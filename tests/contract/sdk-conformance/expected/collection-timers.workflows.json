@@ -1,0 +1,163 @@
+{
+  "canonical": {
+    "activity": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"bodies\":{\"line\":{\"entrypoint\":\"selected\",\"nodes\":[{\"activity\":\"timer.notify\",\"id\":\"selected\",\"next\":\"delay\",\"type\":\"activity\"},{\"durationMs\":1,\"id\":\"delay\",\"next\":\"returned\",\"type\":\"timer\"},{\"id\":\"returned\",\"result\":\"item\",\"type\":\"return\"}]}},\"entrypoint\":\"lines\",\"kind\":\"Workflow\",\"limits\":{\"maxDepth\":1,\"maxInstances\":8},\"metadata\":{\"name\":\"collection-timers-activity\"},\"nodes\":[{\"body\":\"line\",\"id\":\"lines\",\"items\":\"input.items\",\"maxConcurrency\":1,\"maxItems\":2,\"next\":\"done\",\"result\":\"bodyResult\",\"type\":\"forEach\"},{\"id\":\"done\",\"outputExpr\":\"steps.lines.output\",\"type\":\"end\"}]}",
+    "condition": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"bodies\":{\"line\":{\"entrypoint\":\"choose\",\"nodes\":[{\"expression\":\"item > 0\",\"id\":\"choose\",\"ifFalse\":\"returned\",\"ifTrue\":\"delay\",\"type\":\"condition\"},{\"durationMs\":1,\"id\":\"delay\",\"next\":\"returned\",\"type\":\"timer\"},{\"id\":\"returned\",\"result\":\"item\",\"type\":\"return\"}]}},\"entrypoint\":\"lines\",\"kind\":\"Workflow\",\"limits\":{\"maxDepth\":1,\"maxInstances\":8},\"metadata\":{\"name\":\"collection-timers-condition\"},\"nodes\":[{\"body\":\"line\",\"id\":\"lines\",\"items\":\"input.items\",\"maxConcurrency\":1,\"maxItems\":2,\"next\":\"done\",\"result\":\"bodyResult\",\"type\":\"forEach\"},{\"id\":\"done\",\"outputExpr\":\"steps.lines.output\",\"type\":\"end\"}]}",
+    "timer": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"bodies\":{\"line\":{\"entrypoint\":\"delay\",\"nodes\":[{\"durationMs\":1,\"id\":\"delay\",\"next\":\"returned\",\"type\":\"timer\"},{\"id\":\"returned\",\"result\":\"item\",\"type\":\"return\"}]}},\"entrypoint\":\"lines\",\"kind\":\"Workflow\",\"limits\":{\"maxDepth\":1,\"maxInstances\":6},\"metadata\":{\"name\":\"collection-timers-timer\"},\"nodes\":[{\"body\":\"line\",\"id\":\"lines\",\"items\":\"input.items\",\"maxConcurrency\":1,\"maxItems\":2,\"next\":\"done\",\"result\":\"bodyResult\",\"type\":\"forEach\"},{\"id\":\"done\",\"outputExpr\":\"steps.lines.output\",\"type\":\"end\"}]}"
+  },
+  "workflows": {
+    "activity": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "bodies": {
+        "line": {
+          "entrypoint": "selected",
+          "nodes": [
+            {
+              "activity": "timer.notify",
+              "id": "selected",
+              "next": "delay",
+              "type": "activity"
+            },
+            {
+              "durationMs": 1,
+              "id": "delay",
+              "next": "returned",
+              "type": "timer"
+            },
+            {
+              "id": "returned",
+              "result": "item",
+              "type": "return"
+            }
+          ]
+        }
+      },
+      "entrypoint": "lines",
+      "kind": "Workflow",
+      "limits": {
+        "maxDepth": 1,
+        "maxInstances": 8
+      },
+      "metadata": {
+        "name": "collection-timers-activity"
+      },
+      "nodes": [
+        {
+          "body": "line",
+          "id": "lines",
+          "items": "input.items",
+          "maxConcurrency": 1,
+          "maxItems": 2,
+          "next": "done",
+          "result": "bodyResult",
+          "type": "forEach"
+        },
+        {
+          "id": "done",
+          "outputExpr": "steps.lines.output",
+          "type": "end"
+        }
+      ]
+    },
+    "condition": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "bodies": {
+        "line": {
+          "entrypoint": "choose",
+          "nodes": [
+            {
+              "expression": "item > 0",
+              "id": "choose",
+              "ifFalse": "returned",
+              "ifTrue": "delay",
+              "type": "condition"
+            },
+            {
+              "durationMs": 1,
+              "id": "delay",
+              "next": "returned",
+              "type": "timer"
+            },
+            {
+              "id": "returned",
+              "result": "item",
+              "type": "return"
+            }
+          ]
+        }
+      },
+      "entrypoint": "lines",
+      "kind": "Workflow",
+      "limits": {
+        "maxDepth": 1,
+        "maxInstances": 8
+      },
+      "metadata": {
+        "name": "collection-timers-condition"
+      },
+      "nodes": [
+        {
+          "body": "line",
+          "id": "lines",
+          "items": "input.items",
+          "maxConcurrency": 1,
+          "maxItems": 2,
+          "next": "done",
+          "result": "bodyResult",
+          "type": "forEach"
+        },
+        {
+          "id": "done",
+          "outputExpr": "steps.lines.output",
+          "type": "end"
+        }
+      ]
+    },
+    "timer": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "bodies": {
+        "line": {
+          "entrypoint": "delay",
+          "nodes": [
+            {
+              "durationMs": 1,
+              "id": "delay",
+              "next": "returned",
+              "type": "timer"
+            },
+            {
+              "id": "returned",
+              "result": "item",
+              "type": "return"
+            }
+          ]
+        }
+      },
+      "entrypoint": "lines",
+      "kind": "Workflow",
+      "limits": {
+        "maxDepth": 1,
+        "maxInstances": 6
+      },
+      "metadata": {
+        "name": "collection-timers-timer"
+      },
+      "nodes": [
+        {
+          "body": "line",
+          "id": "lines",
+          "items": "input.items",
+          "maxConcurrency": 1,
+          "maxItems": 2,
+          "next": "done",
+          "result": "bodyResult",
+          "type": "forEach"
+        },
+        {
+          "id": "done",
+          "outputExpr": "steps.lines.output",
+          "type": "end"
+        }
+      ]
+    }
+  }
+}

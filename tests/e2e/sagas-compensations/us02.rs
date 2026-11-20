@@ -114,7 +114,7 @@ async fn us02_a_declined_payment_releases_the_reserved_limit_and_the_run_is_comp
 }
 
 #[tokio::test]
-async fn us02_a_worker_that_dies_while_releasing_is_replaced_and_the_provider_sees_one_key() {
+async fn us02_a_worker_that_dies_while_releasing_requires_review_without_a_second_attempt() {
     let p = platform().await;
     let wf = p.publish("corporate-payment", &payment_saga()).await;
     let run = p.start(&wf, &input()).await;
@@ -124,32 +124,63 @@ async fn us02_a_worker_that_dies_while_releasing_is_replaced_and_the_provider_se
     let first = doomed.one_task().await;
     assert_eq!(first.activity_name, "limit.release");
 
-    // It dies holding the lease; the lease runs out and the retry falls due.
+    // It dies holding the lease; the engine cannot infer whether the release happened.
     p.expire_lease(&run, "reserve~c").await;
     p.tick().await;
-    p.elapse_retry_delay(&run, "reserve~c").await;
     p.tick().await;
     let mut rescuer = p.worker("rhea").await;
     rescuer.register(ACTIVITIES).await;
-    let second = rescuer.one_task().await;
-    assert_eq!(second.activity_name, "limit.release");
-    assert_eq!(second.attempt, first.attempt + 1);
-    assert!(second.generation > first.generation);
-    assert_eq!(
-        second.idempotency_key, first.idempotency_key,
-        "the provider recognises the repeat"
+    assert!(
+        rescuer.poll(8).await.is_empty(),
+        "no automatic compensation repeat"
     );
+    assert_eq!(p.status(&run).await, "MANUAL_REVIEW");
+    let reviewed = graph(&p, &run).await;
+    assert_eq!(node(&reviewed, "reserve~c")["status"], "WAITING");
+    assert_eq!(node(&reviewed, "reserve~c")["waitingOn"], "operator");
+    assert_eq!(node(&reviewed, "reserve~c")["failureCode"], "LEASE_EXPIRED");
 
     let late = doomed
         .complete(&first, &json!({}))
         .await
         .expect_err("stale");
     assert_eq!(machine_code(&late), "STALE_ATTEMPT");
-    rescuer
-        .complete(&second, &json!({}))
-        .await
-        .expect("released");
+    let before = journal(&p, &run).await;
+    let (status, body) = decide(
+        &p,
+        None,
+        &run,
+        &json!({"action": "RETRY_COMPENSATION", "stepId": "reserve~c",
+                "reason": "a stable key does not establish the release outcome"}),
+    )
+    .await;
+    assert_eq!(status, 409, "{body}");
+    assert_eq!(journal(&p, &run).await, before);
+    let (status, body) = decide(
+        &p,
+        None,
+        &run,
+        &json!({"action": "RESOLVE_STEP", "stepId": "reserve~c", "outcome": "SUCCEEDED",
+                "reason": "provider evidence confirms the original release completed"}),
+    )
+    .await;
+    assert_eq!(status, 202, "{body}");
     assert_eq!(p.status(&run).await, "COMPENSATED");
+    let events = journal(&p, &run).await;
+    assert_eq!(
+        events
+            .iter()
+            .filter(|(kind, step)| kind == "step.leased" && step.as_deref() == Some("reserve~c"))
+            .count(),
+        1,
+        "no second compensation attempt: {events:?}"
+    );
+    assert!(
+        events.iter().any(|(kind, step)| {
+            kind == "step.resolved" && step.as_deref() == Some("reserve~c")
+        })
+    );
+    assert!(rescuer.poll(8).await.is_empty());
 }
 
 #[tokio::test]

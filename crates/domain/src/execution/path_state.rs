@@ -862,6 +862,13 @@ impl PathExecutionState {
             | RunEvent::StepRetryScheduled { .. }
             | RunEvent::StepRetryDue { .. }
             | RunEvent::StepFailed { .. }
+            | RunEvent::ConditionEvaluated { .. }
+            | RunEvent::SwitchEvaluated { .. }
+            | RunEvent::TimerStarted { .. }
+            | RunEvent::TimerFired { .. }
+            | RunEvent::WaitStarted { .. }
+            | RunEvent::WaitSatisfied { .. }
+            | RunEvent::WaitTimedOut { .. }
             | RunEvent::StepCancelRequested { .. }
             | RunEvent::StepCancelled { .. }) => {
                 self.steps

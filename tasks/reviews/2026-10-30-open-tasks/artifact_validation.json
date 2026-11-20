@@ -1,0 +1,69 @@
+{
+  "task_inventory_hashes_unchanged": true,
+  "target_hash_unchanged": true,
+  "markdown_files_read": 14,
+  "local_links_checked": 158,
+  "stage_reports_present": [
+    "zoom_out_report.md",
+    "comprehension_report.md",
+    "critic_report.md",
+    "intermediate_zoom_out_report.md",
+    "implementation_readiness_report.md",
+    "consolidated_review_report.md"
+  ],
+  "errors": [],
+  "structured_findings": {
+    "raw_findings": 32,
+    "distinct_actions": 8,
+    "reciprocal_mappings_valid": true,
+    "completed_stages": 5,
+    "output_hashes_checked": 16,
+    "historical_source_hashes_checked": 4
+  },
+  "authorized_change_scope_verified": true,
+  "bootstrap_validation": {
+    "contracts": 203,
+    "relative_links": 390,
+    "citation_paths": 5258,
+    "cargo_command_targets": 132,
+    "errors": []
+  },
+  "repository_checks": [
+    {
+      "command": "python3 scripts/check-architecture.py",
+      "exit_code": 0,
+      "output": "architecture check passed (24 workspace crates, layers respected, no cycles)"
+    },
+    {
+      "command": "python3 scripts/check-agent-config.py",
+      "exit_code": 0,
+      "output": "agent configuration ok"
+    },
+    {
+      "command": "python3 scripts/check-vendor.py",
+      "exit_code": 0,
+      "output": "vendor check passed (84 upstream files, one manifest-only override)"
+    },
+    {
+      "command": "git diff --check",
+      "exit_code": 0,
+      "output": ""
+    }
+  ],
+  "precommit_formatting": {
+    "initial_staged_whitespace_check_exit_code": 2,
+    "reports_normalized": {
+      "zoom_out_report.md": {
+        "original_sha256": "46243ccb654cd2e35626084203a5ec8c965c9cf0c5e735298c8d2e2f968fa204",
+        "sha256": "30c24ad00452e84d8ffd92aae0b03998f7268b4fbb5cd9a98957f1818b6de816",
+        "trailing_space_lines": 4
+      },
+      "intermediate_zoom_out_report.md": {
+        "original_sha256": "7d5f0fe99444267d2ddb8b47974b5853247e16546cf84b11ca78459faf7a3006",
+        "sha256": "793722e59780b68a9bc204d6b81ca2057e39c57ae0f03b10a0dbe3e44d635335",
+        "trailing_space_lines": 3
+      }
+    },
+    "changes": "Removed seven Markdown hard-break trailing-space sequences; report wording and canonical source inputs unchanged."
+  }
+}

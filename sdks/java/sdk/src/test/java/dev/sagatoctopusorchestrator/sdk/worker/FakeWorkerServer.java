@@ -59,6 +59,8 @@ final class FakeWorkerServer extends WorkerServiceGrpc.WorkerServiceImplBase imp
     volatile List<Worker.ResolvedSecret> secrets = List.of();
     /** How long a poll takes to answer, and the wait the answer asks for when it brings no task. */
     volatile long pollDelayMs;
+    /** How long a CompleteStep takes to answer once it is recorded: the host heartbeats until the report returns (SPEC 6.3). */
+    volatile long completeDelayMs;
     volatile int pollRetryAfterMs = 50;
     /** Number of leases in each nonempty stream frame. */
     volatile int streamFrameSize = Integer.MAX_VALUE;
@@ -129,6 +131,7 @@ final class FakeWorkerServer extends WorkerServiceGrpc.WorkerServiceImplBase imp
         heartbeatExpiresMs = System.currentTimeMillis() + 60_000;
         secrets = List.of();
         pollDelayMs = 0;
+        completeDelayMs = 0;
         pollRetryAfterMs = 50;
         streamFrameSize = Integer.MAX_VALUE;
         holdStreamOpen = false;
@@ -155,6 +158,13 @@ final class FakeWorkerServer extends WorkerServiceGrpc.WorkerServiceImplBase imp
         if (method.equals("PollTasks") && pollDelayMs > 0) {
             try {
                 TimeUnit.MILLISECONDS.sleep(pollDelayMs);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }
+        if (method.equals("CompleteStep") && completeDelayMs > 0) {
+            try {
+                TimeUnit.MILLISECONDS.sleep(completeDelayMs);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
             }

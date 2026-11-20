@@ -38,7 +38,7 @@ Nothing is lost while a shard waits: timers are rows, the passes catch up as soo
 
 **The database is the ceiling.** Every transition is a commit with its journal rows and its outbox row; adding engine replicas moves the work between processes and does not make the server's commits cheaper. When the passes are late and the replicas are not busy, look at the database (`db_pool_connections{state="in_use"}`, the server's CPU and WAL write rate) before adding replicas.
 
-**Autoscaling.** The chart (`infra/helm`) can scale the engine with KEDA on `max(scheduler_lag_seconds)` (the oldest overdue item of any pass, in seconds; the threshold is `engine.autoscaling.keda.lagThresholdSeconds`), or with an HPA on CPU. The lag is a measure of lateness and not of load, so this is a coarse controller: it adds replicas while the scheduler is late and removes them slowly (one every two minutes, after five minutes of calm), because a shard handover costs a lease. Prefer to fix the number of replicas to what the report shows is enough for your peak, and use the autoscaler for the surprises. The lag is a signal a tenant can raise (many timers due together), so the ceiling matters: `engine.autoscaling.keda.maxReplicaCount` times `database.maxConnections` must be a number of connections the server holds, and `database.serverMaxConnections` makes the chart refuse a ceiling that is not. Set `metrics.selector` (e.g. `namespace="sagat"`) when more than one install shares the Prometheus, or the lag of staging scales production. The chart also isolates egress: the control plane reaches DNS, PostgreSQL and OIDC; the engine additionally reaches configured NATS; workers reach DNS and the release's control-plane and engine pods. Declare any collector or other infrastructure dependency in the role-specific extra rules instead of broadening the core rules.
+**Autoscaling.** The chart (`infra/helm`) can scale the engine with KEDA on `max(scheduler_lag_seconds)` (the oldest overdue item of any pass, in seconds; the threshold is `engine.autoscaling.keda.lagThresholdSeconds`), or with an HPA on CPU. The lag is a measure of lateness and not of load, so this is a coarse controller: it adds replicas while the scheduler is late and removes them slowly (one every two minutes, after five minutes of calm), because a shard handover costs a lease. Prefer to fix the number of replicas to what the report shows is enough for your peak, and use the autoscaler for the surprises. The lag is a signal a tenant can raise (many timers due together), so the ceiling matters: `engine.autoscaling.keda.maxReplicaCount` times `database.maxConnections` must be a number of connections the server holds, and `database.serverMaxConnections` makes the chart refuse a ceiling that is not. Set `metrics.selector` (e.g. `namespace="sagat"`) when more than one install shares the Prometheus, or the lag of staging scales production. The chart also isolates egress: the control plane reaches DNS, PostgreSQL and OIDC; the engine additionally reaches the selected NATS or Redis backend; workers reach DNS and the release's control-plane and engine pods. Declare any collector or other infrastructure dependency in the role-specific extra rules instead of broadening the core rules.
 
 **Pools of workers.** A pool is a deployment of your own image whose program serves some activities. Name the pools in `workerPools` (chart) or `SAGAT_WORKER_POOLS=name=act.a,act.b;name=act.c` (engine) and the monitor sets `pool_ready_steps{pool}` and `pool_queue_lag_seconds{pool}`: the steps ready for any of the pool's activities, across tenants, and how long the oldest has waited. The pool's `ScaledObject` scales on both: replicas for every `readyPerReplica` ready steps, and more when the oldest has waited longer than `lagThresholdSeconds`. Nothing routes work to a pool: a step goes to any worker that serves its activity, in any pool. The gauges count the ready steps of **every** tenant for the pool's activities, with or without a worker that could take them, so a tenant can keep a pool at its ceiling: `maxReplicaCount` is what you are willing to spend on that, and a tenant you do not trust with it gets its own install.
 
@@ -46,7 +46,9 @@ Nothing is lost while a shard waits: timers are rows, the passes catch up as soo
 
 The generic default uses the existing quota endpoints (`PUT /quotas/activity_concurrency` or `PUT /namespaces/{namespaceId}/quotas/activity_concurrency`). Activity overrides use `GET /namespaces/{namespaceId}/activity-quotas` and `PUT`/`DELETE /namespaces/{namespaceId}/activity-quotas/{activity}` with the same `{"limit": n}` body as other quotas. Reads need `quota:read`; changes need `quota:manage`, are ceiling checked and audited. The list contains explicit overrides; the answer to a delete has `overridden: false` and shows the inherited generic limit.
 
-Admission is exact across engine replicas: the claim and the count of unexpired `LEASED`/`RUNNING` steps commit under the activity's database lock. When the limit is full, the candidate remains ready and the poll continues through its bounded scan for other activities. A crashed worker stops consuming the budget when its lease expires. Watch `quota_exceeded_total{limit="activity_concurrency"}` and the ready/lag gauges of the affected pool; the metric deliberately carries no tenant, namespace or activity label. If an unrelated activity behind a very large capped backlog waits to be discovered, poll again or separate the worker bindings so its session searches a smaller queue set.
+Admission is exact across engine replicas. Every claim shares the activity's fence, so a change of the limit waits for the claims in flight and they all read one limit. When that limit is below the maximum (1,000,000,000, which is also the default and means no limit), the claim and the count of unexpired `LEASED`/`RUNNING` steps commit under the activity's count lock, one claim at a time. With no limit set, claims of one activity neither count nor wait for each other; setting any lower limit on a hot activity therefore serialises its leases, which is the price of the exact count. When the limit is full, the candidate remains ready and the poll continues through its bounded scan for other activities. A crashed worker stops consuming the budget when its lease expires. Watch `quota_exceeded_total{limit="activity_concurrency"}` and the ready/lag gauges of the affected pool; the metric deliberately carries no tenant, namespace or activity label. If an unrelated activity behind a very large capped backlog waits to be discovered, poll again or separate the worker bindings so its session searches a smaller queue set.
+
+**What a lease costs.** `worker_claim_candidates_total{stage}` counts, per poll, the candidates the scan `fetched`, the ones a claim transaction was begun for (`probed`), the runs that were locked and loaded (`opened`) and the tasks `leased`. The stage is its only label. `probed` over `leased` is how many candidates workers try for each task they get: it grows when many workers poll one activity, because they read the same oldest candidates and most find the run held by another. `opened` over `leased` should stay near one; well above it, runs are being loaded to find nothing to lease. Polls of a namespace in flight together in one API replica start at different points of their candidates, so `probed` over `leased` grows with the number of replicas more than with the number of workers of one replica.
 
 **Fairness between tenants.** A pass takes up to `batch` candidates, not the `batch` oldest: it shares them between the tenants that have work due by weighted max-min fairness, so a tenant with a burst of ten thousand timers does not hold back a tenant with five. A tenant that has less than its share gets all it has; the rest go to the others in proportion to their weights; a lone tenant gets the whole batch. Weights are 1 to 16, default 1, and are set by the platform operator:
 
@@ -58,10 +60,11 @@ It writes a table the runtime role cannot, so it is run with the owner role from
 
 ## 3. Upgrade
 
-The current chart/application version is `0.2.0`. The earlier numbering reset is documented in
+The current chart/application version is `0.3.0`. The earlier numbering reset is documented in
 [0.1.0](../releases/0.1.0.md); it did not revert code or schema. Required, fail-closed NetworkPolicy
 peers remain mandatory: populate `networkPolicy.apiFrom`, `workersFrom`, `metricsFrom` and
-`egress.{dnsTo,postgres.to,oidc.to}`, plus `egress.nats.to` when `nats.url` is set. Render the release
+`egress.{dnsTo,postgres.to,oidc.to}`, plus `egress.nats.to` for selected NATS or explicit
+`networkPolicy.egress.redis` peers/port for selected Redis (see [transport setup](events.md#redis-streams-v03)). Render the release
 first; missing, empty or global peers are refused.
 
 1. Back up PostgreSQL and the associated blob/provider state and keys. Rehearse on a restored copy.
@@ -80,21 +83,43 @@ first; missing, empty or global peers are refused.
    writes of new scoped workflows.
 
 Follow [security upgrade/rollback](security-governance.md#upgrade-and-rollback),
-[workflow boundaries](workflow-primitives.md) and the current [release notes](../releases/0.2.0.md).
+[workflow boundaries](workflow-primitives.md) and the current [release notes](../releases/0.3.0.md).
 After OpenBao cutover, application rollback alone does not restore credential authority; use the
 [coordinated database/provider recovery](database-recovery.md) procedure, preserving references,
 Raft state/tombstones and the intent-binding key, with cleanup stopped until references are checked.
 
+## Draining workers before a restart
+
+Since feature 037, a worker that stops while an activity is in flight leaves that activity's
+outcome unknown. This happens when its lease lapses, the attempt times out, or the activity reports
+`OUTCOME_UNKNOWN`. Without a `reconcileWith` lookup, such an activity **waits for a person**,
+whether it is high risk or not. A rolling deploy that kills workers mid-activity, or a lost node,
+therefore creates review items instead of retries. To avoid that:
+
+1. Drain the worker identity first: `POST /namespaces/{namespaceId}/workers/{subject}/drain` (or
+   Operations → Workers in the Studio). Polls then get no new work
+   (`worker_polls_drained_total`).
+2. Wait until the identity has no leased task left, then stop it. Give the process a stop timeout
+   (`terminationGracePeriodSeconds` in Kubernetes) at least as long as the longest activity it
+   runs. The SDKs report `shutdown` for work they hand back cleanly (`sdks/SPEC.md`). Work that is
+   still running when the process dies keeps its lease until the lease lapses.
+3. Start the new version, then undrain (`…/undrain`).
+
+Watch `operator_decisions_total{action="requested"}` and the runs in `MANUAL_REVIEW`
+([sagas runbook](sagas.md)). A jump right after a deploy means work was cut off mid-flight, not
+that providers failed. Give every effect that has one a `reconcileWith` lookup: a lookup that
+answers `applied` settles the step without a person.
+
 ## 4. On Kubernetes: the chart
 
-`infra/helm` installs the control plane, the engine and, if you list them, pools of your workers; PostgreSQL, NATS and the identity provider are yours. Start from [`infra/helm/examples/ha.yaml`](../../infra/helm/examples/ha.yaml).
+`infra/helm` installs the control plane, the engine and, if you list them, pools of your workers; PostgreSQL, the selected NATS/Redis service and the identity provider are yours. Start from [`infra/helm/examples/ha.yaml`](../../infra/helm/examples/ha.yaml).
 
 ```sh
 helm lint infra/helm -f infra/helm/examples/ha.yaml
 helm install sagat infra/helm -f my-values.yaml          # after the migrations (section 3)
 ```
 
-- It **refuses at render time** what the platform would refuse at start: a database Secret or OIDC settings missing, more than 64 engine replicas (or an autoscaler allowed to go past 64), a lease outside 3 to 600 s, both autoscalers, a partial native-TLS pair or native TLS and plaintext secrets together, a pool named twice or serving nothing, and unsafe NetworkPolicy inputs. Metrics, REST, worker API, DNS, PostgreSQL and OIDC peers must be explicit; NATS peers are required when NATS is configured. Empty selectors, zero-prefix CIDRs, missing peers or ports, named ports and protocols other than TCP/UDP are refused.
+- It **refuses at render time** what the platform would refuse at start: a database Secret or OIDC settings missing, more than 64 engine replicas (or an autoscaler allowed to go past 64), a lease outside 3 to 600 s, both autoscalers, a partial native-TLS pair or native TLS and plaintext secrets together, a pool named twice or serving nothing, and unsafe NetworkPolicy inputs. Metrics, REST, worker API, DNS, PostgreSQL and OIDC peers must be explicit; the selected NATS or Redis backend needs explicit peers/port. Redis callback destinations also need explicit engine egress rules; see [Redis networking](events.md#redis-streams-v03). Empty selectors, zero-prefix CIDRs, missing peers or ports, named ports and protocols other than TCP/UDP are refused.
 - `controlPlane.nativeTls` mounts the server certificate and webhook client CA read-only and switches the Service and probes to HTTPS. `healthcheckCaSecret` is a separate server-trust bundle. Secret files use mode 0440 with pod group 10001; the same group ownership makes the execution engine's existing 0440 gRPC TLS key readable by its non-root process.
 - Pods run as a non-root user with a read-only root filesystem, no capabilities, the runtime-default seccomp profile and no service-account token. The engine's pods are told their own name (`SAGAT_REPLICA_ID`), surge one at a time, are spread over zones and nodes, and are held by a disruption budget that keeps one replica.
 - `metrics.selector` adds label matchers (`namespace="prod"`) to every query the autoscalers ask, so that two installs that share a Prometheus do not drive each other. The ports 9090 and 9091 answer only the explicit peers in `networkPolicy.metricsFrom`.
@@ -126,6 +151,23 @@ helm install sagat infra/helm -f my-values.yaml          # after the migrations 
 - **Likely causes:** shards unowned (the alert above); a burst of due items larger than the passes take (`SAGAT_SCHEDULER_BATCH` per pass per tick, `SAGAT_SCHEDULER_CONCURRENCY` at a time); a slow database; fewer replicas than the peak needs.
 - **Do:** with shards unowned, that section. With a burst, wait for the backlog to drain: fairness gives every tenant its share meanwhile (`scheduler_fairness_limited_total`). If it does not drain, add replicas (up to 64) or raise the concurrency, and look at the database first.
 - **Over when:** every pass's lag is under the threshold.
+
+## scheduler-tick-slow
+
+**`SagatSchedulerTickSlow`.** The 95th percentile of `scheduler_tick_seconds` has been above 0.5 seconds (the default `SAGAT_SCHEDULER_INTERVAL_MS`) for ten minutes: one tick of a replica's passes takes longer than the interval between ticks, so what is due waits for the next one. The release 0.3 ceiling of pending waits per replica (OD-2026-11-04-6) holds only while ticks fit the interval.
+
+- **Confirm:** `scheduler_tick_seconds` by `instance` (one replica or all?); `scheduler_waits_per_replica`; `scheduler_lag_seconds` by `pass`; `db_pool_connections{state="in_use"}` against the pool size; the database's slow queries.
+- **Likely causes:** more pending waits than a replica handles (the next alert); a slow database; a replica starved of CPU.
+- **Do:** add replicas (up to 64), give the pods the CPU they ask for, and look at the database first. Lengthening the interval only hides it.
+- **Over when:** the percentile is under the interval.
+
+## scheduler-waits-per-replica
+
+**`SagatSchedulerWaitsPerReplica`.** `scheduler_waits_per_replica` (timers, event waits and approvals that wait, over the scheduler replicas alive) has been above 16,000 for fifteen minutes, 80% of the release 0.3 ceiling of 20,000 per replica at the default interval (OD-2026-11-04-6). Nothing is late yet; it is the warning before ticks grow slow.
+
+- **Confirm:** `scheduler_pending_waits`; `scheduler_members` (are replicas missing?); `scheduler_tick_seconds`.
+- **Do:** add scheduler replicas (up to 64) so the waits per replica fall under 16,000; if a replica is missing, find why (the keeper alert). A tenant that opens waits without bound is limited by its quotas, not here.
+- **Over when:** the gauge is under 16,000.
 
 ## shard-fencing
 

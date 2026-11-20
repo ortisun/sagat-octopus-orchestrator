@@ -7,7 +7,7 @@ import { Button } from '../../ui/Button';
 import { ErrorState } from '../../ui/ErrorState';
 import { useAnnounce } from '../../ui/Announcer';
 import { secretsApi } from '../secrets/api';
-import { connectionsApi } from './api';
+import { connectionsApi, postgresOf } from './api';
 import type { Connection, ConnectionWrite } from './api';
 
 const DEFAULT_LIMITS = { timeoutMs: 10000, maxRows: 1000, maxResultBytes: 1048576, connectTimeoutMs: 5000, poolSize: 4, idleTimeoutMs: 30000, maxStatementBytes: 16384, maxParameters: 64, maxParameterBytes: 65536 };
@@ -23,7 +23,7 @@ export function ConnectionForm({ namespace, development, connection, onClose }: 
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   const secretRequest = useRef<string | undefined>(undefined);
   const connectionRequest = useRef<{ content: string; id: string } | undefined>(undefined);
-  const config = connection?.config;
+  const config = connection ? postgresOf(connection) : undefined;
   const [name, setName] = useState(connection?.name ?? '');
   const [host, setHost] = useState(config?.host ?? '');
   const [port, setPort] = useState(String(config?.port ?? 5432));

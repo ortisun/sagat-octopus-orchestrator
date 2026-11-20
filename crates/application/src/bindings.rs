@@ -8,7 +8,7 @@
 use std::future::Future;
 
 use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
-use sagat_domain::binding::{self, BindingError, MAX_PATTERNS, PoolError};
+use sagat_domain::binding::{self, BindingError, BindingProfile, MAX_PATTERNS, PoolError};
 use sagat_domain::identity::{NamespaceId, Permission, Principal, Subject, TenantId};
 
 use crate::authz::{NamespaceDirectory, require_namespace};
@@ -32,6 +32,8 @@ pub struct StoredBinding {
     pub patterns: Vec<String>,
     /// The worker pools the identity was granted in this namespace (G48).
     pub pools: Vec<String>,
+    /// The profile of the identity (D035-057): what kind of managed work a dedicated runner may register for.
+    pub profile: BindingProfile,
 }
 
 /// Storage port of the bindings. Implemented by `sagat-infra-postgres`.
@@ -46,8 +48,10 @@ pub trait BindingStore: NamespaceDirectory {
     /// Replaces the patterns of one identity in one namespace (`patterns` empty removes the binding
     /// and its pool grants), closes the sessions the result no longer covers and releases their
     /// attempts, and writes the audit record, all in one transaction. `pools` replaces the identity's
-    /// pool grants (`Some(&[])` clears them); `None` leaves them as they are. `Ok(None)` when there
-    /// was nothing to remove.
+    /// pool grants (`Some(&[])` clears them); `None` leaves them as they are. `profile` sets the identity's
+    /// profile; `None` keeps the one it has (`database` for a new binding), and a dedicated runner's session
+    /// whose activities are of another profile is closed with the ones the patterns no longer cover.
+    /// `Ok(None)` when there was nothing to remove.
     #[allow(clippy::too_many_arguments)] // one change is the identity, its patterns and pools, who and why
     fn replace_binding(
         &self,
@@ -56,6 +60,7 @@ pub trait BindingStore: NamespaceDirectory {
         subject: &str,
         patterns: &[String],
         pools: Option<&[String]>,
+        profile: Option<BindingProfile>,
         changed_by: &str,
         audit: &AuditRecord,
     ) -> impl Future<Output = Result<Option<Revoked>, StoreError>> + Send;
@@ -67,6 +72,7 @@ pub struct BindingView {
     pub subject: String,
     pub patterns: Vec<String>,
     pub pools: Vec<String>,
+    pub profile: BindingProfile,
     pub revoked: Revoked,
 }
 
@@ -107,6 +113,7 @@ where
                 subject: b.subject,
                 patterns: b.patterns,
                 pools: b.pools,
+                profile: b.profile,
                 revoked: Revoked::default(),
             })
             .collect())
@@ -144,6 +151,27 @@ where
         subject: &str,
         activities: &[String],
         pools: Option<&[String]>,
+        ctx: &RequestContext,
+    ) -> Result<BindingView, AppError> {
+        self.bind_with_profile(principal, namespace, subject, activities, pools, None, ctx)
+            .await
+    }
+
+    /// As [`Self::bind_with_pools`], and sets the profile of the identity (`None` keeps the one it has, `database`
+    /// for a new binding): a dedicated runner registers only for the managed activities of its profile, whatever its
+    /// patterns say (D035-057).
+    ///
+    /// # Errors
+    /// As [`Self::bind_with_pools`].
+    #[allow(clippy::too_many_arguments)] // the identity, its patterns, pools and profile, who and why
+    pub async fn bind_with_profile(
+        &self,
+        principal: &Principal,
+        namespace: NamespaceId,
+        subject: &str,
+        activities: &[String],
+        pools: Option<&[String]>,
+        profile: Option<BindingProfile>,
         ctx: &RequestContext,
     ) -> Result<BindingView, AppError> {
         principal.authorize(Permission::WorkerBind)?;
@@ -184,27 +212,37 @@ where
                 subject.as_str(),
                 &texts,
                 pool_texts.as_deref(),
+                profile,
                 principal.subject().as_str(),
                 &audit,
             )
             .await?
             .unwrap_or_default();
-        // What is in force now: the grants the caller named, or the ones left in place.
-        let pools = match pool_texts {
-            Some(pools) => pools,
-            None => self
-                .store
-                .bindings(principal.tenant_id(), namespace)
-                .await?
-                .into_iter()
-                .find(|b| b.subject == subject.as_str())
-                .map(|b| b.pools)
-                .unwrap_or_default(),
+        // What is in force now: the grants and the profile the caller named, or the ones left in place.
+        let (pools, profile) = match (pool_texts, profile) {
+            (Some(pools), Some(profile)) => (pools, profile),
+            (named_pools, named_profile) => {
+                let stored = self
+                    .store
+                    .bindings(principal.tenant_id(), namespace)
+                    .await?
+                    .into_iter()
+                    .find(|b| b.subject == subject.as_str());
+                (
+                    named_pools
+                        .or_else(|| stored.as_ref().map(|b| b.pools.clone()))
+                        .unwrap_or_default(),
+                    named_profile
+                        .or_else(|| stored.map(|b| b.profile))
+                        .unwrap_or_default(),
+                )
+            }
         };
         Ok(BindingView {
             subject: subject.to_string(),
             patterns: texts,
             pools,
+            profile,
             revoked,
         })
     }
@@ -237,6 +275,7 @@ where
                 namespace,
                 subject.as_str(),
                 &[],
+                None,
                 None,
                 principal.subject().as_str(),
                 &audit,

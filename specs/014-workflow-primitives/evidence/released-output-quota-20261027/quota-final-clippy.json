@@ -1,0 +1,19 @@
+{
+  "command": [
+    "cargo",
+    "clippy",
+    "--workspace",
+    "--all-targets",
+    "--locked",
+    "--",
+    "-D",
+    "warnings"
+  ],
+  "exit_code": 0,
+  "seconds": 22.0,
+  "wall_seconds": 22.0,
+  "wall_minus_monotonic_seconds": 0.0,
+  "started_utc": "2026-10-27T22:34:47.918989+00:00",
+  "finished_utc": "2026-10-27T22:35:09.920503+00:00",
+  "log": "quota-final-clippy.txt"
+}

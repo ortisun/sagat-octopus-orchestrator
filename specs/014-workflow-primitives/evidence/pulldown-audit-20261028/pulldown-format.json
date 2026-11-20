@@ -1,0 +1,14 @@
+{
+  "command": [
+    "cargo",
+    "fmt",
+    "--check"
+  ],
+  "exit_code": 0,
+  "seconds": 4.91,
+  "wall_seconds": 4.91,
+  "wall_minus_monotonic_seconds": -0.0,
+  "started_utc": "2026-10-28T12:31:15.499886+00:00",
+  "finished_utc": "2026-10-28T12:31:20.407958+00:00",
+  "log": "pulldown-format.txt"
+}

@@ -124,15 +124,22 @@ pub(in crate::execution) fn apply_effect_event<S: InstanceSteps>(
             if !matches!(step.waiting, Some(WaitingOn::Reconciliation)) {
                 return Err(illegal_transition(instance, step.status, name));
             }
-            let paired = matches!(
-                (verdict, result),
+            let paired = match (verdict, result) {
                 (ReconcileVerdict::Applied, ReconcileResult::Succeeded)
-                    | (
-                        ReconcileVerdict::NotApplied,
-                        ReconcileResult::RetryAt(_) | ReconcileResult::Failed(_)
-                    )
-                    | (ReconcileVerdict::Unknown, ReconcileResult::Review(_))
-            );
+                | (ReconcileVerdict::Unknown, ReconcileResult::Review(_)) => true,
+                (ReconcileVerdict::NotApplied, ReconcileResult::Review(code)) => {
+                    *code == FailureCode::reconciliation_not_final()
+                }
+                // Written by v0.1/v0.2, which retried or failed the original after a negative
+                // lookup. The current commands never emit these (feature 037 sends a negative
+                // lookup to review), but a committed journal keeps its meaning on replay
+                // (ADR-0030 §15; in-place upgrade kept by the owner on 2026-11-01).
+                (
+                    ReconcileVerdict::NotApplied,
+                    ReconcileResult::RetryAt(_) | ReconcileResult::Failed(_),
+                ) => true,
+                _ => false,
+            };
             if !paired {
                 return Err(ExecutionError::Invariant(
                     "a reconciliation result does not follow from what it found",
@@ -194,6 +201,11 @@ pub(in crate::execution) fn apply_effect_event<S: InstanceSteps>(
             // A step that waits for a decision, or one whose retry is scheduled and an operator
             // does not want to wait for: the scheduler's own `retry_due` finds it no longer in
             // `RETRY_WAIT` and does nothing, so the two cannot both start an attempt.
+            //
+            // Refusing the retry of a step whose outcome is unknown is a *decision* (feature 037),
+            // made by `retry_review` / `retry_scoped_review` under the run lock for every role. The
+            // reducer does not repeat it: v0.1/v0.2 let an operator with `saga:override` retry such
+            // a step, and those committed events must still replay.
             let step = state.locate_effect_step(instance, name, &[Waiting, RetryWait])?;
             if step.status == Waiting && !matches!(step.waiting, Some(WaitingOn::Operator { .. })) {
                 return Err(illegal_transition(instance, step.status, name));

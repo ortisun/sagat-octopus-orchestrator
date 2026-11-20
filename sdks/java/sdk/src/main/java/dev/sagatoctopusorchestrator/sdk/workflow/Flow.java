@@ -197,6 +197,12 @@ public final class Flow {
         return push(options.toNode(id));
     }
 
+    /** An append to an Iceberg table executed by the isolated lake runner; no catalog or storage credential appears here. */
+    public Flow icebergWrite(String id, IcebergWriteOptions options) {
+        if (options == null) throw IcebergWriteOptions.invalid();
+        return push(options.toNode(id));
+    }
+
     /** An activity executed by a worker. */
     public Flow step(String id, String activity, StepOptions options) {
         if (activity == null || activity.isEmpty()) {

@@ -57,3 +57,30 @@ compensation, or with the reconciliation, and the attempts.
   `reconcile.unknown()` (a person decides).
 - `package.json` points at the SDK in this checkout until the SDK is published (see the hello-world
   example).
+
+## Interface
+
+- `prepare.sh` builds the checkout SDK and example; `run.sh` launches compiled `dist/main.js`. [examples/payment-saga/typescript/prepare.sh:npm_install]
+- Package scripts expose `build` and `start`. [examples/payment-saga/typescript/package.json:scripts]
+- [src](src/README.md) — TypeScript payment saga demonstrating keyed effects, compensation, and unknown-outcome reconciliation.
+
+## Invariants
+
+- Preparation is fail-fast and disables dependency lifecycle scripts, audit, and funding output. [examples/payment-saga/typescript/prepare.sh:set -euo pipefail]
+- The package requires Node 20 or newer and references the checkout SDK. [examples/payment-saga/typescript/package.json:engines]
+- Compilation uses strict TypeScript with NodeNext modules and ES2022 output. [examples/payment-saga/typescript/tsconfig.json:compilerOptions]
+
+## Side Effects
+
+- Installs locked SDK/example dependencies and writes compiled output to `dist`. [examples/payment-saga/typescript/prepare.sh:npm_install]
+- Replaces the shell with Node and forwards arguments. [examples/payment-saga/typescript/run.sh:exec]
+
+## Verification
+
+From the repository root, with Docker, the selected example toolchains, and a private `CARGO_TARGET_DIR` outside the checkout:
+
+```sh
+cargo test -p sagat-tests --test e2e_developer_experience --locked -- --ignored saga::
+```
+
+The shared real-platform suite is declared in `tests/Cargo.toml`; language preparation and run commands remain in the example READMEs. [tests/Cargo.toml:e2e_developer_experience]

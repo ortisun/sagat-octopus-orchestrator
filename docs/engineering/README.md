@@ -1,10 +1,10 @@
 # Engineering guide
 
-How this repository is built, by people and by agents. The constitution (`.specify/memory/constitution.md`) says what must stay true; `AGENTS.md` is the short list of rules every agent loads; these pages explain the practice behind them.
+How this repository is built, by people and by agents. The constitution (`docs/constitution.md`) says what must stay true; `AGENTS.md` is the short list of rules every agent loads; these pages explain the practice behind them.
 
 | Page | Read it when |
 |---|---|
-| [SDD workflow](sdd-workflow.md) | you start, change or close a feature: the Spec Kit cycle, its gates, evidence, registers |
+| [SDD workflow](sdd-workflow.md) | you start, change or close a feature: the EGM design cycle, its gates, evidence, registers |
 | [Architecture principles](architecture-principles.md) | you decide something structural: layering, ADRs, fitness functions, quality attributes |
 | [AI engineering](ai-engineering.md) | you configure or direct an agent: instruction files, hooks, skills, subagents, verification, parallel work, security |
 

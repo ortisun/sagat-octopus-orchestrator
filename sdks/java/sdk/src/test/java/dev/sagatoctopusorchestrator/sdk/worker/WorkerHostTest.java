@@ -539,10 +539,12 @@ class WorkerHostTest {
             return Map.of("ok", true);
         });
         fake.heartbeatExpiresMs = System.currentTimeMillis() + 120_000;
+        fake.completeDelayMs = 100;
         fake.addLeases(lease(b -> b.setActivityName("slow").setStepId("slow").setTaskId("run-1/slow/1")));
         h.start();
         until(() -> fake.of("CompleteStep").size() == 1, "the completion");
         List<FakeWorkerServer.Call> beats = fake.of("Heartbeat");
+        int atTheCall = beats.size();
         assertTrue(beats.size() >= 3, beats.size() + " beats");
         Worker.HeartbeatRequest first = (Worker.HeartbeatRequest) beats.get(0).request();
         assertEquals("run-1", first.getRunId());
@@ -554,7 +556,11 @@ class WorkerHostTest {
         assertEquals(1, first.getGeneration());
         assertEquals(TRACE, beats.get(0).header("traceparent"));
         assertTrue(deadlines.get(1).isAfter(deadlines.get(0)), "the lease was extended");
-        int afterwards = fake.of("Heartbeat").size();
+        // The host heartbeats until the report returns (SPEC 6.3), so beats land after the server has recorded the
+        // completion: here the report takes 100 ms to answer. What must not happen is a beat after the host has stopped
+        // it, so let the last ones land and then watch for new ones.
+        int afterwards = settled(() -> fake.of("Heartbeat").size());
+        assertTrue(afterwards > atTheCall, "the heartbeat runs until the report returns");
         sleep(150);
         assertEquals(afterwards, fake.of("Heartbeat").size(), "the heartbeat stops with the task");
     }
@@ -587,6 +593,20 @@ class WorkerHostTest {
         long firstBeat = fake.of("Heartbeat").get(0).nanos();
         long millis = Duration.ofNanos(firstBeat - taken).toMillis();
         assertTrue(millis >= 850 && millis <= 1400, "the first heartbeat came " + millis + " ms after the lease was taken");
+    }
+
+    /** The value of {@code count} once it has stopped changing for three heartbeat intervals; the last value if it never does. */
+    private static int settled(java.util.function.IntSupplier count) {
+        int last = count.getAsInt();
+        for (int i = 0; i < 40; i++) {
+            sleep(60);
+            int now = count.getAsInt();
+            if (now == last) {
+                return now;
+            }
+            last = now;
+        }
+        return last;
     }
 
     private static void sleep(long millis) {
@@ -859,7 +879,8 @@ class WorkerHostTest {
         long began = System.nanoTime();
         h.stop(Duration.ofSeconds(1));
         assertTrue(Duration.ofNanos(System.nanoTime() - began).toMillis() < 2000, "stop cancels the idle receive promptly");
-        assertTrue(fake.streamCancelled);
+        // The server learns of the cancellation on its own thread, after the client's stop has returned.
+        until(() -> fake.streamCancelled, "the server to see the stream cancelled");
     }
 
     @Test

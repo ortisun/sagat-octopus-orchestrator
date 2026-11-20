@@ -15,7 +15,7 @@ use sagat_application::maintenance::{StepRef, Window};
 use sagat_domain::audit::{AuditAction, ResourceType};
 use sagat_domain::definition::WorkflowVersionId;
 use sagat_domain::execution::{
-    ExecutionInstanceId, FailureCode, InstancePath, LoopContinuation, LoopKind, RunId,
+    ExecutionInstanceId, FailureCode, InstancePath, LoopContinuation, LoopKind, RunId, StepStatus,
 };
 use sagat_domain::identity::{NamespaceId, TenantId};
 use sagat_domain::outbound::OutboundKind;
@@ -1206,7 +1206,10 @@ impl LoopProgressStore for PgLoopProgressStore {
                              AND member.lifecycle='ADMITTED' AND failed.status='FAILED')))) \
                       OR scope.lifecycle='DRAINING' \
                       OR (run.status='CANCELLING' AND run.stop_reason='CANCELLED' \
-                          AND scope.lifecycle IN ('READY','RUNNING','DELAYING'))) \
+                          AND scope.lifecycle IN ('READY','RUNNING','DELAYING')) \
+                      OR (run.status='CANCELLING' AND run.stop_reason='FAILED' \
+                          AND run.stop_code='STORAGE_QUOTA_EXCEEDED' \
+                          AND scope.lifecycle='RUNNING')) \
                ) work ORDER BY work.updated_at LIMIT $1 \
              ) candidate ORDER BY candidate.updated_at LIMIT $1",
         )
@@ -2554,7 +2557,18 @@ impl LoopProgressStore for PgLoopProgressStore {
                 run.version_id,
             )
             .await?;
+        // A scoped report refused at the content quota stopped the run for storage in the same
+        // transaction that kept its outcome (feature 037). That committed stop is the proof of
+        // this drain; the loop does not route, and the run is not stopped a second time.
+        let storage_stopped = matches!(
+            &command.reason,
+            sagat_domain::execution::LoopDrainReason::Failed { code, .. }
+                if code == &FailureCode::storage_quota_exceeded()
+        ) && run.status == "CANCELLING"
+            && run.stop_reason.as_deref() == Some("FAILED")
+            && run.stop_code.as_deref() == Some(FailureCode::storage_quota_exceeded().as_str());
         let routed = match &command.reason {
+            _ if storage_stopped => false,
             sagat_domain::execution::LoopDrainReason::Cancelled => false,
             sagat_domain::execution::LoopDrainReason::Failed { .. }
             | sagat_domain::execution::LoopDrainReason::TimedOut => {
@@ -2675,10 +2689,10 @@ impl LoopProgressStore for PgLoopProgressStore {
                         );
                     failed || expression_boundary
                 });
-                if !proven {
+                if !proven && !storage_stopped {
                     return Err(LoopProgressError::InvalidTransition);
                 }
-                if !routed {
+                if !routed && !storage_stopped {
                     sequence += 1;
                     stop_run_for_loop_failure(&mut tx, &command.transition, sequence, code).await?;
                 }
@@ -2926,7 +2940,7 @@ impl LoopProgressStore for PgLoopProgressStore {
             remaining,
         );
         let members = sqlx::query(
-            "SELECT node,status,attempt FROM steps WHERE tenant_id=$1 AND run_id=$2 \
+            "SELECT node,status,attempt,failure_code FROM steps WHERE tenant_id=$1 AND run_id=$2 \
                AND instance_path_nodes=$3 AND instance_path_indices=$4 ORDER BY node FOR UPDATE",
         )
         .bind(command.transition.tenant_id().as_uuid())
@@ -2939,22 +2953,49 @@ impl LoopProgressStore for PgLoopProgressStore {
         if members.is_empty() || remaining < 0 {
             return Err(LoopProgressError::InvalidTransition);
         }
+        let member_status: std::collections::HashMap<String, String> = members
+            .iter()
+            .map(|member| {
+                (
+                    member.get::<String, _>("node"),
+                    member.get::<String, _>("status"),
+                )
+            })
+            .collect();
         for member in &members {
             let node = NodeId::parse_stored(&member.get::<String, _>("node"))
                 .map_err(|_| invalid_storage("loop member node"))?;
             let status = member.get::<String, _>("status");
+            // The shared drain rule: a derived step is settled when it succeeded or was skipped, or
+            // is a FAILED lookup whose original a person has since settled (feature 037).
+            let derived_settled = status.parse::<StepStatus>().is_ok_and(|parsed| {
+                sagat_domain::execution::derived_settles_drain(
+                    // The rule reads only the node's kind, not its path.
+                    &ExecutionInstanceId::root(node.clone()),
+                    parsed,
+                    node.forward()
+                        .and_then(|forward| member_status.get(forward.as_str()))
+                        .and_then(|original| original.parse::<StepStatus>().ok()),
+                )
+            });
             let terminal = matches!(
                 status.as_str(),
                 "SUCCEEDED" | "FAILED" | "CANCELLED" | "SKIPPED"
             );
-            // Nothing is in flight: a step that has not started, or one that waits to retry. One
-            // whose last attempt was lost keeps saying so when it is cancelled, and is compensated.
+            // Nothing is in flight: a step that has not started, or one that waits to retry. A
+            // v0.1/v0.2 retry of an unknown outcome holds the drain until its due retry turns it
+            // into a review (feature 037, `retry_wait_holds_drain`).
             let safe_unstarted = (matches!(status.as_str(), "PENDING" | "READY")
                 && member.get::<i32, _>("attempt") == 0)
-                || status == "RETRY_WAIT";
-            if (node.is_derived() && !matches!(status.as_str(), "SUCCEEDED" | "SKIPPED"))
-                || (!terminal && !safe_unstarted)
-            {
+                || (status == "RETRY_WAIT"
+                    && !sagat_domain::execution::retry_wait_holds_drain(
+                        StepStatus::RetryWait,
+                        member
+                            .get::<Option<String>, _>("failure_code")
+                            .and_then(|code| FailureCode::parse(&code).ok())
+                            .as_ref(),
+                    ));
+            if (node.is_derived() && !derived_settled) || (!terminal && !safe_unstarted) {
                 return Err(LoopProgressError::InvalidTransition);
             }
         }

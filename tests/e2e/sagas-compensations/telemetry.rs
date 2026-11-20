@@ -3,7 +3,7 @@
 use serde_json::json;
 
 use crate::support::worker::platform;
-use crate::{decide, input, payment_saga, with_compensation_attempts};
+use crate::{decide, graph, input, journal, node, payment_saga, with_compensation_attempts};
 use sagat_telemetry::Metrics;
 
 /// The value of the series `name` whose labels include all of `labels`, summed.
@@ -49,20 +49,40 @@ async fn compensations_reconciliations_and_decisions_are_counted_without_naming_
     w.complete(&validate, &json!({})).await.expect("validate");
     let reserve = w.one_task().await;
     w.complete(&reserve, &json!({})).await.expect("reserve");
-    let submit = w.one_task().await;
+    let _submit = w.one_task().await;
 
-    // The response is lost; the lookup says the payment did not happen; the retry is declined.
+    // The response is lost; a negative lookup retains uncertainty until a human decides.
     p.expire_lease(&run, "submit").await;
     p.tick().await;
     let lookup = w.one_task().await;
     w.complete(&lookup, &json!({"effect": "not_applied"}))
         .await
         .expect("answer");
-    p.elapse_retry_delay(&run, "submit").await;
     p.tick().await;
-    let again = w.one_task().await;
-    w.fail(&again, false).await.expect("declined");
-    let _ = submit;
+    assert_eq!(p.status(&run).await, "MANUAL_REVIEW");
+    assert!(w.poll(8).await.is_empty(), "no automatic original repeat");
+    assert_eq!(
+        node(&graph(&p, &run).await, "submit")["failureCode"],
+        "RECONCILIATION_NOT_FINAL"
+    );
+    let (status, body) = decide(
+        &p,
+        None,
+        &run,
+        &json!({"action": "RESOLVE_STEP", "stepId": "submit", "outcome": "FAILED",
+                "errorCode": "PAYMENT_DECLINED", "reason": "provider operator confirms final absence"}),
+    )
+    .await;
+    assert_eq!(status, 202, "{body}");
+    let events = journal(&p, &run).await;
+    assert_eq!(
+        events
+            .iter()
+            .filter(|(kind, step)| kind == "step.leased" && step.as_deref() == Some("submit"))
+            .count(),
+        1,
+        "the human decision never leases the original again: {events:?}"
+    );
 
     // The release fails once and waits for a person, who gives up on it.
     let release = w.one_task().await;
@@ -91,6 +111,7 @@ async fn compensations_reconciliations_and_decisions_are_counted_without_naming_
     assert!(more("reconciliations_total", &[("stage", "requested")]) >= 1.0);
     assert!(more("reconciliations_total", &[("stage", "not_applied")]) >= 1.0);
     assert!(more("operator_decisions_total", &[("action", "requested")]) >= 1.0);
+    assert!(more("operator_decisions_total", &[("action", "resolve_failed")]) >= 1.0);
     assert!(more("operator_decisions_total", &[("action", "skip")]) >= 1.0);
     assert!(more("compensation_attempts_total", &[("result", "needs_review")]) >= 1.0);
 

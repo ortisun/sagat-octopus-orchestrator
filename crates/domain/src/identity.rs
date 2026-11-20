@@ -190,6 +190,23 @@ impl Subject {
         Self("system:gateway".to_owned())
     }
 
+    /// The actor recorded for what a schedule does by itself (starting a run at a nominal time,
+    /// feature 018): `system:schedule:<id>`. Like the other platform actors it lives in the reserved
+    /// `system:` namespace, so nobody can authenticate as it.
+    #[must_use]
+    pub fn schedule(schedule: ::uuid::Uuid) -> Self {
+        Self(format!("system:schedule:{schedule}"))
+    }
+
+    /// The schedule a stored subject stands for, when it is `system:schedule:<id>` (the inverse of
+    /// [`Subject::schedule`]). Anything else, including a malformed id, is `None`.
+    #[must_use]
+    pub fn schedule_of(subject: &str) -> Option<::uuid::Uuid> {
+        subject
+            .strip_prefix("system:schedule:")
+            .and_then(|id| ::uuid::Uuid::parse_str(id).ok())
+    }
+
     /// Validates and wraps a subject.
     ///
     /// # Errors
@@ -356,13 +373,27 @@ pub enum Permission {
     DatabaseAdHoc,
     DatabaseWrite,
     DatabaseResultRead,
+    /// Browse the catalog of an Iceberg connection: namespaces, tables and the shape of a table (feature 035). A
+    /// customer's metadata, so it is not part of `database:use`; held by developers and admins (D035-066).
+    DatabaseBrowse,
     /// Resolve only a leased managed database capability; additionally requires the machine role.
     DatabaseExecute,
+    /// See the schedules of a namespace, their next times and their actions (`FR-018-013`).
+    ScheduleRead,
+    /// Create, change and delete a schedule. Needs `run:start` as well: a schedule starts runs
+    /// as its author would (`FR-018-015`).
+    ScheduleWrite,
+    /// Pause, resume, trigger and backfill a schedule. Resuming and triggering need `run:start`
+    /// too.
+    ScheduleOperate,
+    /// Apply one action to many runs. Needs the permissions of the single action as well; a batch
+    /// multiplies the blast radius of an action by up to 100,000 (`O1002`).
+    RunBatch,
 }
 
 impl Permission {
     /// Every permission, used to grant the admin role and to test the full matrix.
-    pub const ALL: [Self; 48] = [
+    pub const ALL: [Self; 53] = [
         Self::WorkspaceRead,
         Self::WorkspaceCreate,
         Self::NamespaceRead,
@@ -410,7 +441,12 @@ impl Permission {
         Self::DatabaseAdHoc,
         Self::DatabaseWrite,
         Self::DatabaseResultRead,
+        Self::DatabaseBrowse,
         Self::DatabaseExecute,
+        Self::ScheduleRead,
+        Self::ScheduleWrite,
+        Self::ScheduleOperate,
+        Self::RunBatch,
     ];
 
     #[must_use]
@@ -463,7 +499,12 @@ impl Permission {
             Self::DatabaseAdHoc => "database:adhoc",
             Self::DatabaseWrite => "database:write",
             Self::DatabaseResultRead => "database:result:read",
+            Self::DatabaseBrowse => "database:browse",
             Self::DatabaseExecute => "database:execute",
+            Self::ScheduleRead => "schedule:read",
+            Self::ScheduleWrite => "schedule:write",
+            Self::ScheduleOperate => "schedule:operate",
+            Self::RunBatch => "run:batch",
         }
     }
 }
@@ -540,7 +581,12 @@ impl Role {
         Permission::DatabaseAdHoc,
         Permission::DatabaseWrite,
         Permission::DatabaseResultRead,
+        Permission::DatabaseBrowse,
         Permission::DatabaseExecute,
+        Permission::ScheduleRead,
+        Permission::ScheduleWrite,
+        Permission::ScheduleOperate,
+        Permission::RunBatch,
     ];
 
     #[must_use]
@@ -560,18 +606,20 @@ impl Role {
     #[must_use]
     pub const fn permissions(self) -> &'static [Permission] {
         use Permission::{
-            ApprovalDecide, ApprovalRead, DatabaseAdHoc, DatabaseUse, DefinitionPublish,
-            DefinitionRead, DefinitionWrite, EventManage, EventPublish, EventRead, NamespaceRead,
-            OpsRead, PayloadReadInternal, PublicationApprove, QuotaRead, RunOperate,
-            RunPayloadInspect, RunQuery, RunRead, RunSignal, RunStart, RunUpdate, ScriptBuild,
-            ScriptExecute, ScriptPublish, ScriptRead, ScriptWrite, SecretRead, SecretUse,
-            VersionActivate, WorkerExecute, WorkerManage, WorkspaceRead,
+            ApprovalDecide, ApprovalRead, DatabaseAdHoc, DatabaseBrowse, DatabaseUse,
+            DefinitionPublish, DefinitionRead, DefinitionWrite, EventManage, EventPublish,
+            EventRead, NamespaceRead, OpsRead, PayloadReadInternal, PublicationApprove, QuotaRead,
+            RunBatch, RunOperate, RunPayloadInspect, RunQuery, RunRead, RunSignal, RunStart,
+            RunUpdate, ScheduleOperate, ScheduleRead, ScheduleWrite, ScriptBuild, ScriptExecute,
+            ScriptPublish, ScriptRead, ScriptWrite, SecretRead, SecretUse, VersionActivate,
+            WorkerExecute, WorkerManage, WorkspaceRead,
         };
         match self {
             Self::Admin => Self::ADMIN_PERMISSIONS,
             Self::Developer => &[
                 DatabaseUse,
                 DatabaseAdHoc,
+                DatabaseBrowse,
                 WorkspaceRead,
                 NamespaceRead,
                 DefinitionRead,
@@ -595,6 +643,9 @@ impl Role {
                 ScriptPublish,
                 OpsRead,
                 PublicationApprove,
+                ScheduleRead,
+                ScheduleWrite,
+                ScheduleOperate,
             ],
             Self::Operator => &[
                 WorkspaceRead,
@@ -618,6 +669,9 @@ impl Role {
                 WorkerManage,
                 PublicationApprove,
                 VersionActivate,
+                ScheduleRead,
+                ScheduleOperate,
+                RunBatch,
             ],
             Self::Viewer => &[
                 WorkspaceRead,
@@ -629,6 +683,7 @@ impl Role {
                 EventRead,
                 ScriptRead,
                 OpsRead,
+                ScheduleRead,
             ],
             Self::Worker => &[WorkerExecute],
             Self::Runner => &[WorkerExecute, ScriptBuild, ScriptExecute],

@@ -1,0 +1,10 @@
+npm run check:api
+
+> check:api
+> npm run check:api --workspace @sagat/studio
+
+
+> @sagat/studio@0.2.0 check:api
+> node scripts/check-api.mjs
+
+src/api/schema.d.ts matches the OpenAPI contract.

@@ -1,0 +1,360 @@
+# Draft OpenAPI fragment for feature 025. Not canonical: T025-002 merges it into
+# specs/001-platform-foundation/contracts/openapi.yaml (additive under /v1). Every operation reuses
+# the canonical security scheme, X-Trace-Id/X-Request-Id headers, the Error envelope and the shared
+# responses (BadRequest, Unauthorized, Forbidden, NotFound, Conflict, ValidationError,
+# TooManyRequests, Unavailable, InternalError); they are abbreviated here as `x-standard-errors`.
+# A foreign or missing resource is the same opaque 404. Credential values never appear in a
+# response. The MCP endpoint itself is not REST; see mcp-server.md.
+openapi: 3.1.0
+info: {title: Sagat AI agents and MCP (draft fragment), version: 0.0.0-draft}
+paths:
+  /namespaces/{namespaceId}/ai-providers:
+    get:
+      operationId: listAiProviders
+      summary: List provider metadata (no values, no provider routing secrets)
+      description: Requires namespace:read. Deleted providers are omitted. Saving does not prove connectivity.
+      parameters: [{$ref: '#/components/parameters/NamespaceId'}]
+      responses: {'200': {content: {application/json: {schema: {$ref: '#/components/schemas/AiProviderList'}}}}}
+      x-standard-errors: true
+  /namespaces/{namespaceId}/ai-providers/{providerName}:
+    parameters:
+      - {$ref: '#/components/parameters/NamespaceId'}
+      - {name: providerName, in: path, required: true, schema: {type: string, pattern: '^[a-z][a-z0-9-]{2,63}$'}}
+    get:
+      operationId: getAiProvider
+      description: Requires namespace:read. Optional ?revision selects an immutable revision; status is always current.
+      responses: {'200': {content: {application/json: {schema: {$ref: '#/components/schemas/AiProvider'}}}}}
+      x-standard-errors: true
+    put:
+      operationId: putAiProvider
+      description: >-
+        Requires ai:manage and secret:use plus the ACL of each referenced secret. expectedRevision 0 creates.
+        Retries keep requestId; changed content under the same requestId is 409 IDEMPOTENCY_KEY_REUSED.
+        Revision, head and audit ai.provider_created|changed|paused commit together. maxPromptClassification
+        is required and secret is not accepted. No provider call is made.
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/PutAiProviderRequest'}}}}
+      responses: {'200': {content: {application/json: {schema: {$ref: '#/components/schemas/AiProvider'}}}}}
+      x-standard-errors: true
+    delete:
+      operationId: deleteAiProvider
+      description: Requires ai:manage and expectedRevision. Tombstone; pinned revisions remain for run history; later resolution fails closed.
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/ExpectedRevision'}}}}
+      responses: {'200': {content: {application/json: {schema: {$ref: '#/components/schemas/AiProvider'}}}}}
+      x-standard-errors: true
+  /namespaces/{namespaceId}/ai-providers/{providerName}/probe:
+    post:
+      operationId: probeAiProvider
+      description: >-
+        Requires ai:manage and run:start. Admits a durable probe run (origin AI_PROVIDER_PROBE) executed by the
+        agent runner; it lists models and generates no tokens. Idempotency-Key replays the same run.
+        A paused provider refuses with 409 reason AI_PROVIDER_PAUSED.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {name: providerName, in: path, required: true, schema: {type: string}}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody: {content: {application/json: {schema: {type: object, additionalProperties: false, properties: {revision: {type: integer, minimum: 1}}}}}}
+      responses: {'201': {description: Durable probe run, content: {application/json: {schema: {$ref: '#/components/schemas/Run'}}}}}
+      x-standard-errors: true
+  /namespaces/{namespaceId}/mcp-servers:
+    get:
+      operationId: listMcpServers
+      description: Requires namespace:read.
+      parameters: [{$ref: '#/components/parameters/NamespaceId'}]
+      responses: {'200': {content: {application/json: {schema: {$ref: '#/components/schemas/McpServerList'}}}}}
+      x-standard-errors: true
+  /namespaces/{namespaceId}/mcp-servers/{serverName}:
+    parameters:
+      - {$ref: '#/components/parameters/NamespaceId'}
+      - {name: serverName, in: path, required: true, schema: {type: string, pattern: '^[a-z][a-z0-9-]{2,63}$'}}
+    get: {operationId: getMcpServer, responses: {'200': {content: {application/json: {schema: {$ref: '#/components/schemas/McpServer'}}}}}, x-standard-errors: true}
+    put:
+      operationId: putMcpServer
+      description: Requires ai:manage (and secret ACLs). Same revision and receipt rules as putAiProvider. No network call.
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/PutMcpServerRequest'}}}}
+      responses: {'200': {content: {application/json: {schema: {$ref: '#/components/schemas/McpServer'}}}}}
+      x-standard-errors: true
+    delete:
+      operationId: deleteMcpServer
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/ExpectedRevision'}}}}
+      responses: {'200': {content: {application/json: {schema: {$ref: '#/components/schemas/McpServer'}}}}}
+      x-standard-errors: true
+  /namespaces/{namespaceId}/mcp-servers/{serverName}/refresh:
+    post:
+      operationId: refreshMcpServerTools
+      description: Requires ai:manage and run:start. Admits a durable refresh run (origin MCP_TOOL_REFRESH) in the agent runner; completion stores an immutable snapshot and moves the head pointer. Idempotency-Key replays.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {name: serverName, in: path, required: true, schema: {type: string}}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      responses: {'201': {content: {application/json: {schema: {$ref: '#/components/schemas/Run'}}}}}
+      x-standard-errors: true
+  /namespaces/{namespaceId}/mcp-servers/{serverName}/snapshots/{snapshotId}:
+    get:
+      operationId: getMcpToolSnapshot
+      description: Requires namespace:read and ai:use. Returns names, titles, descriptions and schemas of the snapshot, marked untrusted, with their digests.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {name: serverName, in: path, required: true, schema: {type: string}}
+        - {name: snapshotId, in: path, required: true, schema: {type: string, format: uuid}}
+      responses: {'200': {content: {application/json: {schema: {$ref: '#/components/schemas/McpToolSnapshot'}}}}}
+      x-standard-errors: true
+  /namespaces/{namespaceId}/mcp-exposures:
+    get:
+      operationId: listMcpExposures
+      description: Requires namespace:read.
+      parameters: [{$ref: '#/components/parameters/NamespaceId'}]
+      responses: {'200': {content: {application/json: {schema: {$ref: '#/components/schemas/McpExposureList'}}}}}
+      x-standard-errors: true
+  /namespaces/{namespaceId}/mcp-exposures/{toolName}:
+    parameters:
+      - {$ref: '#/components/parameters/NamespaceId'}
+      - {name: toolName, in: path, required: true, schema: {type: string, pattern: '^[a-zA-Z0-9_-]{1,64}$'}}
+    get: {operationId: getMcpExposure, responses: {'200': {content: {application/json: {schema: {$ref: '#/components/schemas/McpExposure'}}}}}, x-standard-errors: true}
+    put:
+      operationId: putMcpExposure
+      description: >-
+        Requires mcp:expose, run:start on the target and the rights of maxResultClassification
+        (payload:read-internal for internal; the reveal grant for pii). The projection is compiled and its
+        result validated against the closed resultSchema; every field's level must be <= maxResultClassification
+        and none secret (422 MCP_RESULT_CLASSIFICATION_EXCEEDED). SCRIPT and OPERATION targets return
+        422 UNSUPPORTED_NODE with details.dependency=STANDALONE_STEPS until feature 022 exists. A target version
+        whose agent nodes contain a write tool acknowledged approval "none" is refused (422 UNATTENDED_WRITE_TOOL),
+        including when an ACTIVE-policy exposure later resolves to such a version at call time.
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/PutMcpExposureRequest'}}}}
+      responses: {'200': {content: {application/json: {schema: {$ref: '#/components/schemas/McpExposure'}}}}}
+      x-standard-errors: true
+    delete:
+      operationId: deleteMcpExposure
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/ExpectedRevision'}}}}
+      responses: {'200': {content: {application/json: {schema: {$ref: '#/components/schemas/McpExposure'}}}}}
+      x-standard-errors: true
+  /namespaces/{namespaceId}/mcp-tokens:
+    parameters: [{$ref: '#/components/parameters/NamespaceId'}]
+    get:
+      operationId: listMcpTokens
+      description: Requires mcp:token:manage; admins see all, others only their own. Never returns a token value.
+      responses: {'200': {content: {application/json: {schema: {$ref: '#/components/schemas/McpTokenList'}}}}}
+      x-standard-errors: true
+    post:
+      operationId: mintMcpToken
+      description: >-
+        Requires mcp:token:manage; every listed exposure must be callable by the minter now. The token value is
+        returned once with Cache-Control private, no-store, stored only as SHA-256; audit mcp.token_minted.
+      parameters: [{$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/MintMcpTokenRequest'}}}}
+      responses: {'201': {headers: {Cache-Control: {schema: {const: 'private, no-store'}}}, content: {application/json: {schema: {$ref: '#/components/schemas/MintedMcpToken'}}}}}
+      x-standard-errors: true
+  /namespaces/{namespaceId}/mcp-tokens/{tokenId}:
+    delete:
+      operationId: revokeMcpToken
+      description: Requires mcp:token:manage (own token) or ai:manage. Effective on the next call; audit mcp.token_revoked.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {name: tokenId, in: path, required: true, schema: {type: string, format: uuid}}
+      responses: {'204': {description: Revoked}}
+      x-standard-errors: true
+  /namespaces/{namespaceId}/runs/{runId}/agent-transcripts/{nodeId}:
+    get:
+      operationId: getAgentTranscript
+      description: >-
+        Requires run:read, payload:read-internal and the namespace payload:reveal-pii grant (the feature-016 pii
+        audience), all current. The read is audited (payload.pii_revealed with reason agent-transcript-v1:<node>,
+        never collapsed; denials payload.reveal_denied) in the transaction that selects
+        the entries, before any byte is returned; an audit failure returns no bytes. Bounded to 16 MiB and
+        30 s; paginated by entry. Opaque provider blocks are returned as {type: opaque, blockType} without bytes.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/RunId'}
+        - {name: nodeId, in: path, required: true, schema: {type: string, pattern: '^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$'}}
+        - {name: afterEntry, in: query, schema: {type: integer, minimum: 0}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 200, default: 50}}
+      responses: {'200': {headers: {Cache-Control: {schema: {const: 'private, no-store'}}}, content: {application/json: {schema: {$ref: '#/components/schemas/AgentTranscriptPage'}}}}}
+      x-standard-errors: true
+  /approvals/{approvalId}/agent-tool-call:
+    get:
+      operationId: getAgentToolCallForApproval
+      description: >-
+        Requires approval:read and current eligibility for the request. Returns tool name, kind, effect and the
+        input disclosed per ADR-0033 with the tool's inputSchema as carrier, every field at least the agent's
+        transcript level (withheld nodes for fields above the caller's level; secret fields never shown).
+        Audited as payload.disclosed or payload.pii_revealed.
+      parameters: [{name: approvalId, in: path, required: true, schema: {type: string, format: uuid}}]
+      responses: {'200': {headers: {Cache-Control: {schema: {const: 'private, no-store'}}}, content: {application/json: {schema: {$ref: '#/components/schemas/AgentToolCallView'}}}}}
+      x-standard-errors: true
+  /namespaces/{namespaceId}/authoring-assistant/proposals:
+    post:
+      operationId: requestAuthoringProposal
+      description: >-
+        P3. Requires definition:write and ai:use. Admits an internal run (origin AUTHORING_ASSISTANT) on the
+        namespace's assistant provider; the result is a proposal, never a saved draft or version.
+      parameters: [{$ref: '#/components/parameters/NamespaceId'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/AuthoringRequest'}}}}
+      responses: {'201': {content: {application/json: {schema: {$ref: '#/components/schemas/Run'}}}}}
+      x-standard-errors: true
+components:
+  schemas:
+    ExpectedRevision: {type: object, additionalProperties: false, required: [expectedRevision, requestId], properties: {expectedRevision: {type: integer, minimum: 1}, requestId: {type: string, format: uuid}}}
+    AiModelEntry:
+      type: object
+      additionalProperties: false
+      required: [id]
+      properties:
+        id: {type: string, maxLength: 128, examples: [claude-opus-5-5, claude-sonnet-5-5, claude-haiku-5-5]}
+        alias: {type: string, pattern: '^[a-z][a-z0-9-]{1,31}$'}
+        maxOutputTokens: {type: integer, minimum: 1, maximum: 262144}
+        contextTokens: {type: integer, minimum: 1}
+        capabilities: {type: object, additionalProperties: false, properties: {nativeStructuredOutput: {type: boolean}, parallelToolCalls: {type: boolean}, streaming: {type: boolean}, effort: {type: boolean}}}
+        prices:
+          type: object
+          additionalProperties: false
+          required: [currency, inputPerMTokMicros, outputPerMTokMicros]
+          description: Declared by the operator; used only to estimate cost. Decimal strings in millionths of the currency unit per million tokens.
+          properties:
+            currency: {type: string, pattern: '^[A-Z]{3}$'}
+            inputPerMTokMicros: {type: string, pattern: '^[0-9]{1,15}$'}
+            outputPerMTokMicros: {type: string, pattern: '^[0-9]{1,15}$'}
+            cacheReadPerMTokMicros: {type: string, pattern: '^[0-9]{1,15}$'}
+            cacheWritePerMTokMicros: {type: string, pattern: '^[0-9]{1,15}$'}
+    PutAiProviderRequest:
+      type: object
+      additionalProperties: false
+      required: [expectedRevision, requestId, kind, settings, credential, models, maxPromptClassification]
+      properties:
+        expectedRevision: {type: integer, minimum: 0}
+        requestId: {type: string, format: uuid}
+        status: {enum: [ACTIVE, PAUSED], default: ACTIVE}
+        kind: {enum: [anthropic, openai-compatible, aws-bedrock, azure-openai]}
+        settings:
+          type: object
+          additionalProperties: false
+          description: Closed per kind. baseUrl must be https, without userinfo or query, and allowed by deployment and namespace egress policy.
+          properties:
+            baseUrl: {type: string, format: uri, maxLength: 512}
+            region: {type: string, pattern: '^[a-z]{2}(-[a-z]+)+-[0-9]$'}
+            apiVersion: {type: string, maxLength: 32}
+            deployments: {type: object, maxProperties: 64, additionalProperties: {type: string, maxLength: 128}, description: azure-openai model id -> deployment name}
+            promptCaching: {type: boolean, description: Default true for anthropic, otherwise false.}
+        credential:
+          type: object
+          additionalProperties: false
+          required: [mode, secrets]
+          properties:
+            mode: {enum: [api-key, bearer, aws-access-key, azure-entra-client-credentials]}
+            secrets: {type: object, maxProperties: 4, additionalProperties: {type: string, pattern: '^[a-z][a-z0-9._-]{0,63}$'}, description: Slot name -> logical secret name (OpenBao-backed, feature 017). Never a value.}
+        models: {type: array, minItems: 1, maxItems: 64, items: {$ref: '#/components/schemas/AiModelEntry'}}
+        maxPromptClassification: {enum: [public, internal, pii]}
+        limits: {type: object, additionalProperties: false, properties: {maxConcurrentCalls: {type: integer, minimum: 1, maximum: 256}, attemptTimeoutMs: {type: integer, minimum: 1000, maximum: 900000}}}
+    AiProvider:
+      type: object
+      required: [name, revision, status, kind, models, maxPromptClassification]
+      properties:
+        name: {type: string}
+        revision: {type: integer}
+        status: {enum: [ACTIVE, PAUSED, DELETED]}
+        kind: {type: string}
+        settings: {type: object}
+        credential: {type: object, description: Mode and logical secret names only.}
+        models: {type: array, items: {$ref: '#/components/schemas/AiModelEntry'}}
+        maxPromptClassification: {type: string}
+        lastProbe: {type: object, properties: {runId: {type: string, format: uuid}, revision: {type: integer}, outcome: {type: string}, at: {type: string, format: date-time}}}
+    AiProviderList: {type: object, properties: {items: {type: array, maxItems: 200, items: {$ref: '#/components/schemas/AiProvider'}}}}
+    PutMcpServerRequest:
+      type: object
+      additionalProperties: false
+      required: [expectedRevision, requestId, url, auth, maxArgumentClassification]
+      properties:
+        expectedRevision: {type: integer, minimum: 0}
+        requestId: {type: string, format: uuid}
+        status: {enum: [ACTIVE, PAUSED]}
+        url: {type: string, format: uri, maxLength: 512}
+        maxArgumentClassification: {enum: [public, internal, pii], description: 'Most sensitive level the model may send to this server as tool arguments; no default. Publication refuses an mcp tool whose agent transcript level is above it.'}
+        protocolPreference: {enum: ['2026-07-28', '2025-11-25'], default: '2026-07-28'}
+        auth:
+          type: object
+          additionalProperties: false
+          required: [mode]
+          properties:
+            mode: {enum: [none, bearer, oauth-client-credentials]}
+            secrets: {type: object, maxProperties: 2, additionalProperties: {type: string, pattern: '^[a-z][a-z0-9._-]{0,63}$'}}
+            clientId: {type: string, maxLength: 256}
+            issuer: {type: string, format: uri, maxLength: 512, description: 'Required for oauth-client-credentials. Recorded and confirmed by the saving ai:manage holder (a refresh shows the discovered value); never replaced by discovery.'}
+            tokenEndpoint: {type: string, format: uri, maxLength: 512, description: 'Required for oauth-client-credentials, HTTPS. The client secret is sent only here; a server advertising another endpoint is refused (AI_MCP_AUTH, audit mcp.oauth_metadata_changed).'}
+            resource: {type: string, format: uri, maxLength: 512, description: RFC 8707 resource indicator; defaults to the server's canonical URI.}
+            scopes: {type: array, maxItems: 16, items: {type: string, maxLength: 128}}
+        limits: {type: object, additionalProperties: false, properties: {callTimeoutMs: {type: integer, minimum: 1000, maximum: 300000}, maxResultBytes: {type: integer, minimum: 1024, maximum: 4194304}}}
+    McpServer: {type: object, properties: {name: {type: string}, revision: {type: integer}, status: {type: string}, url: {type: string}, maxArgumentClassification: {type: string}, auth: {type: object, description: 'Mode, client id, issuer, token endpoint, resource, scopes and logical secret names; never a value.'}, currentSnapshotId: {type: [string, 'null'], format: uuid}, oauthMetadataMismatch: {type: boolean, description: 'True when the latest refresh discovered an issuer or token endpoint other than the recorded ones; calls are refused until the revision is updated.'}}}
+    McpServerList: {type: object, properties: {items: {type: array, items: {$ref: '#/components/schemas/McpServer'}}}}
+    McpToolSnapshot:
+      type: object
+      properties:
+        snapshotId: {type: string, format: uuid}
+        protocolVersion: {type: string}
+        discoveredIssuer: {type: [string, 'null']}
+        discoveredTokenEndpoint: {type: [string, 'null']}
+        createdAt: {type: string, format: date-time}
+        tools: {type: array, maxItems: 1024, items: {type: object, properties: {name: {type: string}, title: {type: string}, description: {type: string}, inputSchema: {type: object}, descriptionSha256: {type: string}, inputSchemaSha256: {type: string}, outputSchemaSha256: {type: [string, 'null']}, closedInput: {type: boolean, description: False when the schema is outside the closed vocabulary; such a tool cannot be allowed in an agent.}}}}
+    PutMcpExposureRequest:
+      type: object
+      additionalProperties: false
+      required: [expectedRevision, requestId, target, description, resultProjection, resultSchema, maxResultClassification, disclosure]
+      properties:
+        expectedRevision: {type: integer, minimum: 0}
+        requestId: {type: string, format: uuid}
+        status: {enum: [ENABLED, DISABLED]}
+        target:
+          type: object
+          additionalProperties: false
+          required: [kind, ref]
+          properties:
+            kind: {enum: [WORKFLOW, SCRIPT, OPERATION]}
+            ref: {type: string, maxLength: 128}
+            versionPolicy: {enum: [ACTIVE, PINNED], default: ACTIVE}
+            version: {type: integer, minimum: 1}
+        title: {type: string, maxLength: 128}
+        description: {type: string, minLength: 1, maxLength: 4096}
+        resultProjection: {type: string, maxLength: 1024, description: Bounded expression over the run result (`result`).}
+        resultSchema: {type: object, description: Closed bounded schema (agent-node.schema.json agentClosedSchema), max 256 KiB serialized result.}
+        maxResultClassification: {enum: [public, internal, pii]}
+        disclosure: {const: declared-mcp-result-v1}
+        waitMs: {type: integer, minimum: 0, maximum: 30000, default: 10000}
+    McpExposure: {type: object, properties: {toolName: {type: string}, revision: {type: integer}, status: {type: string}, target: {type: object}, inputSchema: {type: object, description: Derived from the target's inputSchema.}, resultSchema: {type: object}, maxResultClassification: {type: string}}}
+    McpExposureList: {type: object, properties: {items: {type: array, items: {$ref: '#/components/schemas/McpExposure'}}}}
+    MintMcpTokenRequest:
+      type: object
+      additionalProperties: false
+      required: [label, exposures, expiresInDays]
+      properties:
+        label: {type: string, minLength: 1, maxLength: 64}
+        exposures: {type: array, minItems: 1, maxItems: 64, uniqueItems: true, items: {type: string}}
+        expiresInDays: {type: integer, minimum: 1, maximum: 90}
+    MintedMcpToken: {type: object, required: [tokenId, token, expiresAt], properties: {tokenId: {type: string, format: uuid}, token: {type: string, description: Shown once. Send only in the Authorization header.}, expiresAt: {type: string, format: date-time}}}
+    McpTokenList: {type: object, properties: {items: {type: array, items: {type: object, properties: {tokenId: {type: string}, label: {type: string}, minter: {type: string}, exposures: {type: array, items: {type: string}}, expiresAt: {type: string}, revokedAt: {type: [string, 'null']}}}}}}
+    AgentTranscriptPage:
+      type: object
+      required: [runId, nodeId, entries]
+      properties:
+        runId: {type: string, format: uuid}
+        nodeId: {type: string}
+        entries: {type: array, items: {type: object, required: [entry, kind, turn], properties: {entry: {type: integer}, kind: {enum: [REQUEST_PREFIX, ASSISTANT, TOOL_RESULTS, REPAIR_FEEDBACK]}, turn: {type: integer}, body: {description: model-turn.schema.json (opaque blocks without bytes)}}}}
+        nextEntry: {type: [integer, 'null']}
+    AgentToolCallView:
+      type: object
+      properties:
+        runId: {type: string, format: uuid}
+        nodeId: {type: string}
+        turn: {type: integer}
+        callIndex: {type: integer}
+        toolName: {type: string}
+        kind: {type: string}
+        effect: {enum: [read, write]}
+        input: {description: Classified disclosure result (feature-016 shape with disclosed and withheld nodes).}
+    AgentProgress:
+      description: Additive, payload-free field of runtime-graph agent nodes (merged into the existing graph node schema).
+      type: object
+      properties:
+        status: {enum: [RUNNING, WAITING_TOOLS, SUCCEEDED, FAILED, CANCELLED]}
+        turns: {type: integer}
+        toolCalls: {type: array, maxItems: 256, items: {type: object, properties: {turn: {type: integer}, call: {type: integer}, name: {type: string}, kind: {type: string}, status: {type: string}, approvalId: {type: [string, 'null']}}}}
+        usage: {type: object, properties: {inputTokens: {type: integer}, outputTokens: {type: integer}, cacheReadTokens: {type: integer}, cacheWriteTokens: {type: integer}, estimatedCostMicros: {type: [string, 'null']}, currency: {type: [string, 'null']}, reservedInputTokens: {type: integer}, reservedOutputTokens: {type: integer}}}
+        failureCode: {type: [string, 'null']}
+    AuthoringRequest: {type: object, additionalProperties: false, required: [description], properties: {description: {type: string, minLength: 1, maxLength: 8192}, workflowId: {type: string, format: uuid, description: Draft to improve; optional.}}}

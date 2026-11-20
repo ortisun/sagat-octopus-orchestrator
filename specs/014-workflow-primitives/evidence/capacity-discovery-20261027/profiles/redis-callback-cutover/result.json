@@ -1,0 +1,16 @@
+{
+  "existingOldSessionsTerminated": true,
+  "mixedVersionSafety": false,
+  "newRedisDeliveries": 1,
+  "oldAndNewRunsReplay": true,
+  "oldCallbackMetadataUnchanged": true,
+  "oldLoginRevoked": true,
+  "oldProcessJoinedBeforeActivation": true,
+  "oldPublisherDelivered": true,
+  "oldReaderDecoded": true,
+  "releaseCommit": "bfda342073db71e84f30bdc79ccf3fbc97a7153c",
+  "scenario": "redis-callback-cutover",
+  "schemaAfter": 20261225000000,
+  "schemaBefore": 20261220000000,
+  "stableDeliveryEventBody": true
+}

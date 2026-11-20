@@ -1,0 +1,664 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sagat-octopus-orchestrator.example/schemas/analytics/sagat.analytics.v1.json",
+  "title": "Canonical analytics record, sagat.analytics.v1 (draft)",
+  "description": "One record as a sink receives it (NDJSON line, ClickHouse JSONEachRow row, PostgreSQL row, stream array element, pull-exporter message). Every record is immutable under `key`; a later fact is a new record with a higher `version`. The model only grows (docs/event-schema-evolution.md rules): properties are added as optional, enums gain values, nothing is removed or retyped; an incompatible change is sagat.analytics.v2 published beside v1. Consumers must ignore unknown properties and kinds. Delivery is at least once: deduplicate by `key` (and keep the highest `version`). Field levels are those of data-model.md section 4; a field above the sink's maxLevel is absent and named in `withheld`. Draft test runs (022 DRAFT_TEST origin) are never exported.",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "kind",
+    "key",
+    "version",
+    "regionEpoch",
+    "tenantId",
+    "namespaceId",
+    "emittedFrom"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "sagat.analytics.v1"
+    },
+    "kind": {
+      "enum": [
+        "run_snapshot",
+        "step_attempt",
+        "journal_event",
+        "inbound_event",
+        "delivery",
+        "declared_record",
+        "run_tombstone"
+      ]
+    },
+    "key": {
+      "type": "string",
+      "maxLength": 512,
+      "description": "Deterministic, prefixed by `e/<regionEpoch>/`: run_snapshot `t/<tenant>/r/<run>`; step_attempt `t/<tenant>/r/<run>/p/<path>/n/<node>/a/<attempt>/g/<generation>`; journal_event `t/<tenant>/r/<run>/s/<seq>`; inbound_event `t/<tenant>/ns/<ns>/src/<source>/e/<eventId>`; delivery `t/<tenant>/sub/<subscription>/d/<delivery>`; declared_record `t/<tenant>/r/<run>/p/<path>/n/<node>/a/<attempt>/rec/<record>`; run_tombstone `t/<tenant>/r/<run>/tombstone`."
+    },
+    "version": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "run_snapshot: run journal sequence the snapshot reflects; envelopes: row revision; others: 0 (a single immutable fact)."
+    },
+    "regionEpoch": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "The 032 cell/region epoch the record was derived in (0 when 032 is absent). It is the first segment of `key`, so records of a timeline lost in a failover never collide with the new timeline's records of the same sequences (D1615)."
+    },
+    "tenantId": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "namespaceId": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "emittedFrom": {
+      "type": "object",
+      "required": [
+        "sinkId",
+        "batch"
+      ],
+      "properties": {
+        "sinkId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "batch": {
+          "type": "string",
+          "description": "<regionEpoch>:<shard>:<batchSeq>, the frozen batch the record belongs to."
+        }
+      }
+    },
+    "withheld": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {
+        "type": "object",
+        "required": [
+          "field",
+          "reason"
+        ],
+        "properties": {
+          "field": {
+            "type": "string"
+          },
+          "reason": {
+            "enum": [
+              "LEVEL",
+              "SCHEMA",
+              "SECRET_SUSPECTED",
+              "ENCRYPTED",
+              "EXPRESSION_ERROR",
+              "TOO_LARGE",
+              "LEGACY_VERSION",
+              "NOT_DECLARED"
+            ]
+          }
+        }
+      }
+    },
+    "run": {
+      "$ref": "#/$defs/runSnapshot"
+    },
+    "attempt": {
+      "$ref": "#/$defs/stepAttempt"
+    },
+    "event": {
+      "$ref": "#/$defs/journalEvent"
+    },
+    "inbound": {
+      "$ref": "#/$defs/inboundEvent"
+    },
+    "delivery": {
+      "$ref": "#/$defs/delivery"
+    },
+    "record": {
+      "$ref": "#/$defs/declaredRecord"
+    },
+    "tombstone": {
+      "$ref": "#/$defs/tombstone"
+    }
+  },
+  "$defs": {
+    "runSnapshot": {
+      "type": "object",
+      "required": [
+        "runId",
+        "workflowId",
+        "versionId",
+        "status",
+        "createdAt"
+      ],
+      "properties": {
+        "runId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "workflowId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "workflowName": {
+          "type": "string"
+        },
+        "versionId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "versionNumber": {
+          "type": "integer"
+        },
+        "status": {
+          "type": "string",
+          "description": "Run.status values of the OpenAPI; unknown values must be accepted."
+        },
+        "origin": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "stopCode": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "finishedAt": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "durationMs": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "parentRunId": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "rootRunId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "chainId": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "rerunOf": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "traceId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "attempts": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "correlationId": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "pii"
+        },
+        "startedBy": {
+          "type": "string",
+          "description": "pii"
+        },
+        "searchAttributes": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "Values at `version`, only for attributes whose pinned declaration has export: declared-analytics-export-v1, each filtered by its registry level; any other attribute appears as {\"withheld\": \"NOT_DECLARED\"} (or the level reason)."
+        },
+        "businessId": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "pii; 018's business id when present"
+        },
+        "scheduleId": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        }
+      }
+    },
+    "stepAttempt": {
+      "type": "object",
+      "required": [
+        "runId",
+        "node",
+        "instancePath",
+        "attempt",
+        "generation",
+        "outcome",
+        "leasedAt"
+      ],
+      "properties": {
+        "runId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "node": {
+          "type": "string"
+        },
+        "nodeKind": {
+          "type": "string"
+        },
+        "activity": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "instancePath": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "scopeNode": {
+                "type": "string"
+              },
+              "index": {
+                "type": "integer"
+              }
+            }
+          }
+        },
+        "attempt": {
+          "type": "integer"
+        },
+        "generation": {
+          "type": "integer"
+        },
+        "outcome": {
+          "enum": [
+            "succeeded",
+            "failed",
+            "retry",
+            "review",
+            "unknown_outcome",
+            "cancelled"
+          ]
+        },
+        "failureCode": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "readyAt": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "leasedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "endedAt": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "durationMs": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "scheduleLatencyMs": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "spanId": {
+          "type": "string"
+        }
+      }
+    },
+    "journalEvent": {
+      "type": "object",
+      "required": [
+        "runId",
+        "seq",
+        "eventType",
+        "occurredAt",
+        "actorKind"
+      ],
+      "properties": {
+        "runId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "eventType": {
+          "type": "string"
+        },
+        "node": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "attempt": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "instancePath": {
+          "type": "array"
+        },
+        "occurredAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "actorKind": {
+          "enum": [
+            "user",
+            "worker",
+            "system",
+            "event"
+          ]
+        },
+        "actor": {
+          "type": "string",
+          "description": "pii for user actors; internal otherwise."
+        },
+        "cause": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "description": "The OpenAPI Cause (closed kind and code)."
+        },
+        "payload": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "required": [
+            "sha256",
+            "size"
+          ],
+          "properties": {
+            "sha256": {
+              "type": "string"
+            },
+            "size": {
+              "type": "integer"
+            },
+            "external": {
+              "type": "boolean"
+            }
+          },
+          "description": "Reference only; never the value."
+        },
+        "restoredFrom": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "properties": {
+            "runId": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "seq": {
+              "type": "integer"
+            }
+          },
+          "description": "Set for events a 018 reset restored from a source run; restored attempts are not re-emitted as step_attempt records."
+        },
+        "restored": {
+          "type": "boolean",
+          "description": "true for an event a 018 reset copied from a source run (018 marker)."
+        }
+      }
+    },
+    "inboundEvent": {
+      "type": "object",
+      "required": [
+        "source",
+        "eventId",
+        "eventType",
+        "status",
+        "receivedAt"
+      ],
+      "properties": {
+        "source": {
+          "type": "string"
+        },
+        "eventId": {
+          "type": "string"
+        },
+        "eventType": {
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "PENDING",
+            "DISPATCHED",
+            "DEAD"
+          ]
+        },
+        "attempts": {
+          "type": "integer"
+        },
+        "receivedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "dispatchedAt": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "occurredAt": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "subject": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "pii"
+        },
+        "correlationKey": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "pii"
+        },
+        "dataSize": {
+          "type": "integer"
+        }
+      }
+    },
+    "delivery": {
+      "type": "object",
+      "required": [
+        "deliveryId",
+        "subscriptionId",
+        "destinationKind",
+        "eventId",
+        "status"
+      ],
+      "properties": {
+        "deliveryId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "subscriptionId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "destinationKind": {
+          "enum": [
+            "WEBHOOK",
+            "NATS",
+            "KAFKA",
+            "SQS"
+          ]
+        },
+        "eventId": {
+          "type": "string"
+        },
+        "eventKind": {
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "PENDING",
+            "DELIVERED",
+            "DEAD"
+          ]
+        },
+        "attempts": {
+          "type": "integer"
+        },
+        "lastOutcome": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "deliveredAt": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        }
+      }
+    },
+    "declaredRecord": {
+      "type": "object",
+      "required": [
+        "runId",
+        "node",
+        "attempt",
+        "record",
+        "fields"
+      ],
+      "properties": {
+        "runId": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid",
+          "description": "Null for an event-endpoint declaration."
+        },
+        "node": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "attempt": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "instancePath": {
+          "type": "array"
+        },
+        "endpoint": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Event endpoint slug for endpoint declarations."
+        },
+        "record": {
+          "type": "string"
+        },
+        "fields": {
+          "type": "object",
+          "description": "Values validated against the pinned record schema and filtered by level. A `$blob` value is a descriptor {id,size,sha256,contentType}."
+        },
+        "versionId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "classificationRules": {
+          "type": "integer"
+        }
+      }
+    },
+    "tombstone": {
+      "type": "object",
+      "required": [
+        "runId",
+        "reason",
+        "at"
+      ],
+      "properties": {
+        "runId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "reason": {
+          "enum": [
+            "RETENTION",
+            "ERASURE"
+          ]
+        },
+        "at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "archived": {
+          "type": "boolean"
+        }
+      }
+    }
+  }
+}

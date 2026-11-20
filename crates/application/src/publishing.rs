@@ -308,6 +308,13 @@ where
         }
     }
 
+    /// Lets a definition hold an Apache Iceberg write (the deployment's `lake.enabled`).
+    #[must_use]
+    pub fn with_lake_enabled(mut self, enabled: bool) -> Self {
+        self.definitions = self.definitions.with_lake_enabled(enabled);
+        self
+    }
+
     // ------------------------------------------------------------------ dependencies
 
     /// The script artifacts the version pins (FR-011-001): what a promotion has to find in the target

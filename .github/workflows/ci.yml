@@ -2,8 +2,11 @@ name: ci
 
 on:
   push:
-    branches: [main, develop, "release/**", "hotfix/**"]
+    branches: [main, "release/**", "hotfix/**"]
+    tags: ["v*"]
   pull_request:
+  # A manual run is a release run: it executes the whole stack (see the `changes` job).
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -16,20 +19,107 @@ env:
   CARGO_PROFILE_TEST_DEBUG: "line-tables-only"
 
 jobs:
+  # The rule (docs/constitution.md, CI gates; docs/test-strategy.md): a pull request runs only the unit tests of the
+  # changed packages (and of the SDKs, the Studio and the scripts whose files changed) and the integration suites (the
+  # `sagat-tests` crate) that touch the affected code. A merge into develop starts no run: the push that merges a pull
+  # request would prove again what the pull request proved. A release runs everything: every
+  # test, every lint and every verification job. A release is a push to main, release/** or hotfix/**, a tag v*, a
+  # pull request into one of those branches, a manual run, a change of this workflow, or a run with no usable base
+  # commit. scripts/select-test-targets.py decides and says why; its outputs gate the steps below.
+  changes:
+    name: what to run (scoped tests, or the whole stack for a release)
+    runs-on: ubuntu-latest
+    outputs:
+      full: ${{ steps.select.outputs.full }}
+      crates: ${{ steps.select.outputs.crates }}
+      sdks: ${{ steps.select.outputs.sdks }}
+      frontend: ${{ steps.select.outputs.frontend }}
+      scripts: ${{ steps.select.outputs.scripts }}
+      lake: ${{ steps.select.outputs.lake }}
+      targets: ${{ steps.select.outputs.targets }}
+      any: ${{ steps.select.outputs.any }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The base of the change must be reachable.
+          fetch-depth: 0
+      - id: select
+        env:
+          PUSH_BASE: ${{ github.event.before }}
+        run: |
+          # On a pull request HEAD is the merge commit, so its first parent is the current tip of the base branch.
+          base="$PUSH_BASE"
+          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then base="$(git rev-parse HEAD^1)"; fi
+          python3 scripts/select-test-targets.py --base "$base"
+
   rust:
     name: rust (fmt, clippy, tests)
+    needs: changes
+    if: needs.changes.outputs.full == 'true' || needs.changes.outputs.crates != '' || needs.changes.outputs.any == 'true'
     runs-on: ubuntu-latest
     # A cold build takes about 30 minutes and the workspace tests about as long again. A test that hangs
     # must not hold the runner for the default six hours (it did on pull request 45).
     timeout-minutes: 150
     steps:
+      - name: free disk space
+        # A build of the whole workspace and its tests ran this runner out of disk once ("No space left on device", on a
+        # push that changed Cargo.lock). The image carries toolchains this job never uses: the Android SDK, the Haskell
+        # compilers and CodeQL. The .NET SDK stays, because some suites call it on the host.
+        if: needs.changes.outputs.full == 'true' || needs.changes.outputs.crates == 'ALL'
+        run: |
+          df -h /
+          sudo rm -rf /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h /
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # rust-toolchain.toml pins the exact compiler; rustup installs it on first use.
       - run: rustup show active-toolchain
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
-      - run: cargo fmt --all -- --check
-      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+        with:
+          # Match the existing SDK job cache for this workspace/profile. Compiler,
+          # environment and manifest hashes remain part of the action's key.
+          shared-key: sdks
+          # A failed test must not discard the dependencies already compiled.
+          cache-on-failure: true
+      - name: formatting
+        if: needs.changes.outputs.full == 'true'
+        run: cargo fmt --all -- --check
+      - name: bounded ChildRoot holder discovery
+        if: contains(format(' {0} ', needs.changes.outputs.targets), ' integration_workflow_primitives ')
+        env:
+          SAGAT_TEST_AS_RUNTIME_ROLE: "1"
+          RUST_TEST_THREADS: "2"
+        run: |
+          # Report both the pure shard table and the real PostgreSQL cases on a failure.
+          proof_failed=0
+          cargo test -p sagat-infra-postgres --lib --locked capacity_discovery::tests:: || proof_failed=1
+          cargo test -p sagat-tests --test integration_workflow_primitives --locked -- capacity_finish::discovery::holders:: --nocapture || proof_failed=1
+          exit "$proof_failed"
+      - name: scoped event quota rollback boundary
+        if: contains(format(' {0} ', needs.changes.outputs.targets), ' integration_workflow_primitives ')
+        env:
+          SAGAT_TEST_AS_RUNTIME_ROLE: "1"
+          RUST_TEST_THREADS: "2"
+        run: cargo test -p sagat-tests --test integration_workflow_primitives --locked -- scoped_event_storage::receiver::a_dispatcher_quota_refusal --nocapture
+      - name: worker capacity lease boundary
+        if: contains(format(' {0} ', needs.changes.outputs.targets), ' integration_workflow_primitives ')
+        env:
+          SAGAT_TEST_AS_RUNTIME_ROLE: "1"
+          RUST_TEST_THREADS: "2"
+        run: |
+          cargo test -p sagat-tests --test integration_workflow_primitives --locked -- capacity_finish::worker_leases:: --nocapture
+      - name: capacity transfer command regression
+        if: needs.changes.outputs.full == 'true'
+        run: cargo test -p sagat-application --lib --locked capacity_
+      - name: capacity transfer adapter and audit regression
+        if: needs.changes.outputs.full == 'true'
+        run: |
+          cargo test -p sagat-infra-postgres --lib --locked capacity_transfer::tests
+          cargo test -p sagat-domain --test capacity_acquire_audit --locked
+      - name: clippy
+        if: needs.changes.outputs.full == 'true'
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: isolated C# compiler and runtime images
+        if: needs.changes.outputs.any == 'true'
         run: |
           docker build -f runners/dotnet/Dockerfile.builder -t sagat/dotnet-builder:10.0.401 .
           docker build -f runners/dotnet/Dockerfile.runtime -t sagat/dotnet-runtime:10.0.12 .
@@ -38,12 +128,114 @@ jobs:
       # platform migrations twice is a no-op (T001-030/031).
       # Every failing test is reported, not only the first binary's: a first run on a new platform is the time to see them all.
       - name: build isolated database executor for process tests
+        if: needs.changes.outputs.any == 'true'
         run: cargo build -p sagat-database-runner --bin database-runner --locked
-      - run: cargo test --workspace --locked --no-fail-fast
+      # Fail early on the changed transaction family and its migration/index interactions, for the suites
+      # that were added or modified. The integration step below still runs every selected suite in full.
+      - name: capacity and migration regression preflight
+        if: needs.changes.outputs.any == 'true'
+        env:
+          SAGAT_TEST_AS_RUNTIME_ROLE: "1"
+          RUST_TEST_THREADS: "2"
+          TARGETS: ${{ needs.changes.outputs.targets }}
+        run: |
+          selected() { case " $TARGETS " in *" $1 "*) return 0 ;; esac; return 1; }
+          if selected contract_asyncapi_events_webhooks_messaging; then
+            cargo test -p sagat-tests --test contract_asyncapi_events_webhooks_messaging --locked
+          fi
+          if selected integration_workflow_primitives; then
+            cargo test -p sagat-tests --test integration_workflow_primitives --locked -- hint_contract::capacity_acquire_hint_is_closed_control_metadata_without_execution_authority --exact --nocapture
+            cargo test -p sagat-tests --test integration_workflow_primitives --locked -- capacity_finish::acquire:: --nocapture
+            cargo test -p sagat-tests --test integration_workflow_primitives --locked -- loop_progress::expression_failure_drains_once_restarts_and_finishes_from_the_journal --exact --nocapture
+            cargo test -p sagat-tests --test integration_workflow_primitives --locked -- capacity_finish::downgrade_waits_for_writer_before_deciding_whether_storage_is_empty --exact --nocapture
+            cargo test -p sagat-tests --test integration_workflow_primitives --locked -- capacity_finish::vacate:: --nocapture
+          fi
+          if selected integration_security_multitenancy; then
+            cargo test -p sagat-tests --test integration_security_multitenancy --locked -- bindings::releasing_the_leases_of_closed_sessions_is_an_index_lookup_and_not_a_scan_of_every_lease --exact --nocapture
+          fi
+      # The unit tests of the changed packages (every package for a release or a workspace-wide input). The
+      # `sagat-tests` crate is the integration part of the workspace.
+      - name: unit tests of the changed packages
+        if: needs.changes.outputs.crates != ''
+        env:
+          CRATES: ${{ needs.changes.outputs.crates }}
+        run: |
+          if [ "$CRATES" = ALL ]; then
+            cargo test --workspace --exclude sagat-tests --locked --no-fail-fast
+          else
+            args=()
+            for crate in $CRATES; do args+=(-p "$crate"); done
+            cargo test "${args[@]}" --locked --no-fail-fast
+          fi
+        timeout-minutes: 60
+      - name: integration suites that touch the change
+        if: needs.changes.outputs.any == 'true'
+        env:
+          TARGETS: ${{ needs.changes.outputs.targets }}
+        run: |
+          args=()
+          for target in $TARGETS; do args+=(--test "$target"); done
+          cargo test -p sagat-tests --locked --no-fail-fast "${args[@]}"
         timeout-minutes: 110
+
+  released-upgrade:
+    name: released v0.2 upgrade compatibility
+    needs: changes
+    if: needs.changes.outputs.full == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 100
+    env:
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+      CARGO_BUILD_JOBS: "1"
+      RUST_TEST_THREADS: "1"
+      SAGAT_TEST_AS_RUNTIME_ROLE: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The producer is the immutable v0.2.0 tree, not a current-source imitation.
+          fetch-depth: 0
+      - run: rustup show active-toolchain
+      - name: current upgrade schema boundary before producer build
+        run: python3 scripts/check-upgrade-boundary.py
+      - name: released producer, migration, current progress and released reader
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/sagat-upgrade-current-target
+          TMPDIR: ${{ runner.temp }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          df -h "$RUNNER_TEMP"
+          evidence="$RUNNER_TEMP/sagat-upgrade-evidence"
+          mkdir "$evidence"
+          prepared=""
+          for scenario in active-data inflight-worker applied-lookup applied-output-quota scoped-event-cutover redis-callback-cutover; do
+            args=(--scenario "$scenario")
+            if [[ -n "$prepared" ]]; then args+=(--prepared-run "$prepared"); fi
+            python3 scripts/test-release-upgrade-profile.py "${args[@]}"
+            roots=("$RUNNER_TEMP"/sagat-release-upgrade-*)
+            [[ ${#roots[@]} -eq 1 ]]
+            prepared="${roots[0]}"
+            mkdir "$evidence/$scenario"
+            cp "$prepared"/*.json "$prepared"/*.txt "$evidence/$scenario/"
+            cp -R "$prepared"/outcome-* "$evidence/$scenario/"
+          done
+      - name: retain upgrade receipts and failures
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: released-upgrade-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/sagat-upgrade-evidence/
+            ${{ runner.temp }}/sagat-release-upgrade-*/*.json
+            ${{ runner.temp }}/sagat-release-upgrade-*/*.txt
+            ${{ runner.temp }}/sagat-release-upgrade-*/outcome-*/*.json
+          if-no-files-found: error
 
   native-runners:
     name: native Go and Java (${{ matrix.os }})
+    needs: changes
+    if: needs.changes.outputs.full == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -65,18 +257,44 @@ jobs:
 
   architecture:
     name: architecture rules
+    needs: changes
+    if: needs.changes.outputs.full == 'true' || needs.changes.outputs.scripts == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # check-design-docs.py reads the reviewed commit and the base branch of the pull request.
+          fetch-depth: 0
       - run: rustup show active-toolchain
-      - run: python3 -m unittest discover -s scripts/tests -v
-      - run: python3 scripts/check-architecture.py
-      - run: python3 scripts/check-agent-config.py
+      - name: unit tests of the scripts
+        run: python3 -m unittest discover -s scripts/tests -v
+      # The fitness checks are lints of the repository: a release runs them.
+      - name: architecture rules
+        if: needs.changes.outputs.full == 'true'
+        run: python3 scripts/check-architecture.py
+      - name: capacity activation
+        if: needs.changes.outputs.full == 'true'
+        run: python3 scripts/check-capacity-activation.py
+      - name: upgrade boundary
+        if: needs.changes.outputs.full == 'true'
+        run: python3 scripts/check-upgrade-boundary.py
+      - name: vendored snapshot
+        if: needs.changes.outputs.full == 'true'
+        run: python3 scripts/check-vendor.py
+      - name: agent configuration
+        if: needs.changes.outputs.full == 'true'
+        run: python3 scripts/check-agent-config.py
+      - name: design docs
+        if: needs.changes.outputs.full == 'true'
+        run: python3 scripts/check-design-docs.py
 
   sdks:
     name: sdks (unit tests, conformance suite, user stories, faults)
+    needs: changes
+    if: needs.changes.outputs.full == 'true' || needs.changes.outputs.sdks != '' || contains(format(' {0} ', needs.changes.outputs.targets), ' sdk_conformance ') || contains(format(' {0} ', needs.changes.outputs.targets), ' e2e_sdk_multilanguage ') || contains(format(' {0} ', needs.changes.outputs.targets), ' fault_sdk_multilanguage ') || contains(format(' {0} ', needs.changes.outputs.targets), ' e2e_developer_experience ')
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # Six-language validation reached 59m50s on a cold runner; leave cache-save margin.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: rustup show active-toolchain
@@ -91,60 +309,156 @@ jobs:
         with:
           go-version: "1.25"
       # The C# SDK targets net8.0 and net10.0; global.json asks for the 10.0.4xx SDK.
-      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
         with:
           dotnet-version: |
             8.0.x
             10.0.x
-      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+      - uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
         with:
           distribution: temurin
           java-version: "21"
       # The unit tests of each SDK run offline against fakes; the commands are the ones in its README.
+      # An SDK's unit tests run when its files changed; every SDK is prepared when a suite that plays them all is
+      # selected (the conformance suite needs the six toolchains) and for a release.
       - name: TypeScript SDK
+        if: needs.changes.outputs.full == 'true' || contains(format(' {0} ', needs.changes.outputs.targets), ' sdk_conformance ') || contains(format(' {0} ', needs.changes.outputs.targets), ' e2e_sdk_multilanguage ') || contains(format(' {0} ', needs.changes.outputs.targets), ' fault_sdk_multilanguage ') || contains(format(' {0} ', needs.changes.outputs.targets), ' e2e_developer_experience ') || contains(format(' {0} ', needs.changes.outputs.sdks), ' typescript ')
         working-directory: sdks/typescript
         run: |
           npm ci --ignore-scripts --no-audit --no-fund
           npm test
       - name: Python SDK
+        if: needs.changes.outputs.full == 'true' || contains(format(' {0} ', needs.changes.outputs.targets), ' sdk_conformance ') || contains(format(' {0} ', needs.changes.outputs.targets), ' e2e_sdk_multilanguage ') || contains(format(' {0} ', needs.changes.outputs.targets), ' fault_sdk_multilanguage ') || contains(format(' {0} ', needs.changes.outputs.targets), ' e2e_developer_experience ') || contains(format(' {0} ', needs.changes.outputs.sdks), ' python ')
         working-directory: sdks/python
         run: |
           python3 -m venv .venv
           .venv/bin/pip install --require-hashes -r requirements-dev.lock.txt
           .venv/bin/python -m pytest
+      - name: Python SDK types and lint
+        if: needs.changes.outputs.full == 'true'
+        working-directory: sdks/python
+        run: |
           .venv/bin/mypy
           .venv/bin/ruff check .
       - name: Go SDK
+        if: needs.changes.outputs.full == 'true' || contains(format(' {0} ', needs.changes.outputs.targets), ' sdk_conformance ') || contains(format(' {0} ', needs.changes.outputs.targets), ' e2e_sdk_multilanguage ') || contains(format(' {0} ', needs.changes.outputs.targets), ' fault_sdk_multilanguage ') || contains(format(' {0} ', needs.changes.outputs.targets), ' e2e_developer_experience ') || contains(format(' {0} ', needs.changes.outputs.sdks), ' go ')
         working-directory: sdks/go
         run: |
           go test -race ./...
+      - name: Go SDK vet and format
+        if: needs.changes.outputs.full == 'true'
+        working-directory: sdks/go
+        run: |
           go vet ./...
           test -z "$(gofmt -l .)"
       - name: C# SDK
+        if: needs.changes.outputs.full == 'true' || contains(format(' {0} ', needs.changes.outputs.targets), ' sdk_conformance ') || contains(format(' {0} ', needs.changes.outputs.targets), ' e2e_sdk_multilanguage ') || contains(format(' {0} ', needs.changes.outputs.targets), ' fault_sdk_multilanguage ') || contains(format(' {0} ', needs.changes.outputs.targets), ' e2e_developer_experience ') || contains(format(' {0} ', needs.changes.outputs.sdks), ' dotnet ')
         working-directory: sdks/dotnet
         run: |
           dotnet test
-          dotnet format --verify-no-changes
+      - name: C# SDK format
+        if: needs.changes.outputs.full == 'true'
+        working-directory: sdks/dotnet
+        run: dotnet format --verify-no-changes
       - name: Java SDK
+        if: needs.changes.outputs.full == 'true' || contains(format(' {0} ', needs.changes.outputs.targets), ' sdk_conformance ') || contains(format(' {0} ', needs.changes.outputs.targets), ' e2e_sdk_multilanguage ') || contains(format(' {0} ', needs.changes.outputs.targets), ' fault_sdk_multilanguage ') || contains(format(' {0} ', needs.changes.outputs.targets), ' e2e_developer_experience ') || contains(format(' {0} ', needs.changes.outputs.sdks), ' java ')
         working-directory: sdks/java
         run: ./mvnw -q verify
+      - name: Rust SDK
+        if: needs.changes.outputs.full == 'true' || contains(format(' {0} ', needs.changes.outputs.targets), ' sdk_conformance ') || contains(format(' {0} ', needs.changes.outputs.targets), ' e2e_sdk_multilanguage ') || contains(format(' {0} ', needs.changes.outputs.targets), ' fault_sdk_multilanguage ') || contains(format(' {0} ', needs.changes.outputs.targets), ' e2e_developer_experience ') || contains(format(' {0} ', needs.changes.outputs.sdks), ' rust ')
+        working-directory: sdks/rust
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/sagat-rust-sdk
+        run: cargo test --locked
+      - name: Rust SDK format and clippy
+        if: needs.changes.outputs.full == 'true'
+        working-directory: sdks/rust
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/sagat-rust-sdk
+        run: |
+          cargo fmt --check
+          cargo clippy --all-targets --locked -- -D warnings
       # These three targets play every SDK against a real platform (PostgreSQL through Testcontainers, the
-      # engine and the API in the test process). They are #[ignore] in the workspace run above because they
-      # need the five toolchains.
-      - name: build isolated database executor for SDK conformance
-        run: cargo build -p sagat-database-runner --bin database-runner --locked
-      - name: conformance suite, user stories and faults, five languages
-        run: cargo test -p sagat-tests --test sdk_conformance --test e2e_sdk_multilanguage --test fault_sdk_multilanguage --locked -- --ignored
+      # engine and the API in the test process). They are #[ignore] in the workspace run because they need the
+      # six toolchains, and they run here only when one of them was added or modified.
+      - name: conformance suite, user stories and faults, six languages
+        env:
+          SAGAT_RUST_SDK_TARGET_DIR: ${{ runner.temp }}/sagat-rust-sdk
+          TARGETS: ${{ needs.changes.outputs.targets }}
+        run: |
+          args=()
+          for target in sdk_conformance e2e_sdk_multilanguage fault_sdk_multilanguage; do
+            case " $TARGETS " in *" $target "*) args+=(--test "$target") ;; esac
+          done
+          if [ "${#args[@]}" -eq 0 ]; then
+            echo "No SDK conformance suite was added or modified: skipped."
+            exit 0
+          fi
+          cargo build -p sagat-database-runner --bin database-runner --locked
+          cargo test -p sagat-tests "${args[@]}" --locked -- --ignored
       # The hello-world and order-processing examples of each SDK run against a real platform: all five
       # produce the same persisted semantics; and the payment saga runs on a good day, a declined card
       # and a lost answer, plus the real sandbox.
       # The browser journey runs in the studio job, which installs the frontend and Chromium.
       - name: examples, five languages, payment saga and script sandbox
+        if: contains(format(' {0} ', needs.changes.outputs.targets), ' e2e_developer_experience ')
         run: |
           cargo test -p sagat-tests --test e2e_developer_experience --locked -- --ignored us03:: order_processing:: saga:: scripts::
 
+  # The Python runtime of the Iceberg write steps (feature 035, runners/lake): its unit tests and the audit of its lock
+  # follow a change under runners/lake; its lints, its image, the smoke test of the image and its SBOM are for a
+  # release. The lock is also audited every week by lake-audit.yml.
+  lake-runtime:
+    name: lake runtime (unit tests and audit; lints, image and SBOM for a release)
+    needs: changes
+    if: needs.changes.outputs.lake == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: dependencies from the lock
+        working-directory: runners/lake
+        run: |
+          python3 -m venv .venv
+          .venv/bin/pip install --require-hashes --no-deps -r requirements-dev.lock
+      - name: unit tests of the lake runtime
+        working-directory: runners/lake
+        run: .venv/bin/python -m pytest
+      - name: known vulnerabilities in the lock
+        working-directory: runners/lake
+        run: .venv/bin/pip-audit -r requirements.lock --require-hashes --disable-pip
+      - name: types and lint
+        if: needs.changes.outputs.full == 'true'
+        working-directory: runners/lake
+        run: |
+          .venv/bin/mypy
+          .venv/bin/ruff check .
+          .venv/bin/ruff format --check .
+      - name: image
+        if: needs.changes.outputs.full == 'true'
+        run: docker build -f runners/lake/Dockerfile --target lake-runtime -t sagat-lake-runtime .
+      - name: what the contract promises of the image
+        if: needs.changes.outputs.full == 'true'
+        run: bash runners/lake/smoke-image.sh sagat-lake-runtime
+      # Attestations need a BuildKit builder of the container driver; its image and the SBOM scanner are pinned.
+      - name: SBOM of the image
+        if: needs.changes.outputs.full == 'true'
+        run: |
+          docker buildx create --name lake-sbom --driver docker-container \
+            --driver-opt image=moby/buildkit:v0.34.0@sha256:b059f8d7226d0b326bc871af489a5dddf65e36af4d20d14251b072974d9ee87c \
+            --use
+          docker buildx build --builder lake-sbom -f runners/lake/Dockerfile --target lake-runtime \
+            --sbom=generator=docker/buildkit-syft-scanner:1@sha256:873a7458c3c8ac8e32c7b796c10e1600b07b963d2aa000a72a2d97aaaa2d6315 \
+            --output type=oci,dest=lake-runtime.oci.tar .
+          python3 runners/lake/tools/check_sbom.py lake-runtime.oci.tar pyiceberg pyarrow s3fs gcsfs adlfs
+
   studio:
     name: studio (lint, types, unit tests, build, browser journeys)
+    needs: changes
+    if: needs.changes.outputs.full == 'true' || needs.changes.outputs.frontend == 'true' || contains(format(' {0} ', needs.changes.outputs.targets), ' e2e_workflow_studio ') || contains(format(' {0} ', needs.changes.outputs.targets), ' e2e_developer_experience ') || contains(format(' {0} ', needs.changes.outputs.targets), ' e2e_database_connections ')
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -156,47 +470,61 @@ jobs:
           node-version: "22"
       # The lockfile is the record: exact versions, no install scripts (frontend/.npmrc).
       - name: dependencies
+        if: needs.changes.outputs.full == 'true' || needs.changes.outputs.frontend == 'true' || contains(format(' {0} ', needs.changes.outputs.targets), ' e2e_workflow_studio ') || contains(format(' {0} ', needs.changes.outputs.targets), ' e2e_developer_experience ') || contains(format(' {0} ', needs.changes.outputs.targets), ' e2e_database_connections ')
         working-directory: frontend
         run: npm ci
       # The journeys' workers use the TypeScript SDK (frontend/e2e depends on it by path), so it is built before the
       # journeys' code is type-checked: its dist/ is what the package exports.
       - name: TypeScript SDK
+        if: needs.changes.outputs.full == 'true' || contains(format(' {0} ', needs.changes.outputs.targets), ' e2e_workflow_studio ') || contains(format(' {0} ', needs.changes.outputs.targets), ' e2e_developer_experience ') || contains(format(' {0} ', needs.changes.outputs.targets), ' e2e_database_connections ')
         run: bash sdks/typescript/conformance/prepare.sh
       # Production and tooling both; a low advisory is recorded in research.md (G152), moderate and above fail the build.
       - name: advisories
+        if: needs.changes.outputs.full == 'true'
         working-directory: frontend
         run: npm audit --audit-level=moderate
-      - name: lint, types, unit tests, build, generated API types
+      - name: unit tests
+        if: needs.changes.outputs.full == 'true' || needs.changes.outputs.frontend == 'true'
+        working-directory: frontend
+        run: npm test
+      - name: lint, types, build, generated API types
+        if: needs.changes.outputs.full == 'true'
         working-directory: frontend
         run: |
           npm run lint
           npm run typecheck
           npm run typecheck --workspace @sagat/e2e
-          npm test
           npm run build
           npm run check:api
       - name: Chromium for Playwright
+        if: needs.changes.outputs.full == 'true' || contains(format(' {0} ', needs.changes.outputs.targets), ' e2e_workflow_studio ') || contains(format(' {0} ', needs.changes.outputs.targets), ' e2e_developer_experience ') || contains(format(' {0} ', needs.changes.outputs.targets), ' e2e_database_connections ')
         working-directory: frontend/e2e
         run: npx playwright install --with-deps chromium
       # The journeys (US01..US04, SC-007-001, accessibility, security, sign-in) in a real browser against the real
       # platform (PostgreSQL through Testcontainers, the API serving the Studio, the engine, a sandbox runner). They are
       # #[ignore] in the workspace run because they need Node and Chromium. The benchmark runs only with STUDIO_PERF=1.
       - name: browser journeys
+        if: contains(format(' {0} ', needs.changes.outputs.targets), ' e2e_workflow_studio ')
         run: cargo test -p sagat-tests --test e2e_workflow_studio --locked -- --ignored journeys
       - name: managed PostgreSQL and OpenBao browser journeys
+        if: contains(format(' {0} ', needs.changes.outputs.targets), ' e2e_database_connections ')
         timeout-minutes: 30
         run: |
           cargo build -p sagat-database-runner --bin database-runner --locked
           cargo test -p sagat-tests --test e2e_database_connections --locked -- --ignored
       - name: onboarding browser failure redaction
+        if: needs.changes.outputs.full == 'true' || contains(format(' {0} ', needs.changes.outputs.targets), ' e2e_workflow_studio ') || contains(format(' {0} ', needs.changes.outputs.targets), ' e2e_developer_experience ') || contains(format(' {0} ', needs.changes.outputs.targets), ' e2e_database_connections ')
         working-directory: frontend
         run: node --test e2e/compose-security.test.mjs
       - name: CLI, SDK and Studio onboarding journey
+        if: contains(format(' {0} ', needs.changes.outputs.targets), ' e2e_developer_experience ')
         run: |
           cargo test -p sagat-tests --test e2e_developer_experience --locked -- --ignored onboarding_browser::
 
   contracts:
     name: contracts (OpenAPI, protobuf, AsyncAPI, JSON Schema)
+    needs: changes
+    if: needs.changes.outputs.full == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -229,6 +557,8 @@ jobs:
 
   local-environment:
     name: local environment (docker compose smoke test)
+    needs: changes
+    if: needs.changes.outputs.full == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -257,6 +587,8 @@ jobs:
 
   observability:
     name: observability files (Prometheus rules and configuration, Collector configuration, dashboards)
+    needs: changes
+    if: needs.changes.outputs.full == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -285,6 +617,8 @@ jobs:
 
   scale:
     name: scale and recovery (chart, load harness at a small size, disaster-recovery drill)
+    needs: changes
+    if: needs.changes.outputs.full == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -323,6 +657,8 @@ jobs:
 
   dependencies:
     name: dependency advisories (cargo audit)
+    needs: changes
+    if: needs.changes.outputs.full == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -331,3 +667,4 @@ jobs:
       - run: cargo install cargo-audit --locked --version 0.22.2
       # Every ignored advisory, why, and when it expires are in .cargo/audit.toml and research.md (G16, G271, G700 to G703).
       - run: cargo audit --deny warnings
+      - run: cargo audit --file sdks/rust/Cargo.lock --deny warnings

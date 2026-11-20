@@ -1,0 +1,219 @@
+# Draft fragment for feature 023. Not canonical: T023-051 merges it into
+# specs/001-platform-foundation/contracts/openapi.yaml with the implementation, marking the operations
+# `x-implemented: '023'`. Existing operations and schemas change only additively (enum values, one
+# optional response field on ScriptVersion). Shared parameters/responses/headers are the canonical ones by $ref.
+openapi: 3.1.0
+info:
+  title: Sagat Octopus Orchestrator — feature 023 fragment (script languages)
+  version: 0.0.0-draft
+paths:
+  /namespaces/{namespaceId}/script-languages:
+    get:
+      operationId: listScriptLanguages
+      summary: List the script languages, whether the platform builds them and whether a runner serves them
+      tags: [Scripts]
+      x-implemented: '023'
+      description: |
+        Needs `script:read`. `built` says the platform has a builder, runtime, probe and validator for the
+        language. `served` is advisory: a runner of the tenant advertised the language within the last
+        120 seconds (database clock). Admission never depends on `served`. `allowedByPolicy` applies the
+        namespace's script runtime policy. A language that is not built, not served or not allowed is
+        listed with the reason, never hidden.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+      responses:
+        '200': {description: 'The languages', content: {application/json: {schema: {$ref: '#/components/schemas/ScriptLanguageList'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/script-languages/{language}/catalog:
+    get:
+      operationId: getScriptPackageCatalog
+      summary: List the approved packages of a language and, for a selection, the canonical lockfile
+      tags: [Scripts]
+      x-implemented: '023'
+      description: |
+        Needs `script:read`. The catalog is deployment-wide and image-baked; entries the namespace policy
+        does not allow are listed with `allowed: false`. With `select`, the response includes `lockfile`:
+        the exact Cargo.lock (Rust) or composer.lock (PHP) text for the selected packages and their closure,
+        which is the only lockfile the builder accepts for that selection. A selection naming an unknown
+        or disallowed package is `422` with `details.reason` `PACKAGE_NOT_ALLOWED`. Languages without a
+        catalog (bash, powershell, typescript, python, go, java) return an empty list; C# returns its
+        existing single-entry catalog; `python-data` returns the catalog feature 024 supplies once that
+        runtime is built, and an empty list before.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {name: language, in: path, required: true, schema: {$ref: '#/components/schemas/ScriptLanguageId'}}
+        - {name: select, in: query, required: false, description: 'Comma-separated package names, at most 64.', schema: {type: string, maxLength: 8192}}
+      responses:
+        '200': {description: 'The catalog', content: {application/json: {schema: {$ref: '#/components/schemas/ScriptPackageCatalog'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/script-runtime-policy:
+    get:
+      operationId: getScriptRuntimePolicy
+      summary: Read the namespace's script runtime policy
+      tags: [Scripts]
+      x-implemented: '023'
+      description: |
+        Needs `script:read`. Without a stored policy the response is the deployment default with `revision` 0.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+      responses:
+        '200': {description: 'The policy', content: {application/json: {schema: {$ref: '#/components/schemas/ScriptRuntimePolicy'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        default: {$ref: '#/components/responses/InternalError'}
+    put:
+      operationId: putScriptRuntimePolicy
+      summary: Replace the namespace's script runtime policy
+      tags: [Scripts]
+      x-implemented: '023'
+      description: |
+        Needs `script:policy:manage` (admin). Replaces the document when `revision` equals the current
+        revision (0 when none is stored); otherwise `409 CONFLICT` with the current revision. The policy can
+        only narrow: a language the platform does not build, or a package absent from the deployment
+        catalog, is `422` with `details.reason` `PACKAGE_NOT_ALLOWED` or `LANGUAGE_NOT_BUILT`. The change is
+        audited as `script.policy_changed` in the same transaction. Runs already admitted are not affected;
+        the next draft, publication, test run or workflow publication is checked against the new revision.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/PutScriptRuntimePolicyRequest'}
+      responses:
+        '200': {description: 'The stored policy', content: {application/json: {schema: {$ref: '#/components/schemas/ScriptRuntimePolicy'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        default: {$ref: '#/components/responses/InternalError'}
+components:
+  schemas:
+    ScriptLanguageId:
+      type: string
+      enum: [typescript, python, csharp, go, java, bash, powershell, php, rust, python-data]
+      description: >-
+        `python-data` is reserved for the image-catalog runtime whose packages feature 024 defines
+        (FR-023-027); it is refused `LANGUAGE_NOT_BUILT` until 024 ships it. Replaces the inline five-value enums of Script, ScriptSummary, ScriptVersion and ScriptVersionSummary
+        (additive). `CreateScriptRequest.language` keeps type string and its description is corrected to
+        name every built language (G1200); an unbuilt language is refused with `LANGUAGE_NOT_BUILT`, a
+        language disabled by the namespace policy with `LANGUAGE_DISABLED`.
+    ScriptLanguageList:
+      type: object
+      required: [items]
+      properties:
+        items: {type: array, maxItems: 10, items: {$ref: '#/components/schemas/ScriptLanguage'}}
+    ScriptLanguage:
+      type: object
+      required: [language, built, served, allowedByPolicy, artifactFamily]
+      properties:
+        language: {$ref: '#/components/schemas/ScriptLanguageId'}
+        built: {type: boolean}
+        served: {type: boolean, description: 'Advisory; a runner of the tenant advertised it within 120 s.'}
+        servedTargets: {type: array, maxItems: 2, items: {type: string, enum: [linux-amd64, linux-arm64]}}
+        allowedByPolicy: {type: boolean}
+        reason: {type: string, enum: [NOT_BUILT, NOT_SERVED, DISABLED_BY_POLICY], description: 'Present when the language cannot be used now.'}
+        artifactFamily: {type: string, enum: [v1-text, v2-managed, v3-native, v3-class, v4-tree]}
+        toolchains: {type: array, maxItems: 16, items: {type: string, maxLength: 512}, description: 'Toolchain identities advertised recently; no image registry credentials.'}
+        hasCatalog: {type: boolean}
+    ScriptPackageCatalog:
+      type: object
+      required: [language, catalogDigest, items]
+      properties:
+        language: {$ref: '#/components/schemas/ScriptLanguageId'}
+        catalogDigest: {type: string, pattern: '^sha256:[0-9a-f]{64}$'}
+        items:
+          type: array
+          maxItems: 512
+          items:
+            type: object
+            required: [name, version, purl, licence, allowed]
+            properties:
+              name: {type: string, maxLength: 214}
+              version: {type: string, maxLength: 64}
+              purl: {type: string, maxLength: 512}
+              licence: {type: string, maxLength: 128, description: 'SPDX expression.'}
+              buildTimeCode: {type: boolean, description: 'Review evidence: the crate has a Cargo build script (run only when the image was built) or is a proc-macro (reviewed code that rustc runs inside the sandboxed builder container on every customer build that uses it).'}
+              dependencies: {type: array, maxItems: 64, items: {type: string, maxLength: 214}}
+              allowed: {type: boolean}
+        lockfile: {type: string, maxLength: 262144, description: 'Present with `select`: the canonical lock text.'}
+    ScriptRuntimePolicy:
+      type: object
+      required: [namespaceId, revision, languages]
+      properties:
+        namespaceId: {type: string, format: uuid}
+        revision: {type: integer, minimum: 0}
+        languages: {$ref: '#/components/schemas/ScriptRuntimePolicyLanguages'}
+        updatedBy: {type: string}
+        updatedAt: {type: string, format: date-time}
+    PutScriptRuntimePolicyRequest:
+      type: object
+      additionalProperties: false
+      required: [revision, languages]
+      properties:
+        revision: {type: integer, minimum: 0}
+        languages: {$ref: '#/components/schemas/ScriptRuntimePolicyLanguages'}
+    ScriptRuntimePolicyLanguages:
+      type: object
+      additionalProperties: false
+      maxProperties: 10
+      propertyNames: {$ref: '#/components/schemas/ScriptLanguageId'}
+      patternProperties:
+        '^[a-z]+$':
+          type: object
+          additionalProperties: false
+          properties:
+            enabled: {type: boolean, default: true}
+            packages:
+              oneOf:
+                - {type: string, enum: [catalog, none]}
+                - type: object
+                  additionalProperties: false
+                  required: [allow]
+                  properties:
+                    allow: {type: array, maxItems: 256, uniqueItems: true, items: {type: string, maxLength: 214}}
+    ScriptVersionProvenanceField:
+      description: >-
+        Additive optional property `provenance` of the existing `ScriptVersion` schema returned by
+        `getScriptVersion` (needs `script:read`; not in `ScriptVersionSummary` listings): the statement of
+        the build identified by the version's `buildKey`, stored per build (D1227). Null while the version
+        is `BUILDING` or `FAILED`, and for builds made before feature 023.
+      type: [object, 'null']
+      required: [payloadType, payload, signatures]
+      properties:
+        payloadType: {const: application/vnd.in-toto+json}
+        payload: {type: string, contentEncoding: base64, maxLength: 87384}
+        signatures:
+          type: array
+          minItems: 1
+          maxItems: 1
+          items:
+            type: object
+            required: [keyid, sig]
+            properties:
+              keyid: {type: string}
+              sig: {type: string, contentEncoding: base64}
+  x-error-reasons:
+    # details.reason values of VALIDATION_FAILED (422) added by this feature; see errors.md.
+    - LANGUAGE_DISABLED
+    - PACKAGE_NOT_ALLOWED
+    - LOCKFILE_INVALID
+  x-step-failures:
+    # A script step refused at lease by the namespace language policy fails with the existing
+    # non-retryable SCRIPT_DENIED (D1226); no new failure code.
+    - SCRIPT_DENIED

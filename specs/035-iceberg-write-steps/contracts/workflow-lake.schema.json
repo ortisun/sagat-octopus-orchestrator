@@ -1,0 +1,692 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sagat-octopus-orchestrator.dev/schemas/035/workflow-lake.fragment.json",
+  "title": "Feature 035 additions to the workflow IR (draft fragment)",
+  "description": "Merged into specs/001-platform-foundation/contracts/workflow.schema.json at implementation: icebergWrite joins $defs/node.oneOf (root-only, like $defs/database), and every root-level output-producing node gains the optional destinations property. Bounds are hard ceilings; plan.md lists defaults.",
+  "$defs": {
+    "connectionRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{0,62}$"
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "tableIdentifier": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "namespace",
+        "name"
+      ],
+      "properties": {
+        "namespace": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 8,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 255
+          }
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255
+        }
+      }
+    },
+    "expression": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096,
+      "description": "A workflow expression evaluated by the engine (existing expression language)."
+    },
+    "records": {
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "maxProperties": 1,
+      "properties": {
+        "inline": {
+          "$ref": "#/$defs/expression"
+        },
+        "blobs": {
+          "$ref": "#/$defs/expression",
+          "description": "Evaluates to 1..32 blob descriptors of record files (application/x-ndjson or application/vnd.apache.parquet) committed by earlier steps of the same run."
+        },
+        "databaseResult": {
+          "type": "string",
+          "description": "Id of an earlier root-level database node of the same run."
+        },
+        "output": {
+          "const": true,
+          "description": "Destinations only: the source node's output is one record."
+        },
+        "outputPath": {
+          "type": "string",
+          "pattern": "^(/[^/]+)+$",
+          "maxLength": 512,
+          "description": "Destinations only: JSON pointer to an array of records in the source node's output."
+        }
+      }
+    },
+    "mapping": {
+      "type": "array",
+      "maxItems": 1024,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "field",
+          "column"
+        ],
+        "properties": {
+          "field": {
+            "type": "string",
+            "pattern": "^(/[^/]+)+$",
+            "maxLength": 512
+          },
+          "column": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 255
+          }
+        }
+      }
+    },
+    "recordSchema": {
+      "type": "object",
+      "description": "A closed, bounded JSON Schema of one record carrying x-sagat-classification per field. An egress annotation only, never a disclosure carrier (D035-051): a written field's level is the stricter of the inherited and the declared level; a field declared in neither is pii."
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "maxRecordBytes": {
+          "type": "integer",
+          "minimum": 1024,
+          "maximum": 2147483648
+        },
+        "maxRecords": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100000000
+        },
+        "timeoutMs": {
+          "type": "integer",
+          "minimum": 1000,
+          "maximum": 3600000
+        }
+      }
+    },
+    "icebergWrite": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "type",
+        "connectionRef",
+        "table",
+        "mode",
+        "records"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "type": {
+          "const": "icebergWrite"
+        },
+        "name": {
+          "type": "string"
+        },
+        "connectionRef": {
+          "$ref": "#/$defs/connectionRef"
+        },
+        "table": {
+          "$ref": "#/$defs/tableIdentifier"
+        },
+        "ref": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255,
+          "default": "main"
+        },
+        "mode": {
+          "enum": [
+            "append",
+            "overwrite",
+            "upsert"
+          ]
+        },
+        "overwrite": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "scope"
+          ],
+          "properties": {
+            "scope": {
+              "enum": [
+                "batchPartitions",
+                "filter",
+                "table"
+              ]
+            },
+            "filter": {
+              "$ref": "#/$defs/filter"
+            },
+            "allowEmpty": {
+              "type": "boolean",
+              "default": false
+            }
+          }
+        },
+        "upsert": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "keyColumns": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 16,
+              "items": {
+                "type": "string"
+              }
+            },
+            "deleteMarker": {
+              "type": "string",
+              "pattern": "^(/[^/]+)+$",
+              "maxLength": 512
+            }
+          }
+        },
+        "records": {
+          "$ref": "#/$defs/records"
+        },
+        "mapping": {
+          "$ref": "#/$defs/mapping"
+        },
+        "ignoreUnknownFields": {
+          "type": "boolean",
+          "default": false
+        },
+        "recordSchema": {
+          "$ref": "#/$defs/recordSchema"
+        },
+        "limits": {
+          "$ref": "#/$defs/limits"
+        },
+        "compensation": {
+          "enum": [
+            "revert"
+          ]
+        },
+        "next": {
+          "type": "string"
+        },
+        "onError": {
+          "type": "string"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "type": "object",
+            "properties": {
+              "mode": {
+                "const": "overwrite"
+              }
+            },
+            "required": [
+              "mode"
+            ]
+          },
+          "then": {
+            "type": "object",
+            "properties": {
+              "overwrite": true
+            },
+            "required": [
+              "overwrite"
+            ]
+          }
+        },
+        {
+          "if": {
+            "type": "object",
+            "properties": {
+              "overwrite": {
+                "type": "object",
+                "properties": {
+                  "scope": {
+                    "const": "filter"
+                  }
+                },
+                "required": [
+                  "scope"
+                ]
+              }
+            },
+            "required": [
+              "overwrite"
+            ]
+          },
+          "then": {
+            "type": "object",
+            "properties": {
+              "overwrite": {
+                "type": "object",
+                "properties": {
+                  "filter": true
+                },
+                "required": [
+                  "filter"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "not": {
+            "type": "object",
+            "properties": {
+              "records": {
+                "type": "object",
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "output": true
+                    },
+                    "required": [
+                      "output"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "outputPath": true
+                    },
+                    "required": [
+                      "outputPath"
+                    ]
+                  }
+                ]
+              }
+            },
+            "required": [
+              "records"
+            ]
+          }
+        }
+      ]
+    },
+    "filter": {
+      "description": "A bounded boolean expression over table columns: and/or/not of comparisons (eq, ne, lt, le, gt, ge, in, isNull, notNull) between a column and a typed parameter bound to a workflow expression. Literals are parameters, never text spliced into a query. Publication refuses more than 8 levels or 64 comparisons (FILTER_TOO_DEEP).",
+      "type": "object",
+      "maxProperties": 1,
+      "minProperties": 1,
+      "properties": {
+        "and": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 16,
+          "items": {
+            "$ref": "#/$defs/filter"
+          }
+        },
+        "or": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 16,
+          "items": {
+            "$ref": "#/$defs/filter"
+          }
+        },
+        "not": {
+          "$ref": "#/$defs/filter"
+        },
+        "compare": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "op",
+            "column"
+          ],
+          "properties": {
+            "op": {
+              "enum": [
+                "eq",
+                "ne",
+                "lt",
+                "le",
+                "gt",
+                "ge",
+                "in",
+                "isNull",
+                "notNull"
+              ]
+            },
+            "column": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 255
+            },
+            "value": {
+              "$ref": "#/$defs/expression"
+            }
+          }
+        }
+      }
+    },
+    "destination": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "kind",
+        "target",
+        "records"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{0,30}$"
+        },
+        "kind": {
+          "enum": [
+            "iceberg",
+            "postgresql",
+            "object_storage",
+            "clickhouse",
+            "broker_stream"
+          ]
+        },
+        "connectionRef": {
+          "$ref": "#/$defs/connectionRef"
+        },
+        "subscriptionRef": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{0,62}$",
+          "description": "broker_stream only: a subscription whose purpose is STEP_OUTPUT."
+        },
+        "target": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "table": {
+              "$ref": "#/$defs/tableIdentifier"
+            },
+            "ref": {
+              "type": "string",
+              "maxLength": 255
+            },
+            "schema": {
+              "type": "string",
+              "maxLength": 63
+            },
+            "relation": {
+              "type": "string",
+              "maxLength": 63
+            },
+            "format": {
+              "enum": [
+                "parquet",
+                "ndjson"
+              ]
+            }
+          }
+        },
+        "mode": {
+          "enum": [
+            "append",
+            "overwrite",
+            "upsert",
+            "insert"
+          ]
+        },
+        "overwrite": {
+          "$ref": "#/$defs/icebergWrite/properties/overwrite"
+        },
+        "upsert": {
+          "$ref": "#/$defs/icebergWrite/properties/upsert"
+        },
+        "keyColumn": {
+          "type": "string",
+          "maxLength": 63,
+          "description": "postgresql insert: the constraint-backed column (a record field or the effect key column)."
+        },
+        "effectKeyColumn": {
+          "type": "string",
+          "maxLength": 63
+        },
+        "records": {
+          "$ref": "#/$defs/records"
+        },
+        "mapping": {
+          "$ref": "#/$defs/mapping"
+        },
+        "ignoreUnknownFields": {
+          "type": "boolean",
+          "default": false
+        },
+        "recordSchema": {
+          "$ref": "#/$defs/recordSchema"
+        },
+        "onFailure": {
+          "enum": [
+            "hold",
+            "fail",
+            "continue"
+          ],
+          "default": "hold"
+        },
+        "limits": {
+          "$ref": "#/$defs/limits"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "const": "broker_stream"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "type": "object",
+            "properties": {
+              "subscriptionRef": true
+            },
+            "required": [
+              "subscriptionRef"
+            ],
+            "not": {
+              "type": "object",
+              "properties": {
+                "connectionRef": true
+              },
+              "required": [
+                "connectionRef"
+              ]
+            }
+          },
+          "else": {
+            "type": "object",
+            "properties": {
+              "connectionRef": true
+            },
+            "required": [
+              "connectionRef"
+            ],
+            "not": {
+              "type": "object",
+              "properties": {
+                "subscriptionRef": true
+              },
+              "required": [
+                "subscriptionRef"
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "const": "iceberg"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "type": "object",
+            "properties": {
+              "mode": {
+                "enum": [
+                  "append",
+                  "overwrite",
+                  "upsert"
+                ]
+              }
+            },
+            "required": [
+              "mode"
+            ]
+          }
+        },
+        {
+          "if": {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "const": "postgresql"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "type": "object",
+            "properties": {
+              "mode": {
+                "enum": [
+                  "insert",
+                  "upsert"
+                ]
+              }
+            },
+            "required": [
+              "mode"
+            ]
+          }
+        },
+        {
+          "if": {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "enum": [
+                  "object_storage",
+                  "clickhouse",
+                  "broker_stream"
+                ]
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "not": {
+              "type": "object",
+              "properties": {
+                "mode": true
+              },
+              "required": [
+                "mode"
+              ]
+            }
+          }
+        },
+        {
+          "not": {
+            "type": "object",
+            "properties": {
+              "records": {
+                "type": "object",
+                "properties": {
+                  "databaseResult": true
+                },
+                "required": [
+                  "databaseResult"
+                ]
+              }
+            },
+            "required": [
+              "records"
+            ]
+          }
+        },
+        {
+          "if": {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "const": "broker_stream"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "type": "object",
+            "properties": {
+              "records": {
+                "not": {
+                  "type": "object",
+                  "properties": {
+                    "blobs": true
+                  },
+                  "required": [
+                    "blobs"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "destinations": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 8,
+      "items": {
+        "$ref": "#/$defs/destination"
+      }
+    }
+  }
+}

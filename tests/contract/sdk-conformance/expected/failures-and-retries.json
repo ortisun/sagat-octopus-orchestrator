@@ -320,7 +320,7 @@
     {
       "id": "unknown-wait",
       "ok": true,
-      "op": "sleep"
+      "op": "awaitJournal"
     },
     {
       "id": "unknown-state",
@@ -331,12 +331,12 @@
         "createdAt": "<time>",
         "deadline": null,
         "depth": 0,
-        "finishedAt": "<time>",
+        "finishedAt": null,
         "parent": null,
         "paused": false,
         "runId": "<uuid:10>",
         "startedBy": "alice",
-        "status": "FAILED",
+        "status": "MANUAL_REVIEW",
         "traceId": "<trace:4>",
         "updatedAt": "<time>",
         "version": "<n>",
@@ -368,17 +368,7 @@
           {
             "attempt": 1,
             "stepId": "unknown",
-            "type": "step.failed"
-          },
-          {
-            "attempt": null,
-            "stepId": null,
-            "type": "run.stop_requested"
-          },
-          {
-            "attempt": null,
-            "stepId": null,
-            "type": "run.finished"
+            "type": "step.needs_review"
           }
         ]
       }
@@ -394,14 +384,14 @@
           "forward": null,
           "id": "unknown",
           "kind": "FORWARD",
-          "status": "FAILED",
+          "status": "WAITING",
           "type": "activity",
-          "waitingOn": null
+          "waitingOn": "operator"
         }
       ],
       "paused": false,
       "runId": "<uuid:10>",
-      "status": "FAILED"
+      "status": "MANUAL_REVIEW"
     },
     {
       "nodes": [

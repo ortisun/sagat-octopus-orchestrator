@@ -98,7 +98,7 @@ async fn a_restart_between_the_plan_and_the_lease_loses_nothing() {
 }
 
 #[tokio::test]
-async fn a_crash_after_the_provider_released_and_before_the_report_releases_once() {
+async fn a_crash_after_the_provider_released_holds_review_until_the_outcome_is_resolved() {
     let w = world().await;
     let (wf, _) = w.publish(quick(settlement())).await;
     let s = worker(&w).await;
@@ -117,21 +117,26 @@ async fn a_crash_after_the_provider_released_and_before_the_report_releases_once
     );
     w.age_lease(run, "reserve~c").await;
     w.scheduler.tick().await;
-    w.age_retry(run, "reserve~c").await;
-    w.scheduler.tick().await;
+    // Unknown compensation waits for review; there is no retry timestamp to age.
 
-    // Worker 2 gets the same compensation with the SAME key, and the provider recognises it.
+    // Losing the report is not authority to repeat the release, even with a stable key.
     let second_session = worker(&w).await;
-    let second = w.one_task(&second_session).await;
-    assert_eq!(second.fence.attempt, 2);
-    assert_eq!(second.idempotency_key, first.idempotency_key);
-    assert!(
-        !provider.perform(&second.idempotency_key),
-        "recognised as a duplicate"
+    assert!(w.poll(&second_session, 8).await.is_empty());
+    assert_eq!(w.run_status(run).await, RunStatus::ManualReview);
+    assert_eq!(
+        w.step_status(run, "reserve~c").await,
+        Some(StepStatus::Waiting)
     );
-    w.complete(&second_session, &second, &json!({}))
-        .await
-        .expect("report");
+    w.review(
+        run,
+        "reserve~c",
+        sagat_application::runs::ReviewAction::Resolve(
+            sagat_domain::execution::ReviewOutcome::Succeeded,
+        ),
+        "provider evidence confirms the release",
+    )
+    .await
+    .expect("outcome-bearing human decision");
 
     assert_eq!(w.run_status(run).await, RunStatus::Compensated);
     assert_eq!(
@@ -141,8 +146,8 @@ async fn a_crash_after_the_provider_released_and_before_the_report_releases_once
     );
     assert_eq!(
         provider.calls(&first.idempotency_key),
-        2,
-        "the platform asked twice (at-least-once)"
+        1,
+        "uncertainty never dispatches a second external call"
     );
     let completed = w
         .journal(run)
@@ -150,7 +155,16 @@ async fn a_crash_after_the_provider_released_and_before_the_report_releases_once
         .iter()
         .filter(|e| *e == "step.completed")
         .count();
-    assert_eq!(completed, 2, "reserve and its compensation, once each");
+    assert_eq!(completed, 1, "only reserve has a worker completion");
+    assert_eq!(
+        w.journal(run)
+            .await
+            .iter()
+            .filter(|e| *e == "step.resolved")
+            .count(),
+        1,
+        "compensation retains human provenance"
+    );
     w.assert_consistent(run).await;
 }
 

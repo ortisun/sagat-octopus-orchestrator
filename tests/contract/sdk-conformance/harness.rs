@@ -32,12 +32,13 @@ use crate::support::worker::{
 use normalize::{Normalizer, compared, first_difference};
 
 /// (name used in `SAGAT_SDK_LANGS`, directory under `sdks/`)
-const LANGUAGES: [(&str, &str); 5] = [
+const LANGUAGES: [(&str, &str); 6] = [
     ("typescript", "typescript"),
     ("go", "go"),
     ("python", "python"),
     ("dotnet", "dotnet"),
     ("java", "java"),
+    ("rust", "rust"),
 ];
 
 fn repo() -> PathBuf {
@@ -71,6 +72,18 @@ fn languages(only: Option<&[&str]>) -> Vec<(&'static str, PathBuf)> {
             .filter(|s| !s.is_empty())
             .collect()
     });
+    if let Some(chosen) = &chosen {
+        assert!(
+            !chosen.is_empty(),
+            "SAGAT_SDK_LANGS must name at least one official SDK"
+        );
+        for name in chosen {
+            assert!(
+                LANGUAGES.iter().any(|(known, _)| known == name),
+                "unknown SDK in SAGAT_SDK_LANGS: {name}"
+            );
+        }
+    }
     LANGUAGES
         .iter()
         .filter(|(name, _)| {
@@ -733,6 +746,26 @@ async fn audit_evidence(run: &Run) -> Result<Value, String> {
     ))
 }
 
+/// Human saga decisions, read independently of SDK output. Refused retries do not appear here:
+/// only a committed decision has an audit row, including the actor and the outcome-bearing reason.
+async fn review_evidence(run: &Run) -> Result<Value, String> {
+    let rows: Vec<(String, String, Option<String>)> = sqlx::query_as(
+        "SELECT action, actor, reason FROM audit_records \
+         WHERE tenant_id = $1 AND action LIKE 'saga.step_%' ORDER BY created_at, id",
+    )
+    .bind(run.platform.tenant.as_uuid())
+    .fetch_all(&run.platform.api.db.pool)
+    .await
+    .map_err(|e| format!("reading the saga review audit trail: {e}"))?;
+    Ok(Value::Array(
+        rows.into_iter()
+            .map(|(action, actor, reason)| {
+                json!({"action": action, "actor": actor, "reason": reason})
+            })
+            .collect(),
+    ))
+}
+
 /// The JSON payload stored under a hex SHA-256 digest.
 async fn payload_json(pool: &sqlx::PgPool, digest: &str) -> Result<Value, String> {
     let content: Option<Vec<u8>> =
@@ -987,6 +1020,7 @@ fn marker_appearances(out: &Value, scenario: &Value) -> Vec<String> {
             "observations",
             "serverState",
             "auditEvidence",
+            "reviewEvidence",
             "scopeEvidence",
         ] {
             let mut at = Vec::new();
@@ -1319,6 +1353,12 @@ async fn play(
                             Err(e) => failures.push(format!("{name}/{lang}: {e}")),
                         }
                     }
+                    if scenario["reviewEvidence"].as_bool() == Some(true) {
+                        match review_evidence(&run).await {
+                            Ok(evidence) => out["reviewEvidence"] = evidence,
+                            Err(e) => failures.push(format!("{name}/{lang}: {e}")),
+                        }
+                    }
                     if let Some(mode) = scenario["scopeEvidence"].as_str() {
                         match scope_evidence(&run, &out["serverState"], mode == "summary").await {
                             Ok(evidence) => out["scopeEvidence"] = evidence,
@@ -1587,9 +1627,9 @@ pub async fn conform(selection: &Selection) -> Suite {
         .as_ref()
         .map(|l| l.iter().map(String::as_str).collect());
     let langs = languages(only.as_deref());
-    let all_five = std::env::var("SAGAT_SDK_LANGS").is_err() && only.is_none();
+    let all_official = std::env::var("SAGAT_SDK_LANGS").is_err() && only.is_none();
     let mut failures = Vec::new();
-    if all_five {
+    if all_official {
         for (name, dir) in LANGUAGES {
             let run = sdk_source_root()
                 .join(dir)

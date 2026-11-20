@@ -1,0 +1,301 @@
+{
+  "pid": 4878,
+  "complete_scenarios": [
+    "approval-chain",
+    "approval-decisions",
+    "approval-security",
+    "approval-settlement",
+    "approval-state",
+    "blobs",
+    "builders",
+    "cancellation",
+    "chain-cancel-parent",
+    "chain-child",
+    "chain-commands",
+    "chain-final-success",
+    "chain-inspect-cancel",
+    "chain-query",
+    "chain-query-handoff",
+    "chain-rerun",
+    "chain-root-wait",
+    "chain-state-final-success",
+    "chain-three-segments",
+    "collection-blob-output",
+    "collection-blob-source",
+    "collection-compensation",
+    "collection-control-entry",
+    "collection-control-routing",
+    "collection-events",
+    "collection-fail-fast-drain",
+    "collection-limits",
+    "collection-local-recovery",
+    "collection-ordering",
+    "collection-runtime",
+    "collection-step-source",
+    "collection-timers",
+    "compensation-safety",
+    "database-connections",
+    "errors",
+    "expression-limits",
+    "failures-and-retries",
+    "lease-lost",
+    "loop-cancel",
+    "loop-compensation",
+    "loop-error-activity",
+    "loop-runtime",
+    "loop-semantics",
+    "lost-responses",
+    "protocol-negotiation",
+    "run-input-blobs",
+    "run-input-early-success",
+    "run-lifecycle",
+    "saga-compensation",
+    "scoped-identity",
+    "secrets",
+    "serialization",
+    "signals-and-events",
+    "state-operations",
+    "switch-builders",
+    "worker-registration",
+    "worker-shutdown",
+    "worker-stream-faults",
+    "worker-transport-faults",
+    "workflow-instance-limits"
+  ],
+  "incomplete_scenarios": [],
+  "problems": [
+    {
+      "scenario": "failures-and-retries",
+      "known": true,
+      "golden_differences": {
+        "rust": [
+          "/observations/11/result/finishedAt",
+          "<time>",
+          "None"
+        ],
+        "typescript": [
+          "/observations/11/result/finishedAt",
+          "<time>",
+          "None"
+        ],
+        "python": [
+          "/observations/11/result/finishedAt",
+          "<time>",
+          "None"
+        ],
+        "go": [
+          "/observations/11/result/finishedAt",
+          "<time>",
+          "None"
+        ],
+        "java": [
+          "/observations/11/result/finishedAt",
+          "<time>",
+          "None"
+        ],
+        "dotnet": [
+          "/observations/11/result/finishedAt",
+          "<time>",
+          "None"
+        ]
+      },
+      "cross_language_differences": {}
+    },
+    {
+      "scenario": "lease-lost",
+      "known": true,
+      "golden_differences": {
+        "rust": [
+          "/observations/7",
+          [
+            "id",
+            "ok",
+            "op",
+            "result"
+          ],
+          [
+            "error",
+            "id",
+            "ok",
+            "op"
+          ]
+        ],
+        "typescript": [
+          "/observations/7",
+          [
+            "id",
+            "ok",
+            "op",
+            "result"
+          ],
+          [
+            "error",
+            "id",
+            "ok",
+            "op"
+          ]
+        ],
+        "python": [
+          "/observations/7",
+          [
+            "id",
+            "ok",
+            "op",
+            "result"
+          ],
+          [
+            "error",
+            "id",
+            "ok",
+            "op"
+          ]
+        ],
+        "go": [
+          "/observations/7",
+          [
+            "id",
+            "ok",
+            "op",
+            "result"
+          ],
+          [
+            "error",
+            "id",
+            "ok",
+            "op"
+          ]
+        ],
+        "java": [
+          "/observations/7",
+          [
+            "id",
+            "ok",
+            "op",
+            "result"
+          ],
+          [
+            "error",
+            "id",
+            "ok",
+            "op"
+          ]
+        ],
+        "dotnet": [
+          "/observations/7",
+          [
+            "id",
+            "ok",
+            "op",
+            "result"
+          ],
+          [
+            "error",
+            "id",
+            "ok",
+            "op"
+          ]
+        ]
+      },
+      "cross_language_differences": {}
+    },
+    {
+      "scenario": "worker-shutdown",
+      "known": true,
+      "golden_differences": {
+        "rust": [
+          "/observations/6",
+          [
+            "id",
+            "ok",
+            "op",
+            "result"
+          ],
+          [
+            "error",
+            "id",
+            "ok",
+            "op"
+          ]
+        ],
+        "typescript": [
+          "/observations/6",
+          [
+            "id",
+            "ok",
+            "op",
+            "result"
+          ],
+          [
+            "error",
+            "id",
+            "ok",
+            "op"
+          ]
+        ],
+        "python": [
+          "/observations/6",
+          [
+            "id",
+            "ok",
+            "op",
+            "result"
+          ],
+          [
+            "error",
+            "id",
+            "ok",
+            "op"
+          ]
+        ],
+        "go": [
+          "/observations/6",
+          [
+            "id",
+            "ok",
+            "op",
+            "result"
+          ],
+          [
+            "error",
+            "id",
+            "ok",
+            "op"
+          ]
+        ],
+        "java": [
+          "/observations/6",
+          [
+            "id",
+            "ok",
+            "op",
+            "result"
+          ],
+          [
+            "error",
+            "id",
+            "ok",
+            "op"
+          ]
+        ],
+        "dotnet": [
+          "/observations/6",
+          [
+            "id",
+            "ok",
+            "op",
+            "result"
+          ],
+          [
+            "error",
+            "id",
+            "ok",
+            "op"
+          ]
+        ]
+      },
+      "cross_language_differences": {}
+    }
+  ],
+  "finished": true,
+  "reported": []
+}

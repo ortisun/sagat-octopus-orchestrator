@@ -1,0 +1,510 @@
+--- a/tests/e2e/sdk-multilanguage/us03.rs
++++ b/tests/e2e/sdk-multilanguage/us03.rs
+@@ -84,17 +84,68 @@
+                 .expect("the lookup ran");
+             assert_eq!(lookup["activity"], "saga.lookup", "{language}");
+             assert_eq!(lookup["targetNode"], "pay", "{language}");
+-            // A reconciler that finds the effect did NOT happen: the platform tries the step again, and it succeeds.
++            // A negative lookup is not finality. A simulated human assertion resolves the retained
++            // outcome; it is not provider verification and it never repeats the original activity.
++            assert_eq!(
++                observation(doc, "not-applied-state")["result"]["status"],
++                "MANUAL_REVIEW",
++                "{language}"
++            );
++            assert_eq!(
++                observation(doc, "not-applied-resolved")["result"]["accepted"],
++                true,
++                "{language}"
++            );
+             assert_eq!(
+                 observation(doc, "not-applied-done")["result"]["status"],
+                 "SUCCEEDED",
+                 "{language}"
+             );
+-            assert_eq!(node(doc, "pay2")["attempt"], json!(2), "{language}");
+-            assert_eq!(
+-                node(doc, "pay2")["failureCode"],
+-                "RECONCILED_NOT_APPLIED",
+-                "{language}"
++            assert_eq!(node(doc, "pay2")["attempt"], json!(1), "{language}");
++            assert!(node(doc, "pay2")["failureCode"].is_null(), "{language}");
++            assert_eq!(
++                log.iter()
++                    .filter(|entry| entry["activity"] == "saga.pay2")
++                    .count(),
++                1,
++                "{language}: the original effect is not repeated"
++            );
++            let negative = journal(doc, "not-applied-journal");
++            assert!(
++                !negative.contains(&"step.retry_scheduled".to_owned()),
++                "{language}"
++            );
++            assert_eq!(
++                negative
++                    .iter()
++                    .filter(|event| *event == "step.resolved")
++                    .count(),
++                1
++            );
++            let lookup_done = negative
++                .iter()
++                .position(|event| event == "reconciliation.concluded")
++                .expect("negative lookup is recorded");
++            let resolved = negative
++                .iter()
++                .position(|event| event == "step.resolved")
++                .expect("human resolution is recorded");
++            let finished = negative
++                .iter()
++                .position(|event| event == "run.finished")
++                .expect("run finishes after resolution");
++            assert!(
++                lookup_done < resolved && resolved < finished,
++                "{language}: {negative:?}"
++            );
++            assert_eq!(
++                doc["reviewEvidence"],
++                json!([{
++                    "action": "saga.step_resolved",
++                    "actor": "alice",
++                    "reason": "declared SUCCEEDED: simulated human assertion of final success; no provider verification is claimed"
++                }]),
++                "{language}: finality retains human provenance"
+             );
+             // A reconciler that cannot say: nothing is retried blindly, a person has to decide.
+             let undecided = observation(doc, "undecided-state")["result"].clone();
+@@ -133,13 +184,38 @@
+                 ("flaky", 3, "PROVIDER_BUSY", "SUCCEEDED"),
+                 ("permanent", 1, "INSUFFICIENT_FUNDS", "FAILED"),
+                 ("throws", 2, "ACTIVITY_ERROR", "FAILED"),
+-                ("unknown", 1, "OUTCOME_UNKNOWN", "FAILED"),
++                ("unknown", 1, "OUTCOME_UNKNOWN", "MANUAL_REVIEW"),
+             ] {
+                 let node = node(doc, id);
+                 assert_eq!(node["attempt"], json!(attempts), "{language}/{id}: {node}");
+                 assert_eq!(node["failureCode"], code, "{language}/{id}");
+                 assert_eq!(harness::run_status(doc, id), run, "{language}/{id}");
+             }
++            assert_eq!(node(doc, "unknown")["status"], "WAITING", "{language}");
++            assert_eq!(node(doc, "unknown")["waitingOn"], "operator", "{language}");
++            assert!(observation(doc, "unknown-state")["result"]["finishedAt"].is_null());
++            assert_eq!(
++                worker_log(doc, "w1")
++                    .iter()
++                    .filter(|entry| entry["activity"] == "retry.unknown")
++                    .count(),
++                1,
++                "{language}: unknown is not retried"
++            );
++            let unknown = journal(doc, "unknown-journal");
++            assert_eq!(
++                unknown
++                    .iter()
++                    .filter(|event| *event == "step.needs_review")
++                    .count(),
++                1
++            );
++            for forbidden in ["step.failed", "step.retry_scheduled", "run.finished"] {
++                assert!(
++                    !unknown.iter().any(|event| event == forbidden),
++                    "{language}: {unknown:?}"
++                );
++            }
+         }
+     });
+ }
+--- a/tests/fault/sdk-multilanguage/workers.rs
++++ b/tests/fault/sdk-multilanguage/workers.rs
+@@ -5,6 +5,97 @@
+ use serde_json::json;
+ 
+ use crate::harness::{self, Selection, journal, node, observation, worker_log};
++
++fn assert_human_resolution_precedes_successor(
++    doc: &serde_json::Value,
++    language: &str,
++    activity: &str,
++) {
++    let review = &observation(doc, "review-state")["result"];
++    assert_eq!(review["status"], "MANUAL_REVIEW", "{language}");
++    assert!(review["finishedAt"].is_null(), "{language}");
++    let refused = &observation(doc, "retry-refused")["error"];
++    assert_eq!(refused["code"], "CONFLICT", "{language}");
++    assert_eq!(refused["reason"], "STATE_CONFLICT", "{language}");
++    assert_eq!(refused["retryable"], false, "{language}");
++    let waiting = journal(doc, "review-journal");
++    assert!(
++        waiting.contains(&"step.needs_review".to_owned()),
++        "{language}"
++    );
++    for forbidden in [
++        "step.completed",
++        "step.resolved",
++        "step.retry_scheduled",
++        "run.finished",
++    ] {
++        assert!(
++            !waiting.iter().any(|event| event == forbidden),
++            "{language}: {waiting:?}"
++        );
++    }
++
++    let second = worker_log(doc, "w2");
++    assert_eq!(second.len(), 1, "{language}: {second:?}");
++    assert_eq!(second[0]["activity"], activity, "{language}");
++    assert_eq!(second[0]["node"], "after", "{language}");
++    assert_eq!(second[0]["attempt"], json!(1), "{language}");
++    assert_eq!(node(doc, "work")["attempt"], json!(1), "{language}");
++    assert_eq!(node(doc, "work")["status"], "SUCCEEDED", "{language}");
++    assert_eq!(node(doc, "after")["status"], "SUCCEEDED", "{language}");
++    assert_eq!(
++        observation(doc, "done")["result"]["status"],
++        "SUCCEEDED",
++        "{language}"
++    );
++
++    let events = journal(doc, "journal");
++    for forbidden in ["step.failed", "step.retry_scheduled", "step.retry_due"] {
++        assert!(
++            !events.iter().any(|event| event == forbidden),
++            "{language}: {events:?}"
++        );
++    }
++    assert_eq!(
++        events
++            .iter()
++            .filter(|event| *event == "step.completed")
++            .count(),
++        1
++    );
++    assert_eq!(
++        events
++            .iter()
++            .filter(|event| *event == "step.resolved")
++            .count(),
++        1
++    );
++    let needed = events
++        .iter()
++        .position(|event| event == "step.needs_review")
++        .expect("review");
++    let resolved = events
++        .iter()
++        .position(|event| event == "step.resolved")
++        .expect("human resolution");
++    let completed = events
++        .iter()
++        .position(|event| event == "step.completed")
++        .expect("successor completion");
++    assert!(
++        needed < resolved && resolved < completed,
++        "{language}: {events:?}"
++    );
++    assert_eq!(
++        doc["reviewEvidence"],
++        json!([{
++            "action": "saga.step_resolved",
++            "actor": "alice",
++            "reason": "declared SUCCEEDED: simulated human assertion of final success; no provider verification is claimed"
++        }]),
++        "{language}: the simulated human decision does not claim provider verification"
++    );
++}
+ 
+ #[test]
+ #[ignore = "needs Node, Python, Go, .NET and a JDK: the sdks job of CI runs it with --ignored"]
+@@ -18,22 +109,7 @@
+             assert_eq!(first.len(), 1, "{language}: {first:?}");
+             assert_eq!(first[0]["abortedReason"], "lease-lost", "{language}");
+             assert_eq!(first[0]["outcome"], "cancelled", "{language}");
+-            let second = worker_log(doc, "w2");
+-            assert_eq!(second.len(), 1, "{language}: {second:?}");
+-            assert_eq!(second[0]["attempt"], json!(2), "{language}");
+-            // The step was completed once, by the second attempt.
+-            let events = journal(doc, "journal");
+-            assert_eq!(
+-                events.iter().filter(|e| *e == "step.completed").count(),
+-                1,
+-                "{language}: {events:?}"
+-            );
+-            assert_eq!(node(doc, "work")["attempt"], json!(2), "{language}");
+-            assert_eq!(
+-                observation(doc, "done")["result"]["status"],
+-                "SUCCEEDED",
+-                "{language}"
+-            );
++            assert_human_resolution_precedes_successor(doc, language, "lease.after");
+         }
+     });
+ }
+@@ -120,28 +196,13 @@
+         suite.assert_conforms();
+         for language in suite.languages_of("worker-shutdown") {
+             let doc = suite.doc("worker-shutdown", language);
+-            // The host cancelled the handler's token because it was stopping, the handler raised its cancellation
+-            // and nothing was reported: the lease lapsed and the step went to the second worker.
++            // The host cancelled the handler's token because it was stopping; its cancellation
++            // was not reported as a known failure. The expired lease requires human resolution.
+             let first = worker_log(doc, "w1");
+             assert_eq!(first.len(), 1, "{language}: {first:?}");
+             assert_eq!(first[0]["abortedReason"], "shutdown", "{language}");
+             assert_eq!(first[0]["outcome"], "cancelled", "{language}");
+-            assert_eq!(worker_log(doc, "w2")[0]["attempt"], json!(2), "{language}");
+-            let events = journal(doc, "journal");
+-            assert!(
+-                !events.contains(&"step.failed".to_owned()),
+-                "{language}: {events:?}"
+-            );
+-            assert_eq!(
+-                events.iter().filter(|e| *e == "step.completed").count(),
+-                1,
+-                "{language}: {events:?}"
+-            );
+-            assert_eq!(
+-                observation(doc, "done")["result"]["status"],
+-                "SUCCEEDED",
+-                "{language}"
+-            );
++            assert_human_resolution_precedes_successor(doc, language, "shutdown.after");
+         }
+     });
+ }
+--- a/tests/contract/sdk-conformance/scenarios/lease-lost.json
++++ b/tests/contract/sdk-conformance/scenarios/lease-lost.json
+@@ -1,8 +1,8 @@
+ {
+   "name": "lease-lost",
+-  "description": "US02/edge: a worker that goes silent loses its lease; when its heartbeat finds out, its activity is cancelled with the reason lease-lost and its result is dropped, not reported. The retry waits for its delay (10 min, moved by the control endpoint); a second worker is given the step and the run completes once, on the second attempt. The first worker is stopped before the second is started and the delay elapsed, so that it cannot be the one to take the retry.",
++  "description": "A worker that loses its lease cancels its handler without reporting a known failure. The expired original activity remains under review at attempt one, and direct retry is refused. A simulated human assertion of final success releases a distinct successor to the second worker; it is not provider verification and never authorizes an automatic repeat of the unknown activity. The lease is explicitly aged by control.expireLease; the 120-second TTL protects unrelated work on a slow host.",
+   "server": {
+-    "leaseTtlSeconds": 3
++    "leaseTtlSeconds": 120
+   },
+   "workflows": {
+     "work": {
+@@ -21,6 +21,11 @@
+               "jitter": false
+             }
+           }
++        },
++        {
++          "op": "step",
++          "id": "after",
++          "activity": "lease.after"
+         }
+       ]
+     }
+@@ -44,12 +49,19 @@
+       "protocolVersion": "1.4",
+       "maxInflight": 1,
+       "autostart": false,
+-      "heartbeatIntervalMs": 150,
++      "heartbeatIntervalMs": 60000,
+       "activities": {
+         "lease.work": {
+           "behavior": {
+             "returns": {
+               "second": true
++            }
++          }
++        },
++        "lease.after": {
++          "behavior": {
++            "returns": {
++              "continued": true
+             }
+           }
+         }
+@@ -98,11 +110,39 @@
+       "worker": "w2"
+     },
+     {
+-      "id": "retry",
+-      "op": "control",
+-      "action": "elapseRetryDelay",
++      "id": "review-ready",
++      "op": "awaitJournal",
+       "run": "start",
+-      "node": "work"
++      "eventType": "step.needs_review",
++      "stepId": "work",
++      "timeoutMs": 20000
++    },
++    {
++      "id": "review-state",
++      "op": "get",
++      "run": "start"
++    },
++    {
++      "id": "retry-refused",
++      "op": "operate",
++      "run": "start",
++      "action": "RETRY_STEP",
++      "stepId": "work",
++      "reason": "an expired lease does not establish the original outcome"
++    },
++    {
++      "id": "review-journal",
++      "op": "events",
++      "run": "start"
++    },
++    {
++      "id": "human-resolution",
++      "op": "operate",
++      "run": "start",
++      "action": "RESOLVE_STEP",
++      "stepId": "work",
++      "outcome": "SUCCEEDED",
++      "reason": "simulated human assertion of final success; no provider verification is claimed"
+     },
+     {
+       "id": "done",
+@@ -115,5 +155,6 @@
+       "op": "events",
+       "run": "start"
+     }
+-  ]
++  ],
++  "reviewEvidence": true
+ }
+--- a/tests/contract/sdk-conformance/scenarios/worker-shutdown.json
++++ b/tests/contract/sdk-conformance/scenarios/worker-shutdown.json
+@@ -1,8 +1,8 @@
+ {
+   "name": "worker-shutdown",
+-  "description": "SPEC §6.4/§6.8: a host that is stopped while its handler runs cancels the handler's token with the reason `shutdown`; a handler that then raises its cancellation error is NOT reported (a deploy must not fail a step for good): the lease lapses and a second worker is given the step, which completes on its second attempt.",
++  "description": "A worker that stops during a deployment cancels its handler without reporting a known failure. The expired original activity remains under review at attempt one, and direct retry is refused. A simulated human assertion of final success releases a distinct successor to the second worker; it is not provider verification and never authorizes an automatic repeat of the unknown activity. The lease is explicitly aged by control.expireLease; the 120-second TTL protects unrelated work on a slow host.",
+   "server": {
+-    "leaseTtlSeconds": 3
++    "leaseTtlSeconds": 120
+   },
+   "workflows": {
+     "work": {
+@@ -21,6 +21,11 @@
+               "jitter": false
+             }
+           }
++        },
++        {
++          "op": "step",
++          "id": "after",
++          "activity": "shutdown.after"
+         }
+       ]
+     }
+@@ -47,12 +52,19 @@
+       "protocolVersion": "1.4",
+       "maxInflight": 1,
+       "autostart": false,
+-      "heartbeatIntervalMs": 150,
++      "heartbeatIntervalMs": 60000,
+       "activities": {
+         "shutdown.work": {
+           "behavior": {
+             "returns": {
+               "second": true
++            }
++          }
++        },
++        "shutdown.after": {
++          "behavior": {
++            "returns": {
++              "continued": true
+             }
+           }
+         }
+@@ -102,6 +114,41 @@
+       "worker": "w2"
+     },
+     {
++      "id": "review-ready",
++      "op": "awaitJournal",
++      "run": "start",
++      "eventType": "step.needs_review",
++      "stepId": "work",
++      "timeoutMs": 20000
++    },
++    {
++      "id": "review-state",
++      "op": "get",
++      "run": "start"
++    },
++    {
++      "id": "retry-refused",
++      "op": "operate",
++      "run": "start",
++      "action": "RETRY_STEP",
++      "stepId": "work",
++      "reason": "an expired lease does not establish the original outcome"
++    },
++    {
++      "id": "review-journal",
++      "op": "events",
++      "run": "start"
++    },
++    {
++      "id": "human-resolution",
++      "op": "operate",
++      "run": "start",
++      "action": "RESOLVE_STEP",
++      "stepId": "work",
++      "outcome": "SUCCEEDED",
++      "reason": "simulated human assertion of final success; no provider verification is claimed"
++    },
++    {
+       "id": "done",
+       "op": "waitForCompletion",
+       "run": "start",
+@@ -112,5 +159,6 @@
+       "op": "events",
+       "run": "start"
+     }
+-  ]
++  ],
++  "reviewEvidence": true
+ }
+--- a/tests/contract/sdk-conformance/scenarios/failures-and-retries.json
++++ b/tests/contract/sdk-conformance/scenarios/failures-and-retries.json
+@@ -189,8 +189,11 @@
+     },
+     {
+       "id": "unknown-wait",
+-      "op": "sleep",
+-      "ms": 1500
++      "op": "awaitJournal",
++      "run": "unknown",
++      "eventType": "step.needs_review",
++      "stepId": "unknown",
++      "timeoutMs": 30000
+     },
+     {
+       "id": "unknown-state",
+--- a/tests/contract/sdk-conformance/scenarios/saga-compensation.json
++++ b/tests/contract/sdk-conformance/scenarios/saga-compensation.json
+@@ -1,6 +1,6 @@
+ {
+   "name": "saga-compensation",
+-  "description": "US03: a saga whose last step fails for good is compensated in reverse order; every SDK receives the compensation as a COMPENSATION task that names the step it undoes and the key of the effect at the provider. A step whose outcome is unknown is reconciled, and the reconciler answers exactly a verdict. Neither `not_applied` nor `unknown` proves a final outcome: the run waits for an operator and nothing is retried blindly. The not-applied case continues only after an audited outcome-bearing resolution.",
++  "description": "US03: a saga whose last step fails for good is compensated in reverse order; every SDK receives the compensation as a COMPENSATION task that names the step it undoes and the key of the effect at the provider. A step whose outcome is unknown is reconciled, and the reconciler answers exactly a verdict. Neither `not_applied` nor `unknown` proves a final outcome: the run waits for an operator and nothing is retried blindly. The not-applied case continues only after an audited outcome-bearing resolution. The human resolution is a simulated assertion of final success; no provider verification is claimed.",
+   "workflows": {
+     "saga": {
+       "name": "saga-flow",
+@@ -268,7 +268,7 @@
+       "action": "RESOLVE_STEP",
+       "stepId": "pay2",
+       "outcome": "SUCCEEDED",
+-      "reason": "provider evidence confirms payment p-na"
++      "reason": "simulated human assertion of final success; no provider verification is claimed"
+     },
+     {
+       "id": "not-applied-done",
+@@ -313,5 +313,6 @@
+       "op": "events",
+       "run": "undecided"
+     }
+-  ]
++  ],
++  "reviewEvidence": true
+ }

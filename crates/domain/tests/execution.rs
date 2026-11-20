@@ -9,12 +9,12 @@ mod common;
 use std::time::Duration;
 
 use common::{
-    Harness, T0, activity, build, condition, effect, end, end_with, flaky, id, parallel, saga, sid,
-    timer, wait,
+    Harness, T0, activity, build, condition, effect, end, end_with, flaky, id, parallel,
+    reconciled, saga, sid, timer, wait,
 };
 use sagat_domain::execution::{
     self, CorrelationKey, Evaluation, ExecutionError, Expiry, FailureCode, Fence, Resolution,
-    RunEvent, RunId, RunState, RunStatus, StepStatus, StopReason, WaitingOn,
+    ReviewOutcome, RunEvent, RunId, RunState, RunStatus, StepStatus, StopReason, WaitingOn,
 };
 use sagat_domain::workflow::JoinPolicy;
 
@@ -88,8 +88,8 @@ fn a_second_heartbeat_does_not_journal_again() {
 fn a_stale_generation_cannot_complete_a_step() {
     let mut run = Harness::start(build("a", vec![activity("a")]));
     let first = run.lease("a");
-    run.expire("a", first, Expiry::LeaseExpired)
-        .expect("expire");
+    run.fail_with("a", first, "KNOWN_TRANSIENT_FAILURE", true)
+        .expect("known failure allows retry");
     run.advance(secs(120));
     run.retry_due("a").expect("due");
     let second = run.lease("a");
@@ -125,7 +125,7 @@ fn a_late_report_after_the_lease_was_reclaimed_is_rejected_without_a_trace() {
     assert!(matches!(
         run.complete("a", first),
         Err(ExecutionError::IllegalTransition {
-            status: StepStatus::RetryWait,
+            status: StepStatus::Waiting,
             ..
         })
     ));
@@ -220,7 +220,7 @@ fn an_error_route_handles_a_failure_and_the_run_still_succeeds() {
 }
 
 #[test]
-fn lease_expiry_and_attempt_timeout_consume_an_attempt_with_their_own_code() {
+fn lease_expiry_and_attempt_timeout_preserve_unknown_outcome_with_their_own_code() {
     for (cause, code) in [
         (Expiry::LeaseExpired, "LEASE_EXPIRED"),
         (Expiry::AttemptTimeout, "ATTEMPT_TIMEOUT"),
@@ -229,16 +229,14 @@ fn lease_expiry_and_attempt_timeout_consume_an_attempt_with_their_own_code() {
         let fence = run.lease("a");
         run.expire("a", fence, cause).expect("expire");
         let step = run.state.step(&id("a")).expect("step");
-        assert_eq!(step.status(), StepStatus::RetryWait);
+        assert_eq!(step.status(), StepStatus::Waiting);
         assert_eq!(step.failure().map(FailureCode::as_str), Some(code));
         assert_eq!(step.attempt(), 1);
 
         run.advance(secs(1));
-        run.retry_due("a").expect("due");
-        let fence = run.lease("a");
-        run.expire("a", fence, cause)
-            .expect("second expiry exhausts the budget");
-        assert_eq!(run.state.status(), RunStatus::Failed, "{code}");
+        assert!(run.retry_due("a").is_err());
+        assert_eq!(run.state.status(), RunStatus::ManualReview, "{code}");
+        run.assert_replays();
     }
 }
 
@@ -708,10 +706,10 @@ fn storage_quota_failure_stops_before_on_error_can_release_more_work() {
     assert!(progress.pending.is_none());
     run.journal.extend(progress.events);
 
-    assert_eq!(run.status("write"), StepStatus::Failed);
+    assert_eq!(run.status("write"), StepStatus::Waiting);
     assert!(!run.has_step("would-allocate-more"));
     assert_eq!(run.state.stop_reason(), Some(StopReason::Failed));
-    assert_eq!(run.state.status(), RunStatus::Failed);
+    assert_eq!(run.state.status(), RunStatus::ManualReview);
     assert_eq!(
         run.journal.iter().find_map(|event| match event {
             RunEvent::RunStopRequested { code, .. } => code.as_ref(),
@@ -738,7 +736,7 @@ fn storage_quota_failure_preserves_an_existing_stop_and_owed_compensation() {
     stopping.journal.extend(progress.events);
     assert_eq!(stopping.state.stop_reason(), Some(StopReason::Cancelled));
     assert_eq!(stopping.state.stop_code(), None);
-    assert_eq!(stopping.state.status(), RunStatus::Cancelled);
+    assert_eq!(stopping.state.status(), RunStatus::ManualReview);
     assert_eq!(
         stopping
             .journal
@@ -762,14 +760,14 @@ fn storage_quota_failure_preserves_an_existing_stop_and_owed_compensation() {
     )
     .expect("quota fallback plans undo");
     saga_run.journal.extend(progress.events);
-    assert_eq!(saga_run.status("charge"), StepStatus::Failed);
+    assert_eq!(saga_run.status("charge"), StepStatus::Waiting);
     assert_eq!(
         saga_run
             .state
             .step(&sid("charge~c"))
             .map(|step| step.status()),
-        Some(StepStatus::Ready),
-        "the reported external success may have happened and must be undone"
+        None,
+        "unretained success requires resolution before compensation"
     );
     saga_run.assert_replays();
 
@@ -790,14 +788,14 @@ fn storage_quota_failure_preserves_an_existing_stop_and_owed_compensation() {
     )
     .expect("quota fallback preserves successful effect during cancellation");
     cancelling_saga.journal.extend(progress.events);
-    assert_eq!(cancelling_saga.status("charge"), StepStatus::Cancelled);
+    assert_eq!(cancelling_saga.status("charge"), StepStatus::Waiting);
     assert_eq!(
         cancelling_saga
             .state
             .step(&sid("charge~c"))
             .map(|step| step.status()),
-        Some(StepStatus::Ready),
-        "cancellation must still undo the successful effect whose report did not fit"
+        None,
+        "cancellation must preserve the unresolved report"
     );
     assert_eq!(
         cancelling_saga.state.stop_reason(),
@@ -876,14 +874,77 @@ fn cancelling_a_run_lets_the_worker_acknowledge_before_it_ends() {
 }
 
 #[test]
-fn an_attempt_that_vanishes_during_cancellation_is_cancelled_not_retried() {
+fn an_attempt_that_vanishes_during_cancellation_requires_review() {
     let mut run = Harness::start(build("a", vec![flaky("a", 5)]));
     let fence = run.lease("a");
     run.stop(StopReason::Cancelled).expect("cancel");
     run.expire("a", fence, Expiry::LeaseExpired)
         .expect("expire");
-    assert_eq!(run.status("a"), StepStatus::Cancelled);
-    assert_eq!(run.state.status(), RunStatus::Cancelled);
+    assert_eq!(run.status("a"), StepStatus::Waiting);
+    assert_eq!(run.state.status(), RunStatus::ManualReview);
+    run.assert_replays();
+}
+
+#[test]
+fn stopping_releases_the_lookup_for_an_ambiguous_ordinary_effect() {
+    for (reason, expiry) in [
+        (StopReason::Cancelled, false),
+        (StopReason::Cancelled, true),
+        (StopReason::TimedOut, false),
+        (StopReason::TimedOut, true),
+    ] {
+        let mut run = Harness::start(build("a", vec![reconciled("a")]));
+        let fence = run.lease("a");
+        run.stop(reason)
+            .expect("stop while the effect is in flight");
+        if expiry {
+            run.expire("a", fence, Expiry::LeaseExpired)
+                .expect("lost lease records the ambiguous outcome");
+        } else {
+            run.fail_with("a", fence, "OUTCOME_UNKNOWN", false)
+                .expect("worker records the ambiguous outcome");
+        }
+
+        assert_eq!(run.status("a"), StepStatus::Waiting, "{reason:?}/{expiry}");
+        assert!(matches!(
+            run.state.step(&id("a")).and_then(|step| step.waiting_on()),
+            Some(WaitingOn::Reconciliation)
+        ));
+        assert_eq!(
+            run.status("a~r"),
+            StepStatus::Ready,
+            "stopping must retain the original but release its recovery lookup: {reason:?}/{expiry}"
+        );
+
+        let lookup_fence = run.lease("a~r");
+        run.reconcile(
+            "a~r",
+            lookup_fence,
+            sagat_domain::saga::ReconcileVerdict::NotApplied,
+        )
+        .expect("a negative lookup is evidence, not finality");
+        assert!(matches!(
+            run.state.step(&id("a")).and_then(|step| step.waiting_on()),
+            Some(WaitingOn::Operator { code })
+                if code.as_str() == "RECONCILIATION_NOT_FINAL"
+        ));
+        assert_eq!(run.state.status(), RunStatus::ManualReview);
+        assert!(
+            !run.has_step("a~c"),
+            "a lookup does not invent compensation"
+        );
+
+        run.operator_resolve(
+            "a",
+            ReviewOutcome::Failed(
+                FailureCode::parse("OPERATOR_CONFIRMED_NOT_APPLIED").expect("code"),
+            ),
+        )
+        .expect("a person supplies the final known outcome");
+        assert_eq!(run.status("a"), StepStatus::Failed);
+        assert_eq!(run.state.status(), reason.final_status());
+        run.assert_replays();
+    }
 }
 
 #[test]
@@ -1200,8 +1261,8 @@ fn a_run_id_round_trips_through_text() {
 fn the_reducer_itself_refuses_a_stale_fence_even_if_a_command_did_not() {
     let mut run = Harness::start(build("a", vec![activity("a")]));
     let first = run.lease("a");
-    run.expire("a", first, Expiry::LeaseExpired)
-        .expect("expire");
+    run.fail_with("a", first, "KNOWN_TRANSIENT_FAILURE", true)
+        .expect("known failure allows retry");
     run.advance(secs(120));
     run.retry_due("a").expect("due");
     let second = run.lease("a");

@@ -80,19 +80,10 @@ pub(crate) async fn record_failure(
     if policy.threshold == 0 {
         return Ok(false);
     }
-    sqlx::query(
-        "INSERT INTO compensation_breakers \
-         (tenant_id, namespace_id, activity, failures, probing, level, updated_at) \
-         VALUES ($1, $2, $3, 0, false, 0, clock_timestamp()) ON CONFLICT DO NOTHING",
-    )
-    .bind(tenant)
-    .bind(namespace)
-    .bind(activity)
-    .execute(&mut **tx)
-    .await
-    .map_err(store_error)?;
-    // The row is locked while it is read and rewritten, so concurrent outcomes are applied one
-    // after the other and none is lost.
+    // One statement makes the row exist, locks it and reads it, so concurrent outcomes are applied
+    // one after the other and none is lost. Inserting first and locking afterwards left a gap: a
+    // success that deleted the row in between made this read find nothing and the report fail.
+    // `DO UPDATE` waits for whoever holds the row and, if it is gone by then, inserts it again.
     let (failures, opened_until, probing, level, now): (
         i32,
         Option<OffsetDateTime>,
@@ -100,9 +91,12 @@ pub(crate) async fn record_failure(
         i32,
         OffsetDateTime,
     ) = sqlx::query_as(
-        "SELECT failures, opened_until, probing, level, clock_timestamp() \
-         FROM compensation_breakers \
-         WHERE tenant_id = $1 AND namespace_id = $2 AND activity = $3 FOR UPDATE",
+        "INSERT INTO compensation_breakers \
+         (tenant_id, namespace_id, activity, failures, probing, level, updated_at) \
+         VALUES ($1, $2, $3, 0, false, 0, clock_timestamp()) \
+         ON CONFLICT (tenant_id, namespace_id, activity) \
+         DO UPDATE SET updated_at = compensation_breakers.updated_at \
+         RETURNING failures, opened_until, probing, level, clock_timestamp()",
     )
     .bind(tenant)
     .bind(namespace)

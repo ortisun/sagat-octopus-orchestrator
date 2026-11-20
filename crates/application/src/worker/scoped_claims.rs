@@ -20,6 +20,7 @@ where
         byte_budget: usize,
         trace_id: Option<&str>,
         bytes: &mut usize,
+        progress: &mut ClaimProgress,
     ) -> Result<Vec<ClaimedTask>, AppError> {
         if path.is_root() {
             self.claim_root_run(
@@ -31,6 +32,7 @@ where
                 byte_budget,
                 trace_id,
                 bytes,
+                progress,
             )
             .await
         } else if self.store.supports_scoped_worker_protocol()
@@ -46,6 +48,7 @@ where
                 byte_budget,
                 trace_id,
                 bytes,
+                progress,
             )
             .await
         } else {
@@ -67,6 +70,7 @@ where
         byte_budget: usize,
         trace_id: Option<&str>,
         bytes: &mut usize,
+        progress: &mut ClaimProgress,
     ) -> Result<Vec<ClaimedTask>, AppError> {
         let mut tx = match self
             .store
@@ -83,9 +87,13 @@ where
             }
             Err(error) => return Err(error.into()),
         };
-        if tx.snapshot().info.namespace_id != session.namespace_id
-            || tx.worker_drained(&session.subject).await?
-        {
+        progress.opened += 1;
+        if tx.snapshot().info.namespace_id != session.namespace_id {
+            return Ok(Vec::new());
+        }
+        if tx.worker_drained(&session.subject).await? {
+            // Nothing more for this session, whatever the next candidate is.
+            progress.session_full = true;
             return Ok(Vec::new());
         }
         // Binding replacement locks binding authority before closing sessions. Acquire that
@@ -104,8 +112,11 @@ where
             .worker_session_room(session.id, session_token_hash, &session.subject)
             .await?;
         let remaining = remaining.min(room as usize);
-        if remaining == 0
-            || !tx.current_worker_authorized(&session.subject).await?
+        if remaining == 0 {
+            progress.session_full = true;
+            return Ok(Vec::new());
+        }
+        if !tx.current_worker_authorized(&session.subject).await?
             || tx.required_worker_protocol_minor().await? > session.accepted_protocol_minor
         {
             return Ok(Vec::new());
@@ -120,7 +131,7 @@ where
                     let instance =
                         ExecutionInstanceId::in_path(snapshot.state.path().clone(), node.clone());
                     let node = snapshot.definition.node_for_instance(&instance)?;
-                    if node.database_operation().is_some() {
+                    if node.managed_kind().is_some() {
                         return None;
                     }
                     match node.kind() {
@@ -215,6 +226,9 @@ where
                 break;
             }
             if input.len() > byte_budget - *bytes - run_bytes {
+                break;
+            }
+            if self.child_root_capacity_guard && !tx.worker_capacity_available().await? {
                 break;
             }
             if !tx.activity_admitted(&activity).await? {

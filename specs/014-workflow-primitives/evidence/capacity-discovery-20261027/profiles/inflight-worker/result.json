@@ -1,0 +1,20 @@
+{
+  "appliedLookup": false,
+  "currentSchedulerWorkingTicks": 2,
+  "exactReceiptReplay": true,
+  "logicalBytesChargedOnce": true,
+  "noRefusedOutputCharge": false,
+  "oldImmutablePrefix": true,
+  "oldTerminalReader": true,
+  "oldWorkerReport": true,
+  "outputRefused": false,
+  "prefixVerifiedAfterFinalization": true,
+  "releaseCommit": "bfda342073db71e84f30bdc79ccf3fbc97a7153c",
+  "run": "SUCCEEDED",
+  "scenario": "inflight-worker",
+  "schemaAfter": 20261225000000,
+  "schemaBefore": 20261220000000,
+  "singleAppliedVerdict": false,
+  "singleLookupCompletion": false,
+  "singleReportTransaction": true
+}

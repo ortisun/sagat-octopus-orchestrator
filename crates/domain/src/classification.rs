@@ -86,6 +86,89 @@ impl fmt::Display for Level {
     }
 }
 
+/// The level of every field of a database result written by a step or a destination, whatever a declaration says
+/// (FR-035-025, D035-051).
+pub const DATABASE_RESULT: Level = Level::Pii;
+
+/// Whether a field of `level` may leave the platform through a destination whose ceiling is `ceiling`
+/// (FR-035-025): `secret` is always refused, and any other level may leave when it does not exceed the ceiling.
+#[must_use]
+pub const fn within(level: Level, ceiling: Level) -> bool {
+    !matches!(level, Level::Secret) && level as u8 <= ceiling as u8
+}
+
+/// The level of a written field: the stricter of the level it inherits from its source and the one a record schema
+/// declares, so a declaration can raise a level and never lower it (D035-051).
+///
+/// `inherited` is the level the source step's output schema gives the field, or `None` when the source carries no
+/// annotation. An unannotated field is `pii` under 016 (FR-035-025: "an undeclared field counts as `pii`"), so `None`
+/// is an inherited `pii`, not an absent level: a `public` declaration of the record schema must not lower it. A field
+/// with neither level is therefore `pii`.
+#[must_use]
+pub const fn written_level(inherited: Option<Level>, declared: Option<Level>) -> Level {
+    let inherited = match inherited {
+        Some(level) => level,
+        None => Level::UNMARKED,
+    };
+    match declared {
+        Some(declared) => inherited.stricter(declared),
+        None => inherited,
+    }
+}
+
+/// The highest level a connection or a subscription accepts from a step (feature 035, data-model.md section 1).
+///
+/// Three values: `secret` is never one, because it never leaves. A revision without a ceiling reads as `internal`.
+/// Setting `pii` needs the actor to hold the reveal grant for the namespace.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum EgressCeiling {
+    Public,
+    #[default]
+    Internal,
+    Pii,
+}
+
+impl EgressCeiling {
+    #[must_use]
+    pub const fn as_level(self) -> Level {
+        match self {
+            Self::Public => Level::Public,
+            Self::Internal => Level::Internal,
+            Self::Pii => Level::Pii,
+        }
+    }
+
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        self.as_level().as_str()
+    }
+
+    /// Whether setting this ceiling needs the reveal grant of the namespace.
+    #[must_use]
+    pub const fn requires_reveal_grant(self) -> bool {
+        matches!(self, Self::Pii)
+    }
+
+    /// Whether a field of `level` may leave through this ceiling.
+    #[must_use]
+    pub const fn admits(self, level: Level) -> bool {
+        within(level, self.as_level())
+    }
+}
+
+impl FromStr for EgressCeiling {
+    type Err = ClassificationError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "public" => Ok(Self::Public),
+            "internal" => Ok(Self::Internal),
+            "pii" => Ok(Self::Pii),
+            _ => Err(ClassificationError::UnknownLevel),
+        }
+    }
+}
+
 /// Effective disclosure capabilities for one request.
 ///
 /// `pii` is true only when `internal` is true and the caller both holds a namespace reveal grant

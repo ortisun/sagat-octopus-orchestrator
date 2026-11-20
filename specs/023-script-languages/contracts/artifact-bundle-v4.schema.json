@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sagat-octopus-orchestrator.io/drafts/023/artifact-bundle-v4.schema.json",
+  "title": "Script artifact bundle v4 (bounded text tree), feature 023 draft",
+  "description": "Canonical JSON (keys sorted, no insignificant whitespace); digest = sha256 of the bytes; signed as every bundle (Ed25519 over sagat/script-artifact/v1 || tenant || digest || language). Only php and the reserved image-catalog runtime python-data (FR-023-027, owned by feature 024 for its content) may use v4. This schema states shape; crates/infra-schema/src/bundle.rs additionally enforces canonical encoding, path normalization, case-insensitive uniqueness, the decoded-content total and the 2 MiB stored ceiling, before signing and again at the runner's load. For python-data the runner also refuses the bundle unless runtimeCatalog equals its configured runtime image's catalog digest. Bundles v1, v2 and v3 are unchanged.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["v", "language", "policy", "inputSchema", "outputSchema", "entry", "lockDigest", "runtimeCatalog", "files"],
+  "properties": {
+    "v": {"const": 4},
+    "language": {"enum": ["php", "python-data"]},
+    "policy": {
+      "type": "string",
+      "maxLength": 256,
+      "pattern": "^v1;memory=[0-9]+;cpu=[0-9]+;wall=[0-9]+;pids=[0-9]+;output=[0-9]+;scratch=[0-9]+;egress=(none|namespace)$",
+      "description": "Canonical policy text the build was clamped to; re-parsed with Policy::parse_canonical."
+    },
+    "inputSchema": {"type": ["object", "null"]},
+    "outputSchema": {"type": ["object", "null"]},
+    "entry": {"enum": ["main.php", "main.py"]},
+    "lockDigest": {
+      "type": ["string", "null"],
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "description": "SHA-256 of the version's lockfile bytes (composer.lock for php, hash-pinned requirements for python-data); null when the version has no lockfile."
+    },
+    "runtimeCatalog": {
+      "type": ["string", "null"],
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "description": "php: null (packages travel in files). python-data: the catalog digest of the runtime image the artifact was built against; required."
+    },
+    "files": {
+      "type": "object",
+      "minProperties": 1,
+      "maxProperties": 1024,
+      "propertyNames": {
+        "type": "string",
+        "maxLength": 255,
+        "pattern": "^(?:[A-Za-z0-9_-][A-Za-z0-9._-]{0,63})(?:/[A-Za-z0-9_-][A-Za-z0-9._-]{0,63}){0,9}$"
+      },
+      "additionalProperties": {
+        "type": "string",
+        "description": "UTF-8 text without NUL. The sum of decoded lengths is at most 1,433,600 bytes (1,400 KiB)."
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"language": {"const": "php"}}},
+      "then": {
+        "properties": {"entry": {"const": "main.php"}, "runtimeCatalog": {"type": "null"}, "files": {"required": ["main.php"]}}
+      }
+    },
+    {
+      "if": {"properties": {"language": {"const": "python-data"}}},
+      "then": {
+        "properties": {"entry": {"const": "main.py"}, "runtimeCatalog": {"type": "string"}, "files": {"required": ["main.py"]}}
+      }
+    }
+  ],
+  "examples": [
+    {
+      "entry": "main.php",
+      "files": {
+        "main.php": "<?php\nfunction run(array $input, Octopus $octopus): mixed { return ['double' => ($input['n'] ?? 0) * 2]; }\n"
+      },
+      "inputSchema": null,
+      "language": "php",
+      "lockDigest": null,
+      "outputSchema": null,
+      "policy": "v1;memory=268435456;cpu=1000;wall=30;pids=64;output=65536;scratch=33554432;egress=none",
+      "runtimeCatalog": null,
+      "v": 4
+    }
+  ]
+}

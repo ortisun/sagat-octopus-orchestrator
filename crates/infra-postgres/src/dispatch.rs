@@ -15,7 +15,7 @@ use sagat_application::error::StoreError;
 use sagat_application::identity::TraceLink;
 use sagat_domain::definition::{WorkflowId, WorkflowVersionId};
 use sagat_domain::events::{EventEnvelope, EventId, EventKey};
-use sagat_domain::execution::{CorrelationKey, RunId};
+use sagat_domain::execution::{CorrelationKey, ExecutionInstanceId, RunId};
 use sagat_domain::identity::{NamespaceId, Slug, TenantId};
 use sagat_domain::triggers::{CronSpec, TriggerKind};
 use sagat_domain::workflow::{EventType, Expression, NodeId};
@@ -23,7 +23,7 @@ use sqlx::postgres::PgRow;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use crate::execution::PgRunStore;
+use crate::execution::{PgRunStore, stored_path_parts};
 use crate::identity::{col, corrupt, store_error};
 
 /// The columns of an inbox row the dispatcher reads.
@@ -39,7 +39,7 @@ macro_rules! select_events {
     };
 }
 
-fn claimed_from_row(row: &PgRow) -> Result<ClaimedEvent, StoreError> {
+pub(crate) fn claimed_from_row(row: &PgRow) -> Result<ClaimedEvent, StoreError> {
     let source: String = col(row, "source")?;
     let id: String = col(row, "event_id")?;
     let kind: String = col(row, "event_type")?;
@@ -118,7 +118,11 @@ fn waiting_from_row(row: &PgRow) -> Result<WaitingStep, StoreError> {
         tenant_id: TenantId::new(col::<Uuid>(row, "tenant_id")?),
         namespace_id: NamespaceId::new(col::<Uuid>(row, "namespace_id")?),
         run_id: RunId::new(col::<Uuid>(row, "run_id")?),
-        node: NodeId::parse_stored(&node).map_err(|_| corrupt("step node"))?,
+        instance: ExecutionInstanceId::in_path(
+            crate::execution::step_instance_path(row)?,
+            NodeId::parse_stored(&node).map_err(|_| corrupt("step node"))?,
+        ),
+        step_id: col(row, "step_id")?,
         event_type: EventType::parse(&kind).map_err(|_| corrupt("step event type"))?,
         correlation_key: CorrelationKey::parse(&key)
             .map_err(|_| corrupt("step correlation key"))?,
@@ -267,20 +271,25 @@ impl EventDispatchStore for PgRunStore {
     async fn waits_for_event(
         &self,
         event: &ClaimedEvent,
-        after: Option<(RunId, &NodeId)>,
+        after: Option<(RunId, &ExecutionInstanceId)>,
         limit: u32,
     ) -> Result<Vec<WaitingStep>, StoreError> {
         let Some(key) = &event.envelope.correlation_key else {
             return Ok(Vec::new());
         };
+        let cursor = after.map(|(run, instance)| {
+            let (nodes, indices) = stored_path_parts(instance.path());
+            (run, nodes, indices, instance.node().as_str())
+        });
         sqlx::query(
-            "SELECT tenant_id, namespace_id, run_id, node, event_type, correlation_key, event_since \
+            "SELECT tenant_id, namespace_id, run_id, node, step_id, instance_path_nodes, instance_path_indices, event_type, correlation_key, event_since \
              FROM steps \
              WHERE tenant_id = $1 AND namespace_id = $2 AND status = 'WAITING' \
                AND waiting_kind = 'EVENT' AND event_type = $3 AND correlation_key = $4 \
                AND event_since <= $5 \
-               AND ($7::uuid IS NULL OR (run_id, node) > ($7::uuid, $8::text)) \
-             ORDER BY run_id, node LIMIT $6",
+               AND ($7::uuid IS NULL OR (run_id,instance_path_nodes,instance_path_indices,node) \
+                    > ($7::uuid,$8::text[],$9::integer[],$10::text)) \
+             ORDER BY run_id,instance_path_nodes,instance_path_indices,node LIMIT $6",
         )
         .bind(event.tenant_id.as_uuid())
         .bind(event.namespace_id.as_uuid())
@@ -288,8 +297,10 @@ impl EventDispatchStore for PgRunStore {
         .bind(key.as_str())
         .bind(event.received_at)
         .bind(i64::from(limit))
-        .bind(after.map(|(run, _)| run.as_uuid()))
-        .bind(after.map(|(_, node)| node.as_str()))
+        .bind(cursor.as_ref().map(|(run, ..)| run.as_uuid()))
+        .bind(cursor.as_ref().map(|(_, nodes, ..)| nodes))
+        .bind(cursor.as_ref().map(|(_, _, indices, _)| indices))
+        .bind(cursor.as_ref().map(|(_, _, _, node)| *node))
         .fetch_all(&self.pool)
         .await
         .map_err(store_error)?
@@ -298,15 +309,27 @@ impl EventDispatchStore for PgRunStore {
         .collect()
     }
 
-    async fn unscanned_waits(&self, limit: u32) -> Result<Vec<WaitingStep>, StoreError> {
+    async fn unscanned_waits(
+        &self,
+        after: Option<&WaitingStep>,
+        limit: u32,
+    ) -> Result<Vec<WaitingStep>, StoreError> {
+        let cursor = after.map(|step| stored_path_parts(step.instance.path()));
         sqlx::query(
-            "SELECT tenant_id, namespace_id, run_id, node, event_type, correlation_key, event_since \
+            "SELECT tenant_id, namespace_id, run_id, node, step_id, instance_path_nodes, instance_path_indices, event_type, correlation_key, event_since \
              FROM steps \
              WHERE status = 'WAITING' AND waiting_kind = 'EVENT' AND event_scanned_at IS NULL \
                AND event_since IS NOT NULL \
-             ORDER BY updated_at LIMIT $1",
+               AND ($2::uuid IS NULL OR (tenant_id,run_id,instance_path_nodes,instance_path_indices,node) \
+                   > ($2::uuid,$3::uuid,$4::text[],$5::integer[],$6::text)) \
+             ORDER BY tenant_id,run_id,instance_path_nodes,instance_path_indices,node LIMIT $1",
         )
         .bind(i64::from(limit))
+        .bind(after.map(|step| step.tenant_id.as_uuid()))
+        .bind(after.map(|step| step.run_id.as_uuid()))
+        .bind(cursor.as_ref().map(|(nodes, _)| nodes))
+        .bind(cursor.as_ref().map(|(_, indices)| indices))
+        .bind(after.map(|step| step.instance.node().as_str()))
         .fetch_all(&self.pool)
         .await
         .map_err(store_error)?
@@ -319,10 +342,16 @@ impl EventDispatchStore for PgRunStore {
         &self,
         step: &WaitingStep,
     ) -> Result<Option<ClaimedEvent>, StoreError> {
-        let consumer = format!("wait:{}/{}", step.run_id, step.node);
+        let consumer = step.delivery_consumer();
+        let (nodes, indices) = stored_path_parts(step.instance.path());
         sqlx::query(select_events!(
             "WHERE e.tenant_id = $1 AND e.namespace_id = $2 AND e.event_type = $3 \
                AND e.correlation_key = $4 AND e.received_at >= $5 \
+               AND EXISTS (SELECT 1 FROM steps s WHERE s.tenant_id=$1 AND s.namespace_id=$2 \
+                   AND s.run_id=$7 AND s.node=$8 AND s.step_id=$9 \
+                   AND s.instance_path_nodes=$10 AND s.instance_path_indices=$11 \
+                   AND s.status='WAITING' AND s.waiting_kind='EVENT' \
+                   AND s.event_type=$3 AND s.correlation_key=$4 AND s.event_since=$5) \
                AND NOT EXISTS (SELECT 1 FROM event_deliveries d \
                                WHERE d.tenant_id = e.tenant_id AND d.namespace_id = e.namespace_id \
                                  AND d.source = e.source AND d.event_id = e.event_id \
@@ -335,6 +364,11 @@ impl EventDispatchStore for PgRunStore {
         .bind(step.correlation_key.as_str())
         .bind(step.since)
         .bind(consumer)
+        .bind(step.run_id.as_uuid())
+        .bind(step.instance.node().as_str())
+        .bind(step.step_id)
+        .bind(nodes)
+        .bind(indices)
         .fetch_optional(&self.pool)
         .await
         .map_err(store_error)?
@@ -343,14 +377,24 @@ impl EventDispatchStore for PgRunStore {
     }
 
     async fn mark_wait_scanned(&self, step: &WaitingStep) -> Result<(), StoreError> {
+        let (nodes, indices) = stored_path_parts(step.instance.path());
         sqlx::query(
             "UPDATE steps SET event_scanned_at = clock_timestamp() \
-             WHERE tenant_id = $1 AND run_id = $2 AND node = $3 AND status = 'WAITING' \
-               AND waiting_kind = 'EVENT' AND event_scanned_at IS NULL",
+             WHERE tenant_id = $1 AND run_id = $2 AND node = $3 AND namespace_id=$4 \
+               AND status = 'WAITING' AND waiting_kind = 'EVENT' AND event_scanned_at IS NULL \
+               AND event_type=$5 AND correlation_key=$6 AND event_since=$7 \
+               AND step_id=$8 AND instance_path_nodes=$9 AND instance_path_indices=$10",
         )
         .bind(step.tenant_id.as_uuid())
         .bind(step.run_id.as_uuid())
-        .bind(step.node.as_str())
+        .bind(step.instance.node().as_str())
+        .bind(step.namespace_id.as_uuid())
+        .bind(step.event_type.as_str())
+        .bind(step.correlation_key.as_str())
+        .bind(step.since)
+        .bind(step.step_id)
+        .bind(nodes)
+        .bind(indices)
         .execute(&self.pool)
         .await
         .map_err(store_error)?;

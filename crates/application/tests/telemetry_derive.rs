@@ -1,14 +1,15 @@
 //! What the journal of a run becomes as spans and measurements (FR-008-001, US01, US02).
 #![allow(clippy::expect_used, clippy::panic)] // helpers fail the test by panicking
 
+use sagat_domain::saga::ReconcileVerdict;
 use std::collections::HashMap;
 
 use sagat_application::telemetry::{
     AttemptOutcome, CONTEXT_EVENTS, JournalEntry, Observation, RunFacts, attempts, derive,
 };
 use sagat_domain::execution::{
-    ExecutionInstanceId, FailureCode, Fence, InstancePath, ReviewOutcome, RunEvent, RunId,
-    RunStatus, StopReason,
+    ExecutionInstanceId, FailureCode, Fence, InstancePath, ReconcileResult, ReviewOutcome,
+    RunEvent, RunId, RunStatus, StopReason,
 };
 use sagat_domain::identity::{NamespaceId, TenantId};
 use sagat_domain::workflow::NodeId;
@@ -17,7 +18,7 @@ use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
 
 fn node(name: &str) -> NodeId {
-    NodeId::parse(name).expect("a node id")
+    NodeId::parse_stored(name).expect("a stored node id")
 }
 
 fn code(text: &str) -> FailureCode {
@@ -455,6 +456,204 @@ fn a_lost_lease_is_an_error_attempt_with_its_code() {
         attr(span, "sagat.outcome"),
         Some(&AttrValue::from("failed"))
     );
+}
+
+#[test]
+fn review_telemetry_preserves_source_codes_without_inventing_a_negative_lookup_attempt() {
+    const SECRET_PAYLOAD_CANARY: &str = "worker-secret-payload-must-not-escape";
+
+    let direct_facts = facts(&["charge"]);
+    let mut direct = Journal::new();
+    let charge = node("charge");
+    direct.push(
+        0,
+        "system:engine",
+        RunEvent::StepReleased {
+            node: charge.clone(),
+        },
+    );
+    direct.push(
+        10,
+        &format!("worker:{SECRET_PAYLOAD_CANARY}"),
+        RunEvent::StepLeased {
+            node: charge.clone(),
+            attempt: 1,
+            generation: 1,
+        },
+    );
+    direct.push(
+        10,
+        &format!("worker:{SECRET_PAYLOAD_CANARY}"),
+        RunEvent::StepNeedsReview {
+            node: charge.clone(),
+            code: FailureCode::outcome_unknown(),
+            fence: Some(Fence {
+                attempt: 1,
+                generation: 1,
+            }),
+        },
+    );
+    let direct_derived = derive(&direct_facts, &direct.entries, 0);
+    let direct_span = named(&direct_derived.spans, "step.attempt")[0];
+    assert_eq!(
+        attr(direct_span, "sagat.outcome"),
+        Some(&AttrValue::from("review"))
+    );
+    assert_eq!(
+        attr(direct_span, "sagat.failure.code"),
+        Some(&AttrValue::from("OUTCOME_UNKNOWN"))
+    );
+    assert_eq!(
+        direct_span.status,
+        SpanStatus::Error("OUTCOME_UNKNOWN".to_owned())
+    );
+    assert!(
+        !format!("{:?}", direct_derived.spans).contains(SECRET_PAYLOAD_CANARY),
+        "worker-provided text is not a span attribute"
+    );
+
+    // A negative lookup concludes the original uncertainty and moves that original step to review.
+    // It does not lease a third attempt, so telemetry must expose the bounded review code on the
+    // reconciliation event instead of fabricating a `review` attempt span.
+    let reconciled_facts = facts(&["charge", "charge~r"]);
+    let mut reconciled = Journal::new();
+    let lookup = node("charge").reconciliation();
+    reconciled.push(
+        0,
+        "system:engine",
+        RunEvent::StepReleased {
+            node: charge.clone(),
+        },
+    );
+    reconciled.push(
+        10,
+        &format!("worker:{SECRET_PAYLOAD_CANARY}"),
+        RunEvent::StepLeased {
+            node: charge.clone(),
+            attempt: 1,
+            generation: 1,
+        },
+    );
+    reconciled.push(
+        10,
+        &format!("worker:{SECRET_PAYLOAD_CANARY}"),
+        RunEvent::ReconciliationRequested {
+            node: charge.clone(),
+            fence: Fence {
+                attempt: 1,
+                generation: 1,
+            },
+            cause: FailureCode::outcome_unknown(),
+        },
+    );
+    reconciled.push(
+        5,
+        "system:engine",
+        RunEvent::StepReleased {
+            node: lookup.clone(),
+        },
+    );
+    reconciled.push(
+        10,
+        &format!("worker:{SECRET_PAYLOAD_CANARY}"),
+        RunEvent::StepLeased {
+            node: lookup.clone(),
+            attempt: 1,
+            generation: 1,
+        },
+    );
+    reconciled.push(
+        10,
+        &format!("worker:{SECRET_PAYLOAD_CANARY}"),
+        RunEvent::StepCompleted {
+            node: lookup,
+            attempt: 1,
+            generation: 1,
+        },
+    );
+    reconciled.push(
+        0,
+        &format!("worker:{SECRET_PAYLOAD_CANARY}"),
+        RunEvent::ReconciliationConcluded {
+            node: charge.clone(),
+            verdict: ReconcileVerdict::NotApplied,
+            result: ReconcileResult::Review(FailureCode::reconciliation_not_final()),
+        },
+    );
+    reconciled.push(
+        10,
+        "system:operator",
+        RunEvent::StepResolved {
+            node: charge,
+            outcome: ReviewOutcome::Succeeded,
+        },
+    );
+    reconciled.push(
+        10,
+        "system:engine",
+        RunEvent::RunFinished {
+            status: RunStatus::Succeeded,
+        },
+    );
+
+    let reconciled_derived = derive(&reconciled_facts, &reconciled.entries, 0);
+    let attempt_spans = named(&reconciled_derived.spans, "step.attempt");
+    assert_eq!(
+        attempt_spans.len(),
+        2,
+        "forward plus lookup, not a made-up review attempt"
+    );
+    let forward = attempt_spans
+        .iter()
+        .find(|span| attr(span, "sagat.node") == Some(&AttrValue::from("charge")))
+        .expect("forward attempt span");
+    assert_eq!(
+        attr(forward, "sagat.outcome"),
+        Some(&AttrValue::from("unknown_outcome"))
+    );
+    assert_eq!(
+        attr(forward, "sagat.failure.code"),
+        Some(&AttrValue::from("OUTCOME_UNKNOWN"))
+    );
+    assert!(
+        attempt_spans
+            .iter()
+            .all(|span| attr(span, "sagat.outcome") != Some(&AttrValue::from("review"))),
+        "the negative lookup is a reconciliation decision, not another attempt"
+    );
+    let run_span = named(&reconciled_derived.spans, "workflow.run")[0];
+    let concluded = run_span
+        .events
+        .iter()
+        .find(|event| event.name == "reconciliation.concluded")
+        .expect("reconciliation event on the run span");
+    assert!(
+        concluded.attributes.iter().any(|(key, value)| {
+            key == "sagat.failure.code" && *value == AttrValue::from("RECONCILIATION_NOT_FINAL")
+        }),
+        "the review reason remains distinguishable from a final negative lookup: {concluded:?}"
+    );
+
+    let span_debug = format!("{:?}", reconciled_derived.spans);
+    assert!(!span_debug.contains(SECRET_PAYLOAD_CANARY));
+    let metric_input = format!(
+        "{:?}{:?}",
+        direct_derived.observations, reconciled_derived.observations
+    );
+    for forbidden in [
+        SECRET_PAYLOAD_CANARY.to_owned(),
+        direct_facts.tenant_id.to_string(),
+        direct_facts.namespace_id.to_string(),
+        direct_facts.run_id.to_string(),
+        reconciled_facts.tenant_id.to_string(),
+        reconciled_facts.namespace_id.to_string(),
+        reconciled_facts.run_id.to_string(),
+    ] {
+        assert!(
+            !metric_input.contains(&forbidden),
+            "metric observations keep only closed outcome/status labels: {metric_input}"
+        );
+    }
 }
 
 #[test]

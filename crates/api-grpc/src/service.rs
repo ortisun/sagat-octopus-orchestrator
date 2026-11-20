@@ -110,6 +110,27 @@ impl<St, S, C, E, R> AdmissionProvider for WorkerGrpc<St, S, C, E, R> {
 
 const STREAM_WINDOW: Duration = Duration::from_secs(5);
 
+/// How long before the hard end of a receive window the producer stops claiming and queues its terminal hint. It is
+/// 5% of the window: measured under CPU load the hint took up to 15 ms to reach a reader that was keeping up, and the
+/// 10 ms this was before was lost twice in 34 runs of the contract test under load.
+const TERMINAL_HINT_MARGIN: Duration = Duration::from_millis(250);
+
+/// When the producer of a stream must be done: the hard deadline of the body when the session token expires first (the
+/// stream is cut there), otherwise [`TERMINAL_HINT_MARGIN`] earlier, so that a reader that is keeping up receives the
+/// terminal hint before the body's own deadline discards anything still queued.
+fn producer_end(
+    body_deadline: tokio::time::Instant,
+    token_expires_first: bool,
+) -> tokio::time::Instant {
+    if token_expires_first {
+        body_deadline
+    } else {
+        body_deadline
+            .checked_sub(TERMINAL_HINT_MARGIN)
+            .unwrap_or(body_deadline)
+    }
+}
+
 fn stream_deadline_frame(
     token_expired: bool,
     idle_retry: Duration,
@@ -166,15 +187,31 @@ impl Stream for TaskBody {
             while this.inner.try_recv().is_ok() {}
             return Poll::Ready(Some(Err(api(&ApiError::invalid_credentials()))));
         }
-        if !this.deadline_reported && this.window_deadline.as_mut().poll(cx).is_ready() {
+        if this.deadline_reported {
+            // The window is over and its last item was given: nothing follows, and the aborted producer is not asked why.
+            return Poll::Ready(None);
+        }
+        if this.window_deadline.as_mut().poll(cx).is_ready() {
             this.deadline_reported = true;
             let completed_reason = this.reason.load(Ordering::Acquire);
-            if completed_reason != 2 {
-                this.reason.store(4, Ordering::Release);
-            }
             this.producer.abort();
+            // A terminal hint that the producer queued before the deadline is still the right ending for a reader that
+            // was merely late to come for it. It carries no task, so handing it over late cannot lose a lease. Anything
+            // else that is queued is discarded: a transport that stalled past the deadline sees no old frame.
+            let late_hint = match this.inner.try_recv() {
+                Ok(Ok(frame)) if frame.tasks.is_empty() && frame.retry_after_ms > 0 => Some(frame),
+                _ => None,
+            };
             this.inner.close();
             while this.inner.try_recv().is_ok() {}
+            if completed_reason != 2 && !(late_hint.is_some() && matches!(completed_reason, 3 | 4))
+            {
+                this.reason.store(4, Ordering::Release);
+            }
+            if let Some(frame) = late_hint {
+                this.terminal_delivered = true;
+                return Poll::Ready(Some(Ok(frame)));
+            }
             if this.terminal_delivered || completed_reason == 2 {
                 return Poll::Ready(None);
             }
@@ -552,13 +589,7 @@ where
             // Finish production just before the hard body deadline. A normal reader receives its
             // terminal hint; a stalled transport is cut at the hard deadline and exposes no old
             // buffered frame afterwards.
-            let producer_end = if token_expires_first {
-                body_deadline
-            } else {
-                body_deadline
-                    .checked_sub(Duration::from_millis(10))
-                    .unwrap_or(body_deadline)
-            };
+            let producer_end = producer_end(body_deadline, token_expires_first);
             let producer = tokio::spawn(async move {
                 let mut credit = max_tasks;
                 let mut bytes_left = sagat_application::worker::MAX_POLL_BYTES;
@@ -1147,9 +1178,16 @@ where
                 .parse::<BlobId>()
                 .map_err(|_| invalid("blob_id is not a blob id"))?;
             let principal = &auth.session.principal;
+            // The check names the blob: an ordinary step is held to its lease, a lake attempt to the blobs its lease named, and the
+            // store is not asked about a blob the check did not allow (D035-144).
             let scope = self
                 .workers
-                .check_lease(principal, &attempt.task_ref())
+                .check_blob_read(
+                    principal,
+                    &attempt.task_ref(),
+                    id,
+                    Some(&trace.trace_id().to_string()),
+                )
                 .await
                 .map_err(app)?;
             let (descriptor, body) = blobs
@@ -1541,5 +1579,168 @@ mod tests {
             .expect_err("the queued frame is no longer exposed");
         assert_eq!(status.code(), Code::DeadlineExceeded);
         assert!(body.next().await.is_none(), "the stale frame was discarded");
+    }
+}
+
+#[cfg(test)]
+mod terminal_hint_margin {
+    use super::*;
+
+    /// Found on 2026-11-05 (contract_grpc_durable_execution, `task_stream_byte_credit_is_cumulative_across_frames`, in a
+    /// full CI run and again locally with sixteen CPU burners on a sixteen-core machine): the hint is queued at the end
+    /// of the production window and the body discards what is queued when its own deadline fires, so any delay of the
+    /// reader or the connection task longer than the margin turns the hint into `DeadlineExceeded`. Under load the hint
+    /// took up to 15 ms to reach the reader, and once more than the 10 ms the margin was.
+    #[test]
+    fn the_hint_is_queued_well_before_the_hard_deadline_of_a_window() {
+        let deadline = tokio::time::Instant::now() + STREAM_WINDOW;
+        let end = producer_end(deadline, false);
+        assert!(end < deadline);
+        assert!(
+            deadline - end >= Duration::from_millis(100),
+            "a reader may be late by tens of milliseconds on a loaded machine: the margin is {:?}",
+            deadline - end
+        );
+        assert!(
+            deadline - end <= STREAM_WINDOW / 10,
+            "the margin takes from the window the producer has to claim in: {:?}",
+            deadline - end
+        );
+    }
+
+    /// A body whose window ended 10 ms ago with `frame` still queued: the reader was late, not the transport stalled.
+    async fn late_body(
+        frame: Option<pb::PollTasksResponse>,
+    ) -> (
+        TaskBody,
+        mpsc::Sender<Result<pb::PollTasksResponse, Status>>,
+    ) {
+        let (sender, receiver) = mpsc::channel(1);
+        if let Some(frame) = frame {
+            sender.send(Ok(frame)).await.expect("queue the frame");
+        }
+        let body = TaskBody {
+            inner: receiver,
+            producer: tokio::spawn(std::future::pending()),
+            _ticket: None,
+            _connection_deadline: None,
+            token_expiry: Box::pin(tokio::time::sleep(Duration::from_secs(60))),
+            window_deadline: Box::pin(tokio::time::sleep(Duration::from_millis(20))),
+            expiry_reported: false,
+            deadline_reported: false,
+            terminal_delivered: false,
+            reason: Arc::new(AtomicU8::new(1)),
+            started: Instant::now(),
+        };
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        (body, sender)
+    }
+
+    /// The race itself, without a clock: the producer queued the hint in time and the reader came for it after the
+    /// body's deadline. The hint carries no task, so handing it over late cannot lose a lease, and the reader sees what
+    /// a reader that kept up sees. A frame with tasks is still discarded
+    /// (`a_stalled_body_discards_its_buffer_at_the_transport_deadline`).
+    #[tokio::test]
+    async fn a_terminal_hint_queued_before_the_deadline_reaches_a_reader_that_came_for_it_late() {
+        use tokio_stream::StreamExt as _;
+        let hint = pb::PollTasksResponse {
+            tasks: Vec::new(),
+            retry_after_ms: 1000,
+        };
+        let (mut body, _sender) = late_body(Some(hint)).await;
+        let frame = body
+            .next()
+            .await
+            .expect("a last item")
+            .expect("the hint, not a deadline status");
+        assert!(frame.tasks.is_empty());
+        assert_eq!(frame.retry_after_ms, 1000);
+        assert!(
+            body.next().await.is_none(),
+            "the stream ends after the hint"
+        );
+        assert!(body.terminal_delivered);
+        assert_eq!(
+            body.reason.load(Ordering::Acquire),
+            4,
+            "the window ended it, and nothing failed"
+        );
+    }
+
+    /// The producer says why it ended before it queues nothing more; a hint handed over late must not rewrite that.
+    #[tokio::test]
+    async fn a_late_hint_of_a_byte_budget_that_ran_out_keeps_the_reason_of_the_producer() {
+        use tokio_stream::StreamExt as _;
+        let hint = pb::PollTasksResponse {
+            tasks: Vec::new(),
+            retry_after_ms: 1000,
+        };
+        let (mut body, _sender) = late_body(Some(hint)).await;
+        body.reason.store(3, Ordering::Release);
+        body.next().await.expect("a last item").expect("the hint");
+        assert_eq!(body.reason.load(Ordering::Acquire), 3);
+    }
+
+    /// Only a frame with no task is handed over late. A frame that carries a task and, strangely, a retry hint too, is
+    /// discarded like any other: the task would be a lease the reader can no longer be sure to honour.
+    #[tokio::test]
+    async fn a_frame_with_a_task_is_discarded_even_if_it_carries_a_retry_hint() {
+        use tokio_stream::StreamExt as _;
+        let (mut body, _sender) = late_body(Some(pb::PollTasksResponse {
+            tasks: vec![pb::TaskLease::default()],
+            retry_after_ms: 1000,
+        }))
+        .await;
+        let status = body
+            .next()
+            .await
+            .expect("a last item")
+            .expect_err("a frame with tasks is not a hint");
+        assert_eq!(status.code(), Code::DeadlineExceeded);
+    }
+
+    /// A stream whose credit ran out ends without an error when its window ends, and says so in its reason.
+    #[tokio::test]
+    async fn a_window_whose_credit_ran_out_ends_quietly_and_keeps_its_reason() {
+        use tokio_stream::StreamExt as _;
+        let (mut body, _sender) = late_body(None).await;
+        body.reason.store(2, Ordering::Release);
+        assert!(body.next().await.is_none());
+        assert_eq!(body.reason.load(Ordering::Acquire), 2);
+    }
+
+    #[tokio::test]
+    async fn a_window_that_ended_with_nothing_queued_is_still_a_deadline_status() {
+        use tokio_stream::StreamExt as _;
+        let (mut body, _sender) = late_body(None).await;
+        let status = body
+            .next()
+            .await
+            .expect("a last item")
+            .expect_err("no hint was queued in time");
+        assert_eq!(status.code(), Code::DeadlineExceeded);
+        assert!(body.next().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn an_empty_frame_without_a_retry_hint_is_not_a_terminal_hint() {
+        use tokio_stream::StreamExt as _;
+        let (mut body, _sender) = late_body(Some(pb::PollTasksResponse {
+            tasks: Vec::new(),
+            retry_after_ms: 0,
+        }))
+        .await;
+        let status = body
+            .next()
+            .await
+            .expect("a last item")
+            .expect_err("only a frame that tells the reader when to come back ends a window");
+        assert_eq!(status.code(), Code::DeadlineExceeded);
+    }
+
+    #[test]
+    fn a_token_that_expires_first_ends_production_at_its_own_deadline_with_no_margin() {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        assert_eq!(producer_end(deadline, true), deadline);
     }
 }

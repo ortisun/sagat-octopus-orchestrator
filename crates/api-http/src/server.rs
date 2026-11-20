@@ -12,6 +12,9 @@
 //!   the kernel backlog instead of exhausting file descriptors.
 //! * `shutdown_grace`: on shutdown, in-flight requests may finish, but only for this long; a
 //!   connection that never completes cannot keep the process alive forever.
+//!
+//! [`serve_unix`] serves a node-local Unix socket with the same loop and the same limits. The kernel says who
+//! connects, and a peer whose user the caller does not allow is dropped at accept, before a byte of its request is read.
 
 use std::future::Future;
 use std::io;
@@ -25,7 +28,7 @@ use hyper::server::conn::http1;
 use hyper_util::rt::{TokioIo, TokioTimer};
 use hyper_util::service::TowerToHyperService;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
-use tokio::net::TcpListener;
+use tokio::net::{TcpListener, UnixListener};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, watch};
 use tokio::time::{Instant, Sleep};
 
@@ -80,6 +83,46 @@ impl Default for ServerConfig {
     }
 }
 
+/// Where connections come from. `Ok(None)` is a connection that was refused and is already gone: the loop takes the next one.
+trait Acceptor {
+    type Stream: AsyncRead + AsyncWrite + Unpin + Send + 'static;
+
+    fn accept(&self) -> impl Future<Output = io::Result<Option<Self::Stream>>> + Send;
+}
+
+impl Acceptor for TcpListener {
+    type Stream = tokio::net::TcpStream;
+
+    async fn accept(&self) -> io::Result<Option<Self::Stream>> {
+        let (stream, _peer) = TcpListener::accept(self).await?;
+        // Small responses should not wait for Nagle; failure to set it is harmless.
+        let _ = stream.set_nodelay(true);
+        Ok(Some(stream))
+    }
+}
+
+/// A Unix socket whose peers are checked: the user the kernel reports for the connecting process must pass `allow`.
+struct CheckedUnix<F> {
+    listener: UnixListener,
+    allow: F,
+}
+
+impl<F: Fn(u32) -> bool + Send + Sync> Acceptor for CheckedUnix<F> {
+    type Stream = tokio::net::UnixStream;
+
+    async fn accept(&self) -> io::Result<Option<Self::Stream>> {
+        let (stream, _peer) = self.listener.accept().await?;
+        match stream.peer_cred() {
+            Ok(peer) if (self.allow)(peer.uid()) => Ok(Some(stream)),
+            // A peer the kernel cannot name is not one that is allowed. Nothing was read from it, and nothing is said to it.
+            _ => {
+                metrics::counter!("http_unix_peers_refused_total").increment(1);
+                Ok(None)
+            }
+        }
+    }
+}
+
 /// Serves `app` on `listener` until `shutdown` completes, then drains.
 ///
 /// # Errors
@@ -92,6 +135,22 @@ pub async fn serve(
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> io::Result<()> {
     serve_inner(listener, app, config, None, shutdown).await
+}
+
+/// Serves `app` on a Unix socket until `shutdown` completes, then drains: the loop of [`serve`], with its limits, for a
+/// socket that is a trust boundary of its own. A connection whose peer user `allow` refuses is closed at accept, before
+/// anything is read from it. The socket's own mode and directory are the caller's first line; this is the second.
+///
+/// # Errors
+/// Returns an error only for an unusable configuration.
+pub async fn serve_unix(
+    listener: UnixListener,
+    allow: impl Fn(u32) -> bool + Send + Sync + 'static,
+    app: Router,
+    config: ServerConfig,
+    shutdown: impl Future<Output = ()> + Send + 'static,
+) -> io::Result<()> {
+    serve_inner(CheckedUnix { listener, allow }, app, config, None, shutdown).await
 }
 
 /// Serves HTTP over native TLS with verified, optional client identities.
@@ -108,8 +167,8 @@ pub async fn serve_tls(
     serve_inner(listener, app, config, Some(tls), shutdown).await
 }
 
-async fn serve_inner(
-    listener: TcpListener,
+async fn serve_inner<A: Acceptor + Send + Sync>(
+    listener: A,
     app: Router,
     config: ServerConfig,
     tls: Option<HttpTlsConfig>,
@@ -135,7 +194,9 @@ async fn serve_inner(
         };
         let stream = tokio::select! {
             accepted = listener.accept() => match accepted {
-                Ok((stream, _peer)) => stream,
+                Ok(Some(stream)) => stream,
+                // refused at accept: the place it would have held is free again
+                Ok(None) => continue,
                 Err(error) => {
                     tracing::warn!(%error, "accept failed; retrying");
                     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -144,8 +205,6 @@ async fn serve_inner(
             },
             () = &mut shutdown => break,
         };
-        // Small responses should not wait for Nagle; failure to set it is harmless.
-        let _ = stream.set_nodelay(true);
         if let Some(tls) = tls.clone() {
             let app = app.clone();
             let mut stop = stop_rx.clone();

@@ -20,6 +20,11 @@ pub enum ExecutionError {
         status: StepStatus,
         event: &'static str,
     },
+    /// An operator asked for another attempt of a step that waits for a decision because its
+    /// last outcome is unknown. Nobody may repeat it, whatever their role; a person settles it
+    /// first (feature 037). Committed v0.1/v0.2 retries still replay: this is a command refusal.
+    #[error("execution instance '{0:?}': its last outcome is unknown and must be settled first")]
+    OutcomeUnresolved(ExecutionInstanceId),
     #[error("execution instance '{instance:?}' is {status}, which does not allow '{event}'")]
     IllegalInstanceTransition {
         instance: ExecutionInstanceId,
@@ -40,6 +45,10 @@ pub enum ExecutionError {
     InvalidFailureCode(String),
     #[error("invalid correlation key")]
     InvalidCorrelationKey,
+    /// A valid external event does not match this exact wait's type/key/received-time window.
+    /// No event values are retained in the error.
+    #[error("event does not match execution instance '{instance:?}'")]
+    EventNotMatching { instance: ExecutionInstanceId },
     /// The run is paused, stopping or finished, so no new attempt may start.
     #[error("the run is {0} and does not accept new work")]
     RunNotRunnable(RunStatus),

@@ -1,0 +1,13 @@
+{
+  "command": [
+    "python3",
+    "scripts/check-architecture.py"
+  ],
+  "exit_code": 0,
+  "seconds": 0.61,
+  "wall_seconds": 0.61,
+  "wall_minus_monotonic_seconds": -0.0,
+  "started_utc": "2026-10-27T22:35:59.535427+00:00",
+  "finished_utc": "2026-10-27T22:36:00.141275+00:00",
+  "log": "quota-final-architecture.txt"
+}

@@ -9,7 +9,8 @@
 //! leave a scope locked.
 //!
 //! Resource creation scopes lock namespace before tenant. Activity admission has a separate policy
-//! hierarchy (shared tenant, shared namespace, exact activity), with activities visited in name
+//! hierarchy (shared tenant, shared namespace, the activity's shared fence, then its exclusive count
+//! lock when the limit is between 1 and the maximum), with activities visited in name
 //! order and administrative edits exclusively fencing their changed level.
 
 use crate::pool::BeginSafely;
@@ -105,17 +106,23 @@ async fn iteration_policy_change(
     Ok(())
 }
 
-/// Takes shared policy fences followed by the activity lock for the rest of the transaction.
-/// Callers acquiring several activities must visit them in activity-name order.
-async fn lock_activity(
+/// The fence of one activity's limit: claims share it, a change of the activity's override holds it
+/// exclusively. Callers visiting several activities must take them in activity-name order.
+async fn activity_fence(
     conn: &mut PgConnection,
     tenant: TenantId,
     namespace: NamespaceId,
     activity: &ActivityName,
+    exclusive: bool,
 ) -> Result<(), StoreError> {
     activity_policy_lock(conn, tenant, None, false).await?;
     activity_policy_lock(conn, tenant, Some(namespace), false).await?;
-    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+    let sql = if exclusive {
+        "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))"
+    } else {
+        "SELECT pg_advisory_xact_lock_shared(hashtextextended($1, 0))"
+    };
+    sqlx::query(sql)
         .bind(format!(
             "activity-quota:{tenant}:{namespace}:{}",
             activity.as_str()
@@ -126,9 +133,33 @@ async fn lock_activity(
     Ok(())
 }
 
+/// Serialises the claims that count one activity's leases. Taken after [`activity_fence`], and only
+/// while the activity's effective limit can be reached.
+async fn activity_count_lock(
+    conn: &mut PgConnection,
+    tenant: TenantId,
+    namespace: NamespaceId,
+    activity: &ActivityName,
+) -> Result<(), StoreError> {
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+        .bind(format!(
+            "activity-count:{tenant}:{namespace}:{}",
+            activity.as_str()
+        ))
+        .execute(conn)
+        .await
+        .map_err(store_error)?;
+    Ok(())
+}
+
 /// Reserves one concurrency place for an activity until `conn` commits or rolls back.
 ///
-/// The lock key includes every tenant-owned dimension. Counting only unexpired held leases keeps a
+/// Every claim shares the activity's fence, so the limit it reads is the one every other claim in
+/// flight reads: a policy change waits for all of them. A limit of [`quota::MAX_LIMIT`] (the default)
+/// cannot be reached, so its claims neither count nor wait for each other. Any lower limit is exact:
+/// its claims count under the activity's count lock, one at a time, until they commit.
+///
+/// The lock keys include every tenant-owned dimension. Counting only unexpired held leases keeps a
 /// crashed worker from consuming quota beyond its lease, while the run lock still fences reclamation.
 pub(crate) async fn activity_admitted(
     conn: &mut PgConnection,
@@ -136,7 +167,7 @@ pub(crate) async fn activity_admitted(
     namespace: NamespaceId,
     activity: &ActivityName,
 ) -> Result<bool, StoreError> {
-    lock_activity(conn, tenant, namespace, activity).await?;
+    activity_fence(conn, tenant, namespace, activity, false).await?;
     let limit: i64 = sqlx::query_scalar(
         "SELECT least( \
              coalesce( \
@@ -162,6 +193,10 @@ pub(crate) async fn activity_admitted(
     if limit <= 0 {
         return Ok(false);
     }
+    if u64::try_from(limit).unwrap_or(u64::MAX) >= quota::MAX_LIMIT {
+        return Ok(true);
+    }
+    activity_count_lock(conn, tenant, namespace, activity).await?;
     let used: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM steps \
          WHERE tenant_id = $1 AND namespace_id = $2 AND activity = $3 \
@@ -263,6 +298,26 @@ pub(crate) async fn lock_secrets(
     namespace: NamespaceId,
 ) -> Result<(), StoreError> {
     lock(conn, QuotaResource::Secrets, tenant, Some(namespace)).await
+}
+
+/// Shares the lock of the secrets of one namespace for the rest of the transaction: for a reader that
+/// only needs the order of [`lock_secrets`] (this lock, then the rows of the authority) and to be
+/// waited for by whoever changes the catalog. Readers do not wait for each other. A transaction that
+/// holds it must not ask for [`lock_secrets`] afterwards: two of them would wait for each other.
+pub(crate) async fn share_secrets_lock(
+    conn: &mut PgConnection,
+    tenant: TenantId,
+    namespace: NamespaceId,
+) -> Result<(), StoreError> {
+    sqlx::query("SELECT pg_advisory_xact_lock_shared(hashtextextended($1, 0))")
+        .bind(format!(
+            "quota:{}:{tenant}:{namespace}",
+            QuotaResource::Secrets
+        ))
+        .execute(conn)
+        .await
+        .map_err(store_error)?;
+    Ok(())
 }
 
 /// Takes the lock of the webhook endpoints of one namespace for the rest of the transaction.
@@ -367,6 +422,71 @@ pub(crate) async fn ensure_room_for_connector(
     judge(QuotaResource::Connectors, count, limit)
 }
 
+/// Takes the lock of the schedules of one namespace for the rest of the transaction.
+pub(crate) async fn lock_schedules(
+    conn: &mut PgConnection,
+    tenant: TenantId,
+    namespace: NamespaceId,
+) -> Result<(), StoreError> {
+    lock(conn, QuotaResource::Schedules, tenant, Some(namespace)).await
+}
+
+/// A new schedule fits in its namespace: active and paused ones count, deleted ones do not. The
+/// caller holds [`lock_schedules`].
+pub(crate) async fn ensure_room_for_schedule(
+    conn: &mut PgConnection,
+    tenant: TenantId,
+    namespace: NamespaceId,
+    limit: u64,
+) -> Result<(), StoreError> {
+    let count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM schedules \
+         WHERE tenant_id = $1 AND namespace_id = $2 AND state <> 'DELETED'",
+    )
+    .bind(tenant.as_uuid())
+    .bind(namespace.as_uuid())
+    .fetch_one(&mut *conn)
+    .await
+    .map_err(store_error)?;
+    judge(QuotaResource::Schedules, count, limit)
+}
+
+/// Takes the lock of the backfills of one namespace for the rest of the transaction.
+pub(crate) async fn lock_backfills(
+    conn: &mut PgConnection,
+    tenant: TenantId,
+    namespace: NamespaceId,
+) -> Result<(), StoreError> {
+    lock(
+        conn,
+        QuotaResource::ScheduleBackfills,
+        tenant,
+        Some(namespace),
+    )
+    .await
+}
+
+/// A new backfill fits in its namespace: the ones still active count. The caller holds
+/// [`lock_backfills`].
+pub(crate) async fn ensure_room_for_backfill(
+    conn: &mut PgConnection,
+    tenant: TenantId,
+    namespace: NamespaceId,
+    limit: u64,
+) -> Result<(), StoreError> {
+    let count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM schedule_backfills b \
+         JOIN schedules s ON s.tenant_id = b.tenant_id AND s.id = b.schedule_id \
+         WHERE b.tenant_id = $1 AND s.namespace_id = $2 AND b.state IN ('PENDING', 'RUNNING')",
+    )
+    .bind(tenant.as_uuid())
+    .bind(namespace.as_uuid())
+    .fetch_one(&mut *conn)
+    .await
+    .map_err(store_error)?;
+    judge(QuotaResource::ScheduleBackfills, count, limit)
+}
+
 /// Takes the lock of the scripts of one namespace for the rest of the transaction.
 pub(crate) async fn lock_scripts(
     conn: &mut PgConnection,
@@ -451,7 +571,7 @@ pub(crate) async fn ensure_room_for_secret(
     judge(QuotaResource::Secrets, count, limit)
 }
 
-async fn effective(
+pub(crate) async fn effective(
     pool: &PgPool,
     tenant: TenantId,
     namespace: Option<NamespaceId>,
@@ -607,7 +727,7 @@ impl QuotaStore for PgRunStore {
         let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
         // A completed change governs every claim that begins its quota decision afterwards. A
         // claim already holding this lock may finish before a lower limit takes effect.
-        lock_activity(&mut tx, tenant, namespace, activity).await?;
+        activity_fence(&mut tx, tenant, namespace, activity, true).await?;
         match value {
             Some(value) => {
                 sqlx::query(
@@ -1050,6 +1170,23 @@ impl QuotaStore for PgRunStore {
             QuotaResource::SecretProviderOperations => sqlx::query_scalar(
                 "SELECT count(*) FROM secret_provider_operations WHERE tenant_id=$1 AND namespace_id=$2 AND state='pending'")
                 .bind(tenant.as_uuid()).bind(namespace).fetch_one(&self.pool).await,
+            QuotaResource::Schedules => sqlx::query_scalar(
+                "SELECT count(*) FROM schedules \
+                 WHERE tenant_id = $1 AND namespace_id = $2 AND state <> 'DELETED'",
+            )
+            .bind(tenant.as_uuid())
+            .bind(namespace)
+            .fetch_one(&self.pool)
+            .await,
+            QuotaResource::ScheduleBackfills => sqlx::query_scalar(
+                "SELECT count(*) FROM schedule_backfills b \
+                 JOIN schedules s ON s.tenant_id = b.tenant_id AND s.id = b.schedule_id \
+                 WHERE b.tenant_id = $1 AND s.namespace_id = $2 AND b.state IN ('PENDING', 'RUNNING')",
+            )
+            .bind(tenant.as_uuid())
+            .bind(namespace)
+            .fetch_one(&self.pool)
+            .await,
             QuotaResource::ApiRequestsPerSecond
             | QuotaResource::EventsPerSecond
             | QuotaResource::EventRetentionSeconds
@@ -1087,4 +1224,34 @@ fn stored_limits(rows: Vec<(String, i64)>) -> Result<Vec<StoredLimit>, StoreErro
             })
         })
         .collect()
+}
+
+#[cfg(test)]
+mod secrets_lock_rule {
+    //! A transaction that shares the secrets lock must not ask for it exclusively afterwards: two of
+    //! them would deadlock. The rule holds while the shared lock has one caller, the authority check
+    //! of ordinary workers, and the scoped path, which runs that check, never takes the exclusive one.
+
+    #[test]
+    fn the_shared_secrets_lock_has_one_caller_and_the_scoped_path_never_upgrades() {
+        let execution = include_str!("execution.rs");
+        let path = include_str!("execution/path.rs");
+        let database = include_str!("execution/database.rs");
+        assert_eq!(execution.matches("share_secrets_lock(").count(), 1);
+        assert!(
+            execution
+                .split("async fn current_worker_authorized(")
+                .nth(1)
+                .is_some_and(|body| body[..body.find("\n}\n").unwrap_or(body.len())]
+                    .contains("share_secrets_lock(")),
+            "the one caller is the authority check of ordinary workers"
+        );
+        assert_eq!(path.matches("share_secrets_lock(").count(), 0);
+        assert_eq!(database.matches("share_secrets_lock(").count(), 0);
+        assert_eq!(
+            path.matches("lock_secrets(").count(),
+            0,
+            "a scoped transaction runs the shared check and must not take the exclusive lock"
+        );
+    }
 }

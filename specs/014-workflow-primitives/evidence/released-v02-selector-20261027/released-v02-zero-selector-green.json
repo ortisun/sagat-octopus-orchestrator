@@ -1,0 +1,13 @@
+{
+  "command": [
+    "python3",
+    "/tmp/sagat-v03-20261026/zero-selector-control.py"
+  ],
+  "exit_code": 0,
+  "seconds": 2.82,
+  "wall_seconds": 2.82,
+  "wall_minus_monotonic_seconds": -0.0,
+  "started_utc": "2026-10-27T13:30:31.741997+00:00",
+  "finished_utc": "2026-10-27T13:30:34.566332+00:00",
+  "log": "released-v02-zero-selector-green.txt"
+}

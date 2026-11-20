@@ -1,0 +1,19 @@
+{
+  "command": [
+    "cargo",
+    "clippy",
+    "--workspace",
+    "--all-targets",
+    "--locked",
+    "--",
+    "-D",
+    "warnings"
+  ],
+  "exit_code": 0,
+  "seconds": 73.87,
+  "wall_seconds": 73.87,
+  "wall_minus_monotonic_seconds": 0.0,
+  "started_utc": "2026-10-27T21:34:50.234958+00:00",
+  "finished_utc": "2026-10-27T21:36:04.107676+00:00",
+  "log": "public-scoped-events-workspace-clippy-final.txt"
+}

@@ -12,6 +12,70 @@ mod ad_hoc;
 mod database;
 mod path;
 mod path_read;
+mod scoped_events;
+mod worker_capacity;
+use scoped_events::EventWaitReadState;
+pub(crate) use scoped_events::validate_scoped_event_identity;
+
+// A deterministic control owns no worker, timer, event, child, approval or output capability.
+// Reuse the same physical-row predicate in snapshot readers and guarded update writers.
+macro_rules! scoped_suspension_metadata_empty {
+    () => {
+        "s.activity IS NULL AND s.secrets IS NULL \
+         AND s.ready_at IS NULL AND s.last_hinted_at IS NULL AND s.hint_count=0 \
+         AND s.lease_token_hash IS NULL AND s.lease_expires_at IS NULL \
+         AND s.attempt_deadline_at IS NULL AND s.leased_by IS NULL \
+         AND s.reported_lease_token_hash IS NULL \
+         AND s.child_run_id IS NULL AND NOT s.child_started AND s.child_input IS NULL \
+         AND s.approval_request_id IS NULL AND s.kind='FORWARD'"
+    };
+}
+macro_rules! scoped_scheduler_metadata_empty {
+    () => {
+        concat!(
+            $crate::execution::scoped_suspension_metadata_empty!(),
+            " AND s.output_digest IS NULL AND s.event_type IS NULL AND s.correlation_key IS NULL \
+         AND s.event_since IS NULL AND s.event_scanned_at IS NULL"
+        )
+    };
+}
+macro_rules! scoped_control_metadata_empty {
+    () => {
+        concat!(
+            $crate::execution::scoped_scheduler_metadata_empty!(),
+            " AND s.waiting_kind IS NULL AND s.due_at IS NULL"
+        )
+    };
+}
+macro_rules! scoped_timer_metadata_valid {
+    () => { concat!($crate::execution::scoped_scheduler_metadata_empty!(),
+        " AND s.attempt=0 AND s.generation=0 AND NOT s.cancel_requested AND NOT s.timed_out \
+          AND s.next_attempt_at IS NULL AND s.condition IS NULL AND s.switch_case_id IS NULL \
+          AND s.failure_code IS NULL \
+          AND ((s.status='WAITING' AND NOT s.routed AND s.waiting_kind IS NOT DISTINCT FROM 'TIMER' AND s.due_at IS NOT NULL) \
+            OR (s.status='PENDING' AND NOT s.routed AND s.waiting_kind IS NULL AND s.due_at IS NULL) \
+            OR (s.status='SUCCEEDED' AND s.waiting_kind IS NULL AND s.due_at IS NULL) \
+            OR (s.status='CANCELLED' AND s.routed AND s.waiting_kind IS NULL AND s.due_at IS NULL))") };
+}
+macro_rules! scoped_event_metadata_valid {
+    () => { concat!($crate::execution::scoped_suspension_metadata_empty!(),
+        " AND s.attempt=0 AND s.generation=0 AND NOT s.cancel_requested \
+          AND s.next_attempt_at IS NULL AND s.condition IS NULL AND s.switch_case_id IS NULL \
+          AND ((s.status='WAITING' AND s.output_digest IS NULL AND NOT s.routed AND NOT s.timed_out AND s.failure_code IS NULL \
+                AND s.waiting_kind IS NOT DISTINCT FROM 'EVENT' AND s.due_at IS NOT NULL \
+                AND s.event_type IS NOT NULL AND s.correlation_key IS NOT NULL AND s.event_since IS NOT NULL) \
+            OR (s.waiting_kind IS NULL AND s.due_at IS NULL AND s.event_type IS NULL \
+                AND s.correlation_key IS NULL AND s.event_since IS NULL AND s.event_scanned_at IS NULL \
+                AND ((s.status='PENDING' AND s.output_digest IS NULL AND NOT s.routed AND NOT s.timed_out AND s.failure_code IS NULL) \
+                  OR (s.status='SUCCEEDED' AND s.failure_code IS NULL AND ((s.timed_out AND s.output_digest IS NULL) OR (NOT s.timed_out AND s.output_digest IS NOT NULL))) \
+                  OR (s.status='FAILED' AND s.output_digest IS NULL AND NOT s.timed_out AND (s.failure_code IS NOT DISTINCT FROM 'EXPRESSION_ERROR' OR s.failure_code IS NOT DISTINCT FROM 'WAIT_TIMED_OUT')) \
+                  OR (s.status='CANCELLED' AND s.output_digest IS NULL AND s.routed AND NOT s.timed_out AND s.failure_code IS NULL))))") };
+}
+pub(crate) use scoped_control_metadata_empty;
+pub(crate) use scoped_event_metadata_valid;
+pub(crate) use scoped_scheduler_metadata_empty;
+pub(crate) use scoped_suspension_metadata_empty;
+pub(crate) use scoped_timer_metadata_valid;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -73,6 +137,11 @@ pub struct PgRunStore {
     pub(crate) definitions: PgDefinitionStore,
     breaker: BreakerPolicy,
     pub(crate) scoped_worker_protocol: bool,
+    /// Reads the projections a definition excludes and refuses a run that has any, for a test run that
+    /// checks the exclusion against everything the suites do. Off: such a projection is not read.
+    verify_skipped_loads: bool,
+    /// The deployment's `lake.enabled` (feature 035): whether a run may carry an Iceberg write. Off unless set.
+    pub(crate) lake_enabled: bool,
 }
 
 impl PgRunStore {
@@ -85,7 +154,25 @@ impl PgRunStore {
             cache,
             breaker: BreakerPolicy::default(),
             scoped_worker_protocol: false,
+            verify_skipped_loads: false,
+            lake_enabled: false,
         }
+    }
+
+    /// Makes every command check that a projection its definition excludes is in fact empty. For
+    /// test runs: it costs a statement per command and refuses a run that fails it.
+    #[must_use]
+    pub const fn with_skipped_load_verification(mut self, verify: bool) -> Self {
+        self.verify_skipped_loads = verify;
+        self
+    }
+
+    /// Lets a run carry an Apache Iceberg write: the deployment's `lake.enabled`, off by default (D035-059, D035-137).
+    /// Publication has its own switch; a process that admits runs sets this one from the same setting.
+    #[must_use]
+    pub const fn with_lake_enabled(mut self, enabled: bool) -> Self {
+        self.lake_enabled = enabled;
+        self
     }
 
     /// When the compensations of a provider operation stop being leased (FR-003-003).
@@ -151,8 +238,10 @@ impl PgRunStore {
         if let Some(def) = self.cache.get(version) {
             return Ok(def);
         }
-        let document: Vec<u8> = sqlx::query_scalar(
-            "SELECT document FROM workflow_versions WHERE tenant_id = $1 AND id = $2",
+        // Whether the workflow is private is a row of the store (`workflows.internal`, immutable), and it alone decides which entry restores
+        // the document: nothing in the document does (ADR-0080).
+        let (document, internal): (Vec<u8>, bool) = sqlx::query_as(
+            "SELECT v.document, w.internal FROM workflow_versions v JOIN workflows w ON w.tenant_id = v.tenant_id AND w.id = v.workflow_id WHERE v.tenant_id = $1 AND v.id = $2",
         )
         .bind(tenant.as_uuid())
         .bind(version.as_uuid())
@@ -160,29 +249,51 @@ impl PgRunStore {
         .await
         .map_err(store_error)?
         .ok_or_else(|| corrupt("workflow version reference"))?;
-        self.cache
-            .get_or_parse(version, &document)
-            .map_err(|error| {
-                tracing::error!(%error, %version, "a stored workflow version no longer parses");
-                StoreError::UnreadableDefinition
-            })
+        if internal {
+            self.cache.get_or_parse_private(version, &document)
+        } else {
+            self.cache.get_or_parse(version, &document)
+        }
+        .map_err(|error| {
+            tracing::error!(%error, %version, "a stored workflow version no longer parses");
+            StoreError::UnreadableDefinition
+        })
     }
 
     pub(crate) async fn begin_in_transaction(
         &self,
-        mut tx: Transaction<'static, Postgres>,
+        tx: Transaction<'static, Postgres>,
         tenant: TenantId,
         run: RunId,
         lock: Lock,
         chain_lock: Option<LockedChainHead>,
     ) -> Result<Option<PgRunTx>, StoreError> {
         let row = match lock {
-            Lock::Wait => sqlx::query(RUN_FOR_UPDATE)
+            Lock::Wait => RunRow::Wait,
+            Lock::SkipLocked => RunRow::SkipLocked,
+        };
+        self.begin_row(tx, tenant, run, row, chain_lock).await
+    }
+
+    async fn begin_row(
+        &self,
+        mut tx: Transaction<'static, Postgres>,
+        tenant: TenantId,
+        run: RunId,
+        row: RunRow<'_>,
+        chain_lock: Option<LockedChainHead>,
+    ) -> Result<Option<PgRunTx>, StoreError> {
+        let row = match row {
+            RunRow::Wait => sqlx::query(RUN_FOR_UPDATE)
                 .bind(tenant.as_uuid())
                 .bind(run.as_uuid()),
-            Lock::SkipLocked => sqlx::query(RUN_FOR_UPDATE_SKIP_LOCKED)
+            RunRow::SkipLocked => sqlx::query(RUN_FOR_UPDATE_SKIP_LOCKED)
                 .bind(tenant.as_uuid())
                 .bind(run.as_uuid()),
+            RunRow::Claim(activities) => sqlx::query(RUN_FOR_CLAIM)
+                .bind(tenant.as_uuid())
+                .bind(run.as_uuid())
+                .bind(activities),
         }
         .fetch_optional(&mut *tx)
         .await
@@ -200,12 +311,14 @@ impl PgRunStore {
             .await
             .map_err(store_error)?;
         let input_digest: Vec<u8> = col(&row, "input_digest")?;
-        let step_rows = sqlx::query(
+        let step_rows = sqlx::query(concat!(
             "SELECT node, instance_path_nodes, instance_path_indices, status, attempt, generation, cancel_requested, routed, condition, switch_case_id, \
-                    timed_out, failure_code, next_attempt_at, waiting_kind, due_at, correlation_key, \
-                    child_run_id, approval_request_id \
-             FROM steps WHERE tenant_id = $1 AND run_id = $2",
-        )
+                    timed_out, failure_code, next_attempt_at, waiting_kind, due_at, correlation_key, event_type, event_since, \
+                    child_run_id, approval_request_id, s.namespace_id, s.step_id, s.node_kind AS stored_node_kind, (",
+            scoped_control_metadata_empty!(),
+            ") AS control_metadata_empty, (",scoped_timer_metadata_valid!(),") AS timer_metadata_valid, (",scoped_event_metadata_valid!(),") AS event_metadata_valid \
+             FROM steps s WHERE tenant_id = $1 AND run_id = $2",
+        ))
         .bind(tenant.as_uuid())
         .bind(run.as_uuid())
         .fetch_all(&mut *tx)
@@ -213,15 +326,29 @@ impl PgRunStore {
         .map_err(store_error)?;
         let mut steps = BTreeMap::new();
         let mut stored = BTreeSet::new();
+        let mut stored_kinds = BTreeMap::new();
         for row in &step_rows {
             let node: String = col(row, "node")?;
             let node = NodeId::parse_stored(&node).map_err(|_| corrupt("step node"))?;
             let path = step_instance_path(row)?;
             let instance = ExecutionInstanceId::in_path(path, node);
             stored.insert(instance.clone());
+            stored_kinds.insert(instance.clone(), col::<String>(row, "stored_node_kind")?);
             steps.insert(instance, step_state(row)?);
         }
-        let sagas = load_sagas(&mut tx, tenant, run).await?;
+        // The pinned definition says which kinds of state the run can have; the others are not read.
+        let definition = self
+            .definition(&mut tx, tenant, record.info.version_id)
+            .await?;
+        let kinds = definition.projected_state();
+        if self.verify_skipped_loads {
+            verify_excluded_projections(&mut tx, tenant, run, kinds).await?;
+        }
+        let sagas = if kinds.sagas {
+            load_sagas(&mut tx, tenant, run).await?
+        } else {
+            BTreeMap::new()
+        };
         let stop = match record.stop_reason {
             None => None,
             Some(reason) => Some((
@@ -241,24 +368,74 @@ impl PgRunStore {
             sagas,
             record.version,
         );
-        load_collections(&mut tx, tenant, run, &mut state).await?;
-        load_loops(&mut tx, tenant, run, &mut state).await?;
-        load_scope_sagas(&mut tx, tenant, run, &mut state).await?;
+        if kinds.collections {
+            load_collections(&mut tx, tenant, run, &definition, &mut state).await?;
+        }
+        if kinds.loops {
+            load_loops(&mut tx, tenant, run, &mut state).await?;
+        }
+        if kinds.scope_sagas() {
+            load_scope_sagas(&mut tx, tenant, run, &mut state).await?;
+        }
         load_chain(&mut tx, tenant, run, &mut state).await?;
-        let definition = self
-            .definition(&mut tx, tenant, record.info.version_id)
-            .await?;
+        for row in &step_rows {
+            let node = NodeId::parse_stored(&col::<String>(row, "node")?)
+                .map_err(|_| corrupt("step node"))?;
+            let instance = ExecutionInstanceId::in_path(step_instance_path(row)?, node);
+            if !instance.path().is_root() {
+                let step = state
+                    .instance(&instance)
+                    .ok_or_else(|| corrupt("scoped step identity"))?;
+                validate_scoped_control_row(definition.node_for_instance(&instance), step, row)?;
+                validate_scoped_event_identity(
+                    definition.node_for_instance(&instance),
+                    record.info.namespace_id,
+                    instance_step_id(record.info.version_id, run, &instance),
+                    row,
+                )?;
+            }
+        }
+        let timer_read_states = state
+            .instances()
+            .filter(|(instance, _)| {
+                !instance.path().is_root()
+                    && matches!(
+                        definition.node_for_instance(instance).map(Node::kind),
+                        Some(NodeKind::Timer { .. })
+                    )
+            })
+            .map(|(instance, step)| (instance.clone(), TimerReadState::from_step(step)))
+            .collect();
+        let event_wait_read_states = state
+            .instances()
+            .filter(|(instance, _)| {
+                !instance.path().is_root()
+                    && matches!(
+                        definition.node_for_instance(instance).map(Node::kind),
+                        Some(NodeKind::WaitEvent { .. })
+                    )
+            })
+            .map(|(instance, step)| (instance.clone(), EventWaitReadState::from_step(step)))
+            .collect();
         Ok(Some(PgRunTx {
             tx,
             info: record.info,
             now,
+            own_scheduler_time: None,
+            scoped_event_delivery: None,
+            scoped_event_delivery_attempted: false,
+            scoped_event_persistence_failed: false,
             def: definition,
             persisted: state.version(),
             state,
             data: None,
             input_digest,
             stored,
+            stored_kinds,
+            timer_read_states,
+            event_wait_read_states,
             breaker: self.breaker,
+            lake_enabled: self.lake_enabled,
             script_retention: BTreeMap::new(),
             signals: Vec::new(),
             chain_lock,
@@ -336,12 +513,14 @@ impl PgRunStore {
             .ok_or(StoreError::MissingReference)?;
         let info = run_record(&row)?.info;
         let definition = self.definition(conn, tenant, info.version_id).await?;
-        if definition.nodes().any(|n| n.database_operation().is_some()) {
+        if definition.nodes().any(|n| n.managed_kind().is_some()) {
             let mut actors = crate::database::run_actors(conn, &info).await?;
+            // a schedule that replays the key of a time stands on the member that authorized it
+            let subject = crate::database::authority_of(conn, tenant, subject).await?;
             if subject != sagat_domain::identity::Subject::engine().as_str()
-                && !actors.iter().any(|s| s == subject)
+                && !actors.contains(&subject)
             {
-                actors.push(subject.to_owned());
+                actors.push(subject);
             }
             crate::database::admit_definition(
                 conn,
@@ -351,6 +530,7 @@ impl PgRunStore {
                 &definition,
                 Some(run),
                 Some(&info),
+                self.lake_enabled,
             )
             .await?;
         }
@@ -369,6 +549,16 @@ impl PgRunStore {
             .map_err(|e| e.to_string())?
             .ok_or("the run does not exist")?;
         let stored = stored_tx.state.clone();
+        // The projection above was read without the kinds the definition excludes. Here that
+        // exclusion is part of what is verified: a row of such a kind is a difference too.
+        verify_excluded_projections(
+            &mut stored_tx.tx,
+            tenant,
+            run,
+            stored_tx.def.projected_state(),
+        )
+        .await
+        .map_err(|e| e.to_string())?;
         let rows = sqlx::query(
             "SELECT seq, event_type, node, detail, instance_path_nodes, instance_path_indices \
              FROM run_events \
@@ -720,9 +910,15 @@ pub struct PgPathExecutionTx {
     tx: Transaction<'static, Postgres>,
     snapshot: PathExecutionSnapshot,
     now: OffsetDateTime,
+    own_scheduler_time: Option<OffsetDateTime>,
+    scoped_event_delivery: Option<scoped_events::ScopedEventDelivery>,
+    scoped_event_delivery_attempted: bool,
+    scoped_event_persistence_failed: bool,
     breaker: BreakerPolicy,
     persisted: u64,
     stored: BTreeSet<ExecutionInstanceId>,
+    timer_read_states: BTreeMap<ExecutionInstanceId, TimerReadState>,
+    event_wait_read_states: BTreeMap<ExecutionInstanceId, EventWaitReadState>,
     signals: Vec<Signal>,
     script_retention: BTreeMap<ExecutionInstanceId, ScriptRetentionPins>,
 }
@@ -742,13 +938,51 @@ impl PgPathExecutionTx {
                 ExecutionInstanceId::in_path(snapshot.state.path().clone(), node.clone())
             })
             .collect();
+        let timer_read_states = snapshot
+            .state
+            .local_instances()
+            .filter_map(|(node, step)| {
+                let instance =
+                    ExecutionInstanceId::in_path(snapshot.state.path().clone(), node.clone());
+                matches!(
+                    snapshot
+                        .definition
+                        .node_for_instance(&instance)
+                        .map(Node::kind),
+                    Some(NodeKind::Timer { .. })
+                )
+                .then(|| (instance, TimerReadState::from_step(step)))
+            })
+            .collect();
+        let event_wait_read_states = snapshot
+            .state
+            .local_instances()
+            .filter_map(|(node, step)| {
+                let instance =
+                    ExecutionInstanceId::in_path(snapshot.state.path().clone(), node.clone());
+                matches!(
+                    snapshot
+                        .definition
+                        .node_for_instance(&instance)
+                        .map(Node::kind),
+                    Some(NodeKind::WaitEvent { .. })
+                )
+                .then(|| (instance, EventWaitReadState::from_step(step)))
+            })
+            .collect();
         Self {
             tx,
             snapshot,
             now,
+            own_scheduler_time: None,
+            scoped_event_delivery: None,
+            scoped_event_delivery_attempted: false,
+            scoped_event_persistence_failed: false,
             breaker,
             persisted,
             stored,
+            timer_read_states,
+            event_wait_read_states,
             signals: Vec::new(),
             script_retention: BTreeMap::new(),
         }
@@ -771,7 +1005,11 @@ async fn current_worker_authorized(
     namespace: NamespaceId,
     subject: &str,
 ) -> Result<bool, StoreError> {
-    crate::quotas::lock_secrets(tx, tenant, namespace).await?;
+    // Every report and scoped claim of an ordinary worker passes here. It reads its membership under
+    // the row lock a revocation waits for, and takes the namespace's secrets lock first only to keep
+    // the order of the catalog mutations. Shared: held exclusively it made one namespace's reports
+    // wait for each other until commit.
+    crate::quotas::share_secrets_lock(tx, tenant, namespace).await?;
     let role: Option<String> =
         sqlx::query_scalar("SELECT role FROM public.sagat_lock_memberships($1, ARRAY[$2::text])")
             .bind(tenant.as_uuid())
@@ -826,6 +1064,11 @@ impl RunStore for PgRunStore {
                     .await?;
                 return Ok(Applied::Replayed(existing));
             }
+            // The action of a schedule takes its fence and the schedule row before any other
+            // admission lock (ADR-0050 decision 7).
+            if let Some(schedule) = &new.schedule {
+                crate::schedules::lock_for_admission(&mut tx, tenant, schedule).await?;
+            }
             // Advance the rerun FK's stable identity guard before admission locks.
             // This grants no authority over the source run's business state (ADR-0039).
             if let Some(source) = new.info.rerun_of {
@@ -859,10 +1102,14 @@ impl RunStore for PgRunStore {
                 return Err(StoreError::MissingReference);
             }
             let version_document: Vec<u8> = col(&version_row, "document")?;
-            let declared_state = self
-                .cache
-                .declared_state_publication(&version_document)
-                .map_err(|error| {
+            // A retained definition is a private workflow's (`retain` just wrote it), and a private version is read by the private entry
+            // here as everywhere else (ADR-0080): the row decides, not the document.
+            let declared_state = if new.retained.is_some() {
+                self.cache.declared_state_publication_private(&version_document)
+            } else {
+                self.cache.declared_state_publication(&version_document)
+            }
+            .map_err(|error| {
                     tracing::error!(%error, version = %new.info.version_id, "stored declared state no longer validates");
                     StoreError::Internal {
                         detail: "stored declared state no longer validates".to_owned(),
@@ -920,11 +1167,17 @@ impl RunStore for PgRunStore {
                 let _ = tx.rollback().await;
                 return Err(error);
             }
-            let bindings = if new
-                .definition
-                .nodes()
-                .any(|n| n.database_operation().is_some())
-            {
+            // The subject a schedule acts for is looked at again where the run is admitted, under
+            // the lock of its membership: a revocation that has returned stops the run. A workflow
+            // with managed database steps takes the catalog first, as 017 does (ADR-0050 decision 7).
+            if let Some(schedule) = &new.schedule {
+                let database = crate::database::database_writes(&new.definition);
+                if database.is_some() {
+                    crate::quotas::lock_secrets(&mut tx, tenant, new.info.namespace_id).await?;
+                }
+                crate::schedules::recheck_authority(&mut tx, tenant, schedule, database).await?;
+            }
+            let bindings = if new.definition.nodes().any(|n| n.managed_kind().is_some()) {
                 let actors = crate::database::run_actors(&mut tx, &new.info).await?;
                 crate::database::admit_definition(
                     &mut tx,
@@ -934,6 +1187,7 @@ impl RunStore for PgRunStore {
                     &new.definition,
                     None,
                     Some(info),
+                    self.lake_enabled,
                 )
                 .await?
             } else {
@@ -949,6 +1203,29 @@ impl RunStore for PgRunStore {
             .await
             {
                 let _ = tx.rollback().await;
+                return Err(error);
+            }
+            // After admission (which holds the namespace's lock of secrets to the end of the transaction) and the quota lock of the
+            // namespace: see the function.
+            if info.origin == Some(sagat_application::runs::RunOrigin::ConnectionProbe)
+                && new
+                    .definition
+                    .nodes()
+                    .any(|n| n.lake_probe_target().is_some())
+                && let Err(error) =
+                    ad_hoc::ensure_no_probe_in_flight(&mut tx, info, &bindings).await
+            {
+                let _ = tx.rollback().await;
+                // A retry of the key that started the probe can reach this point while the first start still holds the lock (it did its
+                // replay lookup before that start committed): the probe in flight is then its own, and the key stands for that run
+                // and not for a conflict. A fresh transaction sees what the first one committed.
+                if matches!(error, StoreError::StateConflict(_))
+                    && let Some(existing) = self
+                        .replay_start(tenant, &new.info.started_by, &new.idempotency)
+                        .await?
+                {
+                    return Ok(Applied::Replayed(existing));
+                }
                 return Err(error);
             }
             // Admission locks precede payload uniqueness checks, as in evaluated handoff.
@@ -993,9 +1270,10 @@ impl RunStore for PgRunStore {
                 "INSERT INTO runs (id, tenant_id, namespace_id, workflow_id, workflow_version_id, \
                  status, run_version, paused, input_digest, correlation_id, started_by, trace_id, \
                  deadline_at, created_at, updated_at, parent_run_id, parent_node, cancel_policy, \
-                 depth, root_run_id, trace_parent_span, rerun_of, input_blob_id, origin) \
+                 depth, root_run_id, trace_parent_span, rerun_of, input_blob_id, origin, \
+                 schedule_id, schedule_nominal_at, schedule_action_kind, schedule_revision) \
                  VALUES ($1, $2, $3, $4, $5, 'RUNNING', 0, false, $6, $7, $8, $9, $10, $11, $11, \
-                         $12, $13, $14, $15, $16, $17, $18, $19, $20)",
+                         $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)",
             )
             .bind(info.run_id.as_uuid())
             .bind(tenant.as_uuid())
@@ -1017,9 +1295,20 @@ impl RunStore for PgRunStore {
             .bind(info.rerun_of.map(|r| r.as_uuid()))
             .bind(input_blob.map(sagat_domain::blobs::BlobId::as_uuid))
             .bind(info.origin.map(sagat_application::runs::RunOrigin::as_str))
+            .bind(new.schedule.as_ref().map(|s| s.schedule.as_uuid()))
+            .bind(new.schedule.as_ref().map(|s| s.nominal_at))
+            .bind(new.schedule.as_ref().map(|s| s.kind.as_str()))
+            .bind(
+                new.schedule
+                    .as_ref()
+                    .map(|s| i32::try_from(s.revision).unwrap_or(i32::MAX)),
+            )
             .execute(&mut *tx)
             .await
             .map_err(store_error)?;
+            if let Some(schedule) = &new.schedule {
+                crate::schedules::record_start(&mut tx, tenant, info.run_id, schedule, now).await?;
+            }
             capture_run_limits(
                 &mut tx,
                 tenant.as_uuid(),
@@ -1082,8 +1371,15 @@ impl RunStore for PgRunStore {
                 info.created_at = now;
                 return Ok(Applied::Done(PgRunTx {
                     tx,
+                    stored_kinds: BTreeMap::new(),
+                    timer_read_states: BTreeMap::new(),
+                    event_wait_read_states: BTreeMap::new(),
                     info,
                     now,
+                    own_scheduler_time: None,
+                    scoped_event_delivery: None,
+                    scoped_event_delivery_attempted: false,
+                    scoped_event_persistence_failed: false,
                     def: Arc::clone(&new.definition),
                     state: RunState::new(new.info.run_id),
                     persisted: 0,
@@ -1099,6 +1395,7 @@ impl RunStore for PgRunStore {
                     input_digest,
                     stored: BTreeSet::new(),
                     breaker: self.breaker,
+                    lake_enabled: self.lake_enabled,
                     script_retention: BTreeMap::new(),
                     signals: Vec::new(),
                     chain_lock: None,
@@ -1128,6 +1425,15 @@ impl RunStore for PgRunStore {
     ) -> Result<Option<sagat_application::runs::ConnectionProbe>, StoreError> {
         ad_hoc::latest_probe(self, tenant, namespace, name).await
     }
+    async fn is_lake_connection(
+        &self,
+        tenant: TenantId,
+        namespace: NamespaceId,
+        name: &Slug,
+        revision: Option<u32>,
+    ) -> Result<bool, StoreError> {
+        ad_hoc::is_lake_connection(self, tenant, namespace, name, revision).await
+    }
 
     async fn begin(
         &self,
@@ -1142,6 +1448,25 @@ impl RunStore for PgRunStore {
             RunChainLock::Contended => return Ok(None),
         };
         self.begin_in_transaction(tx, tenant, run, lock, chain_lock)
+            .await
+    }
+
+    async fn begin_claim(
+        &self,
+        tenant: TenantId,
+        run: RunId,
+        activities: &[String],
+    ) -> Result<Option<PgRunTx>, StoreError> {
+        let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
+        let chain_lock = match self
+            .lock_chain_for_run(&mut tx, tenant, run, Lock::SkipLocked)
+            .await?
+        {
+            RunChainLock::NotMember => None,
+            RunChainLock::Locked(chain) => Some(chain),
+            RunChainLock::Contended => return Ok(None),
+        };
+        self.begin_row(tx, tenant, run, RunRow::Claim(activities), chain_lock)
             .await
     }
 
@@ -1629,6 +1954,28 @@ const RUN_FOR_UPDATE: &str = run_columns_sql!(" FOR UPDATE");
 
 const RUN_FOR_UPDATE_SKIP_LOCKED: &str = run_columns_sql!(" FOR UPDATE SKIP LOCKED");
 
+/// How a run's row is read when it is opened: the lock modes of [`Lock`], and a worker's claim.
+enum RunRow<'a> {
+    Wait,
+    SkipLocked,
+    /// [`RUN_FOR_CLAIM`], with the activities the session serves.
+    Claim(&'a [String]),
+}
+
+/// The run of a candidate a poll read a moment ago, for a root claim: not locked by another
+/// transaction, and still with a ready root step of an activity the session serves (`$3`). A root
+/// claim leases nothing else: it takes only ready root activity steps whose activity is one the
+/// session advertised, and a step row's `activity` is the one the candidate scan matched it by. The
+/// condition only ever makes a claim give up on a run, as a lock held by another poller does, and a
+/// run it gives up on is found again by a later poll if such a step is ready then; what is leased is
+/// still decided from the step rows read under the lock.
+const RUN_FOR_CLAIM: &str = run_columns_sql!(
+    " AND EXISTS (SELECT 1 FROM steps s WHERE s.tenant_id = runs.tenant_id \
+        AND s.run_id = runs.id AND s.status = 'READY' \
+        AND cardinality(s.instance_path_nodes) = 0 AND s.activity = ANY($3::text[])) \
+        FOR UPDATE SKIP LOCKED"
+);
+
 /// The same read without a lock, for the bounded snapshot of a scope transition (D523).
 pub(crate) const RUN_SNAPSHOT: &str = run_columns_sql!("");
 
@@ -1729,7 +2076,7 @@ pub(crate) fn instance_path(
     Ok(path)
 }
 
-fn stored_path_parts(path: &InstancePath) -> (Vec<String>, Vec<i32>) {
+pub(crate) fn stored_path_parts(path: &InstancePath) -> (Vec<String>, Vec<i32>) {
     path.segments()
         .iter()
         .map(|segment| {
@@ -1879,16 +2226,142 @@ fn switch_selection(row: &PgRow) -> Result<Option<SwitchSelection>, StoreError> 
     }
 }
 
+fn stored_switch_case_id(step: &StepState) -> Option<&str> {
+    step.switch_selection().map(|selection| match selection {
+        SwitchSelection::Case(id) => id.as_str(),
+        SwitchSelection::Default => "",
+    })
+}
+
+pub(crate) fn validate_scoped_control_projection(
+    node: Option<&Node>,
+    step: &StepState,
+) -> Result<(), StoreError> {
+    let valid = match node.map(Node::kind) {
+        Some(NodeKind::Timer { .. }) => step.is_valid_scoped_timer(),
+        Some(NodeKind::WaitEvent { .. }) => {
+            node.is_some_and(|node| step.is_valid_scoped_event_wait(node))
+        }
+        _ if matches!(
+            step.waiting_on(),
+            Some(WaitingOn::Timer { .. } | WaitingOn::Event { .. })
+        ) =>
+        {
+            false
+        }
+        _ => node.map_or_else(
+            || step.condition().is_none() && step.switch_selection().is_none(),
+            |node| step.is_valid_scoped_control(node),
+        ),
+    };
+    if !valid {
+        return Err(corrupt("scoped control projection"));
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_scoped_control_row(
+    node: Option<&Node>,
+    step: &StepState,
+    row: &PgRow,
+) -> Result<(), StoreError> {
+    validate_scoped_control_projection(node, step)?;
+    if let Some(node) = node
+        && matches!(node.kind(), NodeKind::WaitEvent { .. })
+    {
+        scoped_events::validate_event_row(node, step, row)?;
+    }
+    if let Some(node) = node
+        && matches!(node.kind(), NodeKind::Timer { .. })
+        && (!col::<bool>(row, "timer_metadata_valid")?
+            || col::<String>(row, "stored_node_kind")? != "timer")
+    {
+        return Err(corrupt("scoped timer physical metadata"));
+    }
+    if let Some(node) = node
+        && matches!(
+            node.kind(),
+            NodeKind::Condition { .. } | NodeKind::Switch { .. }
+        )
+        && (!col::<bool>(row, "control_metadata_empty")?
+            || col::<String>(row, "stored_node_kind")? != node.kind().label())
+    {
+        return Err(corrupt("scoped control physical metadata"));
+    }
+    Ok(())
+}
+
+/// The varying fields of a validated timer row, retained until its guarded write.
+/// All other timer lifecycle fields are fixed by `scoped_timer_metadata_valid!`.
+#[derive(Clone, Copy)]
+struct TimerReadState {
+    status: StepStatus,
+    routed: bool,
+    due_at: Option<OffsetDateTime>,
+}
+
+impl TimerReadState {
+    fn from_step(step: &StepState) -> Self {
+        Self {
+            status: step.status(),
+            routed: step.routed(),
+            due_at: match step.waiting_on() {
+                Some(WaitingOn::Timer { due_at }) => Some(*due_at),
+                _ => None,
+            },
+        }
+    }
+}
+
 struct RestoredCollectionRows {
     iterations: Vec<CollectionIterationRestore>,
     completed_count: i32,
     active_count: i32,
 }
 
+/// Dispatch is a projection of the pinned entry kind, never an independent worker capability.
+pub(crate) fn validate_collection_entry_dispatch(
+    definition: &WorkflowDefinition,
+    entry: &ExecutionInstanceId,
+    row: &PgRow,
+) -> Result<(), StoreError> {
+    let dispatch: String = col(row, "entry_dispatch")?;
+    let activity: Option<String> = col(row, "activity")?;
+    let outbox: Option<Uuid> = col(row, "outbox_id")?;
+    let journal: Option<String> = col(row, "journal_dispatch")?;
+    let valid = match definition.node_for_instance(entry).map(Node::kind) {
+        Some(NodeKind::Activity {
+            activity: expected, ..
+        }) => {
+            dispatch == "ACTIVITY"
+                && activity.as_deref() == Some(expected.as_str())
+                && outbox.is_some()
+                && journal.as_deref().is_none_or(|kind| kind == "ACTIVITY")
+        }
+        Some(
+            NodeKind::Condition { .. }
+            | NodeKind::Switch { .. }
+            | NodeKind::Timer { .. }
+            | NodeKind::WaitEvent { .. },
+        ) => {
+            dispatch == "SCHEDULER"
+                && activity.is_none()
+                && outbox.is_none()
+                && journal.as_deref() == Some("SCHEDULER")
+        }
+        _ => false,
+    };
+    if !valid {
+        return Err(corrupt("collection entry dispatch"));
+    }
+    Ok(())
+}
+
 async fn load_collections(
     tx: &mut Transaction<'static, Postgres>,
     tenant: TenantId,
     run: RunId,
+    definition: &WorkflowDefinition,
     state: &mut RunState,
 ) -> Result<(), StoreError> {
     let scopes = sqlx::query(
@@ -1914,10 +2387,13 @@ async fn load_collections(
                 i.entry_node, i.entry_instance_id, i.item_digest, i.lifecycle, i.slot_held, \
                 i.remaining_reservations, i.return_path_nodes, i.return_path_indices, \
                 i.return_node, i.return_instance_id, i.result_digest, i.checkpoint_sequence, \
-                i.drained_sequence, i.drain_outbox_id, \
+                i.drained_sequence, i.drain_outbox_id, i.entry_dispatch,i.activity,i.outbox_id, \
+                admission.detail->>'entry_dispatch' AS journal_dispatch, \
                 entry_step.step_id AS projected_entry_id, \
                 return_step.step_id AS projected_return_id \
          FROM collection_iterations i \
+         LEFT JOIN run_events admission ON admission.tenant_id=i.tenant_id AND admission.run_id=i.run_id \
+          AND admission.seq=i.admitted_sequence AND admission.event_type='collection.iteration_admitted' \
          LEFT JOIN steps entry_step \
            ON entry_step.tenant_id = i.tenant_id AND entry_step.run_id = i.run_id \
           AND entry_step.instance_path_nodes = i.entry_path_nodes \
@@ -1996,6 +2472,7 @@ async fn load_collections(
             path,
             NodeId::parse_stored(&node).map_err(|_| corrupt("collection entry node"))?,
         );
+        validate_collection_entry_dispatch(definition, &entry, row)?;
         let item_digest = stored_digest(col(row, "item_digest")?, "collection item digest")?;
         let (restored, completed) = match lifecycle.as_str() {
             "ADMITTED"
@@ -2901,6 +3378,38 @@ fn scope_owner_instance(row: &PgRow) -> Result<ExecutionInstanceId, StoreError> 
     ))
 }
 
+/// The check behind the loads a definition lets a command skip: a run has no row of a kind its
+/// definition excludes. `verify_run` always makes it; a store asked to
+/// ([`PgRunStore::with_skipped_load_verification`]) makes it for every command.
+async fn verify_excluded_projections(
+    tx: &mut Transaction<'static, Postgres>,
+    tenant: TenantId,
+    run: RunId,
+    kinds: sagat_domain::workflow::ProjectedState,
+) -> Result<(), StoreError> {
+    let (sagas, scope_sagas, collections, loops): (bool, bool, bool, bool) = sqlx::query_as(
+        "SELECT EXISTS (SELECT 1 FROM run_sagas WHERE tenant_id = $1 AND run_id = $2), \
+                EXISTS (SELECT 1 FROM scope_sagas WHERE tenant_id = $1 AND run_id = $2), \
+                EXISTS (SELECT 1 FROM iteration_scopes WHERE tenant_id = $1 AND run_id = $2) \
+                  OR EXISTS (SELECT 1 FROM collection_iterations WHERE tenant_id = $1 AND run_id = $2), \
+                EXISTS (SELECT 1 FROM loop_scopes WHERE tenant_id = $1 AND run_id = $2) \
+                  OR EXISTS (SELECT 1 FROM loop_iterations WHERE tenant_id = $1 AND run_id = $2)",
+    )
+    .bind(tenant.as_uuid())
+    .bind(run.as_uuid())
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(store_error)?;
+    if (sagas && !kinds.sagas)
+        || (scope_sagas && !kinds.scope_sagas())
+        || (collections && !kinds.collections)
+        || (loops && !kinds.loops)
+    {
+        return Err(corrupt("a projection its definition excludes"));
+    }
+    Ok(())
+}
+
 /// The sagas of a run, rebuilt from their rows.
 async fn load_sagas(
     tx: &mut Transaction<'static, Postgres>,
@@ -2985,6 +3494,10 @@ pub struct PgRunTx {
     tx: Transaction<'static, Postgres>,
     info: RunInfo,
     now: OffsetDateTime,
+    own_scheduler_time: Option<OffsetDateTime>,
+    scoped_event_delivery: Option<scoped_events::ScopedEventDelivery>,
+    scoped_event_delivery_attempted: bool,
+    scoped_event_persistence_failed: bool,
     def: Arc<WorkflowDefinition>,
     state: RunState,
     /// Journal sequence already written; `persist` writes `persisted + 1 ..= state.version()`.
@@ -2995,7 +3508,14 @@ pub struct PgRunTx {
     /// "insert or update" is decided here, not by `ON CONFLICT` (which checks constraints on the
     /// proposed row before it takes the update path).
     stored: BTreeSet<ExecutionInstanceId>,
+    /// The kind each step row held when the run was loaded under its row lock. Nothing else writes a
+    /// kind while that lock is held, so a row whose kind is already the definition's needs no write.
+    stored_kinds: BTreeMap<ExecutionInstanceId, String>,
+    timer_read_states: BTreeMap<ExecutionInstanceId, TimerReadState>,
+    event_wait_read_states: BTreeMap<ExecutionInstanceId, EventWaitReadState>,
     breaker: BreakerPolicy,
+    /// The store's `lake.enabled`, for the admission of a claim.
+    lake_enabled: bool,
     /// Pins selected under the retention-policy fence before a lease is granted. `persist` adds
     /// them to the matching immutable `step.leased` detail in this transaction.
     script_retention: BTreeMap<NodeId, ScriptRetentionPins>,
@@ -3035,6 +3555,15 @@ impl PgRunTx {
         instance: &ExecutionInstanceId,
         node_kind: &str,
     ) -> Result<(), StoreError> {
+        // The kind is immutable. A row read with the definition's kind is left alone; any other is
+        // put to the statement below, which upgrades a legacy row and refuses everything else.
+        if self
+            .stored_kinds
+            .get(instance)
+            .is_some_and(|stored| stored == node_kind)
+        {
+            return Ok(());
+        }
         let (path_nodes, path_indices) = stored_path_parts(instance.path());
         let updated = sqlx::query(
             "UPDATE steps SET node_kind=$6 \
@@ -3054,6 +3583,8 @@ impl PgRunTx {
         if updated.rows_affected() != 1 {
             return Err(corrupt("immutable step node kind"));
         }
+        self.stored_kinds
+            .insert(instance.clone(), node_kind.to_owned());
         Ok(())
     }
 
@@ -3625,12 +4156,49 @@ impl RunTx for PgRunTx {
     ) -> Result<sagat_application::database::DatabaseInput, StoreError> {
         self.database_snapshot(node, subject).await
     }
-    async fn pin_database_credential(
+    async fn pin_database_credentials(
         &mut self,
         node: &NodeId,
-        secret: &sagat_application::secrets::StoredSecret,
+        secrets: &[sagat_application::database::SelectedSecret],
     ) -> Result<(), StoreError> {
-        self.database_pin(node, secret).await
+        self.database_pin(node, secrets).await
+    }
+    async fn lake_lease_facts(
+        &mut self,
+        node: &NodeId,
+    ) -> Result<sagat_application::database::LakeLeaseFacts, StoreError> {
+        self.lake_facts(node).await
+    }
+    async fn lake_probe_facts(
+        &mut self,
+        node: &NodeId,
+    ) -> Result<sagat_application::database::ProbeLeaseFacts, StoreError> {
+        self.lake_probe_facts(node).await
+    }
+    async fn lake_record_blobs(
+        &mut self,
+        ids: &[sagat_domain::blobs::BlobId],
+    ) -> Result<Vec<sagat_domain::blobs::BlobDescriptor>, StoreError> {
+        self.lake_blob_descriptors(ids).await
+    }
+    async fn pin_lake_blobs(
+        &mut self,
+        node: &NodeId,
+        fence: sagat_domain::execution::Fence,
+        ids: &[sagat_domain::blobs::BlobId],
+    ) -> Result<(), StoreError> {
+        self.lake_blob_pin(node, fence, ids).await
+    }
+    async fn lake_blob_pinned(
+        &mut self,
+        node: &NodeId,
+        fence: sagat_domain::execution::Fence,
+        id: sagat_domain::blobs::BlobId,
+    ) -> Result<bool, StoreError> {
+        self.lake_blob_is_pinned(node, fence, id).await
+    }
+    async fn lake_attempt_resolved(&mut self, node: &NodeId) -> Result<bool, StoreError> {
+        self.lake_resolved(node).await
     }
     async fn database_result_limits(
         &mut self,
@@ -3642,7 +4210,8 @@ impl RunTx for PgRunTx {
         &mut self,
         node: &NodeId,
     ) -> Result<Option<sagat_application::secrets::StoredSecret>, StoreError> {
-        self.database_pinned_secret(node).await
+        self.database_pinned_secret(node, sagat_domain::database::SecretRole::Primary)
+            .await
     }
 
     async fn current_worker_authorized(&mut self, subject: &str) -> Result<bool, StoreError> {
@@ -3704,11 +4273,13 @@ impl RunTx for PgRunTx {
         owner: &str,
         lease: sagat_application::shards::Lease,
     ) -> Result<bool, StoreError> {
+        self.own_scheduler_time = None;
         let Some(now) = locked_scheduler_time(&mut self.tx, self.info.run_id, owner, lease).await?
         else {
             return Ok(false);
         };
         self.now = now;
+        self.own_scheduler_time = Some(now);
         Ok(true)
     }
 
@@ -4025,6 +4596,10 @@ impl RunTx for PgRunTx {
     }
 
     async fn persist(&mut self, events: &[RunEvent], effects: Effects) -> Result<(), StoreError> {
+        let prior_persist_failure = scoped_events::begin_persistence(
+            self.scoped_event_delivery_attempted,
+            &mut self.scoped_event_persistence_failed,
+        )?;
         if !effects.rehint_instances.is_empty() {
             return Err(StoreError::Internal {
                 detail: "a scoped rehint used root persistence".into(),
@@ -4335,6 +4910,9 @@ impl RunTx for PgRunTx {
         if let Some(audit) = &effects.audit {
             insert_audit(&mut self.tx, audit).await?;
         }
+        for audit in &effects.further_audits {
+            insert_audit(&mut self.tx, audit).await?;
+        }
         if let Some((idempotency, result)) = &effects.idempotency
             && !remember(
                 &mut self.tx,
@@ -4349,6 +4927,7 @@ impl RunTx for PgRunTx {
                 detail: "an idempotency record for this command appeared concurrently".into(),
             });
         }
+        self.scoped_event_persistence_failed = prior_persist_failure;
         Ok(())
     }
 
@@ -4393,6 +4972,49 @@ impl RunTx for PgRunTx {
             .await
     }
 
+    async fn record_scoped_event_delivery(
+        &mut self,
+        step: &sagat_application::dispatch::WaitingStep,
+        event: &sagat_application::dispatch::ClaimedEvent,
+    ) -> Result<Option<Vec<u8>>, StoreError> {
+        if std::mem::replace(&mut self.scoped_event_delivery_attempted, true) {
+            return Err(corrupt("one scoped event delivery per transaction"));
+        }
+        if self.scoped_event_persistence_failed {
+            return Err(corrupt(
+                "scoped event delivery cannot follow a failed persistence",
+            ));
+        }
+        if step.instance.path().is_root()
+            || step.tenant_id != self.info.tenant_id
+            || step.namespace_id != self.info.namespace_id
+            || step.run_id != self.info.run_id
+            || self.state.instance(&step.instance).is_none()
+        {
+            return Ok(None);
+        }
+        let local = sagat_domain::execution::PathExecutionState::from_run(
+            &self.state,
+            step.instance.path().clone(),
+        )
+        .map_err(|_| corrupt("scoped event ancestry"))?;
+        let prepared = scoped_events::prepare_delivery(
+            &mut self.tx,
+            &self.def,
+            &self.info,
+            &self.event_wait_read_states,
+            step,
+            event,
+            scoped_events::allows_outcome(&local),
+        )
+        .await?;
+        let Some((witness, document)) = prepared else {
+            return Ok(None);
+        };
+        self.scoped_event_delivery = Some(witness);
+        Ok(Some(document))
+    }
+
     async fn record_delivery(
         &mut self,
         delivery: &sagat_application::dispatch::DeliveryRef,
@@ -4422,7 +5044,25 @@ impl RunTx for PgRunTx {
         Ok(inserted)
     }
 
+    async fn worker_capacity_available(&mut self) -> Result<bool, StoreError> {
+        worker_capacity::available(&mut self.tx, &self.info).await
+    }
+
     async fn commit(mut self) -> Result<(), StoreError> {
+        if self.scoped_event_delivery_attempted && self.scoped_event_persistence_failed {
+            return Err(corrupt(
+                "scoped event transaction contains a failed persistence",
+            ));
+        }
+        if self
+            .scoped_event_delivery
+            .as_ref()
+            .is_some_and(|receipt| !receipt.persisted)
+        {
+            return Err(corrupt(
+                "scoped event receipt was not persisted with its outcome",
+            ));
+        }
         if self.initialize_chain
             && let Some(policy) = self.def.continuation_policy()
         {
@@ -4723,6 +5363,10 @@ impl PgRunTx {
         outputs: &[(ExecutionInstanceId, Vec<u8>)],
         effects: Effects,
     ) -> Result<(), StoreError> {
+        let prior_persist_failure = scoped_events::begin_persistence(
+            self.scoped_event_delivery_attempted,
+            &mut self.scoped_event_persistence_failed,
+        )?;
         if events
             .iter()
             .any(|event| event.path().is_root() && !is_scope_saga_event(event.event()))
@@ -4760,6 +5404,20 @@ impl PgRunTx {
                 detail: "a root lease effect used addressed storage".into(),
             });
         }
+        let consumed_delivery = scoped_events::require_delivery(
+            &self.def,
+            events,
+            outputs,
+            &effects,
+            self.scoped_event_delivery.as_ref(),
+        )?;
+        scoped_events::require_scoped_event_clock(
+            &self.def,
+            events,
+            &self.event_wait_read_states,
+            self.own_scheduler_time,
+            self.now,
+        )?;
         for addressed in events {
             if !matches!(
                 addressed.event(),
@@ -4767,6 +5425,13 @@ impl PgRunTx {
                     | RunEvent::StepStarted { .. }
                     | RunEvent::StepCompleted { .. }
                     | RunEvent::StepFailed { .. }
+                    | RunEvent::ConditionEvaluated { .. }
+                    | RunEvent::SwitchEvaluated { .. }
+                    | RunEvent::WaitStarted { .. }
+                    | RunEvent::WaitSatisfied { .. }
+                    | RunEvent::WaitTimedOut { .. }
+                    | RunEvent::TimerStarted { .. }
+                    | RunEvent::TimerFired { .. }
                     | RunEvent::StepRouted { .. }
                     | RunEvent::StepRetryScheduled { .. }
                     | RunEvent::StepRetryDue { .. }
@@ -4802,7 +5467,9 @@ impl PgRunTx {
             .filter_map(|addressed| {
                 matches!(
                     addressed.event(),
-                    RunEvent::StepCompleted { .. } | RunEvent::ReconciliationConcluded { .. }
+                    RunEvent::StepCompleted { .. }
+                        | RunEvent::ReconciliationConcluded { .. }
+                        | RunEvent::WaitSatisfied { .. }
                 )
                 .then(|| addressed.instance())
                 .flatten()
@@ -4858,7 +5525,9 @@ impl PgRunTx {
             let (path_nodes, path_indices) = stored_path_parts(instance.path());
             let payload = matches!(
                 event,
-                RunEvent::StepCompleted { .. } | RunEvent::ReconciliationConcluded { .. }
+                RunEvent::StepCompleted { .. }
+                    | RunEvent::ReconciliationConcluded { .. }
+                    | RunEvent::WaitSatisfied { .. }
             )
             .then(|| output_digest.get(&instance))
             .flatten();
@@ -4997,6 +5666,9 @@ impl PgRunTx {
         if let Some(audit) = &effects.audit {
             insert_audit(&mut self.tx, audit).await?;
         }
+        for audit in &effects.further_audits {
+            insert_audit(&mut self.tx, audit).await?;
+        }
         if let Some((idempotency, result)) = &effects.idempotency
             && !remember(
                 &mut self.tx,
@@ -5011,6 +5683,13 @@ impl PgRunTx {
                 detail: "an idempotency record for this command appeared concurrently".into(),
             });
         }
+        if consumed_delivery {
+            self.scoped_event_delivery
+                .as_mut()
+                .ok_or_else(|| corrupt("scoped event delivery witness disappeared"))?
+                .persisted = true;
+        }
+        self.scoped_event_persistence_failed = prior_persist_failure;
         Ok(())
     }
 
@@ -5493,12 +6172,32 @@ impl PgRunTx {
             return Err(corrupt("scope compensation projection"));
         };
         let (path_nodes, path_indices) = stored_path_parts(owner.path());
-        let sequence = i64::try_from(self.state.version()).map_err(|_| corrupt("sequence"))?;
-        let planned = events.iter().any(|event| {
-            matches!(event.event(), RunEvent::ScopeCompensationPlanned { .. })
-                && event.instance().as_ref() == Some(owner)
-        });
-        if planned {
+        let previous = self.persisted;
+        let sequence_at = |index: usize| -> Result<i64, StoreError> {
+            let offset = u64::try_from(index).map_err(|_| corrupt("scope event sequence"))?;
+            previous
+                .checked_add(offset)
+                .and_then(|value| value.checked_add(1))
+                .and_then(|value| i64::try_from(value).ok())
+                .ok_or_else(|| corrupt("scope event sequence"))
+        };
+        let planned = events
+            .iter()
+            .position(|event| {
+                matches!(event.event(), RunEvent::ScopeCompensationPlanned { .. })
+                    && event.instance().as_ref() == Some(owner)
+            })
+            .map(sequence_at)
+            .transpose()?;
+        let ended = events
+            .iter()
+            .position(|event| {
+                matches!(event.event(), RunEvent::ScopeCompensated { .. })
+                    && event.instance().as_ref() == Some(owner)
+            })
+            .map(sequence_at)
+            .transpose()?;
+        if let Some(planned_sequence) = planned {
             sqlx::query(
                 "INSERT INTO scope_sagas \
                  (tenant_id, run_id, owner_path_nodes, owner_path_indices, owner_node, phase, \
@@ -5510,11 +6209,11 @@ impl PgRunTx {
             .bind(&path_nodes)
             .bind(&path_indices)
             .bind(owner.node().as_str())
-            .bind(saga.phase().as_str())
+            .bind(SagaPhase::Compensating.as_str())
             .bind(saga.cause().as_str())
-            .bind(saga.outcome().map(SagaOutcome::as_str))
+            .bind(None::<&str>)
             .bind(saga.during_stop())
-            .bind(sequence)
+            .bind(planned_sequence)
             .bind(self.now)
             .execute(&mut *self.tx)
             .await
@@ -5534,6 +6233,7 @@ impl PgRunTx {
             }
         }
         if saga.outcome().is_some() {
+            let ended_sequence = ended.ok_or_else(|| corrupt("scope compensation end event"))?;
             let updated = sqlx::query(
                 "UPDATE scope_sagas SET phase = $6, outcome = $7, during_stop = $8, \
                         ended_sequence = $9, updated_at = $10 \
@@ -5548,7 +6248,7 @@ impl PgRunTx {
             .bind(saga.phase().as_str())
             .bind(saga.outcome().map(SagaOutcome::as_str))
             .bind(saga.during_stop())
-            .bind(sequence)
+            .bind(ended_sequence)
             .bind(self.now)
             .execute(&mut *self.tx)
             .await
@@ -5625,10 +6325,12 @@ impl PgRunTx {
             .ok_or_else(|| corrupt("scoped step projection"))?;
         // A scoped step can wait for the answer of its lookup or for a person (D386, D387); the
         // other waits belong to the stores of their own primitive.
-        let waiting_kind = match step.waiting_on() {
-            None => None,
-            Some(WaitingOn::Reconciliation) => Some("RECONCILIATION"),
-            Some(WaitingOn::Operator { .. }) => Some("OPERATOR"),
+        let (waiting_kind, due_at) = match step.waiting_on() {
+            None => (None, None),
+            Some(WaitingOn::Reconciliation) => (Some("RECONCILIATION"), None),
+            Some(WaitingOn::Operator { .. }) => (Some("OPERATOR"), None),
+            Some(WaitingOn::Timer { due_at }) => (Some("TIMER"), Some(*due_at)),
+            Some(WaitingOn::Event { deadline, .. }) => (Some("EVENT"), Some(*deadline)),
             Some(_) => {
                 return Err(StoreError::Internal {
                     detail: "the scoped step projection is not supported by addressed storage"
@@ -5636,11 +6338,7 @@ impl PgRunTx {
                 });
             }
         };
-        if step.condition().is_some() || step.switch_selection().is_some() {
-            return Err(StoreError::Internal {
-                detail: "the scoped step projection is not supported by addressed storage".into(),
-            });
-        }
+        validate_scoped_control_projection(self.def.node_for_instance(instance), &step)?;
         let kind = self
             .def
             .node_for_instance(instance)
@@ -5649,6 +6347,28 @@ impl PgRunTx {
             .def
             .node_for_instance(instance)
             .map_or("activity", |node| node.kind().label());
+        let pinned = self.def.node_for_instance(instance);
+        let next_event = EventWaitReadState::from_step(&step);
+        let old_event = self.event_wait_read_states.get(instance).cloned();
+        let event_type = next_event.event_type(pinned).map(str::to_owned);
+        let event_since = if node_kind == "waitEvent" {
+            next_event.since(pinned)?
+        } else {
+            None
+        };
+        let old_event_type = old_event
+            .as_ref()
+            .and_then(|read| read.event_type(pinned))
+            .map(str::to_owned);
+        let old_event_since = if node_kind == "waitEvent" {
+            old_event
+                .as_ref()
+                .map(|read| read.since(pinned))
+                .transpose()?
+                .flatten()
+        } else {
+            None
+        };
         let status = step.status().as_str();
         let attempt = i32::try_from(step.attempt()).map_err(|_| corrupt("attempt"))?;
         let generation = i64::try_from(step.generation()).map_err(|_| corrupt("generation"))?;
@@ -5740,13 +6460,23 @@ impl PgRunTx {
             .await
             .map_err(store_error)?;
             self.stored.insert(instance.clone());
+            if node_kind == "timer" {
+                self.timer_read_states
+                    .insert(instance.clone(), TimerReadState::from_step(&step));
+            }
+            if node_kind == "waitEvent" {
+                self.event_wait_read_states
+                    .insert(instance.clone(), next_event);
+            }
             return Ok(());
         }
 
-        self.ensure_node_kind(instance, node_kind).await?;
+        if !matches!(node_kind, "timer" | "waitEvent") {
+            self.ensure_node_kind(instance, node_kind).await?;
+        }
 
-        let updated = sqlx::query(
-            "UPDATE steps SET status = $6, attempt = $7, generation = $8, \
+        let updated = sqlx::query(concat!(
+            "UPDATE steps AS s SET status = $6, attempt = $7, generation = $8, \
                     cancel_requested = $9, routed = $10, timed_out = $11, failure_code = $12, \
                     next_attempt_at = $13, \
                     ready_at = CASE WHEN $6 = 'READY' \
@@ -5774,10 +6504,25 @@ impl PgRunTx {
                                                      WHEN $25::bytea IS NOT NULL THEN $25 \
                                                      ELSE reported_lease_token_hash END, \
                     output_digest = COALESCE($16, output_digest), waiting_kind = $26, \
-                    updated_at = $14 \
+                    updated_at = $14, condition = $27, switch_case_id = $28,due_at=$31, \
+                    event_type=CASE WHEN $30='waitEvent' THEN $35 ELSE s.event_type END, \
+                    correlation_key=CASE WHEN $30='waitEvent' THEN $36 ELSE s.correlation_key END, \
+                    event_since=CASE WHEN $30='waitEvent' THEN $37 ELSE s.event_since END, \
+                    event_scanned_at=CASE WHEN $30='waitEvent' THEN NULL ELSE s.event_scanned_at END \
              WHERE tenant_id = $1 AND run_id = $2 AND node = $3 AND step_id = $4 \
-               AND namespace_id = $5 AND instance_path_nodes = $17 AND instance_path_indices = $18",
-        )
+               AND namespace_id = $5 AND instance_path_nodes = $17 AND instance_path_indices = $18 \
+               AND (NOT $29 OR (s.node_kind=$30 AND (($30='timer' AND (",
+            scoped_timer_metadata_valid!(),
+            ")) OR ($30 IN ('condition','switch') AND (",
+            scoped_control_metadata_empty!(),
+            ")) OR ($30='waitEvent' AND (",
+            scoped_event_metadata_valid!(),
+            "))))) AND ($30<>'timer' OR (s.due_at IS NOT DISTINCT FROM $32 \
+              AND s.status=$33 AND s.routed=$34)) \
+               AND ($30<>'waitEvent' OR (s.due_at IS NOT DISTINCT FROM $38 AND s.status=$39 AND s.routed=$40 \
+                 AND s.event_type IS NOT DISTINCT FROM $41 AND s.correlation_key IS NOT DISTINCT FROM $42 \
+                 AND s.event_since IS NOT DISTINCT FROM $43))",
+        ))
         .bind(self.info.tenant_id.as_uuid())
         .bind(self.info.run_id.as_uuid())
         .bind(instance.node().as_str())
@@ -5808,12 +6553,37 @@ impl PgRunTx {
         .bind(rehinted)
         .bind(reported.map(|reported| reported.token_hash.clone()))
         .bind(waiting_kind)
+        .bind(step.condition())
+        .bind(stored_switch_case_id(&step))
+        .bind(matches!(node_kind, "condition" | "switch" | "timer" | "waitEvent"))
+        .bind(node_kind)
+        .bind(due_at)
+        .bind(self.timer_read_states.get(instance).and_then(|read| read.due_at))
+        .bind(self.timer_read_states.get(instance).map(|read| read.status.as_str()))
+        .bind(self.timer_read_states.get(instance).map(|read| read.routed))
+        .bind(event_type.as_deref())
+        .bind(next_event.key.as_ref().map(CorrelationKey::as_str))
+        .bind(event_since)
+        .bind(old_event.as_ref().and_then(|read|read.deadline))
+        .bind(old_event.as_ref().map(|read|read.status.as_str()))
+        .bind(old_event.as_ref().map(|read|read.routed))
+        .bind(old_event_type.as_deref())
+        .bind(old_event.as_ref().and_then(|read|read.key.as_ref()).map(CorrelationKey::as_str))
+        .bind(old_event_since)
         .execute(&mut *self.tx)
         .await
         .map_err(store_error)?
         .rows_affected();
         if updated != 1 {
             return Err(corrupt("scoped step identity"));
+        }
+        if node_kind == "timer" {
+            self.timer_read_states
+                .insert(instance.clone(), TimerReadState::from_step(&step));
+        }
+        if node_kind == "waitEvent" {
+            self.event_wait_read_states
+                .insert(instance.clone(), next_event);
         }
         Ok(())
     }
@@ -5956,10 +6726,7 @@ impl PgRunTx {
         let instance = ExecutionInstanceId::root(node.clone());
         let step_uuid = instance_step_id(self.info.version_id, self.info.run_id, &instance);
         let status = step.status().as_str();
-        let switch_case_id = step.switch_selection().map(|selection| match selection {
-            SwitchSelection::Case(id) => id.as_str(),
-            SwitchSelection::Default => "",
-        });
+        let switch_case_id = stored_switch_case_id(&step);
         let attempt = i32::try_from(step.attempt()).map_err(|_| corrupt("attempt"))?;
         let generation = i64::try_from(step.generation()).map_err(|_| corrupt("generation"))?;
         let inserted = !self.stored.contains(&instance);

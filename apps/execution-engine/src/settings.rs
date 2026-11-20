@@ -14,10 +14,11 @@ use sagat_control_plane::config::{
     rate_limit_error, read_auth, read_rate_limit, read_secrets,
 };
 use sagat_infra_blobstore::{BlobSettings, BlobStoreConfig, ConfigError as BlobConfigError};
+use sagat_infra_connectors::redis::RedisConfig;
 use sagat_infra_nats::NatsConfig;
 use sagat_scheduler::{
     DeliverySettings, DispatchSettings, EventDispatchSettings, KeeperSettings, MonitorSettings,
-    ProjectorSettings, SchedulerSettings,
+    ProjectorSettings, ScheduleSettings, SchedulerSettings,
 };
 use sagat_telemetry::OtlpConfig;
 
@@ -74,6 +75,15 @@ pub struct EngineConfig {
     pub events: EventDispatchSettings,
     /// Pause between event dispatch rounds when the last one found nothing to do.
     pub event_poll: Duration,
+    /// Whether the replica fires schedules (`SAGAT_SCHEDULES_ENABLED`, off by default until the
+    /// feature is released): the REST routes can create schedules either way, none fires without it.
+    pub schedules_enabled: bool,
+    /// Whether a run may carry an Apache Iceberg write (`SAGAT_LAKE_ENABLED`, feature 035, off by default). It is the
+    /// control plane's setting too, and a replica that leases the work reads it where it admits the claim.
+    pub lake_enabled: bool,
+    pub schedules: ScheduleSettings,
+    /// Pause between schedule rounds when the last one found nothing to do.
+    pub schedule_poll: Duration,
     /// The worker that sends outbound webhooks.
     pub deliveries: DeliverySettings,
     /// Pause between delivery rounds when the last one found nothing to send.
@@ -86,6 +96,8 @@ pub struct EngineConfig {
     pub monitor: MonitorConfig,
     /// `None`: hints are not published (workers poll; the outbox accumulates).
     pub nats: Option<NatsConfig>,
+    /// Alternative Redis Streams publisher; mutually exclusive with nats.
+    pub redis: Option<RedisConfig>,
     /// The key ring that opens secrets for workers (`SAGAT_SECRETS_KEYS`); `None` turns the
     /// `ResolveSecrets` call off.
     pub secrets: Option<sagat_infra_secrets::SecretsConfig>,
@@ -554,6 +566,45 @@ impl EngineConfig {
             optional(get, "SAGAT_EVENT_POLL_MS", 200u64)?,
         )?);
 
+        let schedules_enabled = flag(get, "SAGAT_SCHEDULES_ENABLED")?;
+        let lake_enabled = flag(get, "SAGAT_LAKE_ENABLED")?;
+        let schedule_defaults = ScheduleSettings::default();
+        let schedules = ScheduleSettings {
+            batch: u32::try_from(positive(
+                "SAGAT_SCHEDULES_BATCH",
+                optional(
+                    get,
+                    "SAGAT_SCHEDULES_BATCH",
+                    u64::from(schedule_defaults.batch),
+                )?,
+            )?)
+            .ok()
+            .filter(|batch| *batch <= MAX_BATCH)
+            .ok_or_else(|| ConfigError::Invalid {
+                name: "SAGAT_SCHEDULES_BATCH",
+                reason: format!("must be at most {MAX_BATCH}"),
+            })?,
+            round_actions: u32::try_from(positive(
+                "SAGAT_SCHEDULES_ROUND_ACTIONS",
+                optional(
+                    get,
+                    "SAGAT_SCHEDULES_ROUND_ACTIONS",
+                    u64::from(schedule_defaults.round_actions),
+                )?,
+            )?)
+            .ok()
+            .filter(|actions| *actions <= ScheduleSettings::MAX_ROUND_ACTIONS)
+            .ok_or_else(|| ConfigError::Invalid {
+                name: "SAGAT_SCHEDULES_ROUND_ACTIONS",
+                reason: format!("must be at most {}", ScheduleSettings::MAX_ROUND_ACTIONS),
+            })?,
+            ..schedule_defaults
+        };
+        let schedule_poll = Duration::from_millis(positive(
+            "SAGAT_SCHEDULES_POLL_MS",
+            optional(get, "SAGAT_SCHEDULES_POLL_MS", 1_000u64)?,
+        )?);
+
         let delivery_defaults = DeliverySettings::default();
         let deliveries = DeliverySettings {
             batch: u32::try_from(positive(
@@ -658,7 +709,13 @@ impl EngineConfig {
             interval: seconds(get, "SAGAT_MONITOR_INTERVAL_SECS", Duration::from_secs(30))?,
         };
 
-        let nats = match get("SAGAT_NATS_URL")
+        let selected = get("SAGAT_EVENT_TRANSPORT").map(|s| s.trim().to_owned());
+        let nats_url = if matches!(selected.as_deref(), Some("redis" | "none")) {
+            None
+        } else {
+            get("SAGAT_NATS_URL")
+        };
+        let nats = match nats_url
             .map(|v| v.trim().to_owned())
             .filter(|v| !v.is_empty())
         {
@@ -678,6 +735,43 @@ impl EngineConfig {
             }
         };
 
+        let (nats, redis) = match selected.as_deref() {
+            None | Some("") => {
+                if get("SAGAT_REDIS_URL").is_some_and(|s| !s.trim().is_empty()) {
+                    return Err(ConfigError::Invalid {
+                        name: "SAGAT_EVENT_TRANSPORT",
+                        reason: "select redis explicitly when configuring SAGAT_REDIS_URL"
+                            .to_owned(),
+                    });
+                }
+                (nats, None)
+            }
+            Some("nats") => {
+                if nats.is_none() {
+                    return Err(ConfigError::Missing("SAGAT_NATS_URL"));
+                }
+                (nats, None)
+            }
+            Some("redis") => {
+                let url = get("SAGAT_REDIS_URL")
+                    .filter(|v| !v.trim().is_empty())
+                    .ok_or(ConfigError::Missing("SAGAT_REDIS_URL"))?;
+                let stream =
+                    get("SAGAT_REDIS_STREAM").unwrap_or_else(|| "sagat:v1:events".to_owned());
+                let max_len = optional(get, "SAGAT_REDIS_STREAM_MAXLEN", 100_000u64)?;
+                let timeout = seconds(get, "SAGAT_REDIS_TIMEOUT_SECS", Duration::from_secs(5))?;
+                let redis=RedisConfig::new(&url,&stream,max_len,timeout,environment!=Environment::Dev)
+                    .map_err(|_|ConfigError::Invalid {name:"SAGAT_REDIS_URL",reason:"invalid Redis endpoint, stream, limit or timeout; TLS is required outside development".to_owned()})?;
+                (None, Some(redis))
+            }
+            Some("none") => (None, None),
+            Some(_) => {
+                return Err(ConfigError::Invalid {
+                    name: "SAGAT_EVENT_TRANSPORT",
+                    reason: "must be nats, redis or none".to_owned(),
+                });
+            }
+        };
         let secrets = read_secrets(get)?;
         let openbao = sagat_control_plane::config::read_openbao(get, environment)?;
         // Secret values travel over the worker API: plaintext is acceptable only in development, or
@@ -718,12 +812,17 @@ impl EngineConfig {
             outbox_poll,
             events,
             event_poll,
+            schedules_enabled,
+            lake_enabled,
+            schedules,
+            schedule_poll,
             deliveries,
             delivery_poll,
             connector_refresh,
             telemetry,
             monitor,
             nats,
+            redis,
             secrets,
             openbao,
             blobs,

@@ -197,6 +197,10 @@ pub struct Sample {
     pub compensating_runs: u64,
     /// Worker sessions that have not expired.
     pub workers: u64,
+    /// Timers, event waits and approvals that wait: what the scheduler's passes look after.
+    pub pending_waits: u64,
+    /// Scheduler replicas whose membership has not expired.
+    pub scheduler_replicas: u64,
     /// How long the oldest overdue item of each of the scheduler's passes has been overdue, in
     /// seconds, zero when nothing is: the scheduler's lag, which is what its replicas scale on
     /// (`FR-010-004`).

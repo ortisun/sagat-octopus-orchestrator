@@ -65,6 +65,14 @@ func (DatabaseOptions) String() string   { return "[managed database operation]"
 func (DatabaseParameter) String() string { return "[database parameter]" }
 
 var databaseName = regexp.MustCompile(`^[a-z][a-z0-9-]{1,61}[a-z0-9]$`)
+
+// validConnectionRef is a scoped logical name (3 to 63 characters, no "--") and an optional revision; shared by every
+// managed step.
+func validConnectionRef(ref ConnectionRef) bool {
+	return databaseName.MatchString(ref.Name) && !strings.Contains(ref.Name, "--") &&
+		(ref.Revision == nil || (*ref.Revision != 0 && *ref.Revision <= 2147483647))
+}
+
 var integerText = regexp.MustCompile(`^-?[0-9]+$`)
 var decimalText = regexp.MustCompile(`^-?[0-9]+(\.[0-9]+)?$`)
 var databaseCeilings = map[string]uint32{"maxStatementBytes": 65536, "maxParameters": 256, "maxParameterBytes": 262144, "maxRows": 10000, "maxResultBytes": 4194304, "timeoutMs": 30000, "connectTimeoutMs": 10000, "poolSize": 16, "idleTimeoutMs": 60000}
@@ -122,8 +130,7 @@ func (b *Builder) Database(id string, options DatabaseOptions) *Builder {
 		return b
 	}
 	fail := func() *Builder { return b.fail(sagat.Invalid("invalid managed database operation")) }
-	ref := options.ConnectionRef
-	if !databaseName.MatchString(ref.Name) || strings.Contains(ref.Name, "--") || (ref.Revision != nil && (*ref.Revision == 0 || *ref.Revision > 2147483647)) {
+	if !validConnectionRef(options.ConnectionRef) {
 		return fail()
 	}
 	if (options.Operation != DatabaseQuery && options.Operation != DatabaseExecute) || strings.TrimSpace(options.Statement) == "" || len(options.Statement) > 65536 || strings.ContainsRune(options.Statement, 0) || len(options.Parameters) > 256 {

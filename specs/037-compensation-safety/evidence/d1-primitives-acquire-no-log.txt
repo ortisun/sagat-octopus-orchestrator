@@ -1,0 +1,6 @@
+
+running 1 test
+test capacity_finish::acquire::acquire_exports_closed_outcomes_and_counts_only_acknowledged_first_transitions ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 771 filtered out; finished in 4.51s
+

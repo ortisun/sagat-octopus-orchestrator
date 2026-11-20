@@ -147,3 +147,12 @@ feature-014 release gates; existing feature behavior stays supported.
 ## Approved dependent delivery: database connections
 
 Feature [017](../017-database-connections/spec.md) and [ADR-0035](../../docs/adr/ADR-0035-database-connections-and-managed-execution.md) were approved on 2026-10-16. Its [plan](../017-database-connections/plan.md) defines the bounded extension to shared contracts, admission/leases, effects, SDKs, Studio, telemetry, secret-provider/security and immutable revisions. Existing transactional, tenant and general payload-inspection guarantees remain binding. Track implementation and new runtime evidence in feature 017; this dependency note does not mark its requirements complete.
+
+
+## Approved dependent delivery: Rust SDK (2026-10-27)
+
+The owner requested an official Rust SDK during the active 0.3 delivery. Feature
+[034](../034-rust-sdk/spec.md) and [ADR-0070](../../docs/adr/ADR-0070-rust-sdk-shares-the-canonical-sdk-contract.md)
+extend the same SDK semantic contract, canonical protocol, errors, conformance and package gates to
+Rust. Existing five-language evidence stays intact. This authorizes the dependency; the new SDK's
+actual acceptance is tracked by T034 tasks and is not supplied by this note.

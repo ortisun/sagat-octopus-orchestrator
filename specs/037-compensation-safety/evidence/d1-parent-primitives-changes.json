@@ -1,0 +1,1 @@
+{"command": ["cargo", "test", "--workspace", "--locked", "--offline", "--test", "integration_workflow_primitives", "--", "byte_ceilings::", "chains::", "scope_compensation_http::", "scoped_worker::"], "exit": 0}

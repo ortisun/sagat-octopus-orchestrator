@@ -1,0 +1,26 @@
+[
+  {
+    "scenario": "compensation-safety",
+    "command": "cargo test --locked --offline -p sagat-tests --test sdk_conformance -- --ignored --nocapture",
+    "exit": 0,
+    "log": "d1-six-compensation-safety.txt"
+  },
+  {
+    "scenario": "saga-compensation",
+    "command": "cargo test --locked --offline -p sagat-tests --test sdk_conformance -- --ignored --nocapture",
+    "exit": 0,
+    "log": "d1-six-saga-compensation.txt"
+  },
+  {
+    "scenario": "collection-compensation",
+    "command": "cargo test --locked --offline -p sagat-tests --test sdk_conformance -- --ignored --nocapture",
+    "exit": 0,
+    "log": "d1-six-collection-compensation.txt"
+  },
+  {
+    "scenario": "loop-compensation",
+    "command": "cargo test --locked --offline -p sagat-tests --test sdk_conformance -- --ignored --nocapture",
+    "exit": 0,
+    "log": "d1-six-loop-compensation.txt"
+  }
+]

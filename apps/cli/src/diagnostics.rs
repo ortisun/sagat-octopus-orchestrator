@@ -51,6 +51,26 @@ pub const CATALOG: &[(&str, &str)] = &[
         "Check the connection reference, query or execute operation, typed parameters and finite limits. Managed database steps cannot declare automatic retries or impersonate an ordinary activity. A managed database step belongs to the root graph of a definition without loops, collections or a continuation policy.",
     ),
     (
+        "LAKE_DISABLED",
+        "This deployment has not enabled the lake, so a workflow cannot hold an Apache Iceberg write. Ask the operator to turn on SAGAT_LAKE_ENABLED, or publish the workflow to a deployment that has it.",
+    ),
+    (
+        "INVALID_ICEBERG_NODE",
+        "Check the connection reference, the table, the record source (exactly one of inline, blobs or a database result), the mapping and the limits. A database result must name a database step that runs before the write. An Apache Iceberg write cannot declare its own retries or effect, impersonate an ordinary activity, or name a field and a column twice.",
+    ),
+    (
+        "MODE_NOT_ALLOWED",
+        "The connection of this Apache Iceberg write does not allow the mode it writes in. Write in a mode the connection allows, or ask the owner of the connection to allow this one in a new revision.",
+    ),
+    (
+        "CLASSIFICATION_EGRESS_REFUSED",
+        "The connection of this Apache Iceberg write does not accept the classification of a field it would send, or the fields were never classified. Map fewer fields, classify the source with x-sagat-classification and refer to it directly (input.a.b or steps.<id>.output.a.b), or use a connection whose ceiling accepts them. A secret field never leaves.",
+    ),
+    (
+        "ICEBERG_NODE_NOT_ROOT",
+        "An Apache Iceberg write belongs to the root graph of a definition without loops, collections or a continuation policy, and never inside a body. Move the write out of the loop, or into a child workflow.",
+    ),
+    (
         "INVALID_NODE_ID",
         "A node id is up to 64 characters of letters, digits, '_', '.' and '-', starting with a letter or a digit.",
     ),

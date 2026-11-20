@@ -1,0 +1,14 @@
+{
+  "command": [
+    "cargo",
+    "fmt",
+    "--check"
+  ],
+  "exit_code": 0,
+  "seconds": 4.87,
+  "wall_seconds": 4.87,
+  "wall_minus_monotonic_seconds": -0.0,
+  "started_utc": "2026-10-28T12:06:25.309942+00:00",
+  "finished_utc": "2026-10-28T12:06:30.183770+00:00",
+  "log": "redis-loopback-final-format.txt"
+}

@@ -6,6 +6,10 @@ use std::time::Duration;
 
 use sagat_infra_sandbox::DockerSandbox;
 use sagat_sandbox_runner::cli::{self, Command, USAGE, UsageError};
+use sagat_sandbox_runner::lake::LakeConfig;
+use sagat_sandbox_runner::lake::config::script_mode_variable;
+use sagat_sandbox_runner::lake::engine::DockerEngine;
+use sagat_sandbox_runner::lake::serve as lake_serve;
 use sagat_sandbox_runner::{Runner, RunnerConfig};
 use sagat_telemetry::LogFormat;
 
@@ -59,10 +63,41 @@ async fn run(command: Command) -> Result<(), String> {
         sagat_control_plane::config::telemetry(&env_lookup, "sagat-sandbox-runner", log_format)
             .map_err(|e| e.to_string())?;
     let telemetry = sagat_telemetry::init(telemetry_config);
-    let result = serve(&telemetry).await;
+    let result = if command == Command::Lake {
+        serve_lake().await
+    } else {
+        serve(&telemetry).await
+    };
     telemetry
         .shutdown(sagat_control_plane::config::TELEMETRY_FLUSH)
         .await;
+    result
+}
+
+/// Lake mode: the lake sandbox API and nothing else (feature 035, ADR-0079). No control-plane token, no build, no script step.
+async fn serve_lake() -> Result<(), String> {
+    // lake mode runs nothing but lake containers and holds no token of the control plane: a setting of the script mode,
+    // whatever it is, is a mistake in the deployment and not something to ignore
+    if let Some(name) = script_mode_variable(std::env::vars().map(|(name, _)| name)) {
+        return Err(format!(
+            "{name} is a setting of the script mode: lake mode runs only lake containers and holds no token of the control plane"
+        ));
+    }
+    let config = LakeConfig::from_lookup(&env_lookup).map_err(|e| e.to_string())?;
+    let engine = DockerEngine::connect()
+        .map_err(|_| "the container engine could not be reached".to_owned())?;
+    let metrics_upkeep = sagat_control_plane::spawn_metrics_upkeep(
+        sagat_telemetry::Metrics::global(),
+        sagat_control_plane::METRICS_UPKEEP_INTERVAL,
+    );
+    let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+    tokio::spawn(async move {
+        sagat_control_plane::shutdown_signal().await;
+        let _ = stop_tx.send(true);
+    });
+    tracing::info!("lake sandbox runner started");
+    let result = lake_serve::run(config, engine, stop_rx).await;
+    metrics_upkeep.abort();
     result
 }
 

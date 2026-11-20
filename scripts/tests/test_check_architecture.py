@@ -10,11 +10,15 @@ SCRIPT = pathlib.Path(__file__).resolve().parents[1] / "check-architecture.py"
 
 
 def pkg(name, path, deps):
+    """A dependency is a name (a normal dependency) or a (name, kind) pair, kind being "dev" or "build"."""
     return {
         "id": name,
         "name": name,
         "manifest_path": f"/r/{path}/Cargo.toml",
-        "dependencies": [{"name": d, "kind": None} for d in deps],
+        "dependencies": [
+            {"name": d, "kind": None} if isinstance(d, str) else {"name": d[0], "kind": d[1]}
+            for d in deps
+        ],
     }
 
 
@@ -44,7 +48,7 @@ class ArchitectureRules(unittest.TestCase):
         self.assertEqual(code, 0, out)
 
     def test_domain_must_not_depend_on_infrastructure_crates(self):
-        for forbidden in ("sqlx", "axum", "async-nats", "kube", "serde_json"):
+        for forbidden in ("sqlx", "axum", "async-nats", "redis", "kube", "serde_json"):
             with self.subTest(forbidden=forbidden):
                 code, out = run_check([pkg("d", "crates/domain", ["uuid", forbidden])])
                 self.assertEqual(code, 1)
@@ -94,6 +98,88 @@ class ArchitectureRules(unittest.TestCase):
         ])
         # application -> application is allowed; this documents that it is not an adapter edge.
         self.assertEqual(code, 0, out)
+
+    def test_the_iceberg_crate_is_allowed_as_a_test_only_dependency(self):
+        # The independent reader of feature 035 (D035-026) lives in the test package only.
+        code, out = run_check([
+            pkg("d", "crates/domain", []),
+            pkg("sagat-tests", "tests", [("iceberg", "dev"), ("iceberg-catalog-rest", "dev")]),
+        ])
+        self.assertEqual(code, 0, out)
+
+    def test_the_iceberg_crate_must_not_reach_the_platform(self):
+        # Writes go through the Python runtime (ADR-0071); the Rust crate is the independent reader and
+        # may not become a normal, dev or build dependency of anything that ships.
+        for crate in ("iceberg", "iceberg-catalog-rest"):
+            for kind in (None, "dev", "build"):
+                for where in ("crates/infra-lake", "apps/control-plane", "crates/application"):
+                    with self.subTest(crate=crate, kind=kind, where=where):
+                        deps = [(crate, kind)] if kind else [crate]
+                        code, out = run_check([pkg("p", where, deps)])
+                        self.assertEqual(code, 1, out)
+                        self.assertIn(f"'p' must not depend on '{crate}'", out)
+                        self.assertIn("test-only", out)
+
+    # ADR-0079 rule 2: the lake runner holds no container-engine access. The engine is `bollard` and the crate that wraps it,
+    # `sagat-infra-sandbox`, and the sandbox runner is the only process that links them.
+    LAKE_RUNNER = "sagat-database-runner"
+
+    def test_the_lake_runner_may_use_what_is_not_the_engine(self):
+        code, out = run_check([
+            pkg("sagat-domain", "crates/domain", []),
+            pkg("sagat-infra-lake", "crates/infra-lake", ["sagat-domain", "hyper"]),
+            pkg(self.LAKE_RUNNER, "apps/database-runner", ["sagat-infra-lake", "sagat-domain", "tonic"]),
+            # the process that does hold the engine is another one
+            pkg("sagat-infra-sandbox", "crates/infra-sandbox", ["bollard", "sagat-domain"]),
+            pkg("sagat-sandbox-runner", "apps/sandbox-runner", ["sagat-infra-sandbox", "sagat-infra-lake"]),
+        ])
+        self.assertEqual(code, 0, out)
+
+    def test_the_lake_runner_must_not_link_the_engine_directly(self):
+        for holder in (self.LAKE_RUNNER, "sagat-infra-lake"):
+            for engine in ("bollard", "sagat-infra-sandbox"):
+                with self.subTest(holder=holder, engine=engine):
+                    where = "apps/database-runner" if holder == self.LAKE_RUNNER else "crates/infra-lake"
+                    code, out = run_check([
+                        pkg("sagat-infra-sandbox", "crates/infra-sandbox", ["bollard"]),
+                        pkg(holder, where, [engine]),
+                    ])
+                    self.assertEqual(code, 1, out)
+                    self.assertIn("ADR-0079", out)
+                    self.assertIn(f"'{holder}' must not reach '{engine}'", out)
+
+    def test_the_lake_runner_must_not_reach_the_engine_through_another_crate(self):
+        code, out = run_check([
+            pkg("sagat-infra-sandbox", "crates/infra-sandbox", ["bollard"]),
+            pkg("sagat-handy", "crates/infra-handy", ["sagat-infra-sandbox"]),
+            pkg("sagat-middle", "crates/infra-middle", ["sagat-handy"]),
+            pkg(self.LAKE_RUNNER, "apps/database-runner", ["sagat-middle"]),
+        ])
+        self.assertEqual(code, 1, out)
+        # the message names the way in, so the dependency to cut can be seen
+        self.assertIn(
+            f"'{self.LAKE_RUNNER}' must not reach 'sagat-infra-sandbox' ({self.LAKE_RUNNER} -> sagat-middle -> sagat-handy -> sagat-infra-sandbox)",
+            out,
+        )
+        self.assertIn(f"'{self.LAKE_RUNNER}' must not reach 'bollard'", out)
+
+    def test_a_build_dependency_of_the_lake_runner_counts_and_a_dev_dependency_does_not(self):
+        code, out = run_check([pkg(self.LAKE_RUNNER, "apps/database-runner", [("bollard", "build")])])
+        self.assertEqual(code, 1, out)
+        self.assertIn(f"'{self.LAKE_RUNNER}' must not reach 'bollard'", out)
+        # a test of the runner may hold an engine double: nothing that ships links it
+        code, out = run_check([pkg(self.LAKE_RUNNER, "apps/database-runner", [("bollard", "dev")])])
+        self.assertEqual(code, 0, out)
+
+    def test_a_rule_that_names_a_package_the_workspace_no_longer_has_is_an_error_and_not_a_pass(self):
+        # A renamed lake runner would otherwise switch the rule off without a sound. A graph that is not the platform's (no `sagat-application`) is
+        # not asked: the other tests of this file use made-up crates.
+        code, out = run_check([
+            pkg("sagat-application", "crates/application", []),
+            pkg("sagat-infra-lake", "crates/infra-lake", []),
+        ])
+        self.assertEqual(code, 1, out)
+        self.assertIn("'sagat-database-runner' is named by ADR-0079 and the workspace has no such package", out)
 
     def test_cycles_are_reported(self):
         code, out = run_check([

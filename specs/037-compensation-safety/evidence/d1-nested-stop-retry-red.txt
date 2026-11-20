@@ -1,0 +1,25 @@
+   Compiling sagat-domain v0.2.0 (/Users/marcelo/Documents/Projects/sagat-octopus-compensation-safety/crates/domain)
+    Finished `test` profile [unoptimized] target(s) in 0.43s
+     Running tests/bounded_path_planning.rs (/var/folders/60/bf6rmfzx6zq67nrbzb3m0p480000gn/T/sagat-037-target-q0fwz2gu/debug/deps/bounded_path_planning-841b7a2fd0322d26)
+
+running 1 test
+test nested_forward_retry_is_refused_when_an_outer_scope_is_draining ... FAILED
+
+failures:
+
+---- nested_forward_retry_is_refused_when_an_outer_scope_is_draining stdout ----
+
+thread 'nested_forward_retry_is_refused_when_an_outer_scope_is_draining' (787733669) panicked at crates/domain/tests/bounded_path_planning.rs:251:5:
+assertion failed: matches!(retry_review_instance(&def, &mut full, &work,
+    time::OffsetDateTime::UNIX_EPOCH),
+    Err(ExecutionError::IllegalInstanceTransition
+    { event: "step.retry_requested", .. }))
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    nested_forward_retry_is_refused_when_an_outer_scope_is_draining
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 14 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p sagat-domain --test bounded_path_planning`

@@ -1,0 +1,197 @@
+# Disposable fixtures for the Apache Iceberg write steps and the step-output destinations (feature 035).
+#
+#   docker compose -f infra/docker/compose.lake.yaml up -d --wait
+#   docker compose -f infra/docker/compose.lake.yaml down -v
+#
+# Self-contained (AGENTS.md rule 16): nothing here talks to the platform database, to a container of
+# another project or to a service started by hand. Every port is published on 127.0.0.1 only, in the
+# 20000-29999 range, so it never collides with compose.yaml. The integration tests start their own
+# containers from the same images through `tests/support/lake.rs`; this file is for running the
+# fixtures by hand and documents the pins in one place.
+#
+# Pins (D035-041): each image carries its tag and its digest. Tags were pushed at least two weeks
+# before they were added (checked 2026-11-02 on the registry APIs: Docker Hub 2025-12-22 .. 2026-10-12,
+# Quay 2026-10-07). Azurite on MCR has no public push-date API; the tag is the one D035-041 recorded.
+#
+# NOT for production: development credentials, single instances, plain HTTP.
+#
+# Pending decisions, not faked here (AGENTS.md rule 11):
+#   - ClickHouse serves plain HTTP. The `clickhouse` connection requires TLS (FR-035-041); the TLS
+#     listener is added with the first ClickHouse connection test.
+#   - The warehouse bucket, the REST warehouse of Lakekeeper (vended credentials) and the Glue/Hive/
+#     JDBC tables are created by the fixture admin client in `tests/support/lake.rs`, never by the
+#     platform (a missing table fails the step, D035-017).
+#   - moto cannot reproduce Glue commit conflicts (G035-012); Azurite serves the blob endpoint only
+#     (G035-013). Cases that depend on those are labelled emulator-only in the tests.
+
+name: sagat-lake-fixtures
+
+x-fixture: &fixture
+  restart: "no"
+  security_opt: ["no-new-privileges:true"]
+  pids_limit: 512
+  labels:
+    com.sagat.fixture: "lake"
+
+# Credentials below are fake, local-only values: they protect nothing and are the same for everyone.
+services:
+  # PostgreSQL: JDBC/SQL Iceberg catalog (`iceberg_catalog`) and Lakekeeper state (`lakekeeper`).
+  postgres:
+    <<: *fixture
+    image: postgres:16-alpine@sha256:0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab
+    environment:
+      POSTGRES_USER: lake
+      POSTGRES_PASSWORD: lake-dev-only
+      POSTGRES_DB: iceberg_catalog
+    volumes:
+      - ./lake-init:/docker-entrypoint-initdb.d:ro
+    ports: ["127.0.0.1:${SAGAT_LAKE_PG_PORT:-25432}:5432"]
+    mem_limit: 512m
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lake -d iceberg_catalog && psql -U lake -d lakekeeper -c 'select 1' >/dev/null"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  # S3-compatible object storage (RustFS).
+  rustfs:
+    <<: *fixture
+    image: rustfs/rustfs:1.0.1@sha256:1803faef57627e2d9c2e7d89d655d712ddded5389040054987163043fecb6a3c
+    environment:
+      RUSTFS_ACCESS_KEY: ${SAGAT_LAKE_ACCESS_KEY:-lakeaccess}
+      RUSTFS_SECRET_KEY: ${SAGAT_LAKE_SECRET_KEY:-lakesecret-dev-only}
+      RUSTFS_ADDRESS: ":9000"
+      RUSTFS_CONSOLE_ENABLE: "false"
+    # An anonymous volume keeps the image's owner (`rustfs`, not root) and goes away with `down -v`.
+    volumes: ["/data"]
+    ports: ["127.0.0.1:${SAGAT_LAKE_S3_PORT:-29000}:9000"]
+    mem_limit: 1g
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:9000/health >/dev/null"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  # Iceberg REST catalog, upstream reference fixture (static credentials, S3FileIO).
+  iceberg-rest:
+    <<: *fixture
+    image: apache/iceberg-rest-fixture:1.10.1@sha256:f7d679d30ac9c640bdeb2c015dff533cd3c8f1c7d491ebcb5d436f9a42db1d6f
+    depends_on:
+      rustfs:
+        condition: service_healthy
+    environment:
+      CATALOG_WAREHOUSE: s3://warehouse/
+      CATALOG_IO__IMPL: org.apache.iceberg.aws.s3.S3FileIO
+      CATALOG_S3_ENDPOINT: http://rustfs:9000
+      CATALOG_S3_PATH__STYLE__ACCESS: "true"
+      AWS_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: ${SAGAT_LAKE_ACCESS_KEY:-lakeaccess}
+      AWS_SECRET_ACCESS_KEY: ${SAGAT_LAKE_SECRET_KEY:-lakesecret-dev-only}
+    ports: ["127.0.0.1:${SAGAT_LAKE_REST_PORT:-28181}:8181"]
+    mem_limit: 1g
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8181/v1/config >/dev/null"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+  # Lakekeeper: REST catalog with vended credentials. Migrations run once, then the server starts.
+  lakekeeper-migrate:
+    <<: *fixture
+    image: quay.io/lakekeeper/catalog:v0.14.0@sha256:de87eaca929f208ec0ea4594706d3d70cec50620b62fea07c17e18fdb1a4c592
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment: &lakekeeper-env
+      LAKEKEEPER__PG_DATABASE_URL_READ: postgresql://lake:lake-dev-only@postgres:5432/lakekeeper
+      LAKEKEEPER__PG_DATABASE_URL_WRITE: postgresql://lake:lake-dev-only@postgres:5432/lakekeeper
+      LAKEKEEPER__PG_ENCRYPTION_KEY: fixture-only-encryption-key-not-secret
+    command: ["migrate"]
+
+  lakekeeper:
+    <<: *fixture
+    image: quay.io/lakekeeper/catalog:v0.14.0@sha256:de87eaca929f208ec0ea4594706d3d70cec50620b62fea07c17e18fdb1a4c592
+    depends_on:
+      lakekeeper-migrate:
+        condition: service_completed_successfully
+    environment: *lakekeeper-env
+    command: ["serve"]
+    ports: ["127.0.0.1:${SAGAT_LAKE_LAKEKEEPER_PORT:-28182}:8181"]
+    mem_limit: 512m
+    healthcheck:
+      test: ["CMD", "/home/nonroot/lakekeeper", "healthcheck"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+  # Hive Metastore (embedded Derby, thrift on 9083). The Rust catalog cannot commit to it (iceberg-rust
+  # 0.10.1); only the Python runtime writes through it.
+  hive-metastore:
+    <<: *fixture
+    image: apache/hive:standalone-metastore-4.2.1@sha256:f11de992645702a028bf514e3d23400162fff65e7480dad9722b9ef78cdc6142
+    environment:
+      SERVICE_NAME: metastore
+    ports: ["127.0.0.1:${SAGAT_LAKE_HIVE_PORT:-29083}:9083"]
+    mem_limit: 1536m
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/127.0.0.1/9083'"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  # AWS Glue and S3 emulator (moto). Commit conflicts cannot be reproduced here (G035-012).
+  moto:
+    <<: *fixture
+    image: motoserver/moto:5.2.4@sha256:120b1589c6df7e35d2092935f6ff724486bb2c4189d0e36ce795baba1400ffd2
+    ports: ["127.0.0.1:${SAGAT_LAKE_MOTO_PORT:-25000}:5000"]
+    mem_limit: 512m
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:5000/moto-api/ >/dev/null"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  # Google Cloud Storage emulator.
+  fake-gcs:
+    <<: *fixture
+    image: fsouza/fake-gcs-server:1.56.1@sha256:797ce226d62f947c009dc40246b30cfb456b8473d8241407f9d6f2c04e4d69ef
+    command: ["-scheme", "http", "-port", "4443", "-backend", "memory"]
+    ports: ["127.0.0.1:${SAGAT_LAKE_GCS_PORT:-24443}:4443"]
+    mem_limit: 256m
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:4443/storage/v1/b"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  # Azure Blob emulator (blob endpoint only; ADLS Gen2 hierarchical namespace is not emulated, G035-013).
+  azurite:
+    <<: *fixture
+    image: mcr.microsoft.com/azure-storage/azurite:3.37.0@sha256:830430c1da1a2d537e08f3e6764dd1f5ae00cf0346bcaf625b968ec3f0971fd5
+    command: ["azurite-blob", "--blobHost", "0.0.0.0", "--blobPort", "10000", "--inMemoryPersistence", "--skipApiVersionCheck"]
+    ports: ["127.0.0.1:${SAGAT_LAKE_AZURE_PORT:-20000}:10000"]
+    mem_limit: 512m
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 10000"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  # ClickHouse (HTTP interface). TLS is a pending decision, see the header.
+  clickhouse:
+    <<: *fixture
+    image: clickhouse/clickhouse-server:26.8.25.14@sha256:dd81097e2c38827a438287d8ae5d4dc8afafbdd0e61e83376fdd7ed4580673b9
+    environment:
+      CLICKHOUSE_USER: lake
+      CLICKHOUSE_PASSWORD: lake-dev-only
+      CLICKHOUSE_DB: analytics
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "0"
+    ports: ["127.0.0.1:${SAGAT_LAKE_CLICKHOUSE_PORT:-28123}:8123"]
+    mem_limit: 2g
+    ulimits:
+      nofile: {soft: 262144, hard: 262144}
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:8123/ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 30

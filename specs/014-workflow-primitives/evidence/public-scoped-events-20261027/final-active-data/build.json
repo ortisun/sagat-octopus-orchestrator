@@ -1,0 +1,42 @@
+{
+  "releaseCommit": "bfda342073db71e84f30bdc79ccf3fbc97a7153c",
+  "packageId": "path+file:///private/tmp/sagat-v03-20261026/released-v02-al_pw2ho/source/tests#sagat-tests@0.2.0",
+  "productionFilesVerified": 649,
+  "productionTreeSha256": "f7ab4beb1f0c38ec39de441f99e86ab61b2e440c3cfd81397fee508bbc8dd7d4",
+  "overlays": [
+    {
+      "path": "tests/fixtures/released-v02/control.rs",
+      "sha256": "b1bdd7e1cb79b796bb6bfd672dbb0b6580c8d05602ad53bfdbe8a260c8869d6e"
+    },
+    {
+      "path": "tests/fixtures/released-v02/cutover.rs",
+      "sha256": "52a3ce4898cbb983e5e30a16f7d90a264ccadfabf68f074f900b190990e61b63"
+    },
+    {
+      "path": "tests/fixtures/released-v02/inflight.rs",
+      "sha256": "99b7d8f80d328a057448fc2f4af3c35e9e96db8c79ef02ec186cf8d0cda2a305"
+    },
+    {
+      "path": "tests/fixtures/released-v02/phase.rs",
+      "sha256": "f54e1ba9bfedc07d39803e7a525dd36ff19a1de3296796c9513f1f10795604da"
+    },
+    {
+      "path": "tests/fixtures/released-v02/wait-state.sql",
+      "sha256": "e4b85c83e0226ad2f4c9c59f8c5c501f8d426ff1d6fe2d090702865484d41388"
+    },
+    {
+      "path": "tests/integration/workflow-primitives/main.rs",
+      "sha256": "6188765ccfa57f3ae61f0cf9b94a95f362e2acb3439eb191282ad9e4f587eafd"
+    }
+  ],
+  "binary": "/private/tmp/sagat-v03-20261026/released-v02-al_pw2ho/released-v02-phase",
+  "binarySha256": "328ccd44ce837bdde5bd83adbe31115979d0fdeaab44f60491592c9bd3decb6f",
+  "oldTarget": "/Users/marcelo/.cache/sagat-v02-profile-20261027-x45v143m",
+  "currentTarget": "/Users/marcelo/.cache/sagat-v03-nodebug-5xlu3ufs",
+  "currentCommit": "19f42cda84706efe01ca7c9b05e53c3c309094c3",
+  "currentSourceSha256": "ac0f95c9c5334d290b7d90fcb15bc5831e79e2a2f6ef9f4c9a14450bd145e4c9",
+  "currentBinarySha256": "4a6cf2cd8e3bb3c24aef05c123b4bb7b07240b1abd6e006a75cdfb5a02ae2f4b",
+  "scenario": "active-data",
+  "coordinatorPath": "tests/integration/workflow-primitives/released_v02_upgrade.rs",
+  "coordinatorSha256": "ad7522593d55679ccbc9979e7c1298dcff441daa6a3c791258d5b43ef843fa32"
+}

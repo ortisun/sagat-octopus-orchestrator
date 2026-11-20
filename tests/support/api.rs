@@ -224,6 +224,7 @@ impl IdentityStore for CountingStore {
 
 /// Settings tests may tighten before the API starts.
 pub struct Options {
+    pub redis_callbacks: bool,
     pub secret_provider: Option<Arc<dyn sagat_application::secret_provider::SecretProvider>>,
     pub http_tls: Option<sagat_api_http::HttpTlsConfig>,
     pub http_tls_ca: Option<Vec<u8>>,
@@ -258,11 +259,14 @@ pub struct Options {
     pub streams: Option<sagat_api_http::streams::StreamLimits>,
     /// Serve the Studio from this directory under `/studio/` (D143).
     pub studio: Option<sagat_api_http::studio::StudioConfig>,
+    /// The lake is on: Iceberg writes are published, admitted and leased, and the worker service completes them (feature 035).
+    pub lake: bool,
 }
 
 impl Default for Options {
     fn default() -> Self {
         Self {
+            redis_callbacks: false,
             secret_provider: None,
             http_tls: None,
             http_tls_ca: None,
@@ -289,6 +293,7 @@ impl Default for Options {
             script_ceiling: sagat_domain::scripts::Policy::default(),
             streams: None,
             studio: None,
+            lake: false,
         }
     }
 }
@@ -362,7 +367,9 @@ async fn start_on_ready_db(db: TestDb, options: Options, supplied_pool: Option<P
         options.limits.max_in_flight_per_tenant,
     ));
     let cache = DefinitionCache::new(Arc::new(JsonIrCodec), 64);
-    let executions = PgRunStore::new(api_pool.clone(), cache.clone()).with_scoped_worker_protocol();
+    let executions = PgRunStore::new(api_pool.clone(), cache.clone())
+        .with_scoped_worker_protocol()
+        .with_lake_enabled(options.lake);
     let key_k1 = sagat_infra_secrets::generate_key().expect("a key");
     let keys =
         sagat_infra_secrets::SecretsConfig::parse(&format!("k1:{key_k1}")).expect("a key ring");
@@ -389,6 +396,27 @@ async fn start_on_ready_db(db: TestDb, options: Options, supplied_pool: Option<P
         SystemClock,
         "docs/runbooks/alerts.md",
     ))
+    .with_schedules(Arc::new(sagat_application::schedule_api::ScheduleApi::new(
+        sagat_application::schedules::ScheduleService::new(
+            sagat_infra_postgres::PgScheduleStore::new(api_pool.clone()),
+            sagat_infra_ir::schedule_calendar::SpecCalendar,
+            SystemClock,
+            sagat_domain::schedules::Ceilings::default(),
+        ),
+        sagat_application::schedule_firing::ScheduleFiring::new(
+            sagat_infra_postgres::PgScheduleStore::new(api_pool.clone()),
+            sagat_infra_ir::schedule_calendar::SpecCalendar,
+            SystemClock,
+            sagat_infra_postgres::PgIdentityStore::new(api_pool.clone()),
+            sagat_application::runs::RunService::new(
+                executions.clone(),
+                SystemClock,
+                Engine::new(JsonEvaluator),
+                cache.clone(),
+            ),
+            sagat_domain::schedules::Ceilings::default(),
+        ),
+    )))
     .with_secrets(SecretService::new(
         executions.clone(),
         SystemClock,
@@ -406,11 +434,14 @@ async fn start_on_ready_db(db: TestDb, options: Options, supplied_pool: Option<P
                 .expect("webhook profiles"),
         )),
     )
-    .with_outbound(OutboundService::new(
-        executions.clone(),
-        SystemClock,
-        EgressService::new(executions.clone(), SystemClock),
-    ))
+    .with_outbound(
+        OutboundService::new(
+            executions.clone(),
+            SystemClock,
+            EgressService::new(executions.clone(), SystemClock),
+        )
+        .with_redis_callbacks(options.redis_callbacks),
+    )
     .with_connectors(ConnectorService::new(
         executions.clone(),
         SystemClock,
@@ -433,10 +464,10 @@ async fn start_on_ready_db(db: TestDb, options: Options, supplied_pool: Option<P
             options.script_ceiling,
         ),
     );
-    governance = governance.with_connections(sagat_application::database::ConnectionService::new(
-        executions.clone(),
-        SystemClock,
-    ));
+    governance = governance.with_connections(
+        sagat_application::database::ConnectionService::new(executions.clone(), SystemClock)
+            .with_lake_enabled(options.lake),
+    );
     if let Some(provider) = &options.secret_provider {
         governance = governance.with_managed_secrets(
             sagat_application::managed_secrets::ManagedSecretService::new(
@@ -474,14 +505,16 @@ async fn start_on_ready_db(db: TestDb, options: Options, supplied_pool: Option<P
         SystemClock,
         Engine::new(JsonEvaluator),
         cache,
-    );
+    )
+    .with_lake_probes(Arc::new(sagat_infra_ir::JsonLakeProbeCodec));
     if let Some(blobs) = &blobs {
         runs = runs.with_input_blobs(blobs.clone(), Arc::new(sagat_infra_schema::Schemas));
     }
     let mut exec = ExecState::new(
         state,
         sagat_application::api_admission::ApiAdmissionService::new(executions.clone(), SystemClock),
-        DefinitionService::new(executions.clone(), SystemClock, JsonIrCodec),
+        DefinitionService::new(executions.clone(), SystemClock, JsonIrCodec)
+            .with_lake_enabled(options.lake),
         runs,
     )
     .with_blob_transfer(sagat_api_http::HttpBlobTransfer {
@@ -529,7 +562,9 @@ async fn start_on_ready_db(db: TestDb, options: Options, supplied_pool: Option<P
     .with_database_content(
         Arc::new(sagat_infra_secrets::database::JsonDatabaseCredentials),
         Arc::new(sagat_infra_ir::JsonDatabaseResultValidator),
-    );
+    )
+    .with_lake_receipts(Arc::new(sagat_infra_ir::JsonLakeReceiptCodec))
+    .with_lake_probes(Arc::new(sagat_infra_ir::JsonLakeProbeCodec));
     if let Some(provider) = &options.secret_provider {
         workers = workers.with_secret_provider(provider.clone());
     }
@@ -572,6 +607,10 @@ async fn start_on_ready_db(db: TestDb, options: Options, supplied_pool: Option<P
         .expect("bind api");
     let addr = listener.local_addr().expect("addr");
     let server = options.server;
+    // The server closes a connection that sends no request head for `header_read_timeout`, idle keep-alive ones included.
+    // A client that keeps an idle connection longer sends its next request into the close and gets `IncompleteMessage`
+    // (it failed a request after a long wait on a held gate), so the client forgets an idle connection after half of it.
+    let idle_limit = server.header_read_timeout / 2;
     let https = options.http_tls.is_some();
     let http_server = tokio::spawn(async move {
         if let Some(tls) = options.http_tls {
@@ -582,7 +621,9 @@ async fn start_on_ready_db(db: TestDb, options: Options, supplied_pool: Option<P
         }
     });
 
-    let mut client = Client::builder().timeout(Duration::from_secs(10));
+    let mut client = Client::builder()
+        .timeout(Duration::from_secs(10))
+        .pool_idle_timeout(idle_limit);
     if let Some(root) = options.http_tls_ca {
         client = client
             .add_root_certificate(reqwest::Certificate::from_pem(&root).expect("HTTP TLS root"));

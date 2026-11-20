@@ -1,0 +1,28 @@
+{
+  "releaseCommit": "bfda342073db71e84f30bdc79ccf3fbc97a7153c",
+  "packageId": "path+file:///private/tmp/sagat-v03-20261026/released-v02-al_pw2ho/source/tests#sagat-tests@0.2.0",
+  "productionFilesVerified": 649,
+  "productionTreeSha256": "f7ab4beb1f0c38ec39de441f99e86ab61b2e440c3cfd81397fee508bbc8dd7d4",
+  "overlays": [
+    {
+      "path": "tests/fixtures/released-v02/phase.rs",
+      "sha256": "fd663205436d54ec5eccfab6afde4c7ac8366fd494e326e526faade2223fef35"
+    },
+    {
+      "path": "tests/fixtures/released-v02/wait-state.sql",
+      "sha256": "e4b85c83e0226ad2f4c9c59f8c5c501f8d426ff1d6fe2d090702865484d41388"
+    },
+    {
+      "path": "tests/integration/workflow-primitives/main.rs",
+      "sha256": "6188765ccfa57f3ae61f0cf9b94a95f362e2acb3439eb191282ad9e4f587eafd"
+    }
+  ],
+  "binary": "/private/tmp/sagat-v03-20261026/released-v02-al_pw2ho/released-v02-phase",
+  "binarySha256": "8d88d23e68ba9a1dfd59cc88b8d54eb75c9a6ea1e9b3efaec5d0fe6af42da15f",
+  "oldTarget": "/Users/marcelo/.cache/sagat-v02-profile-20261027-x45v143m",
+  "currentTarget": "/Users/marcelo/.cache/sagat-v03-nodebug-5xlu3ufs",
+  "currentCommit": "33ab9da52beeec6e2c80edc74913335f57ea8263",
+  "currentSourceSha256": "f2d70eacd5e7d3d69284072429c6e84d7938c313f03069ced2f23f3fbc7aa216",
+  "currentBinarySha256": "aec73604a56fe0e49166f0c9534a38c17357c901fd4a832ea19adacb8b318c37",
+  "coordinatorSha256": "f38c7038adde46395fc14fd033ad8ef90128f9f401437c72b504047c6bdf9045"
+}

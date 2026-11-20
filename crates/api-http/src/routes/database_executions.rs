@@ -51,6 +51,18 @@ pub struct ProbeMetadata {
     run: RunBody,
     revision: u32,
     failure_code: Option<String>,
+    /// The checks of the probe of an Iceberg connection, in the order they ran. Absent for any other probe, and for an Iceberg probe whose
+    /// result cannot be read, which says so by its `failureCode`: no checks never means a healthy connection (D035-150).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    checks: Option<Vec<ProbeCheckBody>>,
+}
+
+#[derive(Serialize)]
+struct ProbeCheckBody {
+    check: &'static str,
+    outcome: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    code: Option<&'static str>,
 }
 fn namespace(raw: &str) -> Result<NamespaceId, ApiError> {
     raw.parse().map_err(|_| ApiError::not_found())
@@ -164,5 +176,18 @@ pub async fn latest_probe<B: Exec>(
         run: RunBody::from(&p.run),
         revision: p.revision,
         failure_code: p.failure_code,
+        checks: p.result.as_ref().map(|result| {
+            result
+                .checks()
+                .iter()
+                .map(|check| ProbeCheckBody {
+                    check: check.check().as_str(),
+                    outcome: check.outcome().as_str(),
+                    code: check
+                        .code()
+                        .map(sagat_domain::database::DatabaseFailure::code),
+                })
+                .collect()
+        }),
     })))
 }

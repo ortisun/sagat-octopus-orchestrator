@@ -367,7 +367,7 @@ async fn prove(
         || node(&iteration, "entry_node")? != *entry.node()
         || col::<Uuid>(&iteration, "entry_instance_id")?
             != instance_step_id(run.version, i.run_id(), &entry)
-        || col::<String>(&iteration, "activity")? != entry_activity
+        || col::<Option<String>>(&iteration, "activity")?.as_deref() != Some(entry_activity)
         || col::<Option<Vec<String>>>(&iteration, "return_path_nodes")?.as_ref() != Some(&nodes)
         || col::<Option<Vec<i32>>>(&iteration, "return_path_indices")?.as_ref() != Some(&indices)
         || node(&iteration, "return_node")? != *returned.node()

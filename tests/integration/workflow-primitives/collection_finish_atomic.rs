@@ -59,7 +59,7 @@ async fn remove_finish_fault(pool: &PgPool) {
     .expect("remove labelled collection Finish fault gate");
 }
 
-async fn snapshot(pool: &PgPool, tenant: Uuid, run: RunId) -> Value {
+pub(super) async fn snapshot(pool: &PgPool, tenant: Uuid, run: RunId) -> Value {
     sqlx::query_scalar(
         "SELECT jsonb_build_object( \
             'run',to_jsonb(r), \

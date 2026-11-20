@@ -62,6 +62,14 @@ impl ScopeMember {
             .and_then(StepState::failure)
     }
 
+    /// The first terminal failure that has no committed local error route.
+    #[must_use]
+    pub fn first_unhandled_failure(&self, definition: &WorkflowDefinition) -> Option<&FailureCode> {
+        self.steps
+            .iter()
+            .find_map(|(instance, step)| step.unhandled_instance_failure(definition, instance))
+    }
+
     /// The member's `return` step that is waiting for the scheduler to checkpoint it.
     #[must_use]
     pub fn pending_return(&self, definition: &WorkflowDefinition) -> Option<&ExecutionInstanceId> {

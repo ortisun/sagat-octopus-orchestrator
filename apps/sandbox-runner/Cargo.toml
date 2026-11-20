@@ -24,18 +24,23 @@ axum.workspace = true
 base64 = "0.23"
 metrics.workspace = true
 reqwest = { workspace = true, features = ["json"] }
+rustix = { version = "1", features = ["fs", "process"] }
 sagat-api-grpc.workspace = true
 sagat-api-http.workspace = true
 sagat-application.workspace = true
 sagat-control-plane.workspace = true
 sagat-domain.workspace = true
 sagat-infra-egress.workspace = true
+sagat-infra-lake.workspace = true
 sagat-infra-sandbox.workspace = true
 sagat-telemetry.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "net", "time", "sync"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "net", "time", "sync", "fs", "io-util"] }
 tonic.workspace = true
 tracing.workspace = true
 uuid.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

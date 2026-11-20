@@ -1,0 +1,196 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sagat-octopus-orchestrator.io/drafts/019/workflow-ir.fragment.schema.json",
+  "title": "Feature 019 additive workflow IR fragment (draft, not canonical)",
+  "description": "Additions to specs/001-platform-foundation/contracts/workflow.schema.json under ADR-0032. apiVersion stays sagat-octopus-orchestrator.io/v1. Each field is optional; publication refuses a field whose capability the server does not enable (VALIDATION_FAILED, details.reason UNSUPPORTED_CAPABILITY). Merge target per $defs entry is named in its description.",
+  "$defs": {
+    "priority": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 5,
+      "description": "Dispatch priority: 1 is the highest, 3 the default. Strict within the candidates one worker session may take."
+    },
+    "versioningBehavior": {
+      "enum": [
+        "pinned",
+        "autoUpgrade"
+      ],
+      "description": "How a step whose activity belongs to a worker deployment is routed: pinned uses the run's pin for that deployment (created at the first claim); autoUpgrade uses the routing in force at each claim."
+    },
+    "workflowDispatch": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Merge as root property `dispatch`. Defaults for runs of this workflow version; start options override them.",
+      "properties": {
+        "priority": {
+          "$ref": "#/$defs/priority"
+        },
+        "fairnessKey": {
+          "description": "Tagged so that a value such as input.customerId is never ambiguous: {\"literal\": key} with key matching ^[A-Za-z0-9._:/-]{1,64}$, or {\"expr\": expression} over `input` only, evaluated once at admission with the existing bounded evaluator; a result outside the key pattern refuses admission (VALIDATION_FAILED, DISPATCH_EXPRESSION). An {expr} key is classified with the ADR-0033 level of the input field it reads (pii when undeclared); publication refuses one above internal (DISPATCH_KEY_LEVEL) or one that reads a location encoded under feature 031 (the encoded-location check of FR-031-006, code ENCODING_READ_BY_FAIRNESS_KEY, registry specs/031-client-side-encryption/contracts/encoded-field-registry.md).",
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "literal"
+              ],
+              "properties": {
+                "literal": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9._:/-]{1,64}$"
+                }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "expr"
+              ],
+              "properties": {
+                "expr": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 1024
+                }
+              }
+            }
+          ]
+        },
+        "fairnessWeight": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100
+        },
+        "versioning": {
+          "$ref": "#/$defs/versioningBehavior"
+        }
+      }
+    },
+    "nodeDispatch": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Merge as property `dispatch` of activity and script nodes (script nodes accept only priority: scripts are outside deployments) and of their body variants.",
+      "properties": {
+        "priority": {
+          "$ref": "#/$defs/priority"
+        },
+        "versioning": {
+          "$ref": "#/$defs/versioningBehavior"
+        }
+      }
+    },
+    "childDispatch": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Merge as property `dispatch` of child nodes. Absent fields inherit the parent's run values; `deployment: current` starts the child without inherited pins.",
+      "properties": {
+        "priority": {
+          "$ref": "#/$defs/priority"
+        },
+        "fairnessKey": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9._:/-]{1,64}$"
+        },
+        "fairnessWeight": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100
+        },
+        "versioning": {
+          "$ref": "#/$defs/versioningBehavior"
+        },
+        "deployment": {
+          "enum": [
+            "inherit",
+            "current"
+          ],
+          "default": "inherit"
+        }
+      }
+    },
+    "asyncCompletion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "heartbeatTimeoutMs"
+      ],
+      "description": "Merge as property `asyncCompletion` of activity nodes (and bodyActivity). Allows a worker or a push function to detach the attempt and complete it through REST with a task token. Both durations are clamped by the step timeout and the run deadline; above the ceilings the definition is refused.",
+      "properties": {
+        "heartbeatTimeoutMs": {
+          "type": "integer",
+          "minimum": 1000,
+          "maximum": 86400000
+        },
+        "maxDurationMs": {
+          "type": "integer",
+          "minimum": 1000,
+          "maximum": 2592000000
+        }
+      }
+    },
+    "heartbeatSchema": {
+      "type": "object",
+      "maxProperties": 64,
+      "description": "Merge as property `heartbeatSchema` of activity and script nodes. A JSON Schema for checkpoint details, carrying the ADR-0033 classification annotation like outputSchema. Undeclared fields are pii. It does not validate a checkpoint against business rules; it classifies it for disclosure. Encoding follows 031's encoded-field registry (specs/031-client-side-encryption/contracts/encoded-field-registry.md): on activity it is a 031 carrier (kinds K, S: checkpoint and final failure details are a write path); on script declaring x-sagat-encoding is refused (ENCODING_NOT_PRODUCIBLE); a checkpoint of an attempt with a non-empty payload plan and no encoded heartbeatSchema is refused with ENCODING_REQUIRED while the lease renewal still commits."
+    },
+    "continueAsNewDeployment": {
+      "enum": [
+        "inherit",
+        "current"
+      ],
+      "default": "inherit",
+      "description": "Merge as property `deployment` of continueAsNew. inherit copies the segment's pins and dispatch options to the successor in the handoff transaction; current copies dispatch options but no pins. The workflow version is unchanged (FR-014-012)."
+    }
+  },
+  "examples": [
+    {
+      "dispatch": {
+        "priority": 2,
+        "fairnessKey": {
+          "expr": "input.customerId"
+        },
+        "versioning": "pinned"
+      },
+      "nodes": [
+        {
+          "id": "render",
+          "type": "activity",
+          "activity": "documents.render",
+          "dispatch": {
+            "priority": 1
+          },
+          "heartbeatSchema": {
+            "type": "object",
+            "properties": {
+              "offset": {
+                "type": "integer",
+                "x-sagat-classification": "internal"
+              }
+            }
+          },
+          "next": "review"
+        },
+        {
+          "id": "review",
+          "type": "activity",
+          "activity": "documents.submit-for-review",
+          "asyncCompletion": {
+            "heartbeatTimeoutMs": 3600000,
+            "maxDurationMs": 604800000
+          },
+          "dispatch": {
+            "versioning": "autoUpgrade"
+          },
+          "next": "again"
+        },
+        {
+          "id": "again",
+          "type": "continueAsNew",
+          "input": "input",
+          "deployment": "current"
+        }
+      ]
+    }
+  ]
+}

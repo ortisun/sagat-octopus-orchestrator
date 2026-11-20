@@ -1,0 +1,7 @@
+{
+  "scenario": "applied-output-quota",
+  "resultPath": "outcome-inukkyd9/result.json",
+  "resultSha256": "e4998ce832899209dd5169d1f3ffd4c8b9c45049517ee1c6ad53fbfcba5dfd0b",
+  "buildSha256": "430d94c900adcb596da62b922cb392586bd586d61ff9362654e7724480925352",
+  "transcriptSha256": "57756f3131cdeb7386493edb35c77eb71ae6fbbedcf3a0e6a4edcc7398c14e18"
+}

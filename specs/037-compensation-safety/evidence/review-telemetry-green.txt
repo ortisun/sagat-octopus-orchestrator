@@ -1,0 +1,31 @@
+    Blocking waiting for file lock on build directory
+   Compiling sagat-domain v0.2.0 (/Users/marcelo/Documents/Projects/sagat-octopus-compensation-safety/crates/domain)
+   Compiling sagat-application v0.2.0 (/Users/marcelo/Documents/Projects/sagat-octopus-compensation-safety/crates/application)
+    Finished `test` profile [unoptimized] target(s) in 1m 29s
+     Running tests/telemetry_derive.rs (/var/folders/60/bf6rmfzx6zq67nrbzb3m0p480000gn/T/sagat-037-target-q0fwz2gu/debug/deps/telemetry_derive-d66f3ae78739bf24)
+
+running 21 tests
+test a_lost_lease_is_an_error_attempt_with_its_code ... ok
+test a_failed_run_is_an_error_span_and_a_cancelled_one_is_not ... ok
+test a_run_finished_is_counted_with_its_duration ... ok
+test a_run_with_three_attempts_has_three_attempt_spans_and_a_run_span ... ok
+test a_step_cancelled_while_it_held_the_lease_ends_its_attempt_as_cancelled ... ok
+test a_timer_that_starts_in_one_batch_and_fires_in_a_later_one_gets_its_span ... ok
+test a_step_cancelled_between_attempts_does_not_close_an_attempt_that_already_ended ... ok
+test a_wait_that_starts_in_one_batch_and_is_satisfied_in_a_later_one_gets_its_span ... ok
+test an_attempt_that_has_not_ended_is_not_exported_and_is_when_it_does ... ok
+test equal_local_nodes_in_two_iterations_have_distinct_attempt_spans ... ok
+test equal_local_timers_in_two_scopes_project_independently ... ok
+test review_telemetry_preserves_source_codes_without_inventing_a_negative_lookup_attempt ... ok
+test scoped_switch_selection_carries_its_instance_identity ... ok
+test deriving_in_two_batches_gives_the_same_spans_as_deriving_at_once_and_none_twice ... ok
+test the_attempts_of_two_steps_do_not_get_each_others_ends ... ok
+test the_attempts_of_a_journal_longer_than_a_batch_are_all_there_and_all_closed ... ok
+test the_duration_of_an_attempt_is_from_its_lease_to_its_end ... ok
+test the_run_span_hangs_from_the_request_the_parent_run_or_nothing ... ok
+test the_wait_between_ready_and_leased_is_the_schedule_latency_of_each_attempt ... ok
+test timers_and_waits_are_spans_of_the_time_a_run_spent_not_working ... ok
+test what_an_operator_did_is_on_the_run_span_without_saying_who ... ok
+
+test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

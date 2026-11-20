@@ -1,6 +1,6 @@
 # Traceability of features, requirements and test evidence
 
-> Base record to update per PR. Features 001–012 have implementations and evidence tables below. The status rows and requirement evidence distinguish delivered scope from remaining product, decision and validation gaps. In particular, native Go and Java sandbox runners are proven on Linux AMD64 and ARM64, while arbitrary TypeScript/Python dependencies remain unsupported; feature 006 is not published; protocol 1.4 task streaming is implemented and passes five-language conformance, with its comparative performance report recorded (MIT was selected on 2026-10-11; reproducible packages and five clean-consumer smoke tests passed); feature 008 has no exemplars, pager integrations or OTLP protobuf/gRPC exporter, and its Operations menu is implemented and validated by T008-036; feature 010 has exact per-activity concurrency admission but no generic pool/queue quota, demonstrated 5 000 transitions/s result or partitioned journal. The full product/KEDA validation passed in a disposable one-node kind/Cilium cluster on 2026-10-12; node drain, cross-node rescheduling and multi-zone recovery remain unproven.
+> Base record to update per PR. Features 001–012 have implementations and evidence tables below. The status rows and requirement evidence distinguish delivered scope from remaining product, decision and validation gaps. In particular, native Go and Java sandbox runners are proven on Linux AMD64 and ARM64, while arbitrary TypeScript/Python dependencies remain unsupported; feature 006 is distributed through GitHub Releases (the 0.2.0 assets and provenance were verified on 2026-10-26); protocol 1.4 task streaming is implemented and passes five-language conformance, with its comparative performance report recorded (MIT was selected on 2026-10-11; reproducible packages and five clean-consumer smoke tests passed); feature 008 has no exemplars, pager integrations or OTLP protobuf/gRPC exporter, and its Operations menu is implemented and validated by T008-036; feature 010 has exact per-activity concurrency admission but no generic pool/queue quota, demonstrated 5 000 transitions/s result or partitioned journal. The full product/KEDA validation passed in a disposable one-node kind/Cilium cluster on 2026-10-12; node drain, cross-node rescheduling and multi-zone recovery remain unproven.
 
 | Feature | Requirements | User stories | Planned tests | Status |
 |---|---|---|---|---|
@@ -9,18 +9,18 @@
 | [003 sagas-compensations](../specs/003-sagas-compensations/spec.md) | FR-003-001..007 | 4 | `tests/e2e/sagas-compensations/`, `tests/integration/sagas-compensations/`, `tests/contract/sagas-compensations/`, `tests/fault/sagas-compensations/` | Implemented; the SDK DSL, Studio saga operations and dashboards were subsequently supplied by features 006–008 |
 | [004 events-webhooks-messaging](../specs/004-events-webhooks-messaging/spec.md) | FR-004-001..008 | 4 | `tests/e2e/events-webhooks-messaging/`, `tests/integration/events-webhooks-messaging/`, `tests/contract/events-webhooks-messaging/`, `tests/fault/events-webhooks-messaging/` | Implemented and verified, including OIDC/mTLS profiles and outbound broker producers; Studio manages inbound NATS/Kafka/SQS connectors, while outbound subscriptions and dedicated webhook/event screens remain API-only |
 | [005 inline-code-sandbox](../specs/005-inline-code-sandbox/spec.md) | FR-005-001..012 | 6 | `tests/e2e/inline-code-sandbox/`, `tests/integration/inline-code-sandbox/`, `tests/contract/inline-code-sandbox/`, `tests/fault/inline-code-sandbox/` | Implemented for TypeScript, Python, C#, native Go and Java; AMD64 and ARM64 native proofs passed. Dependency installation is limited to the exact C# catalog; arbitrary TypeScript/Python dependencies remain unsupported and Go/Java reject dependency requests |
-| [006 sdk-multilanguage](../specs/006-sdk-multilanguage/spec.md) | FR-006-001..008 | 4 | `tests/e2e/sdk-multilanguage/`, `tests/fault/sdk-multilanguage/`, `tests/contract/sdk-conformance/`, `tests/contract/sdk-multilanguage/`, `tests/performance/sdk-multilanguage/` | Implemented within the recorded scope; MIT packages and clean-consumer installation verified; registry publication awaits namespace/credentials; finite-credit streaming passes five-language conformance, with a recorded 30-row comparative benchmark |
+| [006 sdk-multilanguage](../specs/006-sdk-multilanguage/spec.md) | FR-006-001..008 | 4 | `tests/e2e/sdk-multilanguage/`, `tests/fault/sdk-multilanguage/`, `tests/contract/sdk-conformance/`, `tests/contract/sdk-multilanguage/`, `tests/performance/sdk-multilanguage/` | Implemented within the recorded scope; MIT packages and clean-consumer installation verified; 0.2.0 packages published through GitHub Releases, with no registry publication; finite-credit streaming passes five-language conformance, with a recorded 30-row comparative benchmark |
 | [007 workflow-studio](../specs/007-workflow-studio/spec.md) | FR-007-001..010 | 4 | `tests/e2e/workflow-studio/`, `tests/fault/workflow-studio/` | Implemented within the recorded scope, including dedicated Namespaces and inbound Integrations menus; owner approval and real-sandbox Studio CI evidence are linked below |
 | [008 observability-operations](../specs/008-observability-operations/spec.md) | FR-008-001..006 | 4 | `tests/e2e/observability-operations/`, `tests/integration/observability-operations/`, `tests/contract/observability-operations/`, `tests/fault/observability-operations/`, `tests/performance/observability-operations/` | Backend implemented; exemplars, pager integrations and protobuf/gRPC export remain open. The Studio Operations menu for alerts and audited drains is implemented and validated (T008-036) |
 | [009 security-multitenancy](../specs/009-security-multitenancy/spec.md) | FR-009-001..008 | 4 | `tests/e2e/security-multitenancy/`, `tests/integration/security-multitenancy/`, `tests/contract/security-multitenancy/`, `tests/fault/security-multitenancy/` | Implemented within the explicit gaps below, including integration with features 004, 005 and the Helm chart |
 | [010 scalability-ha](../specs/010-scalability-ha/spec.md) | FR-010-001..007 | 4 | `tests/e2e/scalability-ha/`, `tests/integration/scalability-ha/`, `tests/contract/scalability-ha/`, `tests/fault/scalability-ha/`, `tests/fault/failover/`, `tests/performance/scalability-ha/`, `infra/dr/` | Implemented within the measured scope, including exact per-activity concurrency admission and one-node full-product KEDA validation; 5 000 transitions/s, journal partitioning, a generic pool/queue quota and multi-node disruption remain unproven |
-| [011 gitops-versioning](../specs/011-gitops-versioning/spec.md) | FR-011-001..006 | 4 | `tests/e2e/gitops-versioning/`, `tests/integration/gitops-versioning/`, `tests/contract/gitops-versioning/`, `tests/fault/gitops-versioning/`, `tests/performance/gitops-versioning/`, `apps/cli/tests/` | Implemented; artifact/history retention, scripts in the manifest and a packaged binary remain open |
-| [012 developer-experience](../specs/012-developer-experience/spec.md) | FR-012-001..006 | 4 | `tests/e2e/developer-experience/`, `tests/fault/developer-experience/`, `tests/contract/developer-experience/`, `tests/performance/developer-experience/`, `apps/cli/tests/`, `apps/dev-idp/tests/` | Implemented; human acceptance remains open (no person was timed for SC-012-001, and there is no packaged binary, published SDK or hosted documentation) |
-| [016 payload-classification](../specs/016-payload-classification/spec.md) | FR-016-001..029 | 8 | `tests/contract/payload-classification/`, `tests/integration/payload-classification/`, `tests/fault/payload-classification/`, `tests/e2e/payload-classification/`, `tests/performance/payload-classification/`, `frontend/e2e/tests/payload-disclosure.spec.ts` (focused implementations and evidence in `tasks/project-completion/integration-notes.md`; final gates pending) | Implementation in progress |
+| [011 gitops-versioning](../specs/011-gitops-versioning/spec.md) | FR-011-001..006 | 4 | `tests/e2e/gitops-versioning/`, `tests/integration/gitops-versioning/`, `tests/contract/gitops-versioning/`, `tests/fault/gitops-versioning/`, `tests/performance/gitops-versioning/`, `apps/cli/tests/` | Implemented; artifact/history retention and scripts in the manifest remain open; three native CLI archives are available in release 0.2.0 |
+| [012 developer-experience](../specs/012-developer-experience/spec.md) | FR-012-001..006 | 4 | `tests/e2e/developer-experience/`, `tests/fault/developer-experience/`, `tests/contract/developer-experience/`, `tests/performance/developer-experience/`, `apps/cli/tests/`, `apps/dev-idp/tests/` | Implemented; human acceptance and hosted documentation remain open (no person was timed for SC-012-001). Three native CLI archives and all five SDK distributions are available in release 0.2.0 |
+| [016 payload-classification](../specs/016-payload-classification/spec.md) | FR-016-001..029 | 8 | `tests/contract/payload-classification/`, `tests/integration/payload-classification/`, `tests/fault/payload-classification/`, `tests/e2e/payload-classification/`, `tests/performance/payload-classification/`, `frontend/e2e/tests/payload-disclosure.spec.ts` ([final integrated evidence](../specs/016-payload-classification/release-gates-2026-10-25.md)) | Implemented; 0.2.0 integration gates passed on 2026-10-26 |
 
 ## Evidence protocol
 
-Feature [017 database-connections](../specs/017-database-connections/spec.md) is approved (2026-10-16), implemented and integrated with the feature-014 base of `develop` on `feature/017-database-connections-integration` (2026-10-24). FR-017-001..022 and SC-017-001..011 are tracked in its [tasks](../specs/017-database-connections/tasks.md), its [traceability](../specs/017-database-connections/traceability.md) and the "Integration into develop" section of its [verification](../specs/017-database-connections/verification.md). Deployment-gated criteria (private-network egress, three-member Raft restore, Kubernetes) keep the limits recorded there.
+Feature [017 database-connections](../specs/017-database-connections/spec.md) is approved (2026-10-16), implemented and merged into `develop` through PR #45 (`95b5a238`, 2026-10-25), then into the 0.2.0 main checkpoint through PR #51 (`bfda3420`, 2026-10-26). FR-017-001..022 and SC-017-001..011 are tracked in its [tasks](../specs/017-database-connections/tasks.md), its [traceability](../specs/017-database-connections/traceability.md) and the "Integration into develop" section of its [verification](../specs/017-database-connections/verification.md). Deployment-gated criteria (private-network egress, three-member Raft restore, Kubernetes) keep the limits recorded there.
 
 1. Link the PR to the FR and SC satisfied; reference the exact test (name and CI execution).
 2. For durability invariants: failure scenario, journal evidence and absence of a double transition.
@@ -87,9 +87,9 @@ Gaps and decisions: `specs/003-sagas-compensations/research.md` (G51–G65, D59�
 | FR-003-002 the compensation plan persisted as a reverse DAG, respecting branch independence | Done | `saga_plans` / `saga_plan_entries` (immutable, tenant-bound) written at publish, read at `GET …/compensation-plans`; `plan::*`, `us01`, `the_plan_is_the_same_as_the_one_worked_out_the_long_way`, `what_ran_after_a_join_is_undone_before_the_branches_that_fed_it`; the plan a run follows (`run_saga_entries`) is decided from what completed |
 | FR-003-003 compensation with its own retries, idempotency, limits, timeout and provider circuit breaker | Done | default five attempts / `compensationRetry` / `compensationTimeoutMs`; `compensation:{id}:{run}` keys (`us02`, `crashes`, `provider`); the breaker per tenant, namespace and activity (`breaker::*`, mutation-checked); limits are the quotas and bindings of 009 applied to the derived steps. Lookups are not behind the breaker (G56); the breaker is per activity name (G55) |
 | FR-003-004 distinguish COMPENSATED, PARTIAL, COMPENSATION_FAILED, MANUAL_REVIEW and irreversible | Done | the five statuses in the OpenAPI (and a test that none is missing), `run.finished` with all terminal ones (AsyncAPI, tested), `saga` state in the graph; `an_irreversible_effect_makes_the_outcome_partial...`, `a_sibling_saga_whose_compensation_failed_is_not_hidden...`, `us04` |
-| FR-003-005 pause, retry compensation and skip, skip only with explicit permission and an audited justification | Done | `RETRY_STEP` / `RETRY_COMPENSATION` (`run:operate`), `SKIP_COMPENSATION` / `RESOLVE_STEP` (`saga:override`, administrators), justification after trimming, audit with the reason; `review::*`, `us04`, `contract_rest_sagas_compensations`. Feature 008 subsequently implements `MARK_MANUAL_REVIEW` and `RERUN_AS_NEW` with contract/E2E coverage. |
+| FR-003-005 pause, retry compensation and skip, skip only with explicit permission and an audited justification | Done; recovery refined by 037 delivery 1 | `RETRY_STEP` / `RETRY_COMPENSATION` (`run:operate`) remain for known-failed eligible work; unknown originals and compensations are refused even with `saga:override`. `SKIP_COMPENSATION` / `RESOLVE_STEP` need `run:operate` plus `saga:override`; accepted decisions retain actor/reason. `review::*`, `us04`, `contract_rest_sagas_compensations`. Feature 008 subsequently implements `MARK_MANUAL_REVIEW` and `RERUN_AS_NEW` with contract/E2E coverage. |
 | FR-003-006 propagate cancellation / deadline to sub-workflows under a configured policy | Done | `cancelPolicy` of the `child` node (002) carries a cancellation into a child whose saga then undoes its work, and the parent waits (`request_cancel`) or not (`propagate`, `detach`); a child that ends in a saga status fails its parent's step with its own code. `children::*` (8 tests) |
-| FR-003-007 reconcile or mark manual for an ambiguous high-risk result | Done | `LEASE_EXPIRED` / `ATTEMPT_TIMEOUT` / `OUTCOME_UNKNOWN` look the step up (`reconcileWith`) or, if `highRisk` without a lookup, wait for a person; retrying such a step needs an administrator; `reconcile::*`, `us03`, `provider::*` |
+| FR-003-007 reconcile or mark manual for an ambiguous high-risk result | Done for the feature-003 baseline; recovery refined by 037 delivery 1 | Every leased Activity is external-capable. `LEASE_EXPIRED` / `ATTEMPT_TIMEOUT` / `OUTCOME_UNKNOWN` reconcile or review regardless of `highRisk`; `NotApplied` reviews as `RECONCILIATION_NOT_FINAL`, and direct unknown retry is refused. Earlier feature-003 evidence remains historical; delivery-1 acceptance must be recorded separately. |
 | NFR-003-SEC tenant isolation, RBAC, least privilege, no secret in logs or in the journal | Done | tenant in every key, foreign key and statement of the new tables; breaker per namespace; `saga:override` only for administrators; no label, audit record or error carries a payload; the lookup's output goes through the secret scan; two independent reviews (D71) |
 | NFR-003-DUR a transition is not lost after commit; lease and fencing | Done | `fault_sagas_compensations` (13 tests: crash before commit, restart, effect before checkpoint, duplicates, three races, a real HTTP provider, connections killed under load), the domain property tests extended with sagas, `verify_run` after every scenario |
 | NFR-003-OBS logs, correlated traces, essential metrics, auditability per Run/Step | Done | Six counters taken after commit with closed labels (D69), journal events, audit records and the graph; feature 008 subsequently supplied the shared dashboards and alerts (G60 resolved). |
@@ -191,7 +191,7 @@ Gaps and decisions: `specs/006-sdk-multilanguage/research.md` (G121–G141, D119
 | FR-006-005 W3C traceparent, correlationId, idempotency key, deadline; retries only when safe | Done | `run-lifecycle` (the trace reaches the activity; the deadline is `<createdAt+3600s>`), `lost-responses` (a lost answer or a call that never left is one run; a refusal is not repeated; a 408 and two 503 are; `faultsApplied`), `errors`; `fault_sdk_multilanguage network`; one retry rule by code in the five SDKs (D127, D133) |
 | FR-006-006 one conformance suite with fixtures and fault injection for five languages | Done | `tests/contract/sdk-conformance/` now has 19 common scenarios, including blob, run-input and partial-delivery stream fault flows, executed across all five SDKs (95 final recorded executions) against a platform and real engine with faults at each SDK's transport hook. The earlier 15-scenario three-pass timings remain historical evidence for the pre-blob suite. |
 | FR-006-007 C# with Microsoft.Extensions.DependencyInjection, IHostedService, CancellationToken, ILogger, ActivitySource | Done | `sdks/dotnet` (`DependencyInjectionTests`, `AspNetCoreTests`, `TelemetryTests`); `e2e_sdk_multilanguage us01` plays an ASP.NET Core service against the real platform through the `aspnet` mode (the same run for the same key, the trace the request came with) |
-| FR-006-008 packages with SemVer, runtime version matrix and minimal examples | Local distribution implemented; registry publication conditional | MIT was selected and applied to the repository and all five SDK packages. T006-037 built 11 reproducible distributables plus checksums, including Maven source/Javadoc classifiers and SDK release notes; five clean consumers passed in paired same-input runs, and final smoke checks include the blob APIs (`scripts/package-sdks.sh`, `docs/runbooks/sdk-packaging.md`, CI run 38210316160). The older G123 list that says release notes and Maven classifiers are missing is superseded by this evidence. Public registry namespaces/credentials, external signing/provenance verification and durable release retention remain release prerequisites; no registry publication is claimed. |
+| FR-006-008 packages with SemVer, runtime version matrix and minimal examples | Done (GitHub Releases, the owner-selected channel) | MIT was selected and applied to the repository and all five SDK packages. T006-037 built 11 reproducible distributables plus checksums, including Maven source/Javadoc classifiers and SDK release notes; five clean consumers passed in paired same-input runs, and final smoke checks include the blob APIs (`scripts/package-sdks.sh`, `docs/runbooks/sdk-packaging.md`, CI run 38210316160). The older G123 list that says release notes and Maven classifiers are missing is superseded by this evidence. Published 2026-10-26 as release v0.2.0 (`release` run 40268722763): the 14 assets match `SHA256SUMS`, which carries a SLSA v1 provenance attestation from `release.yml` at the tag; on 2026-11-01 the downloaded wheel and npm tarball installed into clean consumers and reported `0.2.0`. Registry publication (npm, PyPI, NuGet, Maven) is outside the channel chosen on 2026-10-16. |
 | NFR-006-SEC tenant isolation, RBAC, least privilege, secret never in logs or in the journal | Done for what exists | `fault_sdk_multilanguage tenant`; four independent reviews (security and correctness, each twice) found defects, each read against the code and fixed failing-first (the list is in `research.md` and the `fix(sdk)` commits): a re-register storm in every SDK, a heartbeat that died on a provider exception, secrets readable after the handler, a body cap that a TLS option bypassed, credentials in every printable form, Jackson advisories, Go advisories; TLS and mTLS tested for both channels in every SDK; no SDK follows a redirect or can turn verification off (a test of each reads its sources). Remaining: G134–G136 |
 | NFR-006-DUR after commit, losing a worker or broker cannot lose a transition | Done | stale reports dropped, reports idempotent (`done-<id>`), `lease-lost`, `worker-shutdown` (a stopped host does not fail a step for good), `worker-transport-faults`; local lease fencing is not done (G134) |
 | NFR-006-OBS structured logs, correlated traces, essential metrics, auditability | Opt-in OTel integration verified | All five SDKs passed real OpenTelemetry in-memory exporter tests for parentage, bounded safe attributes/metrics and exporter failure isolation. TS/Python/Go/Java bridge the existing hooks; C# uses ActivitySource/Meter. Providers and exporters stay application-owned. See [SDK observability](runbooks/sdk-observability.md); final integrated conformance remains a release gate. |
@@ -357,7 +357,9 @@ Gaps and decisions: `specs/010-scalability-ha/research.md` (D229–D260 and G239
 
 Decision: [ADR-0033](adr/ADR-0033-payload-values-are-classified-per-field.md); combined dependency
 policy: [ADR-0036](adr/ADR-0036-integrated-scoped-managed-and-classified-execution.md). Implementation
-is in progress. [Integration notes](../tasks/project-completion/integration-notes.md) name the actual
+and final integrated gates passed for the 0.2.0 checkpoint; current evidence is in the
+[release-gate record](../specs/016-payload-classification/release-gates-2026-10-25.md). The focused
+checkpoint table below is historical. [Integration notes](../tasks/project-completion/integration-notes.md) name the actual
 commands and focused results (that tree is not in git: a tick stands on a test in the repository);
 unchecked canonical tasks require their full acceptance criteria. Two independent reviews on
 2026-10-25 reopened T016-053 (benchmark: the cache does not bound compiled-validator memory) and
@@ -397,7 +399,7 @@ parallelism. Namespace-dialog fixture isolation passed all six focused and 1,105
 Full-workspace Clippy, integrated 0.4.0 builds, readiness probes and four real Chromium journeys pass.
 Neither the initial failed runs nor the external publication/human-acceptance gates are marked green.
 
-## 014 — Workflow primitives and expanded SDK examples (updated 2026-10-17)
+## 014 — Workflow primitives and expanded SDK examples (updated 2026-11-13)
 
 [Specification](../specs/014-workflow-primitives/spec.md),
 [implementation tasks](../specs/014-workflow-primitives/tasks.md), and
@@ -410,8 +412,8 @@ the SDK version and capability matrix is [sdk-compatibility.md](sdk-compatibilit
 | FR-014-001, FR-014-002, SC-014-001 — practical examples and parity | Implemented and locally verified | `examples/order-processing/`: three workflows in all five SDK languages. `e2e_developer_experience` filter `order_processing::` passed 25 workflow runs and 10 configuration checks on a real disposable platform. The common CI example job includes this filter. |
 | FR-014-003, FR-014-009, FR-014-014 — additive v1 identity and bounded switch | Switch implemented and locally verified; broader identity scope partial | The v1 schema, typed root/scoped identity and compatible PostgreSQL migration are implemented. A switch choice is journaled with step projection and outbox in one transaction; PostgreSQL fault tests cover replay, recovery and rollback. WP-07 uses one reviewed scenario across all five SDKs. Restricted scoped collection and loop execution now has public worker 1.5 evidence; broader bodies remain gated. See the [validation report](../specs/014-workflow-primitives/validation-report.md). |
 | FR-014-010–011 — declared Query/Update | Run-addressed subset implemented and locally verified | Public v1 publication accepts bounded declared state with existing basic nodes. Real PostgreSQL and HTTP tests cover revision, replay, authorization, audit, rollback and a response lost after commit; WP-08/09 runs in all five SDKs. Chain Query/Update have focused HTTP/PostgreSQL evidence, including head fencing and replay; a direct public continuation transfers declared state. The `chain-query-handoff` scenario passes successor Query, Update, exact replay and stale expected-head Query in all five SDKs. Timer race, secret-manager capability canaries, broader handoff faults and performance limits remain open. |
-| FR-014-004–008, FR-014-012–013, FR-014-015–017 — collections, loops, approval, continuation and cross-cutting rules | Partially implemented; public runtime incomplete | A bounded root approval can be published, started, listed and decided through the public API; PostgreSQL integration/fault tests and the five-language `approval-decisions` runtime scenario cover its available slice. Approval combined with parallel execution, declared state or another structured primitive remains disabled. A restricted continuation graph can create a chain publicly and hand off with fenced PostgreSQL transactions; focused handoff and HTTP tests cover success/FINAL, CHAIN_LIMIT/FINAL, replay, tenant opacity and direct declared-state transfer. The five-language `chain-query-handoff` scenario distinguishes segment and chain waits. The five-language `chain-commands` scenario proves a signal-controlled wait after an entry activity, exact signal/cancel replay, stale-head fences, tenant opacity and final cancellation. A `waitEvent` entrypoint (the successor is created already waiting; five-language `chain-root-wait`), a parent cancelled mid-chain (`chain-cancel-parent`) and `RERUN_AS_NEW` (`chain-rerun`) are covered; bodies, triggers and wider graphs remain open. A restricted root collection chain with one-activity/return bodies can be published and executed through HTTP, worker 1.5 and the fenced scheduler after audited tenant capacity provisioning; public PostgreSQL tests cover two scopes, ordered checkpoints, terminal rollback/retry and replay. Broader collection bodies, nested scopes and compensation/reconciliation remain closed. A restricted public loop has PostgreSQL restart/rollback and five-SDK `loop-runtime` evidence; mapped collection results have source-bound transactional storage and five-SDK `collection-runtime` evidence. Broader loop graphs and the remaining failure matrix stay open. The separate IR revision was superseded by [ADR-0032](adr/ADR-0032-additive-workflow-ir.md); documents retain v1. |
-| SC-014-002–006 and NFR-014-001–004 — primitive release guarantees | **Not fully verified** | The latest consolidated checkpoint passed 139 real-PostgreSQL integration tests, 26 contracts and 25 fault tests; a separate real HTTP/PostgreSQL E2E route scenario passed. The scheduler finalizes a deterministic continuation transfer failure with `EXPRESSION_ERROR`; fault tests verify rollback and retry after outbox failures, including signal-controlled handoff. All 36 active shared scenarios pass in five SDKs with explicitly pinned historical worker 1.4 fixtures and 1.5 primitive fixtures. The missing WP cases, full crash/race/tenant/upgrade suites and measured resource ceilings remain open. Exact commands and limits are in the validation report. |
+| FR-014-004–008, FR-014-012–013, FR-014-015–017 — collections, loops, approval, continuation and cross-cutting rules | Implemented for root (unnested) scopes; nesting moved to feature 039 (OD-2026-11-12-6) | Root `forEach`/`map` collections and `while`/`repeatUntil` loops run through HTTP, worker 1.5 and the fenced scheduler: activity/condition/switch bodies of up to eight nodes, inline or blob item sources, local `onError` recovery, timers and event waits as scheduler-owned entries, fail-fast drain and compensation (T014-014 to T014-017). The 20 collection and loop scenarios pass in all six official SDKs without bless ([evidence](../specs/014-workflow-primitives/evidence/six-sdk-conformance-20261112/README.md)). Root approval, switch, declared Query/Update and the restricted continue-as-new (chains, `RERUN_AS_NEW`) are as listed in the rows above and below. Nested scopes are refused by the codec; their capacity program and acceptance are [design 039](designs/039-nested-collections.md). The separate IR revision was superseded by [ADR-0032](adr/ADR-0032-additive-workflow-ir.md); documents retain v1. |
+| SC-014-002–006 and NFR-014-001–004 — primitive release guarantees | Correctness matrix verified on the root scope; capacity acceptance and the stack-wide gates open | T014-040 (2026-11-13): fault 92/92 (and 92/92 as the runtime role `sagat_app`), integration 762/762, contract 49/49 and e2e 1/1 on PostgreSQL. Races are forced in both orders with held locks; the lists cover duplicates, lost hints, failed compensation, restart and tenant/secret boundaries. Commands and limits are in the [validation report](../specs/014-workflow-primitives/validation-report.md). Open: T014-042, the capacity acceptance on a separate database host (OD-2026-11-04-7), until which the published ceilings are 1,000 items and 1,000 iterations (OD-2026-11-04-5); T014-043, the Compose smoke test and the stack-wide release-candidate run (OD-2026-11-04-8). The scheduler metrics for the pending-waits ceiling (OD-2026-11-04-6) are built: `scheduler_waits_per_replica` and `scheduler_tick_seconds`, with alerts and runbook sections in [scaling.md](runbooks/scaling.md#scheduler-waits-per-replica). |
 | FR-014-017 — primitive telemetry and published hints | Query/Update and hint contract verified locally | Declared Query/Update emit the contracted `workflow.query`/`workflow.update` spans, `workflow_operation_duration_seconds` and `workflow_primitive_rejections_total` with closed labels; `observability.rs` also proves trace/request correlation and fail-closed audit. All 17 outbox hint types are in `events.asyncapi.yaml` 0.3.0 and `hint_contract.rs` validates the real rows of 11 scenarios. Runs finished by a loop (and by `finalize_chain`) now reach `run.finished` subscribers; both regressions failed first. See the [validation report](../specs/014-workflow-primitives/validation-report.md). |
 | FR-014-017 — projection compatibility | Partial | The PostgreSQL graph/telemetry integration target covers scoped identities, switch routes and continuation links. A future journal event is skipped by the current decoder while its persisted sequence advances the telemetry watermark in one projector round; the real-PostgreSQL regression failed before the fix and passed after it. Studio unknown-node card tests passed 76/76. Explicit unsupported telemetry representation for future definition node kinds remains open. |
 
@@ -423,8 +425,56 @@ checked-in examples and an actual CLI/curl/HTTP/gRPC/PostgreSQL walkthrough (1/1
 prerequisite, component and reference gates. Commands/manifests/limits are in
 `tasks/project-completion/integration-notes.md`. Full workspace/advisory/Compose integration
 (T016-054 / T014-043), remaining accepted feature-014 runtime and large-workload evidence remain
-open; this checkpoint is not remote CI or deployment evidence.
+open at that checkpoint; it is not remote CI or deployment evidence. The 2026-10-26 final
+release gate subsequently closed T016-054 through CI 40259828158 (11/11), independent packages
+and six release-preflight jobs. T014-043 and the other seven unfinished primitive tasks remain
+open under ADR-0040; the shared CI pass does not close their broader acceptance criteria.
 
+
+### 0.3 collection local-recovery increment (2026-10-26)
+
+Refs: T014-014–017/040/043/044, FR-014-004/005/014–017. The activity-only
+collection body now permits local acyclic `onError` routes. `collection_recovery.rs`
+proves sibling isolation, ordered recovery, an unhandled recovery's own failure/compensation,
+a rejected native drain from an already handled failure, lifetime reservation retirement and
+full/frontier transition/journal/status parity. The selected/unselected compensable branch
+cases additionally exercise real compensation versus an empty atomic saga. Native REDs
+reproduced unsupported publication, erroneous native handled-error drain, the checkpoint
+closure assumption, a phantom unselected compensation reservation and empty-plan projection.
+
+The common `collection-local-recovery` fixture produced five matching complete outputs;
+reviewed workflow/runtime reference files then passed all five SDKs without a bless switch
+(36.39 s, focused scenario). The final integrated regression and release-wide gates remain
+separate. Existing IR v1, worker minor1.5, closed errors, journal/graph projection and metric
+vocabulary are retained. No nested capacity or large-resource criterion is closed here.
+[The 0.3 execution ledger](../specs/014-workflow-primitives/implementation-ledger.md) owns
+current commands/results, including the incompatible unpublished legacy-fixture limitation.
+
+### 0.3 local collection decision increment (2026-10-26)
+
+Refs: T014-014–017/040/043/044, FR-014-004/005/014–017. An activity-entry body now
+admits up to eight executable activity/condition/switch nodes and one Return. The exact-path
+snapshot prepares the answer; revision CAS, current scheduler authority and ancestor/global
+fences protect its commit. Choices, routing, tasks, usage and outbox stay in one transaction.
+The full Run remains the independent oracle.
+
+`collection_controls.rs` and `collection_control_transactions.rs` exercise distinct local
+item/step contexts, first-true/default selection, expression failure/compensation, local
+condition recovery, full/frontier transition and complete-journal equivalence, native
+outbox rollback, a pause committed ahead of the prepared decision, malformed projections
+and orphan physical timer/reported-lease state. Observed REDs cover unsupported publication,
+missing scoped evaluation, malformed state accepted by all three readers and a prepared
+writer incorrectly returning success over orphan metadata. The corrected ten-case native
+invocation passed10/10,0 ignored; the separately exercised trace canary passed1/1 after
+its missing-span RED. The current Run-correlated span omits items, outputs and expressions.
+
+`collection-control-routing` produced five identical normalized results. After inspecting
+the workflows, all six actual worker calls, both journals, skipped index1 activity and
+ordered `[1,-1]` results, the reviewed references passed all five SDKs without blessing
+(43.02s, focused scenario). The four core crates passed1009 tests; strict workspace Clippy
+and remaining regression commands are recorded in the execution ledger. No new worker
+minor or wire field is required. Control entry, waits, children, nesting and the full
+62-scenario release aggregate remain pending; no canonical task is closed by this increment.
 
 ### Integrated bounded execution evidence (feature 014)
 
@@ -791,3 +841,282 @@ SDK/resource/release gates remain open. Exact tests/reviews/source provenance ar
 capacity-finish-schema-20261018, capacity-native-finish-20261018, capacity-finish-barriers-20261018,
 capacity-finish-commit-loss-20261018, capacity-finish-races-20261018 and
 capacity-finish-observations-20261018.
+
+
+### 2026-10-26 control entry development increment
+
+T014-014–017/040, FR-014-004/005/014/015/016: `collection_control_entry` and
+`collection_control_admission` exercise public Condition/Switch entry, actual worker absence
+for pure controls, ordered result/instance accounting, native journal failure rollback,
+replay/mismatch, revision/current tenant and shard authority, capacity reduction and cold
+discovery, cancellation, backfill/closed schema constraints and retained journal/projection
+downgrade refusal. Full/path/frontier readers reject dispatch masquerading against a pinned
+definition. Pure-domain and owner/runtime native tests keep both controls outside frozen
+OrdinaryLeafV1. Common SDK fixture `collection-control-entry` exercises existing builders and
+worker1.5. Exact invocation results/limits are in implementation-ledger.md; no canonical task or
+release closure is inferred from these focused fixtures.
+
+
+### 2026-10-27 scoped timer development increment
+
+T014-014–017/040, FR-014-004/005/014/015/016/017: scoped_timer_lifecycle proves
+explicit-clock/full-path semantics; collection_timers and collection_timer_transactions prove
+public Timer entry/activity progression, worker absence, exact accounting, pause/cold resume,
+prepared logical/deadline changes, malformed full/path/frontier reads, journal rollback and
+both actual cancellation/fire commit orders. public_scheduler_entries_remain_outside_the_frozen_ordinary_leaf_profile
+keeps the dormant source predicate closed. Common SDK collection-timers uses existing sleep
+builders in all five languages. Exact counts/limits remain in implementation-ledger.md; no
+canonical task or release closure follows these focused fixtures.
+
+### 2026-10-27 explicit zero iteration policy
+
+O701/D704, T014-014–017/040, FR-014-005/015: quota::tests::zero_iteration_capacity_is_a_valid_tenant_admission_stop
+and iteration_policy_zero prove tenant0, source/default distinction, accepted timer progress,
+fresh admission blocking and later resumption, native CHECK boundaries and real writer/down
+lock orders. The existing collections_http quota test retains role/namespace/ceiling/audit
+regressions (the new1025/default1024 HTTP ceiling check has a separately recorded final gate).
+The OpenAPI quota description and generated Studio API comment match; ordinary
+quota.changed audit and existing capacity refusal vocabulary remain in use. Exact failed and
+passed invocations are in implementation-ledger.md; nested/runtime/release tasks stay open.
+
+### 2026-10-27 scoped event-wait recorded preparation
+
+T014-014–017/040, FR-014-004/005/014/015: scoped_event_wait_lifecycle tests recorded
+correlation/deadline, exact member isolation, event/timeout outcomes and local timeout edge,
+pause/resume and inert invalid/duplicate events in full/path replay. Root branch selection
+uses the same helper; the complete domain gate passed566 before the final additional negative
+matrix, which independently passed in the8-test target. The public contract refuses both
+unproven body-wait entry forms. Native delivery/receipt/value/authority, telemetry, SDK and
+complete release acceptance remain pending; no canonical task closes.
+
+### 2026-10-27 native scoped event-wait start preparation
+
+T014-014–017/040, FR-014-004/005/014/015/017: `scoped_event_storage` reaches a Pending wait
+through real admission/activity completion, writes start or correlation failure in full/path
+transactions with own-shard database time, checks sibling/lookback/worker absence and cold replay,
+and refuses missing/refused authority, earlier clocks, physical drift and foreign namespace/UUID.
+Injected journal failure preserves projection, usage, payloads, audit, outbox and telemetry.
+The complete runtime-role focused gate passes11/0/0; domain583, contracts49 and strict workspace
+Clippy pass separately. Exact failures, commands, timings, review corrections and subsequent
+regressions are in `specs/014-workflow-primitives/implementation-ledger.md`. Public bodies and scoped
+delivery remain closed; native timeout, drain, receiver, SDK/rollout/resource acceptance remain
+pending. This checkpoint closes no canonical runtime or release task.
+
+### 2026-10-27 native scoped event-wait timeout preparation
+
+T014-014–017/040, FR-014-004/005/014/015/017: `scoped_event_storage::timeouts` proves actual
+PostgreSQL due-time closure in both native writers with the pinned handled/error route, own
+authority, exact old key/type/deadline/since CAS and complete subscription/scan cleanup. Pause
+stores the outcome while routing is deferred; an audited Resume followed by an explicit cold
+path command routes once. A projection-trigger failure rolls back preceding journal writes and
+all observed state. The20-case gate and corrected isolated one-case authority test are separate
+invocations; see the implementation ledger for timings and limits. This introduces no scheduler
+producer, external receipt, public body or canonical task closure.
+
+### 2026-10-27 scoped event-wait collection drain
+
+T014-014–017/040, FR-014-004/005/014/015/017: `scoped_event_storage::cancellation` and the
+domain lifecycle cancellation module prove workerless suspension drain across the reducer,
+both scheduler paths and the independent native writer. Full/frontier transitions and journal
+match; actual sibling failure, both held-Run timeout/cancel commit orders, malformed binding/
+identity, current authority/revision, duplicate receipt, late rollback and reservation/tenant
+counter preservation are covered. Full domain587, combined native lifecycle26, final expanded
+cancellation7, unchanged timer13/control23/transaction15 regressions and strict lint pass in
+separate invocations. See the ledger for exact source/hash/timing and retained failures.
+Public event bodies, scoped receiver/producer, loop event drain, nested capacity and final
+SDK/rollout/resource/release gates remain open; no canonical task is checked here.
+
+### 2026-10-27 pure scoped event satisfaction
+
+T014-014–017/040, FR-014-004/005/014/015/017: `scoped_event_wait_lifecycle::satisfaction`
+proves exact typed matching, inclusive lookback boundary, no upper deadline before another
+outcome commits, paused deferred normal route, malformed/stopped/foreign refusals and full/path
+parity. Routing failure is atomic and root/unadmitted candidates use UnknownInstance rather than
+an internal invariant. Native window validation reuses the same checked domain helper. Final
+core1035, focused39, contracts49 and strict workspace lint pass separately; the implementation
+ledger records timings and the earlier native27window checkpoint. Current ingress/receipt,
+classified value/quota, native satisfaction writer and public activation remain pending.
+
+
+### 2026-10-27 native scoped receipt and retained value
+
+T014-014–017/040, FR-014-004/005/014/015/017: scoped_event_storage::receipts ties current inbox
+admission and exact instance receipt to one WaitSatisfied canonical payload, journal and output
+charge. Both writers refuse orphan/duplicate-operation/generic-completion/incorrect-value
+paths and preserve prior failed persistence through later retries. Runtime-role fixtures prove
+quota rollback, paused cold routing/duplicate and pinned public/PII/secret journal disclosure.
+The completed lifecycle gate passes43, root dispatch24, contracts49 and workspace lint; exact
+commands/timings/REDs and fixture limitations are in the0.3 implementation ledger. Production
+callers, native event races/cleanup, public activation and canonical release tasks remain open.
+
+
+### 2026-10-27 scoped event commit-order and inbox-retention proof
+
+T014-014–017/040, FR-014-004/005/014/015/017: receipts::races proves both event/timeout/cancel
+Run-lock orders, current inbox lock versus actual purge, retained value after receipt cascade,
+stale-claim refusal and queued bounded RevisionConflict. receipts::admission proves current
+JSON/fingerprint refusal and the existing database body limit. Native tests pass7 plus1current
+row case (with one tightened overlapping race rerun); timings/fixture limits live in the0.3
+ledger. These tests extend80ae824a with no production change or public/release activation.
+
+
+### 2026-10-27 scoped event subscription scheduler caller
+
+T014-014–017/040, FR-014-004/005/014/015/017: scoped_event_storage::scheduler proves actual
+full/frontier start with captured local keys and pinned clocks/windows, one decision per member,
+paused/deferred onError routing, stopped/no-placement refusal and quota rollback/recovery drain.
+The new scheduler pass reuses exact pure/native commands and existing telemetry/actor/authority.
+Native59, controls23, contracts49 and workspace lint pass; detailed REDs, results and limitations
+are in the0.3 ledger. Deadline/receiver/public activation and canonical release tasks remain open.
+
+
+### 2026-10-27 qualified automatic event deadlines
+
+T014-014–017/040, FR-014-004/005/014/015/017: scoped_event_storage::deadline_processing proves
+qualified discovery and actual scheduler expiry, placement/revision fences, legacy root,
+paused handled/unhandled routing, cold duplicates and held-event versus queued bounded entry.
+Native66, root dispatch24, contracts49 and workspace lint pass. The0.3 ledger records exact
+results, REDs, fixture corrections and boundaries. External receiver/public/released-reader
+activation and the eight canonical release tasks remain open.
+
+
+### 2026-10-27 scoped event dispatcher and bounded lookback recovery
+
+T014-014–017/040/043, FR-014-004/005/014/015/017: scoped_event_storage::receiver proves actual
+paged delivery, finished-inbox lookback, exact candidate CAS, quota rollback, pause/resume,
+failed-consumer fairness, selected-admission purge recovery and deterministic routing-error
+retry. A live-data index rollback/reapply preserves state and replay. Completed event gate79,
+legacy dispatch24, contracts49, migrations5 and strict lint pass. The repaired privilege fitness
+function separately passes42 and retains its RED/review trail in sql-privilege-audit.md. Exact
+commands/results and source identity are in the0.3 ledger; public/old-reader activation and
+canonical release tasks remain open.
+
+
+### 2026-10-27 scheduler-owned event body entry
+
+T014-014–017/040, FR-014-004/005/014/015/017: scoped_event_storage::entry proves actual full/
+frontier PENDING admission, worker-free event completion, pause/resume, cancellation/reservation
+retirement, zero policy, admission fault rollback and dispatch-corruption refusal. A separate
+cold one-connection test proves discovery/ticks without hints. Event gate86, later cold case1,
+controls23, contracts49 and lint pass in distinct invocations; provenance and corrected test
+assumptions are in the0.3 ledger. Public/old-reader/final release acceptance remains open.
+
+
+### 2026-10-27 actual released-v0.2 active-data profile
+
+T014-016/017/040/043, FR-014-014/015/017: release_upgrade plus
+scripts/test-release-upgrade-profile.py prove immutable released-source public production, normal
+migration20261220000000→20261223000000, current runtime-role completion, exact legacy receipt
+and released REST/native replay with unchanged original prefixes. Final coordinator1/0/0
+passes8.42s; eight source-boundary controls pass. Exact phase output, source/binary identities
+and timings are in specs/014-workflow-primitives/evidence/released-v02-20261027. Old in-flight
+reports, scoped-event cutover/public activation and all eight canonical tasks remain open.
+
+
+### 2026-10-27 genuine released-worker in-flight report
+
+T014-016/017/040/043, FR-014-014/015/017: release_upgrade_inflight proves the actual old generated
+client reports its original live scoped FORWARD capability across normal migration to current
+services, exact duplicate receipt, durable token/fence/output/fingerprint/logical-byte charge,
+old immutable/native replay and required current scheduler finalization. Coordinator1/0/0
+passes6.25s; separate active-data regression15.50s, strict lint18.62s and verifier8cases pass.
+Exact source/binary/coordinator hashes, failures and results are in released-v02-inflight-20261027.
+Applied/reconciliation frontier, dispatcher cutover/public activation and canonical tasks stay open.
+
+
+### 2026-10-27 genuine released Applied lookup and terminal reader
+
+T014-016/017/040/043, FR-014-005/014/015/017: actual released OUTCOME_UNKNOWN/lookup production,
+Applied report/exact replay to current services, native original/lookup capability and event/
+output/receipt/accounting checks, required current finalization and actual old terminal REST/
+native/prefix verification pass1 coordinator in6.37s. Separate FORWARD6.55s/active-data6.75s
+regressions and strict lint pass. Exact identities and all separate results are in
+released-v02-applied-20261027. Quota/drain frontier, mixed-dispatcher/public activation and
+canonical release tasks remain open.
+
+
+### Public scoped-event acceptance (feature014, 2026-10-27)
+
+FR-014-004/005/014/015/017 → collection_events six real runtime-role tests → unchanged canonical
+waitEvent/event-publish contracts with bounded public collection-body guard → existing exact-path
+receipt/outcome/audit/metrics → scoped-event-publication.md and its public happy/timeout/cancel/
+compensation demos. Actual released dispatcher login revocation, session termination and process
+join precede current publication in release_upgrade_cutover; old/new replay passes. Common
+collection-events passes all existing five SDKs without blessing. This is partial T014-014–017/
+040/043/044 evidence; nesting/capacity, final resource/fault and integrated six-SDK release gates
+remain open. No mixed-version or automatic operator-fencing claim is added.
+Feature033 (`FR-033-001..009`, `SC-033-001..004`) targets release0.3. Internal transport, public
+callback management, real delivery, TLS/ACL/rotation/namespace checks, crash/fencing and migration
+proofs live in `tests/integration/redis-streams/`; configuration tests live in both process apps,
+settings round-trip properties in `crates/domain/tests/outbound_redis_properties.rs`, and chart
+contracts in `tests/contract/scalability-ha/redis_chart.rs`. Acceptance remains tracked by
+[feature033 tasks](../specs/033-redis-streams/tasks.md); use named, completed gates before release.
+
+
+### Combined v0.3 Redis callback cutover and sixth SDK (2026-10-27)
+
+FR-033-004/005/009, SC-033-004, T033-007 → release_upgrade_callback_cutover and the verified immutable
+release runner → actual old HTTP publish/read, login/session revocation and process join before
+current Redis API activation → real XADD/DELIVERED identity and unchanged old metadata. The shared
+fixture now lives in tests/support/brokers.rs. Combined 139 messaging/Redis tests and 109 Rust SDK
+tests pass; all five new 014 scenarios match reviewed goldens in all six languages. Evidence:
+specs/033-redis-streams/released-callback-cutover.md. No full 65-scenario aggregate, general nested
+capacity or final release acceptance is inferred; canonical open tasks remain open.
+
+
+### Bounded capacity metadata discovery (014, 2026-10-27)
+
+T014-014..017/040/042 → capacity_finish::discovery nine native cases → internal typed
+CapacityDiscoveryStore/CapacityDiscoveryPage → scheduler.action kind=capacity_discovery with
+bounded counts and no tenant/payload fields → specs/014-workflow-primitives/capacity-discovery.md.
+The wider43-case capacity gate,42 SQL privilege checks and six actual released-source upgrade
+profiles pass. There is no public group API, production discovery caller, acquisition, fresh
+admission or new nested publication capability; canonical runtime/resource/release gates stay open.
+
+## Dormant native capacity Vacate — 2026-10-28
+
+T014-014–017/040/043/044, FR-014-014/015 → `capacity_finish::vacate` (18 native tests, CI pending)
+→ exact application command and migration 26 transfer receipts → additive reference-only
+`capacity.member.vacated` AsyncAPI hint → closed `workflow.capacity.vacate` span and operation/outcome
+metrics → [operator guidance](runbooks/workflow-primitives.md). Source inventory fitness rejects
+new or changed literal SQL step-status writers; actual worker-claim races use held database locks.
+[Evidence and limits](../specs/014-workflow-primitives/capacity-vacate-acquire.md) explicitly retain
+the interrupted local run and CI obligations. No task or public nested capability closes here.
+
+## Dormant native ChildRoot Acquire — 2026-10-29
+
+T014-014–017/040/042–044, FR-014-014/015 → `capacity_finish::acquire` native apply/refusal/replay,
+held-lock contention and COMMIT recovery tests → distinct internal typed `CurrentChildRootAcquireStore`
+port and additive reference-only `capacity.member.acquired` AsyncAPI hint → closed
+`workflow.capacity.acquire` span, transfer operation/outcome metrics and acquired transition counter
+→ [contract, proof plan and actual evidence](../specs/014-workflow-primitives/capacity-acquire.md).
+Command and adapter/audit unit steps passed CI40866588862; complete native/integrated CI remains
+pending. This checkpoint enables no production caller, nested admission, sweeper or claim guard.
+
+## Opt-in ChildRoot worker possession — 2026-10-29
+
+O705/O706, T014-014/040, FR-014-014/015 → `capacity_worker_possession` (domain examples/property),
+`capacity_finish::worker_leases` (runtime PostgreSQL grants/refusals, lock lifetime, continuation,
+legacy/default compatibility, reports/heartbeat and internal failure) → shared transactional
+root/exact-path guard and two bounded membership indexes → `worker.capacity.check` and closed
+`worker_claim_skipped_total` capacity reasons → [contract](../specs/014-workflow-primitives/contracts/README.md),
+[operator guidance](runbooks/workflow-primitives.md), [ADR-0075](adr/ADR-0075-worker-leases-retain-child-root-possession.md)
+and [actual evidence/open gates](../specs/014-workflow-primitives/capacity-coordinator.md).
+The source inventory gate has negative controls and documented text-scan limitations.
+Runtime activation, sweeper, admission and full canonical acceptance remain open.
+
+## 037 compensation safety — delivery 1 locally validated (2026-11-01)
+
+[Specification](../specs/037-compensation-safety/spec.md): FR-037-001..021, NFR-037-001..006,
+SC-037-001..007 and four user stories map in its acceptance table. S1-B/S2-B and delivery 1 are
+approved; delivery-1 implementation and local validation are complete. Formal adoption, release
+and whole-feature acceptance remain unclaimed. The
+preceding feature-003 delivery claims describe historical behavior and do not prove this changed
+contract.
+
+Existing domain suites (`crates/domain/tests/sagas.rs`, `scoped_compensation.rs`) passed 60+34
+cases during the B02 baseline assessment; they are characterization, not feature-037 acceptance.
+Delivery-1 tests, contracts, metrics and demos have recorded evidence through the
+[plan](../specs/037-compensation-safety/plan.md), [tasks](../specs/037-compensation-safety/tasks.md)
+and [34-requirement coverage](../specs/037-compensation-safety/analysis.md). Only the
+[validation report](../specs/037-compensation-safety/validation-report.md) records results. US04 remains open.

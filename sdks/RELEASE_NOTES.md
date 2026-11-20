@@ -1,5 +1,14 @@
 # SDK release notes
 
+## 0.3.0
+
+All six SDK packages use 0.3.0 and are distributed through GitHub Release assets (Go as the module
+tag `sdks/go/v0.3.0`, Rust as a `.crate`); registry publication remains disabled. Adds the native Tokio Rust SDK under `sdks/rust`: typed REST client, worker host, scoped
+secrets/blobs, compensation/reconciliation, trace/metric hooks and declarative builders using
+the canonical IR. Rust joins the common conformance matrix and local `.crate`/consumer checks.
+Collection and loop builders run on the server for root (unnested) scopes; the 20 collection and loop scenarios pass in
+all six SDKs. Nested collections are refused (feature 039). See [product notes](../docs/releases/0.3.0.md).
+
 ## 0.2.0
 
 All five SDK packages use 0.2.0 and remain distributed through GitHub Release assets. Go uses

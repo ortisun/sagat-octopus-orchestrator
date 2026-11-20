@@ -1,0 +1,13 @@
+dotnet test
+  Determining projects to restore...
+  Restored /Users/marcelo/Documents/Projects/sagat-octopus-compensation-safety/sdks/dotnet/tests/SagatOctopusOrchestrator.Sdk.Tests/SagatOctopusOrchestrator.Sdk.Tests.csproj (in 928 ms).
+  2 of 3 projects are up-to-date for restore.
+  SagatOctopusOrchestrator.Sdk -> /Users/marcelo/Documents/Projects/sagat-octopus-compensation-safety/sdks/dotnet/src/SagatOctopusOrchestrator.Sdk/bin/Debug/net8.0/SagatOctopusOrchestrator.Sdk.dll
+  SagatOctopusOrchestrator.Sdk -> /Users/marcelo/Documents/Projects/sagat-octopus-compensation-safety/sdks/dotnet/src/SagatOctopusOrchestrator.Sdk/bin/Debug/net10.0/SagatOctopusOrchestrator.Sdk.dll
+  SagatOctopusOrchestrator.Sdk.Conformance -> /Users/marcelo/Documents/Projects/sagat-octopus-compensation-safety/sdks/dotnet/conformance/bin/Debug/net8.0/SagatOctopusOrchestrator.Sdk.Conformance.dll
+  SagatOctopusOrchestrator.Sdk.Conformance -> /Users/marcelo/Documents/Projects/sagat-octopus-compensation-safety/sdks/dotnet/conformance/bin/Debug/net10.0/SagatOctopusOrchestrator.Sdk.Conformance.dll
+  SagatOctopusOrchestrator.Sdk.Tests -> /Users/marcelo/Documents/Projects/sagat-octopus-compensation-safety/sdks/dotnet/tests/SagatOctopusOrchestrator.Sdk.Tests/bin/Debug/net10.0/SagatOctopusOrchestrator.Sdk.Tests.dll
+Test run for /Users/marcelo/Documents/Projects/sagat-octopus-compensation-safety/sdks/dotnet/tests/SagatOctopusOrchestrator.Sdk.Tests/bin/Debug/net10.0/SagatOctopusOrchestrator.Sdk.Tests.dll (.NETCoreApp,Version=v10.0)
+A total of 1 test files matched the specified pattern.
+
+Passed!  - Failed:     0, Passed:   450, Skipped:     0, Total:   450, Duration: 24 s - SagatOctopusOrchestrator.Sdk.Tests.dll (net10.0)

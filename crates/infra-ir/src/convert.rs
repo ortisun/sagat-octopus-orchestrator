@@ -88,6 +88,12 @@ fn unsupported_structured(kind: &str) -> Option<&'static str> {
     })
 }
 
+/// The canonical schema describes step-output destinations (feature 035), but no domain type runs them yet. Publishing
+/// such a workflow would drop the step, so the codec refuses it until the domain tasks of the feature parse and
+/// schedule them (T035-093 and before). The Iceberg write step is parsed (T035-053); whether a deployment may publish
+/// it is the definition service's decision (`lake.enabled`), not the codec's.
+const DESTINATIONS_NOT_ENABLED: &str = "step-output destinations are not enabled by the runtime";
+
 fn integer_u32(node: &Map<String, Value>, field: &str, at: &str) -> Result<u32, IrError> {
     node.get(field)
         .and_then(Value::as_u64)
@@ -519,9 +525,21 @@ fn nodes(raw_nodes: &[Value], at: &str, structured: bool) -> Result<Vec<Node>, I
                 reason,
             });
         }
+        if node.contains_key("destinations") {
+            return Err(IrError::Unsupported {
+                node: id.chars().take(64).collect(),
+                kind: "destinations".to_owned(),
+                reason: DESTINATIONS_NOT_ENABLED,
+            });
+        }
         let id = node_id(id, &format!("{at}/id"))?;
         let mut built = if kind == "database" {
             Node::database(id, crate::database::operation(node, &at)?)
+        } else if kind == "icebergWrite" {
+            Node::iceberg(id, crate::lake::write(node, &at)?)
+        } else if kind == "icebergProbe" {
+            // Only a private document reaches here: the public schema refuses the type before conversion (ADR-0080).
+            Node::lake_probe(id, crate::lake::probe(node, &at)?)
         } else {
             let kind = kind_of(node, kind, &at, &id, structured)?;
             Node::new(id, kind)
@@ -673,6 +691,43 @@ fn is_activity_chain(body: &sagat_domain::workflow::BodyDefinition, limit: usize
     activities >= 1 && activities + 1 == declared
 }
 
+/// A validated body is already acyclic, reachable, closed and has exactly one terminal return.
+/// One local branch executes at a time. Entry dispatch distinguishes worker activities from
+/// scheduler-owned controls; conditions/switches use a revision-fenced exact-path snapshot.
+/// Event waits use the same scheduler-owned admission and exact-path receiver as timers.
+/// Children, approvals and nesting retain their separate admission gates.
+fn is_collection_body(body: &sagat_domain::workflow::BodyDefinition) -> bool {
+    if !body.node(body.entrypoint()).is_some_and(|node| {
+        matches!(
+            node.kind(),
+            NodeKind::Activity { .. }
+                | NodeKind::Condition { .. }
+                | NodeKind::Switch { .. }
+                | NodeKind::Timer { .. }
+                | NodeKind::WaitEvent { .. }
+        )
+    }) {
+        return false;
+    }
+    let mut steps = 0;
+    for node in body.nodes() {
+        match node.kind() {
+            NodeKind::Activity { .. } if node.next().is_some() => steps += 1,
+            NodeKind::Condition { .. } if node.next().is_none() && node.timeout().is_none() => {
+                steps += 1
+            }
+            NodeKind::Switch { .. } => steps += 1,
+            NodeKind::Timer { .. } if node.next().is_some() && node.timeout().is_none() => {
+                steps += 1
+            }
+            NodeKind::WaitEvent { .. } if node.next().is_some() => steps += 1,
+            NodeKind::Return { .. } => {}
+            _ => return false,
+        }
+    }
+    (1..=MAX_BODY_CHAIN).contains(&steps)
+}
+
 /// The first approval a document declares inside a named body, if any. An approval in an iteration
 /// needs the iteration's scoped compensation to settle (decision D295), so publication names that
 /// dependency before it looks at the body's shape.
@@ -781,11 +836,11 @@ pub(crate) fn published_collection_definition(
                 reason: "published collection bodies must be referenced by a collection owner",
             });
         }
-        if !is_activity_chain(body, MAX_BODY_CHAIN) {
+        if !is_collection_body(body) {
             return Err(IrError::Unsupported {
                 node: body.name().as_str().to_owned(),
                 kind: "body".to_owned(),
-                reason: "the runtime supports a collection body of one to eight activities in sequence followed by one return",
+                reason: "the runtime supports a collection body of one to eight activities/conditions/switches/timers/event waits with local routes and one return",
             });
         }
     }

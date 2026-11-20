@@ -1,0 +1,938 @@
+{
+  "faultsApplied": [],
+  "observations": [
+    {
+      "id": "start-worker",
+      "ok": true,
+      "op": "startWorker",
+      "result": {
+        "protocolVersion": "1.5"
+      }
+    },
+    {
+      "id": "condition",
+      "ok": true,
+      "op": "start",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": null,
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:1>",
+        "startedBy": "alice",
+        "status": "RUNNING",
+        "traceId": "<trace:1>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "condition-done",
+      "ok": true,
+      "op": "waitForCompletion",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": "<time>",
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:1>",
+        "startedBy": "alice",
+        "status": "SUCCEEDED",
+        "traceId": "<trace:1>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "condition-journal",
+      "ok": true,
+      "op": "events",
+      "result": {
+        "events": [
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "run.started"
+          },
+          {
+            "attempt": null,
+            "stepId": "lines",
+            "type": "collection.entered"
+          },
+          {
+            "attempt": null,
+            "stepId": "lines",
+            "type": "collection.iteration_admitted"
+          },
+          {
+            "attempt": null,
+            "stepId": "reserve",
+            "type": "step.released"
+          },
+          {
+            "attempt": 1,
+            "stepId": "reserve",
+            "type": "step.leased"
+          },
+          {
+            "attempt": 1,
+            "stepId": "reserve",
+            "type": "step.completed"
+          },
+          {
+            "attempt": null,
+            "stepId": "reserve",
+            "type": "step.routed"
+          },
+          {
+            "attempt": null,
+            "stepId": "choose",
+            "type": "condition.evaluated"
+          },
+          {
+            "attempt": null,
+            "stepId": "choose",
+            "type": "step.routed"
+          },
+          {
+            "attempt": null,
+            "stepId": "selected",
+            "type": "step.released"
+          },
+          {
+            "attempt": 1,
+            "stepId": "selected",
+            "type": "step.leased"
+          },
+          {
+            "attempt": 1,
+            "stepId": "selected",
+            "type": "step.completed"
+          },
+          {
+            "attempt": null,
+            "stepId": "selected",
+            "type": "step.routed"
+          },
+          {
+            "attempt": null,
+            "stepId": "lines",
+            "type": "collection.iteration_returned"
+          },
+          {
+            "attempt": null,
+            "stepId": "lines",
+            "type": "collection.iteration_checkpointed"
+          },
+          {
+            "attempt": null,
+            "stepId": "lines",
+            "type": "collection.iteration_admitted"
+          },
+          {
+            "attempt": null,
+            "stepId": "reserve",
+            "type": "step.released"
+          },
+          {
+            "attempt": 1,
+            "stepId": "reserve",
+            "type": "step.leased"
+          },
+          {
+            "attempt": 1,
+            "stepId": "reserve",
+            "type": "step.completed"
+          },
+          {
+            "attempt": null,
+            "stepId": "reserve",
+            "type": "step.routed"
+          },
+          {
+            "attempt": null,
+            "stepId": "choose",
+            "type": "condition.evaluated"
+          },
+          {
+            "attempt": null,
+            "stepId": "choose",
+            "type": "step.routed"
+          },
+          {
+            "attempt": null,
+            "stepId": "lines",
+            "type": "collection.iteration_returned"
+          },
+          {
+            "attempt": null,
+            "stepId": "lines",
+            "type": "collection.iteration_checkpointed"
+          },
+          {
+            "attempt": null,
+            "stepId": "lines",
+            "type": "collection.finished"
+          },
+          {
+            "attempt": null,
+            "stepId": "lines",
+            "type": "step.routed"
+          },
+          {
+            "attempt": null,
+            "stepId": "done",
+            "type": "end.reached"
+          },
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "run.finished"
+          }
+        ]
+      }
+    },
+    {
+      "id": "switch",
+      "ok": true,
+      "op": "start",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": null,
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:4>",
+        "startedBy": "alice",
+        "status": "RUNNING",
+        "traceId": "<trace:2>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:5>",
+        "workflowId": "<uuid:6>"
+      }
+    },
+    {
+      "id": "switch-done",
+      "ok": true,
+      "op": "waitForCompletion",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": "<time>",
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:4>",
+        "startedBy": "alice",
+        "status": "SUCCEEDED",
+        "traceId": "<trace:2>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:5>",
+        "workflowId": "<uuid:6>"
+      }
+    },
+    {
+      "id": "switch-journal",
+      "ok": true,
+      "op": "events",
+      "result": {
+        "events": [
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "run.started"
+          },
+          {
+            "attempt": null,
+            "stepId": "lines",
+            "type": "collection.entered"
+          },
+          {
+            "attempt": null,
+            "stepId": "lines",
+            "type": "collection.iteration_admitted"
+          },
+          {
+            "attempt": null,
+            "stepId": "reserve",
+            "type": "step.released"
+          },
+          {
+            "attempt": 1,
+            "stepId": "reserve",
+            "type": "step.leased"
+          },
+          {
+            "attempt": 1,
+            "stepId": "reserve",
+            "type": "step.completed"
+          },
+          {
+            "attempt": null,
+            "stepId": "reserve",
+            "type": "step.routed"
+          },
+          {
+            "attempt": null,
+            "stepId": "choose",
+            "type": "switch.evaluated"
+          },
+          {
+            "attempt": null,
+            "stepId": "choose",
+            "type": "step.routed"
+          },
+          {
+            "attempt": null,
+            "stepId": "selected",
+            "type": "step.released"
+          },
+          {
+            "attempt": 1,
+            "stepId": "selected",
+            "type": "step.leased"
+          },
+          {
+            "attempt": 1,
+            "stepId": "selected",
+            "type": "step.completed"
+          },
+          {
+            "attempt": null,
+            "stepId": "selected",
+            "type": "step.routed"
+          },
+          {
+            "attempt": null,
+            "stepId": "lines",
+            "type": "collection.iteration_returned"
+          },
+          {
+            "attempt": null,
+            "stepId": "lines",
+            "type": "collection.iteration_checkpointed"
+          },
+          {
+            "attempt": null,
+            "stepId": "lines",
+            "type": "collection.iteration_admitted"
+          },
+          {
+            "attempt": null,
+            "stepId": "reserve",
+            "type": "step.released"
+          },
+          {
+            "attempt": 1,
+            "stepId": "reserve",
+            "type": "step.leased"
+          },
+          {
+            "attempt": 1,
+            "stepId": "reserve",
+            "type": "step.completed"
+          },
+          {
+            "attempt": null,
+            "stepId": "reserve",
+            "type": "step.routed"
+          },
+          {
+            "attempt": null,
+            "stepId": "choose",
+            "type": "switch.evaluated"
+          },
+          {
+            "attempt": null,
+            "stepId": "choose",
+            "type": "step.routed"
+          },
+          {
+            "attempt": null,
+            "stepId": "lines",
+            "type": "collection.iteration_returned"
+          },
+          {
+            "attempt": null,
+            "stepId": "lines",
+            "type": "collection.iteration_checkpointed"
+          },
+          {
+            "attempt": null,
+            "stepId": "lines",
+            "type": "collection.finished"
+          },
+          {
+            "attempt": null,
+            "stepId": "lines",
+            "type": "step.routed"
+          },
+          {
+            "attempt": null,
+            "stepId": "done",
+            "type": "end.reached"
+          },
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "run.finished"
+          }
+        ]
+      }
+    },
+    {
+      "id": "stop-worker",
+      "ok": true,
+      "op": "stopWorker"
+    }
+  ],
+  "scopeEvidence": [
+    {
+      "events": [
+        {
+          "event": "collection.entered",
+          "item_count": 2,
+          "max_concurrency": 1,
+          "max_items": 2
+        },
+        {
+          "event": "collection.iteration_admitted",
+          "index": 0,
+          "item": 1
+        },
+        {
+          "event": "collection.iteration_returned",
+          "index": 0
+        },
+        {
+          "event": "collection.iteration_checkpointed",
+          "index": 0,
+          "result": 1
+        },
+        {
+          "event": "collection.iteration_admitted",
+          "index": 1,
+          "item": -1
+        },
+        {
+          "event": "collection.iteration_returned",
+          "index": 1
+        },
+        {
+          "event": "collection.iteration_checkpointed",
+          "index": 1,
+          "result": -1
+        },
+        {
+          "event": "collection.finished",
+          "outcome": "succeeded",
+          "result": [
+            1,
+            -1
+          ]
+        }
+      ],
+      "peakActive": 1,
+      "runId": "<uuid:4>"
+    },
+    {
+      "events": [
+        {
+          "event": "collection.entered",
+          "item_count": 2,
+          "max_concurrency": 1,
+          "max_items": 2
+        },
+        {
+          "event": "collection.iteration_admitted",
+          "index": 0,
+          "item": 1
+        },
+        {
+          "event": "collection.iteration_returned",
+          "index": 0
+        },
+        {
+          "event": "collection.iteration_checkpointed",
+          "index": 0,
+          "result": 1
+        },
+        {
+          "event": "collection.iteration_admitted",
+          "index": 1,
+          "item": -1
+        },
+        {
+          "event": "collection.iteration_returned",
+          "index": 1
+        },
+        {
+          "event": "collection.iteration_checkpointed",
+          "index": 1,
+          "result": -1
+        },
+        {
+          "event": "collection.finished",
+          "outcome": "succeeded",
+          "result": [
+            1,
+            -1
+          ]
+        }
+      ],
+      "peakActive": 1,
+      "runId": "<uuid:1>"
+    }
+  ],
+  "serverState": [
+    {
+      "nodes": [
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "done",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "end",
+          "waitingOn": null
+        },
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "lines",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "forEach",
+          "waitingOn": null
+        },
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "lines[0]/choose",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "switch",
+          "waitingOn": null
+        },
+        {
+          "attempt": 1,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "lines[0]/reserve",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "activity",
+          "waitingOn": null
+        },
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "lines[0]/returned",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "return",
+          "waitingOn": null
+        },
+        {
+          "attempt": 1,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "lines[0]/selected",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "activity",
+          "waitingOn": null
+        },
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "lines[1]/choose",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "switch",
+          "waitingOn": null
+        },
+        {
+          "attempt": 1,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "lines[1]/reserve",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "activity",
+          "waitingOn": null
+        },
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "lines[1]/returned",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "return",
+          "waitingOn": null
+        }
+      ],
+      "paused": false,
+      "runId": "<uuid:4>",
+      "status": "SUCCEEDED"
+    },
+    {
+      "nodes": [
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "done",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "end",
+          "waitingOn": null
+        },
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "lines",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "forEach",
+          "waitingOn": null
+        },
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "lines[0]/choose",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "condition",
+          "waitingOn": null
+        },
+        {
+          "attempt": 1,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "lines[0]/reserve",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "activity",
+          "waitingOn": null
+        },
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "lines[0]/returned",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "return",
+          "waitingOn": null
+        },
+        {
+          "attempt": 1,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "lines[0]/selected",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "activity",
+          "waitingOn": null
+        },
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "lines[1]/choose",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "condition",
+          "waitingOn": null
+        },
+        {
+          "attempt": 1,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "lines[1]/reserve",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "activity",
+          "waitingOn": null
+        },
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "lines[1]/returned",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "return",
+          "waitingOn": null
+        }
+      ],
+      "paused": false,
+      "runId": "<uuid:1>",
+      "status": "SUCCEEDED"
+    }
+  ],
+  "workerLog": {
+    "w1": [
+      {
+        "abortedReason": null,
+        "activity": "control.reserve",
+        "attempt": 1,
+        "deadlineAhead": true,
+        "idempotencyKey": "<uuid:1>:<uuid:7>",
+        "input": {
+          "items": [
+            1,
+            -1
+          ]
+        },
+        "instance": {
+          "definitionNodeId": "reserve",
+          "instancePath": [
+            {
+              "iterationIndex": 0,
+              "scopeNodeId": "lines"
+            }
+          ]
+        },
+        "kind": "activity",
+        "node": "reserve",
+        "outcome": "returned",
+        "scopeInput": {
+          "index": 0,
+          "item": 1
+        },
+        "steps": {},
+        "targetIdempotencyKey": "",
+        "targetNode": "",
+        "taskKind": "FORWARD",
+        "traceId": "<trace:1>",
+        "traceparentPresent": true
+      },
+      {
+        "abortedReason": null,
+        "activity": "control.notify",
+        "attempt": 1,
+        "deadlineAhead": true,
+        "idempotencyKey": "<uuid:1>:<uuid:8>",
+        "input": {
+          "items": [
+            1,
+            -1
+          ]
+        },
+        "instance": {
+          "definitionNodeId": "selected",
+          "instancePath": [
+            {
+              "iterationIndex": 0,
+              "scopeNodeId": "lines"
+            }
+          ]
+        },
+        "kind": "activity",
+        "node": "selected",
+        "outcome": "returned",
+        "scopeInput": {
+          "index": 0,
+          "item": 1
+        },
+        "steps": {
+          "reserve": {
+            "reserved": true
+          }
+        },
+        "targetIdempotencyKey": "",
+        "targetNode": "",
+        "taskKind": "FORWARD",
+        "traceId": "<trace:1>",
+        "traceparentPresent": true
+      },
+      {
+        "abortedReason": null,
+        "activity": "control.reserve",
+        "attempt": 1,
+        "deadlineAhead": true,
+        "idempotencyKey": "<uuid:1>:<uuid:9>",
+        "input": {
+          "items": [
+            1,
+            -1
+          ]
+        },
+        "instance": {
+          "definitionNodeId": "reserve",
+          "instancePath": [
+            {
+              "iterationIndex": 1,
+              "scopeNodeId": "lines"
+            }
+          ]
+        },
+        "kind": "activity",
+        "node": "reserve",
+        "outcome": "returned",
+        "scopeInput": {
+          "index": 1,
+          "item": -1
+        },
+        "steps": {},
+        "targetIdempotencyKey": "",
+        "targetNode": "",
+        "taskKind": "FORWARD",
+        "traceId": "<trace:1>",
+        "traceparentPresent": true
+      },
+      {
+        "abortedReason": null,
+        "activity": "control.reserve",
+        "attempt": 1,
+        "deadlineAhead": true,
+        "idempotencyKey": "<uuid:4>:<uuid:10>",
+        "input": {
+          "items": [
+            1,
+            -1
+          ]
+        },
+        "instance": {
+          "definitionNodeId": "reserve",
+          "instancePath": [
+            {
+              "iterationIndex": 0,
+              "scopeNodeId": "lines"
+            }
+          ]
+        },
+        "kind": "activity",
+        "node": "reserve",
+        "outcome": "returned",
+        "scopeInput": {
+          "index": 0,
+          "item": 1
+        },
+        "steps": {},
+        "targetIdempotencyKey": "",
+        "targetNode": "",
+        "taskKind": "FORWARD",
+        "traceId": "<trace:2>",
+        "traceparentPresent": true
+      },
+      {
+        "abortedReason": null,
+        "activity": "control.notify",
+        "attempt": 1,
+        "deadlineAhead": true,
+        "idempotencyKey": "<uuid:4>:<uuid:11>",
+        "input": {
+          "items": [
+            1,
+            -1
+          ]
+        },
+        "instance": {
+          "definitionNodeId": "selected",
+          "instancePath": [
+            {
+              "iterationIndex": 0,
+              "scopeNodeId": "lines"
+            }
+          ]
+        },
+        "kind": "activity",
+        "node": "selected",
+        "outcome": "returned",
+        "scopeInput": {
+          "index": 0,
+          "item": 1
+        },
+        "steps": {
+          "reserve": {
+            "reserved": true
+          }
+        },
+        "targetIdempotencyKey": "",
+        "targetNode": "",
+        "taskKind": "FORWARD",
+        "traceId": "<trace:2>",
+        "traceparentPresent": true
+      },
+      {
+        "abortedReason": null,
+        "activity": "control.reserve",
+        "attempt": 1,
+        "deadlineAhead": true,
+        "idempotencyKey": "<uuid:4>:<uuid:12>",
+        "input": {
+          "items": [
+            1,
+            -1
+          ]
+        },
+        "instance": {
+          "definitionNodeId": "reserve",
+          "instancePath": [
+            {
+              "iterationIndex": 1,
+              "scopeNodeId": "lines"
+            }
+          ]
+        },
+        "kind": "activity",
+        "node": "reserve",
+        "outcome": "returned",
+        "scopeInput": {
+          "index": 1,
+          "item": -1
+        },
+        "steps": {},
+        "targetIdempotencyKey": "",
+        "targetNode": "",
+        "taskKind": "FORWARD",
+        "traceId": "<trace:2>",
+        "traceparentPresent": true
+      }
+    ]
+  }
+}

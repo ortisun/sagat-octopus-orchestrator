@@ -1,6 +1,7 @@
 import { SagatError, invalid } from './errors.js';
 import { canonicalJson } from './json.js';
 import { databaseNode, type DatabaseOptions } from './database.js';
+import { icebergWriteNode, type IcebergWriteOptions } from './iceberg.js';
 
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 type Node = Record<string, Json>;
@@ -274,6 +275,10 @@ export class Flow {
   /** Managed PostgreSQL; credentials and SQL execution stay in the isolated Sagat runner. */
   database(id: string, options: DatabaseOptions): this {
     return this.push(databaseNode(id, options));
+  }
+  /** Appends records to an Iceberg table through the isolated Sagat lake runner; no catalog or storage credential appears here. */
+  icebergWrite(id: string, options: IcebergWriteOptions): this {
+    return this.push(icebergWriteNode(id, options));
   }
   /** @internal */
   readonly nodes: Node[] = [];

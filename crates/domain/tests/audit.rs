@@ -183,6 +183,41 @@ fn payload_disclosure_audits_have_the_decided_repeat_semantics() {
     }
 }
 
+/// Feature 035 (D035-066, D035-075). "Every browse is audited" (contracts/connections.md): a repeat is not collapsed, and
+/// the trail is bounded by the browse limit of the API (30 a minute for an actor), not by a dedupe that would hide how
+/// much of a catalog someone walked. A decision about a step and a request to revert a commit are events each time.
+#[test]
+fn the_audit_actions_of_the_lake_have_stable_names_and_none_collapses_repeats() {
+    assert_eq!(
+        AuditAction::DatabaseCatalogBrowsed.as_str(),
+        "database.catalog_browsed"
+    );
+    assert_eq!(
+        AuditAction::DestinationDecided.as_str(),
+        "destination.decided"
+    );
+    assert_eq!(
+        AuditAction::IcebergRevertRequested.as_str(),
+        "iceberg.revert_requested"
+    );
+    assert_eq!(
+        AuditAction::IcebergWriteCommitted.as_str(),
+        "iceberg.write_committed"
+    );
+
+    for action in [
+        AuditAction::DatabaseCatalogBrowsed,
+        AuditAction::DestinationDecided,
+        AuditAction::IcebergRevertRequested,
+        // One record for each committed write: a write is not something a caller repeats, and none is hidden by collapsing.
+        AuditAction::IcebergWriteCommitted,
+    ] {
+        assert!(!action.collapses_repeats(), "{action}");
+        assert_eq!(action.repeat_window(), None, "{action}");
+        assert_eq!(action.distinct_cap(), None, "{action}");
+    }
+}
+
 #[test]
 fn provisioning_records_are_attributed_to_the_system_and_cannot_be_mistaken_for_a_user() {
     let tenant = TenantId::generate();
@@ -237,4 +272,13 @@ fn leaf_certification_audit_uses_noncollapsing_metadata_vocabulary() {
         ResourceType::LeafCollectionSuccess.as_str(),
         "leaf_collection_success"
     );
+}
+
+#[test]
+fn capacity_vacate_audit_keeps_every_transition() {
+    let action = AuditAction::CapacityMemberVacated;
+    assert_eq!(action.as_str(), "capacity.member.vacated");
+    assert!(!action.collapses_repeats());
+    assert_eq!(action.repeat_window(), None);
+    assert_eq!(action.distinct_cap(), None);
 }

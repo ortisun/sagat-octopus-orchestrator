@@ -1,0 +1,21 @@
+{
+  "command": [
+    "cargo",
+    "clippy",
+    "-p",
+    "sagat-tests",
+    "--test",
+    "integration_workflow_primitives",
+    "--locked",
+    "--",
+    "-D",
+    "warnings"
+  ],
+  "exit_code": 0,
+  "seconds": 108.51,
+  "wall_seconds": 108.51,
+  "wall_minus_monotonic_seconds": 0.0,
+  "started_utc": "2026-10-27T12:45:03.360845+00:00",
+  "finished_utc": "2026-10-27T12:46:51.872970+00:00",
+  "log": "released-v02-target-clippy.txt"
+}

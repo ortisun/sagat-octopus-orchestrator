@@ -2,7 +2,8 @@
 //! (T002-013, T002-018; US02, US03; FR-002-004, FR-002-005, FR-002-007).
 
 use sagat_application::error::AppError;
-use sagat_domain::execution::{RunStatus, StepStatus};
+use sagat_application::runs::ReviewAction;
+use sagat_domain::execution::{FailureCode, ReviewOutcome, RunStatus, StepStatus};
 use serde_json::json;
 
 use crate::support::engine::{activity, chain, document, flaky, with, world};
@@ -10,7 +11,7 @@ use crate::support::engine::{activity, chain, document, flaky, with, world};
 // ------------------------------------------------------------------ US02: a worker dies
 
 #[tokio::test]
-async fn a_lost_worker_is_replaced_and_the_stale_generation_is_never_reused() {
+async fn a_lost_worker_waits_for_resolution_and_the_stale_generation_is_never_reused() {
     let w = world().await;
     let (wf, _) = w.publish(chain("crash-recovery")).await;
     let run = w.start(wf, &json!({})).await;
@@ -22,27 +23,14 @@ async fn a_lost_worker_is_replaced_and_the_stale_generation_is_never_reused() {
     w.age_lease(run, "a").await;
     let report = w.scheduler.tick().await;
     assert_eq!(report.leases_expired, 1);
-    assert_eq!(w.step_status(run, "a").await, Some(StepStatus::RetryWait));
+    assert_eq!(w.step_status(run, "a").await, Some(StepStatus::Waiting));
+    assert_eq!(w.run_status(run).await, RunStatus::ManualReview);
     assert!(
         w.poll(&doomed, 8).await.is_empty(),
-        "nothing is claimable during the backoff"
+        "an unknown effect is not claimable again"
     );
 
-    // The default policy backs off before the next attempt; once it elapses the step is ready again.
-    w.age_retry(run, "a").await;
-    assert_eq!(w.scheduler.tick().await.retries_released, 1);
-    assert_eq!(w.step_status(run, "a").await, Some(StepStatus::Ready));
-
-    let replacement = w.session(&["act.a", "act.b"]).await;
-    let second = w.one_task(&replacement).await;
-    assert_eq!(
-        (second.fence.attempt, second.fence.generation),
-        (2, 2),
-        "a new generation"
-    );
-    assert_ne!(second.lease_token.expose(), first.lease_token.expose());
-
-    // The dead worker comes back with its old lease: refused, and the run is untouched.
+    // The dead worker comes back with its old lease: refused, and retained review is untouched.
     assert_eq!(
         w.complete(&doomed, &first, &json!({"late": true}))
             .await
@@ -56,11 +44,17 @@ async fn a_lost_worker_is_replaced_and_the_stale_generation_is_never_reused() {
             .map(|_| ()),
         Err(AppError::StaleAttempt)
     );
-    assert_eq!(w.step_status(run, "a").await, Some(StepStatus::Leased));
+    assert_eq!(w.step_status(run, "a").await, Some(StepStatus::Waiting));
 
-    w.complete(&replacement, &second, &json!({}))
-        .await
-        .expect("the new holder completes");
+    w.review(
+        run,
+        "a",
+        ReviewAction::Resolve(ReviewOutcome::Succeeded),
+        "provider confirms the lost attempt completed",
+    )
+    .await
+    .expect("resolve the uncertain attempt");
+    let replacement = w.session(&["act.b"]).await;
     let b = w.one_task(&replacement).await;
     w.complete(&replacement, &b, &json!({})).await.expect("b");
     assert_eq!(w.run_status(run).await, RunStatus::Succeeded);
@@ -124,11 +118,24 @@ async fn an_attempt_that_exceeds_its_timeout_fails_even_while_heartbeats_continu
             .await
             .expect("code");
     assert_eq!(code.as_deref(), Some("ATTEMPT_TIMEOUT"));
-    assert_eq!(w.step_status(run, "a").await, Some(StepStatus::RetryWait));
+    assert_eq!(w.step_status(run, "a").await, Some(StepStatus::Waiting));
+    assert_eq!(w.run_status(run).await, RunStatus::ManualReview);
     assert_eq!(
         w.complete(&session, &task, &json!({})).await.map(|_| ()),
         Err(AppError::StaleAttempt)
     );
+    assert!(w.poll(&session, 8).await.is_empty(), "no automatic retry");
+    w.review(
+        run,
+        "a",
+        ReviewAction::Resolve(ReviewOutcome::Failed(
+            FailureCode::parse("OPERATOR_CONFIRMED_NOT_APPLIED").unwrap(),
+        )),
+        "provider confirms the timed-out attempt did not apply",
+    )
+    .await
+    .expect("resolve the timed-out attempt");
+    assert_eq!(w.run_status(run).await, RunStatus::Failed);
 }
 
 #[tokio::test]
@@ -454,6 +461,18 @@ async fn a_worker_that_vanishes_during_cancellation_does_not_keep_the_run_open()
 
     w.age_lease(run, "a").await;
     w.scheduler.tick().await;
+    assert_eq!(w.run_status(run).await, RunStatus::ManualReview);
+    assert_eq!(w.step_status(run, "a").await, Some(StepStatus::Waiting));
+    w.review(
+        run,
+        "a",
+        ReviewAction::Resolve(ReviewOutcome::Failed(
+            FailureCode::parse("OPERATOR_CONFIRMED_NOT_APPLIED").unwrap(),
+        )),
+        "provider confirms the cancelled attempt did not apply",
+    )
+    .await
+    .expect("resolve the cancelled attempt");
     assert_eq!(w.run_status(run).await, RunStatus::Cancelled);
     w.assert_consistent(run).await;
 }

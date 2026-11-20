@@ -1,0 +1,911 @@
+openapi: 3.1.0
+info:
+  title: Feature 018 draft fragment — schedules, business identifiers, with-start, batch operations and reset
+  version: 0.0.0-draft
+  description: |
+    DRAFT, not implemented. T018-010 merges this fragment into
+    specs/001-platform-foundation/contracts/openapi.yaml with `x-implemented: '018'` only when the
+    implementing tasks pass. Every change is additive under /v1. References to existing components
+    point at the canonical document. Tenant comes from the token; namespace from the path UUID or the
+    `X-Octopus-Namespace` header exactly as the canonical routes do. Foreign resources are 404.
+    Errors use the canonical Error envelope; the `details.reason` values are listed in errors.md.
+servers:
+  - url: /v1
+paths:
+  /namespaces/{namespaceId}/schedules:
+    parameters:
+      - $ref: '#/components/parameters/NamespaceId'
+    get:
+      operationId: listSchedules
+      summary: List schedules (API and trigger-owned), newest first
+      description: Needs `schedule:read`. Never returns input values.
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - {name: origin, in: query, schema: {type: string, enum: [API, TRIGGER]}}
+        - {name: state, in: query, schema: {type: string, enum: [ACTIVE, PAUSED]}}
+        - {name: workflowId, in: query, schema: {type: string, format: uuid}}
+        - {name: name, in: query, schema: {type: string, maxLength: 128}}
+      responses:
+        '200': {description: Page of schedules, content: {application/json: {schema: {$ref: '#/components/schemas/SchedulePage'}}}}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        default: {$ref: '#/components/responses/InternalError'}
+    post:
+      operationId: createSchedule
+      summary: Create a schedule
+      description: >-
+        Needs `schedule:write` and `run:start`. The caller becomes `authorizedBy`. The spec is
+        validated (zone, bounds, at least one occurrence, minimum spacing over the next 1,000
+        occurrences) and the input against the target version's input schema. Counts against the
+        namespace `schedules` quota.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/ScheduleWrite'}}}
+      responses:
+        '201': {description: Created, content: {application/json: {schema: {$ref: '#/components/schemas/Schedule'}}}}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/schedules/{scheduleId}:
+    parameters:
+      - $ref: '#/components/parameters/NamespaceId'
+      - $ref: '#/components/parameters/ScheduleId'
+    get:
+      operationId: getSchedule
+      summary: Describe a schedule with its next and recent actions
+      parameters:
+        - {name: nextCount, in: query, schema: {type: integer, minimum: 0, maximum: 100, default: 10}}
+        - {name: recentCount, in: query, schema: {type: integer, minimum: 0, maximum: 100, default: 10}}
+      responses:
+        '200': {description: The schedule, content: {application/json: {schema: {$ref: '#/components/schemas/ScheduleDescription'}}}}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        default: {$ref: '#/components/responses/InternalError'}
+    put:
+      operationId: updateSchedule
+      summary: Replace spec, policies and action as a new revision
+      description: >-
+        Needs `schedule:write` and `run:start`. `expectedRevision` is required; a stale one is 409
+        `REVISION_CONFLICT`. A trigger-owned schedule is 409 `SCHEDULE_TRIGGER_OWNED`. The input is
+        always supplied whole. The next nominal time is the first strictly after the update.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/ScheduleUpdate'}}}
+      responses:
+        '200': {description: Updated, content: {application/json: {schema: {$ref: '#/components/schemas/Schedule'}}}}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        default: {$ref: '#/components/responses/InternalError'}
+    delete:
+      operationId: deleteSchedule
+      summary: Delete a schedule (tombstone); started runs are not touched
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - {name: expectedRevision, in: query, required: true, schema: {type: integer, minimum: 1}}
+      responses:
+        '204': {description: Deleted}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/schedules/{scheduleId}/pause:
+    parameters:
+      - $ref: '#/components/parameters/NamespaceId'
+      - $ref: '#/components/parameters/ScheduleId'
+    post:
+      operationId: pauseSchedule
+      summary: Pause with a note
+      description: Needs `schedule:operate`. Pausing a paused schedule replaces the note. Audited. A `TRIGGER` schedule before the operator handover is 409 `SCHEDULE_TRIGGER_HANDOVER_PENDING`.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/ScheduleNote'}}}
+      responses:
+        '200': {description: Paused, content: {application/json: {schema: {$ref: '#/components/schemas/Schedule'}}}}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/schedules/{scheduleId}/resume:
+    parameters:
+      - $ref: '#/components/parameters/NamespaceId'
+      - $ref: '#/components/parameters/ScheduleId'
+    post:
+      operationId: resumeSchedule
+      summary: Resume with a note; continues from the first nominal time after now
+      description: Needs `schedule:operate` and `run:start` (the caller becomes `authorizedBy`). Audited. A `TRIGGER` schedule before the operator handover is 409 `SCHEDULE_TRIGGER_HANDOVER_PENDING`.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/ScheduleNote'}}}
+      responses:
+        '200': {description: Resumed, content: {application/json: {schema: {$ref: '#/components/schemas/Schedule'}}}}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/schedules/{scheduleId}/trigger:
+    parameters:
+      - $ref: '#/components/parameters/NamespaceId'
+      - $ref: '#/components/parameters/ScheduleId'
+    post:
+      operationId: triggerSchedule
+      summary: Act now (kind TRIGGERED), also while paused
+      description: Needs `schedule:operate` and `run:start`. Origin `MANUAL` (nominal time = database time in microseconds, run key `manual-{µs}`), never the identity of a scheduled time. Does not decrement remaining actions; not limited by the catch-up window. A `TRIGGER` schedule before the operator handover is 409 `SCHEDULE_TRIGGER_HANDOVER_PENDING`.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: false
+        content: {application/json: {schema: {$ref: '#/components/schemas/TriggerRequest'}}}
+      responses:
+        '202': {description: Action recorded (started, buffered or skipped), content: {application/json: {schema: {$ref: '#/components/schemas/ScheduleActionRecord'}}}}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/schedules/{scheduleId}/actions:
+    parameters:
+      - $ref: '#/components/parameters/NamespaceId'
+      - $ref: '#/components/parameters/ScheduleId'
+    get:
+      operationId: listScheduleActions
+      summary: Recorded actions, newest decision first
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - {name: outcome, in: query, schema: {$ref: '#/components/schemas/ScheduleActionOutcome'}}
+      responses:
+        '200': {description: Page, content: {application/json: {schema: {$ref: '#/components/schemas/ScheduleActionPage'}}}}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/schedules/{scheduleId}/backfills:
+    parameters:
+      - $ref: '#/components/parameters/NamespaceId'
+      - $ref: '#/components/parameters/ScheduleId'
+    get:
+      operationId: listScheduleBackfills
+      summary: Backfills of a schedule
+      responses:
+        '200': {description: Backfills, content: {application/json: {schema: {type: object, required: [items], properties: {items: {type: array, items: {$ref: '#/components/schemas/Backfill'}}}}}}}
+        '404': {$ref: '#/components/responses/NotFound'}
+        default: {$ref: '#/components/responses/InternalError'}
+    post:
+      operationId: createScheduleBackfill
+      summary: Act on every nominal time of a past range that has no action yet
+      description: >-
+        Needs `schedule:operate` and `run:start`. `end` must not be after now; the range must hold at
+        most the backfill ceiling of nominal times (422 `BACKFILL_LIMIT`). Times that already have an
+        action are recorded `ALREADY_ACTED`.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/BackfillRequest'}}}
+      responses:
+        '202': {description: Accepted, content: {application/json: {schema: {$ref: '#/components/schemas/Backfill'}}}}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/schedules/{scheduleId}/backfills/{backfillId}/cancel:
+    parameters:
+      - $ref: '#/components/parameters/NamespaceId'
+      - $ref: '#/components/parameters/ScheduleId'
+      - {name: backfillId, in: path, required: true, schema: {type: string, format: uuid}}
+    post:
+      operationId: cancelScheduleBackfill
+      summary: Stop a backfill; acted times stay acted
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '200': {description: Cancelled, content: {application/json: {schema: {$ref: '#/components/schemas/Backfill'}}}}
+        '404': {$ref: '#/components/responses/NotFound'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/schedules/{scheduleId}/input-disclosures:
+    parameters:
+      - $ref: '#/components/parameters/NamespaceId'
+      - $ref: '#/components/parameters/ScheduleId'
+    post:
+      operationId: discloseScheduleInput
+      summary: Classified disclosure of the schedule's input (feature 016 audiences)
+      description: >-
+        Needs `schedule:read`; values are disclosed per level exactly as `discloseRunPayload` does,
+        against the input schema of the version the schedule would use now; `pii` needs `reveal: [pii]`
+        and the `payload:reveal-pii` grant. `Cache-Control: private, no-store`. Audited
+        `schedule.input_disclosed`.
+      requestBody:
+        required: true
+        content: {application/json: {schema: {type: object, additionalProperties: false, properties: {reveal: {type: array, maxItems: 1, items: {type: string, const: pii}}}}}}
+      responses:
+        '200': {description: Classified projection, headers: {Cache-Control: {schema: {type: string, const: 'private, no-store'}}}, content: {application/json: {schema: {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/schemas/PayloadDisclosureNode'}}}}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /runs:
+    post:
+      operationId: startRun
+      summary: (existing) gains optional business-id, policy and start-delay fields
+      description: >-
+        Additive to the canonical `StartRunRequest` (see `StartRunRequestAdditions`). With
+        `businessIdConflictPolicy: USE_EXISTING` and an open holder the answer is `200` with the
+        holder's Run and nothing is created; a new run is `202` as today. When the version declares
+        top-level `concurrency` (feature 022) the new run takes a permit or is queued (`WAITING`); a full
+        key queue is 429 `CONCURRENCY_QUEUE_FULL`; with `startDelayMs` the permit is taken, or the run
+        queued, when the delay elapses (022 FR-022-018).
+      x-additive-to: '#/paths/~1runs/post'
+      parameters:
+        - $ref: '#/components/parameters/Namespace'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/StartRunRequestAdditions'}}}
+      responses:
+        '200': {description: Existing open holder returned (USE_EXISTING), content: {application/json: {schema: {$ref: '#/components/schemas/RunAdditions'}}}}
+        '202': {description: Run durably accepted, content: {application/json: {schema: {$ref: '#/components/schemas/RunAdditions'}}}}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /runs/signal-with-start:
+    post:
+      operationId: signalWithStart
+      summary: Signal the open run of a business id, or start one and deliver the signal at creation
+      description: >-
+        Needs `run:start` and `run:signal`. Never buffers: an open holder not waiting for the signal is
+        409 `NOT_WAITING`; a new run whose entry does not wait for it is 409
+        `SIGNAL_NOT_ACCEPTED_AT_START` and nothing is created, also when feature 022 would queue the new
+        run. `startDelayMs` is refused (422 `START_DELAY_WITH_SIGNAL`).
+      parameters:
+        - $ref: '#/components/parameters/Namespace'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/SignalWithStartRequest'}}}
+      responses:
+        '202': {description: Signal delivered (and run started when `started`), content: {application/json: {schema: {$ref: '#/components/schemas/SignalWithStartResult'}}}}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /runs/update-with-start:
+    post:
+      operationId: updateWithStart
+      summary: Apply a declared Update to the open run of a business id, starting it if needed
+      description: >-
+        Needs `run:start` and `run:update`. One transaction. A business rejection leaves the run
+        started with a stable REJECTED receipt; failures before admission create nothing. Results are
+        disclosed under ADR-0031 (`Cache-Control: no-store`).
+      parameters:
+        - $ref: '#/components/parameters/Namespace'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/UpdateWithStartRequest'}}}
+      responses:
+        '200': {description: Update applied or rejected; run started when `started`, headers: {Cache-Control: {schema: {type: string, const: no-store}}}, content: {application/json: {schema: {$ref: '#/components/schemas/UpdateWithStartResult'}}}}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/business-ids/{businessId}:
+    parameters:
+      - $ref: '#/components/parameters/NamespaceId'
+      - {name: businessId, in: path, required: true, description: URL-encoded business id, schema: {type: string, minLength: 1, maxLength: 200}}
+    get:
+      operationId: getBusinessIdBinding
+      summary: The current binding of a business id
+      description: Needs `run:read`. An unbound or expired id is 404.
+      responses:
+        '200': {description: Binding, content: {application/json: {schema: {$ref: '#/components/schemas/BusinessIdBinding'}}}}
+        '404': {$ref: '#/components/responses/NotFound'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/batch-operations/preview:
+    parameters:
+      - $ref: '#/components/parameters/NamespaceId'
+    post:
+      operationId: previewBatchOperation
+      summary: Count what a selector matches; changes nothing
+      description: Needs `run:batch` and `run:read`.
+      requestBody:
+        required: true
+        content: {application/json: {schema: {type: object, additionalProperties: false, required: [selector], properties: {selector: {$ref: '#/components/schemas/BatchSelector'}, maxItems: {type: integer, minimum: 1, maximum: 100000, default: 10000}}}}}
+      responses:
+        '200': {description: Preview, content: {application/json: {schema: {$ref: '#/components/schemas/BatchPreview'}}}}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/batch-operations:
+    parameters:
+      - $ref: '#/components/parameters/NamespaceId'
+    get:
+      operationId: listBatchOperations
+      summary: Batch jobs, newest first
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - {name: state, in: query, schema: {$ref: '#/components/schemas/BatchJobState'}}
+      responses:
+        '200': {description: Page, content: {application/json: {schema: {type: object, required: [items], properties: {items: {type: array, items: {$ref: '#/components/schemas/BatchJob'}}, nextCursor: {type: [string, 'null']}}}}}}
+        default: {$ref: '#/components/responses/InternalError'}
+    post:
+      operationId: createBatchOperation
+      summary: Create a durable, rate-limited batch job
+      description: Needs `run:batch` and every permission of the single action. Counts against `batch_jobs`.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/BatchCreateRequest'}}}
+      responses:
+        '202': {description: Accepted, content: {application/json: {schema: {$ref: '#/components/schemas/BatchJob'}}}}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/batch-operations/{batchId}:
+    parameters:
+      - $ref: '#/components/parameters/NamespaceId'
+      - $ref: '#/components/parameters/BatchId'
+    get:
+      operationId: getBatchOperation
+      responses:
+        '200': {description: Job, content: {application/json: {schema: {$ref: '#/components/schemas/BatchJob'}}}}
+        '404': {$ref: '#/components/responses/NotFound'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/batch-operations/{batchId}/cancel:
+    parameters:
+      - $ref: '#/components/parameters/NamespaceId'
+      - $ref: '#/components/parameters/BatchId'
+    post:
+      operationId: cancelBatchOperation
+      summary: Stop admitting items; nothing applied is undone
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content: {application/json: {schema: {type: object, additionalProperties: false, required: [reason], properties: {reason: {type: string, minLength: 8, maxLength: 2000}}}}}
+      responses:
+        '202': {description: Cancelling, content: {application/json: {schema: {$ref: '#/components/schemas/BatchJob'}}}}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/batch-operations/{batchId}/items:
+    parameters:
+      - $ref: '#/components/parameters/NamespaceId'
+      - $ref: '#/components/parameters/BatchId'
+    get:
+      operationId: listBatchItems
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - {name: state, in: query, schema: {$ref: '#/components/schemas/BatchItemState'}}
+      responses:
+        '200': {description: Page, content: {application/json: {schema: {type: object, required: [items], properties: {items: {type: array, items: {$ref: '#/components/schemas/BatchItem'}}, nextCursor: {type: [string, 'null']}}}}}}
+        '404': {$ref: '#/components/responses/NotFound'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /runs/{runId}/reset-points:
+    parameters:
+      - $ref: '#/components/parameters/RunId'
+    get:
+      operationId: listResetPoints
+      summary: Eligible reset points, ascending sequence
+      description: Needs `run:operate` and `run:read`. A chain segment or child run is 422 `RESET_NOT_SUPPORTED_FOR_SOURCE`; a 022 draft test run is 422 `RESET_SOURCE_TEST_RUN`; a purged source is 409 `RUN_PURGED`. A point whose prefix holds an event type without a reset-rule registry entry is not listed (`RESET_RULE_MISSING` on an explicit request).
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 200, default: 50}}
+      responses:
+        '200': {description: Page, content: {application/json: {schema: {type: object, required: [items], properties: {items: {type: array, items: {$ref: '#/components/schemas/ResetPoint'}}, nextCursor: {type: [string, 'null']}}}}}}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /runs/{runId}/reset-previews:
+    parameters:
+      - $ref: '#/components/parameters/RunId'
+    post:
+      operationId: previewReset
+      summary: What a reset would restore, run again and reapply; changes nothing
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/ResetPreviewRequest'}}}
+      responses:
+        '200': {description: Plan, content: {application/json: {schema: {$ref: '#/components/schemas/ResetPlan'}}}}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /runs/{runId}/resets:
+    parameters:
+      - $ref: '#/components/parameters/RunId'
+    get:
+      operationId: listRunResets
+      summary: Resets made from this run
+      responses:
+        '200': {description: Resets, content: {application/json: {schema: {type: object, required: [items], properties: {items: {type: array, maxItems: 200, items: {$ref: '#/components/schemas/Reset'}}}}}}}
+        '404': {$ref: '#/components/responses/NotFound'}
+        default: {$ref: '#/components/responses/InternalError'}
+    post:
+      operationId: resetRun
+      summary: Create a new run from an eligible prefix of this run
+      description: >-
+        Needs `run:operate` and `run:start` (+ `run:signal`/`run:update` for reapply). A justification is
+        required. `REQUIRE_TERMINAL` (default) refuses an open source with 409
+        `RESET_SOURCE_NOT_TERMINAL`; `CANCEL_SOURCE` answers `202` with state `PENDING_SOURCE`. A version
+        with run-level `concurrency` acquires a fresh permit in the reset transaction and cannot queue:
+        409 `CONCURRENCY_PERMIT_UNAVAILABLE`. A purged source (or a purge committing during the reset) is
+        409 `RUN_PURGED`. A prefix with an event type that has no reset rule is 422 `RESET_RULE_MISSING`;
+        a `REMATERIALIZE` rule that cannot be applied is refused with its owner's reason.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/ResetRequest'}}}
+      responses:
+        '202': {description: Reset created or pending, content: {application/json: {schema: {$ref: '#/components/schemas/Reset'}}}}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /runs/{runId}/resets/{resetId}:
+    parameters:
+      - $ref: '#/components/parameters/RunId'
+      - {name: resetId, in: path, required: true, schema: {type: string, format: uuid}}
+    get:
+      operationId: getRunReset
+      responses:
+        '200': {description: Reset, content: {application/json: {schema: {$ref: '#/components/schemas/Reset'}}}}
+        '404': {$ref: '#/components/responses/NotFound'}
+        default: {$ref: '#/components/responses/InternalError'}
+components:
+  parameters:
+    NamespaceId: {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/parameters/NamespaceId'}
+    Namespace: {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/parameters/Namespace'}
+    IdempotencyKey: {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/parameters/IdempotencyKey'}
+    Cursor: {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/parameters/Cursor'}
+    Limit: {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/parameters/Limit'}
+    RunId: {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/parameters/RunId'}
+    ScheduleId: {name: scheduleId, in: path, required: true, schema: {type: string, format: uuid}}
+    BatchId: {name: batchId, in: path, required: true, schema: {type: string, format: uuid}}
+  responses:
+    Forbidden: {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/Forbidden'}
+    NotFound: {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/NotFound'}
+    Conflict: {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/Conflict'}
+    ValidationError: {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/ValidationError'}
+    TooManyRequests: {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/TooManyRequests'}
+    InternalError: {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/InternalError'}
+  schemas:
+    ScheduleSpec: {$ref: 'schedule-spec.schema.json#/$defs/ScheduleSpec'}
+    SchedulePolicies: {$ref: 'schedule-spec.schema.json#/$defs/SchedulePolicies'}
+    ScheduleTarget:
+      type: object
+      additionalProperties: false
+      required: [workflowId, input]
+      properties:
+        workflowId: {type: string, format: uuid}
+        versionPolicy: {type: string, enum: [ACTIVE, PINNED], default: ACTIVE}
+        versionId: {type: string, format: uuid, description: Required with PINNED, refused otherwise.}
+        input: {type: object, description: 'Run input, at most 64 KiB by default (256 KiB hard); never returned by ordinary reads.'}
+        nominalTimeField: {type: string, pattern: '^[A-Za-z_][A-Za-z0-9_]{0,63}$', description: Declared top-level input property set to the nominal time (RFC 3339 UTC).}
+        runTimeoutMs: {type: integer, minimum: 1000, maximum: 31622400000}
+        businessIdPrefix: {type: string, minLength: 1, maxLength: 160, pattern: '^[!-~]+$', description: 'Run business id = prefix + "-" + nominal time (RFC 3339 UTC, seconds).'}
+        businessIdConflictPolicy: {type: string, enum: [FAIL, USE_EXISTING], default: FAIL}
+        businessIdReusePolicy: {$ref: '#/components/schemas/BusinessIdReusePolicy'}
+    ScheduleFields:
+      type: object
+      required: [name, spec, action]
+      properties:
+        name: {type: string, minLength: 1, maxLength: 128, pattern: '^[a-z0-9][a-z0-9-]*$'}
+        spec: {$ref: '#/components/schemas/ScheduleSpec'}
+        policies: {$ref: '#/components/schemas/SchedulePolicies'}
+        action: {$ref: '#/components/schemas/ScheduleTarget'}
+        paused: {type: boolean, default: false}
+        note: {type: string, maxLength: 512}
+        remainingActions: {type: integer, minimum: 1, maximum: 1000000}
+    ScheduleWrite:
+      allOf:
+        - {$ref: '#/components/schemas/ScheduleFields'}
+      unevaluatedProperties: false
+    ScheduleUpdate:
+      allOf:
+        - {$ref: '#/components/schemas/ScheduleFields'}
+        - type: object
+          required: [expectedRevision]
+          properties:
+            expectedRevision: {type: integer, minimum: 1}
+      unevaluatedProperties: false
+    ScheduleNote:
+      type: object
+      additionalProperties: false
+      required: [note]
+      properties:
+        note: {type: string, minLength: 1, maxLength: 512}
+    TriggerRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        overlap: {$ref: 'schedule-spec.schema.json#/$defs/OverlapPolicy'}
+    BackfillRequest:
+      type: object
+      additionalProperties: false
+      required: [start, end]
+      properties:
+        start: {type: string, format: date-time}
+        end: {type: string, format: date-time, description: Exclusive; not after now.}
+        overlap: {$ref: 'schedule-spec.schema.json#/$defs/OverlapPolicy'}
+    Backfill:
+      type: object
+      required: [backfillId, start, end, state, overlap, counts]
+      properties:
+        backfillId: {type: string, format: uuid}
+        start: {type: string, format: date-time}
+        end: {type: string, format: date-time}
+        cursor: {type: [string, 'null'], format: date-time}
+        state: {type: string, enum: [PENDING, RUNNING, COMPLETED, CANCELLED]}
+        overlap: {$ref: 'schedule-spec.schema.json#/$defs/OverlapPolicy'}
+        counts: {type: object, additionalProperties: {type: integer, minimum: 0}}
+    Schedule:
+      type: object
+      required: [scheduleId, name, origin, state, revision, createdAt]
+      properties:
+        scheduleId: {type: string, format: uuid}
+        name: {type: string}
+        origin: {type: string, enum: [API, TRIGGER]}
+        triggerId: {type: string, format: uuid, description: TRIGGER only.}
+        state: {type: string, enum: [ACTIVE, PAUSED]}
+        exhausted: {type: boolean, description: remainingActions reached zero.}
+        revision: {type: integer, minimum: 1}
+        spec: {$ref: '#/components/schemas/ScheduleSpec'}
+        policies: {$ref: '#/components/schemas/SchedulePolicies'}
+        action:
+          type: object
+          description: The target without its input; inputDigest and inputBytes describe it.
+          properties:
+            workflowId: {type: string, format: uuid}
+            versionPolicy: {type: string, enum: [ACTIVE, PINNED]}
+            versionId: {type: string, format: uuid}
+            inputDigest: {type: string, pattern: '^[0-9a-f]{64}$'}
+            inputBytes: {type: integer, minimum: 0}
+            nominalTimeField: {type: string}
+            runTimeoutMs: {type: integer}
+            businessIdPrefix: {type: string}
+        note: {type: [string, 'null']}
+        noteBy: {type: [string, 'null']}
+        noteAt: {type: [string, 'null'], format: date-time}
+        authorizedBy: {type: string}
+        remainingActions: {type: [integer, 'null']}
+        nextActionAt: {type: [string, 'null'], format: date-time}
+        createdAt: {type: string, format: date-time}
+        updatedAt: {type: string, format: date-time}
+    ScheduleDescription:
+      allOf:
+        - {$ref: '#/components/schemas/Schedule'}
+        - type: object
+          required: [nextActions, recentActions, openRuns, bufferedCount, counters]
+          properties:
+            nextActions:
+              type: array
+              maxItems: 100
+              items:
+                type: object
+                required: [nominalTime, actualTime]
+                properties:
+                  nominalTime: {type: string, format: date-time}
+                  actualTime: {type: string, format: date-time}
+            recentActions: {type: array, maxItems: 100, items: {$ref: '#/components/schemas/ScheduleActionRecord'}}
+            openRuns: {type: array, maxItems: 1000, items: {type: string, format: uuid}}
+            bufferedCount: {type: integer, minimum: 0}
+            counters: {type: object, additionalProperties: {type: integer, minimum: 0}}
+    SchedulePage:
+      type: object
+      required: [items]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/Schedule'}}
+        nextCursor: {type: [string, 'null']}
+    ScheduleActionOutcome:
+      type: string
+      enum: [STARTED, BUFFERED, SKIPPED_OVERLAP, DROPPED_BUFFER_FULL, DROPPED_DELETED, COALESCED, MISSED_CATCHUP_WINDOW, ALREADY_ACTED, AUTHORITY_REVOKED, BUSINESS_ID_CONFLICT]
+      description: Grows only; a client treats an unknown value as "another outcome".
+    ScheduleActionRecord:
+      type: object
+      required: [nominalTime, kind, revision, outcome, decidedAt]
+      properties:
+        nominalTime: {type: string, format: date-time}
+        actualTime: {type: [string, 'null'], format: date-time}
+        kind: {type: string, enum: [SCHEDULED, TRIGGERED, BACKFILL]}
+        origin: {type: string, enum: [SPEC, MANUAL], description: 'Identity origin: SPEC (scheduled and backfill share nominal times) or MANUAL (trigger-now).'}
+        revision: {type: integer, minimum: 1}
+        outcome: {$ref: '#/components/schemas/ScheduleActionOutcome'}
+        reason: {type: [string, 'null'], description: Closed code, e.g. TRACKING_LIMIT.}
+        runId: {type: [string, 'null'], format: uuid}
+        backfillId: {type: [string, 'null'], format: uuid}
+        summaryCount: {type: [integer, 'null'], minimum: 1, description: For COALESCED and MISSED_CATCHUP_WINDOW summaries.}
+        summaryLastNominalTime: {type: [string, 'null'], format: date-time}
+        decidedAt: {type: string, format: date-time}
+    ScheduleActionPage:
+      type: object
+      required: [items]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/ScheduleActionRecord'}}
+        nextCursor: {type: [string, 'null']}
+    BusinessIdReusePolicy: {type: string, enum: [ALLOW_DUPLICATE, ALLOW_DUPLICATE_FAILED_ONLY, REJECT_DUPLICATE], default: ALLOW_DUPLICATE}
+    StartRunRequestAdditions:
+      type: object
+      description: Optional fields added to the canonical StartRunRequest; absent means today's behaviour.
+      properties:
+        businessId: {type: string, minLength: 1, maxLength: 200, pattern: '^[!-~]+$'}
+        businessIdConflictPolicy: {type: string, enum: [FAIL, USE_EXISTING], default: FAIL}
+        businessIdReusePolicy: {$ref: '#/components/schemas/BusinessIdReusePolicy'}
+        startDelayMs: {type: integer, minimum: 1, maximum: 31622400000}
+    RunAdditions:
+      type: object
+      description: Optional fields added to the canonical Run.
+      properties:
+        businessId: {type: [string, 'null']}
+        startDelayedUntil: {type: [string, 'null'], format: date-time}
+        schedule:
+          type: [object, 'null']
+          required: [scheduleId, nominalTime, kind, revision]
+          properties:
+            scheduleId: {type: string, format: uuid}
+            nominalTime: {type: string, format: date-time}
+            kind: {type: string, enum: [SCHEDULED, TRIGGERED, BACKFILL]}
+            revision: {type: integer, minimum: 1}
+        resetFrom:
+          type: [object, 'null']
+          required: [runId, sequence]
+          properties:
+            runId: {type: string, format: uuid}
+            sequence: {type: integer, minimum: 1}
+    StartFields:
+      type: object
+      required: [workflowId, businessId, input]
+      properties:
+        workflowId: {type: string, format: uuid}
+        versionId: {type: string, format: uuid}
+        businessId: {type: string, minLength: 1, maxLength: 200, pattern: '^[!-~]+$'}
+        businessIdReusePolicy: {$ref: '#/components/schemas/BusinessIdReusePolicy'}
+        input: {type: object}
+        correlationId: {type: string, maxLength: 160}
+        deadline: {type: string, format: date-time}
+    SignalWithStartRequest:
+      unevaluatedProperties: false
+      allOf:
+        - {$ref: '#/components/schemas/StartFields'}
+        - type: object
+          required: [signal]
+          properties:
+            signal:
+              type: object
+              additionalProperties: false
+              required: [name, payload]
+              properties:
+                name: {type: string, minLength: 1, maxLength: 128}
+                payload: {type: object, description: At most 256 KiB, as signalRun.}
+    SignalWithStartResult:
+      type: object
+      required: [runId, started, deliveredTo]
+      properties:
+        runId: {type: string, format: uuid}
+        started: {type: boolean}
+        deliveredTo: {type: array, items: {type: string}}
+    UpdateWithStartRequest:
+      unevaluatedProperties: false
+      allOf:
+        - {$ref: '#/components/schemas/StartFields'}
+        - type: object
+          required: [update]
+          properties:
+            businessIdConflictPolicy: {type: string, enum: [USE_EXISTING, FAIL], default: USE_EXISTING}
+            startDelayMs: {type: integer, minimum: 1, maximum: 31622400000}
+            update:
+              type: object
+              additionalProperties: false
+              required: [name, updateKey, args]
+              properties:
+                name: {type: string, minLength: 1, maxLength: 128, pattern: '^[A-Za-z0-9][A-Za-z0-9_.:-]*$'}
+                updateKey: {type: string, minLength: 1, maxLength: 128, pattern: '^[!-~]+$'}
+                args: {description: JSON value, at most 256 KiB, checked against the declared argument schema.}
+                expectedStateRevision: {type: integer, minimum: 0}
+    UpdateWithStartResult:
+      type: object
+      required: [runId, started, update]
+      properties:
+        runId: {type: string, format: uuid}
+        started: {type: boolean}
+        update:
+          oneOf:
+            - type: object
+              required: [outcome, receipt]
+              properties:
+                outcome: {const: APPLIED}
+                receipt: {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/schemas/DeclaredUpdateResponse'}
+            - type: object
+              required: [outcome, reason]
+              properties:
+                outcome: {const: REJECTED}
+                reason: {type: string, enum: [UPDATE_REJECTED, REVISION_CONFLICT]}
+    BusinessIdBinding:
+      type: object
+      required: [businessId, executionId, currentRunId, open, workflowId, boundAt]
+      properties:
+        businessId: {type: string}
+        executionId: {type: string, format: uuid, description: Run id, or chain id for a continuation chain.}
+        currentRunId: {type: string, format: uuid}
+        open: {type: boolean}
+        lastStatus: {type: [string, 'null'], description: Terminal status of the holder when closed.}
+        workflowId: {type: string, format: uuid}
+        boundAt: {type: string, format: date-time}
+        reusableAfter: {type: [string, 'null'], format: date-time, description: When REJECT_DUPLICATE stops applying.}
+    BatchSelector:
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [filter]
+          properties:
+            filter:
+              type: object
+              additionalProperties: false
+              properties:
+                workflowId: {type: string, format: uuid}
+                versionId: {type: string, format: uuid}
+                status: {type: array, maxItems: 13, items: {type: string}}
+                origin: {type: string}
+                scheduleId: {type: string, format: uuid}
+                createdAfter: {type: string, format: date-time}
+                createdBefore: {type: string, format: date-time}
+                businessIdPrefix: {type: string, minLength: 1, maxLength: 200}
+        - type: object
+          additionalProperties: false
+          required: [runIds]
+          properties:
+            runIds: {type: array, minItems: 1, maxItems: 1000, uniqueItems: true, items: {type: string, format: uuid}}
+        - type: object
+          additionalProperties: false
+          required: [query]
+          description: Feature 020 RunSelector query (specs/020-visibility-analytics-archival/contracts/list-query.md, section RunSelector; keyset-paged, evaluated per round, bounded count preview); refused with 422 QUERY_UNSUPPORTED_OPERATOR (020's reason) while 020's capability is off.
+          properties:
+            query: {type: string, maxLength: 4096}
+    BatchAction: {type: string, enum: [CANCEL, SIGNAL, UPDATE, RERUN, RETRY_STEP, PAUSE, RESUME, MARK_MANUAL_REVIEW, REPIN], description: 'Grows only. REPIN exists only when feature 019 is enabled (else 422 BATCH_ACTION_UNAVAILABLE) and needs deployment:manage and run:operate besides run:batch.'}
+    BatchCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [selector, action, reason]
+      properties:
+        selector: {$ref: '#/components/schemas/BatchSelector'}
+        action: {$ref: '#/components/schemas/BatchAction'}
+        signal: {type: object, additionalProperties: false, required: [name, payload], properties: {name: {type: string, minLength: 1, maxLength: 128}, payload: {type: object}}}
+        update: {type: object, additionalProperties: false, required: [name, args], properties: {name: {type: string}, args: {}}, description: The per-run update key is derived from the job and the run.}
+        stepId: {type: string, description: RETRY_STEP and MARK_MANUAL_REVIEW.}
+        instancePath: {type: array, maxItems: 8, items: {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/schemas/ApprovalScope'}}
+        businessId: {type: string, enum: [KEEP, DROP], default: KEEP, description: RERUN only.}
+        repin:
+          type: object
+          additionalProperties: false
+          required: [deployment, target]
+          description: REPIN only (feature 019); each item is 019's single-run repin (FR-019-009).
+          properties:
+            deployment: {type: string}
+            target: {$ref: '../../019-worker-deployments-dispatch/contracts/openapi-fragment.yaml#/components/schemas/VersionRef'}
+        reason: {type: string, minLength: 8, maxLength: 2000}
+        maxItems: {type: integer, minimum: 1, maximum: 100000, default: 10000}
+        itemsPerSecond: {type: number, exclusiveMinimum: 0, maximum: 200, default: 20}
+    BatchPreview:
+      type: object
+      required: [matched, capped, sample]
+      properties:
+        matched: {type: integer, minimum: 0}
+        capped: {type: boolean, description: More than maxItems matched.}
+        sample: {type: array, maxItems: 20, items: {type: string, format: uuid}}
+    BatchJobState: {type: string, enum: [SELECTING, RUNNING, CANCELLING, COMPLETED, CANCELLED, FAILED]}
+    BatchJob:
+      type: object
+      required: [batchId, action, state, createdBy, createdAt, counts]
+      properties:
+        batchId: {type: string, format: uuid}
+        action: {$ref: '#/components/schemas/BatchAction'}
+        state: {$ref: '#/components/schemas/BatchJobState'}
+        failureReason: {type: [string, 'null']}
+        createdBy: {type: string}
+        payloadDigest: {type: [string, 'null'], description: Signal payload or update arguments; never the value.}
+        maxItems: {type: integer}
+        itemsPerSecond: {type: number}
+        counts:
+          type: object
+          required: [selected, succeeded, skipped, failed, cancelled, deferred]
+          properties:
+            selected: {type: integer, minimum: 0}
+            succeeded: {type: integer, minimum: 0}
+            skipped: {type: integer, minimum: 0}
+            failed: {type: integer, minimum: 0}
+            cancelled: {type: integer, minimum: 0}
+            deferred: {type: integer, minimum: 0}
+        createdAt: {type: string, format: date-time}
+        startedAt: {type: [string, 'null'], format: date-time}
+        finishedAt: {type: [string, 'null'], format: date-time}
+        expiresAt: {type: [string, 'null'], format: date-time}
+    BatchItemState: {type: string, enum: [PENDING, DEFERRED, SUCCEEDED, SKIPPED, FAILED, CANCELLED]}
+    BatchItem:
+      type: object
+      required: [ordinal, runId, state]
+      properties:
+        ordinal: {type: integer, minimum: 0}
+        runId: {type: string, format: uuid}
+        state: {$ref: '#/components/schemas/BatchItemState'}
+        reason: {type: [string, 'null'], description: 'Closed code, e.g. NOT_APPLICABLE, NOT_WAITING, OPERATION_NOT_DECLARED, RUN_CONTINUED.'}
+        errorCode: {type: [string, 'null'], description: Canonical Error.code of a FAILED item.}
+        attempts: {type: integer, minimum: 0}
+        newRunId: {type: [string, 'null'], format: uuid}
+        updatedAt: {type: string, format: date-time}
+    ResetPoint:
+      type: object
+      required: [sequence, kind, occurredAt]
+      properties:
+        sequence: {type: integer, minimum: 1}
+        kind: {type: string, enum: [RUN_STARTED, STEP_COMPLETED, CHILD_FINISHED, COLLECTION_FINISHED, LOOP_FINISHED]}
+        node: {type: [string, 'null']}
+        occurredAt: {type: string, format: date-time}
+    ResetPreviewRequest:
+      type: object
+      additionalProperties: false
+      required: [sequence]
+      properties:
+        sequence: {type: integer, minimum: 1}
+        reapply: {$ref: '#/components/schemas/ReapplyPolicy'}
+    ReapplyPolicy: {type: string, enum: [NONE, SIGNALS, UPDATES, ALL], default: NONE}
+    ResetPlan:
+      type: object
+      required: [sequence, restored, reexecuted, reapply, requiresAcknowledgement]
+      properties:
+        sequence: {type: integer}
+        restored: {type: array, items: {type: object, required: [node, kind], properties: {node: {type: string}, kind: {type: string}, outcome: {type: string}}}}
+        reexecuted:
+          type: array
+          items:
+            type: object
+            required: [node, completedInSource]
+            properties:
+              node: {type: string}
+              completedInSource: {type: boolean}
+              markers: {type: array, items: {type: string, enum: [compensateWith, reconcileWith, irreversible, highRisk]}}
+        reapply: {type: array, maxItems: 256, items: {type: object, required: [sequence, kind, deliverable], properties: {sequence: {type: integer}, kind: {type: string, enum: [signal, update]}, deliverable: {type: string, enum: [YES, NO, UNKNOWN]}, reason: {type: [string, 'null']}}}}
+        requiresAcknowledgement: {type: boolean}
+        prefixEvents: {type: integer, minimum: 1}
+        concurrencyPermit: {type: string, enum: [NOT_DECLARED, AVAILABLE, UNAVAILABLE], description: 'Feature 022 run permit the reset would need, observed at preview time (not reserved).'}
+    ResetRequest:
+      type: object
+      additionalProperties: false
+      required: [sequence, reason]
+      properties:
+        sequence: {type: integer, minimum: 1}
+        reapply: {$ref: '#/components/schemas/ReapplyPolicy'}
+        sourcePolicy: {type: string, enum: [REQUIRE_TERMINAL, CANCEL_SOURCE], default: REQUIRE_TERMINAL}
+        businessId: {type: string, enum: [KEEP, DROP], default: KEEP}
+        acknowledgeReexecution: {type: boolean, default: false}
+        reason: {type: string, minLength: 8, maxLength: 2000}
+    Reset:
+      type: object
+      required: [resetId, sourceRunId, sequence, state]
+      properties:
+        resetId: {type: string, format: uuid}
+        sourceRunId: {type: string, format: uuid}
+        sequence: {type: integer}
+        state: {type: string, enum: [PENDING_SOURCE, CREATED, FAILED]}
+        failureReason: {type: [string, 'null'], description: 'BOUNDARY_NO_LONGER_ELIGIBLE, ADMISSION_REFUSED, BUSINESS_ID_IN_USE, CONCURRENCY_PERMIT_UNAVAILABLE, RUN_PURGED (grows only).'}
+        newRunId: {type: [string, 'null'], format: uuid}
+        reapplyReport: {type: array, maxItems: 256, items: {type: object, required: [sequence, kind, outcome], properties: {sequence: {type: integer}, kind: {type: string, enum: [signal, update]}, outcome: {type: string, enum: [REAPPLIED, REJECTED, NOT_REAPPLIED]}, reason: {type: [string, 'null']}}}}
+        createdAt: {type: string, format: date-time}

@@ -511,7 +511,8 @@ pub async fn serve_with_admin(
     // Workflow documents are validated and parsed once per immutable version, then kept.
     let codec: Arc<dyn IrCodec> = Arc::new(JsonIrCodec);
     let cache = DefinitionCache::new(codec, DEFINITION_CACHE_ENTRIES);
-    let executions = PgRunStore::new(pool.clone(), cache.clone());
+    let executions =
+        PgRunStore::new(pool.clone(), cache.clone()).with_lake_enabled(serve.lake_enabled);
     let mut governance = GovState::new(
         state.clone(),
         sagat_application::api_admission::ApiAdmissionService::new(executions.clone(), SystemClock),
@@ -532,6 +533,44 @@ pub async fn serve_with_admin(
         SystemClock,
         serve.runbook_base.clone(),
     ));
+    // The times a schedule is created, updated, resumed or triggered at are computed on the
+    // database's clock, whatever this process's own says (FR-018-005, D1802); it is kept in step
+    // below, once the shutdown signal exists.
+    let schedule_clock = serve
+        .schedules_enabled
+        .then(|| sagat_infra_postgres::DatabaseClock::new(pool.clone(), SystemClock));
+    if let Some(clock) = &schedule_clock
+        && let Err(error) = clock.sync().await
+    {
+        tracing::warn!(%error, "could not read the database clock; schedules use this process's clock until it can");
+    }
+    if let Some(schedule_clock) = schedule_clock.clone() {
+        let ceilings = sagat_domain::schedules::Ceilings::default();
+        let schedules = || sagat_infra_postgres::PgScheduleStore::new(pool.clone());
+        governance =
+            governance.with_schedules(Arc::new(sagat_application::schedule_api::ScheduleApi::new(
+                sagat_application::schedules::ScheduleService::new(
+                    schedules(),
+                    sagat_infra_ir::schedule_calendar::SpecCalendar,
+                    schedule_clock.clone(),
+                    ceilings,
+                ),
+                // trigger-now starts a run in this process, as the schedule: it needs the run service
+                sagat_application::schedule_firing::ScheduleFiring::new(
+                    schedules(),
+                    sagat_infra_ir::schedule_calendar::SpecCalendar,
+                    schedule_clock,
+                    sagat_infra_postgres::PgIdentityStore::new(pool.clone()),
+                    sagat_application::runs::RunService::new(
+                        executions.clone(),
+                        SystemClock,
+                        sagat_application::execution::Engine::new(sagat_infra_ir::JsonEvaluator),
+                        cache.clone(),
+                    ),
+                    ceilings,
+                ),
+            )));
+    }
     let provider: Option<Arc<dyn sagat_application::secret_provider::SecretProvider>> =
         match &serve.openbao {
             Some(settings) => Some(
@@ -574,12 +613,6 @@ pub async fn serve_with_admin(
                     })?,
                 )),
             )
-            // Deliveries are signed with a secret of the namespace, so they need the key ring too.
-            .with_outbound(OutboundService::new(
-                executions.clone(),
-                SystemClock,
-                EgressService::new(executions.clone(), SystemClock),
-            ))
             .with_connectors(ConnectorService::new(
                 executions.clone(),
                 SystemClock,
@@ -587,10 +620,19 @@ pub async fn serve_with_admin(
                 Arc::new(JsonEvaluator),
             ));
     }
-    governance = governance.with_connections(sagat_application::database::ConnectionService::new(
-        executions.clone(),
-        SystemClock,
-    ));
+    // Broker credentials are optional. Anonymous callbacks do not need a secret backend.
+    governance = governance.with_outbound(
+        OutboundService::new(
+            executions.clone(),
+            SystemClock,
+            EgressService::new(executions.clone(), SystemClock),
+        )
+        .with_redis_callbacks(serve.redis_callbacks),
+    );
+    governance = governance.with_connections(
+        sagat_application::database::ConnectionService::new(executions.clone(), SystemClock)
+            .with_lake_enabled(serve.lake_enabled),
+    );
     if let (Some(settings), Some(provider)) = (&serve.openbao, provider) {
         let key = settings.intent_key().await.map_err(|_| {
             RunError::Refused("OpenBao management requires a 32-byte SAGAT_OPENBAO_INTENT_KEY_FILE")
@@ -626,14 +668,16 @@ pub async fn serve_with_admin(
             ),
         );
     }
-    let publishing = PublishingService::new(executions.clone(), SystemClock, JsonIrCodec);
+    let publishing = PublishingService::new(executions.clone(), SystemClock, JsonIrCodec)
+        .with_lake_enabled(serve.lake_enabled);
     let mut runs = RunService::new(
         executions.clone(),
         SystemClock,
         Engine::new(JsonEvaluator),
         cache,
     )
-    .with_lag_budget(serve.telemetry_lag_budget);
+    .with_lag_budget(serve.telemetry_lag_budget)
+    .with_lake_probes(Arc::new(sagat_infra_ir::JsonLakeProbeCodec));
     if let Some(settings) = &serve.blobs {
         let backend = sagat_infra_blobstore::build_backend(&settings.store, settings.part_size)
             .map_err(|_| RunError::Refused("could not set up the object store (SAGAT_BLOB_*)"))?;
@@ -660,7 +704,8 @@ pub async fn serve_with_admin(
     let exec = ExecState::new(
         state,
         sagat_application::api_admission::ApiAdmissionService::new(executions.clone(), SystemClock),
-        DefinitionService::new(executions.clone(), SystemClock, JsonIrCodec),
+        DefinitionService::new(executions.clone(), SystemClock, JsonIrCodec)
+            .with_lake_enabled(serve.lake_enabled),
         runs,
     )
     .with_database_results(Arc::new(database_results))
@@ -707,6 +752,25 @@ pub async fn serve_with_admin(
         shutdown.await;
         let _ = stop_tx.send(true);
     });
+    let clock_sync = schedule_clock.map(|clock| {
+        let stop = stop_rx.clone();
+        tokio::spawn(async move {
+            // a few seconds of process-clock drift is far below what a schedule time can notice
+            let mut tick = tokio::time::interval(Duration::from_secs(5));
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            let mut stopped = std::pin::pin!(stopped(stop));
+            loop {
+                tokio::select! {
+                    () = &mut stopped => break,
+                    _ = tick.tick() => {
+                        if let Err(error) = clock.sync().await {
+                            tracing::warn!(%error, "could not read the database clock; keeping the last difference");
+                        }
+                    }
+                }
+            }
+        })
+    });
 
     // Public settings only; never the database URL.
     tracing::info!(
@@ -749,6 +813,9 @@ pub async fn serve_with_admin(
     tracing::info!("control plane stopped");
     pool_metrics.abort();
     metrics_upkeep.abort();
+    if let Some(task) = clock_sync {
+        task.abort();
+    }
     pool.close().await;
     Ok(())
 }

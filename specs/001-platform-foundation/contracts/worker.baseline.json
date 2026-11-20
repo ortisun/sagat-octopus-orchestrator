@@ -1,5 +1,37 @@
 {
   "messages": {
+    "sagat_octopus_orchestrator.v1.ClickHouseConnection": {
+      "1": {
+        "name": "url",
+        "repeated": false,
+        "type": "String"
+      },
+      "2": {
+        "name": "database",
+        "repeated": false,
+        "type": "String"
+      },
+      "3": {
+        "name": "ca_pem",
+        "repeated": false,
+        "type": "String"
+      },
+      "4": {
+        "name": "egress_ceiling",
+        "repeated": false,
+        "type": "Enum:.sagat_octopus_orchestrator.v1.EgressCeiling"
+      },
+      "5": {
+        "name": "limits",
+        "repeated": false,
+        "type": "Message:.sagat_octopus_orchestrator.v1.LakeLimits"
+      },
+      "6": {
+        "name": "credentials",
+        "repeated": true,
+        "type": "Message:.sagat_octopus_orchestrator.v1.ClickHouseConnection.CredentialsEntry"
+      }
+    },
     "sagat_octopus_orchestrator.v1.CompleteStepRequest": {
       "1": {
         "name": "task_id",
@@ -289,6 +321,303 @@
         "type": "Bool"
       }
     },
+    "sagat_octopus_orchestrator.v1.IcebergConnection": {
+      "1": {
+        "name": "rest",
+        "repeated": false,
+        "type": "Message:.sagat_octopus_orchestrator.v1.IcebergRestCatalog"
+      },
+      "10": {
+        "name": "credentials",
+        "repeated": true,
+        "type": "Message:.sagat_octopus_orchestrator.v1.IcebergConnection.CredentialsEntry"
+      },
+      "2": {
+        "name": "glue",
+        "repeated": false,
+        "type": "Message:.sagat_octopus_orchestrator.v1.IcebergGlueCatalog"
+      },
+      "3": {
+        "name": "hive",
+        "repeated": false,
+        "type": "Message:.sagat_octopus_orchestrator.v1.IcebergHiveCatalog"
+      },
+      "4": {
+        "name": "jdbc",
+        "repeated": false,
+        "type": "Message:.sagat_octopus_orchestrator.v1.IcebergJdbcCatalog"
+      },
+      "5": {
+        "name": "storage",
+        "repeated": false,
+        "type": "Message:.sagat_octopus_orchestrator.v1.LakeStorage"
+      },
+      "6": {
+        "name": "warehouse_locations",
+        "repeated": true,
+        "type": "String"
+      },
+      "7": {
+        "name": "allowed_modes",
+        "repeated": true,
+        "type": "String"
+      },
+      "8": {
+        "name": "egress_ceiling",
+        "repeated": false,
+        "type": "Enum:.sagat_octopus_orchestrator.v1.EgressCeiling"
+      },
+      "9": {
+        "name": "limits",
+        "repeated": false,
+        "type": "Message:.sagat_octopus_orchestrator.v1.LakeLimits"
+      }
+    },
+    "sagat_octopus_orchestrator.v1.IcebergGlueCatalog": {
+      "1": {
+        "name": "region",
+        "repeated": false,
+        "type": "String"
+      },
+      "2": {
+        "name": "catalog_id",
+        "repeated": false,
+        "type": "String"
+      },
+      "3": {
+        "name": "role_arn",
+        "repeated": false,
+        "type": "String"
+      },
+      "4": {
+        "name": "external_id",
+        "repeated": false,
+        "type": "String"
+      }
+    },
+    "sagat_octopus_orchestrator.v1.IcebergHiveCatalog": {
+      "1": {
+        "name": "uris",
+        "repeated": true,
+        "type": "String"
+      },
+      "2": {
+        "name": "tls_required",
+        "repeated": false,
+        "type": "Bool"
+      }
+    },
+    "sagat_octopus_orchestrator.v1.IcebergJdbcCatalog": {
+      "1": {
+        "name": "host",
+        "repeated": false,
+        "type": "String"
+      },
+      "2": {
+        "name": "port",
+        "repeated": false,
+        "type": "Uint32"
+      },
+      "3": {
+        "name": "database",
+        "repeated": false,
+        "type": "String"
+      },
+      "4": {
+        "name": "tls",
+        "repeated": false,
+        "type": "Enum:.sagat_octopus_orchestrator.v1.DatabaseTlsMode"
+      },
+      "5": {
+        "name": "ca_pem",
+        "repeated": false,
+        "type": "String"
+      },
+      "6": {
+        "name": "engine",
+        "repeated": false,
+        "type": "String"
+      }
+    },
+    "sagat_octopus_orchestrator.v1.IcebergRestCatalog": {
+      "1": {
+        "name": "uri",
+        "repeated": false,
+        "type": "String"
+      },
+      "10": {
+        "name": "remote_signing",
+        "repeated": false,
+        "type": "Bool"
+      },
+      "2": {
+        "name": "warehouse",
+        "repeated": false,
+        "type": "String"
+      },
+      "3": {
+        "name": "prefix",
+        "repeated": false,
+        "type": "String"
+      },
+      "4": {
+        "name": "auth",
+        "repeated": false,
+        "type": "Enum:.sagat_octopus_orchestrator.v1.LakeRestAuth"
+      },
+      "5": {
+        "name": "token_uri",
+        "repeated": false,
+        "type": "String"
+      },
+      "6": {
+        "name": "scope",
+        "repeated": false,
+        "type": "String"
+      },
+      "7": {
+        "name": "region",
+        "repeated": false,
+        "type": "String"
+      },
+      "8": {
+        "name": "signing_name",
+        "repeated": false,
+        "type": "String"
+      },
+      "9": {
+        "name": "vended_credentials",
+        "repeated": false,
+        "type": "Bool"
+      }
+    },
+    "sagat_octopus_orchestrator.v1.LakeAdlsStorage": {
+      "1": {
+        "name": "account",
+        "repeated": false,
+        "type": "String"
+      },
+      "2": {
+        "name": "endpoint_suffix",
+        "repeated": false,
+        "type": "String"
+      }
+    },
+    "sagat_octopus_orchestrator.v1.LakeGcsStorage": {
+      "1": {
+        "name": "project",
+        "repeated": false,
+        "type": "String"
+      },
+      "2": {
+        "name": "endpoint",
+        "repeated": false,
+        "type": "String"
+      }
+    },
+    "sagat_octopus_orchestrator.v1.LakeLimits": {
+      "1": {
+        "name": "max_record_bytes",
+        "repeated": false,
+        "type": "Uint32"
+      },
+      "2": {
+        "name": "max_records",
+        "repeated": false,
+        "type": "Uint32"
+      },
+      "3": {
+        "name": "timeout_ms",
+        "repeated": false,
+        "type": "Uint32"
+      }
+    },
+    "sagat_octopus_orchestrator.v1.LakeS3Storage": {
+      "1": {
+        "name": "region",
+        "repeated": false,
+        "type": "String"
+      },
+      "2": {
+        "name": "endpoint",
+        "repeated": false,
+        "type": "String"
+      },
+      "3": {
+        "name": "path_style",
+        "repeated": false,
+        "type": "Bool"
+      },
+      "4": {
+        "name": "role_arn",
+        "repeated": false,
+        "type": "String"
+      },
+      "5": {
+        "name": "external_id",
+        "repeated": false,
+        "type": "String"
+      }
+    },
+    "sagat_octopus_orchestrator.v1.LakeStorage": {
+      "1": {
+        "name": "s3",
+        "repeated": false,
+        "type": "Message:.sagat_octopus_orchestrator.v1.LakeS3Storage"
+      },
+      "2": {
+        "name": "gcs",
+        "repeated": false,
+        "type": "Message:.sagat_octopus_orchestrator.v1.LakeGcsStorage"
+      },
+      "3": {
+        "name": "adls",
+        "repeated": false,
+        "type": "Message:.sagat_octopus_orchestrator.v1.LakeAdlsStorage"
+      },
+      "4": {
+        "name": "vended_credentials",
+        "repeated": false,
+        "type": "Bool"
+      }
+    },
+    "sagat_octopus_orchestrator.v1.ObjectStorageConnection": {
+      "1": {
+        "name": "storage",
+        "repeated": false,
+        "type": "Message:.sagat_octopus_orchestrator.v1.LakeStorage"
+      },
+      "2": {
+        "name": "prefix",
+        "repeated": false,
+        "type": "String"
+      },
+      "3": {
+        "name": "formats",
+        "repeated": true,
+        "type": "String"
+      },
+      "4": {
+        "name": "conditional_create",
+        "repeated": false,
+        "type": "Enum:.sagat_octopus_orchestrator.v1.LakeConditionalCreate"
+      },
+      "5": {
+        "name": "egress_ceiling",
+        "repeated": false,
+        "type": "Enum:.sagat_octopus_orchestrator.v1.EgressCeiling"
+      },
+      "6": {
+        "name": "limits",
+        "repeated": false,
+        "type": "Message:.sagat_octopus_orchestrator.v1.LakeLimits"
+      },
+      "7": {
+        "name": "credentials",
+        "repeated": true,
+        "type": "Message:.sagat_octopus_orchestrator.v1.ObjectStorageConnection.CredentialsEntry"
+      }
+    },
     "sagat_octopus_orchestrator.v1.PollTasksRequest": {
       "1": {
         "name": "worker_id",
@@ -524,6 +853,21 @@
         "name": "tenant_id",
         "repeated": false,
         "type": "String"
+      },
+      "13": {
+        "name": "iceberg",
+        "repeated": false,
+        "type": "Message:.sagat_octopus_orchestrator.v1.IcebergConnection"
+      },
+      "14": {
+        "name": "object_storage",
+        "repeated": false,
+        "type": "Message:.sagat_octopus_orchestrator.v1.ObjectStorageConnection"
+      },
+      "15": {
+        "name": "clickhouse",
+        "repeated": false,
+        "type": "Message:.sagat_octopus_orchestrator.v1.ClickHouseConnection"
       },
       "2": {
         "name": "connection_revision",

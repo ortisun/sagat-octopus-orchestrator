@@ -1,6 +1,6 @@
 # SDK packaging and clean-install verification
 
-This runbook covers FR-006-008 for the TypeScript, Python, Go, C# and Java SDKs. It builds local release artifacts at the pinned SDK version, installs each artifact into a temporary consumer, exercises a public SDK symbol, checks that the package carries the MIT license and writes SHA-256 checksums. It never publishes to an external registry.
+This runbook covers FR-006-008 for the TypeScript, Python, Go, C#, Java and Rust SDKs. It builds local release artifacts at the pinned SDK version, installs each artifact into a temporary consumer, exercises a public SDK symbol, checks that the package carries the MIT license and writes SHA-256 checksums. It never publishes to an external registry.
 
 ## Build and verify all packages
 
@@ -20,18 +20,18 @@ The script records `SAGAT_SOURCE_REVISION` (default: the commit at startup) in t
 
 Set `PYTHON_BIN` when the system `python3` is outside the tested Python 3.10–3.14 build range, for example `PYTHON_BIN=python3.14 bash scripts/package-sdks.sh`. CI uses Python 3.12.
 
-The expected version is `0.2.0`. The script rejects a different version or license before building. A release that changes the version must update the constant at the top of `scripts/package-sdks.sh` together with every SDK manifest and public version constant.
+The expected version is `0.3.0`. The script rejects a different version or license before building. A release that changes the version must update the constant at the top of `scripts/package-sdks.sh` together with every SDK manifest and public version constant.
 
 ## Artifacts
 
 The output contains:
 
-- `sagat-octopus-orchestrator-sdk-0.2.0.tgz`: npm package, including `LICENSE`.
-- `sagat_octopus_orchestrator-0.2.0-py3-none-any.whl` and `sagat_octopus_orchestrator-0.2.0.tar.gz`: Python wheel and source distribution, including `LICENSE`.
-- `sagat-octopus-orchestrator-go-0.2.0.tar.gz`: deterministic Go module source archive, including `go.mod`, `go.sum` and `LICENSE`.
-- `SagatOctopusOrchestrator.Sdk.0.2.0.nupkg`: NuGet package, including `LICENSE.txt`.
-- `sagat-octopus-orchestrator-sdk-0.2.0.jar`, `-sources.jar`, `-javadoc.jar`, its POM and the parent POM: Maven release candidate, with `META-INF/LICENSE` in every JAR.
-- `SDK_RELEASE_NOTES-0.2.0.md`: reviewed notes for the five SDK packages at this version.
+- `sagat-octopus-orchestrator-sdk-0.3.0.tgz`: npm package, including `LICENSE`.
+- `sagat_octopus_orchestrator-0.3.0-py3-none-any.whl` and `sagat_octopus_orchestrator-0.3.0.tar.gz`: Python wheel and source distribution, including `LICENSE`.
+- `sagat-octopus-orchestrator-go-0.3.0.tar.gz`: deterministic Go module source archive, including `go.mod`, `go.sum` and `LICENSE`.
+- `SagatOctopusOrchestrator.Sdk.0.3.0.nupkg`: NuGet package, including `LICENSE.txt`.
+- `sagat-octopus-orchestrator-sdk-0.3.0.jar`, `-sources.jar`, `-javadoc.jar`, its POM and the parent POM: Maven release candidate, with `META-INF/LICENSE` in every JAR.
+- `SDK_RELEASE_NOTES-0.3.0.md`: reviewed notes for the SDK packages at this version.
 - `SHA256SUMS`: checksums of every distributable file.
 
 The npm consumer imports `SDK_VERSION` and builds a workflow document. The Python consumer installs locked runtime dependencies, imports `__version__` and builds the same minimal document. The Go, .NET and Java consumers compile and run against the extracted or locally installed artifact and assert the public SDK version. The Java smoke repository installs the candidate source and Javadoc classifiers with the main JAR and verifies their bytes before compiling the consumer. The .NET smoke test prefers .NET 8 and uses .NET 10 when only that supported runtime is installed.
@@ -50,6 +50,19 @@ Before external publication, the release owner must review the checksums and rel
 - PyPI requires a trusted publisher or scoped API token for `sagat-octopus-orchestrator`.
 - NuGet.org requires an API key scoped to `SagatOctopusOrchestrator.Sdk`.
 - Maven Central requires namespace ownership, Central Portal credentials and artifact signing. The local candidate already includes the required source and Javadoc artifacts.
-- The Go module is released by signing and pushing the module tag `sdks/go/v0.2.0`; the public Go proxy fetches the module from Git rather than accepting this tarball.
+- The Go module is released by signing and pushing the module tag `sdks/go/v0.3.0`; the public Go proxy fetches the module from Git rather than accepting this tarball.
 
 Registry uploads, release signing and long-term artifact retention are intentionally outside this credential-free workflow. The repository and all five package formats use the MIT license.
+
+## Rust crate candidate
+
+`bash scripts/package-rust-sdk.sh /tmp/sagat-rust-artifact` builds the committed Rust SDK source
+with the pinned Rust toolchain and Python 3.12 or newer. The helper refuses uncommitted SDK files,
+packages with `cargo package --locked`, checks the MIT license, extracts the actual `.crate`,
+and compiles/runs an independent consumer using only that extracted artifact. A fresh consumer
+lock is resolved once, then the run is repeated with `--locked`. It records the source commit,
+crate version and toolchain in `RUST_SDK_PROVENANCE.txt`. Its temporary workspace is removed; an
+explicit caller-owned external `CARGO_TARGET_DIR` is reused and left to its owner.
+
+The common packaging command also invokes this helper before checksums. The Rust crate and the five
+other packages are released together at 0.3.0. GitHub Release assets include the `.crate`; crates.io publication is not enabled.

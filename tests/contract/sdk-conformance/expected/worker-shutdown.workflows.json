@@ -1,6 +1,6 @@
 {
   "canonical": {
-    "work": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"entrypoint\":\"work\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"shutdown-flow\"},\"nodes\":[{\"activity\":\"shutdown.work\",\"id\":\"work\",\"retry\":{\"initialDelayMs\":50,\"jitter\":false,\"maxAttempts\":3,\"maxDelayMs\":50,\"strategy\":\"fixed\"},\"type\":\"activity\"}]}"
+    "work": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"entrypoint\":\"work\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"shutdown-flow\"},\"nodes\":[{\"activity\":\"shutdown.work\",\"id\":\"work\",\"next\":\"after\",\"retry\":{\"initialDelayMs\":50,\"jitter\":false,\"maxAttempts\":3,\"maxDelayMs\":50,\"strategy\":\"fixed\"},\"type\":\"activity\"},{\"activity\":\"shutdown.after\",\"id\":\"after\",\"type\":\"activity\"}]}"
   },
   "workflows": {
     "work": {
@@ -14,6 +14,7 @@
         {
           "activity": "shutdown.work",
           "id": "work",
+          "next": "after",
           "retry": {
             "initialDelayMs": 50,
             "jitter": false,
@@ -21,6 +22,11 @@
             "maxDelayMs": 50,
             "strategy": "fixed"
           },
+          "type": "activity"
+        },
+        {
+          "activity": "shutdown.after",
+          "id": "after",
           "type": "activity"
         }
       ]

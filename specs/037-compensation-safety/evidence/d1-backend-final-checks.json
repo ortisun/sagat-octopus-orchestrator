@@ -1,0 +1,12 @@
+[
+  {
+    "command": "cargo build --locked --offline -p sagat-cli -p sagat-database-runner",
+    "exit": 0,
+    "log": "d1-final-binaries.txt"
+  },
+  {
+    "command": "cargo test --workspace --locked --offline --no-fail-fast",
+    "exit": 101,
+    "log": "d1-final-workspace.txt"
+  }
+]

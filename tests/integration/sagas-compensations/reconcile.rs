@@ -1,6 +1,7 @@
 //! US03: an effect whose outcome is unknown is reconciled before anything else is decided
 //! (FR-003-005, FR-003-006).
 
+use sagat_application::error::AppError;
 use sagat_application::worker::TaskKind;
 use sagat_domain::execution::{RunStatus, StepStatus};
 use serde_json::json;
@@ -96,40 +97,73 @@ async fn the_provider_says_the_payment_happened_so_the_step_succeeds_without_a_s
 }
 
 #[tokio::test]
-async fn the_provider_says_it_did_not_happen_so_the_step_is_tried_again() {
+async fn negative_lookup_never_leases_second_attempt_and_fences_the_stale_report() {
     let w = world().await;
     let (workflow, _) = w.publish(quick(settlement())).await;
     let s = worker(&w).await;
     let run = w.start(workflow, &json!({})).await;
-    lose_the_response(&w, &s, run).await;
+    let reserve = w.one_task(&s).await;
+    w.complete(&s, &reserve, &json!({})).await.expect("reserve");
+    let lost = w.one_task(&s).await;
+    w.age_lease(run, "submit").await;
+    w.scheduler.tick().await;
 
     let lookup = w.one_task(&s).await;
     w.answer_reconciliation(&s, &lookup, "not_applied", None)
         .await
-        .expect("not applied");
+        .expect("a negative observation is accepted but is not final");
     assert_eq!(
         w.step_status(run, "submit").await,
-        Some(StepStatus::RetryWait)
+        Some(StepStatus::Waiting)
     );
-    w.age_retry(run, "submit").await;
-    w.scheduler.tick().await;
-    let again = w.one_task(&s).await;
-    assert_eq!(again.activity.as_str(), "act.submit");
-    assert_eq!(again.fence.attempt, 2);
-    // It did not happen, so nothing is recorded as its output.
-    let seen: serde_json::Value = serde_json::from_slice(&again.input).expect("json");
-    assert!(seen["steps"].get("submit").is_none(), "{seen}");
-    // The same key as the lost attempt: the provider can still recognise the request.
+    assert_eq!(w.run_status(run).await, RunStatus::ManualReview);
+    let forward: (i32, Option<String>, Option<String>) = sqlx::query_as(
+        "SELECT attempt,failure_code,waiting_kind FROM steps \
+         WHERE run_id=$1 AND node='submit'",
+    )
+    .bind(run.as_uuid())
+    .fetch_one(&w.db.pool)
+    .await
+    .expect("retained uncertain effect");
     assert_eq!(
-        again.idempotency_key,
-        lookup.target.expect("target").idempotency_key
+        forward,
+        (
+            1,
+            Some("RECONCILIATION_NOT_FINAL".into()),
+            Some("OPERATOR".into())
+        )
     );
-    w.complete(&s, &again, &json!({})).await.expect("works now");
+
+    // Another scheduler pass cannot reinterpret the observation as final absence or lease attempt 2.
+    w.scheduler.tick().await;
+    assert!(
+        w.poll(&s, 8).await.is_empty(),
+        "no second attempt is leased"
+    );
+
+    let journal = w.journal(run).await;
+    let stale = w.complete(&s, &lost, &json!({ "late": true })).await;
+    assert_eq!(stale.map(|_| ()), Err(AppError::StaleAttempt));
+    assert_eq!(
+        w.journal(run).await,
+        journal,
+        "the old attempt's late report cannot overwrite review"
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i32>(
+            "SELECT attempt FROM steps WHERE run_id=$1 AND node='submit'",
+        )
+        .bind(run.as_uuid())
+        .fetch_one(&w.db.pool)
+        .await
+        .expect("attempt"),
+        1
+    );
     w.assert_consistent(run).await;
 }
 
 #[tokio::test]
-async fn when_it_did_not_happen_and_no_attempt_is_left_the_saga_compensates() {
+async fn negative_lookup_with_no_attempt_left_still_requires_review() {
     let w = world().await;
     let doc = document(
         "settlement",
@@ -152,14 +186,19 @@ async fn when_it_did_not_happen_and_no_attempt_is_left_the_saga_compensates() {
     let lookup = w.one_task(&s).await;
     w.answer_reconciliation(&s, &lookup, "not_applied", None)
         .await
-        .expect("not applied");
+        .expect("negative observation");
 
-    assert_eq!(w.step_status(run, "submit").await, Some(StepStatus::Failed));
-    assert_eq!(w.run_status(run).await, RunStatus::Compensating);
-    let undo = w.one_task(&s).await;
-    assert_eq!(undo.activity.as_str(), "undo.reserve");
-    w.complete(&s, &undo, &json!({})).await.expect("undo");
-    assert_eq!(w.run_status(run).await, RunStatus::Compensated);
+    assert_eq!(
+        w.step_status(run, "submit").await,
+        Some(StepStatus::Waiting)
+    );
+    assert_eq!(w.run_status(run).await, RunStatus::ManualReview);
+    assert_eq!(
+        w.step_status(run, "reserve~c").await,
+        None,
+        "attempt exhaustion cannot turn a non-final lookup into compensation"
+    );
+    assert!(w.poll(&s, 8).await.is_empty());
     w.assert_consistent(run).await;
 }
 
@@ -263,7 +302,7 @@ async fn an_answer_that_is_not_a_verdict_fails_the_lookup_for_good_and_a_human_d
 }
 
 #[tokio::test]
-async fn a_high_risk_step_without_a_lookup_waits_for_an_operator_instead_of_retrying() {
+async fn unknown_activity_without_a_lookup_reviews_regardless_of_high_risk_metadata() {
     let w = world().await;
     let doc = document(
         "pay",
@@ -288,7 +327,8 @@ async fn a_high_risk_step_without_a_lookup_waits_for_an_operator_instead_of_retr
     assert!(w.poll(&s, 8).await.is_empty());
     w.assert_consistent(run).await;
 
-    // An ordinary step with the same loss is retried, as before this feature.
+    // Feature 037 supersedes the old metadata fallthrough: omitting highRisk does not prove that
+    // an activity is pure and cannot authorize a blind retry.
     let (plain, _) = w
         .publish(document(
             "plain",
@@ -300,10 +340,13 @@ async fn a_high_risk_step_without_a_lookup_waits_for_an_operator_instead_of_retr
     let _ = w.one_task(&s).await;
     w.age_lease(plain_run, "pay").await;
     w.scheduler.tick().await;
+    assert_eq!(w.run_status(plain_run).await, RunStatus::ManualReview);
     assert_eq!(
         w.step_status(plain_run, "pay").await,
-        Some(StepStatus::RetryWait)
+        Some(StepStatus::Waiting)
     );
+    assert!(w.poll(&s, 8).await.is_empty());
+    w.assert_consistent(plain_run).await;
 }
 
 #[tokio::test]

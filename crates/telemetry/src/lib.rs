@@ -10,6 +10,7 @@
 
 mod capacity;
 mod json_log;
+pub mod lake;
 mod leaf_certification;
 mod logging;
 mod metrics;
@@ -18,8 +19,15 @@ mod redact;
 mod span;
 mod trace;
 
-pub use capacity::{CAPACITY_FINISH_SPAN, CapacityFinishOutcome};
+pub use capacity::{
+    CAPACITY_ACQUIRE_SPAN, CAPACITY_FINISH_SPAN, CAPACITY_VACATE_SPAN, CapacityAcquireOutcome,
+    CapacityFinishOutcome, CapacityVacateOutcome,
+};
 pub use json_log::{LogLayer, Style};
+pub use lake::{
+    BrowseOutcome, DestinationKind, DestinationOutcome, LakeCatalogType, LakeLookup, LakeMetric,
+    LakeMode, LakePhase, LakeRelayDenial, LakeSandboxExit, LakeStorageType, LakeWriteOutcome,
+};
 pub use leaf_certification::{LEAF_CERTIFICATION_SPAN, LeafCertificationOutcome};
 pub use logging::{LogFormat, Telemetry, TelemetryConfig, init, init_logging};
 pub use metrics::{

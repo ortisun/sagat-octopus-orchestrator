@@ -1,0 +1,62 @@
+{
+  "name": "collection-control-routing",
+  "description": "WP-03 scoped condition and ordered switch select a local activity or Return from the exact item. All five existing body builders emit the same activity-entry graph; negative items skip the selected activity. The authored lifetime ceiling includes unused branch retirement and retained compensation reservations. Native tests separately cover expression failures, local recovery, rollback, malformed projections and stale snapshot CAS.",
+  "server": {"iterationConcurrency": 4},
+  "scopeEvidence": "ordered",
+  "workflows": {
+    "condition": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "name": "collection-control-condition",
+      "limits": {"maxInstances": 12, "maxDepth": 1},
+      "bodies": {"line": {"program": [
+        {"op": "step", "id": "reserve", "activity": "control.reserve", "options": {"compensateWith": "control.release"}},
+        {"op": "condition", "id": "choose", "expression": "item > 0", "ifTrue": "selected", "ifFalse": "returned"},
+        {"op": "step", "id": "selected", "activity": "control.notify"},
+        {"op": "return", "id": "returned", "result": "item"}
+      ]}},
+      "program": [
+        {"op": "map", "id": "lines", "items": "input.items", "body": "line", "result": "bodyResult", "maxItems": 2, "maxConcurrency": 1},
+        {"op": "end", "id": "done", "options": {"outputExpr": "steps.lines.output"}}
+      ]
+    },
+    "switch": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "name": "collection-control-switch",
+      "limits": {"maxInstances": 12, "maxDepth": 1},
+      "bodies": {"line": {"program": [
+        {"op": "step", "id": "reserve", "activity": "control.reserve", "options": {"compensateWith": "control.release"}},
+        {"op": "switch", "id": "choose", "cases": [{"id": "positive", "when": "item > 0", "target": "selected"}], "default": "returned"},
+        {"op": "step", "id": "selected", "activity": "control.notify"},
+        {"op": "return", "id": "returned", "result": "item"}
+      ]}},
+      "program": [
+        {"op": "map", "id": "lines", "items": "input.items", "body": "line", "result": "bodyResult", "maxItems": 2, "maxConcurrency": 1},
+        {"op": "end", "id": "done", "options": {"outputExpr": "steps.lines.output"}}
+      ]
+    }
+  },
+  "workers": {
+    "w1": {
+      "workerName": "collection-control-routing",
+      "protocolVersion": "1.5",
+      "transport": "poll",
+      "maxInflight": 1,
+      "autostart": false,
+      "activities": {
+        "control.reserve": {"behavior": {"returns": {"reserved": true}}},
+        "control.notify": {"behavior": {"returns": {"selected": true}}},
+        "control.release": {"as": "compensation", "behavior": {"returns": {"released": true}}}
+      }
+    }
+  },
+  "steps": [
+    {"id": "start-worker", "op": "startWorker", "worker": "w1"},
+    {"id": "condition", "op": "start", "workflow": "condition", "input": {"items": [1, -1]}},
+    {"id": "condition-done", "op": "waitForCompletion", "run": "condition", "timeoutMs": 60000},
+    {"id": "condition-journal", "op": "events", "run": "condition"},
+    {"id": "switch", "op": "start", "workflow": "switch", "input": {"items": [1, -1]}},
+    {"id": "switch-done", "op": "waitForCompletion", "run": "switch", "timeoutMs": 60000},
+    {"id": "switch-journal", "op": "events", "run": "switch"},
+    {"id": "stop-worker", "op": "stopWorker", "worker": "w1"}
+  ]
+}

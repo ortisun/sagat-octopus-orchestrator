@@ -74,7 +74,23 @@ spec:
             - {name: SAGAT_GRPC_TLS_CERT_FILE, value: /etc/sagat/tls/tls.crt}
             - {name: SAGAT_GRPC_TLS_KEY_FILE, value: /etc/sagat/tls/tls.key}
             {{- end }}
-            {{- if .Values.nats.url }}
+            {{- if not (has .Values.eventTransport (list "" "nats" "redis" "none")) }}
+            {{- fail "eventTransport must be empty, nats, redis or none" }}
+            {{- end }}
+            {{- if .Values.eventTransport }}
+            - {name: SAGAT_EVENT_TRANSPORT, value: {{ .Values.eventTransport | quote }}}
+            {{- end }}
+            {{- if eq .Values.eventTransport "redis" }}
+            - name: SAGAT_REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "redis.urlSecret is required for Redis transport" .Values.redis.urlSecret | quote }}
+                  key: {{ .Values.redis.urlKey | quote }}
+            - {name: SAGAT_REDIS_STREAM, value: {{ .Values.redis.stream | quote }}}
+            - {name: SAGAT_REDIS_STREAM_MAXLEN, value: {{ .Values.redis.streamMaxlen | quote }}}
+            - {name: SAGAT_REDIS_TIMEOUT_SECS, value: {{ .Values.redis.timeoutSecs | quote }}}
+            {{- end }}
+            {{- if and .Values.nats.url (or (eq .Values.eventTransport "") (eq .Values.eventTransport "nats")) }}
             - {name: SAGAT_NATS_URL, value: {{ .Values.nats.url | quote }}}
             - {name: SAGAT_NATS_REQUIRE_TLS, value: {{ .Values.nats.requireTls | quote }}}
             {{- if .Values.nats.credentialsSecret }}
@@ -105,7 +121,7 @@ spec:
             {{- if $e.grpc.tlsSecret }}
             - {name: tls, mountPath: /etc/sagat/tls, readOnly: true}
             {{- end }}
-            {{- if and .Values.nats.url .Values.nats.credentialsSecret }}
+            {{- if and .Values.nats.url .Values.nats.credentialsSecret (or (eq .Values.eventTransport "") (eq .Values.eventTransport "nats")) }}
             - {name: nats-creds, mountPath: /etc/sagat/nats, readOnly: true}
             {{- end }}
       volumes:
@@ -115,7 +131,7 @@ spec:
         - name: tls
           secret: {secretName: {{ $e.grpc.tlsSecret | quote }}, defaultMode: 288} # 0440
         {{- end }}
-        {{- if and .Values.nats.url .Values.nats.credentialsSecret }}
+        {{- if and .Values.nats.url .Values.nats.credentialsSecret (or (eq .Values.eventTransport "") (eq .Values.eventTransport "nats")) }}
         - name: nats-creds
           secret: {secretName: {{ .Values.nats.credentialsSecret | quote }}, defaultMode: 0440}
         {{- end }}

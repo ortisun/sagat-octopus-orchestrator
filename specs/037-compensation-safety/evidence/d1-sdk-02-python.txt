@@ -1,0 +1,2 @@
+.venv/bin/mypy
+/bin/sh: .venv/bin/mypy: No such file or directory

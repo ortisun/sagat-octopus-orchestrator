@@ -1,0 +1,22 @@
+[
+  {
+    "command": "npx --yes --ignore-scripts @redocly/cli@1 lint specs/001-platform-foundation/contracts/openapi.yaml",
+    "exit": 0,
+    "log": "d1-contract-openapi.txt"
+  },
+  {
+    "command": "protoc --proto_path=specs/001-platform-foundation/contracts --descriptor_set_out=/dev/null specs/001-platform-foundation/contracts/worker.proto",
+    "exit": 0,
+    "log": "d1-contract-proto.txt"
+  },
+  {
+    "command": "npx --yes --ignore-scripts @asyncapi/cli@3.6.0 validate specs/001-platform-foundation/contracts/events.asyncapi.yaml",
+    "exit": 0,
+    "log": "d1-contract-asyncapi.txt"
+  },
+  {
+    "command": "npx --yes --ignore-scripts -p ajv-cli@5 -p ajv-formats@3 ajv validate --spec=draft2020 -c ajv-formats --strict=false -s specs/001-platform-foundation/contracts/workflow.schema.json -d examples/payment-saga.workflow.json",
+    "exit": 0,
+    "log": "d1-contract-schema.txt"
+  }
+]

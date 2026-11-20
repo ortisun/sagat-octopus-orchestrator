@@ -1,0 +1,4 @@
+44 Markdown files, 437 local path links checked
+docs/traceability.md -> ../tasks/project-completion/integration-notes.md
+specs/014-workflow-primitives/spec.md -> ../../tasks/project-completion/leaf-child-source-preservation.md
+tests/contract/sdk-conformance/README.md -> ../../../tasks/project-completion/evidence/sdk60-current-20261018/reproduce.md

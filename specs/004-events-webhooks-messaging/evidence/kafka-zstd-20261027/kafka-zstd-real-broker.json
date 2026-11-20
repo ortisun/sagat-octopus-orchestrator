@@ -1,0 +1,22 @@
+{
+  "command": [
+    "cargo",
+    "test",
+    "-p",
+    "sagat-tests",
+    "--test",
+    "e2e_events_webhooks_messaging",
+    "--locked",
+    "--",
+    "us03::us03_kafka_redelivery_poison_messages_and_a_lost_offset_commit_leave_one_run_per_event",
+    "--exact",
+    "--nocapture"
+  ],
+  "exit_code": 0,
+  "seconds": 271.83,
+  "wall_seconds": 271.83,
+  "wall_minus_monotonic_seconds": 0.0,
+  "started_utc": "2026-10-27T21:20:22.961594+00:00",
+  "finished_utc": "2026-10-27T21:24:54.794927+00:00",
+  "log": "kafka-zstd-real-broker.txt"
+}

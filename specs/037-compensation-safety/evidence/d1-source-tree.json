@@ -1,0 +1,902 @@
+{
+  "base_commit": "6b6f0fa4bb7b622c960e9d149a4b78785ad0647b",
+  "branch": "feature/037-compensation-safety",
+  "scope": "changed tracked and untracked source/documentation files; evidence excluded",
+  "files": [
+    {
+      "path": ".specify/memory/constitution.md",
+      "sha256": "114398acee47bcc991aebc74153bcced84536514cbd9c4259f5ccf0121cd22cf",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "AGENTS.md",
+      "sha256": "973624f04af78a6b8cf3c7a5a55b510718b07a1b3b2dec5d6458c4b2ef44ae86",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "README.md",
+      "sha256": "b0a401fd8bb080b8a023143739960b71832da2492bfc76160735332665661225",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "SPECIFICATION-INDEX.md",
+      "sha256": "721ce20b9067bd8903b8f157ca5ae20c531ac2478b879893970c945ca1b497d6",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "crates/api-http/src/routes/execution.rs",
+      "sha256": "9966410fb135779d64f7dedde50b8f3f04788856efd28ee671b136659452c7f8",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "crates/application/src/runs.rs",
+      "sha256": "cdcf89c22a6b6d4580cf701a1dec4fdd60f81211279a3d783e9237c65a8d9d83",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "crates/application/src/telemetry.rs",
+      "sha256": "ac9dc28766d2f2960de6553d61b8c8be0882f4dd1ec5c77572d60345c7b20dc5",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "crates/application/src/worker/output.rs",
+      "sha256": "7dd3819e89a133ca7a54f555d1c412bcb8e78abcb15d980075b2c81cb6c8f22c",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "crates/application/src/worker/scoped_output_refusal.rs",
+      "sha256": "7cd5fc72e4e2b4c36b6cf029d4a190d271866c18856dea5b8af236546915a662",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "crates/application/src/worker/scoped_reports.rs",
+      "sha256": "3f31a7b91e0024bc391bdf2294dcea3f57d18704da370772512c927344348e65",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "crates/application/tests/telemetry_derive.rs",
+      "sha256": "963d77848301caf03aabbbbda242abd1145ad088723b15214d54ded8960c77a4",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "crates/domain/src/execution/command.rs",
+      "sha256": "e495c2781b490eccf838cdfed9804799b081002832a77876aea0d968dfb69f38",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "crates/domain/src/execution/continuation.rs",
+      "sha256": "1ec85a02b9d32d9e40fdc10c13f3a1f60770acd201bfefcd29b7d3352b86d1e3",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "crates/domain/src/execution/event.rs",
+      "sha256": "4bc1d336badc0d4513106b0805b5248ca65ff477ef2e00d18d850084f9a86bc7",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "crates/domain/src/execution/mod.rs",
+      "sha256": "379505989ca903a0d5460dad2d3b518adfb6b6406fd3f8fc48e6196c524329bc",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "crates/domain/src/execution/plan.rs",
+      "sha256": "0b943f9a6d4a307340345261ec02dd5de9df91bdcc4d08fa3a22e88a15e00528",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "crates/domain/src/execution/sagas.rs",
+      "sha256": "0a982aeac00095373153075d54ca8d1b8c133dac47ff2dde02d1499482569593",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "crates/domain/src/execution/scoped_sagas.rs",
+      "sha256": "69e7be28b5e4e1c3a2298adf24da1ed3f98ed257aeeded1d4bc63bb84790ea86",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "crates/domain/src/execution/state.rs",
+      "sha256": "cf2211878710be3b01ccc2fa9552a1b416900b801409d437dc9cd86ae83824ff",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "crates/domain/src/execution/state_effects.rs",
+      "sha256": "7379a71eeb69434d1ab84b3fdadf89a4b7238adb383e8db93d5ea4122228cd36",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "crates/domain/tests/bounded_path_planning.rs",
+      "sha256": "1d3636a24dd05d0153dafa148e941c972b161c4794611d301655f988d5eada8f",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "crates/domain/tests/continuation_quiescence.rs",
+      "sha256": "38c35bd0ea3cf8befb81719428e60e9e782dd406cb4818301b843373f730f081",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "crates/domain/tests/execution.rs",
+      "sha256": "1ce5de9a3383f97fd2d36a9e510affccabbb1ddf32aeb07ffefadf6b62cbb9b8",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "crates/domain/tests/execution_properties.proptest-regressions",
+      "sha256": "747715f9d39efc783ce490f6c05f9c618d92dd8a7a540f41daed6563c519929b",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "crates/domain/tests/execution_properties.rs",
+      "sha256": "7394a4bb72aa15fa9eaeec1a343f05275554efb410a3df87a2dad0ea78a77c51",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "crates/domain/tests/operator_actions.rs",
+      "sha256": "a7df4065bf12db54f2f02c6c6e089fb6b065b3acebda94a2c93af9451062b304",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "crates/domain/tests/sagas.rs",
+      "sha256": "65f5773e1ee148f36eaba99dbf77741bf84e8d23b0347b35e5f12b46b31f5ffd",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "crates/domain/tests/scoped_compensation.rs",
+      "sha256": "afdf790fbdc9502208dcb903a685cdbd406722a725dd66bfb382bb3837ed5b25",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "crates/infra-postgres/src/chain_progress.rs",
+      "sha256": "6485a2737a5cd42fa34fd8cfa26718769d31ac03c83fa3c8aa5826c7f7dbf700",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "docs/adr/ADR-0004-external-effects-at-least-once.md",
+      "sha256": "dbfc0afed2706b44ad34f5b31b5357152deedd731776b1f6fd217434bd8f54cd",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "docs/adr/ADR-0005-compensation-native.md",
+      "sha256": "038987aa693214db8264396f2dc344d262a88669cd5084290994e8a4b7b5bbce",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "docs/adr/ADR-0010-compensations-are-derived-steps.md",
+      "sha256": "981a48d649d7b441014bcdd44705e332cb8d691f8ed243613e3c56eed5b5a824",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "docs/adr/ADR-0013-scripts-run-in-containers-the-control-plane-never-touches.md",
+      "sha256": "87a1b7f2ad5a4dc90c72408ab51358bb672ff66743558263fc2e5db6ed5d32c9",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "docs/adr/ADR-0030-structured-instances-and-continuation-chains.md",
+      "sha256": "905138136fd4f6b19baf9ecf6b8a5c7830fca9f6c4cadb9d5dc9d534dfbd9993",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "docs/adr/ADR-0076-compensation-failure-and-uncertain-effects.md",
+      "sha256": "196a738ee2f6cb488d23eb849d68afd07df4802aed528e693eec84b0d1d1ca5c",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "docs/adr/README.md",
+      "sha256": "9d9b02e4c97fd7034da37a4d311b6789ae9bec790a03882b2556ea4c8214fd61",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "docs/architecture/capacity-and-topology.md",
+      "sha256": "c80385e78f836e66e9bc2b13144087221475ca5847b5bdb0adf0e2c33cd47ec0",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "docs/architecture/execution-semantics.md",
+      "sha256": "8f763655efa8e410834189be36478c77774b714a784875bf7739f9aafb967674",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "docs/architecture/observability-slo.md",
+      "sha256": "2ae1ebddcc355ef97d3dfdcb64a9721399999902fdbfa71268dc5b19678308ff",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "docs/architecture/overview.md",
+      "sha256": "5a864ecc9a6e2d87c210601d0913a48947ec6f7b9de425a0c8f42b9220da16b9",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "docs/architecture/reliability-operational-playbooks.md",
+      "sha256": "61f6caaa2dd08f449b47ce452574432635d825f73d2f4d58c13f42ef9de01695",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "docs/architecture/sagas.md",
+      "sha256": "b740678af5f9f5d48ce8a549730c523eab8b245d0d8ad79a84ccae973de9bc81",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "docs/architecture/sdk-contract.md",
+      "sha256": "9aaa966e623b0f70082f39692bc7cfbf7ad90630372cc99f12fff4bf29fdc1d6",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "docs/architecture/security-and-sandbox.md",
+      "sha256": "2c85e54ce6498856a3434c5e59ea5634c391b71706ebeb1f7145f75d12314e3b",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "docs/architecture/storage-and-events.md",
+      "sha256": "6e06e2650afa063cefa6ed181928e5568c1ef494be6760a97ab6b46ae7e2b719",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "docs/architecture/studio-ux.md",
+      "sha256": "460b2abc232f08a026187be5275b4036824d474e2bfb9b8d5a6b35c89adc60ae",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "docs/architecture/worker-runtime-protocol.md",
+      "sha256": "d48e82cf9b90ad78bd6a2112dc7cf088c40eb252365ea26542dd2931329bcada",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "docs/architecture/workflow-ir-and-sdk-modes.md",
+      "sha256": "0a7ed1f0879bf5ec22e5fa66bbe03d76230d5ff4d993725e52a4664fc076320b",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "docs/engineering/architecture-principles.md",
+      "sha256": "e78b9c33774e119d14e6d7bfd1dedfa75f8c2c6bc368338d1b45ad13a071cf58",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "docs/engineering/dependency-overrides.md",
+      "sha256": "6f9600b836f1d9b3465cb9b625cd2ae661e248f83877c9a2d50a1d97e26923dc",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "docs/engineering/sdd-workflow.md",
+      "sha256": "16fae42b4c62252ee0cdfa878d80c739087c6b4a7bd81fdbc0ee8abb1fd32580",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "docs/governance/compensation-safety-sync-impact.md",
+      "sha256": "78ce00b7a59d5113d1e802a8cd9bba584983390a6869680417f193db309944f9",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "docs/governance/constitution-2.0.0-sync-impact.md",
+      "sha256": "b5ca53f7df049b30d5a5c83e742841406acdb980e66a78f21ecf2919fa395999",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "docs/owner-decisions.md",
+      "sha256": "52a9711e90453bb37cdefcb2d98d075c908c200a98472b07b819b498ee93d1e8",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "docs/roadmap.md",
+      "sha256": "bca30860dcdcdc5b259659f7deb55a022ed6d3990ccbb164231ed21614c1b3ca",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "docs/runbooks/execution-engine.md",
+      "sha256": "2901880e203ca58b1463702c9de726680a32c8adc228da540e0f4967b28b5b36",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "docs/runbooks/sagas.md",
+      "sha256": "9159ece8a2bbea6940d0efbe0f84c689a324c78af72c71f3aba7a94e8760e1a7",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "docs/runbooks/scaling.md",
+      "sha256": "cbd8c58bb2ffb0b406a38678049dd03dd8cc2f3163d25895369259cae6da1055",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "docs/traceability.md",
+      "sha256": "bda255be47ed685e6ea51b41f2ac70d1003072f78c716d162af983fad3ceadce",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "frontend/apps/studio/src/features/runs/OperationDialog.tsx",
+      "sha256": "0c97741ffef27d66a229aa0cf89195ca2540dbd9117fc3963572e0f5b23f9747",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "frontend/apps/studio/src/features/runs/operations.test.tsx",
+      "sha256": "8fb456ff26fc0970a69af5ba3558ddab011a070c31bb7ce5452d17df553f6db6",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "frontend/apps/studio/src/features/runs/ops.test.ts",
+      "sha256": "e711b1c50d4bebbacc98d5eddf8e7079f217a5ab72f197eb7a58e4ed9a60ee7b",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "frontend/apps/studio/src/features/runs/ops.ts",
+      "sha256": "a616100dcb8f81c3bde61c5fe95a3e23f14868fa25472a6d85e9ff809e4dee3d",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "frontend/e2e/tests/us04-act.spec.ts",
+      "sha256": "3ac985e375a974126d537625ebd0961eef0ca23a7eda25c261c1e83a5009601c",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "frontend/package-lock.json",
+      "sha256": "df6119e8fbf799e0b5c2566e8ed03c79751fce822187bbcf4bffc3f35c5acb26",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "frontend/package.json",
+      "sha256": "88bbd46f86ac6b9060682544b706d65837ed170dd6ace6a6a454e2e1c0afd609",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "frontend/tools/minimatch-compat/README.md",
+      "sha256": "c86f16002a242fbe0a4b1940f60ac6460846f559d439a64fe9a2967d945004fc",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "frontend/tools/minimatch-compat/index.cjs",
+      "sha256": "330b478fa84dddbdf397c457df82a466fc20e41332c301b1addb7b5cfdc67bcc",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "frontend/tools/minimatch-compat/package.json",
+      "sha256": "45dea9fc5c3c0ba8c83e53b20cb247b3b0cda89bcbfc01078fd2617446ad80e9",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "frontend/tools/minimatch.test.mjs",
+      "sha256": "5f3b2980b13b2af3fafbcd3ad09873e70081b66c166c828af446a5069f4273d8",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "infra/docker/Dockerfile",
+      "sha256": "22bb7882b0c88110b5efde92a05e7a2a2bf8213d1a0cdfb3425ebe96081b94c7",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "scripts/tests/test_compose_diagnostics.py",
+      "sha256": "392c040ae6093cf4da7df036ef613d54a300801527a5e0ab961b181ecfb619bf",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "sdks/SPEC.md",
+      "sha256": "d95a6a5f758a6773a2fbeb4d2ede344b73c17a712f1616e07ef0435cc9997c0e",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "sdks/rust/conformance/src/runtime.rs",
+      "sha256": "8fbf73b74d02c887bab988ca4ffe0d6177dcdb6fb12f56b6724c92f6a10b63c5",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "sdks/typescript/conformance/runner.ts",
+      "sha256": "097b44ca15b57a1b085fc12e169842713d9b847918fd9deaeeb96fd00c039313",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "specs/002-durable-execution/spec.md",
+      "sha256": "6d07dc7bd98685eac5ad34c86675d6a98fd0d2f533509f06401040534d825dc3",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "specs/003-sagas-compensations/research.md",
+      "sha256": "9656881e059b50df00ef697f21b89413c89b8787a9200267ab1bc5e095bfdfc2",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "specs/003-sagas-compensations/spec.md",
+      "sha256": "4a6b9391f3be6bd6974dd62ddc42d41a1e35dc894235f5c0663f1e8a60ce9cf6",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "specs/014-workflow-primitives/research.md",
+      "sha256": "0071e1a3a31dac94b5660e187601b38d29b9632543c5e2b6b8b3a9862969cde1",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "specs/014-workflow-primitives/spec.md",
+      "sha256": "72d378fc7cd034cefbfb68b0479b7692bd71b80d6256f00f2ca89da2623a79aa",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "specs/037-compensation-safety/analysis.md",
+      "sha256": "d1b82fb15676c86ab8784642a321c97151e5f9638dd9ac03dab617f03511e4a6",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "specs/037-compensation-safety/checklists/requirements.md",
+      "sha256": "1eaa793f601ead509a1e858c9cd4bce6bc6f3b406a56fddb0d4395bfe547d7c7",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "specs/037-compensation-safety/contracts/README.md",
+      "sha256": "448922e0db927d667cb7b3c5744b5244feb9fbb4632788edb1e60fb9b17e2ebf",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "specs/037-compensation-safety/data-model.md",
+      "sha256": "c4fc634134712db6050bf27457e7781918b71bd55278276168da763f5434f7f1",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "specs/037-compensation-safety/plan.md",
+      "sha256": "30aac5b06c95125d723a9ba26580883caaee6197e6ae94d0cf11ea75e0bffb7d",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "specs/037-compensation-safety/quickstart.md",
+      "sha256": "3c1b3a45b47135fa305dc5bc10507009d8918f3b901bb5d5f9494481c61f0e5e",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "specs/037-compensation-safety/research.md",
+      "sha256": "7bac0a9741c144eb32b443c07d556767664d32240c0a6cc847655a42a7da4a6b",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "specs/037-compensation-safety/spec.md",
+      "sha256": "ba825ad0c409612f2647554ff0be4a8c7eb050e2f871556b08f693eaa28afe7a",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "specs/037-compensation-safety/tasks.md",
+      "sha256": "209a9151dc1786cb5ac76c7f86dffc2d7b66543ffd29847a564d1f71528c08f0",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "specs/037-compensation-safety/validation-report.md",
+      "sha256": "c261fc99b744c2d47077394261db9db9c4e3891c82aa4d4d16b9898c35a8d4d2",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "tests/contract/durable-execution/grpc/blobs.rs",
+      "sha256": "e957ff98325723ce9a95b6416f696951771c6308db246e7c4d8ac2ca4c3e2e46",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "tests/contract/durable-execution/grpc/protocol.rs",
+      "sha256": "9d654ba6b19ada5cdffae27aa004241adaefccab94d404e627ffbc4d627d0426",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "tests/contract/sagas-compensations/grpc/protocol.rs",
+      "sha256": "e33c77707fa11d40510f339d09b7e635dab8873aaf11f12a74149adb8bb1270b",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "tests/contract/sagas-compensations/rest/conformance.rs",
+      "sha256": "b493d8645459baf24e7556777272f3f2408bd59566c32404e94780fc4bcb8251",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "tests/contract/sdk-conformance/README.md",
+      "sha256": "e322c2ad460ec5147f2f39538d95fb46bbd61db07bdfc3f2a5357bc6a1015d0f",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "tests/contract/sdk-conformance/expected/compensation-safety.json",
+      "sha256": "3c81c64b2976171d10a1d4e917b55064d68160421f1ed6b9564c9b813172699f",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "tests/contract/sdk-conformance/expected/compensation-safety.workflows.json",
+      "sha256": "13e3bce629d1f74f3313aed24082ac50315745d847d7f4b07db198721632359a",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "tests/contract/sdk-conformance/expected/failures-and-retries.json",
+      "sha256": "778f768f92e3ecfe760f118784b03c53533b62e1aa7dff4e14ba0181b0c07552",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "tests/contract/sdk-conformance/expected/lease-lost.json",
+      "sha256": "bc32136daeb5eea888057cb12238fe70d830b603dfc3c8cf10f46d7e2ed95d6b",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "tests/contract/sdk-conformance/expected/lease-lost.workflows.json",
+      "sha256": "b0553abe6246d616d028981efc4db40ca18e3482d04efa0086a53341fe819444",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "tests/contract/sdk-conformance/expected/saga-compensation.json",
+      "sha256": "240e77df877003aeb0e86e0f1fdd6766dddfad7492a941539e599df6c279f0f0",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "tests/contract/sdk-conformance/expected/worker-shutdown.json",
+      "sha256": "19b3273240b95ad0f46b3aad69365fd83563003185be633f3da14a24a93c1932",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "tests/contract/sdk-conformance/expected/worker-shutdown.workflows.json",
+      "sha256": "21816d353c5ee13169d8617dca78a6c237a911247d941ee6484d78fe7a6ff472",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "tests/contract/sdk-conformance/harness.rs",
+      "sha256": "d11556809d7f27167f5ea678b86ca5caefcd2a3bfc486c254e90301eae582107",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "tests/contract/sdk-conformance/main.rs",
+      "sha256": "787d4028bd259cc64ade0485fdc913c707ab373ce6d4617e36e07a53a2f340de",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "tests/contract/sdk-conformance/normalize.rs",
+      "sha256": "8b481d8abba2ca3b76ef71ee81470fe03aeee1ed2997344d61f5544b373b5270",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "tests/contract/sdk-conformance/scenarios/compensation-safety.json",
+      "sha256": "f4b6914e63fe8597f5544b3e7bd647708d147459b49a2d7d68c82c1b3eb7f840",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "tests/contract/sdk-conformance/scenarios/failures-and-retries.json",
+      "sha256": "41bdd3db4306207d182616ecea140e611c142d3200a7ecacefd386c66f7e10ba",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "tests/contract/sdk-conformance/scenarios/lease-lost.json",
+      "sha256": "0c2a1f99814cf9564266ac74dac105f1e746fdf09cf4e63edd99718c889a3533",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "tests/contract/sdk-conformance/scenarios/saga-compensation.json",
+      "sha256": "8320ffa0c040100ff9d38e1e1968e6546923fed82fad7cd7a576f339ccc1820d",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "tests/contract/sdk-conformance/scenarios/worker-shutdown.json",
+      "sha256": "af0923573bc48881189bf161e218fa863dac72168f80657151bf25ade61b7b40",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "tests/e2e/developer-experience/stories.rs",
+      "sha256": "e35ee619ee0ef1b57221a61f90ebb3e6104a3b3da0e10ad744e4b9172d8b5faa",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "tests/e2e/durable-execution/engine.rs",
+      "sha256": "c9d1341c4bd37aebd362e3fe001d2094cf34368a843f3ef6fc1f10828ff9e5c6",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "tests/e2e/durable-execution/stories.rs",
+      "sha256": "694fab27780276701f6a5e34ad6150df853b350ee5b4bef02e352e20eecffd4d",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "tests/e2e/durable-execution/stream_recovery.rs",
+      "sha256": "3b92102672e5f06ac6af7140440b74737b531e2b3990704ebebe253cb219dbc9",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "tests/e2e/sagas-compensations/telemetry.rs",
+      "sha256": "3c8e05e5b2508c264017820dc9e353dd9301fef46ddc1accee48e788d1199a67",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "tests/e2e/sagas-compensations/us02.rs",
+      "sha256": "0527708656084761a88fdb202096b7f4453193be5ff0ec2adc58024309fe2cf3",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "tests/e2e/sagas-compensations/us03.rs",
+      "sha256": "484b804f0825f73ba16d19cdf829f59147134a5bc9748d5f13438ada5b8a8e8a",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "tests/e2e/sagas-compensations/us04.rs",
+      "sha256": "adeabf93e4e08376a7e24c4162cbff89de694851fd3dab3643ccff7557c669ab",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "tests/e2e/sdk-multilanguage/us03.rs",
+      "sha256": "a399740fa2227ad5541467aa4110e1769fbf063bf27174a33887bf28710dff35",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "tests/fault/failover/workers.rs",
+      "sha256": "3e39e18c05128c3e9b9baab24ecd2b2fdad7aea3fdbc0ec68e303975f5443539",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "tests/fault/inline-code-sandbox/loss.rs",
+      "sha256": "9933b904d9cf7457fdd4b48da84fad3e1e25a6d2b7c08c25e16af8c9e2236c94",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "tests/fault/inline-code-sandbox/races.rs",
+      "sha256": "26b51731fe513e263c03a96d6c5e7e2a6b79e027744bbcf51b061d19e726faec",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "tests/fault/sagas-compensations/chaos.rs",
+      "sha256": "84754d64457b703525aa74c18e3683102eee4522ff47012530a392c94ea9310a",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "tests/fault/sagas-compensations/crashes.rs",
+      "sha256": "25ac30ad4afbf8a8ddc47a64fafe56bec2c963f759d81068274615ea8c4527cb",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "tests/fault/sagas-compensations/provider.rs",
+      "sha256": "d9542d43cd1d7966f150d64f50a80721a9ed40b9fb211ee42bb5c8c0123a82b2",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "tests/fault/sdk-multilanguage/workers.rs",
+      "sha256": "e22ad64a7d57f0319987697deb9a6803c2c004fa535107e67949b32593ba0cf3",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "tests/fault/security-multitenancy/egress.rs",
+      "sha256": "7fcc3969c1085f63fd06c3b1c5b9a374d63532ea1ac40c793254a96239ad8436",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "tests/fault/workflow-primitives/scope_compensation.rs",
+      "sha256": "c3a0bd9592bf3364d12565c4aef2184df35e18457d59134dc06ba963688d9fbc",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "tests/integration/database-connections/cleanup_retention.rs",
+      "sha256": "eca76a7679a9bcf2d7b4203c1a7b24455bd513d3ebddfafa1edfe955a93674e4",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "tests/integration/database-connections/consumers.rs",
+      "sha256": "c12a9dea5d82a7c645a6dfa28748261c843487c1fb2b196b4fd8a75542ba5a9b",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "tests/integration/database-connections/output.rs",
+      "sha256": "aaa4bd84e87caa69360f5bca25e653ecb2aca801139c98b1270a6b4837eb55be",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "tests/integration/durable-execution/concurrency.rs",
+      "sha256": "22a5507bbb9296d2fc6a2de831f91aed4e559f154b5de64dc0af8606ef157acd",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "tests/integration/durable-execution/faults.rs",
+      "sha256": "6dd081f829e152a163374e831eee6b58d7a1c3f471386cee4f1e2648e5ebefe1",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "tests/integration/durable-execution/hardening.rs",
+      "sha256": "069ea7e47db68fa24bbd8356e12b23cb48d7cc4eeb81f14762c6c25b2636ddd2",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "tests/integration/durable-execution/runtime_quotas.rs",
+      "sha256": "72c8d93fa10a76d52d224d9ded9b0cf247b8b6d713436cb6d925d74490f63806",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "tests/integration/durable-execution/scheduler.rs",
+      "sha256": "4527cdaef8975de00988730edd80bb196b0cf9c85dbd53bede40ba130081ae7f",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "tests/integration/sagas-compensations/compensation.rs",
+      "sha256": "04db105d4c8f3d84520b11fccf49fe67017ed6055bc79967640697cc1c944134",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "tests/integration/sagas-compensations/reconcile.rs",
+      "sha256": "9392cc28343a50c672c48679ba065f936356d907f25c89519237a56b31853a0f",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "tests/integration/sagas-compensations/review.rs",
+      "sha256": "a17d3cf21e1e4600315f0655819b8a79a3892d405903c194032e73b453faa990",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "tests/integration/sagas-compensations/stopping.rs",
+      "sha256": "d745c665e6440a4cdc80a5dca32a0e4b1beae10fd5a5ed7dd2061c75fd868ad2",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "tests/integration/scalability-ha/fairness.rs",
+      "sha256": "d80e265266bd3260496c28b74ed0e223574cfebf48b56ab4e1383dc583f008ca",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "tests/integration/security-multitenancy/bindings.rs",
+      "sha256": "092cb70ab3d6794405a2825b0ca6e3eaee22d0265c701d5769328dd6e3b4f22f",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "tests/integration/security-multitenancy/incidents.rs",
+      "sha256": "da80819744624564d5dede266e7bb0428c031f9b905ec4a74f73137685f5810d",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "tests/integration/workflow-primitives/byte_ceilings.rs",
+      "sha256": "414dec5c47e07c38f87b089cab3d2e69349dbd84c8a0d6534fc6723d120fb9c6",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "tests/integration/workflow-primitives/chains.rs",
+      "sha256": "50aa50d6a9718fee154d6d89c611538d81967367e86c7101ccf0708a09383853",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "tests/integration/workflow-primitives/scope_compensation_http.rs",
+      "sha256": "5da5683544f3db7d2ef128d0bb2a9ccfb845a9821e826bf1a62c5713372c5f6d",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "tests/integration/workflow-primitives/scoped_blob_completion.rs",
+      "sha256": "65d506cd4ab5ea42796a83331210549b73fc778d58c4f558af341ab53b03c71d",
+      "mode": "0o644",
+      "symlink": false
+    },
+    {
+      "path": "tests/integration/workflow-primitives/scoped_worker.rs",
+      "sha256": "68aa55b936a29795e854aef4562d27e496076105b845bad509865188d1940132",
+      "mode": "0o644",
+      "symlink": false
+    }
+  ],
+  "source_tree_sha256": "10838a5ea8e9057ccb47884634e2cd2cbdc8252d80eb82d74b81cf888cbf3bc1"
+}

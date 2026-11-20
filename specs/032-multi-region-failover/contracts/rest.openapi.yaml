@@ -1,0 +1,170 @@
+# Draft fragment for feature 032 (multi-region failover). NOT canonical and NOT implemented.
+# T032-050 merges it into specs/001-platform-foundation/contracts/openapi.yaml at implementation time.
+# Every change is additive: new paths, one optional request field, one response header, one optional
+# query parameter and new `details.reason` values over existing `Error.code` values.
+openapi: 3.1.0
+info:
+  title: Sagat Octopus Orchestrator — feature 032 fragment
+  version: 0.0.0-draft
+paths:
+  /region:
+    get:
+      operationId: getRegionStatus
+      summary: Say which cell, region, epoch and role this process serves
+      tags: [Identity]
+      x-implemented: 'proposed: 032'
+      description: >-
+        Needs a token and no permission, like `getPlatformVersion`. Answered in every role, including a
+        passive or superseded region (it is the one tenant-independent call a standby serves besides the
+        probes). Carries no tenant data. A platform without this feature answers `404 ROUTE_NOT_FOUND`; a
+        single-region deployment answers `role: UNCONFIGURED`. Cached for at most one second. The peer
+        epoch probe does not use this route: it reads `GET /region` on the processes' admin listener
+        (internal network, no token, answers only cell, region, role and epoch; research D1598).
+      responses:
+        '200': {description: 'The region status', content: {application/json: {schema: {$ref: '#/components/schemas/RegionStatus'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+  /namespaces/{namespaceId}/placement:
+    get:
+      operationId: getNamespacePlacement
+      summary: Where a namespace's data lives and may live
+      tags: [Identity]
+      x-implemented: 'proposed: 032'
+      description: Needs `namespace:read`. Another tenant's namespace is `404 NOT_FOUND`, indistinguishable from a missing one.
+      parameters:
+        - {name: namespaceId, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '200': {description: 'The placement', content: {application/json: {schema: {$ref: '#/components/schemas/NamespacePlacement'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+    put:
+      operationId: setNamespaceResidency
+      summary: Declare the regions a namespace's data may reside in
+      tags: [Identity]
+      x-implemented: 'proposed: 032'
+      description: >-
+        Needs `placement:manage`. Refused `422 VALIDATION_FAILED` with `details.reason:
+        PLACEMENT_RESIDENCY_CONFLICT` when `allowedRegions` excludes a region of the namespace's cell (its data
+        is already there). `409 CONFLICT` with `REVISION_CONFLICT` when `revision` is not the current one.
+        Audited (`namespace.placement.changed`) in the same transaction. `allowedRegions: null` removes the
+        declaration.
+      parameters:
+        - {name: namespaceId, in: path, required: true, schema: {type: string, format: uuid}}
+        - $ref: '#/components/parameters/OptionalIdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/SetNamespaceResidencyRequest'}
+      responses:
+        '200': {description: 'The new placement', content: {application/json: {schema: {$ref: '#/components/schemas/NamespacePlacement'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+  # Changes to existing operations (described, merged by T032-050):
+  #
+  # createNamespace (POST /workspaces/{workspaceId}/namespaces):
+  #   CreateNamespaceRequest gains the optional property `allowedRegions` (schema RegionList, nullable).
+  #   The same PLACEMENT_RESIDENCY_CONFLICT refusal applies. Needs `namespace:create` (unchanged).
+  #
+  # getRuntimeGraphChanges (GET /runs/{runId}/graph/changes) and streamRunChanges (GET /runs/{runId}/stream):
+  #   new optional query parameter `epoch` ({$ref: '#/components/parameters/RegionEpoch'}): the epoch of the
+  #   event at the client's `since`/`after`/`Last-Event-ID`; GraphChanges gains the optional property
+  #   `epoch` (integer, int64, minimum 0: the epoch recorded on the journal event at `projectionSeq`,
+  #   `run_events.region_epoch`); response header `X-Sagat-Region-Epoch` carries the same value. When
+  #   `epoch` is given and the authority's event at that sequence has another epoch, the answer (and the
+  #   first stream event) is the existing GraphChanges with `reset: true` and the whole graph, exactly as
+  #   when the cursor is ahead of the run today. A follower whose sequence replicated keeps its cursor.
+  #   Without `epoch` the behaviour is unchanged.
+  #
+  # In `sync_quorum` cells every tenant route (and the webhook ingress) may also answer 503 with reason
+  # DURABILITY_UNCONFIRMED when the process's durability lease lapsed or its barrier is incomplete; a
+  # keyed replay is answered only after a quorum-waited commit of its own transaction (FR-032-009).
+  #
+  # Every tenant route and POST /webhooks/{endpointId}:
+  #   in a passive, superseded or (for admissions) draining region, `503` with the Unavailable response,
+  #   `Error.code: UNAVAILABLE`, `retryable: true`, `Retry-After`, and `details.reason` one of
+  #   REGION_PASSIVE, REGION_DRAINING, REGION_SUPERSEDED. Never a redirect.
+  #
+  # getReadiness (GET /ready): `503` in every role but ACTIVE and UNCONFIGURED, with the same reasons.
+components:
+  parameters:
+    RegionEpoch:
+      name: epoch
+      in: query
+      required: false
+      schema: {type: integer, format: int64, minimum: 0}
+      description: The epoch of the journal event at the client's cursor, as last returned in `GraphChanges.epoch` or `X-Sagat-Region-Epoch`. Absent means unknown (no epoch check).
+    OptionalIdempotencyKey:
+      $ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/parameters/OptionalIdempotencyKey'
+  headers:
+    RegionEpoch:
+      description: The epoch recorded on the journal event at the returned sequence (0 on a single-region deployment).
+      schema: {type: integer, format: int64, minimum: 0}
+  schemas:
+    RegionName:
+      type: string
+      pattern: '^[a-z][a-z0-9-]{1,30}[a-z0-9]$'
+      description: An operator-chosen region name; `--` is not allowed.
+    RegionList:
+      type: [array, 'null']
+      minItems: 1
+      maxItems: 3
+      uniqueItems: true
+      items: {$ref: '#/components/schemas/RegionName'}
+    RegionStatus:
+      type: object
+      additionalProperties: false
+      required: [role, epoch, observedAt]
+      properties:
+        cell: {type: [string, 'null'], description: 'Null when UNCONFIGURED.'}
+        region: {type: [string, 'null'], description: 'The region of the answering process.'}
+        role: {type: string, enum: [ACTIVE, DRAINING, PASSIVE, SUPERSEDED, UNCONFIGURED]}
+        epoch: {type: integer, format: int64, minimum: 0, description: '0 when UNCONFIGURED.'}
+        activeRegion: {type: [string, 'null']}
+        regions: {type: array, maxItems: 3, items: {$ref: '#/components/schemas/RegionName'}}
+        replicationMode: {type: [string, 'null'], enum: [SYNC_QUORUM, ASYNC, null]}
+        protection: {type: string, enum: [PROTECTED, UNPROTECTED, UNKNOWN]}
+        lastActivationAt: {type: [string, 'null'], format: date-time}
+        observedAt: {type: string, format: date-time}
+    NamespacePlacement:
+      type: object
+      additionalProperties: false
+      required: [namespaceId, epoch, residencySatisfied, revision]
+      properties:
+        namespaceId: {type: string, format: uuid}
+        cell: {type: [string, 'null']}
+        regions: {type: array, maxItems: 3, items: {$ref: '#/components/schemas/RegionName'}}
+        activeRegion: {type: [string, 'null']}
+        epoch: {type: integer, format: int64, minimum: 0}
+        replicationMode: {type: [string, 'null'], enum: [SYNC_QUORUM, ASYNC, null]}
+        protection: {type: string, enum: [PROTECTED, UNPROTECTED, UNKNOWN]}
+        allowedRegions: {$ref: '#/components/schemas/RegionList'}
+        residencySatisfied: {type: boolean, description: 'Every region of the cell is allowed (always true without a declaration).'}
+        revision: {type: integer, format: int64, minimum: 0, description: '0 when no declaration was ever made.'}
+        updatedAt: {type: [string, 'null'], format: date-time}
+    SetNamespaceResidencyRequest:
+      type: object
+      additionalProperties: false
+      required: [allowedRegions, revision]
+      properties:
+        allowedRegions: {$ref: '#/components/schemas/RegionList'}
+        revision: {type: integer, format: int64, minimum: 0, description: 'The revision the caller read.'}
+  responses:
+    Unauthorized: {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/Unauthorized'}
+    Forbidden: {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/Forbidden'}
+    NotFound: {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/NotFound'}
+    Conflict: {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/Conflict'}
+    BadRequest: {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/BadRequest'}
+    ValidationError: {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/ValidationError'}
+    TooManyRequests: {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/TooManyRequests'}
+    Unavailable: {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/Unavailable'}

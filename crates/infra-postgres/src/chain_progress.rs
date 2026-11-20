@@ -783,10 +783,17 @@ async fn typed_segment_blocker(
              AND lease_token_hash IS NULL), \
            CASE \
              WHEN EXISTS (SELECT 1 FROM run_sagas WHERE tenant_id=$1 AND run_id=$2 \
-               AND phase<>'DONE') THEN 'compensation' \
+               AND phase<>'DONE') \
+               OR EXISTS (SELECT 1 FROM steps WHERE tenant_id=$1 AND run_id=$2 \
+               AND kind='COMPENSATION' AND status NOT IN ('SUCCEEDED','FAILED','CANCELLED','SKIPPED')) \
+               THEN 'compensation' \
              WHEN EXISTS (SELECT 1 FROM steps WHERE tenant_id=$1 AND run_id=$2 \
                AND (node<>$3 OR instance_path_nodes<>'{}' OR instance_path_indices<>'{}') \
-               AND status='WAITING' AND waiting_kind='RECONCILIATION') THEN 'unknown_effect' \
+               AND status='WAITING' AND (waiting_kind='RECONCILIATION' \
+                 OR (waiting_kind='OPERATOR' AND failure_code IN \
+                   ('LEASE_EXPIRED','ATTEMPT_TIMEOUT','OUTCOME_UNKNOWN','STORAGE_QUOTA_EXCEEDED', \
+                    'RECONCILIATION_FAILED','RECONCILIATION_UNKNOWN','RECONCILIATION_NOT_FINAL')))) \
+               THEN 'unknown_effect' \
              WHEN EXISTS (SELECT 1 FROM approval_requests WHERE tenant_id=$1 AND run_id=$2 \
                AND status='PENDING') \
                OR EXISTS (SELECT 1 FROM steps WHERE tenant_id=$1 AND run_id=$2 \

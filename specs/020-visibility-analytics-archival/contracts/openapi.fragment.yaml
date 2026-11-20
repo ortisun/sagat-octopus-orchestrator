@@ -1,0 +1,284 @@
+# Draft OpenAPI 3.1 fragment for feature 020 (not implemented). Merged into
+# specs/001-platform-foundation/contracts/openapi.yaml by T020-012 with x-implemented: '020' only when
+# each operation ships. References to #/components/... resolve against the canonical document.
+# Every operation answers the canonical 400/401/403/404/409/422/429/503/default responses; they are
+# omitted here for brevity except where a reason is specific.
+openapi: 3.1.0
+info: {title: Sagat Octopus Orchestrator — feature 020 fragment, version: 0.3.0-draft}
+paths:
+  /runs/search:
+    post:
+      operationId: searchRuns
+      summary: Search the runs of a namespace with the list query language
+      description: >-
+        Needs run:read; attributes used or requested are gated by their level (FR-020-009). The query is in
+        the body, never in the URL. A pii use requires reveal ["pii"] and the namespace reveal grant and is
+        audited (run.search_pii) before the response. Responses are Cache-Control private, no-store.
+      tags: [Runs]
+      parameters: [{$ref: '#/components/parameters/Namespace'}]
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/RunSearchRequest'}}}
+      responses:
+        '200': {description: Page of runs, content: {application/json: {schema: {$ref: '#/components/schemas/RunSearchPage'}}}}
+  /runs/count:
+    post:
+      operationId: countRuns
+      summary: Count the runs matching a query, exactly up to the count ceiling
+      tags: [Runs]
+      parameters: [{$ref: '#/components/parameters/Namespace'}]
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/RunCountRequest'}}}
+      responses:
+        '200': {description: Count, content: {application/json: {schema: {$ref: '#/components/schemas/RunCount'}}}}
+  /runs/{runId}/search-attributes:
+    get:
+      operationId: getRunSearchAttributes
+      summary: The run's current search attribute values, each disclosed by its level
+      tags: [Runs]
+      parameters: [{$ref: '#/components/parameters/RunId'}, {name: reveal, in: query, schema: {type: string, enum: [pii]}}]
+      responses:
+        '200': {description: Values, content: {application/json: {schema: {$ref: '#/components/schemas/SearchAttributeValues'}}}}
+  /runs/{runId}/history-exports:
+    post:
+      operationId: exportRunHistory
+      summary: Export one run's history as a bounded sagat-run-history-v1 document
+      description: >-
+        Needs run:history:export; values follow FR-016-007 audiences in DISCLOSED mode. Works for hot and
+        archived runs (the archive is verified first). Oversize is HTTP 413 BAD_REQUEST HISTORY_TOO_LARGE. Audited
+        (run.history_exported; pii reveals never collapsed). Cache-Control private, no-store.
+      tags: [Runs]
+      parameters: [{$ref: '#/components/parameters/RunId'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [mode]
+              properties:
+                mode: {type: string, enum: [STRUCTURE, DISCLOSED]}
+                reveal: {type: array, items: {type: string, enum: [pii]}, maxItems: 1}
+                includeDefinition: {type: boolean, default: false}
+      responses:
+        '200': {description: History document (contracts/run-history.schema.json), content: {application/json: {schema: {type: object}}}}
+        '413': {description: 'BAD_REQUEST, details.reason HISTORY_TOO_LARGE: the history exceeds the event or byte bound; nothing partial is returned.', content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+  /runs/{runId}/erasure:
+    post:
+      operationId: requestRunErasure
+      summary: Erase the content of a terminal run (retention pipeline, eligibility now)
+      description: >-
+        Needs retention:manage. Refused CONFLICT RUN_NOT_TERMINAL for a non-terminal tree and CONFLICT
+        EFFECT_UNRESOLVED for a run ended COMPENSATION_FAILED/PARTIAL or with an unresolved outcome until its
+        resolution is recorded. Available only once the principle-I amendment is accepted (ADR-0054).
+      tags: [Operations]
+      parameters: [{$ref: '#/components/parameters/RunId'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [archive, reasonCode]
+              properties:
+                archive: {type: boolean, description: 'false erases without archiving; true archives first under the namespace policy.'}
+                reasonCode: {type: string, enum: [SUBJECT_REQUEST, LEGAL_REQUEST, OPERATOR_CLEANUP]}
+      responses:
+        '202': {description: Erasure job accepted, content: {application/json: {schema: {$ref: '#/components/schemas/ArchivalJob'}}}}
+  /namespaces/{namespaceId}/search-attributes:
+    get:
+      operationId: listSearchAttributes
+      summary: The namespace registry (names, types, levels, states); needs run:read
+      tags: [Runs]
+      parameters: [{name: namespaceId, in: path, required: true, schema: {type: string}}]
+      responses:
+        '200': {description: Registry, content: {application/json: {schema: {type: object, required: [items], properties: {items: {type: array, items: {$ref: '#/components/schemas/SearchAttribute'}}}}}}}
+  /namespaces/{namespaceId}/search-attributes/{name}:
+    patch:
+      operationId: changeSearchAttribute
+      summary: Tighten the level or retire an attribute; needs search-attribute:manage
+      tags: [Governance]
+      parameters: [{name: namespaceId, in: path, required: true, schema: {type: string}}, {name: name, in: path, required: true, schema: {type: string}}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [expectedRevision]
+              properties:
+                expectedRevision: {type: integer, minimum: 1}
+                level: {type: string, enum: [internal, pii]}
+                state: {type: string, enum: [RETIRED]}
+      responses:
+        '200': {description: Changed, content: {application/json: {schema: {$ref: '#/components/schemas/SearchAttribute'}}}}
+  /namespaces/{namespaceId}/run-views:
+    get: {operationId: listRunViews, tags: [Runs], parameters: [{name: namespaceId, in: path, required: true, schema: {type: string}}], responses: {'200': {description: Views visible to the caller}}}
+    post: {operationId: createRunView, tags: [Runs], parameters: [{name: namespaceId, in: path, required: true, schema: {type: string}}, {$ref: '#/components/parameters/IdempotencyKey'}], requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/RunViewInput'}}}}, responses: {'201': {description: Created}}}
+  /namespaces/{namespaceId}/run-views/{viewId}:
+    get: {operationId: getRunView, tags: [Runs], parameters: [{name: namespaceId, in: path, required: true, schema: {type: string}}, {name: viewId, in: path, required: true, schema: {type: string, format: uuid}}], responses: {'200': {description: View}}}
+    put: {operationId: updateRunView, tags: [Runs], parameters: [{name: namespaceId, in: path, required: true, schema: {type: string}}, {name: viewId, in: path, required: true, schema: {type: string, format: uuid}}], requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/RunViewInput'}}}}, responses: {'200': {description: Updated}}}
+    delete: {operationId: deleteRunView, tags: [Runs], parameters: [{name: namespaceId, in: path, required: true, schema: {type: string}}, {name: viewId, in: path, required: true, schema: {type: string, format: uuid}}], responses: {'204': {description: Deleted}}}
+  /namespaces/{namespaceId}/analytics-sinks:
+    get: {operationId: listAnalyticsSinks, tags: [Operations], description: 'Needs analytics:sink:read. Settings without credentials.', parameters: [{name: namespaceId, in: path, required: true, schema: {type: string}}], responses: {'200': {description: Sinks}}}
+    post: {operationId: createAnalyticsSink, tags: [Operations], description: 'Needs analytics:sink:manage (and the reveal grant for maxLevel PII).', parameters: [{name: namespaceId, in: path, required: true, schema: {type: string}}, {$ref: '#/components/parameters/IdempotencyKey'}], requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/AnalyticsSinkInput'}}}}, responses: {'201': {description: Created, content: {application/json: {schema: {$ref: '#/components/schemas/AnalyticsSink'}}}}}}
+  /namespaces/{namespaceId}/analytics-sinks/{sinkId}:
+    get: {operationId: getAnalyticsSink, tags: [Operations], parameters: [{name: namespaceId, in: path, required: true, schema: {type: string}}, {name: sinkId, in: path, required: true, schema: {type: string, format: uuid}}], responses: {'200': {description: Sink with health and lag, content: {application/json: {schema: {$ref: '#/components/schemas/AnalyticsSink'}}}}}}
+    put: {operationId: updateAnalyticsSink, tags: [Operations], description: 'New immutable revision; supersedes an unacknowledged batch.', parameters: [{name: namespaceId, in: path, required: true, schema: {type: string}}, {name: sinkId, in: path, required: true, schema: {type: string, format: uuid}}], requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/AnalyticsSinkInput'}}}}, responses: {'200': {description: Updated}}}
+    delete: {operationId: deleteAnalyticsSink, tags: [Operations], parameters: [{name: namespaceId, in: path, required: true, schema: {type: string}}, {name: sinkId, in: path, required: true, schema: {type: string, format: uuid}}], responses: {'204': {description: Tombstoned; ledger kept for its window}}}
+  /namespaces/{namespaceId}/analytics-sinks/{sinkId}/actions:
+    post:
+      operationId: actOnAnalyticsSink
+      summary: pause, resume, rewind, skip or probe (audited)
+      tags: [Operations]
+      parameters: [{name: namespaceId, in: path, required: true, schema: {type: string}}, {name: sinkId, in: path, required: true, schema: {type: string, format: uuid}}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [action, expectedRevision]
+              properties:
+                action: {type: string, enum: [PAUSE, RESUME, REWIND, SKIP, PROBE]}
+                expectedRevision: {type: integer, minimum: 1}
+                rewindTo: {type: string, format: date-time, description: 'REWIND only: re-export runs created at or after this instant.'}
+                skipBatch: {type: string, pattern: '^[0-9]{1,2}:[0-9]{1,19}$', description: 'SKIP only: <shard>:<batchSeq> of the open batch; recorded in the ledger.'}
+                reasonCode: {type: string, enum: [POISON_RECORD, DESTINATION_REBUILT, OPERATOR_DECISION]}
+      responses:
+        '200': {description: New state, content: {application/json: {schema: {$ref: '#/components/schemas/AnalyticsSink'}}}}
+  /namespaces/{namespaceId}/analytics-sinks/{sinkId}/batches:
+    get: {operationId: listAnalyticsSinkBatches, tags: [Operations], description: 'The export ledger; filter by runId to learn whether a run was exported.', parameters: [{name: namespaceId, in: path, required: true, schema: {type: string}}, {name: sinkId, in: path, required: true, schema: {type: string, format: uuid}}, {name: runId, in: query, schema: {type: string, format: uuid}}, {$ref: '#/components/parameters/Cursor'}, {$ref: '#/components/parameters/Limit'}], responses: {'200': {description: Ledger page}}}
+  /namespaces/{namespaceId}/analytics-sinks/{sinkId}/exporters/{subject}:
+    put: {operationId: bindAnalyticsExporter, tags: [Governance], description: 'Needs analytics:sink:manage; the subject must hold the analytics-exporter role.', parameters: [{name: namespaceId, in: path, required: true, schema: {type: string}}, {name: sinkId, in: path, required: true, schema: {type: string, format: uuid}}, {$ref: '#/components/parameters/WorkerSubject'}], responses: {'204': {description: Bound}}}
+    delete: {operationId: unbindAnalyticsExporter, tags: [Governance], parameters: [{name: namespaceId, in: path, required: true, schema: {type: string}}, {name: sinkId, in: path, required: true, schema: {type: string, format: uuid}}, {$ref: '#/components/parameters/WorkerSubject'}], responses: {'204': {description: Unbound; open leases end at their expiry}}}
+  /namespaces/{namespaceId}/retention-policy:
+    get: {operationId: getRetentionPolicy, tags: [Governance], parameters: [{name: namespaceId, in: path, required: true, schema: {type: string}}], responses: {'200': {description: 'Policy (or none) with the effective days and archival backlog', content: {application/json: {schema: {$ref: '#/components/schemas/RetentionPolicy'}}}}}}
+    put: {operationId: setRetentionPolicy, tags: [Governance], description: 'Needs retention:manage; UP_TO_PII also the reveal grant.', parameters: [{name: namespaceId, in: path, required: true, schema: {type: string}}], requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/RetentionPolicyInput'}}}}, responses: {'200': {description: Set}}}
+    delete: {operationId: removeRetentionPolicy, tags: [Governance], description: 'Stops new eligibility; jobs already PURGING finish, others are BLOCKED POLICY_REMOVED.', parameters: [{name: namespaceId, in: path, required: true, schema: {type: string}}], responses: {'204': {description: Removed}}}
+  /namespaces/{namespaceId}/archival-jobs:
+    get: {operationId: listArchivalJobs, tags: [Operations], parameters: [{name: namespaceId, in: path, required: true, schema: {type: string}}, {name: state, in: query, schema: {type: string, enum: [ELIGIBLE, EXPORTING, EXPORTED, VERIFIED, PURGING, PURGED, BLOCKED]}}, {$ref: '#/components/parameters/Cursor'}, {$ref: '#/components/parameters/Limit'}], responses: {'200': {description: Jobs}}}
+components:
+  schemas:
+    RunSearchRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        query: {type: string, maxLength: 4096, description: contracts/list-query.md}
+        columns: {type: array, maxItems: 16, items: {type: string}}
+        reveal: {type: array, maxItems: 1, items: {type: string, enum: [pii]}}
+        cursor: {type: string}
+        limit: {type: integer, minimum: 1, maximum: 200, default: 50}
+    RunSearchPage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            type: object
+            required: [run]
+            properties:
+              run: {$ref: '#/components/schemas/Run'}
+              searchAttributes: {$ref: '#/components/schemas/SearchAttributeValues'}
+        nextCursor: {type: [string, 'null']}
+    RunCountRequest: {type: object, additionalProperties: false, properties: {query: {type: string, maxLength: 4096}, reveal: {type: array, maxItems: 1, items: {type: string, enum: [pii]}}}}
+    RunCount: {type: object, required: [count, exact], properties: {count: {type: integer, minimum: 0}, exact: {type: boolean}}}
+    SearchAttributeValues:
+      type: object
+      additionalProperties:
+        oneOf:
+          - {type: [string, number, boolean, 'null']}
+          - {type: array, maxItems: 64, items: {type: string}}
+          - {type: object, required: [withheld], additionalProperties: false, properties: {withheld: {type: string, enum: [internal, pii]}}}
+    SearchAttribute:
+      type: object
+      required: [name, type, level, state, revision]
+      properties:
+        name: {type: string}
+        type: {type: string, enum: [keyword, text, int, double, bool, datetime, keywordList]}
+        level: {type: string, enum: [public, internal, pii]}
+        state: {type: string, enum: [ACTIVE, RETIRED]}
+        revision: {type: integer}
+        system: {type: boolean}
+    RunViewInput:
+      type: object
+      additionalProperties: false
+      required: [name, query, visibility]
+      properties:
+        name: {type: string, maxLength: 128}
+        query: {type: string, maxLength: 4096}
+        columns: {type: array, maxItems: 16, items: {type: string}}
+        visibility: {type: string, enum: [PRIVATE, NAMESPACE]}
+        expectedRevision: {type: integer, minimum: 1}
+    AnalyticsSinkInput:
+      type: object
+      additionalProperties: false
+      required: [name, kind, settings, maxLevel]
+      properties:
+        name: {type: string, pattern: '^[a-z][a-z0-9-]{1,62}$'}
+        kind: {type: string, enum: [OBJECT_STORAGE, CLICKHOUSE, POSTGRESQL, ICEBERG, STREAM, PULL]}
+        settings: {type: object, description: 'Closed per kind (contracts/sinks.md); never a credential. POSTGRESQL: connectionRef {name, revision?} of a 017 connection; ICEBERG: connectionRef {name, revision?} of a 035 Iceberg connection, namespace, tablePrefix; STREAM: subscriptionId of a subscription dedicated to the sink.'}
+        credentialsSecret: {type: string, pattern: '^[a-z][a-z0-9._-]{0,63}$', description: 'OBJECT_STORAGE and CLICKHOUSE only; POSTGRESQL and ICEBERG use the connection credentials, STREAM the subscription secret.'}
+        recordKinds: {type: array, description: 'inbound_event and delivery need envelope capture enabled (ENVELOPES_NOT_ENABLED otherwise).', items: {type: string, enum: [run_snapshot, step_attempt, journal_event, inbound_event, delivery, declared_record, run_tombstone]}}
+        workflows: {type: array, maxItems: 64, items: {type: string, format: uuid}}
+        maxLevel: {type: string, enum: [INTERNAL, PII]}
+        startPosition: {type: string, description: 'NOW, EARLIEST or an RFC 3339 instant', default: NOW}
+        batch: {type: object, additionalProperties: false, properties: {maxRecords: {type: integer, minimum: 1, maximum: 10000}, maxBytes: {type: integer, minimum: 1024, maximum: 16777216}, maxWaitMs: {type: integer, minimum: 100, maximum: 300000}}}
+        expectedRevision: {type: integer, minimum: 1}
+    AnalyticsSink:
+      type: object
+      required: [id, name, kind, revision, state, maxLevel]
+      properties:
+        id: {type: string, format: uuid}
+        name: {type: string}
+        kind: {type: string}
+        revision: {type: integer}
+        state: {type: string, enum: [ACTIVE, PAUSED, AUTO_PAUSED, FAILING, THROTTLED, DELETED]}
+        stateReason: {type: [string, 'null']}
+        maxLevel: {type: string}
+        lagSeconds: {type: number, minimum: 0}
+        lastAckAt: {type: [string, 'null'], format: date-time}
+        retentionGaps: {type: integer, minimum: 0}
+        backfill: {type: [object, 'null'], properties: {done: {type: boolean}, shardsDone: {type: integer}}}
+    RetentionPolicyInput:
+      type: object
+      additionalProperties: false
+      required: [hotRetentionDays, archive]
+      properties:
+        hotRetentionDays: {type: integer, minimum: 1, maximum: 3650}
+        archive: {type: string, enum: [REQUIRED, NONE]}
+        archiveValues: {type: string, enum: [METADATA_ONLY, UP_TO_INTERNAL, UP_TO_PII], default: METADATA_ONLY}
+        destination: {type: object, additionalProperties: false, properties: {kind: {type: string, enum: [PLATFORM, OBJECT_STORAGE]}, settings: {type: object}, credentialsSecret: {type: string}}}
+        sinkHoldDays: {type: integer, minimum: 1, maximum: 30, default: 7}
+        expectedRevision: {type: integer, minimum: 1}
+    RetentionPolicy:
+      allOf:
+        - {$ref: '#/components/schemas/RetentionPolicyInput'}
+        - {type: object, properties: {effectiveRetentionDays: {type: integer}, revision: {type: integer}, backlog: {type: object, properties: {eligible: {type: integer}, blocked: {type: integer}, oldestEligibleAgeSeconds: {type: number}}}}}
+    ArchivalJob:
+      type: object
+      required: [runId, reason, state]
+      properties:
+        runId: {type: string, format: uuid}
+        reason: {type: string, enum: [RETENTION, ERASURE]}
+        state: {type: string, enum: [ELIGIBLE, EXPORTING, EXPORTED, VERIFIED, PURGING, PURGED, BLOCKED]}
+        blockedReason: {type: [string, 'null']}
+        survivingSharedPayloads: {type: integer, minimum: 0, description: 'After PURGED: content-addressed payloads kept because a retained run still references them.'}
+    RunArchive:
+      description: Additive optional property `archive` of the canonical Run schema; payload-free.
+      type: object
+      required: [state]
+      properties:
+        state: {type: string, enum: [NONE, ARCHIVED, PURGED_WITHOUT_ARCHIVE, ERASED]}
+        purgedAt: {type: [string, 'null'], format: date-time}
+    StartRunRequestAdditions:
+      description: Additive optional property `searchAttributes` of StartRunRequest (FR-020-003).
+      type: object
+      properties:
+        searchAttributes: {$ref: '#/components/schemas/SearchAttributeValues'}

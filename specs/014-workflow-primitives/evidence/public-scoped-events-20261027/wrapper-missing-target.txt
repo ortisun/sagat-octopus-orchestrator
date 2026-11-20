@@ -1,0 +1,7 @@
+Traceback (most recent call last):
+  File "/Users/marcelo/Documents/Projects/sagat-octopus-v0.3-completion/scripts/test-released-v02-profile.py", line 255, in <module>
+    main()
+    ~~~~^^
+  File "/Users/marcelo/Documents/Projects/sagat-octopus-v0.3-completion/scripts/test-released-v02-profile.py", line 161, in main
+    raise RuntimeError('set CARGO_TARGET_DIR to an owned absolute private current target')
+RuntimeError: set CARGO_TARGET_DIR to an owned absolute private current target

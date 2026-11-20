@@ -1,9 +1,10 @@
 # ADR-0033: Payload values are classified per field, and an unmarked field is personal data
 
-**Status:** Accepted direction (owner decision, 2026-10-16); implementation in progress in feature
-016. Production composition and focused tests exist on the integration branch; the complete canary,
-compatibility, browser and release gates remain pending. See
-[the integration evidence](../../tasks/project-completion/integration-notes.md).
+**Status:** Accepted direction (owner decision, 2026-10-16); implemented in feature 016 and merged
+into the 0.2.0 checkpoint on 2026-10-26 after the final integration gates passed. Canary,
+compatibility, browser, SDK and release evidence is recorded in
+[the release-gate record](../../specs/016-payload-classification/release-gates-2026-10-25.md).
+ADR-0040 preserves the eight unfinished feature-014 tasks and the existing runtime boundaries.
 
 **Refines:** ADR-0028 (authorized structural payload inspection). It does not change ADR-0031,
 which already discloses the declared result of a Query or Update, nor the secret model of feature

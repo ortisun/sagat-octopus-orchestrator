@@ -1,0 +1,13 @@
+{
+  "command": [
+    "python3",
+    "scripts/check-architecture.py"
+  ],
+  "exit_code": 0,
+  "seconds": 0.36,
+  "wall_seconds": 0.36,
+  "wall_minus_monotonic_seconds": -0.0,
+  "started_utc": "2026-10-28T12:06:30.214072+00:00",
+  "finished_utc": "2026-10-28T12:06:30.573040+00:00",
+  "log": "redis-loopback-final-architecture.txt"
+}

@@ -73,6 +73,22 @@ services:
       timeout: 3s
       retries: 20
 
+  # Optional internal notification transport; PostgreSQL remains authoritative.
+  redis:
+    <<: *hardening
+    image: redis:8.6.8-alpine
+    user: redis
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
+    ports:
+      - "127.0.0.1:${SAGAT_REDIS_PORT:-16379}:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
   # One-shot job: applies pending migrations and exits. Idempotent; safe to run on every `up`.
   migrate:
     <<: *control-plane
@@ -112,6 +128,7 @@ services:
   control-plane:
     <<: *control-plane
     environment:
+      SAGAT_REDIS_CALLBACKS_ENABLED: ${SAGAT_REDIS_CALLBACKS_ENABLED:-false}
       <<: *app-database-url
       SAGAT_ENV: ${SAGAT_ENV:-dev}
       SAGAT_OIDC_ISSUER: ${SAGAT_OIDC_ISSUER:?set SAGAT_OIDC_ISSUER in infra/docker/.env}
@@ -136,8 +153,6 @@ services:
     depends_on:
       migrate:
         condition: service_completed_successfully
-      nats:
-        condition: service_healthy
     restart: unless-stopped
 
   # The execution engine: the worker gRPC API, the scheduler loop and the NATS outbox dispatcher.
@@ -158,6 +173,11 @@ services:
       SAGAT_OIDC_TENANT_CLAIM: ${SAGAT_OIDC_TENANT_CLAIM:-tenant}
       SAGAT_ALLOW_INSECURE_JWKS_HTTP: ${SAGAT_ALLOW_INSECURE_JWKS_HTTP:-false}
       SAGAT_LOG_FORMAT: ${SAGAT_LOG_FORMAT:-json}
+      SAGAT_EVENT_TRANSPORT: ${SAGAT_EVENT_TRANSPORT:-nats}
+      SAGAT_REDIS_URL: ${SAGAT_REDIS_URL:-redis://redis:6379/0}
+      SAGAT_REDIS_STREAM: ${SAGAT_REDIS_STREAM:-sagat:v1:events}
+      SAGAT_REDIS_STREAM_MAXLEN: ${SAGAT_REDIS_STREAM_MAXLEN:-100000}
+      SAGAT_REDIS_TIMEOUT_SECS: ${SAGAT_REDIS_TIMEOUT_SECS:-5}
       SAGAT_NATS_URL: nats://nats:4222
       # The local broker has no TLS; outside SAGAT_ENV=dev the engine insists on it by default.
       SAGAT_NATS_REQUIRE_TLS: ${SAGAT_NATS_REQUIRE_TLS:-false}
@@ -170,8 +190,6 @@ services:
     depends_on:
       migrate:
         condition: service_completed_successfully
-      nats:
-        condition: service_healthy
     restart: unless-stopped
 
   # The sandbox runner (profile `sandbox`, not started by default): it builds and runs scripts in
@@ -235,3 +253,4 @@ volumes:
   pgdata:
   idpdata:
   natsdata:
+  redisdata:

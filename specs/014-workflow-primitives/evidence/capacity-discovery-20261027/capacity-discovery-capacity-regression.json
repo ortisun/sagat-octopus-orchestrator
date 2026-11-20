@@ -1,0 +1,21 @@
+{
+  "command": [
+    "cargo",
+    "test",
+    "-p",
+    "sagat-tests",
+    "--test",
+    "integration_workflow_primitives",
+    "capacity_finish",
+    "--locked",
+    "--",
+    "--nocapture"
+  ],
+  "exit_code": 101,
+  "seconds": 166.13,
+  "wall_seconds": 166.13,
+  "wall_minus_monotonic_seconds": 0.0,
+  "started_utc": "2026-10-28T01:53:00.392273+00:00",
+  "finished_utc": "2026-10-28T01:55:46.518271+00:00",
+  "log": "capacity-discovery-capacity-regression.txt"
+}

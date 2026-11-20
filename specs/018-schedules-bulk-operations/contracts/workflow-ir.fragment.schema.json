@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sagat-octopus-orchestrator.io/schemas/018/workflow-ir.fragment.schema.json",
+  "title": "Feature 018 additive IR fragment (DRAFT, not implemented)",
+  "description": "Additive to specs/001-platform-foundation/contracts/workflow.schema.json under apiVersion sagat-octopus-orchestrator.io/v1 (ADR-0032). T018-010 merges it. Publication refuses the field unless the server's `resetReapply` capability is enabled (existing UNSUPPORTED_NODE/capability rules). Absent means false: the Update's arguments are not retained and a reset reports it NOT_REAPPLIED (NOT_RETAINED).",
+  "$defs": {
+    "update": {
+      "properties": {
+        "reapplyOnReset": {
+          "type": "boolean",
+          "default": false,
+          "description": "When true, the canonical arguments of every applied instance of this Update are retained as a content-addressed payload referenced by its state.updated journal row (charged to tenant_content_bytes), so a reset with reapply UPDATES or ALL can re-validate and re-apply it. Not a classification carrier (FR-016-004)."
+        }
+      }
+    }
+  }
+}

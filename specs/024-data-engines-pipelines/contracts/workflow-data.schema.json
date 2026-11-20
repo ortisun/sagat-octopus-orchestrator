@@ -1,0 +1,482 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:sagat:draft:024:workflow-data",
+  "title": "Feature 024 draft fragment of workflow.schema.json (additive v1, ADR-0032)",
+  "description": "Draft $defs merged by T024-008 into specs/001-platform-foundation/contracts/workflow.schema.json. The node union gains dataTransform, dataQuery and dataPublish; the closed database node gains the optional property assets. Data nodes, like database nodes, are allowed only in the root graph of a definition without forEach, while, repeatUntil, continueAsNew or chainPolicy, and outside saga bodies. Publication additionally checks the enabled capability, the asset catalog, producer bindings, contract compatibility and root-only placement. References to #/$defs/nodeId, #/$defs/expression and #/$defs/databaseParameter name the canonical definitions.",
+  "$defs": {
+    "assetRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{1,61}[a-z0-9]$"
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2147483647,
+          "description": "Optional explicit declaration revision; otherwise the current revision is pinned at run admission."
+        }
+      }
+    },
+    "sqlAlias": {
+      "type": "string",
+      "pattern": "^[a-z_][a-z0-9_]{0,62}$"
+    },
+    "dataInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "alias"
+      ],
+      "properties": {
+        "alias": {
+          "$ref": "#/$defs/sqlAlias"
+        },
+        "asset": {
+          "$ref": "#/$defs/assetRef"
+        },
+        "from": {
+          "$ref": "#/$defs/nodeId",
+          "description": "With asset: read the snapshot staged by this earlier dataTransform node of the same run instead of the published one; must be a predecessor on every path; resolves only an AUDITED or PUBLISHED snapshot (a quarantined one fails DATA_INPUT_QUARANTINED)."
+        },
+        "step": {
+          "$ref": "#/$defs/nodeId",
+          "description": "Ingestion: read the committed output of this earlier step of the same run, either a 017 database result (staged as a typed table) or a step-output blob of type application/vnd.apache.parquet (verified like a part). Must be a predecessor on every path; excludes asset and from."
+        }
+      },
+      "oneOf": [
+        {
+          "required": [
+            "asset"
+          ],
+          "not": {
+            "required": [
+              "step"
+            ]
+          }
+        },
+        {
+          "required": [
+            "step"
+          ],
+          "not": {
+            "anyOf": [
+              {
+                "required": [
+                  "asset"
+                ]
+              },
+              {
+                "required": [
+                  "from"
+                ]
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "dataOutput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "asset"
+      ],
+      "properties": {
+        "asset": {
+          "$ref": "#/$defs/assetRef"
+        },
+        "statement": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 65536,
+          "description": "duckdb only: one SELECT over the input aliases; required for duckdb, forbidden for polars."
+        },
+        "parameters": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "$ref": "#/$defs/databaseParameter"
+          }
+        },
+        "publish": {
+          "enum": [
+            "auto",
+            "manual"
+          ],
+          "default": "auto"
+        },
+        "onStale": {
+          "enum": [
+            "fail",
+            "skip"
+          ],
+          "default": "fail"
+        }
+      }
+    },
+    "dataLimits": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Author may lower, never raise, the effective ceilings of the plan.",
+      "properties": {
+        "inputBytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967296
+        },
+        "snapshotBytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2147483648
+        },
+        "memoryBytes": {
+          "type": "integer",
+          "minimum": 268435456,
+          "maximum": 17179869184,
+          "description": "Container memory, which also pays for the /out and /spill tmpfs mounts."
+        },
+        "cpus": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4
+        },
+        "spillBytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967296
+        },
+        "auditTimeoutMs": {
+          "type": "integer",
+          "minimum": 1000,
+          "maximum": 600000
+        }
+      }
+    },
+    "dataRetry": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "maxAttempts": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 5,
+          "default": 2
+        },
+        "backoffMs": {
+          "type": "integer",
+          "minimum": 100,
+          "maximum": 600000,
+          "default": 10000
+        }
+      }
+    },
+    "dataTransform": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "type",
+        "engine",
+        "inputs",
+        "outputs"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/nodeId"
+        },
+        "type": {
+          "const": "dataTransform"
+        },
+        "engine": {
+          "enum": [
+            "duckdb",
+            "polars"
+          ]
+        },
+        "script": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "name",
+            "version"
+          ],
+          "description": "polars only: a published feature-005 script version built for the python-data runtime; pinned at publication.",
+          "properties": {
+            "name": {
+              "type": "string",
+              "maxLength": 128
+            },
+            "version": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        },
+        "scriptInput": {
+          "$ref": "#/$defs/expression",
+          "description": "polars only: bounded JSON value passed to the script."
+        },
+        "inputs": {
+          "type": "array",
+          "minItems": 0,
+          "maxItems": 32,
+          "items": {
+            "$ref": "#/$defs/dataInput"
+          }
+        },
+        "outputs": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 8,
+          "items": {
+            "$ref": "#/$defs/dataOutput"
+          }
+        },
+        "limits": {
+          "$ref": "#/$defs/dataLimits"
+        },
+        "retry": {
+          "$ref": "#/$defs/dataRetry"
+        },
+        "timeoutMs": {
+          "type": "integer",
+          "minimum": 1000,
+          "maximum": 3600000,
+          "default": 600000
+        },
+        "next": {
+          "type": "string"
+        },
+        "onError": {
+          "type": "string"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "engine": {
+                "const": "polars"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "script"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "engine": {
+                "const": "duckdb"
+              }
+            }
+          },
+          "then": {
+            "not": {
+              "required": [
+                "script"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "dataQuery": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "type",
+        "inputs",
+        "statement"
+      ],
+      "description": "Data node: one DuckDB SELECT over pinned inputs, run in the data sandbox as sagat.data.query, writing nothing. Its output is the 017 typed-cell result shape, inline and at most 256 KiB, and a 016 classification carrier whose platform-derived schema carries the highest level among the pinned input columns. Root-only like dataTransform. Not a database node and not served by the 017 result view.",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/nodeId"
+        },
+        "type": {
+          "const": "dataQuery"
+        },
+        "inputs": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 32,
+          "items": {
+            "$ref": "#/$defs/dataInput"
+          }
+        },
+        "statement": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 65536
+        },
+        "parameters": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "$ref": "#/$defs/databaseParameter"
+          }
+        },
+        "maxRows": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10000,
+          "default": 1000
+        },
+        "limits": {
+          "$ref": "#/$defs/dataLimits"
+        },
+        "timeoutMs": {
+          "type": "integer",
+          "minimum": 1000,
+          "maximum": 600000,
+          "default": 120000
+        },
+        "next": {
+          "type": "string"
+        },
+        "onError": {
+          "type": "string"
+        }
+      }
+    },
+    "dataPublish": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "type",
+        "from",
+        "asset"
+      ],
+      "description": "Engine node, no worker: compare-and-set of the asset pointer to the snapshot the from node staged, in the reducer transaction. Already current is success; a quarantined or missing snapshot fails DATA_AUDIT_FAILED / DATA_CONFIGURATION_INVALID.",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/nodeId"
+        },
+        "type": {
+          "const": "dataPublish"
+        },
+        "from": {
+          "$ref": "#/$defs/nodeId"
+        },
+        "asset": {
+          "$ref": "#/$defs/assetRef"
+        },
+        "onStale": {
+          "enum": [
+            "fail",
+            "skip"
+          ],
+          "default": "fail"
+        },
+        "next": {
+          "type": "string"
+        },
+        "onError": {
+          "type": "string"
+        }
+      }
+    },
+    "databaseAssets": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Optional property assets of the database node: declared lineage to external assets. A declared write is accepted at publication only if this node is the external asset's producer and uses its connection; a successful step then records one observation per written asset in its completion transaction. Never inferred from SQL.",
+      "properties": {
+        "reads": {
+          "type": "array",
+          "maxItems": 16,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/assetRef"
+          }
+        },
+        "writes": {
+          "type": "array",
+          "maxItems": 16,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/assetRef"
+          }
+        }
+      }
+    },
+    "nodeId": {
+      "type": "string",
+      "description": "Canonical definition, unchanged."
+    },
+    "expression": {
+      "type": "string",
+      "description": "Canonical definition, unchanged."
+    },
+    "databaseParameter": {
+      "type": "object",
+      "description": "Canonical 017 definition, unchanged."
+    }
+  },
+  "examples": [
+    {
+      "id": "daily-orders",
+      "type": "dataTransform",
+      "engine": "duckdb",
+      "inputs": [
+        {
+          "alias": "orders",
+          "asset": {
+            "name": "raw-orders"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "asset": {
+            "name": "orders-daily"
+          },
+          "statement": "SELECT order_date, count(*) AS orders FROM orders WHERE order_date < $1 GROUP BY 1",
+          "parameters": [
+            {
+              "type": "date",
+              "expression": "input.cutoff"
+            }
+          ],
+          "publish": "manual"
+        }
+      ],
+      "next": "review"
+    },
+    {
+      "id": "publish",
+      "type": "dataPublish",
+      "from": "daily-orders",
+      "asset": {
+        "name": "orders-daily"
+      },
+      "next": "done"
+    },
+    {
+      "id": "explore",
+      "type": "dataQuery",
+      "inputs": [
+        {
+          "alias": "orders",
+          "asset": {
+            "name": "orders-daily"
+          }
+        }
+      ],
+      "statement": "SELECT order_date, sum(amount) AS total FROM orders GROUP BY 1 ORDER BY 1",
+      "maxRows": 100,
+      "next": "done"
+    }
+  ]
+}

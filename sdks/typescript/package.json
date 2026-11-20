@@ -1,6 +1,6 @@
 {
   "name": "@sagat-octopus-orchestrator/sdk",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "TypeScript SDK for the Sagat Octopus Orchestrator: a client for runs and events, a worker host for activities, sagas and reconciliations, and typed builders of the workflow IR.",
   "type": "module",
   "main": "./dist/src/index.js",

@@ -1,0 +1,17 @@
+{
+  "command": [
+    "/opt/homebrew/opt/python@3.15/bin/python3.15",
+    "scripts/test-released-v02-profile.py",
+    "--prepared-run",
+    "/tmp/sagat-v03-20261026/released-v02-al_pw2ho",
+    "--scenario",
+    "applied-lookup"
+  ],
+  "exit_code": 0,
+  "seconds": 8.41,
+  "wall_seconds": 8.41,
+  "wall_minus_monotonic_seconds": -0.0,
+  "started_utc": "2026-10-27T21:38:24.918788+00:00",
+  "finished_utc": "2026-10-27T21:38:33.332273+00:00",
+  "log": "applied-lookup.txt"
+}

@@ -1,0 +1,13 @@
+2026-10-27T21:37:29.0361944Z [xUnit.net 00:00:02.78]     SagatOctopusOrchestrator.Sdk.Tests.CredentialTests.TheSecretsAreWipedWhenTheHandlerReturnsBeforeTheResultIsReportedAndALaterRequestRaises [FAIL]
+2026-10-27T21:37:29.0387971Z   Failed SagatOctopusOrchestrator.Sdk.Tests.CredentialTests.TheSecretsAreWipedWhenTheHandlerReturnsBeforeTheResultIsReportedAndALaterRequestRaises [23 ms]
+2026-10-27T21:37:29.0389081Z   Error Message:
+2026-10-27T21:37:29.0389611Z    Assert.Equal() Failure: Values differ
+2026-10-27T21:37:29.0390074Z Expected: 0
+2026-10-27T21:37:29.0391053Z Actual:   -1
+2026-10-27T21:37:29.0391436Z   Stack Trace:
+2026-10-27T21:37:29.0393742Z      at SagatOctopusOrchestrator.Sdk.Tests.CredentialTests.TheSecretsAreWipedWhenTheHandlerReturnsBeforeTheResultIsReportedAndALaterRequestRaises() in /home/runner/work/sagat-octopus-orchestrator/sagat-octopus-orchestrator/sdks/dotnet/tests/SagatOctopusOrchestrator.Sdk.Tests/CredentialTests.cs:line 128
+2026-10-27T21:37:29.0397437Z    at SagatOctopusOrchestrator.Sdk.Tests.CredentialTests.TheSecretsAreWipedWhenTheHandlerReturnsBeforeTheResultIsReportedAndALaterRequestRaises() in /home/runner/work/sagat-octopus-orchestrator/sagat-octopus-orchestrator/sdks/dotnet/tests/SagatOctopusOrchestrator.Sdk.Tests/CredentialTests.cs:line 134
+2026-10-27T21:37:29.0401032Z    at SagatOctopusOrchestrator.Sdk.Tests.CredentialTests.TheSecretsAreWipedWhenTheHandlerReturnsBeforeTheResultIsReportedAndALaterRequestRaises() in /home/runner/work/sagat-octopus-orchestrator/sagat-octopus-orchestrator/sdks/dotnet/tests/SagatOctopusOrchestrator.Sdk.Tests/CredentialTests.cs:line 134
+2026-10-27T21:37:29.0403070Z --- End of stack trace from previous location ---
+2026-10-27T21:37:38.8589296Z
+2026-10-27T21:37:38.8622040Z Failed!  - Failed:     1, Passed:   449, Skipped:     0, Total:   450, Duration: 12 s - SagatOctopusOrchestrator.Sdk.Tests.dll (net10.0)

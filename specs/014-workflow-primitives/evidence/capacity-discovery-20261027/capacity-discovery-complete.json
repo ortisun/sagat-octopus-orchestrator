@@ -1,0 +1,21 @@
+{
+  "command": [
+    "cargo",
+    "test",
+    "-p",
+    "sagat-tests",
+    "--test",
+    "integration_workflow_primitives",
+    "capacity_finish::discovery",
+    "--locked",
+    "--",
+    "--nocapture"
+  ],
+  "exit_code": 0,
+  "seconds": 76.46,
+  "wall_seconds": 76.46,
+  "wall_minus_monotonic_seconds": 0.0,
+  "started_utc": "2026-10-28T01:49:39.362352+00:00",
+  "finished_utc": "2026-10-28T01:50:55.824706+00:00",
+  "log": "capacity-discovery-complete.txt"
+}

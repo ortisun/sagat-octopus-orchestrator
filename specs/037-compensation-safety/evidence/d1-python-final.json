@@ -1,0 +1,17 @@
+[
+  {
+    "command": ".venv/bin/python -m pytest",
+    "exit": 0,
+    "log": "d1-python-final-0.txt"
+  },
+  {
+    "command": ".venv/bin/mypy",
+    "exit": 0,
+    "log": "d1-python-final-1.txt"
+  },
+  {
+    "command": ".venv/bin/ruff check .",
+    "exit": 0,
+    "log": "d1-python-final-2.txt"
+  }
+]

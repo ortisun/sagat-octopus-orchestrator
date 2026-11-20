@@ -350,6 +350,23 @@ pub trait ExpressionEvaluator: Send + Sync {
     fn condition(&self, expression: &Expression, data: &RunData)
     -> Result<bool, ExpressionFailure>;
 
+    /// Evaluates a boolean in one exact execution context. An adapter must explicitly support
+    /// scoped evaluation; the compatibility default delegates roots and refuses scoped data.
+    fn condition_instance(
+        &self,
+        expression: &Expression,
+        data: &RunData,
+        instance: &ExecutionInstanceId,
+    ) -> Result<bool, ExpressionFailure> {
+        if instance.path().is_root() {
+            self.condition(expression, data)
+        } else {
+            Err(ExpressionFailure(
+                "scoped condition evaluation is unsupported".into(),
+            ))
+        }
+    }
+
     /// # Errors
     /// [`ExpressionFailure`] when the result is not a usable correlation key.
     fn correlation_key(
@@ -357,6 +374,23 @@ pub trait ExpressionEvaluator: Send + Sync {
         expression: &Expression,
         data: &RunData,
     ) -> Result<CorrelationKey, ExpressionFailure>;
+
+    /// Evaluates a correlation key in the exact instance context. Legacy adapters preserve
+    /// root behavior and refuse scoped evaluation until they explicitly support it.
+    fn correlation_key_instance(
+        &self,
+        expression: &Expression,
+        data: &RunData,
+        instance: &ExecutionInstanceId,
+    ) -> Result<CorrelationKey, ExpressionFailure> {
+        if instance.path().is_root() {
+            self.correlation_key(expression, data)
+        } else {
+            Err(ExpressionFailure(
+                "scoped correlation evaluation is unsupported".into(),
+            ))
+        }
+    }
 
     /// Renders an idempotency-key template for `node`.
     ///
@@ -674,6 +708,16 @@ pub trait PathExecutionStore: Send + Sync {
 pub trait PathExecutionTx: Send {
     fn snapshot(&mut self) -> &mut PathExecutionSnapshot;
 
+    /// Stages one exact scoped event receipt and returns its authoritative canonical value.
+    /// No receipt may commit without the matching satisfaction and value in this transaction.
+    fn record_scoped_event_delivery(
+        &mut self,
+        _step: &crate::dispatch::WaitingStep,
+        _event: &crate::dispatch::ClaimedEvent,
+    ) -> impl Future<Output = Result<Option<Vec<u8>>, StoreError>> + Send {
+        async { Err(scoped_execution_adapter_required()) }
+    }
+
     /// Run-wide logical output charge under the run lock, without reading historical values.
     fn logical_output_bytes(&mut self) -> impl Future<Output = Result<u64, StoreError>> + Send;
 
@@ -793,6 +837,13 @@ pub trait PathExecutionTx: Send {
         effects: Effects,
     ) -> impl Future<Output = Result<(), StoreError>> + Send;
 
+    /// Checks the ChildRoot possession prerequisite for a new external worker lease, retaining
+    /// any applicable group lock through commit. Requires the existing own chain/run locks.
+    /// False grants no lease; deterministic preflight failures and existing reports do not call it.
+    fn worker_capacity_available(
+        &mut self,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send;
+
     fn commit(self) -> impl Future<Output = Result<(), StoreError>> + Send;
 }
 
@@ -834,6 +885,9 @@ pub struct Effects {
     pub renewal: Option<LeaseRenewal>,
     /// The audit record of an operator action, committed with the change it describes.
     pub audit: Option<AuditRecord>,
+    /// Further audit records of the same command, committed with it and after `audit`: a command that discloses several
+    /// secrets audits each on its own (feature 035, contracts/worker-protocol.md).
+    pub further_audits: Vec<AuditRecord>,
     /// The idempotency record of the command, with the result a replay should return.
     pub idempotency: Option<(Idempotency, String)>,
     /// `READY` steps to write a fresh wake-up notification for (their notification was lost).
@@ -859,6 +913,7 @@ impl Effects {
             lease: None,
             renewal: None,
             audit: None,
+            further_audits: Vec::new(),
             idempotency: None,
             rehint: Vec::new(),
             rehint_instances: Vec::new(),
@@ -917,6 +972,16 @@ pub enum PoolCheck {
 /// One locked run, mutated in memory and written back in a single transaction.
 pub trait RunTx: Send {
     fn info(&self) -> &RunInfo;
+
+    /// Full-model counterpart of [`PathExecutionTx::record_scoped_event_delivery`].
+    /// Legacy adapters explicitly refuse this operation; root delivery is unchanged.
+    fn record_scoped_event_delivery(
+        &mut self,
+        _step: &crate::dispatch::WaitingStep,
+        _event: &crate::dispatch::ClaimedEvent,
+    ) -> impl Future<Output = Result<Option<Vec<u8>>, StoreError>> + Send {
+        async { Err(scoped_execution_adapter_required()) }
+    }
 
     /// The database clock sampled after the required run lock is acquired: deadlines must not be
     /// backdated by time spent waiting for a writer. All instances use the database's clock.
@@ -1114,6 +1179,61 @@ pub trait RunTx: Send {
         async { Ok(false) }
     }
 
+    /// What the lease of an Iceberg write needs: the limits of the connection it was admitted with, the number of the
+    /// workflow version, and when its first attempt was leased. Unsupported stores fail closed.
+    fn lake_lease_facts(
+        &mut self,
+        _node: &NodeId,
+    ) -> impl Future<Output = Result<crate::database::LakeLeaseFacts, StoreError>> + Send {
+        async { Err(StoreError::DatabaseUnavailable) }
+    }
+
+    /// What the lease of an Iceberg probe needs: the connection it was admitted with, by name and revision (D035-150). Unsupported stores
+    /// fail closed.
+    fn lake_probe_facts(
+        &mut self,
+        _node: &NodeId,
+    ) -> impl Future<Output = Result<crate::database::ProbeLeaseFacts, StoreError>> + Send {
+        async { Err(StoreError::DatabaseUnavailable) }
+    }
+
+    /// What the catalog says, inside this transaction, about the blobs of a record source (feature 035, R2). Only a blob this run's
+    /// own steps committed as an output is returned, with the descriptor the catalog holds; every other case (another run, another
+    /// namespace, another tenant, a run input, an upload not committed, a deleted blob, an id that does not exist) returns nothing,
+    /// all the same, so a descriptor in a JSON value proves nothing. A plain read: the lease holds the tenant's lock and does no
+    /// object I/O. Unsupported stores fail closed.
+    fn lake_record_blobs(
+        &mut self,
+        _ids: &[sagat_domain::blobs::BlobId],
+    ) -> impl Future<Output = Result<Vec<sagat_domain::blobs::BlobDescriptor>, StoreError>> + Send
+    {
+        async { Err(StoreError::DatabaseUnavailable) }
+    }
+
+    /// Records, for the attempt the lease just granted (`fence`), the blobs its document names: the allow-list of the `ReadBlob` of
+    /// that attempt. The store takes the rows from the catalog's own word, as [`Self::lake_record_blobs`] does, and not from the
+    /// caller's: a blob that is not a committed output of this run is not pinned, and then none is (a partial list is an error).
+    /// Immutable once written, and written again as a no-op. Unsupported stores fail closed.
+    fn pin_lake_blobs(
+        &mut self,
+        _node: &NodeId,
+        _fence: sagat_domain::execution::Fence,
+        _ids: &[sagat_domain::blobs::BlobId],
+    ) -> impl Future<Output = Result<(), StoreError>> + Send {
+        async { Err(StoreError::DatabaseUnavailable) }
+    }
+
+    /// Whether the lease of exactly this attempt and generation named the blob. Another attempt, another generation, another node and
+    /// a blob the lease did not name are all `false`, the same. Unsupported stores fail closed.
+    fn lake_blob_pinned(
+        &mut self,
+        _node: &NodeId,
+        _fence: sagat_domain::execution::Fence,
+        _id: sagat_domain::blobs::BlobId,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send {
+        async { Ok(false) }
+    }
+
     /// Selected immutable connection and credential metadata; no provider I/O occurs here.
     fn database_input(
         &mut self,
@@ -1123,13 +1243,22 @@ pub trait RunTx: Send {
         async { Err(StoreError::DatabaseUnavailable) }
     }
 
-    /// Records the credential before returning its value. The pin is immutable for this attempt.
-    fn pin_database_credential(
+    /// Records the credentials before returning their values, each under its role. Every pin is immutable for this attempt.
+    fn pin_database_credentials(
         &mut self,
         _node: &NodeId,
-        _secret: &StoredSecret,
+        _secrets: &[crate::database::SelectedSecret],
     ) -> impl Future<Output = Result<(), StoreError>> + Send {
         async { Err(StoreError::DatabaseUnavailable) }
+    }
+
+    /// Whether the current attempt of a lake step holds a pin for every secret its connection names: whether it resolved
+    /// its credentials. A step that did not cannot have written, and is not completed.
+    fn lake_attempt_resolved(
+        &mut self,
+        _node: &NodeId,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send {
+        async { Ok(false) }
     }
 
     /// Frozen connection/operation ceilings for retained output. Pause/revocation blocks new
@@ -1316,6 +1445,11 @@ pub trait RunTx: Send {
     fn record_delivery(
         &mut self,
         delivery: &crate::dispatch::DeliveryRef,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send;
+
+    /// Full-run counterpart of [`PathExecutionTx::worker_capacity_available`].
+    fn worker_capacity_available(
+        &mut self,
     ) -> impl Future<Output = Result<bool, StoreError>> + Send;
 
     /// Commits. Dropping the transaction instead rolls everything back.
@@ -1694,6 +1828,14 @@ impl DefinitionCache {
         self.codec.parse(document)
     }
 
+    /// The same for a **private** document (ADR-0080), which only the platform writes. Only the entry that builds one calls it.
+    pub fn parse_private_document(
+        &self,
+        document: &[u8],
+    ) -> Result<crate::definitions::ParsedDefinition, IrError> {
+        self.codec.parse_private(document)
+    }
+
     /// The parsed definition of `version` if it is cached.
     #[must_use]
     pub fn get(&self, version: WorkflowVersionId) -> Option<Arc<WorkflowDefinition>> {
@@ -1718,6 +1860,36 @@ impl DefinitionCache {
         version: WorkflowVersionId,
         document: &[u8],
     ) -> Result<Arc<WorkflowDefinition>, IrError> {
+        self.restore(version, || {
+            self.codec
+                .parse_stored(document)
+                .map(|parsed| parsed.definition)
+        })
+    }
+
+    /// The same for a version of a **private** workflow (ADR-0080). The caller decides it from the workflow's `internal` flag, which is a
+    /// row of the store, and never from the document: a version that is not private never reaches this entry. A version is private or
+    /// public for its whole life, so the cache cannot hold one under the other's rules.
+    ///
+    /// # Errors
+    /// [`IrError`] when the stored document no longer parses, or the codec has no private documents.
+    pub fn get_or_parse_private(
+        &self,
+        version: WorkflowVersionId,
+        document: &[u8],
+    ) -> Result<Arc<WorkflowDefinition>, IrError> {
+        self.restore(version, || {
+            self.codec
+                .parse_stored_private(document)
+                .map(|parsed| parsed.definition)
+        })
+    }
+
+    fn restore(
+        &self,
+        version: WorkflowVersionId,
+        parse: impl FnOnce() -> Result<WorkflowDefinition, IrError>,
+    ) -> Result<Arc<WorkflowDefinition>, IrError> {
         {
             let mut guard = self
                 .entries
@@ -1731,7 +1903,7 @@ impl DefinitionCache {
             }
         }
         // Parse outside the lock: it can take milliseconds and other versions must not wait.
-        let parsed = Arc::new(self.codec.parse_stored(document)?.definition);
+        let parsed = Arc::new(parse()?);
         let mut guard = self
             .entries
             .lock()
@@ -1787,5 +1959,16 @@ impl DefinitionCache {
         document: &[u8],
     ) -> Result<Option<crate::declared_operations::PublishedDeclaredState>, IrError> {
         self.codec.declared_state_publication(document)
+    }
+
+    /// The same for the stored document of a **private** version (ADR-0080): the caller decides it from the workflow, never from the document.
+    ///
+    /// # Errors
+    /// Returns an IR error when a stored declaration no longer validates, or the codec has no private documents.
+    pub fn declared_state_publication_private(
+        &self,
+        document: &[u8],
+    ) -> Result<Option<crate::declared_operations::PublishedDeclaredState>, IrError> {
+        self.codec.declared_state_publication_private(document)
     }
 }

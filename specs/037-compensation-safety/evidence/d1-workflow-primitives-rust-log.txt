@@ -1,0 +1,488 @@
+warning: field `tagged_fields` is never read
+   --> vendor/rskafka/src/protocol/messages/create_topics.rs:291:9
+    |
+278 | pub struct CreateTopicsResponse {
+    |            -------------------- field in this struct
+...
+291 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `CreateTopicsResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: fields `name`, `value`, `read_only`, `config_source`, `is_sensitive`, and `tagged_fields` are never read
+   --> vendor/rskafka/src/protocol/messages/create_topics.rs:321:9
+    |
+319 | pub struct CreateTopicResponseConfig {
+    |            ------------------------- fields in this struct
+320 |     /// The configuration name.
+321 |     pub name: CompactString,
+    |         ^^^^
+...
+324 |     pub value: CompactNullableString,
+    |         ^^^^^
+...
+327 |     pub read_only: Boolean,
+    |         ^^^^^^^^^
+...
+330 |     pub config_source: Int8,
+    |         ^^^^^^^^^^^^^
+...
+333 |     pub is_sensitive: Boolean,
+    |         ^^^^^^^^^^^^
+...
+336 |     pub tagged_fields: TaggedFields,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `CreateTopicResponseConfig` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: fields `num_partitions`, `replication_factor`, `configs`, and `tagged_fields` are never read
+   --> vendor/rskafka/src/protocol/messages/create_topics.rs:374:9
+    |
+359 | pub struct CreateTopicResponse {
+    |            ------------------- fields in this struct
+...
+374 |     pub num_partitions: Option<Int32>,
+    |         ^^^^^^^^^^^^^^
+...
+379 |     pub replication_factor: Option<Int16>,
+    |         ^^^^^^^^^^^^^^^^^^
+...
+384 |     pub configs: Vec<CreateTopicResponseConfig>,
+    |         ^^^^^^^
+...
+389 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `CreateTopicResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: fields `low_watermark` and `tagged_fields` are never read
+   --> vendor/rskafka/src/protocol/messages/delete_records.rs:182:9
+    |
+177 | pub struct DeleteResponsePartition {
+    |            ----------------------- fields in this struct
+...
+182 |     pub low_watermark: Int64,
+    |         ^^^^^^^^^^^^^
+...
+190 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `DeleteResponsePartition` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `tagged_fields` is never read
+   --> vendor/rskafka/src/protocol/messages/delete_records.rs:226:9
+    |
+216 | pub struct DeleteResponseTopic {
+    |            ------------------- field in this struct
+...
+226 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `DeleteResponseTopic` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `tagged_fields` is never read
+   --> vendor/rskafka/src/protocol/messages/delete_records.rs:269:9
+    |
+258 | pub struct DeleteRecordsResponse {
+    |            --------------------- field in this struct
+...
+269 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `DeleteRecordsResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `tagged_fields` is never read
+   --> vendor/rskafka/src/protocol/messages/delete_topics.rs:101:9
+    |
+ 88 | pub struct DeleteTopicsResponse {
+    |            -------------------- field in this struct
+...
+101 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `DeleteTopicsResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `tagged_fields` is never read
+   --> vendor/rskafka/src/protocol/messages/delete_topics.rs:144:9
+    |
+129 | pub struct DeleteTopicsResponseTopic {
+    |            ------------------------- field in this struct
+...
+144 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `DeleteTopicsResponseTopic` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: fields `producer_id` and `first_offset` are never read
+   --> vendor/rskafka/src/protocol/messages/fetch.rs:170:9
+    |
+168 | pub struct FetchResponseAbortedTransaction {
+    |            ------------------------------- fields in this struct
+169 |     /// The producer id associated with the aborted transaction.
+170 |     pub producer_id: Int64,
+    |         ^^^^^^^^^^^
+...
+173 |     pub first_offset: Int64,
+    |         ^^^^^^^^^^^^
+    |
+    = note: `FetchResponseAbortedTransaction` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `aborted_transactions` is never read
+   --> vendor/rskafka/src/protocol/messages/fetch.rs:213:9
+    |
+192 | pub struct FetchResponsePartition {
+    |            ---------------------- field in this struct
+...
+213 |     pub aborted_transactions: Vec<FetchResponseAbortedTransaction>,
+    |         ^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `FetchResponsePartition` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `timestamp` is never read
+   --> vendor/rskafka/src/protocol/messages/list_offsets.rs:184:9
+    |
+169 | pub struct ListOffsetsResponsePartition {
+    |            ---------------------------- field in this struct
+...
+184 |     pub timestamp: Option<Int64>,
+    |         ^^^^^^^^^
+    |
+    = note: `ListOffsetsResponsePartition` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: fields `log_append_time_ms` and `log_start_offset` are never read
+   --> vendor/rskafka/src/protocol/messages/produce.rs:148:9
+    |
+132 | pub struct ProduceResponsePartitionResponse {
+    |            -------------------------------- fields in this struct
+...
+148 |     pub log_append_time_ms: Option<Int64>,
+    |         ^^^^^^^^^^^^^^^^^^
+...
+153 |     pub log_start_offset: Option<Int64>,
+    |         ^^^^^^^^^^^^^^^^
+    |
+    = note: `ProduceResponsePartitionResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: fields `session_lifetime_ms` and `tagged_fields` are never read
+   --> vendor/rskafka/src/protocol/messages/sasl_msg.rs:198:9
+    |
+181 | pub struct SaslAuthenticateResponse {
+    |            ------------------------ fields in this struct
+...
+198 |     pub session_lifetime_ms: Option<Int64>,
+    |         ^^^^^^^^^^^^^^^^^^^
+...
+203 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `SaslAuthenticateResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: struct `CompactArray` is never constructed
+   --> vendor/rskafka/src/protocol/primitives.rs:725:12
+    |
+725 | pub struct CompactArray<T>(pub Option<Vec<T>>);
+    |            ^^^^^^^^^^^^
+
+warning: `rskafka` (lib) generated 14 warnings
+    Finished `test` profile [unoptimized] target(s) in 1.33s
+     Running integration/workflow-primitives/main.rs (/var/folders/60/bf6rmfzx6zq67nrbzb3m0p480000gn/T/sagat-037-target-q0fwz2gu/debug/deps/integration_workflow_primitives-93819aef1967810c)
+
+running 772 tests
+test api_reopen::supplied_single_connection_pool_backs_actual_public_completion_after_reopen ... ok
+test api_reopen::current_api_reopens_owned_database_and_resumes_original_public_worker ... ok
+test approval_combinations::a_chain_cancelled_between_the_decision_and_the_hand_off_never_hands_off ... ok
+test approval_combinations::a_chain_segment_waits_for_its_approval_and_the_decision_rolls_it_over ... ok
+test approval_combinations::a_stale_expected_revision_conflicts_while_the_approval_stays_open ... ok
+test approval_combinations::a_viewer_reads_the_state_but_cannot_decide_a_stateful_approval ... ok
+test approval_combinations::an_approval_inside_a_collection_body_is_refused_naming_scoped_compensation ... ok
+test approval_combinations::an_approval_inside_a_loop_body_is_refused_naming_scoped_compensation ... ok
+test approval_combinations::an_approval_with_declared_state_publishes_and_the_decision_routes_the_run ... ok
+test approval_combinations::an_approved_boundary_past_the_chains_deadline_is_ended_by_the_deadline_not_failed ... ok
+test approval_combinations::an_expired_approval_keeps_the_state_and_takes_the_expire_route ... ok
+test approval_combinations::an_update_after_the_decision_but_before_the_route_runs_is_one_journal ... ok
+test approval_combinations::cancelling_the_chain_settles_the_open_approval_and_no_decision_can_revive_it ... ok
+test approval_combinations::the_chains_original_deadline_settles_an_open_approval ... ok
+test approval_combinations::the_state_an_update_wrote_during_the_approval_is_what_the_next_segment_starts_with ... ok
+test approval_progress::a_decision_is_committed_by_the_least_privilege_runtime_role ... ok
+test approval_progress::a_decision_cut_off_at_any_await_commits_whole_or_not_at_all ... ok
+test approval_progress::approval_chain_prefix_precedes_run_lock_and_lasts_until_decision_commit ... ok
+test approval_progress::approval_post_wait_fence_preserves_generation_storage_error ... ok
+2026-11-01T16:51:50.76953Z  WARN sqlx::query: slow statement: execution time exceeded alert threshold db.statement=\n\nSELECT shard FROM scheduler_shards WHERE shard=$1 AND generation=$2 AND owner=$3 FOR SHARE\n elapsed=2.988345417s elapsed_secs=2.988345417 rows_affected=1 rows_returned=1 service=sagat slow_threshold=1s summary=SELECT shard FROM scheduler_shards …
+test approval_progress::approval_post_wait_fence_rejects_opening_after_expiry_without_effects ... ok
+test approval_progress::current_membership_and_tenant_boundary_are_checked_before_receipt_replay ... ok
+test approval_progress::decision_and_expiry_race_has_one_first_commit_winner ... ok
+test approval_progress::expiry_then_decision_and_decision_then_expiry_keep_the_first_outcome ... ok
+2026-11-01T16:52:17.104823Z ERROR sagat_infra_postgres::identity: storage failure detail=error returned from database: duplicate key value violates unique constraint "event_outbox_pkey" at line 666 service=sagat
+test approval_progress::outbox_failure_rolls_back_request_timer_journal_projection_and_audit ... ok
+test approval_progress::restart_and_identical_replay_return_the_original_authorized_receipt ... ok
+2026-11-01T16:52:30.69057Z ERROR sagat_infra_postgres::identity: storage failure detail=error returned from database: duplicate key value violates unique constraint "event_outbox_pkey" at line 666 service=sagat
+2026-11-01T16:52:37.841983Z ERROR sagat_infra_postgres::identity: storage failure detail=error returned from database: duplicate key value violates unique constraint "event_outbox_pkey" at line 666 service=sagat
+test approval_progress::settlement_outbox_failures_roll_back_decision_and_expiry ... ok
+test approval_progress::approval_post_wait_fence_rejects_due_expiry_without_effects has been running for over 60 seconds
+test approval_progress::stale_scheduler_fence_cannot_open_or_expire_an_approval ... ok
+2026-11-01T16:52:50.442393Z  WARN sqlx::query: slow statement: execution time exceeded alert threshold db.statement=\n\nSELECT shard FROM scheduler_shards WHERE shard=$1 AND generation=$2 AND owner=$3 FOR SHARE\n elapsed=2.946128375s elapsed_secs=2.946128375 rows_affected=1 rows_returned=1 service=sagat slow_threshold=1s summary=SELECT shard FROM scheduler_shards …
+test approval_progress::approval_post_wait_fence_rejects_due_expiry_without_effects ... ok
+test approval_scheduler::a_decision_sent_after_the_run_ended_replays_or_names_the_settled_outcome ... ok
+2026-11-01T16:52:57.526934Z ERROR sagat_infra_postgres::identity: storage failure detail=error returned from database: injected outbox failure at line 3897 service=sagat
+test approval_scheduler::cancelling_the_run_cancels_the_request_timer_and_audits_one_atomic_outcome ... ok
+2026-11-01T16:53:04.175523Z ERROR sagat_infra_postgres::identity: storage failure detail=error returned from database: injected audit failure at line 3897 service=sagat
+test approval_scheduler::cancellation_outbox_and_audit_failures_roll_back_the_whole_run_transition ... ok
+test approval_scheduler::public_approval_can_be_cancelled_before_the_scheduler_opens_a_request ... ok
+test approval_scheduler::public_native_approval_can_be_published_and_started ... ok
+test approval_scheduler::decision_expiry_and_cancel_races_keep_exactly_one_approval_outcome ... ok
+test approval_scheduler::raw_signal_cannot_settle_or_route_a_pending_approval ... ok
+test approval_scheduler::scheduler_opened_approval_routes_approved_and_rejected_decisions_after_restart ... ok
+test approval_scheduler::scheduler_opens_then_expires_and_routes_an_approval_after_restart ... ok
+test approval_telemetry::a_decision_and_an_expiry_project_one_span_each_under_the_runs_trace ... ok
+test approval_telemetry::a_request_settled_by_a_cancel_or_a_stop_records_its_wait_as_cancelled ... ok
+test approval_scheduler::the_scheduler_releases_the_route_of_every_settled_approval_exactly_once ... ok
+test approval_telemetry::a_successor_segments_approval_is_projected_under_its_own_run ... ok
+test approval_telemetry::refused_decisions_count_in_the_closed_rejection_series_and_nothing_else_is_invented ... ok
+test approvals_http::decision_commits_once_and_exact_replay_returns_the_receipt ... ok
+test approvals_http::expired_approval_rejects_a_late_http_decision ... ok
+test approvals_http::opaque_approval_lookup_has_a_request_id_index ... ok
+test approvals_http::out_of_bound_decision_keys_and_reason_codes_are_refused_without_a_decision ... ok
+test approvals_http::permission_eligibility_initiator_and_tenant_boundaries_are_opaque_and_audited ... ok
+test approvals_http::run_approvals_are_tenant_scoped_bounded_and_do_not_disclose_eligibility ... ok
+2026-11-01T16:54:16.740041Z ERROR sagat_infra_postgres::identity: failed to record a cross-tenant denial error=referenced row does not exist service=sagat
+test bounded_capabilities::scoped_blob_capabilities_need_no_unrelated_iteration_history ... ok
+test bounded_capabilities::scoped_secret_audits_distinguish_instances_and_collapse_only_their_own_retries ... ok
+test bounded_capabilities::scoped_secret_delivery_needs_no_unrelated_iteration_history ... ok
+test bounded_fences::a_bounded_binding_read_holds_current_authority_until_commit ... ok
+2026-11-01T16:54:38.539012Z  WARN sqlx::query: slow statement: execution time exceeded alert threshold db.statement=\n\nSELECT shard FROM scheduler_shards WHERE shard=$1 AND generation=$2 AND owner=$3 FOR SHARE\n elapsed=2.891805917s elapsed_secs=2.891805917 rows_affected=1 rows_returned=1 service=sagat slow_threshold=1s summary=SELECT shard FROM scheduler_shards …
+test bounded_fences::a_bounded_scheduler_fence_rechecks_expiry_after_its_row_lock_wait ... ok
+2026-11-01T16:54:40.5689Z  WARN sqlx::query: slow statement: execution time exceeded alert threshold db.statement=\n\nSELECT shard FROM scheduler_shards WHERE shard=$1 AND generation=$2 AND owner=$3 FOR SHARE\n elapsed=2.860167959s elapsed_secs=2.860167959 rows_affected=1 rows_returned=1 service=sagat slow_threshold=1s summary=SELECT shard FROM scheduler_shards …
+test bounded_fences::a_full_scheduler_fence_rechecks_expiry_after_its_row_lock_wait ... ok
+test bounded_fences::an_existing_run_cannot_use_child_admission_authority ... ok
+test bounded_fences::chain_prefix_current_path_skips_before_locking_its_run ... ok
+test bounded_fences::chain_prefix_current_path_waits_without_holding_its_run ... ok
+test bounded_fences::chain_prefix_snapshot_path_skips_before_locking_its_run ... ok
+test bounded_fences::chain_prefix_snapshot_path_waits_without_holding_its_run ... ok
+2026-11-01T16:55:10.31105Z  WARN sqlx::query: slow statement: execution time exceeded alert threshold db.statement=\n\nSELECT max_inflight,expires_at FROM worker_sessions WHERE tenant_id=$1 AND namespace_id=$2 AND id=$3 AND token_hash=$4 AND subject=$5 FOR UPDATE\n elapsed=2.831397542s elapsed_secs=2.831397542 rows_affected=1 rows_returned=1 service=sagat slow_threshold=1s summary=SELECT max_inflight,expires_at FROM worker_sessions …
+test bounded_fences::session_room_post_wait_full_rejects_expired_authority ... ok
+2026-11-01T16:55:17.129313Z  WARN sqlx::query: slow statement: execution time exceeded alert threshold db.statement=\n\nSELECT max_inflight,expires_at FROM worker_sessions WHERE tenant_id=$1 AND namespace_id=$2 AND id=$3 AND token_hash=$4 AND subject=$5 FOR UPDATE\n elapsed=2.941323792s elapsed_secs=2.941323792 rows_affected=1 rows_returned=1 service=sagat slow_threshold=1s summary=SELECT max_inflight,expires_at FROM worker_sessions …
+test bounded_fences::session_room_post_wait_path_rejects_expired_authority ... ok
+test bounded_report_provider::binding_revocation_commits_while_a_scoped_openbao_report_scan_is_paused ... ok
+test bounded_report_provider::binding_revocation_discards_secrets_after_a_scoped_openbao_read ... ok
+test bounded_report_provider::role_revocation_commits_while_a_scoped_openbao_report_scan_is_paused ... ok
+test bounded_reports::root_receipt_checks_the_echoed_step_identity ... ok
+test bounded_report_provider::role_revocation_discards_secrets_after_a_scoped_openbao_read ... ok
+test bounded_reports::root_receipt_rechecks_current_binding ... ok
+test bounded_reports::root_receipt_rechecks_current_membership ... ok
+test bounded_reports::scoped_completion_and_its_receipt_need_no_unrelated_iteration_history ... ok
+test bounded_reports::scoped_failure_and_its_receipt_need_no_unrelated_iteration_history ... ok
+2026-11-01T16:55:56.294236Z ERROR sagat_infra_postgres::identity: storage failure detail=error returned from database: injected later path lease failure at line 3897 service=sagat
+2026-11-01T16:55:56.294357Z  WARN sagat_application::worker: leasing the steps of a run failed error=internal error run=01a1980a-026a-72a6-b43c-a7f176a69a1a service=sagat
+test bounded_worker::a_later_path_failure_still_delivers_every_committed_lease ... ok
+test bounded_worker::a_late_scoped_heartbeat_needs_no_history_after_its_collection_and_run_finish ... ok
+test bounded_worker::a_root_heartbeat_waiting_for_the_run_lock_rechecks_current_membership ... ok
+test bounded_worker::a_scoped_claim_rechecks_current_role_after_binding_contention ... ok
+test bounded_worker::a_scoped_claim_waiting_for_binding_authority_holds_no_session_row ... ok
+test bounded_worker::a_scoped_heartbeat_uses_its_path_and_preserves_late_report_and_binding_fences ... ok
+test bounded_worker::concurrent_scoped_heartbeats_finish_with_two_connections_without_history ... ok
+test bounded_worker::scoped_claims_need_no_unrelated_iteration_history ... ok
+test byte_ceilings::a_bounded_completion_commits_without_reopening_the_run_history ... ok
+test byte_ceilings::a_bounded_path_loads_only_its_indexed_scope_saga_authority ... ok
+test byte_ceilings::a_bounded_path_read_does_not_wait_for_the_run_write_lock ... ok
+test byte_ceilings::a_between_persist_fault_rolls_back_the_whole_refusal_and_same_lease_retries ... ok
+test byte_ceilings::a_bounded_scheduler_fence_lasts_to_commit_and_deadlines_are_exact_path ... ok
+test byte_ceilings::a_bounded_reconciliation_persists_its_companion_and_manual_review_status ... ok
+test byte_ceilings::a_bounded_transaction_observes_database_time_after_waiting_for_the_run_lock ... ok
+test byte_ceilings::a_bounded_script_lease_pins_retention_and_zero_withholds_a_new_member ... ok
+test byte_ceilings::a_collection_snapshot_over_the_value_ceiling_fails_the_run_before_it_starts ... ok
+test byte_ceilings::a_full_transaction_observes_database_time_after_waiting_for_the_run_lock ... ok
+test byte_ceilings::a_drain_outbox_fault_preserves_the_committed_report_and_one_retry_compensates ... ok
+test byte_ceilings::a_known_successful_seventeenth_member_is_preserved_without_its_refused_output ... ok
+test byte_ceilings::a_loop_carry_over_the_value_ceiling_fails_the_loop_and_keeps_the_ceiling ... ok
+test byte_ceilings::a_loop_whose_initial_carry_is_over_the_value_ceiling_fails_before_it_starts ... ok
+test byte_ceilings::a_late_receipt_fault_rolls_back_the_whole_successful_refusal_and_same_key_retries ... ok
+test byte_ceilings::a_member_output_over_the_value_ceiling_is_refused_and_the_lease_survives ... ok
+test byte_ceilings::a_scoped_task_context_built_from_the_largest_values_stays_under_eight_mib ... ok
+test byte_ceilings::an_aggregate_over_the_value_ceiling_fails_the_scope_instead_of_storing_it ... ok
+test byte_ceilings::a_scoped_output_refusal_rechecks_binding_after_the_checked_path_is_dropped ... ok
+test byte_ceilings::an_aggregate_that_cannot_be_computed_fails_the_scope_with_expression_error ... ok
+test byte_ceilings::an_aggregate_that_fits_alone_but_not_beside_the_retained_outputs_fails_the_scope ... ok
+test byte_ceilings::an_end_output_created_with_the_report_is_charged_once_as_a_logical_output ... ok
+test byte_ceilings::an_applied_lookup_preserves_both_real_successes_without_the_substitute_output ... ok
+test byte_ceilings::loop_successful_output_over_run_limit_preserves_review ... ok
+test byte_ceilings::member_outputs_that_pass_four_mib_in_all_fail_the_run_with_run_data_limit ... ok
+test byte_ceilings::the_carry_that_ends_a_loop_must_fit_beside_the_outputs_the_run_retains ... ok
+test byte_ceilings::refused_output_compensation::a_refused_required_output_keeps_its_compensation_open_until_audited_resolution ... ok
+test capacity_finish::acquire::acquire_exports_closed_outcomes_and_counts_only_acknowledged_first_transitions ... FAILED
+test capacity_finish::acquire::a_live_or_expired_worker_lease_is_not_an_acquire_readiness_predicate ... ok
+test capacity_finish::acquire::exact_binding_and_persistence_counter_ceiling_refuse_without_mutation ... ok
+test capacity_finish::acquire::exact_replay_returns_the_original_acquisition_once ... ok
+test capacity_finish::acquire::final_child_cannot_acquire_and_cross_operation_keys_conflict_before_cas ... ok
+test capacity_finish::acquire::mismatched_binding_stale_counters_and_lost_scheduler_are_inert ... ok
+test capacity_finish::acquire::occupied_group_refuses_a_fresh_acquire_without_side_effects ... ok
+test capacity_finish::acquire::original_acquisition_replays_after_later_vacate_continuation_and_successor_lease ... ok
+test capacity_finish::acquire::original_receipt_survives_actual_finish_but_fresh_acquire_refuses_inactive_member ... ok
+test capacity_finish::acquire::paused_and_manual_review_are_not_movable_but_running_is ... ok
+2026-11-01T16:58:26.935518Z  WARN sqlx::postgres::notice: there is no transaction in progress service=sagat
+test capacity_finish::acquire::recovery::a_real_deferred_foreign_key_abort_is_confirmed_and_rolls_back_every_write ... ok
+2026-11-01T16:58:28.007403Z ERROR sagat_infra_postgres::identity: storage failure detail=error returned from database: controlled Acquire write refusal at line 3897 service=sagat
+test capacity_finish::acquire::recovery::busy_group_rolls_back_and_releases_own_chain_and_run_guards ... ok
+2026-11-01T16:58:30.11893Z ERROR sagat_infra_postgres::identity: storage failure detail=error returned from database: controlled Acquire write refusal at line 3897 service=sagat
+2026-11-01T16:58:31.155479Z  WARN sqlx_core::pool::connection: error occurred while testing the connection on-release error=error communicating with database: expected to read 5 bytes, got 0 bytes at EOF service=sagat
+2026-11-01T16:58:32.582595Z ERROR sagat_infra_postgres::identity: storage failure detail=error returned from database: controlled Acquire write refusal at line 3897 service=sagat
+test capacity_finish::acquire::recovery::audit_outbox_and_receipt_refusals_roll_back_before_same_key_retry ... ok
+2026-11-01T16:58:33.969385Z  WARN sqlx_core::pool::connection: error occurred while testing the connection on-release error=error communicating with database: expected to read 5 bytes, got 0 bytes at EOF service=sagat
+test capacity_finish::acquire::recovery::lost_commit_ack_reconciles_actual_commit_or_abort_with_the_original_key ... ok
+test capacity_finish::acquire::recovery::scheduler_expiry_while_chain_is_held_refuses_application_and_replay ... ok
+test capacity_finish::acquire::recovery::two_real_members_contend_in_both_orders_then_recheck_cas_and_occupancy ... ok
+test capacity_finish::acquire::vacant_child_acquires_atomically_without_rewriting_execution_or_membership ... ok
+2026-11-01T16:58:45.595666Z  WARN sqlx::postgres::notice: there is no transaction in progress service=sagat
+test capacity_finish::active_holder_fk_is_deferred_and_abort_preserves_both_rows ... ok
+2026-11-01T16:58:46.821705Z ERROR sagat_infra_postgres::identity: storage failure detail=error returned from database: injected capacity write failure at line 3897 service=sagat
+2026-11-01T16:58:46.860838Z ERROR sagat_infra_postgres::identity: storage failure detail=error returned from database: injected capacity write failure at line 3897 service=sagat
+2026-11-01T16:58:46.899613Z ERROR sagat_infra_postgres::identity: storage failure detail=error returned from database: injected capacity write failure at line 3897 service=sagat
+2026-11-01T16:58:46.974714Z ERROR sagat_infra_postgres::identity: storage failure detail=error returned from database: injected capacity write failure at line 3897 service=sagat
+2026-11-01T16:58:46.97694Z  WARN sqlx::postgres::notice: there is no transaction in progress service=sagat
+test capacity_finish::barriers::audit_outbox_receipt_and_deferred_commit_failures_roll_back_all_effects ... ok
+test capacity_finish::barriers::group_busy_consumes_transaction_and_releases_own_chain_and_run ... ok
+test capacity_finish::barriers::own_chain_wait_precedes_run_lock_and_serializes_duplicate_commands ... ok
+2026-11-01T16:58:51.984189Z  WARN sqlx_core::pool::connection: error occurred while testing the connection on-release error=error communicating with database: expected to read 5 bytes, got 0 bytes at EOF service=sagat
+2026-11-01T16:58:52.439483Z  WARN sqlx::query: slow statement: execution time exceeded alert threshold db.statement=\n\nSELECT shard FROM scheduler_shards WHERE shard=$1 AND generation=$2 AND owner=$3 FOR SHARE\n elapsed=2.019180584s elapsed_secs=2.019180584 rows_affected=1 rows_returned=1 service=sagat slow_threshold=1s summary=SELECT shard FROM scheduler_shards …
+2026-11-01T16:58:54.889451Z  WARN sqlx_core::pool::connection: error occurred while testing the connection on-release error=error communicating with database: expected to read 5 bytes, got 0 bytes at EOF service=sagat
+test capacity_finish::commit_loss::unknown_commit_reconciles_actual_commit_and_abort_without_inventing_a_new_key ... ok
+2026-11-01T16:58:56.886383Z  WARN sqlx::query: slow statement: execution time exceeded alert threshold db.statement=\n\nSELECT shard FROM scheduler_shards WHERE shard=$1 AND generation=$2 AND owner=$3 FOR SHARE\n elapsed=2.017690834s elapsed_secs=2.017690834 rows_affected=1 rows_returned=1 service=sagat slow_threshold=1s summary=SELECT shard FROM scheduler_shards …
+test capacity_finish::barriers::postwait_expiry_refuses_first_application_and_receipt_replay ... ok
+test capacity_finish::continued_history_never_finishes_logical_member_even_after_successor_final ... ok
+test capacity_finish::contradictory_final_outcome_refuses_finish_and_root_binding_grants_no_authority ... ok
+test capacity_finish::counters_identity_and_tenant_namespace_bindings_are_enforced ... ok
+test capacity_finish::current_child_final_finishes_once_without_rewriting_execution ... ok
+test capacity_finish::discovery::a_vacant_active_member_is_discovered_with_its_current_head ... ok
+test capacity_finish::discovery::actual_child_continuation_changes_the_discovered_head_without_changing_membership ... ok
+test capacity_finish::discovery::an_empty_filtered_page_advances_before_a_fresh_store_resumes ... ok
+test capacity_finish::discovery::discovery_span_records_bounded_counts_without_tenant_fields ... ok
+test capacity_finish::discovery::equal_registry_ids_in_two_tenants_keep_their_own_namespace_and_head ... ok
+test capacity_finish::discovery::holders::actual_continuation_changes_the_observed_head_and_its_requested_shard ... ok
+test capacity_finish::discovery::holders::discovery_does_not_wait_for_g_or_change_execution_and_capacity_rows ... ok
+test capacity_finish::discovery::holders::holder_span_has_closed_kind_and_bounded_counts_without_resource_ids ... ok
+test capacity_finish::discovery::holders::invalid_holder_windows_are_typed_refusals ... ok
+test capacity_finish::discovery::holders::paused_holder_remains_an_observation_with_its_new_revision ... ok
+test capacity_finish::discovery::holders::nonholder_input_advances_the_cursor_and_a_new_store_resumes ... ok
+test capacity_finish::discovery::holders::selected_holder_is_observed_with_its_current_head_and_revisions ... ok
+test capacity_finish::discovery::holders::tenant_exclusion_filters_after_the_input_page ... ok
+test capacity_finish::discovery::holders::vacancy_is_filtered_and_finished_history_is_not_input ... ok
+test capacity_finish::discovery::invalid_discovery_windows_are_typed_refusals ... ok
+test capacity_finish::discovery::retained_finished_members_are_not_scan_input_and_the_index_reverses ... ok
+test capacity_finish::discovery::runtime_discovery_ignores_a_held_row_lock_and_rewrites_nothing ... ok
+test capacity_finish::discovery::shard_and_tenant_filters_consume_their_page_without_granting_authority ... ok
+test capacity_finish::downgrade_waits_for_writer_before_deciding_whether_storage_is_empty ... ok
+test capacity_finish::exhausted_sql_revision_leaves_no_partial_finish ... ok
+test capacity_finish::empty_schema_reverses_but_retained_tombstones_refuse_downgrade ... ok
+test capacity_finish::historical_holder_receipt_survives_later_holder_finish ... ok
+test capacity_finish::finishing_selected_child_preserves_other_members_and_historical_receipt ... ok
+test capacity_finish::native_finish_rejects_live_wrong_scope_stale_fence_and_conflicting_replay ... ok
+test capacity_finish::native_fixture_reaches_current_child_final_through_real_runtime_writers ... ok
+test capacity_finish::observations::filtered_finish_span_cannot_overwrite_its_callers_outcome_or_status ... FAILED
+test capacity_finish::races::committed_handoff_overtakes_discovered_old_owner_without_forwarding_finish ... ok
+test capacity_finish::observations::returned_outcomes_export_closed_spans_and_only_confirmed_first_commits_count ... FAILED
+test capacity_finish::runtime_has_only_selected_columns_and_receipt_append_privileges ... ok
+test capacity_finish::races::same_tenant_members_in_two_namespaces_keep_exact_binding_and_receipt_identity ... ok
+test capacity_finish::scoped_binding::active_scoped_identity_and_finished_retention_use_always_guards ... ok
+test capacity_finish::scoped_binding::downgrade::child_root_native_finish_survives_down_and_up_with_legacy_grants ... ok
+test capacity_finish::scoped_binding::downgrade::active_member_and_finished_tombstone_receipt_each_refuse_downgrade ... ok
+test capacity_finish::scoped_binding::downgrade::downgrade_waits_on_original_run_then_observes_committed_scoped_member ... ok
+test capacity_finish::scoped_binding::receipt_operation_revision_and_member_keys_remain_global_across_kinds ... ok
+test capacity_finish::scoped_binding::runtime_insert_columns_are_exactly_legacy_and_scoped_release_stays_closed ... ok
+test capacity_finish::scoped_binding::scoped_member_and_receipt_bind_to_a_qualified_flat_run_beside_child_root ... ok
+test capacity_finish::scoped_binding::variants_bounds_qualified_run_and_exact_receipt_binding_are_closed ... ok
+test capacity_finish::tombstones_and_receipts_survive_owner_mutation_attempts ... ok
+test capacity_finish::vacant_nonholder_receipt_keeps_epoch_and_fixed_fingerprint_bounds ... ok
+test capacity_finish::vacate::a_new_command_after_vacating_is_not_a_holder_but_the_old_receipt_replays ... ok
+test capacity_finish::vacate::a_ready_child_vacates_atomically_without_rewriting_execution_or_membership ... ok
+test capacity_finish::vacate::a_real_claim_commits_before_vacate_rechecks_revision_and_quiescence ... ok
+test capacity_finish::vacate::a_scoped_path_in_a_mixed_group_cannot_use_child_root_vacate ... ok
+test capacity_finish::vacate::actual_worker_lease_including_an_expired_one_blocks_vacate ... ok
+test capacity_finish::vacate::busy_group_rolls_back_and_releases_own_chain_and_run_guards ... ok
+test capacity_finish::vacate::another_namespace_and_a_root_without_child_lineage_are_refused ... ok
+test capacity_finish::vacate::concurrent_exact_commands_wait_on_chain_before_run_and_settle_once ... ok
+test capacity_finish::vacate::exact_replay_returns_the_original_transition_once ... ok
+test capacity_finish::vacate::empty_migration_reverses_but_retained_receipts_preserve_the_index_and_evidence ... ok
+test capacity_finish::vacate::final_child_is_refused_without_replacing_finish ... ok
+2026-11-01T17:00:28.534516Z  WARN sqlx_core::pool::connection: error occurred while testing the connection on-release error=error communicating with database: expected to read 5 bytes, got 0 bytes at EOF service=sagat
+test capacity_finish::vacate::mismatched_binding_stale_counters_and_lost_scheduler_are_inert ... ok
+2026-11-01T17:00:30.461319Z  WARN sqlx_core::pool::connection: error occurred while testing the connection on-release error=error communicating with database: expected to read 5 bytes, got 0 bytes at EOF service=sagat
+test capacity_finish::vacate::lost_commit_ack_reconciles_actual_commit_or_abort_with_the_original_key ... ok
+test capacity_finish::vacate::original_receipt_survives_actual_child_continuation_and_current_lease ... ok
+2026-11-01T17:00:31.986199Z ERROR sagat_infra_postgres::identity: storage failure detail=error returned from database: controlled outbox refusal at line 3897 service=sagat
+test capacity_finish::vacate::outbox_refusal_rolls_back_header_audit_and_receipt_before_same_key_retry ... ok
+test capacity_finish::vacate::transfer_receipts_are_append_only_and_the_lease_probe_has_an_index_access_path ... ok
+test capacity_finish::vacate::vacate_exports_closed_outcomes_and_counts_only_acknowledged_first_transitions ... FAILED
+test capacity_finish::vacate::scheduler_expiry_while_chain_is_held_refuses_application_and_replay ... ok
+test capacity_finish::valid_owner_fixture_precedes_capacity_constraint_probes ... ok
+test capacity_finish::worker_leases::a_lease_retains_group_possession_while_waiting_for_activity_admission ... ok
+test capacity_finish::worker_leases::acquire_allows_a_lease_and_existing_report_ignores_a_busy_group ... ok
+test capacity_finish::worker_leases::an_active_nonholder_stays_ready_while_the_other_member_is_leased ... ok
+test capacity_finish::worker_leases::busy_group_skips_without_a_lease_and_releases_own_chain_and_run ... ok
+test capacity_finish::worker_leases::continued_member_uses_the_current_head_and_refuses_its_old_run ... ok
+test capacity_finish::worker_leases::duplicate_active_groups_do_not_choose_an_arbitrary_holder ... ok
+test capacity_finish::worker_leases::finished_history_is_not_legacy_and_one_active_can_follow_retained_history ... ok
+test capacity_finish::worker_leases::nonmember_work_is_compatible_even_while_an_unrelated_group_is_busy ... ok
+test capacity_finish::worker_leases::preflight::internal_input_limit_failure_commits_even_with_vacant_and_busy_group ... ok
+test capacity_finish::worker_leases::preflight::scoped_internal_input_limit_failure_also_ignores_vacant_and_busy_group ... ok
+test capacity_finish::worker_leases::scoped_claims_use_the_same_group_guard_before_attempt_or_quota ... ok
+test capacity_finish::worker_leases::vacant_child_stays_ready_without_consuming_an_attempt_or_quota ... ok
+test chain_handoff::conditional_stateful_continuation_transfers_state_and_finishes ... ok
+test chain_handoff::invalid_continuation_input_fails_the_chain_once ... ok
+2026-11-01T17:00:54.727775Z ERROR sagat_infra_postgres::identity: storage failure detail=error returned from database: duplicate key value violates unique constraint "event_outbox_pkey" at line 666 service=sagat
+test chain_handoff::prepared_continuation_commits_replays_and_rolls_back_atomically ... ok
+test chain_handoff::public_activity_completion_is_handed_to_a_successor_by_the_scheduler ... ok
+test chain_handoff::public_conditional_continuation_reaches_a_successful_final_outcome ... ok
+test chain_handoff::public_stateful_handoff_preserves_the_declared_snapshot ... ok
+test chain_handoff::segment_limit_finalizes_once_and_is_not_rediscovered ... ok
+2026-11-01T17:01:01.574935Z ERROR sagat_infra_postgres::identity: storage failure detail=error returned from database: duplicate key value violates unique constraint "audit_records_pkey" at line 666 service=sagat
+test chain_progress::audit_insert_failure_rolls_back_runs_journal_outbox_and_lineage ... ok
+test chain_progress::chain_cancel_and_handoff_serialize_on_one_head ... ok
+2026-11-01T17:01:03.961405Z ERROR sagat_infra_postgres::identity: storage failure detail=error returned from database: audit rejected at line 3897 service=sagat
+test chain_progress::chain_cancel_audit_failure_rolls_back_latch_journal_and_projection ... ok
+test chain_progress::chain_cancel_latches_before_stopping_the_head_and_replays_after_restart ... ok
+test chain_progress::chain_inspection_is_tenant_scoped_and_audits_a_foreign_probe ... ok
+test chain_progress::chain_handoff_and_finalization_are_written_by_the_least_privilege_runtime_role ... ok
+test chain_progress::chain_signal_is_delivered_only_to_an_existing_wait_and_replays_after_restart ... ok
+test chain_progress::child_cancellation_latch_blocks_a_new_handoff ... ok
+test chain_progress::deadline_boundary_fails_closed_before_any_successor_write ... ok
+test chain_progress::direct_run_signal_and_cancel_preserve_chain_lock_and_terminal_projection ... ok
+test chain_progress::final_head_closes_once_and_exposes_child_outcome_without_settling_parent ... ok
+test chain_progress::final_head_is_delivered_to_run_finished_subscribers_once ... ok
+test chain_progress::handoff_replays_after_restart_without_releasing_a_second_successor ... ok
+test chain_progress::persisted_active_run_limit_blocks_replacement_without_partial_writes ... ok
+test chain_progress::post_wait_fence_preserves_the_oversized_generation_storage_error ... ok
+test chain_progress::post_wait_fence_rejects_expired_chain_finalization_without_effects ... FAILED
+test chain_progress::stale_scheduler_fence_cannot_move_the_chain_head ... FAILED
+test chain_progress::terminal_audit_failure_rolls_back_journal_projection_and_outbox ... FAILED
+test chain_progress::terminal_outbox_conflict_rolls_back_the_final_event_and_chain_outcome ... FAILED
+test chain_storage::chain_head_must_be_a_segment_of_its_own_chain ... FAILED
+test chain_wait::a_chain_that_waits_in_every_segment_reaches_its_final_outcome ... FAILED
+test chain_wait::a_continuation_that_starts_with_a_wait_hands_off_to_a_successor_that_already_waits ... FAILED
+test chain_wait::a_duplicate_delivery_wakes_the_successor_once ... FAILED
+test chain_wait::a_successor_whose_correlation_cannot_be_computed_ends_the_chain_with_a_typed_failure ... FAILED
+2026-11-01T17:01:21.219042Z  WARN sagat_infra_postgres::identity: storage unavailable detail=error communicating with database: expected to read 5 bytes, got 0 bytes at EOF service=sagat
+test chain_progress::post_wait_fence_rejects_an_expired_legacy_chain_handoff_without_effects ... FAILED
+test chain_wait::an_event_admitted_before_the_hand_off_does_not_wake_the_successor_and_one_after_does ... FAILED
+test chain_wait::the_original_deadline_ends_a_waiting_successor_and_its_chain_as_timed_out ... ok
+test chain_wait::the_wait_of_the_successor_times_out_by_its_own_timeout_like_any_other_wait ... ok
+test chain_wait::the_store_refuses_a_selection_that_does_not_match_the_entry_the_definition_declares ... ok
+test chains::a_blocked_boundary_does_not_hold_back_the_boundaries_behind_it ... ok
+test chains::a_boundary_with_an_open_approval_waits_until_the_decision_settles_the_request ... ok
+test chains::a_boundary_with_open_work_waits_without_failing_and_hands_off_once_it_settles ... ok
+test chains::a_continuation_workflow_starts_as_a_child_with_a_durable_link ... ok
+test chains::a_continuation_never_outgrows_the_active_run_quota_and_waits_for_room ... ok
+test chains::a_detached_child_chain_outlives_a_cancelled_parent_and_nobody_is_told ... ok
+test chains::a_hand_off_claimed_for_another_tenant_or_namespace_moves_nothing ... ok
+2026-11-01T17:01:44.452559Z ERROR sagat_scheduler::passes: a continuation scheduler action failed chain_id=5841d457-8a8a-800b-93a7-c7948a6f2897 error=continuation rejected: parent cancellation prevents another child handoff node=rollover run_id=5841d457-8a8a-800b-93a7-c7948a6f2897 service=sagat
+test chains::a_latched_child_chain_never_hands_off_even_before_its_head_is_cancelled ... ok
+test chains::cancelling_the_parent_latches_the_child_chain_and_cancels_its_current_head ... ok
+test chains::finished_chains_links_and_payloads_survive_every_housekeeping_pass ... ok
+test chains::operating_on_a_continued_segment_is_refused_like_any_ended_run_and_never_reaches_the_chain ... ok
+test chains::request_cancel_makes_the_parent_wait_until_the_child_chain_has_settled ... ok
+2026-11-01T17:01:54.006112Z  WARN sqlx::query: slow statement: execution time exceeded alert threshold db.statement=\n\nSELECT shard FROM scheduler_shards WHERE shard=$1 AND generation=$2 AND owner=$3 FOR SHARE\n elapsed=3.036231417s elapsed_secs=3.036231417 rows_affected=1 rows_returned=1 service=sagat slow_threshold=1s summary=SELECT shard FROM scheduler_shards …
+test chains::post_wait_fence_rejects_an_expired_evaluated_handoff_without_effects ... ok
+test chains::rerun_as_new_of_a_segment_starts_an_unrelated_run_with_its_own_chain ... ok
+error: test failed, to rerun pass `-p sagat-tests --test integration_workflow_primitives`
+
+Caused by:
+  process didn't exit successfully: `/var/folders/60/bf6rmfzx6zq67nrbzb3m0p480000gn/T/sagat-037-target-q0fwz2gu/debug/deps/integration_workflow_primitives-93819aef1967810c` (signal: 9, SIGKILL: kill)

@@ -1,0 +1,16 @@
+{
+  "command": [
+    "cargo",
+    "test",
+    "--manifest-path",
+    "sdks/rust/Cargo.toml",
+    "--locked"
+  ],
+  "exit_code": 0,
+  "seconds": 56.73,
+  "wall_seconds": 56.73,
+  "wall_minus_monotonic_seconds": 0.0,
+  "started_utc": "2026-10-28T00:58:08.212811+00:00",
+  "finished_utc": "2026-10-28T00:59:04.944433+00:00",
+  "log": "combined-rust-sdk-native.txt"
+}

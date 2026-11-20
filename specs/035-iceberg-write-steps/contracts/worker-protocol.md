@@ -1,0 +1,83 @@
+# Worker protocol additions (draft, feature 035)
+
+Additive changes to `specs/001-platform-foundation/contracts/worker.proto`, negotiated as the next free
+minor when this feature merges (D035-043; drafts 020, 021, 025 and 026 also claim 1.7).
+
+- **Activities**: all use the reserved prefix `sagat.database.` and are claimable only by
+  `Role::DatabaseRunner`.
+  - **Lake profile**: `sagat.database.iceberg.write`, `sagat.database.iceberg.revert`,
+    `sagat.database.destination.iceberg`, `sagat.database.destination.object_storage`,
+    `sagat.database.lake.probe`, `sagat.database.lake.browse`.
+  - **Database profile**: the existing `sagat.database.postgresql`, plus
+    `sagat.database.destination.postgresql`, `sagat.database.destination.clickhouse`,
+    `sagat.database.clickhouse.probe`.
+- **Profiles and versions** (D035-057):
+  - Each `DatabaseRunner` worker binding names a profile, `database` or `lake`.
+  - `managed_capabilities_allowed` accepts only that profile's activities, and only those the
+    negotiated minor includes.
+  - A runner offers the new activities only when the agreed minor includes them, so a new runner
+    against an old server still registers for PostgreSQL. An old runner never sees them.
+  - `ResolveDatabase` refuses a connection kind outside the caller's profile.
+  - **Status (D035-135, D035-136).** Built: one profile per registration, judged by the activities offered
+    (`sagat.database.postgresql` alone, or `sagat.database.iceberg.write` alone), from minor 1.6; an activity the
+    server does not serve yet is refused; **and the profile persisted on the binding** (`worker_bindings.profile`,
+    `database` by default, set by `PUT /namespaces/{id}/worker-bindings/{subject}`), which a registration must
+    match, so a runner bound to a wildcard is still of one profile. Not built: `ResolveDatabase` refusing a
+    connection kind outside the profile of the caller's binding (D035-130 C), and the runner offering the activity by the
+    agreed minor (G). The minor stays 1.6 for now, because nothing on the wire differs yet; the first wire
+    difference takes the next free minor.
+  - **The probe (D035-150, 2026-11-09).** The lake profile is the write, the probe or both: a registration whose activities are a
+    non-empty subset of `sagat.database.iceberg.write` and `sagat.database.lake.probe` is of the lake profile, and mixing either with SQL or
+    with an ordinary activity is refused as before. **A step is handed only to a session that offers its own activity**, and not merely
+    one of its profile (`profile_fence`, `ManagedKind::activity`): a lake runner that offers the write alone is never handed a probe.
+    **No new minor is taken for it:** the probe's lease rides the existing `input` payload, and the *offer* is the negotiation, because
+    an older runner never offers the probe and so is never handed one. Rollout order: server, then the binding of the runner (it must
+    cover the probe activity), then the runner.
+- **`TaskLease` input** (built since D035-138 for the lake activity from the run's data: inline records, and, since D035-144, the blobs of earlier steps of the run; a SQL result kept inline is turned into inline records by the server (D035-145); one kept as a blob fails the step by name, G035-067) for these activities: the existing `input` payload carries the attempt input
+  of [lake-runtime.md](lake-runtime.md), minus credentials and the relay. That is `effectKey`,
+  `firstAttemptStartedAt`, the table or target, mode, mapping, limits, and record references (blob
+  ids or inline records). Credentials never travel in the lease.
+- **`TaskLease` input of the probe** (D035-150): `sagat.lake.probe-input.v1`, pinned by the fixture
+  `tests/contract/iceberg-writes/fixtures/probe-input/probe.json`, which the server's builder produces byte for byte and the runner's
+  reader is held to (slice S6a, `ProbeInput::read` in `crates/infra-lake`: one object of at most 4 KiB, no name twice at any depth, every
+  member of its own type and bounds, a slug for the name, a revision of 1 to 2^32-1, `checkTimeoutMs` of 100 to 60 000, the three checks in order;
+  `fixtures/probe-input/refused.json` lists what it refuses, one document for each reason). It carries `operation: "probe"`, the connection by the name and the revision the probe was admitted with (what
+  the result echoes), `checks` (`CATALOG_AUTH`, `WAREHOUSE`, `STORAGE_ACCESS`, in the order they run) and `checkTimeoutMs`, and nothing else:
+  no secret, address or table. The connection and its two secrets come from `ResolveDatabase`, read and pinned as a write's are. A probe has
+  its own budget (one in flight in a namespace, four in a tenant, `LAKE_PROBE_*`), so it neither waits for a write nor makes one wait.
+  **The result of a probe** (D035-150, slice S4a) is reported inline in `CompleteStep.output_json`, and is **read into typed fields and written
+  again**: the run keeps the server's own writing of it, never the bytes the runner sent (`JsonLakeProbeCodec`, a port of the application like
+  the receipt's). It is `{"kind":"probe","connection":{"name","revision"},"checks":[{"check","outcome","code"?}]}`: the connection is the
+  probe's own, **echoed and compared** (another connection or revision is refused); the checks are `CATALOG_AUTH`, `WAREHOUSE` and
+  `STORAGE_ACCESS`, each once, in that order; an `outcome` is `PASSED`, `FAILED` or `SKIPPED`; a `FAILED` check carries a `code` of the table
+  below and no other check carries one; after a failed check every later one is `SKIPPED`; a skip has a cause, an earlier failure, except
+  `STORAGE_ACCESS` on credentials the catalog vends (nothing is vended without a table). Any member the result does not have, text where a
+  closed word or a number belongs, or a result over 4 KiB is refused whole (`NotAllowed`, audited as a denial of the run, saying nothing of
+  what it held), and the step is as it was. A probe whose attempt never resolved its credentials has tested nothing, and its result is refused.
+  **A failed check is the answer, not a failed step:** the step succeeds. Only a fault of the platform fails it (`DATABASE_CREDENTIAL_UNAVAILABLE`
+  at the resolve, `LAKE_HOST_PROTOCOL`, `LAKE_SANDBOX_UNAVAILABLE`, the deadline), reported as any managed failure with its closed code.
+  The corpus every implementation is held to, the Rust codec now and the Python host next, is
+  `tests/contract/iceberg-writes/fixtures/probe-results/{accepted,refused}` (each refused file is named for the refusal it gets).
+
+  | Check | May fail with (codes that already exist; none is new) |
+  |---|---|
+  | `CATALOG_AUTH` | `DATABASE_AUTHENTICATION_FAILED` (the catalog refused the credentials), `DATABASE_TLS_FAILED` (an untrusted certificate), `DATABASE_DESTINATION_DENIED` (a host the egress policy refuses), `CATALOG_UNAVAILABLE`, `DATABASE_TIMEOUT` |
+  | `WAREHOUSE` | `DATABASE_AUTHENTICATION_FAILED` (the catalog refuses the warehouse to these credentials), `CATALOG_UNAVAILABLE`, `ICEBERG_LOCATION_NOT_ALLOWED` (a location outside the connection's), `DATABASE_TIMEOUT` |
+  | `STORAGE_ACCESS` | `DATABASE_AUTHENTICATION_FAILED` (the storage credentials were denied), `DATABASE_TLS_FAILED`, `DATABASE_DESTINATION_DENIED`, `STORAGE_UNAVAILABLE`, `DATABASE_TIMEOUT` |
+- **`ResolvedDatabase`** gains three fields, `IcebergConnection iceberg`,
+  `ObjectStorageConnection object_storage` and `ClickHouseConnection clickhouse`. Their numbers are
+  assigned at merge and never reused. Each holds the pinned non-secret settings and a
+  `map<string, bytes> credentials`, resolved through the same two-phase OpenBao path as
+  `PostgresConnection`. Every secret of the connection (for Iceberg, `catalogSecret` and
+  `storageSecret`) is compared, pinned and audited separately. The runner zeroises them when the
+  attempt ends.
+- **`ReadBlob`** is unchanged on the wire; the lake profile uses it for record blobs (D035-144). The server takes the blobs of a blob source from the catalog and not from
+  the descriptors in the run's data (the blob must be a committed output of a step of this run, not of a child run, and its size, digest and media type must be the catalog's), and the lease
+  **pins** them to the attempt and the generation it grants. A lake attempt reads a blob only when the pin of exactly its fence names it, while its run is live (not
+  cancelled, stopped or finished; checked when a read starts, so a download in flight is not cut, G035-081), and every other managed step reads none. A blob the pin does not name is `NOT_FOUND`, the answer for a blob that does not exist; the
+  refusal is audited once for the run (`database.denied`, no blob named) and a read is audited (`blob.read`) before its first byte. A lease whose blobs the catalog does not
+  vouch for is not granted: the step fails for good with `DATABASE_RESULT_UNAVAILABLE` (a blob that is not this run's or whose descriptor differs from the catalog's),
+  `DATABASE_CONFIGURATION_INVALID` (not one to 32 distinct descriptors, or a media type that is not `application/x-ndjson` or `application/vnd.apache.parquet`) or
+  `ICEBERG_LIMIT_EXCEEDED` (more than 2 GiB together).
+- **Failures**: `FailStep` carries the codes of [errors.md](errors.md), which the server parses with
+  `DatabaseFailure::parse`, as for 017 failures.

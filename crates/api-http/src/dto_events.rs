@@ -474,6 +474,15 @@ pub struct UpdateBrokerSubscriptionBody {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct OutboundRedisSettingsBody {
+    pub server: String,
+    pub stream: String,
+    #[serde(default)]
+    pub database: u8,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct OutboundNatsSettingsBody {
     pub servers: Vec<String>,
     pub subject: String,
@@ -526,6 +535,13 @@ impl From<&SubscriptionRecord> for BrokerSubscriptionBody {
             unreachable!("broker routes return broker subscriptions")
         };
         let value = match settings {
+            BrokerDestination::Redis {
+                server,
+                stream,
+                database,
+            } => serde_json::json!({
+                "server": sagat_domain::outbound::redis_endpoint(server), "stream": stream, "database": database,
+            }),
             BrokerDestination::Nats { servers, subject } => serde_json::json!({
                 "servers": servers.iter().map(sagat_domain::connectors::Server::configured_address).collect::<Vec<_>>(),
                 "subject": subject,

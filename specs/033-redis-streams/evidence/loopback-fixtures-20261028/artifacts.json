@@ -1,0 +1,156 @@
+{
+  "README.md": {
+    "storedSha256": "7f7189b02e42e2fcc9ba0b0b6fa27f85477ba13c2ed9017d5996f40568bd2eff"
+  },
+  "profile-build.json": {
+    "storedSha256": "3e0a5244640844117a59a8697f3428ccaf2d245ba4edacd8f7242a09bb64d6d4"
+  },
+  "profile-current-build.json": {
+    "storedSha256": "463f57445a616762b48f156dddc2c4e376fe3634559f2dec6a084e8ba16cfb7b"
+  },
+  "profile-current-source.json.gz": {
+    "storedSha256": "7287710ae7bc66f7812dedfa89b360a3d12e3eb7cd3c191dd5759cd7da25bc80",
+    "uncompressedSha256": "31b63f828b5e483d43ad346f4b552ad4a27dd7bee3c75fbb3b0465f25f1093d7"
+  },
+  "profile-old-build.json": {
+    "storedSha256": "93f55f14c110c16701fe8955f3b016495ee49e5ba131505f5ef9e1e17387ec86"
+  },
+  "profile-outcome.json": {
+    "storedSha256": "ef9fac3b63df7b9077bfa8d198cfd375b511e8e1c0725ae504dbcdcf95123469"
+  },
+  "profile-result.json": {
+    "storedSha256": "dedbbfa0b22df4233e4ef7a6648f5fdf4879cccf306684166c663632e2eb340a"
+  },
+  "profile-transcript.txt.gz": {
+    "storedSha256": "ac24bbe7a4c0a4887f943680a453d78780443c904986bd69510b6677452a7d77",
+    "uncompressedSha256": "3e4895e49ac8e4eac0ca33f168dc12ae5bedac50732225b5b2df236231b22f20"
+  },
+  "redis-loopback-ci-red.json": {
+    "storedSha256": "7164bc7440d0171be52279fd2b015de510fa751a543a4dca78a12fbfa8e59d4e"
+  },
+  "redis-loopback-ci-red.txt.gz": {
+    "storedSha256": "e16f5c1328373cd61e16f5977eb363b262c71b8d843f2d6e0f0dd4c3eb329a53",
+    "uncompressedSha256": "964b2de470f8dc6be4de1a85e4eb8993edf5f2c1e74d9576c8336d3726c22731"
+  },
+  "redis-loopback-final-agent-config.json": {
+    "storedSha256": "d866d2f5804f1dba59d8dd0562cee52cc0ac7cf444cc8757af10379e60d08fb5"
+  },
+  "redis-loopback-final-agent-config.txt.gz": {
+    "storedSha256": "4afc22bc35d9db338614486fff7085aea9681855029ff132e32bacde06e68647",
+    "uncompressedSha256": "1a088c3cb7e17b260bc2c460b2bd5cd1c863eecb32cc03ae08515421281ee52f"
+  },
+  "redis-loopback-final-architecture.json": {
+    "storedSha256": "10a0d0dd50a265a9fa119f8c562288657b9559ee8c6fb39ab80cf8f2b71687a2"
+  },
+  "redis-loopback-final-architecture.txt.gz": {
+    "storedSha256": "79595359b35f0078899ed69914907956d2a5a0f63ec929ad70bdbaa5b1c213ed",
+    "uncompressedSha256": "25234bc56e0de4c2e946e34101c2563b54eb1110f138212dfe56c89c5fe54db7"
+  },
+  "redis-loopback-final-format.json": {
+    "storedSha256": "b23fa74e176f7646915f6e8e379c04fecfc58e9c43ed7a5111aad53f983ef5ed"
+  },
+  "redis-loopback-final-format.txt.gz": {
+    "storedSha256": "ac73670af3abed54ac6fb4695131f4099be9fbe39d6076c5d0264a6bbdae9d83",
+    "uncompressedSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "redis-loopback-final-native.json": {
+    "storedSha256": "151e8e16c7be5d29f5e29673c50549a3ce109f05c748261ade5d21a5b46c4ee8"
+  },
+  "redis-loopback-final-native.txt.gz": {
+    "storedSha256": "b4316d0873624ee30bcced4fbfddc46c99763baca0d7f36644d05579d33f406e",
+    "uncompressedSha256": "6626ebae5dd68f9821d87b1b90bc4a35fd3041e5bbd63a19772f6c3d482c1bbd"
+  },
+  "redis-loopback-native-green-v2.json": {
+    "storedSha256": "d07184ba057c51b57db153033aed880212209601e901e8fc85458113ddf7594d"
+  },
+  "redis-loopback-native-green-v2.txt.gz": {
+    "storedSha256": "71e6d6ab5055ce8429a2d71ff300529b74d1823ca556cd24d2eb3837f97957b4",
+    "uncompressedSha256": "42743f3975908d4ff8fc03d56edeba500eff68354be3427a4012660006f623e0"
+  },
+  "redis-loopback-native-green.json": {
+    "storedSha256": "5b9f0d45a945fb0b466e34e8964d7e3528dbf0a8ec9611589e1dac9725ec99d0"
+  },
+  "redis-loopback-native-green.txt.gz": {
+    "storedSha256": "34649676a67826122855a9f05b0c588f4ce11de895cb69e0e340e5548d04083c",
+    "uncompressedSha256": "1ca92572c63015a5da1ce9421d8c2b73f02021151b9a94ec0cd0be4bfb612add"
+  },
+  "redis-loopback-released-callback.json": {
+    "storedSha256": "b78f5ca5a7c9c912d342bb1cdbd51f41fc79fc20d6f412d0ff3862ab16c74610"
+  },
+  "redis-loopback-released-callback.txt.gz": {
+    "storedSha256": "0069de36498776741f2355861148ece491862e0a2b6a386156aaf488b428fa0d",
+    "uncompressedSha256": "0564826282c9b1cc85732c5a10cd624f5243d7cb7d46f3b5ca164efb6d79c2e1"
+  },
+  "redis-loopback-reviewed-agent-config.json": {
+    "storedSha256": "5f5e55d9fde63e63b2bdddd300f188edc972a2627df296a5b6192d1363faca1c"
+  },
+  "redis-loopback-reviewed-agent-config.txt.gz": {
+    "storedSha256": "4afc22bc35d9db338614486fff7085aea9681855029ff132e32bacde06e68647",
+    "uncompressedSha256": "1a088c3cb7e17b260bc2c460b2bd5cd1c863eecb32cc03ae08515421281ee52f"
+  },
+  "redis-loopback-reviewed-architecture.json": {
+    "storedSha256": "737105d0d9ed4515652fff058de150332b632c9c38f7b2e7d058cf3aa0a90e7c"
+  },
+  "redis-loopback-reviewed-architecture.txt.gz": {
+    "storedSha256": "79595359b35f0078899ed69914907956d2a5a0f63ec929ad70bdbaa5b1c213ed",
+    "uncompressedSha256": "25234bc56e0de4c2e946e34101c2563b54eb1110f138212dfe56c89c5fe54db7"
+  },
+  "redis-loopback-reviewed-clippy.json": {
+    "storedSha256": "e70ab978a94ab9dd75a2fbeaed0068225279015a83d85f30fc8ff4fbcfc2e673"
+  },
+  "redis-loopback-reviewed-clippy.txt.gz": {
+    "storedSha256": "f4c461badc56f5bcfac6a92922c93b3c72c7fc1194bdbac3744ec2f137ca4ad0",
+    "uncompressedSha256": "a47e2efe4bf1ca5693af633b116001950163824e5e8580499768c030796d9a9c"
+  },
+  "redis-loopback-reviewed-format.json": {
+    "storedSha256": "6925f21428670a76783dd82cbcb007856254535b33081fdcc03917797a0c7912"
+  },
+  "redis-loopback-reviewed-format.txt.gz": {
+    "storedSha256": "ac73670af3abed54ac6fb4695131f4099be9fbe39d6076c5d0264a6bbdae9d83",
+    "uncompressedSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "redis-loopback-reviewed-native.json": {
+    "storedSha256": "b3424e68782841988e1a7149e40fcbda3aac9f4d332bd24f1f804120a8000a48"
+  },
+  "redis-loopback-reviewed-native.txt.gz": {
+    "storedSha256": "acec717b124ee5173215e70849c3e2991fbd828e9bbe014a7c532bb05b42def5",
+    "uncompressedSha256": "57107d54408276fe39a34f9417995dfa5bd63ef0b15a89b7d94de5e227f59d11"
+  },
+  "redis-loopback-reviewed-released-callback.json": {
+    "storedSha256": "a2f8a4e65ec1bb2993b8f78c811897c397961caa6e2bd2df011b478d36aa96c3"
+  },
+  "redis-loopback-reviewed-released-callback.txt.gz": {
+    "storedSha256": "ef92aa58a2c4e72ec0e7211eb8533d75450ff8a5ba848e0d427bd5e5fb8c9a12",
+    "uncompressedSha256": "d97e11097ebd2aa7d7fd3b6660a69164ff743b38da5faaf685fab8b63d62024e"
+  },
+  "redis-loopback-workspace-clippy.json": {
+    "storedSha256": "a87304874e1f248290b99a04ea653e025154d9e9f602dea6a90ff53bfcc9bcfe"
+  },
+  "redis-loopback-workspace-clippy.txt.gz": {
+    "storedSha256": "65a40c5cddb29e3be580e13aad468c3ae5758577d933e6fb3485b32a64c77bc4",
+    "uncompressedSha256": "7d36840fbe84197efbb0c5a2c98da7569b0e8ba8de85b567501cc5a21a74e20c"
+  },
+  "reviewed-profile/build.json": {
+    "storedSha256": "7231222146d9941408a706c68c637e4647544df84fc888393a661ef53b4e39f4"
+  },
+  "reviewed-profile/current-build.json": {
+    "storedSha256": "eec964525c0e6a6622a061d9d59d77feb0db0567acc36bafa834eac4a0dd9983"
+  },
+  "reviewed-profile/current-source.json.gz": {
+    "storedSha256": "43845e38b0eb0741fcf0bad00038f02b7a1feed9dc84037faca483ca756f482a",
+    "uncompressedSha256": "46a9add25e42a5c41178130825ad83314ed2c90d72384646addde33781614edc"
+  },
+  "reviewed-profile/old-build.json": {
+    "storedSha256": "84f2113a73dc5145966b20631c415f9cda39497e38825f01ff1bfd7065b33d29"
+  },
+  "reviewed-profile/outcome.json": {
+    "storedSha256": "fe805ceb7b84052ab8737b2a6c8b68887bc5744c7c548c796190c157dc1d4ebf"
+  },
+  "reviewed-profile/result.json": {
+    "storedSha256": "dedbbfa0b22df4233e4ef7a6648f5fdf4879cccf306684166c663632e2eb340a"
+  },
+  "reviewed-profile/transcript.txt.gz": {
+    "storedSha256": "cf784f73dc4279087c84cb2bd103f097ea7414865fe3038b1159c44edd52580e",
+    "uncompressedSha256": "00b512ae54ffc0fc5cb2e1eac443217782de155523c80b489137b9750abec11a"
+  }
+}

@@ -1,0 +1,423 @@
+   Compiling syn v3.0.6
+   Compiling synstructure v0.14.0
+   Compiling syn v2.0.119
+   Compiling zerofrom-derive v0.1.8
+   Compiling zerofrom v0.1.8
+   Compiling yoke-derive v0.8.4
+   Compiling smallvec v1.16.2
+   Compiling yoke v0.8.3
+   Compiling num-traits v0.2.19
+   Compiling zerovec-derive v0.11.6
+   Compiling serde_core v1.0.229
+   Compiling zerovec v0.11.8
+   Compiling getrandom v0.3.4
+   Compiling displaydoc v0.2.7
+   Compiling memchr v2.8.3
+   Compiling cc v1.6.0
+   Compiling serde v1.0.229
+   Compiling ring v0.17.14
+   Compiling tinystr v0.8.4
+   Compiling serde_derive v1.0.229
+   Compiling icu_locale_core v2.3.0
+   Compiling zerotrie v0.2.5
+   Compiling potential_utf v0.1.6
+   Compiling tokio-macros v2.7.2
+   Compiling icu_collections v2.3.0
+   Compiling tokio v1.53.2
+   Compiling icu_provider v2.3.1
+   Compiling http v1.5.0
+   Compiling rand_core v0.9.5
+   Compiling serde_json v1.0.151
+   Compiling http-body v1.1.0
+   Compiling aho-corasick v1.1.5
+   Compiling futures-task v0.3.34
+   Compiling futures-util v0.3.34
+   Compiling rustls v0.23.46
+   Compiling regex-automata v0.4.18
+   Compiling rustls-webpki v0.103.15
+   Compiling icu_properties v2.3.0
+   Compiling icu_normalizer v2.3.0
+   Compiling num-integer v0.1.47
+   Compiling tracing-attributes v0.1.31
+   Compiling bitflags v2.13.2
+   Compiling tracing v0.1.44
+   Compiling rand_chacha v0.9.0
+   Compiling idna_adapter v1.2.2
+   Compiling thiserror-impl v2.0.21
+   Compiling getrandom v0.4.3
+   Compiling darling_core v0.20.11
+   Compiling hyper v1.12.0
+   Compiling thiserror v2.0.21
+   Compiling idna v1.1.0
+   Compiling rand v0.9.5
+   Compiling core-foundation v0.10.1
+   Compiling security-framework-sys v2.17.0
+   Compiling num-bigint v0.4.8
+   Compiling futures-channel v0.3.34
+   Compiling time-macros v0.2.32
+   Compiling hyper-util v0.1.21
+   Compiling tower v0.5.3
+   Compiling url v2.5.8
+   Compiling num-rational v0.4.2
+   Compiling security-framework v3.7.0
+   Compiling darling_macro v0.20.11
+   Compiling tokio-rustls v0.26.6
+   Compiling num-iter v0.1.46
+   Compiling quanta v0.12.6
+   Compiling hashbrown v0.16.1
+   Compiling rand_xoshiro v0.7.0
+   Compiling num-complex v0.4.6
+   Compiling ref-cast-impl v1.0.27
+   Compiling lazy_static v1.5.1
+   Compiling time v0.3.55
+   Compiling evmap v11.0.0
+   Compiling sharded-slab v0.1.7
+   Compiling metrics-util v0.20.4
+   Compiling ref-cast v1.0.27
+   Compiling num v0.4.3
+   Compiling hyper-rustls v0.27.10
+   Compiling ahash v0.8.12
+   Compiling darling v0.20.11
+   Compiling uuid v1.27.0
+   Compiling rustls-platform-verifier v0.7.1
+   Compiling tower-http v0.6.11
+   Compiling parking_lot_core v0.9.12
+   Compiling indexmap v2.14.2
+   Compiling matchers v0.2.0
+   Compiling http-body-util v0.1.5
+   Compiling tracing-serde v0.2.0
+   Compiling base64 v0.22.1
+   Compiling tracing-subscriber v0.3.23
+   Compiling metrics-exporter-prometheus v0.18.3
+   Compiling fluent-uri v0.4.1
+   Compiling reqwest v0.13.5
+   Compiling parking_lot v0.12.5
+   Compiling derive_builder_core v0.20.2
+   Compiling fraction v0.17.0
+   Compiling strum_macros v0.28.0
+   Compiling jsonschema-value v0.58.6
+   Compiling referencing v0.58.6
+   Compiling sha2 v0.11.0
+   Compiling strum v0.28.0
+   Compiling sagat-telemetry v0.2.0 (/Users/marcelo/Documents/Projects/sagat-octopus-v0.3-completion/crates/telemetry)
+   Compiling derive_builder_macro v0.20.2
+   Compiling fancy-regex v0.19.2
+   Compiling sagat-domain v0.2.0 (/Users/marcelo/Documents/Projects/sagat-octopus-v0.3-completion/crates/domain)
+   Compiling strum_macros v0.27.2
+   Compiling regex v1.13.1
+   Compiling email_address v0.2.9
+   Compiling chrono v0.4.45
+   Compiling jsonschema v0.58.6
+   Compiling strum v0.27.2
+   Compiling sagat-application v0.2.0 (/Users/marcelo/Documents/Projects/sagat-octopus-v0.3-completion/crates/application)
+   Compiling derive_builder v0.20.2
+   Compiling chrono-tz v0.10.4
+   Compiling croner v4.0.1
+   Compiling sagat-infra-schema v0.2.0 (/Users/marcelo/Documents/Projects/sagat-octopus-v0.3-completion/crates/infra-schema)
+   Compiling sagat-infra-expr v0.2.0 (/Users/marcelo/Documents/Projects/sagat-octopus-v0.3-completion/crates/infra-expr)
+   Compiling rand_xorshift v0.4.0
+   Compiling unarray v0.1.4
+   Compiling proptest v1.11.0
+   Compiling sagat-infra-ir v0.2.0 (/Users/marcelo/Documents/Projects/sagat-octopus-v0.3-completion/crates/infra-ir)
+    Finished `test` profile [unoptimized] target(s) in 1m 11s
+     Running unittests src/lib.rs (/Users/marcelo/.cache/sagat-v03-nodebug-5xlu3ufs/debug/deps/sagat_infra_ir-b5b2a7a8e10b9e7f)
+
+running 7 tests
+test canonical::tests::keys_are_sorted_even_when_the_entries_arrive_in_another_order ... ok
+test canonical::tests::sorting_is_by_bytes_not_by_locale ... ok
+test schema::embedded_contract_tests::embedded_workflow_schema_matches_the_canonical_contract_bytes ... ok
+test cron::tests::the_next_time_is_the_first_strictly_after ... ok
+test cron::tests::the_time_zone_decides_what_nine_in_the_morning_is ... ok
+test cron::tests::a_schedule_that_means_nothing_is_refused ... ok
+test diff::tests::comparing_a_two_thousand_property_carrier_costs_a_fixed_number_of_passes ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
+
+     Running tests/cache.rs (/Users/marcelo/.cache/sagat-v03-nodebug-5xlu3ufs/debug/deps/cache-abd46e75032cf532)
+
+running 4 tests
+test stored_legacy_schema_extensions_do_not_change_execution_restore ... ok
+test stored_parsing_keeps_structural_validation_and_current_canonical_bytes ... ok
+test a_definition_heavier_than_the_whole_budget_still_works_and_is_the_only_one_kept ... ok
+test old_entries_are_evicted_by_weight_not_only_by_count ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s
+
+     Running tests/classification.rs (/Users/marcelo/.cache/sagat-v03-nodebug-5xlu3ufs/debug/deps/classification-a940bf494214dec3)
+
+running 18 tests
+test failed_carrier_emits_no_partial_locations_and_returns_a_safe_status ... ok
+test an_unwalked_key_inside_a_ref_target_is_still_refused ... ok
+test an_unannotated_document_reports_pii_roots_without_publication_errors ... ok
+test items_and_additional_properties_participate_in_monotonic_publication_walks ... ok
+test report_lists_effective_declared_paths_and_open_inheritance_warning ... ok
+test supported_all_of_refs_remain_valid_controls ... ok
+test all_of_fallbacks_govern_properties_and_prefix_items_from_other_branches ... ok
+test unsupported_applicator_annotation_reachability_follows_two_local_refs ... ok
+test annotations_reached_by_refs_under_unsupported_applicators_are_refused ... ok
+test publication_findings_are_closed_bounded_and_point_to_the_defect ... ok
+test walked_places_stay_accepted_whatever_their_names ... ok
+test named_body_output_schemas_are_carriers_only_on_output_producers ... ok
+test an_annotation_under_any_unwalked_key_is_refused ... ok
+test inherited_open_is_raised_for_items_and_additional_properties_children ... ok
+test warning_caps_and_unrepresentable_paths_cannot_hide_publication_errors ... ok
+test defect_corpus_covers_every_closed_publication_code ... ok
+test named_body_carriers_use_the_same_size_depth_and_reference_bounds ... ok
+test location_visitor_is_not_limited_by_the_human_report_cap ... ok
+
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/classification_diff.rs (/Users/marcelo/.cache/sagat-v03-nodebug-5xlu3ufs/debug/deps/classification_diff-00e568caecb10069)
+
+running 16 tests
+test the_first_draft_of_a_workflow_is_not_compared_level_by_level ... ok
+test incomplete_carrier_is_reported_once_and_its_prefix_is_not_compared ... ok
+test missing_location_floor_keeps_a_secret_ancestor ... ok
+test exact_json_pointer_source_paths_escape_slashes_and_tildes ... ok
+test removed_locations_use_object_and_array_fallbacks ... ok
+test array_fallback_does_not_jump_past_an_explicit_ancestor ... ok
+test object_fallback_does_not_jump_past_an_explicit_ancestor ... ok
+test node_and_combiner_reordering_do_not_create_classification_findings ... ok
+test a_shared_reference_is_resolved_in_each_inherited_context ... ok
+test named_body_carriers_with_the_same_node_id_remain_independent ... ok
+test effective_levels_are_compared_per_path_with_inherited_children ... ok
+test wildcard_and_numeric_property_names_do_not_collide_with_applicators ... ok
+test moving_from_rules_zero_to_the_current_rules_relaxes_the_readable_locations ... ok
+test adding_or_dropping_a_carrier_relaxes_or_tightens_what_it_governs ... ok
+test classification_findings_are_bounded_and_the_more_count_is_exact ... ok
+test classification_after_the_human_report_cap_is_still_compared ... ok
+
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running tests/classification_publication.rs (/Users/marcelo/.cache/sagat-v03-nodebug-5xlu3ufs/debug/deps/classification_publication-a8ed4f0a0a16e2b7)
+
+running 3 tests
+test production_codec_refuses_unsupported_annotations_with_closed_classification_problems ... ok
+test production_compiles_annotated_root_schemas_but_preserves_unannotated_legacy_roots ... ok
+test production_codec_refuses_lowered_levels_and_keeps_sound_digests_stable ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/classification_schema_compile.rs (/Users/marcelo/.cache/sagat-v03-nodebug-5xlu3ufs/debug/deps/classification_schema_compile-f45bef38d321bf7b)
+
+running 2 tests
+test annotated_root_refs_are_compiled_without_network_access_or_value_diagnostics ... ok
+test annotated_root_and_every_supported_node_output_schema_are_compiled ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/codec.rs (/Users/marcelo/.cache/sagat-v03-nodebug-5xlu3ufs/debug/deps/codec-3466a0d7404be3f7)
+
+running 50 tests
+test a_timer_beyond_a_year_is_rejected ... ok
+test a_saga_node_defaults_to_waiting_for_an_operator_and_compensating_on_cancel ... ok
+test a_node_with_an_unknown_or_missing_type_says_so_and_lists_the_types ... ok
+test a_compensation_outside_a_saga_is_a_warning ... ok
+test a_hostile_expression_is_refused_not_evaluated ... ok
+test a_script_node_runs_as_the_activity_named_after_its_digest ... ok
+test a_child_node_defaults_to_the_active_version_the_parents_input_and_propagation ... ok
+test a_child_node_carries_its_workflow_version_input_and_cancel_policy ... ok
+test an_inconsistent_retry_policy_is_rejected_by_the_domain ... ok
+test an_activity_declares_secrets_by_name_and_the_definition_lists_them ... ok
+test a_hostile_node_cannot_make_the_message_long ... ok
+test an_approval_in_a_collection_or_loop_body_waits_for_scoped_compensation ... ok
+test node_kinds_without_an_engine_are_refused_with_the_reason ... ok
+test graph_violations_are_reported_by_the_domain ... ok
+test correlation_end_output_and_idempotency_templates_are_checked_too ... ok
+test expressions_must_compile_in_the_bounded_subset ... ok
+test only_an_activity_can_declare_secrets ... ok
+test native_approval_is_publishable_beside_declared_state_and_apart_from_parallel ... ok
+test omitted_retry_fields_take_the_documented_defaults ... ok
+test oversized_malformed_and_deeply_nested_documents_are_refused_safely ... ok
+test strings_with_unusual_characters_survive_canonicalisation ... ok
+test structured_collection_can_be_validated_canonicalized_and_published ... ok
+test structured_loops_compile_all_expressions_and_validate_their_body ... ok
+test any_change_of_meaning_changes_the_digest ... ok
+test structured_validation_compiles_collection_and_body_expressions ... ok
+test structured_loops_match_the_reviewed_sdk_golden_and_publish ... ok
+test structured_validation_enforces_closed_bodies_and_capability_boundaries ... ok
+test the_effect_of_an_activity_is_read_with_its_defaults ... ok
+test switch_cases_keep_declaration_order_and_reject_an_undefined_target ... ok
+test the_example_digest_is_pinned ... ok
+test the_canonical_form_is_compact_sorted_and_stable_under_reparsing ... ok
+test the_example_saga_compensates_its_steps_and_has_nothing_to_warn_about ... ok
+test the_idempotency_templates_of_the_example_compile ... ok
+test the_repository_example_is_a_valid_definition ... ok
+test unsupported_additive_declarations_remain_unpublishable ... ok
+test whitespace_and_key_order_do_not_change_the_digest ... ok
+test arbitrary_bytes_never_panic ... ok
+test a_wide_but_valid_document_is_accepted ... ok
+test the_number_and_size_of_reported_issues_is_bounded ... ok
+test schema_problems_are_reported_with_json_pointers ... ok
+test structured_schema_errors_identify_the_offending_fields ... ok
+test nonsense_in_a_saga_definition_is_refused_where_it_is ... ok
+test a_node_that_fits_no_type_is_reported_against_the_type_it_says_it_is ... ok
+test a_saga_node_reads_its_policies ... ok
+test a_malformed_child_node_is_reported_at_the_offending_field ... ok
+test structural_schema_violations_are_rejected ... ok
+test a_script_node_pins_a_digest_and_nothing_else ... ok
+test structured_loop_limits_and_body_boundaries_fail_before_runtime ... ok
+test a_secret_declaration_that_is_not_a_list_of_names_is_refused_with_its_path ... ok
+test a_corrupted_example_never_panics_and_never_yields_a_different_valid_digest_silently ... ok
+
+test result: ok. 50 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.17s
+
+     Running tests/collection_sources.rs (/Users/marcelo/.cache/sagat-v03-nodebug-5xlu3ufs/debug/deps/collection_sources-c981b024aca1f067)
+
+running 2 tests
+test accepting_a_source_prefix_does_not_enable_activity_successors_of_collections ... ok
+test source_activity_effect_and_error_combinations_remain_explicitly_unsupported ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/continuation.rs (/Users/marcelo/.cache/sagat-v03-nodebug-5xlu3ufs/debug/deps/continuation-3fff7326fbfc63ee)
+
+running 15 tests
+test publication_keeps_other_approval_continuation_shapes_closed ... ok
+test publication_keeps_other_waiting_continuation_shapes_closed ... ok
+test publication_keeps_every_other_wait_entrypoint_shape_closed_with_a_typed_refusal ... ok
+test publication_rejects_unproven_continuation_combinations ... ok
+test rejects_unavailable_transfer_variables_and_invalid_graphs ... ok
+test input_only_sdk_golden_reparses_to_the_reviewed_canonical_v1_bytes ... ok
+test publishes_only_the_proven_activity_to_continuation_shape ... ok
+test publishes_an_event_wait_after_an_activity_followed_by_continuation ... ok
+test publishes_a_single_condition_between_continuation_and_successful_end ... ok
+test stateful_sdk_golden_reparses_to_the_reviewed_canonical_v1_bytes ... ok
+test publishes_an_event_wait_entrypoint_followed_by_a_continuation_or_one_condition ... ok
+test publishes_direct_continuation_with_exact_declared_state_transfer ... ok
+test validates_and_preserves_policy_transfer_and_graph ... ok
+test publishes_conditional_continuation_with_exact_declared_state_transfer ... ok
+test publishes_an_approval_that_rolls_the_chain_over_and_ends_it_on_rejection_or_expiry ... ok
+
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+     Running tests/database.rs (/Users/marcelo/.cache/sagat-v03-nodebug-5xlu3ufs/debug/deps/database-62f862311d1d8022)
+
+running 9 tests
+test expression_parameters_preserve_precision_and_never_report_sensitive_input ... ok
+test canonical_database_node_is_supported ... ok
+test ordinary_activities_cannot_forge_managed_database_names ... ok
+test a_database_node_beside_only_root_nodes_is_still_published ... ok
+test shared_lossless_value_fixture_and_write_policy ... ok
+test a_database_node_is_root_only_and_never_beside_scopes_or_continuations ... ok
+test database_schema_errors_do_not_echo_sql_or_parameters ... ok
+test database_writes_cannot_override_retry_or_effect_safety ... ok
+test typed_parameters_and_utf8_byte_ceilings_fail_closed ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s
+
+     Running tests/database_result.rs (/Users/marcelo/.cache/sagat-v03-nodebug-5xlu3ufs/debug/deps/database_result-94f97453f424ddd7)
+
+running 2 tests
+test retained_database_result_has_one_bounded_closed_lossless_shape ... ok
+test published_result_schema_agrees_with_the_retained_result_contract ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/declared_state.rs (/Users/marcelo/.cache/sagat-v03-nodebug-5xlu3ufs/debug/deps/declared_state-aa0a68a8576482e1)
+
+running 5 tests
+test stored_state_operations_ignore_new_classification_metadata_but_keep_business_checks ... ok
+test publication_rejects_unreleased_capabilities_combined_with_declared_state ... ok
+test preserves_typed_state_and_operation_metadata_for_publication ... ok
+test compiles_expressions_in_their_exact_data_environments ... ok
+test rejects_uncompiled_oversized_deep_referenced_or_incoherent_schemas ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/diff.rs (/Users/marcelo/.cache/sagat-v03-nodebug-5xlu3ufs/debug/deps/diff-df6c4c75509cdd3a)
+
+running 18 tests
+test a_side_that_is_not_a_json_object_or_is_too_large_cannot_be_compared ... ok
+test edges_are_read_from_every_field_that_points_at_another_node ... ok
+test a_workflow_with_no_version_compares_an_empty_document_with_its_draft ... ok
+test the_same_document_twice_is_identical_whatever_the_order_of_its_keys ... ok
+test nodes_added_removed_and_changed_are_listed_with_the_fields_that_differ ... ok
+test a_draft_that_does_not_validate_can_still_be_compared ... ok
+test findings_never_repeat_a_value_of_the_document_only_names_and_paths ... ok
+test the_input_contract_breaks_when_a_property_goes_changes_type_or_becomes_required ... ok
+test what_is_outside_the_nodes_is_listed_by_path ... ok
+test an_awaited_event_type_that_disappears_breaks_its_emitters ... ok
+test a_required_input_added_to_a_workflow_that_took_anything_breaks_its_callers ... ok
+test the_output_contract_breaks_when_a_property_goes_or_changes_type ... ok
+test what_somebody_must_prepare_is_flagged_but_does_not_break_the_contract ... ok
+test removing_or_changing_a_trigger_breaks_the_contract_adding_one_does_not ... ok
+test a_draft_full_of_triggers_is_compared_in_the_time_it_takes_to_read_it ... ok
+test comparing_a_document_with_itself_is_identical_and_the_other_way_round_swaps_added_and_removed ... ok
+test an_answer_about_tens_of_thousands_of_differences_is_bounded_and_says_how_many_it_left_out ... ok
+test thousands_of_differences_deep_in_a_nested_document_cost_what_reading_it_costs_and_the_answer_stays_small ... ok
+
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.20s
+
+     Running tests/evaluator.rs (/Users/marcelo/.cache/sagat-v03-nodebug-5xlu3ufs/debug/deps/evaluator-60ceb8dbde19dad6)
+
+running 19 tests
+test loop_checkpoint_fails_without_the_exact_iteration_context ... ok
+test loop_correlation_uses_its_own_iteration_and_carry_without_collection_fallback ... ok
+test continuation_value_uses_the_locked_run_snapshot ... ok
+test loop_instance_receives_its_iteration_and_carry ... ok
+test root_task_context_remains_byte_identical_when_scoped_outputs_exist ... ok
+test collection_expressions_keep_item_order_and_exact_scope ... ok
+test collection_instances_receive_only_their_item_and_local_outputs ... ok
+test root_condition_evaluation_keeps_its_context_and_non_boolean_failure ... ok
+test scoped_conditions_read_only_their_exact_iteration_and_local_outputs ... ok
+test root_correlation_instance_keeps_all_legacy_scalar_and_failure_semantics ... ok
+test correlation_compatibility::prior_adapter_default_delegates_root_and_refuses_otherwise_valid_scoped_calls ... ok
+test loop_decisions_bind_the_condition_to_the_new_carry ... ok
+test scoped_correlation_errors_do_not_echo_dynamic_lookup_values ... ok
+test scoped_correlation_evaluates_requested_run_fields_lazily_without_claiming_admission ... ok
+test scoped_correlation_never_falls_back_to_another_paths_item_or_output ... ok
+test scoped_materialization_fails_closed_without_an_admission_input ... ok
+test scoped_idempotency_uses_the_exact_iteration_context ... ok
+test scoped_correlation_reads_its_own_item_index_and_local_outputs ... ok
+test scoped_correlation_keeps_root_scalar_bounds_and_redacts_invalid_payload_values ... ok
+
+test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/event_documents.rs (/Users/marcelo/.cache/sagat-v03-nodebug-5xlu3ufs/debug/deps/event_documents-50a117908acb56f3)
+
+running 1 test
+test released_event_document_encoding_keeps_exact_bytes_and_null_fields ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/limits.rs (/Users/marcelo/.cache/sagat-v03-nodebug-5xlu3ufs/debug/deps/limits-aab3b5952154ad13)
+
+running 6 tests
+test a_lowered_limit_is_published_with_the_definition ... ok
+test the_other_declarations_stay_closed_when_limits_are_present ... ok
+test a_document_without_limits_is_unchanged ... ok
+test a_limit_can_never_be_raised_above_the_platform_ceiling ... ok
+test an_omitted_field_keeps_its_platform_ceiling ... ok
+test every_publishable_shape_accepts_and_carries_the_block ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running tests/operation_evaluator.rs (/Users/marcelo/.cache/sagat-v03-nodebug-5xlu3ufs/debug/deps/operation_evaluator-d9d5203d0fb0219e)
+
+running 7 tests
+test initial_state_rejects_a_value_that_does_not_match_the_published_schema ... ok
+test initial_state_is_schema_checked_canonical_and_ready_for_transactional_retention ... ok
+test query_validates_inputs_and_result_then_binds_it_to_the_observed_snapshot ... ok
+test validator_rejection_does_not_evaluate_the_state_or_result_expressions ... ok
+test update_uses_one_pre_state_and_validates_new_state_before_its_result ... ok
+test malformed_oversized_or_mismatched_contexts_fail_without_disclosing_values ... ok
+test schema_failures_are_typed_and_never_return_unchecked_values ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+     Running tests/payload_projection.rs (/Users/marcelo/.cache/sagat-v03-nodebug-5xlu3ufs/debug/deps/payload_projection-84e98916f4bb039c)
+
+running 4 tests
+test the_global_node_cap_is_applied_before_a_projection_can_grow ... ok
+test every_key_and_scalar_is_absent_while_shape_and_counts_remain ... ok
+test wide_and_deep_documents_are_truncated_during_traversal ... ok
+test malformed_or_overly_nested_json_is_an_opaque_unsupported_format ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests sagat_infra_ir
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s

@@ -1,0 +1,536 @@
+--- a/tests/contract/sdk-conformance/expected/lease-lost.json
++++ b/tests/contract/sdk-conformance/expected/lease-lost.json
+@@ -52,9 +52,89 @@
+       }
+     },
+     {
+-      "id": "retry",
+-      "ok": true,
+-      "op": "control"
++      "id": "review-ready",
++      "ok": true,
++      "op": "awaitJournal"
++    },
++    {
++      "id": "review-state",
++      "ok": true,
++      "op": "get",
++      "result": {
++        "correlationId": null,
++        "createdAt": "<time>",
++        "deadline": null,
++        "depth": 0,
++        "finishedAt": null,
++        "parent": null,
++        "paused": false,
++        "runId": "<uuid:1>",
++        "startedBy": "alice",
++        "status": "MANUAL_REVIEW",
++        "traceId": "<trace:1>",
++        "updatedAt": "<time>",
++        "version": "<n>",
++        "versionId": "<uuid:2>",
++        "workflowId": "<uuid:3>"
++      }
++    },
++    {
++      "error": {
++        "code": "CONFLICT",
++        "message": "<text>",
++        "reason": "STATE_CONFLICT",
++        "remediation": "The request conflicts with the current state: read the resource again and decide; do not repeat it unchanged.",
++        "retryAfterMs": null,
++        "retryable": false,
++        "status": 409,
++        "traceId": "<trace:2>"
++      },
++      "id": "retry-refused",
++      "ok": false,
++      "op": "operate"
++    },
++    {
++      "id": "review-journal",
++      "ok": true,
++      "op": "events",
++      "result": {
++        "events": [
++          {
++            "attempt": null,
++            "stepId": null,
++            "type": "run.started"
++          },
++          {
++            "attempt": null,
++            "stepId": "work",
++            "type": "step.released"
++          },
++          {
++            "attempt": 1,
++            "stepId": "work",
++            "type": "step.leased"
++          },
++          {
++            "attempt": 1,
++            "stepId": "work",
++            "type": "step.started"
++          },
++          {
++            "attempt": 1,
++            "stepId": "work",
++            "type": "step.needs_review"
++          }
++        ]
++      }
++    },
++    {
++      "id": "human-resolution",
++      "ok": true,
++      "op": "operate",
++      "result": {
++        "accepted": true,
++        "runStatus": "RUNNING"
++      }
+     },
+     {
+       "id": "done",
+@@ -107,26 +187,36 @@
+           {
+             "attempt": 1,
+             "stepId": "work",
+-            "type": "step.retry_scheduled"
+-          },
+-          {
+-            "attempt": null,
+-            "stepId": "work",
+-            "type": "step.retry_due"
+-          },
+-          {
+-            "attempt": 2,
+-            "stepId": "work",
++            "type": "step.needs_review"
++          },
++          {
++            "attempt": null,
++            "stepId": "work",
++            "type": "step.resolved"
++          },
++          {
++            "attempt": null,
++            "stepId": "work",
++            "type": "step.routed"
++          },
++          {
++            "attempt": null,
++            "stepId": "after",
++            "type": "step.released"
++          },
++          {
++            "attempt": 1,
++            "stepId": "after",
+             "type": "step.leased"
+           },
+           {
+-            "attempt": 2,
+-            "stepId": "work",
++            "attempt": 1,
++            "stepId": "after",
+             "type": "step.completed"
+           },
+           {
+             "attempt": null,
+-            "stepId": "work",
++            "stepId": "after",
+             "type": "step.routed"
+           },
+           {
+@@ -138,13 +228,31 @@
+       }
+     }
+   ],
++  "reviewEvidence": [
++    {
++      "action": "saga.step_resolved",
++      "actor": "alice",
++      "reason": "declared SUCCEEDED: simulated human assertion of final success; no provider verification is claimed"
++    }
++  ],
+   "serverState": [
+     {
+       "nodes": [
+         {
+-          "attempt": 2,
++          "attempt": 1,
+           "cancelRequested": false,
+-          "failureCode": "LEASE_EXPIRED",
++          "failureCode": null,
++          "forward": null,
++          "id": "after",
++          "kind": "FORWARD",
++          "status": "SUCCEEDED",
++          "type": "activity",
++          "waitingOn": null
++        },
++        {
++          "attempt": 1,
++          "cancelRequested": false,
++          "failureCode": null,
+           "forward": null,
+           "id": "work",
+           "kind": "FORWARD",
+@@ -183,15 +291,15 @@
+     "w2": [
+       {
+         "abortedReason": null,
+-        "activity": "lease.work",
+-        "attempt": 2,
++        "activity": "lease.after",
++        "attempt": 1,
+         "deadlineAhead": true,
+-        "idempotencyKey": "<uuid:1>:work",
++        "idempotencyKey": "<uuid:1>:after",
+         "input": {
+           "n": 1
+         },
+         "kind": "activity",
+-        "node": "work",
++        "node": "after",
+         "outcome": "returned",
+         "steps": {},
+         "targetIdempotencyKey": "",
+--- a/tests/contract/sdk-conformance/expected/lease-lost.workflows.json
++++ b/tests/contract/sdk-conformance/expected/lease-lost.workflows.json
+@@ -1,6 +1,6 @@
+ {
+   "canonical": {
+-    "work": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"entrypoint\":\"work\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"lease-flow\"},\"nodes\":[{\"activity\":\"lease.work\",\"id\":\"work\",\"retry\":{\"initialDelayMs\":600000,\"jitter\":false,\"maxAttempts\":3,\"maxDelayMs\":600000,\"strategy\":\"fixed\"},\"type\":\"activity\"}]}"
++    "work": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"entrypoint\":\"work\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"lease-flow\"},\"nodes\":[{\"activity\":\"lease.work\",\"id\":\"work\",\"next\":\"after\",\"retry\":{\"initialDelayMs\":600000,\"jitter\":false,\"maxAttempts\":3,\"maxDelayMs\":600000,\"strategy\":\"fixed\"},\"type\":\"activity\"},{\"activity\":\"lease.after\",\"id\":\"after\",\"type\":\"activity\"}]}"
+   },
+   "workflows": {
+     "work": {
+@@ -14,6 +14,7 @@
+         {
+           "activity": "lease.work",
+           "id": "work",
++          "next": "after",
+           "retry": {
+             "initialDelayMs": 600000,
+             "jitter": false,
+@@ -22,6 +23,11 @@
+             "strategy": "fixed"
+           },
+           "type": "activity"
++        },
++        {
++          "activity": "lease.after",
++          "id": "after",
++          "type": "activity"
+         }
+       ]
+     }
+--- a/tests/contract/sdk-conformance/expected/worker-shutdown.json
++++ b/tests/contract/sdk-conformance/expected/worker-shutdown.json
+@@ -52,6 +52,91 @@
+       }
+     },
+     {
++      "id": "review-ready",
++      "ok": true,
++      "op": "awaitJournal"
++    },
++    {
++      "id": "review-state",
++      "ok": true,
++      "op": "get",
++      "result": {
++        "correlationId": null,
++        "createdAt": "<time>",
++        "deadline": null,
++        "depth": 0,
++        "finishedAt": null,
++        "parent": null,
++        "paused": false,
++        "runId": "<uuid:1>",
++        "startedBy": "alice",
++        "status": "MANUAL_REVIEW",
++        "traceId": "<trace:1>",
++        "updatedAt": "<time>",
++        "version": "<n>",
++        "versionId": "<uuid:2>",
++        "workflowId": "<uuid:3>"
++      }
++    },
++    {
++      "error": {
++        "code": "CONFLICT",
++        "message": "<text>",
++        "reason": "STATE_CONFLICT",
++        "remediation": "The request conflicts with the current state: read the resource again and decide; do not repeat it unchanged.",
++        "retryAfterMs": null,
++        "retryable": false,
++        "status": 409,
++        "traceId": "<trace:2>"
++      },
++      "id": "retry-refused",
++      "ok": false,
++      "op": "operate"
++    },
++    {
++      "id": "review-journal",
++      "ok": true,
++      "op": "events",
++      "result": {
++        "events": [
++          {
++            "attempt": null,
++            "stepId": null,
++            "type": "run.started"
++          },
++          {
++            "attempt": null,
++            "stepId": "work",
++            "type": "step.released"
++          },
++          {
++            "attempt": 1,
++            "stepId": "work",
++            "type": "step.leased"
++          },
++          {
++            "attempt": 1,
++            "stepId": "work",
++            "type": "step.started"
++          },
++          {
++            "attempt": 1,
++            "stepId": "work",
++            "type": "step.needs_review"
++          }
++        ]
++      }
++    },
++    {
++      "id": "human-resolution",
++      "ok": true,
++      "op": "operate",
++      "result": {
++        "accepted": true,
++        "runStatus": "RUNNING"
++      }
++    },
++    {
+       "id": "done",
+       "ok": true,
+       "op": "waitForCompletion",
+@@ -102,26 +187,36 @@
+           {
+             "attempt": 1,
+             "stepId": "work",
+-            "type": "step.retry_scheduled"
+-          },
+-          {
+-            "attempt": null,
+-            "stepId": "work",
+-            "type": "step.retry_due"
+-          },
+-          {
+-            "attempt": 2,
+-            "stepId": "work",
++            "type": "step.needs_review"
++          },
++          {
++            "attempt": null,
++            "stepId": "work",
++            "type": "step.resolved"
++          },
++          {
++            "attempt": null,
++            "stepId": "work",
++            "type": "step.routed"
++          },
++          {
++            "attempt": null,
++            "stepId": "after",
++            "type": "step.released"
++          },
++          {
++            "attempt": 1,
++            "stepId": "after",
+             "type": "step.leased"
+           },
+           {
+-            "attempt": 2,
+-            "stepId": "work",
++            "attempt": 1,
++            "stepId": "after",
+             "type": "step.completed"
+           },
+           {
+             "attempt": null,
+-            "stepId": "work",
++            "stepId": "after",
+             "type": "step.routed"
+           },
+           {
+@@ -133,13 +228,31 @@
+       }
+     }
+   ],
++  "reviewEvidence": [
++    {
++      "action": "saga.step_resolved",
++      "actor": "alice",
++      "reason": "declared SUCCEEDED: simulated human assertion of final success; no provider verification is claimed"
++    }
++  ],
+   "serverState": [
+     {
+       "nodes": [
+         {
+-          "attempt": 2,
++          "attempt": 1,
+           "cancelRequested": false,
+-          "failureCode": "LEASE_EXPIRED",
++          "failureCode": null,
++          "forward": null,
++          "id": "after",
++          "kind": "FORWARD",
++          "status": "SUCCEEDED",
++          "type": "activity",
++          "waitingOn": null
++        },
++        {
++          "attempt": 1,
++          "cancelRequested": false,
++          "failureCode": null,
+           "forward": null,
+           "id": "work",
+           "kind": "FORWARD",
+@@ -178,15 +291,15 @@
+     "w2": [
+       {
+         "abortedReason": null,
+-        "activity": "shutdown.work",
+-        "attempt": 2,
++        "activity": "shutdown.after",
++        "attempt": 1,
+         "deadlineAhead": true,
+-        "idempotencyKey": "<uuid:1>:work",
++        "idempotencyKey": "<uuid:1>:after",
+         "input": {
+           "n": 1
+         },
+         "kind": "activity",
+-        "node": "work",
++        "node": "after",
+         "outcome": "returned",
+         "steps": {},
+         "targetIdempotencyKey": "",
+--- a/tests/contract/sdk-conformance/expected/worker-shutdown.workflows.json
++++ b/tests/contract/sdk-conformance/expected/worker-shutdown.workflows.json
+@@ -1,6 +1,6 @@
+ {
+   "canonical": {
+-    "work": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"entrypoint\":\"work\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"shutdown-flow\"},\"nodes\":[{\"activity\":\"shutdown.work\",\"id\":\"work\",\"retry\":{\"initialDelayMs\":50,\"jitter\":false,\"maxAttempts\":3,\"maxDelayMs\":50,\"strategy\":\"fixed\"},\"type\":\"activity\"}]}"
++    "work": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"entrypoint\":\"work\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"shutdown-flow\"},\"nodes\":[{\"activity\":\"shutdown.work\",\"id\":\"work\",\"next\":\"after\",\"retry\":{\"initialDelayMs\":50,\"jitter\":false,\"maxAttempts\":3,\"maxDelayMs\":50,\"strategy\":\"fixed\"},\"type\":\"activity\"},{\"activity\":\"shutdown.after\",\"id\":\"after\",\"type\":\"activity\"}]}"
+   },
+   "workflows": {
+     "work": {
+@@ -14,6 +14,7 @@
+         {
+           "activity": "shutdown.work",
+           "id": "work",
++          "next": "after",
+           "retry": {
+             "initialDelayMs": 50,
+             "jitter": false,
+@@ -22,6 +23,11 @@
+             "strategy": "fixed"
+           },
+           "type": "activity"
++        },
++        {
++          "activity": "shutdown.after",
++          "id": "after",
++          "type": "activity"
+         }
+       ]
+     }
+--- a/tests/contract/sdk-conformance/expected/failures-and-retries.json
++++ b/tests/contract/sdk-conformance/expected/failures-and-retries.json
+@@ -320,7 +320,7 @@
+     {
+       "id": "unknown-wait",
+       "ok": true,
+-      "op": "sleep"
++      "op": "awaitJournal"
+     },
+     {
+       "id": "unknown-state",
+@@ -331,12 +331,12 @@
+         "createdAt": "<time>",
+         "deadline": null,
+         "depth": 0,
+-        "finishedAt": "<time>",
++        "finishedAt": null,
+         "parent": null,
+         "paused": false,
+         "runId": "<uuid:10>",
+         "startedBy": "alice",
+-        "status": "FAILED",
++        "status": "MANUAL_REVIEW",
+         "traceId": "<trace:4>",
+         "updatedAt": "<time>",
+         "version": "<n>",
+@@ -368,17 +368,7 @@
+           {
+             "attempt": 1,
+             "stepId": "unknown",
+-            "type": "step.failed"
+-          },
+-          {
+-            "attempt": null,
+-            "stepId": null,
+-            "type": "run.stop_requested"
+-          },
+-          {
+-            "attempt": null,
+-            "stepId": null,
+-            "type": "run.finished"
++            "type": "step.needs_review"
+           }
+         ]
+       }
+@@ -394,14 +384,14 @@
+           "forward": null,
+           "id": "unknown",
+           "kind": "FORWARD",
+-          "status": "FAILED",
++          "status": "WAITING",
+           "type": "activity",
+-          "waitingOn": null
++          "waitingOn": "operator"
+         }
+       ],
+       "paused": false,
+       "runId": "<uuid:10>",
+-      "status": "FAILED"
++      "status": "MANUAL_REVIEW"
+     },
+     {
+       "nodes": [
+--- a/tests/contract/sdk-conformance/expected/saga-compensation.json
++++ b/tests/contract/sdk-conformance/expected/saga-compensation.json
+@@ -575,6 +575,13 @@
+       }
+     }
+   ],
++  "reviewEvidence": [
++    {
++      "action": "saga.step_resolved",
++      "actor": "alice",
++      "reason": "declared SUCCEEDED: simulated human assertion of final success; no provider verification is claimed"
++    }
++  ],
+   "serverState": [
+     {
+       "nodes": [

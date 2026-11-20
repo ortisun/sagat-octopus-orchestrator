@@ -1,0 +1,5 @@
+
+> @sagat/studio@0.2.0 check:api
+> node scripts/check-api.mjs
+
+src/api/schema.d.ts matches the OpenAPI contract.

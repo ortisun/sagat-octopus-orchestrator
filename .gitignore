@@ -15,6 +15,10 @@
 # Isolated worktrees created by agents
 /.claude/worktrees/
 
+# Python bytecode (the CI helper scripts and their tests are run with python3)
+__pycache__/
+*.pyc
+
 # SDK build output and toolchain state
 /sdks/*/node_modules/
 /sdks/*/dist/
@@ -25,6 +29,7 @@
 /sdks/dotnet/**/bin/
 /sdks/dotnet/**/obj/
 /sdks/java/**/target/
+/sdks/rust/**/target/
 /sdks/**/.conformance/
 
 # Isolated .NET runner build output
@@ -37,3 +42,6 @@ AGENTS.local.md
 .claude/settings.local.json
 # Private database/OpenBao development fixture
 /.local/
+
+# Local state of a removed tool (kept ignored in checkouts that still have it)
+.specify/

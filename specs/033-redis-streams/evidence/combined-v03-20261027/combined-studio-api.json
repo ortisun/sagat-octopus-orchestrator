@@ -1,0 +1,14 @@
+{
+  "command": [
+    "npm",
+    "run",
+    "check:api"
+  ],
+  "exit_code": 0,
+  "seconds": 1.23,
+  "wall_seconds": 1.23,
+  "wall_minus_monotonic_seconds": -0.0,
+  "started_utc": "2026-10-28T01:03:45.059218+00:00",
+  "finished_utc": "2026-10-28T01:03:46.293999+00:00",
+  "log": "combined-studio-api.txt"
+}

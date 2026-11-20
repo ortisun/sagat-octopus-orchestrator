@@ -5,9 +5,9 @@ use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
 
 use sagat_application::error::AppError;
-use sagat_application::runs::{Lock, RunStore};
+use sagat_application::runs::{Lock, ReviewAction, RunStore};
 use sagat_application::worker::Capabilities;
-use sagat_domain::execution::{RunStatus, StepStatus};
+use sagat_domain::execution::{FailureCode, ReviewOutcome, RunStatus, StepStatus};
 use sagat_domain::quota::QuotaResource;
 use serde_json::json;
 
@@ -450,7 +450,17 @@ async fn a_completion_racing_a_lease_expiry_has_exactly_one_winner() {
             assert_eq!(w.step_status(run, "a").await, Some(StepStatus::Succeeded));
         } else {
             assert_eq!(completion.map(|_| ()), Err(AppError::StaleAttempt));
-            assert_eq!(w.step_status(run, "a").await, Some(StepStatus::RetryWait));
+            assert_eq!(w.step_status(run, "a").await, Some(StepStatus::Waiting));
+            assert_eq!(w.run_status(run).await, RunStatus::ManualReview);
+            assert!(w.poll(&session, 8).await.is_empty(), "no automatic retry");
+            w.review(
+                run,
+                "a",
+                ReviewAction::Resolve(ReviewOutcome::Succeeded),
+                "provider confirms the raced completion was applied",
+            )
+            .await
+            .expect("resolve the uncertain winner");
         }
         w.assert_consistent(run).await;
         // Leave nothing ready behind for the next round to trip over.
@@ -518,9 +528,22 @@ async fn heartbeats_from_a_worker_that_lost_its_lease_do_not_resurrect_it() {
     );
     assert_eq!(
         w.step_status(run, "a").await,
-        Some(StepStatus::RetryWait),
+        Some(StepStatus::Waiting),
         "a late heartbeat changed nothing"
     );
+    assert_eq!(w.run_status(run).await, RunStatus::ManualReview);
+    assert!(w.poll(&zombie, 8).await.is_empty(), "no replacement lease");
+    w.review(
+        run,
+        "a",
+        ReviewAction::Resolve(ReviewOutcome::Failed(
+            FailureCode::parse("OPERATOR_CONFIRMED_NOT_APPLIED").unwrap(),
+        )),
+        "provider confirms the lost attempt did not apply",
+    )
+    .await
+    .expect("resolve the uncertain attempt");
+    assert_eq!(w.run_status(run).await, RunStatus::Failed);
     w.assert_consistent(run).await;
 }
 

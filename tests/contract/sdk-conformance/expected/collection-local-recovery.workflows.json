@@ -1,0 +1,130 @@
+{
+  "canonical": {
+    "failed": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"bodies\":{\"line\":{\"entrypoint\":\"reserve\",\"nodes\":[{\"activity\":\"recovery.reserve\",\"compensateWith\":\"recovery.release\",\"id\":\"reserve\",\"next\":\"charge\",\"type\":\"activity\"},{\"activity\":\"recovery.charge\",\"id\":\"charge\",\"next\":\"recover\",\"onError\":\"recover\",\"type\":\"activity\"},{\"activity\":\"recovery.broken\",\"id\":\"recover\",\"next\":\"returned\",\"type\":\"activity\"},{\"id\":\"returned\",\"result\":\"item\",\"type\":\"return\"}]}},\"entrypoint\":\"lines\",\"kind\":\"Workflow\",\"limits\":{\"maxDepth\":1,\"maxInstances\":12},\"metadata\":{\"name\":\"collection-local-recovery-failed\"},\"nodes\":[{\"body\":\"line\",\"id\":\"lines\",\"items\":\"input.items\",\"maxConcurrency\":1,\"maxItems\":2,\"next\":\"done\",\"result\":\"bodyResult\",\"type\":\"forEach\"},{\"id\":\"done\",\"outputExpr\":\"steps.lines.output\",\"type\":\"end\"}]}",
+    "recovered": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"bodies\":{\"line\":{\"entrypoint\":\"reserve\",\"nodes\":[{\"activity\":\"recovery.reserve\",\"compensateWith\":\"recovery.release\",\"id\":\"reserve\",\"next\":\"charge\",\"type\":\"activity\"},{\"activity\":\"recovery.charge\",\"id\":\"charge\",\"next\":\"recover\",\"onError\":\"recover\",\"type\":\"activity\"},{\"activity\":\"recovery.notify\",\"id\":\"recover\",\"next\":\"returned\",\"type\":\"activity\"},{\"id\":\"returned\",\"result\":\"item\",\"type\":\"return\"}]}},\"entrypoint\":\"lines\",\"kind\":\"Workflow\",\"limits\":{\"maxDepth\":1,\"maxInstances\":12},\"metadata\":{\"name\":\"collection-local-recovery-recovered\"},\"nodes\":[{\"body\":\"line\",\"id\":\"lines\",\"items\":\"input.items\",\"maxConcurrency\":1,\"maxItems\":2,\"next\":\"done\",\"result\":\"bodyResult\",\"type\":\"forEach\"},{\"id\":\"done\",\"outputExpr\":\"steps.lines.output\",\"type\":\"end\"}]}"
+  },
+  "workflows": {
+    "failed": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "bodies": {
+        "line": {
+          "entrypoint": "reserve",
+          "nodes": [
+            {
+              "activity": "recovery.reserve",
+              "compensateWith": "recovery.release",
+              "id": "reserve",
+              "next": "charge",
+              "type": "activity"
+            },
+            {
+              "activity": "recovery.charge",
+              "id": "charge",
+              "next": "recover",
+              "onError": "recover",
+              "type": "activity"
+            },
+            {
+              "activity": "recovery.broken",
+              "id": "recover",
+              "next": "returned",
+              "type": "activity"
+            },
+            {
+              "id": "returned",
+              "result": "item",
+              "type": "return"
+            }
+          ]
+        }
+      },
+      "entrypoint": "lines",
+      "kind": "Workflow",
+      "limits": {
+        "maxDepth": 1,
+        "maxInstances": 12
+      },
+      "metadata": {
+        "name": "collection-local-recovery-failed"
+      },
+      "nodes": [
+        {
+          "body": "line",
+          "id": "lines",
+          "items": "input.items",
+          "maxConcurrency": 1,
+          "maxItems": 2,
+          "next": "done",
+          "result": "bodyResult",
+          "type": "forEach"
+        },
+        {
+          "id": "done",
+          "outputExpr": "steps.lines.output",
+          "type": "end"
+        }
+      ]
+    },
+    "recovered": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "bodies": {
+        "line": {
+          "entrypoint": "reserve",
+          "nodes": [
+            {
+              "activity": "recovery.reserve",
+              "compensateWith": "recovery.release",
+              "id": "reserve",
+              "next": "charge",
+              "type": "activity"
+            },
+            {
+              "activity": "recovery.charge",
+              "id": "charge",
+              "next": "recover",
+              "onError": "recover",
+              "type": "activity"
+            },
+            {
+              "activity": "recovery.notify",
+              "id": "recover",
+              "next": "returned",
+              "type": "activity"
+            },
+            {
+              "id": "returned",
+              "result": "item",
+              "type": "return"
+            }
+          ]
+        }
+      },
+      "entrypoint": "lines",
+      "kind": "Workflow",
+      "limits": {
+        "maxDepth": 1,
+        "maxInstances": 12
+      },
+      "metadata": {
+        "name": "collection-local-recovery-recovered"
+      },
+      "nodes": [
+        {
+          "body": "line",
+          "id": "lines",
+          "items": "input.items",
+          "maxConcurrency": 1,
+          "maxItems": 2,
+          "next": "done",
+          "result": "bodyResult",
+          "type": "forEach"
+        },
+        {
+          "id": "done",
+          "outputExpr": "steps.lines.output",
+          "type": "end"
+        }
+      ]
+    }
+  }
+}

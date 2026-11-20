@@ -1135,6 +1135,7 @@ async fn grandchild_handoff_and_root_child_admission_do_not_deadlock_on_the_root
         .expect("version")
         .expect("exists");
     let new = NewRun {
+        schedule: None,
         retained: None,
         limits: RunLimits::of(&world.store, tenant, world.namespace.id())
             .await

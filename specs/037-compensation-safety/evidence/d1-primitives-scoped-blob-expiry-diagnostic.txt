@@ -1,0 +1,17 @@
+
+running 1 test
+
+thread 'scoped_blob_completion::a_scoped_blob_quota_recovery_rechecks_lease_expiry' (791315256) panicked at tests/integration/workflow-primitives/scoped_blob_completion.rs:445:5:
+assertion `left == right` failed
+  left: "INTERNAL"
+ right: "STALE_ATTEMPT"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test scoped_blob_completion::a_scoped_blob_quota_recovery_rechecks_lease_expiry ... FAILED
+
+failures:
+
+failures:
+    scoped_blob_completion::a_scoped_blob_quota_recovery_rechecks_lease_expiry
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 771 filtered out; finished in 14.39s
+

@@ -436,6 +436,15 @@ No table or public usage-counter reinterpretation follows from this model alone;
 publication remains closed. See `tasks/project-completion/capacity-group-lifecycle.md` and its
 bounded review/evidence rather than the rejected whole-protocol drafts.
 
+## Capacity after a policy reduction — 2026-10-26
+
+Owner decision O701: a reduction of `iteration_concurrency` (including to 0) does not pause admitted
+work. The only tenant-level capacity gate for nested execution is the existing fresh-admission check
+(`retained < limit`, as `active_iterations` today); a nested descendant joins its ancestor's capacity
+group and charges no tenant unit, so it cannot be starved by a suspended ancestor. No table, column or
+public usage counter changes. Execution inside a group is serialised by possession, not by the limit.
+See [capacity-eligibility.md](./capacity-eligibility.md).
+
 
 Chain scheduler fencing uses a transaction-typed SHARE guard followed by a fresh database clock
 comparison. It must not accept an expiry predicate sampled before a row-lock wait or release the

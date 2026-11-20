@@ -1,0 +1,166 @@
+# Codec server protocol (feature 031, draft). A codec server is hosted and operated by the CUSTOMER; it holds the
+# keys. The platform never calls it. The Studio (in the browser) and the CLI call it directly. The reference
+# implementation is examples/codec-server-go/; the black-box suite is tests/contract/client-side-encryption/codec_server/.
+openapi: 3.1.0
+info:
+  title: Sagat payload codec server
+  version: 1.0.0-draft
+  description: |
+    Requirements on every implementation (MUST unless stated):
+    - HTTPS (plain HTTP only on loopback for development). Responses carry `Cache-Control: no-store`.
+    - Person authentication is the customer's own (ADR-0066 point 8): a session of the customer's identity provider,
+      sent by the browser as a cookie (`credentials: include`; the cookie must be `Secure; SameSite=None` when the codec
+      origin is another site than the Studio), or a customer-issued bearer token in `Authorization` (CLI). A request
+      without that authentication is `401`, whatever else it carries.
+    - The platform assertion travels in `X-Sagat-Codec-Assertion`. It only narrows: verify ES256 against the platform JWKS
+      (`GET {platform}/v1/codec-jwks`, cached at most 300 s), `typ = sagat-codec+jwt`, `iss`, `aud` = this endpoint
+      (origin plus path), `exp`/`nbf` with at most 30 s skew, `sagat_purpose` matching the route, `sagat_tenant` and
+      `sagat_namespace_id` equal to values this server is configured to serve, and `X-Sagat-Namespace` equal to
+      `sagat_namespace_id`. Each `jti` is accepted once (replay cache for the assertion lifetime). A request without a
+      valid assertion is `401`. A valid assertion never authorizes on its own: the effective permission is the
+      intersection of the customer session's policy and the assertion's claims.
+    - CORS: allow exactly the Studio origin(s), `Access-Control-Allow-Credentials: true`, methods `GET, POST, OPTIONS`,
+      request headers `Authorization, Content-Type, X-Sagat-Namespace, X-Sagat-Codec-Assertion`. Never `*`.
+    - Decode: refuse an envelope whose `ctx.t`/`ctx.n` differ from the assertion (`CONTEXT_MISMATCH`), whose `ctx.p`
+      differs from the item's `pointer` (`CONTEXT_MISMATCH`), whose key is not mapped to that namespace (`KEY_NOT_ALLOWED`),
+      or whose `lvl` exceeds `sagat_max_level` or the session's own ceiling (`LEVEL_NOT_PERMITTED`). `secret` envelopes are
+      never sent by the Studio and are refused unless the customer's own policy says otherwise.
+    - Encode: the item `level` MUST be at most `sagat_max_level`; `ctx.t` and `ctx.n` come from the assertion, `ctx.p` from
+      the item `pointer`, never from anything else. An envelope proves possession of the key, not who wrote it.
+    - Limits: at most 64 items and 4 MiB per request, 16 MiB per response (the Studio and CLI defaults are smaller).
+    - Logging: never log plaintext, ciphertext, wrapped keys, assertions or session tokens.
+servers:
+  - url: https://codec.example.com/sagat
+paths:
+  /capabilities:
+    get:
+      operationId: codecCapabilities
+      summary: What this codec server supports (also used by the Studio's "test endpoint")
+      responses:
+        '200':
+          description: Capabilities
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [protocol, envelopeVersions, codecs, encode]
+                properties:
+                  protocol: {const: 1}
+                  envelopeVersions: {type: array, items: {const: 1}}
+                  codecs: {type: array, items: {enum: [zstd, gzip, pad, aes-256-gcm]}}
+                  encode: {type: boolean, description: Whether POST /encode is offered}
+        '401': {description: No customer session or bearer token}
+  /decode:
+    post:
+      operationId: codecDecode
+      parameters:
+        - {name: X-Sagat-Namespace, in: header, required: true, schema: {type: string, format: uuid}}
+        - {name: X-Sagat-Codec-Assertion, in: header, required: true, schema: {type: string, maxLength: 4096}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [items]
+              properties:
+                items:
+                  type: array
+                  minItems: 1
+                  maxItems: 64
+                  items:
+                    type: object
+                    additionalProperties: false
+                    required: [id, pointer, envelope]
+                    properties:
+                      id: {type: string, pattern: '^[A-Za-z0-9_-]{1,64}$', description: 'Caller-chosen correlation id, unique in the request.'}
+                      pointer: {type: string, maxLength: 512, description: 'The location pattern the platform returned with the encoded node.'}
+                      envelope: {$ref: 'envelope.schema.json'}
+      responses:
+        '200':
+          description: One result per item, same ids, any order
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [results]
+                properties:
+                  results:
+                    type: array
+                    maxItems: 64
+                    items:
+                      oneOf:
+                        - type: object
+                          additionalProperties: false
+                          required: [id, value]
+                          properties:
+                            id: {type: string}
+                            value: {description: 'The decoded JSON value.'}
+                        - type: object
+                          additionalProperties: false
+                          required: [id, error]
+                          properties:
+                            id: {type: string}
+                            error: {$ref: '#/components/schemas/ItemError'}
+        '400': {description: Malformed request (including duplicate JSON members)}
+        '401': {description: Customer authentication missing, or assertion missing, invalid, expired, replayed or for another audience}
+        '403': {description: Authenticated caller may not use this codec server for this tenant and namespace}
+        '413': {description: Request over the limits}
+        '503': {description: Key service unavailable for the whole batch; retry later}
+  /encode:
+    post:
+      operationId: codecEncode
+      summary: Optional. Encodes plaintext values for declared locations (used by `sagat workflow run <NAME> --encode`)
+      parameters:
+        - {name: X-Sagat-Namespace, in: header, required: true, schema: {type: string, format: uuid}}
+        - {name: X-Sagat-Codec-Assertion, in: header, required: true, schema: {type: string, maxLength: 4096}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [items]
+              properties:
+                items:
+                  type: array
+                  minItems: 1
+                  maxItems: 64
+                  items:
+                    type: object
+                    additionalProperties: false
+                    required: [id, pointer, value, encoding, level]
+                    properties:
+                      id: {type: string, pattern: '^[A-Za-z0-9_-]{1,64}$'}
+                      pointer: {type: string, maxLength: 512}
+                      value: {description: Plaintext JSON value}
+                      encoding: {enum: [encrypted, compressed]}
+                      level: {enum: [public, internal, pii, secret], description: 'At most the assertion sagat_max_level.'}
+      responses:
+        '200':
+          description: One result per item
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [results]
+                properties:
+                  results:
+                    type: array
+                    items:
+                      oneOf:
+                        - {type: object, required: [id, envelope], properties: {id: {type: string}, envelope: {$ref: 'envelope.schema.json'}}}
+                        - {type: object, required: [id, error], properties: {id: {type: string}, error: {$ref: '#/components/schemas/ItemError'}}}
+        '401': {description: Not authenticated}
+        '404': {description: Encoding not offered}
+components:
+  schemas:
+    ItemError:
+      type: string
+      enum: [ENVELOPE_INVALID, ENVELOPE_UNSUPPORTED, CONTEXT_MISMATCH, KEY_NOT_ALLOWED, KEY_UNAVAILABLE,
+             LEVEL_NOT_PERMITTED, DECODE_FAILED, DECODED_TOO_LARGE, ENCODE_FAILED]
+      description: Closed per-item outcome; carries no detail text.

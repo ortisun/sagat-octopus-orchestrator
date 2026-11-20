@@ -106,7 +106,7 @@ function DecisionForm({ decision, run, live, runId, onDone }: { decision: Decisi
 
   const reasonCheck = checkReason(reason, scope);
   const reasonProblem = submitted ? reasonCheck.problem : undefined;
-  const idProblem = submitted && asksForStepId(action, node) && typed !== stepId ? 'Type the step id exactly as shown to confirm.' : undefined;
+  const idProblem = submitted && asksForStepId(action) && typed !== stepId ? 'Type the step id exactly as shown to confirm.' : undefined;
   const outcomeProblem = submitted && action === 'RESOLVE_STEP' && outcome === '' ? 'Choose what happened to the step.' : undefined;
   const codeProblem = action === 'RESOLVE_STEP' && outcome === 'FAILED' && errorCode !== '' && !ERROR_CODE.test(errorCode) ? 'Use letters, digits and _ . : - only, up to 64 characters.' : undefined;
 
@@ -152,7 +152,7 @@ function DecisionForm({ decision, run, live, runId, onDone }: { decision: Decisi
       reasonRef.current?.focus();
       return;
     }
-    if (!available || (asksForStepId(action, node) && typed !== stepId) || (action === 'RESOLVE_STEP' && (outcome === '' || codeProblem !== undefined))) return;
+    if (!available || (asksForStepId(action) && typed !== stepId) || (action === 'RESOLVE_STEP' && (outcome === '' || codeProblem !== undefined))) return;
     void send();
   };
 
@@ -223,7 +223,7 @@ function DecisionForm({ decision, run, live, runId, onDone }: { decision: Decisi
         <textarea ref={reasonRef} value={reason} rows={4} onChange={(event) => setReason(event.target.value)} />
       </Field>
 
-      {asksForStepId(action, node) && stepId !== undefined ? (
+      {asksForStepId(action) && stepId !== undefined ? (
         <Field label="Type the step id to confirm" hint={`The step is ${clip(stepId, 60)}.`} error={idProblem}>
           <input type="text" value={typed} autoComplete="off" spellCheck={false} onChange={(event) => setTyped(event.target.value)} />
         </Field>

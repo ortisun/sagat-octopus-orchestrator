@@ -1,0 +1,389 @@
+# DRAFT OpenAPI 3.1 excerpt for feature 021. Not implemented. Merged additively into
+# specs/001-platform-foundation/contracts/openapi.yaml by T021-060, reusing its components
+# (NamespaceId, IdempotencyKey, Error responses, headers, EventAccepted, Run, Connector).
+# Every response carries X-Trace-Id and X-Request-Id as in the canonical document; omitted here.
+openapi: 3.1.0
+info: {title: Feature 021 draft fragment, version: 0.0.0-draft}
+paths:
+  /namespaces/{namespaceId}/resource-types:
+    get:
+      operationId: listResourceTypes
+      tags: [Governance]
+      x-proposed: '021'
+      description: Requires namespace:read. Lists type keys and versions; every database driver (postgresql, mysql, mariadb, sqlserver, bigquery, snowflake, duckdb) is listed with managedBy connections.
+      parameters: [{$ref: '#/components/parameters/NamespaceId'}]
+      responses:
+        '200': {description: Types, content: {application/json: {schema: {$ref: '#/components/schemas/ResourceTypeList'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /namespaces/{namespaceId}/resource-types/{typeKey}/versions/{typeVersion}:
+    get:
+      operationId: getResourceTypeVersion
+      tags: [Governance]
+      x-proposed: '021'
+      description: Requires namespace:read. Returns the settings schema, slots, auth schemes, operations and probe of one immutable version.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {name: typeKey, in: path, required: true, schema: {type: string, enum: [http_api, graphql, s3_bucket, smtp, slack_bot]}}
+        - {name: typeVersion, in: path, required: true, schema: {type: integer, minimum: 1}}
+      responses:
+        '200': {description: Type version, content: {application/json: {schema: {$ref: '#/components/schemas/ResourceTypeVersion'}}}}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /namespaces/{namespaceId}/resources:
+    get:
+      operationId: listResources
+      tags: [Governance]
+      x-proposed: '021'
+      description: Requires namespace:read. Metadata only; deleted resources omitted; saving does not prove connectivity.
+      parameters: [{$ref: '#/components/parameters/NamespaceId'}]
+      responses:
+        '200': {description: Resources, content: {application/json: {schema: {$ref: '#/components/schemas/ResourceList'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /namespaces/{namespaceId}/resources/{resourceName}:
+    parameters:
+      - {$ref: '#/components/parameters/NamespaceId'}
+      - {name: resourceName, in: path, required: true, schema: {type: string, pattern: '^[a-z][a-z0-9-]{1,61}[a-z0-9]$'}}
+    get:
+      operationId: getResource
+      tags: [Governance]
+      x-proposed: '021'
+      description: Requires namespace:read. Settings at a revision; status is always current. No slot value, provider path or token.
+      parameters: [{name: revision, in: query, schema: {type: integer, minimum: 1}}]
+      responses:
+        '200': {description: Resource, headers: {Cache-Control: {schema: {type: string, const: 'private, no-store'}}}, content: {application/json: {schema: {$ref: '#/components/schemas/Resource'}}}}
+        '404': {$ref: '#/components/responses/NotFound'}
+    put:
+      operationId: putResource
+      tags: [Governance]
+      x-proposed: '021'
+      description: Requires current resource:manage and use ACL on every slot secret (OpenBao authority). Creating the resource, changing a host-bearing setting or changing a slot's secret also requires secret:manage on each affected slot secret (403 SLOT_DESTINATION_REQUIRES_MANAGE). Database driver types are refused (422 MANAGED_BY_CONNECTIONS). expectedRevision 0 creates; every change or pause writes an immutable revision with its audit. Same actor/requestId/body replays; a changed body conflicts. Performs no network I/O.
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/PutResourceRequest'}}}}
+      responses:
+        '200': {description: Resource, content: {application/json: {schema: {$ref: '#/components/schemas/Resource'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+    delete:
+      operationId: deleteResource
+      tags: [Governance]
+      x-proposed: '021'
+      description: Requires resource:manage and expectedRevision. Tombstones; referenced revisions remain for run history; a repeat returns 404.
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/DeleteResourceRequest'}}}}
+      responses:
+        '200': {description: Tombstoned resource, content: {application/json: {schema: {$ref: '#/components/schemas/Resource'}}}}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+  /namespaces/{namespaceId}/resources/{resourceName}/probe:
+    parameters:
+      - {$ref: '#/components/parameters/NamespaceId'}
+      - {name: resourceName, in: path, required: true, schema: {type: string}}
+    post:
+      operationId: probeResource
+      tags: [Runs]
+      x-proposed: '021'
+      description: Requires run:start, resource:use and slot ACLs. Admits the type's fixed probe as a durable run (origin RESOURCE_PROBE) in the integration runner. A paused resource is refused. Only a durable SUCCEEDED run is evidence, for its pinned revision.
+      parameters: [{$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, additionalProperties: false, properties: {revision: {type: integer, minimum: 1}}}}}}
+      responses:
+        '201': {description: Durable probe run, headers: {Cache-Control: {schema: {type: string, const: 'private, no-store'}}}, content: {application/json: {schema: {$ref: '#/components/schemas/Run'}}}}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+    get:
+      operationId: latestResourceProbe
+      tags: [Runs]
+      x-proposed: '021'
+      description: Requires namespace:read and run:read. Tested revision, timestamps, run status and a closed failure code, or null.
+      responses:
+        '200': {description: Latest probe or null, content: {application/json: {schema: {oneOf: [{$ref: '#/components/schemas/ResourceProbe'}, {type: 'null'}]}}}}
+  /namespaces/{namespaceId}/variables:
+    get:
+      operationId: listVariables
+      tags: [Governance]
+      x-proposed: '021'
+      description: Requires namespace:read. Public values included; internal values only with payload:read-internal (otherwise valueDisclosure structure-only).
+      parameters: [{$ref: '#/components/parameters/NamespaceId'}]
+      responses:
+        '200': {description: Variables, content: {application/json: {schema: {$ref: '#/components/schemas/VariableList'}}}}
+  /namespaces/{namespaceId}/variables/{variableName}:
+    parameters:
+      - {$ref: '#/components/parameters/NamespaceId'}
+      - {name: variableName, in: path, required: true, schema: {type: string, pattern: '^[a-z][a-zA-Z0-9_]{0,62}$'}}
+    get:
+      operationId: getVariable
+      tags: [Governance]
+      x-proposed: '021'
+      parameters: [{name: revision, in: query, schema: {type: integer, minimum: 1}}]
+      responses:
+        '200': {description: Variable, headers: {Cache-Control: {schema: {type: string, const: 'private, no-store'}}}, content: {application/json: {schema: {$ref: '#/components/schemas/Variable'}}}}
+        '404': {$ref: '#/components/responses/NotFound'}
+    put:
+      operationId: putVariable
+      tags: [Governance]
+      x-proposed: '021'
+      description: Requires variable:manage. expectedRevision 0 creates; type and level are fixed at creation; pii and secret levels are refused (VARIABLE_LEVEL).
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/PutVariableRequest'}}}}
+      responses:
+        '200': {description: Variable, content: {application/json: {schema: {$ref: '#/components/schemas/Variable'}}}}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+    delete:
+      operationId: deleteVariable
+      tags: [Governance]
+      x-proposed: '021'
+      description: Requires variable:manage and expectedRevision. Admitted runs keep their pins; new admissions referencing it fail VARIABLE_NOT_FOUND.
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/DeleteResourceRequest'}}}}
+      responses:
+        '200': {description: Tombstoned variable, content: {application/json: {schema: {$ref: '#/components/schemas/Variable'}}}}
+  /namespaces/{namespaceId}/route-prefix:
+    parameters: [{$ref: '#/components/parameters/NamespaceId'}]
+    get:
+      operationId: getRoutePrefix
+      tags: [Events]
+      x-proposed: '021'
+      description: Requires event:read. The namespace's random route prefix and, during rotation, the previous one with its expiry.
+      responses:
+        '200': {description: Prefix, content: {application/json: {schema: {$ref: '#/components/schemas/RoutePrefix'}}}}
+    post:
+      operationId: rotateRoutePrefix
+      tags: [Events]
+      x-proposed: '021'
+      description: Requires event:manage. Issues a new prefix; the previous one stays valid for the bounded overlap. Audited.
+      parameters: [{$ref: '#/components/parameters/IdempotencyKey'}]
+      responses:
+        '200': {description: Prefix, content: {application/json: {schema: {$ref: '#/components/schemas/RoutePrefix'}}}}
+  /routes/{routePrefix}/{routePath}:
+    parameters:
+      - {name: routePrefix, in: path, required: true, schema: {type: string, pattern: '^[a-z2-7]{26}$'}}
+      - {name: routePath, in: path, required: true, x-greedy: true, description: 'The rest of the path, slashes included, matched against the routes of the namespace.', schema: {type: string, maxLength: 512}}
+    post: &routeCall
+      operationId: callRoutePost
+      tags: [Events]
+      x-proposed: '021'
+      security: [{webhookHmac: []}, {webhookOidc: []}, {webhookMtls: []}]
+      description: |
+        Custom route ingress. Before authentication only route-independent bounds apply (global body
+        cap 413, header bounds 431, a prefix-slot attempt limiter 429). The route's single ADR-0026 profile
+        then authenticates the caller; HMAC signs
+        "octopus-route-in-v1\n{timestamp}\n{idempotencyKey}\n{METHOD}\n{routePath}\n{canonicalQuery}\n{canonicalHeaders}\n" + body.
+        Every authentication failure (unknown prefix or route, wrong method, bad credential, stale
+        timestamp) is the same 401. Only after authentication: 503 paused, 413 route body limit, 429 route
+        rate or backlog full, 400 IDEMPOTENCY_KEY_REQUIRED. 202 after the inbox commit; DUPLICATE for a
+        same-key same-body retry; 409 EVENT_ID_REUSED for a changed body.
+      parameters:
+        - {name: Idempotency-Key, in: header, required: false, description: 'Required unless the route names another header, or is an mTLS route using idempotency: generate.', schema: {type: string, minLength: 1, maxLength: 200}}
+        - {name: X-Octopus-Timestamp, in: header, required: false, schema: {type: string, pattern: '^[0-9]+$'}}
+        - {name: X-Octopus-Signature, in: header, required: false, schema: {type: string, maxLength: 512}}
+      requestBody: {required: false, content: {application/json: {schema: {type: object}}}}
+      responses:
+        '202': {description: Durably admitted (or already admitted), content: {application/json: {schema: {$ref: '#/components/schemas/EventAccepted'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '413': {$ref: '#/components/responses/BadRequest'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+    put: {<<: *routeCall, operationId: callRoutePut}
+    patch: {<<: *routeCall, operationId: callRoutePatch}
+    delete: {<<: *routeCall, operationId: callRouteDelete}
+  /namespaces/{namespaceId}/trigger-filter-previews:
+    post:
+      operationId: previewTriggerFilter
+      tags: [Events]
+      x-proposed: '021'
+      description: |
+        Evaluates a draft filter. A sample requires event:read and definition:write. Retained events
+        additionally require payload:read-internal and the namespace reveal grant (FR-016-026); each
+        evaluated event is audited as payload.pii_revealed before the answer. The answer never contains
+        a value. Response Cache-Control private, no-store. Rate-limited per principal.
+      parameters: [{$ref: '#/components/parameters/NamespaceId'}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/FilterPreviewRequest'}}}}
+      responses:
+        '200': {description: Outcomes, content: {application/json: {schema: {$ref: '#/components/schemas/FilterPreviewResult'}}}}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+components:
+  schemas:
+    ResourceTypeList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            type: object
+            required: [key, versions]
+            properties:
+              key: {type: string}
+              versions: {type: array, items: {type: integer, minimum: 1}}
+              managedBy: {type: string, enum: [connections], description: 'Present for every database driver; create it through /connections.'}
+    ResourceTypeVersion:
+      type: object
+      required: [key, version, settingsSchema, slots, authSchemes, operations, probe]
+      properties:
+        key: {type: string}
+        version: {type: integer}
+        settingsSchema: {type: object, description: 'Closed, bounded JSON Schema document.'}
+        slots: {type: array, items: {type: object, required: [name, shape], properties: {name: {type: string}, shape: {type: string, enum: [token, username_password, client_secret, access_key_pair, api_key]}}}}
+        authSchemes: {type: array, items: {type: string}}
+        operations: {type: array, items: {type: object, required: [name, effect], properties: {name: {type: string}, effect: {type: string, enum: [safe, effect]}, irreversible: {type: boolean}}}}
+        probe: {type: string, description: 'Human-readable description of the fixed probe.'}
+    PutResourceRequest:
+      type: object
+      additionalProperties: false
+      required: [requestId, expectedRevision, type, typeVersion, settings, slots, status]
+      properties:
+        requestId: {type: string, format: uuid}
+        expectedRevision: {type: integer, minimum: 0, maximum: 2147483646}
+        type: {type: string, enum: [http_api, graphql, s3_bucket, smtp, slack_bot]}
+        typeVersion: {type: integer, minimum: 1}
+        settings: {type: object, description: 'Validated against the type version; never secret.'}
+        slots: {type: object, maxProperties: 8, additionalProperties: {type: string, pattern: '^[a-z][a-z0-9._-]{0,63}$'}, description: 'slot name → namespace secret logical name (OpenBao authority).'}
+        status: {type: string, enum: [ACTIVE, PAUSED]}
+    DeleteResourceRequest:
+      type: object
+      additionalProperties: false
+      required: [requestId, expectedRevision]
+      properties:
+        requestId: {type: string, format: uuid}
+        expectedRevision: {type: integer, minimum: 1, maximum: 2147483646}
+    Resource:
+      type: object
+      required: [id, namespaceId, name, type, typeVersion, revision, currentRevision, status, settings, slots, createdAt, updatedAt]
+      properties:
+        id: {type: string, format: uuid}
+        namespaceId: {type: string, format: uuid}
+        name: {type: string}
+        type: {type: string}
+        typeVersion: {type: integer}
+        revision: {type: integer, description: 'The revision shown.'}
+        currentRevision: {type: integer}
+        status: {type: string, enum: [ACTIVE, PAUSED, DELETED], description: 'Always current, also for an older revision.'}
+        settings: {type: object}
+        slots: {type: object, additionalProperties: {type: string}, description: 'Names only.'}
+        createdAt: {type: string, format: date-time}
+        updatedAt: {type: string, format: date-time}
+    ResourceList:
+      type: object
+      required: [items]
+      properties: {items: {type: array, maxItems: 1000, items: {$ref: '#/components/schemas/Resource'}}}
+    ResourceProbe:
+      type: object
+      required: [runId, revision, status, admittedAt]
+      properties:
+        runId: {type: string, format: uuid}
+        revision: {type: integer}
+        status: {type: string}
+        admittedAt: {type: string, format: date-time}
+        finishedAt: {type: string, format: date-time}
+        failureCode: {type: string, description: 'Closed step failure code (error-reasons.md).'}
+    PutVariableRequest:
+      type: object
+      additionalProperties: false
+      required: [requestId, expectedRevision, valueType, level, value]
+      properties:
+        requestId: {type: string, format: uuid}
+        expectedRevision: {type: integer, minimum: 0}
+        valueType: {type: string, enum: [string, integer, decimal, boolean, json]}
+        level: {type: string, enum: [public, internal]}
+        value: {description: 'integer and decimal as strings; json an object or array ≤ the value bound.'}
+    Variable:
+      type: object
+      required: [id, name, valueType, level, revision, currentRevision, status, valueDisclosure]
+      allOf:
+        - if: {properties: {valueDisclosure: {const: revealed}}}
+          then: {required: [value]}
+          else: {not: {required: [value]}}
+      properties:
+        id: {type: string, format: uuid}
+        name: {type: string}
+        valueType: {type: string, enum: [string, integer, decimal, boolean, json]}
+        level: {type: string, enum: [public, internal]}
+        revision: {type: integer}
+        currentRevision: {type: integer}
+        status: {type: string, enum: [ACTIVE, DELETED]}
+        valueDisclosure: {type: string, enum: [revealed, structure-only]}
+        value: {}
+    VariableList:
+      type: object
+      required: [items]
+      properties: {items: {type: array, maxItems: 2000, items: {$ref: '#/components/schemas/Variable'}}}
+    RoutePrefix:
+      type: object
+      required: [prefix]
+      properties:
+        prefix: {type: string, pattern: '^[a-z2-7]{26}$'}
+        previousPrefix: {type: string}
+        previousValidUntil: {type: string, format: date-time}
+    FilterPreviewRequest:
+      type: object
+      additionalProperties: false
+      required: [scope, filter, source]
+      properties:
+        scope: {type: string, enum: [trigger, connector]}
+        filter: {type: string, minLength: 1, maxLength: 1024}
+        source:
+          oneOf:
+            - {type: object, additionalProperties: false, required: [kind, document], properties: {kind: {const: sample}, document: {type: object, description: 'trigger: {event, data}; connector: {key, headers, value}. ≤ 240 KiB.'}}}
+            - {type: object, additionalProperties: false, required: [kind, sourceSlug], properties: {kind: {const: retained}, sourceSlug: {type: string}, latest: {type: integer, minimum: 1, maximum: 100, default: 20}}}
+    FilterPreviewResult:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          maxItems: 100
+          items:
+            type: object
+            required: [outcome]
+            properties:
+              eventId: {type: string, description: 'Retained source only.'}
+              outcome: {type: string, enum: [MATCHED, NOT_MATCHED, ERROR]}
+              errorCategory: {type: string, enum: [MISSING_FIELD, TYPE_MISMATCH, LIMIT, ENCODING_READ_BY_EXPRESSION, NOT_A_CONDITION]}
+    # Additive changes to existing schemas (merged into the canonical definitions):
+    CreateEventEndpointRequestAdditions:
+      description: 'New optional properties of CreateEventEndpointRequest/UpdateEventEndpointRequest. kind defaults to WEBHOOK.'
+      type: object
+      properties:
+        kind: {type: string, enum: [WEBHOOK, ROUTE, EMAIL], default: WEBHOOK}
+        route:
+          type: object
+          additionalProperties: false
+          required: [method, path, eventType]
+          properties:
+            method: {type: string, enum: [POST, PUT, PATCH, DELETE]}
+            path: {type: string, maxLength: 512}
+            eventType: {type: string}
+            captureQuery: {type: array, maxItems: 32, items: {type: string, maxLength: 128}}
+            captureHeaders: {type: array, maxItems: 32, items: {type: string, pattern: '^[A-Za-z0-9-]{1,64}$'}}
+            idempotency: {description: 'generate is accepted only with the MTLS profile; HMAC and OIDC routes refuse it (IDEMPOTENCY_GENERATE_NOT_ALLOWED).', oneOf: [{type: object, additionalProperties: false, required: [header], properties: {header: {type: string, pattern: '^[A-Za-z0-9-]{1,64}$'}}}, {const: generate}]}
+            response: {type: object, additionalProperties: false, properties: {mode: {type: string, enum: [accept], default: accept, description: 'Reserved; feature 026 adds wait (FR-026-012).'}}}
+        email:
+          type: object
+          additionalProperties: false
+          required: [provider]
+          properties:
+            provider: {type: string, enum: [MAILGUN, GENERIC_RELAY]}
+            eventType: {type: string, default: email.received}
+    ConnectorAdditions:
+      description: 'Connector.kind and CreateConnectorRequest.kind gain POSTGRES_CDC, MQTT, GCP_PUBSUB, AZURE_SERVICE_BUS, WEBSOCKET; new optional properties below; settings per connector-kinds.md.'
+      type: object
+      properties:
+        filter: {type: string, maxLength: 1024}
+        placement: {type: string, enum: [ENGINE, MANAGED], readOnly: true, description: 'MANAGED for every new kind (CDC in the database runner; MQTT, Pub/Sub, Service Bus, WebSocket in the integration runner); ENGINE for NATS, Kafka, SQS.'}
+        guarantee: {type: string, enum: [AT_LEAST_ONCE, AT_MOST_ONCE, BEST_EFFORT], readOnly: true}
+        health:
+          type: object
+          properties:
+            state: {type: string, enum: [OK, ERROR, LAGGING]}
+            lagBytes: {type: integer, minimum: 0}
+            filtered: {type: integer, minimum: 0}
+            filterErrors: {type: integer, minimum: 0}

@@ -31,6 +31,7 @@ function apply(target: Flow, ops: Obj[]): void {
     switch (op['op']) {
       case 'step': target.step(op['id'], op['activity'], op['options']); break;
       case 'database': target.database(op['id'], op['options']); break;
+      case 'icebergWrite': target.icebergWrite(op['id'], op['options']); break;
       case 'script': target.script(op['id'], op['artifactDigest'], op['options']); break;
       case 'sleep': target.sleep(op['id'], op['durationMs']); break;
       case 'waitForEvent': target.waitForEvent(op['id'], op['options']); break;
@@ -651,7 +652,10 @@ async function main(): Promise<void> {
   if (!mode || !scenarioPath) throw new Error('usage: runner build <scenario> | run <scenario> <config> <out>');
   const raw = read(scenarioPath);
   if (mode === 'build') {
-    process.stdout.write(JSON.stringify(build(raw)));
+    // The harness reads a pipe: exiting before its write completes truncates larger IRs.
+    await new Promise<void>((resolve, reject) => {
+      process.stdout.write(JSON.stringify(build(raw)), (error) => error ? reject(error) : resolve());
+    });
     return;
   }
   if (mode === 'run' && configPath && outPath) {

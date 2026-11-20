@@ -1,0 +1,7 @@
+{
+  "scenario": "active-data",
+  "resultPath": "outcome-a1lrw5m9/result.json",
+  "resultSha256": "59e60c2d5e1c06f13ad06574780a50b560abe40ba754cd18df6f9aefefedbb03",
+  "buildSha256": "5d432d32e96c7234c3be366a3eac10d3303243ebfd2d8d48fca13808ccc3fa2a",
+  "transcriptSha256": "bf61b41d2c6b2b4c9030adbd3ddddc5ee9961c73318484e620bfc3f55ed3f138"
+}

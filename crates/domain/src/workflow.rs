@@ -28,7 +28,9 @@ use std::fmt;
 use std::time::Duration;
 
 use crate::database::{
-    DatabaseOperation, MANAGED_DATABASE_ACTIVITY, MANAGED_DATABASE_PREFIX, OperationKind,
+    DatabaseOperation, EgressField, ICEBERG_PROBE_ACTIVITY, ICEBERG_REVERT_ACTIVITY,
+    ICEBERG_WRITE_ACTIVITY, IcebergWrite, LakeProbe, MANAGED_DATABASE_ACTIVITY,
+    MANAGED_DATABASE_PREFIX, ManagedKind, OperationKind, RecordSource,
 };
 use crate::execution::{ApprovalPolicy, ExecutionInstanceId};
 use crate::identity::{Slug, clip};
@@ -67,6 +69,12 @@ const MAX_EXPRESSION_LEN: usize = 2048;
 pub enum WorkflowError {
     #[error("invalid managed database node or reserved activity name")]
     InvalidDatabaseNode,
+    #[error("invalid iceberg write node or reserved activity name")]
+    InvalidIcebergNode,
+    #[error(
+        "an iceberg write is a root-level node: not in a body, beside a loop or under a continuation policy"
+    )]
+    IcebergNodeNotRoot,
     #[error("invalid node id '{0}'")]
     InvalidNodeId(String),
     #[error("invalid activity name '{0}'")]
@@ -762,6 +770,15 @@ impl NodeKind {
     }
 }
 
+/// What makes a node managed: exactly one of three kinds, so a node cannot be two of them and every match over it is exhaustive
+/// (ADR-0080, D035-150). The accessors below answer the question of one kind; [`Node::managed_kind`] answers whether it is managed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Managed {
+    Sql(DatabaseOperation),
+    Lake(IcebergWrite),
+    LakeProbe(LakeProbe),
+}
+
 /// One node of the graph.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Node {
@@ -772,7 +789,7 @@ pub struct Node {
     timeout: Option<Duration>,
     effect: EffectPolicy,
     origin: NodeOrigin,
-    database: Option<DatabaseOperation>,
+    managed: Option<Managed>,
 }
 
 impl Node {
@@ -786,7 +803,7 @@ impl Node {
             timeout: None,
             effect: EffectPolicy::NONE,
             origin: NodeOrigin::Declared,
-            database: None,
+            managed: None,
         }
     }
 
@@ -814,13 +831,88 @@ impl Node {
             },
         )
         .with_effect(effect);
-        node.database = Some(operation);
+        node.managed = Some(Managed::Sql(operation));
         node
     }
 
     #[must_use]
     pub const fn database_operation(&self) -> Option<&DatabaseOperation> {
-        self.database.as_ref()
+        if let Some(Managed::Sql(operation)) = &self.managed {
+            Some(operation)
+        } else {
+            None
+        }
+    }
+
+    /// An Iceberg write is a high-risk activity on a reserved name. Its retries are automatic, because recovery looks the
+    /// commit up by its effect key; it is irreversible unless it declares a revert, which is a derived compensation.
+    #[must_use]
+    pub fn iceberg(id: NodeId, write: IcebergWrite) -> Self {
+        let revert = write.revert();
+        let mut node = Self::new(
+            id,
+            NodeKind::Activity {
+                activity: ActivityName(ICEBERG_WRITE_ACTIVITY.to_owned()),
+                retry: RetryPolicy::DEFAULT,
+                compensate_with: revert.then(|| ActivityName(ICEBERG_REVERT_ACTIVITY.to_owned())),
+                reconcile_with: None,
+                idempotency_template: None,
+                secrets: Vec::new(),
+            },
+        )
+        .with_effect(iceberg_effect(revert));
+        node.managed = Some(Managed::Lake(write));
+        node
+    }
+
+    #[must_use]
+    pub const fn iceberg_write(&self) -> Option<&IcebergWrite> {
+        if let Some(Managed::Lake(write)) = &self.managed {
+            Some(write)
+        } else {
+            None
+        }
+    }
+
+    /// The probe of an Iceberg connection (D035-150): an activity on a reserved name that never retries and has no effect, because
+    /// it changes nothing. Only the platform creates one, in a private definition (ADR-0080).
+    #[must_use]
+    pub fn lake_probe(id: NodeId, probe: LakeProbe) -> Self {
+        let mut node = Self::new(
+            id,
+            NodeKind::Activity {
+                activity: ActivityName(ICEBERG_PROBE_ACTIVITY.to_owned()),
+                retry: RetryPolicy::no_retry(),
+                compensate_with: None,
+                reconcile_with: None,
+                idempotency_template: None,
+                secrets: Vec::new(),
+            },
+        );
+        node.managed = Some(Managed::LakeProbe(probe));
+        node
+    }
+
+    /// The connection a probe node tests, or `None` for any other node.
+    #[must_use]
+    pub const fn lake_probe_target(&self) -> Option<&LakeProbe> {
+        if let Some(Managed::LakeProbe(probe)) = &self.managed {
+            Some(probe)
+        } else {
+            None
+        }
+    }
+
+    /// The kind of isolated runner that executes this step, or `None` for an ordinary activity or any other node.
+    /// Every path that treats a managed step differently from an ordinary one asks this (D035-134).
+    #[must_use]
+    pub const fn managed_kind(&self) -> Option<ManagedKind> {
+        match &self.managed {
+            None => None,
+            Some(Managed::Sql(_)) => Some(ManagedKind::Sql),
+            Some(Managed::Lake(_)) => Some(ManagedKind::Lake),
+            Some(Managed::LakeProbe(_)) => Some(ManagedKind::LakeProbe),
+        }
     }
 
     /// What the author says about the effect of this activity (irreversible, high risk, how its
@@ -1144,6 +1236,26 @@ pub struct WorkflowDefinition {
     triggers: Vec<Trigger>,
 }
 
+/// Which kinds of projected state a definition's runs can have ([`WorkflowDefinition::projected_state`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ProjectedState {
+    /// A `saga` node exists: a run can have saga state.
+    pub sagas: bool,
+    /// A `forEach` node exists: a run can have iteration scopes and their iterations.
+    pub collections: bool,
+    /// A `while` or `repeatUntil` node exists: a run can have loop scopes and their iterations.
+    pub loops: bool,
+}
+
+impl ProjectedState {
+    /// Whether a run can have the compensation state of a scope: its owner is always an iteration
+    /// or a loop scope, with or without a `saga` node in the definition.
+    #[must_use]
+    pub const fn scope_sagas(self) -> bool {
+        self.collections || self.loops
+    }
+}
+
 /// A region of the graph that decides what a failure inside it means.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Scope {
@@ -1253,6 +1365,18 @@ impl WorkflowDefinition {
         if managed_body || (managed_root && (scoped_root || continuation_policy.is_some())) {
             return Err(WorkflowError::InvalidDatabaseNode);
         }
+        // The same boundary for a lake write (G035-019): its credential pins are root-only too.
+        let is_lake = |node: &Node| {
+            matches!(
+                node.managed_kind(),
+                Some(ManagedKind::Lake | ManagedKind::LakeProbe)
+            )
+        };
+        let iceberg_root = nodes.iter().any(is_lake);
+        let iceberg_body = bodies.iter().any(|body| body.nodes().any(is_lake));
+        if iceberg_body || (iceberg_root && (scoped_root || continuation_policy.is_some())) {
+            return Err(WorkflowError::IcebergNodeNotRoot);
+        }
         let graph = DefinitionGraph::new(entrypoint, nodes, kind)?;
         if kind == GraphKind::StructuredContinuation
             && !graph
@@ -1327,6 +1451,39 @@ impl WorkflowDefinition {
 
     pub fn bodies(&self) -> impl Iterator<Item = &BodyDefinition> {
         self.bodies.values()
+    }
+
+    /// The kinds of projected state a run of this definition can ever have. Each kind is created
+    /// only by a transition of a node of its kind, in the root graph or in a body: a saga by a `saga`
+    /// node, an iteration scope by a `forEach`, a loop scope by a `while` or a `repeatUntil`. A
+    /// definition without such a node has no such state, whatever commands the run receives. The
+    /// compensation state of a scope needs no `saga` node: a `forEach`, `while` or `repeatUntil`
+    /// whose body compensates is its own saga, so it follows the scope kinds
+    /// ([`ProjectedState::scope_sagas`]).
+    ///
+    /// The match names every kind: a new one must say here what state it can create.
+    #[must_use]
+    pub fn projected_state(&self) -> ProjectedState {
+        let mut kinds = ProjectedState::default();
+        for node in self.graphs().flat_map(|graph| graph.nodes.values()) {
+            match node.kind() {
+                NodeKind::Saga { .. } => kinds.sagas = true,
+                NodeKind::ForEach { .. } => kinds.collections = true,
+                NodeKind::While { .. } | NodeKind::RepeatUntil { .. } => kinds.loops = true,
+                NodeKind::Activity { .. }
+                | NodeKind::Timer { .. }
+                | NodeKind::WaitEvent { .. }
+                | NodeKind::Condition { .. }
+                | NodeKind::Switch { .. }
+                | NodeKind::Approval { .. }
+                | NodeKind::Parallel { .. }
+                | NodeKind::Child { .. }
+                | NodeKind::Return { .. }
+                | NodeKind::ContinueAsNew { .. }
+                | NodeKind::End { .. } => {}
+            }
+        }
+        kinds
     }
 
     fn graphs(&self) -> impl Iterator<Item = &DefinitionGraph> {
@@ -1458,6 +1615,27 @@ impl WorkflowDefinition {
         })
     }
 
+    /// Gives each Apache Iceberg write of the root graph the level of every field it writes (FR-035-025).
+    ///
+    /// `levels` is asked once for each such step, with its id, and its answer replaces whatever the step carried. The
+    /// graph is not touched: an Iceberg write is root-only, so there is none in a body, and no node is added or moved.
+    #[must_use]
+    pub fn with_iceberg_egress(
+        mut self,
+        mut levels: impl FnMut(&NodeId, &IcebergWrite) -> Vec<EgressField>,
+    ) -> Self {
+        for (id, node) in &mut self.graph.nodes {
+            node.managed = match node.managed.take() {
+                Some(Managed::Lake(write)) => {
+                    let fields = levels(id, &write);
+                    Some(Managed::Lake(write.with_egress(fields)))
+                }
+                other => other,
+            };
+        }
+        self
+    }
+
     /// The root graph's authored nodes, ordered by local id; bodies have separate local graphs.
     pub fn nodes(&self) -> impl Iterator<Item = &Node> {
         self.graph
@@ -1551,6 +1729,11 @@ impl WorkflowDefinition {
                 .nodes()
                 .filter_map(Node::database_operation)
                 .map(DatabaseOperation::footprint)
+                .sum::<usize>()
+            + self
+                .nodes()
+                .filter_map(Node::iceberg_write)
+                .map(IcebergWrite::footprint)
                 .sum::<usize>()
             + self
                 .bodies
@@ -1696,6 +1879,7 @@ impl DefinitionGraph {
         check_reachable(&map, &entrypoint)?;
         let regions = parallel_regions(&map)?;
         let saga_regions = saga_regions(&map)?;
+        check_iceberg_sources(&map, &regions, &saga_regions)?;
         let scopes = innermost_scopes(&regions, &saga_regions);
         if kind == GraphKind::Body {
             check_body_return(&map, &entrypoint, &scopes)?;
@@ -1737,6 +1921,99 @@ fn scope_error(node: &NodeId, reason: &'static str) -> WorkflowError {
     WorkflowError::InvalidScope {
         node: node.clone(),
         reason,
+    }
+}
+
+/// The database step an Apache Iceberg write reads its records from runs before the write: it exists, it is a managed
+/// database step, and control can pass from it to the write, so its result is there when the write starts (G035-035 point 2).
+fn check_iceberg_sources(
+    map: &BTreeMap<NodeId, Node>,
+    parallels: &Regions,
+    sagas: &BTreeMap<NodeId, BTreeSet<NodeId>>,
+) -> Result<(), WorkflowError> {
+    // The owner of every branch and saga body a node is in: the join, or the end of the saga, hands control on from there.
+    let mut owners: BTreeMap<NodeId, Vec<NodeId>> = BTreeMap::new();
+    for (owner, regions) in parallels {
+        for member in regions.iter().flatten() {
+            owners
+                .entry(member.clone())
+                .or_default()
+                .push(owner.clone());
+        }
+    }
+    for (owner, region) in sagas {
+        for member in region {
+            owners
+                .entry(member.clone())
+                .or_default()
+                .push(owner.clone());
+        }
+    }
+    for node in map.values() {
+        let Some(RecordSource::DatabaseResult(source)) =
+            node.iceberg_write().map(IcebergWrite::records)
+        else {
+            continue;
+        };
+        // A statement that executes retains no column, so a write of its result could never have a record: only a query is a source.
+        let runs_before = map.get(source).is_some_and(|origin| {
+            origin
+                .database_operation()
+                .is_some_and(|operation| operation.kind == OperationKind::Query)
+        }) && can_reach(map, &owners, source, &node.id);
+        if !runs_before {
+            return Err(WorkflowError::InvalidIcebergNode);
+        }
+    }
+    Ok(())
+}
+
+/// Whether control can pass from `from` to `to` after `from` has succeeded: along the edges of the graph (which
+/// `check_acyclic` has shown finite), except the error edge of `from` itself, which is taken when there is no result, and
+/// from the end of a branch or of a saga body to the node that follows the node that owns it. A join is not an edge of the
+/// graph, so without the second rule a step in a branch could never reach what comes after the join.
+fn can_reach<'a>(
+    map: &'a BTreeMap<NodeId, Node>,
+    owners: &BTreeMap<NodeId, Vec<NodeId>>,
+    from: &NodeId,
+    to: &NodeId,
+) -> bool {
+    let mut seen = BTreeSet::new();
+    let mut pending: Vec<&'a NodeId> = Vec::new();
+    if let Some(origin) = map.get(from) {
+        let mut successors = origin.successors();
+        // `successors` lists the error edge last.
+        if origin.on_error().is_some() {
+            successors.pop();
+        }
+        pending.extend(successors);
+    }
+    // Every branch and saga body the source is in, however deeply nested, is an owner of it, so once is enough: nothing the
+    // walk reaches afterwards is inside a region the source is not in, except by passing through the node that owns it.
+    push_continuations(map, owners, from, &mut pending);
+    while let Some(current) = pending.pop() {
+        if current == to {
+            return true;
+        }
+        if !seen.insert(current) {
+            continue;
+        }
+        if let Some(node) = map.get(current) {
+            pending.extend(node.successors());
+        }
+    }
+    false
+}
+
+/// What follows the nodes that own the branches or the saga body `node` is in, once they are done.
+fn push_continuations<'a>(
+    map: &'a BTreeMap<NodeId, Node>,
+    owners: &BTreeMap<NodeId, Vec<NodeId>>,
+    node: &NodeId,
+    pending: &mut Vec<&'a NodeId>,
+) {
+    for owner in owners.get(node).into_iter().flatten() {
+        pending.extend(map.get(owner).and_then(Node::next));
     }
 }
 
@@ -1931,7 +2208,7 @@ fn check_body_return(
     for node in nodes.values() {
         let explicit_route = matches!(
             node.kind(),
-            NodeKind::Condition { .. } | NodeKind::Return { .. }
+            NodeKind::Condition { .. } | NodeKind::Switch { .. } | NodeKind::Return { .. }
         ) || node.next().is_some();
         if !explicit_route && !scopes.contains_key(node.id()) {
             return Err(scope_error(
@@ -2036,6 +2313,15 @@ fn check_body_references(
     Ok(())
 }
 
+/// What an Iceberg write is, whatever its author says: high risk, and irreversible unless a revert undoes it.
+fn iceberg_effect(revert: bool) -> EffectPolicy {
+    EffectPolicy {
+        high_risk: true,
+        irreversible: !revert,
+        ..EffectPolicy::NONE
+    }
+}
+
 fn check_node(node: &Node) -> Result<(), WorkflowError> {
     if let NodeKind::Activity {
         activity,
@@ -2047,13 +2333,44 @@ fn check_node(node: &Node) -> Result<(), WorkflowError> {
     } = &node.kind
     {
         let reserved = |a: &ActivityName| a.as_str().starts_with(MANAGED_DATABASE_PREFIX);
-        if compensate_with.as_ref().is_some_and(reserved)
+        // Only a managed node carries a reserved name, and only an Iceberg write names the revert in `compensateWith`.
+        if (compensate_with.as_ref().is_some_and(reserved) && node.iceberg_write().is_none())
             || reconcile_with.as_ref().is_some_and(reserved)
-            || (reserved(activity) && node.database.is_none())
+            || (reserved(activity) && node.managed.is_none())
         {
             return Err(WorkflowError::InvalidDatabaseNode);
         }
-        if let Some(operation) = &node.database {
+        if node.lake_probe_target().is_some() {
+            // What a probe is, whatever its author says: it never retries, names nothing and changes nothing.
+            if activity.as_str() != ICEBERG_PROBE_ACTIVITY
+                || *retry != RetryPolicy::no_retry()
+                || !secrets.is_empty()
+                || compensate_with.is_some()
+                || reconcile_with.is_some()
+                || idempotency_template.is_some()
+                || node.effect != EffectPolicy::NONE
+            {
+                return Err(WorkflowError::InvalidIcebergNode);
+            }
+        }
+        if let Some(write) = node.iceberg_write() {
+            write
+                .validate()
+                .map_err(|_| WorkflowError::InvalidIcebergNode)?;
+            let revert = write.revert();
+            if activity.as_str() != ICEBERG_WRITE_ACTIVITY
+                || *retry != RetryPolicy::DEFAULT
+                || !secrets.is_empty()
+                || compensate_with.as_ref().map(ActivityName::as_str)
+                    != revert.then_some(ICEBERG_REVERT_ACTIVITY)
+                || reconcile_with.is_some()
+                || idempotency_template.is_some()
+                || node.effect != iceberg_effect(revert)
+            {
+                return Err(WorkflowError::InvalidIcebergNode);
+            }
+        }
+        if let Some(operation) = node.database_operation() {
             operation
                 .validate()
                 .map_err(|_| WorkflowError::InvalidDatabaseNode)?;
@@ -2077,8 +2394,15 @@ fn check_node(node: &Node) -> Result<(), WorkflowError> {
                 return Err(WorkflowError::InvalidDatabaseNode);
             }
         }
-    } else if node.database.is_some() {
-        return Err(WorkflowError::InvalidDatabaseNode);
+    } else {
+        // A payload on a node that is not an activity: each kind says which of its two errors it is.
+        match &node.managed {
+            None => {}
+            Some(Managed::Sql(_)) => return Err(WorkflowError::InvalidDatabaseNode),
+            Some(Managed::Lake(_) | Managed::LakeProbe(_)) => {
+                return Err(WorkflowError::InvalidIcebergNode);
+            }
+        }
     }
     if let Some(timeout) = node.timeout {
         duration_in_range(&node.id, "timeout", timeout)?;

@@ -1,0 +1,22 @@
+{
+  "command": [
+    "cargo",
+    "test",
+    "-p",
+    "sagat-tests",
+    "--test",
+    "integration_redis_streams",
+    "fixtures_publish_redis_only_on_loopback",
+    "--locked",
+    "--",
+    "--exact",
+    "--nocapture"
+  ],
+  "exit_code": 101,
+  "seconds": 67.8,
+  "wall_seconds": 67.8,
+  "wall_minus_monotonic_seconds": 0.0,
+  "started_utc": "2026-10-28T11:57:56.416676+00:00",
+  "finished_utc": "2026-10-28T11:59:04.217098+00:00",
+  "log": "redis-loopback-ci-red.txt"
+}

@@ -27,22 +27,89 @@ pub struct ConnectionRecord {
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
 }
+/// What the lease of a lake step needs from the store, read in the lease transaction (feature 035, D035-138).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LakeLeaseFacts {
+    /// The limits of the connection at the revision the run was admitted with, not the revision in force.
+    pub connection_limits: sagat_domain::database::LakeLimits,
+    /// The number of the published version of the workflow the run is of.
+    pub workflow_version: u32,
+    /// When the first attempt of the step was leased, by the database's clock; `None` while no attempt has been.
+    pub first_leased_at: Option<OffsetDateTime>,
+}
+
+/// What the lease of an Iceberg probe needs from the store, read in the lease transaction (D035-150): the connection it tests, by the name
+/// and the revision it was admitted with, which are what the result echoes back.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProbeLeaseFacts {
+    pub connection: String,
+    pub revision: u32,
+}
+
+/// One secret a connection names, selected under the current run/ACL locks (feature 035, D035-140).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SelectedSecret {
+    /// What the secret is for in the connection; the pin of the attempt is keyed by it.
+    pub role: sagat_domain::database::SecretRole,
+    /// The version the attempt is to use: the one it pinned, when it has pinned one.
+    pub stored: crate::secrets::StoredSecret,
+    /// Current authority even when the attempt has pinned an older retained credential.
+    pub current_version: Uuid,
+}
+
+/// What the step is to do, with the secrets it needs. A SQL step has one statement and one secret; a lake step has
+/// no statement and up to two secrets (the catalog's and the storage's), and which of them exist is the connection's.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DatabaseWork {
+    Sql {
+        operation: sagat_domain::database::DatabaseOperation,
+        secret: Box<SelectedSecret>,
+    },
+    Lake {
+        secrets: Vec<SelectedSecret>,
+    },
+}
+
 /// Metadata selected under current run/ACL locks. It is compared again after provider I/O.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DatabaseInput {
     pub connection: ConnectionRecord,
-    pub operation: sagat_domain::database::DatabaseOperation,
-    pub secret: crate::secrets::StoredSecret,
-    /// Current authority even when the attempt has pinned an older retained credential.
-    pub current_secret_version: Uuid,
+    pub work: DatabaseWork,
+}
+
+impl DatabaseInput {
+    /// The secrets of the step, in the order they are read from the provider and pinned.
+    #[must_use]
+    pub fn secrets(&self) -> &[SelectedSecret] {
+        match &self.work {
+            DatabaseWork::Sql { secret, .. } => std::slice::from_ref(&**secret),
+            DatabaseWork::Lake { secrets } => secrets,
+        }
+    }
+}
+
+/// What a lake step is handed: the secrets of its connection that exist, each under its role.
+#[derive(Debug)]
+pub struct ResolvedLake {
+    pub catalog: Option<crate::worker::ResolvedSecret>,
+    pub storage: Option<crate::worker::ResolvedSecret>,
+}
+
+/// What the executor is handed for the work of its step.
+#[derive(Debug)]
+pub enum ResolvedGrant {
+    Sql {
+        operation: sagat_domain::database::DatabaseOperation,
+        credential: crate::worker::ResolvedSecret,
+    },
+    Lake(ResolvedLake),
 }
 
 /// A lease-bound capability for the isolated executor. Provider routing stays in the server.
 #[derive(Debug)]
 pub struct ResolvedDatabase {
     pub connection: ConnectionRecord,
-    pub operation: sagat_domain::database::DatabaseOperation,
-    pub credential: crate::worker::ResolvedSecret,
+    pub grant: ResolvedGrant,
     pub expires_at: OffsetDateTime,
 }
 
@@ -81,10 +148,38 @@ pub trait ConnectionStore: NamespaceDirectory {
 pub struct ConnectionService<S, C> {
     store: S,
     clock: C,
+    /// `allowUnauthenticatedMetastore`: whether a Hive metastore may be used without TLS. Off unless the deployment says
+    /// so, since it has neither transport security nor authentication.
+    allow_unauthenticated_metastore: bool,
+    /// `lake.enabled`: whether this deployment runs Apache Iceberg writes, so whether it offers an Iceberg connection (feature 035). Off
+    /// unless the deployment says so.
+    lake_enabled: bool,
 }
 impl<S: ConnectionStore, C: Clock> ConnectionService<S, C> {
     pub fn new(store: S, clock: C) -> Self {
-        Self { store, clock }
+        Self {
+            store,
+            clock,
+            allow_unauthenticated_metastore: false,
+            lake_enabled: false,
+        }
+    }
+    /// The deployment's `lake.enabled`, which decides whether the drivers it lists include Apache Iceberg.
+    #[must_use]
+    pub const fn with_lake_enabled(mut self, enabled: bool) -> Self {
+        self.lake_enabled = enabled;
+        self
+    }
+    /// Whether the deployment offers an Iceberg connection: it runs Iceberg writes.
+    #[must_use]
+    pub const fn lake_enabled(&self) -> bool {
+        self.lake_enabled
+    }
+    /// Lets a connection use a Hive metastore with `tls: none` (the deployment's `allowUnauthenticatedMetastore`).
+    #[must_use]
+    pub fn with_unauthenticated_metastore_allowed(mut self, allowed: bool) -> Self {
+        self.allow_unauthenticated_metastore = allowed;
+        self
     }
     #[tracing::instrument(name = "database.catalog.write", skip_all)]
     pub async fn put(
@@ -96,10 +191,12 @@ impl<S: ConnectionStore, C: Clock> ConnectionService<S, C> {
     ) -> Result<ConnectionRecord, AppError> {
         principal.authorize(Permission::DatabaseManage)?;
         require_namespace(&self.store, &self.clock, principal, namespace, ctx).await?;
-        write
-            .config
-            .validate()
-            .map_err(|_| AppError::NotAllowed("invalid database connection configuration"))?;
+        write.config.validate().map_err(invalid_connection)?;
+        if write.config.uses_unauthenticated_metastore() && !self.allow_unauthenticated_metastore {
+            return Err(AppError::InvalidConnection {
+                reason: "UNAUTHENTICATED_METASTORE_NOT_ALLOWED",
+            });
+        }
         if write.request_id.is_nil() || write.expected_revision >= i32::MAX as u32 {
             return Err(AppError::NotAllowed(
                 "invalid database request identity or revision",
@@ -150,6 +247,17 @@ impl<S: ConnectionStore, C: Clock> ConnectionService<S, C> {
     }
 }
 
+/// What a refused connection configuration says: the reason of a lake connection, which is a closed name, and the
+/// general refusal for the rest.
+pub fn invalid_connection(error: sagat_domain::database::DatabaseError) -> AppError {
+    match error {
+        sagat_domain::database::DatabaseError::Lake(reason) => AppError::InvalidConnection {
+            reason: reason.reason(),
+        },
+        _ => AppError::NotAllowed("invalid database connection configuration"),
+    }
+}
+
 /// Credential fields have independent semantics and always own zeroized secret memory.
 #[derive(Debug)]
 pub struct DatabaseCredentials {
@@ -182,4 +290,139 @@ pub trait DatabaseResultValidator: Send + Sync {
         content: &[u8],
         limits: sagat_domain::database::DatabaseLimits,
     ) -> Result<(), InvalidDatabaseResult>;
+}
+
+/// What the server knows of the write a lake receipt must be about (feature 035, D035-142). Not what the runner says it did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExpectedReceipt<'a> {
+    /// The effect key of the step: the idempotency key of its task.
+    pub effect_key: &'a str,
+    /// The branch or tag the step commits to.
+    pub reference: &'a str,
+    pub mode: sagat_domain::database::WriteMode,
+    /// Whether the lease said an empty batch may end the step without a commit. When it did not, a receipt that says one did is not the
+    /// host's the step was given to.
+    pub allow_empty: bool,
+}
+
+/// Why a receipt is not the one of the step. Never carries the receipt: a value of it is not safe to print.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum InvalidLakeReceipt {
+    #[error("the receipt is larger than a receipt can be")]
+    TooLarge,
+    #[error("the receipt does not hold as typed fields")]
+    Malformed,
+    #[error("the receipt is of a kind an Iceberg write does not produce")]
+    Kind,
+    #[error("the receipt reports an outcome an Iceberg write does not end with")]
+    Outcome,
+    #[error("the parts of the receipt contradict each other")]
+    Inconsistent,
+    #[error("the receipt is not about this step")]
+    Mismatch,
+}
+
+/// What a write that committed is audited with (FR-035-030): two numbers of the typed receipt, so that nothing but digits can reach a
+/// record and the application reads no wire shape of another layer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CommittedWrite {
+    pub snapshot_id: i64,
+    pub rows_added: Option<u64>,
+}
+
+/// The receipt as the server stores it, and what it says of the write.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RebuiltReceipt {
+    /// The canonical bytes, built again from typed fields.
+    pub canonical: Vec<u8>,
+    /// `Some` only for a receipt of a commit: a write of no record commits nothing.
+    pub commit: Option<CommittedWrite>,
+}
+
+/// Receipt syntax belongs to an adapter. The server never stores what the runner sent: it reads it into typed fields that accept
+/// only what the contract names, checks it against the step, and stores the receipt built again from those fields.
+pub trait LakeReceiptCodec: Send + Sync {
+    /// The canonical receipt of an Iceberg write and what it says of the write, or the reason it is not the one of the step.
+    ///
+    /// # Errors
+    /// [`InvalidLakeReceipt`] for a receipt that is too large, does not hold as typed fields, is of another kind or outcome, or
+    /// names another effect key, ref or mode than `expected`.
+    fn rebuild(
+        &self,
+        receipt: &[u8],
+        expected: &ExpectedReceipt<'_>,
+    ) -> Result<RebuiltReceipt, InvalidLakeReceipt>;
+}
+
+/// What the server knows of the probe a result must be about (D035-150): the connection it was leased with, by the name and the revision
+/// it was admitted with. Not what the runner says it tested.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExpectedProbe<'a> {
+    pub connection: &'a str,
+    pub revision: u32,
+}
+
+/// Why a probe result is not the one of the probe. Never carries the result: a member of it is not safe to print.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum InvalidLakeProbe {
+    #[error("the result is larger than a result can be")]
+    TooLarge,
+    #[error("the result does not hold as typed fields")]
+    Malformed,
+    #[error("the result is of a kind a probe does not produce")]
+    Kind,
+    #[error("the checks of the result contradict each other")]
+    Inconsistent,
+    #[error("the result is not about this probe")]
+    Mismatch,
+}
+
+/// The result as the server stores it, and what it says.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RebuiltProbe {
+    /// The canonical bytes, built again from typed fields.
+    pub canonical: Vec<u8>,
+    pub result: sagat_domain::database::ProbeResult,
+}
+
+/// Result syntax belongs to an adapter, as a receipt's does. The server never stores what the runner sent: it reads it into typed fields that
+/// accept only what the contract names (closed words, numbers, and the connection's own name), checks it against the probe, and stores the
+/// result built again from those fields.
+pub trait LakeProbeCodec: Send + Sync {
+    /// The canonical result of the probe, or the reason what the runner reported is not the result of this one.
+    ///
+    /// # Errors
+    /// [`InvalidLakeProbe`] for a result that is too large, does not hold as typed fields, is of another kind, names another connection or
+    /// revision than `expected`, or whose checks contradict each other.
+    fn rebuild(
+        &self,
+        result: &[u8],
+        expected: &ExpectedProbe<'_>,
+    ) -> Result<RebuiltProbe, InvalidLakeProbe>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sagat_domain::database::{DatabaseError, LakeConfigError};
+
+    #[test]
+    fn a_lake_refusal_keeps_its_reason_and_any_other_is_the_general_one() {
+        assert_eq!(
+            invalid_connection(DatabaseError::Lake(LakeConfigError::CredentialInUri)),
+            AppError::InvalidConnection {
+                reason: "CREDENTIAL_IN_URI"
+            }
+        );
+        for other in [
+            DatabaseError::InvalidHost,
+            DatabaseError::InvalidLimits,
+            DatabaseError::InvalidTls,
+        ] {
+            assert_eq!(
+                invalid_connection(other),
+                AppError::NotAllowed("invalid database connection configuration")
+            );
+        }
+    }
 }

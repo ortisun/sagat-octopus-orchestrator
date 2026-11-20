@@ -48,8 +48,8 @@ export const STEP_ACTIONS: readonly Action[] = ['RETRY_STEP', 'RETRY_COMPENSATIO
 /** What an operator can do to the run as a whole. */
 export const RUN_ACTIONS: readonly Action[] = ['PAUSE', 'RESUME', 'CANCEL', 'RERUN_AS_NEW'];
 
-/** The error codes that leave it unknown whether a step's effect happened; the platform asks for more to retry one (`FailureCode::leaves_outcome_unknown`). */
-const OUTCOME_UNKNOWN = new Set(['LEASE_EXPIRED', 'ATTEMPT_TIMEOUT', 'OUTCOME_UNKNOWN', 'RECONCILIATION_FAILED', 'RECONCILIATION_UNKNOWN']);
+/** The error codes that leave it unknown whether a step's effect happened; the platform requires an outcome resolution before further action (`FailureCode::leaves_outcome_unknown`). */
+const OUTCOME_UNKNOWN = new Set(['LEASE_EXPIRED', 'ATTEMPT_TIMEOUT', 'OUTCOME_UNKNOWN', 'RECONCILIATION_FAILED', 'RECONCILIATION_UNKNOWN', 'RECONCILIATION_NOT_FINAL', 'STORAGE_QUOTA_EXCEEDED']);
 
 export function isCompensation(id: string): boolean {
   return id.endsWith('~c');
@@ -57,7 +57,7 @@ export function isCompensation(id: string): boolean {
 
 /** The step's last failure left it unknown whether its effect happened: another attempt may do it twice. */
 export function mayHaveHappened(node: RuntimeNode | undefined): boolean {
-  return node !== undefined && !isCompensation(node.id) && node.failureCode !== undefined && node.failureCode !== null && OUTCOME_UNKNOWN.has(node.failureCode);
+  return node !== undefined && node.failureCode !== undefined && node.failureCode !== null && OUTCOME_UNKNOWN.has(node.failureCode);
 }
 
 function noPermission(permission: Permission): string {
@@ -127,8 +127,8 @@ export function stepOperations(node: RuntimeNode, run: RunFacts, can: (permissio
     if (action === 'RETRY_COMPENSATION' && !undo) return 'Only a compensation (an id ending in ~c) can be retried this way: use Retry step.';
     if (action === 'SKIP_COMPENSATION' && !undo) return 'Only a compensation can be skipped.';
     if (!waiting && !((action === 'RETRY_STEP' || action === 'RETRY_COMPENSATION') && retryWait)) return 'This step is not waiting for a decision.';
-    if (action === 'RETRY_STEP' && waiting && !can('saga:override') && mayHaveHappened(node)) {
-      return `This step may already have happened (${node.failureCode}). Retrying it needs the saga:override permission.`;
+    if ((action === 'RETRY_STEP' || action === 'RETRY_COMPENSATION') && mayHaveHappened(node)) {
+      return `The outcome is unresolved (${node.failureCode}). Direct retry is blocked; resolve the outcome using evidence first.`;
     }
     return undefined;
   };
@@ -147,16 +147,15 @@ export function consequence(action: Action, step?: string, node?: RuntimeNode): 
     case 'RESUME':
       return 'Resumes the run: the steps that were held back are released.';
     case 'CANCEL':
-      return 'Stops the run. Completed steps of a saga are compensated according to its cancel policy; the steps still running are asked to stop.';
+      return 'Stops the run. Completed steps of a saga are compensated according to its cancel policy; the steps still running are asked to stop. Review of unresolved effects and failed compensations is preserved.';
     case 'RETRY_STEP':
+      if (mayHaveHappened(node)) return `Direct retry of ${which} is blocked (${node?.failureCode}). Resolve the outcome using evidence first.`;
       if (node?.status === 'RETRY_WAIT') {
         return `Starts the next attempt of ${which} now, without waiting for the delay of its retry. The earlier attempts stay in the journal.`;
       }
-      if (mayHaveHappened(node)) {
-        return `Asks for another attempt of ${which}, which may already have happened (${node?.failureCode ?? 'outcome unknown'}): if it did, it will happen twice. Do this only if you know it did not, or that the effect can safely be repeated. The earlier attempts stay in the journal.`;
-      }
       return `Asks for another attempt of ${which}; the earlier attempts stay in the journal.`;
     case 'RETRY_COMPENSATION':
+      if (mayHaveHappened(node)) return `Direct retry of ${which} is blocked (${node?.failureCode}). Resolve the outcome using evidence first.`;
       if (node?.status === 'RETRY_WAIT') {
         return `Starts the next attempt at undoing ${which} now, without waiting for the delay of its retry. The earlier attempts stay in the journal.`;
       }
@@ -172,9 +171,9 @@ export function consequence(action: Action, step?: string, node?: RuntimeNode): 
   }
 }
 
-/** The step decisions that ask for the step id to be typed back (D149): the two that override, and a retry of a step that may already have happened. */
-export function asksForStepId(action: Action, node?: RuntimeNode): boolean {
-  return action === 'SKIP_COMPENSATION' || action === 'RESOLVE_STEP' || (action === 'RETRY_STEP' && mayHaveHappened(node));
+/** The step decisions that ask for the step id to be typed back (D149): the two outcome-bearing overrides. */
+export function asksForStepId(action: Action): boolean {
+  return action === 'SKIP_COMPENSATION' || action === 'RESOLVE_STEP';
 }
 
 export const MIN_REASON = 8;

@@ -21,9 +21,8 @@ use sagat_application::identity::{Page, PageRequest};
 use sagat_application::runs::{GraphChanges, ReviewAction, RunFilter, RunOperation, StartRun};
 use sagat_domain::definition::{WorkflowId, WorkflowVersionId};
 use sagat_domain::execution::{
-    ExecutionInstanceId, FailureCode, InstancePath, ReviewOutcome, RunId, RunStatus, StepStatus,
+    ExecutionInstanceId, FailureCode, InstancePath, ReviewOutcome, RunId, RunStatus,
 };
-use sagat_domain::identity::Permission;
 use sagat_domain::workflow::NodeId;
 use serde::Deserialize;
 use serde_json::Value;
@@ -896,35 +895,6 @@ pub async fn operate_run<B: Exec>(
         .as_ref()
         .map(|action| validate_review_request(&body, action))
         .transpose()?;
-    if matches!(review, Some(ReviewAction::Retry))
-        && review_node
-            .as_ref()
-            .is_some_and(|instance| !instance.node().is_compensation())
-    {
-        let instance = review_node.as_ref().ok_or_else(ApiError::not_found)?;
-        let graph = state
-            .runs()
-            .graph(&caller.session.principal, run_id, &caller.ctx)
-            .await?;
-        let step = graph
-            .steps
-            .iter()
-            .find(|step| &step.instance == instance)
-            .ok_or_else(ApiError::not_found)?;
-        let unknown_outcome = step.status == StepStatus::Waiting
-            && step
-                .failure_code
-                .as_deref()
-                .and_then(|code| FailureCode::parse(code).ok())
-                .is_some_and(|code| code.leaves_outcome_unknown());
-        if unknown_outcome {
-            caller
-                .session
-                .principal
-                .authorize(Permission::SagaOverride)
-                .map_err(AppError::from)?;
-        }
-    }
     let admission_operation = match (&review, body.action.as_str()) {
         (Some(ReviewAction::Retry | ReviewAction::Hold), _) => ApiOperation::RunOperate,
         (Some(ReviewAction::Skip | ReviewAction::Resolve(_)), _) => ApiOperation::SagaOverride,

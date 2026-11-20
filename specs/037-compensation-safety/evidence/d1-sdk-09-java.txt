@@ -1,0 +1,17 @@
+./mvnw -q verify
+Nov 01, 2026 9:22:05 PM dev.sagatoctopusorchestrator.sdk.Hooks log
+SEVERE: registering again failed code=UNSUPPORTED_PROTOCOL
+Nov 01, 2026 9:22:08 PM dev.sagatoctopusorchestrator.sdk.Hooks log
+SEVERE: the completion could not be reported task=run-1/charge/1 code=VALIDATION_FAILED
+Nov 01, 2026 9:22:19 PM dev.sagatoctopusorchestrator.sdk.Hooks log
+SEVERE: the completion could not be reported task=run-1/charge/1 code=CANCELLED
+Nov 01, 2026 9:22:29 PM dev.sagatoctopusorchestrator.sdk.Hooks log
+SEVERE: the completion could not be reported task=run-1/charge/1 code=TRANSPORT
+Nov 01, 2026 9:22:34 PM dev.sagatoctopusorchestrator.sdk.Hooks log
+SEVERE: the completion could not be reported task=run-1/charge/1 code=UNAUTHENTICATED
+Nov 01, 2026 9:22:34 PM dev.sagatoctopusorchestrator.sdk.Hooks log
+SEVERE: the completion could not be reported task=run-1/charge/1 code=FORBIDDEN
+Nov 01, 2026 9:22:34 PM dev.sagatoctopusorchestrator.sdk.Hooks log
+SEVERE: the completion could not be reported task=run-1/charge/1 code=VALIDATION_FAILED
+Nov 01, 2026 9:22:34 PM dev.sagatoctopusorchestrator.sdk.Hooks log
+SEVERE: the completion could not be reported task=run-1/charge/1 code=CONFLICT

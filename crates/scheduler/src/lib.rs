@@ -17,6 +17,7 @@ mod fairness;
 mod monitor;
 mod outbox;
 mod passes;
+mod schedules;
 mod shards;
 mod telemetry;
 
@@ -29,6 +30,7 @@ pub use passes::{
     CollectionAdvance, CollectionAdvanceError, ContinuationAdvanceError, LoopAdvance,
     LoopAdvanceError, Report, Scheduler, SchedulerSettings,
 };
+pub use schedules::{SchedulePass, ScheduleRound, ScheduleSettings};
 pub use shards::{Keeper, KeeperSettings, Placement, Round, Snapshot};
 pub use telemetry::{
     ProjectionRound, ProjectorSettings, TelemetryProjector, state as projection_state,

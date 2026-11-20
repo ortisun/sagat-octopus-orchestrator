@@ -1,0 +1,5 @@
+test_malformed_ids_and_probe_exceptions_emit_only_unavailable (test_compose_diagnostics.SafeComposeDiagnostics.test_malformed_ids_and_probe_exceptions_emit_only_unavailable) ... Timeout (0:00:03)!
+Thread 0x00000001f076f080 (most recent call first):
+  File "/Users/marcelo/Documents/Projects/sagat-octopus-compensation-safety/scripts/tests/test_compose_diagnostics.py", line 42 in __init__
+  File "__init__", line ??? in __init__
+  <invalid frame>

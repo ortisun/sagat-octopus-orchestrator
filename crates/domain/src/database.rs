@@ -1,8 +1,32 @@
 //! Managed database targets and operations (feature 017). No driver or network I/O lives here.
 mod failure;
+mod iceberg;
+mod iceberg_egress;
+mod iceberg_write;
+mod lake_probe;
 pub use failure::DatabaseFailure;
+pub use iceberg::{
+    AccessDelegation, AdlsStorage, GcsStorage, GlueCatalog, HiveCatalog, HiveTls, IcebergCatalog,
+    IcebergConfig, JdbcCatalog, JdbcEngine, LakeConfigError, LakeLimits, LakeStorage, RestAuth,
+    RestCatalog, S3Storage, StorageCredentials, StorageKind, WriteMode,
+};
+pub use iceberg::{
+    DEFAULT_MAX_RECORD_BYTES, DEFAULT_MAX_RECORDS, DEFAULT_TIMEOUT_MS, EffectiveLakeLimits,
+};
+pub use iceberg_egress::{EgressField, EgressRefusal, LakeRefusal};
+pub use iceberg_write::{
+    ColumnMapping, ICEBERG_REVERT_ACTIVITY, ICEBERG_WRITE_ACTIVITY, IcebergWrite,
+    IcebergWriteError, IcebergWriteParts, MAX_MAPPED_COLUMNS, MAX_MAPPING_DEPTH, MAX_RECORD_BLOBS,
+    MAX_RECORD_INPUT_BYTES, RecordSource, TableIdentifier, WriteIntent,
+};
+pub use lake_probe::{
+    ICEBERG_PROBE_ACTIVITY, LakeProbe, ProbeCheck, ProbeCheckResult, ProbeOutcome, ProbeResult,
+    ProbeResultError,
+};
 
-use crate::{identity::Slug, secrets::SecretName, workflow::Expression};
+use crate::{
+    classification::EgressCeiling, identity::Slug, secrets::SecretName, workflow::Expression,
+};
 use std::{fmt, net::IpAddr};
 
 uuid_id!(
@@ -34,6 +58,10 @@ pub enum DatabaseError {
     ParameterLimit,
     #[error("unsupported or invalid database value")]
     InvalidValue,
+    #[error("setting a PII egress ceiling needs the reveal grant of the namespace")]
+    RevealGrantRequired,
+    #[error("invalid lake connection: {0}")]
+    Lake(LakeConfigError),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -139,6 +167,22 @@ impl DatabaseLimits {
     }
 }
 
+/// A bare DNS name or an IP address: no scheme, port, path, query or user information.
+fn valid_host(host: &str) -> bool {
+    let dns = !host.is_empty()
+        && host.len() <= 253
+        && host.split('.').all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+                && label
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        });
+    dns || host.parse::<IpAddr>().is_ok()
+}
+
 /// Driver-specific configuration keeps an extension boundary without advertising unbuilt drivers.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConnectionConfig {
@@ -149,7 +193,12 @@ pub enum ConnectionConfig {
         tls: TlsPolicy,
         secret: SecretName,
         limits: DatabaseLimits,
+        /// The highest level a step may write to this connection (feature 035). A revision stored without one reads
+        /// as `internal`.
+        egress_ceiling: EgressCeiling,
     },
+    /// An Apache Iceberg catalog and its storage (feature 035). Boxed: it is far larger than the others.
+    Iceberg(Box<IcebergConfig>),
 }
 impl ConnectionConfig {
     pub fn postgres(
@@ -167,31 +216,75 @@ impl ConnectionConfig {
             tls,
             secret,
             limits,
+            egress_ceiling: EgressCeiling::default(),
         };
         config.validate()?;
         Ok(config)
     }
+    /// An Iceberg connection **being saved**, checked against every rule of `data-model.md` section 1, including that a plain `http` address
+    /// names the loopback (O035-010).
+    ///
+    /// # Errors
+    /// [`DatabaseError::Lake`] with the rule that does not hold.
+    pub fn iceberg(config: IcebergConfig) -> Result<Self, DatabaseError> {
+        config.validate_saved()?;
+        Ok(Self::Iceberg(Box::new(config)))
+    }
+
+    /// An Iceberg connection **read back from the store**: every rule a build of any age enforced, and none that came later about what
+    /// may be saved. A revision stays readable after the rules of saving tighten.
+    ///
+    /// # Errors
+    /// [`DatabaseError::Lake`] with the rule that does not hold.
+    pub fn iceberg_stored(config: IcebergConfig) -> Result<Self, DatabaseError> {
+        config.validate()?;
+        Ok(Self::Iceberg(Box::new(config)))
+    }
+    /// The name of the driver, as the API and the stored configuration give it.
+    #[must_use]
+    pub const fn driver(&self) -> &'static str {
+        match self {
+            Self::Postgres { .. } => "postgresql",
+            Self::Iceberg(_) => "iceberg",
+        }
+    }
+    /// The same connection with another egress ceiling. Whether the actor may set it is `authorize_egress_ceiling`.
+    #[must_use]
+    pub fn with_egress_ceiling(mut self, ceiling: EgressCeiling) -> Self {
+        match &mut self {
+            Self::Postgres { egress_ceiling, .. } => *egress_ceiling = ceiling,
+            Self::Iceberg(config) => config.egress_ceiling = ceiling,
+        }
+        self
+    }
+    #[must_use]
+    pub fn egress_ceiling(&self) -> EgressCeiling {
+        match self {
+            Self::Postgres { egress_ceiling, .. } => *egress_ceiling,
+            Self::Iceberg(config) => config.egress_ceiling,
+        }
+    }
+    /// Setting `pii` as the ceiling needs the actor to hold the reveal grant for the namespace (FR-035-005); the other
+    /// ceilings need nothing more than the right to manage connections.
+    pub fn authorize_egress_ceiling(&self, holds_reveal_grant: bool) -> Result<(), DatabaseError> {
+        if self.egress_ceiling().requires_reveal_grant() && !holds_reveal_grant {
+            return Err(DatabaseError::RevealGrantRequired);
+        }
+        Ok(())
+    }
     pub fn validate(&self) -> Result<(), DatabaseError> {
-        let Self::Postgres {
-            host,
-            port,
-            database,
-            tls,
-            limits,
-            ..
-        } = self;
-        let dns = !host.is_empty()
-            && host.len() <= 253
-            && host.split('.').all(|label| {
-                !label.is_empty()
-                    && label.len() <= 63
-                    && !label.starts_with('-')
-                    && !label.ends_with('-')
-                    && label
-                        .bytes()
-                        .all(|b| b.is_ascii_alphanumeric() || b == b'-')
-            });
-        if host.parse::<IpAddr>().is_err() && !dns {
+        let (host, port, database, tls, limits) = match self {
+            Self::Postgres {
+                host,
+                port,
+                database,
+                tls,
+                limits,
+                ..
+            } => (host, port, database, tls, limits),
+            Self::Iceberg(config) => return config.validate(),
+        };
+        if !valid_host(host) {
             return Err(DatabaseError::InvalidHost);
         }
         if *port == 0
@@ -204,14 +297,80 @@ impl ConnectionConfig {
         tls.validate()?;
         limits.validate()
     }
-    pub fn secret(&self) -> &SecretName {
+    /// The settings of an Apache Iceberg connection, or `None` for any other kind: a step that writes to a lake reads the
+    /// modes and the ceiling from them, and a connection of another kind is unusable to it.
+    #[must_use]
+    pub const fn as_iceberg(&self) -> Option<&IcebergConfig> {
         match self {
-            Self::Postgres { secret, .. } => secret,
+            Self::Postgres { .. } => None,
+            Self::Iceberg(config) => Some(config),
         }
     }
-    pub fn limits(&self) -> DatabaseLimits {
+    /// The logical secrets the connection refers to, for the checks that each exists with the right authority. A
+    /// PostgreSQL connection has one; an Iceberg connection has a catalog secret, a storage secret, both or neither.
+    #[must_use]
+    pub fn secrets(&self) -> Vec<&SecretName> {
         match self {
-            Self::Postgres { limits, .. } => *limits,
+            Self::Postgres { secret, .. } => vec![secret],
+            Self::Iceberg(config) => config
+                .catalog_secret
+                .iter()
+                .chain(config.storage_secret.iter())
+                .collect(),
+        }
+    }
+    /// The secrets of the connection with the role each plays, in a fixed order: the primary one of a SQL connection; the
+    /// catalog's then the storage's of a lake connection, either of them, both or neither. The same names as
+    /// [`Self::secrets`], in the same order.
+    #[must_use]
+    pub fn secret_slots(&self) -> Vec<(SecretRole, &SecretName)> {
+        match self {
+            Self::Postgres { secret, .. } => vec![(SecretRole::Primary, secret)],
+            Self::Iceberg(config) => config
+                .catalog_secret
+                .iter()
+                .map(|secret| (SecretRole::Catalog, secret))
+                .chain(
+                    config
+                        .storage_secret
+                        .iter()
+                        .map(|secret| (SecretRole::Storage, secret)),
+                )
+                .collect(),
+        }
+    }
+    /// The secret of a SQL connection. `None` for a lake connection: the managed executor runs SQL and nothing else, so
+    /// a path that needs one refuses the connection instead of guessing.
+    #[must_use]
+    pub fn sql_secret(&self) -> Option<&SecretName> {
+        match self {
+            Self::Postgres { secret, .. } => Some(secret),
+            Self::Iceberg(_) => None,
+        }
+    }
+    /// The SQL limits of a SQL connection; `None` for a lake connection, whose limits are [`LakeLimits`].
+    #[must_use]
+    pub fn sql_limits(&self) -> Option<DatabaseLimits> {
+        match self {
+            Self::Postgres { limits, .. } => Some(*limits),
+            Self::Iceberg(_) => None,
+        }
+    }
+    /// Whether the connection reaches something without transport security, which only a development namespace allows.
+    #[must_use]
+    pub fn requires_development(&self) -> bool {
+        match self {
+            Self::Postgres { tls, .. } => *tls == TlsPolicy::DevelopmentPlaintext,
+            Self::Iceberg(config) => config.requires_development(),
+        }
+    }
+    /// Whether the connection uses a Hive metastore with `tls: none`, which the deployment must allow
+    /// (`allowUnauthenticatedMetastore`).
+    #[must_use]
+    pub fn uses_unauthenticated_metastore(&self) -> bool {
+        match self {
+            Self::Postgres { .. } => false,
+            Self::Iceberg(config) => config.uses_unauthenticated_metastore(),
         }
     }
 }
@@ -243,6 +402,76 @@ impl ConnectionRef {
             return Err(DatabaseError::InvalidRevision);
         }
         Ok(Self { name, revision })
+    }
+}
+
+/// The role a secret plays in the connection of a managed step (feature 035, D035-139). The attempt of a step pins each
+/// secret it was handed under its role, so that two secrets of one connection can both be compared, pinned and audited.
+/// A SQL connection has one secret, `primary`; an Iceberg connection has a `catalog` secret and a `storage` secret.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum SecretRole {
+    Primary,
+    Catalog,
+    Storage,
+}
+
+impl SecretRole {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Primary => "primary",
+            Self::Catalog => "catalog",
+            Self::Storage => "storage",
+        }
+    }
+
+    /// `None` for anything but the three exact names.
+    #[must_use]
+    pub fn parse(text: &str) -> Option<Self> {
+        match text {
+            "primary" => Some(Self::Primary),
+            "catalog" => Some(Self::Catalog),
+            "storage" => Some(Self::Storage),
+            _ => None,
+        }
+    }
+}
+
+/// Which isolated runner executes a managed step. A managed step is never offered to an ordinary worker, its lease does
+/// not carry the run's data, and its own runner reports its outcome (feature 035, D035-134). A path that needs to know
+/// whether a step is managed asks [`Node::managed_kind`](crate::workflow::Node::managed_kind), never whether it has a SQL
+/// operation: that names only one of the kinds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ManagedKind {
+    /// A SQL operation, executed by a database runner.
+    Sql,
+    /// An Iceberg write, executed by a lake runner.
+    Lake,
+    /// The probe of an Iceberg connection, executed by a lake runner (D035-150). It reads and writes nothing of the customer's.
+    LakeProbe,
+}
+
+impl ManagedKind {
+    /// The reserved activity a runner offers for this kind, and the one its steps carry. A runner is handed a step of a kind only when it
+    /// offers that activity, and not merely when it is of the kind's profile (D035-150): a lake runner that has no probe to run offers the
+    /// write alone and is never handed a probe.
+    #[must_use]
+    pub const fn activity(self) -> &'static str {
+        match self {
+            Self::Sql => MANAGED_DATABASE_ACTIVITY,
+            Self::Lake => ICEBERG_WRITE_ACTIVITY,
+            Self::LakeProbe => ICEBERG_PROBE_ACTIVITY,
+        }
+    }
+
+    /// The profile of the runner that executes this kind: a runner of another profile is never handed the step, and never
+    /// handed its credentials.
+    #[must_use]
+    pub const fn profile(self) -> crate::binding::BindingProfile {
+        match self {
+            Self::Sql => crate::binding::BindingProfile::Database,
+            Self::Lake | Self::LakeProbe => crate::binding::BindingProfile::Lake,
+        }
     }
 }
 

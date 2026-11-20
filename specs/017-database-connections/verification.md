@@ -762,3 +762,16 @@ and the reviewed Rust benchmark remained byte-identical to `5aec324e`.
 The full affected Compose scenario and all current release-head gates remain
 mandatory before merge. A subsequent passing run does not identify or fix the
 discarded historical startup cause. Refs: T017-025, FR-017-020, FR-017-022.
+
+## Final 0.2.0 integration — 2026-10-26
+
+PR #45 merged into `develop` after all 12 checks passed. The final combined
+candidate `769a7d1d` then passed all 11 CI jobs in run 40259828158, independent
+SDK packaging, and all six release-preflight build/consumer/recovery jobs.
+The full affected Compose scenario passed its original TLS, OpenBao, probe,
+typed-result, replay, restore, restart, retirement-fence and provider-outage
+assertions. No diagnostic category is retroactively assigned to the old failure.
+PR #51 merged that exact tested tree into `main` as `bfda3420`; both 0.2.0 tags
+reference that actual main merge. See the shared
+[release evidence](../016-payload-classification/release-gates-2026-10-25.md)
+for exact run links, publication proof and preserved feature-014 boundaries.

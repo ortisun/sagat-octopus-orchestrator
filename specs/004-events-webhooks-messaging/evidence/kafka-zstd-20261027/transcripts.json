@@ -1,0 +1,18 @@
+{
+  "kafka-zstd-connectors-clippy.txt": {
+    "originalSHA256": "8ec8de28a2007cb433d7a6d47c05a20369955d118e22bb2cb9957b94b99498bc",
+    "storedSHA256": "8ec8de28a2007cb433d7a6d47c05a20369955d118e22bb2cb9957b94b99498bc"
+  },
+  "kafka-zstd-real-broker.txt": {
+    "originalSHA256": "bf5359acd83f7b6758e09faa4aed33c7d2f5f5433b249df1ce3bc9b343fc30c9",
+    "storedSHA256": "3a1b641426585fc43ed0636b24caec06cf3578470594cf7e201aefba6c1c6e71"
+  },
+  "manifest-anchor-red.txt": {
+    "originalSHA256": "a959ab851d9733d1fa425ac1b6c091d4fbdd347f448f8776aa813cea685b5fb0",
+    "storedSHA256": "a959ab851d9733d1fa425ac1b6c091d4fbdd347f448f8776aa813cea685b5fb0"
+  },
+  "kafka-zstd-fixed-audit.txt": {
+    "originalSHA256": "40a951f15ba4738e1f9324533dfc15ac30821e12b792b12f8297a737ec330e96",
+    "storedSHA256": "40a951f15ba4738e1f9324533dfc15ac30821e12b792b12f8297a737ec330e96"
+  }
+}

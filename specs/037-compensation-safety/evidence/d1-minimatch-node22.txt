@@ -1,0 +1,266 @@
+TAP version 13
+# Subtest: @eslint/config-array resolves the reviewed bridge and patched matcher
+not ok 1 - @eslint/config-array resolves the reviewed bridge and patched matcher
+  ---
+  duration_ms: 2.705166
+  type: 'test'
+  location: '/src/frontend/tools/minimatch.test.mjs:11:3'
+  failureType: 'testCodeFailure'
+  error: |-
+    Cannot find module 'minimatch'
+    Require stack:
+    - /src/frontend/node_modules/@eslint/config-array/dist/cjs/index.cjs
+  code: 'MODULE_NOT_FOUND'
+  stack: |-
+    Function._resolveFilename (node:internal/modules/cjs/loader:1430:15)
+    Function.resolve (node:internal/modules/helpers:157:19)
+    TestContext.<anonymous> (file:///src/frontend/tools/minimatch.test.mjs:13:32)
+    Test.runInAsyncScope (node:async_hooks:214:14)
+    Test.run (node:internal/test_runner/test:1047:25)
+    Test.start (node:internal/test_runner/test:944:17)
+    startSubtestAfterBootstrap (node:internal/test_runner/harness:296:17)
+  ...
+# Subtest: @eslint/eslintrc resolves the reviewed bridge and patched matcher
+not ok 2 - @eslint/eslintrc resolves the reviewed bridge and patched matcher
+  ---
+  duration_ms: 0.69075
+  type: 'test'
+  location: '/src/frontend/tools/minimatch.test.mjs:11:3'
+  failureType: 'testCodeFailure'
+  error: |-
+    Cannot find module 'minimatch'
+    Require stack:
+    - /src/frontend/node_modules/@eslint/eslintrc/dist/eslintrc.cjs
+  code: 'MODULE_NOT_FOUND'
+  stack: |-
+    Function._resolveFilename (node:internal/modules/cjs/loader:1430:15)
+    Function.resolve (node:internal/modules/helpers:157:19)
+    TestContext.<anonymous> (file:///src/frontend/tools/minimatch.test.mjs:13:32)
+    Test.runInAsyncScope (node:async_hooks:214:14)
+    Test.run (node:internal/test_runner/test:1047:25)
+    Test.processPendingSubtests (node:internal/test_runner/test:744:18)
+    Test.postRun (node:internal/test_runner/test:1173:19)
+    Test.run (node:internal/test_runner/test:1101:12)
+    async startSubtestAfterBootstrap (node:internal/test_runner/harness:296:3)
+  ...
+# Subtest: eslint resolves the reviewed bridge and patched matcher
+not ok 3 - eslint resolves the reviewed bridge and patched matcher
+  ---
+  duration_ms: 1.232333
+  type: 'test'
+  location: '/src/frontend/tools/minimatch.test.mjs:11:3'
+  failureType: 'testCodeFailure'
+  error: |-
+    Cannot find module 'minimatch'
+    Require stack:
+    - /src/frontend/node_modules/eslint/lib/api.js
+  code: 'MODULE_NOT_FOUND'
+  stack: |-
+    Function._resolveFilename (node:internal/modules/cjs/loader:1430:15)
+    Function.resolve (node:internal/modules/helpers:157:19)
+    TestContext.<anonymous> (file:///src/frontend/tools/minimatch.test.mjs:13:32)
+    Test.runInAsyncScope (node:async_hooks:214:14)
+    Test.run (node:internal/test_runner/test:1047:25)
+    Test.processPendingSubtests (node:internal/test_runner/test:744:18)
+    Test.postRun (node:internal/test_runner/test:1173:19)
+    Test.run (node:internal/test_runner/test:1101:12)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+# Subtest: eslint-plugin-jsx-a11y resolves the reviewed bridge and patched matcher
+not ok 4 - eslint-plugin-jsx-a11y resolves the reviewed bridge and patched matcher
+  ---
+  duration_ms: 1.661583
+  type: 'test'
+  location: '/src/frontend/tools/minimatch.test.mjs:11:3'
+  failureType: 'testCodeFailure'
+  error: |-
+    Cannot find module 'minimatch'
+    Require stack:
+    - /src/frontend/node_modules/eslint-plugin-jsx-a11y/lib/index.js
+  code: 'MODULE_NOT_FOUND'
+  stack: |-
+    Function._resolveFilename (node:internal/modules/cjs/loader:1430:15)
+    Function.resolve (node:internal/modules/helpers:157:19)
+    TestContext.<anonymous> (file:///src/frontend/tools/minimatch.test.mjs:13:32)
+    Test.runInAsyncScope (node:async_hooks:214:14)
+    Test.run (node:internal/test_runner/test:1047:25)
+    Test.processPendingSubtests (node:internal/test_runner/test:744:18)
+    Test.postRun (node:internal/test_runner/test:1173:19)
+    Test.run (node:internal/test_runner/test:1101:12)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+# Subtest: @redocly/openapi-core resolves the reviewed bridge and patched matcher
+not ok 5 - @redocly/openapi-core resolves the reviewed bridge and patched matcher
+  ---
+  duration_ms: 0.531541
+  type: 'test'
+  location: '/src/frontend/tools/minimatch.test.mjs:11:3'
+  failureType: 'testCodeFailure'
+  error: |-
+    Cannot find module 'minimatch'
+    Require stack:
+    - /src/frontend/node_modules/@redocly/openapi-core/lib/index.js
+  code: 'MODULE_NOT_FOUND'
+  stack: |-
+    Function._resolveFilename (node:internal/modules/cjs/loader:1430:15)
+    Function.resolve (node:internal/modules/helpers:157:19)
+    TestContext.<anonymous> (file:///src/frontend/tools/minimatch.test.mjs:13:32)
+    Test.runInAsyncScope (node:async_hooks:214:14)
+    Test.run (node:internal/test_runner/test:1047:25)
+    Test.processPendingSubtests (node:internal/test_runner/test:744:18)
+    Test.postRun (node:internal/test_runner/test:1173:19)
+    Test.run (node:internal/test_runner/test:1101:12)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+# Subtest: @typescript-eslint/typescript-estree resolves the reviewed bridge and patched matcher
+not ok 6 - @typescript-eslint/typescript-estree resolves the reviewed bridge and patched matcher
+  ---
+  duration_ms: 0.41825
+  type: 'test'
+  location: '/src/frontend/tools/minimatch.test.mjs:11:3'
+  failureType: 'testCodeFailure'
+  error: |-
+    Cannot find module 'minimatch'
+    Require stack:
+    - /src/frontend/node_modules/@typescript-eslint/typescript-estree/dist/index.js
+  code: 'MODULE_NOT_FOUND'
+  stack: |-
+    Function._resolveFilename (node:internal/modules/cjs/loader:1430:15)
+    Function.resolve (node:internal/modules/helpers:157:19)
+    TestContext.<anonymous> (file:///src/frontend/tools/minimatch.test.mjs:13:32)
+    Test.runInAsyncScope (node:async_hooks:214:14)
+    Test.run (node:internal/test_runner/test:1047:25)
+    Test.processPendingSubtests (node:internal/test_runner/test:744:18)
+    Test.postRun (node:internal/test_runner/test:1173:19)
+    Test.run (node:internal/test_runner/test:1101:12)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+# Subtest: native ESM has both default and named imports required by tooling
+not ok 7 - native ESM has both default and named imports required by tooling
+  ---
+  duration_ms: 0.388708
+  type: 'test'
+  location: '/src/frontend/tools/minimatch.test.mjs:33:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    Cannot find module 'minimatch'
+    Require stack:
+    - /src/frontend/node_modules/@eslint/config-array/dist/cjs/index.cjs
+  code: 'MODULE_NOT_FOUND'
+  stack: |-
+    Function._resolveFilename (node:internal/modules/cjs/loader:1430:15)
+    Function.resolve (node:internal/modules/helpers:157:19)
+    TestContext.<anonymous> (file:///src/frontend/tools/minimatch.test.mjs:35:60)
+    Test.runInAsyncScope (node:async_hooks:214:14)
+    Test.run (node:internal/test_runner/test:1047:25)
+    Test.processPendingSubtests (node:internal/test_runner/test:744:18)
+    Test.postRun (node:internal/test_runner/test:1173:19)
+    Test.run (node:internal/test_runner/test:1101:12)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+# Subtest: optimization level 2 bounds globparts amplification in the actual installed matcher
+not ok 8 - optimization level 2 bounds globparts amplification in the actual installed matcher
+  ---
+  duration_ms: 0.353792
+  type: 'test'
+  location: '/src/frontend/tools/minimatch.test.mjs:41:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    Cannot find module 'minimatch'
+    Require stack:
+    - /src/frontend/node_modules/@typescript-eslint/typescript-estree/dist/index.js
+  code: 'MODULE_NOT_FOUND'
+  stack: |-
+    Function._resolveFilename (node:internal/modules/cjs/loader:1430:15)
+    Function.resolve (node:internal/modules/helpers:157:19)
+    TestContext.<anonymous> (file:///src/frontend/tools/minimatch.test.mjs:43:30)
+    Test.runInAsyncScope (node:async_hooks:214:14)
+    Test.run (node:internal/test_runner/test:1047:25)
+    Test.processPendingSubtests (node:internal/test_runner/test:744:18)
+    Test.postRun (node:internal/test_runner/test:1173:19)
+    Test.run (node:internal/test_runner/test:1101:12)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+# Subtest: ESLint matching retains directory traversal, basename and negated-pattern options
+not ok 9 - ESLint matching retains directory traversal, basename and negated-pattern options
+  ---
+  duration_ms: 0.52125
+  type: 'test'
+  location: '/src/frontend/tools/minimatch.test.mjs:58:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    Cannot find module 'minimatch'
+    Require stack:
+    - /src/frontend/node_modules/eslint/lib/api.js
+  code: 'MODULE_NOT_FOUND'
+  stack: |-
+    Function._resolveFilename (node:internal/modules/cjs/loader:1430:15)
+    defaultResolveImpl (node:internal/modules/cjs/loader:1040:19)
+    resolveForCJSWithHooks (node:internal/modules/cjs/loader:1045:22)
+    Function._load (node:internal/modules/cjs/loader:1216:25)
+    wrapModuleLoad (node:internal/modules/cjs/loader:254:19)
+    Module.require (node:internal/modules/cjs/loader:1527:12)
+    require (node:internal/modules/helpers:147:16)
+    TestContext.<anonymous> (file:///src/frontend/tools/minimatch.test.mjs:60:25)
+    Test.runInAsyncScope (node:async_hooks:214:14)
+    Test.run (node:internal/test_runner/test:1047:25)
+  ...
+# Subtest: jsx-a11y wildcard custom controls exercise the legacy callable matcher
+not ok 10 - jsx-a11y wildcard custom controls exercise the legacy callable matcher
+  ---
+  duration_ms: 20.970916
+  type: 'test'
+  location: '/src/frontend/tools/minimatch.test.mjs:68:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    Cannot find module 'minimatch'
+    Require stack:
+    - /src/frontend/node_modules/eslint-plugin-jsx-a11y/lib/util/mayHaveAccessibleLabel.js
+    - /src/frontend/tools/minimatch.test.mjs
+  code: 'MODULE_NOT_FOUND'
+  stack: |-
+    Function._resolveFilename (node:internal/modules/cjs/loader:1430:15)
+    defaultResolveImpl (node:internal/modules/cjs/loader:1040:19)
+    resolveForCJSWithHooks (node:internal/modules/cjs/loader:1045:22)
+    Function._load (node:internal/modules/cjs/loader:1216:25)
+    wrapModuleLoad (node:internal/modules/cjs/loader:254:19)
+    Module.require (node:internal/modules/cjs/loader:1527:12)
+    require (node:internal/modules/helpers:147:16)
+    Object.<anonymous> (/src/frontend/node_modules/eslint-plugin-jsx-a11y/lib/util/mayHaveAccessibleLabel.js:9:41)
+    Module._compile (node:internal/modules/cjs/loader:1781:14)
+    Object..js (node:internal/modules/cjs/loader:1913:10)
+  ...
+# Subtest: Redocly URL-header rules include only matching hosts and paths
+not ok 11 - Redocly URL-header rules include only matching hosts and paths
+  ---
+  duration_ms: 0.546
+  type: 'test'
+  location: '/src/frontend/tools/minimatch.test.mjs:78:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    Cannot find module 'minimatch'
+    Require stack:
+    - /src/frontend/node_modules/@redocly/openapi-core/lib/utils.js
+    - /src/frontend/tools/minimatch.test.mjs
+  code: 'MODULE_NOT_FOUND'
+  stack: |-
+    Function._resolveFilename (node:internal/modules/cjs/loader:1430:15)
+    defaultResolveImpl (node:internal/modules/cjs/loader:1040:19)
+    resolveForCJSWithHooks (node:internal/modules/cjs/loader:1045:22)
+    Function._load (node:internal/modules/cjs/loader:1216:25)
+    wrapModuleLoad (node:internal/modules/cjs/loader:254:19)
+    Module.require (node:internal/modules/cjs/loader:1527:12)
+    require (node:internal/modules/helpers:147:16)
+    Object.<anonymous> (/src/frontend/node_modules/@redocly/openapi-core/lib/utils.js:42:19)
+    Module._compile (node:internal/modules/cjs/loader:1781:14)
+    Object..js (node:internal/modules/cjs/loader:1913:10)
+  ...
+1..11
+# tests 11
+# suites 0
+# pass 0
+# fail 11
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 77.25

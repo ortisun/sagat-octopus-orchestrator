@@ -1,0 +1,13 @@
+{
+  "command": [
+    "python3",
+    "scripts/check-architecture.py"
+  ],
+  "exit_code": 0,
+  "seconds": 0.57,
+  "wall_seconds": 0.57,
+  "wall_minus_monotonic_seconds": -0.0,
+  "started_utc": "2026-10-28T02:10:59.411352+00:00",
+  "finished_utc": "2026-10-28T02:10:59.976736+00:00",
+  "log": "capacity-discovery-architecture.txt"
+}

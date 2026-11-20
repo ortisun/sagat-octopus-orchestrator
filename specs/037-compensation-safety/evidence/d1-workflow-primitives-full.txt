@@ -1,0 +1,983 @@
+    Blocking waiting for file lock on build directory
+warning: field `tagged_fields` is never read
+   --> vendor/rskafka/src/protocol/messages/create_topics.rs:291:9
+    |
+278 | pub struct CreateTopicsResponse {
+    |            -------------------- field in this struct
+...
+291 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `CreateTopicsResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: fields `name`, `value`, `read_only`, `config_source`, `is_sensitive`, and `tagged_fields` are never read
+   --> vendor/rskafka/src/protocol/messages/create_topics.rs:321:9
+    |
+319 | pub struct CreateTopicResponseConfig {
+    |            ------------------------- fields in this struct
+320 |     /// The configuration name.
+321 |     pub name: CompactString,
+    |         ^^^^
+...
+324 |     pub value: CompactNullableString,
+    |         ^^^^^
+...
+327 |     pub read_only: Boolean,
+    |         ^^^^^^^^^
+...
+330 |     pub config_source: Int8,
+    |         ^^^^^^^^^^^^^
+...
+333 |     pub is_sensitive: Boolean,
+    |         ^^^^^^^^^^^^
+...
+336 |     pub tagged_fields: TaggedFields,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `CreateTopicResponseConfig` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: fields `num_partitions`, `replication_factor`, `configs`, and `tagged_fields` are never read
+   --> vendor/rskafka/src/protocol/messages/create_topics.rs:374:9
+    |
+359 | pub struct CreateTopicResponse {
+    |            ------------------- fields in this struct
+...
+374 |     pub num_partitions: Option<Int32>,
+    |         ^^^^^^^^^^^^^^
+...
+379 |     pub replication_factor: Option<Int16>,
+    |         ^^^^^^^^^^^^^^^^^^
+...
+384 |     pub configs: Vec<CreateTopicResponseConfig>,
+    |         ^^^^^^^
+...
+389 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `CreateTopicResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: fields `low_watermark` and `tagged_fields` are never read
+   --> vendor/rskafka/src/protocol/messages/delete_records.rs:182:9
+    |
+177 | pub struct DeleteResponsePartition {
+    |            ----------------------- fields in this struct
+...
+182 |     pub low_watermark: Int64,
+    |         ^^^^^^^^^^^^^
+...
+190 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `DeleteResponsePartition` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `tagged_fields` is never read
+   --> vendor/rskafka/src/protocol/messages/delete_records.rs:226:9
+    |
+216 | pub struct DeleteResponseTopic {
+    |            ------------------- field in this struct
+...
+226 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `DeleteResponseTopic` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `tagged_fields` is never read
+   --> vendor/rskafka/src/protocol/messages/delete_records.rs:269:9
+    |
+258 | pub struct DeleteRecordsResponse {
+    |            --------------------- field in this struct
+...
+269 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `DeleteRecordsResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `tagged_fields` is never read
+   --> vendor/rskafka/src/protocol/messages/delete_topics.rs:101:9
+    |
+ 88 | pub struct DeleteTopicsResponse {
+    |            -------------------- field in this struct
+...
+101 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `DeleteTopicsResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `tagged_fields` is never read
+   --> vendor/rskafka/src/protocol/messages/delete_topics.rs:144:9
+    |
+129 | pub struct DeleteTopicsResponseTopic {
+    |            ------------------------- field in this struct
+...
+144 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `DeleteTopicsResponseTopic` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: fields `producer_id` and `first_offset` are never read
+   --> vendor/rskafka/src/protocol/messages/fetch.rs:170:9
+    |
+168 | pub struct FetchResponseAbortedTransaction {
+    |            ------------------------------- fields in this struct
+169 |     /// The producer id associated with the aborted transaction.
+170 |     pub producer_id: Int64,
+    |         ^^^^^^^^^^^
+...
+173 |     pub first_offset: Int64,
+    |         ^^^^^^^^^^^^
+    |
+    = note: `FetchResponseAbortedTransaction` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `aborted_transactions` is never read
+   --> vendor/rskafka/src/protocol/messages/fetch.rs:213:9
+    |
+192 | pub struct FetchResponsePartition {
+    |            ---------------------- field in this struct
+...
+213 |     pub aborted_transactions: Vec<FetchResponseAbortedTransaction>,
+    |         ^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `FetchResponsePartition` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `timestamp` is never read
+   --> vendor/rskafka/src/protocol/messages/list_offsets.rs:184:9
+    |
+169 | pub struct ListOffsetsResponsePartition {
+    |            ---------------------------- field in this struct
+...
+184 |     pub timestamp: Option<Int64>,
+    |         ^^^^^^^^^
+    |
+    = note: `ListOffsetsResponsePartition` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: fields `log_append_time_ms` and `log_start_offset` are never read
+   --> vendor/rskafka/src/protocol/messages/produce.rs:148:9
+    |
+132 | pub struct ProduceResponsePartitionResponse {
+    |            -------------------------------- fields in this struct
+...
+148 |     pub log_append_time_ms: Option<Int64>,
+    |         ^^^^^^^^^^^^^^^^^^
+...
+153 |     pub log_start_offset: Option<Int64>,
+    |         ^^^^^^^^^^^^^^^^
+    |
+    = note: `ProduceResponsePartitionResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: fields `session_lifetime_ms` and `tagged_fields` are never read
+   --> vendor/rskafka/src/protocol/messages/sasl_msg.rs:198:9
+    |
+181 | pub struct SaslAuthenticateResponse {
+    |            ------------------------ fields in this struct
+...
+198 |     pub session_lifetime_ms: Option<Int64>,
+    |         ^^^^^^^^^^^^^^^^^^^
+...
+203 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `SaslAuthenticateResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: struct `CompactArray` is never constructed
+   --> vendor/rskafka/src/protocol/primitives.rs:725:12
+    |
+725 | pub struct CompactArray<T>(pub Option<Vec<T>>);
+    |            ^^^^^^^^^^^^
+
+warning: `rskafka` (lib) generated 14 warnings
+    Finished `test` profile [unoptimized] target(s) in 17.68s
+     Running integration/workflow-primitives/main.rs (/var/folders/60/bf6rmfzx6zq67nrbzb3m0p480000gn/T/sagat-037-target-q0fwz2gu/debug/deps/integration_workflow_primitives-93819aef1967810c)
+
+running 772 tests
+test api_reopen::supplied_single_connection_pool_backs_actual_public_completion_after_reopen ... ok
+test api_reopen::current_api_reopens_owned_database_and_resumes_original_public_worker ... ok
+test approval_combinations::a_chain_cancelled_between_the_decision_and_the_hand_off_never_hands_off ... ok
+test approval_combinations::a_chain_segment_waits_for_its_approval_and_the_decision_rolls_it_over ... ok
+test approval_combinations::a_stale_expected_revision_conflicts_while_the_approval_stays_open ... ok
+test approval_combinations::a_viewer_reads_the_state_but_cannot_decide_a_stateful_approval ... ok
+test approval_combinations::an_approval_inside_a_collection_body_is_refused_naming_scoped_compensation ... ok
+test approval_combinations::an_approval_inside_a_loop_body_is_refused_naming_scoped_compensation ... ok
+test approval_combinations::an_approval_with_declared_state_publishes_and_the_decision_routes_the_run ... ok
+test approval_combinations::an_approved_boundary_past_the_chains_deadline_is_ended_by_the_deadline_not_failed ... ok
+test approval_combinations::an_expired_approval_keeps_the_state_and_takes_the_expire_route ... ok
+test approval_combinations::an_update_after_the_decision_but_before_the_route_runs_is_one_journal ... ok
+test approval_combinations::cancelling_the_chain_settles_the_open_approval_and_no_decision_can_revive_it ... ok
+test approval_combinations::the_state_an_update_wrote_during_the_approval_is_what_the_next_segment_starts_with ... ok
+test approval_combinations::the_chains_original_deadline_settles_an_open_approval ... ok
+test approval_progress::a_decision_is_committed_by_the_least_privilege_runtime_role ... ok
+test approval_progress::a_decision_cut_off_at_any_await_commits_whole_or_not_at_all ... ok
+test approval_progress::approval_chain_prefix_precedes_run_lock_and_lasts_until_decision_commit ... ok
+test approval_progress::approval_post_wait_fence_preserves_generation_storage_error ... ok
+test approval_progress::approval_post_wait_fence_rejects_opening_after_expiry_without_effects ... ok
+test approval_progress::current_membership_and_tenant_boundary_are_checked_before_receipt_replay ... ok
+test approval_progress::decision_and_expiry_race_has_one_first_commit_winner ... ok
+test approval_progress::expiry_then_decision_and_decision_then_expiry_keep_the_first_outcome ... ok
+test approval_progress::outbox_failure_rolls_back_request_timer_journal_projection_and_audit ... ok
+test approval_progress::restart_and_identical_replay_return_the_original_authorized_receipt ... ok
+test approval_progress::settlement_outbox_failures_roll_back_decision_and_expiry ... ok
+test approval_progress::stale_scheduler_fence_cannot_open_or_expire_an_approval ... ok
+test approval_scheduler::a_decision_sent_after_the_run_ended_replays_or_names_the_settled_outcome ... ok
+test approval_scheduler::cancellation_outbox_and_audit_failures_roll_back_the_whole_run_transition ... ok
+test approval_scheduler::cancelling_the_run_cancels_the_request_timer_and_audits_one_atomic_outcome ... ok
+test approval_scheduler::decision_expiry_and_cancel_races_keep_exactly_one_approval_outcome ... ok
+test approval_scheduler::public_approval_can_be_cancelled_before_the_scheduler_opens_a_request ... ok
+test approval_scheduler::public_native_approval_can_be_published_and_started ... ok
+test approval_scheduler::raw_signal_cannot_settle_or_route_a_pending_approval ... ok
+test approval_scheduler::scheduler_opened_approval_routes_approved_and_rejected_decisions_after_restart ... ok
+test approval_scheduler::scheduler_opens_then_expires_and_routes_an_approval_after_restart ... ok
+test approval_scheduler::the_scheduler_releases_the_route_of_every_settled_approval_exactly_once ... ok
+test approval_telemetry::a_decision_and_an_expiry_project_one_span_each_under_the_runs_trace ... ok
+test approval_telemetry::a_request_settled_by_a_cancel_or_a_stop_records_its_wait_as_cancelled ... ok
+test approval_telemetry::a_successor_segments_approval_is_projected_under_its_own_run ... ok
+test approval_telemetry::refused_decisions_count_in_the_closed_rejection_series_and_nothing_else_is_invented ... ok
+test approval_progress::approval_post_wait_fence_rejects_due_expiry_without_effects has been running for over 60 seconds
+test approvals_http::decision_commits_once_and_exact_replay_returns_the_receipt ... ok
+test approvals_http::expired_approval_rejects_a_late_http_decision ... ok
+test approval_progress::approval_post_wait_fence_rejects_due_expiry_without_effects ... ok
+test approvals_http::opaque_approval_lookup_has_a_request_id_index ... ok
+test approvals_http::out_of_bound_decision_keys_and_reason_codes_are_refused_without_a_decision ... ok
+test approvals_http::permission_eligibility_initiator_and_tenant_boundaries_are_opaque_and_audited ... ok
+test approvals_http::run_approvals_are_tenant_scoped_bounded_and_do_not_disclose_eligibility ... ok
+test bounded_capabilities::scoped_blob_capabilities_need_no_unrelated_iteration_history ... ok
+test bounded_capabilities::scoped_secret_audits_distinguish_instances_and_collapse_only_their_own_retries ... ok
+test bounded_capabilities::scoped_secret_delivery_needs_no_unrelated_iteration_history ... ok
+test bounded_fences::a_bounded_binding_read_holds_current_authority_until_commit ... ok
+test bounded_fences::a_bounded_scheduler_fence_rechecks_expiry_after_its_row_lock_wait ... ok
+test bounded_fences::a_full_scheduler_fence_rechecks_expiry_after_its_row_lock_wait ... ok
+test bounded_fences::an_existing_run_cannot_use_child_admission_authority ... ok
+test bounded_fences::chain_prefix_current_path_skips_before_locking_its_run ... ok
+test bounded_fences::chain_prefix_current_path_waits_without_holding_its_run ... ok
+test bounded_fences::chain_prefix_snapshot_path_skips_before_locking_its_run ... ok
+test bounded_fences::chain_prefix_snapshot_path_waits_without_holding_its_run ... ok
+test bounded_fences::session_room_post_wait_full_rejects_expired_authority ... ok
+test bounded_fences::session_room_post_wait_path_rejects_expired_authority ... ok
+test bounded_report_provider::binding_revocation_commits_while_a_scoped_openbao_report_scan_is_paused ... ok
+test bounded_report_provider::binding_revocation_discards_secrets_after_a_scoped_openbao_read ... ok
+test bounded_report_provider::role_revocation_commits_while_a_scoped_openbao_report_scan_is_paused ... ok
+test bounded_report_provider::role_revocation_discards_secrets_after_a_scoped_openbao_read ... ok
+test bounded_reports::root_receipt_checks_the_echoed_step_identity ... ok
+test bounded_reports::root_receipt_rechecks_current_binding ... ok
+test bounded_reports::root_receipt_rechecks_current_membership ... ok
+test bounded_reports::scoped_completion_and_its_receipt_need_no_unrelated_iteration_history ... ok
+test bounded_reports::scoped_failure_and_its_receipt_need_no_unrelated_iteration_history ... ok
+test bounded_worker::a_late_scoped_heartbeat_needs_no_history_after_its_collection_and_run_finish ... ok
+test bounded_worker::a_later_path_failure_still_delivers_every_committed_lease ... ok
+test bounded_worker::a_root_heartbeat_waiting_for_the_run_lock_rechecks_current_membership ... ok
+test bounded_worker::a_scoped_claim_rechecks_current_role_after_binding_contention ... ok
+test bounded_worker::a_scoped_claim_waiting_for_binding_authority_holds_no_session_row ... ok
+test bounded_worker::a_scoped_heartbeat_uses_its_path_and_preserves_late_report_and_binding_fences ... ok
+test bounded_worker::concurrent_scoped_heartbeats_finish_with_two_connections_without_history ... ok
+test bounded_worker::scoped_claims_need_no_unrelated_iteration_history ... ok
+test byte_ceilings::a_bounded_completion_commits_without_reopening_the_run_history ... ok
+test byte_ceilings::a_bounded_path_loads_only_its_indexed_scope_saga_authority ... ok
+test byte_ceilings::a_bounded_path_read_does_not_wait_for_the_run_write_lock ... ok
+test byte_ceilings::a_between_persist_fault_rolls_back_the_whole_refusal_and_same_lease_retries ... ok
+test byte_ceilings::a_bounded_scheduler_fence_lasts_to_commit_and_deadlines_are_exact_path ... ok
+test byte_ceilings::a_bounded_reconciliation_persists_its_companion_and_manual_review_status ... ok
+test byte_ceilings::a_bounded_script_lease_pins_retention_and_zero_withholds_a_new_member ... ok
+test byte_ceilings::a_bounded_transaction_observes_database_time_after_waiting_for_the_run_lock ... ok
+test byte_ceilings::a_collection_snapshot_over_the_value_ceiling_fails_the_run_before_it_starts ... ok
+test byte_ceilings::a_full_transaction_observes_database_time_after_waiting_for_the_run_lock ... ok
+test byte_ceilings::a_drain_outbox_fault_preserves_the_committed_report_and_one_retry_compensates ... ok
+test byte_ceilings::a_known_successful_seventeenth_member_is_preserved_without_its_refused_output ... ok
+test byte_ceilings::a_loop_carry_over_the_value_ceiling_fails_the_loop_and_keeps_the_ceiling ... ok
+test byte_ceilings::a_late_receipt_fault_rolls_back_the_whole_successful_refusal_and_same_key_retries ... ok
+test byte_ceilings::a_loop_whose_initial_carry_is_over_the_value_ceiling_fails_before_it_starts ... ok
+test byte_ceilings::a_member_output_over_the_value_ceiling_is_refused_and_the_lease_survives ... ok
+test byte_ceilings::a_scoped_task_context_built_from_the_largest_values_stays_under_eight_mib ... ok
+test byte_ceilings::an_aggregate_over_the_value_ceiling_fails_the_scope_instead_of_storing_it ... ok
+test byte_ceilings::a_scoped_output_refusal_rechecks_binding_after_the_checked_path_is_dropped ... ok
+test byte_ceilings::an_aggregate_that_cannot_be_computed_fails_the_scope_with_expression_error ... ok
+test byte_ceilings::an_aggregate_that_fits_alone_but_not_beside_the_retained_outputs_fails_the_scope ... ok
+test byte_ceilings::an_end_output_created_with_the_report_is_charged_once_as_a_logical_output ... ok
+test byte_ceilings::an_applied_lookup_preserves_both_real_successes_without_the_substitute_output ... ok
+test byte_ceilings::loop_successful_output_over_run_limit_preserves_review ... ok
+test byte_ceilings::member_outputs_that_pass_four_mib_in_all_fail_the_run_with_run_data_limit ... ok
+test byte_ceilings::the_carry_that_ends_a_loop_must_fit_beside_the_outputs_the_run_retains ... ok
+test byte_ceilings::refused_output_compensation::a_refused_required_output_keeps_its_compensation_open_until_audited_resolution ... ok
+test capacity_finish::acquire::acquire_exports_closed_outcomes_and_counts_only_acknowledged_first_transitions ... ok
+test capacity_finish::acquire::a_live_or_expired_worker_lease_is_not_an_acquire_readiness_predicate ... ok
+test capacity_finish::acquire::exact_binding_and_persistence_counter_ceiling_refuse_without_mutation ... ok
+test capacity_finish::acquire::exact_replay_returns_the_original_acquisition_once ... ok
+test capacity_finish::acquire::final_child_cannot_acquire_and_cross_operation_keys_conflict_before_cas ... ok
+test capacity_finish::acquire::mismatched_binding_stale_counters_and_lost_scheduler_are_inert ... ok
+test capacity_finish::acquire::occupied_group_refuses_a_fresh_acquire_without_side_effects ... ok
+test capacity_finish::acquire::original_receipt_survives_actual_finish_but_fresh_acquire_refuses_inactive_member ... ok
+test capacity_finish::acquire::original_acquisition_replays_after_later_vacate_continuation_and_successor_lease ... ok
+test capacity_finish::acquire::recovery::a_real_deferred_foreign_key_abort_is_confirmed_and_rolls_back_every_write ... ok
+test capacity_finish::acquire::paused_and_manual_review_are_not_movable_but_running_is ... ok
+test capacity_finish::acquire::recovery::busy_group_rolls_back_and_releases_own_chain_and_run_guards ... ok
+test capacity_finish::acquire::recovery::audit_outbox_and_receipt_refusals_roll_back_before_same_key_retry ... ok
+test capacity_finish::acquire::recovery::lost_commit_ack_reconciles_actual_commit_or_abort_with_the_original_key ... ok
+test capacity_finish::acquire::recovery::scheduler_expiry_while_chain_is_held_refuses_application_and_replay ... ok
+test capacity_finish::acquire::recovery::two_real_members_contend_in_both_orders_then_recheck_cas_and_occupancy ... ok
+test capacity_finish::acquire::vacant_child_acquires_atomically_without_rewriting_execution_or_membership ... ok
+test capacity_finish::active_holder_fk_is_deferred_and_abort_preserves_both_rows ... ok
+test capacity_finish::barriers::audit_outbox_receipt_and_deferred_commit_failures_roll_back_all_effects ... ok
+test capacity_finish::barriers::group_busy_consumes_transaction_and_releases_own_chain_and_run ... ok
+test capacity_finish::barriers::own_chain_wait_precedes_run_lock_and_serializes_duplicate_commands ... ok
+test capacity_finish::commit_loss::unknown_commit_reconciles_actual_commit_and_abort_without_inventing_a_new_key ... ok
+test capacity_finish::barriers::postwait_expiry_refuses_first_application_and_receipt_replay ... ok
+test capacity_finish::continued_history_never_finishes_logical_member_even_after_successor_final ... ok
+test capacity_finish::contradictory_final_outcome_refuses_finish_and_root_binding_grants_no_authority ... ok
+test capacity_finish::counters_identity_and_tenant_namespace_bindings_are_enforced ... ok
+test capacity_finish::current_child_final_finishes_once_without_rewriting_execution ... ok
+test capacity_finish::discovery::a_vacant_active_member_is_discovered_with_its_current_head ... ok
+test capacity_finish::discovery::actual_child_continuation_changes_the_discovered_head_without_changing_membership ... ok
+test capacity_finish::discovery::an_empty_filtered_page_advances_before_a_fresh_store_resumes ... ok
+test capacity_finish::discovery::discovery_span_records_bounded_counts_without_tenant_fields ... ok
+test capacity_finish::discovery::equal_registry_ids_in_two_tenants_keep_their_own_namespace_and_head ... ok
+test capacity_finish::discovery::holders::actual_continuation_changes_the_observed_head_and_its_requested_shard ... ok
+test capacity_finish::discovery::holders::discovery_does_not_wait_for_g_or_change_execution_and_capacity_rows ... ok
+test capacity_finish::discovery::holders::holder_span_has_closed_kind_and_bounded_counts_without_resource_ids ... ok
+test capacity_finish::discovery::holders::invalid_holder_windows_are_typed_refusals ... ok
+test capacity_finish::discovery::holders::nonholder_input_advances_the_cursor_and_a_new_store_resumes ... ok
+test capacity_finish::discovery::holders::paused_holder_remains_an_observation_with_its_new_revision ... ok
+test capacity_finish::discovery::holders::selected_holder_is_observed_with_its_current_head_and_revisions ... ok
+test capacity_finish::discovery::holders::tenant_exclusion_filters_after_the_input_page ... ok
+test capacity_finish::discovery::holders::vacancy_is_filtered_and_finished_history_is_not_input ... ok
+test capacity_finish::discovery::invalid_discovery_windows_are_typed_refusals ... ok
+test capacity_finish::discovery::retained_finished_members_are_not_scan_input_and_the_index_reverses ... ok
+test capacity_finish::discovery::runtime_discovery_ignores_a_held_row_lock_and_rewrites_nothing ... ok
+test capacity_finish::discovery::shard_and_tenant_filters_consume_their_page_without_granting_authority ... ok
+test capacity_finish::downgrade_waits_for_writer_before_deciding_whether_storage_is_empty ... ok
+test capacity_finish::exhausted_sql_revision_leaves_no_partial_finish ... ok
+test capacity_finish::empty_schema_reverses_but_retained_tombstones_refuse_downgrade ... ok
+test capacity_finish::historical_holder_receipt_survives_later_holder_finish ... ok
+test capacity_finish::finishing_selected_child_preserves_other_members_and_historical_receipt ... ok
+test capacity_finish::native_finish_rejects_live_wrong_scope_stale_fence_and_conflicting_replay ... ok
+test capacity_finish::native_fixture_reaches_current_child_final_through_real_runtime_writers ... ok
+test capacity_finish::observations::filtered_finish_span_cannot_overwrite_its_callers_outcome_or_status ... ok
+test capacity_finish::races::committed_handoff_overtakes_discovered_old_owner_without_forwarding_finish ... ok
+test capacity_finish::observations::returned_outcomes_export_closed_spans_and_only_confirmed_first_commits_count ... ok
+test capacity_finish::runtime_has_only_selected_columns_and_receipt_append_privileges ... ok
+test capacity_finish::races::same_tenant_members_in_two_namespaces_keep_exact_binding_and_receipt_identity ... ok
+test capacity_finish::scoped_binding::active_scoped_identity_and_finished_retention_use_always_guards ... ok
+test capacity_finish::scoped_binding::downgrade::child_root_native_finish_survives_down_and_up_with_legacy_grants ... ok
+test capacity_finish::scoped_binding::downgrade::active_member_and_finished_tombstone_receipt_each_refuse_downgrade ... ok
+test capacity_finish::scoped_binding::downgrade::downgrade_waits_on_original_run_then_observes_committed_scoped_member ... ok
+test capacity_finish::scoped_binding::receipt_operation_revision_and_member_keys_remain_global_across_kinds ... ok
+test capacity_finish::scoped_binding::runtime_insert_columns_are_exactly_legacy_and_scoped_release_stays_closed ... ok
+test capacity_finish::scoped_binding::scoped_member_and_receipt_bind_to_a_qualified_flat_run_beside_child_root ... ok
+test capacity_finish::scoped_binding::variants_bounds_qualified_run_and_exact_receipt_binding_are_closed ... ok
+test capacity_finish::tombstones_and_receipts_survive_owner_mutation_attempts ... ok
+test capacity_finish::vacant_nonholder_receipt_keeps_epoch_and_fixed_fingerprint_bounds ... ok
+test capacity_finish::vacate::a_new_command_after_vacating_is_not_a_holder_but_the_old_receipt_replays ... ok
+test capacity_finish::vacate::a_ready_child_vacates_atomically_without_rewriting_execution_or_membership ... ok
+test capacity_finish::vacate::a_real_claim_commits_before_vacate_rechecks_revision_and_quiescence ... ok
+test capacity_finish::vacate::a_scoped_path_in_a_mixed_group_cannot_use_child_root_vacate ... ok
+test capacity_finish::vacate::actual_worker_lease_including_an_expired_one_blocks_vacate ... ok
+test capacity_finish::vacate::busy_group_rolls_back_and_releases_own_chain_and_run_guards ... ok
+test capacity_finish::vacate::another_namespace_and_a_root_without_child_lineage_are_refused ... ok
+test capacity_finish::vacate::concurrent_exact_commands_wait_on_chain_before_run_and_settle_once ... ok
+test capacity_finish::vacate::exact_replay_returns_the_original_transition_once ... ok
+test capacity_finish::vacate::empty_migration_reverses_but_retained_receipts_preserve_the_index_and_evidence ... ok
+test capacity_finish::vacate::final_child_is_refused_without_replacing_finish ... ok
+test capacity_finish::vacate::mismatched_binding_stale_counters_and_lost_scheduler_are_inert ... ok
+test capacity_finish::vacate::lost_commit_ack_reconciles_actual_commit_or_abort_with_the_original_key ... ok
+test capacity_finish::vacate::original_receipt_survives_actual_child_continuation_and_current_lease ... ok
+test capacity_finish::vacate::outbox_refusal_rolls_back_header_audit_and_receipt_before_same_key_retry ... ok
+test capacity_finish::vacate::transfer_receipts_are_append_only_and_the_lease_probe_has_an_index_access_path ... ok
+test capacity_finish::vacate::vacate_exports_closed_outcomes_and_counts_only_acknowledged_first_transitions ... ok
+test capacity_finish::vacate::scheduler_expiry_while_chain_is_held_refuses_application_and_replay ... ok
+test capacity_finish::valid_owner_fixture_precedes_capacity_constraint_probes ... ok
+test capacity_finish::worker_leases::a_lease_retains_group_possession_while_waiting_for_activity_admission ... ok
+test capacity_finish::worker_leases::acquire_allows_a_lease_and_existing_report_ignores_a_busy_group ... ok
+test capacity_finish::worker_leases::an_active_nonholder_stays_ready_while_the_other_member_is_leased ... ok
+test capacity_finish::worker_leases::busy_group_skips_without_a_lease_and_releases_own_chain_and_run ... ok
+test capacity_finish::worker_leases::continued_member_uses_the_current_head_and_refuses_its_old_run ... ok
+test capacity_finish::worker_leases::duplicate_active_groups_do_not_choose_an_arbitrary_holder ... ok
+test capacity_finish::worker_leases::finished_history_is_not_legacy_and_one_active_can_follow_retained_history ... ok
+test capacity_finish::worker_leases::nonmember_work_is_compatible_even_while_an_unrelated_group_is_busy ... ok
+test capacity_finish::worker_leases::preflight::internal_input_limit_failure_commits_even_with_vacant_and_busy_group ... ok
+test capacity_finish::worker_leases::preflight::scoped_internal_input_limit_failure_also_ignores_vacant_and_busy_group ... ok
+test capacity_finish::worker_leases::scoped_claims_use_the_same_group_guard_before_attempt_or_quota ... ok
+test capacity_finish::worker_leases::vacant_child_stays_ready_without_consuming_an_attempt_or_quota ... ok
+test chain_handoff::conditional_stateful_continuation_transfers_state_and_finishes ... ok
+test chain_handoff::invalid_continuation_input_fails_the_chain_once ... ok
+test chain_handoff::prepared_continuation_commits_replays_and_rolls_back_atomically ... ok
+test chain_handoff::public_activity_completion_is_handed_to_a_successor_by_the_scheduler ... ok
+test chain_handoff::public_conditional_continuation_reaches_a_successful_final_outcome ... ok
+test chain_handoff::public_stateful_handoff_preserves_the_declared_snapshot ... ok
+test chain_handoff::segment_limit_finalizes_once_and_is_not_rediscovered ... ok
+test chain_progress::audit_insert_failure_rolls_back_runs_journal_outbox_and_lineage ... ok
+test chain_progress::chain_cancel_and_handoff_serialize_on_one_head ... ok
+test chain_progress::chain_cancel_audit_failure_rolls_back_latch_journal_and_projection ... ok
+test chain_progress::chain_cancel_latches_before_stopping_the_head_and_replays_after_restart ... ok
+test chain_progress::chain_inspection_is_tenant_scoped_and_audits_a_foreign_probe ... ok
+test chain_progress::chain_handoff_and_finalization_are_written_by_the_least_privilege_runtime_role ... ok
+test chain_progress::chain_signal_is_delivered_only_to_an_existing_wait_and_replays_after_restart ... ok
+test chain_progress::child_cancellation_latch_blocks_a_new_handoff ... ok
+test chain_progress::deadline_boundary_fails_closed_before_any_successor_write ... ok
+test chain_progress::direct_run_signal_and_cancel_preserve_chain_lock_and_terminal_projection ... ok
+test chain_progress::final_head_closes_once_and_exposes_child_outcome_without_settling_parent ... ok
+test chain_progress::final_head_is_delivered_to_run_finished_subscribers_once ... ok
+test chain_progress::handoff_replays_after_restart_without_releasing_a_second_successor ... ok
+test chain_progress::persisted_active_run_limit_blocks_replacement_without_partial_writes ... ok
+test chain_progress::post_wait_fence_preserves_the_oversized_generation_storage_error ... ok
+test chain_progress::post_wait_fence_rejects_an_expired_legacy_chain_handoff_without_effects ... ok
+test chain_progress::post_wait_fence_rejects_expired_chain_finalization_without_effects ... ok
+test chain_progress::stale_scheduler_fence_cannot_move_the_chain_head ... ok
+test chain_progress::terminal_audit_failure_rolls_back_journal_projection_and_outbox ... ok
+test chain_progress::terminal_outbox_conflict_rolls_back_the_final_event_and_chain_outcome ... ok
+test chain_storage::chain_head_must_be_a_segment_of_its_own_chain ... ok
+test chain_wait::a_chain_that_waits_in_every_segment_reaches_its_final_outcome ... ok
+test chain_wait::a_continuation_that_starts_with_a_wait_hands_off_to_a_successor_that_already_waits ... ok
+test chain_wait::a_duplicate_delivery_wakes_the_successor_once ... ok
+test chain_wait::a_successor_whose_correlation_cannot_be_computed_ends_the_chain_with_a_typed_failure ... ok
+test chain_wait::an_event_admitted_before_the_hand_off_does_not_wake_the_successor_and_one_after_does ... ok
+test chain_wait::the_original_deadline_ends_a_waiting_successor_and_its_chain_as_timed_out ... ok
+test chain_wait::the_wait_of_the_successor_times_out_by_its_own_timeout_like_any_other_wait ... ok
+test chain_wait::the_store_refuses_a_selection_that_does_not_match_the_entry_the_definition_declares ... ok
+test chains::a_blocked_boundary_does_not_hold_back_the_boundaries_behind_it ... ok
+test chains::a_boundary_with_an_open_approval_waits_until_the_decision_settles_the_request ... ok
+test chains::a_boundary_with_open_work_waits_without_failing_and_hands_off_once_it_settles ... ok
+test chains::a_continuation_workflow_starts_as_a_child_with_a_durable_link ... ok
+test chains::a_continuation_never_outgrows_the_active_run_quota_and_waits_for_room ... ok
+test chains::a_detached_child_chain_outlives_a_cancelled_parent_and_nobody_is_told ... ok
+test chains::a_hand_off_claimed_for_another_tenant_or_namespace_moves_nothing ... ok
+test chains::a_latched_child_chain_never_hands_off_even_before_its_head_is_cancelled ... ok
+test chains::cancelling_the_parent_latches_the_child_chain_and_cancels_its_current_head ... ok
+test chains::finished_chains_links_and_payloads_survive_every_housekeeping_pass ... ok
+test chains::operating_on_a_continued_segment_is_refused_like_any_ended_run_and_never_reaches_the_chain ... ok
+test chains::request_cancel_makes_the_parent_wait_until_the_child_chain_has_settled ... ok
+test chains::rerun_as_new_of_a_segment_starts_an_unrelated_run_with_its_own_chain ... ok
+test chains::post_wait_fence_rejects_an_expired_evaluated_handoff_without_effects ... ok
+test chains::the_locked_handoff_cannot_bypass_unknown_or_compensation_review ... ok
+test chains::the_last_run_the_tree_budget_allows_is_a_successor_and_the_next_one_is_refused ... ok
+test chains::the_original_deadline_ends_a_waiting_boundary_as_timed_out_with_no_successor ... ok
+test chains::the_parent_hears_only_the_final_outcome_of_a_child_chain_and_hears_it_once ... ok
+test chains::the_store_itself_refuses_a_second_successor_a_second_predecessor_and_bad_bounds ... ok
+test chains::the_store_proves_an_open_approval_again_under_the_locks ... ok
+test chains::the_write_proves_quiescence_again_under_the_locks_and_names_the_blocker ... ok
+test chains::waiting_for_quiescence_never_records_a_durable_failure ... ok
+test chains_http::a_continued_segment_is_an_ordinary_succeeded_run_for_a_client_that_knows_no_chains ... ok
+test chains_http::a_run_read_names_its_segment_and_whether_it_continued ... ok
+test chains_http::an_operation_on_a_continued_segment_of_a_finished_chain_is_a_conflict_not_an_internal_error ... ok
+test chains_http::cancel_requires_the_current_head_and_replays_without_a_second_transition ... ok
+test chains_http::chain_commands_take_a_key_of_eight_to_one_hundred_sixty_printable_characters ... ok
+test chains_http::inspect_and_signal_are_tenant_scoped_and_signal_replays_exactly ... ok
+test chains_http::public_start_creates_the_initial_chain_atomically ... ok
+test chains_http::the_runs_of_a_chain_are_tenant_opaque_and_need_authentication ... ok
+test chains_http::the_runs_of_a_chain_page_in_segment_order_with_a_stable_bounded_cursor ... ok
+test collection_10k::ten_thousand_items_are_admitted_concurrently_aggregated_in_order_and_bounded ... ignored, 10,000 iterations end to end take minutes; run explicitly and read stderr
+test collection_budgets::a_budget_reduced_to_what_is_accepted_still_lets_the_accepted_failure_be_undone ... ok
+test collection_10k::entry_of_ten_thousand_items_is_one_exact_membership ... ok
+test collection_budgets::a_retried_iteration_is_charged_once_and_a_derived_activation_uses_its_reservation ... ok
+test collection_control_admission::a_current_revision_admission_cannot_release_new_work_while_the_run_is_paused ... ok
+test collection_budgets::a_tenant_capacity_of_one_runs_every_iteration_to_the_end ... ok
+test collection_control_admission::a_disguised_scheduler_membership_is_rejected_by_the_full_projection_reader ... ok
+test collection_control_admission::activity_memberships_backfill_and_downgrade_but_dispatch_contradictions_are_refused ... ok
+test collection_control_admission::cancelling_a_pending_control_releases_its_slot_without_worker_ownership ... ok
+test collection_control_admission::control_admission_honors_revision_and_capacity_while_accepted_work_continues_cold ... ok
+test collection_control_admission::immutable_control_admission_evidence_blocks_down_even_if_the_projection_is_disguised ... ok
+test collection_control_admission::retained_scheduler_memberships_refuse_downgrade_even_after_completion ... ok
+test collection_control_admission::scheduler_admission_rolls_back_on_journal_failure_and_replays_without_a_fake_outbox ... ok
+test collection_control_admission::public_scheduler_entries_remain_outside_the_frozen_ordinary_leaf_profile ... ok
+test collection_control_admission::scheduler_entry_rejects_wrong_dispatch_membership_tenant_and_shard_authority ... ok
+test collection_control_entry::a_control_only_collection_finishes_without_any_worker_lease_or_task_hint ... ok
+test collection_control_entry::a_switch_entry_dispatches_only_the_selected_real_activity ... ok
+test collection_control_transactions::a_pause_committing_ahead_of_a_prepared_control_refuses_the_stale_choice ... ok
+test collection_control_transactions::control_choice_and_selected_task_roll_back_together_if_the_outbox_fails ... ok
+test collection_control_transactions::malformed_scoped_control_projections_are_rejected_before_any_transition ... ok
+test collection_control_transactions::prepared_control_writers_reject_physical_metadata_added_after_the_snapshot ... ok
+test collection_controls::a_control_expression_failure_drains_and_compensates_its_real_prefix ... ok
+test collection_controls::a_control_transaction_trace_correlates_the_run_without_logging_its_item ... ok
+test collection_controls::a_failed_condition_takes_its_declared_local_recovery_without_stopping_the_run ... ok
+test collection_controls::a_selected_switch_case_does_not_evaluate_a_later_invalid_predicate ... ok
+test collection_controls::each_member_evaluates_a_condition_in_its_own_committed_context ... ok
+test collection_controls::each_member_evaluates_ordered_switch_cases_or_its_default ... ok
+test collection_data_limit_native::aggregate_requires_exact_source_owner_and_complete_checkpoint_tuple ... ok
+test collection_data_limit_native::audit_outbox_and_telemetry_faults_roll_back_the_native_command ... ok
+test collection_data_limit_native::fitting_empty_aggregate_is_rejected_without_writes ... ok
+test collection_data_limit_native::native_empty_aggregate_stops_atomically_and_cold_replays_original_receipt ... ok
+test collection_data_limit_readers::malformed_static_data_limit_shapes_are_typed_corruption_in_both_readers ... ok
+test collection_data_limit_readers::native_finish_guard_rejects_data_limit_iteration_before_writes ... ok
+test collection_controls::local_control_success_and_failure_match_the_full_run_oracle ... ok
+test collection_data_limit_readers::static_data_limit_draining_restores_in_full_and_descendant_readers ... ok
+test collection_data_limit_readers::static_data_limit_failed_restores_in_full_and_descendant_readers ... ok
+test collection_data_limit_schema::ordinary_history_without_the_new_reason_downgrades_and_reapplies ... ok
+test collection_data_limit_schema::downgrade_owns_run_before_a_new_reason_writer_and_the_writer_rolls_back ... ok
+test collection_data_limit_schema::retained_static_run_data_limit_journal_refuses_downgrade ... ok
+test collection_data_limit_schema::retained_static_run_data_limit_scope_refuses_downgrade ... ok
+test collection_data_limit_schema::run_data_limit_constraint_is_total_and_preserves_every_old_form ... ok
+test collection_empty_quota::empty_collection_aggregate_fits_with_exactly_two_bytes_remaining ... ok
+test collection_empty_quota::empty_collection_aggregate_obeys_remaining_run_bytes ... ok
+test collection_empty_quota::legal_end_output_refuses_when_successful_empty_aggregate_leaves_one_run_byte ... ok
+test collection_empty_quota::second_empty_collection_refuses_after_first_consumes_final_two_bytes ... ok
+test collection_end_result::collection_end_retains_owner_aggregate_and_evaluated_run_result ... ok
+test collection_end_result::collection_result_uses_pinned_output_schema_for_http_disclosure ... ok
+test collection_end_result::collection_success_does_not_bypass_the_successor_end_instance_limit ... ok
+test collection_end_result::collection_end_preserves_optional_null_and_typed_evaluation_semantics ... ok
+test collection_events::an_unhandled_public_event_timeout_compensates_each_original_activity ... ok
+test collection_events::cancelling_public_event_entries_retires_slots_and_refuses_late_events ... ok
+test collection_events::public_activity_event_bodies_recover_already_dispatched_events_with_a_cold_receiver ... ok
+test collection_events::public_controls_route_through_events_to_workers_with_only_their_own_event_value ... ok
+test collection_events::public_event_deadlines_route_without_worker_tasks ... ok
+test collection_events::public_event_entries_finish_in_input_order_with_scoped_receipts ... ok
+test collection_finish_atomic::collection_finish_is_atomic_after_persistence_and_retry_commits_once ... ok
+test collection_pipeline::a_failed_source_activity_starts_no_collection ... ok
+test collection_pipeline::a_public_activity_can_commit_a_blob_as_its_collection_source ... ok
+test collection_pipeline::a_public_activity_can_produce_inline_collection_membership ... ok
+test collection_pipeline::a_public_pipeline_refuses_an_uncommitted_source_blob ... ok
+test collection_pipeline::a_scoped_grpc_blob_upload_needs_no_unrelated_iteration_history ... ok
+test collection_recovery::a_handled_member_failure_runs_local_recovery_without_stopping_siblings ... ok
+test collection_recovery::a_selected_compensable_recovery_preserves_its_real_drain_obligation ... ok
+test collection_recovery::an_unselected_compensable_recovery_retires_every_unreachable_reservation ... ok
+test collection_recovery::an_unhandled_recovery_failure_drains_with_its_own_code_and_compensates ... ok
+test collection_recovery::native_drain_refuses_a_failure_already_routed_to_local_recovery ... ok
+test collection_restore::addressed_persistence_keeps_scoped_journal_projection_and_output_identity ... ok
+test collection_restore::admitted_collection_reopens_with_exact_scope_and_verifies_from_addressed_journal ... ok
+test collection_restore::journal_attempt_spans_use_the_complete_instance_path ... ok
+test collection_restore::verification_detects_a_scope_projection_that_differs_from_the_journal ... ok
+test collection_recovery::handled_recovery_and_failed_recovery_match_the_full_run_oracle ... ok
+test collection_sources::a_blob_that_is_not_a_usable_array_fails_the_run_with_the_matching_code ... ok
+test collection_sources::a_blob_whose_bytes_changed_or_vanished_fails_the_run_with_a_typed_code ... ok
+test collection_sources::a_descriptor_the_run_does_not_own_is_refused_with_blob_unavailable ... ok
+test collection_sources::a_large_item_reaches_its_iteration_as_a_reference_that_the_worker_can_read ... ok
+test collection_sources::a_replica_without_a_blob_source_leaves_the_run_alone ... ok
+test collection_sources::a_run_input_blob_array_is_the_membership_and_each_item_reaches_its_iteration ... ok
+test collection_sources::a_step_output_blob_is_a_source_of_its_own_run_only ... ok
+test collection_sources::an_array_of_blob_references_larger_than_one_payload_is_materialized_and_delivered_as_references ... ok
+test collection_sources::an_inline_items_value_that_is_not_an_array_fails_the_run_instead_of_retrying_for_ever ... ok
+test collection_sources::an_outage_of_the_object_store_leaves_the_run_waiting_not_failed ... ok
+test collection_sources::the_membership_is_fixed_at_entry_and_the_blob_behind_it_is_protected ... ok
+test collection_timer_transactions::a_due_timer_fires_while_paused_and_cold_resume_releases_its_route_once ... ok
+test collection_timer_transactions::a_prepared_timer_fire_refuses_a_deadline_changed_without_a_run_revision ... ok
+test collection_timer_transactions::a_timer_committing_ahead_of_public_cancellation_fires_once_then_drains ... ok
+test collection_timer_transactions::an_invented_failed_timer_is_rejected_by_all_readers ... ok
+test collection_timer_transactions::cancellation_committing_ahead_of_the_queued_timer_prevents_its_fire ... ok
+test collection_timer_transactions::orphan_worker_metadata_on_a_timer_is_rejected_by_all_three_readers ... ok
+test collection_timer_transactions::generic_step_failure_cannot_persist_an_unsupported_timer_failure ... ok
+test collection_timer_transactions::timer_member_progress_matches_the_full_run_oracle ... ok
+test collection_timer_transactions::timer_start_and_fire_roll_back_every_projection_on_journal_failure_in_both_writers ... ok
+test collection_timers::a_timer_entry_finishes_without_any_worker_task_or_admission_notification ... ok
+test collection_timer_transactions::prepared_timer_writes_reject_lifecycle_fields_changed_without_a_run_revision ... ok
+test collection_timers::an_activity_routes_each_member_to_its_own_durable_timer_then_return ... ok
+test collections_http::iteration_capacity_is_tenant_scoped_authorized_audited_and_reducible ... ok
+test collection_timers::timer_start_and_fire_traces_keep_qualified_identity_without_item_data ... ok
+test collections_http::publication_keeps_unproven_collection_bodies_closed ... ok
+test collections_http::proven_collection_can_be_published_and_started_over_http ... ok
+test compatibility::a_reader_without_the_capability_leaves_an_active_structured_run_untouched_until_it_returns ... ok
+test compatibility::a_root_only_adapter_caps_a_newer_offer_at_1_4_and_withholds_scoped_work ... ok
+test compatibility::combinations_the_reader_does_not_enable_are_refused_with_a_typed_reason_and_store_nothing ... ok
+test compatibility::documents_with_only_pre_primitive_nodes_validate_identically_in_every_reader ... ok
+test compatibility::an_active_pre_014_run_survives_the_migrations_and_finishes_on_the_new_engine ... ok
+test compatibility::pre_primitive_documents_keep_the_digest_the_pre_014_build_computed ... ok
+test compatibility::old_worker_minors_negotiate_and_are_never_offered_scoped_work ... ok
+test hint_contract::capacity_acquire_hint_is_closed_control_metadata_without_execution_authority ... ok
+test hint_contract::capacity_finish_hint_is_closed_control_metadata ... ok
+test hint_contract::capacity_scoped_finish_hint_accepts_the_closed_reference_payload ... ok
+test hint_contract::capacity_scoped_finish_hint_rejects_each_invalid_shape_independently ... ok
+test compatibility::runs_a_reader_cannot_read_do_not_starve_the_ones_it_can ... ok
+test identity_storage::locked_run_restores_every_scoped_instance_of_the_same_node ... ok
+test identity_storage::old_worker_candidate_query_does_not_offer_scoped_ready_steps ... ok
+test identity_storage::one_definition_node_can_have_distinct_tenant_scoped_instance_paths ... ok
+test identity_storage::upgrading_populated_storage_keeps_root_rows_and_does_not_rewrite_the_journal ... ok
+test iteration_policy_zero::an_explicit_zero_policy_finishes_accepted_timers_and_blocks_new_members ... ok
+test iteration_policy_zero::zero_policy_inserts_without_a_row_and_clear_restores_the_distinct_default ... ok
+test iteration_policy_zero::zero_policy_schema_retains_its_value_until_a_safe_downgrade ... ok
+test journal_identity::legacy_null_journal_identity_still_replays_as_root ... ok
+test iteration_policy_zero::zero_policy_writer_and_downgrade_obey_both_relation_lock_orders ... ok
+test journal_identity::newly_persisted_root_steps_and_events_share_the_typed_identity ... ok
+test leaf_certification::dormant_runtime_cannot_create_or_rewrite_certifications ... ok
+test leaf_certification::dormant_snapshot_constraints_and_namespace_binding_are_real ... ok
+test leaf_certification::downgrade_waits_on_actual_own_run_prefix_before_retained_fact_check ... ok
+test leaf_certification::retained_fact_and_original_run_survive_owner_replication_role_bypass ... ok
+test leaf_certification::empty_schema_reverses_but_any_retained_fact_refuses_down ... ok
+test leaf_certification_native::child_source::detached_progress::detached_child_completes_real_later_work_and_replays_original_source ... ok
+test leaf_certification_native::binding::ambient_binding_replacement_preserves_source_before_proof_and_during_commit ... ok
+test leaf_certification_native::child_source::genuine_ordinary_child_certificate_still_cannot_authorize_scoped_finish ... ok
+test leaf_certification_native::child_source::native_certifier_characterizes_a_real_ordinary_unchained_child_source ... ok
+test leaf_certification_native::child_source::own_cancel::first_child_source_certification_commits_before_parent_propagate_child_stop ... ok
+test leaf_certification_native::child_source::own_cancel::parent_propagate_child_stop_commits_before_first_source_certification ... ok
+test leaf_certification_native::child_source::parent_flags::incoming_parent_flag_waits_for_the_child_certifiers_actual_commit ... ok
+test leaf_certification_native::child_source::result::collection_child_end_result_reaches_its_parent_end ... ok
+test leaf_certification_native::closure::actual_collection_closure_and_certification_obey_both_original_run_queue_orders ... ok
+test leaf_certification_native::commit_loss::lost_leaf_commit_reconciles_actual_commit_and_abort_with_cold_same_identity_store ... ok
+test leaf_certification_native::child_source::parent_flags::public_parent_flags_and_first_child_certification_serialize_in_both_orders ... ok
+test leaf_certification_native::late_reports::stale_new_key_reports_preserve_closed_source_in_both_run_lock_orders ... ok
+test leaf_certification_native::native_certification_compares_far_future_scheduler_expiry_on_the_server ... ok
+test leaf_certification_native::native_certification_guard_failure_redacts_driver_diagnostics ... ok
+test leaf_certification_native::native_certification_is_metadata_only_and_replays_after_later_scope_failure ... ok
+test leaf_certification_native::native_certification_refuses_unrepresentable_canonical_time ... ok
+test leaf_certification_native::later_work::later_success_failure_and_ready_cancel_preserve_source_in_both_run_queue_orders ... ok
+test leaf_certification_native::observations::filtered_leaf_span_preserves_callers_outcome_and_records_storage_error_metric ... ok
+test leaf_certification_native::observations::actual_leaf_outcomes_export_closed_metadata_and_count_only_acknowledged_first_commits ... ok
+test leaf_certification_native::process::native_reconciliation_probe ... ignored, private subprocess probe; requires parent-provided database and metadata paths
+test leaf_certification_native::refusals::canonical_metadata_reader_qualifies_owner_and_index_before_creation_cas ... ok
+test leaf_certification_native::process::killed_native_reconciler_restarts_same_identity_after_actual_commit_or_abort ... ok
+test leaf_certification_native::refusals::compensating_definition_is_not_an_ordinary_leaf_source ... ok
+test leaf_certification_native::refusals::canonical_metadata_reader_refuses_wrong_pin_and_future_revision ... ok
+test leaf_certification_native::refusals::current_authority_precedes_canonical_replay_and_fresh_owner_keeps_original_record ... ok
+test leaf_certification_native::refusals::journal_reference_and_checkpoint_digest_must_match_actual_retained_evidence ... ok
+test leaf_certification_native::refusals::complete_local_step_set_and_bounded_metadata_are_required ... ok
+test leaf_certification_native::refusals::original_qualified_identity_and_creation_cas_refuse_without_metadata_writes ... ok
+test leaf_certification_native::refusals::outstanding_reservation_refuses_and_creation_cas_precedes_source_corruption ... ok
+test leaf_certification_native::saga::later_effectful_saga_planning_and_certification_preserve_selected_source_in_both_orders ... ok
+test leaf_certification_native::scoped_finish::atomic_failures::native_scoped_finish_statement_and_deferred_commit_failures_are_atomic ... ok
+test leaf_certification_native::scoped_finish::contexts::native_scoped_finish_refuses_actual_parentless_historical_chain_segment ... ok
+test leaf_certification_native::scoped_finish::commit_loss::unknown_scoped_commit_reconciles_real_commit_and_abort_with_the_complete_old_command ... ok
+test leaf_certification_native::scoped_finish::contexts::native_scoped_finish_refuses_actual_public_child_before_and_after_detachment ... ok
+test leaf_certification_native::scoped_finish::entry_barriers::applicable_chain_precedes_run_and_context_refusal_precedes_source_or_receipt_reads ... ok
+test leaf_certification_native::scoped_finish::contexts::native_scoped_finish_refuses_actual_settled_final_child_chain_segment ... ok
+test leaf_certification_native::scoped_finish::entry_barriers::duplicate_native_callers_queue_on_the_actual_run_and_share_one_original_result ... ok
+test leaf_certification_native::scoped_finish::entry_barriers::selected_group_busy_follows_actual_run_entry_and_rolls_back_every_effect ... ok
+test leaf_certification_native::scoped_finish::native_scoped_finish_preserves_exact_a1_holder_vacant_and_last_transitions ... ok
+test leaf_certification_native::scoped_finish::native_scoped_finish_applies_once_and_replays_original_after_real_later_changes ... ok
+test leaf_certification_native::scoped_finish::native_scoped_finish_refuses_signed_counter_overflow_atomically ... ok
+test leaf_certification_native::scoped_finish::native_scoped_finish_refuses_source_authority_context_cas_and_inactive_in_order ... ok
+test leaf_certification_native::scoped_finish::observations::filtered_scoped_finish_span_cannot_overwrite_its_callers_outcome_or_status ... ok
+test leaf_certification_native::scoped_finish::observations::abandoned_scoped_finish_waiting_on_run_has_no_returned_observation_or_effect ... ok
+test leaf_certification_native::scoped_finish::observations::returned_scoped_finish_outcomes_are_closed_redacted_and_count_only_acknowledged_apply ... ok
+test leaf_certification_native::scoped_finish::process::native_reconciliation_probe ... ignored, private subprocess probe; requires parent-provided database and metadata paths
+test leaf_certification_native::scoped_finish::process::killed_scoped_reconciler_restarts_complete_old_command_after_real_commit_or_abort ... ok
+test leaf_certification_native::scoped_finish::qualification::cross_kind_decoder::exact_scoped_fingerprint_cannot_turn_a_child_root_receipt_into_a_scoped_result ... ok
+test leaf_certification_native::scoped_finish::qualification::qualification_distinguishes_exact_absence_from_observable_binding_mismatch ... ok
+test leaf_certification_native::scoped_finish::qualification::qualification_preserves_a_same_tenant_holder_from_another_real_namespace ... ok
+test leaf_certification_native::scoped_finish::qualification::qualification_rejects_a_group_wide_cross_kind_operation_key_then_applies_a_fresh_key ... ok
+test leaf_certification_native::scoped_finish::receipts::native_receipt_checks_fingerprint_before_guarded_timestamp_and_replays_ce_bc_controls ... ok
+test leaf_certification_native::scoped_finish::receipts::native_receipt_refuses_schema_valid_counter_and_scoped_binding_contradictions ... ok
+test leaf_certification_native::scoped_finish::shard_expiry::native_exact_replay_revalidates_expiry_after_unchanged_shard_wait ... ok
+test leaf_certification_native::scoped_finish::source_controls::native_scoped_finish_applies_and_replays_from_certificate_metadata_only ... ok
+test leaf_certification_native::scoped_finish::shard_expiry::native_first_apply_revalidates_expiry_after_unchanged_shard_wait ... ok
+test leaf_certification_native::scoped_finish::source_controls::native_scoped_finish_requires_retained_certificate_before_receipt_and_after_fence ... ok
+test leaf_certification_native::scoped_finish::source_controls::native_scoped_finish_validates_certificate_pin_before_matching_receipt ... ok
+test leaf_certification_native::scoped_finish::writer_order::actual_first_certifier_and_scoped_finish_obey_both_original_run_orders ... ok
+test leaf_certification_native::scoped_finish::writer_order::two_genuine_scoped_members_complete_in_either_observed_run_queue_order ... ok
+test legacy_collection_inflight_applied_v1::old_applied_lookup_attaches_without_changing_original_authority ... ignored, requires separate immutable-old Applied producer; see decision evidence
+test legacy_collection_inflight_applied_v1::parser_refuses_coherently_readdressed_lookup_task ... ok
+test legacy_collection_inflight_report_v1::old_live_work_frontier_drains_before_waiting ... ignored, requires scripts/test-legacy-collection-inflight-report-v1.sh --case live-work-frontier
+test legacy_collection_inflight_report_v1::old_ordinary_success_after_cancellation_drain_preserves_the_original_stop ... ignored, requires scripts/test-legacy-collection-inflight-report-v1.sh
+test legacy_collection_inflight_report_v1::old_ordinary_success_after_drain_preserves_the_report_and_compensation ... ignored, requires scripts/test-legacy-collection-inflight-report-v1.sh --case drain-before-report
+test legacy_collection_inflight_report_v1::old_ordinary_success_before_drain_preserves_the_report_and_compensation ... ignored, requires scripts/test-legacy-collection-inflight-report-v1.sh
+test legacy_collection_inflight_report_v1::old_original_success_forces_frontier_cas_then_fresh_stopped_drain ... ignored, requires the separate immutable-old ordinary producer; see fixture README
+test legacy_collection_inflight_report_v1::old_under_limit_increment_after_cancellation_drain_preserves_the_original_stop ... ignored, requires separate immutable-old under-limit producer; see fixture README
+test legacy_collection_inflight_report_v1::old_under_limit_increment_before_drain_preserves_the_report_and_compensation ... ignored, requires scripts/test-legacy-collection-inflight-report-v1.sh --case under-limit-increment-before-drain
+test legacy_collection_output_view::a_current_full_run_transaction_reads_frozen_legacy_collection_outputs ... ignored, requires the frozen 6c44a0e4 producer phase; see companion notes
+test legacy_collection_output_view::current_frontier_admits_frozen_old_free_admission_at_exact_limit ... ignored, requires separate immutable-old equal-limit producer; see fixture README
+test legacy_collection_output_view::current_frontier_drains_frozen_old_free_admission_before_first_member ... ignored, requires the separate immutable-old free-admission producer; see fixture README
+test legacy_collection_output_view::current_frontier_drains_frozen_old_nonfinal_return_before_checkpoint ... ignored, requires the separate immutable-old nonfinal Return producer; see fixture README
+test legacy_collection_output_view::current_frontier_preserves_frozen_old_member_failure_over_excess ... ignored, requires separate immutable-old failed-member producer; see fixture README
+test limits::a_collection_that_cannot_be_admitted_within_the_instance_limit_fails_before_it_starts ... ok
+test limits::a_delayed_loop_is_refused_before_it_waits_for_an_iteration_it_cannot_afford ... ok
+test leaf_certification_native::scoped_finish::writer_order::actual_later_worker_and_scoped_finish_obey_both_original_run_orders ... ok
+test limits::a_finished_loop_whose_successor_cannot_be_afforded_stops_with_instance_limit ... ok
+test limits::a_loop_that_cannot_afford_its_first_iteration_fails_before_it_starts ... ok
+test limits::a_loop_that_cannot_afford_its_next_iteration_fails_with_instance_limit ... ok
+test limits::a_loop_that_needs_more_than_its_iteration_limit_fails_with_iteration_limit ... ok
+test limits::a_loop_whose_next_iteration_exactly_fits_continues ... ok
+test limits::a_policy_reduction_midway_pauses_admission_without_failing_or_killing_accepted_work ... ok
+test limits::a_tenant_ceiling_below_the_authors_limit_is_never_raised ... ok
+test limits::a_tenant_reduction_below_the_next_iteration_stops_the_loop_with_instance_limit ... ok
+test limits::more_items_than_the_collection_limit_fail_the_run_with_iteration_limit ... ok
+test limits::run_creation_captures_the_lowered_limits_and_old_documents_keep_the_ceilings ... ok
+test limits::the_instance_beyond_the_limit_fails_the_run_with_instance_limit ... ok
+test limits::the_last_instance_inside_the_limit_still_runs ... ok
+test loop_progress::a_cancelled_run_surfaces_its_loop_while_it_waits ... ok
+test loop_progress::a_loop_that_hit_its_iteration_limit_ends_the_run_failed_through_the_scheduler ... ok
+test loop_progress::a_run_finished_by_its_loop_is_delivered_to_run_finished_subscribers ... ok
+test loop_progress::a_stale_scheduler_fence_stops_every_routed_drain_step ... ok
+test loop_progress::cancel_during_a_failure_drain_finishes_the_run_cancelled_without_routing ... ok
+test loop_progress::cancellation_drains_the_active_iteration_and_finishes_after_restart ... ok
+test loop_progress::cancellation_with_an_error_edge_still_cancels_the_run ... ok
+test loop_progress::complete_checkpoint_routes_the_terminal_successor_atomically ... ok
+test loop_progress::deadline_cancels_a_suspended_timer_and_fences_the_stale_fire ... ok
+test loop_progress::delay_checkpoint_restart_and_duplicate_timer_fire_are_atomic ... ok
+test loop_progress::drain_outbox_failure_rolls_back_stop_projection_audit_and_journal ... ok
+test loop_progress::error_edge_outbox_failure_rolls_back_the_whole_finish_and_a_retry_completes_it ... ok
+test loop_progress::error_edge_to_an_end_rolls_back_when_the_terminal_hint_cannot_be_stored ... ok
+test loop_progress::expired_failed_and_draining_loops_surface_for_the_scheduler ... ok
+test loop_progress::expression_error_with_an_error_edge_routes_the_recovery_activity_and_the_run_completes ... ok
+test loop_progress::expression_failure_drains_once_restarts_and_finishes_from_the_journal ... ok
+test loop_progress::false_while_finishes_without_admitting_a_body_and_replays_exactly ... ok
+test loop_progress::iteration_ceiling_coexists_with_database_policies_and_rollback_preserves_configuration ... ok
+test loop_progress::iteration_limit_stops_the_run_without_routing_a_successor ... ok
+test loop_progress::iteration_limit_with_an_error_edge_routes_instead_of_stopping_the_run ... ok
+test loop_progress::leased_member_observes_cancellation_and_drain_resumes_after_restart ... ok
+test loop_progress::loop_discovery_filters_unrelated_pending_roots_before_pagination ... ok
+test loop_progress::loop_entry_is_atomic_restart_safe_and_exactly_idempotent ... ok
+test loop_progress::loop_entry_and_checkpoint_are_written_by_the_least_privilege_runtime_role ... ok
+test loop_progress::loop_failure_with_an_error_edge_to_an_end_finishes_the_run_through_the_terminal_path ... ok
+test loop_progress::loop_timeout_before_the_body_starts_cancels_it_and_takes_the_error_edge ... ok
+test loop_progress::loop_timeout_with_an_error_edge_routes_the_recovery_activity ... ok
+test loop_progress::outbox_and_audit_failures_roll_back_the_whole_checkpoint ... ok
+test loop_progress::permanent_body_failure_without_an_error_edge_still_fails_the_run ... ok
+test loop_progress::permanent_body_failure_with_an_error_edge_routes_the_recovery_activity ... ok
+test loop_progress::repeat_until_always_admits_its_first_body_before_checking ... ok
+test loop_progress::populated_loop_schema_upgrades_and_backfills_the_initial_decision ... ok
+test loop_progress::running_member_observes_timeout_and_releases_capacity_after_restart ... ok
+test loop_progress::scope_chain_prefix_loop_entry_precedes_own_run_and_replays ... ok
+test loop_progress::scope_post_wait_fence_preserves_loop_generation_storage_error ... ok
+test loop_progress::stale_fence_and_outbox_failure_leave_entry_unchanged ... ok
+test loop_progress::stale_fence_capacity_and_instance_budget_fail_without_timer_side_effects ... ok
+test loop_progress::scope_post_wait_fence_rejects_loop_entry_after_expiry_without_effects ... ok
+test loop_progress::terminal_outbox_failure_rolls_back_checkpoint_routing_and_slot_release ... ok
+test loops_http::a_delay_longer_than_the_loop_budget_waits_for_the_deadline_without_a_timer ... ok
+test loops_http::a_loop_that_times_out_during_its_delay_follows_its_error_edge_with_no_worker ... ok
+test loops_http::a_paused_run_holds_the_delay_and_resumes_the_loop ... ok
+test loops_http::a_public_cancel_before_the_loop_is_entered_cancels_the_run_directly ... ok
+test loops_http::a_public_cancel_while_an_iteration_is_leased_ends_the_run_cancelled ... ok
+test loops_http::a_public_cancel_while_the_loop_waits_on_its_delay_ends_the_run_cancelled ... ok
+test loops_http::a_repeat_until_loop_waits_out_its_delay_with_no_worker_connected ... ok
+test loops_http::a_while_loop_waits_out_its_delay_with_no_worker_connected ... ok
+test loops_http::an_entry_expression_error_follows_the_error_edge_to_a_recovery_activity ... ok
+test loops_http::an_entry_expression_error_follows_the_error_edge_to_an_end ... ok
+test loops_http::an_entry_expression_error_without_an_error_edge_still_fails_the_run ... ok
+test loops_http::public_loop_body_failure_routes_the_error_edge_and_the_run_completes ... ok
+test loops_http::public_loop_body_failure_routes_the_error_edge_to_an_activity_that_completes_the_run ... ok
+test loops_http::public_loop_body_failure_without_an_error_edge_fails_the_run ... ok
+test loops_http::public_loop_timeout_routes_the_error_edge_and_the_run_completes ... ok
+test loops_http::public_pre_and_post_test_loops_finish_after_restart_and_terminal_rollback ... ok
+test loops_http::publication_keeps_unproven_loop_bodies_closed ... ok
+test observability::a_failed_audit_write_fails_the_operation_closed_and_discloses_nothing ... ok
+test observability::declared_operations_emit_the_closed_span_and_metric_vocabulary ... ok
+test observability::trace_and_request_ids_correlate_the_error_and_the_access_audit ... ok
+test operations::a_declared_query_is_served_by_the_least_privilege_runtime_role ... ok
+test operations::activity_completion_serializes_after_the_snapshot_used_by_an_update ... ok
+test operations::an_applied_update_is_committed_by_the_least_privilege_runtime_role ... ok
+test operations::canonical_chain_update_hash_is_stable_without_a_head_and_binds_an_explicit_cas ... ok
+test operations::canonical_update_hash_frames_operation_arguments_revision_and_run ... ok
+test operations::applied_update_commits_state_receipt_journal_audit_and_outbox_together ... ok
+test operations::chain_query_waits_for_handoff_and_reads_only_the_committed_successor_snapshot ... ok
+test operations::evaluator_applies_and_retains_schema_checked_state_and_result_in_one_transaction ... ok
+test operations::concurrent_expected_revision_updates_apply_once_and_reject_once ... ok
+test operations::invalid_initial_state_refuses_start_without_a_run_or_retained_payload ... ok
+test operations::missing_declaration_fails_closed_without_an_audit_or_value ... ok
+test operations::publication_and_run_start_atomically_retain_declared_metadata_and_initial_state ... ok
+test operations::outbox_failure_rolls_back_state_journal_receipt_and_audit ... ok
+test operations::query_returns_one_committed_snapshot_and_only_adds_access_audit ... ok
+test operations::revision_rejection_is_durable_replays_once_and_checks_current_authorization ... ok
+test operations_http::chain_query_resolves_one_head_and_enforces_tenant_and_expected_run ... ok
+test operations_http::a_run_addressed_update_locks_its_successors_chain_before_the_run_until_commit ... ok
+test operations_http::current_permissions_and_tenant_boundary_guard_results_and_replays ... ok
+test operations_http::chain_update_keeps_one_receipt_across_handoff_and_cas_protects_new_keys ... ok
+test operations_http::outbox_failure_rolls_back_the_http_update_and_the_same_key_can_retry ... ok
+test operations_http::query_returns_only_the_declared_result_without_mutating_the_run ... ok
+test operations_http::update_commits_once_and_replays_the_durable_result ... ok
+test operations_http::update_to_a_continued_segment_is_run_continued ... ok
+test operations_http::update_to_a_finished_run_is_not_mutable ... ok
+test operations_http::validator_and_revision_rejections_are_stable_and_do_not_schedule_work ... ok
+test primitive_transactions::a_collection_entered_once_keeps_its_membership_against_any_later_entry ... ok
+test primitive_transactions::admission_owner_must_match_the_stored_scope_owner ... ok
+test primitive_transactions::checkpoint_and_finish_are_atomic_replayable_and_restart_safe ... ok
+test primitive_transactions::collection_admission_and_checkpoint_are_written_by_the_least_privilege_runtime_role ... ok
+test primitive_transactions::collection_admission_writes_expected_journal_projection_and_usage_atomically ... ok
+test primitive_transactions::collection_payloads_require_same_tenant_and_matching_content_digests ... ok
+test primitive_transactions::empty_collection_finishes_without_admission_or_capacity_charge ... ok
+test primitive_transactions::failed_outbox_insert_rolls_back_admission_and_every_counter ... ok
+test primitive_transactions::missing_tenant_policy_fails_closed ... ok
+test primitive_transactions::persisted_tenant_capacity_serializes_admission_across_runs ... ok
+test primitive_transactions::populated_scope_prevents_destructive_migration_rollback ... ok
+test primitive_transactions::populated_schema_upgrades_and_backfills_root_usage ... ok
+test primitive_transactions::scope_post_wait_fence_preserves_collection_generation_storage_error ... ok
+test primitive_transactions::stale_scheduler_fence_rejects_entry_and_admission ... ok
+test primitive_transactions::scope_post_wait_fence_rejects_collection_entry_after_expiry_without_effects ... ok
+test projection::a_collection_owner_points_at_the_entry_of_each_admitted_iteration ... ok
+test projection::an_event_of_an_unknown_kind_is_projected_as_an_explicit_unsupported_span ... ok
+test projection::a_loop_owner_points_at_the_entry_of_each_admitted_iteration ... ok
+test projection::approval_routes_and_the_recorded_decision_are_projected_over_http ... ok
+test projection::graph_and_telemetry_project_the_same_continuation_link ... ok
+test projection::selected_route_is_visible_in_the_journal_delta ... ok
+test projection::scoped_graph_delta_and_telemetry_keep_the_complete_instance_identity ... ok
+test projection::telemetry_advances_past_an_unknown_journal_event ... ok
+test public_refusal_commit_loss::committed_loss::ordinary_public_scoped_refusal_aborted_commit_reply_loss_applies_after_api_reopen ... ok
+test public_refusal_commit_loss::committed_loss::ordinary_public_scoped_refusal_commit_reply_loss_replays_after_api_reopen ... ok
+test publication_rejections::a_body_edge_cycle_returns_invalid_scope_over_http ... ok
+test publication_rejections::a_body_route_into_the_root_returns_invalid_scope_over_http ... ok
+test publication_rejections::a_multibyte_expression_above_the_legacy_wrapper_limit_returns_expression ... ok
+test public_refusal_commit_loss::ordinary_public_scoped_refusal_reopens_on_supplied_runtime_pool ... ok
+test publication_rejections::a_recursive_body_returns_invalid_scope_over_http ... ok
+test publication_rejections::a_terminal_body_node_is_rejected_by_the_canonical_schema_over_http ... ok
+test publication_rejections::an_object_literal_is_rejected_at_http_publication_before_execution ... ok
+test publication_rejections::an_ordinary_missing_root_target_keeps_the_existing_graph_reason ... ok
+test publication_rejections::an_oversized_multibyte_expression_returns_expression_instead_of_scope ... ok
+test publication_rejections::an_oversized_multibyte_switch_predicate_returns_expression_over_http ... ok
+test publication_rejections::overlapping_parallel_branches_return_invalid_scope_over_http ... ok
+test refusal_secret_versions::a_scanned_output_refusal_rechecks_the_original_lease_after_path_drop ... ok
+test release_upgrade::release_upgrade_active_rows_upgrade_progress_and_remain_readable_by_the_release ... ignored, requires the verified v0.2.0 phase executable; run the release-upgrade profile script
+test release_upgrade_callback_cutover::released_callback_writer_is_fenced_before_redis_activation ... ignored, requires verified actual released source; use the release-upgrade profile runner
+test release_upgrade_cutover::released_dispatcher_credentials_and_process_are_fenced_before_public_scoped_events ... ignored, requires verified actual released source; use the release-upgrade profile runner
+test release_upgrade_inflight::a_released_applied_report_refuses_output_and_compensates_original_effects_over_quota ... ignored, requires verified actual released source; use the release-upgrade profile runner
+test release_upgrade_inflight::a_released_worker_reports_and_replays_its_old_applied_lookup_after_server_upgrade ... ignored, requires verified actual released source; use the release-upgrade profile runner
+test release_upgrade_inflight::a_released_worker_reports_and_replays_its_old_lease_after_server_upgrade ... ignored, requires verified actual released source; use the release-upgrade profile runner
+test refusal_secret_versions::a_scoped_refusal_rechecks_openbao_versions_after_its_path_check ... ok
+test scope_compensation_http::a_cancellation_never_gives_up_on_a_compensation_that_waits_for_a_person ... ok
+test scope_compensation_http::a_cancelled_collection_undoes_what_completed_and_ends_cancelled ... ok
+test scope_compensation_http::a_cancelled_loop_undoes_what_completed_and_ends_cancelled ... ok
+test scope_compensation_http::a_cancelled_run_whose_compensation_keeps_failing_ends_partial_not_cancelled ... ok
+test scope_compensation_http::a_closed_storage_quota_does_not_stop_the_compensation ... ok
+test scope_compensation_http::a_collection_undoes_no_more_iterations_at_once_than_it_may_run ... ok
+test scope_compensation_http::a_compensation_that_keeps_failing_waits_for_a_person_who_can_retry_it ... ok
+test scope_compensation_http::a_failed_collection_undoes_what_its_iterations_completed_in_reverse_order ... ok
+test scope_compensation_http::a_lookup_that_cannot_say_waits_for_a_person_who_declares_what_happened ... ok
+test scope_compensation_http::a_failed_loop_undoes_its_completed_iterations_last_first ... ok
+test scope_compensation_http::a_loop_error_edge_is_taken_only_after_its_failure_was_undone ... ok
+test scope_compensation_http::a_loop_failure_that_was_not_fully_undone_is_not_handled_by_its_error_edge ... ok
+test scope_compensation_http::a_loop_stopped_by_its_iteration_limit_undoes_its_iterations_last_first ... ok
+test scope_compensation_http::a_loop_stopped_by_the_instance_budget_undoes_its_iterations_last_first ... ok
+test scope_compensation_http::a_negative_lookup_requires_resolution_and_survives_collection_cancellation ... ok
+test scope_compensation_http::a_loop_unknown_report_and_negative_lookup_after_cancel_wait_for_resolution ... ok
+test scope_compensation_http::a_person_can_declare_a_compensation_failed_and_the_run_ends_compensation_failed ... ok
+test scope_compensation_http::a_person_can_skip_a_compensation_and_the_run_ends_partial ... ok
+test scope_compensation_http::an_effect_of_unknown_outcome_is_looked_up_and_found_applied_before_anything_repeats ... ok
+test scope_compensation_http::an_irreversible_effect_ends_the_run_partial_and_is_never_called_compensated ... ok
+test scope_frontier::a_cancelled_collection_drains_the_same_way_through_both_paths ... ok
+test scope_compensation_http::collection_cancelled_before_unknown_report_still_leases_its_lookup ... ok
+test scope_frontier::a_cancelled_loop_drains_the_same_way_through_both_paths ... ok
+test scope_frontier::a_failing_loop_iteration_drains_the_same_way_through_both_paths ... ok
+test scope_frontier::a_collection_writes_the_same_journal_through_the_frontier_and_the_whole_run ... ok
+test scope_frontier::a_loop_with_a_delay_writes_the_same_journal_through_both_paths ... ok
+test scope_frontier::a_failing_member_drains_the_same_way_through_both_paths ... ok
+test scope_frontier::charge_projection_backfills_nonempty_runs_without_rewriting_steps ... ok
+test scope_frontier::a_loop_writes_the_same_journal_through_the_frontier_and_the_whole_run ... ok
+test scope_frontier::charge_projection_rolls_back_with_root_and_scoped_cancellation ... ok
+test scope_frontier::the_frontier_equals_the_restored_scope_at_every_step ... ok
+test scope_frontier::the_loop_frontier_equals_the_restored_scope_at_every_step ... ok
+test scoped_blob_completion::a_racing_blob_preparation_replays_a_report_committed_after_its_first_lookup ... ok
+test scoped_blob_completion::a_scoped_blob_cannot_be_committed_by_another_iteration ... ok
+test scoped_blob_completion::a_scoped_blob_commit_rolls_back_with_its_failed_journal_write ... ok
+test scoped_blob_completion::a_scoped_blob_commits_and_replays_without_unrelated_history ... ok
+test scoped_blob_completion::a_scoped_blob_report_rejects_a_non_holder_before_catalog_lookup ... ok
+test scoped_blob_completion::an_uploaded_scoped_result_can_be_reported_after_cancellation ... ok
+test scoped_blob_completion::path_storage_rejects_a_blob_without_its_matching_output_descriptor ... ok
+test scoped_event_dispatch_identity::event_cursor_uses_complete_database_tuple_across_same_name_scoped_candidates ... ok
+test scoped_event_dispatch_identity::event_discovery_pages_root_and_scoped_candidates_by_complete_identity ... ok
+test scoped_event_dispatch_identity::root_scan_markers_refuse_siblings_foreign_scope_and_changed_bindings ... ok
+test scoped_blob_completion::a_scoped_blob_quota_recovery_rechecks_lease_expiry ... FAILED
+test scoped_event_dispatch_identity::scan_markers_refuse_changed_physical_or_logical_candidate_identity ... ok
+test scoped_event_storage::a_generic_failure_cannot_impersonate_a_clocked_unhandled_timeout ... ok
+test scoped_event_storage::cancellation::a_late_native_drain_journal_failure_rolls_back_binding_usage_and_outbox ... ok
+test scoped_event_storage::cancellation::a_timeout_committed_ahead_of_queued_public_cancellation_keeps_its_outcome ... ok
+test scoped_event_storage::cancellation::a_real_sibling_correlation_failure_drains_the_subscribed_member_in_both_modes ... ok
+test scoped_event_storage::cancellation::committed_cancellation_prevents_a_due_timeout_queued_on_the_run_lock ... ok
+test scoped_event_storage::cancellation::the_independent_event_drain_requires_current_own_authority_and_run_revision ... ok
+test scoped_event_storage::cancellation::the_independent_native_drain_writer_refuses_corrupted_wait_capabilities_and_identity ... ok
+test scoped_event_storage::correlation_failure_start_cannot_commit_without_an_acknowledged_own_shard_guard ... ok
+test scoped_event_storage::cancellation::user_cancellation_drains_a_subscribed_member_and_retires_its_reservations ... ok
+test scoped_event_storage::correlation_failure_start_commits_with_acknowledged_own_shard_guard ... ok
+test scoped_event_storage::deadline_processing::a_paused_failed_wait_without_on_error_waits_for_resume_before_collection_failure ... ok
+test scoped_event_storage::deadline_processing::actual_scoped_deadline_ticks_refuse_missing_or_stale_authority_without_mutation ... ok
+test scoped_event_storage::deadline_processing::actual_paused_deadline_ticks_defer_routes_until_resume_for_every_timeout_policy ... ok
+test scoped_event_storage::deadline_processing::deadline_discovery_preserves_both_same_name_scoped_instances_and_tenant_exclusion ... ok
+test scoped_event_storage::deadline_processing::an_event_committed_ahead_of_the_actual_queued_deadline_entry_fences_its_old_revision_and_binding ... ok
+test scoped_event_storage::deadline_processing::the_qualified_consumer_preserves_legacy_root_timeout_in_singleton_mode ... ok
+test scoped_event_storage::deadline_processing::one_scheduler_tick_processes_both_same_name_scoped_deadlines_and_cold_repeat_is_no_work ... ok
+test scoped_event_storage::entry::a_cold_single_connection_scheduler_discovers_pending_event_entries_without_hints ... ok
+test scoped_event_storage::entry::all_cold_readers_refuse_worker_dispatch_metadata_on_an_event_entry ... ok
+test scoped_event_storage::entry::an_event_entry_admission_fault_rolls_back_membership_step_budget_and_captured_item ... ok
+test scoped_event_storage::entry::cancellation_before_an_event_entry_starts_retires_its_return_reservation ... ok
+test scoped_event_storage::entry::frontier_admission_runs_event_entries_without_creating_worker_tasks ... ok
+test scoped_event_storage::entry::full_oracle_admission_runs_event_entries_without_creating_worker_tasks ... ok
+test scoped_event_storage::entry::pause_prevents_event_entry_admission_and_resume_preserves_scheduler_dispatch ... ok
+test scoped_event_storage::entry::zero_iteration_policy_blocks_new_event_entries_but_keeps_admitted_waits_progressing ... ok
+test scoped_event_storage::full_native_start_preserves_the_other_same_name_member_and_replays_cold ... ok
+test scoped_event_storage::guards::a_journal_abort_rolls_back_start_in_both_native_writers ... ok
+test scoped_event_storage::guards::a_start_prepared_before_the_own_guard_cannot_reuse_its_earlier_clock ... ok
+test scoped_event_storage::guards::all_readers_refuse_a_same_tenant_wrong_namespace_or_invented_step_uuid ... ok
+test scoped_event_storage::guards::all_readers_reject_orphan_metadata_on_a_real_wait ... ok
+test scoped_event_storage::guards::missing_and_later_refused_own_acknowledgements_refuse_both_start_shapes_in_both_writers ... ok
+test scoped_event_storage::guards::prepared_starts_refuse_physical_changes_without_a_run_revision ... ok
+test scoped_event_storage::native_start_records_an_exact_wait_after_real_worker_routing ... ok
+test scoped_event_storage::receipts::a_claim_snapshot_cannot_replace_current_admission_fields_in_either_writer ... ok
+test scoped_event_storage::receipts::a_current_event_retains_its_exact_scoped_receipt_and_value_in_the_bounded_writer ... ok
+test scoped_event_storage::receipts::a_current_event_retains_its_exact_scoped_receipt_and_value_in_the_full_writer ... ok
+test scoped_event_storage::receipts::a_duplicate_receipt_is_no_work_only_with_all_exact_instance_metadata ... ok
+test scoped_event_storage::receipts::a_generic_completion_cannot_consume_a_scoped_event_receipt ... ok
+test scoped_event_storage::receipts::a_later_failed_persist_cannot_commit_an_already_staged_successful_delivery ... ok
+test scoped_event_storage::receipts::a_non_aborting_late_persist_error_cannot_commit_a_receipt_or_its_value ... ok
+test scoped_event_storage::receipts::a_staged_receipt_cannot_commit_without_its_satisfaction_and_value ... ok
+test scoped_event_storage::receipts::a_successful_retry_before_receipt_staging_cannot_erase_an_earlier_persist_failure ... ok
+test scoped_event_storage::receipts::a_retained_event_uses_its_pinned_body_schema_for_public_pii_and_secret_disclosure ... ok
+test scoped_event_storage::receipts::admission::current_inbox_data_requires_its_admission_fingerprint_json_object_and_body_bound ... ok
+test scoped_event_storage::receipts::current_retained_quota_rolls_back_the_receipt_value_and_outcome_in_both_writers ... ok
+test scoped_event_storage::receipts::even_an_unmatched_receipt_attempt_cannot_be_repeated_in_one_transaction ... ok
+test scoped_event_storage::receipts::races::a_prepared_path_delivery_refuses_a_timeout_committed_while_its_entry_is_queued ... ok
+test scoped_event_storage::receipts::paused_delivery_cold_resume_and_duplicate_keep_one_value_outcome_and_logical_charge ... ok
+test scoped_event_storage::receipts::races::cancellation_commit_prevents_an_event_actually_queued_on_the_run_lock ... ok
+test scoped_event_storage::receipts::races::cleanup_committed_first_prevents_a_stale_claim_from_creating_any_value ... ok
+test scoped_event_storage::receipts::races::current_inbox_lock_keeps_cleanup_queued_until_the_value_commits ... ok
+test scoped_event_storage::receipts::races::event_commit_prevents_a_due_timeout_actually_queued_on_the_run_lock ... ok
+test scoped_event_storage::receipts::races::event_commit_preserves_its_value_ahead_of_queued_public_cancellation ... ok
+test scoped_event_storage::receipts::races::timeout_commit_prevents_an_event_actually_queued_on_the_run_lock ... ok
+test scoped_event_storage::receipts::satisfaction_with_another_value_is_refused_by_both_writers ... ok
+test scoped_event_storage::receipts::satisfaction_without_a_current_receipt_is_refused_by_both_writers ... ok
+test scoped_event_storage::receipts::satisfaction_without_a_value_is_refused_by_both_writers ... ok
+test scoped_event_storage::receiver::a_dispatcher_quota_refusal_rolls_back_receipts_and_retries_pending_lookback ... ok
+test scoped_event_storage::receiver::a_dispatcher_quota_refusal_with_held_inbox_keeps_lookback_pending ... ok
+test scoped_event_storage::receiver::a_failed_scoped_lookback_cannot_monopolize_the_next_bounded_round ... ok
+test scoped_event_storage::receiver::a_post_admission_routing_error_is_retried_instead_of_finishing_the_event ... ok
+test scoped_event_storage::receiver::an_inbox_removed_after_lookback_selection_does_not_close_the_scan ... ok
+test scoped_event_storage::receiver::scoped_lookback_and_scan_markers_require_each_complete_current_candidate ... ok
+test scoped_event_storage::receiver::the_dispatcher_records_paused_scoped_outcomes_and_routes_only_after_resume ... ok
+test scoped_event_storage::receiver::the_event_dispatcher_pages_same_name_scoped_waits_without_aliasing ... ok
+test scoped_event_storage::receiver::the_event_dispatcher_recovers_finished_inbox_events_for_late_scoped_waits ... ok
+test scoped_event_storage::receiver::the_lookback_index_migration_round_trips_with_admitted_waits_present ... ok
+test scoped_event_storage::scheduler::a_failed_wait_recorded_while_paused_keeps_its_local_error_route_before_fail_fast ... ok
+test scoped_event_storage::scheduler::a_persist_time_quota_fault_rolls_back_before_reopening_the_scope_for_drain ... ok
+test scoped_event_storage::scheduler::a_placement_free_scheduler_refuses_scoped_event_clocks_with_a_typed_fence_error ... ok
+test scoped_event_storage::scheduler::a_scheduled_subscription_refused_at_commit_rolls_back_before_current_quota_drain ... ok
+test scoped_event_storage::scheduler::committed_cancellation_drains_before_any_pending_event_subscription_can_start ... ok
+test scoped_event_storage::scheduler::paused_pending_waits_create_no_subscription_and_resume_starts_normally ... ok
+test scoped_event_storage::scheduler::scheduled_correlation_errors_take_the_local_error_route_without_worker_capabilities ... ok
+test scoped_event_storage::scheduler::the_collection_scheduler_starts_each_exact_event_subscription_once_in_both_modes ... ok
+test scoped_event_storage::timeouts::a_handled_native_timeout_clears_the_binding_in_the_bounded_writer ... ok
+test scoped_event_storage::timeouts::a_handled_native_timeout_clears_the_binding_in_the_full_writer ... ok
+test scoped_event_storage::timeouts::a_late_projection_fault_rolls_back_timeout_and_its_preceding_journal_in_both_writers ... ok
+test scoped_event_storage::timeouts::an_unhandled_native_timeout_uses_the_recorded_deadline_in_the_bounded_writer ... ok
+test scoped_event_storage::timeouts::an_unhandled_native_timeout_uses_the_recorded_deadline_in_the_full_writer ... ok
+test scoped_event_storage::timeouts::an_unhandled_timeout_keeps_its_local_error_edge_in_both_writers ... ok
+test scoped_event_storage::timeouts::native_timeouts_refuse_missing_authority_early_clocks_and_the_wrong_pinned_outcome ... ok
+test scoped_event_storage::timeouts::prepared_timeouts_refuse_changed_keys_and_windows_without_a_run_revision ... ok
+test scoped_worker::a_late_journal_failure_rolls_back_the_whole_scoped_report ... ok
+test scoped_event_storage::timeouts::paused_timeouts_persist_outcomes_and_cold_explicit_resume_routes_once ... ok
+test scoped_worker::a_scoped_failure_retries_after_restart_and_rejects_the_old_fence ... ok
+test scoped_worker::a_scoped_lease_observes_cancellation_and_acknowledges_it_before_restart ... ok
+test scoped_worker::a_scoped_lost_lease_rolls_back_then_reviews_after_restart ... ok
+test scoped_worker::aggregate_retention_quota_atomically_drains_and_replays_the_open_scope ... ok
+test scoped_worker::an_uncertain_scoped_report_is_atomic_idempotent_and_keeps_its_path_after_restart ... ok
+test scoped_worker::automatic_collection_progress_rechecks_the_tenant_capacity ... ok
+test scoped_worker::cancellation_drains_members_atomically_and_finishes_after_restart ... ok
+test scoped_worker::collection_discovery_filters_unrelated_pending_roots_before_pagination ... ok
+test scoped_worker::exhausted_member_failure_starts_fail_fast_drain_and_survives_restart ... ok
+test scoped_worker::failed_derived_obligations_keep_member_capacity_reserved ... ok
+test scoped_worker::scheduler_resumes_collection_through_checkpoint_and_finish ... ok
+test scoped_worker::scope_chain_prefix_collection_drain_precedes_own_run_and_replays ... ok
+test scoped_worker::scope_chain_prefix_collection_entry_precedes_own_run_and_replays ... ok
+test scoped_worker::scoped_lease_capabilities_reject_a_foreign_tenant_without_leaking_the_attempt ... ok
+test scoped_worker::scoped_maintenance_reviews_ambiguity_without_whole_run_iteration_history ... ok
+test scoped_worker::snapshot_retention_quota_stops_the_pending_owner_without_creating_a_scope ... ok
+test scoped_worker::scoped_content_quota_fallback_preserves_success_or_unknown_before_any_error_route ... ok
+test scoped_worker::stale_hints_are_renewed_for_each_scoped_instance ... ok
+test scoped_worker::two_equal_nodes_keep_distinct_leases_outputs_routes_and_replays ... ok
+test security::a_tenant_reduction_never_stops_accepted_loops_and_holds_back_new_ones ... ok
+test security::approval_state_is_tenant_bound_and_foreign_decisions_look_missing ... ok
+test security::chain_state_is_tenant_bound_and_foreign_commands_look_missing ... ok
+test security::collection_admission_derives_its_reservation_from_the_pinned_definition ... ok
+test security::loop_state_is_tenant_bound_and_foreign_probes_look_missing ... ok
+test security::scoped_identity_storage_rejects_foreign_tenant_keys_and_reads_look_missing ... ok
+test security::no_maintenance_job_removes_primitive_data ... ok
+test security::tenant_collection_capacity_serializes_admission_across_runs ... ok
+test switch_storage::case_and_default_choices_survive_projection_reload_and_duplicate_start ... ok
+test switch_storage::failed_successor_hint_rolls_back_the_choice_and_retry_commits_it_once ... ok
+test switch_storage::predicate_error_fails_without_recording_a_choice_or_activating_a_successor ... ok
+test switch_storage::migration_preserves_legacy_nulls_rejects_invalid_cases_and_guards_rollback ... ok
+
+failures:
+
+---- scoped_blob_completion::a_scoped_blob_quota_recovery_rechecks_lease_expiry stdout ----
+
+thread 'scoped_blob_completion::a_scoped_blob_quota_recovery_rechecks_lease_expiry' (791290515) panicked at tests/integration/workflow-primitives/scoped_blob_completion.rs:445:5:
+assertion `left == right` failed
+  left: "INTERNAL"
+ right: "STALE_ATTEMPT"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    scoped_blob_completion::a_scoped_blob_quota_recovery_rechecks_lease_expiry
+
+test result: FAILED. 749 passed; 1 failed; 22 ignored; 0 measured; 0 filtered out; finished in 1329.80s
+
+error: test failed, to rerun pass `-p sagat-tests --test integration_workflow_primitives`

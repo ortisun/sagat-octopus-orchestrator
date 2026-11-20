@@ -131,6 +131,9 @@ remains a separate acceptance step (T010-038).
 Activity admission acquires policy fences in tenant, namespace, activity order. Claims share the
 tenant and namespace fences; edits exclusively fence the level they change. A run claiming several
 activities visits them in activity-name order (then node id), independent of workflow node order.
+Claims also share the activity's own fence, which a change of its override takes exclusively. Leases
+are counted, one claim at a time, only for a limit between 1 and the maximum; with no limit set an
+activity's claims are not counted and do not wait for each other.
 A completed limit change governs subsequent admissions; transactions already admitted may finish
 before the change commits. Existing leases are not revoked by a lower limit (T010-040).
 

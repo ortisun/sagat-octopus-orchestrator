@@ -1227,7 +1227,7 @@ pub fn new_event(
     payload: Vec<u8>,
     ttl: Duration,
 ) -> NewEvent {
-    let digest = digest_of(&envelope, &payload);
+    let digest = event_admission_digest(&envelope, &payload);
     NewEvent {
         tenant_id: tenant,
         namespace_id: namespace,
@@ -1242,7 +1242,10 @@ pub fn new_event(
 
 /// What makes two admissions of one event id "the same event": its type, subject, correlation key
 /// and data. Length-prefixed, so no two different tuples concatenate to the same bytes.
-fn digest_of(envelope: &EventEnvelope, payload: &[u8]) -> Vec<u8> {
+/// This legacy admission fingerprint excludes occurred_at; consumers must pin that field
+/// independently when validating a complete canonical event value.
+#[must_use]
+pub fn event_admission_digest(envelope: &EventEnvelope, payload: &[u8]) -> Vec<u8> {
     let mut hash = Sha256::new();
     for part in [
         envelope.event_type.as_str().as_bytes(),

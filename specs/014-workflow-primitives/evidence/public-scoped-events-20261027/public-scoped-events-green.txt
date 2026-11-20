@@ -1,0 +1,41 @@
+   Compiling sagat-infra-ir v0.2.0 (/Users/marcelo/Documents/Projects/sagat-octopus-v0.3-completion/crates/infra-ir)
+   Compiling sagat-control-plane v0.2.0 (/Users/marcelo/Documents/Projects/sagat-octopus-v0.3-completion/apps/control-plane)
+   Compiling sagat-execution-engine v0.2.0 (/Users/marcelo/Documents/Projects/sagat-octopus-v0.3-completion/apps/execution-engine)
+   Compiling sagat-sandbox-runner v0.2.0 (/Users/marcelo/Documents/Projects/sagat-octopus-v0.3-completion/apps/sandbox-runner)
+   Compiling sagat-cli v0.2.0 (/Users/marcelo/Documents/Projects/sagat-octopus-v0.3-completion/apps/cli)
+   Compiling sagat-tests v0.2.0 (/Users/marcelo/Documents/Projects/sagat-octopus-v0.3-completion/tests)
+    Finished `test` profile [unoptimized] target(s) in 55.41s
+     Running integration/workflow-primitives/main.rs (/Users/marcelo/.cache/sagat-v03-nodebug-5xlu3ufs/debug/deps/integration_workflow_primitives-7df55b39987620ef)
+
+running 3 tests
+test collection_events::public_activity_event_bodies_recover_already_dispatched_events_with_a_cold_receiver ... FAILED
+test collection_events::public_event_deadlines_route_without_worker_tasks ... FAILED
+test collection_events::public_event_entries_finish_in_input_order_with_scoped_receipts ... FAILED
+
+failures:
+
+---- collection_events::public_activity_event_bodies_recover_already_dispatched_events_with_a_cold_receiver stdout ----
+
+thread 'collection_events::public_activity_event_bodies_recover_already_dispatched_events_with_a_cold_receiver' (473330820) panicked at tests/integration/workflow-primitives/../../support/scope_flow.rs:166:14:
+the compensating collection publishes: Object {"code": String("VALIDATION_FAILED"), "details": Object {"kind": String("body"), "node": String("line"), "reason": String("UNSUPPORTED_NODE")}, "message": String("node 'line' is a 'body', which is not supported yet: the runtime supports a collection body of one to eight activities/conditions/switches/timers/event waits with local routes and one return"), "remediation": String("Correct what `details` names (a problem, a path) and send the request again."), "requestId": String("791941319c554e49909a3975d7189974"), "retryable": Bool(false), "traceId": String("1283e2497ec3494a9bafe580f516c672")}
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- collection_events::public_event_deadlines_route_without_worker_tasks stdout ----
+
+thread 'collection_events::public_event_deadlines_route_without_worker_tasks' (473332548) panicked at tests/integration/workflow-primitives/../../support/scope_flow.rs:166:14:
+the compensating collection publishes: Object {"code": String("VALIDATION_FAILED"), "details": Object {"kind": String("body"), "node": String("line"), "reason": String("UNSUPPORTED_NODE")}, "message": String("node 'line' is a 'body', which is not supported yet: the runtime supports a collection body of one to eight activities/conditions/switches/timers/event waits with local routes and one return"), "remediation": String("Correct what `details` names (a problem, a path) and send the request again."), "requestId": String("9934c65266704eee89133dc257514b46"), "retryable": Bool(false), "traceId": String("06d6ec0762504351a3370f31a1ce2fb2")}
+
+---- collection_events::public_event_entries_finish_in_input_order_with_scoped_receipts stdout ----
+
+thread 'collection_events::public_event_entries_finish_in_input_order_with_scoped_receipts' (473334338) panicked at tests/integration/workflow-primitives/../../support/scope_flow.rs:166:14:
+the compensating collection publishes: Object {"code": String("VALIDATION_FAILED"), "details": Object {"kind": String("body"), "node": String("line"), "reason": String("UNSUPPORTED_NODE")}, "message": String("node 'line' is a 'body', which is not supported yet: the runtime supports a collection body of one to eight activities/conditions/switches/timers/event waits with local routes and one return"), "remediation": String("Correct what `details` names (a problem, a path) and send the request again."), "requestId": String("219438da3a664bbe8465a2eac32cbf40"), "retryable": Bool(false), "traceId": String("d7385338af2941f9bcf159f259db28c8")}
+
+
+failures:
+    collection_events::public_activity_event_bodies_recover_already_dispatched_events_with_a_cold_receiver
+    collection_events::public_event_deadlines_route_without_worker_tasks
+    collection_events::public_event_entries_finish_in_input_order_with_scoped_receipts
+
+test result: FAILED. 0 passed; 3 failed; 0 ignored; 0 measured; 691 filtered out; finished in 5.32s
+
+error: test failed, to rerun pass `-p sagat-tests --test integration_workflow_primitives`

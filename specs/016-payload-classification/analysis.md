@@ -179,3 +179,19 @@ What the review changed in this set:
 | US01.6 did not say what republishing an identical legacy document does | It does, and `classificationRules` is returned (D661) |
 
 Nothing in this review is evidence that a requirement holds beyond the tests named in `tasks.md`.
+
+## Final integrated gates — 2026-10-26
+
+The earlier design and review snapshots above remain historical. T016-053 was subsequently
+closed by the recorded release-build measurement; T016-001 closed when PR #47 merged the
+specification into `develop` as `ca18e33c`. T016-054 now has the complete integrated Linux
+gate: candidate `769a7d1d` passed all 11 jobs of CI 40259828158, independent SDK packaging
+and all six release-preflight jobs. PR #50 supplies the approved Studio integration;
+PR #51 merged the identical tested candidate tree into `main` as `bfda3420`.
+
+All 65 feature-016 tasks now carry their closure evidence in `tasks.md`; the checked-in
+[release-gate record](release-gates-2026-10-25.md) retains commands, earlier failures,
+current results and limits. The shared technical pass does not close the eight open
+feature-014 tasks or enable broader nesting, production ceilings, or combining managed
+database nodes with collections, loops or continuation. ADR-0040 and the original runtime
+capability gates remain authoritative.

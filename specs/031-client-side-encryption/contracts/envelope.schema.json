@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sagat-octopus-orchestrator.io/schemas/payload-envelope/v1",
+  "title": "Encoded payload envelope v1 (feature 031, draft)",
+  "description": "Structural shape the server checks at an encoded location. The server never decodes data. Normative text: envelope.md (strict parsing: duplicate members are refused before this schema is applied; codec order, ctx equality and level equality are checked beyond this schema).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$encoded"],
+  "properties": {
+    "$encoded": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["v", "codecs", "cty", "lvl", "ctx", "data"],
+      "properties": {
+        "v": {"const": 1},
+        "codecs": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 3,
+          "uniqueItems": true,
+          "items": {"enum": ["zstd", "gzip", "pad", "aes-256-gcm"]},
+          "description": "Order applied at encode time: [zstd|gzip]? pad? aes-256-gcm?; pad only between a compression and a cipher; at least one compression or cipher."
+        },
+        "cty": {"const": "application/json"},
+        "lvl": {"enum": ["public", "internal", "pii", "secret"]},
+        "ctx": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["t", "n", "p"],
+          "properties": {
+            "t": {"type": "string", "format": "uuid", "description": "Tenant id."},
+            "n": {"type": "string", "format": "uuid", "description": "Namespace id."},
+            "p": {"type": "string", "maxLength": 512, "pattern": "^(/([^/~]|~[01])*)*$", "description": "Pointer pattern of the location in its carrier; '' is the root; a '*' segment is every array element."}
+          }
+        },
+        "key": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kid", "wk"],
+          "properties": {
+            "kid": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9._:/-]{1,128}$"},
+            "kv": {"type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[A-Za-z0-9._:/-]{1,64}$"},
+            "wk": {
+              "type": "string",
+              "minLength": 4,
+              "maxLength": 1368,
+              "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$"
+            }
+          }
+        },
+        "iv": {"type": "string", "pattern": "^[A-Za-z0-9+/]{16}$", "description": "Exactly 12 bytes."},
+        "data": {
+          "type": "string",
+          "minLength": 4,
+          "maxLength": 349528,
+          "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$",
+          "description": "Inline bound follows the 256 KiB payload limit; a blob-borne root envelope is bounded by the blob limit instead."
+        }
+      },
+      "if": {"properties": {"codecs": {"contains": {"const": "aes-256-gcm"}}}},
+      "then": {"required": ["key", "iv"]},
+      "else": {"not": {"anyOf": [{"required": ["key"]}, {"required": ["iv"]}]}}
+    }
+  }
+}

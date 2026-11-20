@@ -1,0 +1,204 @@
+    Blocking waiting for file lock on package cache
+   Compiling log v0.4.34
+   Compiling tracing-core v0.1.36
+   Compiling tokio v1.53.2
+   Compiling tracing v0.1.44
+   Compiling tokio-util v0.7.19
+   Compiling ring v0.17.14
+   Compiling h2 v0.4.20
+   Compiling rustls v0.23.46
+   Compiling hyper v1.12.0
+   Compiling rustls-webpki v0.103.16
+   Compiling form_urlencoded v1.2.2
+   Compiling hyper-util v0.1.21
+   Compiling tower v0.5.3
+   Compiling tokio-rustls v0.26.6
+   Compiling ryu v1.0.23
+   Compiling axum-core v0.5.6
+   Compiling serde_urlencoded v0.7.1
+   Compiling serde_path_to_error v0.1.20
+   Compiling axum v0.8.9
+   Compiling url v2.5.8
+   Compiling hyper-timeout v0.5.2
+   Compiling tokio-stream v0.1.19
+   Compiling tonic v0.14.6
+   Compiling tower-http v0.6.11
+   Compiling sagat-octopus-orchestrator-sdk v0.3.0 (/Users/marcelo/Documents/Projects/sagat-octopus-v0.3-completion/sdks/rust)
+   Compiling hyper-rustls v0.27.10
+   Compiling rustls-platform-verifier v0.7.1
+   Compiling lazy_static v1.5.1
+   Compiling sharded-slab v0.1.7
+   Compiling reqwest v0.13.5
+   Compiling tonic-prost v0.14.6
+   Compiling yasna v0.5.2
+   Compiling pem v3.0.6
+   Compiling tracing-log v0.2.0
+   Compiling thread_local v1.1.10
+   Compiling nu-ansi-term v0.50.3
+   Compiling tracing-subscriber v0.3.23
+   Compiling rcgen v0.13.2
+    Finished `test` profile [unoptimized] target(s) in 48.12s
+     Running unittests src/lib.rs (/Users/marcelo/.cache/sagat-v03-combined-sdk-Q6PiK2/debug/deps/sagat_octopus_orchestrator_sdk-13968ec383fd7fd5)
+
+running 36 tests
+test json::tests::oversized_output_stops_encoding_before_consuming_the_entire_value ... ok
+test json::tests::finite_adapter_retains_exact_arbitrary_precision_numbers_and_serializes_once ... ok
+test capabilities::tests::malformed_names_do_not_become_a_successful_cache ... ok
+test capabilities::tests::too_many_secrets_do_not_become_a_successful_cache ... ok
+test capabilities::tests::empty_and_oversized_values_do_not_become_a_successful_cache ... ok
+test worker::serialization_tests::typed_activity_outputs_refuse_non_finite_numbers_in_nested_values ... ok
+test client::response_cancellation_tests::cancellation_during_a_held_body_keeps_received_status_and_trace ... ok
+test worker::worker_tests::an_explicit_unsupported_stream_surfaces_a_terminal_worker_error ... ok
+test worker::worker_tests::a_reconciler_returns_the_canonical_applied_envelope ... ok
+test worker::worker_tests::reconciliation_does_not_accept_an_untyped_json_lookalike ... ok
+test worker::worker_tests::a_json_blob_lookalike_is_reported_as_inline_json ... ok
+test worker::worker_tests::a_panicking_metrics_observer_does_not_drop_a_leased_activity ... ok
+test worker::worker_tests::a_retained_blob_marker_is_refused_when_the_session_only_speaks_protocol_1_2 ... ok
+test worker::worker_tests::handler_return_revokes_a_secret_rpc_already_in_flight ... ok
+test worker::worker_tests::compensation_preserves_its_forward_target_and_uses_the_same_lease_protocol ... ok
+test worker::worker_tests::corrupt_blob_bytes_fail_before_a_verified_eof ... ok
+test worker::worker_tests::a_retained_blob_reader_cannot_yield_data_after_the_handler_returns ... ok
+test worker::worker_tests::failed_secret_resolution_is_not_cached_for_the_rest_of_the_attempt ... ok
+test worker::worker_tests::worker_blob_calls_are_revoked_while_waiting_for_fresh_credentials ... ok
+test worker::worker_tests::worker_blob_output_is_a_typed_reference_with_the_original_scoped_capability ... ok
+test worker::worker_tests::server_reasons_cannot_spoof_local_token_provenance_during_refresh_or_recovery ... ok
+test worker::worker_tests::secret_responses_have_a_smaller_decode_budget_than_task_inputs ... ok
+test worker::worker_tests::a_local_receive_token_failure_retries_without_replacing_a_valid_session ... ok
+test worker::worker_tests::worker_blob_reads_verify_the_header_bytes_digest_and_clean_eof ... ok
+test worker_rpc::secret_decode_errors::a_known_local_secret_decode_overflow_is_protocol_without_reclassifying_server_statuses ... ok
+test worker_rpc::tests::stream_fallback_cannot_be_enabled_by_a_permission_failure ... ok
+test worker_rpc::tests::grpc_errors_preserve_closed_codes_and_bounded_metadata_without_raw_messages ... ok
+test worker_rpc::deferred_request_tests::request_materialization_does_not_run_while_token_authentication_is_pending ... ok
+test worker::worker_tests::native_worker_tls_verifies_trust_name_and_mutual_client_identity ... ok
+test worker::worker_tests::a_native_worker_registers_runs_and_reports_the_exact_scoped_lease ... ok
+test worker::worker_tests::concurrent_scopes_with_the_same_legacy_task_id_are_distinct_but_duplicates_are_dropped ... ok
+test worker::worker_tests::run_cancellation_is_cooperative_and_does_not_discard_a_returned_value ... ok
+test worker::worker_tests::shutdown_cancellation_is_not_reported_as_a_permanent_activity_failure ... ok
+test worker::worker_tests::server_staleness_cancels_the_handler_and_drops_its_eventual_result ... ok
+test worker::worker_tests::shutdown_grace_does_not_add_an_unrequested_two_second_delay ... ok
+test worker::worker_tests::secrets_resolve_once_concurrently_and_retained_views_cannot_read_after_return ... ok
+
+test result: ok. 36 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.15s
+
+     Running tests/builders.rs (/Users/marcelo/.cache/sagat-v03-combined-sdk-Q6PiK2/debug/deps/builders-22bd3f510e43a3d3)
+
+running 8 tests
+test canonical_text_uses_utf16_and_ecmascript_numbers_with_safe_integer_policy ... ok
+test managed_database_empty_error_route_is_rejected_with_an_opaque_error ... ok
+test typed_activity_timer_and_terminal_emit_the_common_ir ... ok
+test build_preserves_numbers_and_only_canonical_text_rejects_unsafe_whole_values ... ok
+test root_only_settings_on_nested_flows_are_refused_instead_of_dropped ... ok
+test invalid_names_references_saga_mutations_and_join_cycles_fail_locally ... ok
+test joined_flows_are_read_at_build_and_flatten_after_top_level_nodes ... ok
+test state_schema_byte_budget_measures_canonical_text ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/protocol.rs (/Users/marcelo/.cache/sagat-v03-combined-sdk-Q6PiK2/debug/deps/protocol-580f69ab1c0d9f5b)
+
+running 1 test
+test packaged_protocol_matches_the_canonical_wire_contract ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/rest.rs (/Users/marcelo/.cache/sagat-v03-combined-sdk-Q6PiK2/debug/deps/rest-67d6a795d755c55e)
+
+running 54 tests
+test cancellation_invalid_trace_and_response_bounds_fail_closed ... ok
+test cancel_sends_the_observed_version_and_the_user_agent_suffix ... ok
+test a_missing_workflow_name_is_a_typed_not_found_without_starting_a_run ... ok
+test a_stale_chain_head_is_never_retargeted_to_a_new_run ... ok
+test a_server_reason_is_public_but_never_grants_the_local_provider_retry_exception ... ok
+test chain_page_indices_outside_the_canonical_bound_are_protocol_failures ... ok
+test approval_nullability_is_required_and_invalid_decision_keys_stay_local ... ok
+test approval_pages_keep_scoped_identity_and_ignore_additive_scope_fields ... ok
+test approval_iteration_fetches_its_second_page_lazily ... ok
+test ambient_trace_hooks_and_metrics_callbacks_are_safe_and_explicit_trace_wins ... ok
+test chain_run_pages_preserve_order_and_continuation_kind_without_payloads ... ok
+test embedded_error_catalog_is_the_canonical_document ... ok
+test failed_resolution_requires_a_failure_code_before_network_io ... ok
+test invalid_operation_keys_names_and_event_shapes_never_reach_the_server ... ok
+test malformed_static_bearer_is_a_local_nonretryable_validation_failure ... ok
+test chain_state_calls_preserve_the_optional_head_and_the_durable_update_key ... ok
+test object_only_shapes_are_refused_before_network_io ... ok
+test declared_queries_keep_exact_revisions_and_disclosed_values ... ok
+test child_run_lineage_has_typed_fields_and_retains_raw_data ... ok
+test journal_events_have_typed_fields_and_keep_additive_raw_json ... ok
+test failed_uploads_are_never_replayed_even_when_credentials_can_refresh ... ok
+test a_local_token_provider_failure_retries_before_network_io ... ok
+test operation_receipt_must_match_the_requested_action ... ok
+test operation_reason_policy_is_validated_by_the_server_with_response_metadata ... ok
+test operator_resolution_preserves_valid_lowercase_and_punctuated_failure_codes ... ok
+test review_unknown_run_operation_is_rejected_before_network_io ... ok
+test review_empty_signal_success_is_a_protocol_error ... ok
+test serialized_errors_have_an_empty_trace_when_no_trusted_trace_is_available ... ok
+test malformed_and_non_progressing_pages_keep_response_metadata ... ok
+test review_malformed_json_keeps_the_received_status_and_trace_id ... ok
+test missing_declared_operation_fields_are_protocol_errors_with_response_metadata ... ok
+test review_paused_is_a_known_nonterminal_run_status ... ok
+test review_required_run_fields_are_validated_and_keep_response_metadata ... ok
+test approval_decisions_retry_the_unchanged_body_key_and_return_typed_receipts ... ok
+test review_signal_names_are_encoded_as_one_url_segment ... ok
+test redirects_and_server_forged_token_failure_are_never_retried ... ok
+test signal_parses_the_canonical_array_of_woken_nodes ... ok
+test run_input_upload_is_single_pass_and_start_sends_only_the_blob_reference ... ok
+test chain_commands_freeze_the_expected_head_and_per_call_idempotency_key ... ok
+test step_operation_preserves_exact_scope_outcome_and_expected_revision ... ok
+test typed_response_failures_are_not_counted_as_successful_sdk_calls ... ok
+test run_pagination_follows_opaque_cursors_without_growing_a_result_collection ... ok
+test unsupported_routes_do_not_advertise_retryable_not_found ... ok
+test upload_descriptor_mismatch_is_a_local_protocol_failure ... ok
+test durable_updates_retry_the_body_key_and_exact_arguments_without_an_idempotency_header ... ok
+test chain_inspection_and_completion_wait_use_the_authoritative_final_outcome ... ok
+test event_publication_freezes_its_generated_event_id_and_utc_instant_across_retries ... ok
+test retry_preserves_exact_body_and_key_but_fetches_a_fresh_token ... ok
+test workflow_name_resolution_preserves_hex_names_and_rejects_malformed_wire_ids ... ok
+test workflow_names_resolve_all_pages_and_reuse_only_a_client_local_cache ... ok
+test start_options_freeze_the_version_correlation_and_utc_deadline_across_retries ... ok
+test waiting_uses_known_terminal_states_and_does_not_cancel_the_run_on_timeout ... ok
+test token_provider_timeout_has_provider_reason_without_a_network_request ... ok
+test wait_timeout_and_cancellation_stop_polling_without_issuing_an_operation ... ok
+
+test result: ok. 54 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running tests/shared_builders.rs (/Users/marcelo/.cache/sagat-v03-combined-sdk-Q6PiK2/debug/deps/shared_builders-e770849c330ff6de)
+
+running 1 test
+test public_builders_match_existing_shared_programs_and_reviewed_goldens ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+     Running tests/tls.rs (/Users/marcelo/.cache/sagat-v03-combined-sdk-Q6PiK2/debug/deps/tls-d57d154d469921be)
+
+running 4 tests
+test invalid_identity_material_has_no_echo_in_errors ... ok
+test plaintext_warning_names_only_the_host_once_per_client ... ok
+test mtls_requires_the_explicit_client_identity_and_redacts_its_key ... ok
+test custom_roots_and_configured_names_are_verified_instead_of_skipped ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+     Running tests/upload_io.rs (/Users/marcelo/.cache/sagat-v03-combined-sdk-Q6PiK2/debug/deps/upload_io-e27c9e0665d92a05)
+
+running 3 tests
+test source_failure_does_not_replay_or_expose_its_error_text ... ok
+test an_early_success_cannot_accept_a_descriptor_before_source_eof ... ok
+test a_large_source_is_measured_once_in_bounded_chunks_with_precondition_headers ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+     Running tests/worker.rs (/Users/marcelo/.cache/sagat-v03-combined-sdk-Q6PiK2/debug/deps/worker-c604981588edcdb4)
+
+running 1 test
+test invalid_worker_configuration_and_empty_registry_fail_before_connecting ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests sagat_octopus_orchestrator_sdk
+
+running 1 test
+test src/lib.rs - (line 20) - compile ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+all doctests ran in 1.35s; merged doctests compilation took 0.75s

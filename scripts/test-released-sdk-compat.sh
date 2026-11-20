@@ -26,6 +26,7 @@ git archive "${release_commit}" sdks specs/001-platform-foundation/contracts | t
   done
 } > "${run_root}/source.sha256"
 env -u SAGAT_SDK_LANGS -u SAGAT_SDK_REUSE -u SAGAT_SDK_BLESS \
+  SAGAT_SDK_LANGS=typescript,go,python,dotnet,java \
   CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-3}" \
   RUST_MIN_STACK="${RUST_MIN_STACK:-16777216}" \
   SAGAT_SDK_SOURCE_ROOT="${source_root}/sdks" SAGAT_SDK_SCENARIO=run-lifecycle \

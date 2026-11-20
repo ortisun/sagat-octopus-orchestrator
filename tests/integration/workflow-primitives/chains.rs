@@ -92,29 +92,44 @@ impl Boundary {
 
     /// Adds one open step to the run's projection, the shape the matching `StepState` has.
     async fn obstruct(&self, kind: QuiescenceBlocker) {
-        let (status, waiting) = match kind {
-            QuiescenceBlocker::SiblingWork => ("READY", None),
-            QuiescenceBlocker::Timer => ("WAITING", Some("TIMER")),
-            QuiescenceBlocker::Subscription => ("WAITING", Some("EVENT")),
-            QuiescenceBlocker::Lease => ("LEASED", None),
+        let (node, status, waiting, step_kind, failure) = match kind {
+            QuiescenceBlocker::SiblingWork => ("ghost", "READY", None, "FORWARD", None),
+            QuiescenceBlocker::Timer => ("ghost", "WAITING", Some("TIMER"), "FORWARD", None),
+            QuiescenceBlocker::Subscription => ("ghost", "WAITING", Some("EVENT"), "FORWARD", None),
+            QuiescenceBlocker::Lease => ("ghost", "LEASED", None, "FORWARD", None),
+            QuiescenceBlocker::UnknownEffect => (
+                "ghost",
+                "WAITING",
+                Some("OPERATOR"),
+                "FORWARD",
+                Some("OUTCOME_UNKNOWN"),
+            ),
+            QuiescenceBlocker::Compensation => (
+                "ghost~c",
+                "WAITING",
+                Some("OPERATOR"),
+                "COMPENSATION",
+                Some("PROVIDER_DOWN"),
+            ),
             other => panic!("{other:?} is not seeded by this helper"),
         };
         let leased = status == "LEASED";
         sqlx::query(
-            "INSERT INTO steps (tenant_id,run_id,node,step_id,namespace_id,status,waiting_kind, \
+            "INSERT INTO steps (tenant_id,run_id,node,step_id,namespace_id,status,waiting_kind,kind,failure_code, \
                                 activity,ready_at,due_at,event_type,correlation_key, \
                                 lease_token_hash,lease_expires_at,leased_by,routed,updated_at, \
                                 instance_path_nodes,instance_path_indices) \
-             VALUES ($1,$2,'ghost',gen_random_uuid(),$3,$4,$5, \
-                     CASE WHEN $4='READY' THEN 'ghost.work' END, now(), \
-                     CASE WHEN $5 IS NOT NULL THEN now()+interval '1 day' END, \
-                     CASE WHEN $5='EVENT' THEN 'order.paid' END, \
-                     CASE WHEN $5='EVENT' THEN 'k' END, \
-                     CASE WHEN $6 THEN decode('00','hex') END, \
-                     CASE WHEN $6 THEN now()+interval '1 day' END, \
-                     CASE WHEN $6 THEN 'w' END, false, now(), '{}', '{}') \
+             VALUES ($1,$2,$4,gen_random_uuid(),$3,$5,$6,$7,$8, \
+                     CASE WHEN $5='READY' THEN 'ghost.work' END, now(), \
+                     CASE WHEN $6 IN ('TIMER','EVENT') THEN now()+interval '1 day' END, \
+                     CASE WHEN $6='EVENT' THEN 'order.paid' END, \
+                     CASE WHEN $6='EVENT' THEN 'k' END, \
+                     CASE WHEN $9 THEN decode('00','hex') END, \
+                     CASE WHEN $9 THEN now()+interval '1 day' END, \
+                     CASE WHEN $9 THEN 'w' END, false, now(), '{}', '{}') \
              ON CONFLICT ON CONSTRAINT steps_pkey DO UPDATE SET \
                 status=EXCLUDED.status,waiting_kind=EXCLUDED.waiting_kind, \
+                kind=EXCLUDED.kind,failure_code=EXCLUDED.failure_code, \
                 activity=EXCLUDED.activity,ready_at=EXCLUDED.ready_at,due_at=EXCLUDED.due_at, \
                 event_type=EXCLUDED.event_type,correlation_key=EXCLUDED.correlation_key, \
                 lease_token_hash=EXCLUDED.lease_token_hash,lease_expires_at=EXCLUDED.lease_expires_at, \
@@ -123,8 +138,11 @@ impl Boundary {
         .bind(self.world.admin.tenant_id().as_uuid())
         .bind(self.chain.as_uuid())
         .bind(self.world.namespace.id().as_uuid())
+        .bind(node)
         .bind(status)
         .bind(waiting)
+        .bind(step_kind)
+        .bind(failure)
         .bind(leased)
         .execute(&self.world.db.pool)
         .await
@@ -396,6 +414,35 @@ async fn the_write_proves_quiescence_again_under_the_locks_and_names_the_blocker
     let written = boundary.write_directly().await.expect("quiescent hand-off");
     assert!(!written.replayed());
     assert_eq!(written.successor_index(), 1);
+}
+
+#[tokio::test]
+async fn the_locked_handoff_cannot_bypass_unknown_or_compensation_review() {
+    for blocker in [
+        QuiescenceBlocker::UnknownEffect,
+        QuiescenceBlocker::Compensation,
+    ] {
+        let boundary = Boundary::reach(&blocker.label().replace('_', "-")).await;
+        boundary.obstruct(blocker).await;
+        let before = boundary.chain_row().await;
+        let journal_before = boundary.journal_len().await;
+
+        assert_eq!(
+            boundary.write_directly().await,
+            Err(ChainProgressError::Chain(ChainError::NotQuiescent(blocker))),
+            "the serialized write must retain the recovery obligation's typed blocker"
+        );
+        assert_eq!(
+            boundary.chain_row().await,
+            before,
+            "no successor was installed"
+        );
+        assert_eq!(
+            boundary.journal_len().await,
+            journal_before,
+            "a refused handoff wrote no partial journal"
+        );
+    }
 }
 
 #[tokio::test]

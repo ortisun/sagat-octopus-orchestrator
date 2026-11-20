@@ -1,0 +1,7 @@
+{
+  "scenario": "inflight-worker",
+  "resultPath": "outcome-r3soayn7/result.json",
+  "resultSha256": "07040f6254798707a9bb0f9a24824193c3ad7de0f05d71d83765168a90145ffc",
+  "buildSha256": "319b68a4f7c977b167c2f3601fbced4c78ac004cb4858923904fbc4c2038b719",
+  "transcriptSha256": "ed6d71ac47c58f2facb02161909f3715d2911f877e57ebb2421cb99640bed31a"
+}

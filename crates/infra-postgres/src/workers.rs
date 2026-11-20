@@ -4,7 +4,7 @@ use crate::pool::BeginSafely;
 use std::time::Duration;
 
 use sagat_application::error::StoreError;
-use sagat_application::worker::{NewSession, SessionRecord, WorkerStore};
+use sagat_application::worker::{CapacityWindow, NewSession, SessionRecord, WorkerStore};
 use sagat_domain::audit::AuditRecord;
 use sagat_domain::binding::{ActivityPattern, first_uncovered};
 use sagat_domain::execution::RunId;
@@ -31,6 +31,26 @@ macro_rules! pool_refused {
                                 ON g.tenant_id = p.tenant_id AND g.pool = p.pool \
                                AND g.namespace_id = sec.namespace_id AND g.subject = $6 \
                               WHERE p.tenant_id = sec.tenant_id AND p.secret_id = sec.id)))"
+    };
+}
+
+/// Capacity part of the candidate window, selected by `$7` (ADR-0075, G715): 0 every run (the
+/// legacy window), 1 the runs the ChildRoot possession prerequisite does not certainly refuse,
+/// 2 the runs it certainly refuses: an ACTIVE ChildRoot member that is not the holder of its group.
+///
+/// A hint, never stricter than `worker_capacity::available`, which stays the authority: the
+/// stale-head, finished-history and `SCOPED_PATH` refusals are not repeated here, so those runs
+/// stay in the eligible part and the claim refuses them. Plain reads, no row lock.
+macro_rules! capacity_window {
+    () => {
+        "AND ($7 = 0 OR (($7 = 2) = EXISTS (SELECT 1 FROM chain_segments cs \
+            JOIN capacity_group_members cm ON cm.tenant_id = cs.tenant_id \
+             AND cm.namespace_id = cs.namespace_id AND cm.chain_id = cs.chain_id \
+            JOIN capacity_groups cg ON cg.tenant_id = cm.tenant_id AND cg.group_id = cm.group_id \
+            WHERE cs.tenant_id = st.tenant_id AND cs.namespace_id = st.namespace_id \
+              AND cs.run_id = st.run_id \
+              AND cm.member_kind = 'CHILD_ROOT' AND cm.state = 'ACTIVE' \
+              AND (cg.possession <> 'HELD' OR cg.holder_member_id IS DISTINCT FROM cm.member_id)))) "
     };
 }
 
@@ -83,6 +103,8 @@ macro_rules! claimable_query {
                   AND blob.state = 'COMMITTED'))) \
             AND NOT ",
     pool_refused!(),
+    " ",
+    capacity_window!(),
     " \
           ORDER BY st.ready_at LIMIT $4) \
          UNION ALL \
@@ -98,6 +120,8 @@ macro_rules! claimable_query {
                   AND blob.state = 'COMMITTED'))) \
             AND ",
     pool_refused!(),
+    " ",
+    capacity_window!(),
     " \
           ORDER BY st.ready_at LIMIT 4) \
          UNION ALL \
@@ -116,6 +140,8 @@ macro_rules! claimable_query {
                   AND b.opened_until > clock_timestamp()) \
             AND NOT ",
     pool_refused!(),
+    " ",
+    capacity_window!(),
     " \
           ORDER BY st.ready_at LIMIT $4) \
          UNION ALL \
@@ -136,6 +162,8 @@ macro_rules! claimable_query {
                   AND b.opened_until > clock_timestamp()) \
             AND ",
     pool_refused!(),
+    " ",
+    capacity_window!(),
     " \
           ORDER BY st.ready_at LIMIT 4) \
      ) s \
@@ -154,6 +182,15 @@ pub const CLAIMABLE: &str =
 const CLAIMABLE_PATHS: &str = claimable_query!(
     "SELECT run_id,instance_path_nodes,instance_path_indices FROM candidates ORDER BY ready_at,run_id"
 );
+
+/// The `$7` of the candidate query (see `capacity_window!`).
+const fn capacity_mode(window: CapacityWindow) -> i32 {
+    match window {
+        CapacityWindow::Any => 0,
+        CapacityWindow::Eligible => 1,
+        CapacityWindow::Ineligible => 2,
+    }
+}
 
 fn micros(duration: Duration) -> i64 {
     i64::try_from(duration.as_micros()).unwrap_or(i64::MAX)
@@ -207,8 +244,8 @@ impl WorkerStore for PgRunStore {
             .execute(&mut *tx)
             .await
             .map_err(store_error)?;
-        let bound: Vec<String> = sqlx::query_scalar(
-            "SELECT pattern FROM worker_bindings \
+        let bound_rows: Vec<(String, String)> = sqlx::query_as(
+            "SELECT pattern, profile FROM worker_bindings \
              WHERE tenant_id = $1 AND namespace_id = $2 AND subject = $3",
         )
         .bind(session.tenant_id.as_uuid())
@@ -217,6 +254,12 @@ impl WorkerStore for PgRunStore {
         .fetch_all(&mut *tx)
         .await
         .map_err(store_error)?;
+        // All the rows of an identity carry one profile; two would be a binding nobody wrote.
+        let profiles: std::collections::BTreeSet<&str> = bound_rows
+            .iter()
+            .map(|(_, profile)| profile.as_str())
+            .collect();
+        let bound: Vec<&String> = bound_rows.iter().map(|(pattern, _)| pattern).collect();
         let patterns = bound
             .iter()
             .map(|text| ActivityPattern::parse(text))
@@ -245,7 +288,17 @@ impl WorkerStore for PgRunStore {
             .activities
             .iter()
             .any(|a| a.starts_with(sagat_domain::database::MANAGED_DATABASE_PREFIX));
+        // A dedicated runner registers only for the managed activities of the profile its binding carries (D035-057),
+        // whatever its patterns cover: a runner bound to `*` is still of one profile.
+        let profile_matches = !managed
+            || (profiles.len() == 1
+                && profiles
+                    .iter()
+                    .next()
+                    .and_then(|text| sagat_domain::binding::BindingProfile::parse(text))
+                    == sagat_application::worker::managed_profile(&session.activities));
         if !role.is_some_and(|role| role.grants(sagat_domain::identity::Permission::WorkerExecute))
+            || !profile_matches
             || (managed && role != Some(sagat_domain::identity::Role::DatabaseRunner))
             || role.is_some_and(|role| {
                 !sagat_application::worker::managed_capabilities_allowed(
@@ -384,6 +437,7 @@ impl WorkerStore for PgRunStore {
         Ok(session)
     }
 
+    #[allow(clippy::too_many_arguments)] // mirrors the trait's discovery window
     async fn claimable_paths(
         &self,
         tenant: TenantId,
@@ -392,6 +446,7 @@ impl WorkerStore for PgRunStore {
         limit: u32,
         accepted_protocol_minor: u32,
         subject: &str,
+        capacity: CapacityWindow,
     ) -> Result<Vec<(RunId, sagat_domain::execution::InstancePath)>, StoreError> {
         let rows = sqlx::query(CLAIMABLE_PATHS)
             .bind(tenant.as_uuid())
@@ -403,6 +458,7 @@ impl WorkerStore for PgRunStore {
                     .map_err(|_| corrupt("accepted protocol minor"))?,
             )
             .bind(subject)
+            .bind(capacity_mode(capacity))
             .fetch_all(self.pool())
             .await
             .map_err(store_error)?;
@@ -418,6 +474,7 @@ impl WorkerStore for PgRunStore {
         Ok(candidates)
     }
 
+    #[allow(clippy::too_many_arguments)] // mirrors the trait's discovery window
     async fn claimable_runs(
         &self,
         tenant: TenantId,
@@ -426,6 +483,7 @@ impl WorkerStore for PgRunStore {
         limit: u32,
         accepted_protocol_minor: u32,
         subject: &str,
+        capacity: CapacityWindow,
     ) -> Result<Vec<RunId>, StoreError> {
         let rows: Vec<Uuid> = sqlx::query_scalar(CLAIMABLE)
             .bind(tenant.as_uuid())
@@ -437,6 +495,7 @@ impl WorkerStore for PgRunStore {
                     .map_err(|_| corrupt("accepted protocol minor"))?,
             )
             .bind(subject)
+            .bind(capacity_mode(capacity))
             .fetch_all(self.pool())
             .await
             .map_err(store_error)?;

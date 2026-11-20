@@ -16,8 +16,9 @@ disclose values through one new audited operation whose audience follows the lev
 inspection of ADR-0028, the declared operation results of ADR-0031 and every payload-free read stay as
 they are. The work is dependency-ordered: domain types and permissions, schema walker and publication
 check, storage, the use case and endpoint, the grant resource, then the CLI, the Studio, the SDK
-setters, the canary and fault suites and the benchmark. Implementation is in progress; the combined
-branch evidence and remaining gates are recorded in `tasks/project-completion/integration-notes.md`.
+setters, the canary and fault suites and the benchmark. Implementation and the integrated release
+gates passed for the 0.2.0 checkpoint; current commands, failures and limits are recorded in
+[release-gates-2026-10-25.md](release-gates-2026-10-25.md). Earlier session evidence is historical.
 
 ## Technical Context
 

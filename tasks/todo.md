@@ -25,7 +25,7 @@ without a policy) are not silently expanded or reclassified as implemented.
 - [x] FR-007-002: schema-aware workflow input/output editing.
 - [x] FR-007-005: authorized, audited `structure-only-v1` payload inspection through REST and Studio; real PostgreSQL/gRPC/blob E2E 2/2 and keyboard Chromium journey 1/1 passed. All values and keys remain hidden.
 - [x] FR-005-003: isolated Go and Java build/runtime runners with signed artifacts and conformance/fault tests.
-- [ ] SC-008-001 / SC-012-001: agree the numeric UX target and record real human evaluation; never substitute an automated timing claim.
+- [ ] SC-008-001 / SC-012-001: record real human evaluation under `docs/validation/human-acceptance.md` (N = 10 set by the owner on 2026-10-16: at most 9 counted interactions); never substitute an automated timing claim. Same criterion pair as the entry under "Completion follow-up"; both close on one shared evidence index.
 - [x] Owner selected MIT; apply it to the repository and distributable SDK packages.
 - [x] Record the owner's explicit ratification of constitution v1.0.0 on 2026-10-11.
 
@@ -58,7 +58,7 @@ without a policy) are not silently expanded or reclassified as implemented.
 
 - Workspace validation with the documented local profile exercised 2,224 runnable tests: 2,223 passed and one telemetry fixture failed before correction; 47 opt-in tests/benchmarks were ignored by this command. The fixture stopped its exporter before the required request span closed. After correcting that ordering, the complete affected target passes 26/26 both with two threads and default parallelism, and its focused regression passes 1/1. Production telemetry is unchanged. The earlier unrestricted run and all failure logs are preserved locally; no failing run is reported as an all-green run.
 - Final full-workspace Clippy with warnings denied and formatting pass; the corrected telemetry target also passes scoped Clippy. Five-language opt-in SDK conformance/E2E/fault and native architecture gates run separately in CI; standalone performance benchmarks retain their explicit opt-in profile.
-- Independent consequential review is closed for activated durable byte quotas, runtime recovery, blob deletion claims, retention/provenance and audited structural payload inspection. Remaining human acceptance is the unchecked SC item above; registry publication still requires its namespace/credentials.
+- Independent consequential review is closed for activated durable byte quotas, runtime recovery, blob deletion claims, retention/provenance and audited structural payload inspection. Remaining human acceptance is the unchecked SC item above; registry publication is outside the owner-selected GitHub Releases channel (see FR-006-008 below).
 
 ## Completion follow-up — 2026-10-12 (active)
 
@@ -68,7 +68,7 @@ The earlier checked entries describe delivered slices, not total product complet
 - [x] T007-054: follow namespace cursors so the menu/selector include tenants with more than 200 namespaces; prove cancellation and no partial success after a later-page failure.
 - [x] T007-055 / G156: configure safe trace links at runtime, preserve copy fallback, validate URLs and trace identifiers, test serving/config/UI behavior.
 - [x] NFR-006-PERF / G125: implement and measure bounded worker task streaming with shared server semantics and five-language conformance, including disconnect/cancellation/backpressure/older-server behavior.
-- [ ] FR-006-008: publish verified SDK artifacts under confirmed registry identities, record immutable versions and consumer evidence (awaiting registry identity information).
+- [x] FR-006-008: publish verified SDK artifacts through the owner-selected channel, GitHub Releases only (owner decision 2026-10-16, item 12; npm/PyPI/NuGet/Maven publication is not in scope). Evidence 2026-11-01: release [v0.2.0](https://github.com/ortisun/sagat-octopus-orchestrator/releases/tag/v0.2.0) from the `release` workflow run [40268722763](https://github.com/ortisun/sagat-octopus-orchestrator/actions/runs/40268722763) carries the five SDK packages, three CLI archives and `SHA256SUMS`; all 14 downloaded assets match `sha256sum -c SHA256SUMS`; the SLSA v1 provenance attestation for `SHA256SUMS` names `.github/workflows/release.yml` at `refs/tags/v0.2.0`; the downloaded wheel and npm tarball install into clean consumers and report `0.2.0`. The Rust SDK (034) postdates v0.2.0 and ships with the next tagged release.
 - [ ] SC-008-001 / SC-012-001: record genuine human usability evaluation under the existing protocol; no simulated human acceptance.
 - [x] Finish the architectural gap audit and add remaining justified slices with acceptance criteria before implementation.
 - [x] Run integrated checks for the resulting changes, review the diff, commit and push with traced Conventional Commits.

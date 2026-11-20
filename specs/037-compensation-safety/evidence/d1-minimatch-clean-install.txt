@@ -1,0 +1,19 @@
+✔ @eslint/config-array resolves the reviewed bridge and patched matcher (8.632875ms)
+✔ @eslint/eslintrc resolves the reviewed bridge and patched matcher (0.758958ms)
+✔ eslint resolves the reviewed bridge and patched matcher (0.501791ms)
+✔ eslint-plugin-jsx-a11y resolves the reviewed bridge and patched matcher (0.512416ms)
+✔ @redocly/openapi-core resolves the reviewed bridge and patched matcher (0.494ms)
+✔ @typescript-eslint/typescript-estree resolves the reviewed bridge and patched matcher (0.548667ms)
+✔ native ESM has both default and named imports required by tooling (0.359167ms)
+✔ optimization level 2 bounds globparts amplification in the actual installed matcher (65.683042ms)
+✔ ESLint matching retains directory traversal, basename and negated-pattern options (0.753709ms)
+✔ jsx-a11y wildcard custom controls exercise the legacy callable matcher (22.146833ms)
+✔ Redocly URL-header rules include only matching hosts and paths (20.2555ms)
+ℹ tests 11
+ℹ suites 0
+ℹ pass 11
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 193.945416

@@ -1,0 +1,14 @@
+[
+  {
+    "path": "upgrade.txt",
+    "rawSha256": "604046bd193133d2d6111140b21cda27522689230268a7aa52f9f08ff6497681",
+    "normalizedSha256": "425a15f461435581777a3d05dc3a0afe4621e228dcd803fa4f7ba480e7006010",
+    "normalization": "strip trailing line whitespace and final empty lines only"
+  },
+  {
+    "path": "preflight-upgrade.txt",
+    "rawSha256": "2a11a74bd619f7b67e75b4c4ca3bec2f934098327ce8f78bbb531b850033ca59",
+    "normalizedSha256": "51b144ef146339e2d6a4b724b80f8fd8279a7e0bcd9570cbb95102cbf269b176",
+    "normalization": "strip trailing line whitespace and final empty lines only"
+  }
+]

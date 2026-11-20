@@ -1,0 +1,331 @@
+warning: field `tagged_fields` is never read
+   --> vendor/rskafka/src/protocol/messages/create_topics.rs:291:9
+    |
+278 | pub struct CreateTopicsResponse {
+    |            -------------------- field in this struct
+...
+291 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `CreateTopicsResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: fields `name`, `value`, `read_only`, `config_source`, `is_sensitive`, and `tagged_fields` are never read
+   --> vendor/rskafka/src/protocol/messages/create_topics.rs:321:9
+    |
+319 | pub struct CreateTopicResponseConfig {
+    |            ------------------------- fields in this struct
+320 |     /// The configuration name.
+321 |     pub name: CompactString,
+    |         ^^^^
+...
+324 |     pub value: CompactNullableString,
+    |         ^^^^^
+...
+327 |     pub read_only: Boolean,
+    |         ^^^^^^^^^
+...
+330 |     pub config_source: Int8,
+    |         ^^^^^^^^^^^^^
+...
+333 |     pub is_sensitive: Boolean,
+    |         ^^^^^^^^^^^^
+...
+336 |     pub tagged_fields: TaggedFields,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `CreateTopicResponseConfig` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: fields `num_partitions`, `replication_factor`, `configs`, and `tagged_fields` are never read
+   --> vendor/rskafka/src/protocol/messages/create_topics.rs:374:9
+    |
+359 | pub struct CreateTopicResponse {
+    |            ------------------- fields in this struct
+...
+374 |     pub num_partitions: Option<Int32>,
+    |         ^^^^^^^^^^^^^^
+...
+379 |     pub replication_factor: Option<Int16>,
+    |         ^^^^^^^^^^^^^^^^^^
+...
+384 |     pub configs: Vec<CreateTopicResponseConfig>,
+    |         ^^^^^^^
+...
+389 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `CreateTopicResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: fields `low_watermark` and `tagged_fields` are never read
+   --> vendor/rskafka/src/protocol/messages/delete_records.rs:182:9
+    |
+177 | pub struct DeleteResponsePartition {
+    |            ----------------------- fields in this struct
+...
+182 |     pub low_watermark: Int64,
+    |         ^^^^^^^^^^^^^
+...
+190 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `DeleteResponsePartition` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `tagged_fields` is never read
+   --> vendor/rskafka/src/protocol/messages/delete_records.rs:226:9
+    |
+216 | pub struct DeleteResponseTopic {
+    |            ------------------- field in this struct
+...
+226 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `DeleteResponseTopic` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `tagged_fields` is never read
+   --> vendor/rskafka/src/protocol/messages/delete_records.rs:269:9
+    |
+258 | pub struct DeleteRecordsResponse {
+    |            --------------------- field in this struct
+...
+269 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `DeleteRecordsResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `tagged_fields` is never read
+   --> vendor/rskafka/src/protocol/messages/delete_topics.rs:101:9
+    |
+ 88 | pub struct DeleteTopicsResponse {
+    |            -------------------- field in this struct
+...
+101 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `DeleteTopicsResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `tagged_fields` is never read
+   --> vendor/rskafka/src/protocol/messages/delete_topics.rs:144:9
+    |
+129 | pub struct DeleteTopicsResponseTopic {
+    |            ------------------------- field in this struct
+...
+144 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `DeleteTopicsResponseTopic` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: fields `producer_id` and `first_offset` are never read
+   --> vendor/rskafka/src/protocol/messages/fetch.rs:170:9
+    |
+168 | pub struct FetchResponseAbortedTransaction {
+    |            ------------------------------- fields in this struct
+169 |     /// The producer id associated with the aborted transaction.
+170 |     pub producer_id: Int64,
+    |         ^^^^^^^^^^^
+...
+173 |     pub first_offset: Int64,
+    |         ^^^^^^^^^^^^
+    |
+    = note: `FetchResponseAbortedTransaction` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `aborted_transactions` is never read
+   --> vendor/rskafka/src/protocol/messages/fetch.rs:213:9
+    |
+192 | pub struct FetchResponsePartition {
+    |            ---------------------- field in this struct
+...
+213 |     pub aborted_transactions: Vec<FetchResponseAbortedTransaction>,
+    |         ^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `FetchResponsePartition` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `timestamp` is never read
+   --> vendor/rskafka/src/protocol/messages/list_offsets.rs:184:9
+    |
+169 | pub struct ListOffsetsResponsePartition {
+    |            ---------------------------- field in this struct
+...
+184 |     pub timestamp: Option<Int64>,
+    |         ^^^^^^^^^
+    |
+    = note: `ListOffsetsResponsePartition` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: fields `log_append_time_ms` and `log_start_offset` are never read
+   --> vendor/rskafka/src/protocol/messages/produce.rs:148:9
+    |
+132 | pub struct ProduceResponsePartitionResponse {
+    |            -------------------------------- fields in this struct
+...
+148 |     pub log_append_time_ms: Option<Int64>,
+    |         ^^^^^^^^^^^^^^^^^^
+...
+153 |     pub log_start_offset: Option<Int64>,
+    |         ^^^^^^^^^^^^^^^^
+    |
+    = note: `ProduceResponsePartitionResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: fields `session_lifetime_ms` and `tagged_fields` are never read
+   --> vendor/rskafka/src/protocol/messages/sasl_msg.rs:198:9
+    |
+181 | pub struct SaslAuthenticateResponse {
+    |            ------------------------ fields in this struct
+...
+198 |     pub session_lifetime_ms: Option<Int64>,
+    |         ^^^^^^^^^^^^^^^^^^^
+...
+203 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `SaslAuthenticateResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: struct `CompactArray` is never constructed
+   --> vendor/rskafka/src/protocol/primitives.rs:725:12
+    |
+725 | pub struct CompactArray<T>(pub Option<Vec<T>>);
+    |            ^^^^^^^^^^^^
+
+warning: `rskafka` (lib) generated 14 warnings
+   Compiling sagat-tests v0.2.0 (/Users/marcelo/Documents/Projects/sagat-octopus-compensation-safety/tests)
+    Finished `test` profile [unoptimized] target(s) in 18.83s
+     Running fault/sagas-compensations/main.rs (/var/folders/60/bf6rmfzx6zq67nrbzb3m0p480000gn/T/sagat-037-target-q0fwz2gu/debug/deps/fault_sagas_compensations-6cc0517c219a091c)
+
+running 14 tests
+test crashes::a_crash_after_the_provider_released_holds_review_until_the_outcome_is_resolved ... ok
+2026-11-01T14:58:12.725139Z  WARN sagat_infra_postgres::identity: storage unavailable detail=error returned from database: terminating connection due to administrator command at line 3286 service=sagat
+2026-11-01T14:58:12.727207Z  WARN sqlx_core::pool::connection: error occurred while testing the connection on-release error=error communicating with database: expected to read 5 bytes, got 0 bytes at EOF service=sagat
+2026-11-01T14:58:12.902658Z  WARN sagat_infra_postgres::identity: storage unavailable detail=error returned from database: terminating connection due to administrator command at line 3286 service=sagat
+2026-11-01T14:58:12.902719Z  WARN sagat_scheduler::passes: a scheduler query failed error=storage unavailable: error returned from database: terminating connection due to administrator command at line 3286 service=sagat what=children_to_cancel
+2026-11-01T14:58:12.904223Z  WARN sqlx_core::pool::connection: error occurred while testing the connection on-release error=error communicating with database: expected to read 5 bytes, got 0 bytes at EOF service=sagat
+2026-11-01T14:58:13.025106Z  WARN sagat_infra_postgres::identity: storage unavailable detail=error returned from database: terminating connection due to administrator command at line 3286 service=sagat
+2026-11-01T14:58:13.025185Z  WARN sagat_application::worker: leasing the steps of a run failed error=service temporarily unavailable run=01a1979e-3d5b-7550-aa42-aa6b7465e0e4 service=sagat
+2026-11-01T14:58:13.027185Z  WARN sqlx_core::pool::connection: error occurred while testing the connection on-release error=error communicating with database: expected to read 5 bytes, got 0 bytes at EOF service=sagat
+2026-11-01T14:58:13.146123Z  WARN sagat_infra_postgres::identity: storage unavailable detail=error returned from database: terminating connection due to administrator command at line 3286 service=sagat
+2026-11-01T14:58:13.146182Z  WARN sagat_scheduler::passes: a scheduler query failed error=storage unavailable: error returned from database: terminating connection due to administrator command at line 3286 service=sagat what=stopped_runs
+2026-11-01T14:58:13.146372Z  WARN sagat_infra_postgres::identity: storage unavailable detail=error returned from database: terminating connection due to administrator command at line 3286 service=sagat
+2026-11-01T14:58:13.1464Z  WARN sagat_scheduler::passes: a scheduler query failed error=storage unavailable: error returned from database: terminating connection due to administrator command at line 3286 service=sagat what=stopped_runs
+2026-11-01T14:58:13.146511Z  WARN sagat_infra_postgres::identity: storage unavailable detail=error returned from database: terminating connection due to administrator command at line 3286 service=sagat
+2026-11-01T14:58:13.146537Z  WARN sagat_scheduler::passes: a scheduler query failed error=storage unavailable: error returned from database: terminating connection due to administrator command at line 3286 service=sagat what=stopped_runs
+2026-11-01T14:58:13.147005Z  WARN sagat_infra_postgres::identity: storage unavailable detail=error returned from database: terminating connection due to administrator command at line 3286 service=sagat
+2026-11-01T14:58:13.14704Z  WARN sagat_scheduler::passes: a scheduler query failed error=storage unavailable: error returned from database: terminating connection due to administrator command at line 3286 service=sagat what=deadlines
+2026-11-01T14:58:13.148115Z  WARN sqlx_core::pool::connection: error occurred while testing the connection on-release error=error communicating with database: expected to read 5 bytes, got 0 bytes at EOF service=sagat
+2026-11-01T14:58:13.148198Z  WARN sqlx_core::pool::connection: error occurred while testing the connection on-release error=error communicating with database: expected to read 5 bytes, got 0 bytes at EOF service=sagat
+2026-11-01T14:58:13.148247Z  WARN sqlx_core::pool::connection: error occurred while testing the connection on-release error=error communicating with database: expected to read 5 bytes, got 0 bytes at EOF service=sagat
+2026-11-01T14:58:13.148589Z  WARN sqlx_core::pool::connection: error occurred while testing the connection on-release error=error communicating with database: expected to read 5 bytes, got 0 bytes at EOF service=sagat
+2026-11-01T14:58:13.259913Z  WARN sagat_infra_postgres::identity: storage unavailable detail=error returned from database: terminating connection due to administrator command at line 3286 service=sagat
+2026-11-01T14:58:13.260063Z  WARN sagat_infra_postgres::identity: storage unavailable detail=error returned from database: terminating connection due to administrator command at line 3286 service=sagat
+2026-11-01T14:58:13.261844Z  WARN sqlx_core::pool::connection: error occurred while testing the connection on-release error=error communicating with database: expected to read 5 bytes, got 0 bytes at EOF service=sagat
+2026-11-01T14:58:13.262146Z  WARN sqlx_core::pool::connection: error occurred while testing the connection on-release error=error communicating with database: expected to read 5 bytes, got 0 bytes at EOF service=sagat
+2026-11-01T14:58:13.383692Z  WARN sagat_infra_postgres::identity: storage unavailable detail=error returned from database: terminating connection due to administrator command at line 3286 service=sagat
+2026-11-01T14:58:13.383749Z  WARN sagat_scheduler::passes: a scheduler query failed error=storage unavailable: error returned from database: terminating connection due to administrator command at line 3286 service=sagat what=children_to_cancel
+2026-11-01T14:58:13.384075Z  WARN sagat_infra_postgres::identity: storage unavailable detail=error returned from database: terminating connection due to administrator command at line 3286 service=sagat
+2026-11-01T14:58:13.384125Z  WARN sagat_scheduler::passes: a scheduler query failed error=storage unavailable: error returned from database: terminating connection due to administrator command at line 3286 service=sagat what=children_to_cancel
+2026-11-01T14:58:13.384257Z  WARN sagat_infra_postgres::identity: storage unavailable detail=error returned from database: terminating connection due to administrator command at line 3286 service=sagat
+2026-11-01T14:58:13.384286Z  WARN sagat_scheduler::passes: a scheduler query failed error=storage unavailable: error returned from database: terminating connection due to administrator command at line 3286 service=sagat what=ended_children
+2026-11-01T14:58:13.384406Z  WARN sagat_infra_postgres::identity: storage unavailable detail=error returned from database: terminating connection due to administrator command at line 3286 service=sagat
+2026-11-01T14:58:13.384433Z  WARN sagat_scheduler::passes: a scheduler query failed error=storage unavailable: error returned from database: terminating connection due to administrator command at line 3286 service=sagat what=ended_children
+2026-11-01T14:58:13.385789Z  WARN sqlx_core::pool::connection: error occurred while testing the connection on-release error=error communicating with database: expected to read 5 bytes, got 0 bytes at EOF service=sagat
+2026-11-01T14:58:13.385894Z  WARN sqlx_core::pool::connection: error occurred while testing the connection on-release error=error communicating with database: expected to read 5 bytes, got 0 bytes at EOF service=sagat
+2026-11-01T14:58:13.385944Z  WARN sqlx_core::pool::connection: error occurred while testing the connection on-release error=error communicating with database: expected to read 5 bytes, got 0 bytes at EOF service=sagat
+2026-11-01T14:58:13.386089Z  WARN sqlx_core::pool::connection: error occurred while testing the connection on-release error=error communicating with database: expected to read 5 bytes, got 0 bytes at EOF service=sagat
+2026-11-01T14:58:13.495773Z  WARN sagat_infra_postgres::identity: storage unavailable detail=error returned from database: terminating connection due to administrator command at line 3286 service=sagat
+2026-11-01T14:58:13.495842Z  WARN sagat_application::worker: leasing the steps of a run failed error=service temporarily unavailable run=01a1979e-3d79-77d2-a39e-4d6c1453bb7e service=sagat
+2026-11-01T14:58:13.495886Z  WARN sagat_infra_postgres::identity: storage unavailable detail=error returned from database: terminating connection due to administrator command at line 3286 service=sagat
+2026-11-01T14:58:13.495915Z  WARN sagat_application::worker: leasing the steps of a run failed error=service temporarily unavailable run=01a1979e-3d5b-7550-aa42-aa6b7465e0e4 service=sagat
+2026-11-01T14:58:13.497947Z  WARN sqlx_core::pool::connection: error occurred while testing the connection on-release error=error communicating with database: expected to read 5 bytes, got 0 bytes at EOF service=sagat
+2026-11-01T14:58:13.498074Z  WARN sqlx_core::pool::connection: error occurred while testing the connection on-release error=error communicating with database: expected to read 5 bytes, got 0 bytes at EOF service=sagat
+2026-11-01T14:58:13.618005Z  WARN sagat_infra_postgres::identity: storage unavailable detail=error returned from database: terminating connection due to administrator command at line 3286 service=sagat
+2026-11-01T14:58:13.61808Z  WARN sagat_application::worker: leasing the steps of a run failed error=service temporarily unavailable run=01a1979e-3d5b-7550-aa42-aa6b7465e0e4 service=sagat
+2026-11-01T14:58:13.618143Z  WARN sagat_infra_postgres::identity: storage unavailable detail=error returned from database: terminating connection due to administrator command at line 3286 service=sagat
+2026-11-01T14:58:13.618233Z  WARN sagat_infra_postgres::identity: storage unavailable detail=error returned from database: terminating connection due to administrator command at line 3286 service=sagat
+2026-11-01T14:58:13.61895Z  WARN sagat_infra_postgres::identity: storage unavailable detail=error returned from database: terminating connection due to administrator command at line 3286 service=sagat
+2026-11-01T14:58:13.618993Z  WARN sagat_application::worker: leasing the steps of a run failed error=service temporarily unavailable run=01a1979e-3d5b-7550-aa42-aa6b7465e0e4 service=sagat
+2026-11-01T14:58:13.619033Z  WARN sqlx_core::pool::connection: error occurred while testing the connection on-release error=error communicating with database: expected to read 5 bytes, got 0 bytes at EOF service=sagat
+2026-11-01T14:58:13.619529Z  WARN sqlx_core::pool::connection: error occurred while testing the connection on-release error=error communicating with database: expected to read 5 bytes, got 0 bytes at EOF service=sagat
+2026-11-01T14:58:13.620064Z  WARN sqlx_core::pool::connection: error occurred while testing the connection on-release error=error communicating with database: expected to read 5 bytes, got 0 bytes at EOF service=sagat
+2026-11-01T14:58:13.620421Z  WARN sqlx_core::pool::connection: error occurred while testing the connection on-release error=error communicating with database: expected to read 5 bytes, got 0 bytes at EOF service=sagat
+test crashes::a_failure_that_is_never_committed_does_not_start_a_compensation ... ok
+2026-11-01T14:58:14.092484Z  WARN sagat_infra_postgres::identity: storage unavailable detail=error returned from database: terminating connection due to administrator command at line 3286 service=sagat
+2026-11-01T14:58:14.092553Z  WARN sagat_scheduler::passes: a scheduler query failed error=storage unavailable: error returned from database: terminating connection due to administrator command at line 3286 service=sagat what=pending_children
+2026-11-01T14:58:14.09279Z  WARN sagat_infra_postgres::identity: storage unavailable detail=error returned from database: terminating connection due to administrator command at line 3286 service=sagat
+2026-11-01T14:58:14.092819Z  WARN sagat_scheduler::passes: a scheduler query failed error=storage unavailable: error returned from database: terminating connection due to administrator command at line 3286 service=sagat what=pending_children
+2026-11-01T14:58:14.092938Z  WARN sagat_infra_postgres::identity: storage unavailable detail=error returned from database: terminating connection due to administrator command at line 3286 service=sagat
+2026-11-01T14:58:14.092964Z  WARN sagat_scheduler::passes: a scheduler query failed error=storage unavailable: error returned from database: terminating connection due to administrator command at line 3286 service=sagat what=pending_children
+2026-11-01T14:58:14.093061Z  WARN sagat_infra_postgres::identity: storage unavailable detail=error returned from database: terminating connection due to administrator command at line 3286 service=sagat
+2026-11-01T14:58:14.093097Z  WARN sagat_scheduler::passes: a scheduler query failed error=storage unavailable: error returned from database: terminating connection due to administrator command at line 3286 service=sagat what=pending_children
+2026-11-01T14:58:14.094425Z  WARN sqlx_core::pool::connection: error occurred while testing the connection on-release error=error communicating with database: expected to read 5 bytes, got 0 bytes at EOF service=sagat
+2026-11-01T14:58:14.094564Z  WARN sqlx_core::pool::connection: error occurred while testing the connection on-release error=error communicating with database: expected to read 5 bytes, got 0 bytes at EOF service=sagat
+2026-11-01T14:58:14.094662Z  WARN sqlx_core::pool::connection: error occurred while testing the connection on-release error=error communicating with database: expected to read 5 bytes, got 0 bytes at EOF service=sagat
+2026-11-01T14:58:14.094707Z  WARN sqlx_core::pool::connection: error occurred while testing the connection on-release error=error communicating with database: expected to read 5 bytes, got 0 bytes at EOF service=sagat
+2026-11-01T14:58:14.444055Z  WARN sagat_infra_postgres::identity: storage unavailable detail=error returned from database: terminating connection due to administrator command at line 3286 service=sagat
+2026-11-01T14:58:14.444172Z  WARN sagat_infra_postgres::identity: storage unavailable detail=error returned from database: terminating connection due to administrator command at line 3286 service=sagat
+2026-11-01T14:58:14.444212Z  WARN sagat_infra_postgres::identity: storage unavailable detail=error returned from database: terminating connection due to administrator command at line 3286 service=sagat
+2026-11-01T14:58:14.444246Z  WARN sagat_infra_postgres::identity: storage unavailable detail=error returned from database: terminating connection due to administrator command at line 3286 service=sagat
+2026-11-01T14:58:14.445933Z  WARN sqlx_core::pool::connection: error occurred while testing the connection on-release error=error communicating with database: expected to read 5 bytes, got 0 bytes at EOF service=sagat
+2026-11-01T14:58:14.446548Z  WARN sqlx_core::pool::connection: error occurred while testing the connection on-release error=error communicating with database: expected to read 5 bytes, got 0 bytes at EOF service=sagat
+2026-11-01T14:58:14.44667Z  WARN sqlx_core::pool::connection: error occurred while testing the connection on-release error=error communicating with database: expected to read 5 bytes, got 0 bytes at EOF service=sagat
+2026-11-01T14:58:14.446716Z  WARN sqlx_core::pool::connection: error occurred while testing the connection on-release error=error communicating with database: expected to read 5 bytes, got 0 bytes at EOF service=sagat
+2026-11-01T14:58:14.92484Z  WARN sqlx_core::pool::connection: error occurred while testing the connection on-release error=error returned from database: terminating connection due to administrator command at line 3286 service=sagat
+2026-11-01T14:58:14.924965Z  WARN sagat_infra_postgres::identity: storage unavailable detail=error returned from database: terminating connection due to administrator command at line 3286 service=sagat
+2026-11-01T14:58:14.925Z  WARN sagat_scheduler::passes: a scheduler query failed error=storage unavailable: error returned from database: terminating connection due to administrator command at line 3286 service=sagat what=hints
+2026-11-01T14:58:14.925222Z  WARN sagat_infra_postgres::identity: storage unavailable detail=error returned from database: terminating connection due to administrator command at line 3286 service=sagat
+2026-11-01T14:58:14.925249Z  WARN sagat_scheduler::passes: a scheduler query failed error=storage unavailable: error returned from database: terminating connection due to administrator command at line 3286 service=sagat what=hints
+2026-11-01T14:58:14.925346Z  WARN sagat_infra_postgres::identity: storage unavailable detail=error returned from database: terminating connection due to administrator command at line 3286 service=sagat
+2026-11-01T14:58:14.925383Z  WARN sagat_scheduler::passes: a scheduler query failed error=storage unavailable: error returned from database: terminating connection due to administrator command at line 3286 service=sagat what=hints
+2026-11-01T14:58:14.926464Z  WARN sqlx_core::pool::connection: error occurred while testing the connection on-release error=error communicating with database: expected to read 5 bytes, got 0 bytes at EOF service=sagat
+2026-11-01T14:58:14.92703Z  WARN sqlx_core::pool::connection: error occurred while testing the connection on-release error=error communicating with database: expected to read 5 bytes, got 0 bytes at EOF service=sagat
+2026-11-01T14:58:14.927545Z  WARN sqlx_core::pool::connection: error occurred while testing the connection on-release error=error communicating with database: expected to read 5 bytes, got 0 bytes at EOF service=sagat
+test crashes::a_restart_between_the_plan_and_the_lease_loses_nothing ... ok
+2026-11-01T14:58:15.304212Z  WARN sagat_infra_postgres::identity: storage unavailable detail=error returned from database: terminating connection due to administrator command at line 3286 service=sagat
+2026-11-01T14:58:15.304278Z  WARN sagat_infra_postgres::identity: storage unavailable detail=error returned from database: terminating connection due to administrator command at line 3286 service=sagat
+2026-11-01T14:58:15.304646Z  WARN sagat_infra_postgres::identity: storage unavailable detail=error returned from database: terminating connection due to administrator command at line 3286 service=sagat
+2026-11-01T14:58:15.304681Z  WARN sagat_scheduler::passes: a scheduler query failed error=storage unavailable: error returned from database: terminating connection due to administrator command at line 3286 service=sagat what=children_to_cancel
+2026-11-01T14:58:15.306463Z  WARN sagat_infra_postgres::identity: storage unavailable detail=error returned from database: terminating connection due to administrator command at line 3286 service=sagat
+2026-11-01T14:58:15.306609Z  WARN sqlx_core::pool::connection: error occurred while testing the connection on-release error=error communicating with database: expected to read 5 bytes, got 0 bytes at EOF service=sagat
+2026-11-01T14:58:15.306801Z  WARN sqlx_core::pool::connection: error occurred while testing the connection on-release error=error communicating with database: expected to read 5 bytes, got 0 bytes at EOF service=sagat
+2026-11-01T14:58:15.307096Z  WARN sqlx_core::pool::connection: error occurred while testing the connection on-release error=error communicating with database: expected to read 5 bytes, got 0 bytes at EOF service=sagat
+2026-11-01T14:58:15.307972Z  WARN sqlx_core::pool::connection: error occurred while testing the connection on-release error=error communicating with database: expected to read 5 bytes, got 0 bytes at EOF service=sagat
+2026-11-01T14:58:15.430624Z  WARN sagat_infra_postgres::identity: storage unavailable detail=error returned from database: terminating connection due to administrator command at line 3286 service=sagat
+2026-11-01T14:58:15.430682Z  WARN sagat_scheduler::passes: a scheduler query failed error=storage unavailable: error returned from database: terminating connection due to administrator command at line 3286 service=sagat what=hints
+2026-11-01T14:58:15.43089Z  WARN sagat_infra_postgres::identity: storage unavailable detail=error returned from database: terminating connection due to administrator command at line 3286 service=sagat
+2026-11-01T14:58:15.430919Z  WARN sagat_scheduler::passes: a scheduler query failed error=storage unavailable: error returned from database: terminating connection due to administrator command at line 3286 service=sagat what=hints
+2026-11-01T14:58:15.433762Z  WARN sqlx_core::pool::connection: error occurred while testing the connection on-release error=error communicating with database: expected to read 5 bytes, got 0 bytes at EOF service=sagat
+2026-11-01T14:58:15.433852Z  WARN sqlx_core::pool::connection: error occurred while testing the connection on-release error=error communicating with database: expected to read 5 bytes, got 0 bytes at EOF service=sagat
+2026-11-01T14:58:15.547233Z  WARN sagat_infra_postgres::identity: storage unavailable detail=error returned from database: terminating connection due to administrator command at line 3286 service=sagat
+2026-11-01T14:58:15.547312Z  WARN sagat_application::worker: leasing the steps of a run failed error=service temporarily unavailable run=01a1979e-3d5b-7550-aa42-aa6b7465e0e4 service=sagat
+2026-11-01T14:58:15.547402Z  WARN sagat_infra_postgres::identity: storage unavailable detail=error returned from database: terminating connection due to administrator command at line 3286 service=sagat
+2026-11-01T14:58:15.547433Z  WARN sagat_application::worker: leasing the steps of a run failed error=service temporarily unavailable run=01a1979e-3d96-70d8-b650-b83bf9c4c11d service=sagat
+2026-11-01T14:58:15.547471Z  WARN sagat_infra_postgres::identity: storage unavailable detail=error returned from database: terminating connection due to administrator command at line 3286 service=sagat
+2026-11-01T14:58:15.547498Z  WARN sagat_application::worker: leasing the steps of a run failed error=service temporarily unavailable run=01a1979e-3d79-77d2-a39e-4d6c1453bb7e service=sagat
+2026-11-01T14:58:15.549654Z  WARN sqlx_core::pool::connection: error occurred while testing the connection on-release error=error communicating with database: expected to read 5 bytes, got 0 bytes at EOF service=sagat
+2026-11-01T14:58:15.549776Z  WARN sqlx_core::pool::connection: error occurred while testing the connection on-release error=error communicating with database: expected to read 5 bytes, got 0 bytes at EOF service=sagat
+2026-11-01T14:58:15.549839Z  WARN sqlx_core::pool::connection: error occurred while testing the connection on-release error=error communicating with database: expected to read 5 bytes, got 0 bytes at EOF service=sagat
+2026-11-01T14:58:15.674674Z  WARN sagat_infra_postgres::identity: storage unavailable detail=error returned from database: terminating connection due to administrator command at line 3286 service=sagat
+2026-11-01T14:58:15.674786Z  WARN sagat_infra_postgres::identity: storage unavailable detail=error returned from database: terminating connection due to administrator command at line 3286 service=sagat
+2026-11-01T14:58:15.674822Z  WARN sagat_scheduler::passes: a scheduler query failed error=storage unavailable: error returned from database: terminating connection due to administrator command at line 3286 service=sagat what=stopped_runs
+2026-11-01T14:58:15.676212Z  WARN sqlx_core::pool::connection: error occurred while testing the connection on-release error=error communicating with database: expected to read 5 bytes, got 0 bytes at EOF service=sagat
+2026-11-01T14:58:15.676468Z  WARN sqlx_core::pool::connection: error occurred while testing the connection on-release error=error communicating with database: expected to read 5 bytes, got 0 bytes at EOF service=sagat
+2026-11-01T14:58:15.806635Z  WARN sagat_infra_postgres::identity: storage unavailable detail=error returned from database: terminating connection due to administrator command at line 3286 service=sagat
+2026-11-01T14:58:15.806721Z  WARN sagat_application::worker: leasing the steps of a run failed error=service temporarily unavailable run=01a1979e-3d5b-7550-aa42-aa6b7465e0e4 service=sagat
+2026-11-01T14:58:15.80717Z  WARN sagat_infra_postgres::identity: storage unavailable detail=error returned from database: terminating connection due to administrator command at line 3286 service=sagat
+2026-11-01T14:58:15.807226Z  WARN sagat_scheduler::passes: a scheduler query failed error=storage unavailable: error returned from database: terminating connection due to administrator command at line 3286 service=sagat what=children_to_cancel
+2026-11-01T14:58:15.808397Z  WARN sqlx_core::pool::connection: error occurred while testing the connection on-release error=error communicating with database: expected to read 5 bytes, got 0 bytes at EOF service=sagat
+2026-11-01T14:58:15.809043Z  WARN sqlx_core::pool::connection: error occurred while testing the connection on-release error=error communicating with database: expected to read 5 bytes, got 0 bytes at EOF service=sagat
+test crashes::a_run_waiting_for_a_person_is_still_waiting_after_every_process_restarted ... ok
+test chaos::connection_kills_while_sagas_succeed_and_compensate_lose_nothing_and_duplicate_nothing ... ok
+test crashes::a_worker_that_dies_during_the_lookup_is_replaced_and_its_late_answer_is_refused ... ok
+test crashes::duplicate_reports_of_a_lookup_and_of_a_compensation_commit_once ... ok
+test provider::a_provider_that_accepts_before_it_times_out_is_asked_instead_of_paid_again ... ok
+test provider::an_injected_transport_duplicate_uses_the_same_key_without_a_second_engine_attempt ... ok
+2026-11-01T14:58:33.323477Z ERROR sagat_infra_postgres::identity: storage failure detail=error returned from database: injected review audit failure at line 3897 service=sagat
+test provider::failed_required_review_audit_dispatches_nothing_and_retry_commits_once_after_restart ... ok
+test provider::negative_provider_lookup_requires_human_finality_and_never_pays_again ... ok
+test races::a_signal_and_a_timeout_arriving_together_decide_the_saga_exactly_one_way ... ok
+test races::schedulers_that_notice_the_same_lost_lease_at_once_request_one_reconciliation ... ok
+2026-11-01T14:58:48.196126Z  WARN sqlx_core::pool::connection: error occurred while testing the connection on-release error=error returned from database: terminating connection due to unexpected postmaster exit at line 205 service=sagat
+2026-11-01T14:58:50.983813Z  WARN sqlx_core::pool::connection: error occurred while testing the connection on-release error=error returned from database: terminating connection due to unexpected postmaster exit at line 205 service=sagat
+2026-11-01T14:58:53.455268Z  WARN sqlx_core::pool::connection: error occurred while testing the connection on-release error=error returned from database: terminating connection due to unexpected postmaster exit at line 205 service=sagat
+2026-11-01T14:58:56.964045Z  WARN sqlx_core::pool::connection: error occurred while testing the connection on-release error=error communicating with database: expected to read 5 bytes, got 0 bytes at EOF service=sagat
+test races::a_lease_that_runs_out_while_the_answer_arrives_is_decided_once ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 48.09s
+

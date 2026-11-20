@@ -1157,6 +1157,16 @@ pub fn derive(facts: &RunFacts, entries: &[JournalEntry], applied_seq: u64) -> D
                         attributes
                             .push(("sagat.cause.code".to_owned(), AttrValue::from(cause.code)));
                     }
+                    if let RunEvent::ReconciliationConcluded {
+                        result: sagat_domain::execution::ReconcileResult::Review(code),
+                        ..
+                    } = &entry.event
+                    {
+                        attributes.push((
+                            "sagat.failure.code".to_owned(),
+                            AttrValue::from(code.as_str()),
+                        ));
+                    }
                     SpanEvent {
                         name: entry.event.name().to_owned(),
                         unix_nano: nanos(entry.occurred_at),

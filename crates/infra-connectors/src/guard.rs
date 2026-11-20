@@ -15,8 +15,26 @@ use sagat_application::egress::{EgressService, EgressStore};
 use sagat_domain::connectors::Server;
 use sagat_domain::identity::{NamespaceId, TenantId};
 
+/// Resolution preserves the difference between a policy refusal and unavailable infrastructure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResolveFailure {
+    Denied,
+    Network,
+}
+
 /// Decides whether a connector may connect to its brokers.
 pub trait BrokerGuard: Send + Sync {
+    /// Returns the exact checked addresses for a client that supports DNS pinning.
+    /// Custom guards fail closed unless they explicitly implement this capability.
+    fn resolve(
+        &self,
+        _tenant: TenantId,
+        _namespace: NamespaceId,
+        _server: &Server,
+    ) -> impl Future<Output = Result<Vec<std::net::SocketAddr>, ResolveFailure>> + Send {
+        async { Err(ResolveFailure::Denied) }
+    }
+
     /// `true` when every one of `servers` may be connected to by `namespace`.
     fn permits(
         &self,
@@ -42,38 +60,47 @@ impl<S: EgressStore> PolicyGuard<S> {
 
 impl<S: EgressStore> BrokerGuard for PolicyGuard<S> {
     async fn permits(&self, tenant: TenantId, namespace: NamespaceId, servers: &[Server]) -> bool {
-        let Ok(policy) = self.egress.policy_for(tenant, namespace).await else {
-            return false;
-        };
         for server in servers {
-            // The first stage: the name and the port.
-            if let Err(denial) = policy.check_destination(&server.destination()) {
-                self.egress
-                    .record_denial(tenant, namespace, &server.destination(), denial)
-                    .await;
-                return false;
-            }
-            // The second: every address the name resolves to. One that is out of bounds refuses the
-            // whole answer, like the guarded HTTP client does.
-            let Ok(addresses) = tokio::net::lookup_host((server.host(), server.port())).await
-            else {
-                return false;
-            };
-            let mut any = false;
-            for address in addresses {
-                any = true;
-                if let Err(denial) = policy.check_address(address.ip()) {
-                    self.egress
-                        .record_denial(tenant, namespace, &server.destination(), denial)
-                        .await;
-                    return false;
-                }
-            }
-            if !any {
+            if self.resolve(tenant, namespace, server).await.is_err() {
                 return false;
             }
         }
         true
+    }
+
+    async fn resolve(
+        &self,
+        tenant: TenantId,
+        namespace: NamespaceId,
+        server: &Server,
+    ) -> Result<Vec<std::net::SocketAddr>, ResolveFailure> {
+        let policy = self
+            .egress
+            .policy_for(tenant, namespace)
+            .await
+            .map_err(|_| ResolveFailure::Network)?;
+        if let Err(denial) = policy.check_destination(&server.destination()) {
+            self.egress
+                .record_denial(tenant, namespace, &server.destination(), denial)
+                .await;
+            return Err(ResolveFailure::Denied);
+        }
+        let addresses: Vec<_> = tokio::net::lookup_host((server.host(), server.port()))
+            .await
+            .map_err(|_| ResolveFailure::Network)?
+            .collect();
+        if addresses.is_empty() {
+            return Err(ResolveFailure::Network);
+        }
+        for address in &addresses {
+            if let Err(denial) = policy.check_address(address.ip()) {
+                self.egress
+                    .record_denial(tenant, namespace, &server.destination(), denial)
+                    .await;
+                return Err(ResolveFailure::Denied);
+            }
+        }
+        Ok(addresses)
     }
 }
 
@@ -86,6 +113,18 @@ pub struct Unguarded;
 
 #[cfg(feature = "unguarded-for-tests")]
 impl BrokerGuard for Unguarded {
+    async fn resolve(
+        &self,
+        _: TenantId,
+        _: NamespaceId,
+        server: &Server,
+    ) -> Result<Vec<std::net::SocketAddr>, ResolveFailure> {
+        tokio::net::lookup_host((server.host(), server.port()))
+            .await
+            .map(Iterator::collect)
+            .map_err(|_| ResolveFailure::Network)
+    }
+
     async fn permits(&self, _: TenantId, _: NamespaceId, _: &[Server]) -> bool {
         true
     }

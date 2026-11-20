@@ -1,0 +1,29 @@
+@sagat/frontend@ /Users/marcelo/Documents/Projects/sagat-octopus-compensation-safety/frontend
+├─┬ @sagat/minimatch-compat@1.0.0 -> ./tools/minimatch-compat
+│ └── minimatch-upstream@npm:minimatch@11.0.1
+├─┬ @sagat/studio@0.2.0 -> ./apps/studio
+│ ├─┬ eslint-plugin-jsx-a11y@6.10.2
+│ │ └── minimatch@ invalid: "file:tools/minimatch-compat" from node_modules/eslint-plugin-jsx-a11y
+│ ├─┬ eslint@9.39.5
+│ │ ├─┬ @eslint/config-array@0.21.2
+│ │ │ └── minimatch@ invalid: "file:tools/minimatch-compat" from node_modules/@eslint/config-array
+│ │ ├─┬ @eslint/eslintrc@3.3.7
+│ │ │ └── minimatch@ invalid: "file:tools/minimatch-compat" from node_modules/@eslint/eslintrc
+│ │ └── minimatch@ invalid: "file:tools/minimatch-compat" from node_modules/eslint
+│ ├─┬ openapi-typescript@7.13.0
+│ │ └─┬ @redocly/openapi-core@1.34.20
+│ │   └── minimatch@ invalid: "file:tools/minimatch-compat" from node_modules/@redocly/openapi-core
+│ └─┬ typescript-eslint@8.70.1
+│   └─┬ @typescript-eslint/typescript-estree@8.70.1
+│     └── minimatch@ invalid: "file:tools/minimatch-compat" from node_modules/@typescript-eslint/typescript-estree
+└─┬ minimatch@npm:@sagat/minimatch-compat@1.0.0 -> ./tools/minimatch-compat
+  └── minimatch-upstream@npm:minimatch@11.0.1 deduped
+
+npm error code ELSPROBLEMS
+npm error invalid: minimatch@ /Users/marcelo/Documents/Projects/sagat-octopus-compensation-safety/frontend/node_modules/eslint-plugin-jsx-a11y/node_modules/minimatch
+npm error invalid: minimatch@ /Users/marcelo/Documents/Projects/sagat-octopus-compensation-safety/frontend/node_modules/eslint/node_modules/minimatch
+npm error invalid: minimatch@ /Users/marcelo/Documents/Projects/sagat-octopus-compensation-safety/frontend/node_modules/@eslint/config-array/node_modules/minimatch
+npm error invalid: minimatch@ /Users/marcelo/Documents/Projects/sagat-octopus-compensation-safety/frontend/node_modules/@eslint/eslintrc/node_modules/minimatch
+npm error invalid: minimatch@ /Users/marcelo/Documents/Projects/sagat-octopus-compensation-safety/frontend/node_modules/@redocly/openapi-core/node_modules/minimatch
+npm error invalid: minimatch@ /Users/marcelo/Documents/Projects/sagat-octopus-compensation-safety/frontend/node_modules/@typescript-eslint/typescript-estree/node_modules/minimatch
+npm error A complete log of this run can be found in: /Users/marcelo/.npm/_logs/2026-11-01T15_50_42_209Z-debug-0.log

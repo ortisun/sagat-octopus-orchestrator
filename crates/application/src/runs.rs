@@ -8,7 +8,8 @@
 mod ad_hoc;
 pub(crate) use ad_hoc::audit_denied as audit_database_execution_denied;
 pub use ad_hoc::{
-    AdHocMode, ConnectionProbe, RetainedDefinition, RunOrigin, StartDatabaseExecution,
+    AdHocMode, ConnectionProbe, ProbeView, ProbeViewInput, RetainedDefinition, RunOrigin,
+    StartDatabaseExecution, lake_probe_document, probe_view,
 };
 
 use std::future::Future;
@@ -18,8 +19,8 @@ use std::time::Duration;
 use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
 use sagat_domain::definition::{WorkflowId, WorkflowVersionId};
 use sagat_domain::execution::{
-    self, ExecutionError, ExecutionInstanceId, FailureCode, Progress, ReviewOutcome, RunEvent,
-    RunId, RunStatus, StepStatus, StopReason, WaitingOn,
+    self, ExecutionError, ExecutionInstanceId, Progress, ReviewOutcome, RunEvent, RunId, RunStatus,
+    StepStatus, StopReason, WaitingOn,
 };
 use sagat_domain::identity::{Namespace, NamespaceId, Permission, Principal, TenantId};
 use sagat_domain::workflow::{NodeId, NodeKind, WorkflowDefinition};
@@ -39,6 +40,10 @@ use crate::quotas::{QuotaLookup, RunLimits};
 pub const MAX_RUN_DEADLINE: Duration = Duration::from_secs(366 * 24 * 60 * 60);
 /// Longest correlation id accepted at start.
 pub const MAX_CORRELATION_ID: usize = 160;
+
+/// Why a run cannot start from a workflow none of whose versions is published
+/// ([`AppError::StateConflict`]). A schedule keeps such a time owed and tries it again.
+pub const NO_PUBLISHED_VERSION: &str = "the workflow has no published version";
 
 /// How a run is opened for a command.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -62,6 +67,8 @@ pub struct NewRun {
     pub input_blob: Option<crate::blobs::RunInputBinding>,
     pub audit: AuditRecord,
     pub idempotency: Idempotency,
+    /// The schedule action this run is the result of, committed with the run (feature 018).
+    pub schedule: Option<crate::schedules::ScheduleAdmission>,
 }
 
 /// One journal entry as the API shows it.
@@ -230,6 +237,18 @@ pub trait RunStore:
         name: &sagat_domain::identity::Slug,
     ) -> impl Future<Output = Result<Option<ConnectionProbe>, StoreError>> + Send;
 
+    /// Whether the active connection `name` of the namespace, at `revision` (the current one when none is asked for), is an Apache
+    /// Iceberg connection: what the probe reads to choose its document (D035-150). It is `false` for every other answer, a SQL
+    /// connection, one that is missing, paused or deleted, a revision that is not there and another tenant's, so a caller who is
+    /// refused afterwards by admission learns no more from this than from that.
+    fn is_lake_connection(
+        &self,
+        tenant: TenantId,
+        namespace: NamespaceId,
+        name: &sagat_domain::identity::Slug,
+        revision: Option<u32>,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send;
+
     /// Opens a run for a command. `None` when it does not exist (or, with
     /// [`Lock::SkipLocked`], when another transaction holds it).
     fn begin(
@@ -237,6 +256,17 @@ pub trait RunStore:
         tenant: TenantId,
         run: RunId,
         lock: Lock,
+    ) -> impl Future<Output = Result<Option<Self::Tx>, StoreError>> + Send;
+
+    /// Opens a run for a worker's claim, giving up at once as [`Lock::SkipLocked`] does. `None` also
+    /// when the run has no ready root step of one of `activities` (the activities the session
+    /// serves): a candidate a poll read a moment ago may no longer have one, and is then dropped
+    /// without loading anything. What is leased is still decided from the rows read under the lock.
+    fn begin_claim(
+        &self,
+        tenant: TenantId,
+        run: RunId,
+        activities: &[String],
     ) -> impl Future<Output = Result<Option<Self::Tx>, StoreError>> + Send;
 
     fn get(
@@ -421,6 +451,7 @@ pub struct RunService<S, C, E> {
         crate::blobs::BlobService,
         Arc<dyn crate::blobs::RunInputChecker>,
     )>,
+    lake_probes: Option<Arc<dyn crate::database::LakeProbeCodec>>,
 }
 
 /// The state of a run's telemetry and what it is judged by.
@@ -452,6 +483,7 @@ where
             cache,
             lag_budget: Duration::from_secs(30),
             input_blobs: None,
+            lake_probes: None,
         }
     }
 
@@ -469,6 +501,14 @@ where
         checker: Arc<dyn crate::blobs::RunInputChecker>,
     ) -> Self {
         self.input_blobs = Some((blobs, checker));
+        self
+    }
+
+    /// The codec that reads the result of the probe of an Iceberg connection back from what the store kept (D035-150). Without it the checks
+    /// of a probe are not shown, and an Iceberg probe that succeeded says its result is unavailable, never that the connection is healthy.
+    #[must_use]
+    pub fn with_lake_probes(mut self, probes: Arc<dyn crate::database::LakeProbeCodec>) -> Self {
+        self.lake_probes = Some(probes);
         self
     }
 
@@ -521,7 +561,29 @@ where
         request: &StartRun<'_>,
         ctx: &RequestContext,
     ) -> Result<RunRecord, AppError> {
-        self.start_with(principal, request, None, None, ctx).await
+        self.start_with(principal, request, None, None, None, ctx)
+            .await
+    }
+
+    /// Starts the run of a schedule's action (feature 018). The principal is the schedule
+    /// (`system:schedule:<id>`) holding the role of whoever authorized it, so the run says who started
+    /// it and `run:start` is the authority of that subject today. The run is admitted under the scope
+    /// `schedule:{id}` and the key of the action, and the action row and the new state of the schedule
+    /// commit with it.
+    ///
+    /// # Errors
+    /// As [`Self::start`], and [`AppError::StateConflict`] when the schedule is not active, changed
+    /// since the decision, the shard lease is no longer held, or the key of the action already has
+    /// its run: another process acted on that time first, and this one did not.
+    pub async fn start_scheduled(
+        &self,
+        principal: &Principal,
+        request: &StartRun<'_>,
+        admission: crate::schedules::ScheduleAdmission,
+        ctx: &RequestContext,
+    ) -> Result<RunRecord, AppError> {
+        self.start_with(principal, request, None, None, Some(admission), ctx)
+            .await
     }
 
     /// Starts with a staged upload belonging to this principal. The external bytes stay opaque;
@@ -533,7 +595,7 @@ where
         id: sagat_domain::blobs::BlobId,
         ctx: &RequestContext,
     ) -> Result<RunRecord, AppError> {
-        self.start_with(principal, request, None, Some(id), ctx)
+        self.start_with(principal, request, None, Some(id), None, ctx)
             .await
     }
 
@@ -599,6 +661,7 @@ where
             },
             Some(Rerun { of: id, reason }),
             None,
+            None,
             ctx,
         )
         .await
@@ -610,6 +673,7 @@ where
         request: &StartRun<'_>,
         rerun: Option<Rerun<'_>>,
         input_blob: Option<sagat_domain::blobs::BlobId>,
+        scheduled: Option<crate::schedules::ScheduleAdmission>,
         ctx: &RequestContext,
     ) -> Result<RunRecord, AppError> {
         principal.authorize(Permission::RunStart)?;
@@ -668,9 +732,9 @@ where
         }
         let version_id = match request.version {
             Some(id) => id,
-            None => workflow.active_version().ok_or(AppError::StateConflict(
-                "the workflow has no published version",
-            ))?,
+            None => workflow
+                .active_version()
+                .ok_or(AppError::StateConflict(NO_PUBLISHED_VERSION))?,
         };
         let version = self
             .store
@@ -772,6 +836,21 @@ where
         if let Some(blob_idempotency) = blob_idempotency {
             idempotency = blob_idempotency;
         }
+        if let Some(admission) = &scheduled {
+            // an action is recognised by its schedule and its nominal time, whatever the caller sends
+            idempotency = Idempotency {
+                scope: format!("schedule:{}", admission.schedule),
+                key: admission.run_key(),
+                fingerprint: fingerprint(&[
+                    b"schedule.action",
+                    admission.schedule.to_string().as_bytes(),
+                    admission.run_key().as_bytes(),
+                    workflow.id().to_string().as_bytes(),
+                    version.version.id().to_string().as_bytes(),
+                    request.input,
+                ]),
+            };
+        }
         let (input, input_binding) = match input_blob {
             Some(id) => {
                 let (blobs, checker) = self.input_blobs.as_ref().ok_or(AppError::Unavailable)?;
@@ -828,7 +907,9 @@ where
             input_blob: input_binding,
             audit,
             idempotency,
+            schedule: scheduled,
         };
+        let scheduled_start = new.schedule.is_some();
         let created = match self.store.create(new).await {
             Ok(created) => created,
             Err(error) => {
@@ -837,7 +918,8 @@ where
                 return Err(error.into());
             }
         };
-        self.finish_start(principal, run_id, created, ctx).await
+        self.finish_start(principal, run_id, created, scheduled_start, ctx)
+            .await
     }
 
     async fn finish_start(
@@ -845,9 +927,15 @@ where
         principal: &Principal,
         run_id: RunId,
         created: Applied<S::Tx>,
+        scheduled: bool,
         ctx: &RequestContext,
     ) -> Result<RunRecord, AppError> {
         match created {
+            // the key of a scheduled time is the platform's own: nobody retries it, so a replay is
+            // another process that acted on that time first
+            Applied::Replayed(_) if scheduled => Err(AppError::StateConflict(
+                "the schedule already acted on that time",
+            )),
             Applied::Replayed(existing) => {
                 let id = existing.parse::<RunId>().map_err(|_| AppError::Internal)?;
                 self.store
@@ -1358,28 +1446,8 @@ where
         if expected_version.is_some_and(|expected| expected != version) {
             return Err(AppError::RevisionConflict { current: version });
         }
-        // Asking again for an effect that may already have happened is the decision the platform
-        // would not take by itself (a high risk step waits for a person for that reason), so it is
-        // an administrator's to take: an operator may retry a step that is known not to have
-        // happened, or a compensation (which is idempotent by contract).
-        // A step that is only waiting out the delay of a retry is not that decision: the platform
-        // had already decided to try again, and the operator is not waiting for the delay.
-        if *action == ReviewAction::Retry
-            && !node.is_compensation()
-            && tx
-                .parts()
-                .1
-                .instance(instance)
-                .is_some_and(|step| step.status() == StepStatus::Waiting)
-            && tx
-                .parts()
-                .1
-                .instance(instance)
-                .and_then(|step| step.failure())
-                .is_some_and(FailureCode::leaves_outcome_unknown)
-        {
-            principal.authorize(Permission::SagaOverride)?;
-        }
+        // The domain checks retry safety under this run lock for every role and task kind.
+        // SagaOverride authorizes outcome-bearing decisions, never a blind repeat.
         let now = self.clock.now();
         let mut effects = Effects::by(
             Actor::Principal(principal.subject().as_str().to_owned()),
@@ -1628,7 +1696,10 @@ pub fn execution_error(error: &ExecutionError) -> AppError {
         ExecutionError::RunNotRunnable(_) => {
             AppError::StateConflict("the run does not accept new work")
         }
-        ExecutionError::StaleAttempt { .. } | ExecutionError::IllegalTransition { .. } => {
+        ExecutionError::OutcomeUnresolved(_) => AppError::OutcomeUnresolved,
+        ExecutionError::StaleAttempt { .. }
+        | ExecutionError::IllegalTransition { .. }
+        | ExecutionError::IllegalInstanceTransition { .. } => {
             AppError::StateConflict("the step is not in a state that allows this")
         }
         other => {
@@ -1652,4 +1723,60 @@ fn fingerprint(parts: &[&[u8]]) -> Vec<u8> {
 #[must_use]
 pub fn event_names(events: &[RunEvent]) -> Vec<&'static str> {
     events.iter().map(RunEvent::name).collect()
+}
+
+impl<S, C, E> crate::schedule_firing::ScheduledStarts for RunService<S, C, E>
+where
+    S: RunStore + DefinitionStore,
+    C: Clock,
+    E: ExpressionEvaluator,
+{
+    async fn start_scheduled(
+        &self,
+        principal: &Principal,
+        request: &crate::schedule_firing::ScheduledStart<'_>,
+        admission: crate::schedules::ScheduleAdmission,
+        ctx: &RequestContext,
+    ) -> Result<RunId, AppError> {
+        let key = admission.run_key();
+        let started = RunService::start_scheduled(
+            self,
+            principal,
+            &StartRun {
+                namespace: request.namespace,
+                workflow: request.workflow,
+                version: request.version,
+                input: request.input,
+                correlation_id: None,
+                deadline: None,
+                key: &key,
+            },
+            admission,
+            ctx,
+        )
+        .await?;
+        Ok(started.info.run_id)
+    }
+
+    async fn cancel_run(
+        &self,
+        principal: &Principal,
+        run: uuid::Uuid,
+        reason: &str,
+        key: &str,
+        ctx: &RequestContext,
+    ) -> Result<(), AppError> {
+        RunService::operate(
+            self,
+            principal,
+            RunId::new(run),
+            RunOperation::Cancel,
+            reason,
+            None,
+            key,
+            ctx,
+        )
+        .await
+        .map(|_| ())
+    }
 }

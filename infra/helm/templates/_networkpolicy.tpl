@@ -132,13 +132,21 @@
 {{- include "sagat.networkPolicy.validatePort" (dict "name" (printf "networkPolicy.egress.%s.port" $dependency) "port" (get $config "port")) -}}
 {{- include "sagat.networkPolicy.validatePeers" (dict "name" (printf "networkPolicy.egress.%s.to" $dependency) "peers" (get $config "to")) -}}
 {{- end -}}
-{{- if .Values.nats.url -}}
+{{- if and .Values.nats.url (or (eq .Values.eventTransport "") (eq .Values.eventTransport "nats")) -}}
 {{- $nats := get $egress "nats" -}}
 {{- if not (kindIs "map" $nats) -}}
 {{- fail "networkPolicy.egress.nats is required when nats.url is configured" -}}
 {{- end -}}
 {{- include "sagat.networkPolicy.validatePort" (dict "name" "networkPolicy.egress.nats.port" "port" (get $nats "port")) -}}
 {{- include "sagat.networkPolicy.validatePeers" (dict "name" "networkPolicy.egress.nats.to" "peers" (get $nats "to")) -}}
+{{- end -}}
+{{- if eq .Values.eventTransport "redis" -}}
+{{- $redis := get $egress "redis" -}}
+{{- if not (kindIs "map" $redis) -}}
+{{- fail "networkPolicy.egress.redis is required for Redis transport" -}}
+{{- end -}}
+{{- include "sagat.networkPolicy.validatePort" (dict "name" "networkPolicy.egress.redis.port" "port" (get $redis "port")) -}}
+{{- include "sagat.networkPolicy.validatePeers" (dict "name" "networkPolicy.egress.redis.to" "peers" (get $redis "to")) -}}
 {{- end -}}
 {{- include "sagat.networkPolicy.validateRules" (dict "name" "networkPolicy.egress.controlPlaneExtra" "rules" (default (list) (get $egress "controlPlaneExtra")) "peerKey" "to") -}}
 {{- include "sagat.networkPolicy.validateRules" (dict "name" "networkPolicy.egress.engineExtra" "rules" (default (list) (get $egress "engineExtra")) "peerKey" "to") -}}

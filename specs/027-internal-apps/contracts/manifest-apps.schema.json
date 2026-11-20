@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sagat-octopus-orchestrator.io/schemas/manifest/v1-apps-fragment.json",
+  "title": "Sagat manifest — apps fragment (feature 027, draft)",
+  "description": "Draft additive fragment, not merged. T027-036 adds these two optional root properties to specs/011-gitops-versioning/contracts/manifest.schema.json, whose root keeps additionalProperties: false; an older `sagat` therefore refuses a manifest that lists apps instead of ignoring them. File paths follow the existing entry rule (relative, below the manifest directory, no `..`).",
+  "type": "object",
+  "properties": {
+    "apps": {
+      "type": "array",
+      "maxItems": 500,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "file"],
+        "properties": {
+          "name": { "type": "string", "minLength": 3, "maxLength": 63, "pattern": "^[a-z][a-z0-9]*(-[a-z0-9]+)*$" },
+          "file": { "type": "string", "minLength": 1, "maxLength": 255, "pattern": "^(?!/)(?!(.*/)?\\.\\.(/|$)).+$", "description": "A JSON or YAML app document (app.schema.json)." },
+          "releaseNotes": { "type": "string", "maxLength": 2048 }
+        }
+      }
+    },
+    "appComponents": {
+      "type": "array",
+      "maxItems": 500,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "script", "propsSchema", "eventsSchema"],
+        "properties": {
+          "name": { "type": "string", "minLength": 3, "maxLength": 63, "pattern": "^[a-z][a-z0-9]*(-[a-z0-9]+)*$" },
+          "script": { "type": "string", "maxLength": 255, "pattern": "^(?!/)(?!(.*/)?\\.\\.(/|$)).+\\.js$" },
+          "style": { "type": "string", "maxLength": 255, "pattern": "^(?!/)(?!(.*/)?\\.\\.(/|$)).+\\.css$" },
+          "propsSchema": { "type": "string", "maxLength": 255, "pattern": "^(?!/)(?!(.*/)?\\.\\.(/|$)).+\\.json$" },
+          "eventsSchema": { "type": "string", "maxLength": 255, "pattern": "^(?!/)(?!(.*/)?\\.\\.(/|$)).+\\.json$" }
+        }
+      }
+    }
+  }
+}

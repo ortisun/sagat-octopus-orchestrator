@@ -1,0 +1,115 @@
+{
+  "canonical": {
+    "condition": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"bodies\":{\"line\":{\"entrypoint\":\"choose\",\"nodes\":[{\"expression\":\"item > 0\",\"id\":\"choose\",\"ifFalse\":\"returned\",\"ifTrue\":\"returned\",\"type\":\"condition\"},{\"id\":\"returned\",\"result\":\"item\",\"type\":\"return\"}]}},\"entrypoint\":\"lines\",\"kind\":\"Workflow\",\"limits\":{\"maxDepth\":1,\"maxInstances\":6},\"metadata\":{\"name\":\"collection-control-entry-only\"},\"nodes\":[{\"body\":\"line\",\"id\":\"lines\",\"items\":\"input.items\",\"maxConcurrency\":1,\"maxItems\":2,\"next\":\"done\",\"result\":\"bodyResult\",\"type\":\"forEach\"},{\"id\":\"done\",\"outputExpr\":\"steps.lines.output\",\"type\":\"end\"}]}",
+    "switch": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"bodies\":{\"line\":{\"entrypoint\":\"choose\",\"nodes\":[{\"cases\":[{\"id\":\"positive\",\"target\":\"selected\",\"when\":\"item > 0\"}],\"default\":\"returned\",\"id\":\"choose\",\"type\":\"switch\"},{\"activity\":\"control.notify\",\"id\":\"selected\",\"next\":\"returned\",\"type\":\"activity\"},{\"id\":\"returned\",\"result\":\"item\",\"type\":\"return\"}]}},\"entrypoint\":\"lines\",\"kind\":\"Workflow\",\"limits\":{\"maxDepth\":1,\"maxInstances\":8},\"metadata\":{\"name\":\"collection-control-entry-work\"},\"nodes\":[{\"body\":\"line\",\"id\":\"lines\",\"items\":\"input.items\",\"maxConcurrency\":1,\"maxItems\":2,\"next\":\"done\",\"result\":\"bodyResult\",\"type\":\"forEach\"},{\"id\":\"done\",\"outputExpr\":\"steps.lines.output\",\"type\":\"end\"}]}"
+  },
+  "workflows": {
+    "condition": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "bodies": {
+        "line": {
+          "entrypoint": "choose",
+          "nodes": [
+            {
+              "expression": "item > 0",
+              "id": "choose",
+              "ifFalse": "returned",
+              "ifTrue": "returned",
+              "type": "condition"
+            },
+            {
+              "id": "returned",
+              "result": "item",
+              "type": "return"
+            }
+          ]
+        }
+      },
+      "entrypoint": "lines",
+      "kind": "Workflow",
+      "limits": {
+        "maxDepth": 1,
+        "maxInstances": 6
+      },
+      "metadata": {
+        "name": "collection-control-entry-only"
+      },
+      "nodes": [
+        {
+          "body": "line",
+          "id": "lines",
+          "items": "input.items",
+          "maxConcurrency": 1,
+          "maxItems": 2,
+          "next": "done",
+          "result": "bodyResult",
+          "type": "forEach"
+        },
+        {
+          "id": "done",
+          "outputExpr": "steps.lines.output",
+          "type": "end"
+        }
+      ]
+    },
+    "switch": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "bodies": {
+        "line": {
+          "entrypoint": "choose",
+          "nodes": [
+            {
+              "cases": [
+                {
+                  "id": "positive",
+                  "target": "selected",
+                  "when": "item > 0"
+                }
+              ],
+              "default": "returned",
+              "id": "choose",
+              "type": "switch"
+            },
+            {
+              "activity": "control.notify",
+              "id": "selected",
+              "next": "returned",
+              "type": "activity"
+            },
+            {
+              "id": "returned",
+              "result": "item",
+              "type": "return"
+            }
+          ]
+        }
+      },
+      "entrypoint": "lines",
+      "kind": "Workflow",
+      "limits": {
+        "maxDepth": 1,
+        "maxInstances": 8
+      },
+      "metadata": {
+        "name": "collection-control-entry-work"
+      },
+      "nodes": [
+        {
+          "body": "line",
+          "id": "lines",
+          "items": "input.items",
+          "maxConcurrency": 1,
+          "maxItems": 2,
+          "next": "done",
+          "result": "bodyResult",
+          "type": "forEach"
+        },
+        {
+          "id": "done",
+          "outputExpr": "steps.lines.output",
+          "type": "end"
+        }
+      ]
+    }
+  }
+}

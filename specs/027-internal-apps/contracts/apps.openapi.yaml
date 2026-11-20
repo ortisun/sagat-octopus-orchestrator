@@ -1,0 +1,618 @@
+# Draft OpenAPI fragment for feature 027 (internal apps). NOT merged, NOT implemented.
+# Merge target: specs/001-platform-foundation/contracts/openapi.yaml (T027-004). References to
+# #/components/responses/*, #/components/parameters/{Namespace,IdempotencyKey,Cursor,Limit} and
+# #/components/schemas/{Run,RunPage,DeclaredQueryResponse,DeclaredUpdateResponse,PayloadDisclosure}
+# resolve against the canonical document after the merge. Every operation carries x-planned: '027'
+# until built. All paths are under the server base /v1. Origins: Studio (existing), apps origin
+# (SAGAT_APPS_ORIGIN: runtime page, sign-in callback, openAppSession, endAppSession,
+# invokeAppBinding, mintAppComponentFrame) and component sandbox origin (SAGAT_APPS_SANDBOX_ORIGIN:
+# getAppComponentFrame only). The sandbox origin is never the Studio, apps or public-page origin.
+openapi: 3.1.0
+info:
+  title: Sagat Octopus Orchestrator — internal apps (fragment)
+  version: 0.0.0-draft
+x-amends-existing-operations:
+  - operationId: startRun
+    change: An `Idempotency-Key` starting with `app:` is refused with 422 VALIDATION_FAILED, reason RESERVED_KEY_PREFIX (D1365, G1373). Exact replays of records created before the change stay valid.
+  - operationId: updateRunState
+    change: Same rule for `updateKey`.
+  - operationId: updateExecutionChain
+    change: Same rule for `updateKey`.
+  - operationId: '*'
+    change: Every other operation that takes a caller-chosen idempotency key applies the same rule; only the app runtime derives keys with that prefix.
+tags:
+  - name: Apps
+    description: Internal app documents, versions, audience, embedding, components and runtime sessions (feature 027).
+paths:
+  /namespaces/{namespaceId}/apps:
+    parameters:
+      - {name: namespaceId, in: path, required: true, schema: {type: string}}
+    get:
+      operationId: listApps
+      tags: [Apps]
+      x-planned: '027'
+      description: Needs `app:read`. Returns only apps the caller may open (audience) or author (`app:write`). Tombstones are omitted unless `includeDeleted=true` and the caller holds `app:manage`.
+      parameters:
+        - {$ref: '#/components/parameters/Cursor'}
+        - {$ref: '#/components/parameters/Limit'}
+        - {name: includeDeleted, in: query, schema: {type: boolean, default: false}}
+      responses:
+        '200': {description: Page of apps, content: {application/json: {schema: {$ref: '#/components/schemas/AppPage'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+    post:
+      operationId: createApp
+      tags: [Apps]
+      x-planned: '027'
+      description: Needs `app:write`. Charges the `apps` quota. Creates an empty draft at revision 0.
+      parameters:
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/CreateAppRequest'}}}
+      responses:
+        '201': {description: Created, content: {application/json: {schema: {$ref: '#/components/schemas/App'}}}}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+  /namespaces/{namespaceId}/apps/{appName}:
+    parameters:
+      - {name: namespaceId, in: path, required: true, schema: {type: string}}
+      - {name: appName, in: path, required: true, schema: {type: string, minLength: 3, maxLength: 63}}
+    get:
+      operationId: getApp
+      tags: [Apps]
+      x-planned: '027'
+      responses:
+        '200': {description: App metadata, content: {application/json: {schema: {$ref: '#/components/schemas/App'}}}}
+        '404': {$ref: '#/components/responses/NotFound'}
+    delete:
+      operationId: deleteApp
+      tags: [Apps]
+      x-planned: '027'
+      description: Needs `app:manage` and a reason. Tombstone; versions, history and pinned components are kept; open sessions are revoked in the same transaction.
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/Reason'}}}
+      responses:
+        '204': {description: Tombstoned}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /namespaces/{namespaceId}/apps/{appName}/draft:
+    parameters:
+      - {name: namespaceId, in: path, required: true, schema: {type: string}}
+      - {name: appName, in: path, required: true, schema: {type: string}}
+    get:
+      operationId: getAppDraft
+      tags: [Apps]
+      x-planned: '027'
+      description: Needs `app:write`.
+      responses:
+        '200': {description: The draft, content: {application/json: {schema: {$ref: '#/components/schemas/AppDraft'}}}}
+    put:
+      operationId: saveAppDraft
+      tags: [Apps]
+      x-planned: '027'
+      description: Needs `app:write`. Compare-and-swap on `expectedRevision`. An invalid document is saved; publication is what is gated. Saving supersedes an open publication request.
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/SaveAppDraftRequest'}}}
+      responses:
+        '200': {description: Saved, content: {application/json: {schema: {$ref: '#/components/schemas/AppDraft'}}}}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '413': {$ref: '#/components/responses/PayloadTooLarge'}
+  /namespaces/{namespaceId}/apps/{appName}/validate:
+    parameters:
+      - {name: namespaceId, in: path, required: true, schema: {type: string}}
+      - {name: appName, in: path, required: true, schema: {type: string}}
+    post:
+      operationId: validateApp
+      tags: [Apps]
+      x-planned: '027'
+      description: Needs `app:write`. Runs the publication codec on the body document or the stored draft; stores and audits nothing.
+      requestBody:
+        content: {application/json: {schema: {type: object, additionalProperties: false, properties: {document: {type: object}}}}}
+      responses:
+        '200': {description: Problems and warnings, content: {application/json: {schema: {$ref: '#/components/schemas/AppValidation'}}}}
+  /namespaces/{namespaceId}/apps/{appName}/publish:
+    parameters:
+      - {name: namespaceId, in: path, required: true, schema: {type: string}}
+      - {name: appName, in: path, required: true, schema: {type: string}}
+    post:
+      operationId: publishApp
+      tags: [Apps]
+      x-planned: '027'
+      description: Needs `app:publish`. Publishes the draft at `draftRevision`. `409 APPROVAL_REQUIRED` when the namespace publication policy asks for approvals. Same Idempotency-Key returns the committed version.
+      parameters:
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/PublishAppRequest'}}}
+      responses:
+        '201': {description: Published, content: {application/json: {schema: {$ref: '#/components/schemas/AppVersion'}}}}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+  /namespaces/{namespaceId}/apps/{appName}/versions/{versionNumber}:
+    parameters:
+      - {name: namespaceId, in: path, required: true, schema: {type: string}}
+      - {name: appName, in: path, required: true, schema: {type: string}}
+      - {name: versionNumber, in: path, required: true, schema: {type: integer, minimum: 1}}
+    get:
+      operationId: getAppVersion
+      tags: [Apps]
+      x-planned: '027'
+      responses:
+        '200': {description: Immutable version, content: {application/json: {schema: {$ref: '#/components/schemas/AppVersion'}}}}
+  /namespaces/{namespaceId}/apps/{appName}/diff:
+    parameters:
+      - {name: namespaceId, in: path, required: true, schema: {type: string}}
+      - {name: appName, in: path, required: true, schema: {type: string}}
+      - {name: from, in: query, required: true, schema: {type: string, description: 'A version number or `draft`.'}}
+      - {name: to, in: query, required: true, schema: {type: string}}
+    get:
+      operationId: diffApp
+      tags: [Apps]
+      x-planned: '027'
+      responses:
+        '200': {description: Changes and review items, content: {application/json: {schema: {$ref: '#/components/schemas/AppDiff'}}}}
+  /namespaces/{namespaceId}/apps/{appName}/active-version:
+    parameters:
+      - {name: namespaceId, in: path, required: true, schema: {type: string}}
+      - {name: appName, in: path, required: true, schema: {type: string}}
+    put:
+      operationId: activateAppVersion
+      tags: [Apps]
+      x-planned: '027'
+      description: Needs `app:publish`. Moves the pointer to an existing version with a reason; `409 ACTIVE_VERSION_CHANGED` when `expectedVersion` is stale. `revokeSessions` revokes open sessions of every other version in the same transaction.
+      parameters:
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/ActivateAppRequest'}}}
+      responses:
+        '200': {description: Activated, content: {application/json: {schema: {$ref: '#/components/schemas/AppActivation'}}}}
+        '409': {$ref: '#/components/responses/Conflict'}
+  /namespaces/{namespaceId}/apps/{appName}/versions/{versionNumber}/promote:
+    parameters:
+      - {name: namespaceId, in: path, required: true, schema: {type: string}}
+      - {name: appName, in: path, required: true, schema: {type: string}}
+      - {name: versionNumber, in: path, required: true, schema: {type: integer, minimum: 1}}
+    post:
+      operationId: promoteAppVersion
+      tags: [Apps]
+      x-planned: '027'
+      description: Needs `app:read` in the source and `app:publish` in the target namespace of the same or a later environment. Publishes the same canonical document; refuses missing workflows, operations or components (`422` with `details.missing`).
+      parameters:
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content: {application/json: {schema: {type: object, additionalProperties: false, required: [targetNamespace, reason], properties: {targetNamespace: {type: string}, reason: {type: string, minLength: 8, maxLength: 2000}}}}}
+      responses:
+        '201': {description: Published in the target, content: {application/json: {schema: {$ref: '#/components/schemas/AppVersion'}}}}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+  /namespaces/{namespaceId}/apps/{appName}/publication-requests:
+    parameters:
+      - {name: namespaceId, in: path, required: true, schema: {type: string}}
+      - {name: appName, in: path, required: true, schema: {type: string}}
+    post:
+      operationId: requestAppPublication
+      tags: [Apps]
+      x-planned: '027'
+      description: Needs `app:publish`. Names the draft revision and digest; one open request per app.
+      requestBody:
+        required: true
+        content: {application/json: {schema: {type: object, additionalProperties: false, required: [draftRevision], properties: {draftRevision: {type: integer, minimum: 0}, releaseNotes: {type: string, maxLength: 2048}}}}}
+      responses:
+        '201': {description: Opened, content: {application/json: {schema: {$ref: '#/components/schemas/AppPublicationRequest'}}}}
+  /app-publication-requests/{requestId}/{decision}:
+    parameters:
+      - {name: requestId, in: path, required: true, schema: {type: string, format: uuid}}
+      - {name: decision, in: path, required: true, schema: {type: string, enum: [approve, reject, withdraw, publish]}}
+    post:
+      operationId: decideAppPublicationRequest
+      tags: [Apps]
+      x-planned: '027'
+      description: approve/reject need `publication:approve` and neither requester nor last editor; withdraw is the requester's; publish needs `app:publish` and recounts approvals against the policy in force.
+      requestBody:
+        content: {application/json: {schema: {$ref: '#/components/schemas/Reason'}}}
+      responses:
+        '200': {description: New state, content: {application/json: {schema: {$ref: '#/components/schemas/AppPublicationRequest'}}}}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '409': {$ref: '#/components/responses/Conflict'}
+  /namespaces/{namespaceId}/apps/{appName}/access:
+    parameters:
+      - {name: namespaceId, in: path, required: true, schema: {type: string}}
+      - {name: appName, in: path, required: true, schema: {type: string}}
+    get:
+      operationId: getAppAudience
+      tags: [Apps]
+      x-planned: '027'
+      responses:
+        '200': {description: Audience, content: {application/json: {schema: {$ref: '#/components/schemas/AppAudience'}}}}
+    put:
+      operationId: replaceAppAudience
+      tags: [Apps]
+      x-planned: '027'
+      description: Needs `app:manage`. Replaces the list (0–256 entries); empty means every holder of `app:read`.
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/AppAudience'}}}
+      responses:
+        '200': {description: Replaced, content: {application/json: {schema: {$ref: '#/components/schemas/AppAudience'}}}}
+  /namespaces/{namespaceId}/apps/{appName}/embedding:
+    parameters:
+      - {name: namespaceId, in: path, required: true, schema: {type: string}}
+      - {name: appName, in: path, required: true, schema: {type: string}}
+    get:
+      operationId: getAppEmbedding
+      tags: [Apps]
+      x-planned: '027'
+      responses:
+        '200': {description: Configured and effective origins, and availability, content: {application/json: {schema: {$ref: '#/components/schemas/AppEmbedding'}}}}
+    put:
+      operationId: setAppEmbedding
+      tags: [Apps]
+      x-planned: '027'
+      description: Needs `app:manage`. `422 EMBED_ORIGIN_NOT_ALLOWED` for an origin outside namespace policy ∩ deployment allowlist; `422 EMBEDDING_UNAVAILABLE` without an apps origin.
+      requestBody:
+        required: true
+        content: {application/json: {schema: {type: object, additionalProperties: false, required: [origins], properties: {origins: {type: array, maxItems: 16, items: {$ref: '#/components/schemas/HttpsOrigin'}}}}}}
+      responses:
+        '200': {description: Saved, content: {application/json: {schema: {$ref: '#/components/schemas/AppEmbedding'}}}}
+        '422': {$ref: '#/components/responses/ValidationError'}
+  /namespaces/{namespaceId}/app-policy:
+    parameters:
+      - {name: namespaceId, in: path, required: true, schema: {type: string}}
+    get:
+      operationId: getAppPolicy
+      tags: [Apps]
+      x-planned: '027'
+      responses:
+        '200': {description: Namespace app policy, content: {application/json: {schema: {$ref: '#/components/schemas/AppPolicy'}}}}
+    put:
+      operationId: setAppPolicy
+      tags: [Apps]
+      x-planned: '027'
+      description: Needs `app:manage`. Audited. Enabling custom components without a configured component sandbox origin is `422 COMPONENT_SANDBOX_UNAVAILABLE`.
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/AppPolicy'}}}
+      responses:
+        '200': {description: Saved, content: {application/json: {schema: {$ref: '#/components/schemas/AppPolicy'}}}}
+  /namespaces/{namespaceId}/app-components/{componentName}/versions:
+    parameters:
+      - {name: namespaceId, in: path, required: true, schema: {type: string}}
+      - {name: componentName, in: path, required: true, schema: {type: string}}
+    post:
+      operationId: uploadAppComponentVersion
+      tags: [Apps]
+      x-planned: '027'
+      description: Needs `app:publish` and the namespace policy enabled (`403 COMPONENTS_DISABLED` otherwise). Bytes are base64 in a closed body, checked for size, UTF-8 and the forbidden sequences `</script`, `</style` and `<!--` (ASCII case-insensitive), never executed or parsed. The uploader is recorded; publication and session creation check that the uploader may read the level a version passes to the component (`COMPONENT_AUTHOR_LEVEL`). Creates the component on first upload (charges `app_components`). Same digest returns the existing version.
+      parameters:
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/UploadAppComponentRequest'}}}
+      responses:
+        '201': {description: Stored, content: {application/json: {schema: {$ref: '#/components/schemas/AppComponentVersion'}}}}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '413': {$ref: '#/components/responses/PayloadTooLarge'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+  /namespaces/{namespaceId}/apps/{appName}/sessions:
+    parameters:
+      - {name: namespaceId, in: path, required: true, schema: {type: string}}
+      - {name: appName, in: path, required: true, schema: {type: string}}
+    post:
+      operationId: openAppSession
+      tags: [Apps]
+      x-planned: '027'
+      security: [{bearerAuth: []}, {}]
+      description: |
+        Opens an app session (opaque, hashed at rest) pinned to the active version, or to the draft
+        revision for `mode: preview` (`app:write`). Needs `app:read` and the audience. `studio` and
+        `preview` authenticate with the bearer token. `embedded` is served only on the apps origin,
+        carries no bearer token and presents `authorizationCode`, `codeVerifier` and `redirectUri`
+        (which must be the apps origin's callback); the control plane redeems the code at the configured
+        issuer, verifies the token like any bearer token and discards it; no issuer token is returned.
+        `embedOrigin` must be within the effective origins. Pinned components whose uploader no longer
+        holds the version's frame level are listed as unavailable. Expiry = min(TTL, token expiry).
+        `Cache-Control: no-store`.
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/OpenAppSessionRequest'}}}
+      responses:
+        '201':
+          description: The session and the pinned document
+          headers: {Cache-Control: {schema: {type: string, const: no-store}}}
+          content: {application/json: {schema: {$ref: '#/components/schemas/AppSession'}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+  /app-runtime/components/{componentName}/frames:
+    parameters:
+      - {name: componentName, in: path, required: true, schema: {type: string, minLength: 3, maxLength: 63}}
+    post:
+      operationId: mintAppComponentFrame
+      tags: [Apps]
+      x-planned: '027'
+      security: [{appSession: []}]
+      description: |
+        Mints one single-use frame capability for a component pinned by the session's version and still
+        available (uploader check). Valid 60 s until first use, never past the session; at most 256 per
+        session. Returns a URL on the component sandbox origin. `Cache-Control: no-store`.
+      responses:
+        '201':
+          description: A single-use frame URL
+          headers: {Cache-Control: {schema: {type: string, const: no-store}}}
+          content: {application/json: {schema: {type: object, required: [frameUrl, expiresAt], properties: {frameUrl: {type: string}, expiresAt: {type: string, format: date-time}}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+  /app-runtime/session:
+    delete:
+      operationId: endAppSession
+      tags: [Apps]
+      x-planned: '027'
+      security: [{appSession: []}]
+      responses:
+        '204': {description: Ended}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+  /app-runtime/bindings/{bindingId}/invoke:
+    parameters:
+      - {name: bindingId, in: path, required: true, schema: {type: string, maxLength: 48, pattern: '^[A-Za-z][A-Za-z0-9_-]{0,47}$'}}
+    post:
+      operationId: invokeAppBinding
+      tags: [Apps]
+      x-planned: '027'
+      security: [{appSession: []}]
+      description: |
+        Invokes a binding of the session's pinned version as the viewer. Arguments are the values of
+        the binding's declared references; the server validates them against the mapping and the
+        target schema and calls the existing operation. `update` and `start` require `actionKey`, reused
+        on retry; the derived underlying key is `app:<app-id, 32 hex>:<bindingId>:<actionKey, 32 hex>`
+        (≤ 118 characters; the `app:` prefix is reserved for this derivation). `runResult` accepts
+        `reveal: [pii]`. Results reuse the existing wire schemas. `Cache-Control: no-store`
+        (`private, no-store` for `runResult`).
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/InvokeAppBindingRequest'}}}
+      responses:
+        '200':
+          description: The underlying operation's result
+          headers: {Cache-Control: {schema: {type: string}}}
+          content: {application/json: {schema: {$ref: '#/components/schemas/AppBindingResult'}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '413': {$ref: '#/components/responses/PayloadTooLarge'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+  /app-runtime/frames/{frameToken}:
+    parameters:
+      - {name: frameToken, in: path, required: true, schema: {type: string, pattern: '^[A-Za-z0-9_-]{43}$'}}
+    get:
+      operationId: getAppComponentFrame
+      tags: [Apps]
+      x-planned: '027'
+      security: []
+      description: |
+        Served only on the component sandbox origin. The single-use capability (32 random bytes,
+        base64url) from mintAppComponentFrame is consumed by this request. Returns a generated document
+        with the CSP `sandbox allow-scripts`, hash-pinned inline scripts and styles, `connect-src 'none'`,
+        `frame-ancestors` limited to the Studio and apps origins, `Cache-Control: private, no-store`,
+        `Referrer-Policy: no-referrer`. Every response of this route and host, at every status (200, 404,
+        429, 5xx), carries the same sandbox CSP and headers. An unknown, expired, consumed or revoked
+        capability is `404` with no body detail. Logged as the route template only.
+      responses:
+        '200': {description: Frame document, content: {text/html: {schema: {type: string}}}}
+        '404': {description: Not found (same sandbox headers)}
+        '429': {description: Rate limited (same sandbox headers)}
+        '503': {description: Unavailable (same sandbox headers)}
+components:
+  securitySchemes:
+    appSession:
+      type: http
+      scheme: bearer
+      description: Opaque app session token from openAppSession. Accepted only on /app-runtime/* routes; every other route refuses it.
+  schemas:
+    HttpsOrigin: {type: string, maxLength: 255, pattern: '^https://[a-z0-9.-]+(:[0-9]{1,5})?$'}
+    Reason: {type: object, additionalProperties: false, required: [reason], properties: {reason: {type: string, minLength: 8, maxLength: 2000}}}
+    CreateAppRequest:
+      type: object
+      additionalProperties: false
+      required: [name, title]
+      properties:
+        name: {type: string, minLength: 3, maxLength: 63, pattern: '^[a-z][a-z0-9]*(-[a-z0-9]+)*$'}
+        title: {type: string, minLength: 1, maxLength: 120}
+        description: {type: string, maxLength: 1000}
+    App:
+      type: object
+      required: [id, name, title, state, createdAt]
+      properties:
+        id: {type: string, format: uuid}
+        name: {type: string}
+        title: {type: string}
+        description: {type: string}
+        state: {type: string, enum: [ACTIVE, DELETED]}
+        activeVersion: {type: [integer, 'null']}
+        draftRevision: {type: integer}
+        createdAt: {type: string, format: date-time}
+    AppPage:
+      type: object
+      required: [items]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/App'}}
+        nextCursor: {type: [string, 'null']}
+    AppDraft:
+      type: object
+      required: [revision, document, editedBy, editedAt]
+      properties:
+        revision: {type: integer, minimum: 0}
+        document: {type: object, description: 'An app document (app.schema.json), possibly invalid.'}
+        editedBy: {type: string}
+        editedAt: {type: string, format: date-time}
+    SaveAppDraftRequest:
+      type: object
+      additionalProperties: false
+      required: [expectedRevision, document]
+      properties:
+        expectedRevision: {type: integer, minimum: 0}
+        document: {type: object}
+    AppProblem:
+      type: object
+      required: [code, path, message]
+      properties:
+        code: {type: string, description: 'Closed problem code, e.g. UNKNOWN_FIELD, LIMIT, UNRESOLVED_REFERENCE, UNKNOWN_TARGET, UNKNOWN_OPERATION, BINDING_CONTRACT_CHANGED, BINDING_CAPABILITY_UNAVAILABLE, MISSING_ACCESSIBLE_NAME, CLASSIFICATION_PASSING, ENCODING_READ_BY_FORM, ENCODING_NOT_PRODUCIBLE, ENCODING_READ_BY_EXPRESSION (031 registry), COMPONENTS_DISABLED.'}
+        path: {type: string, description: JSON pointer}
+        message: {type: string}
+    AppValidation:
+      type: object
+      required: [valid, problems, warnings]
+      properties:
+        valid: {type: boolean}
+        problems: {type: array, maxItems: 256, items: {$ref: '#/components/schemas/AppProblem'}}
+        warnings: {type: array, maxItems: 256, items: {$ref: '#/components/schemas/AppProblem'}}
+    PublishAppRequest:
+      type: object
+      additionalProperties: false
+      required: [draftRevision]
+      properties:
+        draftRevision: {type: integer, minimum: 0}
+        releaseNotes: {type: string, maxLength: 2048}
+    AppVersion:
+      type: object
+      required: [number, digest, document, publishedBy, publishedAt, origin]
+      properties:
+        number: {type: integer, minimum: 1}
+        digest: {type: string, pattern: '^sha256:[0-9a-f]{64}$'}
+        document: {type: object}
+        publishedBy: {type: string}
+        publishedAt: {type: string, format: date-time}
+        origin: {type: string, enum: [PUBLISH, PROMOTE]}
+        releaseNotes: {type: string}
+    AppDiff:
+      type: object
+      required: [changes, reviewItems]
+      properties:
+        changes: {type: array, items: {type: object, required: [kind, path], properties: {kind: {type: string, enum: [ADDED, REMOVED, CHANGED]}, path: {type: string}}}}
+        reviewItems: {type: array, items: {type: string, enum: [NEW_WRITE_BINDING, NEW_CUSTOM_COMPONENT, NEW_ALLOW_PII, UPDATE_WITHOUT_EXPECTED_REVISION]}}
+    ActivateAppRequest:
+      type: object
+      additionalProperties: false
+      required: [version, reason]
+      properties:
+        version: {type: integer, minimum: 1}
+        expectedVersion: {type: integer, minimum: 1}
+        reason: {type: string, minLength: 8, maxLength: 2000}
+        revokeSessions: {type: boolean, default: false}
+    AppActivation:
+      type: object
+      required: [kind, version, actor, createdAt, sessionsRevoked]
+      properties:
+        kind: {type: string, enum: [PUBLISH, PROMOTE, ROLLBACK, ACTIVATE]}
+        version: {type: integer}
+        previousVersion: {type: [integer, 'null']}
+        actor: {type: string}
+        createdAt: {type: string, format: date-time}
+        sessionsRevoked: {type: integer, minimum: 0}
+    AppPublicationRequest:
+      type: object
+      required: [id, state, draftRevision, digest, requiredApprovals]
+      properties:
+        id: {type: string, format: uuid}
+        state: {type: string, enum: [PENDING, APPROVED, PUBLISHED, REJECTED, WITHDRAWN, SUPERSEDED]}
+        draftRevision: {type: integer}
+        digest: {type: string}
+        requiredApprovals: {type: integer, minimum: 0, maximum: 3}
+        publishedVersion: {type: [integer, 'null']}
+    AppAudience:
+      type: object
+      additionalProperties: false
+      required: [entries]
+      properties:
+        entries:
+          type: array
+          maxItems: 256
+          items:
+            type: object
+            additionalProperties: false
+            required: [kind, value]
+            properties:
+              kind: {type: string, enum: [SUBJECT, ROLE]}
+              value: {type: string, maxLength: 255}
+    AppEmbedding:
+      type: object
+      required: [available, origins, effectiveOrigins]
+      properties:
+        available: {type: boolean, description: 'false when the deployment has no apps origin'}
+        unavailableReason: {type: string, enum: [NO_APPS_ORIGIN]}
+        origins: {type: array, items: {$ref: '#/components/schemas/HttpsOrigin'}}
+        effectiveOrigins: {type: array, items: {$ref: '#/components/schemas/HttpsOrigin'}}
+    AppPolicy:
+      type: object
+      additionalProperties: false
+      required: [customComponentsEnabled, embedOrigins]
+      properties:
+        customComponentsEnabled: {type: boolean, default: false}
+        embedOrigins: {type: array, maxItems: 64, items: {$ref: '#/components/schemas/HttpsOrigin'}}
+    UploadAppComponentRequest:
+      type: object
+      additionalProperties: false
+      required: [script, propsSchema, eventsSchema]
+      properties:
+        script: {type: string, contentEncoding: base64, description: 'UTF-8 JavaScript, no `</script`, `<!--`; script+style ≤ 1 MiB decoded.'}
+        style: {type: string, contentEncoding: base64, description: 'UTF-8 CSS, no `</style`.'}
+        propsSchema: {type: object, description: 'Closed, bounded JSON Schema (≤ 64 KiB with eventsSchema).'}
+        eventsSchema: {type: object}
+    AppComponentVersion:
+      type: object
+      required: [name, number, digest, byteLength, uploadedAt]
+      properties:
+        name: {type: string}
+        number: {type: integer}
+        digest: {type: string, pattern: '^sha256:[0-9a-f]{64}$'}
+        byteLength: {type: integer}
+        uploadedAt: {type: string, format: date-time}
+    OpenAppSessionRequest:
+      type: object
+      additionalProperties: false
+      required: [mode]
+      properties:
+        mode: {type: string, enum: [studio, embedded, preview]}
+        draftRevision: {type: integer, minimum: 0, description: 'preview only'}
+        embedOrigin: {$ref: '#/components/schemas/HttpsOrigin'}
+        authorizationCode: {type: string, minLength: 1, maxLength: 2048, description: 'embedded only; redeemed server-side, never logged'}
+        codeVerifier: {type: string, minLength: 43, maxLength: 128, pattern: '^[A-Za-z0-9._~-]+$', description: 'embedded only; PKCE verifier held in the embedded page memory'}
+        redirectUri: {type: string, maxLength: 255, description: 'embedded only; must equal the apps origin sign-in callback'}
+    AppSession:
+      type: object
+      required: [sessionToken, expiresAt, mode, version, document, components]
+      properties:
+        sessionToken: {type: string, description: '32 random bytes, base64url; never logged or stored in the browser beyond memory.'}
+        expiresAt: {type: string, format: date-time}
+        mode: {type: string, enum: [studio, embedded, preview]}
+        version: {type: object, required: [digest], properties: {number: {type: [integer, 'null']}, draftRevision: {type: [integer, 'null']}, digest: {type: string}}}
+        document: {type: object}
+        components: {type: array, maxItems: 16, items: {type: object, required: [component, available], properties: {component: {type: string}, available: {type: boolean}, unavailableReason: {type: string, enum: [UPLOADER_LEVEL, COMPONENTS_DISABLED, COMPONENT_SANDBOX_UNAVAILABLE]}}}}
+    InvokeAppBindingRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        values: {type: object, description: 'Map from the binding''s declared reference paths to their current values; ≤ 256 KiB canonical.'}
+        actionKey: {type: string, format: uuid, description: 'Required for update and start.'}
+        reveal: {type: array, maxItems: 1, items: {type: string, enum: [pii]}}
+        cursor: {type: string, maxLength: 512, description: 'listRuns paging'}
+    AppBindingResult:
+      description: Discriminated by kind; the inner objects are the existing wire schemas, not copies.
+      oneOf:
+        - {type: object, required: [kind, query], properties: {kind: {const: query}, query: {$ref: '#/components/schemas/DeclaredQueryResponse'}}}
+        - {type: object, required: [kind, update], properties: {kind: {const: update}, update: {$ref: '#/components/schemas/DeclaredUpdateResponse'}}}
+        - {type: object, required: [kind, run], properties: {kind: {const: start}, run: {$ref: '#/components/schemas/Run'}}}
+        - {type: object, required: [kind, runs], properties: {kind: {const: listRuns}, runs: {$ref: '#/components/schemas/RunPage'}}}
+        - {type: object, required: [kind, disclosure], properties: {kind: {const: runResult}, disclosure: {$ref: '#/components/schemas/PayloadDisclosure'}}}

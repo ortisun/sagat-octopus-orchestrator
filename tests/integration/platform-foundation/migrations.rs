@@ -203,3 +203,239 @@ fn every_forward_migration_has_a_rollback() {
         "each forward migration needs a matching .down.sql"
     );
 }
+
+/// The stamp of the migration before the one that gives a worker binding its profile (D035-136).
+const BEFORE_BINDING_PROFILE: i64 = 20_261_231_000_000;
+
+#[tokio::test]
+async fn the_binding_profile_rolls_back_only_while_every_binding_is_of_the_database_profile() {
+    let db = migrated_db().await;
+    let tenant: sqlx::types::Uuid = sqlx::query_scalar(
+        "INSERT INTO tenants (id, slug, created_at) VALUES (gen_random_uuid(), 'acme', now()) RETURNING id",
+    )
+    .fetch_one(&db.pool)
+    .await
+    .expect("tenant");
+    let workspace: sqlx::types::Uuid = sqlx::query_scalar(
+        "INSERT INTO workspaces (id, tenant_id, slug, created_at) VALUES (gen_random_uuid(), $1, 'main', now()) RETURNING id",
+    )
+    .bind(tenant)
+    .fetch_one(&db.pool)
+    .await
+    .expect("workspace");
+    let namespace: sqlx::types::Uuid = sqlx::query_scalar(
+        "INSERT INTO namespaces (id, tenant_id, workspace_id, slug, environment, created_at) \
+         VALUES (gen_random_uuid(), $1, $2, 'dev', 'dev', now()) RETURNING id",
+    )
+    .bind(tenant)
+    .bind(workspace)
+    .fetch_one(&db.pool)
+    .await
+    .expect("namespace");
+
+    // A binding written without a profile reads as the database profile.
+    sqlx::query(
+        "INSERT INTO worker_bindings (tenant_id, namespace_id, subject, pattern, updated_by) \
+         VALUES ($1, $2, 'sql-runner', 'sagat.database.postgresql', 'admin')",
+    )
+    .bind(tenant)
+    .bind(namespace)
+    .execute(&db.pool)
+    .await
+    .expect("binding");
+    let default: String =
+        sqlx::query_scalar("SELECT profile FROM worker_bindings WHERE subject = 'sql-runner'")
+            .fetch_one(&db.pool)
+            .await
+            .expect("profile");
+    assert_eq!(default, "database");
+
+    // Only the two names are a profile.
+    let invalid = sqlx::query(
+        "INSERT INTO worker_bindings (tenant_id, namespace_id, subject, pattern, updated_by, profile) \
+         VALUES ($1, $2, 'odd-runner', '*', 'admin', 'sql')",
+    )
+    .bind(tenant)
+    .bind(namespace)
+    .execute(&db.pool)
+    .await;
+    assert!(invalid.is_err(), "a profile is `database` or `lake`");
+
+    // A lake binding stops the rollback, with the message that says why.
+    sqlx::query(
+        "INSERT INTO worker_bindings (tenant_id, namespace_id, subject, pattern, updated_by, profile) \
+         VALUES ($1, $2, 'lake-runner', 'sagat.database.iceberg.write', 'admin', 'lake')",
+    )
+    .bind(tenant)
+    .bind(namespace)
+    .execute(&db.pool)
+    .await
+    .expect("lake binding");
+    // sqlx takes an advisory lock for a rollback and does not release it when a revert fails, so the refused
+    // rollback runs on a connection of its own and lets the lock go: the next rollback would wait on it for as
+    // long as the pool keeps the connection (about twenty minutes).
+    let mut connection = db.pool.acquire().await.expect("a connection");
+    let refused = MIGRATOR
+        .undo(&mut *connection, BEFORE_BINDING_PROFILE)
+        .await
+        .expect_err("a lake binding blocks the rollback");
+    sqlx::query("SELECT pg_advisory_unlock_all()")
+        .execute(&mut *connection)
+        .await
+        .expect("release the migration lock");
+    drop(connection);
+    let message = refused.to_string();
+    assert!(
+        message.contains("cannot roll back worker binding profiles"),
+        "{message}"
+    );
+    let still_there: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM information_schema.columns \
+         WHERE table_name = 'worker_bindings' AND column_name = 'profile')",
+    )
+    .fetch_one(&db.pool)
+    .await
+    .expect("column");
+    assert!(still_there, "a refused rollback leaves the column in place");
+
+    // Once the operator has re-bound it, the rollback goes through and forward restores the default.
+    sqlx::query("DELETE FROM worker_bindings WHERE subject = 'lake-runner'")
+        .execute(&db.pool)
+        .await
+        .expect("remove the lake binding");
+    MIGRATOR
+        .undo(&db.pool, BEFORE_BINDING_PROFILE)
+        .await
+        .expect("rollback of the profile alone");
+    let gone: bool = sqlx::query_scalar(
+        "SELECT NOT EXISTS (SELECT 1 FROM information_schema.columns \
+         WHERE table_name = 'worker_bindings' AND column_name = 'profile')",
+    )
+    .fetch_one(&db.pool)
+    .await
+    .expect("column");
+    assert!(gone, "the column is dropped");
+    migrate(&db.pool).await.expect("forward again");
+    let restored: String =
+        sqlx::query_scalar("SELECT profile FROM worker_bindings WHERE subject = 'sql-runner'")
+            .fetch_one(&db.pool)
+            .await
+            .expect("profile after forward");
+    assert_eq!(
+        restored, "database",
+        "the surviving binding reads as the default again"
+    );
+}
+
+/// The stamp of the migration before the one that records the blobs a lake attempt may read (feature 035, D035-144).
+const BEFORE_LAKE_BLOB_PINS: i64 = 20_270_110_000_000;
+
+#[tokio::test]
+async fn the_lake_blob_pins_roll_back_only_while_no_attempt_holds_one() {
+    let db = migrated_db().await;
+    assert!(table_exists(&db.pool, "step_lease_blobs").await);
+
+    // A pin is written by the lease of a lake step, which needs a run and a blob of its own; the guard reads the table alone, so the
+    // row is written with the foreign keys switched off for this transaction (the owner may) and the guard is what is tested.
+    let mut tx = db.pool.begin().await.expect("a transaction");
+    sqlx::query("SET LOCAL session_replication_role = replica")
+        .execute(&mut *tx)
+        .await
+        .expect("foreign keys off for this transaction");
+    sqlx::query(
+        "INSERT INTO step_lease_blobs (tenant_id, namespace_id, run_id, node_id, attempt, generation, blob_id) \
+         VALUES (gen_random_uuid(), gen_random_uuid(), gen_random_uuid(), 'load', 1, 1, gen_random_uuid())",
+    )
+    .execute(&mut *tx)
+    .await
+    .expect("a pin");
+    tx.commit().await.expect("committed");
+
+    // sqlx takes an advisory lock for a rollback and does not release it when a revert fails: the refused rollback runs on a connection of
+    // its own and lets the lock go (see the binding profile's test).
+    let mut connection = db.pool.acquire().await.expect("a connection");
+    let refused = MIGRATOR
+        .undo(&mut *connection, BEFORE_LAKE_BLOB_PINS)
+        .await
+        .expect_err("a pin blocks the rollback");
+    sqlx::query("SELECT pg_advisory_unlock_all()")
+        .execute(&mut *connection)
+        .await
+        .expect("release the migration lock");
+    drop(connection);
+    let message = refused.to_string();
+    assert!(
+        message.contains("cannot roll back lake blob pins"),
+        "{message}"
+    );
+    assert!(
+        table_exists(&db.pool, "step_lease_blobs").await,
+        "a refused rollback leaves the table, and the pin, in place"
+    );
+    let kept: i64 = sqlx::query_scalar("SELECT count(*) FROM step_lease_blobs")
+        .fetch_one(&db.pool)
+        .await
+        .expect("count");
+    assert_eq!(kept, 1);
+
+    // With no attempt holding one the rollback goes through, and forward brings the table back, empty.
+    sqlx::query("DELETE FROM step_lease_blobs")
+        .execute(&db.pool)
+        .await
+        .expect("the attempt's run was cleaned up");
+    MIGRATOR
+        .undo(&db.pool, BEFORE_LAKE_BLOB_PINS)
+        .await
+        .expect("rollback of the pins alone");
+    assert!(!table_exists(&db.pool, "step_lease_blobs").await);
+    let function: bool =
+        sqlx::query_scalar("SELECT to_regproc('sagat_lake_blob_pin_immutable') IS NOT NULL")
+            .fetch_one(&db.pool)
+            .await
+            .expect("function");
+    assert!(!function, "the guard function goes with the table");
+    migrate(&db.pool).await.expect("forward again");
+    assert!(table_exists(&db.pool, "step_lease_blobs").await);
+}
+
+/// The stamp of the migration before the one that lets the runtime role delete the pins of lake blobs (feature 035, D035-147).
+const BEFORE_LAKE_BLOB_PIN_RELEASE: i64 = 20_270_111_000_000;
+
+#[tokio::test]
+async fn the_release_of_the_lake_blob_pins_is_a_grant_and_rolls_back_as_one() {
+    let db = migrated_db().await;
+    let can_delete = |db: &crate::support::TestDb| {
+        let pool = db.pool.clone();
+        async move {
+            sqlx::query_scalar::<_, bool>(
+                "SELECT has_table_privilege('sagat_app', 'step_lease_blobs', 'DELETE')",
+            )
+            .fetch_one(&pool)
+            .await
+            .expect("the privilege")
+        }
+    };
+    assert!(
+        can_delete(&db).await,
+        "the retention job runs as the runtime role"
+    );
+    // Nothing is lost by rolling it back: the pins stay, the table stays, and only the grant goes.
+    MIGRATOR
+        .undo(&db.pool, BEFORE_LAKE_BLOB_PIN_RELEASE)
+        .await
+        .expect("the grant alone rolls back");
+    assert!(table_exists(&db.pool, "step_lease_blobs").await);
+    assert!(
+        !can_delete(&db).await,
+        "and the runtime role no longer deletes a pin"
+    );
+    let still: bool = sqlx::query_scalar(
+        "SELECT has_table_privilege('sagat_app', 'step_lease_blobs', 'SELECT') AND has_table_privilege('sagat_app', 'step_lease_blobs', 'INSERT')",
+    )
+    .fetch_one(&db.pool)
+    .await
+    .expect("the privileges");
+    assert!(still, "it reads and writes them as before");
+    migrate(&db.pool).await.expect("forward again");
+    assert!(can_delete(&db).await);
+}

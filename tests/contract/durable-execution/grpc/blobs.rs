@@ -1065,7 +1065,7 @@ async fn rejected_blob_completion_replays_after_unused_blob_collection() {
         "metadata": {"name": "blob-budget"}, "entrypoint": "s0", "nodes": nodes
     });
     let wf = p.publish("blob-budget", &definition).await;
-    p.start(&wf, &json!({})).await;
+    let run = p.start(&wf, &json!({})).await;
     let mut w = p.worker("wendy").await;
     w.register(&["act.a"]).await;
     w.client = w.client.clone().max_decoding_message_size(8 * 1024 * 1024);
@@ -1085,8 +1085,21 @@ async fn rejected_blob_completion_replays_after_unused_blob_collection() {
     let first = w
         .complete_with_blob(&lease, &stored.blob_id)
         .await
-        .expect("accepted failure");
-    assert_eq!(first.run_status, "FAILED");
+        .expect("accepted review of the successful effect");
+    assert_eq!(first.step_status, "WAITING");
+    assert_eq!(first.run_status, "MANUAL_REVIEW");
+    assert!(
+        w.poll(8).await.is_empty(),
+        "refused output grants no repeat"
+    );
+    let failure: Option<String> =
+        sqlx::query_scalar("SELECT failure_code FROM steps WHERE run_id=$1 AND node='s16'")
+            .bind(uuid::Uuid::parse_str(&run).expect("run UUID"))
+            .fetch_one(&p.api.db.pool)
+            .await
+            .expect("review source");
+    assert_eq!(failure.as_deref(), Some("STORAGE_QUOTA_EXCEEDED"));
+    let events_before_gc = count(&p, "SELECT count(*) FROM run_events").await;
     sqlx::query("UPDATE blobs SET uploaded_at = uploaded_at - interval '2 days'")
         .execute(&p.api.db.pool)
         .await
@@ -1106,7 +1119,14 @@ async fn rejected_blob_completion_replays_after_unused_blob_collection() {
         .expect("durable replay");
     assert!(replay.already_applied);
     assert_eq!(first.command_id, replay.command_id);
-    assert_eq!(replay.run_status, "FAILED");
+    assert_eq!(replay.step_status, "WAITING");
+    assert_eq!(replay.run_status, "MANUAL_REVIEW");
+    assert_eq!(p.status(&run).await, "MANUAL_REVIEW");
+    assert_eq!(
+        count(&p, "SELECT count(*) FROM run_events").await,
+        events_before_gc
+    );
+    assert!(w.poll(8).await.is_empty());
 }
 
 #[tokio::test]

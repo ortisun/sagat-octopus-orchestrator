@@ -3,8 +3,7 @@
 //! PostgreSQL is the authority and the broker only carries hints, so this is deliberately simple
 //! and at-least-once: a message is claimed (hidden for `visibility`), published with a stable
 //! message id, and only then marked delivered. A crash between publishing and confirming makes the
-//! message reappear and be published again, never be lost; the stable id lets the broker drop the
-//! duplicate. A failure is recorded with a stable code and retried with capped, jittered backoff,
+//! message reappear and be published again, never be lost; consumers use the stable application id to deduplicate. A failure is recorded with a stable code and retried with capped, jittered backoff,
 //! so a broker outage grows the backlog (a gauge) instead of losing messages or spinning.
 
 use std::time::Duration;
@@ -232,7 +231,7 @@ where
             && let Err(error) = self.store.mark_delivered(&delivered).await
         {
             // The messages reappear after the visibility timeout and are published again with the
-            // same ids: a duplicate the broker drops, never a loss.
+            // same application ids: a possible physical duplicate, never a lost obligation.
             tracing::warn!(%error, count = delivered.len(), "could not confirm delivered messages");
         }
         // The backlog is a gauge of the whole outbox, set by the monitor (one replica) and not counted

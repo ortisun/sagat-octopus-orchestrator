@@ -11,6 +11,64 @@
 - E2E: author→publish→trigger→run→saga compensation→visualize; inline code TypeScript and C#; human approval.
 - Load/stress: partitioning, active steps, 10k/100k/1M waits, pools/quotas, high fanout, huge DAG and backpressure.
 
+## What CI runs
+
+The rule is in the constitution (Development Workflow, CI gates) and is checked by `scripts/tests/test_ci_workflow.py`.
+
+**A pull request** runs only the tests of what it changes (a merge into `develop` starts no run, since the push that
+merges a pull request would prove again what the pull request proved):
+
+- the unit tests of the workspace packages that contain a changed file and of every package that depends on one of them,
+  directly or not (`cargo test -p <package>`), and every package when
+  `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `.cargo/`, `clippy.toml`, `rustfmt.toml` or `vendor/` changes;
+- the unit tests of an SDK when a file under `sdks/<language>/` changes, of the Studio when a file under `frontend/` changes,
+  and of the scripts when a file under `scripts/` changes; and of the lake runtime (Python, `runners/lake/`) with the
+  audit of its lock when a file other than Markdown under it changes;
+- the integration suites (the `sagat-tests` targets: integration, contract, fault, e2e and performance, which start
+  PostgreSQL through Testcontainers) that were themselves changed: the suite whose directory holds a changed file (the
+  deepest one, so `tests/contract/<feature>/rest/` does not select its parent) or whose `[[test]]` entry is new or
+  changed. A changed package does not select a suite because the suite uses it, or uses what depends on it: the suites are
+  expensive and the release runs all of them. The browser
+  suites when `frontend/e2e` or `examples/` changes; the SDK suites when `sdks/<language>/conformance` changes; the lake
+  suites (`integration`, `fault`, `e2e` and `performance` of `iceberg-writes`) when `runners/lake/` changes; the budget of the
+  hot path (`integration_claim_transition_efficiency`, design 038) when a file of `crates/infra-postgres/` or of the worker,
+  execution and run modules of `crates/application` changes (constitution 4.4.0, OD-2026-11-12-4).
+  What is shared selects no suite: `tests/support`, `tests/fixtures`, any other `runners/` directory, a contract file
+  under `specs/`, a dependency of `tests/Cargo.toml` and `Cargo.lock` (which does select the unit tests of every package)
+  are used by suites nobody changed, and the release runs those (OD-2026-11-06-2). The log of the selector says
+  `select no suite: <file> is shared by the suites` so that nobody wonders why a suite did not run.
+
+Nothing else runs: no formatting, no `clippy`, no architecture, agent-configuration or design-doc check, no contract
+validation, no advisory audit, no upgrade, Compose smoke-test, scale or native-runner job. A change that touches only
+Markdown, `docs/`, `tasks/`, `.claude/` or `infra/` runs no test at all.
+
+**A release** runs everything: every unit test and integration suite, formatting, `clippy`, the checks above, the contract
+and observability validation, the advisory audit, and the upgrade, Compose smoke-test, scale and native-runner jobs. A
+release is a push to `main`, `release/**` or `hotfix/**`, a tag `v*`, a pull request into one of those branches, a manual
+run (`workflow_dispatch`), a change of `.github/workflows`, or any run with no usable base commit. For the lake runtime
+that adds the types and lint, the image build, the smoke test of the image and its SBOM; its lock is also audited every
+week by `.github/workflows/lake-audit.yml`.
+
+**Mutation testing** is not part of a pull request, of a merge or of the CI (OD-2026-11-06-2). It runs when a release is
+closed, by whoever closes it, over the guards that the release added or changed: each is weakened once, in a throw-away
+copy of the tree, and a named test must fail. A survivor gets a test, or the code it guards is removed as unneeded, and an
+equivalent mutant is said to be one. The repository has no mutation tooling, and the scripts are written for the occasion;
+run each mutant with bytecode off (`PYTHONDONTWRITEBYTECODE=1`), because two mutants of the same size written within a second
+share a bytecode cache entry and the second is then judged by the first one's code. The result goes in the release's
+validation report. Until then the tests of a change are written first and seen failing, and nothing more is claimed for them.
+
+What this costs, so it is not forgotten: a violation of a lint or of an architecture rule reaches `develop` and is found when
+a release is closed, and a suite that reaches the code only over HTTP, without naming its package, is not selected for a
+change to that package. Run the lints and the suites you affect before the pull request (`/verify`). Measured on the
+repository: a change to a leaf package (`infra-egress`) selects 12 of the 83 suites, a change to `domain` selects 76,
+because almost everything depends on it. A coverage map from test to file would select exactly; it is not built.
+
+Measured on GitHub's runners on 2026-11-05, with two throwaway pull requests against `develop`: a change to one Markdown
+file ran the selection job (8 s) and skipped every other job; a comment added to `infra-egress` ran only the `rust` job,
+which took 28 min 51 s (the unit tests of that package and the 12 suites above), against 1 h 30 min for the same job in a
+release, with every other job skipped. The first run of the release rule, the merge of the change that introduced it, ran
+all 13 jobs green because it changed `.github/workflows`.
+
 ## Where the tests live and what they are called
 
 `tests/<kind>/<feature>/` with `<kind>` one of `e2e`, `integration`, `contract`, `fault` and `performance`, and `<feature>` the
@@ -40,6 +98,28 @@ Keep performance benchmarks separate and report their own concurrency and hardwa
 CI sets the Cargo dev and test profiles to `debug = "line-tables-only"`. This retains filename/line
 backtraces while omitting type and variable debugging metadata; test commands are unchanged, and
 `debug_assertions` and the build-script `DEBUG=true` value remain enabled for these profiles.
+
+The Rust workspace job shares the SDK job's existing dependency-cache key (`sdks`) and enables
+`cache-on-failure`. Both jobs use the same root workspace/profile; the action retains its compiler,
+environment, platform and manifest hashes, and Cargo checks artifact freshness. Saving compiled
+dependencies after a test failure lets later attempts reuse them. Every test gate still executes.
+Workspace crates retain the action's default exclusion, so compiling/linking this repository's
+test executables can still be substantial. Cache restoration alone does not establish a timing
+improvement; inspect the cache-hit log and measured build stages before claiming one.
+
+The loop-drain recovery test performs its expected-error downgrade probes on dedicated
+PostgreSQL sessions. SQLx 0.9 returns early on a refused migration before its session advisory
+unlock; returning that connection to a pool can block a later probe. The fixture acknowledges
+unlock and closes the session before reporting its outcome, with bounded waits and database-scoped
+lock assertions. This regression runs first in the capacity/migration CI preflight.
+
+Scoped event quota tests separate a claimed event's durable retry from a mixed lookback/claim
+tick. A controlled inbox SHARE permits native lookback while making UPDATE SKIP LOCKED defer
+the claim; that tick need not increment a retry counter. The held-source case requires a
+positive quota-refusal diagnostic, unchanged execution/receipt/accounting snapshots, and cold
+lookback recovery after the explicit unlock. The independent dispatch case requires the stored
+quota retry class and zero consumed attempts. Neither proof assumes an unobserved rollback
+cleanup timing or relies on sleeping until a lock disappears.
 
 ## Critical matrix
 

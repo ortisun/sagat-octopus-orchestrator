@@ -518,20 +518,8 @@ async fn publication_keeps_unproven_collection_bodies_closed() {
     let document = collection_document(
         &name,
         json!([
-            {
-                "id": "price",
-                "type": "activity",
-                "activity": "line.price",
-                "next": "return-price",
-                "onError": "fallback"
-            },
-            {
-                "id": "fallback",
-                "type": "activity",
-                "activity": "line.fallback",
-                "next": "return-price"
-            },
-            {"id": "return-price", "type": "return", "result": "steps.price.output"}
+            // Return-only entry retains its separate admission/budget gate.
+            {"id":"price","type":"return","result":"item"}
         ]),
     );
     let workflow = create(&api, &name, document).await;
@@ -589,18 +577,24 @@ async fn iteration_capacity_is_tenant_scoped_authorized_audited_and_reducible() 
         .expect("reject namespace iteration capacity");
     assert_eq!(wrong_scope.status(), StatusCode::UNPROCESSABLE_ENTITY);
 
-    let zero = api
-        .as_user(
-            Method::PUT,
-            "/quotas/iteration_concurrency",
-            "alice",
-            "acme",
-        )
-        .json(&json!({"limit": 0}))
-        .send()
-        .await
-        .expect("reject zero iteration capacity");
-    assert_eq!(zero.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    for value in [1_025_u64, 1_000_000_001] {
+        let rejected = api
+            .as_user(
+                Method::PUT,
+                "/quotas/iteration_concurrency",
+                "alice",
+                "acme",
+            )
+            .json(&json!({"limit": value}))
+            .send()
+            .await
+            .expect("reject capacity above the operator ceiling or the hard maximum");
+        assert_eq!(
+            rejected.status(),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "value={value}"
+        );
+    }
 
     let initial = json_of(api.get_as("/quotas", "alice", "acme").await).await;
     let initial = initial["items"]

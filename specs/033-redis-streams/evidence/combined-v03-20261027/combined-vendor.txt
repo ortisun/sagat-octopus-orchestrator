@@ -1,0 +1,1 @@
+vendor check passed (84 upstream files, one manifest-only override)

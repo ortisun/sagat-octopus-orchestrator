@@ -49,6 +49,48 @@ impl Credentials {
     }
 }
 
+/// Redis authentication and trust material, validated before any connection is opened.
+pub(crate) struct RedisCredentials<'a> {
+    pub username: Option<&'a str>,
+    pub password: Option<&'a str>,
+    pub ca_cert: Option<&'a str>,
+}
+impl Credentials {
+    pub(crate) fn redis(&self, named: bool) -> Result<RedisCredentials<'_>, ()> {
+        if self
+            .values
+            .keys()
+            .any(|key| !matches!(key.as_str(), "username" | "password" | "caCert"))
+        {
+            return Err(());
+        }
+        for (key, value) in &self.values {
+            let limit = match key.as_str() {
+                "username" => 256,
+                "password" => 8192,
+                _ => 48 * 1024,
+            };
+            if !value
+                .as_str()
+                .is_some_and(|v| !v.is_empty() && v.len() <= limit)
+            {
+                return Err(());
+            }
+        }
+        let result = RedisCredentials {
+            username: self.text("username"),
+            password: self.text("password"),
+            ca_cert: self.text("caCert"),
+        };
+        if (result.username.is_some() && result.password.is_none())
+            || (named && result.password.is_none() && result.ca_cert.is_none())
+        {
+            return Err(());
+        }
+        Ok(result)
+    }
+}
+
 /// Why a connector's credentials could not be had.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CredentialsError {

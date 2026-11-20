@@ -1,0 +1,54 @@
+[
+  {
+    "command": [
+      "docker",
+      "build",
+      "-f",
+      "runners/go/Dockerfile.builder",
+      "-t",
+      "sagat/go-builder:1.25.3",
+      "."
+    ],
+    "exit": 0,
+    "log": "d1-image-go-builder.txt"
+  },
+  {
+    "command": [
+      "docker",
+      "build",
+      "-f",
+      "runners/go/Dockerfile.runtime",
+      "-t",
+      "sagat/go-runtime:1.25.3",
+      "."
+    ],
+    "exit": 0,
+    "log": "d1-image-go-runtime.txt"
+  },
+  {
+    "command": [
+      "docker",
+      "build",
+      "-f",
+      "runners/java/Dockerfile.builder",
+      "-t",
+      "sagat/java-builder:17.0.16",
+      "."
+    ],
+    "exit": 0,
+    "log": "d1-image-java-builder.txt"
+  },
+  {
+    "command": [
+      "docker",
+      "build",
+      "-f",
+      "runners/java/Dockerfile.runtime",
+      "-t",
+      "sagat/java-runtime:17.0.16",
+      "."
+    ],
+    "exit": 0,
+    "log": "d1-image-java-runtime.txt"
+  }
+]

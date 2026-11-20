@@ -1,0 +1,46 @@
+{
+  "releaseCommit": "bfda342073db71e84f30bdc79ccf3fbc97a7153c",
+  "packageId": "path+file:///private/tmp/sagat-v03-20261026/released-v02-al_pw2ho/source/tests#sagat-tests@0.2.0",
+  "productionFilesVerified": 649,
+  "productionTreeSha256": "f7ab4beb1f0c38ec39de441f99e86ab61b2e440c3cfd81397fee508bbc8dd7d4",
+  "overlays": [
+    {
+      "path": "tests/fixtures/released-v02/callback_cutover.rs",
+      "sha256": "75ed8919e7607ad556dc258fee42a2bd9c4668f70462b8c4eeef0c17c208b593"
+    },
+    {
+      "path": "tests/fixtures/released-v02/control.rs",
+      "sha256": "fea5272c199b905c9622c0f6c7ee471b26303c172dd675af5b09ace82c6089c3"
+    },
+    {
+      "path": "tests/fixtures/released-v02/cutover.rs",
+      "sha256": "52a3ce4898cbb983e5e30a16f7d90a264ccadfabf68f074f900b190990e61b63"
+    },
+    {
+      "path": "tests/fixtures/released-v02/inflight.rs",
+      "sha256": "14db48e4a459715f7219467df8494e7eac64d4a9493d18d37c85eb36d5948536"
+    },
+    {
+      "path": "tests/fixtures/released-v02/phase.rs",
+      "sha256": "c3209cfa85ca2a72044cda8a4e8e70e0b77b5d3adadb7337ebc6b115d5bf3933"
+    },
+    {
+      "path": "tests/fixtures/released-v02/wait-state.sql",
+      "sha256": "e4b85c83e0226ad2f4c9c59f8c5c501f8d426ff1d6fe2d090702865484d41388"
+    },
+    {
+      "path": "tests/integration/workflow-primitives/main.rs",
+      "sha256": "6188765ccfa57f3ae61f0cf9b94a95f362e2acb3439eb191282ad9e4f587eafd"
+    }
+  ],
+  "binary": "/private/tmp/sagat-v03-20261026/released-v02-al_pw2ho/released-v02-phase",
+  "binarySha256": "1a27c123460bfc00d22b9bef22bfcf1c2513f93282beca09ef0ce9e068f4edc9",
+  "oldTarget": "/Users/marcelo/.cache/sagat-v02-profile-20261027-x45v143m",
+  "currentTarget": "/Users/marcelo/.cache/sagat-v03-nodebug-5xlu3ufs",
+  "currentCommit": "8ace0da7a90f58de5dced2caf0f8c702408facd2",
+  "currentSourceSha256": "a9adc05f50469ee0189c0c3f55809e6da7d5e6edde32d4cfb8f2b40de9ac42fe",
+  "currentBinarySha256": "db28a0b6b68274ba3e80210b31615f7cf373914f95f4663be67463f3ee3119c4",
+  "scenario": "active-data",
+  "coordinatorPath": "tests/integration/workflow-primitives/released_v02_upgrade.rs",
+  "coordinatorSha256": "23ddae57929f7533cdfa21f93554bd5a1c149517780eeaddce5e799bf37aedf3"
+}

@@ -1,0 +1,15 @@
+2026-10-27T22:15:17.3459155Z test result: ok. 36 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.24s
+2026-10-27T22:15:17.3900880Z test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+2026-10-27T22:15:17.3921868Z test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+2026-10-27T22:15:17.9367770Z test result: ok. 54 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.54s
+2026-10-27T22:15:17.9930041Z test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+2026-10-27T22:15:18.1124284Z test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s
+2026-10-27T22:15:18.1862808Z test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
+2026-10-27T22:15:18.1892808Z test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+2026-10-27T22:15:19.2699022Z test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+2026-10-27T22:25:14.1169531Z test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 316.07s
+2026-10-27T22:31:33.5334838Z test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 379.41s
+2026-10-27T23:05:11.1513942Z test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 2017.61s
+2026-10-27T23:08:05.4741501Z test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 33 filtered out; finished in 133.43s
+2026-10-27T23:08:10.1887863Z ... Saving cache ...
+2026-10-27T23:08:17.4009525Z ##[error]The operation was canceled.

@@ -12,9 +12,11 @@ use sagat_domain::execution::{
     Expiry, Failure, FailureCode, Fence, InstancePath, LoopContinuation, LoopDrainReason, LoopKind,
     PathExecutionState, ReviewOutcome, RunEvent, RunId, RunState, RunStatus, SagaPhase,
     ScopedOutputRefusalSuccess, StepStatus, StopReason, WaitingOn, complete_instance,
-    complete_reconciliation_instance, expire_instance, fail_instance, lease_instance,
-    lease_path_instance, plan_scope_compensation, prepare_scoped_output_refusal,
-    resolve_review_instance, retry_review_instance, skip_review_instance,
+    complete_reconciliation_instance, complete_reconciliation_path_instance, expire_instance,
+    fail_instance, fail_path_instance, lease_instance, lease_path_instance,
+    plan_scope_compensation, prepare_scoped_output_refusal, resolve_review_instance,
+    resolve_review_path_instance, retry_review_instance, retry_review_path_instance,
+    skip_review_instance,
 };
 use sagat_domain::identity::Slug;
 use sagat_domain::saga::{EffectPolicy, ReconcileVerdict, SagaOutcome as Outcome};
@@ -41,6 +43,22 @@ fn step(name: &str, undo: bool, lookup: bool) -> Node {
         NodeKind::Activity {
             activity: ActivityName::parse(&format!("act.{name}")).expect("activity"),
             retry: RetryPolicy::DEFAULT,
+            compensate_with: undo
+                .then(|| ActivityName::parse(&format!("undo.{name}")).expect("activity")),
+            reconcile_with: lookup
+                .then(|| ActivityName::parse(&format!("lookup.{name}")).expect("activity")),
+            idempotency_template: None,
+            secrets: Vec::new(),
+        },
+    )
+}
+
+fn no_retry_step(name: &str, undo: bool, lookup: bool) -> Node {
+    Node::new(
+        id(name),
+        NodeKind::Activity {
+            activity: ActivityName::parse(&format!("act.{name}")).expect("activity"),
+            retry: RetryPolicy::no_retry(),
             compensate_with: undo
                 .then(|| ActivityName::parse(&format!("undo.{name}")).expect("activity")),
             reconcile_with: lookup
@@ -364,6 +382,21 @@ impl Scope {
         fence
     }
 
+    fn lease_with_path_oracle(&mut self, instance: &ExecutionInstanceId) -> Fence {
+        let mut bounded = PathExecutionState::from_run(&self.state, instance.path().clone())
+            .expect("bounded lease path");
+        let expected = lease_instance(&mut self.state, instance).expect("full lease");
+        let actual = lease_path_instance(&mut bounded, instance).expect("bounded lease");
+        assert_eq!(actual, expected);
+        assert_eq!(
+            bounded,
+            PathExecutionState::from_run(&self.state, instance.path().clone())
+                .expect("lease oracle")
+        );
+        self.journal.push(expected.1);
+        expected.0
+    }
+
     fn complete(&mut self, instance: &ExecutionInstanceId) {
         let fence = self.lease(instance);
         let progress = complete_instance(&self.def, &mut self.state, instance, fence)
@@ -398,6 +431,113 @@ impl Scope {
         )?;
         self.absorb(progress.events);
         Ok(())
+    }
+
+    fn fail_with_path_oracle(
+        &mut self,
+        instance: &ExecutionInstanceId,
+        fence: Fence,
+        code: &str,
+        retryable: bool,
+    ) {
+        let mut bounded = PathExecutionState::from_run(&self.state, instance.path().clone())
+            .expect("bounded failure path");
+        let failure = Failure {
+            fence,
+            code: FailureCode::parse(code).expect("code"),
+            retryable,
+            jitter_sample: 0.0,
+        };
+        let expected = fail_instance(&self.def, &mut self.state, instance, failure.clone(), T0)
+            .expect("full failure applies");
+        let actual = fail_path_instance(&self.def, &mut bounded, instance, failure, T0)
+            .expect("bounded failure applies");
+        assert_eq!(actual, expected);
+        assert_eq!(
+            bounded,
+            PathExecutionState::from_run(&self.state, instance.path().clone())
+                .expect("failure oracle")
+        );
+        self.absorb(expected.events);
+    }
+
+    fn reconcile_with_path_oracle(
+        &mut self,
+        lookup: &ExecutionInstanceId,
+        fence: Fence,
+        verdict: ReconcileVerdict,
+    ) {
+        let mut bounded = PathExecutionState::from_run(&self.state, lookup.path().clone())
+            .expect("bounded reconciliation path");
+        let expected = complete_reconciliation_instance(
+            &self.def,
+            &mut self.state,
+            lookup,
+            fence,
+            verdict,
+            0.0,
+            T0,
+        )
+        .expect("full reconciliation applies");
+        let actual = complete_reconciliation_path_instance(
+            &self.def,
+            &mut bounded,
+            lookup,
+            fence,
+            verdict,
+            0.0,
+            T0,
+        )
+        .expect("bounded reconciliation applies");
+        assert_eq!(actual, expected);
+        assert_eq!(
+            bounded,
+            PathExecutionState::from_run(&self.state, lookup.path().clone())
+                .expect("reconciliation oracle")
+        );
+        self.absorb(expected.events);
+    }
+
+    fn resolve_review_with_path_oracle(
+        &mut self,
+        instance: &ExecutionInstanceId,
+        outcome: ReviewOutcome,
+    ) {
+        let mut bounded = PathExecutionState::from_run(&self.state, instance.path().clone())
+            .expect("bounded review path");
+        let expected =
+            resolve_review_instance(&self.def, &mut self.state, instance, outcome.clone(), T0)
+                .expect("full review resolution applies");
+        let actual = resolve_review_path_instance(&self.def, &mut bounded, instance, outcome, T0)
+            .expect("bounded review resolution applies");
+        assert_eq!(actual, expected);
+        assert_eq!(
+            bounded,
+            PathExecutionState::from_run(&self.state, instance.path().clone())
+                .expect("review resolution oracle")
+        );
+        self.absorb(expected.events);
+    }
+
+    fn assert_unknown_retry_refused_with_path_oracle(&mut self, instance: &ExecutionInstanceId) {
+        let before = self.state.clone();
+        let mut bounded = PathExecutionState::from_run(&self.state, instance.path().clone())
+            .expect("bounded review path");
+        let bounded_before = bounded.clone();
+        let expected = retry_review_instance(&self.def, &mut self.state, instance, T0);
+        let actual = retry_review_path_instance(&self.def, &mut bounded, instance, T0);
+        assert_eq!(actual, expected);
+        assert_eq!(
+            expected,
+            Err(ExecutionError::OutcomeUnresolved(instance.clone())),
+            "an unknown effect needs an outcome-bearing resolution before another attempt"
+        );
+        assert_eq!(self.state, before, "a refused retry changes no run state");
+        assert_eq!(
+            bounded, bounded_before,
+            "a refused retry changes no path state"
+        );
+        self.assert_replays();
     }
 
     fn expire(&mut self, instance: &ExecutionInstanceId, fence: Fence, cause: Expiry) {
@@ -995,6 +1135,69 @@ fn completed_iterations_of_a_loop_compensate_in_reverse_iteration_order() {
 
 // --------------------------------------------------------------------------- unknown effects
 
+#[test]
+fn absent_or_false_high_risk_unknown_original_waits_for_review_in_exact_scope_path() {
+    let mut collection = Scope::start(
+        collection_definition(vec![step("reserve", false, false)], 1),
+        "lines",
+    );
+    collection.enter_collection(1, 1);
+    collection.admit_collection(0, "reserve");
+
+    let explicitly_false = step("reserve", false, false).with_effect(EffectPolicy {
+        high_risk: false,
+        ..EffectPolicy::NONE
+    });
+    let mut loop_scope = Scope::start(
+        loop_definition(vec![explicitly_false], LoopKind::While),
+        "poll",
+    );
+    loop_scope.enter_loop(LoopKind::While);
+    loop_scope.admit_loop(0, "reserve");
+
+    for (case, mut scope) in [
+        ("absent highRisk on collection", collection),
+        ("highRisk false on loop", loop_scope),
+    ] {
+        let reserve = scope.at(0, "reserve");
+        let fence = scope.lease(&reserve);
+        scope.fail_with_path_oracle(&reserve, fence, "OUTCOME_UNKNOWN", true);
+
+        let step = scope.state.instance(&reserve).expect("effect step");
+        assert_eq!(
+            step.status(),
+            StepStatus::Waiting,
+            "{case}: attempts remaining must not authorize a repeat"
+        );
+        assert!(
+            matches!(
+                step.waiting_on(),
+                Some(WaitingOn::Operator { code }) if code.as_str() == "OUTCOME_UNKNOWN"
+            ),
+            "{case}: uncertainty is owed to an operator"
+        );
+        assert_eq!(scope.state.status(), RunStatus::ManualReview, "{case}");
+        scope.assert_replays();
+    }
+}
+
+#[test]
+fn unknown_original_retry_requires_resolution_in_exact_scope_path() {
+    let high_risk = step("reserve", false, false).with_effect(EffectPolicy {
+        high_risk: true,
+        ..EffectPolicy::NONE
+    });
+    let mut scope = Scope::start(collection_definition(vec![high_risk], 1), "lines");
+    scope.enter_collection(1, 1);
+    scope.admit_collection(0, "reserve");
+    let reserve = scope.at(0, "reserve");
+    let fence = scope.lease(&reserve);
+    scope.fail_with_path_oracle(&reserve, fence, "OUTCOME_UNKNOWN", false);
+    assert_eq!(scope.step_status(&reserve), StepStatus::Waiting);
+
+    scope.assert_unknown_retry_refused_with_path_oracle(&reserve);
+}
+
 fn unknown_effect_scope() -> (Scope, ExecutionInstanceId, Fence) {
     let mut scope = Scope::start(
         collection_definition(vec![step("reserve", true, true)], 1),
@@ -1117,6 +1320,114 @@ fn an_iteration_whose_member_is_being_looked_up_cannot_be_drained() {
 }
 
 #[test]
+fn draining_collection_and_loop_release_lookup_before_preserving_review() {
+    let (mut collection, collection_effect, collection_fence) = unknown_effect_scope();
+    collection.cancel_collection();
+    collection.addressed(
+        collection_effect.path(),
+        RunEvent::StepCancelRequested {
+            node: collection_effect.node().clone(),
+        },
+    );
+
+    let mut loop_scope = Scope::start(
+        loop_definition(vec![step("reserve", true, true)], LoopKind::While),
+        "poll",
+    );
+    loop_scope.enter_loop(LoopKind::While);
+    loop_scope.admit_loop(0, "reserve");
+    let loop_effect = loop_scope.at(0, "reserve");
+    let loop_fence = loop_scope.lease(&loop_effect);
+    loop_scope.event(RunEvent::RunStopRequested {
+        reason: StopReason::Cancelled,
+        code: None,
+    });
+    loop_scope.event(RunEvent::LoopDrainStarted {
+        node: loop_scope.owner.node().clone(),
+        reason: LoopDrainReason::Cancelled,
+    });
+    loop_scope.addressed(
+        loop_effect.path(),
+        RunEvent::StepCancelRequested {
+            node: loop_effect.node().clone(),
+        },
+    );
+
+    for (case, mut scope, effect, fence, is_loop) in [
+        (
+            "collection",
+            collection,
+            collection_effect,
+            collection_fence,
+            false,
+        ),
+        ("loop", loop_scope, loop_effect, loop_fence, true),
+    ] {
+        scope.fail_with_path_oracle(&effect, fence, "OUTCOME_UNKNOWN", true);
+        let lookup = effect.reconciliation();
+        assert_eq!(scope.step_status(&effect), StepStatus::Waiting, "{case}");
+        assert!(matches!(
+            scope
+                .state
+                .instance(&effect)
+                .and_then(|step| step.waiting_on()),
+            Some(WaitingOn::Reconciliation)
+        ));
+        assert_eq!(
+            scope.step_status(&lookup),
+            StepStatus::Ready,
+            "{case}: draining protects the original effect but must release its lookup"
+        );
+
+        let lookup_fence = scope.lease_with_path_oracle(&lookup);
+        scope.reconcile_with_path_oracle(&lookup, lookup_fence, ReconcileVerdict::NotApplied);
+        assert!(matches!(
+            scope.state.instance(&effect).and_then(|step| step.waiting_on()),
+            Some(WaitingOn::Operator { code })
+                if code.as_str() == "RECONCILIATION_NOT_FINAL"
+        ));
+        assert_eq!(scope.state.status(), RunStatus::ManualReview, "{case}");
+        assert!(
+            scope.state.instance(&effect.compensation()).is_none(),
+            "{case}: a negative lookup cannot authorize defensive compensation"
+        );
+
+        let resolved = FailureCode::parse("OPERATOR_CONFIRMED_NOT_APPLIED").expect("code");
+        scope.resolve_review_with_path_oracle(&effect, ReviewOutcome::Failed(resolved.clone()));
+        assert_eq!(scope.step_status(&effect), StepStatus::Failed, "{case}");
+        assert_eq!(
+            scope
+                .state
+                .instance(&effect)
+                .and_then(|step| step.failure()),
+            Some(&resolved),
+            "{case}"
+        );
+
+        if is_loop {
+            scope.drain_loop(0);
+        } else {
+            scope.drain_collection(0);
+        }
+        let chosen = scope.advance();
+        assert!(
+            released(&chosen).is_empty(),
+            "{case}: known absence leaves no work to compensate"
+        );
+        assert_eq!(
+            scope
+                .state
+                .scope_saga(&scope.owner)
+                .and_then(sagat_domain::execution::ScopeSagaState::outcome),
+            Some(Outcome::Compensated),
+            "{case}"
+        );
+        assert_eq!(scope.state.stop_reason(), Some(StopReason::Cancelled));
+        scope.assert_replays();
+    }
+}
+
+#[test]
 fn a_lookup_that_found_the_effect_makes_the_step_compensable() {
     let (mut scope, reserve, fence) = unknown_effect_scope();
     scope.expire(&reserve, fence, Expiry::LeaseExpired);
@@ -1142,7 +1453,7 @@ fn a_lookup_that_found_the_effect_makes_the_step_compensable() {
 }
 
 #[test]
-fn a_lookup_that_found_nothing_does_not_retry_a_stopping_scope_and_compensates_nothing() {
+fn a_negative_lookup_during_stop_waits_for_resolution_and_compensates_nothing() {
     let (mut scope, reserve, fence) = unknown_effect_scope();
     scope.expire(&reserve, fence, Expiry::LeaseExpired);
     scope.cancel_collection();
@@ -1160,11 +1471,52 @@ fn a_lookup_that_found_nothing_does_not_retry_a_stopping_scope_and_compensates_n
     .expect("verdict applies");
     scope.absorb(progress.events);
     let step = scope.state.instance(&reserve).expect("step");
-    assert_eq!(step.status(), StepStatus::Failed);
+    assert_eq!(step.status(), StepStatus::Waiting);
     assert_eq!(
-        step.failure(),
-        Some(&FailureCode::reconciled_not_applied()),
-        "it did not happen: it is not an unknown outcome any more"
+        step.failure().map(FailureCode::as_str),
+        Some("RECONCILIATION_NOT_FINAL"),
+        "a point-in-time absence does not prove the original effect is final"
+    );
+    assert!(matches!(
+        step.waiting_on(),
+        Some(WaitingOn::Operator { code })
+            if code.as_str() == "RECONCILIATION_NOT_FINAL"
+    ));
+    assert_eq!(scope.state.status(), RunStatus::ManualReview);
+    let owner = scope.owner.node().clone();
+    assert!(
+        scope
+            .state
+            .clone()
+            .apply(&RunEvent::CollectionIterationDrained {
+                node: owner,
+                index: 0,
+            })
+            .is_err(),
+        "stop cannot drain away the unresolved review"
+    );
+    assert!(
+        scope.advance().is_empty(),
+        "negative lookup schedules neither retry nor defensive compensation"
+    );
+
+    let resolved_code = FailureCode::parse("OPERATOR_CONFIRMED_NOT_APPLIED").expect("code");
+    let progress = resolve_review_instance(
+        &scope.def,
+        &mut scope.state,
+        &reserve,
+        ReviewOutcome::Failed(resolved_code.clone()),
+        T0,
+    )
+    .expect("authorized outcome-bearing resolution");
+    scope.absorb(progress.events);
+    assert_eq!(scope.step_status(&reserve), StepStatus::Failed);
+    assert_eq!(
+        scope
+            .state
+            .instance(&reserve)
+            .and_then(|step| step.failure()),
+        Some(&resolved_code)
     );
     scope.drain_collection(0);
     let chosen = scope.advance();
@@ -1176,6 +1528,7 @@ fn a_lookup_that_found_nothing_does_not_retry_a_stopping_scope_and_compensates_n
             .and_then(sagat_domain::execution::ScopeSagaState::outcome),
         Some(Outcome::Compensated)
     );
+    scope.assert_replays();
 }
 
 #[test]
@@ -1204,8 +1557,68 @@ fn a_lookup_that_cannot_say_waits_for_a_person() {
 }
 
 #[test]
-fn an_unknown_outcome_is_compensated_defensively_when_the_scope_stops() {
-    // No lookup: the attempt was lost while the run asked it to stop; the step keeps saying so.
+fn not_applied_always_reviews_in_collection_and_loop_exact_paths() {
+    let (mut collection, collection_reserve, collection_fence) = unknown_effect_scope();
+    collection.expire(&collection_reserve, collection_fence, Expiry::LeaseExpired);
+
+    let mut loop_scope = Scope::start(
+        loop_definition(vec![no_retry_step("reserve", true, true)], LoopKind::While),
+        "poll",
+    );
+    loop_scope.enter_loop(LoopKind::While);
+    loop_scope.admit_loop(0, "reserve");
+    let loop_reserve = loop_scope.at(0, "reserve");
+    let loop_fence = loop_scope.lease(&loop_reserve);
+    loop_scope.expire(&loop_reserve, loop_fence, Expiry::LeaseExpired);
+    loop_scope.event(RunEvent::RunStopRequested {
+        reason: StopReason::Cancelled,
+        code: None,
+    });
+    loop_scope.event(RunEvent::LoopDrainStarted {
+        node: loop_scope.owner.node().clone(),
+        reason: LoopDrainReason::Cancelled,
+    });
+
+    for (case, mut scope, reserve) in [
+        (
+            "collection with attempts remaining",
+            collection,
+            collection_reserve,
+        ),
+        (
+            "stopping loop with attempts exhausted",
+            loop_scope,
+            loop_reserve,
+        ),
+    ] {
+        let lookup = reserve.reconciliation();
+        let lookup_fence = scope.lease(&lookup);
+        scope.reconcile_with_path_oracle(&lookup, lookup_fence, ReconcileVerdict::NotApplied);
+
+        let step = scope.state.instance(&reserve).expect("effect step");
+        assert_eq!(step.status(), StepStatus::Waiting, "{case}");
+        assert_eq!(
+            step.failure().map(FailureCode::as_str),
+            Some("RECONCILIATION_NOT_FINAL"),
+            "{case}: compare the new bounded code without depending on a constructor"
+        );
+        assert!(
+            matches!(
+                step.waiting_on(),
+                Some(WaitingOn::Operator { code })
+                    if code.as_str() == "RECONCILIATION_NOT_FINAL"
+            ),
+            "{case}: a point-in-time absence is not finality"
+        );
+        assert_eq!(scope.state.status(), RunStatus::ManualReview, "{case}");
+        scope.assert_replays();
+    }
+}
+
+#[test]
+fn an_unknown_outcome_during_stop_requires_resolution_before_compensation() {
+    // No lookup: the attempt was lost while the run asked it to stop. Stopping is not evidence that
+    // the effect happened and does not authorize a defensive compensation.
     let mut scope = Scope::start(
         collection_definition(vec![step("reserve", true, false)], 1),
         "lines",
@@ -1222,14 +1635,53 @@ fn an_unknown_outcome_is_compensated_defensively_when_the_scope_stops() {
         },
     );
     scope.expire(&reserve, fence, Expiry::LeaseExpired);
-    assert_eq!(scope.step_status(&reserve), StepStatus::Cancelled);
+    assert_eq!(scope.step_status(&reserve), StepStatus::Waiting);
+    assert!(matches!(
+        scope.state.instance(&reserve).and_then(|step| step.waiting_on()),
+        Some(WaitingOn::Operator { code }) if code.as_str() == "LEASE_EXPIRED"
+    ));
+    assert_eq!(scope.state.status(), RunStatus::ManualReview);
+    assert_eq!(scope.state.stop_reason(), Some(StopReason::Cancelled));
+    let owner = scope.owner.node().clone();
+    assert!(
+        scope
+            .state
+            .clone()
+            .apply(&RunEvent::CollectionIterationDrained {
+                node: owner,
+                index: 0,
+            })
+            .is_err(),
+        "the iteration cannot discard the unresolved effect"
+    );
+    assert!(
+        scope.advance().is_empty(),
+        "unknown original effect has no defensive compensation plan"
+    );
+    assert!(
+        scope.state.instance(&reserve.compensation()).is_none(),
+        "no compensation is scheduled before an outcome is known"
+    );
+
+    let progress = resolve_review_instance(
+        &scope.def,
+        &mut scope.state,
+        &reserve,
+        ReviewOutcome::Succeeded,
+        T0,
+    )
+    .expect("authorized operator confirms the effect happened");
+    scope.absorb(progress.events);
+    assert_eq!(scope.step_status(&reserve), StepStatus::Succeeded);
     scope.drain_collection(0);
     let chosen = scope.advance();
     assert_eq!(
         released(&chosen),
         vec![("reserve~c".to_owned(), 0)],
-        "an effect that may have happened is undone, and the compensation tolerates that it did not"
+        "only the resolved known success becomes a compensation candidate"
     );
+    assert_eq!(scope.state.stop_reason(), Some(StopReason::Cancelled));
+    scope.assert_replays();
 }
 
 // ------------------------------------------------------------------------- irreversible
@@ -1339,6 +1791,53 @@ fn a_compensation_that_keeps_failing_waits_for_a_person_and_is_never_assumed_don
         Some(SagaPhase::Compensating)
     );
     scope.assert_replays();
+}
+
+#[test]
+fn unknown_compensation_reviews_before_retry_or_failure_in_exact_scope_path() {
+    for retryable in [false, true] {
+        let mut scope = failed_after_a_completed_iteration();
+        scope.advance();
+        let undo = scope.at(0, "ship").compensation();
+        let fence = scope.lease(&undo);
+        scope.fail_with_path_oracle(&undo, fence, "OUTCOME_UNKNOWN", retryable);
+
+        let step = scope.state.instance(&undo).expect("compensation step");
+        assert_eq!(
+            step.status(),
+            StepStatus::Waiting,
+            "retryable={retryable}: unknown takes precedence over retry and terminal failure"
+        );
+        assert!(
+            matches!(
+                step.waiting_on(),
+                Some(WaitingOn::Operator { code }) if code.as_str() == "OUTCOME_UNKNOWN"
+            ),
+            "retryable={retryable}: the compensation outcome remains unresolved"
+        );
+        assert_eq!(
+            scope.state.status(),
+            RunStatus::Compensating,
+            "independent ready compensation keeps the run compensating while this review waits"
+        );
+        assert!(
+            scope.advance().is_empty(),
+            "unknown compensation cannot be scheduled again or declared failed"
+        );
+        scope.assert_replays();
+    }
+}
+
+#[test]
+fn unknown_compensation_retry_requires_resolution_in_exact_scope_path() {
+    let mut scope = failed_after_a_completed_iteration();
+    scope.advance();
+    let undo = scope.at(0, "ship").compensation();
+    let fence = scope.lease(&undo);
+    scope.fail_with_path_oracle(&undo, fence, "OUTCOME_UNKNOWN", false);
+    assert_eq!(scope.step_status(&undo), StepStatus::Waiting);
+
+    scope.assert_unknown_retry_refused_with_path_oracle(&undo);
 }
 
 #[test]
@@ -1677,6 +2176,220 @@ fn a_plan_must_name_real_completed_members_and_be_made_after_the_drain() {
 }
 
 #[test]
+fn a_v02_defensive_scope_plan_still_replays_but_the_current_planner_never_emits_one() {
+    // The prefix is the journal v0.2.0 wrote for a lease lost while the collection was cancelled
+    // (generated from the v0.2.0 domain); `LEASE_EXPIRED` leaves the outcome unknown.
+    let mut scope = Scope::start(
+        collection_definition(vec![step("reserve", true, false)], 1),
+        "lines",
+    );
+    scope.enter_collection(1, 1);
+    scope.admit_collection(0, "reserve");
+    let reserve = scope.at(0, "reserve");
+    let fence = scope.lease(&reserve);
+    scope.cancel_collection();
+    scope.addressed(
+        reserve.path(),
+        RunEvent::StepCancelRequested {
+            node: reserve.node().clone(),
+        },
+    );
+    scope.addressed(
+        reserve.path(),
+        RunEvent::StepRetryScheduled {
+            node: reserve.node().clone(),
+            attempt: fence.attempt,
+            generation: fence.generation,
+            code: FailureCode::parse("LEASE_EXPIRED").expect("code"),
+            not_before: T0,
+        },
+    );
+    scope.addressed(
+        reserve.path(),
+        RunEvent::StepCancelled {
+            node: reserve.node().clone(),
+        },
+    );
+    scope.drain_collection(0);
+    assert_eq!(scope.step_status(&reserve), StepStatus::Cancelled);
+
+    // The current planner does not compensate an unresolved original effect.
+    let mut planner = Scope {
+        def: scope.def.clone(),
+        state: scope.state.clone(),
+        journal: scope.journal.clone(),
+        owner: scope.owner.clone(),
+    };
+    assert!(
+        planner.advance().iter().all(|event| match event.event() {
+            RunEvent::ScopeCompensationPlanned {
+                entries,
+                irreversible,
+                ..
+            } => {
+                entries.iter().all(|entry| entry.instance != reserve)
+                    && !irreversible.contains(&reserve)
+            }
+            _ => true,
+        }),
+        "feature 037: an unknown effect is not a compensation candidate"
+    );
+
+    // The plan v0.2 committed for the same state still replays (owner decision 2026-11-01).
+    let legacy = RunEvent::ScopeCompensationPlanned {
+        node: scope.owner.node().clone(),
+        cause: FailureCode::run_cancelled(),
+        entries: vec![sagat_domain::execution::ScopedPlannedEntry {
+            instance: reserve.clone(),
+            after: Vec::new(),
+        }],
+        irreversible: Vec::new(),
+    };
+    let mut replayed = scope.state.clone();
+    replayed
+        .apply(&legacy)
+        .expect("a committed v0.2 defensive scope plan replays");
+    let mut journal = scope.journal.clone();
+    journal.push(AddressedRunEvent::root(legacy));
+    assert_eq!(
+        RunState::replay_addressed(scope.state.run_id(), &journal).expect("journal replays"),
+        replayed
+    );
+}
+
+#[test]
+fn a_scope_plan_still_refuses_a_known_failure() {
+    let mut scope = Scope::start(
+        collection_definition(vec![step("reserve", true, false)], 1),
+        "lines",
+    );
+    scope.enter_collection(1, 1);
+    scope.admit_collection(0, "reserve");
+    let reserve = scope.at(0, "reserve");
+    let fence = scope.lease(&reserve);
+    scope.cancel_collection();
+    scope.addressed(
+        reserve.path(),
+        RunEvent::StepCancelRequested {
+            node: reserve.node().clone(),
+        },
+    );
+    scope.addressed(
+        reserve.path(),
+        RunEvent::StepRetryScheduled {
+            node: reserve.node().clone(),
+            attempt: fence.attempt,
+            generation: fence.generation,
+            code: FailureCode::parse("DECLINED").expect("code"),
+            not_before: T0,
+        },
+    );
+    scope.addressed(
+        reserve.path(),
+        RunEvent::StepCancelled {
+            node: reserve.node().clone(),
+        },
+    );
+    scope.drain_collection(0);
+    let forged = RunEvent::ScopeCompensationPlanned {
+        node: scope.owner.node().clone(),
+        cause: FailureCode::run_cancelled(),
+        entries: vec![sagat_domain::execution::ScopedPlannedEntry {
+            instance: reserve,
+            after: Vec::new(),
+        }],
+        irreversible: Vec::new(),
+    };
+    let mut candidate = scope.state.clone();
+    let before = candidate.clone();
+    assert!(
+        candidate.apply(&forged).is_err(),
+        "a known failure had no effect to undo in any version"
+    );
+    assert_eq!(candidate, before, "a rejected plan changes no state");
+    scope.assert_replays();
+}
+
+#[test]
+fn scoped_compensation_plan_rejects_succeeded_derived_lookup_ids_without_mutation() {
+    let (mut scope, reserve, fence) = unknown_effect_scope();
+    scope.expire(&reserve, fence, Expiry::LeaseExpired);
+    scope.cancel_collection();
+    let lookup = reserve.reconciliation();
+    let lookup_fence = scope.lease(&lookup);
+    scope.reconcile_with_path_oracle(&lookup, lookup_fence, ReconcileVerdict::Applied);
+    assert_eq!(scope.step_status(&lookup), StepStatus::Succeeded);
+    scope.drain_collection(0);
+
+    for (entries, irreversible) in [
+        (
+            vec![sagat_domain::execution::ScopedPlannedEntry {
+                instance: lookup.clone(),
+                after: Vec::new(),
+            }],
+            Vec::new(),
+        ),
+        (Vec::new(), vec![lookup.clone()]),
+    ] {
+        let forged = RunEvent::ScopeCompensationPlanned {
+            node: scope.owner.node().clone(),
+            cause: FailureCode::run_cancelled(),
+            entries,
+            irreversible,
+        };
+        let mut candidate = scope.state.clone();
+        let before = candidate.clone();
+        assert!(
+            candidate.apply(&forged).is_err(),
+            "a derived lookup is not an original effect even when it succeeded"
+        );
+        assert_eq!(candidate, before, "a rejected plan changes no state");
+    }
+    scope.assert_replays();
+}
+
+#[test]
+fn a_content_refused_scope_compensation_report_keeps_its_outcome_without_stopping_the_run() {
+    // Iteration 1 failed and was drained; the scope now compensates what completed. A compensation
+    // report whose retention hits the content quota must still be recorded (its outcome is not
+    // routed anywhere), and must not stop the run: the drained iteration has no live ancestry.
+    let mut scope = failed_after_a_completed_iteration();
+    scope.advance();
+    let undo = scope.at(1, "charge").compensation();
+    assert_eq!(scope.step_status(&undo), StepStatus::Ready);
+    let fence = scope.lease(&undo);
+    let stop_before = scope.state.stop_reason();
+    let progress = sagat_domain::execution::prepare_scoped_content_refusal(
+        &scope.def,
+        &mut scope.state,
+        &undo,
+        fence,
+    )
+    .expect("an authorized scope compensation keeps its outcome at the content limit");
+    assert!(
+        progress.events.is_empty(),
+        "no run stop is added for a compensation report"
+    );
+    assert_eq!(scope.state.stop_reason(), stop_before);
+    // The caller then records the source outcome in the same transaction, as it does for forward
+    // work (`refuse_scoped_content`).
+    complete_instance(&scope.def, &mut scope.state, &undo, fence)
+        .expect("the compensation's success is recorded without its output");
+    assert_eq!(scope.step_status(&undo), StepStatus::Succeeded);
+    let unrelated = scope.at(1, "ship").compensation();
+    assert!(
+        sagat_domain::execution::prepare_scoped_content_refusal(
+            &scope.def,
+            &mut scope.state.clone(),
+            &unrelated,
+            fence,
+        )
+        .is_err(),
+        "a compensation the scope did not plan is refused"
+    );
+}
+
+#[test]
 fn a_collection_cannot_finish_while_its_compensation_is_open() {
     let mut scope = failed_after_a_completed_iteration();
     scope.advance();
@@ -1901,6 +2614,75 @@ fn bounded_derived_expiry_keeps_compensation_and_lookup_policy() {
                     .expect("derived expiry oracle")
             );
             scope.absorb(expected.events);
+            scope.assert_replays();
+        }
+    }
+}
+
+#[test]
+fn stopped_scoped_forward_retry_is_refused_before_native_drain() {
+    for reason in [StopReason::Cancelled, StopReason::TimedOut] {
+        for is_loop in [false, true] {
+            let mut scope = if is_loop {
+                Scope::start(
+                    loop_definition(vec![step("reserve", true, false)], LoopKind::While),
+                    "poll",
+                )
+            } else {
+                Scope::start(
+                    collection_definition(vec![step("reserve", true, false)], 1),
+                    "lines",
+                )
+            };
+            if is_loop {
+                scope.enter_loop(LoopKind::While);
+                scope.admit_loop(0, "reserve");
+            } else {
+                scope.enter_collection(1, 1);
+                scope.admit_collection(0, "reserve");
+            }
+            let instance = scope.at(0, "reserve");
+            let held = sagat_domain::execution::mark_for_review_instance(
+                &scope.def,
+                &mut scope.state,
+                &instance,
+                T0,
+            )
+            .expect("hold ready forward step");
+            scope.absorb(held.events);
+            // A known held step remains retryable before stop.
+            assert!(
+                retry_review_instance(&scope.def, &mut scope.state.clone(), &instance, T0).is_ok()
+            );
+            scope.event(RunEvent::RunStopRequested { reason, code: None });
+            let mut bounded = PathExecutionState::from_run(&scope.state, instance.path().clone())
+                .expect("bounded path");
+            let before = scope.state.clone();
+            let bounded_before = bounded.clone();
+            let full = retry_review_instance(&scope.def, &mut scope.state, &instance, T0);
+            let path = retry_review_path_instance(&scope.def, &mut bounded, &instance, T0);
+            assert!(
+                matches!(
+                    full,
+                    Err(ExecutionError::IllegalInstanceTransition {
+                        event: "step.retry_requested",
+                        ..
+                    })
+                ),
+                "{reason:?}, loop={is_loop}: {full:?}"
+            );
+            assert!(
+                matches!(
+                    path,
+                    Err(ExecutionError::IllegalInstanceTransition {
+                        event: "step.retry_requested",
+                        ..
+                    })
+                ),
+                "{reason:?}, loop={is_loop}: {path:?}"
+            );
+            assert_eq!(scope.state, before);
+            assert_eq!(bounded, bounded_before);
             scope.assert_replays();
         }
     }

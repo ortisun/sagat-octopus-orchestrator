@@ -1,0 +1,758 @@
+openapi: 3.1.0
+info:
+  title: Feature 026 draft fragment — invocation and human-interaction surfaces
+  version: 0.0.0-draft
+  description: |
+    DRAFT. Not implemented. Merged into specs/001-platform-foundation/contracts/openapi.yaml by
+    T026-005 at implementation time; component names that already exist there (`Run`, `Error`,
+    `StartRunRequest`, `PayloadDisclosure`, `ApprovalDecisionRequest`, `ApprovalDecisionReceipt`,
+    parameters and responses) are referenced, not redefined, except where this fragment adds optional
+    properties (marked `x-additive: '026'`). Every operation is additive; no existing operation changes.
+    Errors use the existing `Error` envelope; reasons are listed in contracts/errors.md.
+servers:
+  - url: https://api.sagat-octopus-orchestrator.example/v1
+security:
+  - bearerAuth: []
+paths:
+  /workflows/{workflowId}/versions/{versionNumber}/form:
+    get:
+      operationId: getStartForm
+      summary: The form model of a published version's input schema
+      tags: [Workflows]
+      x-proposed: '026'
+      description: |
+        Needs `definition:read`. Derived from the pinned `inputSchema` by the server (FR-026-001/002);
+        deterministic for a version. `status: UNAVAILABLE` is an answer, not an error.
+      parameters:
+        - {$ref: '#/components/parameters/Namespace'}
+        - {$ref: '#/components/parameters/WorkflowId'}
+        - {$ref: '#/components/parameters/VersionNumber'}
+      responses:
+        '200': {description: The form model, content: {application/json: {schema: {$ref: '#/components/schemas/FormModel'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+  /workflows/{workflowId}/versions/{versionNumber}/openapi:
+    get:
+      operationId: getWorkflowOpenApi
+      summary: The OpenAPI 3.1 document of one published version
+      tags: [Workflows]
+      x-proposed: '026'
+      description: |
+        Needs `definition:read`. Specializes `startRun`, `executeRun`, `getRunOutcome`, the declared
+        Query/Update operations and `streamRunEvents` for this version (FR-026-040). Byte-identical for
+        a version and generator; strong `ETag`; `If-None-Match` answers `304`.
+      parameters:
+        - {$ref: '#/components/parameters/Namespace'}
+        - {$ref: '#/components/parameters/WorkflowId'}
+        - {$ref: '#/components/parameters/VersionNumber'}
+      responses:
+        '200':
+          description: The generated document
+          headers:
+            ETag: {schema: {type: string}}
+          content:
+            application/vnd.oai.openapi+json: {schema: {type: object}}
+        '304': {description: Not modified}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /runs/execute:
+    post:
+      operationId: executeRun
+      summary: Start a run and wait a bounded time for its outcome
+      tags: [Runs]
+      x-proposed: '026'
+      description: |
+        Same admission, authorization and idempotency as `startRun` (`run:start`), plus `run:read` to
+        receive the outcome. Waits at most min(`waitMs`, namespace `run_wait_ms`, deployment ceiling;
+        default 30 s, ceiling 60 s) without holding any database resource. `200` when terminal or
+        returned early; `202` otherwise, with `Location: /v1/runs/{runId}/outcome`. A replay with the
+        same key and body waits on the same run. `Cache-Control: private, no-store`.
+      parameters:
+        - {$ref: '#/components/parameters/Namespace'}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ExecuteRunRequest'}
+      responses:
+        '200': {description: Terminal or early outcome, content: {application/json: {schema: {$ref: '#/components/schemas/RunOutcome'}}}}
+        '202':
+          description: Still running at the end of the wait
+          headers:
+            Location: {schema: {type: string}}
+          content: {application/json: {schema: {$ref: '#/components/schemas/RunOutcome'}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+  /runs/{runId}/outcome:
+    get:
+      operationId: getRunOutcome
+      summary: The outcome of a run, waiting a bounded time if it is not terminal
+      tags: [Runs]
+      x-proposed: '026'
+      description: Needs `run:read`. `waitMs` 0 answers at once. Result per feature 016 for the caller.
+      parameters:
+        - {$ref: '#/components/parameters/RunId'}
+        - {name: waitMs, in: query, schema: {type: integer, minimum: 0, maximum: 60000, default: 0}}
+        - {name: reveal, in: query, schema: {type: string, enum: [pii]}, description: 'Ask for pii fields; needs the namespace reveal grant; audited.'}
+      responses:
+        '200': {description: Terminal or early outcome, content: {application/json: {schema: {$ref: '#/components/schemas/RunOutcome'}}}}
+        '202': {description: Not terminal at the end of the wait, content: {application/json: {schema: {$ref: '#/components/schemas/RunOutcome'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+  /runs/{runId}/stream-events:
+    get:
+      operationId: streamRunEvents
+      summary: Workflow Stream events of a run, as SSE or as a page
+      tags: [Runs]
+      x-proposed: '026'
+      description: |
+        Needs `run:read`. `Accept: text/event-stream` gives:
+        `event: attempts` first (on open and on every resume): `StreamAttempts`, the current attempt and
+        settled state of every node instance with events; `event: stream` lines with `id` =
+        `<epoch>.<offset>` (feature 032 cell epoch, 0 without 032) and `data` = one `StreamEvent`;
+        `event: superseded` / `event: settled` (no `id`) when a newer attempt of such a node instance
+        starts or its step settles (derived from committed attempt state; ADR-0068); `event: reset`
+        when the cursor's epoch differs from the current one, followed by the stream from the start;
+        `event: end` when the run is terminal and every event was sent; `event: reconnect` at the
+        lifetime ceiling; `: ping` every 15 s. Resume with `Last-Event-ID` or `after` (`Last-Event-ID`
+        wins). A client discards events of attempts older than the current attempt of their node
+        instance. `Accept: application/json` gives a `StreamEventPage`. Open streams are bounded per
+        subject and tenant (`429`). Data is projected per feature 016; a `pii` reveal is audited when
+        the connection opens and at each membership recheck.
+      parameters:
+        - {$ref: '#/components/parameters/RunId'}
+        - {name: after, in: query, schema: {type: string, pattern: '^[0-9]{1,19}\.[0-9]{1,19}$'}, description: 'Cursor `<epoch>.<offset>`.'}
+        - {name: channel, in: query, schema: {type: array, maxItems: 8, items: {$ref: '#/components/schemas/StreamChannelName'}}, style: form, explode: true}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 1000, default: 200}}
+        - {name: reveal, in: query, schema: {type: string, enum: [pii]}}
+      responses:
+        '200':
+          description: The stream or a page
+          content:
+            text/event-stream: {schema: {type: string}}
+            application/json: {schema: {$ref: '#/components/schemas/StreamEventPage'}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+  /namespaces/{namespaceId}/public-links:
+    get:
+      operationId: listPublicLinks
+      summary: Public form links of a namespace (metadata only, never a token)
+      tags: [Governance]
+      x-proposed: '026'
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/Cursor'}
+        - {$ref: '#/components/parameters/Limit'}
+      responses:
+        '200': {description: A page, content: {application/json: {schema: {$ref: '#/components/schemas/PublicLinkPage'}}}}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+    post:
+      operationId: createPublicLink
+      summary: Create a public form link (token returned once)
+      tags: [Governance]
+      x-proposed: '026'
+      description: Needs `link:manage`; the caller becomes the owner and must hold `run:start`; quota `public_links` (default 0).
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/PublicLinkSettings'}}}
+      responses:
+        '201': {description: Created, headers: {Cache-Control: {schema: {type: string, const: no-store}}}, content: {application/json: {schema: {$ref: '#/components/schemas/PublicLinkCreated'}}}}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+  /namespaces/{namespaceId}/public-links/{linkId}:
+    get:
+      operationId: getPublicLink
+      tags: [Governance]
+      x-proposed: '026'
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/PublicLinkId'}
+      responses:
+        '200': {description: The link, content: {application/json: {schema: {$ref: '#/components/schemas/PublicLink'}}}}
+        '404': {$ref: '#/components/responses/NotFound'}
+    put:
+      operationId: updatePublicLink
+      summary: Edit a link (new revision; `expectedRevision` required)
+      tags: [Governance]
+      x-proposed: '026'
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/PublicLinkId'}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/PublicLinkUpdate'}}}
+      responses:
+        '200': {description: The new revision, content: {application/json: {schema: {$ref: '#/components/schemas/PublicLink'}}}}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+  /namespaces/{namespaceId}/public-links/{linkId}/actions:
+    post:
+      operationId: actOnPublicLink
+      summary: Pause, resume, rotate the token of, or revoke a link
+      tags: [Governance]
+      x-proposed: '026'
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/PublicLinkId'}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [action, expectedRevision]
+              properties:
+                action: {type: string, enum: [PAUSE, RESUME, ROTATE, REVOKE]}
+                expectedRevision: {type: integer, minimum: 1}
+      responses:
+        '200': {description: 'The link; for ROTATE also the new token, once', content: {application/json: {schema: {$ref: '#/components/schemas/PublicLinkCreated'}}}}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+  /public/form:
+    get:
+      servers: [{url: 'https://forms.sagat-octopus-orchestrator.example/v1', description: 'The operator-configured public-forms origin; the Studio/API origin answers these paths 404 (ADR-0061, ADR-0062).'}]
+      operationId: getPublicForm
+      summary: The public form of a link (anonymous)
+      tags: [Public]
+      x-proposed: '026'
+      security: [{publicLinkToken: []}]
+      description: Title, description and the exposed fields' form model only. Every unusable link is the same `404`. The page that calls this is `https://<public-forms-origin>/f/{embedId}`; its `frame-ancestors` header comes from the link found by `embedId`.
+      responses:
+        '200': {description: The public form, headers: {Cache-Control: {schema: {type: string, const: no-store}}}, content: {application/json: {schema: {$ref: '#/components/schemas/PublicForm'}}}}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+  /public/submissions:
+    post:
+      servers: [{url: 'https://forms.sagat-octopus-orchestrator.example/v1', description: 'The operator-configured public-forms origin; the Studio/API origin answers these paths 404 (ADR-0061, ADR-0062).'}]
+      operationId: submitPublicForm
+      summary: Submit a public form (anonymous)
+      tags: [Public]
+      x-proposed: '026'
+      security: [{publicLinkToken: []}]
+      description: |
+        Admission order of FR-026-025 (ADR-0050 decision 7: link row in slot 1). `202` with a
+        receipt and no internal identifier. The same `submissionKey` and body replays the same receipt
+        token (it is derived, not stored); another body is `409 IDEMPOTENCY_KEY_REUSED`. A link at its
+        live-run cap, or a namespace whose public-link pool is full, is `429` with no detail.
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/PublicSubmission'}}}
+      responses:
+        '202': {description: Accepted, headers: {Cache-Control: {schema: {type: string, const: no-store}}}, content: {application/json: {schema: {$ref: '#/components/schemas/PublicSubmissionReceipt'}}}}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '413': {$ref: '#/components/responses/PayloadTooLarge'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+  /public/receipt:
+    get:
+      servers: [{url: 'https://forms.sagat-octopus-orchestrator.example/v1', description: 'The operator-configured public-forms origin; the Studio/API origin answers these paths 404 (ADR-0061, ADR-0062).'}]
+      operationId: getPublicReceipt
+      summary: Status of one public submission (anonymous)
+      tags: [Public]
+      x-proposed: '026'
+      security: [{publicReceiptToken: []}]
+      responses:
+        '200': {description: The receipt status, headers: {Cache-Control: {schema: {type: string, const: no-store}}}, content: {application/json: {schema: {$ref: '#/components/schemas/PublicReceiptStatus'}}}}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+  /approval-links/resolve:
+    post:
+      operationId: resolveApprovalLink
+      summary: Resolve a decision link for the signed-in caller
+      tags: [Operations]
+      x-proposed: '026'
+      description: |
+        Needs a signed-in member with `approval:read` in the link's tenant. The link only identifies the
+        approval; deciding uses `decideWorkflowApproval` (ADR-0061). Unusable links are the same `404`.
+        The summary is projected for the caller's own audience; `reveal: [pii]` is audited.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [token]
+              properties:
+                token: {type: string, minLength: 60, maxLength: 128, pattern: '^v1\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$'}
+                reveal: {type: array, maxItems: 1, items: {type: string, const: pii}}
+      responses:
+        '200': {description: The approval as the caller may see it, headers: {Cache-Control: {schema: {type: string, const: 'private, no-store'}}}, content: {application/json: {schema: {$ref: '#/components/schemas/ApprovalLinkResolution'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /namespaces/{namespaceId}/notification-channels:
+    get:
+      operationId: listNotificationChannels
+      tags: [Events]
+      x-proposed: '026'
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+      responses:
+        '200': {description: Channels, content: {application/json: {schema: {type: object, required: [items], properties: {items: {type: array, maxItems: 200, items: {$ref: '#/components/schemas/NotificationChannel'}}}}}}}
+    post:
+      operationId: createNotificationChannel
+      summary: Create a Slack, Teams or e-mail channel (an outbound subscription, ADR-0025)
+      tags: [Events]
+      x-proposed: '026'
+      description: 'Needs `event:manage` (and `secret:use` for a Teams or SMTP secret binding). `maxClassification` defaults to `public`; `internal` also needs `payload:read-internal`; `pii` also the namespace reveal grant, rechecked at each delivery (uniform egress rule of feature 020 O1081).'
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/NotificationChannelSettings'}}}
+      responses:
+        '201': {description: Created, content: {application/json: {schema: {$ref: '#/components/schemas/NotificationChannel'}}}}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+  /namespaces/{namespaceId}/notification-channels/{channelName}/test:
+    post:
+      operationId: testNotificationChannel
+      summary: Queue a test message through the delivery pipeline
+      tags: [Events]
+      x-proposed: '026'
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {name: channelName, in: path, required: true, schema: {type: string}}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      responses:
+        '202': {description: 'Queued; follow the delivery', content: {application/json: {schema: {type: object, required: [deliveryId], properties: {deliveryId: {type: string, format: uuid}}}}}}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /namespaces/{namespaceId}/slack-apps:
+    get:
+      operationId: listSlackAppBindings
+      tags: [Events]
+      x-proposed: '026'
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+      responses:
+        '200': {description: Bindings (secret names only), content: {application/json: {schema: {type: object, required: [items], properties: {items: {type: array, maxItems: 10, items: {$ref: '#/components/schemas/SlackAppBinding'}}}}}}}
+    post:
+      operationId: registerSlackAppBinding
+      summary: Register the tenant's own Slack app (team id from auth.test, never from the client)
+      tags: [Events]
+      x-proposed: '026'
+      description: 'Needs `event:manage` and `secret:use` for both secret bindings. The control plane calls Slack `auth.test` with the bot token through the egress guard and stores the returned team id.'
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [name, botTokenSecret, signingSecretSecret]
+              properties:
+                name: {type: string, pattern: '^[a-z][a-z0-9-]{1,61}[a-z0-9]$'}
+                botTokenSecret: {type: string, pattern: '^[a-z][a-z0-9._-]{0,63}$'}
+                signingSecretSecret: {type: string, pattern: '^[a-z][a-z0-9._-]{0,63}$'}
+      responses:
+        '201': {description: Registered, content: {application/json: {schema: {$ref: '#/components/schemas/SlackAppBinding'}}}}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+  /namespaces/{namespaceId}/chat-identity-links:
+    get:
+      operationId: listMyChatIdentityLinks
+      summary: The caller's own chat identity links (pending and active)
+      tags: [Operations]
+      x-proposed: '026'
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+      responses:
+        '200': {description: Links of the caller only, content: {application/json: {schema: {type: object, required: [items], properties: {items: {type: array, maxItems: 8, items: {$ref: '#/components/schemas/ChatIdentityLink'}}}}}}}
+  /namespaces/{namespaceId}/chat-identity-links/codes:
+    post:
+      operationId: issueChatLinkCode
+      summary: Issue a single-use code (≥ 128 bits, 10 minutes) for one Slack app binding
+      tags: [Operations]
+      x-proposed: '026'
+      description: 'The code is returned once, with `Cache-Control: no-store`; at most 5 per subject per hour.'
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {type: object, additionalProperties: false, required: [slackApp], properties: {slackApp: {type: string}}}
+      responses:
+        '201': {description: The code, content: {application/json: {schema: {type: object, required: [code, expiresAt], properties: {code: {type: string, minLength: 26, maxLength: 64}, expiresAt: {type: string, format: date-time}}}}}}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+  /namespaces/{namespaceId}/chat-identity-links/{linkId}/confirm:
+    post:
+      operationId: confirmChatIdentityLink
+      summary: Confirm a pending link naming the exact Slack user and workspace (the subject only)
+      tags: [Operations]
+      x-proposed: '026'
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {name: linkId, in: path, required: true, schema: {type: string, format: uuid}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {type: object, additionalProperties: false, required: [teamId, externalUserId], properties: {teamId: {type: string}, externalUserId: {type: string}}}
+      responses:
+        '200': {description: Active, content: {application/json: {schema: {$ref: '#/components/schemas/ChatIdentityLink'}}}}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+  /chat/slack/apps/{bindingId}/requests:
+    post:
+      operationId: receiveSlackRequest
+      summary: Slack interactivity and slash-command requests of one Slack app binding (P3)
+      tags: [Public]
+      x-proposed: '026'
+      security: [{slackSignature: []}]
+      description: |
+        Verified with that binding's signing secret: `v0=` HMAC-SHA256 over
+        `v0:{X-Slack-Request-Timestamp}:{raw body}`, 300-second window, constant-time compare; every
+        failure, including an unknown binding id, is the same `401`. A verified request is admitted to
+        the inbox and acknowledged with `200` within Slack's deadline. The dispatcher takes the tenant
+        only from the decision-link row in the button value and requires it to match the binding's
+        tenant, team and channel (FR-026-042).
+      parameters:
+        - {name: bindingId, in: path, required: true, schema: {type: string, format: uuid}}
+      requestBody:
+        required: true
+        content: {application/x-www-form-urlencoded: {schema: {type: object}}}
+      responses:
+        '200': {description: Acknowledged}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+components:
+  securitySchemes:
+    publicLinkToken: {type: apiKey, in: header, name: X-Octopus-Link-Token, description: 'The token read from the URL fragment by the public page; never in a path or query.'}
+    publicReceiptToken: {type: apiKey, in: header, name: X-Octopus-Receipt-Token}
+    slackSignature: {type: apiKey, in: header, name: X-Slack-Signature}
+  parameters:
+    PublicLinkId: {name: linkId, in: path, required: true, schema: {type: string, format: uuid}}
+  schemas:
+    FormModel:
+      type: object
+      additionalProperties: false
+      required: [versionId, carrier, status, fields, generator]
+      properties:
+        versionId: {type: string, format: uuid}
+        carrier: {type: string, enum: [input, approvalForm]}
+        status: {type: string, enum: [AVAILABLE, UNAVAILABLE]}
+        reasons:
+          type: array
+          maxItems: 64
+          items:
+            type: object
+            required: [code, pointer]
+            properties:
+              code: {type: string, enum: [NO_SCHEMA, UNSUPPORTED_REQUIRED_FIELD, ENCODING_READ_BY_FORM, TOO_COMPLEX], description: 'ENCODING_READ_BY_FORM is feature 031''s code.'}
+              pointer: {type: string, maxLength: 512}
+        fields: {type: array, maxItems: 256, items: {$ref: '#/components/schemas/FormField'}}
+        generator: {type: string, const: form-model-v1}
+    FormField:
+      type: object
+      additionalProperties: false
+      required: [pointer, type, required, level, supported]
+      properties:
+        pointer: {type: string, maxLength: 512}
+        type: {type: string, enum: [object, string, integer, number, boolean, array]}
+        required: {type: boolean}
+        level: {type: string, enum: [public, internal, pii, secret]}
+        supported: {type: boolean}
+        unsupportedKeyword: {type: string, maxLength: 64}
+        title: {type: string, maxLength: 200}
+        description: {type: string, maxLength: 2000}
+        widget: {type: string, enum: [text, textarea, select, radio, checkbox, password, date, datetime, email, url, number, list, group]}
+        placeholder: {type: string, maxLength: 120}
+        order: {type: integer}
+        choices: {type: array, maxItems: 1000, items: {}}
+        default: {description: 'Absent for secret fields.'}
+        constraints:
+          type: object
+          additionalProperties: false
+          properties:
+            minimum: {type: number}
+            maximum: {type: number}
+            exclusiveMinimum: {type: number}
+            exclusiveMaximum: {type: number}
+            minLength: {type: integer}
+            maxLength: {type: integer}
+            pattern: {type: string, maxLength: 1024}
+            format: {type: string, enum: [date, date-time, email, uri]}
+            minItems: {type: integer}
+            maxItems: {type: integer}
+    ExecuteRunRequest:
+      x-additive: '026'
+      description: '`StartRunRequest` plus `waitMs`; the same oneOf input/inputBlobRef rule.'
+      allOf:
+        - {$ref: '#/components/schemas/StartRunRequest'}
+        - type: object
+          properties:
+            waitMs: {type: integer, minimum: 0, maximum: 60000, default: 30000}
+            reveal: {type: array, maxItems: 1, items: {type: string, const: pii}}
+    RunOutcome:
+      type: object
+      additionalProperties: false
+      required: [run, completion, effectiveWaitMs]
+      properties:
+        run: {$ref: '#/components/schemas/Run'}
+        completion: {type: string, enum: [TERMINAL, EARLY_RETURN, PENDING]}
+        failureCode: {type: [string, 'null'], maxLength: 64, description: 'Closed failure code of a failed run; never a payload.'}
+        result: {$ref: '#/components/schemas/PayloadDisclosure', description: 'Present for TERMINAL with a result and for EARLY_RETURN.'}
+        effectiveWaitMs: {type: integer, minimum: 0}
+    StreamChannelName: {type: string, pattern: '^[a-z][a-z0-9_.-]{0,62}$'}
+    StreamEvent:
+      type: object
+      additionalProperties: false
+      required: [offset, channel, nodeId, attempt, superseded, publishedAt, data]
+      properties:
+        offset: {type: integer, format: int64, minimum: 1}
+        channel: {$ref: '#/components/schemas/StreamChannelName'}
+        nodeId: {type: string, maxLength: 64}
+        instancePath: {type: array, maxItems: 8, items: {type: object}}
+        attempt: {type: integer, minimum: 1}
+        superseded: {type: boolean, description: 'True when a later attempt of the same node instance exists (computed at read).'}
+        publishedAt: {type: string, format: date-time}
+        data: {$ref: '#/components/schemas/PayloadDisclosure'}
+    StreamAttempts:
+      type: object
+      required: [nodes]
+      properties:
+        nodes:
+          type: array
+          maxItems: 10000
+          items:
+            type: object
+            required: [nodeId, currentAttempt, settled]
+            properties:
+              nodeId: {type: string}
+              instancePath: {type: array, maxItems: 8, items: {type: object}}
+              currentAttempt: {type: integer, minimum: 1}
+              settled: {type: [string, 'null'], enum: [COMPLETED, FAILED, CANCELLED, null]}
+    StreamEventPage:
+      type: object
+      additionalProperties: false
+      required: [items, runTerminal, nextAfter]
+      properties:
+        items: {type: array, maxItems: 1000, items: {$ref: '#/components/schemas/StreamEvent'}}
+        runTerminal: {type: boolean}
+        nextAfter: {type: string, description: 'Cursor `<epoch>.<offset>`.'}
+        reset: {type: boolean, description: 'True when the request cursor belonged to another epoch; the page starts from the beginning.'}
+        attempts: {$ref: '#/components/schemas/StreamAttempts'}
+    PublicLinkSettings:
+      type: object
+      additionalProperties: false
+      required: [name, title, workflowId, versionNumber, exposedFields, expiresAt, maxConcurrentRuns]
+      properties:
+        name: {type: string, pattern: '^[a-z][a-z0-9-]{1,61}[a-z0-9]$'}
+        title: {type: string, minLength: 1, maxLength: 120}
+        description: {type: string, maxLength: 1000}
+        workflowId: {type: string, format: uuid}
+        versionNumber: {type: integer, minimum: 1}
+        exposedFields: {type: array, minItems: 1, maxItems: 128, uniqueItems: true, items: {type: string, maxLength: 512}}
+        presets: {type: object, description: 'Server-side values merged into the input; at most 16 KiB; never shown publicly.'}
+        resultDisclosure: {type: string, enum: [NONE, PUBLIC_FIELDS_V1], default: NONE}
+        allowedOrigins: {type: array, maxItems: 8, uniqueItems: true, items: {type: string, pattern: '^https://[^/?#]+$'}}
+        expiresAt: {type: string, format: date-time}
+        maxSubmissions: {type: integer, minimum: 1, maximum: 1000000}
+        maxConcurrentRuns: {type: integer, minimum: 1, maximum: 100, description: 'Required cap on live runs started through this link.'}
+    PublicLinkUpdate:
+      allOf:
+        - {$ref: '#/components/schemas/PublicLinkSettings'}
+        - type: object
+          required: [expectedRevision]
+          properties:
+            expectedRevision: {type: integer, minimum: 1}
+    PublicLink:
+      type: object
+      required: [linkId, embedId, name, status, revision, owner, workflowId, versionNumber, expiresAt, maxConcurrentRuns, submissions]
+      properties:
+        linkId: {type: string, format: uuid}
+        embedId: {type: string, pattern: '^[A-Za-z0-9_-]{22}$', description: 'Non-secret; the path of the public page.'}
+        maxConcurrentRuns: {type: integer}
+        name: {type: string}
+        status: {type: string, enum: [ACTIVE, PAUSED, REVOKED, EXPIRED, EXHAUSTED, AT_CAPACITY]}
+        revision: {type: integer}
+        owner: {type: string}
+        workflowId: {type: string, format: uuid}
+        versionNumber: {type: integer}
+        exposedFields: {type: array, items: {type: string}}
+        hasPresets: {type: boolean, description: 'Preset values are not returned by this operation.'}
+        resultDisclosure: {type: string, enum: [NONE, PUBLIC_FIELDS_V1]}
+        allowedOrigins: {type: array, items: {type: string}}
+        expiresAt: {type: string, format: date-time}
+        maxSubmissions: {type: [integer, 'null']}
+        submissions: {type: integer, minimum: 0}
+    PublicLinkCreated:
+      type: object
+      required: [link]
+      properties:
+        link: {$ref: '#/components/schemas/PublicLink'}
+        url: {type: string, description: 'Present once, at creation and rotation: https://<public-forms-origin>/f/<embedId>#t=<token>.'}
+    PublicLinkPage:
+      type: object
+      required: [items, nextCursor]
+      properties:
+        items: {type: array, maxItems: 200, items: {$ref: '#/components/schemas/PublicLink'}}
+        nextCursor: {type: [string, 'null']}
+    PublicForm:
+      type: object
+      additionalProperties: false
+      required: [title, form]
+      properties:
+        title: {type: string}
+        description: {type: string}
+        form: {$ref: '#/components/schemas/FormModel'}
+    PublicSubmission:
+      type: object
+      additionalProperties: false
+      required: [submissionKey, input]
+      properties:
+        submissionKey: {type: string, pattern: '^[A-Za-z0-9_-]{22,64}$', description: 'At least 128 random bits, generated by the page per opened form.'}
+        input: {type: object, description: 'Exactly the exposed fields; any other field is VALIDATION_FAILED.'}
+    PublicSubmissionReceipt:
+      type: object
+      additionalProperties: false
+      required: [receiptToken, status, replayed]
+      properties:
+        receiptToken: {type: string, description: 'HMAC-derived from the link and the submission-key hash (256 bits); bound to this submission only; kept in page memory, never stored by the page.'}
+        status: {type: string, const: ACCEPTED}
+        replayed: {type: boolean}
+    PublicReceiptStatus:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status: {type: string, enum: [ACCEPTED, RUNNING, COMPLETED, FAILED]}
+        result: {type: object, description: 'Only when the link declares PUBLIC_FIELDS_V1: the result fields whose effective level is public; a model-written value has at least the level of its transcript (feature 025).'}
+    ApprovalLinkResolution:
+      type: object
+      additionalProperties: false
+      required: [approvalId, status, deadline]
+      properties:
+        approvalId: {type: string, format: uuid}
+        runId: {type: string, format: uuid}
+        workflow: {type: string}
+        nodeId: {type: string}
+        status: {type: string, enum: [PENDING, APPROVED, REJECTED, EXPIRED, CANCELLED]}
+        deadline: {type: string, format: date-time}
+        intendedFor: {type: string, description: 'The channel the link was sent to; informative, not enforced.'}
+        summary: {$ref: '#/components/schemas/PayloadDisclosure'}
+        form: {$ref: '#/components/schemas/FormModel'}
+        mayDecide: {type: boolean, description: 'Whether the caller passes the eligibility check now; the decision is checked again at commit.'}
+    ApprovalDecisionRequestAdditions:
+      x-additive: '026'
+      description: >-
+        Optional properties added to the existing closed `ApprovalDecisionRequest`. A request without
+        `input` keeps exactly today's fingerprint. Attribution (`via`) is derived by the server from a
+        verified `linkToken` of this approval (`SLACK`, `TEAMS`, `EMAIL`), else `API`; it is never sent.
+      type: object
+      properties:
+        input: {type: object, description: 'Validated against the approval form schema (DECISION_INPUT_INVALID); part of the decision-key fingerprint when present.'}
+        linkToken: {type: string, maxLength: 128}
+    NotificationChannelSettings:
+      type: object
+      additionalProperties: false
+      required: [name, destination, kinds]
+      properties:
+        name: {type: string, pattern: '^[a-z][a-z0-9-]{1,61}[a-z0-9]$'}
+        destination:
+          oneOf:
+            - type: object
+              additionalProperties: false
+              required: [kind, slackApp, channelId]
+              properties:
+                kind: {const: SLACK}
+                slackApp: {type: string, description: 'Name of a Slack app binding of the namespace; its team id is copied.'}
+                channelId: {type: string, pattern: '^[A-Z0-9]{9,12}$'}
+                interactive: {type: boolean, default: false, description: 'Unique by (team, channel) across tenants (CHANNEL_ALREADY_BOUND).'}
+            - type: object
+              additionalProperties: false
+              required: [kind, webhookSecret]
+              properties:
+                kind: {const: TEAMS}
+                webhookSecret: {type: string, pattern: '^[a-z][a-z0-9._-]{0,63}$'}
+            - type: object
+              additionalProperties: false
+              required: [kind, recipients]
+              properties:
+                kind: {const: EMAIL}
+                recipients: {type: array, minItems: 1, maxItems: 50, uniqueItems: true, items: {type: string, format: email, maxLength: 254}}
+                relayCredentialSecret: {type: string, pattern: '^[a-z][a-z0-9._-]{0,63}$'}
+        kinds:
+          type: array
+          minItems: 1
+          maxItems: 5
+          uniqueItems: true
+          items: {type: string, enum: [run.finished, ops.alert.fired, ops.alert.resolved, approval.requested, approval.settled]}
+        runFilter:
+          type: object
+          additionalProperties: false
+          properties:
+            workflows: {type: array, maxItems: 32, items: {type: string}}
+            statuses: {type: array, maxItems: 7, items: {type: string, enum: [SUCCEEDED, FAILED, CANCELLED, TIMED_OUT, COMPENSATED, PARTIAL, COMPENSATION_FAILED]}}
+        maxClassification: {type: string, enum: [public, internal, pii], default: public, description: '`internal` needs payload:read-internal; `pii` follows the uniform egress rule (reveal grant, rechecked per delivery, revocation pauses).'}
+        ratePerSecond: {type: integer, minimum: 1, maximum: 100, default: 1}
+    NotificationChannel:
+      description: >-
+        E-mail `recipients` (pii) are returned only to holders of `event:manage`; other readers get
+        `recipientCount`. Secret names are returned, secret values never.
+      allOf:
+        - {$ref: '#/components/schemas/NotificationChannelSettings'}
+        - type: object
+          required: [id, status, consecutiveDead]
+          properties:
+            recipientCount: {type: integer, minimum: 0, maximum: 50}
+            id: {type: string, format: uuid}
+            status: {type: string, enum: [ACTIVE, PAUSED, DISABLED]}
+            consecutiveDead: {type: integer}
+            lastSuccessAt: {type: [string, 'null'], format: date-time}
+            lastFailureAt: {type: [string, 'null'], format: date-time}
+    SlackAppBinding:
+      type: object
+      required: [id, name, teamId, status]
+      properties:
+        id: {type: string, format: uuid, description: 'Part of the request URL /v1/chat/slack/apps/{id}/requests.'}
+        name: {type: string}
+        teamId: {type: string, description: 'From Slack auth.test, never from a client.'}
+        status: {type: string, enum: [ACTIVE, PAUSED, INVALID]}
+        botTokenSecret: {type: string}
+        signingSecretSecret: {type: string}
+        verifiedAt: {type: string, format: date-time}
+    ChatIdentityLink:
+      type: object
+      required: [linkId, provider, teamId, externalUserId, status]
+      properties:
+        linkId: {type: string, format: uuid}
+        provider: {type: string, const: SLACK}
+        teamId: {type: string}
+        externalUserId: {type: string}
+        status: {type: string, enum: [PENDING, ACTIVE, REVOKED]}

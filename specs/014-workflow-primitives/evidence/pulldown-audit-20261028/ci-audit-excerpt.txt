@@ -1,0 +1,10 @@
+2026-10-28T12:22:57.4437574Z Crate:     pulldown-cmark
+2026-10-28T12:22:57.4438060Z Version:   0.13.4
+2026-10-28T12:22:57.4438688Z Title:     Exponential event growth with `ENABLE_WIKILINKS`
+2026-10-28T12:22:57.4439308Z Date:      2026-10-18
+2026-10-28T12:22:57.4440015Z ID:        RUSTSEC-2026-0414
+2026-10-28T12:22:57.4440670Z URL:       https://rustsec.org/advisories/RUSTSEC-2026-0414
+2026-10-28T12:22:57.4441280Z Severity:  7.5 (high)
+2026-10-28T12:22:57.4441763Z Solution:  Upgrade to >=0.13.5
+2026-10-28T12:22:57.4442073Z
+2026-10-28T12:22:57.4590245Z ##[error]Process completed with exit code 1.

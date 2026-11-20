@@ -1,0 +1,20 @@
+    Finished `test` profile [unoptimized] target(s) in 0.10s
+     Running tests/sagas.rs (/var/folders/60/bf6rmfzx6zq67nrbzb3m0p480000gn/T/sagat-037-target-q0fwz2gu/debug/deps/sagas-8c257bc5dfd4d1ac)
+
+running 1 test
+
+thread 'negative_lookup_requires_finality' (781318315) panicked at crates/domain/tests/sagas.rs:2020:9:
+assertion `left == right` failed
+  left: Failed
+ right: Waiting
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test negative_lookup_requires_finality ... FAILED
+
+failures:
+
+failures:
+    negative_lookup_requires_finality
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 62 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p sagat-domain --test sagas`

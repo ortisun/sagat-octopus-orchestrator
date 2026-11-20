@@ -101,10 +101,10 @@ async fn us01_a_dag_runs_to_completion_and_every_step_is_checkpointed() {
     assert_eq!(node_status(&done, "b"), "SUCCEEDED");
 }
 
-/// US02-AC01: a step is leased; the worker dies and the lease expires; another worker resumes
-/// without reusing the stale generation, and the dead worker's late report changes nothing.
+/// US02-AC01 with T037: an expired external attempt requires review. The stale generation stays
+/// fenced, and a human outcome allows another worker to execute only the subsequent step.
 #[tokio::test]
-async fn us02_a_dead_workers_step_is_taken_over_and_the_stale_generation_is_dead() {
+async fn us02_a_dead_workers_step_requires_review_and_the_stale_generation_is_dead() {
     let p = platform().await;
     let wf = p.publish("order-flow", &chain_ir("order-flow")).await;
     let run = p.start(&wf, &json!({"orderId": "o-1"})).await;
@@ -117,17 +117,20 @@ async fn us02_a_dead_workers_step_is_taken_over_and_the_stale_generation_is_dead
     p.expire_lease(&run, "a").await;
     let report = p.tick().await;
     assert_eq!(report.leases_expired, 1);
-    assert!(doomed.poll(8).await.is_empty(), "the retry is backing off");
-    p.elapse_retry_delay(&run, "a").await;
-    assert_eq!(p.tick().await.retries_released, 1);
+    assert!(
+        doomed.poll(8).await.is_empty(),
+        "uncertainty grants no retry"
+    );
+    assert_eq!(p.status(&run).await, "MANUAL_REVIEW");
+    assert!(!p.tick().await.did_work(), "review is idle");
 
     let mut rescuer = p.worker("rhea").await;
     rescuer.register(&["act.a", "act.b"]).await;
-    let fresh = rescuer.one_task().await;
-    assert_eq!(fresh.activity_name, "act.a");
-    assert!(fresh.generation > stale.generation, "a new generation");
-    assert_eq!(fresh.attempt, stale.attempt + 1);
-    assert_ne!(fresh.lease_token, stale.lease_token);
+    assert!(
+        rescuer.poll(8).await.is_empty(),
+        "another worker cannot repeat it"
+    );
+    let before = journal(&p, &run).await;
 
     // The dead worker wakes up (a long GC pause, a partition healing) and reports.
     let late = doomed.complete(&stale, &json!({"authorised": true})).await;
@@ -140,18 +143,34 @@ async fn us02_a_dead_workers_step_is_taken_over_and_the_stale_generation_is_dead
         .await
         .expect_err("and so is its heartbeat");
     assert_eq!(machine_code(&beat), "STALE_ATTEMPT");
+    assert_eq!(
+        journal(&p, &run).await,
+        before,
+        "stale calls change nothing"
+    );
 
-    // The rescuer finishes the run; the journal holds exactly one commit of A.
-    rescuer
-        .complete(&fresh, &json!({"authorised": true}))
-        .await
-        .expect("a");
+    // A human settles A; the rescuer executes B without ever repeating A.
+    let (status, body) = p
+        .rest(
+            Method::POST,
+            &format!("/runs/{run}/operations"),
+            Some(
+                &json!({"action": "RESOLVE_STEP", "stepId": "a", "outcome": "SUCCEEDED",
+                         "reason": "provider evidence confirms the original authorization"}),
+            ),
+        )
+        .await;
+    assert_eq!(status, 202, "{body}");
     let b = rescuer.one_task().await;
+    assert_eq!(b.activity_name, "act.b");
     rescuer.complete(&b, &json!({})).await.expect("b");
     assert_eq!(p.status(&run).await, "SUCCEEDED");
     let events = journal(&p, &run).await;
-    assert_eq!(count(&events, "step.completed", Some("a")), 1);
-    assert!(count(&events, "step.leased", Some("a")) >= 2);
+    assert_eq!(count(&events, "step.completed", Some("a")), 0);
+    assert_eq!(count(&events, "step.resolved", Some("a")), 1);
+    assert_eq!(count(&events, "step.leased", Some("a")), 1);
+    assert_eq!(count(&events, "step.completed", Some("b")), 1);
+    assert!(rescuer.poll(8).await.is_empty());
 }
 
 /// US03-AC01: a run enters a one-hour timer; no worker remains allocated; the scheduler creates the

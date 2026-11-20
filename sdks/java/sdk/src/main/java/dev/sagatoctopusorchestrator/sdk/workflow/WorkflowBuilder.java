@@ -161,6 +161,12 @@ public final class WorkflowBuilder {
         return this;
     }
 
+    /** An append to an Iceberg table. The lake runner resolves the connection; no credential appears in the workflow. */
+    public WorkflowBuilder icebergWrite(String id, IcebergWriteOptions options) {
+        body.icebergWrite(id, options);
+        return this;
+    }
+
     public WorkflowBuilder sleep(String id, Duration duration) {
         body.sleep(id, duration);
         return this;

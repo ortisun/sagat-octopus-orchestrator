@@ -21,18 +21,24 @@ use sagat_application::clock::SystemClock;
 use sagat_application::entropy::SystemEntropy;
 use sagat_application::execution::{DefinitionCache, Engine};
 use sagat_application::identity::IdentityService;
+use sagat_application::runs::RunService;
+use sagat_application::schedule_firing::ScheduleFiring;
 use sagat_application::worker::WorkerService;
 use sagat_control_plane::config::{self, Config, Environment};
 use sagat_control_plane::{
     METRICS_UPKEEP_INTERVAL, RunError, admin_router_with, open_pool, spawn_metrics_upkeep, stopped,
 };
+use sagat_domain::schedules::Ceilings;
 use sagat_infra_blobstore::build_backend;
+use sagat_infra_ir::schedule_calendar::SpecCalendar;
 use sagat_infra_ir::{JsonEvaluator, JsonIrCodec};
 use sagat_infra_nats::NatsPublisher;
-use sagat_infra_postgres::{PgBlobCatalog, PgIdentityStore, PgRunStore, spawn_pool_metrics};
+use sagat_infra_postgres::{
+    DatabaseClock, PgBlobCatalog, PgIdentityStore, PgRunStore, PgScheduleStore, spawn_pool_metrics,
+};
 use sagat_scheduler::{
     DeliveryWorker, EventDispatcher, Keeper, Monitor, OutboxDispatcher, Placement,
-    ProjectorSettings, Scheduler, TelemetryProjector,
+    ProjectorSettings, SchedulePass, Scheduler, TelemetryProjector,
 };
 use sagat_telemetry::Metrics;
 use tokio::net::TcpListener;
@@ -48,7 +54,7 @@ pub use settings::EngineConfig;
 
 use loops::{
     EngineDeliveries, EngineDispatcher, EngineEvents, EngineKeeper, EngineMonitor, EngineProjector,
-    EngineScheduler, Health,
+    EngineScheduler, EngineSchedules, Health,
 };
 use supervision::CriticalTasks;
 
@@ -93,7 +99,8 @@ pub async fn serve(
     let cache = DefinitionCache::new(Arc::new(JsonIrCodec), DEFINITION_CACHE_ENTRIES);
     let store = PgRunStore::new(pool.clone(), cache.clone())
         .with_breaker(engine.breaker)
-        .with_scoped_worker_protocol();
+        .with_scoped_worker_protocol()
+        .with_lake_enabled(engine.lake_enabled);
     let state = AppState::with_rate_limit(
         IdentityService::new(identity, SystemClock),
         verifier,
@@ -112,7 +119,9 @@ pub async fn serve(
     .with_database_content(
         Arc::new(sagat_infra_secrets::database::JsonDatabaseCredentials),
         Arc::new(sagat_infra_ir::JsonDatabaseResultValidator),
-    );
+    )
+    .with_lake_receipts(Arc::new(sagat_infra_ir::JsonLakeReceiptCodec))
+    .with_lake_probes(Arc::new(sagat_infra_ir::JsonLakeProbeCodec));
     let provider: Option<Arc<dyn sagat_application::secret_provider::SecretProvider>> =
         match &engine.openbao {
             Some(settings) => Some(
@@ -198,23 +207,21 @@ pub async fn serve(
             store.clone(),
             Engine::new(JsonEvaluator),
             SystemEntropy,
-            cache,
+            cache.clone(),
             engine.events,
         )
         .with_cron(Arc::new(sagat_infra_ir::cron::CronCalendar)),
     );
-    // Deliveries and connector consumers share the configured secret authorities.
-    let deliveries: Option<Arc<EngineDeliveries>> =
-        (engine.secrets.is_some() || provider.is_some()).then(|| {
-            Arc::new(DeliveryWorker::with_broker_reader(
-                store.clone(),
-                sagat_infra_connectors::webhook::GuardedSender::new(store.clone()),
-                sagat_infra_connectors::publish::Publisher::new(store.clone()),
-                SystemEntropy,
-                secret_reader.clone(),
-                engine.deliveries,
-            ))
-        });
+    // Anonymous broker destinations must run without a secret backend. The default reader
+    // fails closed only when an attempt actually requires unavailable signing/authentication.
+    let deliveries: Arc<EngineDeliveries> = Arc::new(DeliveryWorker::with_broker_reader(
+        store.clone(),
+        sagat_infra_connectors::webhook::GuardedSender::new(store.clone()),
+        sagat_infra_connectors::publish::Publisher::new(store.clone()),
+        SystemEntropy,
+        secret_reader.clone(),
+        engine.deliveries,
+    ));
     // Broker credentials are resolved through the same namespace-scoped reader.
     let connectors = (engine.secrets.is_some() || provider.is_some()).then(|| {
         Arc::new(sagat_infra_connectors::supervisor::Supervisor::with_reader(
@@ -227,27 +234,36 @@ pub async fn serve(
             engine.connector_refresh,
         ))
     });
-    let dispatcher: Option<Arc<EngineDispatcher>> = match &engine.nats {
-        Some(nats) => {
-            let publisher = NatsPublisher::connect(nats.clone()).await.map_err(|e| {
+    let publisher = match (&engine.nats, &engine.redis) {
+        (Some(nats), None) => Some(loops::HintPublisher::Nats(Box::new(
+            NatsPublisher::connect(nats.clone()).await.map_err(|e| {
                 RunError::Refused(match e {
                     sagat_infra_nats::NatsError::Config(reason) => reason,
                     sagat_infra_nats::NatsError::Connect => "could not set up the NATS client",
                 })
-            })?;
-            Some(Arc::new(
-                OutboxDispatcher::new(store.clone(), publisher, SystemEntropy, engine.dispatch)
-                    .with_placement(placement.clone()),
-            ))
-        }
-        None => {
+            })?,
+        ))),
+        (None, Some(redis)) => Some(loops::HintPublisher::Redis(
+            sagat_infra_connectors::redis::RedisPublisher::new(redis.clone()),
+        )),
+        (None, None) => {
             tracing::warn!(
-                "SAGAT_NATS_URL is not set: task hints are not published, workers must poll, \
-                 and the outbox accumulates until a dispatcher is configured"
+                "internal notifications are disabled; PostgreSQL outbox accumulates and workers continue through gRPC"
             );
             None
         }
+        (Some(_), Some(_)) => {
+            return Err(RunError::Refused(
+                "configure only one internal event transport",
+            ));
+        }
     };
+    let dispatcher: Option<Arc<EngineDispatcher>> = publisher.map(|publisher| {
+        Arc::new(
+            OutboxDispatcher::new(store.clone(), publisher, SystemEntropy, engine.dispatch)
+                .with_placement(placement.clone()),
+        )
+    });
 
     // The journal becomes spans and measurements here, off the path of every request and every
     // transition. With no collector configured the measurements are still made.
@@ -359,9 +375,7 @@ pub async fn serve(
                         {
                             tracing::warn!(%error, "could not purge the telemetry notes of finished runs");
                         }
-                        if let Some(deliveries) = deliveries {
-                            deliveries.housekeeping().await;
-                        }
+                        deliveries.housekeeping().await;
                     }
                 }
             },
@@ -369,6 +383,47 @@ pub async fn serve(
             stop_rx.clone(),
         ),
     );
+    if engine.schedules_enabled {
+        // A schedule's run is admitted as the schedule's own subject, so the pass needs the same
+        // run service the API has; it holds a store of its own over the shared pool.
+        // The pass finds what is due by the database's clock, so the firing must plan the times it
+        // acts on by the same clock, whatever this process's own says.
+        let database_clock = DatabaseClock::new(pool.clone(), SystemClock);
+        let schedules: Arc<EngineSchedules> = Arc::new(SchedulePass::new(
+            ScheduleFiring::new(
+                PgScheduleStore::new(pool.clone()),
+                SpecCalendar,
+                database_clock.clone(),
+                PgIdentityStore::new(pool.clone()),
+                RunService::new(
+                    store.clone(),
+                    SystemClock,
+                    Engine::new(JsonEvaluator),
+                    cache.clone(),
+                ),
+                Ceilings::default(),
+            ),
+            placement.clone(),
+            engine.schedules,
+        ));
+        tasks.spawn_loop(
+            "schedule pass",
+            loops::run_schedules(
+                {
+                    let schedules = Arc::clone(&schedules);
+                    move || {
+                        let schedules = Arc::clone(&schedules);
+                        let clock = database_clock.clone();
+                        async move { loops::schedule_round(&clock, &schedules).await }
+                    }
+                },
+                engine.schedule_poll,
+                stop_rx.clone(),
+            ),
+        );
+    } else {
+        tracing::info!("SAGAT_SCHEDULES_ENABLED is not set: schedules are stored but none fires");
+    }
     tasks.spawn_loop(
         "event dispatcher",
         loops::run_events(
@@ -414,19 +469,17 @@ pub async fn serve(
     if let Some(connectors) = connectors {
         tasks.spawn_loop("connector supervisor", connectors.run(stop_rx.clone()));
     }
-    if let Some(deliveries) = deliveries {
-        tasks.spawn_loop(
-            "delivery worker",
-            loops::run_deliveries(
-                move || {
-                    let deliveries = Arc::clone(&deliveries);
-                    async move { deliveries.tick().await }
-                },
-                engine.delivery_poll,
-                stop_rx.clone(),
-            ),
-        );
-    }
+    tasks.spawn_loop(
+        "delivery worker",
+        loops::run_deliveries(
+            move || {
+                let deliveries = Arc::clone(&deliveries);
+                async move { deliveries.tick().await }
+            },
+            engine.delivery_poll,
+            stop_rx.clone(),
+        ),
+    );
     if let Some(dispatcher) = dispatcher {
         tasks.spawn_loop(
             "outbox dispatcher",

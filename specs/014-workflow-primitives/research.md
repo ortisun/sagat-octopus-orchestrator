@@ -1768,3 +1768,76 @@ expression case adds distinct query result-schema failure, raw canary redaction 
 Run/state versions, plus actual publication of32queries/32updates. Approval authoring accepts32
 principals and retains33 refusal. Focused all-five results and exact commands are retained in
 `tasks/project-completion/evidence/sdk-public-gaps-20261018`; full60 integration remains separate.
+
+
+## Nested capacity after a policy reduction (B1c) — D701–D705, G706–G713, O701–O704
+
+Range D701–D799 / G701–G799 / O701–O799 is reserved for the nested-capacity lane (branch
+`feature/014-capacity-protocol`) so it cannot clash with `feature/014-v0.3-completion`. Text, rationale and
+what remains: [capacity-eligibility.md](./capacity-eligibility.md). Owner answer to O701 recorded in
+`docs/owner-decisions.md` (2026-10-26).
+
+- **D701, D702 (withdrawn)** — drain lane and pausing admitted work; rejected by the owner through O701 (answer: do not pause).
+- **D703 (confirmed)** — a retained group counts against fresh admission until it settles, as a flat iteration counts in `active_iterations`.
+- **D704** — The only tenant-level capacity gate is fresh admission, `retained < limit`; no new tenant counter, enabled/parked state, drain lane or enable queue. A reduction never touches admitted work.
+- **D705** — A nested descendant joins an existing group and never allocates one; joining charges no tenant unit.
+- **G706** (open) descendants must join, with a nested limit-1 test at wiring; **G708** (open) a retained group blocks fresh admission, as in flat; **G711** (open) telemetry/audit vocabulary for join/vacate/acquire; **G713** (open) fairness among members of one group may be unnecessary. G701–G705, G707, G709, G710, G712 were obligations of the withdrawn model and are void.
+- **O701 (answered 2026-10-26: do not pause admitted work)**, **O702–O704 (derived from it, open to correction)**: a tenant may run above a reduced limit while its admitted work lasts; accepted compensation continues at limit 0; a retained idle group's unit counts against the quota and there is no serial drain lane.
+
+## Vacate and Acquire for ChildRoot members (B1d.2 / B2) — D706–D715, G714–G723, O705–O706 (proposed, revision 2)
+
+Text, gates, receipt and required evidence: [capacity-vacate-acquire.md](./capacity-vacate-acquire.md). Proposal only; revision 2 follows one correctness and one architecture review of revision 1. No code.
+
+- **D706** — ChildRoot members only; `SCOPED_PATH` gets its own commands and receipt table. **D707** — Finish's lock order, but the receipt lookup comes before the head check (these commands target a head that can continue). **D708** — Vacate gate: holder, current non-final head, no `LEASED`/`RUNNING` step (expired or not), no clock read; the soundness argument names the two statements that set those statuses. **D709** — Acquire gate is minimal (vacant at the epoch, active member, non-final head, movable run status) and does not claim the member has work. **D710** — writes are the header, audit, outbox and receipt only. **D711** — one append-only `capacity_group_transfer_receipts` table with `resulting_active_members` and the Finish foreign keys; it is evidence, not authority. **D712** — closed errors, exhaustive domain-error mapping, one span with the label `operation`, a refusal class, two audit actions, two outbox hints. **D713** — commit uncertainty follows Finish, with one shared `confirmed_abort`. **D714** (proposed) — a holder that cannot progress is vacated or finished by a level-triggered scheduler-tick sweeper, not inline. **D715** — two slices, Vacate first.
+- **G714** (planned) partial index on `LEASED`/`RUNNING` steps; **G715** (open) one shared runnable predicate and a differential test before Acquire claims work; **G716** (open) `SCOPED_PATH` members; **G717** (open) nothing reads possession yet, plus an inventory fitness test; **G718** (open) fairness and starvation not claimed; **G719** (open) the caller is the D714 sweeper; **G720** (open) receipt retention; **G721** (open) ADR for the possession protocol and the group lock position before any production caller; **G722** (open) which runs are members; **G723** (open) zombie workers and blocking activities. **G724** (open, blocks activation) the ineligible sample of the guarded poll is always the same four oldest runs and is skipped when eligible work fills the poll, so internal progress (an over-limit input) of a fifth non-holder starves while a holder always has work; **G725** (open, blocks activation) the eligible window can be filled by runs the claim refuses (stale head, finished-only chain, `SCOPED_PATH` original, ambiguous membership); **G726** (open, lead) cost and plan of the guarded poll under a generic plan, extra run transactions per poll, no test of a holder change between the unlocked and the locked read of condition (j), runbook wording of the capacity reasons. Evidence: `implementation-ledger.md`, "Review after the pull request opened (2026-11-06)".
+- **O705** (open, owner) — approve the sweeper (D714) instead of vacating inline when the holder becomes idle? **O706** (open, owner) — does possession gate only worker leases, or also scheduler-owned transitions?
+
+
+## ChildRoot coordination owner answers — 2026-10-29
+
+The owner answered O705 with “Sweeper no tick do scheduler, em transação própria (recomendado)”
+and O706 with “Apenas concessão de leases aos workers (recomendado)”. O705/O706 are answered:
+D714's level-triggered scheduler sweep is approved, with an independent native transaction per
+operation; possession gates worker-lease grants only. Scheduler-owned transitions, reports,
+heartbeats, signal/timer handling and settlement are not gated by possession. Existing leases
+still use their existing fencing and expiry semantics. These answers do not waive G715/G717/G721,
+claim/transfer races, membership admission, scoped-path support, quota or release acceptance.
+Implementation order and ownership are in [capacity-coordinator.md](./capacity-coordinator.md).
+Native Vacate/Acquire are already merged through PR59/65; their passing evidence is not repeated
+as proof of production coordination.
+
+## 2026-11-01 — B02 owner direction (pre-implementation record)
+
+The owner approved S1-B/S2-B in [feature 037](../037-compensation-safety/spec.md); the
+[approval record](../037-compensation-safety/research.md) distinguishes direction from adoption.
+Default compensation review must survive cancellation/deadline; explicit saga `fail` retains
+terminal failure/history without a promised active post-terminal review queue. Unknown external
+effects require consultation/review unless the specific compensation exception is qualified by
+provider evidence, current authority and adapter tests, including finality and late effects.
+O381 is answered “hold for both” at product level. At this decision point the explicit-saga
+correction was not implemented. Delivery 1 is now implementation in verification; O380 scope-level
+policy fields remain deferred, earlier D63/D66 and other dated evidence remain historical, and no
+acceptance is claimed by this note.
+
+
+## Delegated decisions — 2026-11-04 (O460, O463, O464)
+
+The owner delegated these questions (rows OD-2026-11-04-5 to OD-2026-11-04-7 of
+[owner-decisions.md](../../docs/owner-decisions.md)); they are `Decided by: delegate` and reversible.
+Opinion and method: [the data review](evidence/delegated-decisions-20261104/data-review.md). Nothing
+was run for these answers; the figures are the report's, measured on older source (see the review's
+provenance section).
+
+- **O460 and O464 — answered.** Collections publish `maxItems` 10,000 if the T014-042 acceptance run
+  on the release candidate meets its thresholds, otherwise 1,000. Loops publish `maxIterations` 1,000
+  unless a 10,000-iteration loop completes within 1,800 s on that run; none ever has (the best reached
+  8,806 iterations in 1,800 s). G520 (the worker report restores the whole run) is a documented
+  limitation for root-task reports and whole-run reads, not a release blocker; scoped tasks are
+  already bounded in the current source. The limit is stated in the runbook and the release notes and
+  bounded by the tenant quota; validation keeps accepting up to 10,000.
+- **O463 — answered.** The ceiling is 20,000 pending waits per scheduler replica at the default
+  500 ms interval, observed by a new `scheduler_tick_seconds` metric with a slow-tick alert and an
+  alert above 16,000 waits per replica. Index-only discovery (the `node_kind` column) is required only
+  if the acceptance run fails the idle-tick thresholds. Not built.
+- **T014-042 is not lowered.** Its original criteria stand, including the nested 100,000-instance
+  workload, which cannot be measured while nested scopes are closed.

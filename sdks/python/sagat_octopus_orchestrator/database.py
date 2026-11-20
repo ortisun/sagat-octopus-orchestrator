@@ -108,18 +108,22 @@ def _parameter(p: Any) -> bool:
     return bool(kind == "json")  # canonical_json validates the JSON; SQL conversion remains server-side.
 
 
+def valid_connection_ref(ref: Any) -> bool:
+    """A scoped logical name (3 to 63 characters, no ``--``) and an optional revision; shared by every managed step."""
+    return (
+        isinstance(ref, dict)
+        and ref.keys() <= {"name", "revision"}
+        and isinstance(ref.get("name"), str)
+        and re.fullmatch(r"[a-z][a-z0-9-]{1,61}[a-z0-9]", ref["name"]) is not None
+        and "--" not in ref["name"]
+        and ("revision" not in ref or _integer(ref["revision"], 2147483647))
+    )
+
+
 def database_node(node_id: str, options: dict[str, Any]) -> dict[str, Any]:
     """Validate authoring shape and capture a snapshot without exposing rejected values in errors."""
     try:
-        ref = options["connectionRef"]
-        if (
-            not isinstance(ref, dict)
-            or not ref.keys() <= {"name", "revision"}
-            or not isinstance(ref.get("name"), str)
-            or not re.fullmatch(r"[a-z][a-z0-9-]{1,61}[a-z0-9]", ref["name"])
-            or "--" in ref["name"]
-            or ("revision" in ref and not _integer(ref["revision"], 2147483647))
-        ):
+        if not valid_connection_ref(options["connectionRef"]):
             raise ValueError
         statement = options["statement"]
         if (

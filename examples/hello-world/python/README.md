@@ -37,6 +37,33 @@ and `sagat workflow inspect <run>` shows the journal: the same one whatever the 
 - The activities are the two `register_activity` calls. What a step receives is the input of the run (the
   first argument) and the outputs of the steps before it (`ctx.steps["<id>"]`); what it returns is its output.
 - A real effect (a payment, an e-mail) sends `ctx.idempotency_key` to its provider: it is the same for every
-  attempt of the step, so a repeat does not do it twice.
+  attempt of the step; the provider must deduplicate that key to prevent duplicate effects.
 - `prepare.sh` installs the SDK from this checkout (`pip install ../../../sdks/python`), because it is not on
   PyPI yet. Once it is, replace that line with `pip install sagat-octopus-orchestrator`.
+
+## Interface
+
+- `main` and `run` drive the local command; `compose` and `deliver` implement its activities. [examples/hello-world/python/main.py:run]
+
+## Invariants
+
+- The four Sagat connection settings are required; missing settings exit 2. [examples/hello-world/python/main.py:setting]
+- Registers compose/deliver activities, uses the prior compose output, and defaults the name to Ada. [examples/hello-world/python/main.py:run]
+- The wait is bounded to 60 seconds and success requires `SUCCEEDED`. [examples/hello-world/python/main.py:run]
+- Preparation installs hash-pinned dependencies, then the checkout SDK with `--no-deps`. [examples/hello-world/python/prepare.sh:--require-hashes]
+
+## Side Effects
+
+- Creates and populates `.venv` and verifies the SDK import. [examples/hello-world/python/prepare.sh:pip install]
+- Starts/stops a worker, starts/waits for the workflow, and prints activity/run/error diagnostics. [examples/hello-world/python/main.py:run]
+- Replaces the shell with the virtualenv Python process. [examples/hello-world/python/run.sh:exec]
+
+## Verification
+
+From the repository root, with Docker, the selected example toolchains, and a private `CARGO_TARGET_DIR` outside the checkout:
+
+```sh
+cargo test -p sagat-tests --test e2e_developer_experience --locked -- --ignored
+```
+
+The shared real-platform suite is declared in `tests/Cargo.toml`; language preparation and run commands remain in the example READMEs. [tests/Cargo.toml:e2e_developer_experience]

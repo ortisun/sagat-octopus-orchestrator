@@ -194,6 +194,7 @@ pub struct OutboundService<S, C> {
     store: S,
     clock: C,
     egress: EgressService<S, C>,
+    redis_callbacks: bool,
 }
 
 impl<S, C> OutboundService<S, C>
@@ -208,7 +209,16 @@ where
             store,
             clock,
             egress,
+            redis_callbacks: false,
         }
+    }
+
+    /// Enable only after all outbound readers and writers have been upgraded or stopped.
+    /// This switch cannot fence an old process; the operator completes the cold rollout first.
+    #[must_use]
+    pub const fn with_redis_callbacks(mut self, enabled: bool) -> Self {
+        self.redis_callbacks = enabled;
+        self
     }
 
     /// Creates a subscription in a namespace.
@@ -744,6 +754,20 @@ where
             ));
         }
         require_namespace(&self.store, &self.clock, principal, namespace, ctx).await?;
+        if matches!(settings.destination, BrokerDestination::Redis { .. }) && !self.redis_callbacks
+        {
+            return Err(AppError::NotAllowed(
+                "Redis callbacks require the completed rollout activation",
+            ));
+        }
+        if let BrokerDestination::Redis { server, .. } = &settings.destination
+            && settings.credentials_secret.is_some()
+            && !server.tls()
+        {
+            return Err(AppError::NotAllowed(
+                "Redis credentials require a TLS destination",
+            ));
+        }
         for server in settings.destination.servers() {
             if self
                 .egress

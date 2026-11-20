@@ -1,0 +1,426 @@
+   Compiling syn v3.0.6
+    Checking libc v0.2.190
+    Checking cfg-if v1.0.5
+   Compiling serde_core v1.0.229
+   Compiling serde v1.0.229
+   Compiling serde_derive v1.0.229
+    Checking pin-project-lite v0.2.17
+    Checking bytes v1.12.1
+    Checking memchr v2.8.3
+    Checking futures-core v0.3.34
+    Checking typenum v1.20.1
+    Checking zeroize v1.9.1
+    Checking once_cell v1.21.4
+   Compiling synstructure v0.14.0
+    Checking socket2 v0.6.5
+    Checking mio v1.2.4
+   Compiling tokio-macros v2.7.2
+    Checking slab v0.4.12
+    Checking subtle v2.6.1
+    Checking itoa v1.0.18
+    Checking tokio v1.53.2
+   Compiling zerofrom-derive v0.1.8
+   Compiling syn v2.0.119
+    Checking futures-sink v0.3.34
+    Checking zerofrom v0.1.8
+   Compiling yoke-derive v0.8.4
+    Checking stable_deref_trait v1.2.1
+    Checking yoke v0.8.3
+    Checking futures-channel v0.3.34
+    Checking getrandom v0.2.17
+   Compiling futures-macro v0.3.34
+    Checking futures-io v0.3.34
+    Checking futures-task v0.3.34
+    Checking smallvec v1.16.2
+    Checking futures-util v0.3.34
+   Compiling zerovec-derive v0.11.6
+    Checking zerovec v0.11.8
+    Checking tracing-core v0.1.36
+   Compiling displaydoc v0.2.7
+    Checking generic-array v0.14.9
+    Checking http v1.5.0
+    Checking http-body v1.1.0
+   Compiling tracing-attributes v0.1.31
+    Checking tracing v0.1.44
+    Checking zerocopy v0.8.61
+    Checking block-buffer v0.10.4
+    Checking crypto-common v0.1.6
+    Checking tinystr v0.8.4
+    Checking rustls-pki-types v1.15.1
+    Checking core-foundation-sys v0.8.7
+    Checking writeable v0.6.4
+    Checking litemap v0.8.3
+    Checking icu_locale_core v2.3.0
+    Checking digest v0.10.7
+    Checking ppv-lite86 v0.2.21
+    Checking zerotrie v0.2.5
+    Checking potential_utf v0.1.6
+    Checking log v0.4.34
+    Checking percent-encoding v2.3.2
+    Checking utf8_iter v1.0.4
+    Checking untrusted v0.9.0
+    Checking ring v0.17.14
+    Checking icu_collections v2.3.0
+    Checking icu_provider v2.3.1
+    Checking deranged v0.5.8
+    Checking time-core v0.1.9
+    Checking powerfmt v0.2.1
+    Checking num-conv v0.2.2
+    Checking time v0.3.55
+   Compiling num-traits v0.2.19
+   Compiling rustls v0.23.46
+    Checking icu_normalizer_data v2.3.0
+    Checking rustls-webpki v0.103.15
+    Checking icu_properties_data v2.3.0
+    Checking icu_properties v2.3.0
+    Checking icu_normalizer v2.3.0
+    Checking http-body-util v0.1.5
+   Compiling thiserror-impl v2.0.21
+    Checking bitflags v2.13.2
+    Checking rand_core v0.10.1
+    Checking thiserror v2.0.21
+    Checking idna_adapter v1.2.2
+    Checking crossbeam-utils v0.8.23
+    Checking getrandom v0.3.4
+    Checking form_urlencoded v1.2.2
+    Checking core-foundation v0.10.1
+    Checking security-framework-sys v2.17.0
+   Compiling serde_json v1.0.151
+    Checking try-lock v0.2.5
+    Checking tower-service v0.3.3
+    Checking want v0.3.2
+    Checking security-framework v3.7.0
+    Checking rand_core v0.9.5
+    Checking idna v1.1.0
+    Checking getrandom v0.4.3
+    Checking httparse v1.10.1
+    Checking zmij v1.0.23
+    Checking tokio-rustls v0.26.6
+    Checking rand_core v0.6.4
+    Checking hybrid-array v0.4.15
+    Checking aho-corasick v1.1.5
+    Checking base64ct v1.8.3
+    Checking atomic-waker v1.1.2
+    Checking regex-syntax v0.8.11
+    Checking regex-automata v0.4.18
+    Checking hyper v1.12.0
+    Checking pem-rfc7468 v0.7.0
+    Checking url v2.5.8
+    Checking sync_wrapper v1.0.2
+    Checking cpufeatures v0.2.17
+    Checking tower-layer v0.3.3
+    Checking outref v0.5.2
+    Checking cmov v0.5.4
+    Checking base64 v0.22.1
+    Checking either v1.19.0
+    Checking ipnet v2.12.2
+    Checking const-oid v0.9.6
+    Checking vsimd v0.8.0
+    Checking base64 v0.23.1
+    Checking hyper-util v0.1.21
+    Checking base64-simd v0.8.0
+    Checking der v0.7.10
+    Checking bytes-utils v0.1.4
+    Checking ctutils v0.4.3
+    Checking tower v0.5.3
+    Checking sha2 v0.10.9
+    Checking rapidhash v4.5.1
+    Checking block-buffer v0.12.1
+    Checking crypto-common v0.2.2
+    Checking rand_chacha v0.3.1
+    Checking rand_chacha v0.9.0
+    Checking num-integer v0.1.47
+   Compiling curve25519-dalek v4.1.3
+    Checking signature v2.2.0
+    Checking tokio-util v0.7.19
+    Checking foldhash v0.2.0
+    Checking pin-utils v0.1.1
+    Checking ryu v1.0.23
+    Checking const-oid v0.10.2
+    Checking digest v0.11.3
+    Checking aws-smithy-types v1.8.1
+    Checking hashbrown v0.16.1
+    Checking rand v0.9.5
+    Checking rand v0.8.8
+    Checking metrics v0.24.6
+    Checking tower-http v0.6.11
+    Checking crossbeam-epoch v0.9.21
+    Checking spki v0.7.3
+    Checking hyper-rustls v0.27.10
+    Checking uuid v1.27.0
+    Checking rand_xoshiro v0.7.0
+    Checking rustls-platform-verifier v0.7.1
+    Checking quanta v0.12.6
+    Checking left-right v0.11.8
+    Checking aws-smithy-async v1.3.0
+   Compiling aws-smithy-runtime-api-macros v1.1.0
+    Checking tinyvec v1.13.3
+    Checking hashbrown v0.17.1
+    Checking lazy_static v1.5.1
+    Checking hashbag v0.1.13
+    Checking equivalent v1.0.2
+    Checking sketches-ddsketch v0.3.1
+    Checking metrics-util v0.20.4
+    Checking indexmap v2.14.2
+    Checking evmap v11.0.0
+    Checking sharded-slab v0.1.7
+    Checking unicode-normalization v0.1.25
+    Checking aws-smithy-runtime-api v1.19.0
+    Checking reqwest v0.13.5
+    Checking pkcs8 v0.10.2
+    Checking ed25519 v2.2.3
+    Checking zstd-sys v2.1.2+zstd.1.5.7
+    Checking matchers v0.2.0
+    Checking tracing-serde v0.2.0
+    Checking thread_local v1.1.10
+    Checking cpufeatures v0.3.1
+    Checking simd-adler32 v0.3.10
+    Checking adler2 v2.0.1
+    Checking scopeguard v1.2.0
+    Checking nu-ansi-term v0.50.3
+    Checking unicode-properties v0.1.4
+    Checking unicode-bidi v0.3.18
+    Checking stringprep v0.1.5
+    Checking tracing-subscriber v0.3.23
+    Checking lock_api v0.4.14
+    Checking miniz_oxide v0.9.1
+    Checking sha2 v0.11.0
+    Checking zstd-safe v8.2.0
+    Checking ed25519-dalek v2.2.0
+    Checking signatory v0.27.1
+    Checking lz4-sys v1.11.1+lz4-1.10.0
+    Checking metrics-exporter-prometheus v0.18.3
+    Checking parking_lot_core v0.9.12
+    Checking crc32fast v1.5.2
+    Checking sagat-domain v0.2.0 (/Users/marcelo/Documents/Projects/sagat-octopus-kafka-zstd/crates/domain)
+    Checking hmac v0.13.0
+    Checking chacha20 v0.10.2
+    Checking tracing-log v0.2.0
+    Checking hmac v0.12.1
+    Checking pbkdf2 v0.12.2
+    Checking iana-time-zone v0.1.65
+    Checking futures-executor v0.3.34
+   Compiling thiserror-impl v1.0.69
+   Compiling pin-project-internal v1.1.13
+    Checking data-encoding v2.11.1
+    Checking nkeys v0.4.5
+    Checking pin-project v1.1.13
+    Checking thiserror v1.0.69
+    Checking futures v0.3.34
+    Checking chrono v0.4.45
+    Checking rsasl v2.3.1
+    Checking sagat-telemetry v0.2.0 (/Users/marcelo/Documents/Projects/sagat-octopus-kafka-zstd/crates/telemetry)
+    Checking rand v0.10.3
+    Checking flate2 v1.1.10
+    Checking parking_lot v0.12.5
+    Checking lz4 v1.28.1
+    Checking zstd v0.14.3
+    Checking crc32c v0.6.8
+    Checking snap v1.1.2
+    Checking portable-atomic v1.15.0
+    Checking aws-credential-types v1.3.0
+    Checking aws-smithy-http v0.64.1
+    Checking regex v1.13.1
+    Checking rustls-native-certs v0.8.4
+    Checking tokio-stream v0.1.19
+    Checking tryhard v0.5.2
+    Checking serde_nanos v0.1.4
+   Compiling serde_repr v0.1.21
+    Checking hex v0.4.3
+    Checking integer-encoding v4.1.0
+    Checking rskafka v0.6.0 (/Users/marcelo/Documents/Projects/sagat-octopus-kafka-zstd/vendor/rskafka)
+warning: field `tagged_fields` is never read
+   --> vendor/rskafka/src/protocol/messages/create_topics.rs:291:9
+    |
+278 | pub struct CreateTopicsResponse {
+    |            -------------------- field in this struct
+...
+291 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `CreateTopicsResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: fields `name`, `value`, `read_only`, `config_source`, `is_sensitive`, and `tagged_fields` are never read
+   --> vendor/rskafka/src/protocol/messages/create_topics.rs:321:9
+    |
+319 | pub struct CreateTopicResponseConfig {
+    |            ------------------------- fields in this struct
+320 |     /// The configuration name.
+321 |     pub name: CompactString,
+    |         ^^^^
+...
+324 |     pub value: CompactNullableString,
+    |         ^^^^^
+...
+327 |     pub read_only: Boolean,
+    |         ^^^^^^^^^
+...
+330 |     pub config_source: Int8,
+    |         ^^^^^^^^^^^^^
+...
+333 |     pub is_sensitive: Boolean,
+    |         ^^^^^^^^^^^^
+...
+336 |     pub tagged_fields: TaggedFields,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `CreateTopicResponseConfig` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: fields `num_partitions`, `replication_factor`, `configs`, and `tagged_fields` are never read
+   --> vendor/rskafka/src/protocol/messages/create_topics.rs:374:9
+    |
+359 | pub struct CreateTopicResponse {
+    |            ------------------- fields in this struct
+...
+374 |     pub num_partitions: Option<Int32>,
+    |         ^^^^^^^^^^^^^^
+...
+379 |     pub replication_factor: Option<Int16>,
+    |         ^^^^^^^^^^^^^^^^^^
+...
+384 |     pub configs: Vec<CreateTopicResponseConfig>,
+    |         ^^^^^^^
+...
+389 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `CreateTopicResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: fields `low_watermark` and `tagged_fields` are never read
+   --> vendor/rskafka/src/protocol/messages/delete_records.rs:182:9
+    |
+177 | pub struct DeleteResponsePartition {
+    |            ----------------------- fields in this struct
+...
+182 |     pub low_watermark: Int64,
+    |         ^^^^^^^^^^^^^
+...
+190 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `DeleteResponsePartition` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `tagged_fields` is never read
+   --> vendor/rskafka/src/protocol/messages/delete_records.rs:226:9
+    |
+216 | pub struct DeleteResponseTopic {
+    |            ------------------- field in this struct
+...
+226 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `DeleteResponseTopic` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `tagged_fields` is never read
+   --> vendor/rskafka/src/protocol/messages/delete_records.rs:269:9
+    |
+258 | pub struct DeleteRecordsResponse {
+    |            --------------------- field in this struct
+...
+269 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `DeleteRecordsResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `tagged_fields` is never read
+   --> vendor/rskafka/src/protocol/messages/delete_topics.rs:101:9
+    |
+ 88 | pub struct DeleteTopicsResponse {
+    |            -------------------- field in this struct
+...
+101 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `DeleteTopicsResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `tagged_fields` is never read
+   --> vendor/rskafka/src/protocol/messages/delete_topics.rs:144:9
+    |
+129 | pub struct DeleteTopicsResponseTopic {
+    |            ------------------------- field in this struct
+...
+144 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `DeleteTopicsResponseTopic` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: fields `producer_id` and `first_offset` are never read
+   --> vendor/rskafka/src/protocol/messages/fetch.rs:170:9
+    |
+168 | pub struct FetchResponseAbortedTransaction {
+    |            ------------------------------- fields in this struct
+169 |     /// The producer id associated with the aborted transaction.
+170 |     pub producer_id: Int64,
+    |         ^^^^^^^^^^^
+...
+173 |     pub first_offset: Int64,
+    |         ^^^^^^^^^^^^
+    |
+    = note: `FetchResponseAbortedTransaction` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `aborted_transactions` is never read
+   --> vendor/rskafka/src/protocol/messages/fetch.rs:213:9
+    |
+192 | pub struct FetchResponsePartition {
+    |            ---------------------- field in this struct
+...
+213 |     pub aborted_transactions: Vec<FetchResponseAbortedTransaction>,
+    |         ^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `FetchResponsePartition` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `timestamp` is never read
+   --> vendor/rskafka/src/protocol/messages/list_offsets.rs:184:9
+    |
+169 | pub struct ListOffsetsResponsePartition {
+    |            ---------------------------- field in this struct
+...
+184 |     pub timestamp: Option<Int64>,
+    |         ^^^^^^^^^
+    |
+    = note: `ListOffsetsResponsePartition` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: fields `log_append_time_ms` and `log_start_offset` are never read
+   --> vendor/rskafka/src/protocol/messages/produce.rs:148:9
+    |
+132 | pub struct ProduceResponsePartitionResponse {
+    |            -------------------------------- fields in this struct
+...
+148 |     pub log_append_time_ms: Option<Int64>,
+    |         ^^^^^^^^^^^^^^^^^^
+...
+153 |     pub log_start_offset: Option<Int64>,
+    |         ^^^^^^^^^^^^^^^^
+    |
+    = note: `ProduceResponsePartitionResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: fields `session_lifetime_ms` and `tagged_fields` are never read
+   --> vendor/rskafka/src/protocol/messages/sasl_msg.rs:198:9
+    |
+181 | pub struct SaslAuthenticateResponse {
+    |            ------------------------ fields in this struct
+...
+198 |     pub session_lifetime_ms: Option<Int64>,
+    |         ^^^^^^^^^^^^^^^^^^^
+...
+203 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `SaslAuthenticateResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: struct `CompactArray` is never constructed
+   --> vendor/rskafka/src/protocol/primitives.rs:725:12
+    |
+725 | pub struct CompactArray<T>(pub Option<Vec<T>>);
+    |            ^^^^^^^^^^^^
+
+warning: `rskafka` (lib) generated 14 warnings
+    Checking aws-sigv4 v1.6.0
+    Checking async-nats v0.50.0
+    Checking sagat-application v0.2.0 (/Users/marcelo/Documents/Projects/sagat-octopus-kafka-zstd/crates/application)
+    Checking sagat-infra-egress v0.2.0 (/Users/marcelo/Documents/Projects/sagat-octopus-kafka-zstd/crates/infra-egress)
+    Checking webpki-roots v1.0.9
+    Checking quick-xml v0.42.0
+    Checking sagat-infra-connectors v0.2.0 (/Users/marcelo/Documents/Projects/sagat-octopus-kafka-zstd/crates/infra-connectors)
+    Finished `dev` profile [unoptimized] target(s) in 51.64s
