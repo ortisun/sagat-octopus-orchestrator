@@ -22,8 +22,19 @@ transaction; when the carry makes that transaction fail, the report is recorded 
 through an RPC of their own, `AppendStepLogs`. A step log MUST NOT be a second place where another tenant's data can be
 read, or where a secret can be read beyond the limit of G041-001 (a value the code transformed, a short one, or one
 obtained outside the platform). Log writing can delay a report of the same tenant only by the waits listed in section 2,
-"What a report can wait for": the tenant's usage row at the commit, which SC-041-007 covers. A carry takes its
-step-log locks only when they are free and otherwise skips itself, so it adds no lock wait before the commit.
+"What a report can wait for": a refill of the tenant's step-log quota leases, once per lease, which SC-041-007 covers. A
+carry takes its step-log locks only when they are free and otherwise skips itself, so it adds no other lock wait before
+the commit, and its rows are charged to a lease, never to the tenant's usage row (ADR-0097).
+
+**Revision of 2026-11-20, after T041-35's second run (Draft).** The second run failed at 1 × 16 (D041-105). Two
+diagnoses on the hosted runners followed: the commits did wait on the tenant's usage row, but that queue was not what
+failed the gates (D041-106); the carry's cost lies in its stream row and, less, its line rows (D041-107). The revision
+charges the step-log class to exact per-tenant leases
+([ADR-0097](../adr/ADR-0097-the-step-log-quota-is-charged-to-exact-per-tenant-leases-never-to-the-usage-row-at-commit.md),
+Proposed, D041-108; section 2b), writes a short step's new stream once and makes a later stream update HOT (D041-111;
+sections 2a and 3), and keeps T041-35's environment, gates and rule unchanged (D041-109). Changed: this Overview, FR-041-008,
+SC-041-001, sections 2, 2a, 2b (new), 3 and 4, the Risks, the Alternatives and T041-5, T041-35 and T041-36. The reviews of
+this revision are in `041-step-logs.reviews/2026-11-20-hot-row/`.
 
 **Revision of 2026-11-19 (Draft).** The design was approved on 2026-11-16 (commit `f9d4a65f`; the four reports of
 `041-step-logs.reviews/2026-11-16/`). Its spike before the schema, T041-31, failed SC-041-007: with an `AppendStepLogs`
@@ -173,8 +184,9 @@ Each requirement is binding as written, whether or not it says MUST.
 - **FR-041-008 Storage beside the journal.** Lines are stored in PostgreSQL in tables of their own. Storing a batch MUST
   NOT take, or wait for, a lock on a row of `runs`, `steps` or `run_events`; leasing and heartbeat MUST NOT read or write
   the log tables; a report MUST NOT read or write them except to store its own carry, through the `StepLogCarryTx` port
-  (one method, one call of the function `sagat_step_log_carry`, section 2a), at the cost section 2a states as an equality. Neither a batch nor a
-  carry may take the tenant's `tenant_retained_usage` row before its commit.
+  (one method, one call of the function `sagat_step_log_carry`, section 2a), at the cost section 2a states as an equality. A batch or a
+  carry charges its rows to one of the tenant's step-log quota leases (ADR-0097) and takes the tenant's
+  `tenant_retained_usage` row only to refill its leases (section 2b).
   The attempt ceilings count text bytes (the UTF-8 octets of message, exception and fields); the bytes charged to the tenant, each row's text plus a fixed 128 bytes
   (OD-2026-11-15-6), are counted in a storage class of their own, `step_log` (ADR-0027 Amendment of 2026-11-15), and released when the rows are
   deleted.
@@ -298,15 +310,18 @@ Each requirement is binding as written, whether or not it says MUST.
     | carries records, capture off in the namespace | 51, 1, 11 | 48, 1, 9 | none |
   - A batch for a run commits, under `lock_timeout = 50ms`, while another transaction holds that run's row `FOR UPDATE`
     and has updated the leased `steps` row.
-  - One ingest of tenant T is held after its quota flush (`SET CONSTRAINTS ALL IMMEDIATE`), so it holds the tenant usage
-    row; K − 1 more ingests of T queue behind it on that row (K = the tenant's tickets on one replica); then a completion
-    with output of another run of T, whose output has a digest not yet stored, queues after them. When the ingests are
-    committed one at a time, after each commit the completion is still blocked and `pg_blocking_pids` of it names ingest
-    backends only, and it commits after the K-th.
+  - One ingest of tenant T is held after T8 (its charge holds a lease): K − 1 more ingests of T and a carrying report of
+    T each commit while it is held, each charged to another lease, none taking T's usage row (`pg_stat_activity` shows
+    none of them waiting; ADR-0097). One transaction that holds T's usage row (a refill held open) delays only a charge
+    that finds no free lease with room, and a completion of T with output at its commit, as today.
+  - The leases keep the quota exact: under concurrent charges, refills, reclaims, releases and a lowered limit, T's
+    usage never exceeds the limit in force when each charge was admitted and equals what the stored rows measure; a
+    charge is refused only when the room left is in leases that open transactions hold (G041-023) or not there at all
+    (ADR-0097's tests, T041-5).
   - One ingest of the namespace is held after T7: a `lock_secrets` of the namespace and a completion of the namespace
     both commit while it is held, since the ingest takes no secrets lock and no membership lock (OD-2026-11-16-7).
-  - A carrying report whose commit fails because the finalizer finds the tenant's step-log limit exceeded, and a
-    carrying report whose carry statement fails, are each recorded by a downgrade re-run with the same outcome and output
+  - A carrying report whose carry's charge is refused at the tenant's step-log limit, and a carrying report whose
+    carry statement fails, are each recorded by a downgrade re-run with the same outcome and output
     as without a carry (section 2a).
   - A carrying report never waits for a step-log lock: with a change of a step-log resource holding or queued for its
     fence, or an ingest of the same attempt held after T3, the carry writes nothing more (`contended`) and the report
@@ -839,38 +854,48 @@ values, T4, the tenant allowance, the binding's patterns, the membership, T8, T9
 - L1b. the attempt's stream lock, an advisory lock on (tenant, run, step, attempt, generation): an ingest takes it in
   its T3, after L1, and a carry tries it in its CA; the purge, the delete route and the script marker never take it;
 - L2. the stream row;
-- L3. at commit, the policy fences of the classes the transaction charges, in ADR-0027's order (content, log, then
-  step-log; an ingest charges the step-log class only, a report with output and a carry both content and step-log);
-- L4. the tenant's `tenant_retained_usage` row.
+- L3. the policy fences of the quota classes, shared, in ADR-0027's order (content, log, then step-log): a step-log
+  charge takes all three at its insert (ADR-0097, section 2b); the finalizer takes those of the classes it applies at
+  commit;
+- L3b. a lease of the tenant's step-log quota (`step_log_quota_leases`): a charge only tries one (`SKIP LOCKED`) and never
+  waits; a release (the purge's or the delete route's finalizer) waits for every lease of the tenant in lease order;
+- L4. the tenant's `tenant_retained_usage` row: taken by a refill (a charge that found no free lease with room), by a
+  release after its leases, and by the content and log finalizer at commit.
 
-The finalizer takes L3 and L4 in that order for every writer; a change of a namespace step-log resource takes its own
-L1 fence exclusively and nothing else of this order. The purge and the delete route take stream rows (L2) in
-`stream_id` order, and nothing earlier. The script marker (section 7) takes L1, then a stream row no other transaction
-can see, then L3 and L4. A report that carries nothing takes none of L1, L1b and L2; a carrying report holds L0 and then
-only tries L1, L1b and L2 (for its own attempt's stream), never waiting for them, then takes L3 and L4 at its commit. Putting L1 before L2 is the reading of ADR-0084 decision 11 the
-owner accepted (O041-025, OD-2026-11-16-11). No cycle can form: no holder of L1, L1b, L2, L3 or L4 then waits for a run row
-or an authority lock, and a carrying report waits for none of L1, L1b and L2. The lock-order test, built on
-`tests/support/lock_order.rs` with new slots for L1, L1b and L2 placed after
-its `Bookkeeping` slot and before `Usage` (a carry runs right before the report's commit), grows with the tasks that add
-a writer: T041-6 runs an ingest, a report that carries nothing and a change of a step-log resource; T041-10 adds the
-purge; T041-36 adds a carrying report beside an ingest of the same attempt, the purge and a queued change of a step-log
-resource; T041-13 adds the script marker and T041-30 the delete route.
+No transaction that holds a lease waits for a lease, and only a release waits for one, holding no usage row while it
+does, so no cycle can pass through L3b; a refill holds L4 and then only tries leases. A change of a namespace step-log
+resource takes its own L1 fence exclusively and nothing else of this order; a change of `tenant_step_log_bytes` takes
+its L3 fence exclusively and nothing else. The purge and the delete route take stream rows (L2) in `stream_id` order,
+and nothing earlier, then at commit L3, L3b and L4. The script marker (section 7) takes L1, then a stream row no other
+transaction can see, then at its insert L3, a lease and, on a refill, L4. A report that carries nothing takes none of
+L1, L1b, L2 and L3b; a carrying report holds L0 and then only tries L1, L1b and L2 (for its own attempt's stream), never
+waiting for them, tries L3 in CA (so that CD's charge holds it already) and L3b at CD, waits for L4 only on a refill, and takes L3 and L4 at its commit
+only when it stores output. Putting L1 before L2 is the reading of ADR-0084 decision 11 the owner accepted (O041-025,
+OD-2026-11-16-11). No cycle can form: no holder of L1, L1b, L2, L3, L3b or L4 then waits for a run row or an authority
+lock, a carrying report waits for none of L1, L1b, L2 and L3b, and L4's holders wait for no lease. The lock-order test,
+built on `tests/support/lock_order.rs` with new slots for L1, L1b, L2 and L3b placed after its `Bookkeeping` slot and
+before `Usage` (a carry runs right before the report's commit), grows with the tasks that add a writer: T041-6 runs an
+ingest, a report that carries nothing and a change of a step-log resource; T041-10 adds the purge; T041-36 adds a
+carrying report beside an ingest of the same attempt, the purge and a queued change of a step-log resource; T041-13 adds
+the script marker and T041-30 the delete route.
 
-**What a report can wait for** (the bound). A report of tenant T takes T's usage row (L4) in its own commit when it
-stores output or keeps a carried record. It waits there only for the commits queued ahead of it on that row: the other
-reports of T that store output or keep carried records, as completions with output already queue today; at most
-tickets × R ingests of T, each holding the row from its first deferred flush call to the end of its commit; the purge's
-delete transactions, each holding it for at most 500 rows; and script markers, each holding it for the flush of one
-row. Before its commit a carrying report waits for no step-log lock: it tries L1 (the policy fences), L1b (the
-attempt's stream lock) and L2 (the stream row) and, when any is held (a change of a step-log resource holding or queued
-for its fence; an ingest of the attempt between its T3 and its commit, which happens only after the SDK's 2-second wait
-for its batch in flight expired, section 6; the purge or the delete route on an expired or deleted stream), writes
-nothing more (`contended`, section 2a). A report that carries nothing takes none of them. Before L1, the ingest takes
-none of the locks a report, a lease or a heartbeat takes. The effect of these waits on time is what SC-041-007 bounds
-(the completion p99 within 10% of its value with capture off, or the larger of 10% and 2 ms for a carrying completion),
-measured by T041-35 before the schema and T041-9 at the
-end. A per-tenant step-log usage row of its own (O041-026) would move the step-log part of the queue to a row of its
-own; it would not remove it, since every report that keeps a carried record would take that row.
+**What a report can wait for** (the bound). A report of tenant T takes T's usage row (L4) in its own commit only when it
+stores output (the content class, as today), and before its commit only when its carry's charge finds no free lease with
+room (a refill: once per lease of up to 1 MiB, about 300 ten-line carries). It waits there for the commits queued ahead
+of it on that row: the other reports of T that store output, as today; a refill of T's leases; the purge's delete
+transactions, each holding it for at most 500 rows after its leases; and a script marker's refill. No ingest and no
+carrying report holds T's usage row for a charge into a lease, so a tenant's logging no longer queues behind its own
+commits (D041-106: before the leases each such commit held the row p50 1.1 ms and p99 4.0 to 4.5 ms, to the end of its
+WAL flush). Before its commit a carrying report waits for no step-log lock: it tries L1 (the policy fences), L1b (the
+attempt's stream lock), L2 (the stream row) and L3b (a lease) and, when L1, L1b or L2 is held (a change of a step-log
+resource holding or queued for its fence; an ingest of the attempt between its T3 and its commit, which happens only
+after the SDK's 2-second wait for its batch in flight expired, section 6; the purge or the delete route on an expired or
+deleted stream), writes nothing more (`contended`, section 2a); a held lease only sends the charge to another lease.
+A report that carries nothing takes none of them. Before L1, the ingest takes none of the locks a report, a lease or a
+heartbeat takes. The effect of these waits on time is what SC-041-007 bounds (the completion p99 within 10% of its value
+with capture off, or the larger of 10% and 2 ms for a carrying completion), measured by T041-35 before the schema and
+T041-9 at the end. A per-tenant step-log usage row of its own (O041-026) is not needed: the leases remove the step-log
+part of the queue rather than moving it (ADR-0097).
 
 **Capacity.** `AppendStepLogs` now serves only long steps: each sends about one batch for each second it logs, plus
 the batches its last records need when they do not fit one carry. One tenant's batch rate on a replica, in batches per
@@ -982,28 +1007,33 @@ order:
   key is the 64-bit `hashtextextended` of that text, so two attempts can share a key by collision; that only makes one
   of them `contended` or one ingest wait for the other, never a wrong write, since the stream row is what identifies. Any
   refused: `contended`. (A change of a step-log resource holding or queued for its fence, or an ingest of the attempt
-  between T3 and its commit, is what refuses it.)
+  between T3 and its commit, is what refuses it.) Then the tenant's three quota class fences (L3: content, log,
+  step-log), tried shared in that order, so that CD's charge, which takes them again in the same transaction, never waits
+  for them (ADR-0097); a change of a tenant class limit holding or queued for its fence makes the carry `contended`.
 - CB. The three resources' rows (the read `effective_policy` makes) and `sagat_quota_step_log_allowance(tenant)`, in a
   statement whose snapshot begins after CA's locks are held; `step_log_attempt_records = 0` is capture off: `off`.
-- CC. `INSERT … SELECT … WHERE NOT EXISTS (<the attempt's stream>) ON CONFLICT DO NOTHING RETURNING` the new stream row.
-  An existing row, even one the purge or the delete route is updating, is seen by the statement's snapshot, so no row is
-  offered and no unique check waits; with the stream lock held no other transaction is inserting a new one. A short
-  step's stream is new.
+- The plan of a new stream (from zero counters, `in_order` true), before any write (D041-111).
+- CC. `INSERT … SELECT … WHERE NOT EXISTS (<the attempt's stream>) ON CONFLICT DO NOTHING RETURNING` the new stream row,
+  written once with what that plan stores: its counters, `last_sequence`, the drops, `ceiling_sequence` and
+  `ceiling_reason`, `first_at`, `last_at`, `expires_at`, `final_at` and `last_stored_xid` (the transaction's id when a row
+  is kept). An existing row, even one the purge or the delete route is updating, is seen by the statement's snapshot, so
+  no row is offered and no unique check waits; with the stream lock held no other transaction is inserting a new one. A
+  short step's stream is new; for it CD follows and CE does not run.
 - CC′. Only when CC inserted nothing: `SELECT … FOR UPDATE SKIP LOCKED` of the existing stream row (L2). No row (the
   purge or the delete route holds it): `contended`. Removed, expired or already final: `removed` or `final_recorded`.
-- The plan, as above. A mark-only carry keeps no record and plans no marker.
-- CD. One insert of the kept lines and the marker, at most once each (attempt, generation, sequence).
-- CE. The stream's counters from CD's rows; `final_at`; `last_stored_xid` raised only when CD inserted a row.
+- The plan of the existing stream, from its counters. A mark-only carry keeps no record and plans no marker.
+- CD. One insert of the kept lines and the marker, at most once each (attempt, generation, sequence). For a new stream
+  no line of it exists, so the insert keeps every planned row and the counters CC wrote are exact.
+- CE. Only for an existing stream: its counters from CD's rows; `final_at`; `last_stored_xid` raised only when CD
+  inserted a row. It keeps `expires_day` on most days, so it is a HOT update (section 3).
 
-**At the commit** the finalizer of ADR-0027 charges the kept rows to `tenant_step_log_bytes` (L3, L4). The rows are
-charged once per insert statement, not once per row (OD-2026-11-20-1): `step_log_lines` has no per-row measurement
-trigger on `INSERT`; a statement-level `AFTER INSERT` trigger over the statement's transition table adds, for each
-tenant, the text bytes plus 128 a row to the transaction's step-log delta in one call, and the transaction's
-`quota_transaction_deltas` row queues the one deferred flush (the proposed text of the ADR-0027 Amendment, O041-040). A
-`DELETE` (the purge) keeps its per-row release. So a carry with *k* kept rows fires one statement-trigger call and one
-deferred flush, where the approved shape fired *k* of each. That wait on the tenant usage row at the commit is the one a
-carrying report shares with every report that stores output; it is not bounded by the carry, and SC-041-007 bounds its
-effect.
+**The charge** (ADR-0097, section 2b). CD's statement-level trigger charges the kept rows to `tenant_step_log_bytes`
+once per insert statement: their text bytes plus 128 a row, measured by the database, added to one of the tenant's
+leases taken `SKIP LOCKED`. The rows are not charged at the commit and the usage row is not taken for them, so a
+carrying report whose output stores nothing takes no quota lock at all, and one that stores output takes the usage row
+at its commit for the content class only, as every report with output does today. A charge refused (the tenant's limit,
+a lowered limit, or room held only by open transactions' leases, G041-023) raises in CD, which fails the report's
+transaction like any carry error and is answered by the downgrade re-run below.
 
 **When the carry makes the report's transaction fail**, the report is recorded anyway by a *downgrade re-run*: the
 report's method runs again from its start, as the worker's own resend of the same report would, with the carry
@@ -1012,10 +1042,10 @@ step-log downgrade can meet the content-quota fallback once (which keeps the dow
 four transactions (`Full`; a step-log refusal, then `MarkOnly`; a content raise, then its fallback with `MarkOnly`; a
 failed call, then `None`); a transaction whose carry is `None` cannot fail because of it.
 
-- Any error the finalizer's step-log branch raises at the commit (`tenant_step_log_quota_exceeded`, or a guard of that
-  branch, each with a constraint name of its own, T041-5): the store maps it to `StoreError::StepLogRefused`, and the
-  re-run carries a mark-only carry, with the records counted as `tenant_quota` (or `failed` for another raise). A
-  mark-only carry charges nothing, so the step-log branch does not run again (`quota_rerun`).
+- Any error the step-log charge raises in CD (`tenant_step_log_quota_exceeded`, or a guard of the lease functions, each
+  with a constraint name of its own, T041-5): the store maps it to `StoreError::StepLogRefused`, and the re-run carries a
+  mark-only carry, with the records counted as `tenant_quota` (or `failed` for another raise). A mark-only carry charges
+  nothing, so the charge does not run again (`quota_rerun`).
 - The call fails (a lost connection, a deadlock the database breaks, a bug in the function): the store maps its error to
   `StoreError::StepLogCarry`, which keeps only the SQLSTATE (through `store_error_without_text`); the re-run carries none
   (`failed`), and the stream keeps no final mark. A mark-only carry that fails so in a re-run or a content fallback is run
@@ -1081,11 +1111,67 @@ read under their locks, and C0 refuses the runner roles and managed steps, which
 T7 check but the session's minor; a report of a client that negotiated below 1.7 can carry records, and they are stored,
 a case of G041-001 (D041-092).
 
+### 2b. The step-log quota leases (ADR-0097)
+
+The revision of 2026-11-20 (D041-108, delegate OD-2026-11-20-6) takes every step-log charge off the tenant's
+`tenant_retained_usage` row. As built in the spike's second run, the charge went to the transaction's delta row and ADR-0027's
+deferred finalizer applied it at commit, holding the tenant's one usage row from its `SELECT … FOR UPDATE` to the end of
+the commit's WAL flush: measured on the hosted runners (D041-106), p50 1.1 ms and p99 4.0 to 4.5 ms per lock, busy 23% to
+24% of the time with one charge a step and 68% with two, so one tenant's charging commits passed it one at a time, about
+800 a second on that machine whatever the number of replicas. [ADR-0097](../adr/ADR-0097-the-step-log-quota-is-charged-to-exact-per-tenant-leases-never-to-the-usage-row-at-commit.md)
+(Proposed) replaces that charge with exact per-tenant leases; data-model.md §3b gives the table, the functions and their
+statements.
+
+- **Leases.** `step_log_quota_leases (tenant_id, lease, granted, used)`, at most 256 a tenant, and
+  `tenant_retained_usage.step_log_leased_bytes` (G) beside `step_log_bytes` (S, the folded usage). The tenant's usage is
+  U = S + Σ `used`; its leased room R = Σ (`granted` − `used`).
+- **A charge** (the statement trigger of the line rows, once per insert statement and tenant, with what
+  `sagat_quota_measure` measures from the rows stored) takes the content, log and step-log policy fences shared, reads the
+  limit L and, without a lock, S and G, refuses when S + G > L (a lowered limit), and adds its bytes to one lease with
+  room taken `FOR UPDATE SKIP LOCKED`, starting at the backend's own slot. It never locks the usage row and never waits for
+  a lease.
+- **A refill**, when no free lease has room, locks the usage row (the only wait of a charge), reclaims the room of every
+  lease no open transaction holds when the free room is under max(*n*, 1 MiB), folds the free lease with the least room,
+  grants it max(*n* − its room, min(1 MiB, (L − S − G) / 64)) when that fits under L, and charges it; with all 256 leases
+  held by open transactions it charges S under the row. Otherwise it raises `tenant_step_log_quota_exceeded`.
+- **A release** (the purge's and the delete route's `DELETE`, unchanged: per-row delta and deferred flush) folds every
+  lease of the tenant in the finalizer's step-log branch, waiting for each in lease order, then applies its negative delta
+  to S. Only a release waits for a lease, and a lease holder never waits for anything a release holds before its leases.
+- **Exactness.** A charge moves bytes from R to U and changes neither S nor G; a grant commits only with S + G ≤ L; so
+  U ≤ S + G ≤ L at every commit: the usage never exceeds the limit in force when the charge was admitted, ADR-0027's
+  exactness today, with no overshoot to bound. A charge can be refused while room exists only in leases that open
+  transactions hold, at most that room and only until they end; near the limit a grant is at most 1/64 of the free room.
+  Such a refusal is a counted drop (`tenant_quota`), never an overshoot (G041-023).
+- **Where a refusal lands.** The charge runs in the insert's statement trigger, so a refusal raises at the insert, not at
+  the commit: T8 of a batch (mapped to `RETRY_LATER`, as T10's finalizer refusal was) and CD of a carry (mapped to
+  `StoreError::StepLogRefused`, the same downgrade re-run as before, section 2a). The script marker's insert raises the
+  same way and is counted `skipped_quota`.
+- **What it costs** (the budget lines, pinned by `step_log_leases_tests.rs::a_step_log_insert_costs_its_budget_line` on the
+  prototype and by T041-36's equalities on the built carry): an insert charged into a free lease writes one lease row and
+  no usage or delta row, runs six nested statements for its charge (the transition-table read, the charge call, the three
+  fences in one statement, the limit's read, the unlocked read of S and G, the lease update) besides the one foreign-key
+  check per stored row, and queues no deferred call for the commit; a refill adds one write of the usage row and the lease
+  rows it folds or reclaims. A report that stores output still takes the usage row at its commit for the content class,
+  as ADR-0027 does today (G041-024).
+
 ### 3. Storage
 
 Two tables, in one migration of T041-5 (data-model.md §2 gives the DDL): `step_log_streams` (one row per stream, with
 its counters and expiry) and `step_log_lines` (one row per stored line or marker), with a run-scoped and a
 stream-scoped read index.
+
+**What a write costs, measured (D041-107, D041-111).** At 1 replica and 16 workers on the hosted runners the carry's
+fences, stream lock and policy read cost nothing measurable, its stream row 5.0% of the completion rate (+2.1 ms of p50)
+and its ten line rows 2.2% more (+1.3 ms); storing the lines without the secondary indexes, without the foreign key, as
+one chunk row or unlogged moved the rate by less than the noise, while a chunk row wrote 33% less WAL
+(validation-report.md, 2026-11-20). So the lines stay one row each, which the readers, the purge's per-row release and
+the cursor rely on, and the stream row is cut instead: a carry that creates its stream inserts it once, with the
+counters, final mark, expiry and order guard its plan computed, and updates nothing (section 2a); the table has no run
+index (a run's streams are read through the `(tenant_id, run_id, …)` prefix of its attempt key and sorted by
+`stream_id`); and its expiry index is keyed on `expires_day`, the whole days since the Unix epoch of `expires_at`, a
+stored generated column, with a fill factor of 70, so that a batch or a carry on an existing stream that keeps the day
+changes no indexed column and is a HOT update (no new index entry). Chunk rows were rejected (D041-111): they would
+change the read paths, the cursor, the markers and the release for WAL alone.
 
 **No foreign key to `runs` or `steps`.** An insert that references `runs` takes `KEY SHARE` on the run row, which
 conflicts with the `FOR UPDATE` the engine holds while it leases or completes. The run's existence in the tenant is proven
@@ -1130,7 +1216,8 @@ way to remove lines early.
 A housekeeping pass (`crates/scheduler/src/passes.rs`, beside `purge_script_records`, through a new method of
 `MaintenanceStore`, `crates/application/src/maintenance.rs:117`) removes lines in two steps:
 
-1. **Mark.** Streams with `removed_at` null and `expires_at` past (`step_log_streams_expiry_idx`) are locked
+1. **Mark.** Streams with `removed_at` null, `expires_day` at most today's and `expires_at` past
+   (`step_log_streams_expiry_idx` on `expires_day`, the exact time rechecked) are locked
    `FOR UPDATE SKIP LOCKED`, a page at a time, and get `removed_at`. From then on readers show the stream as expired and
    return none of its lines, and T4 of the ingest answers `REMOVED` (and CC of a carry stores nothing) under the same
    row lock, so no batch or carry can add a line to a stream whose removal has begun. The delete route sets `deleted_at` and `removed_at` together.
@@ -1920,6 +2007,17 @@ Slice A, decisions, contracts and the spike:
     the verdict are kept as the run's artifact. The "quiet" precondition reads there as "a dedicated runner, nothing
     else running": every round on it counts as quiet. The acceptance rule is unchanged. A job whose rounds are void is
     run once more; at most two jobs.
+  - **Third run** (after the second run failed at 1 × 16, D041-105, and the diagnoses D041-106 and D041-107; its rule is
+    fixed here before any of its rounds). The prototype changes to the revision of 2026-11-20 (`SAGAT_PERF_STEP_LOG_CARRY_RUN=3`,
+    `step_log_spike::install_leases` and `install_third_run_storage`): the step-log charge goes to the tenant's exact
+    leases (ADR-0097; the statement trigger calls the charge, no deferred flush), the carry tries the tenant's quota
+    class fences in CA, writes a new stream once and its lines (no update), the stream has no run index and its expiry
+    index is keyed on `expires_day` with a fill factor of 70 (D041-111). Every pool of a row is filled before the row is
+    measured and closed at its end, a failed call prints its time and its pool's state, and each round keeps the
+    server's log (D041-110). Everything else is the second run's: the workloads, the round's order, the declared
+    environment (D041-102), four runners of three rounds each judged in the fixed order of D041-104, the validity rule,
+    gates (1), (2b), (3) and (4) with their thresholds and the median-of-three rule (D041-109). A job with fewer than
+    three valid rounds is not decided and may be run once more.
   Refs: NFR-041-PERF, SC-041-001, SC-041-007
   Owner-gate: OD-2026-11-19-1, OD-2026-11-20-1
   Files: modify `tests/performance/scalability-ha/{main.rs,step_log_spike.rs}`, `tests/Cargo.toml` (the opt-in feature),
@@ -2018,22 +2116,32 @@ Slice B, the server stores:
   `tests/integration/workflow-primitives/{release_upgrade.rs,release_upgrade_inflight.rs,release_upgrade_callback_cutover.rs}`.
 - [ ] T041-5 The migration of data-model.md §2 to §4, named `<timestamp>_step_logs`: the two tables (with
   `step_log_streams.last_stored_xid`, which the guard trigger also keeps from being lowered or cleared, section 2a; and
-  a constraint name of their own for every raise of the finalizer's step-log branch, so that the store maps them to one
-  typed refusal), their indexes (the
-  run index and the stream index), the no-update trigger on lines and the guard trigger on streams; the rest of the
+  a constraint name of their own for every raise of the lease functions and the finalizer's step-log branch, so that the
+  store maps them to one typed refusal), their indexes (the lines' run and stream read indexes; on streams no run index,
+  and the expiry index on the stored generated `expires_day`, with a fill factor of 70, D041-111), the no-update trigger
+  on lines and the guard trigger on streams; the rest of the
   ADR-0027 Amendment's accounting (data-model.md §3) except its locking accessor `sagat_quota_lock_step_log_usage`, which
   is not built, with the manifest test taught the class
   and the kind; the quota triggers on `step_log_lines` in the shape of the proposed amendment of 2026-11-20 (O041-040,
-  OD-2026-11-20-1): a statement-level `AFTER INSERT` trigger over the transition table charging each tenant once per
-  statement, a per-row `AFTER DELETE` release, and the deferred flush queued by a constraint trigger on
-  `quota_transaction_deltas` `AFTER INSERT … WHEN (NEW.step_log_delta <> 0)`, each `ENABLE ALWAYS`, with the manifest
-  test taught that shape for the class `step_log`; the storage-classification entries with the migration as owner
+  OD-2026-11-20-1) as ADR-0097 (D041-108) changes it: a statement-level `AFTER INSERT` trigger over the transition table
+  charging each tenant once per statement to its exact leases (data-model.md §3b: `step_log_quota_leases`,
+  `tenant_retained_usage.step_log_leased_bytes`, `sagat_quota_step_log_charge`, `sagat_quota_step_log_refill`, the
+  release branch of the finalizer that folds the leases), a per-row `AFTER DELETE` release, and no deferred flush on
+  insert, each `ENABLE ALWAYS`, with the manifest test taught that shape for the class `step_log`; ADR-0097's tests: the
+  invariants I1 to I5 under a property test of random interleavings of charges, refills, reclaims, releases and limit
+  changes, the held-lock tests (a held lease skipped and never waited for; a charge into a free lease never takes the
+  usage row; a refill alone waits for it; a release waits for a held lease and then folds it), the exact remainder
+  admitted from idle leases near the limit and one byte more refused, a lowered limit stopping charges into leases with
+  room, the runtime-role bypass tests extended to the lease table and functions, a source-text check that only the
+  refill and the release branch lock `tenant_retained_usage` for the class `step_log`, and the budget line of a charged
+  insert (one lease row, no usage or delta row, six nested statements for the charge besides the foreign-key checks, no
+  deferred call), on the pattern of `step_log_leases_tests.rs`; the storage-classification entries with the migration as owner
   path; grants, with `sagat_quota_step_log_allowance` revoked from `PUBLIC`; a down that refuses while a line exists and otherwise restores
   what it replaced. It follows `.claude/skills/migration`; the upgrade-boundary oracle moves to it in the three files
   of T041-4. Tests, in `tests/integration/claim-transition-efficiency/step_log_isolation.rs`: the migration's up and
-  down, on the pattern of `undo_to`; the finalizer's new branch raises at the limit and charges 128 bytes for an empty
-  line; an insert of 10 lines adds one charge of their text plus 1,280 bytes and queues one flush, and a purge of them
-  releases the same, and a property test that the charge of any inserted lines equals the release of their delete
+  down, on the pattern of `undo_to`; the lease charge raises at the limit and charges 128 bytes for an empty
+  line; an insert of 10 lines adds one lease charge of their text plus 1,280 bytes and queues no flush, and a purge of
+  them releases the same, and a property test that the charge of any inserted lines equals the release of their delete
   (Unicode, JSON fields, NUL-replaced text); the statement-level trigger function is `SECURITY DEFINER` with a pinned
   `search_path` and executable by neither `PUBLIC` nor `sagat_app`; a script log, a dispatch error and a connector error are stored in full under `tenant_log_bytes` while the
   tenant is at its step-log limit; every function the migration creates or replaces (`sagat_quota_step_log_allowance`,

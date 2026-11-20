@@ -523,3 +523,40 @@ that with a batch per step; at 1 × 16 neither row reaches the cap.
 Recorded, no threshold: rounds 4 and 5 of the second job (D041-105) stopped with `complete: Unavailable` at 8 × 128; the
 benchmark's replicas acquire a connection with a 2-second timeout (`tests/support/engine.rs:764`), which a 2.1 s
 completion p99 (round 9's (f) at 8 × 128) can reach. Not checked further.
+
+## 2026-11-20 — The carry's cost, broken down (D041-107)
+
+**Result: at 1 × 16 the carry's policy fences, stream lock and policy read cost nothing measurable (0.996 of the rate
+with capture off); writing the stream row costs 5.0% of the rate (+2.1 ms of completion p50); the ten line rows cost 2.2%
+more (+1.3 ms). How the lines are stored (no secondary index, no foreign key, one chunk row, an unlogged table) changes
+the rate by less than the noise (0.969 to 0.981 of the stream-only row against 0.978 for the design's rows) but changes
+the WAL: 7,874 bytes a commit for the design's rows, 6,980 without the secondary indexes, 5,280 as one chunk row.** Not a
+gate; the figures support D041-111.
+
+Run 44741773762 at `5af7c9d2` on `perf/041-diag-cost`: four `ubuntu-latest` runners, each `step_log_carry_diag` with
+`SAGAT_PERF_DIAG_SET=cost`: three repetitions of eight rows at 1 × 16 (twelve paired blocks), every row with output `{}`
+and the step-log charge `none`, so only the carry's storage differs; then (a) and (g) at 8 × 128 twice each with the
+pools not filled first (`-cold`). The carry function reads a mode at its start in every row; the modes were proved to
+write only their storage by `step_log_leases_tests.rs::each_carry_mode_of_the_cost_breakdown_writes_only_its_storage`.
+
+| Row (1 × 16, medians of 12) | Rate | p50 / p99 (ms) | WAL a commit | Rate / off-{} [min, max] | Against the row before |
+|---|---:|---|---:|---|---|
+| off-{} | 289.7/s | 24.4 / 55.8 | 4,172 B | 1 | |
+| `c-locks`: fences, stream lock, policy read | 286.8/s | 26.2 / 62.3 | 4,265 B | 0.996 [0.741, 1.078] | |
+| `c-stream`: + the stream row (insert, then update) | 264.9/s | 27.8 / 65.9 | 4,895 B | 0.919 [0.876, 1.007] | / `c-locks` 0.950, p50 +2.11 ms |
+| `c-full`: + ten line rows (the design) | 254.0/s | 29.6 / 78.1 | 7,874 B | 0.901 [0.813, 0.937] | / `c-stream` 0.978, p50 +1.27 ms |
+| `c-noidx`: lines without the two secondary indexes | 260.3/s | 28.2 / 71.3 | 6,980 B | 0.913 [0.871, 0.962] | / `c-stream` 0.981 |
+| `c-nofk`: lines without the foreign key | 265.9/s | 28.6 / 78.2 | 7,946 B | 0.914 [0.760, 1.037] | / `c-stream` 0.976 |
+| `c-chunk`: one row holding the ten records | 259.4/s | 28.1 / 70.0 | 5,280 B | 0.917 [0.683, 0.957] | / `c-stream` 0.981 |
+| `c-unlogged`: the lines unlogged (a measurement point only) | 252.7/s | 28.7 / 66.0 | 5,245 B | 0.895 [0.841, 0.943] | / `c-stream` 0.969 |
+
+The stream row of a short step is written twice in one transaction: inserted, then updated with its counters, its final
+mark and its expiry. `expires_at` is a key of `step_log_streams_expiry_idx`, so the update is not HOT and adds a heap
+tuple and an entry in each of the table's five indexes that cover it, and it fires the table's guard trigger.
+
+The `-cold` rows: sixteen rows of (a) and (g) at 8 × 128 with empty pools all completed (no `Unavailable`, no
+`spike-failure-json`; rates 74 to 145 a second, completion p99 512 to 2,717 ms), so the cause of D041-105's rounds 4 and
+5 did not recur and stays unknown (D041-110). The servers' logs hold 1,075 `canceling statement due to lock timeout`
+errors (9 in shard 2, 1,066 in shard 3), every one a `COMMIT` of an ingest transaction (its 200 ms lock timeout) waiting
+on the tenant's `tenant_retained_usage` row in the finalizer (`INSERT … ON CONFLICT DO NOTHING` or `SELECT … FOR UPDATE`):
+at 8 × 128 the usage row turns batches away, which the leases of ADR-0097 remove.

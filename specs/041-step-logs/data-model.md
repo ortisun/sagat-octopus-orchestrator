@@ -63,6 +63,10 @@ CREATE TABLE step_log_streams (
     first_at              timestamptz,                     -- server time of the first recorded batch or carry
     last_at               timestamptz NOT NULL,            -- server time (clock_timestamp()) of the last recorded batch or carry
     expires_at            timestamptz NOT NULL,            -- last_at + retention_days, written with every batch and carry
+    expires_day           integer     GENERATED ALWAYS AS  -- whole days since the Unix epoch (UTC) of expires_at: the
+        ((floor(extract(epoch FROM (expires_at - '1970-01-01 00:00:00+00'::timestamptz)) / 86400))::integer) STORED,
+                                                           -- expiry index's key, so that an update keeping the day is
+                                                           -- HOT (D041-111); an immutable expression (no time zone)
     deleted_at            timestamptz,                     -- the delete route
     removed_at            timestamptz,                     -- removal began (purge mark or delete): no line is served
     purged_at             timestamptz,                     -- no line is left
@@ -85,9 +89,10 @@ CREATE TABLE step_log_streams (
     CONSTRAINT step_log_streams_retention_valid CHECK (retention_days BETWEEN 1 AND 365),
     CONSTRAINT step_log_streams_removal_order CHECK ((deleted_at IS NULL OR removed_at IS NOT NULL)
         AND (purged_at IS NULL OR removed_at IS NOT NULL))
-);
-CREATE INDEX step_log_streams_run_idx ON step_log_streams (tenant_id, run_id, stream_id);
-CREATE INDEX step_log_streams_expiry_idx ON step_log_streams (expires_at) WHERE removed_at IS NULL;
+) WITH (fillfactor = 70);                                  -- room on each page for HOT updates (D041-111)
+-- No run index (D041-111): a run's streams are read through the (tenant_id, run_id, …) prefix of
+-- step_log_streams_attempt_uniq, sorted by stream_id (a run has at most its attempts' streams and its script markers).
+CREATE INDEX step_log_streams_expiry_idx ON step_log_streams (expires_day) WHERE removed_at IS NULL;
 CREATE INDEX step_log_streams_removal_idx ON step_log_streams (tenant_id, stream_id)
     WHERE removed_at IS NOT NULL AND purged_at IS NULL;
 -- A BEFORE UPDATE trigger, enabled ALWAYS, refuses a change of tenant_id, stream_id, public_id, namespace_id, run_id,
@@ -194,6 +199,64 @@ function the migration creates or replaces keeps or has `SECURITY DEFINER`, its 
 before, which T041-5 tests. The down migration restores the four-argument `sagat_quota_add_delta` and the bodies of the functions it
 replaced.
 `step_log_lines.script_execution_id` is a `uuid`, fixed-size, so it is not in the manifest.
+
+## 3b. Exact leases of the step-log quota (ADR-0097, D041-108; T041-5)
+
+Every step-log charge goes to a lease; nothing of the class `step_log` goes to `quota_transaction_deltas.step_log_delta`
+on insert, so the deferred flush trigger `quota_transaction_deltas_step_log_flush` of §3 is **not** created, and a
+transaction that only stores step-log rows queues no deferred quota call.
+
+```sql
+ALTER TABLE tenant_retained_usage ADD COLUMN step_log_leased_bytes bigint NOT NULL DEFAULT 0;
+ALTER TABLE tenant_retained_usage ADD CONSTRAINT tenant_retained_usage_step_log_leased_nonnegative
+    CHECK (step_log_leased_bytes >= 0) NOT VALID;          -- validated by the next migration, as T041-4's CHECKs
+CREATE TABLE step_log_quota_leases (
+    tenant_id uuid     NOT NULL,
+    lease     smallint NOT NULL,
+    granted   bigint   NOT NULL DEFAULT 0,
+    used      bigint   NOT NULL DEFAULT 0,
+    PRIMARY KEY (tenant_id, lease),
+    CONSTRAINT step_log_quota_leases_lease_valid CHECK (lease BETWEEN 0 AND 255),
+    CONSTRAINT step_log_quota_leases_used_within CHECK (0 <= used AND used <= granted)
+);
+```
+
+S is `step_log_bytes` (the folded usage), G is `step_log_leased_bytes`; the usage is U = S + Σ `used` and the leased room
+R = Σ (`granted` − `used`). Invariants, each tested: (I1) the `CHECK`s; (I2) G = Σ `granted` of the tenant's leases, both
+written only while the usage row is locked; (I3) S ≥ 0, G ≥ 0; (I4) a grant commits only with S + G ≤ L after it; (I5) a
+charge commits only with S + G ≤ L for the L it read. L is the limit the finalizer's step-log branch works out
+(`quota_limits`, else `quota_ceilings`, else 1 GiB, bounded by the ceiling), read after the step-log fence.
+
+Three `SECURITY DEFINER` functions of ADR-0027's pattern (fixed `search_path = pg_catalog, pg_temp`, trusted owner,
+`REVOKE ALL … FROM PUBLIC`, no `EXECUTE` to `sagat_app`: only the statement trigger of §3 and the finalizer call them):
+
+- `sagat_quota_step_log_charge(tenant, bytes)`: one statement takes the content, log and step-log fences shared (in that
+  order, `pg_advisory_xact_lock_shared`); the limit; `SELECT step_log_bytes, step_log_leased_bytes` without a lock;
+  `S + G > L` raises `tenant_step_log_quota_exceeded`; `UPDATE step_log_quota_leases … SET used = used + bytes FROM (SELECT
+  lease … WHERE tenant_id = tenant AND granted - used >= bytes ORDER BY (lease + pg_backend_pid()) % 256 LIMIT 1 FOR UPDATE
+  SKIP LOCKED)`; no row: `sagat_quota_step_log_refill(tenant, bytes, L)`.
+- `sagat_quota_step_log_refill(tenant, bytes, L)`: `INSERT … ON CONFLICT DO NOTHING` of the tenant's usage row and its
+  `SELECT … FOR UPDATE`; when L − S − G < max(bytes, 1 MiB), every lease no open transaction holds (`FOR UPDATE SKIP
+  LOCKED`, lease order) gives its room back (S += `used`, G −= `granted`, both 0); the free lease with the least room
+  (`ORDER BY granted - used, lease … FOR UPDATE SKIP LOCKED`), else the lowest unused lease number, else, with all 256
+  held, a direct charge of S under the row (raising when S + G + bytes > L); the chosen lease is folded (S += `used`,
+  G −= `used`, `granted` −= `used`, `used` = 0) and granted g = max(bytes − room, min(1 MiB, (L − S − G) / 64), 0),
+  raising when g > L − S − G; then `granted` += g, `used` = bytes, G += g.
+- The finalizer's step-log branch (in `sagat_quota_flush_deltas`, ADR-0027's Amendment item 3), now reached only by a
+  release (a negative `step_log_delta` from the per-row `AFTER DELETE` trigger): after the fences and before the usage
+  row, every lease of the tenant `FOR UPDATE` in lease order (waiting), each folded (S += `used`, G −= `used`, `granted`
+  −= `used`, `used` = 0); then S += the delta, which stays ≥ 0 because every committed charge is folded.
+
+The usage the quota API shows for `tenant_step_log_bytes` and `sagat_quota_step_log_allowance(tenant)` returns are
+S + Σ `used` in one snapshot, without a lock. Lock order: L3 (the class fences, shared) → a lease (tried, `SKIP LOCKED`,
+except by a release) → L4 (the usage row, by a refill, a release and the content and log finalizer). No transaction
+holding a lease waits for a lease; only a release waits for one, and it holds no usage row while it does.
+
+Budget line of one insert statement of *k* step-log rows charged into a free lease (pinned by
+`tests/performance/scalability-ha/step_log_leases_tests.rs::a_step_log_insert_costs_its_budget_line` on the prototype):
+rows written one lease row, no usage row, no delta row; nested statements 6 for the charge + *k* foreign-key checks
+(`step_log_lines_stream_fk`); deferred calls at the commit 0. A refill adds one write of the usage row and one lease row
+(plus one per reclaimed lease near the limit).
 
 ## 4. Grants (the migrations' `DO $grants$` blocks)
 
