@@ -37,6 +37,18 @@ options.
 |---|---|---|---|---|
 | OD-2026-11-19-1 | O041-036, "Redesenhar (CompleteStep)" ("redesign (CompleteStep)"), option (d): cut what a step pays; the lines travel in the step's own `CompleteStep` (and `FailStep`) so that a short step needs no extra transaction, a long step still streams before its completion, and a new spike with the same criteria (rate at least 90%, completion p99 within +10%, tickets within half the pool) runs before the schema. O041-037 follows from it (T041-3 and T041-4 stay held; T041-3's 1.7 contract changes), recorded as decision D041-091 | owner | Decided | docs/designs/041-step-logs.md T041-3, T041-4, T041-5, T041-6, T041-8, T041-9, T041-14, T041-15, T041-16, T041-17, T041-18, T041-19, T041-20, T041-32, T041-35, T041-36 |
 
+## 2026-11-19 — Design 043: the last three owner questions
+
+Asked together with the other open recommendations on 2026-11-19 ("Há seis decisões pendentes, todas com recomendação
+… Aceitas todas como recomendado?"); the owner answered "Sim, como recomendado". The three of design 043 below; the
+three of feature 022 are recorded on its branch.
+
+| ID | Decision | Decided by | Status | Covers |
+|---|---|---|---|---|
+| OD-2026-11-19-5 | O043-005 (a), "Sim, como recomendado": an `inputSchema` with tuple positions (`prefixItems`, or `items` as an array) stays outside the supported subset in 0.3.0; in `enforce` such a version is refused at publication and refuses its starts, the inventory lists it, `report` publishes it, the 016 contract and the release notes say so, and tuples are designed into the subset later | owner | Decided | O043-005, D043-095, D043-110, specs/043-run-input-validation/research.md |
+| OD-2026-11-19-6 | O043-006 (a), "Sim, como recomendado": a repeat, trigger-now or private rerun refused on its input answers `/` and `other` to every caller, as built; no graded disclosure in 0.3.0 | owner | Decided | O043-006, D043-121, D043-144, D043-148, G043-040 |
+| OD-2026-11-19-7 | O043-008 (a), "Sim, como recomendado": ADR-0092 decision 6 is accepted: a release that makes the subset stricter ships `run-input-validation-v2`, required by the operator as v1 is, never a silent edit | owner | Decided | O043-008, ADR-0092 decision 6 |
+
 ## 2026-11-16 — Design 041 (step logs): the approval path and the answers to Q1 to Q8
 
 After the third approval run of design 041 the assistant listed every open finding with a question to the owner
