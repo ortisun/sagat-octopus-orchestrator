@@ -2,8 +2,9 @@
 
 **Status:** Proposed
 **Decided by:** agent under the owner's delegation OD-2026-11-20-6 ("decide for advantage"), design 041's D041-108,
-D041-112, D041-117 (the lease owned by its writer) and D041-119 (room made before the report, a fallback refill
-bounded by a budget); adopted by the coordinating session on 2026-11-20. Acceptance (D041-115): README rule 4 requires a person to accept, and
+D041-112, D041-117 (the lease owned by its writer), D041-119 (room made before the report, a fallback refill
+bounded by a budget), D041-120 (the bounded ensure, the ended-backend reclaim) and D041-121 (the second re-reads'
+answers); adopted by the coordinating session on 2026-11-20. Acceptance (D041-115): README rule 4 requires a person to accept, and
 the delegation does not stand in for that; the coordinating session puts this ADR to the owner with a recommendation once
 design 041's re-review has no Blocker or Major and task T041-35's fourth run, which measures decisions 1 to 4 and 5 to
 8 on the leases (decision 3b, the ensure, is measured by task T041-9), is recorded (question O041-042),
@@ -22,7 +23,7 @@ gate), together with the restated O041-040
   row on a refill);
 - in [ADR-0084](ADR-0084-step-logs-are-a-bounded-lossy-per-attempt-record-beside-the-journal.md) decision 7 ("MUST NOT
   fail, block, retry or delay a step beyond one bounded final flush"): a report may also wait for the ensure of decision
-  3b (a transaction of its own, under no run lock, with its own budget) and for the fallback refill of decision 4 (each
+  3b (a transaction of its own, under no run lock, under the fallback's budget) and for the fallback refill of decision 4 (each
   lock acquisition at most 200 ms); both are bounded delays, and neither fails, blocks or retries a step;
 - in [ADR-0095](ADR-0095-the-last-step-log-records-of-an-attempt-ride-on-its-report.md), decision 2 (a carrying report
   adds no transaction: it may add the ensure, before the report and under no run lock), decision 4 (a carry may delay a
@@ -129,10 +130,13 @@ ADR-0095 decision 4).
    The store counts the answer (`step_log_quota_ensures_total{outcome}`) and never fails or re-runs a report because of
    it. After `limit` or `held` the carry answers mark-only at once without a refill; after `busy`, `contended` or
    `error`, or a `made` whose room a reclaim took before the reservation, the carry may fall back and wait again, under
-   the run lock: a report waits on the usage row at most twice, once under no run lock and once under it. Every call
-   that charges or refills (the carry, the ensure, a batch, the script marker) returns the backend's pid, the room left
-   and the lease's last charge, and the store keeps the room per (backend pid, tenant) until 9 minutes after that last
-   charge or grant, under the idle interval. The ensure helps only with session affinity (direct connections or a
+   the run lock: for its step-log charge, before its commit, a report waits on the usage row at most twice, once under
+   no run lock and once under it (a report that stores output also takes the row at its commit, for the content class,
+   as today: design 041's gap G041-024). The carry and the ensure return the backend's pid, the room left and the
+   lease's age since its last charge or grant, computed by the database; the store keeps the room per (backend pid,
+   tenant) until 9 minutes after that last charge or grant, under the idle interval, aging it with its own monotonic
+   clock. A batch and the script marker return no room, so after one the store forgets that room and the next carrying
+   report runs the ensure. The ensure helps only with session affinity (direct connections or a
    session pooler): behind a pooler in transaction mode the ensure and the report can run on different backends, the
    report then falls back (design 041's gap G041-027), and this decision has no effect; the store counts those affinity
    misses and every fallback (decision 8). The first charge of every (tenant, backend), and the steady refills, are thereby made outside
@@ -232,8 +236,9 @@ ADR-0095 decision 4).
    backends on one slot during a deploy's overlap, sends charges to a lease another backend uses, and every such
    overlap answers busy); a slot token on every charging call; a replica's lapse waits for the idle interval instead of
    the ended-backend reclaim; and a deploy still starts new slots, so the cold-start herd stays. Backend keys are kept;
-   1c is the named alternative if task T041-9's pooler scenario shows fallbacks above the reopening threshold of
-   question O041-041 in the deployed topology.
+   1c is the named alternative if task T041-9's pooler scenario shows carry fallbacks
+   (`step_log_quota_fallbacks_total{caller="carry"}`) above 1% of carrying reports, or carries answered
+   `mark_only:busy` above the 0.1% that reopens question O041-041 (decision D041-121).
 1d. **A refill that never waits (`NOWAIT`) and answers mark-only when the row is busy** (D041-112): loses a tenant's
    records under load for no quota reason; replaced by the ensure of decision 3b and the bounded fallback of decision 4.
 1e. **A background refiller per replica** keeping every lease above a low-water mark: would take the refill off the
@@ -300,8 +305,8 @@ ADR-0095 decision 4).
   session affinity: near the limit, reclaims take room between the ensure and the report, and behind a transaction
   pooler the ensure may serve another backend, so fallbacks come more often (design 041's gaps G041-026 and G041-027;
   the owner chooses between this loss, failing and resending, and writing the records after the report commits,
-  question O041-041). After an ensure answered `busy`, the fallback can wait a second time, so a report waits on the
-  usage row at most twice, once under the run lock (decision 3b). Design 041's task T041-9 measures these regimes.
+  question O041-041). After an ensure answered `busy`, the fallback can wait a second time, so for its step-log charge,
+  before its commit, a report waits on the usage row at most twice, once under the run lock (decision 3b). Design 041's task T041-9 measures these regimes.
 - A carry that needs the fallback opens one subtransaction (its block, ADR-0095 decision 5): a second transaction id for
   that report; the refill and a carry with nothing to charge (no record and no marker planned) open none. Design 041's T041-9 reports the XID rate and `pg_stat_slru` for `subtransaction`
   near the limit and for many low-volume tenants.

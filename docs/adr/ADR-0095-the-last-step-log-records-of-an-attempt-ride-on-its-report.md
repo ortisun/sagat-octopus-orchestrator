@@ -102,7 +102,7 @@ Facts of the code that shape the change:
    D041-119) MUST NOT fail the report: the carry's block answers it in the same call with a mark-only final mark whose
    reason is `tenant_quota_busy`, counted and alerted, and the report lands. When the ensure before the report answered
    that the quota is full or held, the carry answers mark-only at once, without a refill; after any other answer the
-   carry may still fall back, so a report waits on the usage row at most twice, once under its run lock. Item 1 of ADR-0027's Amendment then reads "a step-log charge never blocks a terminal state: a report whose step-log rows
+   carry may still fall back, so for its step-log charge, before its commit, a report waits on the usage row at most twice, once under its run lock (a report that stores output also takes the row at its commit, for the content class). Item 1 of ADR-0027's Amendment then reads "a step-log charge never blocks a terminal state: a report whose step-log rows
    do not fit records them as dropped in the same call, and only a guard the call does not answer leads to a re-run without them". A report whose output or failure code holds a declared secret, root or
    scoped, and a report re-run for its retained content, write a mark-only carry.
 6. Within an attempt, stored lines MUST stay in sequence order under the read order of ADR-0084 decision 9 (storing transaction

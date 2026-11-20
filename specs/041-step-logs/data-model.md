@@ -260,8 +260,8 @@ limit editor the others.
   the room missing is in leases it could not lock (their room read without a lock) and `tenant_step_log_quota_exceeded`
   otherwise; then `granted` = g, `used` = bytes (0 when not `charge`), `charged_at` = now, G += g. With
   `step_log_enforcement_enabled` off, the charge skips its S + G ≤ L test and the refill its I4 check.
-- `sagat_quota_step_log_ensure(tenant, bytes) RETURNS TABLE (outcome text, writer integer, room bigint, charged_at
-  timestamptz)` (`EXECUTE` to `sagat_app`; the store calls it with the principal's tenant, after C1 to C3 and for a
+- `sagat_quota_step_log_ensure(tenant, bytes) RETURNS TABLE (outcome text, writer integer, room bigint, idle_for
+  interval)` (`EXECUTE` to `sagat_app`; the store calls it with the principal's tenant, after C1 to C3 and for a
   carry that will write records, in a transaction of its own on the report's connection before the report, under no
   run lock; decisions D041-119 to D041-121): `invalid` when `bytes` ≤ 0 or above the largest planned charge a valid carry can have (the
   attempt byte ceiling's maximum plus 128 for each of the attempt record ceiling's maximum rows and a marker);
@@ -272,7 +272,8 @@ limit editor the others.
   with `charge` false and `bounded` true, inside one `BEGIN … EXCEPTION` block of its own (its own transaction, not
   the report's): `made`, or `busy` (`55P03`), `held` or `limit` (the refill's refusals by constraint name). It never
   raises for these; it returns its answer, `pg_backend_pid()`, the writer's room after it and the lease's last charge
-  or grant (`charged_at`, from which the store ages its kept room). The `made` answer's writes run inside that block, so
+  or grant as an age the database computes (`idle_for` = `clock_timestamp() − charged_at`), which the store ages with
+  its own monotonic clock, so no clock is compared across machines. The `made` answer's writes run inside that block, so
   they take a subtransaction id. Any other error of its transaction is the store's answer `error`: the store rolls it
   back, counts it and proceeds with the report as if no ensure had run.
 - `sagat_quota_step_log_idle_tenants(max integer) RETURNS SETOF uuid` (`EXECUTE` to `sagat_app`; the purge pass): at most
@@ -289,7 +290,7 @@ limit editor the others.
   itself: holding a lease always means holding that fence, which the reclaim's `NOWAIT` relies on); otherwise, unless the
   quota is not enforced, S + G ≤ L read without a lock, and the writer's own lease with room ≥ bytes locked `FOR UPDATE
   SKIP LOCKED` for the transaction, nothing written; returns whether it found one, the lease's room and its last charge
-  (`RETURNS TABLE (reserved boolean, room bigint, charged_at timestamptz)`, decision D041-121: this is how the carry, a
+  (`RETURNS TABLE (reserved boolean, room bigint, idle_for interval)`, decision D041-121: this is how the carry, a
   `SECURITY INVOKER` function that cannot read the lease table, returns the room left, its room minus its charge; a
   carry that refilled in its fallback returns no room, and the store's next report runs the ensure). The carry's `bytes` is an upper bound of what CD's
   trigger will measure, computed before CC for either stream case: every sent record's `sagat_quota_measure` sizes plus 128
@@ -422,9 +423,11 @@ and drop metrics below; `step_log_lines_stored_total{level}`; `step_log_bytes_st
 `step_log_quota_refills_total{kind}` (`refill`, `reclaim`, `idle`, `ended`); `step_log_quota_ensures_total{outcome}`
 (`room`, `made`, `limit`, `held`, `busy`, `contended`, `invalid`, `error`; counted by the store);
 `step_log_quota_fallbacks_total{caller}` (`carry`, `ingest`, `marker`: a refill inside a report, a batch or the marker;
-counted by the store from the carry's `written:refill` or mark-only path and the refill's return); the counter
-`step_log_quota_ensure_affinity_misses_total` (a report whose carry returned a `writer` other than its ensure's;
-counted by the store; decision D041-121); `step_log_quota_refusals_total{cause}`
+counted by the store from a carry that took its block, that is a `stored` carry that returned no room or a `mark_only`
+carry with a non-null `cause`, never from a carry the application planned mark-only; from a batch's or a marker's
+refill when the call says it refilled); the counter
+`step_log_quota_ensure_affinity_misses_total` (a report whose carry returned a `writer` other than its ensure's, or,
+when no ensure ran, other than the pid the store keeps with the connection; counted by the store; decision D041-121); `step_log_quota_refusals_total{cause}`
 (`limit`, `held`, `busy`; counted by the store from the carry's cause, and, for a carry made mark-only by the ensure's
 `limit` or `held` answer, from that answer, which the carry's `p_mark_reason` cannot tell apart); `step_log_quota_refill_budget_exceeded_total{caller}`
 (`carry`, `ingest`, `marker`; counted by the store); the gauge `step_log_quota_lease_rows` (ADR-0097, §3b);
@@ -436,10 +439,10 @@ G041-016). Each label set is a
 closed enum with `ALL` and `as_str` in `crates/telemetry/src/metrics.rs`, built as `WorkflowPrimitiveOutcome` is
 (`metrics.rs:68-106`), with a test that every emitted value is one of the enum's. Owners: T041-36 the carries' and its
 `out_of_order` drop reason, and the lease, ensure, fallback, affinity, refusal and budget counters of the carry and the
-ensure (`caller="carry"`); T041-6 the ingest's metrics, with `caller="ingest"`; T041-13 `caller="marker"`; T041-5 the
-lease-row gauge and the refill counters counted inside SQL; T041-6 the ingest's metrics
-(batches, lines stored, bytes, drops, truncations, redactions, ingest seconds, lock timeouts, quota retries); T041-10 the
-purge's; T041-11 the gauge; T041-12 the tails'; T041-13 the markers'.
+ensure (`caller="carry"`); T041-5 the lease-row gauge and the refill counters counted inside SQL; T041-6 the ingest's
+metrics (batches, lines stored, bytes, drops, truncations, redactions, ingest seconds, lock timeouts, quota retries),
+with `caller="ingest"`; T041-10 the purge's; T041-11 the gauge; T041-12 the tails'; T041-13 the markers', with
+`caller="marker"`.
 
 SDK (local to the worker process, each SDK's own metrics facility or log): dropped records by reason (`report_deadline`,
 `buffer_full`,
@@ -536,7 +539,8 @@ RETURNS TABLE (outcome text, kept integer, dropped_by_worker bigint,
                writer integer,           -- pg_backend_pid(): the store keeps the room per (writer, tenant)
                room bigint,              -- the room left in the writer's lease after the call (from the reserve);
                                          -- null after a fallback refill, so the store's next report runs the ensure
-               charged_at timestamptz)   -- the lease's last charge or grant, from which the store ages the room
+               idle_for interval)        -- the age of the lease's last charge or grant, from which the store ages
+                                         -- the room with its own monotonic clock
 LANGUAGE plpgsql VOLATILE SECURITY INVOKER SET search_path = pg_catalog, public, pg_temp AS $$ … $$;
 REVOKE ALL ON FUNCTION sagat_step_log_carry(…) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION sagat_step_log_carry(…) TO sagat_app;

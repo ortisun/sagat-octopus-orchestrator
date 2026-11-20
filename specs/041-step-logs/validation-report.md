@@ -835,4 +835,10 @@ Then, for decision D041-121 (the answers to the second re-reads), each fix seen 
   assertion of `the_ensure_before_a_report_gives_the_carry_its_fast_path` now checks the answer `room` (before, a
   bounded ensure that waited answered `busy` within its budget and still passed). Under the mutation that test fails
   ("an ensure with room answers from the lease, without the usage row"), and so does
-  `the_ensure_answers_without_raising`; 33 of the 35 lease tests passed. After the restore a fresh build passed the whole performance test binary (51 tests, 10 ignored benchmarks).
+  `the_ensure_answers_without_raising`; 33 of the 35 lease tests passed.
+- **Refilling reports named apart** (point 9 of decision D041-121, after the confirmation re-reads):
+  `only_a_carry_that_needs_a_refill_opens_a_subtransaction` now also checks the report's `application_name` after a
+  refilling carry and after a fast-path one. Before the change it failed ("x" against "x:refill"); with the slow path
+  naming the report `<application>:refill` for the rest of its transaction it passes. The judge was run on synthetic
+  rounds: a round without its (d) row is void ("d missing"), and with three complete rounds it prints the medians of
+  the (2b) attribution (i) and (ii). After the restore a fresh build passed the whole performance test binary (51 tests, 10 ignored benchmarks).
