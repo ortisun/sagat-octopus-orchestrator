@@ -2372,12 +2372,17 @@ Slice A, decisions, contracts and the spike:
       `complete_minus_carry_p99_ms` minus off-1K's p99 meets the allowance, removing the carry's own time could close
       the gap (an upper bound: a lever recovers only part of it): the lever it names, the lines' p99 among the carry's
       statements (section 3's chunk rows, decision D041-111), is first measured by a diagnosis (`perf/041-diag-*`), and
-      becomes a design change, reviewed again, only if its measured reduction covers the excess; task T041-5 waits.
+      becomes a design change, reviewed again, only if its measured reduction covers the excess, and otherwise takes
+      (iii)'s consequence; task T041-5 waits.
       (iii) Otherwise the cause is outside the carry's own time: the commit queue on the tenant's usage row (the content
       class's, gap G041-024) and the runner's load. It is not attributable to one design lever by this run: recorded
       as not decided for (2b) at 8 × 128 with those figures, and reported to the coordinating session for the owner
       with the environment question (decision D041-109); task T041-5 waits for the owner's answer. A row without an
-      attribution (its tagged count differs) makes (2b) at 8 × 128 not decided, with (iii)'s consequence. No
+      attribution (its tagged count differs) makes (2b) at 8 × 128 not decided, with (iii)'s consequence unless the
+      refill share alone already gives (i), which then takes precedence. The one-half threshold of the refill share
+      detects only a dominant refill queue, since most commit waits of (a) are the content class's queue, which off-1K
+      has too; a smaller refill queue falls to (ii), whose diagnosis is therefore run with the in-report refills
+      counted beside it. No
       expectation is declared among (i) to (iii): the earlier runs did not measure these figures.
     - Gate (1) or (3) failing at 8 × 128: a design change, reviewed again before task T041-5 starts.
     - Gate (4) failing at either size: the ingest's ticket sizing of task T041-31, reported with the service time; a

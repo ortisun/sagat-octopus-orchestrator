@@ -55,3 +55,12 @@ run.
 
 Not taken: Minor 4 (the new queue test reads `pg_stat_activity` from another backend, which is what the sampler relies on); Nit 1 (the markdown table of a round, whose JSON carries the field).
 
+## The second narrow re-read of the design critic (18898a98)
+
+`egm-design-narrow-2.md`, saved verbatim: 0 Blocker, 0 Major; both Majors of the first narrow re-read closed. Taken:
+Minor 1 (the one-half threshold's basis stated: it detects only a dominant refill queue), Minor 2 (a diagnosis that
+falls short takes (iii)'s consequence), Minor 3 (the refill share alone takes precedence over a void attribution),
+Minor 4 (three queued waiters, each counted once; a hand mutation to `count(c.waiter)` fails it, (3, 4) against
+(3, 3)), Nit 1 (52 tests). Not taken: Nits 2 to 5 (wording of the queue, the depth cap, the sampler's cost, the judge's
+key names), which change no figure the rule reads.
+

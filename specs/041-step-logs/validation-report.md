@@ -847,4 +847,8 @@ Then, for decision D041-121 (the answers to the second re-reads), each fix seen 
   `spike041carry:refill` and queues two `COMMIT`s behind it in turn (each through a deferred trigger that updates the
   row, each seen waiting in `pg_stat_activity` before the next). On the sample that counted only the immediate
   blocker it failed: (2, 1) against (2, 2), the second waiter being blocked by the first. With the blocking chain
-  followed it passes. After the restore a fresh build passed the whole performance test binary (51 tests, 10 ignored benchmarks).
+  followed it passes. After the second narrow re-read it queues three: a hand mutation that counts chain rows instead of distinct
+  waiters (`count(c.waiter)`) fails it, (3, 4) against (3, 3), the third waiter reaching the holder by two paths;
+  restored, the whole performance test binary passes (52 tests, 10 ignored benchmarks), on commit `18898a98` plus this
+  change. The lease tests are run by hand (they need `--features perf-spike` and a database); the gate job builds the
+  binary and runs only the rounds. After the restore a fresh build passed the whole performance test binary (51 tests, 10 ignored benchmarks).
