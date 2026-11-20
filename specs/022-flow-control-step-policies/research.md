@@ -626,6 +626,61 @@ taken after `git grep D022-04` on every `origin/*` branch.
   unleased (`ENDED`). A pause or resume locks the keys of its returns and of the run's waiters in one sorted pass before
   it writes any (correctness review M1 of 2026-11-20). Hold for review, cancellation and run end gave back already (the
   step leaves `READY`); T022-100 adds their tests. The exception to ADR-0094 decisions 2 and 3 is ADR-0096 (accepted 2026-11-20, OD-2026-11-20-2).
+- **D022-049 — A run's start is admitted through one helper and projected on the run (T022-022, T10; FR-022-018,
+  FR-022-021, FR-022-059; D022-031; 2026-11-20).** Every creator on the tree (the start API with reruns, schedule
+  firings, with-start, batch and ad hoc admission through `RunService::finish_start`; event and cron triggers in
+  `scheduler/events.rs`; child nodes in `scheduler/passes.rs`) starts a created run through `Engine::start`, and
+  `execution::start_run` and `start_run_delayed` refuse a definition that gates its start, so a creator that bypasses
+  the helper fails closed instead of starting ungated. The helper evaluates the start key over the input (a key that does
+  not evaluate or exceeds 256 bytes ends the run `FAILED`/`EXPRESSION_ERROR` at once, D1180) and asks the adapter
+  (`RunTx::decide_run_gates`) to file and lock the key after the run's row (slot 7), count it, and write a holder or a
+  waiter row; the reservation rule of D022-021 applies (holders plus waiters below the limit). Refusals are synchronous:
+  the key's waiter ceiling `CONCURRENCY_QUEUE_FULL`; `queued_runs`, the live keys or a zero effective limit or timeout
+  `FLOW_CONTROL_LIMIT`; nothing of the run exists. The gates of the start are projected on `runs.flow_control_gates`
+  (migrations `20270203000000`, `20270203000100`), written by `persist` only in a transaction with a run-scope gate event
+  and read with the run's row (no statement more on the plain path), so a finished run keeps what its gates ended as and
+  `verify_run` compares the journal, the projection and the rows (invariants 1 and 2 for the start). The grant (T26) and
+  timeout (T27) routines serve run waiters through the same adapter code as step waiters (`node` is `None`; scope
+  `RUN`); a queued start that times out fails the run directly (`time_out_run_gates`). Run-scope outcomes are counted at
+  scope `run`. A start's `rateLimit` stays refused (`BINARY_CAPABILITY_MISSING`) until T022-072; a delayed start and a
+  reset of a definition that gates its start are refused `BINARY_CAPABILITY_MISSING` rather than started ungated
+  (G022-009), and so is a definition with a start gate and a `forEach`, `while` or `repeatUntil` node, whose finish paths
+  end the run without the reducer and would never give the permit back (reviews of 2026-11-20, B1; lifted by G1197).
+  **Supersedes the placement of D022-031** and the words "inside `PgRunStore::create`" of FR-022-059 (delegated by
+  OD-2026-11-20-6; architecture review B1 of 2026-11-20): the key is an expression over the run's input that only the
+  application evaluates, and the decision is journaled through the domain's start functions, which `create` cannot call;
+  ADR-0056 decision 3 asks for "one application port that every run creator calls", which `Engine::start` is. What
+  FR-022-059 protects (no creator starts a run past the gate) is kept by three layers: `PgRunStore::create` still refuses a
+  gated definition a process does not run the gate for; the domain refuses a gated definition in `start_run`,
+  `start_run_delayed` and `record_reset`; and `scripts/check-architecture.py` (`run_start_errors`) refuses a call of a
+  domain start function outside `Engine::start`. The approved text of FR-022-059 is revised with G022-007.
+- **D022-050 — Decisions delegated by OD-2026-11-20-6 while building T022-022 (2026-11-20).** Each weighed every option
+  and took the one with the most architectural and business advantage:
+  1. *Where the start gate runs:* `Engine::start` (D022-049), over `PgRunStore::create` (it cannot evaluate the key or
+     journal) and over a gate in each creator (the "guard each caller" shape ADR-0089 rejected).
+  2. *A start gate with a collection or a loop:* refuse at admission until G1197 routes their finish through the reducer,
+     over failing the run at its finish (a run that worked for nothing) and over building the routing now (G1197 is the
+     slice's next item and changes the same paths for a gated successor: one change, not two).
+  3. *`queued_runs` without a counter:* count the waiter rows unlocked until T022-105's trigger-kept usage rows
+     (FR-022-058, the approved design), with the bound stated (at most the concurrent queuing admissions), over a namespace
+     row lock, which would serialize every queuing admission of a namespace, the throughput the feature exists for
+     (G022-011).
+  4. *Admission counts every waiter of the key, the grant routine only eligible ones:* kept. A new arrival never takes a
+     permit ahead of any waiter (D022-021); a waiter that is paused, past its deadline or orphaned is served or removed
+     by the next pass, so the stricter count costs at most one tick.
+  5. *The start's decision code beside the step's:* one shared core is built with T022-072, the change that gives a start
+     its second gate, so that it is designed against both gates of both levels at once (G022-012).
+  6. *Signal- and Update-with-Start of a start that queues:* hold the signal or update with the queued run and deliver it
+     at the grant (FR-022-018 treats a with-start as an ordinary admission), over refusing every with-start of a gated
+     definition (load-independent, but it loses the feature). Until built, the existing typed refusal
+     (`SIGNAL_NOT_ACCEPTED_AT_START`, nothing created) stands (G022-010).
+  7. *The refusal code of a path not built:* `BINARY_CAPABILITY_MISSING` (503, retryable), as for every other gated path
+     this build does not run, over a new non-retryable reason that would become dead with the path; no process lists the
+     capability, so no production client meets it (G022-009).
+  8. *Lock order of a commit that ends a gated run:* lock the run's active-run counter row first through the
+     `SECURITY DEFINER` `run_active_counts_lock_slot` (ADR-0050 slot 6 before slot 7), over moving the returns after the
+     run row (it would lock a key after the usage rows of slot 8b, D022-038). One statement, only in a commit that ends a
+     run with a flow-control event.
 
 ## Gaps
 
@@ -658,7 +713,7 @@ taken after `git grep D022-04` on every `origin/*` branch.
 | G1185 | A key label is an online oracle: a caller who may see labels and start runs can confirm a guessed key value by the label it gets (like G1171). FR-022-057 limits labels to callers who may disclose the key's source. | Accepted; documented |
 | G1186 | Review findings not relayed to this author (architecture N2–N5, security three nits, correctness N2) are not addressed in this revision; the review records say so. | Open |
 | G1187 | The namespace-level warnings `CONCURRENCY_LIMIT_MISMATCH` and `RATE_LIMIT_MISMATCH` need the declarations of the other published definitions of the namespace; the codec cannot see them and no store keeps them yet. *Closed 2026-11-16 (D022-041): the declarations table and the publication check; proved by `integration_flow_control_step_policies::publication`.* | Closed |
-| G1188 | `RunState::restore` (a run rebuilt from its projection) does not restore gate state. No stored run has any in this build (admission refuses gated definitions; the projection writer refuses a gated step's wait). *Partly closed 2026-11-19 (D022-044): a step's gates are restored from `steps.flow_control_gates`; a run's start gates are not (T022-022).* | Open; T022-022 |
+| G1188 | `RunState::restore` (a run rebuilt from its projection) does not restore gate state. No stored run has any in this build (admission refuses gated definitions; the projection writer refuses a gated step's wait). *Partly closed 2026-11-19 (D022-044): a step's gates are restored from `steps.flow_control_gates`; a run's start gates are not (T022-022).* *Closed 2026-11-20 (D022-049): a run's start gates are restored from `runs.flow_control_gates`.* | Closed |
 | G1197 | The collection- and loop-finish paths (`crates/infra-postgres/src/primitives.rs`, `loop_progress.rs`, `crates/scheduler/src/passes.rs`) write their successor's step row directly: a gated root successor of a `forEach` or a loop is refused there (`RuntimeNotIntegrated`, fail closed; the finish is retried) instead of being decided. Corrected 2026-11-19: the first text said they refused an unexpected evaluation, which was true only for an `end` successor. | Open; T022-096 follow-up |
 | G1198 | No deployment configuration carries the digest keys (`KeyRing`) to the stores of the control plane and the engine: a gated step is refused `BINARY_CAPABILITY_MISSING` without them. Lands with the capability listing (D022-037). *Extended 2026-11-19 (D022-045): a scheduler replica needs the ring too; without it the grant pass grants nothing (`unsupported`) and keeps its keys due; the timeout routine does not need it.* | Open; capability listing |
 | G1199 | The readiness gate applies the declared `limit` and `queueTimeout`; the namespace's `concurrency_limit` and `flow_control_queue_timeout_ms` ceilings (`FlowControlCeilings`) are not read there yet, nor the live-keys ceiling (`FLOW_CONTROL_LIMIT` of FR-022-054) or a waiters-per-key bound (security review of 2026-11-19, Major): with distinct keys a caller can create key rows without bound in one namespace. No process may list the capabilities before these are applied. *Partly closed 2026-11-19 (D022-045): the namespace limit, queue timeout and live-keys ceilings apply at readiness (`FLOW_CONTROL_LIMIT`); step waiters are bounded by the plan per run and gated node, not per key. Open: a namespace ceiling of rate-limit keys and values (T022-077); run waiters per key (T022-022, T022-072).* | Open; T022-077, T022-022 |
@@ -670,6 +725,10 @@ taken after `git grep D022-04` on every `origin/*` branch.
 | G022-006 | The digest-key commands (activation, force, listing) are SQL functions with no audited API, CLI, span or metric (NFR-022-005, constitution VI; security review of 2026-11-20, finding 4); the force's history is append-only only for roles that may not drop its trigger, and a deployment where operators share the schema owner's login records whatever name they type and can retire a version by a direct `UPDATE` with no record (finding 5). The runbook tells operators to use their own login and never to edit the table by hand. | Open; T022-061, T022-082; a dedicated operator role |
 | G022-007 | FR-022-021 says "pausing a holder MUST NOT release its permit", and FR-022-019 counts a granted, unleased step as a holder, while FR-022-046 says a pause returns the permit and slot of a granted, unleased step: the approved texts disagree for that case; the build follows FR-022-046 (D022-048). T022-025's "pause keeps permit" holds for a leased step and a run holder. `data-model.md` ("Steps and their gates", invariant 11) does not say that a step a pause gave back waits with no waiter row. Revised when the approved texts are next re-approved. | Open; re-approval of the texts |
 | G022-008 | A step queued when its run pauses keeps its waiter row and its deadline, which runs during the pause: a long pause can fail it `CONCURRENCY_WAIT_TIMEOUT` or `RATE_LIMIT_WAIT_TIMEOUT` (the timeout routine does not look at the pause), while a step granted before the pause waits with no deadline (correctness review 4 and architecture M2 of 2026-11-20). Not introduced by T022-100. | Open; O1175 (a) accepted without option (c) (OD-2026-11-20-2), so the deadline rule is a later decision |
+| G022-009 | A start delay or a reset of a definition that gates its start is refused `BINARY_CAPABILITY_MISSING` (D022-049): the plan says the gate is decided at the delay's release, and a reset takes a fresh permit or is refused `CONCURRENCY_PERMIT_UNAVAILABLE` (never queues); neither is built. A child node whose run's start is refused (`CONCURRENCY_QUEUE_FULL`, `FLOW_CONTROL_LIMIT`) is retried by the next pass instead of failing its node with the typed retryable code (T022-102). | Open; T022-064, T022-102 |
+| G022-010 | A Signal- or Update-with-Start of a definition whose start queues is refused `SIGNAL_NOT_ACCEPTED_AT_START` (no step waits while the entry is held), so the outcome depends on the key's load (correctness review M2 of 2026-11-20). Chosen design (D022-050 item 6): hold the signal or update with the queued run and deliver it at the grant. | Open; T022-064 |
+| G022-011 | `queued_runs` is counted from the waiter rows without a lock (D022-050 item 3): concurrent admissions that each queue can pass it by at most their number, until T022-105's trigger-kept usage rows (FR-022-058). The per-key waiter ceiling is counted under the key's lock and is exact. | Open; T022-105 |
+| G022-012 | The start's decision (`decide_start_gates`) and the step's (`decide_gates`) are two code paths over the same rules; T022-072 builds one core for both levels and both gates (D022-050 item 5; architecture review M1 of 2026-11-20). A paused queued run's deadline runs during its pause, as G022-008 says of a step. | Open; T022-072 |
 | G1189 | Nothing in the database computes or checks `key_shard` and the waiter `shard`; two binaries that hashed differently would file one key under two shards. | Open; T022-097 |
 | G1190 | `flow_control_key_activate` records the operator as typed and keeps no history row with the database role, unlike the registry's activations. *Partly closed 2026-11-16 (D022-042): the version row records `activated_role` (`session_user`); a history of earlier activations of the same version is not kept, since a version is activated once. 2026-11-19 (D022-046): every force has an append-only history row with the database role and a reason; the runbook part is `docs/runbooks/flow-control.md`.* | Open; T022-061 (the rest of the runbook) |
 | G1191 | Untested: the down migrations' refusal when `run_events` holds a `concurrency.*` or `rate_limit.*` event; no contract test parses 018's reset-rule table against `RULES`. | Open |

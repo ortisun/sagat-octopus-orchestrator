@@ -63,9 +63,17 @@ fn count_key(gate: &Pending, filed: &FiledKey) -> CountKey {
 struct GateReturn {
     table: KeyTable,
     change: GateChange,
-    node: NodeId,
+    /// The step, or `None` for the run's start (T022-022).
+    node: Option<NodeId>,
     attempt: u32,
     key: ExistingKey,
+}
+
+impl GateReturn {
+    /// The `node` column of its row: the node, or `''` for a run's own row.
+    fn node_column(&self) -> &str {
+        self.node.as_ref().map_or("", NodeId::as_str)
+    }
 }
 
 /// The counts of one locked key, kept as this transaction adds rows under it.
@@ -149,7 +157,7 @@ impl PgRunTx {
                     namespace,
                     pool: GatePool::Ordinary,
                     level: GateLevel::Step,
-                    shard: key_shard(&group, candidates.active.as_bytes()),
+                    shard: key_shard(GateLevel::Step, &group, candidates.active.as_bytes()),
                     group: group.clone(),
                     candidates,
                 };
@@ -660,15 +668,18 @@ impl PgRunTx {
         let pausing = events
             .iter()
             .any(|event| matches!(event, RunEvent::RunPaused | RunEvent::RunResumed));
-        if !pausing || self.def.gated_nodes().next().is_none() {
+        if !pausing
+            || (self.def.gated_nodes().next().is_none() && !self.def.run_flow_control().is_gated())
+        {
             return Ok(Vec::new());
         }
-        let rows: Vec<(String, String, String, Vec<u8>)> = sqlx::query_as(
-            "SELECT 'S', pool, group_name, key_digest FROM concurrency_waiters \
-              WHERE tenant_id = $1 AND run_id = $2 AND permit_scope = 'STEP' \
+        // a queued run's start is skipped while it is paused, like a queued step (ADR-0089 decision 4; T022-022)
+        let rows: Vec<(String, String, String, String, Vec<u8>)> = sqlx::query_as(
+            "SELECT 'S', permit_scope, pool, group_name, key_digest FROM concurrency_waiters \
+              WHERE tenant_id = $1 AND run_id = $2 \
              UNION \
-             SELECT 'W', pool, group_name, key_digest FROM rate_limit_waiters \
-              WHERE tenant_id = $1 AND run_id = $2 AND limit_scope = 'STEP'",
+             SELECT 'W', limit_scope, pool, group_name, key_digest FROM rate_limit_waiters \
+              WHERE tenant_id = $1 AND run_id = $2",
         )
         .bind(self.info.tenant_id.as_uuid())
         .bind(self.info.run_id.as_uuid())
@@ -676,7 +687,7 @@ impl PgRunTx {
         .await
         .map_err(store_error)?;
         rows.into_iter()
-            .map(|(table, pool, group, digest)| {
+            .map(|(table, scope, pool, group, digest)| {
                 Ok((
                     if table == "S" {
                         KeyTable::Semaphores
@@ -687,7 +698,11 @@ impl PgRunTx {
                         tenant: self.info.tenant_id,
                         namespace: self.info.namespace_id,
                         pool: GatePool::parse(&pool).ok_or_else(|| corrupt("waiter pool"))?,
-                        level: GateLevel::Step,
+                        level: if scope == "RUN" {
+                            GateLevel::Run
+                        } else {
+                            GateLevel::Step
+                        },
                         group: sagat_domain::workflow::ResolvedGroup::parse(&group)
                             .map_err(|_| corrupt("waiter group"))?,
                         digest: digest.try_into().map_err(|_| corrupt("waiter key"))?,
@@ -707,33 +722,33 @@ impl PgRunTx {
             let RunEvent::Gate(gate) = event else {
                 continue;
             };
-            let GateTarget::Step { node, attempt } = &gate.target else {
-                return Err(StoreError::Internal {
-                    detail:
-                        "a run-level flow-control event reached a build without run-level admission"
-                            .into(),
-                });
+            // a step's rows name its node and attempt; the run's own rows (its start's gates, T022-022) name neither
+            let (node, attempt, level) = match &gate.target {
+                GateTarget::Step { node, attempt } => {
+                    (Some(node.clone()), *attempt, GateLevel::Step)
+                }
+                GateTarget::Run => (None, 0, GateLevel::Run),
             };
             let (table, read) = match gate.change {
                 GateChange::ConcurrencyReleased => (
                     KeyTable::Semaphores,
                     "SELECT key_digest FROM concurrency_holders WHERE tenant_id = $1 AND run_id = $2 \
-                     AND holder_scope = 'STEP' AND node = $3 AND attempt = $4",
+                     AND holder_scope = $5 AND node = $3 AND attempt = $4",
                 ),
                 GateChange::ConcurrencyDequeued | GateChange::ConcurrencyWaitTimedOut => (
                     KeyTable::Semaphores,
                     "SELECT key_digest FROM concurrency_waiters WHERE tenant_id = $1 AND run_id = $2 \
-                     AND permit_scope = 'STEP' AND node = $3 AND attempt = $4",
+                     AND permit_scope = $5 AND node = $3 AND attempt = $4",
                 ),
                 GateChange::RateReturned => (
                     KeyTable::Windows,
                     "SELECT key_digest FROM rate_limit_grants WHERE tenant_id = $1 AND run_id = $2 \
-                     AND limit_scope = 'STEP' AND node = $3 AND attempt = $4 AND leased_at IS NULL",
+                     AND limit_scope = $5 AND node = $3 AND attempt = $4 AND leased_at IS NULL",
                 ),
                 GateChange::RateDequeued | GateChange::RateWaitTimedOut => (
                     KeyTable::Windows,
                     "SELECT key_digest FROM rate_limit_waiters WHERE tenant_id = $1 AND run_id = $2 \
-                     AND limit_scope = 'STEP' AND node = $3 AND attempt = $4",
+                     AND limit_scope = $5 AND node = $3 AND attempt = $4",
                 ),
                 // decisions wrote their rows under the keys' locks
                 GateChange::ConcurrencyQueued { .. }
@@ -741,16 +756,17 @@ impl PgRunTx {
                 | GateChange::RateQueued { .. }
                 | GateChange::RateGranted { .. } => continue,
             };
-            let identity = (node.clone(), *attempt, gate.change.name());
+            let identity = (node.clone(), attempt, gate.change.name());
             if self.gate_returns_applied.contains(&identity) {
                 continue;
             }
-            let attempt_column = i32::try_from(*attempt).map_err(|_| corrupt("attempt"))?;
+            let attempt_column = i32::try_from(attempt).map_err(|_| corrupt("attempt"))?;
             let digest: Option<Vec<u8>> = sqlx::query_scalar(read)
                 .bind(self.info.tenant_id.as_uuid())
                 .bind(self.info.run_id.as_uuid())
-                .bind(node.as_str())
+                .bind(node.as_ref().map_or("", NodeId::as_str))
                 .bind(attempt_column)
+                .bind(level.as_str())
                 .fetch_optional(&mut *self.tx)
                 .await
                 .map_err(store_error)?;
@@ -760,13 +776,13 @@ impl PgRunTx {
             returns.push(GateReturn {
                 table,
                 change: gate.change,
-                node: node.clone(),
-                attempt: *attempt,
+                node,
+                attempt,
                 key: ExistingKey {
                     tenant: self.info.tenant_id,
                     namespace: self.info.namespace_id,
                     pool: gate.gate.pool,
-                    level: GateLevel::Step,
+                    level,
                     group: gate.gate.group.clone(),
                     digest,
                 },
@@ -781,19 +797,19 @@ impl PgRunTx {
         for r in returns {
             let delete = match r.change {
                 GateChange::ConcurrencyReleased => {
-                    "DELETE FROM concurrency_holders WHERE tenant_id = $1 AND run_id = $2 AND holder_scope = 'STEP' \
+                    "DELETE FROM concurrency_holders WHERE tenant_id = $1 AND run_id = $2 AND holder_scope = $5 \
                      AND node = $3 AND attempt = $4"
                 }
                 GateChange::ConcurrencyDequeued | GateChange::ConcurrencyWaitTimedOut => {
-                    "DELETE FROM concurrency_waiters WHERE tenant_id = $1 AND run_id = $2 AND permit_scope = 'STEP' \
+                    "DELETE FROM concurrency_waiters WHERE tenant_id = $1 AND run_id = $2 AND permit_scope = $5 \
                      AND node = $3 AND attempt = $4"
                 }
                 GateChange::RateReturned => {
-                    "DELETE FROM rate_limit_grants WHERE tenant_id = $1 AND run_id = $2 AND limit_scope = 'STEP' \
+                    "DELETE FROM rate_limit_grants WHERE tenant_id = $1 AND run_id = $2 AND limit_scope = $5 \
                      AND node = $3 AND attempt = $4 AND leased_at IS NULL"
                 }
                 GateChange::RateDequeued | GateChange::RateWaitTimedOut => {
-                    "DELETE FROM rate_limit_waiters WHERE tenant_id = $1 AND run_id = $2 AND limit_scope = 'STEP' \
+                    "DELETE FROM rate_limit_waiters WHERE tenant_id = $1 AND run_id = $2 AND limit_scope = $5 \
                      AND node = $3 AND attempt = $4"
                 }
                 _ => return Err(corrupt("flow-control return")),
@@ -801,8 +817,9 @@ impl PgRunTx {
             let deleted = sqlx::query(delete)
                 .bind(self.info.tenant_id.as_uuid())
                 .bind(self.info.run_id.as_uuid())
-                .bind(r.node.as_str())
+                .bind(r.node_column())
                 .bind(i32::try_from(r.attempt).map_err(|_| corrupt("attempt"))?)
+                .bind(r.key.level.as_str())
                 .execute(&mut *self.tx)
                 .await
                 .map_err(store_error)?
@@ -812,12 +829,235 @@ impl PgRunTx {
             }
             // a permit released, a slot returned unleased, a waiter gone: each may let a waiter of the key through
             self.key_is_eligible(r.table, &r.key).await?;
-            self.gate_outcomes
-                .push((r.change.kind(), GateOutcome::of(r.change)));
+            let outcomes = if r.node.is_some() {
+                &mut self.gate_outcomes
+            } else {
+                &mut self.run_gate_outcomes
+            };
+            outcomes.push((r.change.kind(), GateOutcome::of(r.change)));
             self.gate_returns_applied
                 .insert((r.node, r.attempt, r.change.name()));
         }
         Ok(())
+    }
+}
+
+impl PgRunTx {
+    /// Decides the gates of a new run's start in its admission transaction (T10 of the plan, T022-022; FR-022-018,
+    /// FR-022-021): after the run's row (slot 6 of ADR-0050's merged order) the key's semaphore is filed and locked
+    /// (slot 7), then counted; the run holds a permit when the key's holders plus its waiters are below the acquirer's
+    /// limit (a new arrival never takes a permit ahead of a queued run, D022-021), else it waits in the key's queue until
+    /// the earlier of its declared queue timeout and the namespace's. Nothing is written when a ceiling refuses: a key
+    /// beyond the namespace's live keys or a zero effective limit (`FLOW_CONTROL_LIMIT`), a full namespace
+    /// (`queued_runs`, `FLOW_CONTROL_LIMIT`) or a full key (`CONCURRENCY_QUEUE_FULL`, counted under the key's lock: exact).
+    /// The two counts of the namespace are read without a namespace lock: admissions that each create a key at the same
+    /// moment can pass the live keys by at most the keys the others create (G022-002, OD-2026-11-19-4, OD-2026-11-20-3),
+    /// and admissions that each queue can pass `queued_runs` by at most their number until its usage rows exist
+    /// (G022-011, T022-105; delegated by OD-2026-11-20-6, D022-050).
+    ///
+    /// # Errors
+    /// The refusals above; `BINARY_CAPABILITY_MISSING` without a digest key ring, and for a start that declares a rate
+    /// limit (its admission is T022-072); [`StoreError::Unavailable`] when no digest key version is active.
+    pub(super) async fn decide_start_gates(
+        &mut self,
+        keys: &sagat_application::flow_control::RunGateKeys,
+    ) -> Result<Vec<GateEvent>, StoreError> {
+        let Some(ring) = self.flow_control_keys.clone() else {
+            return Err(StoreError::FlowControl(
+                FlowControlRefusal::BinaryCapabilityMissing,
+            ));
+        };
+        let flow = self.def.run_flow_control().clone();
+        if flow.rate_limit().is_some() {
+            return Err(StoreError::FlowControl(
+                FlowControlRefusal::BinaryCapabilityMissing,
+            ));
+        }
+        let (Some(policy), Some(canonical)) = (flow.concurrency(), keys.concurrency.as_deref())
+        else {
+            return Err(StoreError::Internal {
+                detail: "a gated start came without its key".into(),
+            });
+        };
+        let (tenant, namespace) = (self.info.tenant_id, self.info.namespace_id);
+        let versions = key_versions(&mut self.tx).await?;
+        let ceilings = crate::quotas::step_gate_ceilings(&mut self.tx, tenant, namespace).await?;
+        let limit = ceilings.concurrency_limit(policy);
+        let timeout = ceilings.queue_timeout(policy.queue_timeout());
+        if limit == 0 {
+            return Err(StoreError::FlowControl(FlowControlRefusal::Limit {
+                limit: "concurrency_limit",
+            }));
+        }
+        if timeout.is_zero() {
+            return Err(StoreError::FlowControl(FlowControlRefusal::Limit {
+                limit: "flow_control_queue_timeout_ms",
+            }));
+        }
+        let candidates = ring
+            .candidates(
+                versions,
+                KeyPurpose::Concurrency,
+                tenant,
+                namespace,
+                canonical,
+            )
+            .map_err(key_refusal)?;
+        let group = policy.group().resolve(self.def.name(), None);
+        let active = *candidates.active.as_bytes();
+        let retiring = candidates.retiring.as_ref().map(|d| d.as_bytes().to_vec());
+        let key = KeyToFile {
+            tenant,
+            namespace,
+            pool: GatePool::Ordinary,
+            level: GateLevel::Run,
+            shard: key_shard(GateLevel::Run, &group, &active),
+            group: group.clone(),
+            candidates,
+        };
+        // a key the admission would create meets the namespace's live-keys ceiling (FR-022-054, G1199), counted on the
+        // versions in force only (ADR-0093 decision 5)
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM concurrency_semaphores WHERE tenant_id = $1 AND namespace_id = $2 \
+              AND pool = 'ORDINARY' AND permit_scope = 'RUN' AND group_name = $3 \
+              AND (key_digest = $4 OR key_digest = $5))",
+        )
+        .bind(tenant.as_uuid())
+        .bind(namespace.as_uuid())
+        .bind(group.as_str())
+        .bind(active.as_slice())
+        .bind(retiring.as_deref())
+        .fetch_one(&mut *self.tx)
+        .await
+        .map_err(store_error)?;
+        let refusal = start_refused;
+        if !exists {
+            let in_force: Vec<i16> = std::iter::once(versions.active)
+                .chain(versions.retiring)
+                .map(|v| i16::try_from(v).map_err(|_| corrupt("digest key version")))
+                .collect::<Result<_, _>>()?;
+            let live: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM concurrency_semaphores WHERE tenant_id = $1 AND namespace_id = $2 \
+                 AND key_version = ANY($3)",
+            )
+            .bind(tenant.as_uuid())
+            .bind(namespace.as_uuid())
+            .bind(&in_force)
+            .fetch_one(&mut *self.tx)
+            .await
+            .map_err(store_error)?;
+            ceilings
+                .admits_key(u64::try_from(live).unwrap_or(u64::MAX))
+                .map_err(refusal)?;
+        }
+        let filed = file_keys_with(&mut self.tx, KeyTable::Semaphores, &[key], &[])
+            .await?
+            .into_iter()
+            .next()
+            .ok_or_else(|| corrupt("a start key that was not filed"))?;
+        // the decision's instant is the database clock after the key's lock (D022-027)
+        let now: OffsetDateTime = sqlx::query_scalar("SELECT clock_timestamp()")
+            .fetch_one(&mut *self.tx)
+            .await
+            .map_err(store_error)?;
+        let (holders, waiters): (i64, i64) = sqlx::query_as(
+            "SELECT holders::bigint, waiters::bigint FROM concurrency_semaphores \
+              WHERE tenant_id = $1 AND namespace_id = $2 AND pool = 'ORDINARY' AND permit_scope = 'RUN' \
+                AND group_name = $3 AND key_digest = $4",
+        )
+        .bind(tenant.as_uuid())
+        .bind(namespace.as_uuid())
+        .bind(group.as_str())
+        .bind(filed.digest.as_slice())
+        .fetch_one(&mut *self.tx)
+        .await
+        .map_err(store_error)?;
+        let declared_limit = i32::try_from(limit).map_err(|_| corrupt("declared limit"))?;
+        let admits = holders + waiters < i64::from(limit);
+        let change = if admits {
+            sqlx::query(
+                "INSERT INTO concurrency_holders (tenant_id, namespace_id, run_id, holder_scope, node, attempt, pool, \
+                 group_name, key_digest, declared_limit, acquired_at) \
+                 VALUES ($1, $2, $3, 'RUN', '', 0, 'ORDINARY', $4, $5, $6, $7)",
+            )
+            .bind(tenant.as_uuid())
+            .bind(namespace.as_uuid())
+            .bind(self.info.run_id.as_uuid())
+            .bind(group.as_str())
+            .bind(filed.digest.as_slice())
+            .bind(declared_limit)
+            .bind(now)
+            .execute(&mut *self.tx)
+            .await
+            .map_err(store_error)?;
+            GateChange::ConcurrencyAcquired
+        } else {
+            // a queued run is an active run with a ceiling of its own (D1182): the namespace's, then the key's
+            let queued_runs: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM ( \
+                     SELECT run_id FROM concurrency_waiters \
+                      WHERE tenant_id = $1 AND namespace_id = $2 AND permit_scope = 'RUN' \
+                     UNION \
+                     SELECT run_id FROM rate_limit_waiters \
+                      WHERE tenant_id = $1 AND namespace_id = $2 AND limit_scope = 'RUN') waiting",
+            )
+            .bind(tenant.as_uuid())
+            .bind(namespace.as_uuid())
+            .fetch_one(&mut *self.tx)
+            .await
+            .map_err(store_error)?;
+            ceilings
+                .admits_waiter(
+                    u64::try_from(queued_runs).unwrap_or(u64::MAX),
+                    u64::try_from(waiters).unwrap_or(u64::MAX),
+                    false,
+                )
+                .map_err(refusal)?;
+            let deadline = now
+                .checked_add(
+                    time::Duration::try_from(timeout).map_err(|_| corrupt("queue timeout"))?,
+                )
+                .ok_or_else(|| corrupt("queue deadline"))?;
+            self.key_due(KeyTable::Semaphores, GateLevel::Run, &group, &filed.digest)
+                .await?;
+            sqlx::query(
+                "INSERT INTO concurrency_waiters (tenant_id, namespace_id, run_id, node, permit_scope, attempt, pool, \
+                 group_name, key_digest, declared_limit, enqueued_at, deadline_at, shard) \
+                 VALUES ($1, $2, $3, '', 'RUN', 0, 'ORDINARY', $4, $5, $6, $7, $8, run_shard($3))",
+            )
+            .bind(tenant.as_uuid())
+            .bind(namespace.as_uuid())
+            .bind(self.info.run_id.as_uuid())
+            .bind(group.as_str())
+            .bind(filed.digest.as_slice())
+            .bind(declared_limit)
+            .bind(now)
+            .bind(deadline)
+            .execute(&mut *self.tx)
+            .await
+            .map_err(store_error)?;
+            GateChange::ConcurrencyQueued {
+                queue_deadline_us: unix_micros(deadline)?,
+            }
+        };
+        self.run_gate_outcomes
+            .push((GateKind::Concurrency, GateOutcome::of(change)));
+        // the span names the group, never the key (FR-022-033)
+        tracing::info_span!(
+            sagat_telemetry::FlowControlSpan::ConcurrencyAcquire.as_str(),
+            "sagat.concurrency.group" = group.as_str(),
+            "sagat.outcome" = if admits { "granted" } else { "queued" },
+        )
+        .in_scope(|| ());
+        Ok(vec![GateEvent {
+            target: GateTarget::Run,
+            gate: GateRef {
+                pool: GatePool::Ordinary,
+                group,
+                key_label: KeyLabel::of_digest(&filed.digest),
+            },
+            change,
+        }])
     }
 }
 
@@ -831,15 +1071,27 @@ impl PgRunTx {
         gate: &Pending,
         filed: &FiledKey,
     ) -> Result<(), StoreError> {
+        self.key_due(table, GateLevel::Step, &gate.group, &filed.digest)
+            .await
+    }
+
+    /// [`Self::key_is_due`] for a key of either level.
+    async fn key_due(
+        &mut self,
+        table: KeyTable,
+        level: GateLevel,
+        group: &sagat_domain::workflow::ResolvedGroup,
+        digest: &[u8; 32],
+    ) -> Result<(), StoreError> {
         let statement = match table {
             KeyTable::Semaphores => {
                 "UPDATE concurrency_semaphores SET next_eligible_at = clock_timestamp(), updated_at = clock_timestamp() \
-                  WHERE tenant_id = $1 AND namespace_id = $2 AND pool = $3 AND permit_scope = 'STEP' \
+                  WHERE tenant_id = $1 AND namespace_id = $2 AND pool = $3 AND permit_scope = $6 \
                     AND group_name = $4 AND key_digest = $5 AND next_eligible_at IS NULL"
             }
             KeyTable::Windows => {
                 "UPDATE rate_limit_windows SET next_eligible_at = clock_timestamp(), updated_at = clock_timestamp() \
-                  WHERE tenant_id = $1 AND namespace_id = $2 AND pool = $3 AND limit_scope = 'STEP' \
+                  WHERE tenant_id = $1 AND namespace_id = $2 AND pool = $3 AND limit_scope = $6 \
                     AND group_name = $4 AND key_digest = $5 AND next_eligible_at IS NULL"
             }
         };
@@ -847,8 +1099,9 @@ impl PgRunTx {
             .bind(self.info.tenant_id.as_uuid())
             .bind(self.info.namespace_id.as_uuid())
             .bind(GatePool::Ordinary.as_str())
-            .bind(gate.group.as_str())
-            .bind(filed.digest.as_slice())
+            .bind(group.as_str())
+            .bind(digest.as_slice())
+            .bind(level.as_str())
             .execute(&mut *self.tx)
             .await
             .map_err(store_error)?;
@@ -862,13 +1115,13 @@ impl PgRunTx {
         for statement in [
             "UPDATE concurrency_semaphores s SET next_eligible_at = clock_timestamp(), updated_at = clock_timestamp() \
                FROM concurrency_waiters w \
-              WHERE w.tenant_id = $1 AND w.run_id = $2 AND w.permit_scope = 'STEP' \
+              WHERE w.tenant_id = $1 AND w.run_id = $2 \
                 AND s.tenant_id = w.tenant_id AND s.namespace_id = w.namespace_id AND s.pool = w.pool \
                 AND s.permit_scope = w.permit_scope AND s.group_name = w.group_name AND s.key_digest = w.key_digest \
                 AND s.next_eligible_at IS NULL",
             "UPDATE rate_limit_windows s SET next_eligible_at = clock_timestamp(), updated_at = clock_timestamp() \
                FROM rate_limit_waiters w \
-              WHERE w.tenant_id = $1 AND w.run_id = $2 AND w.limit_scope = 'STEP' \
+              WHERE w.tenant_id = $1 AND w.run_id = $2 \
                 AND s.tenant_id = w.tenant_id AND s.namespace_id = w.namespace_id AND s.pool = w.pool \
                 AND s.limit_scope = w.limit_scope AND s.group_name = w.group_name AND s.key_digest = w.key_digest \
                 AND s.next_eligible_at IS NULL",
@@ -892,12 +1145,12 @@ impl PgRunTx {
         let statement = match table {
             KeyTable::Semaphores => {
                 "UPDATE concurrency_semaphores SET next_eligible_at = clock_timestamp(), updated_at = clock_timestamp() \
-                  WHERE tenant_id = $1 AND namespace_id = $2 AND pool = $3 AND permit_scope = 'STEP' \
+                  WHERE tenant_id = $1 AND namespace_id = $2 AND pool = $3 AND permit_scope = $6 \
                     AND group_name = $4 AND key_digest = $5 AND waiters > 0"
             }
             KeyTable::Windows => {
                 "UPDATE rate_limit_windows SET next_eligible_at = clock_timestamp(), updated_at = clock_timestamp() \
-                  WHERE tenant_id = $1 AND namespace_id = $2 AND pool = $3 AND limit_scope = 'STEP' \
+                  WHERE tenant_id = $1 AND namespace_id = $2 AND pool = $3 AND limit_scope = $6 \
                     AND group_name = $4 AND key_digest = $5 AND waiters > 0"
             }
         };
@@ -907,6 +1160,7 @@ impl PgRunTx {
             .bind(key.pool.as_str())
             .bind(key.group.as_str())
             .bind(key.digest.as_slice())
+            .bind(key.level.as_str())
             .execute(&mut *self.tx)
             .await
             .map_err(store_error)?;
@@ -916,7 +1170,16 @@ impl PgRunTx {
 
 /// The stored projection of a step's gates, or `NULL` for a step that has none.
 pub(super) fn gates_projection(step: &StepState) -> Result<Option<serde_json::Value>, StoreError> {
-    let gates = step.gates();
+    project_gates(step.gates())
+}
+
+/// The stored projection of the gates of a run's start (`runs.flow_control_gates`, T022-022), or `NULL` for a run that
+/// has none. The same shape as a step's, every attempt 0.
+pub(super) fn run_gates_projection(gates: &Gates) -> Result<Option<serde_json::Value>, StoreError> {
+    project_gates(gates)
+}
+
+fn project_gates(gates: &Gates) -> Result<Option<serde_json::Value>, StoreError> {
     if gates.concurrency().is_none() && gates.rate().is_none() {
         return Ok(None);
     }
@@ -1035,11 +1298,17 @@ fn key_refusal(error: KeyedDigestError) -> StoreError {
 }
 
 /// The home shard of a key (ADR-0089 decision 3): a stable hash of what names its row, modulo the 64 shards.
-fn key_shard(group: &sagat_domain::workflow::ResolvedGroup, digest: &[u8; 32]) -> i16 {
+fn key_shard(
+    level: GateLevel,
+    group: &sagat_domain::workflow::ResolvedGroup,
+    digest: &[u8; 32],
+) -> i16 {
     let mut hash = Sha256::new();
     hash.update(b"sagat.flow-control.key-shard.v1\0");
     hash.update(GatePool::Ordinary.as_str().as_bytes());
-    hash.update(b"\0STEP\0");
+    hash.update(b"\0");
+    hash.update(level.as_str().as_bytes());
+    hash.update(b"\0");
     hash.update(group.as_str().as_bytes());
     hash.update(b"\0");
     hash.update(digest);
@@ -1090,11 +1359,33 @@ impl GateOutcome {
     }
 }
 
-/// Records the step-scope decisions of a committed transaction (G022-001; FR-022-033, FR-022-049).
-pub(super) fn record_gate_outcomes(outcomes: &[(GateKind, GateOutcome)]) {
+/// A run's start refused by a ceiling (T022-022): the typed refusal of `contracts/errors.md`, counted at once as
+/// `concurrency_acquisitions_total{scope="run",outcome="refused_full"}` (FR-022-033), since the refused transaction rolls
+/// back and nothing of it is counted at commit (architecture review M3 of 2026-11-20).
+pub(super) fn start_refused(limit: sagat_domain::workflow::FlowControlLimit) -> StoreError {
+    use sagat_domain::workflow::FlowControlLimit;
+    use sagat_telemetry::flow_control::{ConcurrencyOutcome, FlowControlScope, record_concurrency};
+    record_concurrency(FlowControlScope::Run, ConcurrencyOutcome::RefusedFull);
+    StoreError::FlowControl(match limit {
+        FlowControlLimit::KeyWaiters => FlowControlRefusal::ConcurrencyQueueFull,
+        FlowControlLimit::QueuedRuns => FlowControlRefusal::Limit {
+            limit: "queued_runs",
+        },
+        FlowControlLimit::LiveKeys | FlowControlLimit::NodeDeclarations { .. } => {
+            FlowControlRefusal::Limit {
+                limit: "concurrency_live_keys",
+            }
+        }
+    })
+}
+
+/// Records the decisions of a committed transaction at `scope` (G022-001; FR-022-033, FR-022-049).
+pub(super) fn record_gate_outcomes(
+    outcomes: &[(GateKind, GateOutcome)],
+    scope: sagat_telemetry::flow_control::FlowControlScope,
+) {
     use sagat_telemetry::flow_control::{
-        ConcurrencyOutcome, FlowControlScope, RateLimitOutcome, record_concurrency,
-        record_rate_limit,
+        ConcurrencyOutcome, RateLimitOutcome, record_concurrency, record_rate_limit,
     };
     for (kind, outcome) in outcomes {
         match kind {
@@ -1109,11 +1400,11 @@ pub(super) fn record_gate_outcomes(outcomes: &[(GateKind, GateOutcome)]) {
                     GateOutcome::GivenBack => None,
                 };
                 if let Some(label) = label {
-                    record_concurrency(FlowControlScope::Step, label);
+                    record_concurrency(scope, label);
                 }
             }
             GateKind::RateLimit => record_rate_limit(
-                FlowControlScope::Step,
+                scope,
                 match outcome {
                     GateOutcome::Granted => RateLimitOutcome::Granted,
                     GateOutcome::Queued => RateLimitOutcome::Queued,
@@ -1129,7 +1420,53 @@ pub(super) fn record_gate_outcomes(outcomes: &[(GateKind, GateOutcome)]) {
 
 #[cfg(test)]
 mod tests {
-    use super::{GateOutcome, record_gate_outcomes};
+    use super::{GateOutcome, record_gate_outcomes, start_refused};
+
+    /// A refused start is counted at run scope as `refused_full` and maps each ceiling to its typed refusal.
+    #[test]
+    fn a_refused_start_is_counted_and_typed() {
+        use sagat_application::flow_control::FlowControlRefusal;
+        use sagat_domain::workflow::FlowControlLimit;
+        let (telemetry, recorder) =
+            sagat_telemetry::Metrics::detached(std::time::Duration::from_secs(60));
+        let refusals = metrics::with_local_recorder(&recorder, || {
+            [
+                FlowControlLimit::KeyWaiters,
+                FlowControlLimit::QueuedRuns,
+                FlowControlLimit::LiveKeys,
+            ]
+            .map(start_refused)
+        });
+        let reasons: Vec<_> = refusals
+            .iter()
+            .map(|e| match e {
+                sagat_application::error::StoreError::FlowControl(r) => *r,
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            reasons,
+            [
+                FlowControlRefusal::ConcurrencyQueueFull,
+                FlowControlRefusal::Limit {
+                    limit: "queued_runs"
+                },
+                FlowControlRefusal::Limit {
+                    limit: "concurrency_live_keys"
+                },
+            ]
+        );
+        let rendered = telemetry.render();
+        assert!(
+            rendered
+                .lines()
+                .any(|line| line.starts_with("concurrency_acquisitions_total")
+                    && line.contains("scope=\"run\"")
+                    && line.contains("outcome=\"refused_full\"")
+                    && line.ends_with(" 3")),
+            "{rendered}"
+        );
+    }
     use sagat_domain::workflow::GateKind;
 
     /// G022-001: what a committed transaction decided is counted once per gate, step scope, in the closed vocabulary;
@@ -1150,7 +1487,12 @@ mod tests {
             .into_iter()
             .flat_map(|kind| all.map(|outcome| (kind, outcome)))
             .collect();
-        metrics::with_local_recorder(&recorder, || record_gate_outcomes(&outcomes));
+        metrics::with_local_recorder(&recorder, || {
+            record_gate_outcomes(
+                &outcomes,
+                sagat_telemetry::flow_control::FlowControlScope::Step,
+            );
+        });
         let rendered = telemetry.render();
         let counted = |family: &str, outcome: &str| {
             rendered.lines().any(|line| {

@@ -700,10 +700,14 @@ pub(crate) async fn step_gate_ceilings(
     tenant: TenantId,
     namespace: NamespaceId,
 ) -> Result<sagat_domain::workflow::FlowControlCeilings, StoreError> {
-    const READ: [QuotaResource; 3] = [
+    // every ceiling a gate decision applies, read in one statement (the run admission of T022-022 also applies the two
+    // queue ceilings; a ceiling left out here would silently fall back to its default)
+    const READ: [QuotaResource; 5] = [
         QuotaResource::ConcurrencyLimit,
         QuotaResource::FlowControlQueueTimeoutMs,
         QuotaResource::ConcurrencyLiveKeys,
+        QuotaResource::QueuedRuns,
+        QuotaResource::FlowControlKeyWaiters,
     ];
     let rows: Vec<(String, Option<uuid::Uuid>, i64, bool)> = sqlx::query_as(
         "SELECT resource, namespace_id, max_value, false FROM quota_limits \
@@ -730,6 +734,8 @@ pub(crate) async fn step_gate_ceilings(
         concurrency_limit: of(QuotaResource::ConcurrencyLimit),
         queue_timeout_ms: of(QuotaResource::FlowControlQueueTimeoutMs),
         live_keys: of(QuotaResource::ConcurrencyLiveKeys),
+        queued_runs: of(QuotaResource::QueuedRuns),
+        key_waiters: of(QuotaResource::FlowControlKeyWaiters),
         ..sagat_domain::workflow::FlowControlCeilings::DEFAULT
     })
 }

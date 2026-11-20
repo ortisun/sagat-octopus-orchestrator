@@ -47,12 +47,17 @@ fn step_ref(row: &PgRow) -> Result<StepRef, StoreError> {
     })
 }
 
+/// A waiter row: a step's names its node; a run's start's has `''` (T022-022).
 fn gate_waiter(row: &PgRow) -> Result<sagat_application::flow_control::GateWaiter, StoreError> {
     let node: String = col(row, "node")?;
     Ok(sagat_application::flow_control::GateWaiter {
         tenant_id: TenantId::new(col::<Uuid>(row, "tenant_id")?),
         run_id: RunId::new(col::<Uuid>(row, "run_id")?),
-        node: NodeId::parse_stored(&node).map_err(|_| corrupt("waiter node"))?,
+        node: if node.is_empty() {
+            None
+        } else {
+            Some(NodeId::parse_stored(&node).map_err(|_| corrupt("waiter node"))?)
+        },
     })
 }
 
@@ -115,21 +120,22 @@ impl MaintenanceStore for PgRunStore {
         let (limit, shards, exclude) = window_params(window);
         // the partial indexes `(key_shard, next_eligible_at) WHERE waiters > 0` of both key tables serve this
         let rows = sqlx::query(
-            "SELECT k.tenant_id, k.namespace_id, k.kind, k.group_name, k.key_digest, k.key_shard, k.next_eligible_at \
+            "SELECT k.tenant_id, k.namespace_id, k.kind, k.scope, k.group_name, k.key_digest, k.key_shard, \
+                    k.next_eligible_at \
                FROM unnest($2::smallint[]) AS sh(s) \
                CROSS JOIN LATERAL ( \
-                 (SELECT tenant_id, namespace_id, 'CONCURRENCY' AS kind, group_name, key_digest, key_shard, \
-                         next_eligible_at \
+                 (SELECT tenant_id, namespace_id, 'CONCURRENCY' AS kind, permit_scope AS scope, group_name, key_digest, \
+                         key_shard, next_eligible_at \
                     FROM concurrency_semaphores \
                    WHERE key_shard = sh.s AND waiters > 0 AND next_eligible_at <= now() \
-                     AND pool = 'ORDINARY' AND permit_scope = 'STEP' AND tenant_id <> ALL($3::uuid[]) \
+                     AND pool = 'ORDINARY' AND tenant_id <> ALL($3::uuid[]) \
                    ORDER BY next_eligible_at LIMIT $1) \
                  UNION ALL \
-                 (SELECT tenant_id, namespace_id, 'RATE' AS kind, group_name, key_digest, key_shard, \
-                         next_eligible_at \
+                 (SELECT tenant_id, namespace_id, 'RATE' AS kind, limit_scope AS scope, group_name, key_digest, \
+                         key_shard, next_eligible_at \
                     FROM rate_limit_windows \
                    WHERE key_shard = sh.s AND waiters > 0 AND next_eligible_at <= now() \
-                     AND pool = 'ORDINARY' AND limit_scope = 'STEP' AND tenant_id <> ALL($3::uuid[]) \
+                     AND pool = 'ORDINARY' AND tenant_id <> ALL($3::uuid[]) \
                    ORDER BY next_eligible_at LIMIT $1) \
                ) k \
               ORDER BY k.next_eligible_at LIMIT $1",
@@ -143,6 +149,7 @@ impl MaintenanceStore for PgRunStore {
         rows.iter()
             .map(|row| {
                 let kind: String = col(row, "kind")?;
+                let scope: String = col(row, "scope")?;
                 let group: String = col(row, "group_name")?;
                 let digest: Vec<u8> = col(row, "key_digest")?;
                 let shard: i16 = col(row, "key_shard")?;
@@ -156,6 +163,11 @@ impl MaintenanceStore for PgRunStore {
                         sagat_domain::workflow::GateKind::RateLimit
                     } else {
                         sagat_domain::workflow::GateKind::Concurrency
+                    },
+                    level: match scope.as_str() {
+                        "RUN" => sagat_domain::workflow::GateLevel::Run,
+                        "STEP" => sagat_domain::workflow::GateLevel::Step,
+                        _ => return Err(corrupt("key scope")),
                     },
                     group: sagat_domain::workflow::ResolvedGroup::parse(&group)
                         .map_err(|_| corrupt("key group"))?,
@@ -179,7 +191,7 @@ impl MaintenanceStore for PgRunStore {
             sagat_domain::workflow::GateKind::Concurrency => {
                 "SELECT w.tenant_id, w.run_id, w.node FROM concurrency_waiters w \
                    JOIN runs r ON r.tenant_id = w.tenant_id AND r.id = w.run_id \
-                  WHERE w.tenant_id = $1 AND w.namespace_id = $2 AND w.pool = 'ORDINARY' AND w.permit_scope = 'STEP' \
+                  WHERE w.tenant_id = $1 AND w.namespace_id = $2 AND w.pool = 'ORDINARY' AND w.permit_scope = $6 \
                     AND w.group_name = $3 AND w.key_digest = $4 AND w.deadline_at > now() \
                     AND r.status IN ('RUNNING', 'WAITING') AND NOT r.paused \
                   ORDER BY w.enqueued_at, w.run_id, w.node LIMIT $5"
@@ -187,7 +199,7 @@ impl MaintenanceStore for PgRunStore {
             sagat_domain::workflow::GateKind::RateLimit => {
                 "SELECT w.tenant_id, w.run_id, w.node FROM rate_limit_waiters w \
                    JOIN runs r ON r.tenant_id = w.tenant_id AND r.id = w.run_id \
-                  WHERE w.tenant_id = $1 AND w.namespace_id = $2 AND w.pool = 'ORDINARY' AND w.limit_scope = 'STEP' \
+                  WHERE w.tenant_id = $1 AND w.namespace_id = $2 AND w.pool = 'ORDINARY' AND w.limit_scope = $6 \
                     AND w.group_name = $3 AND w.key_digest = $4 AND w.deadline_at > now() \
                     AND r.status IN ('RUNNING', 'WAITING') AND NOT r.paused \
                   ORDER BY w.enqueued_at, w.run_id, w.node LIMIT $5"
@@ -199,6 +211,7 @@ impl MaintenanceStore for PgRunStore {
             .bind(key.group.as_str())
             .bind(key.digest.as_slice())
             .bind(i64::from(limit))
+            .bind(key.level.as_str())
             .fetch_all(self.pool())
             .await
             .map_err(store_error)?
@@ -215,7 +228,7 @@ impl MaintenanceStore for PgRunStore {
         let statement = match key.kind {
             sagat_domain::workflow::GateKind::Concurrency => {
                 "UPDATE concurrency_semaphores SET next_eligible_at = NULL, updated_at = clock_timestamp() \
-                  WHERE tenant_id = $1 AND namespace_id = $2 AND pool = 'ORDINARY' AND permit_scope = 'STEP' \
+                  WHERE tenant_id = $1 AND namespace_id = $2 AND pool = 'ORDINARY' AND permit_scope = $9 \
                     AND group_name = $3 AND key_digest = $4 AND next_eligible_at = $5 \
                     AND ($6::text IS NULL OR EXISTS (SELECT 1 FROM scheduler_shards s WHERE s.shard = $7 \
                          AND s.owner = $6 AND s.generation = $8 AND s.expires_at > clock_timestamp()))"
@@ -231,7 +244,7 @@ impl MaintenanceStore for PgRunStore {
                                                AND g.leased_at + make_interval(secs => g.period_ms / 1000.0) \
                                                    > clock_timestamp()), \
                         updated_at = clock_timestamp() \
-                  WHERE w.tenant_id = $1 AND w.namespace_id = $2 AND w.pool = 'ORDINARY' AND w.limit_scope = 'STEP' \
+                  WHERE w.tenant_id = $1 AND w.namespace_id = $2 AND w.pool = 'ORDINARY' AND w.limit_scope = $9 \
                     AND w.group_name = $3 AND w.key_digest = $4 AND w.next_eligible_at = $5 \
                     AND ($6::text IS NULL OR EXISTS (SELECT 1 FROM scheduler_shards s WHERE s.shard = $7 \
                          AND s.owner = $6 AND s.generation = $8 AND s.expires_at > clock_timestamp()))"
@@ -248,6 +261,7 @@ impl MaintenanceStore for PgRunStore {
             .bind(holder.map(|(owner, _)| owner))
             .bind(holder.map(|(_, lease)| i16::from(lease.shard.index())))
             .bind(holder.and_then(|(_, lease)| i64::try_from(lease.generation).ok()))
+            .bind(key.level.as_str())
             .execute(self.pool())
             .await
             .map_err(store_error)?;
@@ -264,11 +278,11 @@ impl MaintenanceStore for PgRunStore {
             "SELECT t.tenant_id, t.run_id, t.node FROM unnest($2::smallint[]) AS sh(s) \
              CROSS JOIN LATERAL ( \
                  (SELECT tenant_id, run_id, node, deadline_at FROM concurrency_waiters \
-                   WHERE shard = sh.s AND permit_scope = 'STEP' AND deadline_at <= now() \
+                   WHERE shard = sh.s AND deadline_at <= now() \
                      AND tenant_id <> ALL($3::uuid[]) ORDER BY deadline_at LIMIT $1) \
                  UNION \
                  (SELECT tenant_id, run_id, node, deadline_at FROM rate_limit_waiters \
-                   WHERE shard = sh.s AND limit_scope = 'STEP' AND deadline_at <= now() \
+                   WHERE shard = sh.s AND deadline_at <= now() \
                      AND tenant_id <> ALL($3::uuid[]) ORDER BY deadline_at LIMIT $1) \
              ) t ORDER BY t.deadline_at LIMIT $1",
         )

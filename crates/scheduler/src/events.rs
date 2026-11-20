@@ -34,7 +34,7 @@ use sagat_domain::events::{
     GIVE_UP_AFTER, MAX_DISPATCH_ATTEMPTS, capacity_backoff, dispatch_backoff,
 };
 use sagat_domain::execution::{self, ExecutionError, RunId, StepStatus, WaitVia, WaitingOn};
-use sagat_domain::workflow::{Node, NodeKind, WorkflowDefinition};
+use sagat_domain::workflow::{Node, NodeKind};
 use time::OffsetDateTime;
 
 /// Tunable limits of the dispatcher.
@@ -544,13 +544,8 @@ where
                     }
                 }
                 let effects = Effects::by(Actor::System("event-dispatcher"), None);
-                self.engine
-                    .run(&mut tx, effects, |def: &WorkflowDefinition, state, now| {
-                        let (started, progress) = execution::start_run(def, run_id, now)?;
-                        *state = started;
-                        Ok(((), progress))
-                    })
-                    .await?;
+                // through the run's start gates (feature 022, T022-022)
+                self.engine.start(&mut tx, effects, run_id, None).await?;
                 tx.commit().await?;
                 metrics::counter!("trigger_events_total", "outcome" => "run_started").increment(1);
                 metrics::counter!("runs_started_total", "source" => "trigger").increment(1);

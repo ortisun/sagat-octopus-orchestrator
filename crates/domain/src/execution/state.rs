@@ -2059,6 +2059,15 @@ impl RunState {
         }
     }
 
+    /// The gates of the run's start restored from their rows (feature 022, T022-022): a held permit or a queued wait, for
+    /// a trusted projection of a run whose definition gates its start. A run never stays live with a start gate in any
+    /// other phase: a timeout or a dequeue stops it in the same commit, and the permit is given back by its last commit.
+    #[must_use]
+    pub fn with_restored_run_gates(mut self, gates: super::flow_control::Gates) -> Self {
+        self.run_gates = gates;
+        self
+    }
+
     /// The state with its entry held until `until_us` (microseconds since the epoch), for a trusted
     /// projection of a run created with a start delay that has not been released.
     #[must_use]

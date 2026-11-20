@@ -190,9 +190,9 @@ impl PgRunStore {
         self
     }
 
-    /// Tests only: admits a definition whose gates are all on its root steps, past the fleet's activation and this
-    /// build's refusal (D022-037), so that the readiness gate (T022-096) can be exercised against PostgreSQL. A run
-    /// of it is gated at every step; nothing grants a queued step yet (T022-097) or times it out (T022-098).
+    /// Tests only: admits a definition whose gates are on its root steps or are a `concurrency` of its start, past the
+    /// fleet's activation and this build's refusal (D022-037), so that the readiness gate (T022-096) and the run
+    /// admission (T022-022) can be exercised against PostgreSQL. A start's `rateLimit` (T022-072) stays refused.
     #[cfg(feature = "step-gates-for-tests")]
     #[must_use]
     pub const fn admitting_step_gates_for_tests(mut self) -> Self {
@@ -477,6 +477,10 @@ impl PgRunStore {
                 .transpose()?,
         )
         .with_gated_steps(&definition);
+        // feature 022 (T022-022): the gates of the run's start, from their projection on the run's row (no statement more)
+        if let Some(gates) = col::<Option<serde_json::Value>>(&row, "flow_control_gates")? {
+            state = state.with_restored_run_gates(readiness_gate::restore_gates(&gates)?);
+        }
         if kinds.collections {
             load_collections(&mut tx, tenant, run, &definition, &mut state).await?;
         }
@@ -555,6 +559,7 @@ impl PgRunStore {
             flow_control_keys: self.flow_control_keys.clone(),
             gate_returns_applied: BTreeSet::new(),
             gate_outcomes: Vec::new(),
+            run_gate_outcomes: Vec::new(),
         }))
     }
 
@@ -722,6 +727,36 @@ impl PgRunStore {
         if let Some((node, breach)) = replayed.flow_control_breach() {
             return Err(format!(
                 "invariant 11 of feature 022 fails at node '{node}': {breach}"
+            ));
+        }
+        // feature 022, invariants 1 and 2 of `data-model.md` for the run's start (T022-022): the run has a holder row
+        // exactly while its journal holds a permit, a waiter row (with the journal's deadline) exactly while it waits,
+        // and the counters of the key those rows are under equal its rows
+        let (holders, waiters, deadline, counters_agree): (i64, i64, Option<OffsetDateTime>, bool) =
+            sqlx::query_as(
+                "SELECT (SELECT count(*) FROM concurrency_holders WHERE tenant_id = $1 AND run_id = $2 AND holder_scope = 'RUN'),                         (SELECT count(*) FROM concurrency_waiters WHERE tenant_id = $1 AND run_id = $2 AND permit_scope = 'RUN'),                         (SELECT deadline_at FROM concurrency_waiters WHERE tenant_id = $1 AND run_id = $2 AND permit_scope = 'RUN'),                         NOT EXISTS (SELECT 1 FROM concurrency_semaphores s                                      WHERE s.tenant_id = $1 AND s.permit_scope = 'RUN'                                        AND EXISTS (SELECT 1 FROM (                                              SELECT namespace_id, pool, group_name, key_digest FROM concurrency_holders                                               WHERE tenant_id = $1 AND run_id = $2 AND holder_scope = 'RUN'                                              UNION SELECT namespace_id, pool, group_name, key_digest FROM concurrency_waiters                                               WHERE tenant_id = $1 AND run_id = $2 AND permit_scope = 'RUN') k                                             WHERE k.namespace_id = s.namespace_id AND k.pool = s.pool                                               AND k.group_name = s.group_name AND k.key_digest = s.key_digest)                                        AND (s.holders <> (SELECT count(*) FROM concurrency_holders h                                                            WHERE h.tenant_id = s.tenant_id AND h.namespace_id = s.namespace_id                                                              AND h.pool = s.pool AND h.holder_scope = s.permit_scope                                                              AND h.group_name = s.group_name AND h.key_digest = s.key_digest)                                          OR s.waiters <> (SELECT count(*) FROM concurrency_waiters w                                                            WHERE w.tenant_id = s.tenant_id AND w.namespace_id = s.namespace_id                                                              AND w.pool = s.pool AND w.permit_scope = s.permit_scope                                                              AND w.group_name = s.group_name AND w.key_digest = s.key_digest)))",
+            )
+            .bind(tenant.as_uuid())
+            .bind(run.as_uuid())
+            .fetch_one(&mut *stored_tx.tx)
+            .await
+            .map_err(|e| e.to_string())?;
+        let journal = replayed.run_gates().concurrency().map(|slot| slot.phase());
+        let deadline_us = deadline
+            .map(|at| i64::try_from(at.unix_timestamp_nanos() / 1_000))
+            .transpose()
+            .map_err(|e| e.to_string())?;
+        let agrees = match journal {
+            Some(sagat_domain::execution::GatePhase::Held) => holders == 1 && waiters == 0,
+            Some(sagat_domain::execution::GatePhase::Queued { deadline_us: due }) => {
+                holders == 0 && waiters == 1 && deadline_us == Some(due)
+            }
+            _ => holders == 0 && waiters == 0,
+        };
+        if !agrees || !counters_agree {
+            return Err(format!(
+                "invariants 1 and 2 of feature 022 fail for the run's start: the journal says {journal:?}, the rows are \
+                 {holders} holder(s) and {waiters} waiter(s), the key's counters agree: {counters_agree}"
             ));
         }
         drop(stored_tx);
@@ -1284,8 +1319,11 @@ impl RunStore for PgRunStore {
             }
             // Feature 022: every run creator passes here, so a gated definition is decided here, before any lock of the
             // admission is taken (FR-022-059); this build refuses it whatever the registry says (D022-037).
+            // The tests' door admits step gates and a start's concurrency gate (T022-022); a start's rate limit is
+            // T022-072's and stays refused.
             if new.definition.declares_gates()
-                && !(self.step_gates_for_tests && !new.definition.run_flow_control().is_gated())
+                && !(self.step_gates_for_tests
+                    && new.definition.run_flow_control().rate_limit().is_none())
             {
                 let refusal = self.flow_control_admission(&mut tx, &new.definition).await;
                 let _ = tx.rollback().await;
@@ -1691,6 +1729,7 @@ impl RunStore for PgRunStore {
                     flow_control_keys: self.flow_control_keys.clone(),
                     gate_returns_applied: BTreeSet::new(),
                     gate_outcomes: Vec::new(),
+                    run_gate_outcomes: Vec::new(),
                 }));
             }
         }
@@ -2331,6 +2370,7 @@ macro_rules! run_columns_sql {
      (to_jsonb(runs.*) ->> 'start_delayed_until')::timestamptz AS start_delayed_until, \
      (to_jsonb(runs.*) ->> 'schedule_id')::uuid AS origin_schedule_id, \
      (to_jsonb(runs.*) ->> 'schedule_nominal_at')::timestamptz AS origin_schedule_nominal_at, \
+     NULLIF(to_jsonb(runs.*) -> 'flow_control_gates', 'null'::jsonb) AS flow_control_gates, \
      clock_timestamp() AS db_now \
      FROM runs WHERE tenant_id = $1 AND id = $2",
             $tail
@@ -4010,9 +4050,14 @@ pub struct PgRunTx {
     /// The digest keys of the flow-control gates, from the store (feature 022).
     flow_control_keys: Option<Arc<sagat_application::keyed_digest::KeyRing>>,
     /// The gate returns (node, attempt, event) the gate round gave back already; `persist` skips them (feature 022).
-    gate_returns_applied: BTreeSet<(NodeId, u32, &'static str)>,
+    gate_returns_applied: BTreeSet<(Option<NodeId>, u32, &'static str)>,
     /// The flow-control decisions and returns of this transaction, recorded once it commits (G022-001).
     gate_outcomes: Vec<(
+        sagat_domain::workflow::GateKind,
+        readiness_gate::GateOutcome,
+    )>,
+    /// The same, for the gates of the run's start (T022-022), counted at run scope.
+    run_gate_outcomes: Vec<(
         sagat_domain::workflow::GateKind,
         readiness_gate::GateOutcome,
     )>,
@@ -4311,9 +4356,17 @@ impl RunTx for PgRunTx {
         self.decide_gates(steps, pending)
     }
 
+    fn decide_run_gates<'a>(
+        &'a mut self,
+        keys: &'a sagat_application::flow_control::RunGateKeys,
+    ) -> impl Future<Output = Result<Vec<sagat_domain::execution::GateEvent>, StoreError>> + Send + 'a
+    {
+        self.decide_start_gates(keys)
+    }
+
     fn grant_queued_step<'a>(
         &'a mut self,
-        node: &'a NodeId,
+        node: Option<&'a NodeId>,
         attempt: u32,
     ) -> impl Future<Output = Result<Option<Vec<sagat_domain::execution::GateEvent>>, StoreError>>
     + Send
@@ -4323,7 +4376,7 @@ impl RunTx for PgRunTx {
 
     fn refusing_gate<'a>(
         &'a mut self,
-        node: &'a NodeId,
+        node: Option<&'a NodeId>,
         attempt: u32,
     ) -> impl Future<Output = Result<sagat_domain::workflow::GateKind, StoreError>> + Send + 'a
     {
@@ -5300,6 +5353,17 @@ impl RunTx for PgRunTx {
                 RunEvent::Gate(_) | RunEvent::RunPaused | RunEvent::RunResumed
             )
         }) {
+            // a commit that ends the run sets `finished_at`, whose trigger locks the run's active-run counter row (slot 6
+            // of ADR-0050's merged order): it is locked first, before any key, as an admission locks it (correctness
+            // review M1 of 2026-11-20); a commit that does not end the run, the hot path, takes nothing more
+            if self.state.status().is_terminal() {
+                sqlx::query("SELECT run_active_counts_lock_slot($1, $2)")
+                    .bind(self.info.tenant_id.as_uuid())
+                    .bind(self.info.run_id.as_uuid())
+                    .execute(&mut *self.tx)
+                    .await
+                    .map_err(store_error)?;
+            }
             self.persist_gate_returns(events).await?;
         }
 
@@ -5613,11 +5677,15 @@ impl RunTx for PgRunTx {
             _ => None,
         });
         if written > 0 {
+            let run_gates_changed = events.iter().any(|event| {
+                matches!(event, RunEvent::Gate(gate) if matches!(gate.target, sagat_domain::execution::GateTarget::Run))
+            });
             let updated = sqlx::query(
                 "UPDATE runs SET status = $4, run_version = $5, stop_reason = $6, stop_code = $7, \
                         paused = $8, updated_at = $9, \
                         finished_at = CASE WHEN $10 THEN COALESCE(finished_at, $9) ELSE NULL END, \
-                        result_digest = COALESCE($11, result_digest) \
+                        result_digest = COALESCE($11, result_digest), \
+                        flow_control_gates = CASE WHEN $12 THEN $13 ELSE flow_control_gates END \
                  WHERE tenant_id = $1 AND id = $2 AND run_version = $3",
             )
             .bind(tenant.as_uuid())
@@ -5631,6 +5699,14 @@ impl RunTx for PgRunTx {
             .bind(self.now)
             .bind(self.state.status().is_terminal())
             .bind(result)
+            // feature 022 (T022-022): the gates of the run's start follow its gate events, in this statement; a run with
+            // no such event leaves the column as it is (no statement more, NFR-022-007)
+            .bind(run_gates_changed)
+            .bind(if run_gates_changed {
+                readiness_gate::run_gates_projection(self.state.run_gates())?
+            } else {
+                None
+            })
             .execute(&mut *self.tx)
             .await
             .map_err(store_error)?
@@ -5885,7 +5961,14 @@ impl RunTx for PgRunTx {
                 })?;
         }
         self.tx.commit().await.map_err(store_error)?;
-        readiness_gate::record_gate_outcomes(&self.gate_outcomes);
+        readiness_gate::record_gate_outcomes(
+            &self.gate_outcomes,
+            sagat_telemetry::flow_control::FlowControlScope::Step,
+        );
+        readiness_gate::record_gate_outcomes(
+            &self.run_gate_outcomes,
+            sagat_telemetry::flow_control::FlowControlScope::Run,
+        );
         for waited in self.cancelled_waits {
             metrics::histogram!(
                 WorkflowPrimitiveMetric::ApprovalWait.as_str(),

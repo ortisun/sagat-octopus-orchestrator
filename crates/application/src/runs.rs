@@ -1984,6 +1984,18 @@ where
                     ctx.trace_id.clone(),
                 );
                 if let Some(reset) = reset {
+                    // feature 022: a reset of a definition that gates its start takes a fresh permit or is refused, never
+                    // queues (plan, Run creators); this build does not decide it yet (G022-009), so it refuses rather
+                    // than start the reset run ungated. Nothing has been written.
+                    if tx.parts().0.run_flow_control().is_gated() {
+                        drop(tx);
+                        return Err(store_failure(
+                            pending_completion,
+                            StoreError::FlowControl(
+                                crate::flow_control::FlowControlRefusal::BinaryCapabilityMissing,
+                            ),
+                        ));
+                    }
                     // A reset that would deliver again is refused here, where a run would be created, and not
                     // before the replay of the request: a retry of a request that succeeded must be answered from
                     // the register whatever the setting is now. Nothing has been written: the transaction is dropped.
@@ -2045,17 +2057,9 @@ where
                     .await
                     .map_err(|error| store_failure(pending_completion, error))?;
                 } else {
+                    // every creator passes the run's start through its gates here (feature 022, T022-022)
                     self.engine
-                        .run(&mut tx, effects, |def, state, now| {
-                            let (started, progress) = match held_until_us {
-                                Some(until_us) => {
-                                    execution::start_run_delayed(def, run_id, now, until_us)?
-                                }
-                                None => execution::start_run(def, run_id, now)?,
-                            };
-                            *state = started;
-                            Ok(((), progress))
-                        })
+                        .start(&mut tx, effects, run_id, held_until_us)
                         .await
                         .map_err(engine_error)?;
                 }

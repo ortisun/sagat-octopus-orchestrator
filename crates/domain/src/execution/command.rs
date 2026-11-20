@@ -300,12 +300,14 @@ fn require_instance_lease<'a>(
 /// Creates the state of a new run and schedules its entrypoint.
 ///
 /// # Errors
-/// [`ExecutionError`] only on an internal inconsistency.
+/// [`ExecutionError::Invariant`] for a definition that gates the run's start (feature 022): such a run is admitted
+/// through its gates ([`start_run_gated`]), never around them (FR-022-059); otherwise only on an internal inconsistency.
 pub fn start_run(
     def: &WorkflowDefinition,
     run_id: RunId,
     now: OffsetDateTime,
 ) -> Result<(RunState, Progress), ExecutionError> {
+    refuse_gated_start(def)?;
     let mut state = RunState::new(run_id).with_gated_steps(def);
     let started = RunEvent::RunStarted {
         entrypoint: def.entrypoint().clone(),
@@ -319,13 +321,16 @@ pub fn start_run(
 /// epoch): `run.started` and `run.start_delayed`, and nothing released (feature 018, `FR-018-023`).
 ///
 /// # Errors
-/// [`ExecutionError`] only on an internal inconsistency.
+/// [`ExecutionError::Invariant`] for a definition that gates the run's start: its gates are decided at the delay's
+/// release, which this build does not do yet (G022-009), so it is refused rather than started ungated; otherwise only on
+/// an internal inconsistency.
 pub fn start_run_delayed(
     def: &WorkflowDefinition,
     run_id: RunId,
     now: OffsetDateTime,
     until_us: i64,
 ) -> Result<(RunState, Progress), ExecutionError> {
+    refuse_gated_start(def)?;
     let mut state = RunState::new(run_id).with_gated_steps(def);
     let started = RunEvent::RunStarted {
         entrypoint: def.entrypoint().clone(),
@@ -390,6 +395,171 @@ pub fn start_run_gated(
     }
     let progress = settle(def, &mut state, now, events)?;
     Ok((state, progress))
+}
+
+/// A run whose definition gates its start is never started around its gates (feature 022, FR-022-059): every creator
+/// admits it through [`start_run_gated`], or ends it at once when its key does not evaluate ([`start_run_key_failed`]).
+fn refuse_gated_start(def: &WorkflowDefinition) -> Result<(), ExecutionError> {
+    if def.run_flow_control().is_gated() {
+        return Err(ExecutionError::Invariant(
+            "a run of a definition that gates its start is admitted through its gates",
+        ));
+    }
+    Ok(())
+}
+
+/// Creates the state of a new run whose start key did not evaluate, or is longer than 256 bytes (feature 022, D1180):
+/// the run exists and ends `FAILED` with `EXPRESSION_ERROR` in its admission transaction, whatever started it; it never
+/// waited for or held a gate, so nothing is given back (`contracts/errors.md`, "Failure codes").
+///
+/// # Errors
+/// [`ExecutionError::Invariant`] for a definition that does not gate its start.
+pub fn start_run_key_failed(
+    def: &WorkflowDefinition,
+    run_id: RunId,
+    now: OffsetDateTime,
+) -> Result<(RunState, Progress), ExecutionError> {
+    if !def.run_flow_control().is_gated() {
+        return Err(ExecutionError::Invariant(
+            "only the start key of a gated definition fails its admission",
+        ));
+    }
+    let mut state = RunState::new(run_id).with_gated_steps(def);
+    let started = RunEvent::RunStarted {
+        entrypoint: def.entrypoint().clone(),
+    };
+    state.apply(&started)?;
+    let stop = RunEvent::RunStopRequested {
+        reason: StopReason::Failed,
+        code: Some(FailureCode::expression_error()),
+    };
+    state.apply(&stop)?;
+    let progress = settle(def, &mut state, now, vec![started, stop])?;
+    Ok((state, progress))
+}
+
+/// Grants a queued run every gate its start waits for (feature 022, the grant routine T26 for run waiters; FR-022-018,
+/// ADR-0056 decision 3 as refined by ADR-0089): `decisions` are the grants the adapter took under the keys' locks, one
+/// per gate the start waits for. The entry is released and what that lets go is settled. Both or neither (FR-022-044).
+///
+/// # Errors
+/// [`ExecutionError::IllegalTransition`] when the run's start no longer waits (a timeout or a stop won);
+/// [`ExecutionError::Invariant`] when `decisions` are not the grants of exactly the gates the start waits for.
+pub fn grant_run_gates(
+    def: &WorkflowDefinition,
+    state: &mut RunState,
+    now: OffsetDateTime,
+    decisions: Vec<super::GateEvent>,
+) -> Result<Progress, ExecutionError> {
+    let waiting: Vec<_> = state.run_gates().waiting().map(|(kind, _)| kind).collect();
+    if waiting.is_empty() || state.stop_reason().is_some() || state.is_finished() {
+        return Err(ExecutionError::IllegalTransition {
+            node: def.entrypoint().clone(),
+            event: "concurrency.acquired",
+            status: StepStatus::Pending,
+        });
+    }
+    let granted: Vec<_> = decisions.iter().map(|d| d.change.kind()).collect();
+    if decisions.iter().any(|decision| {
+        !matches!(decision.target, super::GateTarget::Run)
+            || !matches!(
+                decision.change,
+                super::GateChange::ConcurrencyAcquired
+                    | super::GateChange::RateGranted {
+                        from_queue: true,
+                        ..
+                    }
+            )
+    }) || granted.len() != waiting.len()
+        || !waiting.iter().all(|kind| granted.contains(kind))
+    {
+        return Err(ExecutionError::Invariant(
+            "a grant from the queue grants every gate the run's start waits for, once",
+        ));
+    }
+    let mut events = Vec::with_capacity(decisions.len());
+    for decision in decisions {
+        let event = RunEvent::Gate(decision);
+        state.apply(&event)?;
+        events.push(event);
+    }
+    settle(def, state, now, events)
+}
+
+/// A queued run's wait ended at its deadline (feature 022, the timeout routine T27 for run waiters; FR-022-021,
+/// FR-022-052): the gate that refuses it then journals `wait_timed_out`, the other gate it waits for is dequeued, and
+/// the run fails directly with `CONCURRENCY_WAIT_TIMEOUT` or `RATE_LIMIT_WAIT_TIMEOUT` (it never held a permit, plan
+/// T12 as refined by T27).
+///
+/// # Errors
+/// [`ExecutionError::NotYetDue`] before the earliest deadline of its gates; [`ExecutionError::IllegalTransition`] when
+/// the start no longer waits; [`ExecutionError::Invariant`] when `refusing` is not a gate the start waits for.
+pub fn time_out_run_gates(
+    def: &WorkflowDefinition,
+    state: &mut RunState,
+    now: OffsetDateTime,
+    refusing: crate::workflow::GateKind,
+) -> Result<Progress, ExecutionError> {
+    let mut slots: Vec<_> = state
+        .run_gates()
+        .waiting()
+        .map(|(kind, slot)| (kind, slot.gate().clone(), slot.phase()))
+        .collect();
+    if slots.is_empty() || state.stop_reason().is_some() || state.is_finished() {
+        return Err(ExecutionError::IllegalTransition {
+            node: def.entrypoint().clone(),
+            event: "concurrency.wait_timed_out",
+            status: StepStatus::Pending,
+        });
+    }
+    if !slots.iter().any(|(kind, _, _)| *kind == refusing) {
+        return Err(ExecutionError::Invariant(
+            "a run's wait times out on a gate its start waits for",
+        ));
+    }
+    let now_us = i64::try_from(now.unix_timestamp_nanos() / 1_000)
+        .map_err(|_| ExecutionError::Invariant("an instant out of range"))?;
+    let earliest = slots
+        .iter()
+        .filter_map(|(_, _, phase)| match phase {
+            super::GatePhase::Queued { deadline_us } => Some(*deadline_us),
+            _ => None,
+        })
+        .min();
+    if earliest > Some(now_us) {
+        return Err(ExecutionError::NotYetDue(def.entrypoint().clone()));
+    }
+    slots.sort_by_key(|(kind, _, _)| *kind != refusing);
+    let mut events = Vec::with_capacity(slots.len() + 1);
+    for (kind, gate, _) in slots {
+        let change = match (kind == refusing, kind) {
+            (true, crate::workflow::GateKind::Concurrency) => {
+                super::GateChange::ConcurrencyWaitTimedOut
+            }
+            (true, crate::workflow::GateKind::RateLimit) => super::GateChange::RateWaitTimedOut,
+            (false, crate::workflow::GateKind::Concurrency) => {
+                super::GateChange::ConcurrencyDequeued
+            }
+            (false, crate::workflow::GateKind::RateLimit) => super::GateChange::RateDequeued,
+        };
+        let event = RunEvent::Gate(super::GateEvent {
+            target: super::GateTarget::Run,
+            gate,
+            change,
+        });
+        state.apply(&event)?;
+        events.push(event);
+    }
+    let stop = RunEvent::RunStopRequested {
+        reason: StopReason::Failed,
+        code: Some(match refusing {
+            crate::workflow::GateKind::Concurrency => FailureCode::concurrency_wait_timeout(),
+            crate::workflow::GateKind::RateLimit => FailureCode::rate_limit_wait_timeout(),
+        }),
+    };
+    state.apply(&stop)?;
+    events.push(stop);
+    settle(def, state, now, events)
 }
 
 /// Journals one flow-control decision about an existing run (feature 022) and settles what it lets go: a grant that
@@ -606,6 +776,9 @@ pub fn record_reset(
     prefix_digest: Digest,
     reapply: ResetReapply,
 ) -> Result<Progress, ExecutionError> {
+    // a reset of a definition that gates its start takes a fresh permit or is refused (plan, Run creators): not built
+    // (G022-009), so it is refused rather than started ungated
+    refuse_gated_start(def)?;
     apply_then_settle(
         def,
         state,

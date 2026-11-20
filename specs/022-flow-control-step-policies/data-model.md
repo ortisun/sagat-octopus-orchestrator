@@ -198,6 +198,7 @@ neither place fails 020's migration test.
 | `result_available_at` | timestamptz null | |
 | `handler_for_run_id` | uuid null | FK `(tenant_id, handler_for_run_id)` → `runs`; UNIQUE `(tenant_id, handler_for_run_id)` where not null |
 | `test_tree` | boolean | NOT NULL DEFAULT false; true for `DRAFT_TEST` and its descendants |
+| `flow_control_gates` | jsonb null | *Added 2026-11-20 (T022-022, D022-049; migrations `20270203000000`, `20270203000100`).* The gates of the run's start as the reducer left them (phase, pool, group, 12-hex key label, a wait's deadline; never a key's value), the same shape as `steps.flow_control_gates`; CHECK `runs_flow_control_gates_bounded` (an object of at most 1,024 bytes); written only by a commit with a run-scope gate event; protected |
 | `failure_handler_state` | text null | CHECK `IN ('RUNNING','SUCCEEDED','FAILED','TIMED_OUT','CANCELLED')` |
 | `pending_terminal_status` | text null | one of the five handler statuses |
 

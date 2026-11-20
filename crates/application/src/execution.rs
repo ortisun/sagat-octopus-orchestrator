@@ -1069,14 +1069,32 @@ pub trait RunTx: Send {
         }
     }
 
+    /// Feature 022 (T10 of the plan, T022-022; FR-022-018, FR-022-021, D022-031): decides, in the admission transaction
+    /// of a new run whose definition gates its start, each gate its start declares (`keys`, evaluated over the run's
+    /// input): a grant of every one or a wait of every one (both or neither, FR-022-044), as the events to journal, with
+    /// the holder or waiter rows written under the key's lock, after the run's row (slot 7 of ADR-0050's merged order).
+    /// A full queue or a namespace ceiling refuses the admission (`CONCURRENCY_QUEUE_FULL`, `FLOW_CONTROL_LIMIT`) and
+    /// nothing is written. An adapter that does not run the gate refuses (fail closed, D022-037).
+    fn decide_run_gates<'a>(
+        &'a mut self,
+        _keys: &'a crate::flow_control::RunGateKeys,
+    ) -> impl Future<Output = Result<Vec<sagat_domain::execution::GateEvent>, StoreError>> + Send + 'a
+    {
+        async {
+            Err(StoreError::FlowControl(
+                crate::flow_control::FlowControlRefusal::BinaryCapabilityMissing,
+            ))
+        }
+    }
+
     /// Feature 022 (the grant routine T26, T022-097; ADR-0089 decisions 3 and 4): under one sorted lock of the keys of
-    /// the queued step `node` (semaphores, then windows), whether every gate it waits for admits it now by the
+    /// the queued step `node`, or of the run's start when `node` is `None` (T022-022) (semaphores, then windows), whether every gate it waits for admits it now by the
     /// reservation rule, and if so its grants, as the events to journal, with their holder and grant rows written and its
     /// waiter rows removed. `None` when a gate refuses it, or its queue deadline passed (the timeout routine's). The
     /// run's state is not changed; the domain applies the events. An adapter that does not run the gate refuses.
     fn grant_queued_step<'a>(
         &'a mut self,
-        _node: &'a NodeId,
+        _node: Option<&'a NodeId>,
         _attempt: u32,
     ) -> impl Future<Output = Result<Option<Vec<sagat_domain::execution::GateEvent>>, StoreError>>
     + Send
@@ -1089,11 +1107,11 @@ pub trait RunTx: Send {
     }
 
     /// Feature 022 (the timeout routine T27, T022-098; ADR-0089 decision 5): under one sorted lock of the keys of the
-    /// queued step `node`, the gate that refuses it now, rate first when both do (FR-022-052). The rows go when the
-    /// events are persisted.
+    /// queued step `node`, or of the run's start when `node` is `None`, the gate that refuses it now, rate first when both
+    /// do (FR-022-052). The rows go when the events are persisted.
     fn refusing_gate<'a>(
         &'a mut self,
-        _node: &'a NodeId,
+        _node: Option<&'a NodeId>,
         _attempt: u32,
     ) -> impl Future<Output = Result<sagat_domain::workflow::GateKind, StoreError>> + Send + 'a
     {
@@ -2064,6 +2082,100 @@ impl<E: ExpressionEvaluator> Engine<E> {
 }
 
 impl<E: ExpressionEvaluator> Engine<E> {
+    /// Starts the run `tx` was admitted for (every run creator, feature 022 T10 and T022-022, D022-031): a definition
+    /// that gates its start has its start keys evaluated over the run's input and decided by the adapter in this
+    /// transaction (a grant, or a wait in the key's queue), and the run starts with those decisions; a key that does not
+    /// evaluate, or is longer than 256 bytes, ends the run `FAILED`/`EXPRESSION_ERROR` at once (D1180). A definition
+    /// without a start gate starts as before, held until `held_until_us` when it has a start delay.
+    ///
+    /// # Errors
+    /// The adapter's refusals (`CONCURRENCY_QUEUE_FULL`, `FLOW_CONTROL_LIMIT`, `BINARY_CAPABILITY_MISSING`); a gated start
+    /// with a start delay is refused `BINARY_CAPABILITY_MISSING`, since its gates are decided at the release and this
+    /// build does not do that yet (G022-009): never started ungated.
+    pub async fn start<Tx: RunTx>(
+        &self,
+        tx: &mut Tx,
+        effects: Effects,
+        run_id: RunId,
+        held_until_us: Option<i64>,
+    ) -> Result<(), EngineError> {
+        use sagat_domain::workflow::flow_control::MAX_KEY_BYTES;
+        let flow = {
+            let (def, _) = tx.parts();
+            def.run_flow_control().clone()
+        };
+        if !flow.is_gated() {
+            return self
+                .run(tx, effects, move |def, state, now| {
+                    let (started, progress) = match held_until_us {
+                        Some(until_us) => {
+                            sagat_domain::execution::start_run_delayed(def, run_id, now, until_us)?
+                        }
+                        None => sagat_domain::execution::start_run(def, run_id, now)?,
+                    };
+                    *state = started;
+                    Ok(((), progress))
+                })
+                .await;
+        }
+        // fail closed, before any key is evaluated or anything is written (G022-009; G1197): a start delay (its gates are
+        // decided at the release), a start's rate limit (T022-072), and a definition with a `forEach`, `while` or
+        // `repeatUntil` node, whose finish paths end the run without the reducer and so would never give the permit back
+        let unsupported = {
+            let (def, _) = tx.parts();
+            let kinds = def.projected_state();
+            held_until_us.is_some()
+                || flow.rate_limit().is_some()
+                || kinds.collections
+                || kinds.loops
+        };
+        if unsupported {
+            return Err(EngineError::Store(StoreError::FlowControl(
+                crate::flow_control::FlowControlRefusal::BinaryCapabilityMissing,
+            )));
+        }
+        let data = tx.data().await?;
+        let value = |expression: Option<&Expression>| -> Result<Vec<u8>, ()> {
+            let Some(expression) = expression else {
+                return Ok(crate::flow_control::SINGLE_KEY.to_vec());
+            };
+            let value = self
+                .evaluator
+                .flow_control_key(expression, data)
+                .map_err(|failure| {
+                    // the cause can name fields, never values
+                    tracing::warn!(error = %failure, "a run's start key did not evaluate");
+                })?;
+            if value.len() > MAX_KEY_BYTES {
+                tracing::warn!("a run's start key is longer than 256 bytes");
+                return Err(());
+            }
+            Ok(value)
+        };
+        let concurrency = flow.concurrency().map(|p| value(p.key())).transpose();
+        let rate = flow.rate_limit().map(|p| value(p.key())).transpose();
+        let (Ok(concurrency), Ok(rate)) = (concurrency, rate) else {
+            return self
+                .run(tx, effects, move |def, state, now| {
+                    let (started, progress) =
+                        sagat_domain::execution::start_run_key_failed(def, run_id, now)?;
+                    *state = started;
+                    Ok(((), progress))
+                })
+                .await;
+        };
+        let decisions = tx
+            .decide_run_gates(&crate::flow_control::RunGateKeys { concurrency, rate })
+            .await?;
+        self.run(tx, effects, move |def, state, now| {
+            let (started, progress) =
+                sagat_domain::execution::start_run_gated(def, run_id, now, decisions)?;
+            *state = started;
+            Ok(((), progress))
+        })
+        .await
+    }
+
     /// The readiness gate's round (feature 022, T28): evaluates the key of each gate the asked steps declare over the
     /// run's data, then lets the adapter decide them all under one sorted lock. A key that does not evaluate, or whose
     /// canonical value is longer than 256 bytes, fails its step `FLOW_CONTROL_KEY_INVALID` (no attempt spent, never

@@ -15,8 +15,11 @@ Reads `cargo metadata` and fails when:
     `add_schedule_origin`, in the same function (FR-018-046, D2143): a writer that forgets it tells the subscribers of a run a
     schedule started nothing about the schedule, and nothing else would fail;
   * a SQL literal of the PostgreSQL adapter inserts into `runs` outside `execution.rs` (`PgRunStore::create`, the one admission
-    point every run creator passes, where the flow-control gate runs) and `chain_progress.rs` (the continuation successors, which
+    point every run creator passes, which refuses a gated definition its process does not run the gate for) and `chain_progress.rs` (the continuation successors, which
     assert that their definition has no run-level gate): a new writer of runs would start runs past the gate (FR-022-059, D022-031).
+  * a domain start function (`start_run`, `start_run_delayed`, `start_run_gated`, `start_run_key_failed`) is called in production
+    code outside `Engine::start` of `crates/application/src/execution.rs`, where the gates of a run's start are decided (FR-022-059,
+    D022-049): every creator starts the run it was admitted for there;
   * the run-input validator (`crates/infra-schema/src/run_input/`, design 043) names `jsonschema` (a `use`, an `extern crate` or
     a qualified path): it is the oracle of a test only, never on the path (D043-074, ADR-0090);
   * `tokio` is a dependency of `sagat-application` with a default feature or a feature other than `rt`, or a build dependency,
@@ -355,13 +358,50 @@ def run_insert_errors(src):
                 continue
             errors.append(
                 f"crates/infra-postgres/src/{rel}:{text.count(chr(10), 0, offset) + 1}: a statement inserts into `runs` outside "
-                f"{' and '.join(RUN_WRITERS)}: a run created here would not pass the flow-control gate of PgRunStore::create "
+                f"{' and '.join(RUN_WRITERS)}: a run created here would not pass the one admission point, PgRunStore::create "
                 f"(FR-022-059); create runs through RunStore::create"
             )
     if found == 0:
         errors.append(
             f"no `INSERT INTO runs` was found in {RUN_WRITERS[0]} of {src}: the one-admission-point rule would check nothing "
             f"(is the statement spelled otherwise?)"
+        )
+    return errors
+
+
+# --- a run's start passes its gates in one place (feature 022, T022-022, D022-049) ------------------------------------------------
+# Every creator starts the run it was admitted for through `Engine::start` (crates/application/src/execution.rs), which evaluates
+# the start's keys and has the adapter decide them; a creator that called a domain start function itself would start a run past
+# its gates. The domain refuses a gated definition in `start_run` and `start_run_delayed` at run time; this keeps it static.
+DOMAIN_START = re.compile(r"\bstart_run(?:_delayed|_gated|_key_failed)?\s*\(")
+DOMAIN_START_HOME = ("crates/application/src/execution.rs", "start")
+
+
+def run_start_errors(root):
+    """The errors of the one-start-point rule over the tree at `root` (production sources outside the domain)."""
+    errors = []
+    found = 0
+    for rel, text, masked, _ in production_sources(root):
+        if rel.startswith("crates/domain/"):
+            continue
+        for m in DOMAIN_START.finditer(masked):
+            before = masked[max(0, m.start() - 8):m.start()]
+            # a method of another type (`self.start_run(`, `.start_run(&`) or a definition (`fn start_run(`) is not a call of
+            # the domain's function
+            if re.search(r"(\.|\bfn\s+)$", before):
+                continue
+            inside = enclosing_function(masked, m.start())
+            if inside is not None and (rel, inside[0]) == DOMAIN_START_HOME:
+                found += 1
+                continue
+            errors.append(
+                f"{rel}:{text.count(chr(10), 0, m.start()) + 1}: a domain start function is called outside `Engine::start` "
+                f"({DOMAIN_START_HOME[0]}): the run would start past the gates of its start (FR-022-059, D022-049)"
+            )
+    if found == 0:
+        errors.append(
+            f"no domain start call was found in `Engine::start` of {DOMAIN_START_HOME[0]}: the one-start-point rule would "
+            f"check nothing"
         )
     return errors
 
@@ -829,6 +869,7 @@ def main(argv):
     errors.extend(run_input_errors(run_input_src))
     errors.extend(application_runtime_errors(pkgs))
     errors.extend(run_creator_errors(rust_root))
+    errors.extend(run_start_errors(rust_root))
     errors.extend(run_input_runtime_errors(rust_root))
     errors.extend(gate_wiring_errors(rust_root))
     errors.extend(test_support_errors(pkgs))
@@ -864,7 +905,7 @@ def main(argv):
         return 1
     print(f"architecture check passed ({len(graph)} workspace crates, layers respected, no cycles, the lease row is a leaf lock, every run.finished body says its schedule, "
           f"no jsonschema in the run-input validator, the application's runtime confined to one file, every creator given the gate, every run created with a checked input, "
-          f"runs are inserted only at the admission point, key rows are filed only by file_keys, gate rows are written only by the gate)")
+          f"runs are inserted only at the admission point, key rows are filed only by file_keys, gate rows are written only by the gate, a run starts only through Engine::start)")
     return 0
 
 

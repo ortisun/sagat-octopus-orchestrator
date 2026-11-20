@@ -114,3 +114,20 @@ namespace's committed keys under the versions in force before it creates its own
   until they drain, and a key filed again is not refused for the row it replaces.
 
 While the count is above the ceiling, a step whose key is new is refused; keys that exist are decided as before.
+
+## 5. Queued runs (a run's start that waits for its permit)
+
+A workflow with a top-level `concurrency` takes a permit of its key when a run is started; when the key is full the run
+is created `WAITING` and queued (`concurrency.queued`), and the scheduler grants the oldest waiter when a holder ends
+(`concurrency.acquired`) or fails it `CONCURRENCY_WAIT_TIMEOUT` at its queue deadline. A synchronous start is refused,
+with nothing created, when the key's queue is full (`CONCURRENCY_QUEUE_FULL`), the namespace's `queued_runs` is reached or
+the key would be new beyond `concurrency_live_keys` (`FLOW_CONTROL_LIMIT`). Each refusal is counted
+`concurrency_acquisitions_total{scope="run",outcome="refused_full"}`.
+
+- `queued_runs` is counted without a namespace lock until T022-105: concurrent starts that each queue can pass it by at
+  most their number (G022-011).
+- A start delay, a reset, a run-level `rateLimit`, and a workflow with a `forEach`, `while` or `repeatUntil` node beside a
+  top-level `concurrency` are refused `BINARY_CAPABILITY_MISSING` in this build (G022-009, G1197).
+- Rolling back migration `20270203000000` is refused while any run, finished or not, keeps `runs.flow_control_gates`:
+  archive those runs first.
+

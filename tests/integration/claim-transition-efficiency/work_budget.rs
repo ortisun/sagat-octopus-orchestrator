@@ -427,6 +427,82 @@ measured!(
     a_rate_limited_step_costs_what_the_budget_says_once
 );
 
+/// An admission whose start declares `concurrency` and is granted at once (feature 022, T022-022; NFR-022-007: what a
+/// declaring definition adds to its own admission is a budget line of the change that adds it). Measured 2026-11-20 on a
+/// key that its last holder emptied (an empty key row is pruned, so each start files it again): the plain admission
+/// (33, 1, 11) and ten statements, itemised against a plain start: the digest key versions in force, the ceilings, the
+/// key's existence, the namespace's live keys (a key filed again), the key's insert and its lock, the decision's clock,
+/// the key's count, the holder row and the `concurrency.acquired` journal row; three rows more (holder, key, journal
+/// row; the projection goes in the run's own UPDATE).
+const GATED_START_ADMISSION: Work = cost(43, 1, 14);
+/// The same admission when the key is full and the run queues: the namespace's queued runs, the key's hint and the
+/// waiter row in place of the holder row, and no entry released (no ready step, task hint or outbox row).
+const QUEUED_START_ADMISSION: Work = cost(43, 1, 11);
+/// The completion that ends a run holding a start permit: the plain one (47, 1, 9) and seven statements, among them the
+/// counter-slot lock (D022-050 item 8), the return of the permit under its key's lock (the holder's key, the lock, the
+/// delete, the key's hint) and the `concurrency.released` journal row; three rows more.
+const COMPLETION_THAT_ENDS_A_GATED_START: Work = cost(54, 1, 12);
+
+async fn a_gated_start_costs_what_the_budget_says_once() -> Result<(), Evicted> {
+    let w = crate::support::flow_control::gated_world().await;
+    sqlx::query("CREATE EXTENSION IF NOT EXISTS pg_stat_statements")
+        .execute(&w.db.pool)
+        .await
+        .expect("the test PostgreSQL preloads pg_stat_statements");
+    let gated = |name: &str, limit: u32| {
+        let mut doc = document(name, "a", vec![activity("a")]);
+        // no key: the single key of the group, so that every run of the measure counts on one existing row
+        doc["concurrency"] = json!({"limit": limit});
+        doc
+    };
+    let roomy =
+        crate::support::flow_control::publish(&w, gated("budget-gated-start", 10_000)).await;
+    let session = w.session(&["act.a"]).await;
+    let mut admissions = Vec::new();
+    let mut completions = Vec::new();
+    for _ in 0..3 {
+        let before = reading(&w).await;
+        w.start(roomy, &json!({})).await;
+        admissions.push(spent(&w, before).await?);
+        let task = w.one_task(&session).await;
+        let before = reading(&w).await;
+        w.complete(&session, &task, &json!({})).await.expect("done");
+        completions.push(spent(&w, before).await?);
+    }
+    let full = crate::support::flow_control::publish(&w, gated("budget-queued-start", 1)).await;
+    w.start(full, &json!({})).await;
+    let mut queued = Vec::new();
+    for _ in 0..3 {
+        let before = reading(&w).await;
+        w.start(full, &json!({})).await;
+        queued.push(spent(&w, before).await?);
+    }
+    assert_eq!(
+        (admissions[1], completions[1], queued[1]),
+        (admissions[2], completions[2], queued[2]),
+        "the counts of a quiet database do not vary"
+    );
+    if admissions[1] != GATED_START_ADMISSION
+        || queued[1] != QUEUED_START_ADMISSION
+        || completions[1] != COMPLETION_THAT_ENDS_A_GATED_START
+    {
+        panic!(
+            "the work of a gated start left its budget (lower the budget with the change that earns it; raise it only with \
+             the reason beside it).\n\
+             granted admission: {:?}, budget {GATED_START_ADMISSION:?}\n\
+             queued admission: {:?}, budget {QUEUED_START_ADMISSION:?}\n\
+             completion that ends the run: {:?}, budget {COMPLETION_THAT_ENDS_A_GATED_START:?}",
+            admissions[1], queued[1], completions[1]
+        );
+    }
+    Ok(())
+}
+
+measured!(
+    a_gated_start_costs_what_the_budget_says,
+    a_gated_start_costs_what_the_budget_says_once
+);
+
 /// Sets the stored kind of the one step row of `run` at `node`, as the owner.
 async fn store_kind(w: &World, run: sagat_domain::execution::RunId, node: &str, kind: &str) {
     let changed = sqlx::query(

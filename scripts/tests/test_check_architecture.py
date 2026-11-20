@@ -692,11 +692,19 @@ CHAINS = (
 GATE = "pub struct CheckedRunInput { version: u8 }\nfn check() -> CheckedRunInput { CheckedRunInput { version: 1 } }\n"
 
 
+ENGINE_START = (
+    "impl Engine {\n    pub async fn start(&self) {\n"
+    "        let _ = sagat_domain::execution::start_run(def, run, now);\n"
+    "        let _ = sagat_domain::execution::start_run_gated(def, run, now, d);\n    }\n}\n"
+)
+
+
 def creator_tree(**extra):
     files = {
         "crates/infra-postgres/src/execution.rs": EXECUTION,
         "crates/infra-postgres/src/chain_progress.rs": CHAINS,
         "crates/application/src/run_input.rs": GATE,
+        "crates/application/src/execution.rs": ENGINE_START,
     }
     files.update(extra)
     return files
@@ -878,3 +886,33 @@ class EveryRunIsCreatedWithACheckedInput(unittest.TestCase):
 if __name__ == "__main__":
     unittest.main()
 
+
+class ARunStartsThroughItsGates(unittest.TestCase):
+    """Feature 022, D022-049: the domain's start functions are called in production only inside `Engine::start`."""
+
+    def test_engine_start_passes_and_another_caller_is_refused_and_named(self):
+        code, out = creator_check(creator_tree())
+        self.assertEqual(code, 0, out)
+        for call in (
+            "execution::start_run(def, id, now)",
+            "sagat_domain::execution::start_run_delayed(def, id, now, until)",
+            "start_run_gated (def, id, now, decisions)",
+            "execution::start_run_key_failed(def, id, now)",
+        ):
+            code, out = creator_check(creator_tree(**{
+                "crates/scheduler/src/passes.rs": f"async fn start_child() {{\n    let _ = {call};\n}}\n",
+            }))
+            self.assertEqual(code, 1, out)
+            self.assertIn("crates/scheduler/src/passes.rs:2: a domain start function is called outside", out)
+
+    def test_a_method_a_definition_and_a_test_module_are_not_calls(self):
+        code, out = creator_check(creator_tree(**{
+            "crates/application/src/schedule_firing.rs": "async fn start_run(&self) {}\nasync fn f(&self) { self.start_run().await; x.start_run(&r); }\n",
+            "crates/scheduler/src/events.rs": "#[cfg(test)]\nmod tests { fn t() { execution::start_run(d, r, n); } }\n",
+        }))
+        self.assertEqual(code, 0, out)
+
+    def test_a_start_point_with_no_call_is_an_error_and_not_a_pass(self):
+        code, out = creator_check(creator_tree(**{"crates/application/src/execution.rs": "impl Engine { pub async fn start(&self) {} }\n"}))
+        self.assertEqual(code, 1, out)
+        self.assertIn("the one-start-point rule would check nothing", out)

@@ -193,6 +193,26 @@ impl std::fmt::Debug for StepGateKeys {
     }
 }
 
+/// The keys of the gates a run's start declares, evaluated by the application over the run's input at its admission
+/// (feature 022, T10 and T19 of the plan, T022-022): the canonical value of each, at most
+/// [`sagat_domain::workflow::flow_control::MAX_KEY_BYTES`] bytes; a gate without a key expression has [`SINGLE_KEY`].
+/// The adapter digests and files them under the keys' locks; the values never leave the transaction (D1168).
+#[derive(Clone, PartialEq, Eq)]
+pub struct RunGateKeys {
+    pub concurrency: Option<Vec<u8>>,
+    pub rate: Option<Vec<u8>>,
+}
+
+/// A key's values are run data: only their sizes are shown.
+impl std::fmt::Debug for RunGateKeys {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RunGateKeys")
+            .field("concurrency_len", &self.concurrency.as_ref().map(Vec::len))
+            .field("rate_len", &self.rate.as_ref().map(Vec::len))
+            .finish()
+    }
+}
+
 /// The readiness gate's answer for the steps of one round (T28): the grants or waits of every gate of the steps it
 /// decided, or, when a namespace ceiling refuses some of them (a new key beyond the live-keys ceiling, a ceiling of
 /// zero: `FLOW_CONTROL_LIMIT`, G1199), only those refusals: nothing is filed then, and the next round asks again for the
@@ -218,18 +238,20 @@ pub struct GateKey {
     pub tenant_id: sagat_domain::identity::TenantId,
     pub namespace_id: sagat_domain::identity::NamespaceId,
     pub kind: GateKind,
+    /// Whose waiters the key queues: runs' starts (`Run`) or steps (`Step`); the scope is part of the key's identity.
+    pub level: sagat_domain::workflow::GateLevel,
     pub group: sagat_domain::workflow::ResolvedGroup,
     pub digest: [u8; 32],
     pub shard: sagat_domain::sharding::Shard,
     pub hint: time::OffsetDateTime,
 }
 
-/// A queued step of a key, or one whose queue deadline passed (T26, T27).
+/// A queued step of a key, or a queued run's start (`node` is `None`), or one whose queue deadline passed (T26, T27).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GateWaiter {
     pub tenant_id: sagat_domain::identity::TenantId,
     pub run_id: sagat_domain::execution::RunId,
-    pub node: sagat_domain::workflow::NodeId,
+    pub node: Option<sagat_domain::workflow::NodeId>,
 }
 
 /// How many waiters of one key one pass tries (D022-015, ADR-0089 decision 3, plan "grant pass": at most 256 grants per

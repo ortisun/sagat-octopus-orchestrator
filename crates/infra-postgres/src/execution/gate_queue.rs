@@ -47,12 +47,19 @@ impl Queued {
     }
 }
 
+/// The level of a waiter and the `node` column of its rows: a step's node, or `''` for the run's start (T022-022).
+fn level_of(node: Option<&NodeId>) -> (GateLevel, &str) {
+    node.map_or((GateLevel::Run, ""), |node| {
+        (GateLevel::Step, node.as_str())
+    })
+}
+
 impl PgRunTx {
-    /// The waiter rows of `node`'s attempt `attempt`, rate first, under one sorted lock of their keys, and the database
+    /// The waiter rows of `node`'s attempt `attempt` (of the run's start when `node` is `None`), rate first, under one sorted lock of their keys, and the database
     /// clock read after the locks (D022-027).
     async fn locked_queue(
         &mut self,
-        node: &NodeId,
+        node: Option<&NodeId>,
         attempt: u32,
         lock: bool,
     ) -> Result<(Vec<Queued>, OffsetDateTime), StoreError> {
@@ -67,24 +74,26 @@ impl PgRunTx {
             sqlx::query_as(
                 "SELECT 'RATE', group_name, key_digest, declared_limit, period_ms, enqueued_at, deadline_at \
                    FROM rate_limit_waiters \
-                  WHERE tenant_id = $1 AND run_id = $2 AND limit_scope = 'STEP' AND node = $3 AND attempt = $4 \
+                  WHERE tenant_id = $1 AND run_id = $2 AND limit_scope = $5 AND node = $3 AND attempt = $4 \
                  UNION ALL \
                  SELECT 'CONCURRENCY', group_name, key_digest, declared_limit, 0, enqueued_at, deadline_at \
                    FROM concurrency_waiters \
-                  WHERE tenant_id = $1 AND run_id = $2 AND permit_scope = 'STEP' AND node = $3 AND attempt = $4 \
+                  WHERE tenant_id = $1 AND run_id = $2 AND permit_scope = $5 AND node = $3 AND attempt = $4 \
                  ORDER BY 1 DESC",
             )
             .bind(self.info.tenant_id.as_uuid())
             .bind(self.info.run_id.as_uuid())
-            .bind(node.as_str())
+            .bind(level_of(node).1)
             .bind(attempt_column)
+            .bind(level_of(node).0.as_str())
             .fetch_all(&mut *self.tx)
             .await
             .map_err(store_error)?;
-        let declared = self
-            .state
-            .declared_gates(node)
-            .ok_or_else(|| corrupt("a queued step of a node that declares no gate"))?;
+        let declared = match node {
+            Some(node) => self.state.declared_gates(node),
+            None => sagat_domain::execution::DeclaredGates::of(self.def.run_flow_control()),
+        }
+        .ok_or_else(|| corrupt("a queued waiter whose level declares no gate"))?;
         let mut queued = Vec::with_capacity(rows.len());
         for (kind, group, digest, limit, period_ms, enqueued_at, deadline_at) in rows {
             queued.push(Queued {
@@ -117,7 +126,7 @@ impl PgRunTx {
                     tenant: self.info.tenant_id,
                     namespace: self.info.namespace_id,
                     pool: GatePool::Ordinary,
-                    level: GateLevel::Step,
+                    level: level_of(node).0,
                     group: q.group.clone(),
                     digest: q.digest,
                 })
@@ -135,16 +144,16 @@ impl PgRunTx {
 
     /// Whether the gate of `queued` admits the waiter now: its key's counted holders or grants plus the eligible waiters
     /// ahead of it are below its own limit (ADR-0089 decision 4). The key row is locked.
-    async fn admits(&mut self, queued: &Queued, node: &NodeId) -> Result<bool, StoreError> {
+    async fn admits(&mut self, queued: &Queued, node: Option<&NodeId>) -> Result<bool, StoreError> {
         let statement = match queued.kind {
             GateKind::Concurrency => {
                 "WITH taken AS (SELECT holders::bigint AS n FROM concurrency_semaphores \
-                                 WHERE tenant_id = $1 AND namespace_id = $2 AND pool = $3 AND permit_scope = 'STEP' \
+                                 WHERE tenant_id = $1 AND namespace_id = $2 AND pool = $3 AND permit_scope = $11 \
                                    AND group_name = $4 AND key_digest = $5) \
                  SELECT taken.n, (SELECT count(*) FROM (SELECT 1 FROM concurrency_waiters w \
                                    JOIN runs r ON r.tenant_id = w.tenant_id AND r.id = w.run_id \
                                   WHERE w.tenant_id = $1 AND w.namespace_id = $2 AND w.pool = $3 \
-                                    AND w.permit_scope = 'STEP' AND w.group_name = $4 AND w.key_digest = $5 \
+                                    AND w.permit_scope = $11 AND w.group_name = $4 AND w.key_digest = $5 \
                                     AND (w.enqueued_at, w.run_id, w.node) < ($6, $7, $8) \
                                     AND w.deadline_at > clock_timestamp() \
                                     AND r.status IN ('RUNNING', 'WAITING') AND NOT r.paused \
@@ -155,13 +164,13 @@ impl PgRunTx {
             GateKind::RateLimit => {
                 "WITH taken AS (SELECT count(*) AS n FROM rate_limit_grants g \
                                  WHERE g.tenant_id = $1 AND g.namespace_id = $2 AND g.pool = $3 \
-                                   AND g.limit_scope = 'STEP' AND g.group_name = $4 AND g.key_digest = $5 \
+                                   AND g.limit_scope = $11 AND g.group_name = $4 AND g.key_digest = $5 \
                                    AND (g.leased_at IS NULL \
                                         OR g.leased_at > clock_timestamp() - make_interval(secs => $9::bigint / 1000.0))) \
                  SELECT taken.n, (SELECT count(*) FROM (SELECT 1 FROM rate_limit_waiters w \
                                    JOIN runs r ON r.tenant_id = w.tenant_id AND r.id = w.run_id \
                                   WHERE w.tenant_id = $1 AND w.namespace_id = $2 AND w.pool = $3 \
-                                    AND w.limit_scope = 'STEP' AND w.group_name = $4 AND w.key_digest = $5 \
+                                    AND w.limit_scope = $11 AND w.group_name = $4 AND w.key_digest = $5 \
                                     AND (w.enqueued_at, w.run_id, w.node) < ($6, $7, $8) \
                                     AND w.deadline_at > clock_timestamp() \
                                     AND r.status IN ('RUNNING', 'WAITING') AND NOT r.paused \
@@ -177,10 +186,11 @@ impl PgRunTx {
             .bind(queued.digest.as_slice())
             .bind(queued.enqueued_at)
             .bind(self.info.run_id.as_uuid())
-            .bind(node.as_str())
+            .bind(level_of(node).1)
             .bind(i64::from(queued.period_ms))
             // no more of the queue ahead is read than can matter: the waiter's own limit
             .bind(i64::from(queued.limit))
+            .bind(level_of(node).0.as_str())
             .fetch_one(&mut *self.tx)
             .await
             .map_err(store_error)?;
@@ -190,7 +200,7 @@ impl PgRunTx {
     /// See [`sagat_application::execution::RunTx::grant_queued_step`].
     pub(super) async fn grant_from_queue(
         &mut self,
-        node: &NodeId,
+        node: Option<&NodeId>,
         attempt: u32,
     ) -> Result<Option<Vec<GateEvent>>, StoreError> {
         let (queued, now) = self.locked_queue(node, attempt, true).await?;
@@ -209,7 +219,7 @@ impl PgRunTx {
             let change = match q.kind {
                 GateKind::Concurrency => {
                     self.move_row(
-                        "DELETE FROM concurrency_waiters WHERE tenant_id = $1 AND run_id = $2 AND permit_scope = 'STEP' \
+                        "DELETE FROM concurrency_waiters WHERE tenant_id = $1 AND run_id = $2 AND permit_scope = $5 \
                          AND node = $3 AND attempt = $4",
                         node,
                         attempt_column,
@@ -218,18 +228,19 @@ impl PgRunTx {
                     sqlx::query(
                         "INSERT INTO concurrency_holders (tenant_id, namespace_id, run_id, holder_scope, node, attempt, \
                          pool, group_name, key_digest, declared_limit, acquired_at) \
-                         VALUES ($1, $2, $3, 'STEP', $4, $5, $6, $7, $8, $9, $10)",
+                         VALUES ($1, $2, $3, $11, $4, $5, $6, $7, $8, $9, $10)",
                     )
                     .bind(self.info.tenant_id.as_uuid())
                     .bind(self.info.namespace_id.as_uuid())
                     .bind(self.info.run_id.as_uuid())
-                    .bind(node.as_str())
+                    .bind(level_of(node).1)
                     .bind(attempt_column)
                     .bind(GatePool::Ordinary.as_str())
                     .bind(q.group.as_str())
                     .bind(q.digest.as_slice())
                     .bind(q.limit)
                     .bind(now)
+                    .bind(level_of(node).0.as_str())
                     .execute(&mut *self.tx)
                     .await
                     .map_err(store_error)?;
@@ -237,7 +248,7 @@ impl PgRunTx {
                 }
                 GateKind::RateLimit => {
                     self.move_row(
-                        "DELETE FROM rate_limit_waiters WHERE tenant_id = $1 AND run_id = $2 AND limit_scope = 'STEP' \
+                        "DELETE FROM rate_limit_waiters WHERE tenant_id = $1 AND run_id = $2 AND limit_scope = $5 \
                          AND node = $3 AND attempt = $4",
                         node,
                         attempt_column,
@@ -246,12 +257,12 @@ impl PgRunTx {
                     sqlx::query(
                         "INSERT INTO rate_limit_grants (tenant_id, namespace_id, run_id, node, attempt, pool, limit_scope, \
                          group_name, key_digest, declared_limit, period_ms, granted_at, leased_at, shard) \
-                         VALUES ($1, $2, $3, $4, $5, $6, 'STEP', $7, $8, $9, $10, $11, NULL, run_shard($3))",
+                         VALUES ($1, $2, $3, $4, $5, $6, $12, $7, $8, $9, $10, $11, NULL, run_shard($3))",
                     )
                     .bind(self.info.tenant_id.as_uuid())
                     .bind(self.info.namespace_id.as_uuid())
                     .bind(self.info.run_id.as_uuid())
-                    .bind(node.as_str())
+                    .bind(level_of(node).1)
                     .bind(attempt_column)
                     .bind(GatePool::Ordinary.as_str())
                     .bind(q.group.as_str())
@@ -259,6 +270,7 @@ impl PgRunTx {
                     .bind(q.limit)
                     .bind(q.period_ms)
                     .bind(now)
+                    .bind(level_of(node).0.as_str())
                     .execute(&mut *self.tx)
                     .await
                     .map_err(store_error)?;
@@ -271,13 +283,17 @@ impl PgRunTx {
                     }
                 }
             };
-            self.gate_outcomes
-                .push((q.kind, GateOutcome::GrantedFromQueue));
+            let outcomes = if node.is_some() {
+                &mut self.gate_outcomes
+            } else {
+                &mut self.run_gate_outcomes
+            };
+            outcomes.push((q.kind, GateOutcome::GrantedFromQueue));
             events.push(GateEvent {
-                target: GateTarget::Step {
+                target: node.map_or(GateTarget::Run, |node| GateTarget::Step {
                     node: node.clone(),
                     attempt,
-                },
+                }),
                 gate: GateRef {
                     pool: GatePool::Ordinary,
                     group: q.group.clone(),
@@ -292,7 +308,7 @@ impl PgRunTx {
     /// See [`sagat_application::execution::RunTx::refusing_gate`].
     pub(super) async fn gate_that_refuses(
         &mut self,
-        node: &NodeId,
+        node: Option<&NodeId>,
         attempt: u32,
     ) -> Result<GateKind, StoreError> {
         // read without the keys' locks (correctness review M2, 2026-11-19): the rows go with the events, under the one
@@ -314,14 +330,15 @@ impl PgRunTx {
     async fn move_row(
         &mut self,
         delete: &'static str,
-        node: &NodeId,
+        node: Option<&NodeId>,
         attempt: i32,
     ) -> Result<(), StoreError> {
         let deleted = sqlx::query(delete)
             .bind(self.info.tenant_id.as_uuid())
             .bind(self.info.run_id.as_uuid())
-            .bind(node.as_str())
+            .bind(level_of(node).1)
             .bind(attempt)
+            .bind(level_of(node).0.as_str())
             .execute(&mut *self.tx)
             .await
             .map_err(store_error)?

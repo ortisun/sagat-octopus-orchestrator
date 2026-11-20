@@ -5653,19 +5653,27 @@ where
                 if state.is_paused() || state.stop_reason().is_some() {
                     return Ok(Granted::Refused);
                 }
-                match state.step(&waiter.node) {
-                    Some(step)
-                        if step.status() == execution::StepStatus::Waiting
-                            && matches!(step.waiting_on(), Some(execution::WaitingOn::Gate)) =>
-                    {
-                        step.attempt().saturating_add(1)
-                    }
-                    // the candidate is stale: a grant, a timeout or a cancellation reached it first
-                    _ => return Ok(Granted::Refused),
+                match &waiter.node {
+                    // a run's start that still waits (T022-022)
+                    None if state.run_gates().is_waiting() => 0,
+                    Some(node) => match state.step(node) {
+                        Some(step)
+                            if step.status() == execution::StepStatus::Waiting
+                                && matches!(
+                                    step.waiting_on(),
+                                    Some(execution::WaitingOn::Gate)
+                                ) =>
+                        {
+                            step.attempt().saturating_add(1)
+                        }
+                        // the candidate is stale: a grant, a timeout or a cancellation reached it first
+                        _ => return Ok(Granted::Refused),
+                    },
+                    None => return Ok(Granted::Refused),
                 }
             };
             let Some(grants) = tx
-                .grant_queued_step(&waiter.node, attempt)
+                .grant_queued_step(waiter.node.as_ref(), attempt)
                 .await
                 .map_err(EngineError::Store)?
             else {
@@ -5691,9 +5699,15 @@ where
                     parent_span_id = %sagat_telemetry::run_span_id(waiter.run_id.as_uuid()),
                 ),
             };
+            let start = waiter.node.is_none();
             self.engine
                 .run(&mut tx, self.effects(), move |def, state, now| {
-                    Ok(((), execution::grant_step_gates(def, state, now, grants)?))
+                    let progress = if start {
+                        execution::grant_run_gates(def, state, now, grants)?
+                    } else {
+                        execution::grant_step_gates(def, state, now, grants)?
+                    };
+                    Ok(((), progress))
                 })
                 .instrument(span)
                 .await?;
@@ -5775,28 +5789,39 @@ where
             }
             let attempt = {
                 let (_, state) = tx.parts();
-                match state.step(&waiter.node) {
-                    Some(step)
-                        if step.status() == execution::StepStatus::Waiting
-                            && matches!(step.waiting_on(), Some(execution::WaitingOn::Gate)) =>
-                    {
-                        step.attempt().saturating_add(1)
-                    }
-                    _ => return Ok(Outcome::Skipped),
+                match &waiter.node {
+                    // a run's start that still waits (T022-022)
+                    None if state.run_gates().is_waiting() && state.stop_reason().is_none() => 0,
+                    Some(node) => match state.step(node) {
+                        Some(step)
+                            if step.status() == execution::StepStatus::Waiting
+                                && matches!(
+                                    step.waiting_on(),
+                                    Some(execution::WaitingOn::Gate)
+                                ) =>
+                        {
+                            step.attempt().saturating_add(1)
+                        }
+                        _ => return Ok(Outcome::Skipped),
+                    },
+                    None => return Ok(Outcome::Skipped),
                 }
             };
             let refusing = tx
-                .refusing_gate(&waiter.node, attempt)
+                .refusing_gate(waiter.node.as_ref(), attempt)
                 .await
                 .map_err(EngineError::Store)?;
             let node = waiter.node.clone();
             match self
                 .engine
                 .run(&mut tx, self.effects(), move |def, state, now| {
-                    Ok((
-                        (),
-                        execution::time_out_step_gates(def, state, now, &node, refusing)?,
-                    ))
+                    let progress = match &node {
+                        Some(node) => {
+                            execution::time_out_step_gates(def, state, now, node, refusing)?
+                        }
+                        None => execution::time_out_run_gates(def, state, now, refusing)?,
+                    };
+                    Ok(((), progress))
                 })
                 .await
             {
@@ -6556,11 +6581,8 @@ where
                 let effects = Effects::by(Actor::System("scheduler"), parent.info.trace_id.clone());
                 let started = self
                     .engine
-                    .run(&mut tx, effects, |def: &WorkflowDefinition, state, now| {
-                        let (started, progress) = execution::start_run(def, child_id, now)?;
-                        *state = started;
-                        Ok(((), progress))
-                    })
+                    // through the child's start gates (feature 022, T022-022)
+                    .start(&mut tx, effects, child_id, None)
                     .await;
                 if let Err(error) = started {
                     drop(tx);

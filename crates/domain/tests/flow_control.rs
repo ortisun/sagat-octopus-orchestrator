@@ -1025,3 +1025,194 @@ fn an_admission_decides_exactly_the_gates_the_definition_declares() {
     )
     .expect("both granted");
 }
+
+// ------------------------------------------------------------------------------- run admission (T022-022)
+
+#[test]
+fn a_definition_that_gates_its_start_is_never_started_around_its_gates() {
+    for def in [gated_chain(true, false), gated_chain(false, true)] {
+        let plain = execution::start_run(&def, RunId::generate(), T0);
+        assert!(
+            matches!(plain, Err(ExecutionError::Invariant(_))),
+            "a gated start is admitted through its gates (FR-022-059): {plain:?}"
+        );
+        let delayed = execution::start_run_delayed(&def, RunId::generate(), T0, DEADLINE);
+        assert!(
+            matches!(delayed, Err(ExecutionError::Invariant(_))),
+            "a delayed gated start is refused until its release decides the gates (G022-009): {delayed:?}"
+        );
+    }
+    assert!(execution::start_run(&chain(), RunId::generate(), T0).is_ok());
+}
+
+#[test]
+fn a_start_key_that_does_not_evaluate_ends_the_run_failed_with_expression_error() {
+    let def = gated_chain(true, false);
+    let (state, progress) =
+        execution::start_run_key_failed(&def, RunId::generate(), T0).expect("ended");
+    assert_eq!(
+        names(&progress.events),
+        [
+            "run.started",
+            "run.stop_requested",
+            "step.cancelled",
+            "run.finished"
+        ]
+    );
+    assert_eq!(state.status(), RunStatus::Failed);
+    assert_eq!(
+        progress.events[1],
+        RunEvent::RunStopRequested {
+            reason: StopReason::Failed,
+            code: Some(FailureCode::expression_error()),
+        },
+        "D1180: the run exists and ends FAILED/EXPRESSION_ERROR"
+    );
+    assert!(state.run_gates().concurrency().is_none(), "it never waited");
+    replays(&state, &progress.events);
+    assert!(
+        execution::start_run_key_failed(&chain(), RunId::generate(), T0).is_err(),
+        "only a gated start has a key to fail"
+    );
+}
+
+#[test]
+fn a_queued_run_is_granted_every_gate_it_waits_for_once_and_its_entry_is_released() {
+    let def = gated_chain(true, true);
+    let (mut state, mut events) = execution::start_run_gated(
+        &def,
+        RunId::generate(),
+        T0,
+        vec![run_event(queued()), run_event(rate_queued())],
+    )
+    .map(|(state, progress)| (state, progress.events))
+    .expect("admitted");
+    let half = execution::grant_run_gates(
+        &def,
+        &mut state.clone(),
+        T0,
+        vec![run_event(GateChange::ConcurrencyAcquired)],
+    );
+    assert!(
+        matches!(half, Err(ExecutionError::Invariant(_))),
+        "both or neither (FR-022-044): {half:?}"
+    );
+    let not_from_queue = execution::grant_run_gates(
+        &def,
+        &mut state.clone(),
+        T0,
+        vec![
+            run_event(GateChange::ConcurrencyAcquired),
+            run_event(rate_granted(false)),
+        ],
+    );
+    assert!(matches!(not_from_queue, Err(ExecutionError::Invariant(_))));
+    let granted = execution::grant_run_gates(
+        &def,
+        &mut state,
+        T0,
+        vec![
+            run_event(rate_granted(true)),
+            run_event(GateChange::ConcurrencyAcquired),
+        ],
+    )
+    .expect("granted");
+    assert_eq!(
+        names(&granted.events),
+        [
+            "rate_limit.granted",
+            "concurrency.acquired",
+            "step.released"
+        ]
+    );
+    assert_eq!(state.status(), RunStatus::Running);
+    events.extend(granted.events);
+    let again = execution::grant_run_gates(
+        &def,
+        &mut state.clone(),
+        T0,
+        vec![run_event(GateChange::ConcurrencyAcquired)],
+    );
+    assert!(
+        matches!(again, Err(ExecutionError::IllegalTransition { .. })),
+        "a start that waits for nothing is a lost race, not a defect: {again:?}"
+    );
+    replays(&state, &events);
+}
+
+#[test]
+fn a_queued_run_times_out_on_the_refusing_gate_dequeues_the_other_and_fails() {
+    let def = gated_chain(true, true);
+    let admitted = |deadline_us| {
+        execution::start_run_gated(
+            &def,
+            RunId::generate(),
+            T0,
+            vec![
+                run_event(GateChange::ConcurrencyQueued {
+                    queue_deadline_us: deadline_us,
+                }),
+                run_event(GateChange::RateQueued {
+                    limit: 10,
+                    per: RatePeriod::Second,
+                    queue_deadline_us: deadline_us,
+                }),
+            ],
+        )
+        .expect("admitted")
+    };
+    let t0_us = i64::try_from(T0.unix_timestamp_nanos() / 1_000).expect("instant");
+    let (mut early, _) = admitted(t0_us + 1);
+    let not_due = execution::time_out_run_gates(&def, &mut early, T0, GateKind::Concurrency);
+    assert!(
+        matches!(not_due, Err(ExecutionError::NotYetDue(_))),
+        "{not_due:?}"
+    );
+    let (mut state, progress) = admitted(t0_us);
+    let mut events = progress.events;
+    let timed_out = execution::time_out_run_gates(&def, &mut state, T0, GateKind::Concurrency)
+        .expect("timed out");
+    assert_eq!(
+        names(&timed_out.events),
+        [
+            "concurrency.wait_timed_out",
+            "rate_limit.dequeued",
+            "run.stop_requested",
+            "step.cancelled",
+            "run.finished"
+        ]
+    );
+    assert!(timed_out.events.contains(&RunEvent::RunStopRequested {
+        reason: StopReason::Failed,
+        code: Some(FailureCode::concurrency_wait_timeout()),
+    }));
+    assert_eq!(state.status(), RunStatus::Failed);
+    events.extend(timed_out.events);
+    replays(&state, &events);
+    let late = execution::time_out_run_gates(&def, &mut state, T0, GateKind::Concurrency);
+    assert!(
+        matches!(late, Err(ExecutionError::IllegalTransition { .. })),
+        "{late:?}"
+    );
+}
+
+#[test]
+fn a_reset_of_a_definition_that_gates_its_start_is_refused_until_it_takes_a_fresh_permit() {
+    let def = gated_chain(true, false);
+    let (mut state, _) =
+        execution::start_run_gated(&def, RunId::generate(), T0, vec![run_event(queued())])
+            .expect("admitted");
+    let reset = execution::record_reset(
+        &def,
+        &mut state,
+        T0,
+        RunId::generate(),
+        1,
+        sagat_domain::workflow::Digest::new([0x42; 32]),
+        sagat_domain::execution::ResetReapply::None,
+    );
+    assert!(
+        matches!(reset, Err(ExecutionError::Invariant(_))),
+        "never started ungated (G022-009): {reset:?}"
+    );
+}
