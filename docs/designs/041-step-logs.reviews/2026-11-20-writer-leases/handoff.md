@@ -155,3 +155,25 @@ Stop the local server when done:
   - task T041-3 does not say that the planned openapi.yaml now carries `tenant_quota_busy`;
   - the lock-order test's set of writers (design, "lock-order test") does not name the holders of `sagat_quota_lock_log_usage`;
   - the T041-36 test text "a carry statement that raises" is unchanged.
+
+## Update after decision D041-121 (2026-11-20, head `77fcb33d`)
+
+Steps 1 to 3 of "Left to do" above are done:
+- The lease tests were rerun.
+- Hand mutations 16 to 21 are recorded in validation-report.md.
+- The Studio types were regenerated, and they are identical to the hand edit.
+
+The review rounds are closed:
+- The second re-reads are in `rereview-2/`.
+- The confirmation re-reads and the design critic's two narrow re-reads are in `rereview-3/`.
+- Each folder has a `resolution.md`.
+- The answers are decision D041-121, documents first, each code fix shown by a failing test.
+
+The fourth run was started at `77fcb33d`: `perf/041-carry-spike` was fast-forwarded and the run is 44834024933. Its
+record is decision D041-122 (the coordinating session had expected D041-121, which the review answers took).
+
+How to read the run: by task T041-35's fourth-run rules, as restated by D041-121. The judge prints the (2b)
+attribution medians: `g2b attribution refill share 8`, `i 8` and `ii 8`.
+
+Not merged: develop moved to `a1d77778`. It merges cleanly, but was left out so that the measured build stays the
+declared one.
