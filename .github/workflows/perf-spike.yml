@@ -1,0 +1,61 @@
+# Design 041's spike T041-35, second run, on a dedicated GitHub-hosted runner: the declared environment of
+# OD-2026-11-20-6 (delegate), since the shared laptop could not give a quiet round. A push to a `perf/**` branch runs
+# the branch's own copy of this file; it is kept on the perf branch and the feature branch only (research.md, D041-103).
+name: perf-spike
+
+on:
+  push:
+    branches: ['perf/**']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: perf-spike-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  carry-spike:
+    runs-on: ubuntu-latest
+    # A cold release build of sagat-tests takes about 30 minutes; each round about 10 to 20 minutes here.
+    timeout-minutes: 300
+    env:
+      OUT: ${{ runner.temp }}/carry-spike
+      SAGAT_SPIKE_DEDICATED: "1"
+      ROUNDS: "3"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+    steps:
+      - name: free disk space
+        # The image carries toolchains this job never uses; a release build of sagat-tests needs the room (ci.yml).
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h /
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # rust-toolchain.toml pins the exact compiler; rustup installs it on first use.
+      - run: rustup show active-toolchain
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          shared-key: perf-spike
+          cache-on-failure: true
+      - name: declared environment
+        run: |
+          nproc
+          lscpu | sed -n 's/^Model name: *//p'
+          free -g
+          df -h /
+          uptime
+          ls -d /usr/lib/postgresql/*/bin
+      - name: build the spike
+        run: cargo test -p sagat-tests --test perf_scalability_ha --release --features perf-spike --locked --no-run
+      - name: rounds
+        run: tests/performance/scalability-ha/carry_spike_rounds.sh
+      - name: verdict
+        if: always()
+        run: python3 -I tests/performance/scalability-ha/carry_spike_judge.py "$OUT" | tee "$OUT/verdict.txt"
+      - name: keep the rounds and the verdict
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: carry-spike-${{ github.sha }}
+          path: ${{ runner.temp }}/carry-spike/

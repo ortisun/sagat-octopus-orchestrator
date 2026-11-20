@@ -1909,6 +1909,17 @@ Slice A, decisions, contracts and the spike:
     gates (1), (2b), (3) and (4) pass at both sizes with three valid rounds; the report says, for each size, whether +10%
     or +2 ms was the allowance. Recorded besides: the function call's time per completion (p50, p99), and the completion
     p99 of (a) and off-1K pooled over the three valid rounds beside their medians.
+    **Declared environment** (OD-2026-11-20-6, delegate, D041-102): the shared laptop gave no quiet round (attempts 1
+    to 3 of the second run, 2026-11-20, were void by the drift rule while other projects' work loaded the machine), so
+    the second run's rounds run on a GitHub-hosted `ubuntu-latest` runner of this public repository (4 vCPU, 16 GB of
+    memory, 14 GB of SSD, as GitHub states for that runner), with the PostgreSQL server binaries of its image (version
+    16), started by `run.sh` with the same settings. The workflow `.github/workflows/perf-spike.yml` runs on a push to a
+    `perf/**` branch: the pinned toolchain, the release build with `--features perf-spike`, then
+    `tests/performance/scalability-ha/carry_spike_rounds.sh`, which runs three rounds in the same job, recording `nproc`,
+    the CPU model and `uptime` for each, and `carry_spike_judge.py`, which judges them by the rule above; the rounds and
+    the verdict are kept as the run's artifact. The "quiet" precondition reads there as "a dedicated runner, nothing
+    else running": every round on it counts as quiet. The acceptance rule is unchanged. A job whose rounds are void is
+    run once more; at most two jobs.
   Refs: NFR-041-PERF, SC-041-001, SC-041-007
   Owner-gate: OD-2026-11-19-1, OD-2026-11-20-1
   Files: modify `tests/performance/scalability-ha/{main.rs,step_log_spike.rs}`, `tests/Cargo.toml` (the opt-in feature),
