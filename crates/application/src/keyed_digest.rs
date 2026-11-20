@@ -264,18 +264,23 @@ const SEALED_PREFIX: &str = "c1.";
 
 impl KeyRing {
     /// Seals `plain`, the position of a listing page, for the listing of one namespace of one tenant: encrypted and
-    /// authenticated (ChaCha20-Poly1305) under a key derived from the newest version this process holds, so a caller
-    /// learns nothing from the text (not even a key's digest) and cannot alter it or replay it in another namespace
-    /// (D022-055 item 2 as amended by D022-059). `None` without a key or a source of randomness.
+    /// authenticated (ChaCha20-Poly1305) under a key derived from `version`, the version the database has active (which
+    /// every process of a rotation holds, D022-059), so a caller learns nothing from the text (not even a key's digest)
+    /// and cannot alter it or replay it in another namespace. `None` without that version, above
+    /// [`MAX_CURSOR_PLAIN_BYTES`], or without a source of randomness.
     #[must_use]
     pub fn seal_cursor(
         &self,
+        version: u16,
         tenant: TenantId,
         namespace: NamespaceId,
         plain: &[u8],
     ) -> Option<String> {
         use ring::rand::SecureRandom as _;
-        let key = self.keys.values().next_back()?;
+        if plain.len() > MAX_CURSOR_PLAIN_BYTES {
+            return None;
+        }
+        let key = self.keys.get(&version)?;
         let mut nonce = [0u8; aead::NONCE_LEN];
         ring::rand::SystemRandom::new().fill(&mut nonce).ok()?;
         let mut sealed = plain.to_vec();
@@ -337,8 +342,13 @@ impl KeyRing {
     }
 }
 
-/// The longest sealed cursor accepted, in bytes: a version, a nonce, a tag and a position of at most 256 bytes.
-const MAX_SEALED_BYTES: usize = 2 + 12 + 16 + 256;
+/// The longest position a cursor seals. The longest a listing writes is 364 bytes: `k1.` (3), an instant of at most 19
+/// digits, `.` (1), `DRAFT_TEST` (10), `.` (1), `STEP` (4), `.` (1), a digest in hexadecimal (64), `.` (1) and a group of
+/// at most 130 bytes in hexadecimal (260); 384 leaves room without ever cutting one off.
+pub const MAX_CURSOR_PLAIN_BYTES: usize = 384;
+
+/// The longest sealed cursor accepted, in bytes: a version, a nonce, a tag and a position.
+const MAX_SEALED_BYTES: usize = 2 + 12 + 16 + MAX_CURSOR_PLAIN_BYTES;
 
 const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
 
@@ -591,7 +601,9 @@ mod tests {
         let ring = KeyRing::parse(&format!("1:{HEX},2:{}", "ab".repeat(32))).expect("ring");
         let (tenant, namespace) = ids();
         let plain = b"position of the last key";
-        let text = ring.seal_cursor(tenant, namespace, plain).expect("sealed");
+        let text = ring
+            .seal_cursor(2, tenant, namespace, plain)
+            .expect("sealed");
         assert!(text.starts_with("c1."), "{text}");
         // opaque: neither the position nor any part of it is readable in the text
         assert!(
@@ -606,11 +618,36 @@ mod tests {
             ring.open_cursor(tenant, namespace, &text).as_deref(),
             Some(&plain[..])
         );
-        // sealed under the newest version held, with a fresh nonce each time
+        // sealed under the version asked for (the active one), with a fresh nonce each time
         assert_eq!(&text[3..7], "0002");
         assert_ne!(
-            ring.seal_cursor(tenant, namespace, plain),
+            ring.seal_cursor(2, tenant, namespace, plain),
             Some(text.clone())
+        );
+        let older = KeyRing::parse(&format!("1:{HEX}")).expect("ring");
+        // during a rotation a process that holds both versions opens what one holding the active one sealed
+        let under_one = older
+            .seal_cursor(1, tenant, namespace, plain)
+            .expect("sealed");
+        assert_eq!(&under_one[3..7], "0001");
+        assert_eq!(
+            ring.open_cursor(tenant, namespace, &under_one).as_deref(),
+            Some(&plain[..])
+        );
+        assert_eq!(
+            ring.seal_cursor(3, tenant, namespace, plain),
+            None,
+            "a version not held"
+        );
+        // the longest position is sealed and opened; a longer one is not sealed
+        let longest = vec![b'a'; MAX_CURSOR_PLAIN_BYTES];
+        let sealed = ring
+            .seal_cursor(2, tenant, namespace, &longest)
+            .expect("the longest position");
+        assert_eq!(ring.open_cursor(tenant, namespace, &sealed), Some(longest));
+        assert_eq!(
+            ring.seal_cursor(2, tenant, namespace, &[b'a'; MAX_CURSOR_PLAIN_BYTES + 1]),
+            None
         );
         // every single altered byte is refused, the version and nonce included
         for at in 3..text.len() {
@@ -632,14 +669,17 @@ mod tests {
             ring.open_cursor(TenantId::generate(), namespace, &text),
             None
         );
-        let older = KeyRing::parse(&format!("1:{HEX}")).expect("ring");
-        assert_eq!(older.open_cursor(tenant, namespace, &text), None);
+        assert_eq!(
+            older.open_cursor(tenant, namespace, &text),
+            None,
+            "a version this process does not hold"
+        );
         assert_eq!(
             ring.open_cursor(tenant, namespace, &text[..text.len() - 2]),
             None
         );
         assert_eq!(
-            ring.open_cursor(tenant, namespace, &format!("{text}{}", "00".repeat(300))),
+            ring.open_cursor(tenant, namespace, &format!("{text}{}", "00".repeat(400))),
             None
         );
         for other in ["", "c1.", "c1.zz", "k1.n.ORDINARY", &text.to_uppercase()] {
@@ -647,7 +687,7 @@ mod tests {
         }
         // a ring with no key seals nothing
         assert_eq!(
-            KeyRing::default().seal_cursor(tenant, namespace, plain),
+            KeyRing::default().seal_cursor(1, tenant, namespace, plain),
             None
         );
     }

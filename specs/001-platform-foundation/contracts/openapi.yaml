@@ -2260,14 +2260,14 @@ paths:
       tags: [Operations]
       x-implemented: '022'
       description: |
-        Feature 022 (FR-022-022, release 0.3.0 slice). Needs `ops:read`. The concurrency keys with a holder or a waiter, each with its holders, waiters and the ages of its oldest holder and oldest wait, oldest wait first; keys nobody waits for come last. `queuedRuns` counts the namespace's queued runs (concurrency and rate-limit waiters together, a run once) as the `queued_runs` ceiling counts them; the `group` filter narrows the keys, not that count. A key is never shown by its value: `keyLabel` is the 12-hex label of its keyed digest, and is null unless the caller may reveal personal data in the namespace (a role that may use a reveal grant, and the namespace's `payload:reveal-pii` grant). Counts are read without the keys' locks, in one snapshot per page; a key's counts and place may change between two pages, so a key can appear on two pages or on none of a later page's predecessors. `nextCursor` is opaque, sealed for this namespace: an altered cursor, one of another namespace, or one of another group's listing is a 400. A namespace of another tenant is a 404, like one that does not exist.
+        Feature 022 (FR-022-022, release 0.3.0 slice). Needs `ops:read`. The concurrency keys with a holder or a waiter, each with its holders, waiters and the ages of its oldest holder and oldest wait, oldest wait first; keys nobody waits for come last. `queuedRuns` counts the namespace's queued runs (concurrency and rate-limit waiters together, a run once) as the `queued_runs` ceiling counts them; the `group` filter narrows the keys, not that count. A key is never shown by its value: `keyLabel` is the 12-hex label of its keyed digest, and is null unless the caller may reveal personal data in the namespace (a role that may use a reveal grant, and the namespace's `payload:reveal-pii` grant); for such a caller `oldestHolderSince` and `oldestWaitSince` are null too, since they equal the `since` of the key's runs. A page that has a next one is a 503 when the serving process lacks the digest key version in force (it cannot seal the cursor). Counts are read without the keys' locks, in one snapshot per page; a key's counts and place may change between two pages, so a key can appear on two pages or on none of a later page's predecessors. `nextCursor` is opaque, sealed for this namespace: an altered cursor, one of another namespace, or one of another group's listing is a 400. A namespace of another tenant is a 404, like one that does not exist.
       parameters:
         - {$ref: '#/components/parameters/NamespaceId'}
         - name: group
           in: query
           required: false
           description: An explicit group or a derived one (`=<workflow>` or `=<workflow>/<node>`); 422 when it is no group name.
-          schema: {type: string, maxLength: 130}
+          schema: {type: string, maxLength: 130, pattern: '^([a-z][a-z0-9.-]{0,63}|=[a-z][a-z0-9-]{0,63}(/[A-Za-z0-9][A-Za-z0-9_.-]{0,63})?)$'}
         - {$ref: '#/components/parameters/Cursor'}
         - {$ref: '#/components/parameters/Limit'}
       responses:

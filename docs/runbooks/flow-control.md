@@ -30,6 +30,8 @@ The ring is a file, never an environment value: `SAGAT_FLOW_CONTROL_DIGEST_KEYS_
 
 ```sh
 umask 077 && printf '1:%s\n' "$(openssl rand -hex 32)" > flow-control.keys
+# the images run as uid 10001: on a Linux host let that group read it
+sudo chgrp 10001 flow-control.keys && chmod 0640 flow-control.keys
 ```
 
 Give the **same** file to every control plane and every execution engine: on Kubernetes a Secret with the key
@@ -48,6 +50,9 @@ can the fleet activation of step 3 of 1.2 pass. No process of this release lists
 T022-072 and T022-074).
 
 ### 1.2 Turning concurrency keys on
+
+**Not in production before T022-104** (G022-015): publication does not yet refuse a key over a `secret` field. Until
+then a key's label, and its oldest instants, are shown only to callers with the namespace's reveal grant.
 
 1. Make the ring (1.1) and give it to every control plane and engine, with `SAGAT_FLOW_CONTROL_CONCURRENCY_KEYS_ENABLED=true`;
    restart them.

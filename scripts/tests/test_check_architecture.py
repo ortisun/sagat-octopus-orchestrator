@@ -534,7 +534,7 @@ class QueuedRunsAreCountedByOneStatement(unittest.TestCase):
 
     def test_a_second_count_elsewhere_is_refused_and_named(self):
         copy = (
-            'async fn usage() { sqlx::query("SELECT count(*) FROM (SELECT DISTINCT run_id FROM rate_limit_waiters '
+            'async fn usage() { sqlx::query("SELECT count(*) FROM (SELECT DISTINCT r.run_id FROM rate_limit_waiters r '
             'WHERE k = $1 UNION SELECT run_id FROM concurrency_waiters WHERE k = $1) x"); }'
         )
         code, out = run_lease_check(tree(**{"quotas.rs": copy}))
@@ -581,8 +581,8 @@ class FlowControlBodiesHoldNoKeyValue(unittest.TestCase):
             "fn f(p: &Position) -> [u8; 32] { p.digest }",
         ):
             errors = self.check(bad, "fn route() {}")
-            self.assertEqual(len(errors), 1, errors)
-            self.assertIn("dto_flow_control.rs:1", errors[0])
+            self.assertGreaterEqual(len(errors), 1, errors)
+            self.assertTrue(all("dto_flow_control.rs:1" in e for e in errors), errors)
 
     def test_a_word_in_a_comment_or_a_string_is_not_a_use(self):
         self.assertEqual(self.check('// a Value is never here\nconst S: &str = "serde_json";', "fn route() {}"), [])
@@ -591,6 +591,20 @@ class FlowControlBodiesHoldNoKeyValue(unittest.TestCase):
         errors = self.check("fn dto() {}", None)
         self.assertEqual(len(errors), 1, errors)
         self.assertIn("does not exist", errors[0])
+
+
+class TheRevealRuleHasOneImplementation(unittest.TestCase):
+    """Feature 022's review of 2026-11-20 (architecture M1): `payload_reveal_grants` is read by reveal_grants.rs only."""
+
+    def test_a_second_reader_is_refused_and_named(self):
+        grants = 'async fn may() { sqlx::query("SELECT EXISTS (SELECT 1 FROM payload_reveal_grants WHERE k = $1)"); }'
+        second = 'async fn labels() { sqlx::query("SELECT 1 FROM payload_reveal_grants g WHERE g.k = $1"); }'
+        code, out = run_lease_check(tree(**{"reveal_grants.rs": grants, "flow_control.rs": KEY_FILER + "\n" + second}))
+        self.assertEqual(code, 1, out)
+        self.assertIn("flow_control.rs:", out)
+        self.assertIn("outside reveal_grants.rs", out)
+        code, out = run_lease_check(tree(**{"reveal_grants.rs": grants}))
+        self.assertEqual(code, 0, out)
 
 
 def load_checker():

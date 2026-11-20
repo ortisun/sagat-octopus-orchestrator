@@ -489,8 +489,8 @@ def gate_row_write_errors(src):
 # runs of both waiter tables is refused outside flow_control.rs.
 QUEUED_RUNS_COUNT = (
     re.compile(r"\bcount\s*\(", re.IGNORECASE),
-    re.compile(r"\bselect\s+(?:distinct\s+)?run_id\s+from\s+concurrency_waiters\b", re.IGNORECASE),
-    re.compile(r"\bselect\s+(?:distinct\s+)?run_id\s+from\s+rate_limit_waiters\b", re.IGNORECASE),
+    re.compile(r"\bselect\s+(?:distinct\s+)?(?:\w+\.)?run_id\s+from\s+concurrency_waiters\b", re.IGNORECASE),
+    re.compile(r"\bselect\s+(?:distinct\s+)?(?:\w+\.)?run_id\s+from\s+rate_limit_waiters\b", re.IGNORECASE),
 )
 QUEUED_RUNS_HOME = "flow_control.rs"
 
@@ -548,6 +548,37 @@ def key_value_free_errors(root):
                 f"{rel}:{text.count(chr(10), 0, m.start()) + 1}: `{m.group(0)}` in a flow-control body or route: these are "
                 f"built from types that hold no key value, and show a key by its label only (FR-022-022, D1168)"
             )
+    return errors
+
+
+# --- feature 009's reveal rule has one implementation (feature 022's review of 2026-11-20, architecture M1) -----------------
+# Who may reveal personal data in a namespace is read from `payload_reveal_grants` by `reveal_grants.rs` only, so that a key
+# label (feature 022) and a payload disclosure never answer the question differently when the rule changes.
+REVEAL_GRANTS_TABLE = re.compile(r"\bpayload_reveal_grants\b", re.IGNORECASE)
+REVEAL_GRANTS_HOME = "reveal_grants.rs"
+
+
+def reveal_rule_errors(src):
+    """The errors of the one-reveal-rule rule over the PostgreSQL adapter's source directory `src`."""
+    errors = []
+    root = pathlib.Path(src)
+    found = 0
+    for path in sorted(root.rglob("*.rs")):
+        text = path.read_text()
+        _, literals = rust_literals(text)
+        rel = path.relative_to(root).as_posix()
+        for offset, sql in literals:
+            if not REVEAL_GRANTS_TABLE.search(sql):
+                continue
+            if rel == REVEAL_GRANTS_HOME:
+                found += 1
+                continue
+            errors.append(
+                f"crates/infra-postgres/src/{rel}:{text.count(chr(10), 0, offset) + 1}: a statement reads "
+                f"`payload_reveal_grants` outside {REVEAL_GRANTS_HOME}: feature 009's reveal rule has one implementation"
+            )
+    if found == 0 and (root / REVEAL_GRANTS_HOME).exists():
+        errors.append(f"no statement over payload_reveal_grants was found in {REVEAL_GRANTS_HOME}: the rule would check nothing")
     return errors
 
 
@@ -830,16 +861,16 @@ def test_support_errors(pkgs):
 
 
 # The test-only door of feature 022 is opened by tests alone: no production source calls it (D022-057).
-STEP_GATES_DOOR = re.compile(r"\bserving_rate_gates_for_tests\s*\(")
-STEP_GATES_DOOR_HOME = "crates/infra-postgres/src/execution.rs"
+RATE_GATES_DOOR = re.compile(r"\bserving_rate_gates_for_tests\s*\(")
+RATE_GATES_DOOR_HOME = "crates/infra-postgres/src/execution.rs"
 
 
-def step_gates_door_errors(root):
+def rate_gates_door_errors(root):
     """`serving_rate_gates_for_tests` is called only under `tests/` (its definition aside)."""
     errors = []
     for rel, text, masked, _ in production_sources(root):
-        for m in STEP_GATES_DOOR.finditer(masked):
-            if rel == STEP_GATES_DOOR_HOME and re.search(r"fn\s+$", masked[max(0, m.start() - 8):m.start()]):
+        for m in RATE_GATES_DOOR.finditer(masked):
+            if rel == RATE_GATES_DOOR_HOME and re.search(r"fn\s+$", masked[max(0, m.start() - 8):m.start()]):
                 continue
             errors.append(
                 f"{rel}:{text.count(chr(10), 0, m.start()) + 1}: `serving_rate_gates_for_tests` is called outside the "
@@ -937,6 +968,7 @@ def main(argv):
     errors.extend(key_row_insert_errors(postgres_src))
     errors.extend(gate_row_write_errors(postgres_src))
     errors.extend(queued_runs_count_errors(postgres_src))
+    errors.extend(reveal_rule_errors(postgres_src))
     errors.extend(run_input_errors(run_input_src))
     errors.extend(application_runtime_errors(pkgs))
     errors.extend(run_creator_errors(rust_root))
@@ -944,7 +976,7 @@ def main(argv):
     errors.extend(run_input_runtime_errors(rust_root))
     errors.extend(gate_wiring_errors(rust_root))
     errors.extend(test_support_errors(pkgs))
-    errors.extend(step_gates_door_errors(rust_root))
+    errors.extend(rate_gates_door_errors(rust_root))
     errors.extend(key_value_free_errors(rust_root))
 
     # Cycle detection over workspace members (DFS, three colours).
@@ -978,7 +1010,7 @@ def main(argv):
     print(f"architecture check passed ({len(graph)} workspace crates, layers respected, no cycles, the lease row is a leaf lock, every run.finished body says its schedule, "
           f"no jsonschema in the run-input validator, the application's runtime confined to one file, every creator given the gate, every run created with a checked input, "
           f"runs are inserted only at the admission point, key rows are filed only by file_keys, gate rows are written only by the gate, a run starts only through Engine::start, "
-          f"queued runs are counted by one statement, flow-control bodies hold no key value)")
+          f"queued runs are counted by one statement, flow-control bodies hold no key value, the reveal rule has one implementation)")
     return 0
 
 

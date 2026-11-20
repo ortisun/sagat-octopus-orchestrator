@@ -534,6 +534,14 @@ impl sagat_application::flow_control_keys::FlowControlKeyReader for crate::PgRun
             .fetch_one(&mut *tx)
             .await
             .map_err(store_error)?;
+        // the version that seals the page's cursor: the active one, which every process of a rotation holds (D022-059);
+        // read plainly (a read-only snapshot takes no lock)
+        let cursor_version: Option<i16> = sqlx::query_scalar(
+            "SELECT version FROM flow_control_key_versions WHERE state = 'ACTIVE'",
+        )
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(store_error)?;
         tx.commit().await.map_err(store_error)?;
         let mut items = Vec::with_capacity(rows.len());
         for row in &rows {
@@ -590,6 +598,9 @@ impl sagat_application::flow_control_keys::FlowControlKeyReader for crate::PgRun
         Ok(ConcurrencyKeyPage {
             items,
             queued_runs: u64::try_from(queued_runs).map_err(|_| corrupt("queued runs"))?,
+            cursor_version: cursor_version
+                .map(|version| u16::try_from(version).map_err(|_| corrupt("digest key version")))
+                .transpose()?,
         })
     }
 
@@ -599,26 +610,9 @@ impl sagat_application::flow_control_keys::FlowControlKeyReader for crate::PgRun
         namespace: NamespaceId,
         subject: &sagat_domain::identity::Subject,
     ) -> Result<bool, StoreError> {
-        // feature 009's rule (`has_effective_payload_reveal_grant`) read in one snapshot without its locks: the role
-        // the subject holds in the tenant now may use a reveal grant, and it holds one for the namespace
-        let roles: Vec<String> = sqlx::query_scalar(
-            "SELECT m.role FROM memberships m \
-              WHERE m.tenant_id = $1 AND m.subject = $3 \
-                AND EXISTS (SELECT 1 FROM payload_reveal_grants g \
-                             WHERE g.tenant_id = $1 AND g.namespace_id = $2 AND g.subject = $3)",
-        )
-        .bind(tenant.as_uuid())
-        .bind(namespace.as_uuid())
-        .bind(subject.as_str())
-        .fetch_all(self.pool())
-        .await
-        .map_err(store_error)?;
-        Ok(roles.iter().any(|role| {
-            role.parse::<sagat_domain::identity::Role>()
-                .is_ok_and(|role| {
-                    role.grants(sagat_domain::identity::Permission::PayloadReadInternal)
-                })
-        }))
+        // feature 009's rule, its one implementation (D022-060)
+        crate::reveal_grants::may_reveal_payload_unlocked(self.pool(), tenant, namespace, subject)
+            .await
     }
 
     fn flow_control_key_ring(&self) -> Option<&sagat_application::keyed_digest::KeyRing> {

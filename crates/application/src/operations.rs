@@ -673,34 +673,42 @@ impl<S: AlertReader + FlowControlKeyReader, C: Clock> OperationsService<S, C> {
             .store
             .concurrency_keys(principal.tenant_id(), namespace, group, after, limit)
             .await?;
-        if self
+        let reveal = self
             .store
             .reveals_personal_data(principal.tenant_id(), namespace, principal.subject())
-            .await?
-        {
-            for key in &mut page.items {
+            .await?;
+        for key in &mut page.items {
+            if reveal {
                 key.label = Some(sagat_domain::execution::KeyLabel::of_digest(
                     &key.position.digest,
                 ));
+            } else {
+                // the instants of a key equal its runs' `since` to the microsecond: shown to a caller who may not see
+                // the label, they would link the runs of one key as the label would (D022-060, review of the fixes)
+                key.oldest_wait_since = None;
+                key.oldest_holder_since = None;
             }
         }
         Ok(page)
     }
 
-    /// The cursor of a page that ends with `last`, sealed for the namespace (D022-059).
+    /// The cursor of `page`, which ends with `last`, sealed for the namespace under the version the database had active
+    /// in the page's snapshot (D022-059).
     ///
     /// # Errors
-    /// [`AppError::Unavailable`] when this process holds no flow-control key: it cannot hand out a cursor, and a page
+    /// [`AppError::Unavailable`] when this process does not hold that version: it cannot hand out a cursor, and a page
     /// cut short without one would hide keys.
     pub fn concurrency_key_cursor(
         &self,
         principal: &Principal,
         namespace: NamespaceId,
+        page: &ConcurrencyKeyPage,
         last: &KeyPosition,
     ) -> Result<String, AppError> {
         self.store
             .flow_control_key_ring()
-            .and_then(|ring| last.seal(ring, principal.tenant_id(), namespace))
+            .zip(page.cursor_version)
+            .and_then(|(ring, version)| last.seal(ring, version, principal.tenant_id(), namespace))
             .ok_or(AppError::Unavailable)
     }
 

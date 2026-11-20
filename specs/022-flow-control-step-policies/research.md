@@ -409,7 +409,7 @@ taken after `git grep D022-` on every `origin/*` branch and the sibling worktree
   the ten events carries `pool`, `scope`, `group` and `key_label`, and at step scope `attempt` (the node is the row's own
   column). `contracts/journal-events.md` lists `concurrency.dequeued` without `scope`; a step can be dequeued since
   ADR-0089, so the scope is needed to replay it. The detail is closed: the codec reads back only the keys it wrote.
-- **D022-037 — A binary announces a flow-control capability only once it runs the gate.** `flow-control-concurrency-v1`
+- **D022-037 — A binary announces a flow-control capability only once it runs the gate.** *(Amended by D022-057: the concurrency gate is listed and admitted by a process with its switch and the digest keys; the rate gate stays unlisted until T022-072 and T022-074.)* `flow-control-concurrency-v1`
   and `flow-control-rate-v1` mean "this process enforces the gate on every path it serves" (ADR-0089 decision 6). This
   build has the declarations, the events, the tables and the activation, but no admission gate, readiness gate or grant
   routine (T022-022, T022-072, T022-096..098), so the control plane and the engine do not list either capability.
@@ -806,7 +806,7 @@ taken after `git grep D022-04` on every `origin/*` branch.
      digest: a total order, since those five are the row's key within a namespace. Options for the cursor: an offset
      (moves under live rows and costs a scan), the label alone (two keys of one group may share a 48-bit label: a page
      boundary between them would skip or repeat one), server-side cursor state (a table and its expiry for a read), or
-     the full keyed digest in an opaque, versioned cursor. Chosen: **the digest** (`KeyPosition`, `k1.` text of hex
+     the full keyed digest in an opaque, versioned cursor (*amended by D022-059: the cursor is sealed*). Chosen: **the digest** (`KeyPosition`, `k1.` text of hex
      fields). It is the output of the same keyed function as the label (an HMAC under the deployment's secret key), so
      it lets nobody test a guessed key value, and it goes only to the caller the labels already go to. A cursor this
      process did not write is a `400`; a page and its `queuedRuns` are one `REPEATABLE READ` snapshot, and a key whose
@@ -814,7 +814,7 @@ taken after `git grep D022-04` on every `origin/*` branch.
   3. *One count of queued runs.* The listing, the `queued_runs` ceiling at admission and its quota usage read one
      statement (`QUEUED_RUNS_SQL`), so the number an operator reads is the number the ceiling compares, by
      construction. T022-105's counter rows replace that statement in one place.
-  4. *`keyLabel` is always the label for now.* Its `null` for a caller who may not disclose every location the key reads
+  4. *`keyLabel` is always the label for now* (*amended by D022-060: only to a caller who may reveal personal data*). Its `null` for a caller who may not disclose every location the key reads
      is T022-104's (G1185); the listing needs `ops:read`, which every human role holds and no machine role does.
 - **D022-056 — Invariants 1 and 2 across runs (T022-027).** `verify_run` checks one run; the invariants are about a
   key, whose rows belong to many runs. `World::assert_consistent` (every test of the suites) now also runs
@@ -857,7 +857,17 @@ taken after `git grep D022-04` on every `origin/*` branch.
   Proved by `integration_flow_control_step_policies::admission::a_process_with_the_switch_the_activation_and_the_keys_admits_a_concurrency_gated_run`,
   `apps/execution-engine/tests/registry.rs` (listing, refusals, no key in an error or a printed configuration) and the
   control plane's registry tests. The harness gives a real engine the switch and the ring with
-  `support::flow_control::process_env` and activates the concurrency capability only (`activate_concurrency`).
+  `support::flow_control::process_env` and activates the concurrency capability only (`activate_concurrency`);
+  `admission::a_real_engine_with_the_ring_lists_the_gate_and_one_missing_the_active_version_does_not_start` starts a real
+  engine with it (it registers listing the capability) and one whose ring lacks the active version (it does not start).
+  A process with every switch off ignores a key file it was given (review of the fixes, m5).
+  *Listing before T022-104 (review of the fixes, architecture M3).* Listing the capability makes activation possible
+  while publication does not yet refuse a key over a `secret` location (T022-104). Options: hold the listing back until
+  T022-104 (blocks the SDK conformance of the release slice for a publication rule); build the `secret` refusal alone now
+  (needs the classification of every location a key expression reads, which is T022-104 itself); list now and make
+  T022-104 a gate of the release and of production activation. Chosen: **the last** (G022-015): the runbook says not to
+  activate the capability in production before T022-104, the release cannot close with T022-104 open, and until then a
+  key's label goes only to a caller who may reveal personal data (D022-060).
 - **D022-058 — A page of the key listing costs its own keys (keys review of 2026-11-20, architecture M3; T022-026,
   T022-105; delegate (OD-2026-11-20-6)).** The listing computed each key's oldest wait by a correlated `min()` over its
   waiters and sorted every live key of the namespace before `LIMIT`: a page cost O(live keys), up to the 100,000 the
@@ -887,9 +897,12 @@ taken after `git grep D022-04` on every `origin/*` branch.
   over the clear position (tamper-evident, still readable); (b) server-side cursor state (a table, its expiry and its
   cleanup, for a read); (c) a surrogate key column ordered instead of the digest (a sequence shared by every tenant
   leaks their creation rate); (d) authenticated encryption of the position. Chosen: **(d)**: ChaCha20-Poly1305 under a
-  key derived from the newest version of the deployment's flow-control digest key (`HMAC(key, "sagat.flow-control.
-  cursor.v1\0")`, a message no key digest can be), a random nonce per cursor, the version in clear and the tenant and
-  namespace as associated data (`KeyRing::seal_cursor`, `KeyPosition::seal`). A caller learns nothing from it, cannot
+  key derived from the version of the deployment's flow-control digest key the database has active in the page's
+  snapshot, which every process of a rotation holds (review of the fixes, m4: the newest version a process holds would
+  break paging across replicas during a rolling addition) (`HMAC(key, "sagat.flow-control.cursor.v1\0")`, a message no
+  key digest can be), a random nonce per cursor, the version in clear and the tenant and namespace as associated data
+  (`KeyRing::seal_cursor`, `KeyPosition::seal`); a position is at most 364 bytes and the bound is 384, derived from the
+  longest group (`MAX_CURSOR_PLAIN_BYTES`, review of the fixes, correctness M1). A caller learns nothing from it, cannot
   alter it, and cannot use it in another namespace; a cursor sealed under a version the process no longer holds, an
   altered one, a forged clear position (`k1.`) and one of another namespace are each a `400`, decided before admission
   (the same answer whether the namespace exists or not). A position before 1970 is refused (the `500` of security
@@ -914,6 +927,11 @@ taken after `git grep D022-04` on every `origin/*` branch.
   `rest::a_key_label_is_shown_only_to_a_caller_who_may_reveal_personal_data` (a viewer and a developer without a grant
   read `null` in the run, the run listing and the key listing; an admin with the grant and the developer once granted
   read the label).
+  *Revised after the review of the fixes (security Major 1).* A key's `oldestHolderSince` and `oldestWaitSince` equal
+  the `since` of its runs to the microsecond, so a caller who may not see the label could still link the runs of one key
+  by them: for such a caller they are `null` too. A weaker channel stays (the counts of a key and the oldest-wait order,
+  G022-014). The reveal rule has one implementation, `reveal_grants::may_reveal_payload_unlocked`, and a fitness rule
+  keeps `payload_reveal_grants` read only there (review of the fixes, architecture M1).
 
 ## Gaps
 
@@ -949,7 +967,7 @@ taken after `git grep D022-04` on every `origin/*` branch.
 | G1188 | `RunState::restore` (a run rebuilt from its projection) does not restore gate state. No stored run has any in this build (admission refuses gated definitions; the projection writer refuses a gated step's wait). *Partly closed 2026-11-19 (D022-044): a step's gates are restored from `steps.flow_control_gates`; a run's start gates are not (T022-022).* *Closed 2026-11-20 (D022-049): a run's start gates are restored from `runs.flow_control_gates`.* | Closed |
 | G1197 | The collection- and loop-finish paths (`crates/infra-postgres/src/primitives.rs`, `loop_progress.rs`, `crates/scheduler/src/passes.rs`) write their successor's step row directly: a gated root successor of a `forEach` or a loop is refused there (`RuntimeNotIntegrated`, fail closed; the finish is retried) instead of being decided. Corrected 2026-11-19: the first text said they refused an unexpected evaluation, which was true only for an `end` successor. | Open; T022-096 follow-up |
 | G1198 | No deployment configuration carries the digest keys (`KeyRing`) to the stores of the control plane and the engine: a gated step is refused `BINARY_CAPABILITY_MISSING` without them. Lands with the capability listing (D022-037). *Extended 2026-11-19 (D022-045): a scheduler replica needs the ring too; without it the grant pass grants nothing (`unsupported`) and keeps its keys due; the timeout routine does not need it.* *Closed 2026-11-20 (D022-057): the ring is the file `SAGAT_FLOW_CONTROL_DIGEST_KEYS_FILE` in both binaries (a switch on without it does not start); both list `flow-control-concurrency-v1` with the switch and the ring; the admission point admits a gate a process serves. Open: the rate gate's listing (T022-072, T022-074).* | Closed for the concurrency gate; rate with T022-074 |
-| G1199 | The readiness gate applies the declared `limit` and `queueTimeout`; the namespace's `concurrency_limit` and `flow_control_queue_timeout_ms` ceilings (`FlowControlCeilings`) are not read there yet, nor the live-keys ceiling (`FLOW_CONTROL_LIMIT` of FR-022-054) or a waiters-per-key bound (security review of 2026-11-19, Major): with distinct keys a caller can create key rows without bound in one namespace. No process may list the capabilities before these are applied. *Partly closed 2026-11-19 (D022-045): the namespace limit, queue timeout and live-keys ceilings apply at readiness (`FLOW_CONTROL_LIMIT`); step waiters are bounded by the plan per run and gated node, not per key. Open: a namespace ceiling of rate-limit keys and values (T022-077); run waiters per key (T022-022, T022-072).* | Open; T022-077, T022-022 |
+| G1199 | The readiness gate applies the declared `limit` and `queueTimeout`; the namespace's `concurrency_limit` and `flow_control_queue_timeout_ms` ceilings (`FlowControlCeilings`) are not read there yet, nor the live-keys ceiling (`FLOW_CONTROL_LIMIT` of FR-022-054) or a waiters-per-key bound (security review of 2026-11-19, Major): with distinct keys a caller can create key rows without bound in one namespace. No process may list the capabilities before these are applied. *Partly closed 2026-11-19 (D022-045): the namespace limit, queue timeout and live-keys ceilings apply at readiness (`FLOW_CONTROL_LIMIT`); step waiters are bounded by the plan per run and gated node, not per key. Open: a namespace ceiling of rate-limit keys and values (T022-077); run waiters per key (T022-022, T022-072).* *2026-11-20 (D022-057): the concurrency half is met: run waiters per key are bounded at admission (`CONCURRENCY_QUEUE_FULL` under the key's lock, `run_admission::*`) and `queued_runs` is exact (D022-051), so the concurrency capability is listed; the rate half (T022-077) stays open and the rate capability unlisted.* | Concurrency met; rate open (T022-077) |
 | G022-001 | The readiness gate records no metric or span yet (`concurrency_acquisitions_total`, `rate_limit_decisions_total`, `workflow.concurrency.acquire`, `workflow.rate_limit.admit`, rule 10; architecture review of 2026-11-19, M3). A grant counts as unleased until the pass records its lease (T022-074), so a rate-limited step key admits only `limit` steps in all until then. A key that yields `null` shares the group's single key. *Partly closed 2026-11-19 (D022-045): decisions, grants, timeouts, dequeues and returns of the step scope are counted after commit and spanned by group. Open: the wait histograms and waiter gauges, the grant-lag and unleased-grant series and their alerts (T022-082).* | Open; T022-082, T022-074, T022-104 |
 | G022-002 | The live-keys ceiling is checked without a namespace lock: concurrent transactions that each create a new key at the boundary can pass it by at most the new keys the others create (their number minus one when each creates one key). *Accepted 2026-11-19 by the owner (O1172 (a), OD-2026-11-19-4) for 0.3.0; the bound is documented in `docs/runbooks/flow-control.md` (D022-047). The exact bound is in keys when a round creates several (O1173), accepted 2026-11-20 (OD-2026-11-20-3).* | Accepted (OD-2026-11-19-4; in keys, OD-2026-11-20-3) |
 | G022-003 | A rate-limit grant's lease instant is recorded by a pass that is not built (T23, T022-074): a leased grant counts for ever, so a rate key that reached its limit frees only by a returned slot or a dequeue, and its window never rests until an age-out instant. T022-097's rate half rests on it. | Open; T022-074 |
@@ -962,6 +980,9 @@ taken after `git grep D022-04` on every `origin/*` branch.
 | G022-010 | A Signal- or Update-with-Start of a definition whose start queues is refused `SIGNAL_NOT_ACCEPTED_AT_START` (no step waits while the entry is held), so the outcome depends on the key's load (correctness review M2 of 2026-11-20). Chosen design (D022-050 item 6): hold the signal or update with the queued run and deliver it at the grant. *2026-11-20 (T022-064):* an Update-with-Start is not affected (it changes the declared state, which a queued run has: `run_creators::an_update_with_start_admits_through_the_key_and_applies_its_update`); a Signal-with-Start keeps the typed refusal with nothing created (`run_creators::a_signal_with_start_whose_start_would_queue_is_refused_and_creates_nothing`). The hold-and-deliver needs a durable held signal, its delivery in the grant's transaction and the replay of its receipt: follow-up T022-109. | Open; T022-109 |
 | G022-011 | `queued_runs` was believed counted without a lock (D022-050 item 3). *Closed 2026-11-20 (D022-051):* the count is exact. Only an admission adds a run waiter, every admission holds the namespace's active-run quota lock from before its runs row to its commit, and the start's gate counts after it in a fresh READ COMMITTED statement; proved by `run_admission::two_starts_at_the_queued_runs_ceiling_are_decided_one_after_the_other` (the lock held by the test, both starts observed waiting on it, then exactly one queued and one refused), red under two hand mutations (the lock removed; the ceiling ignored). The merge blocker the owner set on it is met. T022-105's counter rows remain for the cost of the count (a scan of the namespace's run waiters, at most the ceiling) and its privileges. | Closed (exactness); T022-105 open for the counter rows |
 | G022-012 | The start's decision (`decide_start_gates`) and the step's (`decide_gates`) are two code paths over the same rules; T022-072 builds one core for both levels and both gates (D022-050 item 5; architecture review M1 of 2026-11-20). A paused queued run's deadline runs during its pause, as G022-008 says of a step. *2026-11-20 (D022-054): the start's three causes share one validator (`check_start_decisions`) and one adapter function; the step's decision is still its own path.* | Open; T022-072 |
+| G022-013 | Keys-review correctness m5 and m8 (2026-11-20): the takeover test races a raw `UPDATE` of the shard lease, not a keeper's takeover, and checks "nothing twice" afterwards; and SC-022-004 at run level lacks five same-key starts with `limit: 1` (at most one holder, grants in admission order) and a mixed-limit pair sharing a group. | Open; T022-110 |
+| G022-014 | Without the label, a key's counts and the oldest-wait order still let a caller who may not reveal personal data partly link runs (one key of a group with waiters: every `WAITING` run of the group waits on it). The labels and the instants are hidden (D022-060). An aggregated listing per (pool, scope, group) for such callers would close it. | Accepted for 0.3.0; revisit with T022-104 |
+| G022-015 | Publication does not yet refuse a concurrency key over a `secret` location (T022-104), while this build lists and can activate the concurrency capability (D022-057). The runbook forbids production activation before it; the release cannot close with it open. | Open; release gate, T022-104 |
 | G1189 | Nothing in the database computes or checks `key_shard` and the waiter `shard`; two binaries that hashed differently would file one key under two shards. | Open; T022-097 |
 | G1190 | `flow_control_key_activate` records the operator as typed and keeps no history row with the database role, unlike the registry's activations. *Partly closed 2026-11-16 (D022-042): the version row records `activated_role` (`session_user`); a history of earlier activations of the same version is not kept, since a version is activated once. 2026-11-19 (D022-046): every force has an append-only history row with the database role and a reason; the runbook part is `docs/runbooks/flow-control.md`.* | Open; T022-061 (the rest of the runbook) |
 | G1191 | Untested: the down migrations' refusal when `run_events` holds a `concurrency.*` or `rate_limit.*` event; no contract test parses 018's reset-rule table against `RULES`. | Open |

@@ -25,7 +25,7 @@ use crate::keyed_digest::KeyRing;
 ///
 /// Its key's label is hidden when it is read ([`Self::label`] is `None`); only [`Self::reveal_label`], which the run
 /// service calls for a caller who may reveal personal data in the run's namespace, shows it (fail closed, D022-060).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct RunPermit {
     pub pool: GatePool,
     pub group: ResolvedGroup,
@@ -66,6 +66,19 @@ impl RunPermit {
     /// Shows the key's label: for a caller who may reveal personal data in the run's namespace.
     pub fn reveal_label(&mut self) {
         self.label = Some(KeyLabel::of_digest(&self.digest));
+    }
+}
+
+/// Prints the key as its label only, revealed or not, never the digest (NFR-022-002: logs).
+impl std::fmt::Debug for RunPermit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RunPermit")
+            .field("pool", &self.pool)
+            .field("group", &self.group)
+            .field("state", &self.state)
+            .field("since", &self.since)
+            .field("label", &self.label)
+            .finish_non_exhaustive()
     }
 }
 
@@ -113,6 +126,9 @@ pub struct ConcurrencyKeyView {
 pub struct ConcurrencyKeyPage {
     pub items: Vec<ConcurrencyKeyView>,
     pub queued_runs: u64,
+    /// The digest key version the database had active in the page's snapshot, which seals its cursor (D022-059); `None`
+    /// before any version was activated (then no key exists either).
+    pub cursor_version: Option<u16>,
 }
 
 /// The place of a key in the listing's order: oldest wait first (a key nobody waits for last), then pool, scope, group
@@ -122,7 +138,7 @@ pub struct ConcurrencyKeyPage {
 /// that could not tell them apart would skip or repeat one at a page boundary. A caller never sees it: the cursor is the
 /// position sealed (encrypted and authenticated) for the namespace under the deployment's flow-control key
 /// ([`Self::seal`], D022-059), so the cursor of a page whose labels are hidden discloses no label either.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct KeyPosition {
     /// The oldest wait of the key in microseconds since the epoch, `None` for a key nobody waits for.
     pub oldest_wait_us: Option<i64>,
@@ -132,14 +148,34 @@ pub struct KeyPosition {
     pub digest: [u8; 32],
 }
 
+/// Prints the key as its label, never the digest (NFR-022-002: logs).
+impl std::fmt::Debug for KeyPosition {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("KeyPosition")
+            .field("oldest_wait_us", &self.oldest_wait_us)
+            .field("pool", &self.pool)
+            .field("scope", &self.scope)
+            .field("group", &self.group)
+            .field("key", &KeyLabel::of_digest(&self.digest))
+            .finish()
+    }
+}
+
 const CURSOR_VERSION: &str = "k1";
 
 impl KeyPosition {
-    /// The cursor a caller is given: the position sealed for this namespace of this tenant. `None` when this process
-    /// holds no flow-control key (it cannot then hand out a cursor; the service refuses the page, D022-059).
+    /// The cursor a caller is given: the position sealed for this namespace of this tenant under `version`, the digest
+    /// key version the database has active. `None` when this process does not hold it (it cannot then hand out a
+    /// cursor; the service refuses the page, D022-059).
     #[must_use]
-    pub fn seal(&self, ring: &KeyRing, tenant: TenantId, namespace: NamespaceId) -> Option<String> {
-        ring.seal_cursor(tenant, namespace, self.encode().as_bytes())
+    pub fn seal(
+        &self,
+        ring: &KeyRing,
+        version: u16,
+        tenant: TenantId,
+        namespace: NamespaceId,
+    ) -> Option<String> {
+        ring.seal_cursor(version, tenant, namespace, self.encode().as_bytes())
     }
 
     /// The position a cursor [`Self::seal`] wrote for this namespace of this tenant; `None` for anything else.
@@ -324,7 +360,7 @@ mod tests {
         let ring = KeyRing::parse(RING).expect("ring");
         let (tenant, namespace) = (TenantId::generate(), NamespaceId::generate());
         let p = position(Some(1_763_640_000_123_456), "payments.eu");
-        let cursor = p.seal(&ring, tenant, namespace).expect("sealed");
+        let cursor = p.seal(&ring, 1, tenant, namespace).expect("sealed");
         assert!(!cursor.contains(&hex(&p.digest)), "{cursor}");
         assert!(!cursor.contains(&hex(&p.digest[..6])), "{cursor}");
         assert!(
@@ -346,7 +382,38 @@ mod tests {
             KeyPosition::open(&p.encode(), &ring, tenant, namespace),
             None
         );
-        assert_eq!(p.seal(&KeyRing::default(), tenant, namespace), None);
+        assert_eq!(p.seal(&KeyRing::default(), 1, tenant, namespace), None);
+        // what is printed carries the label at most, never the digest
+        assert!(!format!("{p:?}").contains(&hex(&p.digest)));
+    }
+
+    /// Keys review (2026-11-20, correctness M1): the longest position a listing writes (a derived group of 130 bytes,
+    /// `DRAFT_TEST`, `STEP`, the largest instant) seals and opens.
+    #[test]
+    fn the_longest_position_seals_and_opens() {
+        let ring = KeyRing::parse(RING).expect("ring");
+        let (tenant, namespace) = (TenantId::generate(), NamespaceId::generate());
+        // the longest derived group the grammar accepts (at most 130 bytes)
+        let group = (1..=64)
+            .rev()
+            .flat_map(|slug| (1..=64).rev().map(move |node| (slug, node)))
+            .map(|(slug, node)| format!("=a{}/N{}", "b".repeat(slug - 1), "c".repeat(node - 1)))
+            .find_map(|text| ResolvedGroup::parse(&text).ok())
+            .expect("a derived group");
+        assert!(group.as_str().len() >= 120, "{}", group.as_str());
+        let p = KeyPosition {
+            oldest_wait_us: Some(i64::MAX / 1_000_000 * 1_000),
+            pool: GatePool::DraftTest,
+            scope: GateLevel::Step,
+            group,
+            digest: [0xff; 32],
+        };
+        assert!(p.encode().len() <= crate::keyed_digest::MAX_CURSOR_PLAIN_BYTES);
+        let cursor = p.seal(&ring, 1, tenant, namespace).expect("sealed");
+        assert_eq!(
+            KeyPosition::open(&cursor, &ring, tenant, namespace),
+            Some(p)
+        );
     }
 
     #[test]

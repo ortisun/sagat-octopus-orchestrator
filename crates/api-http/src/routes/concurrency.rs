@@ -78,7 +78,7 @@ pub async fn list_concurrency_keys<B: Governance>(
         )
         .await?;
     let body = ConcurrencyKeyPageBody::of(&page, limit as usize, |last| {
-        service.concurrency_key_cursor(&caller.session.principal, namespace, last)
+        service.concurrency_key_cursor(&caller.session.principal, namespace, &page, last)
     })?;
     Ok(Json(body))
 }

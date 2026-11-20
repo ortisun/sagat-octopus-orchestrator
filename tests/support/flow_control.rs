@@ -374,11 +374,32 @@ pub async fn key_consistency(
     .fetch_one(&mut *tx)
     .await
     .map_err(|e| e.to_string())?;
+    // which of them the schema must have is decided by the migrations applied, never by the columns found (review of
+    // the fixes, correctness m9): a column a migration added that is gone is a failure
+    let applied: i64 =
+        sqlx::query_scalar("SELECT COALESCE(max(version), 0) FROM _sqlx_migrations WHERE success")
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|e| e.to_string())?;
+    let must = |since: i64, present: bool, what: &str| -> Result<(), String> {
+        if applied >= since && !present {
+            Err(format!(
+                "feature 022's consistency check: {what} is missing from a schema at {applied}"
+            ))
+        } else {
+            Ok(())
+        }
+    };
+    must(20_270_130_000_000, tables, "concurrency_semaphores")?;
+    must(20_270_130_000_600, step_gates, "steps.flow_control_gates")?;
+    must(20_270_203_000_000, run_gates, "runs.flow_control_gates")?;
+    must(
+        20_270_205_000_000,
+        oldest_wait,
+        "concurrency_semaphores.oldest_wait_at",
+    )?;
     if !tables {
         return Ok(Vec::new());
-    }
-    if !step_gates {
-        return Err("feature 022's tables without the steps' gate projection".to_owned());
     }
     // a run's own gates exist from `flow_control_run_gates` on; a schema between the two has only steps' gates.
     // Steps inside an instance path (a loop body, a collection item) are not filed under gates in this slice (G1160):
@@ -421,6 +442,15 @@ pub async fn key_consistency(
             "an empty key row",
             "SELECT s.group_name || ':' || encode(substr(s.key_digest, 1, 6), 'hex') FROM concurrency_semaphores s \
               WHERE s.tenant_id = $1 AND s.holders = 0 AND s.waiters = 0"
+                .to_owned(),
+        ),
+        (
+            // invariant 12, the rate-limit waiters (review of the fixes, correctness m8)
+            "a rate-limit waiter row of a terminal run",
+            "SELECT w.run_id::text || '/' || w.node || ' ' || r.status FROM rate_limit_waiters w \
+               JOIN runs r ON r.tenant_id = w.tenant_id AND r.id = w.run_id \
+              WHERE w.tenant_id = $1 AND r.status IN ('SUCCEEDED', 'FAILED', 'CANCELLED', 'TIMED_OUT', 'COMPENSATED', \
+                                                      'PARTIAL', 'COMPENSATION_FAILED')"
                 .to_owned(),
         ),
         (

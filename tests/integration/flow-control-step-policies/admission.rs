@@ -349,6 +349,66 @@ async fn a_process_with_the_switch_the_activation_and_the_keys_admits_a_concurre
     w.assert_consistent(run).await;
 }
 
+/// D022-057 (G1198; review of the fixes, architecture M2): a real engine started the way the binary starts, with the
+/// switch and the ring of `support::flow_control::process_env`, registers listing `flow-control-concurrency-v1`; one whose
+/// ring lacks the version the database has active refuses to start, naming the variable and no key.
+#[tokio::test]
+async fn a_real_engine_with_the_ring_lists_the_gate_and_one_missing_the_active_version_does_not_start()
+ {
+    use crate::support::worker::{RunningEngine, engine_env};
+    let api = crate::support::api::start_with(crate::support::api::Options::default()).await;
+    let activate = |version: i16| {
+        let pool = api.db.pool.clone();
+        async move {
+            let (outcome,): (String,) = sqlx::query_as(
+                "SELECT out_outcome FROM flow_control_key_activate($1::smallint, 'operator')",
+            )
+            .bind(version)
+            .fetch_one(&pool)
+            .await
+            .expect("activate a key version");
+            assert_eq!(outcome, "ACTIVATED");
+        }
+    };
+    activate(1).await;
+    let pairs = crate::support::flow_control::process_env();
+    let mut extra: Vec<(&str, &str)> = pairs.iter().map(|(k, v)| (*k, v.as_str())).collect();
+    extra.push(("SAGAT_REPLICA_ID", "flow-control-engine"));
+    extra.push(("SAGAT_LIVENESS_GRACE_SECS", "30"));
+    let mut engine = RunningEngine::start(engine_env(&api.db, &api.idp, &extra)).await;
+    let listed = crate::support::eventually("the engine registered", || async {
+        let rows: Vec<Vec<String>> = sqlx::query_scalar(
+            "SELECT capabilities FROM serving_instances WHERE kind = 'EXECUTION_ENGINE'",
+        )
+        .fetch_all(&api.db.pool)
+        .await
+        .expect("registry");
+        rows.into_iter().next()
+    })
+    .await;
+    assert!(
+        listed.iter().any(|c| c == "flow-control-concurrency-v1")
+            && !listed.iter().any(|c| c == "flow-control-rate-v1"),
+        "{listed:?}"
+    );
+    engine.finish().await.expect("stopped");
+
+    activate(2).await;
+    let refused = RunningEngine::try_start(engine_env(&api.db, &api.idp, &extra))
+        .await
+        .err()
+        .expect("an engine without the active version does not start")
+        .to_string();
+    assert!(
+        refused.contains("SAGAT_FLOW_CONTROL_DIGEST_KEYS_FILE"),
+        "{refused}"
+    );
+    assert!(
+        !refused.contains("5a5a"),
+        "no key in the refusal: {refused}"
+    );
+}
+
 /// FR-022-059, T022-093: a continuation successor is the one other writer of runs. A definition with a run-level gate is
 /// refused beside a continuation at publication; a stored one that has it anyway (here, a version changed behind the
 /// store's back) is refused at the hand-off, and the same hand-off goes through once the document is what it was.

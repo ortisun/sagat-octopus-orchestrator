@@ -99,10 +99,10 @@ fn a_switch_without_usable_digest_keys_stops_the_engine_naming_the_variable_only
                 .find(|(key, _)| *key == name)
                 .map(|(_, value)| (*value).to_owned())
         };
-        EngineConfig::from_lookup(&lookup, Environment::Dev)
-            .err()
-            .expect("refused")
-            .to_string()
+        match EngineConfig::from_lookup(&lookup, Environment::Dev) {
+            Ok(_) => panic!("refused"),
+            Err(error) => error.to_string(),
+        }
     };
     for switch in [
         "SAGAT_FLOW_CONTROL_CONCURRENCY_KEYS_ENABLED",

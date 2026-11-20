@@ -198,7 +198,10 @@ pub fn flow_control_keys(
     };
     let file = std::fs::File::open(path.trim())
         .map_err(|_| invalid("must name a readable file of at most 16 KiB"))?;
-    let mut bytes = zeroize::Zeroizing::new(Vec::new());
+    // one allocation of the bound, so no copy of the key is freed unwiped by a reallocation
+    let mut bytes = zeroize::Zeroizing::new(Vec::with_capacity(
+        usize::try_from(FLOW_CONTROL_KEYS_FILE_LIMIT).unwrap_or(16 * 1024) + 1,
+    ));
     file.take(FLOW_CONTROL_KEYS_FILE_LIMIT + 1)
         .read_to_end(&mut bytes)
         .map_err(|_| invalid("must name a readable file of at most 16 KiB"))?;
@@ -688,6 +691,7 @@ impl ServeConfig {
                 });
             }
         }
+        let switches = flow_control(get)?;
         Ok(Self {
             redis_callbacks: flag(get, "SAGAT_REDIS_CALLBACKS_ENABLED")?,
             schedules_enabled: flag(get, "SAGAT_SCHEDULES_ENABLED")?,
@@ -697,8 +701,8 @@ impl ServeConfig {
             lake_enabled: flag(get, "SAGAT_LAKE_ENABLED")?,
             run_input_validation: run_input_validation(get)?,
             collection_operators_enabled: collection_operators(get)?,
-            flow_control: flow_control(get)?,
-            flow_control_keys: flow_control_keys(get, flow_control(get)?)?,
+            flow_control: switches,
+            flow_control_keys: flow_control_keys(get, switches)?,
             tls,
             webhook_oidc,
             webhook_oidc_development: environment == Environment::Dev,

@@ -444,6 +444,12 @@ class Scope(unittest.TestCase):
         decision = self.decide()
         self.assertEqual((decision["frontend"], decision["scripts"]), ("true", "true"))
 
+    def test_a_change_of_the_canonical_contract_flags_the_studio(self):
+        # the Studio's API types are generated from it (`npm run check:api`)
+        self.write("specs/001-platform-foundation/contracts/openapi.yaml", "openapi: 3.1.0\n")
+        self.commit()
+        self.assertEqual(self.decide()["frontend"], "true")
+
     def test_a_change_elsewhere_flags_neither(self):
         self.write("crates/leaf/src/lib.rs", "// changed\n")
         self.commit()

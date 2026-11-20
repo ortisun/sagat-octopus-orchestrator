@@ -439,6 +439,19 @@ async fn a_key_label_is_shown_only_to_a_caller_who_may_reveal_personal_data() {
             let (status, page) = read_as(api, &keys, subject).await;
             assert_eq!(status, StatusCode::OK, "{page}");
             assert_eq!(page["items"][0]["holders"], 1, "{page}");
+            // the key's instants go with its label: without it they would link the runs of one key (review of the
+            // fixes, security Major 1)
+            let revealed = page["items"][0]["keyLabel"].is_string();
+            assert_eq!(
+                page["items"][0]["oldestHolderSince"].is_string(),
+                revealed,
+                "{page}"
+            );
+            assert_eq!(
+                page["items"][0]["oldestWaitSince"].is_string(),
+                revealed,
+                "{page}"
+            );
             assert!(
                 run["concurrency"].get("keyLabel").is_some(),
                 "the field is there: {run}"
@@ -468,6 +481,30 @@ async fn a_key_label_is_shown_only_to_a_caller_who_may_reveal_personal_data() {
         labels_seen_by("dan-developer").await,
         shown,
         "the developer once granted"
+    );
+    // the role half of the rule (review of the fixes, correctness m3): a grant row beside a role that may not use it
+    // (demoted to viewer, the row put back as a defect would leave it) reveals nothing
+    let pool = &api.db.pool;
+    sqlx::query(
+        "UPDATE memberships SET role = 'viewer' WHERE tenant_id = $1 AND subject = 'dan-developer'",
+    )
+    .bind(acme.as_uuid())
+    .execute(pool)
+    .await
+    .expect("demoted");
+    sqlx::query(
+        "INSERT INTO payload_reveal_grants (tenant_id, namespace_id, subject, granted_by, granted_at) \
+         VALUES ($1, $2::uuid, 'dan-developer', 'alice', clock_timestamp()) ON CONFLICT DO NOTHING",
+    )
+    .bind(acme.as_uuid())
+    .bind(&namespace)
+    .execute(pool)
+    .await
+    .expect("a grant row beside the viewer");
+    assert_eq!(
+        labels_seen_by("dan-developer").await,
+        hidden,
+        "a viewer with a grant row"
     );
 }
 
