@@ -38,6 +38,7 @@ jobs:
       lake: ${{ steps.select.outputs.lake }}
       targets: ${{ steps.select.outputs.targets }}
       any: ${{ steps.select.outputs.any }}
+      shards: ${{ steps.select.outputs.shards }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -55,7 +56,9 @@ jobs:
   rust:
     name: rust (fmt, clippy, tests)
     needs: changes
-    if: needs.changes.outputs.full == 'true' || needs.changes.outputs.crates != '' || needs.changes.outputs.any == 'true'
+    # The integration suites run in the `integration` shards below; this job has nothing to do for a change that
+    # selects only suites.
+    if: needs.changes.outputs.full == 'true' || needs.changes.outputs.crates != ''
     runs-on: ubuntu-latest
     # A cold build takes about 30 minutes and the workspace tests about as long again. A test that hangs
     # must not hold the runner for the default six hours (it did on pull request 45).
@@ -91,30 +94,6 @@ jobs:
       - name: formatting
         if: needs.changes.outputs.full == 'true'
         run: cargo fmt --all -- --check
-      - name: bounded ChildRoot holder discovery
-        if: contains(format(' {0} ', needs.changes.outputs.targets), ' integration_workflow_primitives ')
-        env:
-          SAGAT_TEST_AS_RUNTIME_ROLE: "1"
-          RUST_TEST_THREADS: "2"
-        run: |
-          # Report both the pure shard table and the real PostgreSQL cases on a failure.
-          proof_failed=0
-          cargo test -p sagat-infra-postgres --lib --locked capacity_discovery::tests:: || proof_failed=1
-          cargo test -p sagat-tests --test integration_workflow_primitives --locked -- capacity_finish::discovery::holders:: --nocapture || proof_failed=1
-          exit "$proof_failed"
-      - name: scoped event quota rollback boundary
-        if: contains(format(' {0} ', needs.changes.outputs.targets), ' integration_workflow_primitives ')
-        env:
-          SAGAT_TEST_AS_RUNTIME_ROLE: "1"
-          RUST_TEST_THREADS: "2"
-        run: cargo test -p sagat-tests --test integration_workflow_primitives --locked -- scoped_event_storage::receiver::a_dispatcher_quota_refusal --nocapture
-      - name: worker capacity lease boundary
-        if: contains(format(' {0} ', needs.changes.outputs.targets), ' integration_workflow_primitives ')
-        env:
-          SAGAT_TEST_AS_RUNTIME_ROLE: "1"
-          RUST_TEST_THREADS: "2"
-        run: |
-          cargo test -p sagat-tests --test integration_workflow_primitives --locked -- capacity_finish::worker_leases:: --nocapture
       - name: capacity transfer command regression
         if: needs.changes.outputs.full == 'true'
         run: cargo test -p sagat-application --lib --locked capacity_
@@ -126,41 +105,6 @@ jobs:
       - name: clippy
         if: needs.changes.outputs.full == 'true'
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
-      - name: isolated C# compiler and runtime images
-        if: needs.changes.outputs.any == 'true'
-        run: |
-          docker build -f runners/dotnet/Dockerfile.builder -t sagat/dotnet-builder:10.0.401 .
-          docker build -f runners/dotnet/Dockerfile.runtime -t sagat/dotnet-runtime:10.0.12 .
-      # Integration tests start PostgreSQL through Testcontainers (Docker is preinstalled).
-      # The workspace also verifies worker/event compatibility baselines and that applying
-      # platform migrations twice is a no-op (T001-030/031).
-      # Every failing test is reported, not only the first binary's: a first run on a new platform is the time to see them all.
-      - name: build isolated database executor for process tests
-        if: needs.changes.outputs.any == 'true'
-        run: cargo build -p sagat-database-runner --bin database-runner --locked
-      # Fail early on the changed transaction family and its migration/index interactions, for the suites
-      # that were added or modified. The integration step below still runs every selected suite in full.
-      - name: capacity and migration regression preflight
-        if: needs.changes.outputs.any == 'true'
-        env:
-          SAGAT_TEST_AS_RUNTIME_ROLE: "1"
-          RUST_TEST_THREADS: "2"
-          TARGETS: ${{ needs.changes.outputs.targets }}
-        run: |
-          selected() { case " $TARGETS " in *" $1 "*) return 0 ;; esac; return 1; }
-          if selected contract_asyncapi_events_webhooks_messaging; then
-            cargo test -p sagat-tests --test contract_asyncapi_events_webhooks_messaging --locked
-          fi
-          if selected integration_workflow_primitives; then
-            cargo test -p sagat-tests --test integration_workflow_primitives --locked -- hint_contract::capacity_acquire_hint_is_closed_control_metadata_without_execution_authority --exact --nocapture
-            cargo test -p sagat-tests --test integration_workflow_primitives --locked -- capacity_finish::acquire:: --nocapture
-            cargo test -p sagat-tests --test integration_workflow_primitives --locked -- loop_progress::expression_failure_drains_once_restarts_and_finishes_from_the_journal --exact --nocapture
-            cargo test -p sagat-tests --test integration_workflow_primitives --locked -- capacity_finish::downgrade_waits_for_writer_before_deciding_whether_storage_is_empty --exact --nocapture
-            cargo test -p sagat-tests --test integration_workflow_primitives --locked -- capacity_finish::vacate:: --nocapture
-          fi
-          if selected integration_security_multitenancy; then
-            cargo test -p sagat-tests --test integration_security_multitenancy --locked -- bindings::releasing_the_leases_of_closed_sessions_is_an_index_lookup_and_not_a_scan_of_every_lease --exact --nocapture
-          fi
       # The unit tests of the changed packages (every package for a release or a workspace-wide input). The
       # `sagat-tests` crate is the integration part of the workspace.
       - name: unit tests of the changed packages
@@ -176,15 +120,117 @@ jobs:
             cargo test "${args[@]}" --locked --no-fail-fast
           fi
         timeout-minutes: 60
-      - name: integration suites that touch the change
-        if: needs.changes.outputs.any == 'true'
-        env:
-          TARGETS: ${{ needs.changes.outputs.targets }}
+
+  # The integration suites the selection chose (the `sagat-tests` targets), spread over parallel shards. Run one after
+  # another in one step, every suite outgrew the step's 110 minutes although each passed (run 44793165198). The
+  # selection decides which suites run, exactly as before; scripts/select-test-targets.py also plans the shards, greedy
+  # and longest suite first, by the measured duration of each suite (scripts/integration-suite-durations.toml), so a
+  # change that selects a few suites gets one shard and a release gets as many as its time needs. Each shard builds
+  # `sagat-tests` once for its own targets and runs them with the same environment the single step had.
+  integration:
+    name: integration suites (shard ${{ matrix.shard.index }} of ${{ matrix.shard.count }})
+    needs: changes
+    if: needs.changes.outputs.any == 'true'
+    strategy:
+      # A failing shard must not hide what the others would have reported.
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.changes.outputs.shards) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - name: free disk space the build needs
+        # The build of the integration targets ran the runner's disk out once (pull request 91, `No space left on
+        # device` in rustc). The image carries toolchains this job never uses (the Android SDK, .NET, GHC, CodeQL).
         run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h /
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: rustup show active-toolchain
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          shared-key: sdks
+          cache-on-failure: true
+      - name: bounded ChildRoot holder discovery
+        if: contains(format(' {0} ', matrix.shard.targets), ' integration_workflow_primitives ')
+        env:
+          SAGAT_TEST_AS_RUNTIME_ROLE: "1"
+          RUST_TEST_THREADS: "2"
+        run: |
+          # Report both the pure shard table and the real PostgreSQL cases on a failure.
+          proof_failed=0
+          cargo test -p sagat-infra-postgres --lib --locked capacity_discovery::tests:: || proof_failed=1
+          cargo test -p sagat-tests --test integration_workflow_primitives --locked -- capacity_finish::discovery::holders:: --nocapture || proof_failed=1
+          exit "$proof_failed"
+      - name: scoped event quota rollback boundary
+        if: contains(format(' {0} ', matrix.shard.targets), ' integration_workflow_primitives ')
+        env:
+          SAGAT_TEST_AS_RUNTIME_ROLE: "1"
+          RUST_TEST_THREADS: "2"
+        run: cargo test -p sagat-tests --test integration_workflow_primitives --locked -- scoped_event_storage::receiver::a_dispatcher_quota_refusal --nocapture
+      - name: worker capacity lease boundary
+        if: contains(format(' {0} ', matrix.shard.targets), ' integration_workflow_primitives ')
+        env:
+          SAGAT_TEST_AS_RUNTIME_ROLE: "1"
+          RUST_TEST_THREADS: "2"
+        run: |
+          cargo test -p sagat-tests --test integration_workflow_primitives --locked -- capacity_finish::worker_leases:: --nocapture
+      - name: isolated C# compiler and runtime images
+        run: |
+          docker build -f runners/dotnet/Dockerfile.builder -t sagat/dotnet-builder:10.0.401 .
+          docker build -f runners/dotnet/Dockerfile.runtime -t sagat/dotnet-runtime:10.0.12 .
+      # Integration tests start PostgreSQL through Testcontainers (Docker is preinstalled).
+      # The workspace also verifies worker/event compatibility baselines and that applying
+      # platform migrations twice is a no-op (T001-030/031).
+      # Every failing test is reported, not only the first binary's: a first run on a new platform is the time to see them all.
+      - name: build isolated database executor for process tests
+        run: cargo build -p sagat-database-runner --bin database-runner --locked
+      # Fail early on the changed transaction family and its migration/index interactions, for the suites
+      # that were added or modified. The last step still runs every suite of the shard in full.
+      - name: capacity and migration regression preflight
+        env:
+          SAGAT_TEST_AS_RUNTIME_ROLE: "1"
+          RUST_TEST_THREADS: "2"
+          TARGETS: ${{ matrix.shard.targets }}
+        run: |
+          selected() { case " $TARGETS " in *" $1 "*) return 0 ;; esac; return 1; }
+          if selected contract_asyncapi_events_webhooks_messaging; then
+            cargo test -p sagat-tests --test contract_asyncapi_events_webhooks_messaging --locked
+          fi
+          if selected integration_workflow_primitives; then
+            cargo test -p sagat-tests --test integration_workflow_primitives --locked -- hint_contract::capacity_acquire_hint_is_closed_control_metadata_without_execution_authority --exact --nocapture
+            cargo test -p sagat-tests --test integration_workflow_primitives --locked -- capacity_finish::acquire:: --nocapture
+            cargo test -p sagat-tests --test integration_workflow_primitives --locked -- loop_progress::expression_failure_drains_once_restarts_and_finishes_from_the_journal --exact --nocapture
+            cargo test -p sagat-tests --test integration_workflow_primitives --locked -- capacity_finish::downgrade_waits_for_writer_before_deciding_whether_storage_is_empty --exact --nocapture
+            cargo test -p sagat-tests --test integration_workflow_primitives --locked -- capacity_finish::vacate:: --nocapture
+          fi
+          if selected integration_security_multitenancy; then
+            cargo test -p sagat-tests --test integration_security_multitenancy --locked -- bindings::releasing_the_leases_of_closed_sessions_is_an_index_lookup_and_not_a_scan_of_every_lease --exact --nocapture
+          fi
+      - name: integration suites of this shard
+        env:
+          TARGETS: ${{ matrix.shard.targets }}
+          SHARD: ${{ matrix.shard.index }} of ${{ matrix.shard.count }}, planned at ${{ matrix.shard.seconds }} seconds
+        run: |
+          echo "shard $SHARD: $TARGETS"
           args=()
           for target in $TARGETS; do args+=(--test "$target"); done
           cargo test -p sagat-tests --locked --no-fail-fast "${args[@]}"
         timeout-minutes: 110
+
+  # The number of shards follows the selection; this job, of a fixed name, says whether every one of them passed.
+  integration-result:
+    name: integration suites
+    needs: [changes, integration]
+    if: always() && needs.changes.outputs.any == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: every shard passed
+        env:
+          RESULT: ${{ needs.integration.result }}
+        run: |
+          echo "integration shards: $RESULT"
+          [ "$RESULT" = success ]
 
   released-upgrade:
     name: released v0.2 upgrade compatibility
