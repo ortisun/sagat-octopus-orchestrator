@@ -340,3 +340,112 @@ async fn each_carry_mode_of_the_cost_breakdown_writes_only_its_storage() {
     })
     .await;
 }
+
+/// Nested statements the server ran (`pg_stat_statements.track = 'all'`, as the test support starts it).
+async fn nested_calls(pool: &PgPool) -> i64 {
+    sqlx::query_scalar(
+        "SELECT coalesce(sum(calls), 0)::bigint FROM pg_stat_statements \
+          WHERE NOT toplevel AND dbid = (SELECT oid FROM pg_database WHERE datname = current_database())",
+    )
+    .fetch_one(pool)
+    .await
+    .expect("pg_stat_statements")
+}
+
+/// Nested statements per query text, for the itemised budget.
+async fn nested_by_query(pool: &PgPool) -> std::collections::BTreeMap<String, i64> {
+    sqlx::query_as::<_, (String, i64)>(
+        "SELECT regexp_replace(query, '\\s+', ' ', 'g'), sum(calls)::bigint FROM pg_stat_statements \
+          WHERE NOT toplevel AND dbid = (SELECT oid FROM pg_database WHERE datname = current_database()) GROUP BY 1",
+    )
+    .fetch_all(pool)
+    .await
+    .expect("pg_stat_statements")
+    .into_iter()
+    .collect()
+}
+
+/// Quota rows the open transaction wrote: leases, the usage row, transaction deltas.
+async fn written_by_me(conn: &mut PgConnection) -> (i64, i64, i64) {
+    sqlx::query_as(
+        "SELECT (SELECT count(*) FROM spike_041.step_log_quota_leases WHERE xmin = pg_current_xact_id()::xid), \
+                (SELECT count(*) FROM tenant_retained_usage WHERE xmin = pg_current_xact_id()::xid), \
+                (SELECT count(*) FROM quota_transaction_deltas WHERE transaction_id = pg_current_xact_id())",
+    )
+    .fetch_one(conn)
+    .await
+    .expect("rows written")
+}
+
+/// The budget line of a step-log insert statement under ADR-0097 (design 041 sections 2 and 2a): charged into a free lease,
+/// it writes one lease row and no usage or delta row, runs six nested statements for the charge (the transition-table
+/// read, the charge call, the three fences in one statement, the limit's read, the unlocked usage read, the lease
+/// update) besides the one foreign-key check of each line, and queues no deferred call for the commit; a refill writes
+/// the usage row once and one lease row.
+#[tokio::test]
+async fn a_step_log_insert_costs_its_budget_line() {
+    bounded::within("budget line", LIMIT, async {
+        let (w, tenant) = leased_world(1 << 30).await;
+        let pool = &w.db.pool;
+        sqlx::query("CREATE EXTENSION IF NOT EXISTS pg_stat_statements")
+            .execute(pool)
+            .await
+            .expect("the test PostgreSQL preloads pg_stat_statements");
+        let track: String = sqlx::query_scalar("SELECT current_setting('pg_stat_statements.track')")
+            .fetch_one(pool)
+            .await
+            .expect("track");
+        assert_eq!(track, "all", "the budget counts nested statements: pg_stat_statements.track must be 'all'");
+        let stream: i64 = sqlx::query_scalar(
+            "INSERT INTO spike_041.step_log_streams (tenant_id, public_id, namespace_id, run_id, step_id, node, \
+               instance_path_nodes, instance_path_indices, attempt, generation, retention_days, last_at, expires_at) \
+             VALUES ($1, gen_random_uuid(), gen_random_uuid(), gen_random_uuid(), gen_random_uuid(), 'a', '{}', '{}', \
+               1, 0, 14, now(), now() + interval '14 days') RETURNING stream_id",
+        )
+        .bind(tenant)
+        .fetch_one(pool)
+        .await
+        .expect("a stream");
+        let insert = |from: i64| {
+            sqlx::query(
+                "INSERT INTO spike_041.step_log_lines (tenant_id, stream_id, sequence, run_id, level, kind, message) \
+                 SELECT $1, $2, s, gen_random_uuid(), 'info', 'line', repeat('x', 200) FROM generate_series($3, $3 + 9) s",
+            )
+            .bind(tenant)
+            .bind(stream)
+            .bind(from)
+        };
+        // The first insert finds no lease: a refill.
+        let mut tx = pool.begin().await.expect("begin");
+        insert(1).execute(&mut *tx).await.expect("the first ten lines");
+        assert_eq!(written_by_me(&mut tx).await, (1, 1, 0), "a refill writes one lease row and the usage row once");
+        tx.commit().await.expect("commit");
+        // The second finds lease room: the hot path.
+        let mut tx = pool.begin().await.expect("begin");
+        let before = nested_calls(pool).await;
+        let items = nested_by_query(pool).await;
+        insert(11).execute(&mut *tx).await.expect("ten more lines");
+        let during = nested_calls(pool).await;
+        let ran: Vec<(String, i64)> = nested_by_query(pool)
+            .await
+            .into_iter()
+            .map(|(q, n)| (q.chars().take(90).collect::<String>(), n - items.get(&q).copied().unwrap_or(0)))
+            .filter(|(_, n)| *n > 0)
+            .collect();
+        let foreign_key: i64 = ran
+            .iter()
+            .filter(|(q, _)| q.starts_with("SELECT $3 FROM ONLY \"spike_041\".\"step_log_streams\""))
+            .map(|(_, n)| n)
+            .sum();
+        assert_eq!(foreign_key, 10, "one foreign-key check a line: {ran:#?}");
+        assert_eq!(written_by_me(&mut tx).await, (1, 0, 0), "a charge writes one lease row, no usage and no delta row");
+        let at_commit = nested_calls(pool).await;
+        tx.commit().await.expect("commit");
+        let after = nested_calls(pool).await;
+        // The reads of this test are top-level statements of another connection, and a subquery is not a statement: the
+        // difference is the insert's nested statements, its charge's six and one foreign-key check for each line.
+        assert_eq!(during - before, 6 + 10, "the nested statements of one charged insert: {ran:#?}");
+        assert_eq!(after - at_commit, 0, "the commit runs no deferred quota call for a step-log-only transaction");
+    })
+    .await;
+}
