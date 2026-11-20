@@ -93,6 +93,14 @@
       "ok": true,
       "op": "start",
       "result": {
+        "concurrency": {
+          "group": "=flow-serial",
+          "keyLabel": null,
+          "pool": "ORDINARY",
+          "queueDeadline": null,
+          "since": "<time>",
+          "state": "HOLDING"
+        },
         "correlationId": null,
         "createdAt": "<time>",
         "deadline": null,
@@ -120,6 +128,14 @@
       "ok": true,
       "op": "start",
       "result": {
+        "concurrency": {
+          "group": "=flow-serial",
+          "keyLabel": null,
+          "pool": "ORDINARY",
+          "queueDeadline": "<time>",
+          "since": "<time>",
+          "state": "WAITING"
+        },
         "correlationId": null,
         "createdAt": "<time>",
         "deadline": null,
@@ -147,6 +163,14 @@
       "ok": true,
       "op": "start",
       "result": {
+        "concurrency": {
+          "group": "=flow-serial",
+          "keyLabel": null,
+          "pool": "ORDINARY",
+          "queueDeadline": "<time>",
+          "since": "<time>",
+          "state": "WAITING"
+        },
         "correlationId": null,
         "createdAt": "<time>",
         "deadline": null,
@@ -174,6 +198,14 @@
       "ok": true,
       "op": "start",
       "result": {
+        "concurrency": {
+          "group": "=flow-serial",
+          "keyLabel": null,
+          "pool": "ORDINARY",
+          "queueDeadline": "<time>",
+          "since": "<time>",
+          "state": "WAITING"
+        },
         "correlationId": null,
         "createdAt": "<time>",
         "deadline": null,
@@ -201,6 +233,14 @@
       "ok": true,
       "op": "start",
       "result": {
+        "concurrency": {
+          "group": "=flow-serial",
+          "keyLabel": null,
+          "pool": "ORDINARY",
+          "queueDeadline": null,
+          "since": "<time>",
+          "state": "HOLDING"
+        },
         "correlationId": null,
         "createdAt": "<time>",
         "deadline": null,
@@ -224,10 +264,48 @@
       "op": "awaitJournal"
     },
     {
+      "id": "a1-read-holding",
+      "ok": true,
+      "op": "get",
+      "result": {
+        "concurrency": {
+          "group": "=flow-serial",
+          "keyLabel": null,
+          "pool": "ORDINARY",
+          "queueDeadline": null,
+          "since": "<time>",
+          "state": "HOLDING"
+        },
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": null,
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:1>",
+        "startedBy": "alice",
+        "status": "RUNNING",
+        "traceId": "<trace:1>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
       "id": "a3-read-queued",
       "ok": true,
       "op": "get",
       "result": {
+        "concurrency": {
+          "group": "=flow-serial",
+          "keyLabel": null,
+          "pool": "ORDINARY",
+          "queueDeadline": "<time>",
+          "since": "<time>",
+          "state": "WAITING"
+        },
         "correlationId": null,
         "createdAt": "<time>",
         "deadline": null,
