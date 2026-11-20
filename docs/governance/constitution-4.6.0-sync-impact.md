@@ -1,9 +1,9 @@
 # Constitution 4.6.0 — Sync Impact Report
 
 This record accompanies the pull request that lets a change of a contract file select the contract suites and the
-packages that read it. **Status: PROPOSED**; it is adopted by merging the pull request that carries it, on the owner's
-delegation of the 0.3.0 decisions to the coordinating session (OD-2026-11-20-6) and the delegate's decision
-OD-2026-11-20-7 of [`docs/owner-decisions.md`](../owner-decisions.md), which answers finding m7 of the architecture
+packages that read it. **Status: ADOPTED** by the owner's answer "Yes, merge #254" (2026-11-20), recorded as
+OD-2026-11-20-7 of [`docs/owner-decisions.md`](../owner-decisions.md); the coordinating session proposed it and put it
+to the owner because it narrows OD-2026-11-06-2, which the delegation (OD-2026-11-20-6) does not cover. It answers finding m7 of the architecture
 re-review of design 022 (`specs/022-flow-control-step-policies/reviews/2026-11-20/keys-rereview-architecture.md`). The
 owner may overrule it by a later amendment.
 
