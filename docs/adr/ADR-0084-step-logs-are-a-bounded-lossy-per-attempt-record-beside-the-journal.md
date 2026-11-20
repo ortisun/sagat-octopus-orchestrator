@@ -251,7 +251,7 @@ after design 041's spike T041-35.
 Note (2026-11-20, design 041's D041-108 and D041-112): [ADR-0097](ADR-0097-the-step-log-quota-is-charged-to-exact-per-tenant-leases-never-to-the-usage-row-at-commit.md),
 Proposed, would supersede, for an ingest, the clause of the Revision's decision 3 that a batch "MUST NOT take the tenant's
 `tenant_retained_usage` row before its commit" and is refused "by the commit-time finalizer's raise", and the ingest's
-reading of decision 11: a batch's rows are charged at its insert to one of the tenant's step-log quota leases (after the
+reading of decision 11: a batch's rows are charged at its insert to its writer's own step-log quota lease (after the
 quota class fences, shared), the usage row is taken only by a refill under the ingest's lock timeout, and a refusal raises
 at the insert and is answered `RETRY_LATER` as before. Nothing above changes until ADR-0097 is accepted; on acceptance this
 ADR is marked "partly superseded by ADR-0097".

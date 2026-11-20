@@ -198,8 +198,9 @@ class measured per statement, and the generator does not write its triggers (the
 
 Note (2026-11-20, design 041's D041-108): [ADR-0097](ADR-0097-the-step-log-quota-is-charged-to-exact-per-tenant-leases-never-to-the-usage-row-at-commit.md),
 Proposed, would replace for a step-log *charge* the delta of the first bullet above and the whole second bullet: the
-statement-level trigger keeps measuring the rows stored, but adds the charge to one of the tenant's exact leases, so no
-deferred flush is queued on insert and the usage row is locked only by a refill or a release; the release stays per row
+statement-level trigger keeps measuring the rows stored, but adds the charge to its writer's exact lease, so no
+deferred flush is queued on insert and the usage row is locked only by an ensure, a refill, a release, an idle reclaim
+or a limit change; the release stays per row
 (third bullet), and the finalizer's step-log branch, reached then only by a release, lowers the folded usage under the usage
 row without taking any lease; for the class `step_log` the folded usage may then go below zero while the usage (the folded
 usage plus what the leases hold) never does (ADR-0097 decision 5). Nothing above changes until ADR-0097 and this amendment

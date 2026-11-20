@@ -19,7 +19,8 @@ the step-log tables, and the cost with and without a carry at every other call s
 that the carry function and the domain's `plan_batch` plan alike (decision 3, T041-36); a source-text test that the worker and execution modules reach the step-log tables only through the port of decision
 3 (T041-36); the re-run tests of decision 5 for a completion and a failure, root and scoped, and its in-call tests (a carry
 refused by the limit on a new and on an existing stream recording its mark in the same call; a carry whose refill finds the
-usage row held by a holder that updated it answering at once; a reserved carry writing with no subtransaction) (T041-36,
+usage row held by a holder that updated it waiting at most its budget and then answering `tenant_quota_busy`; a reserved
+carry writing with no subtransaction; the store's ensure before a report giving the carry its fast path) (T041-36,
 on the pattern of the prototype's `step_log_leases_tests.rs`); the C0 tests of decision 3
 (T041-36); the order tests of decision 6 (T041-36); the lock-order test with a carrying report beside an ingest of its attempt,
 the purge and a change of a step-log resource, and the tests that a held step-log lock makes a carry `contended` with the report
@@ -88,11 +89,10 @@ Facts of the code that shape the change:
    transaction fails because of its carry otherwise, the report MUST be recorded by a re-run of the report with the
    carry downgraded: after a raise of a guard of the step-log quota that the block does not catch (or on the fast path,
    where no block runs), a mark-only carry that charges nothing; after a failed carry statement, none. The carry only goes down, and each downgrade can
-   meet the content-quota fallback once, so a report runs at most four transactions. The two causes MUST reach the re-run as values of their own, never as an ordinary unavailability, which is
-   never re-run. A refill that outwaits its bound (ADR-0097 decision 4, `55P03` `tenant_step_log_refill_wait`) is such an
-   ordinary unavailability: it MUST NOT be turned into a mark-only carry while the tenant has room; the report's
-   transaction fails, counted and alerted, and the worker resends the report (`UNAVAILABLE` is retryable). Item 1 of
-   ADR-0027's Amendment then reads "a step-log charge never blocks a terminal state: a report whose step-log rows
+   meet the content-quota fallback once, so a report runs at most four transactions. The two causes MUST reach the re-run as values of their own, never as an ordinary unavailability, which the
+   server never re-runs. A fallback refill that waits for the usage row past its budget (ADR-0097 decisions 3b and 4,
+   D041-119) MUST NOT fail the report: the carry's block answers it in the same call with a mark-only final mark whose
+   reason is `tenant_quota_busy`, counted and alerted, and the report lands. Item 1 of ADR-0027's Amendment then reads "a step-log charge never blocks a terminal state: a report whose step-log rows
    do not fit is recorded by a re-run without them". A report whose output or failure code holds a declared secret, root or
    scoped, and a report re-run for its retained content, write a mark-only carry.
 6. Within an attempt, stored lines MUST stay in sequence order under the read order of ADR-0084 decision 9 (storing transaction
@@ -128,7 +128,8 @@ Facts of the code that shape the change:
 6. **A savepoint around the carry** so that its failure rolls back only itself — lost as two statements of the client on every
    carrying report, and while the charge raised at commit, where a savepoint cannot catch it. Since ADR-0097 the charge
    raises at the insert, so the carry's own call now opens one `BEGIN … EXCEPTION` block (a subtransaction, no round trip)
-   for its charge's refusal (decision 5, revised 2026-11-20); its cost is measured by T041-35's third run.
+   for its charge's refusal (decision 5, revised 2026-11-20), only on the fallback path once the store made the lease's
+   room before the report (ADR-0097 decision 3b); its cost is measured by T041-35's fourth run.
 7. **A carry of up to 500 records**, the batch's cap — lost. A 500-record write took about 200 ms at p99 in T041-31, all of it
    under the run lock and, as charged then, from its first deferred flush, the tenant usage row.
 8. **Accept a lower criterion (O041-036 (c)) or defer the feature (O041-036 (e))** — not chosen by the owner.
@@ -139,9 +140,10 @@ Good: a short step adds no transaction and no round trip of its worker; its line
 lines are visible no later than its end and a tail never waits for a final batch that is still in flight; the final flush's
 two-second wait disappears for short steps.
 
-Bad: the report's transaction holds the run row while its carry's one call runs (one round trip, one subtransaction) and
-fires one statement-trigger call that charges the writer's lease (ADR-0097; the usage row only for a refill, waited for
-at most 1 s); a report that
+Bad: the report's transaction holds the run row while its carry's one call runs (one round trip; a subtransaction only
+on the fallback path) and fires one statement-trigger call that charges the writer's lease (ADR-0097; the usage row
+only for a fallback refill, waited for at most 200 ms; the store's ensure before the report, when the lease is short,
+is a transaction of its own under no run lock); a report that
 also stores output takes the usage row at its commit for the content class, as today. Spike T041-35 measures it. Part of a rule (the carry's plan) runs in SQL, kept equal
 to the domain's by a property test. A carry that finds a step-log lock held stores nothing (`contended`), so a rare contention loses that attempt's last
 lines. A carry whose transaction fails costs one or two more report transactions, and a re-run can be refused as a late report
