@@ -57,7 +57,8 @@ Facts of the code that shape the change:
 2. A report without a carry MUST cost what it costs today: no additional statement, transaction or row. A carrying report MUST add
    no transaction and exactly one statement, one round trip: a call of the database function `sagat_step_log_carry`, which tries
    the locks, reads the policy, writes the stream and the kept lines and their counters (OD-2026-11-20-1). The step-log rows are
-   charged once per insert statement (ADR-0027's proposed amendment of 2026-11-20). These are equalities of the hot-path budget
+   charged once per insert statement (ADR-0027's proposed amendment of 2026-11-20), to one of the tenant's exact leases
+   (ADR-0097, Proposed), never to the usage row at the commit. These are equalities of the hot-path budget
    (constitution, CI gates), beside the existing ones, tested at every call site; since the function's writes are not top-level
    statements, the budget counts them by a second measure from the step-log tables.
 3. The carry MUST be written by the transaction that records the report, after the report's own checks and the engine's change

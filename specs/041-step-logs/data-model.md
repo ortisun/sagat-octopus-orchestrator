@@ -165,11 +165,9 @@ classes:
   DEFINER` trigger function with the pinned `search_path` of its siblings, executable by neither `PUBLIC` nor
   `sagat_app`, which sums per tenant, over `inserted`, what `sagat_quota_measure` measures for each row's `message`,
   `exception`, `fields` (`octet_length_utf8`) and `level` (`fixed_octets`, 128), the same function the per-row release
-  uses, and calls `sagat_quota_add_delta` once per tenant with that step-log delta; `ENABLE ALWAYS`;
-- `quota_transaction_deltas_step_log_flush`: a constraint trigger `AFTER INSERT ON quota_transaction_deltas DEFERRABLE
-  INITIALLY DEFERRED FOR EACH ROW WHEN (NEW.step_log_delta <> 0) EXECUTE FUNCTION sagat_quota_flush_deltas()`, so a
-  transaction whose first delta of a tenant is a step-log one queues one flush (a transaction whose delta row a content or
-  log write created has that table's flush queued already); `ENABLE ALWAYS`;
+  uses, and calls `sagat_quota_step_log_charge` (§3b) once per tenant, in tenant order, with that charge; `ENABLE ALWAYS`;
+- no deferred flush on insert (ADR-0097, §3b): the charge goes to a lease in the statement trigger itself, so the
+  constraint trigger `quota_transaction_deltas_step_log_flush` of the 2026-11-20 text is not created;
 - `step_log_lines_quota_delete` and `step_log_lines_quota_flush`: the per-row `AFTER DELETE` delta and flush triggers of
   the generator's shape, so that the purge releases exactly what it deletes;
 - no `UPDATE` trigger: lines are never updated (a trigger refuses it, §2).
@@ -264,6 +262,7 @@ rows written one lease row, no usage row, no delta row; nested statements 6 for 
 |---|---|
 | `step_log_lines` | `SELECT, INSERT, DELETE` |
 | `step_log_streams` | `SELECT, INSERT, UPDATE` |
+| `step_log_quota_leases` | none: only the `SECURITY DEFINER` functions of §3b write or read it (ADR-0097) |
 
 Usage of the identity sequence of `step_log_streams`. No `TRUNCATE` and no grant on `namespaces`. The only new `SECURITY
 DEFINER` function is the accessor of ADR-0027's Amendment, `sagat_quota_step_log_allowance(tenant)`, of the existing
@@ -272,7 +271,11 @@ does, since PostgreSQL grants `EXECUTE` to `PUBLIC` on a new function) and `EXEC
 exists because the runtime role may not read `quota_accounting_control` (`:564-572`). Two more functions, of the 2026-11-20 revision (OD-2026-11-20-1): the statement-level quota trigger function of §3
 (`SECURITY DEFINER`, pinned `search_path`, `REVOKE ALL … FROM PUBLIC`, no `EXECUTE` to `sagat_app`, since only its trigger
 calls it), and `sagat_step_log_carry` of §8a (`SECURITY INVOKER`, pinned `search_path`, `REVOKE ALL … FROM PUBLIC`,
-`EXECUTE` to `sagat_app`), created by T041-36's migration. No other grant. The down migration
+`EXECUTE` to `sagat_app`), created by T041-36's migration. And the two lease functions of §3b,
+`sagat_quota_step_log_charge` and `sagat_quota_step_log_refill` (`SECURITY DEFINER`, pinned `search_path`, `REVOKE ALL …
+FROM PUBLIC`, no `EXECUTE` to `sagat_app`: only the statement trigger calls the first, and the first the second); the
+runtime role gets no privilege on `tenant_retained_usage.step_log_leased_bytes` beyond what it has on the table today. No
+other grant. The down migration
 refuses while a row of `step_log_lines` exists.
 
 ## 5. Canonical JSON of `fields`
@@ -377,7 +380,7 @@ timeout is `SET LOCAL lock_timeout = '200ms'`.
   2^53.
 - **T6.** The attempt allowance from the stream row's `records` and `bytes` against `step_log_attempt_records` and
   `step_log_attempt_bytes`. The tenant allowance from `sagat_quota_step_log_allowance(tenant)`, which returns without a lock
-  `tenant_retained_usage.step_log_bytes`, the limit worked out as the finalizer's branch works it out from
+  the usage S + Σ `used` of §3b, the limit worked out as the finalizer's branch works it out from
   `quota_limits`, `quota_ceilings` and the 1 GiB default, and whether it is enforced (the runtime role may not read
   `quota_accounting_control`, `20261024000000_durable_quotas.up.sql:561-572`, and the accessor keeps one limit rule).
   The attempt allowance counts text bytes; the tenant's counts text plus 128 bytes a row, a planned marker included. When a record does not
@@ -394,13 +397,14 @@ timeout is `SET LOCAL lock_timeout = '200ms'`.
   `sagat_lock_memberships`; the ingest's own query reads `worker_bindings` as `bound_patterns` does
   (`execution.rs:4766-4775`), without its lock.
 - **T8.** One `INSERT … SELECT … FROM unnest(…) ON CONFLICT (tenant_id, stream_id, sequence) DO NOTHING RETURNING` the text
-  size of each inserted row.
+  size of each inserted row. Its statement trigger charges the rows to a lease (§3b); a refusal raises here
+  (`tenant_step_log_quota_exceeded`) and is mapped to `RETRY_LATER`.
 - **T9.** From the rows T8 returned: `last_sequence = GREATEST(last_sequence, high mark)`, records, bytes, truncated
   records, both drop counts, `ceiling_sequence`, `ceiling_reason`, `first_at`, `last_at = clock_timestamp()`,
   `expires_at = last_at + retention_days`, and `last_stored_xid = GREATEST(coalesce(last_stored_xid, '0'::xid8),
   pg_current_xact_id())` only when T8 inserted a row. A batch never sets `final_at` (D041-090): only the carry of §8a
   does.
-- **T10.** `COMMIT`. `tenant_step_log_quota_exceeded` from the finalizer is mapped to `RETRY_LATER`.
+- **T10.** `COMMIT`. No deferred quota call runs for the step-log rows (§3b).
 
 A marker line (either kind) has the level `info`, and `minLevel` never hides a marker: the filter applies to
 `kind = 'line'` only.
@@ -434,15 +438,20 @@ GRANT EXECUTE ON FUNCTION sagat_step_log_carry(…) TO sagat_app;
 Its body, each statement with a snapshot of its own (the function is `VOLATILE`, the transaction READ COMMITTED):
 
 1. **CA.** `pg_try_advisory_xact_lock_shared(hashtextextended(k, 0))` for each of `p_fence_keys` in order, then
-   `pg_try_advisory_xact_lock(hashtextextended(p_stream_key, 0))`. Any `false`: return `contended`.
+   `pg_try_advisory_xact_lock(hashtextextended(p_stream_key, 0))`, then the tenant's three quota class fences
+   (`quota-policy:tenant_content_bytes:`, `…tenant_log_bytes:`, `…tenant_step_log_bytes:` and the tenant) with
+   `pg_try_advisory_xact_lock_shared`, so that CD's charge never waits for them (ADR-0097). Any `false`: return `contended`.
 2. **CB.** The `quota_limits` and `quota_ceilings` rows of the three resources for the tenant and the namespace, resolved
    as `effective_policy` resolves them (the namespace row, else the tenant row, else the default, bounded by the
    ceiling; the same rule the property test of T041-36 compares), and `sagat_quota_step_log_allowance(p_tenant)`.
    `step_log_attempt_records = 0`: return `off`.
-3. **CC.** `INSERT INTO step_log_streams (…) SELECT … WHERE NOT EXISTS (SELECT 1 FROM step_log_streams WHERE
-   tenant_id = p_tenant AND run_id = p_run AND step_id = p_step AND attempt = p_attempt AND generation = p_generation AND
-   source = 'worker') ON CONFLICT (tenant_id, run_id, step_id, attempt, generation, source) DO NOTHING RETURNING`
-   the row (counters zero, `in_order` true).
+3. **CC.** The plan of item 5 for a new stream (zero counters, `in_order` true), then `INSERT INTO step_log_streams (…)
+   SELECT … WHERE NOT EXISTS (SELECT 1 FROM step_log_streams WHERE tenant_id = p_tenant AND run_id = p_run AND step_id =
+   p_step AND attempt = p_attempt AND generation = p_generation AND source = 'worker') ON CONFLICT (tenant_id, run_id,
+   step_id, attempt, generation, source) DO NOTHING RETURNING` the row, written once with what that plan stores (the
+   counters, `last_sequence`, the drops, `ceiling_sequence`, `ceiling_reason`, `first_at`, `last_at`, `expires_at`,
+   `final_at`, and `last_stored_xid` = `pg_current_xact_id()` when a row is kept; D041-111). A new stream's carry then runs
+   CD and not CE.
 4. **CC′.** When CC returned nothing: `SELECT … FOR UPDATE SKIP LOCKED` of the stream row with its counters,
    `removed_at`, `expires_at`, `final_at` and `last_stored_xid IS NULL OR last_stored_xid < pg_current_xact_id()` as
    `in_order`. No row: `contended`; removed, expired or final: `removed` or `final_recorded`.
@@ -462,11 +471,12 @@ Its body, each statement with a snapshot of its own (the function is `VOLATILE`,
 6. **CD.** `INSERT INTO step_log_lines … SELECT … FROM unnest(…) WITH ORDINALITY … WHERE <kept> ON CONFLICT (tenant_id,
    stream_id, sequence) DO NOTHING RETURNING octet_length(…)`, and the marker. Not run when nothing is kept. The
    statement-level trigger of §3 charges the inserted rows once.
-7. **CE.** The `UPDATE` of T9 from CD's rows, plus `final_at = clock_timestamp()` and `last_stored_xid` raised as T9
-   raises it; it runs also when nothing was kept. Return `stored` or `mark_only` with the kept count, the drops by the
+7. **CE.** For an existing stream only: the `UPDATE` of T9 from CD's rows, plus `final_at = clock_timestamp()` and
+   `last_stored_xid` raised as T9 raises it; it runs also when nothing was kept. It changes `expires_day` only when the
+   day of `expires_at` changes, so it is HOT on most days. Return `stored` or `mark_only` with the kept count, the drops by the
    worker, the drops by the server per reason, and the stream's `ceiling_reason`.
 
-At the commit any raise of the finalizer's step-log branch (each with a constraint name of its own, T041-5) is mapped
+Any raise of the step-log charge in CD (each with a constraint name of its own, T041-5) is mapped
 to `StoreError::StepLogRefused`, which the application answers with a re-run of the report carrying a mark-only carry
 (the records counted `tenant_quota`); `StoreError::StepLogCarry` with a re-run carrying none. Both cross into the
 application as internal variants (`AppError::StepLogRefused`, `AppError::StepLogCarry`) that only the re-run wrapper

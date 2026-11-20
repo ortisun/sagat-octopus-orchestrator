@@ -196,6 +196,13 @@ spike (T041-35, `specs/041-step-logs/validation-report.md`, 2026-11-20) measured
 call as part of a carry that added +40.6% and +23.7% to the completion p99. Consequence: the step-log class is the one
 class measured per statement, and the generator does not write its triggers (the migration of design 041's T041-5 does).
 
+Note (2026-11-20, design 041's D041-108): [ADR-0097](ADR-0097-the-step-log-quota-is-charged-to-exact-per-tenant-leases-never-to-the-usage-row-at-commit.md),
+Proposed, would replace for a step-log *charge* the delta of the first bullet above and the whole second bullet: the
+statement-level trigger keeps measuring the rows stored, but adds the charge to one of the tenant's exact leases, so no
+deferred flush is queued on insert and the usage row is locked only by a refill or a release; the release stays per row
+(third bullet), and the finalizer's step-log branch, reached then only by a release, folds the tenant's leases first.
+Nothing above changes until ADR-0097 and this amendment are accepted.
+
 ## Implementation slices and ownership contract
 
 1. **Shared policy and manifest:** domain resource names/units/ranges; application ports and typed rate result; migration, durable usage/rate state, exhaustive classification manifest and backfill tests; existing quota REST/CLI/OpenAPI views. Own `domain/quota.rs`, `application/quotas.rs`, `infra-postgres/quotas.rs`, new `infra-postgres/content_usage.rs` and migration. Preserve T010-040 activity lock hierarchy and broker resource arms.
