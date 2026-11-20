@@ -1123,7 +1123,7 @@ taken after `git grep D022-04` on every `origin/*` branch.
   per minute, not per second: five REST starts on a loaded machine can take more than a second, which would let run 3
   be granted without waiting and change the golden; a minute keeps which runs wait fixed, and the assertions are the
   contract's (no window of `per` holds more than two run grants of P, nor more than one lease of the activity per
-  second). The cost is about a minute per language. The golden holds no instant: the windows and the order are checked
+  second). The cost is about a minute per language. The worker of `flow-rate-limit` starts only after every start is decided: a step's slot granted and not yet leased counts without end, so each step that becomes ready while the activity's slot is taken waits whatever the machine's speed, and the step-level events of the golden do not depend on how fast the starts were made (first run of 2026-11-20: with the worker running from the beginning, whether the second run's step waited depended on its start coming less than a second after the first lease). The golden holds no instant: the windows and the order are checked
   by the harness from the journals (`flow_control.rs`), the shape the contract asks for.
 - **D022-094 — A runtime scenario written before its server is `pending`, never green (2026-11-20).** Delegate
   (OD-2026-11-20-6). A scenario carries `"pending": "<why, with the task or gap>"`; the harness still checks its
@@ -1154,6 +1154,19 @@ taken after `git grep D022-04` on every `origin/*` branch.
   `"disclosed"`: the label is a digest under each platform's own key, so its value differs per language while whether
   it was disclosed is the contract. The OpenAPI has no `position` on a run permit (only the rate limit's does), so none
   is added.
+
+- **D022-097 — A scenario plays what the server serves and names the check it cannot make yet (2026-11-20).** Delegate
+  (OD-2026-11-20-6). With the rate capability listed (D022-062) and the run-level rate gate built for the starts the
+  scenario makes (task T022-072, partly), every observation of `flow-rate-limit` can be made except one: the contract's
+  "a buffered run reports `rateLimit.state=WAITING` with a `position`", which needs the run resource's `rateLimit`
+  (task T022-078) and the six SDKs' reading of it (task T022-120). Options: (a) keep the whole scenario `pending` until
+  then (the rate gate would go without conformance evidence for a release cycle); (b) play it and drop the position
+  from the scenario (the contract's line would be silently lost); (c) play it and keep that one check under a scenario
+  key `deferred`, a map from the check to its reason, which the harness prints on every run as not made, and which the
+  registry test requires to name the task it waits for. Chosen: (c). The scenario passes for what it asserts, the
+  missing check stays visible in every run's output and in the scenario file, and adding it later is the removal of
+  one entry plus the observation it describes. A `deferred` check never turns a failure into a pass: it only lists an
+  assertion the scenario does not make.
 
 ## Gaps
 
@@ -1217,7 +1230,7 @@ taken after `git grep D022-04` on every `origin/*` branch.
 | G1195 | Approved texts still describe the drain-first rotation: FR-022-020's last sentence, `data-model.md` (key versions, "only by an audited operator command"), G1163; `data-model.md` does not list `flow_control_group_declarations` or `activated_role`; `contracts/errors.md` does not say that `*_POLICY_INVALID` covers the namespace's ceiling of node-level declarations. Changing them makes the docs drafts again (constitution, Approval). *O1170 answered 2026-11-19 (OD-2026-11-19-2). Also out of date since the force (D022-046): FR-022-056's "no key is ever split between two rows" and SC-022-028 (a forced rotation splits a key into at most two rows), and `data-model.md` lacks `flow_control_key_forced_retirements`. The texts, and the bound of D022-047 in `contracts/errors.md`, are revised when the approved texts are next re-approved (a change makes them drafts again).* | Open; re-approval of the texts |
 | G1196 | A rotation's progress (rows left under the retiring version) has no metric and no audit record; the operator learns it by running the command again. *2026-11-19: likewise the rows left under a forced version (an over-admission in progress, D022-046); a force has an audit row, an activation does not.* | Open; T022-061, T022-082 |
 | G1183 | A database clock that moves backwards under-delivers until it catches up (NFR-022-008); no alert tells the operator why grants paused beyond `rate_limit_grant_lagging`. | Accepted; runbook |
-| G022-090 | The runtime scenarios `flow-concurrency` and `flow-rate-limit` cannot be played: a production build refuses every gated start (`BINARY_CAPABILITY_MISSING`, D022-037) until the capability listing and the deployment's digest key ring land (G1198), and the control plane of `tests/support` (`Options`) has no flow-control switch, so the suite's platform cannot even publish a gated workflow (`CAPABILITY_DISABLED`). Both scenarios are written with their independent assertions and marked `pending` (D022-094). *Partly closed 2026-11-20: with G1198 the harness boots the concurrency gate (`Options::flow_control`, `flow_control::process_env`) and `flow-concurrency` passes in six languages (T022-053). Open: `flow-rate-limit`, which no process can serve yet (D022-057).* | Open; T022-072, T022-074 |
+| G022-090 | The runtime scenarios `flow-concurrency` and `flow-rate-limit` cannot be played: a production build refuses every gated start (`BINARY_CAPABILITY_MISSING`, D022-037) until the capability listing and the deployment's digest key ring land (G1198), and the control plane of `tests/support` (`Options`) has no flow-control switch, so the suite's platform cannot even publish a gated workflow (`CAPABILITY_DISABLED`). Both scenarios are written with their independent assertions and marked `pending` (D022-094). *Partly closed 2026-11-20: with G1198 the harness boots the concurrency gate (`Options::flow_control`, `flow_control::process_env`) and `flow-concurrency` passes in six languages (T022-053). Closed for the rate gate the same day: every process with the digest key ring lists the rate capability (D022-062), and `flow-rate-limit` plays with one check deferred (D022-097).* | Closed; the deferred check is G022-091 |
 | G022-091 | The SDKs' `Run` types do not carry the run resource's `concurrency` and `rateLimit` (state, position, estimate; FR-022-022, FR-022-048): the canonical OpenAPI does not have them yet (T022-026). `flow-rate-limit` observes a buffered run's `WAITING` status through the SDK (`get`); the contract's `rateLimit.state=WAITING` with a `position` is asserted once T022-120 adds the field to the six SDKs. | Open for `rateLimit` (T022-078, T022-120). *Partly closed 2026-11-20: the six `Run` types carry `concurrency` (D022-096) and `flow-concurrency` observes it through each SDK.* |
 
 ## Owner questions

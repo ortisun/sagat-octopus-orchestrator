@@ -88,8 +88,16 @@ never a permit), and the others are granted in admission order once the worker s
 gate events from the platform's journal: the harness checks from their instants that A never had two holders and that
 the grants kept the queue's order (`flow_control.rs`, unit-tested), and the golden keeps their order without instants.
 The worker log is compared as a set (`workerLogOrder: unordered`): two ready tasks of different keys are taken in claim
-order. `flow-rate-limit.json` is US07's contract, written with its assertions and `pending` until a process can serve
-the rate gate.
+order. `flow-rate-limit.json` is user story 7's contract in six languages (SC-022-023): two runs of provider P are granted at
+once, three more are buffered and the fifth is cancelled while it waits, a run of provider Q is not held back, and the
+third and fourth are granted from the queue in the order they were buffered once the first grants leave the window. The
+harness checks from the journal's instants that no window held more than two run grants of P nor more than one lease of
+the rate-limited activity a second, and that a grant said it came from the queue exactly when the run had waited.
+
+A scenario may name, under `deferred`, a check of its contract it cannot make yet, with the reason and the task it waits
+for (D022-097). The harness prints each one as not made on every run; it never turns a failure into a pass. The
+registry test requires every reason to name a task or a gap. `flow-rate-limit` defers the run resource's
+`rateLimit.state=WAITING` with its `position` until task T022-078 serves it and task T022-120 reads it in the six SDKs.
 
 `loop-builders.json` checks additive v1 `while` and `repeatUntil` authoring in the five SDKs.
 It is build-only while durable loop execution remains disabled. The reviewed fixture covers pre-test
