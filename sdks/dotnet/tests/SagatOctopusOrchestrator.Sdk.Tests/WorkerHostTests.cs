@@ -1062,6 +1062,23 @@ public sealed class WorkerHostTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task AJsonElementHandlerWithoutAnInputSeesAJsonNull()
+    {
+        JsonElement? raw = null;
+        var host = Host();
+        host.RegisterActivity<JsonElement, JsonElement>("echo", (input, _, _) =>
+        {
+            raw = input;
+            return Task.FromResult(input);
+        });
+        State.Lease(LeaseFor("echo", l => l.InputJson = string.Empty));
+        await host.StartAsync();
+        await Eventually.UntilAsync(() => State.Of("CompleteStep").Count == 1, "the completion");
+        Assert.Equal(JsonValueKind.Null, raw!.Value.ValueKind);
+        Assert.Equal("null", ((CompleteStepRequest)State.Of("CompleteStep")[0].Request).OutputJson);
+    }
+
+    [Fact]
     public async Task TheNodeComesFromTheStepDocumentAndFallsBackToTheStepId()
     {
         var nodes = new List<string>();
