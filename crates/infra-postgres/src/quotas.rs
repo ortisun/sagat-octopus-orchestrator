@@ -1344,15 +1344,7 @@ impl QuotaStore for PgRunStore {
             .await,
             // feature 022 (T022-013): a run waiting for both gates counts once; the waiter rows of both gates are the
             // truth until the sharded counters of T022-105 exist
-            QuotaResource::QueuedRuns => sqlx::query_scalar(
-                "SELECT count(*) FROM ( \
-                     SELECT run_id FROM concurrency_waiters \
-                      WHERE tenant_id = $1 AND namespace_id = $2 AND permit_scope = 'RUN' \
-                     UNION \
-                     SELECT run_id FROM rate_limit_waiters \
-                      WHERE tenant_id = $1 AND namespace_id = $2 AND limit_scope = 'RUN' \
-                 ) waiting",
-            )
+            QuotaResource::QueuedRuns => sqlx::query_scalar(crate::flow_control::QUEUED_RUNS_SQL)
             .bind(tenant.as_uuid())
             .bind(namespace)
             .fetch_one(&self.pool)

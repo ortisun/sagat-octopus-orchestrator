@@ -5715,6 +5715,7 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+ "zeroize",
 ]
 
 [[package]]
@@ -5800,6 +5801,7 @@ dependencies = [
  "sagat-infra-secrets",
  "sagat-scheduler",
  "sagat-telemetry",
+ "tempfile",
  "tokio",
  "tracing",
  "uuid",

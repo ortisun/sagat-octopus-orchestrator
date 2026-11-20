@@ -33,8 +33,8 @@ Reads `cargo metadata` and fails when:
   * the legacy continue-as-new (`.continue_as_new(`, which carries an input nobody checked) is called outside the tests, other
     than by the one forwarder, `continue_as_new` in `crates/infra-postgres/src/chain_progress.rs` (FR-043-016, D043-122);
   * the `test-support` feature of `sagat-application` (the constructor of `CheckedRunInput` that skips the gate), or the
-    `step-gates-for-tests` feature of `sagat-infra-postgres` (feature 022's test-only admission of step gates), is enabled
-    anywhere but a `[dev-dependencies]` entry (FR-043-016, D022-037);
+    `rate-gates-for-tests` feature of `sagat-infra-postgres` (feature 022's test-only service of the step-level rate gate),
+    is enabled anywhere but a `[dev-dependencies]` entry (FR-043-016, D022-057);
   * a `CheckedRunInput` is built (a struct expression or an associated function call) outside
     `crates/application/src/run_input.rs` and the tests, or has a `Default` or a `Deserialize` anywhere (FR-043-016, D043-045).
 
@@ -483,6 +483,105 @@ def gate_row_write_errors(src):
     return errors
 
 
+# --- one count of queued runs (feature 022, D022-055 item 3; the keys review of 2026-11-20, architecture m3) ------------------
+# The `queued_runs` ceiling's check, its quota usage and the key listing read one statement (`QUEUED_RUNS_SQL`), so they never
+# disagree about what a queued run is (a run waiting for a permit or a slot, counted once). A second statement that counts the
+# runs of both waiter tables is refused outside flow_control.rs.
+QUEUED_RUNS_COUNT = (
+    re.compile(r"\bcount\s*\(", re.IGNORECASE),
+    re.compile(r"\bselect\s+(?:distinct\s+)?(?:\w+\.)?run_id\s+from\s+concurrency_waiters\b", re.IGNORECASE),
+    re.compile(r"\bselect\s+(?:distinct\s+)?(?:\w+\.)?run_id\s+from\s+rate_limit_waiters\b", re.IGNORECASE),
+)
+QUEUED_RUNS_HOME = "flow_control.rs"
+
+
+def queued_runs_count_errors(src):
+    """The errors of the one-count-of-queued-runs rule over the PostgreSQL adapter's source directory `src`."""
+    errors = []
+    root = pathlib.Path(src)
+    found = 0
+    for path in sorted(root.rglob("*.rs")):
+        text = path.read_text()
+        _, literals = rust_literals(text)
+        rel = path.relative_to(root).as_posix()
+        for offset, sql in literals:
+            if not all(pattern.search(sql) for pattern in QUEUED_RUNS_COUNT):
+                continue
+            if rel == QUEUED_RUNS_HOME:
+                found += 1
+                continue
+            errors.append(
+                f"crates/infra-postgres/src/{rel}:{text.count(chr(10), 0, offset) + 1}: a statement counts the runs of "
+                f"both waiter tables outside {QUEUED_RUNS_HOME}: the queued runs are counted by `QUEUED_RUNS_SQL` only, "
+                f"so the ceiling, its usage and the key listing never disagree (D022-055)"
+            )
+    if found != 1:
+        errors.append(
+            f"{found} counts of queued runs were found in {QUEUED_RUNS_HOME} of {src}, where there is exactly one "
+            f"(`QUEUED_RUNS_SQL`): the one-count rule would check nothing or the statement was copied"
+        )
+    return errors
+
+
+# --- a key's value never reaches the API's flow-control bodies (feature 022, FR-022-022, D1168; keys review m4) -----------------
+# The bodies of `Run.concurrency` and the key listing are built from types that hold no key value: no JSON value (which could
+# carry one), no digest machinery, no digest read. A key is shown as its label only.
+KEY_VALUE_FREE_FILES = ("crates/api-http/src/dto_flow_control.rs", "crates/api-http/src/routes/concurrency.rs")
+KEY_VALUE_NAMES = re.compile(r"\b(serde_json|Value|KeyedDigest|FlowControlKey|KeyRing|keyed_digest|canonical)\b|\.digest\b")
+
+
+def key_value_free_errors(root):
+    """The errors of the key-value-free-bodies rule over the tree at `root`."""
+    errors = []
+    base = pathlib.Path(root)
+    if not (base / "crates/api-http/src").is_dir():
+        return errors  # a tree without the HTTP adapter (a fixture of another rule) has no body to check
+    for rel in KEY_VALUE_FREE_FILES:
+        path = base / rel
+        if not path.is_file():
+            errors.append(f"{rel} is named by the key-value-free rule and does not exist: the rule would check nothing")
+            continue
+        text = path.read_text()
+        masked, _ = rust_literals(text)
+        for m in KEY_VALUE_NAMES.finditer(masked):
+            errors.append(
+                f"{rel}:{text.count(chr(10), 0, m.start()) + 1}: `{m.group(0)}` in a flow-control body or route: these are "
+                f"built from types that hold no key value, and show a key by its label only (FR-022-022, D1168)"
+            )
+    return errors
+
+
+# --- feature 009's reveal rule has one implementation (feature 022's review of 2026-11-20, architecture M1) -----------------
+# Who may reveal personal data in a namespace is read from `payload_reveal_grants` by `reveal_grants.rs` only, so that a key
+# label (feature 022) and a payload disclosure never answer the question differently when the rule changes.
+REVEAL_GRANTS_TABLE = re.compile(r"\bpayload_reveal_grants\b", re.IGNORECASE)
+REVEAL_GRANTS_HOME = "reveal_grants.rs"
+
+
+def reveal_rule_errors(src):
+    """The errors of the one-reveal-rule rule over the PostgreSQL adapter's source directory `src`."""
+    errors = []
+    root = pathlib.Path(src)
+    found = 0
+    for path in sorted(root.rglob("*.rs")):
+        text = path.read_text()
+        _, literals = rust_literals(text)
+        rel = path.relative_to(root).as_posix()
+        for offset, sql in literals:
+            if not REVEAL_GRANTS_TABLE.search(sql):
+                continue
+            if rel == REVEAL_GRANTS_HOME:
+                found += 1
+                continue
+            errors.append(
+                f"crates/infra-postgres/src/{rel}:{text.count(chr(10), 0, offset) + 1}: a statement reads "
+                f"`payload_reveal_grants` outside {REVEAL_GRANTS_HOME}: feature 009's reveal rule has one implementation"
+            )
+    if found == 0 and (root / REVEAL_GRANTS_HOME).exists():
+        errors.append(f"no statement over payload_reveal_grants was found in {REVEAL_GRANTS_HOME}: the rule would check nothing")
+    return errors
+
+
 # --- the run-input validator is the platform's own (design 043, D043-074) -----------------------------------------------------
 # `jsonschema` is the oracle of the validator's property test and the compiler of the scripts' schemas; on the path of a run input it
 # would bring back what four reviews could not bound. Any mention of it in the code of the module (comments and strings aside) fails.
@@ -724,11 +823,11 @@ def gate_wiring_errors(root):
 
 
 # The features that open a door only a test may open, each with why: `sagat-application/test-support` builds a
-# `CheckedRunInput` no gate checked (FR-043-016); `sagat-infra-postgres/step-gates-for-tests` admits a definition gated
-# at its steps before the run-level admission and the grant and timeout routines exist (feature 022, T022-096, D022-037).
+# `CheckedRunInput` no gate checked (FR-043-016); `sagat-infra-postgres/rate-gates-for-tests` serves the step-level rate
+# gate this build does not list (feature 022, D022-057).
 TEST_ONLY_FEATURES = (
     (APPLICATION_PACKAGE, TEST_SUPPORT_FEATURE, "it builds a `CheckedRunInput` no gate checked", "FR-043-016"),
-    ("sagat-infra-postgres", "step-gates-for-tests", "it admits runs past the flow-control fleet gate", "D022-037"),
+    ("sagat-infra-postgres", "rate-gates-for-tests", "it serves a flow-control gate this build does not list", "D022-057"),
 )
 
 
@@ -761,21 +860,21 @@ def test_support_errors(pkgs):
     return errors
 
 
-# The test-only door of feature 022 is opened by tests alone: no production source calls it (T022-096, D022-037).
-STEP_GATES_DOOR = re.compile(r"\badmitting_step_gates_for_tests\s*\(")
-STEP_GATES_DOOR_HOME = "crates/infra-postgres/src/execution.rs"
+# The test-only door of feature 022 is opened by tests alone: no production source calls it (D022-057).
+RATE_GATES_DOOR = re.compile(r"\bserving_rate_gates_for_tests\s*\(")
+RATE_GATES_DOOR_HOME = "crates/infra-postgres/src/execution.rs"
 
 
-def step_gates_door_errors(root):
-    """`admitting_step_gates_for_tests` is called only under `tests/` (its definition aside)."""
+def rate_gates_door_errors(root):
+    """`serving_rate_gates_for_tests` is called only under `tests/` (its definition aside)."""
     errors = []
     for rel, text, masked, _ in production_sources(root):
-        for m in STEP_GATES_DOOR.finditer(masked):
-            if rel == STEP_GATES_DOOR_HOME and re.search(r"fn\s+$", masked[max(0, m.start() - 8):m.start()]):
+        for m in RATE_GATES_DOOR.finditer(masked):
+            if rel == RATE_GATES_DOOR_HOME and re.search(r"fn\s+$", masked[max(0, m.start() - 8):m.start()]):
                 continue
             errors.append(
-                f"{rel}:{text.count(chr(10), 0, m.start()) + 1}: `admitting_step_gates_for_tests` is called outside the "
-                f"tests: it admits runs past the flow-control fleet gate (D022-037)"
+                f"{rel}:{text.count(chr(10), 0, m.start()) + 1}: `serving_rate_gates_for_tests` is called outside the "
+                f"tests: it serves a flow-control gate this build does not list (D022-057)"
             )
     return errors
 
@@ -868,6 +967,8 @@ def main(argv):
     errors.extend(run_insert_errors(postgres_src))
     errors.extend(key_row_insert_errors(postgres_src))
     errors.extend(gate_row_write_errors(postgres_src))
+    errors.extend(queued_runs_count_errors(postgres_src))
+    errors.extend(reveal_rule_errors(postgres_src))
     errors.extend(run_input_errors(run_input_src))
     errors.extend(application_runtime_errors(pkgs))
     errors.extend(run_creator_errors(rust_root))
@@ -875,7 +976,8 @@ def main(argv):
     errors.extend(run_input_runtime_errors(rust_root))
     errors.extend(gate_wiring_errors(rust_root))
     errors.extend(test_support_errors(pkgs))
-    errors.extend(step_gates_door_errors(rust_root))
+    errors.extend(rate_gates_door_errors(rust_root))
+    errors.extend(key_value_free_errors(rust_root))
 
     # Cycle detection over workspace members (DFS, three colours).
     WHITE, GREY, BLACK = 0, 1, 2
@@ -907,7 +1009,8 @@ def main(argv):
         return 1
     print(f"architecture check passed ({len(graph)} workspace crates, layers respected, no cycles, the lease row is a leaf lock, every run.finished body says its schedule, "
           f"no jsonschema in the run-input validator, the application's runtime confined to one file, every creator given the gate, every run created with a checked input, "
-          f"runs are inserted only at the admission point, key rows are filed only by file_keys, gate rows are written only by the gate, a run starts only through Engine::start)")
+          f"runs are inserted only at the admission point, key rows are filed only by file_keys, gate rows are written only by the gate, a run starts only through Engine::start, "
+          f"queued runs are counted by one statement, flow-control bodies hold no key value, the reveal rule has one implementation)")
     return 0
 
 

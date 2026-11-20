@@ -153,10 +153,10 @@ pub struct PgRunStore {
     flow_control: sagat_application::flow_control::FlowControlSwitches,
     /// The digest keys of the gates (feature 022): without them a gated step is never decided (fail closed).
     flow_control_keys: Option<Arc<sagat_application::keyed_digest::KeyRing>>,
-    /// Tests only (`step-gates-for-tests`): admit a definition whose gates are all on its steps, so that the
-    /// readiness gate can be exercised before the run-level admission and the grant and timeout routines exist. No
-    /// production build can set it.
-    step_gates_for_tests: bool,
+    /// Tests only (`rate-gates-for-tests`): serve the step-level rate gate, which this build does not list (the
+    /// run-level rate gate, T022-072, and the lease instant, T022-074, are missing), so that the readiness gate's rate
+    /// half can be exercised against PostgreSQL. No production build can set it (D022-057).
+    rate_gates_for_tests: bool,
 }
 
 impl PgRunStore {
@@ -176,7 +176,7 @@ impl PgRunStore {
                 rate_limits: false,
             },
             flow_control_keys: None,
-            step_gates_for_tests: false,
+            rate_gates_for_tests: false,
         }
     }
 
@@ -190,14 +190,29 @@ impl PgRunStore {
         self
     }
 
-    /// Tests only: admits a definition whose gates are on its root steps or are a `concurrency` of its start, past the
-    /// fleet's activation and this build's refusal (D022-037), so that the readiness gate (T022-096) and the run
-    /// admission (T022-022) can be exercised against PostgreSQL. A start's `rateLimit` (T022-072) stays refused.
-    #[cfg(feature = "step-gates-for-tests")]
+    /// The digest keys this store was given, if any.
+    pub(crate) fn flow_control_keys(&self) -> Option<&sagat_application::keyed_digest::KeyRing> {
+        self.flow_control_keys.as_deref()
+    }
+
+    /// Tests only: serves the step-level rate gate as well (see `rate_gates_for_tests`), behind the same switch, digest
+    /// keys and fleet activation as every gate. A start's `rateLimit` (T022-072) stays refused.
+    #[cfg(feature = "rate-gates-for-tests")]
     #[must_use]
-    pub const fn admitting_step_gates_for_tests(mut self) -> Self {
-        self.step_gates_for_tests = true;
+    pub const fn serving_rate_gates_for_tests(mut self) -> Self {
+        self.rate_gates_for_tests = true;
         self
+    }
+
+    /// The flow-control capabilities this process serves (D022-057): built, switched on, and backed by the digest keys.
+    fn served_flow_control(&self) -> Vec<sagat_application::flow_control::FlowControlCapability> {
+        use sagat_application::flow_control::{FlowControlCapability, served};
+        let keys = self.flow_control_keys.is_some();
+        let mut capabilities = served(self.flow_control, keys);
+        if self.rate_gates_for_tests && keys && self.flow_control.rate_limits {
+            capabilities.push(FlowControlCapability::RateLimits);
+        }
+        capabilities
     }
 
     /// The deployment's `flow-control.*` switches (feature 022), read by the one admission point.
@@ -210,27 +225,24 @@ impl PgRunStore {
         self
     }
 
-    /// The gate of the one admission point (feature 022, FR-022-059): what a run of a definition that declares a
-    /// `concurrency` or `rateLimit` gets from this build. A capability switched off refuses
-    /// (`CAPABILITY_DISABLED`), one the fleet has not activated refuses (`FLOW_CONTROL_ACTIVATION_PENDING`, read in the
-    /// admitting transaction, FR-022-053), and one that is activated is refused too, because this process does not
-    /// run the gate (`BINARY_CAPABILITY_MISSING`, D022-037): the admission, readiness and grant code of T022-022,
-    /// T022-072 and T022-096..098 is not in this build, and a run must never start ungated. A definition without a
-    /// gate never reaches here, so the plain admission costs nothing more (NFR-022-007, the budget of T022-091).
+    /// Whether a gated definition is admitted here (FR-022-059, D022-057): every capability it needs is switched on,
+    /// activated for the fleet, and served by this process; `None` admits it, a refusal says which condition failed,
+    /// in that order. A start's `rateLimit` is refused `BINARY_CAPABILITY_MISSING` until the run-level rate gate exists
+    /// (T022-072).
     async fn flow_control_admission(
         &self,
         tx: &mut sqlx::PgConnection,
         definition: &WorkflowDefinition,
-    ) -> Result<sagat_application::flow_control::FlowControlRefusal, StoreError> {
+    ) -> Result<Option<sagat_application::flow_control::FlowControlRefusal>, StoreError> {
         use sagat_application::flow_control::{FlowControlRefusal, required};
         let required = required(definition);
         if let Some(capability) = required
             .iter()
             .find(|capability| !self.flow_control.enabled(**capability))
         {
-            return Ok(FlowControlRefusal::CapabilityDisabled {
+            return Ok(Some(FlowControlRefusal::CapabilityDisabled {
                 capability: *capability,
-            });
+            }));
         }
         let names: Vec<&str> = required
             .iter()
@@ -247,11 +259,19 @@ impl PgRunStore {
             .iter()
             .find(|capability| !recorded.iter().any(|r| r == capability.registry().as_str()))
         {
-            return Ok(FlowControlRefusal::ActivationPending {
+            return Ok(Some(FlowControlRefusal::ActivationPending {
                 capability: *capability,
-            });
+            }));
         }
-        Ok(FlowControlRefusal::BinaryCapabilityMissing)
+        let served = self.served_flow_control();
+        if definition.run_flow_control().rate_limit().is_some()
+            || required
+                .iter()
+                .any(|capability| !served.contains(capability))
+        {
+            return Ok(Some(FlowControlRefusal::BinaryCapabilityMissing));
+        }
+        Ok(None)
     }
 
     /// Makes every command check that a projection its definition excludes is in fact empty. For
@@ -1318,16 +1338,19 @@ impl RunStore for PgRunStore {
                 return Ok(Admitted::Replayed(existing));
             }
             // Feature 022: every run creator passes here, so a gated definition is decided here, before any lock of the
-            // admission is taken (FR-022-059); this build refuses it whatever the registry says (D022-037).
-            // The tests' door admits step gates and a start's concurrency gate (T022-022); a start's rate limit is
-            // T022-072's and stays refused.
+            // admission is taken (FR-022-059): admitted when every capability it needs is switched on, activated for the
+            // fleet and served by this process (D022-057).
             if new.definition.declares_gates()
-                && !(self.step_gates_for_tests
-                    && new.definition.run_flow_control().rate_limit().is_none())
+                && let Some(refusal) = self
+                    .flow_control_admission(&mut tx, &new.definition)
+                    .await
+                    .transpose()
             {
-                let refusal = self.flow_control_admission(&mut tx, &new.definition).await;
                 let _ = tx.rollback().await;
-                return Err(StoreError::FlowControl(refusal?));
+                return Err(match refusal {
+                    Ok(refusal) => StoreError::FlowControl(refusal),
+                    Err(error) => error,
+                });
             }
             // The action of a schedule takes its fence and the schedule row before any other
             // admission lock (ADR-0050 decision 7).
@@ -1819,21 +1842,23 @@ impl RunStore for PgRunStore {
         before: Option<RunId>,
         limit: u32,
     ) -> Result<Vec<RunRecord>, StoreError> {
-        sqlx::query(
+        sqlx::query(concat!(
             "SELECT id, tenant_id, namespace_id, workflow_id, workflow_version_id, status, run_version, \
                     stop_reason, stop_code, paused, correlation_id, started_by, trace_id, deadline_at, \
                     created_at, updated_at, finished_at, parent_run_id, root_run_id, parent_node, \
                     cancel_policy, depth, trace_parent_span, rerun_of, origin, business_id, \
                     start_delayed_until, schedule_id, schedule_nominal_at, schedule_action_kind, \
                     schedule_revision, reset_sequence, \
-                    seg_chain_id, seg_index, seg_completion, seg_successor \
+                    seg_chain_id, seg_index, seg_completion, seg_successor, \
+                    cc_state, cc_pool, cc_group, cc_key, cc_since, cc_deadline \
              FROM runs LEFT JOIN LATERAL ( \
                SELECT chain_id AS seg_chain_id, segment_index AS seg_index, \
                       completion_kind AS seg_completion, successor_run_id AS seg_successor \
                FROM chain_segments \
                WHERE chain_segments.tenant_id = runs.tenant_id \
-                 AND chain_segments.run_id = runs.id) segment ON true \
-             WHERE runs.tenant_id = $1 AND runs.namespace_id = $2 \
+                 AND chain_segments.run_id = runs.id) segment ON true",
+            crate::flow_control::run_permit_lateral_sql!(),
+            "WHERE runs.tenant_id = $1 AND runs.namespace_id = $2 \
                AND ($3::uuid IS NULL OR runs.id < $3) \
                AND ($4::uuid IS NULL OR runs.workflow_id = $4) \
                AND ($5::text IS NULL OR runs.status = $5) \
@@ -1842,7 +1867,7 @@ impl RunStore for PgRunStore {
                AND ($9::text IS NULL OR runs.business_id LIKE $9 ESCAPE '\\') \
                AND ($10::uuid IS NULL OR runs.schedule_id = $10) \
              ORDER BY runs.id DESC LIMIT $6",
-        )
+        ))
         .bind(tenant.as_uuid())
         .bind(namespace.as_uuid())
         .bind(before.map(RunId::as_uuid))
@@ -2341,19 +2366,23 @@ async fn claim_reservation(
 // when present): one lateral index probe (`chain_segments_run_unique`) that yields nothing for a run
 // outside any chain. They read as well the columns a run was created with that say where it came from
 // (the schedule action and the reset sequence), from the row they already load: no query per run.
-const RUN_SELECT: &str = "SELECT id, tenant_id, namespace_id, workflow_id, workflow_version_id, status, \
+const RUN_SELECT: &str = concat!(
+    "SELECT id, tenant_id, namespace_id, workflow_id, workflow_version_id, status, \
      run_version, stop_reason, stop_code, paused, correlation_id, started_by, trace_id, deadline_at, \
      created_at, updated_at, finished_at, parent_run_id, root_run_id, parent_node, cancel_policy, depth, \
      trace_parent_span, rerun_of, origin, business_id, start_delayed_until, \
      schedule_id, schedule_nominal_at, schedule_action_kind, schedule_revision, reset_sequence, \
-     seg_chain_id, seg_index, seg_completion, seg_successor \
+     seg_chain_id, seg_index, seg_completion, seg_successor, \
+     cc_state, cc_pool, cc_group, cc_key, cc_since, cc_deadline \
      FROM runs LEFT JOIN LATERAL ( \
        SELECT chain_id AS seg_chain_id, segment_index AS seg_index, \
               completion_kind AS seg_completion, successor_run_id AS seg_successor \
        FROM chain_segments \
        WHERE chain_segments.tenant_id = runs.tenant_id AND chain_segments.run_id = runs.id) segment \
-     ON true \
-     WHERE runs.tenant_id = $1 AND runs.id = $2";
+     ON true",
+    crate::flow_control::run_permit_lateral_sql!(),
+    "WHERE runs.tenant_id = $1 AND runs.id = $2"
+);
 
 /// The columns a command transaction reads about a run; `$tail` is the lock clause, if any.
 ///
@@ -2494,6 +2523,7 @@ pub(crate) fn run_record(row: &PgRow) -> Result<RunRecord, StoreError> {
         failure_code: selected::<String>(row, "stop_code")?
             .map(|code| FailureCode::parse(&code).map_err(|_| corrupt("stop code")))
             .transpose()?,
+        concurrency: crate::flow_control::run_permit(row)?,
     })
 }
 
@@ -2504,7 +2534,7 @@ pub(crate) fn run_record(row: &PgRow) -> Result<RunRecord, StoreError> {
 /// `start_delayed_until` already do (those are reads of the API, which runs the schema it was built for). What the
 /// engine's passes read tolerates it: `run_columns_sql!` does not select them, and `add_schedule_origin` reads them
 /// through a snapshot of the row.
-fn selected<'r, T>(row: &'r PgRow, name: &'static str) -> Result<Option<T>, StoreError>
+pub(crate) fn selected<'r, T>(row: &'r PgRow, name: &'static str) -> Result<Option<T>, StoreError>
 where
     T: sqlx::Decode<'r, sqlx::Postgres> + sqlx::Type<sqlx::Postgres>,
 {

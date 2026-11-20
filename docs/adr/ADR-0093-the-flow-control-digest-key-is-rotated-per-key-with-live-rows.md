@@ -97,3 +97,13 @@ allowed, the retiring version in force while unused, a vanished row filed anyway
 version table's lock, the forced version left in force, a second force while the first drains, and the live-keys count
 over every version). Spec FR-022-053, FR-022-056; research
 D022-025, D022-042, D022-043; reviews `specs/022-flow-control-step-policies/reviews/2026-11-16/`.
+
+## Note (2026-11-20, feature 022 D022-057)
+
+The ring this ADR rotates reaches the processes as a file named by `SAGAT_FLOW_CONTROL_DIGEST_KEYS_FILE` (a Kubernetes or
+compose secret mounted read-only), never an environment value; its format is `version:hex[,version:hex...]`. A control
+plane or engine with a flow-control switch on refuses to start without it, and refuses to start when the database has
+a version in force (active or retiring) that the file lacks: the start-time half of G1193's consequence. Enforced by
+`apps/execution-engine/tests/registry.rs` and
+`integration_flow_control_step_policies::admission::a_real_engine_with_the_ring_lists_the_gate_and_one_missing_the_active_version_does_not_start`.
+The listing's cursors are sealed under the version in force (D022-059), so they survive a rotation's rolling restarts.

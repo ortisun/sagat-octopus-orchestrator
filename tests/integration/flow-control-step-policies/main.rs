@@ -9,12 +9,15 @@ mod support;
 
 mod admission;
 mod ceilings;
+mod concurrency_locks;
+mod consistency;
 mod lifecycle;
 mod migrations;
 mod publication;
 mod queue;
 mod readiness;
 mod readiness_sources;
+mod rest;
 mod returns;
 mod rotation;
 mod run_admission;

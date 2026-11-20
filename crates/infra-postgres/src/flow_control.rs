@@ -140,6 +140,38 @@ pub async fn key_versions(conn: &mut PgConnection) -> Result<KeyVersions, StoreE
     })
 }
 
+/// The digest key versions the database has in force (active, and retiring during a rotation) that `ring` lacks, read
+/// once by a process before it serves a gate (D022-057): one that served without them would refuse or never grant
+/// every key of that version. An empty answer before any version was activated.
+///
+/// # Errors
+/// A store error.
+pub async fn missing_key_versions(
+    pool: &sqlx::PgPool,
+    ring: &sagat_application::keyed_digest::KeyRing,
+) -> Result<Vec<u16>, StoreError> {
+    let mut tx = crate::pool::BeginSafely::begin_safely(pool)
+        .await
+        .map_err(store_error)?;
+    let (active, retiring): (Option<i16>, Option<i16>) =
+        sqlx::query_as("SELECT active, retiring FROM flow_control_key_versions_in_force()")
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(store_error)?;
+    tx.rollback().await.map_err(store_error)?;
+    let held: Vec<u16> = ring.versions().collect();
+    [active, retiring]
+        .into_iter()
+        .flatten()
+        .map(|version| u16::try_from(version).map_err(|_| corrupt("digest key version")))
+        .filter(|version| {
+            version
+                .as_ref()
+                .map_or(true, |version| !held.contains(version))
+        })
+        .collect()
+}
+
 /// Files and locks the keys of one table, in the one order: each key resolves to the row that exists under the
 /// retiring version, else to its digest under the active version (created when absent); then the rows are locked sorted
 /// by (pool, scope, group, digest), byte order (SQL paths that lock the same rows sort `group_name COLLATE "C"`).
@@ -365,3 +397,261 @@ async fn lock_row(
         .map(|v| u16::try_from(v).map_err(|_| corrupt("digest key version")))
         .transpose()
 }
+
+/// The namespace's queued runs as the `queued_runs` ceiling counts them (feature 022, T022-013, D022-051): a run waiting
+/// for both gates counts once. The one statement the ceiling's check, its quota usage and the key listing read, so they
+/// never disagree; `$1` is the tenant, `$2` the namespace.
+pub(crate) const QUEUED_RUNS_SQL: &str = "SELECT count(*) FROM ( \
+         SELECT run_id FROM concurrency_waiters \
+          WHERE tenant_id = $1 AND namespace_id = $2 AND permit_scope = 'RUN' \
+         UNION \
+         SELECT run_id FROM rate_limit_waiters \
+          WHERE tenant_id = $1 AND namespace_id = $2 AND limit_scope = 'RUN') waiting";
+
+/// The run-level permit of a run, as `get` and `list` read it beside the run's row (T022-026): one lateral probe of the
+/// holder and waiter primary keys, which yields nothing for a run that neither holds nor waits. Invariants 1 and 2 allow
+/// at most one of the two rows; `verify_run` checks it, and the read prefers the holder if both were ever there.
+macro_rules! run_permit_lateral_sql {
+    () => {
+        " LEFT JOIN LATERAL ( \
+           SELECT p.cc_state, p.cc_pool, p.cc_group, p.cc_key, p.cc_since, p.cc_deadline FROM ( \
+             SELECT 'HOLDING' AS cc_state, h.pool AS cc_pool, h.group_name AS cc_group, h.key_digest AS cc_key, \
+                    h.acquired_at AS cc_since, NULL::timestamptz AS cc_deadline \
+               FROM concurrency_holders h \
+              WHERE h.tenant_id = runs.tenant_id AND h.run_id = runs.id AND h.holder_scope = 'RUN' AND h.node = '' \
+             UNION ALL \
+             SELECT 'WAITING', w.pool, w.group_name, w.key_digest, w.enqueued_at, w.deadline_at \
+               FROM concurrency_waiters w \
+              WHERE w.tenant_id = runs.tenant_id AND w.run_id = runs.id AND w.permit_scope = 'RUN' AND w.node = '' \
+           ) p ORDER BY p.cc_state LIMIT 1) permit ON true "
+    };
+}
+pub(crate) use run_permit_lateral_sql;
+
+/// The run-level permit of a row that `get` or `list` read with [`run_permit_lateral_sql`]; `None` for a row without
+/// those columns (a command transaction's) or a run that neither holds nor waits.
+pub(crate) fn run_permit(
+    row: &sqlx::postgres::PgRow,
+) -> Result<Option<sagat_application::flow_control_keys::RunPermit>, StoreError> {
+    use sagat_application::flow_control_keys::{RunPermit, RunPermitState};
+    use sqlx::Row as _;
+    // a row without the columns (a command transaction's) has no permit; one whose columns cannot be read is corrupt
+    let Some(state) = crate::execution::selected::<String>(row, "cc_state")? else {
+        return Ok(None);
+    };
+    let pool: String = row.try_get("cc_pool").map_err(store_error)?;
+    let group: String = row.try_get("cc_group").map_err(store_error)?;
+    let digest: Vec<u8> = row.try_get("cc_key").map_err(store_error)?;
+    let since: time::OffsetDateTime = row.try_get("cc_since").map_err(store_error)?;
+    let deadline: Option<time::OffsetDateTime> = row.try_get("cc_deadline").map_err(store_error)?;
+    let digest: [u8; 32] = digest
+        .try_into()
+        .map_err(|_| corrupt("concurrency key digest"))?;
+    let state = match (state.as_str(), deadline) {
+        ("HOLDING", None) => RunPermitState::Holding,
+        ("WAITING", Some(deadline)) => RunPermitState::Waiting { deadline },
+        _ => return Err(corrupt("run permit")),
+    };
+    Ok(Some(RunPermit::new(
+        GatePool::parse(&pool).ok_or_else(|| corrupt("concurrency pool"))?,
+        ResolvedGroup::parse(&group).map_err(|_| corrupt("concurrency group"))?,
+        digest,
+        state,
+        since,
+    )))
+}
+
+impl sagat_application::flow_control_keys::FlowControlKeyReader for crate::PgRunStore {
+    async fn concurrency_keys(
+        &self,
+        tenant: TenantId,
+        namespace: NamespaceId,
+        group: Option<&ResolvedGroup>,
+        after: Option<&sagat_application::flow_control_keys::KeyPosition>,
+        limit: u32,
+    ) -> Result<sagat_application::flow_control_keys::ConcurrencyKeyPage, StoreError> {
+        use sagat_application::flow_control_keys::{
+            ConcurrencyKeyPage, ConcurrencyKeyView, KeyPosition,
+        };
+        use sqlx::Row as _;
+        // one snapshot for the page and the count, so a page's keys and its queued runs are of one instant
+        let mut tx = crate::pool::BeginSafely::begin_safely(self.pool())
+            .await
+            .map_err(store_error)?;
+        sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+            .execute(&mut *tx)
+            .await
+            .map_err(store_error)?;
+        // a page is a few index probes; one that takes longer is refused as unavailable (a `503`), never left to hold
+        // an API connection (D022-058)
+        sqlx::query(LISTING_TIMEOUT_SQL)
+            .execute(&mut *tx)
+            .await
+            .map_err(store_error)?;
+        let after_since = after
+            .and_then(|p| p.oldest_wait_us)
+            .map(|us| {
+                time::OffsetDateTime::from_unix_timestamp_nanos(i128::from(us) * 1_000)
+                    .map_err(|_| corrupt("concurrency key cursor"))
+            })
+            .transpose()?;
+        // a key nobody waits for sorts after every key somebody waits for ('infinity'); the five sort columns are the
+        // row's key within the namespace, so the order is total and a page resumes exactly after its last key. The
+        // order is an index's (`concurrency_semaphores_listing_idx`, or `_group_listing_idx` for one group), so a page
+        // reads its own keys and stops: its cost does not grow with the namespace's live keys (D022-058).
+        let sql = if group.is_some() {
+            KEY_LISTING_OF_GROUP_SQL
+        } else {
+            KEY_LISTING_SQL
+        };
+        // From the first key, the position before every key ('-infinity'); after a key nobody waits for, 'infinity'.
+        // One statement either way, its position always an index condition (never an `OR` a generic plan would
+        // turn into a filter of every key before the cursor).
+        let after_bucket = match after {
+            None => "-infinity",
+            Some(_) => "infinity",
+        };
+        let rows = sqlx::query(sql)
+            .bind(tenant.as_uuid())
+            .bind(namespace.as_uuid())
+            .bind(group.map(ResolvedGroup::as_str))
+            .bind(after_bucket)
+            .bind(after_since)
+            .bind(after.map_or("", |p| p.pool.as_str()))
+            .bind(after.map_or("", |p| p.scope.as_str()))
+            .bind(after.map_or_else(
+                || group.map_or("", ResolvedGroup::as_str),
+                |p| p.group.as_str(),
+            ))
+            .bind(after.map_or(&[][..], |p| p.digest.as_slice()))
+            .bind(i64::from(limit))
+            .fetch_all(&mut *tx)
+            .await
+            .map_err(store_error)?;
+        let queued_runs: i64 = sqlx::query_scalar(QUEUED_RUNS_SQL)
+            .bind(tenant.as_uuid())
+            .bind(namespace.as_uuid())
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(store_error)?;
+        // the version that seals the page's cursor: the active one, which every process of a rotation holds (D022-059);
+        // read plainly (a read-only snapshot takes no lock)
+        let cursor_version: Option<i16> = sqlx::query_scalar(
+            "SELECT version FROM flow_control_key_versions WHERE state = 'ACTIVE'",
+        )
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(store_error)?;
+        tx.commit().await.map_err(store_error)?;
+        let mut items = Vec::with_capacity(rows.len());
+        for row in &rows {
+            let pool = GatePool::parse(&row.try_get::<String, _>("pool").map_err(store_error)?)
+                .ok_or_else(|| corrupt("concurrency pool"))?;
+            let scope = match row
+                .try_get::<String, _>("permit_scope")
+                .map_err(store_error)?
+                .as_str()
+            {
+                "RUN" => GateLevel::Run,
+                "STEP" => GateLevel::Step,
+                _ => return Err(corrupt("concurrency scope")),
+            };
+            let group = ResolvedGroup::parse(
+                &row.try_get::<String, _>("group_name")
+                    .map_err(store_error)?,
+            )
+            .map_err(|_| corrupt("concurrency group"))?;
+            let digest: [u8; 32] = row
+                .try_get::<Vec<u8>, _>("key_digest")
+                .map_err(store_error)?
+                .try_into()
+                .map_err(|_| corrupt("concurrency key digest"))?;
+            let count = |name: &str| -> Result<u32, StoreError> {
+                u32::try_from(row.try_get::<i32, _>(name).map_err(store_error)?)
+                    .map_err(|_| corrupt("concurrency counter"))
+            };
+            let oldest_wait: Option<time::OffsetDateTime> =
+                row.try_get("oldest_wait").map_err(store_error)?;
+            let oldest_wait_us = oldest_wait
+                .map(|at| i64::try_from(at.unix_timestamp_nanos() / 1_000))
+                .transpose()
+                .map_err(|_| corrupt("concurrency wait instant"))?;
+            items.push(ConcurrencyKeyView {
+                // the service shows it to whom it may (D022-060)
+                label: None,
+                holders: count("holders")?,
+                waiters: count("waiters")?,
+                oldest_wait_since: oldest_wait,
+                oldest_holder_since: row.try_get("oldest_holder").map_err(store_error)?,
+                position: KeyPosition {
+                    oldest_wait_us,
+                    pool,
+                    scope,
+                    group: group.clone(),
+                    digest,
+                },
+                pool,
+                scope,
+                group,
+            });
+        }
+        Ok(ConcurrencyKeyPage {
+            items,
+            queued_runs: u64::try_from(queued_runs).map_err(|_| corrupt("queued runs"))?,
+            cursor_version: cursor_version
+                .map(|version| u16::try_from(version).map_err(|_| corrupt("digest key version")))
+                .transpose()?,
+        })
+    }
+
+    async fn reveals_personal_data(
+        &self,
+        tenant: TenantId,
+        namespace: NamespaceId,
+        subject: &sagat_domain::identity::Subject,
+    ) -> Result<bool, StoreError> {
+        // feature 009's rule, its one implementation (D022-060)
+        crate::reveal_grants::may_reveal_payload_unlocked(self.pool(), tenant, namespace, subject)
+            .await
+    }
+
+    fn flow_control_key_ring(&self) -> Option<&sagat_application::keyed_digest::KeyRing> {
+        self.flow_control_keys()
+    }
+}
+
+/// The bound of one page of the key listing (D022-058): a page is at most 201 probes of three indexes.
+const LISTING_TIMEOUT_SQL: &str = "SET LOCAL statement_timeout = '2s'";
+
+/// The listing of a namespace's keys (`$3` is null), in the order of `concurrency_semaphores_listing_idx`, after the
+/// position `(COALESCE($5, $4), $6, $7, $8, $9)`.
+pub const KEY_LISTING_SQL: &str = "SELECT s.pool, s.permit_scope, s.group_name, s.key_digest, s.holders, s.waiters, \
+            s.oldest_wait_at AS oldest_wait, \
+            (SELECT h.acquired_at FROM concurrency_holders h \
+              WHERE h.tenant_id = s.tenant_id AND h.namespace_id = s.namespace_id AND h.pool = s.pool \
+                AND h.holder_scope = s.permit_scope AND h.group_name = s.group_name \
+                AND h.key_digest = s.key_digest \
+              ORDER BY h.acquired_at LIMIT 1) AS oldest_holder \
+       FROM concurrency_semaphores s \
+      WHERE s.tenant_id = $1 AND s.namespace_id = $2 AND $3::text IS NULL \
+        AND (COALESCE(s.oldest_wait_at, 'infinity'::timestamptz), s.pool, s.permit_scope, s.group_name, s.key_digest) \
+            > (COALESCE($5::timestamptz, $4::text::timestamptz), $6::text, $7::text, $8::text, $9::bytea) \
+      ORDER BY COALESCE(s.oldest_wait_at, 'infinity'::timestamptz), s.pool, s.permit_scope, s.group_name, \
+               s.key_digest \
+      LIMIT $10";
+
+/// The listing of one group's keys (`$3`), in the order of `concurrency_semaphores_group_listing_idx`: the order of
+/// [`KEY_LISTING_SQL`] within one group, after a position of that group (`$8`).
+pub const KEY_LISTING_OF_GROUP_SQL: &str = "SELECT s.pool, s.permit_scope, s.group_name, s.key_digest, s.holders, \
+            s.waiters, s.oldest_wait_at AS oldest_wait, \
+            (SELECT h.acquired_at FROM concurrency_holders h \
+              WHERE h.tenant_id = s.tenant_id AND h.namespace_id = s.namespace_id AND h.pool = s.pool \
+                AND h.holder_scope = s.permit_scope AND h.group_name = s.group_name \
+                AND h.key_digest = s.key_digest \
+              ORDER BY h.acquired_at LIMIT 1) AS oldest_holder \
+       FROM concurrency_semaphores s \
+      WHERE s.tenant_id = $1 AND s.namespace_id = $2 AND s.group_name = $3 AND $8::text = $3 \
+        AND (COALESCE(s.oldest_wait_at, 'infinity'::timestamptz), s.pool, s.permit_scope, s.key_digest) \
+            > (COALESCE($5::timestamptz, $4::text::timestamptz), $6::text, $7::text, $9::bytea) \
+      ORDER BY COALESCE(s.oldest_wait_at, 'infinity'::timestamptz), s.pool, s.permit_scope, s.key_digest \
+      LIMIT $10";

@@ -261,7 +261,9 @@ WRITER = """
 
 KEY_FILER = (
     'const fn insert(self) -> &\'static str { match self { Self::Semaphores => "INSERT INTO concurrency_semaphores (k) VALUES ($1)", '
-    'Self::Windows => "INSERT INTO rate_limit_windows (k) VALUES ($1)" } }'
+    'Self::Windows => "INSERT INTO rate_limit_windows (k) VALUES ($1)" } }\n'
+    'const QUEUED_RUNS_SQL: &str = "SELECT count(*) FROM (SELECT run_id FROM concurrency_waiters WHERE k = $1 '
+    'UNION SELECT run_id FROM rate_limit_waiters WHERE k = $1) w";'
 )
 
 
@@ -519,6 +521,100 @@ class GateRowsAreWrittenOnlyByTheGate(unittest.TestCase):
         code, out = run_lease_check(tree(**{"execution/readiness_gate.rs": "fn nothing() {}"}))
         self.assertEqual(code, 1, out)
         self.assertIn("no gate-row write was found", out)
+
+
+class QueuedRunsAreCountedByOneStatement(unittest.TestCase):
+    """The keys review of 2026-11-20 (feature 022, architecture m3): the queued runs of a namespace are counted by
+    `QUEUED_RUNS_SQL` only, so the ceiling, its usage and the key listing never disagree (D022-055)."""
+
+    def test_the_adapter_of_this_repository_passes(self):
+        result = subprocess.run([sys.executable, str(SCRIPT)], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("queued runs are counted by one statement", result.stdout)
+
+    def test_a_second_count_elsewhere_is_refused_and_named(self):
+        copy = (
+            'async fn usage() { sqlx::query("SELECT count(*) FROM (SELECT DISTINCT r.run_id FROM rate_limit_waiters r '
+            'WHERE k = $1 UNION SELECT run_id FROM concurrency_waiters WHERE k = $1) x"); }'
+        )
+        code, out = run_lease_check(tree(**{"quotas.rs": copy}))
+        self.assertEqual(code, 1, out)
+        self.assertIn("quotas.rs:1", out)
+        self.assertIn("counts the runs of both waiter tables outside flow_control.rs", out)
+
+    def test_a_count_of_one_table_is_not_a_count_of_queued_runs(self):
+        busiest = 'async fn busiest() { sqlx::query("SELECT count(*) FROM concurrency_waiters WHERE k = $1"); }'
+        code, out = run_lease_check(tree(**{"quotas.rs": busiest}))
+        self.assertEqual(code, 0, out)
+
+    def test_a_rule_that_finds_no_count_or_two_is_an_error_and_not_a_pass(self):
+        for home in ("fn nothing() {}", KEY_FILER + "\n" + KEY_FILER.split("\n")[1].replace("QUEUED_RUNS_SQL", "AGAIN")):
+            code, out = run_lease_check(tree(**{"flow_control.rs": home}))
+            self.assertEqual(code, 1, out)
+            self.assertIn("counts of queued runs were found in flow_control.rs", out)
+
+
+class FlowControlBodiesHoldNoKeyValue(unittest.TestCase):
+    """The keys review of 2026-11-20 (feature 022, architecture m4): the bodies and the route of the key reads are built
+    from types that hold no key value."""
+
+    def check(self, dto, route):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            for rel, text in (
+                ("crates/api-http/src/dto_flow_control.rs", dto),
+                ("crates/api-http/src/routes/concurrency.rs", route),
+            ):
+                if text is not None:
+                    (root / rel).parent.mkdir(parents=True, exist_ok=True)
+                    (root / rel).write_text(text)
+            module = load_checker()
+            return module.key_value_free_errors(str(root))
+
+    def test_the_bodies_of_this_repository_pass(self):
+        self.assertEqual(load_checker().key_value_free_errors(str(SCRIPT.parents[1])), [])
+
+    def test_a_json_value_or_digest_machinery_is_refused_and_named(self):
+        for bad in (
+            "pub struct Body { pub key: serde_json::Value }",
+            "fn f(k: &KeyedDigest) {}",
+            "fn f(p: &Position) -> [u8; 32] { p.digest }",
+        ):
+            errors = self.check(bad, "fn route() {}")
+            self.assertGreaterEqual(len(errors), 1, errors)
+            self.assertTrue(all("dto_flow_control.rs:1" in e for e in errors), errors)
+
+    def test_a_word_in_a_comment_or_a_string_is_not_a_use(self):
+        self.assertEqual(self.check('// a Value is never here\nconst S: &str = "serde_json";', "fn route() {}"), [])
+
+    def test_a_named_file_that_is_gone_is_an_error_and_not_a_pass(self):
+        errors = self.check("fn dto() {}", None)
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("does not exist", errors[0])
+
+
+class TheRevealRuleHasOneImplementation(unittest.TestCase):
+    """Feature 022's review of 2026-11-20 (architecture M1): `payload_reveal_grants` is read by reveal_grants.rs only."""
+
+    def test_a_second_reader_is_refused_and_named(self):
+        grants = 'async fn may() { sqlx::query("SELECT EXISTS (SELECT 1 FROM payload_reveal_grants WHERE k = $1)"); }'
+        second = 'async fn labels() { sqlx::query("SELECT 1 FROM payload_reveal_grants g WHERE g.k = $1"); }'
+        code, out = run_lease_check(tree(**{"reveal_grants.rs": grants, "flow_control.rs": KEY_FILER + "\n" + second}))
+        self.assertEqual(code, 1, out)
+        self.assertIn("flow_control.rs:", out)
+        self.assertIn("outside reveal_grants.rs", out)
+        code, out = run_lease_check(tree(**{"reveal_grants.rs": grants}))
+        self.assertEqual(code, 0, out)
+
+
+def load_checker():
+    """The checker as a module, to call one rule on a tree of files."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("check_architecture", SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 if __name__ == "__main__":
@@ -866,21 +962,21 @@ class EveryRunIsCreatedWithACheckedInput(unittest.TestCase):
         self.assertEqual(code, 1, out)
         self.assertIn("feature `testing` enables", out)
 
-    def test_the_step_gates_feature_of_the_postgres_adapter_belongs_in_dev_dependencies_only(self):
-        # feature 022 (T022-096, D022-037): the test-only admission of step gates never reaches a production build
+    def test_the_rate_gates_feature_of_the_postgres_adapter_belongs_in_dev_dependencies_only(self):
+        # feature 022 (D022-057): the test-only service of the step-level rate gate never reaches a production build
         def packages(dependency):
             postgres = pkg("sagat-infra-postgres", "crates/infra-postgres", [])
             user = pkg("sagat-tests", "tests", [])
             user["dependencies"] = [dependency]
             return [postgres, user]
 
-        dev = {"name": "sagat-infra-postgres", "kind": "dev", "features": ["step-gates-for-tests"]}
+        dev = {"name": "sagat-infra-postgres", "kind": "dev", "features": ["rate-gates-for-tests"]}
         code, out = creator_check(creator_tree(), packages(dev))
-        self.assertNotIn("step-gates-for-tests", out)
-        normal = {"name": "sagat-infra-postgres", "kind": None, "features": ["step-gates-for-tests"]}
+        self.assertNotIn("rate-gates-for-tests", out)
+        normal = {"name": "sagat-infra-postgres", "kind": None, "features": ["rate-gates-for-tests"]}
         code, out = creator_check(creator_tree(), packages(normal))
         self.assertEqual(code, 1, out)
-        self.assertIn("`sagat-infra-postgres/step-gates-for-tests` as a normal dependency", out)
+        self.assertIn("`sagat-infra-postgres/rate-gates-for-tests` as a normal dependency", out)
 
 
 if __name__ == "__main__":

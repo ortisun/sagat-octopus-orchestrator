@@ -232,7 +232,9 @@ def scope(root, base, head, targets, workspace):
         for language in SDK_LANGUAGES:
             if rel.startswith(f"sdks/{language}/"):
                 decision.sdks.add(language)
-        if rel.startswith("frontend/"):
+        # the Studio's API types are generated from the canonical contract (`npm run check:api`), so a change of it is a
+        # change of the Studio's inputs (feature 022's review of 2026-11-20, architecture B3)
+        if rel.startswith("frontend/") or rel == "specs/001-platform-foundation/contracts/openapi.yaml":
             decision.frontend = True
         if rel.startswith("scripts/"):
             decision.scripts = True

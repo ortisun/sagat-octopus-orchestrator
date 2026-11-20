@@ -1037,12 +1037,31 @@ impl World {
             .collect()
     }
 
-    /// The projections must equal a replay of the journal.
+    /// The projections of `run` must equal a replay of its journal; and, across every run of the world's first tenant
+    /// (not only `run`), the flow-control key rows must agree with the permits the runs' journals hold and wait for, and
+    /// each run a key row names is verified the same way (feature 022, invariants 1, 2 and 12, T022-027).
     pub async fn assert_consistent(&self, run: RunId) {
         self.store
             .verify_run(self.admin.tenant_id(), run)
             .await
             .unwrap_or_else(|why| panic!("run {run} is inconsistent: {why}"));
+        self.assert_keys_consistent().await;
+    }
+
+    /// Invariants 1 and 2 of feature 022 across the runs of the first tenant, each run a key row names checked against
+    /// its journal ([`super::flow_control::key_consistency`]).
+    pub async fn assert_keys_consistent(&self) {
+        let runs = super::flow_control::key_consistency(&self.db.pool, self.admin.tenant_id())
+            .await
+            .unwrap_or_else(|why| panic!("the flow-control keys are inconsistent: {why}"));
+        for run in runs {
+            self.store
+                .verify_run(self.admin.tenant_id(), run)
+                .await
+                .unwrap_or_else(|why| {
+                    panic!("run {run}, which a key row names, is inconsistent: {why}")
+                });
+        }
     }
 
     pub async fn operate(

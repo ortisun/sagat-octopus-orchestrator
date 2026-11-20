@@ -66,6 +66,36 @@ pub async fn has_effective_payload_reveal_grant(
     .map_err(store_error)
 }
 
+/// [`has_effective_payload_reveal_grant`] read in one statement without its locks, for a read that discloses no payload:
+/// whether `subject`'s current role in the tenant may use a reveal grant and it holds one for the namespace. Feature 022
+/// shows a key's label by it (FR-022-057, D022-060); a revocation committing during the read may let that one read show
+/// a label, which is a pseudonym, not an audited disclosure.
+///
+/// # Errors
+/// A store error.
+pub(crate) async fn may_reveal_payload_unlocked(
+    pool: &sqlx::PgPool,
+    tenant: TenantId,
+    namespace: NamespaceId,
+    subject: &Subject,
+) -> Result<bool, StoreError> {
+    let roles: Vec<String> = sqlx::query_scalar(
+        "SELECT m.role FROM memberships m \
+          WHERE m.tenant_id = $1 AND m.subject = $3 \
+            AND EXISTS (SELECT 1 FROM payload_reveal_grants g \
+                         WHERE g.tenant_id = $1 AND g.namespace_id = $2 AND g.subject = $3)",
+    )
+    .bind(tenant.as_uuid())
+    .bind(namespace.as_uuid())
+    .bind(subject.as_str())
+    .fetch_all(pool)
+    .await
+    .map_err(store_error)?;
+    Ok(roles
+        .iter()
+        .any(|role| role.parse::<Role>().is_ok_and(role_can_use_reveal_grant)))
+}
+
 fn role_can_use_reveal_grant(role: Role) -> bool {
     role.grants(Permission::PayloadReadInternal)
 }

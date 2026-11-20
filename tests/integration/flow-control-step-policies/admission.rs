@@ -1,7 +1,9 @@
 //! The one admission point and the fleet activation of the two capabilities (T022-093, T022-094; FR-022-053,
-//! FR-022-059; SC-022-027): every run creator passes `PgRunStore::create`, where this build refuses a gated definition
-//! whatever the registry says (D022-037); publication and starts wait for the operator's activation; the activation waits
-//! for every live process to run the gate; and a continuation successor never admits a run past the gate.
+//! FR-022-059; SC-022-027): every run creator passes `PgRunStore::create`, which admits a gated definition only when every
+//! capability it needs is switched on, activated for the fleet and served by the process (D022-057: the concurrency
+//! gate, with the deployment's digest keys; never the rate gate in this build); publication and starts wait for the
+//! operator's activation; the activation waits for every live process to run the gate; and a continuation successor
+//! never admits a run past the gate.
 
 use std::sync::Arc;
 use std::time::Duration as StdDuration;
@@ -190,12 +192,14 @@ async fn the_activation_is_refused_while_a_live_process_lacks_the_capability() {
     ));
 }
 
-/// FR-022-053, FR-022-059, D022-037: before the activation, publication is refused `FLOW_CONTROL_ACTIVATION_PENDING`;
-/// after it, a start reaches the one admission point, which this build refuses `BINARY_CAPABILITY_MISSING`; when the
+/// FR-022-053, FR-022-059, D022-057: before the activation, publication is refused `FLOW_CONTROL_ACTIVATION_PENDING`;
+/// after it, a start reaches the one admission point, which refuses a rate-limited definition
+/// `BINARY_CAPABILITY_MISSING` (no process of this build serves the rate gate, even with the digest keys); when the
 /// requirement is removed, the start is refused `FLOW_CONTROL_ACTIVATION_PENDING`; with the switch off,
 /// `CAPABILITY_DISABLED`. No run of the gated definition ever exists.
 #[tokio::test]
-async fn publication_and_starts_wait_for_the_activation_and_this_build_never_admits_a_gated_run() {
+async fn publication_and_starts_wait_for_the_activation_and_this_build_never_admits_a_rate_limited_run()
+ {
     let w = world().await;
     let workflow = create(&w, &gated("provider-sync")).await;
     match publish(&w, workflow).await {
@@ -238,13 +242,21 @@ async fn publication_and_starts_wait_for_the_activation_and_this_build_never_adm
         .await
         .expect("published once activated");
 
-    let on = runs(w.store.clone().with_flow_control(BOTH_ON));
+    let on = runs(
+        w.store
+            .clone()
+            .with_flow_control(BOTH_ON)
+            .with_flow_control_keys(Arc::new(
+                sagat_application::keyed_digest::KeyRing::parse(crate::support::flow_control::RING)
+                    .expect("a ring"),
+            )),
+    );
     assert_eq!(
         start(&on, &w, workflow).await,
         Err(AppError::FlowControl(
             FlowControlRefusal::BinaryCapabilityMissing
         )),
-        "this build runs no gate, so it admits no gated run"
+        "this build serves no rate gate, so it admits no rate-limited run"
     );
     assert_eq!(
         start(&runs(w.store.clone()), &w, workflow).await,
@@ -270,6 +282,131 @@ async fn publication_and_starts_wait_for_the_activation_and_this_build_never_adm
         ))
     );
     assert_eq!(runs_of(&w, workflow).await, 0, "no run of it exists");
+}
+
+/// D022-057 (G1198): a concurrency-gated definition is admitted by the one admission point, with no test door, exactly
+/// when the process's switch is on, the fleet activated the capability, and the process holds the deployment's digest
+/// keys; a process with the switch and the activation but without the keys refuses it `BINARY_CAPABILITY_MISSING`, and
+/// one without the switch `CAPABILITY_DISABLED`. The admitted run holds its permit.
+#[tokio::test]
+async fn a_process_with_the_switch_the_activation_and_the_keys_admits_a_concurrency_gated_run() {
+    let w = world().await;
+    crate::support::flow_control::activate(&w.db.pool).await;
+    let workflow = create(
+        &w,
+        &json!({
+            "apiVersion": "sagat-octopus-orchestrator.io/v1",
+            "kind": "Workflow",
+            "metadata": {"name": "provider-serial"},
+            "entrypoint": "fetch",
+            "concurrency": {"group": "providers", "key": "input.providerId", "limit": 1},
+            "nodes": [{"id": "fetch", "type": "activity", "activity": "provider.fetch"}]
+        }),
+    )
+    .await;
+    publish(&w, workflow).await.expect("published");
+    let ring = || {
+        Arc::new(
+            sagat_application::keyed_digest::KeyRing::parse(crate::support::flow_control::RING)
+                .expect("a ring"),
+        )
+    };
+    let switched_off = runs(w.store.clone().with_flow_control_keys(ring()));
+    assert_eq!(
+        start(&switched_off, &w, workflow).await,
+        Err(AppError::FlowControl(
+            FlowControlRefusal::CapabilityDisabled {
+                capability: FlowControlCapability::ConcurrencyKeys
+            }
+        ))
+    );
+    let without_keys = runs(w.store.clone().with_flow_control(BOTH_ON));
+    assert_eq!(
+        start(&without_keys, &w, workflow).await,
+        Err(AppError::FlowControl(
+            FlowControlRefusal::BinaryCapabilityMissing
+        )),
+        "a process without the digest keys serves no gate"
+    );
+    assert_eq!(runs_of(&w, workflow).await, 0, "nothing was admitted");
+    let serving = runs(
+        w.store
+            .clone()
+            .with_flow_control(BOTH_ON)
+            .with_flow_control_keys(ring()),
+    );
+    let run = start(&serving, &w, workflow)
+        .await
+        .expect("admitted by the one admission point");
+    let held: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM concurrency_holders WHERE run_id = $1 AND holder_scope = 'RUN'",
+    )
+    .bind(run.as_uuid())
+    .fetch_one(&w.db.pool)
+    .await
+    .expect("holders");
+    assert_eq!(held, 1, "the run holds its permit");
+    w.assert_consistent(run).await;
+}
+
+/// D022-057 (G1198; review of the fixes, architecture M2): a real engine started the way the binary starts, with the
+/// switch and the ring of `support::flow_control::process_env`, registers listing `flow-control-concurrency-v1`; one whose
+/// ring lacks the version the database has active refuses to start, naming the variable and no key.
+#[tokio::test]
+async fn a_real_engine_with_the_ring_lists_the_gate_and_one_missing_the_active_version_does_not_start()
+ {
+    use crate::support::worker::{RunningEngine, engine_env};
+    let api = crate::support::api::start_with(crate::support::api::Options::default()).await;
+    let activate = |version: i16| {
+        let pool = api.db.pool.clone();
+        async move {
+            let (outcome,): (String,) = sqlx::query_as(
+                "SELECT out_outcome FROM flow_control_key_activate($1::smallint, 'operator')",
+            )
+            .bind(version)
+            .fetch_one(&pool)
+            .await
+            .expect("activate a key version");
+            assert_eq!(outcome, "ACTIVATED");
+        }
+    };
+    activate(1).await;
+    let pairs = crate::support::flow_control::process_env();
+    let mut extra: Vec<(&str, &str)> = pairs.iter().map(|(k, v)| (*k, v.as_str())).collect();
+    extra.push(("SAGAT_REPLICA_ID", "flow-control-engine"));
+    extra.push(("SAGAT_LIVENESS_GRACE_SECS", "30"));
+    let mut engine = RunningEngine::start(engine_env(&api.db, &api.idp, &extra)).await;
+    let listed = crate::support::eventually("the engine registered", || async {
+        let rows: Vec<Vec<String>> = sqlx::query_scalar(
+            "SELECT capabilities FROM serving_instances WHERE kind = 'EXECUTION_ENGINE'",
+        )
+        .fetch_all(&api.db.pool)
+        .await
+        .expect("registry");
+        rows.into_iter().next()
+    })
+    .await;
+    assert!(
+        listed.iter().any(|c| c == "flow-control-concurrency-v1")
+            && !listed.iter().any(|c| c == "flow-control-rate-v1"),
+        "{listed:?}"
+    );
+    engine.finish().await.expect("stopped");
+
+    activate(2).await;
+    let refused = RunningEngine::try_start(engine_env(&api.db, &api.idp, &extra))
+        .await
+        .err()
+        .expect("an engine without the active version does not start")
+        .to_string();
+    assert!(
+        refused.contains("SAGAT_FLOW_CONTROL_DIGEST_KEYS_FILE"),
+        "{refused}"
+    );
+    assert!(
+        !refused.contains("5a5a"),
+        "no key in the refusal: {refused}"
+    );
 }
 
 /// FR-022-059, T022-093: a continuation successor is the one other writer of runs. A definition with a run-level gate is

@@ -23,6 +23,43 @@ execution engine, scheduler replica) holds the key ring, and `flow_control_key_v
 
 Only the operator (not the runtime role `sagat_app`) can run the commands below.
 
+### 1.1 Giving the processes the key ring (D022-057)
+
+The ring is a file, never an environment value: `SAGAT_FLOW_CONTROL_DIGEST_KEYS_FILE` names it, and it holds
+`version:hex[,version:hex...]`, each key 32 random bytes in hexadecimal (at most 16 KiB). Make one version:
+
+```sh
+umask 077 && printf '1:%s\n' "$(openssl rand -hex 32)" > flow-control.keys
+# the images run as uid 10001: on a Linux host let that group read it
+sudo chgrp 10001 flow-control.keys && chmod 0640 flow-control.keys
+```
+
+Give the **same** file to every control plane and every execution engine: on Kubernetes a Secret with the key
+`flow-control.keys` named by `flowControl.digestKeys.existingSecret` (the chart mounts it read-only under
+`/etc/sagat/flow-control/`); with the local stack the overlay `infra/docker/compose.flow-control.yaml` mounts
+`infra/docker/flow-control.keys`. A process logs and prints only the versions of its ring.
+
+A process refuses to start when:
+
+- `SAGAT_FLOW_CONTROL_CONCURRENCY_KEYS_ENABLED` (or the rate switch) is `true` and no file is named, or the file cannot be
+  read, is larger than 16 KiB, is not a ring, or holds no key (the error names the variable, never the content);
+- the database has a version in force (active, or retiring during a rotation) that the file lacks.
+
+With the switch on and the ring set, a process lists `flow-control-concurrency-v1` in the instance registry, and only then
+can the fleet activation of step 3 of 1.2 pass. No process of this release lists `flow-control-rate-v1` (the rate gate needs
+T022-072 and T022-074).
+
+### 1.2 Turning concurrency keys on
+
+**Not in production before T022-104** (G022-015): publication does not yet refuse a key over a `secret` field. Until
+then a key's label, and its oldest instants, are shown only to callers with the namespace's reveal grant.
+
+1. Make the ring (1.1) and give it to every control plane and engine, with `SAGAT_FLOW_CONTROL_CONCURRENCY_KEYS_ENABLED=true`;
+   restart them.
+2. `SELECT * FROM flow_control_key_activate(1::smallint, '<your name>');` (expect `ACTIVATED`), as the schema owner.
+3. `control-plane flow-control-activate concurrency-keys --operator <you>`: refused, naming the instances, while a live
+   process does not list the capability.
+
 ## 2. An ordinary rotation
 
 The commands take a `smallint` version: write it `2::smallint` (a bare `2` is an `integer`, and PostgreSQL then finds no

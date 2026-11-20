@@ -18,6 +18,7 @@ use uuid::Uuid;
 use crate::authz::{NamespaceDirectory, require_namespace};
 use crate::clock::Clock;
 use crate::error::{AppError, StoreError};
+use crate::flow_control_keys::{ConcurrencyKeyPage, FlowControlKeyReader, KeyPosition};
 use crate::identity::{MAX_PAGE_SIZE, RequestContext};
 
 /// How long a condition must last before it is an alert. Each is a count of seconds the platform
@@ -647,6 +648,88 @@ impl<S: AlertReader + WorkerAdmin + AuditStore, C: Clock> OperationsService<S, C
     }
 }
 
+impl<S: AlertReader + FlowControlKeyReader, C: Clock> OperationsService<S, C> {
+    /// The live concurrency keys of a namespace (FR-022-022, T022-026), at most `limit` (one more than the page tells
+    /// the caller another page follows). A key's label is shown only to a caller who may reveal personal data in the
+    /// namespace; every other caller reads `None` (FR-022-057, D022-060).
+    ///
+    /// # Errors
+    /// [`AppError::Forbidden`] without `ops:read`; [`AppError::NotFound`] for a namespace not in the caller's tenant
+    /// (audited); a storage error.
+    pub async fn concurrency_keys(
+        &self,
+        principal: &Principal,
+        namespace: NamespaceId,
+        group: Option<&sagat_domain::workflow::ResolvedGroup>,
+        after: Option<&KeyPosition>,
+        limit: Option<u32>,
+        ctx: &RequestContext,
+    ) -> Result<ConcurrencyKeyPage, AppError> {
+        principal.authorize(Permission::OpsRead)?;
+        require_namespace(&self.store, &self.clock, principal, namespace, ctx).await?;
+        // as `alerts`: a caller that asks for one more than its page is answered with that one more
+        let limit = limit.unwrap_or(50).clamp(1, MAX_PAGE_SIZE + 1);
+        let mut page = self
+            .store
+            .concurrency_keys(principal.tenant_id(), namespace, group, after, limit)
+            .await?;
+        let reveal = self
+            .store
+            .reveals_personal_data(principal.tenant_id(), namespace, principal.subject())
+            .await?;
+        for key in &mut page.items {
+            if reveal {
+                key.label = Some(sagat_domain::execution::KeyLabel::of_digest(
+                    &key.position.digest,
+                ));
+            } else {
+                // the instants of a key equal its runs' `since` to the microsecond: shown whole to a caller who may not
+                // see the label, they would link the runs of one key as the label would. Such a caller gets them to the
+                // minute, which still says how long a queue has waited (FR-022-022) (D022-060, re-review of the fixes)
+                key.oldest_wait_since = key.oldest_wait_since.map(to_the_minute);
+                key.oldest_holder_since = key.oldest_holder_since.map(to_the_minute);
+            }
+        }
+        Ok(page)
+    }
+
+    /// The cursor of `page`, which ends with `last`, sealed for the namespace under the version the database had active
+    /// in the page's snapshot (D022-059).
+    ///
+    /// # Errors
+    /// [`AppError::Unavailable`] when this process does not hold that version: it cannot hand out a cursor, and a page
+    /// cut short without one would hide keys.
+    pub fn concurrency_key_cursor(
+        &self,
+        principal: &Principal,
+        namespace: NamespaceId,
+        page: &ConcurrencyKeyPage,
+        last: &KeyPosition,
+    ) -> Result<String, AppError> {
+        self.store
+            .flow_control_key_ring()
+            .zip(page.cursor_version)
+            .and_then(|(ring, version)| last.seal(ring, version, principal.tenant_id(), namespace))
+            .ok_or(AppError::Unavailable)
+    }
+
+    /// The position a cursor of this namespace's listing names; `None` for anything else (a `400`).
+    #[must_use]
+    pub fn concurrency_key_position(
+        &self,
+        principal: &Principal,
+        namespace: NamespaceId,
+        cursor: &str,
+    ) -> Option<KeyPosition> {
+        KeyPosition::open(
+            cursor,
+            self.store.flow_control_key_ring()?,
+            principal.tenant_id(),
+            namespace,
+        )
+    }
+}
+
 /// Whether a character may be in text a person wrote that others will read on a terminal or in a
 /// page: no control character, and none of the format characters that reorder or hide text (the
 /// bidirectional overrides and isolates, the zero-width characters, the line and paragraph
@@ -685,4 +768,12 @@ fn worker_subject(subject: &str) -> Result<&str, AppError> {
         return Err(AppError::NotAllowed("the worker identity is not valid"));
     }
     Ok(subject)
+}
+
+/// An instant cut down to its minute (seconds and fractions zero): what a caller who may not see a key's label reads of
+/// the key's oldest instants (D022-060).
+fn to_the_minute(at: OffsetDateTime) -> OffsetDateTime {
+    at.replace_second(0)
+        .and_then(|at| at.replace_nanosecond(0))
+        .unwrap_or(at)
 }

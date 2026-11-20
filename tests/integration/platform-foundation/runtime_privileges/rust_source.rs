@@ -5,7 +5,7 @@
 //! which is the limit of the audit: SQL assembled at run time from values it cannot see is reported
 //! as unresolved, not guessed.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Tok {
@@ -211,7 +211,7 @@ fn matching(tokens: &[Tok], open_at: usize, open: char, close: char) -> usize {
 fn take_macros(
     tokens: Vec<Tok>,
     mut macros: BTreeMap<String, Expansion>,
-    execution_module: bool,
+    module: Option<&str>,
 ) -> (BTreeMap<String, Expansion>, Vec<Tok>) {
     let mut kept = Vec::new();
     let mut i = 0;
@@ -254,9 +254,9 @@ fn take_macros(
                 }
                 at += 1;
             }
-            if execution_module {
-                macros.insert(format!("crate::execution::{name}"), prefix.clone());
-                macros.insert(format!("$crate::execution::{name}"), prefix.clone());
+            if let Some(module) = module {
+                macros.insert(format!("crate::{module}::{name}"), prefix.clone());
+                macros.insert(format!("$crate::{module}::{name}"), prefix.clone());
             }
             macros.insert(name.clone(), prefix);
             i = end + 1;
@@ -555,10 +555,25 @@ pub fn extract(source: &str) -> Extraction {
 
 /// Only qualified declarations escape the parent module; its SQL statements never do.
 pub fn macro_prelude(source: &str) -> BTreeMap<String, Expansion> {
-    take_macros(lex(source), BTreeMap::new(), true)
+    macro_prelude_of(source, "execution", &BTreeMap::new())
+}
+
+/// The macros a module of the store declares, under the paths other modules call them by
+/// (`crate::<module>::name`): a statement that splices a fragment of another module is audited
+/// with its text, never reported as an unresolved placeholder. `known` are the declarations read
+/// before, which a nested call may name.
+pub fn macro_prelude_of(
+    source: &str,
+    module: &str,
+    known: &BTreeMap<String, Expansion>,
+) -> BTreeMap<String, Expansion> {
+    take_macros(lex(source), known.clone(), Some(module))
         .0
         .into_iter()
-        .filter(|(name, _)| name.contains("::"))
+        .filter(|(name, _)| {
+            name.starts_with(&format!("crate::{module}::"))
+                || name.starts_with(&format!("$crate::{module}::"))
+        })
         .collect()
 }
 
@@ -576,7 +591,25 @@ fn macro_scope(
         }
         return scope;
     }
-    let prefix = lex("use crate::execution::");
+    let modules: BTreeSet<&str> = parent
+        .keys()
+        .filter_map(|name| name.strip_prefix("crate::"))
+        .filter_map(|name| name.rsplit_once("::").map(|(module, _)| module))
+        .collect();
+    for module in modules {
+        import_from(tokens, parent, module, &mut scope);
+    }
+    scope
+}
+
+/// `use crate::<module>::{a, b as c};` brings the module's declared macros into scope by name.
+fn import_from(
+    tokens: &[Tok],
+    parent: &BTreeMap<String, Expansion>,
+    module: &str,
+    scope: &mut BTreeMap<String, Expansion>,
+) {
+    let prefix = lex(&format!("use crate::{module}::"));
     let mut depth = 0_i32;
     for at in 0..tokens.len() {
         match tokens[at] {
@@ -614,12 +647,11 @@ fn macro_scope(
                 ] if keyword == "as" => (name, alias),
                 _ => continue,
             };
-            if let Some(value) = parent.get(&format!("crate::execution::{name}")) {
+            if let Some(value) = parent.get(&format!("crate::{module}::{name}")) {
                 scope.insert(alias.clone(), value.clone());
             }
         }
     }
-    scope
 }
 
 pub fn extract_with_macros(
@@ -629,7 +661,7 @@ pub fn extract_with_macros(
 ) -> Extraction {
     let tokens = lex(source);
     let scope = macro_scope(&tokens, inherited, lexical);
-    let (macros, tokens) = take_macros(tokens, scope, false);
+    let (macros, tokens) = take_macros(tokens, scope, None);
     let consts = take_consts(&tokens);
     let tokens = expand(&tokens, &macros, &consts, false);
     let mut extraction = Extraction::default();
@@ -768,6 +800,39 @@ mod tests {
             "SELECT id FROM steps WHERE true AND EXISTS (SELECT 1 FROM secret_pools FOR SHARE) AND true ORDER BY id"
         );
         assert!(found.fragments.is_empty() && found.unresolved.is_empty());
+    }
+
+    /// B1 of the keys review (2026-11-20): a fragment another module of the store declares is
+    /// audited where it is spliced, called by its path or imported by name.
+    #[test]
+    fn a_fragment_of_another_module_is_expanded_by_path_and_by_import() {
+        let execution = macro_prelude(r#"macro_rules! policy { () => { "AND true " }; }"#);
+        let flow_control = macro_prelude_of(
+            r#"macro_rules! lateral { () => { " LEFT JOIN LATERAL (SELECT 1 FROM concurrency_holders h) p ON true " }; }"#,
+            "flow_control",
+            &execution,
+        );
+        let mut inherited = execution;
+        inherited.extend(flow_control);
+        for source in [
+            r#"fn f() { q(concat!("SELECT id FROM runs", crate::flow_control::lateral!(), "WHERE true")); }"#,
+            r#"use crate::flow_control::lateral;
+               fn f() { q(concat!("SELECT id FROM runs", lateral!(), "WHERE true")); }"#,
+        ] {
+            let found = extract_with_macros(source, &inherited, false);
+            assert!(found.unresolved.is_empty(), "{source}");
+            assert_eq!(
+                found.statements[0].text,
+                "SELECT id FROM runs LEFT JOIN LATERAL (SELECT 1 FROM concurrency_holders h) p ON true WHERE true"
+            );
+        }
+        // a module that declares nothing by that name lends nothing
+        let found = extract_with_macros(
+            r#"fn f() { q(concat!("SELECT id FROM runs", crate::other::lateral!())); }"#,
+            &inherited,
+            false,
+        );
+        assert!(!found.unresolved.is_empty());
     }
 
     #[test]

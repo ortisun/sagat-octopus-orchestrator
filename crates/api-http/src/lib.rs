@@ -30,6 +30,7 @@ mod dto_database;
 mod dto_declared_operations;
 mod dto_events;
 mod dto_exec;
+mod dto_flow_control;
 mod dto_gov;
 mod dto_ops;
 mod dto_primitives;
@@ -302,6 +303,7 @@ where
         + sagat_application::scripts::RunnerStore
         + sagat_application::operations::AlertReader
         + sagat_application::operations::WorkerAdmin
+        + sagat_application::flow_control_keys::FlowControlKeyReader
         + sagat_application::operations::AuditStore
         + 'static,
     ExecState<S, C, P, X, E>: Exec,
@@ -350,6 +352,7 @@ where
         + sagat_application::scripts::RunnerStore
         + sagat_application::operations::AlertReader
         + sagat_application::operations::WorkerAdmin
+        + sagat_application::flow_control_keys::FlowControlKeyReader
         + sagat_application::operations::AuditStore
         + 'static,
     ExecState<S, C, P, X, E>: Exec,
@@ -418,6 +421,7 @@ where
         + sagat_application::scripts::RunnerStore
         + sagat_application::operations::AlertReader
         + sagat_application::operations::WorkerAdmin
+        + sagat_application::flow_control_keys::FlowControlKeyReader
         + sagat_application::operations::AuditStore
         + 'static,
 {
@@ -469,6 +473,10 @@ where
         .route(
             "/namespaces/{namespace_id}/alerts",
             get(ops::list_alerts::<B<S, C, G>>),
+        )
+        .route(
+            "/namespaces/{namespace_id}/concurrency-keys",
+            get(routes::concurrency::list_concurrency_keys::<B<S, C, G>>),
         )
         .route("/audit", get(ops::list_audit::<B<S, C, G>>))
         .route(

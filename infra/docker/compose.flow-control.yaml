@@ -1,0 +1,36 @@
+# Flow control (feature 022) for the local stack: `docker compose -f compose.yaml -f compose.flow-control.yaml up`.
+#
+# It turns the concurrency gate on in the control plane and the engine and gives both the deployment's digest keys
+# (D022-057): the file infra/docker/flow-control.keys (ignored by git), mounted read-only, never a variable's value.
+# Make it once, readable by you and by the images' user (uid 10001) only:
+#
+#   umask 077 && printf '1:%s\n' "$(openssl rand -hex 32)" > infra/docker/flow-control.keys
+#   sudo chgrp 10001 infra/docker/flow-control.keys && chmod 0640 infra/docker/flow-control.keys
+#
+# (Docker Desktop and Colima map the file to the container's user; on a Linux host the group line is what lets the
+# services read it.)
+# Then activate version 1 of the key and the capability for the fleet (docs/runbooks/flow-control.md). Both services
+# refuse to start with the switch on and no file, or with a file that lacks a version the database has in force.
+services:
+  control-plane:
+    environment:
+      SAGAT_FLOW_CONTROL_CONCURRENCY_KEYS_ENABLED: "true"
+      SAGAT_FLOW_CONTROL_DIGEST_KEYS_FILE: /run/secrets/flow-control.keys
+    volumes:
+      - type: bind
+        source: ./flow-control.keys
+        target: /run/secrets/flow-control.keys
+        read_only: true
+        bind:
+          create_host_path: false
+  execution-engine:
+    environment:
+      SAGAT_FLOW_CONTROL_CONCURRENCY_KEYS_ENABLED: "true"
+      SAGAT_FLOW_CONTROL_DIGEST_KEYS_FILE: /run/secrets/flow-control.keys
+    volumes:
+      - type: bind
+        source: ./flow-control.keys
+        target: /run/secrets/flow-control.keys
+        read_only: true
+        bind:
+          create_host_path: false

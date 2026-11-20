@@ -26,5 +26,15 @@ pub fn capabilities(config: &EngineConfig) -> Vec<Capability> {
     if config.run_input_validation == sagat_application::run_input::InputValidationMode::Enforce {
         listed.push(Capability::RunInputValidationV1);
     }
+    // feature 022: a gate this engine runs (admission of the runs it creates, readiness, grant and timeout passes),
+    // switched on and backed by the digest keys (D022-057)
+    listed.extend(
+        sagat_application::flow_control::served(
+            config.flow_control,
+            config.flow_control_keys.is_some(),
+        )
+        .into_iter()
+        .map(sagat_application::flow_control::FlowControlCapability::registry),
+    );
     listed
 }

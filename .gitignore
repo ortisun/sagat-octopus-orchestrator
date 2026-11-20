@@ -6,6 +6,8 @@
 .env.*
 !.env.example
 /infra/docker/runner.token
+# the local flow-control digest keys (compose.flow-control.yaml, D022-057)
+/infra/docker/flow-control.keys
 
 # Tooling state that is not part of the project
 /.agents/solomon/state/

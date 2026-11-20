@@ -46,28 +46,8 @@ pub(crate) async fn set(w: &World, resource: QuotaResource, value: u64) {
 
 /// Replaces a queued start's waiter row by one past its deadline, and its projection with it (a waiter row is never
 /// updated in place).
-async fn age_start_deadline(w: &World, run: RunId) {
-    sqlx::query(
-        "WITH gone AS (DELETE FROM concurrency_waiters WHERE run_id = $1 AND permit_scope = 'RUN' RETURNING *) \
-         INSERT INTO concurrency_waiters (tenant_id, namespace_id, run_id, node, permit_scope, attempt, pool, \
-                group_name, key_digest, declared_limit, enqueued_at, deadline_at, shard) \
-         SELECT tenant_id, namespace_id, run_id, node, permit_scope, attempt, pool, group_name, key_digest, \
-                declared_limit, clock_timestamp() - interval '1 hour', clock_timestamp() - interval '1 second', shard \
-           FROM gone",
-    )
-    .bind(run.as_uuid())
-    .execute(&w.db.pool)
-    .await
-    .expect("waiter aged");
-    sqlx::query(
-        "UPDATE runs SET flow_control_gates = jsonb_set(flow_control_gates, '{concurrency,deadlineUs}', \
-              to_jsonb((extract(epoch FROM clock_timestamp()) * 1000000)::bigint - 1000000)) \
-          WHERE id = $1",
-    )
-    .bind(run.as_uuid())
-    .execute(&w.db.pool)
-    .await
-    .expect("projection aged");
+pub(crate) async fn age_start_deadline(w: &World, run: RunId) {
+    crate::support::flow_control::age_start_deadline(w, run).await;
 }
 
 /// A start with room holds a permit from its creation transaction and runs; its last commit gives the permit back,

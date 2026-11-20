@@ -3,8 +3,8 @@
 //! ready, and is never offered to a worker before every gate it declares is granted. Every run here is checked by
 //! `verify_run`, which replays the journal alone and checks invariant 11.
 //!
-//! The runs are admitted by the store's test-only admission of step gates (`step-gates-for-tests`): this build lists no
-//! flow-control capability (D022-037), and nothing grants a queued step (T022-097) or times it out (T022-098) yet.
+//! The runs are admitted by the one admission point of a store that serves the gates (`support::flow_control::gate`: the
+//! switches, the digest keys and the activation, D022-057; the rate gate through the tests' `rate-gates-for-tests`).
 
 use sagat_application::runs::RunOperation;
 use sagat_domain::execution::{RunId, RunStatus};

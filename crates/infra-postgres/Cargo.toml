@@ -12,10 +12,10 @@ publish.workspace = true
 workspace = true
 
 [features]
-# Feature 022 (T022-096): `PgRunStore::admitting_step_gates_for_tests`, which admits a definition gated only at its steps
-# before the run-level admission and the grant and timeout routines exist. Test suites only, enabled in
-# `[dev-dependencies]` (scripts/check-architecture.py).
-step-gates-for-tests = []
+# Feature 022 (D022-057): `PgRunStore::serving_rate_gates_for_tests`, which serves the step-level rate gate this build does
+# not list (T022-072, T022-074 missing), behind the same switch, keys and activation as every gate. Test suites only,
+# enabled in `[dev-dependencies]` (scripts/check-architecture.py).
+rate-gates-for-tests = []
 
 [dependencies]
 sagat-application.workspace = true

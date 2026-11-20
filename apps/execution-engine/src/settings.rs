@@ -106,6 +106,10 @@ pub struct EngineConfig {
     /// The flow-control capabilities this deployment allows (`SAGAT_FLOW_CONTROL_*_ENABLED`, feature 022): the control
     /// plane's setting too, read where the engine admits a run (a trigger, a cron, a child, a schedule).
     pub flow_control: sagat_application::flow_control::FlowControlSwitches,
+    /// The deployment's flow-control digest keys (`SAGAT_FLOW_CONTROL_DIGEST_KEYS_FILE`, D022-057): the control plane's
+    /// setting too, required with a switch on; the grant pass needs them as the admission does. Prints its versions
+    /// only.
+    pub flow_control_keys: Option<std::sync::Arc<sagat_application::keyed_digest::KeyRing>>,
     pub schedules: ScheduleSettings,
     /// Pause between schedule rounds when the last one found nothing to do.
     pub schedule_poll: Duration,
@@ -639,6 +643,7 @@ impl EngineConfig {
             concurrency_keys: flag(get, "SAGAT_FLOW_CONTROL_CONCURRENCY_KEYS_ENABLED")?,
             rate_limits: flag(get, "SAGAT_FLOW_CONTROL_RATE_LIMITS_ENABLED")?,
         };
+        let flow_control_keys = sagat_control_plane::config::flow_control_keys(get, flow_control)?;
         let schedule_defaults = ScheduleSettings::default();
         let schedules = ScheduleSettings {
             batch: u32::try_from(positive(
@@ -961,6 +966,7 @@ impl EngineConfig {
             schedules_enabled,
             lake_enabled,
             flow_control,
+            flow_control_keys,
             schedules,
             schedule_poll,
             batches_enabled,

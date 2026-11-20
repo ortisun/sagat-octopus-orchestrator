@@ -504,6 +504,8 @@ async fn a_dual_gated_waiter_times_out_on_the_gate_that_refuses_it_rate_first() 
 /// Races of the timeout against a grant (ADR-0089 decision 5), 20 rounds: both reach the waiter's run lock, and the
 /// first commit decides. A due waiter is never granted, whichever of the two takes the run first (a grant checks the
 /// deadline under the keys' locks); a waiter granted before its deadline is never timed out. Exactly one outcome each.
+/// Round 3 (keys review, correctness M1) makes the grant decide about a waiter that becomes due while the grant waits
+/// for the key: listed before its deadline, the run held, the deadline passed, the timeout waiting for the run.
 #[tokio::test]
 async fn a_timeout_and_a_grant_of_one_waiter_are_decided_by_the_first_commit() {
     let w = gated_world().await;
@@ -534,8 +536,35 @@ async fn a_timeout_and_a_grant_of_one_waiter_are_decided_by_the_first_commit() {
             key
         };
         let other = || scheduler(&w, SchedulerSettings::default(), None);
-        match round % 3 {
-            // the grant takes the run first and waits for the key; the timeout waits for the run
+        match round % 4 {
+            // the grant lists the waiter before its deadline, takes the run and waits for the key; the deadline passes;
+            // the timeout lists it due and waits for the run; only the grant's check under the key refuses it
+            3 => {
+                let deadline = crate::support::flow_control::set_gate_deadline(
+                    &w.db.pool, waiter, "g", 2_000_000,
+                )
+                .await;
+                let key = hold_key().await;
+                let (grants, timeouts) = (other(), other());
+                let grant = tokio::spawn(async move { grants.grant_gates().await });
+                lock_waiters(&w, 1).await;
+                assert!(
+                    crate::support::flow_control::database_now_us(&w.db.pool).await < deadline,
+                    "round {round}: the grant listed the waiter before its deadline"
+                );
+                crate::support::flow_control::until_past(&w.db.pool, deadline).await;
+                let timeout = tokio::spawn(async move { timeouts.time_out_gates().await });
+                lock_waiters(&w, 2).await;
+                key.rollback().await.expect("released");
+                let (g, t) = (grant.await.expect("grant"), timeout.await.expect("timeout"));
+                assert_eq!(
+                    g.gates_granted, 0,
+                    "a waiter due under the key is never granted: {g:?}"
+                );
+                assert_eq!(t.gate_waits_timed_out, 1, "{t:?}");
+            }
+            // the waiter is due before either starts: the grant pass does not list it and waits only to rest the key;
+            // the timeout takes the run and waits for the key (round 3 is the one where the grant holds the run)
             0 => {
                 age_gate_deadline(&w, waiter, "g").await;
                 let key = hold_key().await;
@@ -581,7 +610,7 @@ async fn a_timeout_and_a_grant_of_one_waiter_are_decided_by_the_first_commit() {
             1,
             "round {round}: exactly one outcome"
         );
-        assert_eq!(timed_out == 1, round % 3 != 2, "round {round}");
+        assert_eq!(timed_out == 1, round % 4 != 2, "round {round}");
         let (_, waiters, _, _) = rows(&w, waiter, "g").await;
         assert_eq!(waiters, 0, "round {round}: no waiter row is left");
         let report = w.scheduler.tick().await;

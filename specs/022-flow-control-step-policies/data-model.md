@@ -401,3 +401,19 @@ rows it actually deleted.
     open grant for each declared gate.
 12. Every waiter row belongs to a run that is not terminal; a breach raises `flow_control_waiter_orphaned`.
 13. At no instant does a key have more granted, unleased steps than the smallest `limit` among them.
+
+### Revision of 2026-11-20 (keys review; D022-058, D022-059)
+
+- `concurrency_semaphores.oldest_wait_at timestamptz` null: the oldest `enqueued_at` of the key's waiters, kept by the
+  count trigger in the transaction that adds or removes a waiter (`LEAST` on an insert; on a delete the minimum of the
+  waiters that remain, read after the trigger locks the key's row `FOR UPDATE` by its own statement); CHECK
+  `concurrency_semaphores_oldest_wait_iff_waiters` `(waiters = 0) = (oldest_wait_at IS NULL)` (added `NOT VALID` by
+  `20270205000000`, validated by `20270205000100`). Holds after every row trigger of a statement that adds and removes
+  several waiters of one key.
+- Indexes in the order of the key listing: `concurrency_semaphores_listing_idx (tenant_id, namespace_id,
+  COALESCE(oldest_wait_at, 'infinity'), pool, permit_scope, group_name, key_digest)` and
+  `concurrency_semaphores_group_listing_idx (tenant_id, namespace_id, group_name, COALESCE(oldest_wait_at, 'infinity'),
+  pool, permit_scope, key_digest)`; `concurrency_holders_key_age_idx` (the key's columns, then `acquired_at`) replaces
+  `concurrency_holders_key_idx`.
+- Invariant 12 is also checked over `rate_limit_waiters`; an empty key row and a key whose `oldest_wait_at` is not its
+  waiters' oldest are breaches (`support::flow_control::key_consistency`).

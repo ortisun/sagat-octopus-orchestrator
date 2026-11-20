@@ -710,6 +710,10 @@ pub struct RunRecord {
     /// continuation refused for its input, design 043), for a run stopped with one. Read by `get` and `list`; `None`
     /// for every other run and for a record loaded inside a command transaction.
     pub failure_code: Option<FailureCode>,
+    /// The run-level concurrency permit the run holds or waits for now (feature 022, `Run.concurrency`, T022-026). Read
+    /// by `get` and `list` from the holder and waiter rows; `None` for a run that neither holds nor waits, and for a
+    /// record loaded inside a command transaction.
+    pub concurrency: Option<crate::flow_control_keys::RunPermit>,
 }
 
 /// Which schedule started a run, for which nominal time, by which kind of action and under which

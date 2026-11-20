@@ -1647,6 +1647,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/namespaces/{namespaceId}/concurrency-keys": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List the live concurrency keys of a namespace, oldest wait first
+         * @description Feature 022 (FR-022-022, release 0.3.0 slice). Needs `ops:read`. The concurrency keys with a holder or a waiter, each with its holders, waiters and the ages of its oldest holder and oldest wait, oldest wait first; keys nobody waits for come last. `queuedRuns` counts the namespace's queued runs (concurrency and rate-limit waiters together, a run once) as the `queued_runs` ceiling counts them; the `group` filter narrows the keys, not that count. A key is never shown by its value: `keyLabel` is the 12-hex label of its keyed digest, and is null unless the caller may reveal personal data in the namespace (a role that may use a reveal grant, and the namespace's `payload:reveal-pii` grant); for any other caller `oldestHolderSince` and `oldestWaitSince` are cut to the minute, since whole they equal the `since` of the key's runs. A page that has a next one is a 503 when the serving process lacks the digest key version in force (it cannot seal the cursor). Counts are read without the keys' locks, in one snapshot per page; a key's counts and place may change between two pages, so a key can appear on two pages or on none of a later page's predecessors. `nextCursor` is opaque, sealed for this namespace: an altered cursor, one of another namespace, or one of another group's listing is a 400. A namespace of another tenant is a 404, like one that does not exist.
+         */
+        get: operations["listConcurrencyKeys"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/namespaces/{namespaceId}/workers": {
         parameters: {
             query?: never;
@@ -3921,6 +3941,7 @@ export interface components {
             };
             /** @description Design 043 (FR-043-015): the failure code the stop of the run carries, when it stopped with one: the code of the step whose failure failed the run, a ceiling (`STORAGE_QUOTA_EXCEEDED`, ...), or `CONTINUATION_INPUT_INVALID` and `RUN_INPUT_SCHEMA_UNUSABLE` for a continue-as-new refused for its input. Absent for every other run. Read by getRun and listRuns. Never holds an input value. */
             failureCode?: string;
+            concurrency?: components["schemas"]["RunConcurrency"];
         };
         RunPage: {
             items: components["schemas"]["Run"][];
@@ -5612,6 +5633,51 @@ export interface components {
             items: number;
             /** @description The age of the oldest of them. */
             oldestSeconds: number;
+        };
+        /** @description Feature 022 (FR-022-022). One live concurrency key; counts are a snapshot read without the key's lock. */
+        ConcurrencyKey: {
+            /**
+             * @description Draft test trees use their own pool and never share a key with ordinary runs.
+             * @enum {string}
+             */
+            pool: "ORDINARY" | "DRAFT_TEST";
+            /** @enum {string} */
+            scope: "RUN" | "STEP";
+            group: string;
+            /** @description The 12-hex label of the key's keyed digest; null unless the caller may reveal personal data in the namespace (FR-022-057). */
+            keyLabel: string | null;
+            holders: number;
+            waiters: number;
+            /** Format: date-time */
+            oldestWaitSince?: string | null;
+            /** Format: date-time */
+            oldestHolderSince?: string | null;
+        };
+        ConcurrencyKeyPage: {
+            queuedRuns: number;
+            items: components["schemas"]["ConcurrencyKey"][];
+            /** @description Opaque, sealed for this namespace; null after the last page. */
+            nextCursor?: string | null;
+        };
+        /** @description Feature 022 (FR-022-022). The run-level concurrency permit the run holds or waits for. Absent on a run that neither holds nor waits; read by getRun and listRuns. */
+        RunConcurrency: {
+            /** @enum {string} */
+            state: "HOLDING" | "WAITING";
+            /** @enum {string} */
+            pool: "ORDINARY" | "DRAFT_TEST";
+            group: string;
+            /** @description The 12-hex label of the key's keyed digest; null unless the caller may reveal personal data in the run's namespace (FR-022-057). */
+            keyLabel: string | null;
+            /**
+             * Format: date-time
+             * @description When the permit was acquired (HOLDING) or the run was queued (WAITING).
+             */
+            since: string;
+            /**
+             * Format: date-time
+             * @description WAITING: when the run fails CONCURRENCY_WAIT_TIMEOUT if not granted before; null while HOLDING.
+             */
+            queueDeadline?: string | null;
         };
         AlertPage: {
             items: components["schemas"]["Alert"][];
@@ -10013,6 +10079,45 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AlertPage"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            422: components["responses"]["ValidationError"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    listConcurrencyKeys: {
+        parameters: {
+            query?: {
+                /** @description An explicit group or a derived one (`=<workflow>` or `=<workflow>/<node>`); 422 when it is no group name. */
+                group?: string;
+                /** @description Opaque cursor returned as `nextCursor` by the previous page. */
+                cursor?: components["parameters"]["Cursor"];
+                /** @description Page size; values outside 1..200 are clamped. */
+                limit?: components["parameters"]["Limit"];
+            };
+            header?: never;
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description A page of keys */
+            200: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConcurrencyKeyPage"];
                 };
             };
             400: components["responses"]["BadRequest"];

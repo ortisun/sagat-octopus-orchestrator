@@ -33,6 +33,7 @@ pub mod event_payloads;
 pub mod events;
 pub mod execution;
 pub mod flow_control;
+pub mod flow_control_keys;
 pub mod identity;
 pub mod instances;
 pub mod keyed_digest;
