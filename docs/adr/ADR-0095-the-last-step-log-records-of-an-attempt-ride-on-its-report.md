@@ -2,7 +2,9 @@
 
 **Status:** Proposed
 **Decided by:** owner chose the direction (OD-2026-11-19-1, O041-036 option (d), "Redesenhar (CompleteStep)"); this text is the
-agent's proposal of how, for the owner to accept (O041-038) once design 041's spike T041-35 passes
+agent's proposal of how; accepted (O041-038) by the coordinating session under the owner's delegation for 0.3.0
+(OD-2026-11-20-6) once design 041's spike T041-35 passes and the re-review of its revision of 2026-11-20 has no Blocker or
+Major (D041-113)
 **Refines / supersedes:** would supersede, when accepted, decisions 2, 6 and 11 of
 [ADR-0084](ADR-0084-step-logs-are-a-bounded-lossy-per-attempt-record-beside-the-journal.md) (as revised on 2026-11-15 and read
 by its Notes), the session clause of its decision 5 for a carry, and the clause of item 1 of the Amendment of 2026-11-15 of
@@ -16,7 +18,10 @@ acceptance both are marked "partly superseded by ADR-0095". ADR-0084's other dec
 off; 48, 1, 9 for the completion that ends the run), each with a second measure of the step-log rows written counted from
 the step-log tables, and the cost with and without a carry at every other call site (decision 2, T041-36); the property test
 that the carry function and the domain's `plan_batch` plan alike (decision 3, T041-36); a source-text test that the worker and execution modules reach the step-log tables only through the port of decision
-3 (T041-36); the re-run tests of decision 5 for a completion and a failure, root and scoped (T041-36); the C0 tests of decision 3
+3 (T041-36); the re-run tests of decision 5 for a completion and a failure, root and scoped, and its in-call tests (a carry
+refused by the limit on a new and on an existing stream recording its mark in the same call; a carry whose refill finds the
+usage row held by a holder that updated it answering at once; a reserved carry writing with no subtransaction) (T041-36,
+on the pattern of the prototype's `step_log_leases_tests.rs`); the C0 tests of decision 3
 (T041-36); the order tests of decision 6 (T041-36); the lock-order test with a carrying report beside an ingest of its attempt,
 the purge and a change of a step-log resource, and the tests that a held step-log lock makes a carry `contended` with the report
 committed at once (decision 7, T041-36; the delete route joins them in T041-30); the conformance scenarios `step-logs-capture` and `step-logs-transport-faults` in six SDKs,
@@ -76,12 +81,15 @@ Facts of the code that shape the change:
    levels, scrubbing, cutting, sizing) is, in the application; a carry that fails a check is ignored, or recorded as a final mark
    with no line when its highest sequence alone is valid, and the report is recorded.
 5. A refusal of the carry's own charge (ADR-0097: `tenant_step_log_quota_exceeded` or `tenant_step_log_quota_held`, raised
-   at its insert) MUST be answered inside the carry's call, by one `BEGIN … EXCEPTION` block around its writes: the carry
-   then records a mark-only stream (the records counted `tenant_quota`) in the same call, and its charge's refill takes the
-   usage row `NOWAIT`, a held row making the carry `contended` (revised 2026-11-20, D041-112). When the report's
+   at its insert) MUST be answered inside the carry's call (revised 2026-11-20, D041-112, D041-113). Before any write the
+   carry reserves a lease with room for its planned charge; with one it writes with no subtransaction, and its charge
+   cannot be refused. Without one, its writes run in one `BEGIN … EXCEPTION` block that catches only those two refusals
+   (by constraint name) and its refill's `lock_not_available` (the refill takes the usage row `NOWAIT`), re-raising
+   anything else, and records a mark-only final mark (the records counted `tenant_quota`) in the same call: a new stream
+   inserted, an existing one taken again `SKIP LOCKED` and updated, `contended` only when that row is held. When the report's
    transaction fails because of its carry otherwise, the report MUST be recorded by a re-run of the report with the
-   carry downgraded: after a raise of a guard of the step-log quota that the block does not catch, a mark-only carry that
-   charges nothing; after a failed carry statement, none. The carry only goes down, and each downgrade can
+   carry downgraded: after a raise of a guard of the step-log quota that the block does not catch (or on the fast path,
+   where no block runs), a mark-only carry that charges nothing; after a failed carry statement, none. The carry only goes down, and each downgrade can
    meet the content-quota fallback once, so a report runs at most four transactions. The two causes MUST reach the re-run as values of their own, never as an ordinary unavailability, which is
    never re-run. Item 1 of ADR-0027's Amendment then reads "a step-log charge never blocks a terminal state: a report whose step-log rows
    do not fit is recorded by a re-run without them". A report whose output or failure code holds a declared secret, root or

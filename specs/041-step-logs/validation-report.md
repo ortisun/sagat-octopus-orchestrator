@@ -565,7 +565,7 @@ at 8 × 128 the usage row turns batches away, which the leases of ADR-0097 remov
 
 The prototype's tests, `tests/performance/scalability-ha/step_log_leases_tests.rs`, run by hand against a disposable
 PostgreSQL 18 with `pg_stat_statements` preloaded (`SAGAT_TEST_DATABASE_URL=… cargo test -p sagat-tests --test
-perf_scalability_ha --features perf-spike leases_tests`); all 14 pass as committed. Each mutation below was applied by
+perf_scalability_ha --features perf-spike leases_tests`); all 17 pass as committed (D041-113). Each mutation below was applied by
 hand to `step_log_spike.rs`, the tests run, the file restored and compared:
 
 | Mutation | Test that failed |
@@ -585,9 +585,13 @@ hand to `step_log_spike.rs`, the tests run, the file restored and compared:
 | R4 the carry's refill waits (no `NOWAIT`) | `a_carry_never_waits_for_the_usage_row` |
 | R5 the carry does not catch a refusal | `a_carry_refused_by_the_limit_records_its_mark_in_the_same_call` |
 | R6 a change of the limit reclaims nothing | `a_limit_lowered_above_the_usage_still_admits_what_fits` |
+| R7 the refill inserts the usage row before its `NOWAIT` lock (D041-113) | `a_carry_never_waits_for_the_usage_row` (its holder updates the row) |
+| R8 no fast path (the reservation always fails) | `only_a_carry_that_needs_a_refill_opens_a_subtransaction` |
+| R9 a refused long step's mark is not written (a first, weaker version survived: it changed only `last_sequence`; redone so that the stream is never found) | `a_long_steps_carry_refused_by_the_limit_records_its_mark_on_its_stream` |
 
 The budget lines were derived before they were run and seen failing where the derivation missed a statement: a charged
 insert derived as 6 nested statements ran 16 (one foreign-key check a line); a short step's carry derived as 22 ran 23
 (the stream's path check), then with the no-wait setting derived as 25 ran 24 (the new stream's path returned before a
-reset, which was removed). Not covered by the prototype: the direct charge with all 256 leases held (T041-5, with a
+reset, which was removed), then with the fast path derived as 29 ran 27 (a function called in an `IF` or a `RETURN` is an
+expression, not a statement). Not covered by the prototype: the direct charge with all 256 leases held (T041-5, with a
 lowered cap), the privileges of ADR-0097 decision 1 (T041-5's runtime-role tests).

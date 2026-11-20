@@ -2,9 +2,11 @@
 
 **Status:** Proposed
 **Decided by:** agent under the owner's delegation OD-2026-11-20-6 ("decide for advantage"), design 041's D041-108 and
-D041-112; adopted by the coordinating session on 2026-11-20, which accepts it under the same delegation when design 041's
-re-review closes and T041-35's third run is recorded, together with O041-038 (ADR-0095) and the restated O041-040
-(README rule 4: the coordinating session holds the owner's delegation for 0.3.0, OD-2026-11-20-6)
+D041-112; adopted by the coordinating session on 2026-11-20. Acceptance (D041-113): the coordinating session accepts it under the
+same delegation once design 041's re-review has no Blocker or Major and T041-35's third run is recorded, whatever that run's
+result (this decision rests on D041-106's ceiling, not on the 1 × 16 gate), together with the restated O041-040; ADR-0095
+(O041-038) is accepted the same way only with a pass. README rule 4 ("a person accepts") is met by the owner's delegation
+for 0.3.0 (OD-2026-11-20-6), as the coordinating session decided
 **Refines / supersedes:** would supersede, when accepted:
 - for the class `step_log`, the charge half of item 3 of the Amendment of 2026-11-15 of
   [ADR-0027](ADR-0027-durable-content-rate-and-retention-quotas.md) (a charge goes to a lease, not to
@@ -75,25 +77,33 @@ them; a report must never wait under its run lock for another tenant's, replica'
    gives today, with no overshoot to bound.
 3. **A charge** is made by the statement trigger of the step-log rows, once per insert statement and tenant, with the
    bytes `sagat_quota_measure` measures from the rows stored, never a caller's number. It MUST take the content, log and
-   step-log policy fences shared, in ADR-0027's order; read L and, without a lock, S and G; when S + G ≤ L, add its bytes
-   to the `used` of one lease with room, picked by an uncorrelated scalar subquery (run once) `… ORDER BY (lease −
-   pg_backend_pid() mod 256) mod 256 LIMIT 1 FOR UPDATE SKIP LOCKED`, so that a lease another open transaction holds is
-   skipped. It MUST NOT lock `tenant_retained_usage` and MUST NOT wait for a lease. Otherwise it calls the refill.
+   step-log policy fences shared, in ADR-0027's order; read L and, without a lock, S and G; when S + G ≤ L (or the
+   quota is not enforced), add its bytes to the `used` of one lease with room, picked by an uncorrelated scalar subquery
+   (run once) `… ORDER BY (lease - pg_backend_pid() % 256 + 256) % 256 LIMIT 1 FOR UPDATE SKIP LOCKED`, so that a lease
+   another open transaction holds is skipped and one this transaction holds is found. It MUST NOT lock
+   `tenant_retained_usage` and MUST NOT wait for a lease. Otherwise it calls the refill. A carry first reserves a lease
+   with room for its planned charge (`sagat_quota_step_log_reserve`: the lease locked `SKIP LOCKED`, nothing written), so
+   that its charge cannot be refused and needs no subtransaction (ADR-0095 decision 5).
 4. **A refill** locks the usage row (the one wait a charge can have; `NOWAIT` when the transaction set
-   `sagat.step_log_charge_nowait`, as a carry does, ADR-0095). It reads L itself. When the free room L − S − G is under
+   `sagat.step_log_charge_nowait`, as a carry does, ADR-0095) before it would ever insert it: an `INSERT … ON CONFLICT`
+   first would wait for a holder that updated the row, whatever `NOWAIT` says. The setting is set transaction-locally by
+   the carry; it can only turn that wait into a refusal, never admit more (ADR-0027's rule on session flags). It reads L
+   itself. When the free room L − S − G is under
    max(*n*, 1 MiB), *n* the charge, it first reclaims every lease no open transaction holds (`SKIP LOCKED`: S += `used`,
    G −= `granted`, both set to 0). It then takes the free lease with the least room (or the lowest unused number below
    256), folds it (S += `used`, G −= `used`, `granted` −= `used`, `used` = 0) and grants it
-   g = max(*n* − room, min(1 MiB, ⌊(L − S − G) / 64⌋), 0), raising `tenant_step_log_quota_exceeded` when g > L − S − G (I4);
-   else it charges *n* there. When all 256 leases are held by open transactions it charges S directly under the row,
+   g = max(*n* − room, min(1 MiB, ⌊(L − S − G) / 64⌋), 0), raising when g > L − S − G (I4): `tenant_step_log_quota_held`
+   when the room missing is in leases it could not lock, `tenant_step_log_quota_exceeded` otherwise; else it charges *n*
+   there. When all 256 leases are held by open transactions it charges S directly under the row,
    exactly. After the usage row a refill takes no lock it waits for.
 5. **A release** (the purge's `DELETE`, which keeps ADR-0027's per-row delta and deferred flush) MUST NOT wait for a
    lease: in the finalizer's step-log branch, under the usage row, it reads Σ `used`, refuses with
-   `retained step-log usage underflow` when S − released + Σ `used` < 0 (I3), and otherwise sets S −= released. Leases
-   are never waited for by anyone.
-6. **A change of the limit.** A change of `tenant_step_log_bytes` or of its ceiling takes the step-log fence exclusively
-   (so no transaction holds a lease) and reclaims every lease of the tenant in the same transaction (S += Σ `used`,
-   G = 0). A lowered limit therefore stops growth at once (I5) and leaves no stranded room; a charge that still meets
+   `step_log_usage_underflow` (counted) when S − released + Σ `used` < 0 (I3), and otherwise sets S −= released. No
+   charge, refill or release waits for a lease.
+6. **A change of the limit.** An `ENABLE ALWAYS` `SECURITY DEFINER` trigger on `quota_limits` and `quota_ceilings`, for
+   `tenant_step_log_bytes`, takes the step-log fence exclusively itself (at once when the editor already holds it; so no
+   transaction holds a lease), then the tenant's leases `NOWAIT`, then the usage row, and reclaims every lease (S += Σ
+   `used`, G = 0), whoever wrote the row. A lowered limit therefore stops growth at once (I5) and leaves no stranded room; a charge that still meets
    S + G > L goes to the refill, which reclaims, and is refused only when what it needs is not there.
 7. **Reads.** The usage of `tenant_step_log_bytes` that the quota API, `sagat_quota_step_log_allowance` and every
    reconciliation read MUST be S + Σ `used`, in one snapshot, through a `SECURITY DEFINER` accessor. With
@@ -101,7 +111,9 @@ them; a report must never wait under its run lock for another tenant's, replica'
    exact.
 8. **Telemetry**, closed labels, no tenant: `step_log_quota_refills_total{kind="refill"|"reclaim"|"direct"}`,
    `step_log_quota_refusals_total{cause="limit"|"held"}` (the second when the room is in leases open transactions hold,
-   raised under its own constraint name `tenant_step_log_quota_held`), and a gauge of lease rows.
+   raised under its own constraint name `tenant_step_log_quota_held`), and a gauge of lease rows. Events counted inside
+   SQL MUST NOT update a counter row (a hot row again): they advance sequences, read as deltas with the lease-row count
+   by a definer accessor that the purge pass calls; the carry returns its refusal cause.
 
 ## Considered options
 
@@ -128,6 +140,10 @@ them; a report must never wait under its run lock for another tenant's, replica'
    commit together; a crash between them leaves rows uncharged.
 8. **Deferring the leases** (D041-106 showed the queue did not fail T041-35 at 1 × 16): keeps a measured ceiling of about
    800 charging commits a second per tenant and the batch refusals at 8 × 128; rejected for advantage (OD-2026-11-20-6).
+10. **A subtransaction on every carrying report** (one `BEGIN … EXCEPTION` block around its writes, this ADR's second
+   text): every carrying report would take a second transaction id (XID use and freeze pressure doubled for them, and
+   `pg_subtrans` lookups for readers under a long transaction); replaced by the reservation of decision 3, which keeps the
+   block for the carries that need a refill (about one in 300 far from the limit).
 9. **A release that folds every lease, waiting for each** (this ADR's first text): it would hold a tenant's leases on the
    purge's cadence and send its charges to the usage row meanwhile; replaced by decision 5, which waits for no lease.
 
@@ -141,6 +157,9 @@ them; a report must never wait under its run lock for another tenant's, replica'
 - Near the limit (free room under 64 MiB) grants shrink to 1/64 of the free room and refills come more often; at the
   limit about one refill per charge, each holding the usage row to the end of its commit. A carry's refill never waits
   for it (`NOWAIT`, decision 4); an ingest's waits under its 200 ms lock timeout. Design 041's T041-9 measures this regime.
+- A carry that needs a refill opens one subtransaction (its block, ADR-0095 decision 5): a second transaction id for that
+  report. Far from the limit that is about one carry in 300; at the limit, most of them. Design 041's T041-9 reports the
+  XID rate and `pg_stat_slru` for `subtransaction` there.
 - Every step-log charge holds the content and log fences shared (ADR-0027's order against an editor that takes several
   fences), so a change of `tenant_content_bytes` or `tenant_log_bytes` waits for the charges in flight and, while queued,
   makes carries `contended`.
@@ -150,7 +169,7 @@ them; a report must never wait under its run lock for another tenant's, replica'
   the down migration reclaims it; the usage it shows is exact meanwhile.
 - One more table, two more columns' worth of rules, the charge and refill functions, a usage accessor, a branch of the
   finalizer for the release and one for a limit change. The down migration refuses while a step-log line exists, and
-  otherwise drops the leases (U = 0) and the column.
+  otherwise folds Σ `used` into S (U = 0, so S = 0), then drops the leases and the column.
 - Runs in flight are unaffected: nothing is charged under this rule before the migration that adds it, and step logs do
   not exist before design 041.
 

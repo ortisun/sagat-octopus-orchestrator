@@ -34,3 +34,24 @@ Constitution Check and Complexity Tracking rows, the stale text listed, the HOT 
 mutation record and the prototype tests' run command. Not taken: inlining the charge into the trigger function (the
 revokes and the limit read inside the refill close the same risk); a test with 257 concurrent lease holders (the cap is a
 constant of T041-5, which tests the direct charge with a lowered cap).
+
+## Re-reads of 3f1f0aba
+
+Saved verbatim as `rereads-3f1f0aba-{correctness,security,architecture,egm-design}.md`. Every earlier Blocker and Major
+was found closed except architecture M2 (as R1). New Majors, answered by D041-113:
+
+| Finding | Answer |
+|---|---|
+| Architecture R1 (M2 still open): one acceptance route, O041-040 restated | ADR-0097, ADR-0095 and O041-040 share one route: the coordinating session under OD-2026-11-20-6 once the re-review has no Blocker or Major and the third run is recorded (ADR-0097 whatever its result, ADR-0095 with a pass); O041-040 (a) restated to the measurement and the per-row release, its flush replaced by ADR-0097 (design and research.md) |
+| Architecture N1: an `INSERT … ON CONFLICT` before the `NOWAIT` select waits for a holder that updated the usage row | The refill locks the row first and inserts it only when absent; the test's holder now updates the row as real holders do (mutation R7) |
+| Correctness N1, architecture N5, design critic N3: near the limit a held usage row loses carries uncounted (`contended`) | A held row on a refill now records the mark-only final mark (`tenant_quota`, cause `busy`); `contended` only when the existing stream's own row is held (test `a_carry_never_waits_for_the_usage_row`) |
+| Design critic N1, correctness N3, architecture N2, security Nit 2: the handler catches all of SQLSTATE 54, loses a long step's mark, and §8a does not describe it | The handler matches the two constraint names and `55P03`, re-raises the rest, and takes an existing stream again `SKIP LOCKED`; data-model §8a describes it (test `a_long_steps_carry_refused_by_the_limit_records_its_mark_on_its_stream`, mutation R9) |
+| Design critic N2, correctness N8, architecture N6: a subtransaction on every carrying report | A carry first reserves a lease with room for its planned charge; with one it writes with no subtransaction (test `only_a_carry_that_needs_a_refill_opens_a_subtransaction`, mutation R8); the block is kept for carries that need a refill; a risk row and T041-9's measurement cover the rest |
+| Security new Major, design critic N4, correctness N6, architecture N4: the limit-change reclaim relies on its caller's fence and cannot be called by the runtime role | An `ENABLE ALWAYS` `SECURITY DEFINER` trigger on `quota_limits` and `quota_ceilings` that takes the fence itself, then the leases `NOWAIT`, then the usage row; `quotas.rs` calls nothing (mutation R6 still fails its test) |
+
+Minors taken: T041-4's non-negative CHECK removed from its migrations now (the T041-4 migration test passes); the down
+folds Σ `used` into S; a test of the S + G > L path with the reclaim disabled; the script marker's held refusal counted
+`skipped_quota`; the enforcement switch in the charge; telemetry counted by sequences read through a definer accessor,
+the carry's cause returned, `contended` in the carries' outcomes, an underflow counted; the stale rows of the Risks and
+the Constitution Check, ADR-0027's Note, the architecture principle's row, ADR-0095's Enforced by, G041-023; the probe
+expression in ADR-0097; the setting's description against ADR-0027's rule on session flags.
