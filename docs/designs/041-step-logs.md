@@ -426,15 +426,15 @@ Technical, each closed by the task named:
 
 ### Open
 
-- **O041-040 The wording of the proposed amendment of ADR-0027's Amendment** (restated 2026-11-20, D041-113; settled with
-  ADR-0097 by the coordinating session under OD-2026-11-20-6 once the re-review of the revision has no Blocker or Major and
-  T041-35's third run is recorded): step-log rows charged once per insert statement by a statement-level trigger, and the
+- **O041-040 The wording of the proposed amendment of ADR-0027's Amendment** (restated 2026-11-20, D041-113; put to the
+  owner with ADR-0097 by the coordinating session, with a recommendation, once the re-review of the revision has no
+  Blocker or Major and T041-35's third run is recorded, D041-115): step-log rows charged once per insert statement by a statement-level trigger, and the
   purge's release kept per row (ADR-0027, "Proposed amendment of 2026-11-20"); its deferred flush on insert is replaced by
   ADR-0097's leases. (a) Accept the statement-level measurement, with the charge going to a lease as ADR-0097 states it,
   and the per-row release, as a section of ADR-0027 (an exception to `docs/adr/README.md` rule 2, as OD-2026-11-15-16
   granted for the first Amendment); (b) the same moved into ADR-0097; (c) accept with changes. Recommended (a).
-- **O041-038 Accept ADR-0095** (settled by the coordinating session under OD-2026-11-20-6 once T041-35 passes and the
-  re-review has no Blocker or Major, D041-113; T041-3 and T041-36 wait for it). (a) Accept it as written,
+- **O041-038 Accept ADR-0095** (put to the owner by the coordinating session once T041-35 passes and the re-review has no
+  Blocker or Major, D041-115; T041-3 and T041-36 wait for it). (a) Accept it as written,
   which supersedes ADR-0084 decisions 2, 6 and 11 and decision 5's session clause for a carry, and the terminal-report
   clause of ADR-0027's Amendment item 1; (b) accept with changes; (c) reject, and the design changes again. Recommended
   (a) if T041-35 passes.
@@ -2111,8 +2111,7 @@ Slice A, decisions, contracts and the spike:
     By this task's rule the design changes and is reviewed again before T041-5 starts: asked as O041-039 (research.md,
     D041-099); O041-026 is not put (its condition is not shown); O041-038 is not put.
 - [ ] T041-3 Contracts: contracts.md §1, as revised on 2026-11-19 (D041-090), and §2.
-  Waits for O041-038 (the acceptance of ADR-0095 by the coordinating session under OD-2026-11-20-6, once T041-35 passes;
-  D041-113).
+  Waits for O041-038 (the owner's acceptance of ADR-0095, put once T041-35 passes; D041-115).
   Built on this branch before the revision (D041-091); what changes from that build: the proto's field 13 on both
   reports and `StepLogCarry`, fields 11 and 12 of `AppendStepLogsRequest` reserved (the baseline loses `final_batch` and
   `highest_sequence`, a removal that is expected because 1.7 is unreleased), `StepLogCarry` in the three `skip_debug`
@@ -2243,7 +2242,7 @@ Slice B, the server stores:
   `tests/integration/platform-foundation/runtime_privileges.rs` and `python3 scripts/check-upgrade-boundary.py` pass, the
   suites also as the runtime role.
   Refs: FR-041-008
-  Waits for O041-040 for the charge per statement and for the acceptance of ADR-0097 (D041-108, D041-112).
+  Waits for O041-040 for the charge per statement and for the owner's acceptance of ADR-0097 (D041-108, D041-115).
   Owner-gate: OD-2026-11-13-14, OD-2026-11-13-18, OD-2026-11-15-4, OD-2026-11-15-5, OD-2026-11-15-6, OD-2026-11-15-9, OD-2026-11-15-16, OD-2026-11-16-10, OD-2026-11-19-1, OD-2026-11-20-1, OD-2026-11-20-6
   Files: create the migration (`.up.sql`, `.down.sql`), `tests/integration/claim-transition-efficiency/step_log_isolation.rs`;
   modify `crates/infra-postgres/src/identity.rs` (the typed refusals of `tenant_step_log_quota_exceeded` and
@@ -2395,8 +2394,8 @@ Slice B, the server stores:
   `tests/integration/database-runner/proxy.rs`); modify `tests/integration/database-runner/main.rs`,
   `tests/integration/step-logs/main.rs`.
 - [ ] T041-36 The carry on a report (section 2a).
-  Waits for O041-038 (the acceptance of ADR-0095) and O041-040 (the wording of the ADR-0027 amendment), both settled by the
-  coordinating session under OD-2026-11-20-6 (D041-113).
+  Waits for O041-038 (the owner's acceptance of ADR-0095) and O041-040 (the wording of the ADR-0027 amendment), both put
+  to the owner by the coordinating session (D041-115).
   Builds:
   - the domain type `sagat_domain::step_logs::Carry` (records, `highest_sequence`, encoded size) and `CarryPlan`
     (`Full`, `MarkOnly`, `None`);

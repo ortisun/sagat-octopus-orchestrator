@@ -166,10 +166,10 @@ Proposed, would let a report store its attempt's last step-log rows in its own t
 charge never blocks a terminal state would then hold by one re-run of the report without those rows. Item 1 is unchanged
 until that ADR is accepted.
 
-### Proposed amendment of the Amendment (2026-11-20), for acceptance of its wording (O041-040; settled by the coordinating session under OD-2026-11-20-6, design 041's D041-113)
+### Proposed amendment of the Amendment (2026-11-20), for the owner's acceptance of its wording (O041-040; put by the coordinating session with ADR-0097, design 041's D041-115)
 
 Status: proposed. The owner chose its direction on 2026-11-20 ("Cortar custo, depois limite absoluto", OD-2026-11-20-1,
-design 041's O041-039 (a)); this wording is the agent's and changes nothing above until it is accepted. It would
+design 041's O041-039 (a)); this wording is the agent's and changes nothing above until the owner accepts it. It would
 replace item 3's sentence "`sagat_quota_row_delta` routes the class `step_log` to the new delta" and item 4's per-row
 reading of the 128-byte charge as follows; items 1, 2 and 5 and the rest of items 3 and 4 are unchanged.
 

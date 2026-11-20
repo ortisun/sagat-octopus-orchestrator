@@ -2,11 +2,10 @@
 
 **Status:** Proposed
 **Decided by:** agent under the owner's delegation OD-2026-11-20-6 ("decide for advantage"), design 041's D041-108 and
-D041-112; adopted by the coordinating session on 2026-11-20. Acceptance (D041-113): the coordinating session accepts it under the
-same delegation once design 041's re-review has no Blocker or Major and T041-35's third run is recorded, whatever that run's
-result (this decision rests on D041-106's ceiling, not on the 1 × 16 gate), together with the restated O041-040; ADR-0095
-(O041-038) is accepted the same way only with a pass. README rule 4 ("a person accepts") is met by the owner's delegation
-for 0.3.0 (OD-2026-11-20-6), as the coordinating session decided
+D041-112; adopted by the coordinating session on 2026-11-20. Acceptance (D041-115): README rule 4 requires a person to accept, and
+the delegation does not stand in for that; the coordinating session puts this ADR to the owner with a recommendation once
+design 041's re-review has no Blocker or Major and T041-35's third run is recorded, whatever that run's result (this
+decision rests on D041-106's ceiling, not on the 1 × 16 gate), together with the restated O041-040
 **Refines / supersedes:** would supersede, when accepted:
 - for the class `step_log`, the charge half of item 3 of the Amendment of 2026-11-15 of
   [ADR-0027](ADR-0027-durable-content-rate-and-retention-quotas.md) (a charge goes to a lease, not to

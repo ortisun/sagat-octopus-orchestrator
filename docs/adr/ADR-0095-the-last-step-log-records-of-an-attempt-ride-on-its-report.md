@@ -2,9 +2,8 @@
 
 **Status:** Proposed
 **Decided by:** owner chose the direction (OD-2026-11-19-1, O041-036 option (d), "Redesenhar (CompleteStep)"); this text is the
-agent's proposal of how; accepted (O041-038) by the coordinating session under the owner's delegation for 0.3.0
-(OD-2026-11-20-6) once design 041's spike T041-35 passes and the re-review of its revision of 2026-11-20 has no Blocker or
-Major (D041-113)
+agent's proposal of how, for the owner to accept (O041-038), put by the coordinating session with a recommendation once
+design 041's spike T041-35 passes and the re-review of its revision of 2026-11-20 has no Blocker or Major (D041-115)
 **Refines / supersedes:** would supersede, when accepted, decisions 2, 6 and 11 of
 [ADR-0084](ADR-0084-step-logs-are-a-bounded-lossy-per-attempt-record-beside-the-journal.md) (as revised on 2026-11-15 and read
 by its Notes), the session clause of its decision 5 for a carry, and the clause of item 1 of the Amendment of 2026-11-15 of

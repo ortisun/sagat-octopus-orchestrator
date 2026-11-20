@@ -65,3 +65,7 @@ in T041-36; the handler's retake rechecks removal and expiry; the refill raises 
 sequences revoked and published by one replica; the stale acceptance and lock-order text; the busy case stated in
 G041-023) or recorded there as Minors left open (a reason of its own for the busy case, the refill's `NOWAIT` under a
 constraint name of its own, preferring the reserved lease).
+
+Note (D041-115): the acceptance route of architecture R1 is corrected by the coordinating session: README rule 4 requires a
+person to accept, so ADR-0097, ADR-0095 and the restated O041-040 stay Proposed and are put to the owner with a
+recommendation.
