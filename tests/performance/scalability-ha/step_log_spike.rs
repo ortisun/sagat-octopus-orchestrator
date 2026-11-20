@@ -140,6 +140,123 @@ pub async fn install(pool: &PgPool) {
     }
 }
 
+/// T041-35's second run (OD-2026-11-20-1): the scratch line table charged once per insert statement, its flush queued by
+/// the transaction's delta row, and the carry as one function call (design 041 section 2a, data-model.md §3 and §8a).
+#[cfg(feature = "perf-spike")]
+pub async fn install_per_statement(pool: &PgPool) {
+    let statements = [
+        "DROP TRIGGER step_log_lines_quota_delta ON spike_041.step_log_lines",
+        "DROP TRIGGER step_log_lines_quota_flush ON spike_041.step_log_lines",
+        r"CREATE FUNCTION spike_041.lines_charge() RETURNS trigger LANGUAGE plpgsql
+            SET search_path = pg_catalog, pg_temp AS $$
+        DECLARE r record;
+        BEGIN
+            FOR r IN SELECT tenant_id,
+                            sum(octet_length(coalesce(message, '')) + octet_length(coalesce(exception, ''))
+                                + octet_length(coalesce(fields, '')) + 128)::bigint AS bytes
+                       FROM inserted GROUP BY tenant_id LOOP
+                PERFORM public.sagat_quota_add_delta(r.tenant_id, 0, 0, r.bytes);
+            END LOOP;
+            RETURN NULL;
+        END $$",
+        "CREATE TRIGGER step_log_lines_quota_insert AFTER INSERT ON spike_041.step_log_lines \
+           REFERENCING NEW TABLE AS inserted FOR EACH STATEMENT EXECUTE FUNCTION spike_041.lines_charge()",
+        "ALTER TABLE spike_041.step_log_lines ENABLE ALWAYS TRIGGER step_log_lines_quota_insert",
+        "CREATE CONSTRAINT TRIGGER quota_transaction_deltas_spike_flush AFTER INSERT ON public.quota_transaction_deltas \
+           DEFERRABLE INITIALLY DEFERRED FOR EACH ROW WHEN (NEW.log_delta <> 0) \
+           EXECUTE FUNCTION public.sagat_quota_flush_deltas()",
+        "ALTER TABLE public.quota_transaction_deltas ENABLE ALWAYS TRIGGER quota_transaction_deltas_spike_flush",
+        r"CREATE FUNCTION spike_041.step_log_carry(p_tenant uuid, p_namespace uuid, p_run uuid, p_step uuid,
+                p_node text, p_attempt integer, p_generation bigint, p_keys text[], p_stream_key text,
+                p_resources text[], p_messages text[], p_application text)
+            RETURNS text LANGUAGE plpgsql VOLATILE SET search_path = pg_catalog, public, pg_temp AS $$
+        DECLARE
+            k text; r record;
+            v_records bigint := 10000; v_bytes bigint := 1048576; v_retention integer := 14;
+            v_records_scoped boolean := false; v_bytes_scoped boolean := false; v_retention_scoped boolean := false;
+            v_usage bigint; v_stream bigint; v_last bigint; v_count bigint; v_sum bigint;
+            v_final boolean; v_removed boolean; v_in_order boolean; v_inserted integer; v_size bigint;
+        BEGIN
+            PERFORM set_config('application_name', p_application, true);
+            -- CA: the fences and the stream lock, tried, never waited for.
+            FOREACH k IN ARRAY p_keys LOOP
+                IF NOT pg_try_advisory_xact_lock_shared(hashtextextended(k, 0)) THEN RETURN 'contended'; END IF;
+            END LOOP;
+            IF NOT pg_try_advisory_xact_lock(hashtextextended(p_stream_key, 0)) THEN RETURN 'contended'; END IF;
+            -- CB: the policy, read after the locks, and the tenant's allowance.
+            FOR r IN SELECT resource, namespace_id, max_value FROM public.quota_limits
+                      WHERE tenant_id = p_tenant AND resource = ANY (p_resources)
+                        AND (namespace_id IS NULL OR namespace_id = p_namespace)
+                     UNION ALL SELECT resource, NULL::uuid, max_value FROM public.quota_ceilings
+                      WHERE tenant_id = p_tenant AND resource = ANY (p_resources) LOOP
+                IF r.resource = p_resources[1] AND (r.namespace_id IS NOT NULL OR NOT v_records_scoped) THEN
+                    v_records := r.max_value; v_records_scoped := r.namespace_id IS NOT NULL;
+                ELSIF r.resource = p_resources[2] AND (r.namespace_id IS NOT NULL OR NOT v_bytes_scoped) THEN
+                    v_bytes := r.max_value; v_bytes_scoped := r.namespace_id IS NOT NULL;
+                ELSIF r.resource = p_resources[3] AND (r.namespace_id IS NOT NULL OR NOT v_retention_scoped) THEN
+                    v_retention := r.max_value::integer; v_retention_scoped := r.namespace_id IS NOT NULL;
+                END IF;
+            END LOOP;
+            SELECT log_bytes INTO v_usage FROM public.tenant_retained_usage WHERE tenant_id = p_tenant;
+            IF v_records = 0 THEN RETURN 'off'; END IF;
+            -- CC: a new stream, never waiting on a unique check.
+            INSERT INTO spike_041.step_log_streams (tenant_id, public_id, namespace_id, run_id, step_id, node,
+                    instance_path_nodes, instance_path_indices, attempt, generation, retention_days, last_at, expires_at)
+            SELECT p_tenant, gen_random_uuid(), p_namespace, p_run, p_step, p_node, '{}'::text[], '{}'::integer[],
+                   p_attempt, p_generation, v_retention, clock_timestamp(),
+                   clock_timestamp() + make_interval(days => v_retention)
+             WHERE NOT EXISTS (SELECT 1 FROM spike_041.step_log_streams WHERE tenant_id = p_tenant AND run_id = p_run
+                                  AND step_id = p_step AND attempt = p_attempt AND generation = p_generation
+                                  AND source = 'worker')
+            ON CONFLICT (tenant_id, run_id, step_id, attempt, generation, source) DO NOTHING
+            RETURNING stream_id INTO v_stream;
+            IF v_stream IS NOT NULL THEN
+                v_last := 0; v_count := 0; v_sum := 0;
+            ELSE
+                -- CC': the existing stream, locked only if free.
+                SELECT stream_id, last_sequence, records, bytes, final_at IS NOT NULL,
+                       (removed_at IS NOT NULL OR expires_at <= clock_timestamp()),
+                       (last_stored_xid IS NULL OR last_stored_xid < pg_current_xact_id())
+                  INTO v_stream, v_last, v_count, v_sum, v_final, v_removed, v_in_order
+                  FROM spike_041.step_log_streams
+                 WHERE tenant_id = p_tenant AND run_id = p_run AND step_id = p_step AND attempt = p_attempt
+                   AND generation = p_generation AND source = 'worker'
+                   FOR UPDATE SKIP LOCKED;
+                IF NOT FOUND THEN RETURN 'contended'; END IF;
+                IF v_final OR v_removed OR NOT v_in_order THEN RETURN 'neither'; END IF;
+            END IF;
+            -- The plan, inline for the spike's two cases: every record kept when it fits the ceilings.
+            IF v_count + cardinality(p_messages) > v_records THEN RETURN 'neither'; END IF;
+            -- CD: the kept lines; the statement trigger charges them once.
+            WITH ins AS (
+                INSERT INTO spike_041.step_log_lines (tenant_id, stream_id, sequence, run_id, worker_time, level, kind, message)
+                SELECT p_tenant, v_stream, v_last + o, p_run, clock_timestamp(), 'info', 'line', m
+                  FROM unnest(p_messages) WITH ORDINALITY AS u(m, o)
+                ON CONFLICT (tenant_id, stream_id, sequence) DO NOTHING
+                RETURNING octet_length(message) AS n)
+            SELECT count(*)::integer, coalesce(sum(n), 0)::bigint INTO v_inserted, v_size FROM ins;
+            IF v_sum + v_size > v_bytes THEN RAISE EXCEPTION 'spike carry over the attempt bytes'; END IF;
+            -- CE: the counters, the final mark and the order guard.
+            UPDATE spike_041.step_log_streams
+               SET last_sequence = GREATEST(last_sequence, v_last + cardinality(p_messages)),
+                   records = records + v_inserted, bytes = bytes + v_size,
+                   first_at = coalesce(first_at, clock_timestamp()), last_at = clock_timestamp(),
+                   expires_at = clock_timestamp() + make_interval(days => retention_days::integer),
+                   final_at = clock_timestamp(),
+                   last_stored_xid = CASE WHEN v_inserted > 0
+                       THEN GREATEST(coalesce(last_stored_xid, '0'::xid8), pg_current_xact_id()) ELSE last_stored_xid END
+             WHERE tenant_id = p_tenant AND stream_id = v_stream;
+            RETURN 'written';
+        END $$",
+    ];
+    for statement in statements {
+        sqlx::query(statement)
+            .execute(pool)
+            .await
+            .unwrap_or_else(|error| panic!("spike schema (second run): {error}"));
+    }
+}
+
 /// The admission of one replica: the Logs class cap and the tenant's tickets. No call waits for either.
 #[derive(Clone)]
 pub struct Admission {
@@ -682,11 +799,14 @@ pub struct CarryHook {
     pub contended: AtomicU64,
     pub neither: AtomicU64,
     pub times: std::sync::Mutex<Vec<Duration>>,
+    /// T041-35's second run (`SAGAT_PERF_STEP_LOG_CARRY_RUN=2`): the carry as one call of `spike_041.step_log_carry`.
+    pub one_call: bool,
 }
 
 impl CarryHook {
     pub fn new(records: usize, bytes: usize) -> Self {
         Self {
+            one_call: std::env::var("SAGAT_PERF_STEP_LOG_CARRY_RUN").as_deref() == Ok("2"),
             records,
             bytes,
             calls: AtomicU64::new(0),
@@ -706,6 +826,9 @@ impl CarryHook {
     ) -> Result<(), sqlx::Error> {
         self.calls.fetch_add(1, Ordering::Relaxed);
         let started = Instant::now();
+        if self.one_call {
+            return self.carry_in_one_call(conn, a, started).await;
+        }
         let keys: Vec<String> = RESOURCES
             .iter()
             .flat_map(|resource| {
@@ -856,6 +979,59 @@ impl CarryHook {
         .execute(&mut *conn)
         .await?;
         self.written.fetch_add(1, Ordering::Relaxed);
+        self.record(started);
+        Ok(())
+    }
+
+    /// The second run's carry: one round trip, the function of `install_per_statement`.
+    #[cfg(feature = "perf-spike")]
+    async fn carry_in_one_call(
+        &self,
+        conn: &mut sqlx::PgConnection,
+        a: &sagat_infra_postgres::report_hook::ReportedAttempt,
+        started: Instant,
+    ) -> Result<(), sqlx::Error> {
+        let keys: Vec<String> = RESOURCES
+            .iter()
+            .flat_map(|resource| {
+                [
+                    format!("quota-policy:{resource}:{}", a.tenant),
+                    format!("quota-policy:{resource}:{}:{}", a.tenant, a.namespace),
+                ]
+            })
+            .collect();
+        let messages: Vec<String> = records(1, self.records, self.bytes)
+            .into_iter()
+            .map(|record| record.message)
+            .collect();
+        let outcome: String = sqlx::query_scalar(
+            "SELECT spike_041.step_log_carry($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
+        )
+        .bind(a.tenant)
+        .bind(a.namespace)
+        .bind(a.run)
+        .bind(a.step)
+        .bind(&a.node)
+        .bind(a.attempt)
+        .bind(a.generation)
+        .bind(&keys)
+        .bind(stream_lock_key(
+            a.tenant,
+            a.run,
+            a.step,
+            a.attempt,
+            a.generation,
+        ))
+        .bind(RESOURCES.map(str::to_owned).to_vec())
+        .bind(&messages)
+        .bind(CARRY_APPLICATION)
+        .fetch_one(&mut *conn)
+        .await?;
+        match outcome.as_str() {
+            "written" => self.written.fetch_add(1, Ordering::Relaxed),
+            "contended" => self.contended.fetch_add(1, Ordering::Relaxed),
+            _ => self.neither.fetch_add(1, Ordering::Relaxed),
+        };
         self.record(started);
         Ok(())
     }

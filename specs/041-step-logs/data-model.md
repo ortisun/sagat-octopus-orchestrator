@@ -359,8 +359,10 @@ CREATE FUNCTION sagat_step_log_carry(
     p_exceptions text[], p_fields text[], p_truncated boolean[], p_sizes integer[],
     p_highest bigint,
     p_mark_reason text)           -- null for a full carry; else invalid, tenant_quota, secret or content_fallback
-RETURNS TABLE (outcome text, kept integer, dropped_by_worker bigint, dropped_by_server bigint,
-               dropped_reason text, ceiling_reason text)
+RETURNS TABLE (outcome text, kept integer, dropped_by_worker bigint,
+               dropped_by_server jsonb,  -- the counts per reason (out_of_order, attempt_records, attempt_bytes,
+                                         -- tenant_quota, invalid, secret, content_fallback); one carry can have two
+               ceiling_reason text)
 LANGUAGE plpgsql VOLATILE SECURITY INVOKER SET search_path = pg_catalog, public, pg_temp AS $$ … $$;
 REVOKE ALL ON FUNCTION sagat_step_log_carry(…) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION sagat_step_log_carry(…) TO sagat_app;
@@ -382,7 +384,9 @@ Its body, each statement with a snapshot of its own (the function is `VOLATILE`,
    `removed_at`, `expires_at`, `final_at` and `last_stored_xid IS NULL OR last_stored_xid < pg_current_xact_id()` as
    `in_order`. No row: `contended`; removed, expired or final: `removed` or `final_recorded`.
 5. **Plan**, in the function, exactly T5 and T6 of §8 for a carry (design section 2a): with `p_mark_reason` set, no
-   record is kept, no marker is planned, the records are counted as dropped by the server with that reason, and for
+   record is kept, no marker is planned, each distinct sequence in (`last_sequence`, `p_highest`] that the carry sent is
+   counted once as dropped by the server with that reason (an invalid carry's duplicate or out-of-range elements are not
+   counted; the rest of the range is the worker's gap), and for
    `tenant_quota` the stream's `ceiling_reason` becomes `tenant_quota`. Otherwise the records whose sequence is above
    `last_sequence` (none above it when `in_order` is false, counted `out_of_order`) are kept in sequence order until the
    first that does not fit `step_log_attempt_records` or `step_log_attempt_bytes` from the stream's counters; the rest
@@ -396,8 +400,8 @@ Its body, each statement with a snapshot of its own (the function is `VOLATILE`,
    stream_id, sequence) DO NOTHING RETURNING octet_length(…)`, and the marker. Not run when nothing is kept. The
    statement-level trigger of §3 charges the inserted rows once.
 7. **CE.** The `UPDATE` of T9 from CD's rows, plus `final_at = clock_timestamp()` and `last_stored_xid` raised as T9
-   raises it; it runs also when nothing was kept. Return `stored` or `mark_only` with the kept count, the drops by
-   worker and by server and their reason, and the stream's `ceiling_reason`.
+   raises it; it runs also when nothing was kept. Return `stored` or `mark_only` with the kept count, the drops by the
+   worker, the drops by the server per reason, and the stream's `ceiling_reason`.
 
 At the commit any raise of the finalizer's step-log branch (each with a constraint name of its own, T041-5) is mapped
 to `StoreError::StepLogRefused`, which the application answers with a re-run of the report carrying a mark-only carry

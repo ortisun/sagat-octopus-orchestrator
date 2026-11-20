@@ -2171,6 +2171,11 @@ async fn step_log_carry_spike() {
             .expect("set the tenant's limit");
     }
     step_log_spike::install(&w.db.pool).await;
+    // T041-35's second run (OD-2026-11-20-1): one call and a charge per insert statement.
+    let second_run = std::env::var("SAGAT_PERF_STEP_LOG_CARRY_RUN").as_deref() == Ok("2");
+    if second_run {
+        step_log_spike::install_per_statement(&w.db.pool).await;
+    }
     let (chain, _) = w
         .publish(document(
             "spike-chain",
@@ -2186,7 +2191,12 @@ async fn step_log_carry_spike() {
     let half_pool = usize::try_from(API_POOL / 2).unwrap_or(10);
     let mut body = format!("{}\n", environment(&w).await);
     body.push_str(&format!(
-        "Design 041, T041-35: the carry of section 2a (CA to CE of data-model.md §8a) run by the report hook inside the report transaction of each root completion, against the scratch schema `spike_041`. {runs} runs of three chained activities per measurement. Logs class cap and tickets of (g): {half_pool}.\n\n| Measurement | Transitions/s | Complete p50 / p99 | Carry calls / written / contended / neither | Carry p50 / p99 | S p99 | Batches | Ticket refusals | Commit waits / by ingest / by carry |\n|---|---:|---|---|---|---:|---:|---:|---|\n"
+        "Design 041, T041-35 ({}): the carry of section 2a run by the report hook inside the report transaction of each root completion, against the scratch schema `spike_041`. {runs} runs of three chained activities per measurement. Logs class cap and tickets of (g): {half_pool}.\n\n| Measurement | Transitions/s | Complete p50 / p99 | Carry calls / written / contended / neither | Carry p50 / p99 | S p99 | Batches | Ticket refusals | Commit waits / by ingest / by carry |\n|---|---:|---|---|---|---:|---:|---:|---|\n",
+        if second_run {
+            "second run: one function call, a charge per insert statement"
+        } else {
+            "first run: CA to CE as statements, a charge per row"
+        }
     ));
     let measure = |label: &'static str,
                    replicas: usize,

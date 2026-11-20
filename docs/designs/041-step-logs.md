@@ -1049,7 +1049,8 @@ next step whose short step carries ten records (51 statements, 1 transaction, 11
 lines), a mark-only carry (51, 1, 11; 1 stream, 0 lines) and capture off in the namespace (51, 1, 11; none); and the
 completion that ends the run in the same three cases (48, 1, 9 each, with the same step-log rows). A third measure keeps
 the function's own cost from growing unseen: in the carrying cases the test sets `pg_stat_statements.track = 'all'` for
-its database and asserts, as an equality, the nested statements (`toplevel = false`) that the call ran and their rows,
+its server (`ALTER SYSTEM` and `pg_reload_conf()` before the measured pool opens, so that the report's own connection
+counts them) and asserts, as an equality, the nested statements (`toplevel = false`) that the call ran and their rows,
 recorded by T041-36 for each case (for ten records kept: the fence and stream-lock tries, the policy read, the
 allowance, the stream insert, the lines insert with its statement trigger's delta, the counter update); and a
 source-text check of the migration that creates the function fails if its body names `tenant_retained_usage` (FR-041-008:
