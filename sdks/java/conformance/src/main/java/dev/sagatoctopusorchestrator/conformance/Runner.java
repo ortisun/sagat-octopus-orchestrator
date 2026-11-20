@@ -729,6 +729,30 @@ public final class Runner {
             permit.set("since", instant(run.concurrency().since()));
             permit.set("queueDeadline", instant(run.concurrency().queueDeadline()));
         }
+        // Present only for a run whose rate-limit slot counts or that is buffered (feature 022); the label as for a permit,
+        // the position as it came.
+        if (run.rateLimit() != null) {
+            Run.RateLimitOfRun slot = run.rateLimit();
+            ObjectNode rate = out.putObject("rateLimit");
+            rate.put("state", slot.state());
+            rate.put("pool", slot.pool());
+            rate.put("group", slot.group());
+            if (slot.keyLabel() == null) {
+                rate.putNull("keyLabel");
+            } else {
+                rate.put("keyLabel", "disclosed");
+            }
+            rate.put("limit", slot.limit());
+            rate.put("per", slot.per());
+            rate.set("since", instant(slot.since()));
+            rate.set("queueDeadline", instant(slot.queueDeadline()));
+            if (slot.position() == null) {
+                rate.putNull("position");
+            } else {
+                rate.put("position", slot.position().longValue());
+            }
+            rate.set("estimatedGrantAt", instant(slot.estimatedGrantAt()));
+        }
         return out;
     }
 

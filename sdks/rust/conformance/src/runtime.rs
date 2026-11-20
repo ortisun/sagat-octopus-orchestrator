@@ -102,6 +102,22 @@ fn run_json(run: Run) -> Value {
             "queueDeadline": operations::instant(permit.queue_deadline),
         });
     }
+    // Present only for a run whose rate-limit slot counts or that is buffered (feature 022); the
+    // label as for a permit, the position as it came.
+    if let Some(slot) = &run.rate_limit {
+        result["rateLimit"] = json!({
+            "state": slot.state,
+            "pool": slot.pool,
+            "group": slot.group,
+            "keyLabel": slot.key_label.as_ref().map(|_| "disclosed"),
+            "limit": slot.limit,
+            "per": slot.per,
+            "since": operations::instant(Some(slot.since)),
+            "queueDeadline": operations::instant(slot.queue_deadline),
+            "position": slot.position,
+            "estimatedGrantAt": operations::instant(slot.estimated_grant_at),
+        });
+    }
     result
 }
 fn log_entry(ctx: &ActivityContext, input: &Value, name: &str, kind: &str, outcome: &str) -> Value {

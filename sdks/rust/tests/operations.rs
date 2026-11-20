@@ -433,6 +433,100 @@ async fn a_run_permit_is_carried_when_the_run_holds_or_waits_for_one_and_is_none
 }
 
 #[tokio::test]
+async fn a_run_rate_limit_slot_is_carried_while_it_counts_or_waits_and_is_none_otherwise() {
+    let server = Recorder::start().await;
+    server.answer_with(
+        200,
+        run(json!({"status": "WAITING", "rateLimit": {
+            "state": "WAITING", "pool": "ORDINARY", "group": "provider-starts", "keyLabel": "0123456789ab",
+            "limit": 2, "per": "minute", "since": "2026-11-20T10:00:00.123456+02:00",
+            "queueDeadline": "2026-11-20T10:10:00Z", "position": 3, "estimatedGrantAt": "2026-11-20T10:01:00Z"
+        }})),
+    );
+    let slot = server
+        .client()
+        .get(RUN, CallOptions::default())
+        .await
+        .expect("get")
+        .rate_limit
+        .expect("a buffered run has its slot");
+    assert_eq!(
+        (
+            slot.state.as_str(),
+            slot.pool.as_str(),
+            slot.group.as_str(),
+            slot.limit,
+            slot.per.as_str(),
+            slot.position
+        ),
+        (
+            "WAITING",
+            "ORDINARY",
+            "provider-starts",
+            2,
+            "minute",
+            Some(3)
+        )
+    );
+    assert_eq!(slot.key_label.as_deref(), Some("0123456789ab"));
+    assert_eq!(slot.since, utc("2026-11-20T08:00:00.123456Z"));
+    assert_eq!(slot.since.offset(), time::UtcOffset::UTC);
+    assert_eq!(slot.queue_deadline, Some(utc("2026-11-20T10:10:00Z")));
+    assert_eq!(slot.estimated_grant_at, Some(utc("2026-11-20T10:01:00Z")));
+    server.answer_with(
+        200,
+        run(json!({"rateLimit": {
+            "state": "GRANTED", "pool": "ORDINARY", "group": "g", "keyLabel": null, "limit": 1,
+            "per": "fortnight", "since": "2026-11-20T10:00:00Z"
+        }})),
+    );
+    let granted = server
+        .client()
+        .get(RUN, CallOptions::default())
+        .await
+        .expect("get")
+        .rate_limit
+        .expect("a granted slot");
+    assert!(granted.key_label.is_none() && granted.queue_deadline.is_none());
+    assert!(granted.position.is_none() && granted.estimated_grant_at.is_none());
+    assert_eq!(granted.per, "fortnight");
+    server.answer_with(200, run(json!({})));
+    let plain = server
+        .client()
+        .get(RUN, CallOptions::default())
+        .await
+        .expect("get");
+    assert!(plain.rate_limit.is_none());
+    let whole = json!({"state": "WAITING", "pool": "ORDINARY", "group": "g", "limit": 1, "per": "second",
+        "since": "2026-11-20T10:00:00Z"});
+    let with = |key: &str, value: Value| {
+        let mut slot = whole.clone();
+        if value.is_null() {
+            slot.as_object_mut().expect("object").remove(key);
+        } else {
+            slot[key] = value;
+        }
+        slot
+    };
+    for broken in [
+        with("per", Value::Null),
+        with("limit", json!(0)),
+        with("limit", json!(1.5)),
+        with("since", Value::Null),
+        with("position", json!(0)),
+        json!("WAITING"),
+    ] {
+        server.answer_with(200, run(json!({ "rateLimit": broken })));
+        let error = server
+            .client()
+            .get(RUN, CallOptions::default())
+            .await
+            .expect_err("a broken slot is refused");
+        assert_eq!(error.code, "PROTOCOL", "{broken}");
+    }
+}
+
+#[tokio::test]
 async fn a_run_stopped_with_a_failure_code_carries_it_and_a_run_without_one_has_none() {
     let server = Recorder::start().await;
     server.answer_with(

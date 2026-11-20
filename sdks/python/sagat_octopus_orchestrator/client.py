@@ -141,6 +141,36 @@ class RunResetFrom:
 
 
 @dataclass(frozen=True)
+class RunRateLimit:
+    """The run-level rate-limit slot a run holds while it counts, or waits for while buffered (feature 022,
+    FR-022-048)."""
+
+    state: str
+    """``GRANTED`` or ``WAITING``, or another string: the set only grows."""
+    pool: str
+    """``ORDINARY`` or ``DRAFT_TEST``, or another string: the set only grows."""
+    group: str
+    key_label: str | None
+    """The 12-hex label of the key's keyed digest; ``None`` for a caller who may not reveal personal data in the run's
+    namespace."""
+    limit: int
+    """The effective limit the slot was decided with (1 or more)."""
+    per: str
+    """``second``, ``minute`` or ``hour``, or another string: the set only grows."""
+    since: datetime
+    """When the slot was granted (``GRANTED``) or the run was buffered (``WAITING``); aware UTC."""
+    queue_deadline: datetime | None
+    """``WAITING``: when the run fails ``RATE_LIMIT_WAIT_TIMEOUT`` if not granted before; ``None`` while
+    ``GRANTED``."""
+    position: int | None
+    """``WAITING``, from ``get`` only: the run's rank among the key's eligible waiters (1 is next); ``None``
+    otherwise."""
+    estimated_grant_at: datetime | None
+    """``WAITING``, from ``get`` only: an estimate of the grant, never a promise; ``None`` otherwise and for a caller
+    without the reveal grant."""
+
+
+@dataclass(frozen=True)
 class RunConcurrency:
     """The run-level concurrency permit a run holds or waits for (feature 022, FR-022-022)."""
 
@@ -200,6 +230,9 @@ class Run:
     concurrency: RunConcurrency | None = None
     """The run-level concurrency permit the run holds or waits for (feature 022); ``None`` for a run that does
     neither."""
+    rate_limit: RunRateLimit | None = None
+    """The run-level rate-limit slot the run holds while it counts, or waits for while buffered (feature 022);
+    ``None`` for any other run."""
     raw: Mapping[str, Any] = field(default_factory=dict, repr=False, compare=False)
 
     @property
@@ -422,6 +455,7 @@ def _run_fields(value: Any) -> dict[str, Any]:
         "reset_from": _to_run_reset_from(raw.get("resetFrom")),
         "failure_code": _opt_str(raw, "failureCode"),
         "concurrency": _to_run_concurrency(raw.get("concurrency")),
+        "rate_limit": _to_run_rate_limit(raw.get("rateLimit")),
         "raw": raw,
     }
     return fields
@@ -444,6 +478,24 @@ def _to_run_reset_from(value: Any) -> RunResetFrom | None:
         return None
     reset = _object(value, "a run reset")
     return RunResetFrom(_str(reset, "runId"), _revision(reset, "sequence", 1))
+
+
+def _to_run_rate_limit(value: Any) -> RunRateLimit | None:
+    if value is None:
+        return None
+    slot = _object(value, "a run rate-limit slot")
+    return RunRateLimit(
+        _str(slot, "state"),
+        _str(slot, "pool"),
+        _str(slot, "group"),
+        _opt_str(slot, "keyLabel"),
+        _revision(slot, "limit", 1),
+        _str(slot, "per"),
+        instant_of(slot, "since"),
+        parse_instant(slot.get("queueDeadline")),
+        None if slot.get("position") is None else _revision(slot, "position", 1),
+        parse_instant(slot.get("estimatedGrantAt")),
+    )
 
 
 def _to_run_concurrency(value: Any) -> RunConcurrency | None:

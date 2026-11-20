@@ -225,6 +225,15 @@ Rules:
   `state`, `pool`, `group` or a valid `since`, or one that is not an object, is the SDK's `PROTOCOL` error, never a run with half of
   it (D022-096). The type is `RunConcurrency` (Java `Run.ConcurrencyOfRun`). The conformance observation carries the key only when
   present, and writes a disclosed label as `"disclosed"`: its value is a digest under the platform's own key.
+- A `Run` carries `rateLimit` (feature 022, FR-022-048) while its run-level rate-limit slot still counts or while it is buffered,
+  and none otherwise: `state` (`GRANTED`, `WAITING`, or another string: the set only grows), `pool` (likewise), `group`,
+  `keyLabel` (as for `concurrency`), `limit` (an integer of at least 1: the effective limit the slot was decided with), `per`
+  (`second`, `minute`, `hour`, or another string), `since` (an instant), `queueDeadline` (an instant while `WAITING`), `position`
+  (an integer of at least 1, only from `get` while `WAITING`; null/None/nil/zero otherwise) and `estimatedGrantAt` (an instant, only
+  from `get` while `WAITING`, and absent for a caller who may not reveal personal data in the namespace). A slot without `state`,
+  `pool`, `group`, `per`, a valid `since` or a `limit` of at least 1, a `position` below 1, or one that is not an object, is the
+  SDK's `PROTOCOL` error (D022-098). The type is `RunRateLimit` (Java `Run.RateLimitOfRun`). The conformance observation carries
+  the key only when present, a disclosed label as `"disclosed"`, and the position as it came.
 - The action of a schedule may name a business-id prefix (FR-018-016): `businessIdPrefix` (a string), `businessIdConflictPolicy` and
   `businessIdReusePolicy` (the two policies of `start`), optional on the schedule write (create and update) and on the `action` of what is
   read back. **Absent means absent**: a write that sets none of them sends none of the three keys (not `null`, not empty), and a schedule whose

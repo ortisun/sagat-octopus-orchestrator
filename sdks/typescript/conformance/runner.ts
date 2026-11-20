@@ -164,6 +164,11 @@ function runJson(run: Run): Obj {
     ...(run.concurrency !== null
       ? { concurrency: { state: run.concurrency.state, pool: run.concurrency.pool, group: run.concurrency.group, keyLabel: run.concurrency.keyLabel === null ? null : 'disclosed', since: iso(run.concurrency.since), queueDeadline: iso(run.concurrency.queueDeadline) } }
       : {}),
+    // Present only for a run whose rate-limit slot counts or that is buffered (feature 022); the label as for a permit,
+    // the position as it came.
+    ...(run.rateLimit !== null
+      ? { rateLimit: { state: run.rateLimit.state, pool: run.rateLimit.pool, group: run.rateLimit.group, keyLabel: run.rateLimit.keyLabel === null ? null : 'disclosed', limit: run.rateLimit.limit, per: run.rateLimit.per, since: iso(run.rateLimit.since), queueDeadline: iso(run.rateLimit.queueDeadline), position: run.rateLimit.position, estimatedGrantAt: iso(run.rateLimit.estimatedGrantAt) } }
+      : {}),
   };
 }
 

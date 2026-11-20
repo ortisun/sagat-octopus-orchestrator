@@ -166,8 +166,45 @@ pub struct Run {
     /// The run-level concurrency permit the run holds or waits for (feature 022), or `None` for a
     /// run that does neither.
     pub concurrency: Option<RunConcurrency>,
+    /// The run-level rate-limit slot the run holds while it counts, or waits for while buffered
+    /// (feature 022), or `None` for any other run.
+    pub rate_limit: Option<RunRateLimit>,
     #[serde(skip)]
     pub raw: Value,
+}
+/// The run-level rate-limit slot a run holds while it counts, or waits for while buffered (feature
+/// 022, FR-022-048).
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunRateLimit {
+    /// `GRANTED` or `WAITING`, or another string: the set only grows.
+    pub state: String,
+    /// `ORDINARY` or `DRAFT_TEST`, or another string: the set only grows.
+    pub pool: String,
+    pub group: String,
+    /// The 12-hex label of the key's keyed digest; `None` for a caller who may not reveal personal
+    /// data in the run's namespace.
+    #[serde(default)]
+    pub key_label: Option<String>,
+    /// The effective limit the slot was decided with (1 or more).
+    pub limit: u64,
+    /// `second`, `minute` or `hour`, or another string: the set only grows.
+    pub per: String,
+    /// When the slot was granted (`GRANTED`) or the run was buffered (`WAITING`), in UTC.
+    #[serde(with = "time::serde::rfc3339")]
+    pub since: OffsetDateTime,
+    /// `WAITING`: when the run fails `RATE_LIMIT_WAIT_TIMEOUT` if not granted before; `None` while
+    /// `GRANTED`.
+    #[serde(default, with = "time::serde::rfc3339::option")]
+    pub queue_deadline: Option<OffsetDateTime>,
+    /// `WAITING`, from `get` only: the run's rank among the key's eligible waiters (1 is next);
+    /// `None` otherwise.
+    #[serde(default)]
+    pub position: Option<u64>,
+    /// `WAITING`, from `get` only: an estimate of the grant, never a promise; `None` otherwise and
+    /// for a caller without the reveal grant.
+    #[serde(default, with = "time::serde::rfc3339::option")]
+    pub estimated_grant_at: Option<OffsetDateTime>,
 }
 /// The run-level concurrency permit a run holds or waits for (feature 022, FR-022-022).
 #[derive(Clone, Debug, Deserialize)]
@@ -240,6 +277,12 @@ impl Run {
                 .reset_from
                 .as_ref()
                 .is_some_and(|reset| !(1..=i64::MAX as u64).contains(&reset.sequence))
+            || run.rate_limit.as_ref().is_some_and(|slot| {
+                !(1..=i64::MAX as u64).contains(&slot.limit)
+                    || slot
+                        .position
+                        .is_some_and(|rank| !(1..=i64::MAX as u64).contains(&rank))
+            })
         {
             return Err(protocol());
         }
@@ -250,6 +293,11 @@ impl Run {
         run.start_delayed_until = run.start_delayed_until.map(|v| v.to_offset(UtcOffset::UTC));
         if let Some(schedule) = &mut run.schedule {
             schedule.nominal_time = schedule.nominal_time.to_offset(UtcOffset::UTC);
+        }
+        if let Some(slot) = &mut run.rate_limit {
+            slot.since = slot.since.to_offset(UtcOffset::UTC);
+            slot.queue_deadline = slot.queue_deadline.map(|v| v.to_offset(UtcOffset::UTC));
+            slot.estimated_grant_at = slot.estimated_grant_at.map(|v| v.to_offset(UtcOffset::UTC));
         }
         if let Some(permit) = &mut run.concurrency {
             permit.since = permit.since.to_offset(UtcOffset::UTC);

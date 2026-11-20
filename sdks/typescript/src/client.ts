@@ -63,8 +63,33 @@ export interface Run {
   failureCode: string | null;
   /** The run-level concurrency permit the run holds or waits for (feature 022), or null for a run that does neither. */
   concurrency: RunConcurrency | null;
+  /** The run-level rate-limit slot the run holds (while it counts) or waits for (feature 022), or null for any other run. */
+  rateLimit: RunRateLimit | null;
   /** The answer as the server sent it, so a field of a newer server is reachable. */
   raw: Record<string, unknown>;
+}
+
+/** The run-level rate-limit slot a run holds while it counts, or waits for while buffered (feature 022, FR-022-048). */
+export interface RunRateLimit {
+  /** `GRANTED` or `WAITING`, or another string: the set only grows. */
+  state: string;
+  /** `ORDINARY` or `DRAFT_TEST`, or another string: the set only grows. */
+  pool: string;
+  group: string;
+  /** The 12-hex label of the key's keyed digest; null for a caller who may not reveal personal data in the run's namespace. */
+  keyLabel: string | null;
+  /** The effective limit the slot was decided with (1 or more). */
+  limit: number;
+  /** `second`, `minute` or `hour`, or another string: the set only grows. */
+  per: string;
+  /** When the slot was granted (`GRANTED`) or the run was buffered (`WAITING`). A `Date`, so to the millisecond. */
+  since: Date;
+  /** `WAITING`: when the run fails `RATE_LIMIT_WAIT_TIMEOUT` if not granted before; null while `GRANTED`. */
+  queueDeadline: Date | null;
+  /** `WAITING`, from `get` only: the run's rank among the key's eligible waiters (1 is next); null otherwise. */
+  position: number | null;
+  /** `WAITING`, from `get` only: an estimate of the grant, never a promise; null otherwise and for a caller without the reveal grant. */
+  estimatedGrantAt: Date | null;
 }
 
 /** The run-level concurrency permit a run holds or waits for (feature 022, FR-022-022). */
@@ -394,7 +419,21 @@ export function toRun(value: unknown): Run {
     resetFrom: toRunResetFrom(raw['resetFrom']),
     failureCode: optStr(raw, 'failureCode'),
     concurrency: toRunConcurrency(raw['concurrency']),
+    rateLimit: toRunRateLimit(raw['rateLimit']),
     raw,
+  };
+}
+
+function toRunRateLimit(value: unknown): RunRateLimit | null {
+  if (value === null || value === undefined) return null;
+  const slot = object(value, 'a run rate-limit slot');
+  const since = optDate(slot, 'since');
+  if (!since) throw new SagatError({ code: 'PROTOCOL', message: 'since is missing or invalid in the answer' });
+  const position = slot['position'] === null || slot['position'] === undefined ? null : revision(slot, 'position', 1);
+  return {
+    state: str(slot, 'state'), pool: str(slot, 'pool'), group: str(slot, 'group'), keyLabel: optStr(slot, 'keyLabel'),
+    limit: revision(slot, 'limit', 1), per: str(slot, 'per'), since, queueDeadline: optDate(slot, 'queueDeadline'),
+    position, estimatedGrantAt: optDate(slot, 'estimatedGrantAt'),
   };
 }
 

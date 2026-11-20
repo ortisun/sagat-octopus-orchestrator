@@ -41,6 +41,8 @@ import java.time.Instant;
  *                      other run
  * @param concurrency   the run-level concurrency permit the run holds or waits for (feature 022); null for a run that
  *                      does neither
+ * @param rateLimit     the run-level rate-limit slot the run holds while it counts, or waits for while buffered
+ *                      (feature 022); null for any other run
  * @param raw           the answer as sent
  */
 public record Run(
@@ -68,7 +70,40 @@ public record Run(
         ResetFromOfRun resetFrom,
         String failureCode,
         ConcurrencyOfRun concurrency,
+        RateLimitOfRun rateLimit,
         JsonNode raw) {
+
+    /** A run without a rate-limit slot. */
+    public Run(
+            String runId,
+            String workflowId,
+            String versionId,
+            RunStatus status,
+            String statusText,
+            long version,
+            boolean paused,
+            String startedBy,
+            Instant createdAt,
+            Instant updatedAt,
+            Instant finishedAt,
+            Instant deadline,
+            String traceId,
+            String correlationId,
+            int depth,
+            Parent parent,
+            ChainSegmentOfRun chain,
+            String rerunOf,
+            String businessId,
+            Instant startDelayedUntil,
+            ScheduleOfRun schedule,
+            ResetFromOfRun resetFrom,
+            String failureCode,
+            ConcurrencyOfRun concurrency,
+            JsonNode raw) {
+        this(runId, workflowId, versionId, status, statusText, version, paused, startedBy, createdAt, updatedAt,
+                finishedAt, deadline, traceId, correlationId, depth, parent, chain, rerunOf, businessId,
+                startDelayedUntil, schedule, resetFrom, failureCode, concurrency, null, raw);
+    }
 
     /** A run that neither holds nor waits for a run permit. */
     public Run(
@@ -98,7 +133,7 @@ public record Run(
             JsonNode raw) {
         this(runId, workflowId, versionId, status, statusText, version, paused, startedBy, createdAt, updatedAt,
                 finishedAt, deadline, traceId, correlationId, depth, parent, chain, rerunOf, businessId,
-                startDelayedUntil, schedule, resetFrom, failureCode, null, raw);
+                startDelayedUntil, schedule, resetFrom, failureCode, null, null, raw);
     }
 
     /** A run stopped without a failure code. */
@@ -243,6 +278,36 @@ public record Run(
      */
     public record ConcurrencyOfRun(
             String state, String pool, String group, String keyLabel, Instant since, Instant queueDeadline) {}
+
+    /**
+     * The run-level rate-limit slot a run holds while it counts, or waits for while buffered (feature 022, FR-022-048).
+     *
+     * @param state            {@code GRANTED} or {@code WAITING}, or another string: the set only grows
+     * @param pool             {@code ORDINARY} or {@code DRAFT_TEST}, or another string: the set only grows
+     * @param group            the group of the slot
+     * @param keyLabel         the 12-hex label of the key's keyed digest; null for a caller who may not reveal personal
+     *                         data in the run's namespace
+     * @param limit            the effective limit the slot was decided with (1 or more)
+     * @param per              {@code second}, {@code minute} or {@code hour}, or another string: the set only grows
+     * @param since            when the slot was granted ({@code GRANTED}) or the run was buffered ({@code WAITING}), UTC
+     * @param queueDeadline    {@code WAITING}: when the run fails {@code RATE_LIMIT_WAIT_TIMEOUT} if not granted
+     *                         before; null while {@code GRANTED}
+     * @param position         {@code WAITING}, from a get only: the run's rank among the key's eligible waiters (1 is
+     *                         next); null otherwise
+     * @param estimatedGrantAt {@code WAITING}, from a get only: an estimate of the grant, never a promise; null otherwise
+     *                         and for a caller without the reveal grant
+     */
+    public record RateLimitOfRun(
+            String state,
+            String pool,
+            String group,
+            String keyLabel,
+            long limit,
+            String per,
+            Instant since,
+            Instant queueDeadline,
+            Long position,
+            Instant estimatedGrantAt) {}
 
     /** The parent of a child run. */
     public record Parent(String runId, String node, String cancelPolicy) {}

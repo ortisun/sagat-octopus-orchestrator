@@ -2,6 +2,7 @@ package client
 
 import (
 	"encoding/json"
+	"math"
 	"time"
 
 	sagat "github.com/ortisun/sagat-octopus-orchestrator/sdks/go"
@@ -89,6 +90,9 @@ type Run struct {
 	// Concurrency is the run-level concurrency permit the run holds or waits for (feature 022), or nil for a run
 	// that does neither.
 	Concurrency *RunConcurrency
+	// RateLimit is the run-level rate-limit slot the run holds while it counts, or waits for while buffered (feature
+	// 022), or nil for any other run.
+	RateLimit *RunRateLimit
 	// Raw is the answer as the server sent it, member by member, so that a field of a newer server
 	// is reachable.
 	Raw map[string]json.RawMessage
@@ -114,6 +118,34 @@ type RunSchedule struct {
 type RunResetFrom struct {
 	RunID    string
 	Sequence int64
+}
+
+// RunRateLimit is the run-level rate-limit slot a run holds while it counts, or waits for while buffered (feature 022,
+// FR-022-048).
+type RunRateLimit struct {
+	// State is "GRANTED" or "WAITING", or another string: the set only grows.
+	State string
+	// Pool is "ORDINARY" or "DRAFT_TEST", or another string: the set only grows.
+	Pool  string
+	Group string
+	// KeyLabel is the 12-hex label of the key's keyed digest; empty for a caller who may not reveal personal data
+	// in the run's namespace.
+	KeyLabel string
+	// Limit is the effective limit the slot was decided with (1 or more).
+	Limit int64
+	// Per is "second", "minute" or "hour", or another string: the set only grows.
+	Per string
+	// Since is when the slot was granted (GRANTED) or the run was buffered (WAITING).
+	Since time.Time
+	// QueueDeadline is, while WAITING, when the run fails RATE_LIMIT_WAIT_TIMEOUT if not granted before; zero
+	// while GRANTED.
+	QueueDeadline time.Time
+	// Position is, while WAITING and from Get only, the run's rank among the key's eligible waiters (1 is next);
+	// zero otherwise.
+	Position int64
+	// EstimatedGrantAt is, while WAITING and from Get only, an estimate of the grant, never a promise; zero otherwise
+	// and for a caller who may not reveal personal data in the run's namespace.
+	EstimatedGrantAt time.Time
 }
 
 // RunConcurrency is the run-level concurrency permit a run holds or waits for (feature 022, FR-022-022).
@@ -488,7 +520,60 @@ func runOf(m map[string]json.RawMessage) (*Run, error) {
 		}
 		run.Concurrency = permit
 	}
+	if raw, present := m["rateLimit"]; present && !jsonx.IsNull(raw) {
+		slot, err := runRateLimitOf(raw)
+		if err != nil {
+			return nil, err
+		}
+		run.RateLimit = slot
+	}
 	return run, nil
+}
+
+// requiredWhole reads a member that must be a whole number of at least minimum: a fraction is a PROTOCOL error, as in
+// the other SDKs, where requiredRevision would truncate it.
+func requiredWhole(m map[string]json.RawMessage, key string, minimum int64) (int64, error) {
+	var number json.Number
+	if err := json.Unmarshal(m[key], &number); err != nil {
+		return 0, protocolError("%s is invalid in the answer", key)
+	}
+	value, err := number.Float64()
+	if err != nil || value != math.Trunc(value) || value < float64(minimum) || value > 1<<53 {
+		return 0, protocolError("%s is invalid in the answer", key)
+	}
+	return int64(value), nil
+}
+
+// runRateLimitOf reads the rate-limit slot of a run: an object without its state, pool, group, per, since or a limit
+// of at least 1, or with a position below 1, is a PROTOCOL error and never a run with half of it.
+func runRateLimitOf(raw json.RawMessage) (*RunRateLimit, error) {
+	m, err := jsonx.Object(raw)
+	if err != nil {
+		return nil, protocolError("rateLimit is invalid in the answer")
+	}
+	slot := &RunRateLimit{}
+	for key, field := range map[string]*string{"state": &slot.State, "pool": &slot.Pool, "group": &slot.Group, "per": &slot.Per} {
+		if *field, err = requiredString(m, key); err != nil {
+			return nil, err
+		}
+	}
+	if slot.Limit, err = requiredWhole(m, "limit", 1); err != nil {
+		return nil, err
+	}
+	since, ok := jsonx.Time(m, "since")
+	if !ok {
+		return nil, protocolError("since is missing or invalid in the answer")
+	}
+	slot.Since = since
+	if position, present := m["position"]; present && !jsonx.IsNull(position) {
+		if slot.Position, err = requiredWhole(m, "position", 1); err != nil {
+			return nil, err
+		}
+	}
+	slot.KeyLabel, _ = jsonx.String(m, "keyLabel")
+	slot.QueueDeadline, _ = jsonx.Time(m, "queueDeadline")
+	slot.EstimatedGrantAt, _ = jsonx.Time(m, "estimatedGrantAt")
+	return slot, nil
 }
 
 // runConcurrencyOf reads the run permit of a run: an object without its state, pool, group or since is a PROTOCOL

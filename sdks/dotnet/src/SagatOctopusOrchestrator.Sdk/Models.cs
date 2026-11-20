@@ -141,6 +141,9 @@ public record Run
     /// <summary>The run-level concurrency permit the run holds or waits for (feature 022); <c>null</c> for a run that does neither.</summary>
     public RunConcurrency? Concurrency { get; init; }
 
+    /// <summary>The run-level rate-limit slot the run holds while it counts, or waits for while buffered (feature 022); <c>null</c> for any other run.</summary>
+    public RunRateLimit? RateLimit { get; init; }
+
     /// <summary>The answer as the server sent it.</summary>
     public JsonElement Raw { get; init; }
 
@@ -185,6 +188,29 @@ public sealed record RunSchedule(string ScheduleId, DateTimeOffset NominalTime, 
 /// <param name="RunId">The run that was reset.</param>
 /// <param name="Sequence">The journal sequence (1 or more) of <paramref name="RunId"/> up to which the new run keeps the history.</param>
 public sealed record RunResetFrom(string RunId, long Sequence);
+
+/// <summary>The run-level rate-limit slot a run holds while it counts, or waits for while buffered (feature 022, FR-022-048).</summary>
+/// <param name="State"><c>GRANTED</c> or <c>WAITING</c>, or another string a newer server sends: the set only grows.</param>
+/// <param name="Pool"><c>ORDINARY</c> or <c>DRAFT_TEST</c>, or another string: the set only grows.</param>
+/// <param name="Group">The group of the slot.</param>
+/// <param name="KeyLabel">The 12-hex label of the key's keyed digest; <c>null</c> for a caller who may not reveal personal data in the run's namespace.</param>
+/// <param name="Limit">The effective limit the slot was decided with (1 or more).</param>
+/// <param name="Per"><c>second</c>, <c>minute</c> or <c>hour</c>, or another string: the set only grows.</param>
+/// <param name="Since">When the slot was granted (<c>GRANTED</c>) or the run was buffered (<c>WAITING</c>), UTC.</param>
+/// <param name="QueueDeadline"><c>WAITING</c>: when the run fails <c>RATE_LIMIT_WAIT_TIMEOUT</c> if not granted before; <c>null</c> while <c>GRANTED</c>.</param>
+/// <param name="Position"><c>WAITING</c>, from a get only: the run's rank among the key's eligible waiters (1 is next); <c>null</c> otherwise.</param>
+/// <param name="EstimatedGrantAt"><c>WAITING</c>, from a get only: an estimate of the grant, never a promise; <c>null</c> otherwise and for a caller without the reveal grant.</param>
+public sealed record RunRateLimit(
+    string State,
+    string Pool,
+    string Group,
+    string? KeyLabel,
+    long Limit,
+    string Per,
+    DateTimeOffset Since,
+    DateTimeOffset? QueueDeadline,
+    long? Position,
+    DateTimeOffset? EstimatedGrantAt);
 
 /// <summary>The run-level concurrency permit a run holds or waits for (feature 022, FR-022-022).</summary>
 /// <param name="State"><c>HOLDING</c> or <c>WAITING</c>, or another string a newer server sends: the set only grows.</param>

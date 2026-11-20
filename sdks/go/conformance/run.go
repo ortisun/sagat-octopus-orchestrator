@@ -93,6 +93,22 @@ func runJSON(run *client.Run) object {
 			"since": iso(permit.Since), "queueDeadline": deadline,
 		}
 	}
+	// Present only for a run whose rate-limit slot counts or that is buffered (feature 022); the label as for a permit,
+	// the position as it came.
+	if slot := run.RateLimit; slot != nil {
+		var label, position any
+		if slot.KeyLabel != "" {
+			label = "disclosed"
+		}
+		if slot.Position != 0 {
+			position = slot.Position
+		}
+		observed["rateLimit"] = object{
+			"state": slot.State, "pool": slot.Pool, "group": slot.Group, "keyLabel": label, "limit": slot.Limit,
+			"per": slot.Per, "since": iso(slot.Since), "queueDeadline": iso(slot.QueueDeadline), "position": position,
+			"estimatedGrantAt": iso(slot.EstimatedGrantAt),
+		}
+	}
 	return observed
 }
 

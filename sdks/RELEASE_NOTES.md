@@ -11,8 +11,9 @@ Registry publication remains disabled.
 Feature 022 adds to the workflow builders of every SDK `concurrency` and `rateLimit`, at the workflow level and on
 activity and script steps (`ConcurrencyPolicy`, `RateLimitPolicy`, `RatePeriod`; SPEC §7.4); the builders only assemble the
 policy and the server checks it at publication. The `Run` of every SDK carries the run-level permit the run holds or waits
-for (`concurrency`: state, pool, group, key label when the caller may see it, since, queue deadline), absent for every other
-run.
+for (`concurrency`: state, pool, group, key label when the caller may see it, since, queue deadline), and the run-level
+rate-limit slot it holds or waits for (`rateLimit`: the same, with the limit and window, and while buffered its position
+and an estimate of its grant), each absent for every other run.
 
 Design 043 adds `field` and `rule` to the error type of every SDK, beside `reason`: the server's `details.field` (a JSON
 pointer whose segments are names the version's `inputSchema` declares and array indices, never a value) and

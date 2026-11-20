@@ -906,6 +906,25 @@ internal sealed partial class RunMode : IAsyncDisposable
             };
         }
 
+        // Present only for a run whose rate-limit slot counts or that is buffered (feature 022); the label as for a permit,
+        // the position as it came.
+        if (run.RateLimit is { } slot)
+        {
+            observed["rateLimit"] = new JsonObject
+            {
+                ["state"] = slot.State,
+                ["pool"] = slot.Pool,
+                ["group"] = slot.Group,
+                ["keyLabel"] = slot.KeyLabel is null ? null : "disclosed",
+                ["limit"] = slot.Limit,
+                ["per"] = slot.Per,
+                ["since"] = Iso(slot.Since),
+                ["queueDeadline"] = Iso(slot.QueueDeadline),
+                ["position"] = slot.Position,
+                ["estimatedGrantAt"] = Iso(slot.EstimatedGrantAt),
+            };
+        }
+
         return observed;
     }
 

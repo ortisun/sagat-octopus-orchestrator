@@ -420,6 +420,22 @@ def run_json(run: Run) -> Obj:
             "since": instant(permit.since),
             "queueDeadline": instant(permit.queue_deadline),
         }
+    # Present only for a run whose rate-limit slot counts or that is buffered (feature 022); the label as for a permit,
+    # the position as it came.
+    if run.rate_limit is not None:
+        slot = run.rate_limit
+        observed["rateLimit"] = {
+            "state": slot.state,
+            "pool": slot.pool,
+            "group": slot.group,
+            "keyLabel": None if slot.key_label is None else "disclosed",
+            "limit": slot.limit,
+            "per": slot.per,
+            "since": instant(slot.since),
+            "queueDeadline": instant(slot.queue_deadline),
+            "position": slot.position,
+            "estimatedGrantAt": instant(slot.estimated_grant_at),
+        }
     return observed
 
 

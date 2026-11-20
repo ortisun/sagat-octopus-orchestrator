@@ -999,6 +999,7 @@ public sealed partial class SagatClient : ISagatClient, IDisposable
             ResetFrom = ToRunResetFrom(raw),
             FailureCode = OptStr(raw, "failureCode"),
             Concurrency = ToRunConcurrency(raw),
+            RateLimit = ToRunRateLimit(raw),
             Raw = raw,
         };
     }
@@ -1013,6 +1014,29 @@ public sealed partial class SagatClient : ISagatClient, IDisposable
         var schedule = ObjectOf(value, "a run schedule");
         var nominalTime = OptDate(schedule, "nominalTime") ?? throw new SagatException(SagatErrorCode.Protocol, "nominalTime is missing or invalid in the answer");
         return new RunSchedule(Str(schedule, "scheduleId"), nominalTime, Str(schedule, "kind"), Revision(schedule, "revision", 1));
+    }
+
+    private static RunRateLimit? ToRunRateLimit(JsonElement run)
+    {
+        if (!run.TryGetProperty("rateLimit", out var value) || value.ValueKind == JsonValueKind.Null)
+        {
+            return null;
+        }
+
+        var slot = ObjectOf(value, "a run rate-limit slot");
+        var since = OptDate(slot, "since") ?? throw new SagatException(SagatErrorCode.Protocol, "since is missing or invalid in the answer");
+        long? position = slot.TryGetProperty("position", out var rank) && rank.ValueKind != JsonValueKind.Null ? Revision(slot, "position", 1) : null;
+        return new RunRateLimit(
+            Str(slot, "state"),
+            Str(slot, "pool"),
+            Str(slot, "group"),
+            OptStr(slot, "keyLabel"),
+            Revision(slot, "limit", 1),
+            Str(slot, "per"),
+            since,
+            OptDate(slot, "queueDeadline"),
+            position,
+            OptDate(slot, "estimatedGrantAt"));
     }
 
     private static RunConcurrency? ToRunConcurrency(JsonElement run)
