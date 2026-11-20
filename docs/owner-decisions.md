@@ -40,6 +40,18 @@ other numbers of the 2026-11-19 range are recorded on the branches they belong t
 | OD-2026-11-19-3 | "Sim, como recomendado": O1171 option (a). The readiness gate decides in an evaluation round the planner asks for, before `persist` (ADR-0094); ADR-0089 decision 2 is refined accordingly. ADR-0094 is Accepted | owner | Decided | docs/adr/ADR-0094-*.md, specs/022-flow-control-step-policies/research.md O1171, tasks.md T022-096 |
 | OD-2026-11-19-4 | "Sim, como recomendado": O1172 option (a). In release 0.3.0 the namespace's live-keys ceiling is checked without a namespace lock and may be overshot by at most the number of transactions creating keys at the same moment; the bound is documented, no new lock is added | owner | Decided | specs/022-flow-control-step-policies/research.md O1172, G022-002, D022-047, docs/runbooks/flow-control.md section 4 |
 
+## 2026-11-19 — Design 043: the last three owner questions
+
+Asked together with the other open recommendations on 2026-11-19 ("Há seis decisões pendentes, todas com recomendação
+… Aceitas todas como recomendado?"); the owner answered "Sim, como recomendado". The three of design 043 below; the
+three of feature 022 are recorded on its branch.
+
+| ID | Decision | Decided by | Status | Covers |
+|---|---|---|---|---|
+| OD-2026-11-19-5 | O043-005 (a), "Sim, como recomendado": an `inputSchema` with tuple positions (`prefixItems`, or `items` as an array) stays outside the supported subset in 0.3.0; in `enforce` such a version is refused at publication and refuses its starts, the inventory lists it, `report` publishes it, the 016 contract and the release notes say so, and tuples are designed into the subset later | owner | Decided | O043-005, D043-095, D043-110, specs/043-run-input-validation/research.md |
+| OD-2026-11-19-6 | O043-006 (a), "Sim, como recomendado": a repeat, trigger-now or private rerun refused on its input answers `/` and `other` to every caller, as built; no graded disclosure in 0.3.0 | owner | Decided | O043-006, D043-121, D043-144, D043-148, G043-040 |
+| OD-2026-11-19-7 | O043-008 (a), "Sim, como recomendado": ADR-0092 decision 6 is accepted: a release that makes the subset stricter ships `run-input-validation-v2`, required by the operator as v1 is, never a silent edit | owner | Decided | O043-008, ADR-0092 decision 6 |
+
 ## 2026-11-16 — Feature 022: the checklist deviations and the quota resources of the OpenAPI
 
 The foundation of the 0.3.0 slice of feature 022 (pull request 237) left two things that only the owner could settle:
