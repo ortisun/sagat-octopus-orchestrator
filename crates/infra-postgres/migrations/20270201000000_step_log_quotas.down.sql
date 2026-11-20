@@ -14,7 +14,6 @@ BEGIN
     END IF;
 END $guard$;
 
-ALTER TABLE tenant_retained_usage DROP CONSTRAINT tenant_retained_usage_step_log_nonnegative;
 ALTER TABLE tenant_retained_usage DROP COLUMN step_log_bytes;
 
 ALTER TABLE quota_limits DROP CONSTRAINT quota_limits_value_range;

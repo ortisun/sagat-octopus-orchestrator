@@ -97,4 +97,5 @@ ALTER TABLE quota_ceilings ADD CONSTRAINT quota_ceilings_value_range CHECK (
 
 -- The usage of the step-log class (`tenant_step_log_bytes`), written by the quota finalizer from T041-5 on.
 ALTER TABLE tenant_retained_usage ADD COLUMN step_log_bytes bigint NOT NULL DEFAULT 0;
-ALTER TABLE tenant_retained_usage ADD CONSTRAINT tenant_retained_usage_step_log_nonnegative CHECK (step_log_bytes >= 0) NOT VALID;
+-- No CHECK (step_log_bytes >= 0): under ADR-0097 (Proposed) S may go below zero while released bytes were charged in
+-- quota leases; the usage S + Σ used is kept non-negative by the release (design 041, D041-112).

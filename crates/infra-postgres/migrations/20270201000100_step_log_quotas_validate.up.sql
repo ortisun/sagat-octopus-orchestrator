@@ -7,4 +7,3 @@ ALTER TABLE quota_limits VALIDATE CONSTRAINT quota_limits_resource_valid;
 ALTER TABLE quota_limits VALIDATE CONSTRAINT quota_limits_tenant_scoped;
 ALTER TABLE quota_limits VALIDATE CONSTRAINT quota_limits_value_range;
 ALTER TABLE quota_ceilings VALIDATE CONSTRAINT quota_ceilings_value_range;
-ALTER TABLE tenant_retained_usage VALIDATE CONSTRAINT tenant_retained_usage_step_log_nonnegative;
