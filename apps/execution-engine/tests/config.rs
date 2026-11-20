@@ -1246,11 +1246,37 @@ fn a_line_that_gives_the_switch_a_value_is_read_as_one() {
 fn the_engine_reads_the_flow_control_switches_of_the_control_plane() {
     let config = parse(&[]).expect("config");
     assert!(!config.flow_control.concurrency_keys && !config.flow_control.rate_limits);
-    let on = parse(&[
-        ("SAGAT_FLOW_CONTROL_CONCURRENCY_KEYS_ENABLED", "true"),
-        ("SAGAT_FLOW_CONTROL_RATE_LIMITS_ENABLED", "1"),
-    ])
+    // a switch on needs the digest key file (D022-057): a test file, never a real key
+    let keys = {
+        use std::io::Write as _;
+        let mut file = tempfile::NamedTempFile::new().expect("a file");
+        file.write_all(b"1:4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d\n")
+            .expect("written");
+        file
+    };
+    let path = keys.path().to_str().expect("a path").to_owned();
+    let on = parse_with(
+        &[
+            ("SAGAT_FLOW_CONTROL_CONCURRENCY_KEYS_ENABLED", "true"),
+            ("SAGAT_FLOW_CONTROL_RATE_LIMITS_ENABLED", "1"),
+            ("SAGAT_FLOW_CONTROL_DIGEST_KEYS_FILE", &path),
+        ],
+        Environment::Prod,
+    )
     .expect("config");
     assert!(on.flow_control.concurrency_keys && on.flow_control.rate_limits);
+    assert!(on.flow_control_keys.is_some());
     assert!(parse(&[("SAGAT_FLOW_CONTROL_RATE_LIMITS_ENABLED", "maybe")]).is_err());
+    for name in [
+        "SAGAT_FLOW_CONTROL_CONCURRENCY_KEYS_ENABLED",
+        "SAGAT_FLOW_CONTROL_RATE_LIMITS_ENABLED",
+    ] {
+        let missing = parse(&[(name, "true")])
+            .expect_err("a switch on without the key file")
+            .to_string();
+        assert!(
+            missing.contains("SAGAT_FLOW_CONTROL_DIGEST_KEYS_FILE"),
+            "{name}: {missing}"
+        );
+    }
 }

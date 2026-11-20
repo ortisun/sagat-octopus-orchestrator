@@ -146,6 +146,41 @@ fn a_switch_without_usable_digest_keys_stops_the_engine_naming_the_variable_only
     assert!(why.contains("readable file"), "{why}");
 }
 
+/// FR-022-031 (re-review of 34b8be41, Major 2): an engine with both switches off that is given the digest keys holds
+/// them, so that what was admitted before the switch went off drains (its waiters granted, its gated steps decided),
+/// lists no gate and admits none; the file is read as strictly as with a switch on, and without a file it holds nothing.
+#[test]
+fn an_engine_with_its_switches_off_holds_a_given_key_file_to_drain_and_lists_no_gate() {
+    let keys = key_file(&format!("1:{KEY}\n"));
+    let path = keys.path().to_str().expect("a path").to_owned();
+    let draining = config(&[("SAGAT_FLOW_CONTROL_DIGEST_KEYS_FILE", &path)]);
+    assert!(
+        draining.flow_control_keys.is_some(),
+        "the ring is held with every switch off"
+    );
+    assert_eq!(
+        capabilities(&draining),
+        vec![Capability::RunInputValidationV1]
+    );
+    assert!(config(&[]).flow_control_keys.is_none());
+    let empty = key_file(" \n");
+    let lookup = {
+        let path = empty.path().to_str().expect("a path").to_owned();
+        move |name: &str| match name {
+            "SAGAT_OIDC_ISSUER" => Some("https://idp.example/".to_owned()),
+            "SAGAT_OIDC_AUDIENCE" => Some("sagat".to_owned()),
+            "SAGAT_OIDC_JWKS_URI" => Some("https://idp.example/jwks.json".to_owned()),
+            "SAGAT_FLOW_CONTROL_DIGEST_KEYS_FILE" => Some(path.clone()),
+            _ => None,
+        }
+    };
+    let why = match EngineConfig::from_lookup(&lookup, Environment::Dev) {
+        Ok(_) => panic!("a file that is not a ring is refused with the switches off too"),
+        Err(error) => error.to_string(),
+    };
+    assert!(why.contains("SAGAT_FLOW_CONTROL_DIGEST_KEYS_FILE"), "{why}");
+}
+
 /// FR-043-013: the capability is listed only in `enforce`, so a replica in `report` is refused once it is required.
 #[test]
 fn an_engine_in_report_mode_does_not_list_run_input_validation() {

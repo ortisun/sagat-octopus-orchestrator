@@ -258,8 +258,9 @@ pub const SINGLE_KEY: &[u8] = b"null";
 /// A key whose waiters the grant routine may serve now (feature 022, T26, ADR-0089 decision 3): a step key with
 /// waiters whose next-eligible hint has come, on a home shard this replica holds. Its digest is a keyed digest, never a
 /// value (D1168); `hint` is the hint as it was read, so a pass that grants nothing may clear it only if no release
-/// moved it since (early, never late).
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// moved it since (early, never late). Its `Debug` prints the key's label, never the digest: the full digest opens the
+/// listing's position and is what a forged cursor would need (keys reviews of 2026-11-20, security minor 1).
+#[derive(Clone, PartialEq, Eq)]
 pub struct GateKey {
     pub tenant_id: sagat_domain::identity::TenantId,
     pub namespace_id: sagat_domain::identity::NamespaceId,
@@ -270,6 +271,24 @@ pub struct GateKey {
     pub digest: [u8; 32],
     pub shard: sagat_domain::sharding::Shard,
     pub hint: time::OffsetDateTime,
+}
+
+impl std::fmt::Debug for GateKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GateKey")
+            .field("tenant_id", &self.tenant_id)
+            .field("namespace_id", &self.namespace_id)
+            .field("kind", &self.kind)
+            .field("level", &self.level)
+            .field("group", &self.group)
+            .field(
+                "label",
+                &sagat_domain::execution::KeyLabel::of_digest(&self.digest).as_str(),
+            )
+            .field("shard", &self.shard)
+            .field("hint", &self.hint)
+            .finish()
+    }
 }
 
 /// A queued step of a key, or a queued run's start (`node` is `None`), or one whose queue deadline passed (T26, T27).
@@ -283,3 +302,30 @@ pub struct GateWaiter {
 /// How many waiters of one key one pass tries (D022-015, ADR-0089 decision 3, plan "grant pass": at most 256 grants per
 /// key, so a flood on one key does not hold back the keys behind it).
 pub const GRANTS_PER_KEY_PER_PASS: u32 = 256;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A gate key's `Debug` (logged by the grant pass) names its label, never its full digest (keys reviews of
+    /// 2026-11-20, security minor 1).
+    #[test]
+    fn a_gate_keys_debug_prints_its_label_and_never_its_digest() {
+        let digest: [u8; 32] = std::array::from_fn(|i| u8::try_from(0xa0 + i).unwrap_or(0));
+        let key = GateKey {
+            tenant_id: sagat_domain::identity::TenantId::generate(),
+            namespace_id: sagat_domain::identity::NamespaceId::generate(),
+            kind: GateKind::Concurrency,
+            level: sagat_domain::workflow::GateLevel::Step,
+            group: sagat_domain::workflow::ResolvedGroup::parse("providers").expect("a group"),
+            digest,
+            shard: sagat_domain::sharding::Shard::new(3).expect("a shard"),
+            hint: time::OffsetDateTime::UNIX_EPOCH,
+        };
+        let printed = format!("{key:?}");
+        assert!(printed.contains("a0a1a2a3a4a5"), "the label: {printed}");
+        // the seventh byte on, in the spellings a derived or hexadecimal Debug would use
+        assert!(!printed.contains("a6a7a8"), "{printed}");
+        assert!(!printed.contains("166, 167, 168"), "{printed}");
+    }
+}

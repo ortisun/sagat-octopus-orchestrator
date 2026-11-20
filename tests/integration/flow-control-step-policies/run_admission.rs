@@ -638,3 +638,39 @@ async fn two_starts_at_the_queued_runs_ceiling_are_decided_one_after_the_other()
         w.assert_consistent(run).await;
     }
 }
+
+/// FR-022-031 (re-review of 34b8be41, Major 2): turning the switch off stops new gated starts while what was admitted
+/// drains. A process with the switch off that holds the digest keys (its new starts are refused `CAPABILITY_DISABLED`,
+/// `admission::a_process_with_the_switch_the_activation_and_the_keys_admits_a_concurrency_gated_run`) still grants the
+/// queued start once the holder ends.
+#[tokio::test]
+async fn with_the_switch_off_a_process_holding_the_keys_drains_the_queue() {
+    let w = gated_world().await;
+    let workflow = publish(&w, serial_start("switched-off-drain", 1)).await;
+    let session = w.session(&["act.g"]).await;
+    let holder = w.start(workflow, &json!({"accountId": "acct-1"})).await;
+    let waiter = w.start(workflow, &json!({"accountId": "acct-1"})).await;
+    assert_eq!(start_rows(&w, waiter).await, (0, 1));
+
+    let switched_off = w
+        .store
+        .clone()
+        .with_flow_control(crate::support::flow_control::switches(false));
+    let scheduler = sagat_scheduler::Scheduler::new(
+        switched_off,
+        sagat_application::execution::Engine::new(sagat_infra_ir::JsonEvaluator),
+        sagat_application::entropy::SystemEntropy,
+        sagat_scheduler::SchedulerSettings::default(),
+    )
+    .with_children(w.cache.clone());
+    let task = w.one_task(&session).await;
+    assert_eq!(task.run_id, holder);
+    w.complete(&session, &task, &json!({})).await.expect("done");
+    let report = scheduler.tick().await;
+    assert_eq!(report.gates_granted, 1, "{report:?}");
+    assert_eq!(start_rows(&w, waiter).await, (1, 0), "the queue drained");
+    assert_eq!(w.run_status(waiter).await, RunStatus::Running);
+    for run in [holder, waiter] {
+        w.assert_consistent(run).await;
+    }
+}

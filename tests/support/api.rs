@@ -287,6 +287,8 @@ pub struct Options {
     /// `serving_rate_gates_for_tests`), and the concurrency capability activated for the fleet. A real engine started
     /// beside it gets the same with `flow_control::process_env`. Off unless a test turns it on.
     pub flow_control: bool,
+    /// With `flow_control`: the API's digest key ring instead of `flow_control::RING` (for a rotation).
+    pub flow_control_ring: Option<&'static str>,
 }
 
 impl Default for Options {
@@ -327,6 +329,7 @@ impl Default for Options {
             run_input_validation: sagat_application::run_input::InputValidationMode::Enforce,
             collection_operators: false,
             flow_control: false,
+            flow_control_ring: None,
         }
     }
 }
@@ -410,7 +413,10 @@ async fn start_on_ready_db(db: TestDb, options: Options, supplied_pool: Option<P
         // the concurrency gate only: a real engine a harness starts with `flow_control::process_env` lists that one
         // (D022-057), and a fleet requirement of the rate gate would refuse its registration
         super::flow_control::activate_concurrency(&db.pool).await;
-        executions = super::flow_control::gate(executions);
+        executions = match options.flow_control_ring {
+            Some(ring) => super::flow_control::gate_with_keys(executions, ring),
+            None => super::flow_control::gate(executions),
+        };
     }
     let key_k1 = sagat_infra_secrets::generate_key().expect("a key");
     let keys =

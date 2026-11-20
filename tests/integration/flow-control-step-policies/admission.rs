@@ -591,3 +591,79 @@ async fn the_activation_of_an_empty_fleet_is_refused_by_its_own_step() {
         Ok(Activated::Recorded { .. })
     ));
 }
+
+/// D022-057, keys reviews' minors of 2026-11-20: a control plane checks its ring against the versions the database has
+/// in force before it serves anything. During a rotation (version 1 retiring with a live holder, version 2 active) a
+/// control plane whose ring lacks the retiring version, or the active one, does not start, naming the variable and no
+/// key; a ring with both passes the check.
+#[tokio::test]
+async fn a_control_plane_missing_a_version_in_force_does_not_start_and_one_with_both_passes() {
+    use sagat_control_plane::config::{Config, DatabaseConfig, Environment, ServeConfig};
+    use std::io::Write as _;
+    let w = crate::support::flow_control::gated_world().await;
+    let workflow =
+        crate::support::flow_control::publish(&w, crate::run_admission::serial_start("cp-keys", 1))
+            .await;
+    w.start(workflow, &json!({"accountId": "acct-1"})).await;
+    let (outcome,): (String,) = sqlx::query_as(
+        "SELECT out_outcome FROM flow_control_key_activate(2::smallint, 'operator')",
+    )
+    .fetch_one(&w.db.pool)
+    .await
+    .expect("activated");
+    assert_eq!(outcome, "ACTIVATED");
+    let state: String =
+        sqlx::query_scalar("SELECT state FROM flow_control_key_versions WHERE version = 1")
+            .fetch_one(&w.db.pool)
+            .await
+            .expect("version 1");
+    assert_eq!(state, "RETIRING", "a rotation with a live holder");
+    let (one, two) = crate::support::flow_control::RING_TWO
+        .split_once(',')
+        .expect("two versions");
+    for (ring, missing) in [(two, "the retiring version"), (one, "the active version")] {
+        let mut file = tempfile::NamedTempFile::new().expect("a key file");
+        file.write_all(ring.as_bytes()).expect("written");
+        let path = file.path().to_str().expect("a path").to_owned();
+        let lookup = |name: &str| match name {
+            "SAGAT_OIDC_ISSUER" => Some("https://idp.example/".to_owned()),
+            "SAGAT_OIDC_AUDIENCE" => Some("sagat".to_owned()),
+            "SAGAT_OIDC_JWKS_URI" => Some("https://idp.example/jwks.json".to_owned()),
+            "SAGAT_ADMIN_ADDR" => Some("off".to_owned()),
+            "SAGAT_FLOW_CONTROL_CONCURRENCY_KEYS_ENABLED" => Some("true".to_owned()),
+            "SAGAT_FLOW_CONTROL_DIGEST_KEYS_FILE" => Some(path.clone()),
+            _ => None,
+        };
+        let serve = ServeConfig::from_lookup(&lookup).expect("a configuration");
+        let config = Config {
+            environment: Environment::Dev,
+            log_format: sagat_telemetry::LogFormat::Json,
+            database: DatabaseConfig {
+                url: w.db.url.clone(),
+                max_connections: 2,
+                statement_timeout: std::time::Duration::from_secs(3),
+            },
+        };
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let refused = sagat_control_plane::serve(&config, &serve, listener, async {})
+            .await
+            .expect_err(missing)
+            .to_string();
+        assert!(
+            refused.contains("SAGAT_FLOW_CONTROL_DIGEST_KEYS_FILE"),
+            "{missing}: {refused}"
+        );
+        assert!(
+            !refused.contains("5a5a") && !refused.contains("6b6b"),
+            "{missing}: {refused}"
+        );
+    }
+    let both =
+        sagat_application::keyed_digest::KeyRing::parse(crate::support::flow_control::RING_TWO)
+            .expect("a ring");
+    sagat_control_plane::check_flow_control_keys(&w.db.pool, Some(&both))
+        .await
+        .expect("a ring with every version in force passes");
+}

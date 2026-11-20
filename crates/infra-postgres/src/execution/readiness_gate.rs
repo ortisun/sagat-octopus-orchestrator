@@ -871,6 +871,15 @@ impl PgRunTx {
         keys: &sagat_application::flow_control::RunGateKeys,
     ) -> Result<Vec<GateEvent>, StoreError> {
         let Some(ring) = self.flow_control_keys.clone() else {
+            // an admission and a reset (whose run is created by `PgRunStore::create`) reach this only past the admission
+            // point, which refuses a gate its process does not serve (`flow_control_admission`): reaching it without the
+            // ring is a defect, not a refusal, so the admission point's guard is proved on its own (the mutation of
+            // 2026-11-20 that dropped it survived behind this one). A release has no admission point: this is its guard.
+            if keys.cause != StartCause::Release {
+                return Err(StoreError::Internal {
+                    detail: "an admission reached a start gate its process does not serve".into(),
+                });
+            }
             return Err(StoreError::FlowControl(
                 FlowControlRefusal::BinaryCapabilityMissing,
             ));

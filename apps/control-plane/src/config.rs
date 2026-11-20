@@ -175,7 +175,8 @@ const FLOW_CONTROL_KEYS_FILE_LIMIT: u64 = 16 * 1024;
 /// material is a file the deployment mounts (a Kubernetes secret, a compose secret), as the HTTP server's private key
 /// is, never a variable's value or a row; which version is in force is the database's. A process with either
 /// `SAGAT_FLOW_CONTROL_*_ENABLED` switch on must have it: it would otherwise refuse every gated run it is asked to admit
-/// and could not grant a queued one. No error names a key or the file's content.
+/// and could not grant a queued one. A process with both off that is given the file holds it, so that what was admitted
+/// before the switch went off drains (FR-022-031). No error names a key or the file's content.
 ///
 /// # Errors
 /// [`ConfigError::Missing`] with a switch on and no file named; [`ConfigError::Invalid`] for a file that cannot be read,
@@ -189,12 +190,14 @@ pub fn flow_control_keys(
         name: FLOW_CONTROL_KEYS_FILE,
         reason: reason.to_owned(),
     };
-    // a process with every switch off serves no gate: it neither reads nor holds a key file it was given
-    if !(switches.concurrency_keys || switches.rate_limits) {
-        return Ok(None);
-    }
+    // a process with every switch off admits no gated start, but a file it is given keeps the rows already filed
+    // draining: queued waiters are granted and gated steps of running runs decided (FR-022-031, re-review of 34b8be41,
+    // Major 2); the file is then read and checked as strictly as with a switch on
     let Some(path) = get(FLOW_CONTROL_KEYS_FILE).filter(|path| !path.trim().is_empty()) else {
-        return Err(ConfigError::Missing(FLOW_CONTROL_KEYS_FILE));
+        if switches.concurrency_keys || switches.rate_limits {
+            return Err(ConfigError::Missing(FLOW_CONTROL_KEYS_FILE));
+        }
+        return Ok(None);
     };
     let file = std::fs::File::open(path.trim())
         .map_err(|_| invalid("must name a readable file of at most 16 KiB"))?;

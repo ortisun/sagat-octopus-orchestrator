@@ -295,6 +295,13 @@ pub trait FlowControlKeyReader {
 
     /// The deployment's flow-control digest keys this process holds, which seal the listing's cursors (D022-059).
     fn flow_control_key_ring(&self) -> Option<&KeyRing>;
+
+    /// Whether the database has digest key `version` in force now (active, or retiring with rows left): a cursor sealed
+    /// under any other version is refused, a forced retirement's included, whatever ring the process holds.
+    fn key_version_in_force(
+        &self,
+        version: u16,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send;
 }
 
 #[cfg(test)]

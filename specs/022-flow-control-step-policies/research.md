@@ -935,6 +935,58 @@ taken after `git grep D022-04` on every `origin/*` branch.
   G022-014). The reveal rule has one implementation, `reveal_grants::may_reveal_payload_unlocked`, and a fitness rule
   keeps `payload_reveal_grants` read only there (review of the fixes, architecture M1).
 
+- **D022-061 — What a caller without the reveal right learns of a key's instants (re-review of 34b8be41, correctness
+  Major 1; FR-022-022, FR-022-057; amends D022-060's revision; delegate (OD-2026-11-20-6)).** The cut to the minute does
+  not stop linking: `Run.concurrency.since` reaches every `run:read` caller whole, so a key's instant to the minute still
+  names its runs whenever the group's runs start in different minutes, the usual case for a low-rate key (one customer's
+  serialised runs), and the listing's order within a minute is the whole instants' order. Options: (a) keep the cut and
+  say what it does (narrows linking in busy groups, does not stop it); (b) for such a caller, list one aggregated row per
+  (pool, scope, group) (holders, waiters, oldest holder and oldest wait of the group, whole) instead of per-key rows;
+  (c) also cut `Run.concurrency.since` (minutes still match: no gain, and FR-022-022's run view loses precision);
+  (d) per-key rows without instants (the counts still link, G022-014, and FR-022-022's "oldest wait" is lost). Chosen:
+  **(b) as the end state, (a) until it lands.** A group is not a secret (it is the definition's name or a declared
+  slug, already on each run), so a per-group aggregate reveals nothing a run reader lacks, closes this channel and
+  G022-014's count channel together, and serves the operator's question (which queue is stuck, for how long);
+  FR-022-022's per-key listing "by key label only" stays the view of callers who may see labels. Built now, a group's
+  sums would cost a scan of its keys per page (up to the live-keys ceiling, the cost D022-058 removed); built right, they
+  are per-group counter rows kept by the triggers that keep the key rows' counters, which is the counter work of
+  T022-105. So it is follow-up **T022-111**, a release item beside T022-104 (which shows labels of keys over `public` or
+  `internal` fields to their readers and so shrinks the population it serves). Until then the cut stays, its
+  arithmetic fails closed (no path returns the whole instant), and the contract, the runbook and the release note say
+  that it narrows and does not stop linking.
+- **D022-062 — A process with the switches off that is given the key file keeps it, to drain (re-review of 34b8be41,
+  correctness Major 2; FR-022-031; amends D022-057's "a process with every switch off neither reads nor holds a key
+  file", review of the fixes m5; delegate (OD-2026-11-20-6)).** FR-022-031: "disabling MUST stop new publications and
+  starts while existing runs drain". 34b8be41 dropped the ring of a switched-off process, so its grant pass and its
+  step decisions refused (`BINARY_CAPABILITY_MISSING`) and every waiter could only time out. Options: (a) as 34b8be41
+  (no drain; contradicts FR-022-031); (b) hold the ring whenever a file is named, whatever the switches, read and
+  checked as strictly as with a switch on; the switches govern admission (`CAPABILITY_DISABLED`) and the listed
+  capabilities only; (c) a third setting for "draining". Chosen: **(b)**: it is FR-022-031's behaviour with no new
+  setting, and the concern of m5 (a switched-off process using a stale ring unchecked) is met by checking the ring
+  against the versions in force whenever one is held (`check_flow_control_keys` no longer looks at the switches). A
+  switch on without a file is still `Missing`; no file with the switches off holds nothing. Proved by
+  `apps/execution-engine/tests/registry.rs::an_engine_with_its_switches_off_holds_a_given_key_file_to_drain_and_lists_no_gate`
+  (red with 34b8be41's early return) and
+  `run_admission::with_the_switch_off_a_process_holding_the_keys_drains_the_queue`.
+- **D022-063 — A cursor of a version out of force is refused; the image's group; the two guards of an unserved gate
+  (keys reviews of 2026-11-20, minors; delegate (OD-2026-11-20-6)).** (1) A version forced out (ADR-0093 decision 5, a
+  leaked key) may still be in a process's file, and its holder could seal positions the process would open. Options:
+  refuse only versions with a forced-retirement row; refuse every version the database does not have in force
+  (active, or retiring with rows left); require operators to remove it from every file first. Chosen: **in force
+  only**, read through `flow_control_key_versions_in_force()` (the one reading of the versions) before the namespace is
+  checked (the same `400` whether it exists or not): it covers a force and an ended rotation alike, and cursors are
+  short-lived, so refusing an ended rotation's cursor costs a client one fresh listing. Proved by
+  `rest::a_cursor_is_sealed_under_the_active_version_and_one_of_a_forced_version_is_refused` (a cursor sealed under the
+  active version; a retiring version's cursor opens; a forced one is `400`; red with the check removed). (2) The key
+  file recipe said `chgrp 10001`, but the runtime image created its user without a group id, so its primary group was a
+  system group of unknown id and the recipe granted nothing under compose. The image now creates group `sagat` with gid
+  10001 (as the chart's `fsGroup`), so one recipe holds for both. (3) The admission point refuses a gate its process does
+  not serve, and the start gate's own guard refused the same way, so dropping the first survived. The start gate's guard
+  now answers an admission or a reset (both created through the admission point) with an internal error, and remains
+  the refusal of a release (which has no admission point): `admission::a_process_with_the_switch_the_activation_and_the_keys_admits_a_concurrency_gated_run`
+  and `run_creators::a_process_without_the_digest_keys_refuses_a_reset_and_decides_no_release` are red with the
+  admission point's check dropped.
+
 ## Gaps
 
 | ID | Gap | Status |
@@ -983,7 +1035,7 @@ taken after `git grep D022-04` on every `origin/*` branch.
 | G022-011 | `queued_runs` was believed counted without a lock (D022-050 item 3). *Closed 2026-11-20 (D022-051):* the count is exact. Only an admission adds a run waiter, every admission holds the namespace's active-run quota lock from before its runs row to its commit, and the start's gate counts after it in a fresh READ COMMITTED statement; proved by `run_admission::two_starts_at_the_queued_runs_ceiling_are_decided_one_after_the_other` (the lock held by the test, both starts observed waiting on it, then exactly one queued and one refused), red under two hand mutations (the lock removed; the ceiling ignored). The merge blocker the owner set on it is met. T022-105's counter rows remain for the cost of the count (a scan of the namespace's run waiters, at most the ceiling) and its privileges. | Closed (exactness); T022-105 open for the counter rows |
 | G022-012 | The start's decision (`decide_start_gates`) and the step's (`decide_gates`) are two code paths over the same rules; T022-072 builds one core for both levels and both gates (D022-050 item 5; architecture review M1 of 2026-11-20). A paused queued run's deadline runs during its pause, as G022-008 says of a step. *2026-11-20 (D022-054): the start's three causes share one validator (`check_start_decisions`) and one adapter function; the step's decision is still its own path.* | Open; T022-072 |
 | G022-013 | Keys-review correctness m5 and m8 (2026-11-20): the takeover test races a raw `UPDATE` of the shard lease, not a keeper's takeover, and checks "nothing twice" afterwards; and SC-022-004 at run level lacks five same-key starts with `limit: 1` (at most one holder, grants in admission order) and a mixed-limit pair sharing a group. | Open; T022-110 |
-| G022-014 | Without the label, a key's counts and the oldest-wait order still let a caller who may not reveal personal data partly link runs (one key of a group with waiters: every `WAITING` run of the group waits on it). The labels and the instants are hidden (D022-060). An aggregated listing per (pool, scope, group) for such callers would close it. | Accepted for 0.3.0; revisit with T022-104 |
+| G022-014 | Without the label, a key's counts and the oldest-wait order still let a caller who may not reveal personal data partly link runs (one key of a group with waiters: every `WAITING` run of the group waits on it). The labels are hidden and the instants truncated to the minute (D022-060), which narrows and does not stop linking (D022-061). An aggregated listing per (pool, scope, group) for such callers closes it: T022-111 (D022-061). | Open; T022-111, a release item with T022-104 |
 | G022-015 | Publication does not yet refuse a concurrency key over a `secret` location (T022-104), while this build lists and can activate the concurrency capability (D022-057). The runbook forbids production activation before it; the release cannot close with it open. | Open; release gate, T022-104 |
 | G1189 | Nothing in the database computes or checks `key_shard` and the waiter `shard`; two binaries that hashed differently would file one key under two shards. | Open; T022-097 |
 | G1190 | `flow_control_key_activate` records the operator as typed and keeps no history row with the database role, unlike the registry's activations. *Partly closed 2026-11-16 (D022-042): the version row records `activated_role` (`session_user`); a history of earlier activations of the same version is not kept, since a version is activated once. 2026-11-19 (D022-046): every force has an append-only history row with the database role and a reason; the runbook part is `docs/runbooks/flow-control.md`.* | Open; T022-061 (the rest of the runbook) |

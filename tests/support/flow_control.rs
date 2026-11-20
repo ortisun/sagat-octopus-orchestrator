@@ -32,6 +32,10 @@ pub async fn gated_world() -> World {
 /// The digest key ring of [`gated_world`]'s processes: version 1.
 pub const RING: &str = "1:5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a";
 
+/// A ring of versions 1 and 2, for a rotation: version 1 is [`RING`]'s.
+pub const RING_TWO: &str = "1:5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a,\
+                            2:6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b";
+
 /// The switches of a process with flow control `on`, or of one without it.
 pub const fn switches(on: bool) -> FlowControlSwitches {
     if on {
@@ -49,7 +53,8 @@ pub fn gate(store: PgRunStore) -> PgRunStore {
     gate_with_keys(store, RING)
 }
 
-fn gate_with_keys(store: PgRunStore, ring: &str) -> PgRunStore {
+/// `store` running the gates with the digest key ring `ring` (`version:hex,...`).
+pub fn gate_with_keys(store: PgRunStore, ring: &str) -> PgRunStore {
     store
         .with_flow_control(BOTH_ON)
         .with_flow_control_keys(Arc::new(KeyRing::parse(ring).expect("a key ring")))

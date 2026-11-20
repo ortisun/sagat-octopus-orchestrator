@@ -30,7 +30,7 @@ The ring is a file, never an environment value: `SAGAT_FLOW_CONTROL_DIGEST_KEYS_
 
 ```sh
 umask 077 && printf '1:%s\n' "$(openssl rand -hex 32)" > flow-control.keys
-# the images run as uid 10001: on a Linux host let that group read it
+# the images run as uid and gid 10001 (infra/docker/Dockerfile; the chart's fsGroup): on a Linux host let that group read it
 sudo chgrp 10001 flow-control.keys && chmod 0640 flow-control.keys
 ```
 
@@ -52,7 +52,12 @@ T022-072 and T022-074).
 ### 1.2 Turning concurrency keys on
 
 **Not in production before T022-104** (G022-015): publication does not yet refuse a key over a `secret` field. Until
-then a key's label, and its oldest instants, are shown only to callers with the namespace's reveal grant.
+then a key's label and its whole oldest instants are shown only to callers with the namespace's reveal grant; other
+readers get the instants truncated to the minute, which narrows but does not stop linking a key's runs (D022-061).
+
+**Turning the switch off** stops new gated publications and starts; keep the key file mounted so that what was admitted
+drains: a process with the switches off that is given the file still grants queued waiters and decides gated steps
+(FR-022-031, D022-062). Without the file, waiters can only time out.
 
 1. Make the ring (1.1) and give it to every control plane and engine, with `SAGAT_FLOW_CONTROL_CONCURRENCY_KEYS_ENABLED=true`;
    restart them.

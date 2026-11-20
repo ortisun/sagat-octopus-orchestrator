@@ -42,17 +42,19 @@ pub async fn list_concurrency_keys<B: Governance>(
                 .map_err(|_| ApiError::validation("the group is not a valid group name"))
         })
         .transpose()?;
-    // A cursor is the position sealed for this namespace of this tenant (D022-059): anything else, altered, or sealed
-    // for another namespace is a `400`, decided before admission and the same whether the namespace exists or not.
-    let after = query
-        .cursor
-        .as_deref()
-        .map(|c| {
+    // A cursor is the position sealed for this namespace of this tenant (D022-059): anything else, altered, sealed for
+    // another namespace or under a digest key version out of force is a `400`, decided before admission and the same
+    // whether the namespace exists or not.
+    let after = match query.cursor.as_deref() {
+        Some(c) => Some(
             service
                 .concurrency_key_position(&caller.session.principal, namespace, c)
-                .ok_or_else(|| ApiError::bad_request("the cursor is not valid"))
-        })
-        .transpose()?;
+                .await
+                .map_err(ApiError::from)?
+                .ok_or_else(|| ApiError::bad_request("the cursor is not valid"))?,
+        ),
+        None => None,
+    };
     // a group's listing resumes only after a key of that group (the order within one group is the namespace's order)
     if let (Some(group), Some(after)) = (&group, &after)
         && after.group != *group
