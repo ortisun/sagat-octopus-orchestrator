@@ -328,13 +328,11 @@ fn token(platform: &Platform, subject: &str, tenant: &str) -> String {
 }
 
 async fn boot(scenario: &Value) -> Run {
-    // Feature 022: the gates of flow control are a capability the platform of `tests/support` cannot switch on yet (the
-    // control plane's switch, the engine's key ring and the fleet's activation, G1198). A scenario that needs them is
-    // marked `pending` and never booted; one that is not must not boot a platform without them.
-    assert!(
-        scenario["server"]["flowControl"] != true || scenario["pending"].is_string(),
-        "a scenario needs flow control, which this platform cannot run yet (G022-090)"
-    );
+    // Feature 022 (`server.flowControl`): the concurrency gate is on in the control plane of the scenario (its switch, the
+    // test digest key ring, the fleet's activation of `flow-control-concurrency-v1`) and in the engine it starts (the
+    // switch and the ring's file, `support::flow_control::process_env`), so that the engine lists the capability. The
+    // rate gate is listed by no process of this build (D022-057): a scenario that needs it stays `pending`.
+    let flow_control = scenario["server"]["flowControl"] == true;
     let lease = scenario["server"]["leaseTtlSeconds"].as_u64().unwrap_or(30);
     let blob_dir = TempBlobDir::create();
     let mut database = if scenario["server"]["managedDatabase"] == true {
@@ -360,6 +358,7 @@ async fn boot(scenario: &Value) -> Run {
         // Feature 018: a reset may cancel a source that has not ended only where the operator said so; the engine is told
         // by the flag below (`server.resetCancelSource`), the control plane of the scenario by this setting.
         reset_cancel_source: scenario["server"]["resetCancelSource"] == true,
+        flow_control,
         ..Options::default()
     })
     .await;
@@ -416,6 +415,14 @@ async fn boot(scenario: &Value) -> Run {
     }
     if scenario["server"]["batches"] == true {
         extra.push(("SAGAT_BATCHES_ENABLED", "true"));
+    }
+    let flow_control_env = crate::support::flow_control::process_env();
+    if flow_control {
+        extra.extend(
+            flow_control_env
+                .iter()
+                .map(|(key, value)| (*key, value.as_str())),
+        );
     }
     if scenario["server"]["resetCancelSource"] == true {
         extra.push(("SAGAT_RESET_CANCEL_SOURCE_ENABLED", "true"));
@@ -1526,7 +1533,21 @@ async fn play(
                         failures.push(format!("{name}/{lang}: {appearance}"));
                     }
                     let mut normalizer = Normalizer::new(&unique, given_traces(&scenario));
-                    let doc = compared(&out, &mut normalizer);
+                    let mut doc = compared(&out, &mut normalizer);
+                    // `"workerLogOrder": "unordered"`: tasks of different runs become ready together and the order in
+                    // which a worker takes them is not part of the contract (feature 022: the holders of two keys);
+                    // the log is compared as a set, the order the contract fixes is checked by its own evidence.
+                    if scenario["workerLogOrder"] == "unordered" {
+                        for log in doc["workerLog"]
+                            .as_object_mut()
+                            .into_iter()
+                            .flat_map(|logs| logs.values_mut())
+                        {
+                            if let Some(entries) = log.as_array_mut() {
+                                entries.sort_by_key(canonical);
+                            }
+                        }
+                    }
                     if name == "blobs"
                         && let Err(e) = validate_blob_result(&doc)
                     {

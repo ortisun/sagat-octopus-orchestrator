@@ -80,6 +80,17 @@ only. Two of its workflows are the shared fixtures `provider-sync` and `account-
 that the reviewed golden equals those fixtures, that each document's canonical text is the server codec's own and that it
 decodes to the gates the scenario declares. The runtime contracts are `flow-concurrency` and `flow-rate-limit`.
 
+`flow-concurrency.json` is feature 022's US02 contract in six languages (SC-022-012). The platform is booted with the
+concurrency gate on (`server.flowControl`: the control plane's switch and the fleet's activation, and the engine's
+switch and digest key file, so that it lists `flow-control-concurrency-v1`). One run of key A holds its permit while
+three more queue, a run of key B is not delayed, the third run of A is cancelled while it queues (`concurrency.dequeued`,
+never a permit), and the others are granted in admission order once the worker starts. `flowControlEvidence` reads the
+gate events from the platform's journal: the harness checks from their instants that A never had two holders and that
+the grants kept the queue's order (`flow_control.rs`, unit-tested), and the golden keeps their order without instants.
+The worker log is compared as a set (`workerLogOrder: unordered`): two ready tasks of different keys are taken in claim
+order. `flow-rate-limit.json` is US07's contract, written with its assertions and `pending` until a process can serve
+the rate gate.
+
 `loop-builders.json` checks additive v1 `while` and `repeatUntil` authoring in the five SDKs.
 It is build-only while durable loop execution remains disabled. The reviewed fixture covers pre-test
 and post-test shapes, the maximum iteration and duration bounds, optional durable delay/error routing,

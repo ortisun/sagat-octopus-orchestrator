@@ -1,9 +1,9 @@
 {
   "name": "flow-concurrency",
-  "pending": "The platform the suite boots cannot run a gated run yet: a production build refuses every start whose definition declares concurrency (BINARY_CAPABILITY_MISSING, D022-037) until the capability listing and the digest key ring of the deployment land (G1198), and the control plane of tests/support has no flow-control switch to publish one (CAPABILITY_DISABLED). Runs once the server side of US02 is on the parent branch (G022-090).",
   "description": "Feature 022 US02 (SC-022-012, contracts/conformance.md): a workflow whose start holds a permit of the key input.accountId, at most one at a time. The worker is not started, so the first run of key A holds its permit while the next three queue in admission order; a run of key B is not delayed by them. The third run of key A is cancelled while it queues: it ends CANCELLED with concurrency.dequeued and never holds a permit. Then the worker starts: the holder ends and gives its permit back, and the queued runs are granted one after the other in the order they were queued. A fourth run of key A (beyond the three of the contract) makes the grant order observable. The harness checks from the journals' instants that no two runs of key A held a permit at once and that the grants kept the admission order; the golden holds only the event order and the states.",
   "server": { "flowControl": true },
   "flowControlEvidence": true,
+  "workerLogOrder": "unordered",
   "workflows": {
     "serial": {
       "name": "flow-serial",
