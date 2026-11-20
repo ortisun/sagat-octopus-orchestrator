@@ -860,7 +860,7 @@ taken after `git grep D022-04` on every `origin/*` branch.
   `support::flow_control::process_env` and activates the concurrency capability only (`activate_concurrency`);
   `admission::a_real_engine_with_the_ring_lists_the_gate_and_one_missing_the_active_version_does_not_start` starts a real
   engine with it (it registers listing the capability) and one whose ring lacks the active version (it does not start).
-  A process with every switch off neither reads nor holds a key file it was given (review of the fixes, m5; re-review).
+  A process with every switch off neither reads nor holds a key file it was given (review of the fixes, m5; re-review). *Amended by D022-062: it holds one it is given, to drain, and lists the gate.*
   *Listing before T022-104 (review of the fixes, architecture M3).* Listing the capability makes activation possible
   while publication does not yet refuse a key over a `secret` location (T022-104). Options: hold the listing back until
   T022-104 (blocks the SDK conformance of the release slice for a publication rule); build the `secret` refusal alone now
@@ -965,9 +965,22 @@ taken after `git grep D022-04` on every `origin/*` branch.
   setting, and the concern of m5 (a switched-off process using a stale ring unchecked) is met by checking the ring
   against the versions in force whenever one is held (`check_flow_control_keys` no longer looks at the switches). A
   switch on without a file is still `Missing`; no file with the switches off holds nothing. Proved by
-  `apps/execution-engine/tests/registry.rs::an_engine_with_its_switches_off_holds_a_given_key_file_to_drain_and_lists_no_gate`
+  `apps/execution-engine/tests/registry.rs::an_engine_with_its_switches_off_holds_a_given_key_file_to_drain_and_lists_the_gate`
   (red with 34b8be41's early return) and
-  `run_admission::with_the_switch_off_a_process_holding_the_keys_drains_the_queue`.
+  `run_admission::with_the_switch_off_a_process_holding_the_keys_drains_the_queue` (its store built from the engine's
+  parsed configuration).
+  *Amended after the re-review of 39157608 (Major 1).* With the activation recorded, a process that does not list the
+  gate is refused by the registry and serves nothing (FR-022-053), so a switched-off process that did not list it could
+  never drain, and a rolling restart with the switch off would stop the fleet. Options: (a) document an order (remove
+  the fleet requirement first, then restart switched off); (b) list the capability from the ring alone, whatever the
+  switches, since a listed capability promises that the process runs the gate for what was admitted, which a draining
+  process does, while the switch says only whether new gated work is admitted (`CAPABILITY_DISABLED` first, at the one
+  admission point and at publication). Chosen: **(b)** (`flow_control::listed`): no operator order to get wrong, no
+  window where a requirement is removed while gated runs live, and the registry keeps meaning "this process will not
+  mishandle a gated run". Rejected (a): one forgotten step stops every process of the fleet. Proved by
+  `admission::a_draining_engine_with_the_keys_stays_in_a_fleet_that_requires_the_gate` (a real engine restarted with the
+  file and no switch registers listing the gate; with a file lacking the version in force it does not start). A child
+  run started by a draining run is a new start, refused `CAPABILITY_DISABLED`; its node's typed failure joins T022-102.
 - **D022-063 — A cursor of a version out of force is refused; the image's group; the two guards of an unserved gate
   (keys reviews of 2026-11-20, minors; delegate (OD-2026-11-20-6)).** (1) A version forced out (ADR-0093 decision 5, a
   leaked key) may still be in a process's file, and its holder could seal positions the process would open. Options:

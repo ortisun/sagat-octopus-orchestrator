@@ -667,3 +667,62 @@ async fn a_control_plane_missing_a_version_in_force_does_not_start_and_one_with_
         .await
         .expect("a ring with every version in force passes");
 }
+
+/// D022-062 as amended (re-review of 39157608, Major 1): with the concurrency gate required of the fleet, an engine
+/// restarted with its switches off and the key file (to drain) registers listing the gate and serves, instead of being
+/// refused by the registry; and a switched-off engine whose file lacks the version in force does not start (its ring is
+/// checked whatever its switches).
+#[tokio::test]
+async fn a_draining_engine_with_the_keys_stays_in_a_fleet_that_requires_the_gate() {
+    use crate::support::worker::{RunningEngine, engine_env};
+    let api = crate::support::api::start_with(crate::support::api::Options {
+        flow_control: true,
+        ..crate::support::api::Options::default()
+    })
+    .await;
+    let file = crate::support::flow_control::process_env()
+        .into_iter()
+        .find(|(name, _)| *name == "SAGAT_FLOW_CONTROL_DIGEST_KEYS_FILE")
+        .expect("the key file")
+        .1;
+    let extra = [
+        ("SAGAT_FLOW_CONTROL_DIGEST_KEYS_FILE", file.as_str()),
+        ("SAGAT_REPLICA_ID", "draining-engine"),
+        ("SAGAT_LIVENESS_GRACE_SECS", "30"),
+    ];
+    let mut engine = RunningEngine::try_start(engine_env(&api.db, &api.idp, &extra))
+        .await
+        .expect("a draining engine starts in a fleet that requires the gate");
+    let listed = crate::support::eventually("the engine registered", || async {
+        let rows: Vec<Vec<String>> = sqlx::query_scalar(
+            "SELECT capabilities FROM serving_instances WHERE kind = 'EXECUTION_ENGINE' AND scheduler_owner IS NOT NULL",
+        )
+        .fetch_all(&api.db.pool)
+        .await
+        .expect("registry");
+        rows.into_iter().next()
+    })
+    .await;
+    assert!(
+        listed.iter().any(|c| c == "flow-control-concurrency-v1"),
+        "{listed:?}"
+    );
+    engine.finish().await.expect("stopped");
+
+    let (outcome,): (String,) = sqlx::query_as(
+        "SELECT out_outcome FROM flow_control_key_activate(2::smallint, 'operator')",
+    )
+    .fetch_one(&api.db.pool)
+    .await
+    .expect("activated");
+    assert_eq!(outcome, "ACTIVATED");
+    let refused = RunningEngine::try_start(engine_env(&api.db, &api.idp, &extra))
+        .await
+        .err()
+        .expect("a switched-off engine without the active version does not start")
+        .to_string();
+    assert!(
+        refused.contains("SAGAT_FLOW_CONTROL_DIGEST_KEYS_FILE"),
+        "{refused}"
+    );
+}

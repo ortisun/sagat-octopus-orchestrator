@@ -607,11 +607,15 @@ impl sagat_application::flow_control_keys::FlowControlKeyReader for crate::PgRun
     async fn key_version_in_force(&self, version: u16) -> Result<bool, StoreError> {
         // the one reading of the versions in force (`flow_control_key_versions_in_force`): a forced or ended retirement
         // is out of force at once (ADR-0093 decision 5)
+        // a version no `smallint` holds is in force nowhere: a `400`, not a `500` (re-review of 39157608, nit)
+        let Ok(version) = i16::try_from(version) else {
+            return Ok(false);
+        };
         sqlx::query_scalar(
             "SELECT coalesce(active = $1, false) OR coalesce(retiring = $1, false) \
                FROM flow_control_key_versions_in_force()",
         )
-        .bind(i16::try_from(version).map_err(|_| corrupt("digest key version"))?)
+        .bind(version)
         .fetch_one(self.pool())
         .await
         .map_err(store_error)

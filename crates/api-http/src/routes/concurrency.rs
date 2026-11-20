@@ -42,19 +42,18 @@ pub async fn list_concurrency_keys<B: Governance>(
                 .map_err(|_| ApiError::validation("the group is not a valid group name"))
         })
         .transpose()?;
-    // A cursor is the position sealed for this namespace of this tenant (D022-059): anything else, altered, sealed for
-    // another namespace or under a digest key version out of force is a `400`, decided before admission and the same
-    // whether the namespace exists or not.
-    let after = match query.cursor.as_deref() {
-        Some(c) => Some(
+    // A cursor is the position sealed for this namespace of this tenant (D022-059): anything else, altered, or sealed
+    // for another namespace is a `400`, decided before admission and the same whether the namespace exists or not. One
+    // sealed under a digest key version out of force is a `400` too, asked after admission (it reads the database).
+    let after = query
+        .cursor
+        .as_deref()
+        .map(|c| {
             service
                 .concurrency_key_position(&caller.session.principal, namespace, c)
-                .await
-                .map_err(ApiError::from)?
-                .ok_or_else(|| ApiError::bad_request("the cursor is not valid"))?,
-        ),
-        None => None,
-    };
+                .ok_or_else(|| ApiError::bad_request("the cursor is not valid"))
+        })
+        .transpose()?;
     // a group's listing resumes only after a key of that group (the order within one group is the namespace's order)
     if let (Some(group), Some(after)) = (&group, &after)
         && after.group != *group
@@ -69,6 +68,14 @@ pub async fn list_concurrency_keys<B: Governance>(
         ApiTarget::Namespace(namespace),
     )
     .await?;
+    if let Some(cursor) = query.cursor.as_deref()
+        && !service
+            .concurrency_cursor_in_force(cursor)
+            .await
+            .map_err(ApiError::from)?
+    {
+        return Err(ApiError::bad_request("the cursor is not valid"));
+    }
     let page = service
         .concurrency_keys(
             &caller.session.principal,

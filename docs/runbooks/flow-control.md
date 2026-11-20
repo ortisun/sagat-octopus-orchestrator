@@ -56,8 +56,12 @@ then a key's label and its whole oldest instants are shown only to callers with 
 readers get the instants truncated to the minute, which narrows but does not stop linking a key's runs (D022-061).
 
 **Turning the switch off** stops new gated publications and starts; keep the key file mounted so that what was admitted
-drains: a process with the switches off that is given the file still grants queued waiters and decides gated steps
-(FR-022-031, D022-062). Without the file, waiters can only time out.
+drains: a process with the switches off that is given the file still lists the gate (so a fleet that requires it keeps
+serving), grants queued waiters, releases delayed gated starts and decides gated steps (FR-022-031, D022-062). Without
+the file a process does not list the gate: once the activation requires it, the registry refuses that process and it
+serves nothing, and its queued waiters can only time out. Every process that holds the file checks it against the
+versions in force at start, switched on or off. A child run that a draining run starts is a new start: it is refused
+`CAPABILITY_DISABLED` (its node's typed failure is T022-102).
 
 1. Make the ring (1.1) and give it to every control plane and engine, with `SAGAT_FLOW_CONTROL_CONCURRENCY_KEYS_ENABLED=true`;
    restart them.
@@ -167,8 +171,9 @@ the key would be new beyond `concurrency_live_keys` (`FLOW_CONTROL_LIMIT`). Each
 `concurrency_acquisitions_total{scope="run",outcome="refused_full"}`.
 
 - `queued_runs` is exact: every start holds the namespace's admission lock while it is decided (D022-051).
-- A start delay, a reset, a run-level `rateLimit`, and a workflow with a `forEach`, `while` or `repeatUntil` node beside a
-  top-level `concurrency` are refused `BINARY_CAPABILITY_MISSING` in this build (G022-009, G1197).
+- A start delay takes its permit or queues at its release, and a reset takes a fresh permit or is refused
+  `CONCURRENCY_PERMIT_UNAVAILABLE` (D022-052, D022-053). A run-level `rateLimit`, and a workflow with a `forEach`, `while`
+  or `repeatUntil` node beside a top-level `concurrency`, are refused `BINARY_CAPABILITY_MISSING` in this build (G1197).
 - Rolling back migration `20270203000000` is refused while any run, finished or not, keeps `runs.flow_control_gates`:
   archive those runs first.
 

@@ -1584,7 +1584,7 @@ async fn a_process_without_the_digest_keys_refuses_a_reset_and_decides_no_releas
         .find(|point| point.node.as_deref() == Some("a"))
         .expect("the completion of `a` is a point")
         .sequence;
-    let journal = w.journal(source).await;
+    let runs_before = runs_of(&w, workflow).await;
     let refused = sagat_application::runs::RunService::new(
         ringless(),
         sagat_application::clock::SystemClock,
@@ -1604,7 +1604,11 @@ async fn a_process_without_the_digest_keys_refuses_a_reset_and_decides_no_releas
         refused,
         AppError::FlowControl(FlowControlRefusal::BinaryCapabilityMissing)
     );
-    assert_eq!(w.journal(source).await, journal, "nothing reset");
+    assert_eq!(
+        runs_of(&w, workflow).await,
+        runs_before,
+        "no reset run was created"
+    );
 
     let delayed_workflow = publish(&w, serial_start("creators-delay-ringless", 1)).await;
     let delayed = start_delayed(&w, delayed_workflow, Some("acct-9")).await;

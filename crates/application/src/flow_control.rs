@@ -24,13 +24,23 @@ use crate::instances::Capability;
 pub const BUILT: [FlowControlCapability; 1] = [FlowControlCapability::ConcurrencyKeys];
 
 /// The flow-control capabilities a process serves: built, switched on, and backed by the deployment's digest keys
-/// (`keys`). What it lists in the instance registry and what its admission point admits (D022-057).
+/// (`keys`). What its admission point admits (D022-057).
 #[must_use]
 pub fn served(switches: FlowControlSwitches, keys: bool) -> Vec<FlowControlCapability> {
     BUILT
         .into_iter()
         .filter(|capability| keys && switches.enabled(*capability))
         .collect()
+}
+
+/// The flow-control capabilities a process lists in the instance registry: built and backed by the digest keys, whatever
+/// its switches (D022-062 as amended). A listed capability promises that the process runs the gate (decides, grants,
+/// times out what was admitted); the switch says only whether it admits new gated work. So a process switched off to
+/// drain keeps its place in a fleet whose activation requires the gate, instead of being refused by the registry and
+/// serving nothing (re-review of 39157608, Major 1).
+#[must_use]
+pub fn listed(keys: bool) -> Vec<FlowControlCapability> {
+    BUILT.into_iter().filter(|_| keys).collect()
 }
 
 /// One of the two flow-control capabilities.

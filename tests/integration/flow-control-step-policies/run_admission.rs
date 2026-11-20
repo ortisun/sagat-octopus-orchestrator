@@ -652,10 +652,30 @@ async fn with_the_switch_off_a_process_holding_the_keys_drains_the_queue() {
     let waiter = w.start(workflow, &json!({"accountId": "acct-1"})).await;
     assert_eq!(start_rows(&w, waiter).await, (0, 1));
 
-    let switched_off = w
-        .store
-        .clone()
-        .with_flow_control(crate::support::flow_control::switches(false));
+    // the engine's own configuration with the switches off and the key file named, and its store built as `serve` builds
+    // it (red when the configuration drops the file of a switched-off process, 34b8be41)
+    let file = crate::support::flow_control::process_env()
+        .into_iter()
+        .find(|(name, _)| *name == "SAGAT_FLOW_CONTROL_DIGEST_KEYS_FILE")
+        .expect("the key file")
+        .1;
+    let lookup = |name: &str| match name {
+        "SAGAT_OIDC_ISSUER" => Some("https://idp.example/".to_owned()),
+        "SAGAT_OIDC_AUDIENCE" => Some("sagat".to_owned()),
+        "SAGAT_OIDC_JWKS_URI" => Some("https://idp.example/jwks.json".to_owned()),
+        "SAGAT_FLOW_CONTROL_DIGEST_KEYS_FILE" => Some(file.clone()),
+        _ => None,
+    };
+    let engine = sagat_execution_engine::EngineConfig::from_lookup(
+        &lookup,
+        sagat_control_plane::config::Environment::Dev,
+    )
+    .expect("a switched-off engine with the key file");
+    assert!(!engine.flow_control.concurrency_keys);
+    let switched_off =
+        sagat_infra_postgres::PgRunStore::new(w.execution_pool.clone(), w.cache.clone())
+            .with_flow_control(engine.flow_control)
+            .with_flow_control_keys(engine.flow_control_keys.expect("the ring is held to drain"));
     let scheduler = sagat_scheduler::Scheduler::new(
         switched_off,
         sagat_application::execution::Engine::new(sagat_infra_ir::JsonEvaluator),

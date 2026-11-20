@@ -713,32 +713,34 @@ impl<S: AlertReader + FlowControlKeyReader, C: Clock> OperationsService<S, C> {
             .ok_or(AppError::Unavailable)
     }
 
-    /// The position a cursor of this namespace's listing names; `None` for anything else (a `400`), a cursor sealed under
-    /// a digest key version the database no longer has in force included (a forced retirement of a leaked key: its
-    /// holder could otherwise forge positions, even if a process still holds the version).
-    ///
-    /// # Errors
-    /// A storage error while the versions in force are read.
-    pub async fn concurrency_key_position(
+    /// The position a cursor of this namespace's listing names; `None` for anything else (a `400`). Whether its version
+    /// is still in force is [`Self::concurrency_cursor_in_force`], asked once the caller is admitted.
+    #[must_use]
+    pub fn concurrency_key_position(
         &self,
         principal: &Principal,
         namespace: NamespaceId,
         cursor: &str,
-    ) -> Result<Option<KeyPosition>, AppError> {
-        let Some(ring) = self.store.flow_control_key_ring() else {
-            return Ok(None);
-        };
-        let Some(position) = KeyPosition::open(cursor, ring, principal.tenant_id(), namespace)
-        else {
-            return Ok(None);
-        };
+    ) -> Option<KeyPosition> {
+        KeyPosition::open(
+            cursor,
+            self.store.flow_control_key_ring()?,
+            principal.tenant_id(),
+            namespace,
+        )
+    }
+
+    /// Whether the digest key version an opened cursor was sealed under is still in force (active, or retiring with
+    /// rows left): `false` (a `400`) for any other, a forced retirement of a leaked key included, whose holder could
+    /// otherwise forge positions a process still holding the version would open (D022-063).
+    ///
+    /// # Errors
+    /// A storage error while the versions in force are read.
+    pub async fn concurrency_cursor_in_force(&self, cursor: &str) -> Result<bool, AppError> {
         let Some(version) = crate::keyed_digest::KeyRing::sealed_version(cursor) else {
-            return Ok(None);
+            return Ok(false);
         };
-        if !self.store.key_version_in_force(version).await? {
-            return Ok(None);
-        }
-        Ok(Some(position))
+        Ok(self.store.key_version_in_force(version).await?)
     }
 }
 

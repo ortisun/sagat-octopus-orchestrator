@@ -549,10 +549,7 @@ pub async fn serve_with_admin(
         sagat_application::instances::InstanceKind::ControlPlane,
         &registry::capabilities(
             serve.run_input_validation,
-            &sagat_application::flow_control::served(
-                serve.flow_control,
-                serve.flow_control_keys.is_some(),
-            ),
+            &sagat_application::flow_control::listed(serve.flow_control_keys.is_some()),
         ),
         None,
     );

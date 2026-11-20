@@ -47,8 +47,9 @@ fn key_file(text: &str) -> tempfile::NamedTempFile {
 
 const KEY: &str = "3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c";
 
-/// D022-057: an engine lists `flow-control-concurrency-v1` when its switch is on and it holds the deployment's digest
-/// keys, never `flow-control-rate-v1` (T022-072, T022-074), and nothing with the switch off.
+/// D022-057, D022-062: an engine lists `flow-control-concurrency-v1` when it holds the deployment's digest keys, its
+/// switch on or off (a draining engine runs the gate for what was admitted), never `flow-control-rate-v1` (T022-072,
+/// T022-074), and nothing without the keys.
 #[test]
 fn an_engine_lists_the_concurrency_gate_with_its_switch_and_keys_and_never_the_rate_gate() {
     let keys = key_file(&format!("1:{KEY}\n"));
@@ -65,9 +66,17 @@ fn an_engine_lists_the_concurrency_gate_with_its_switch_and_keys_and_never_the_r
             Capability::FlowControlConcurrencyV1
         ]
     );
-    // keys without the switch: no gate is served
+    // keys without the switch: the gate is run for what was admitted (a draining engine, D022-062), so it is listed
     assert_eq!(
         capabilities(&config(&[("SAGAT_FLOW_CONTROL_DIGEST_KEYS_FILE", &path)])),
+        vec![
+            Capability::RunInputValidationV1,
+            Capability::FlowControlConcurrencyV1
+        ]
+    );
+    // no keys and no switch: nothing listed (a switch without the keys does not start)
+    assert_eq!(
+        capabilities(&config(&[])),
         vec![Capability::RunInputValidationV1]
     );
     let engine = config(&[
@@ -146,11 +155,12 @@ fn a_switch_without_usable_digest_keys_stops_the_engine_naming_the_variable_only
     assert!(why.contains("readable file"), "{why}");
 }
 
-/// FR-022-031 (re-review of 34b8be41, Major 2): an engine with both switches off that is given the digest keys holds
-/// them, so that what was admitted before the switch went off drains (its waiters granted, its gated steps decided),
-/// lists no gate and admits none; the file is read as strictly as with a switch on, and without a file it holds nothing.
+/// FR-022-031 (re-review of 34b8be41, Major 2; re-review of 39157608, Major 1): an engine with both switches off that is
+/// given the digest keys holds them, so that what was admitted before the switch went off drains (its waiters granted,
+/// its gated steps decided), and lists the gate so that a fleet whose activation requires it keeps it; it admits no new
+/// gated start (`CAPABILITY_DISABLED`). The file is read as strictly as with a switch on; without a file it holds nothing.
 #[test]
-fn an_engine_with_its_switches_off_holds_a_given_key_file_to_drain_and_lists_no_gate() {
+fn an_engine_with_its_switches_off_holds_a_given_key_file_to_drain_and_lists_the_gate() {
     let keys = key_file(&format!("1:{KEY}\n"));
     let path = keys.path().to_str().expect("a path").to_owned();
     let draining = config(&[("SAGAT_FLOW_CONTROL_DIGEST_KEYS_FILE", &path)]);
@@ -158,9 +168,13 @@ fn an_engine_with_its_switches_off_holds_a_given_key_file_to_drain_and_lists_no_
         draining.flow_control_keys.is_some(),
         "the ring is held with every switch off"
     );
+    assert!(!draining.flow_control.concurrency_keys && !draining.flow_control.rate_limits);
     assert_eq!(
         capabilities(&draining),
-        vec![Capability::RunInputValidationV1]
+        vec![
+            Capability::RunInputValidationV1,
+            Capability::FlowControlConcurrencyV1
+        ]
     );
     assert!(config(&[]).flow_control_keys.is_none());
     let empty = key_file(" \n");
