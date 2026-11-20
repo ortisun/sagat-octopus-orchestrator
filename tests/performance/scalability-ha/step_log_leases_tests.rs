@@ -373,16 +373,42 @@ async fn nested_by_query(pool: &PgPool) -> std::collections::BTreeMap<String, i6
     .collect()
 }
 
-/// Quota rows the open transaction wrote: leases, the usage row, transaction deltas.
-async fn written_by_me(conn: &mut PgConnection) -> (i64, i64, i64) {
-    sqlx::query_as(
-        "SELECT (SELECT count(*) FROM spike_041.step_log_quota_leases WHERE xmin = pg_current_xact_id()::xid), \
-                (SELECT count(*) FROM tenant_retained_usage WHERE xmin = pg_current_xact_id()::xid), \
-                (SELECT count(*) FROM quota_transaction_deltas WHERE transaction_id = pg_current_xact_id())",
+/// The tenant's quota rows as the open transaction sees them: its leases, its usage row and the transaction's deltas.
+type QuotaRows = (Vec<(i16, i64, i64)>, Option<(i64, i64)>, i64);
+
+async fn quota_rows(conn: &mut PgConnection, tenant: Uuid) -> QuotaRows {
+    let leases: Vec<(i16, i64, i64)> = sqlx::query_as(
+        "SELECT lease, granted, used FROM spike_041.step_log_quota_leases WHERE tenant_id = $1 ORDER BY lease",
     )
-    .fetch_one(conn)
+    .bind(tenant)
+    .fetch_all(&mut *conn)
     .await
-    .expect("rows written")
+    .expect("the leases");
+    let usage: Option<(i64, i64)> = sqlx::query_as(
+        "SELECT step_log_bytes, step_log_leased_bytes FROM tenant_retained_usage WHERE tenant_id = $1",
+    )
+    .bind(tenant)
+    .fetch_optional(&mut *conn)
+    .await
+    .expect("the usage row");
+    let deltas: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM quota_transaction_deltas WHERE transaction_id = pg_current_xact_id()",
+    )
+    .fetch_one(&mut *conn)
+    .await
+    .expect("the deltas");
+    (leases, usage, deltas)
+}
+
+/// Quota rows written between two readings: lease rows changed or added, the usage row changed, delta rows. Compared by
+/// value, so that rows a subtransaction wrote count too (their `xmin` is not the transaction's).
+fn written(before: &QuotaRows, after: &QuotaRows) -> (i64, i64, i64) {
+    let changed = after.0.iter().filter(|row| !before.0.contains(row)).count();
+    (
+        i64::try_from(changed).unwrap_or(i64::MAX),
+        i64::from(before.1 != after.1),
+        after.2,
+    )
 }
 
 /// The budget line of a step-log insert statement under ADR-0097 (design 041 sections 2 and 2a): charged into a free lease,
@@ -425,13 +451,19 @@ async fn a_step_log_insert_costs_its_budget_line() {
         };
         // The first insert finds no lease: a refill.
         let mut tx = pool.begin().await.expect("begin");
+        let start = quota_rows(&mut tx, tenant).await;
         insert(1).execute(&mut *tx).await.expect("the first ten lines");
-        assert_eq!(written_by_me(&mut tx).await, (1, 1, 0), "a refill writes one lease row and the usage row once");
+        assert_eq!(
+            written(&start, &quota_rows(&mut tx, tenant).await),
+            (1, 1, 0),
+            "a refill writes one lease row and the usage row once"
+        );
         tx.commit().await.expect("commit");
         // The next ones find lease room: the hot path. Measured again while `pg_stat_statements` evicts entries.
         for attempt in 0..8 {
             let evicted = evictions(pool).await;
             let mut tx = pool.begin().await.expect("begin");
+            let start = quota_rows(&mut tx, tenant).await;
             let before = nested_calls(pool).await;
             let items = nested_by_query(pool).await;
             insert(11 + 10 * attempt).execute(&mut *tx).await.expect("ten more lines");
@@ -442,7 +474,7 @@ async fn a_step_log_insert_costs_its_budget_line() {
                 .map(|(q, n)| (q.chars().take(90).collect::<String>(), n - items.get(&q).copied().unwrap_or(0)))
                 .filter(|(_, n)| *n > 0)
                 .collect();
-            let written = written_by_me(&mut tx).await;
+            let written = written(&start, &quota_rows(&mut tx, tenant).await);
             let at_commit = nested_calls(pool).await;
             tx.commit().await.expect("commit");
             let after = nested_calls(pool).await;
@@ -472,6 +504,49 @@ async fn third_run_world() -> (World, Uuid) {
     let (w, tenant) = leased_world(1 << 30).await;
     super::install_third_run_storage(&w.db.pool).await;
     (w, tenant)
+}
+
+/// Counts every update of a stream row (a test-only trigger): `pg_stat_xact_user_tables` also counts the work of a
+/// subtransaction the carry's block rolled back, so it cannot tell a stream written once.
+async fn count_stream_updates(pool: &PgPool) {
+    for statement in [
+        "CREATE TABLE spike_041.test_stream_updates (stream_id bigint NOT NULL)",
+        "CREATE FUNCTION spike_041.test_stream_updated() RETURNS trigger LANGUAGE plpgsql AS $$ \
+         BEGIN INSERT INTO spike_041.test_stream_updates VALUES (NEW.stream_id); RETURN NULL; END $$",
+        "CREATE TRIGGER test_stream_updated AFTER UPDATE ON spike_041.step_log_streams \
+           FOR EACH ROW EXECUTE FUNCTION spike_041.test_stream_updated()",
+    ] {
+        sqlx::query(statement)
+            .execute(pool)
+            .await
+            .expect("the update counter");
+    }
+}
+
+/// The streams of `run`, their updates and their lines, as the open transaction sees them.
+async fn run_rows(conn: &mut PgConnection, run: Uuid) -> (i64, i64, i64) {
+    sqlx::query_as(
+        "SELECT (SELECT count(*) FROM spike_041.step_log_streams WHERE run_id = $1), \
+                (SELECT count(*) FROM spike_041.test_stream_updates u JOIN spike_041.step_log_streams s \
+                    USING (stream_id) WHERE s.run_id = $1), \
+                (SELECT count(*) FROM spike_041.step_log_lines WHERE run_id = $1)",
+    )
+    .bind(run)
+    .fetch_one(conn)
+    .await
+    .expect("the run's rows")
+}
+
+/// The streams and lines of `run`, as the open transaction sees them.
+async fn run_lines(conn: &mut PgConnection, run: Uuid) -> (i64, i64) {
+    sqlx::query_as(
+        "SELECT (SELECT count(*) FROM spike_041.step_log_streams WHERE run_id = $1), \
+                (SELECT count(*) FROM spike_041.step_log_lines WHERE run_id = $1)",
+    )
+    .bind(run)
+    .fetch_one(conn)
+    .await
+    .expect("the run's rows")
 }
 
 fn carry_call<'q>(
@@ -515,6 +590,7 @@ async fn a_short_steps_carry_writes_its_new_stream_once() {
             .execute(pool)
             .await
             .expect("the test PostgreSQL preloads pg_stat_statements");
+        count_stream_updates(pool).await;
         // A first carry leases (a refill), so that the measured one charges a free lease.
         let mut tx = pool.begin().await.expect("begin");
         carry_call(tenant, Uuid::new_v4(), Uuid::new_v4())
@@ -525,31 +601,34 @@ async fn a_short_steps_carry_writes_its_new_stream_once() {
         for _ in 0..8 {
             let evicted = evictions(pool).await;
             let mut tx = pool.begin().await.expect("begin");
+            let run = Uuid::new_v4();
+            let start = quota_rows(&mut tx, tenant).await;
             let before = nested_calls(pool).await;
-            let outcome = carry_call(tenant, Uuid::new_v4(), Uuid::new_v4())
+            let outcome = carry_call(tenant, run, Uuid::new_v4())
                 .fetch_one(&mut *tx)
                 .await
                 .expect("the carry");
             let during = nested_calls(pool).await;
             assert_eq!(outcome, "written");
-            let stream = table_writes(&mut tx, "step_log_streams").await;
-            let lines = table_writes(&mut tx, "step_log_lines").await;
-            let written = written_by_me(&mut tx).await;
+            let rows = run_rows(&mut tx, run).await;
+            let written = written(&start, &quota_rows(&mut tx, tenant).await);
             let at_commit = nested_calls(pool).await;
             tx.commit().await.expect("commit");
             let after = nested_calls(pool).await;
             if evictions(pool).await != evicted {
                 continue;
             }
-            assert_eq!(stream, (1, 0, 0), "the stream is inserted once, never updated");
-            assert_eq!(lines, (10, 0, 0));
+            assert_eq!(rows, (1, 0, 10), "one stream, inserted once and never updated, and its ten lines");
             assert_eq!(written, (1, 0, 0), "one lease row, no usage or delta row");
             assert_eq!(after - at_commit, 0, "no deferred quota call at the commit");
-            // The function's six statements (the application name, the policy read, the usage read, the plan's size,
-            // the stream insert, the lines insert), the stream's path check (`execution_instance_path_valid`, a SQL
-            // function its CHECK calls), the charge's six and the ten foreign-key checks. Derived first as 22, seen
-            // failing at 23: the path check had been left out.
-            assert_eq!(during - before, 6 + 1 + 6 + 10, "the nested statements of a short step's carry");
+            // The function's seven statements (the application name, the no-wait setting, the policy read, the usage
+            // read, the plan's size, the stream insert, the lines insert), the stream's path check
+            // (`execution_instance_path_valid`, a SQL function its CHECK calls), the charge's six and the ten
+            // foreign-key checks. Derived first as 22 (seen failing at 23: the path check had been left out), then
+            // with D041-112's no-wait setting as 25 (seen failing at 24: the new stream's path returns before a reset,
+            // which was then removed as needless: the setting is transaction-local and the carry is the report's last
+            // statement).
+            assert_eq!(during - before, 7 + 1 + 6 + 10, "the nested statements of a short step's carry");
         let (records, bytes, last, xid_set): (i32, i64, i64, bool) = sqlx::query_as(
             "SELECT records, bytes, last_sequence, last_stored_xid IS NOT NULL FROM spike_041.step_log_streams \
               ORDER BY stream_id DESC LIMIT 1",
@@ -576,7 +655,7 @@ async fn a_carry_onto_an_existing_stream_updates_it_hot() {
             "INSERT INTO spike_041.step_log_streams (tenant_id, public_id, namespace_id, run_id, step_id, node, \
                instance_path_nodes, instance_path_indices, attempt, generation, retention_days, last_at, expires_at) \
              VALUES ($1, gen_random_uuid(), gen_random_uuid(), $2, $3, 'a', '{}', '{}', 1, 0, 14, clock_timestamp(), \
-               clock_timestamp() + interval '14 days')",
+               (date_trunc('day', clock_timestamp() AT TIME ZONE 'UTC') + interval '14 days 12 hours') AT TIME ZONE 'UTC')",
         )
         .bind(tenant)
         .bind(run)
@@ -589,6 +668,155 @@ async fn a_carry_onto_an_existing_stream_updates_it_hot() {
         assert_eq!(outcome, "written");
         assert_eq!(table_writes(&mut tx, "step_log_streams").await, (0, 1, 1), "one update, HOT");
         tx.commit().await.expect("commit");
+    })
+    .await;
+}
+
+/// ADR-0097 after review (D041-112): a limit lowered below the leased room but above the usage reclaims the idle leases
+/// at the next charge instead of refusing every charge.
+#[tokio::test]
+async fn a_limit_lowered_above_the_usage_still_admits_what_fits() {
+    bounded::within("lowered above usage", LIMIT, async {
+        let (w, tenant) = leased_world(1 << 30).await;
+        let pool = &w.db.pool;
+        charge_committed(pool, tenant, 1_000)
+            .await
+            .expect("lease 0: 1 MiB granted");
+        w.quotas
+            .set(
+                &w.admin,
+                None,
+                QuotaResource::TenantStepLogBytes,
+                10_000,
+                &ctx(),
+            )
+            .await
+            .expect("lower the limit above the usage, below the leased room");
+        let (s, g, _, used, _) = ledger(pool, tenant).await;
+        assert_eq!(
+            (s, g, used),
+            (1_000, 0, 0),
+            "the change of the limit reclaimed every lease"
+        );
+        charge_committed(pool, tenant, 2_000)
+            .await
+            .expect("what fits under the new limit is admitted");
+        assert!(
+            refused(charge_committed(pool, tenant, 7_001).await),
+            "past the new limit is refused"
+        );
+        charge_committed(pool, tenant, 7_000)
+            .await
+            .expect("the exact rest is admitted");
+        let (s, g, granted, used, _) = ledger(pool, tenant).await;
+        assert_eq!(g, granted);
+        assert_eq!(s + used, 10_000);
+    })
+    .await;
+}
+
+/// D041-112: a release applies to the folded usage under the usage row only: it never waits for a lease another
+/// transaction holds, and it refuses to take the usage below zero.
+#[tokio::test]
+async fn a_release_never_waits_for_a_lease_and_never_goes_below_zero() {
+    bounded::within("release", LIMIT, async {
+        let (w, tenant) = leased_world(1 << 30).await;
+        let pool = &w.db.pool;
+        charge_committed(pool, tenant, 5_000)
+            .await
+            .expect("a charge");
+        let mut held = pool.begin().await.expect("begin");
+        charge(&mut held, tenant, 1_000)
+            .await
+            .expect("a lease held");
+        let release = |bytes: i64| async move {
+            let mut tx = pool.begin().await?;
+            sqlx::query("SELECT spike_041.step_log_release($1, $2)")
+                .bind(tenant)
+                .bind(bytes)
+                .execute(&mut *tx)
+                .await?;
+            tx.commit().await
+        };
+        let released = tokio::time::timeout(Duration::from_secs(20), release(5_000)).await;
+        assert!(
+            matches!(released, Ok(Ok(()))),
+            "a release waited for a held lease or failed: {released:?}"
+        );
+        let under = release(1).await;
+        assert!(
+            matches!(&under, Err(sqlx::Error::Database(e)) if e.code().as_deref() == Some("22000")),
+            "a release below zero was applied: {under:?}"
+        );
+        held.commit().await.expect("commit");
+        let (s, _, _, used, _) = ledger(pool, tenant).await;
+        assert_eq!(s + used, 1_000, "the usage is what is still stored");
+    })
+    .await;
+}
+
+/// D041-112: a carry whose charge needs a refill while the usage row is held does not wait: it answers `contended` and
+/// writes nothing, and its transaction commits.
+#[tokio::test]
+async fn a_carry_never_waits_for_the_usage_row() {
+    bounded::within("carry nowait", LIMIT, async {
+        let (w, tenant) = third_run_world().await;
+        let pool = &w.db.pool;
+        sqlx::query(
+            "INSERT INTO tenant_retained_usage (tenant_id) VALUES ($1) ON CONFLICT DO NOTHING",
+        )
+        .bind(tenant)
+        .execute(pool)
+        .await
+        .expect("the usage row");
+        let mut row = pool.begin().await.expect("begin");
+        sqlx::query("SELECT 1 FROM tenant_retained_usage WHERE tenant_id = $1 FOR UPDATE")
+            .bind(tenant)
+            .execute(&mut *row)
+            .await
+            .expect("hold the usage row");
+        let mut tx = pool.begin().await.expect("begin");
+        let run = Uuid::new_v4();
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(20),
+            carry_call(tenant, run, Uuid::new_v4()).fetch_one(&mut *tx),
+        )
+        .await;
+        assert!(
+            matches!(&outcome, Ok(Ok(o)) if o == "contended"),
+            "the carry waited or did not answer contended: {outcome:?}"
+        );
+        assert_eq!(run_lines(&mut tx, run).await, (0, 0), "nothing stored");
+        tx.commit().await.expect("the report's transaction commits");
+        row.commit().await.expect("commit");
+    })
+    .await;
+}
+
+/// D041-112: a carry refused by the tenant's limit records a mark-only stream in the same call, and its transaction
+/// commits: no re-run of the report.
+#[tokio::test]
+async fn a_carry_refused_by_the_limit_records_its_mark_in_the_same_call() {
+    bounded::within("carry refused", LIMIT, async {
+        let (w, tenant) = leased_world(100).await;
+        super::install_third_run_storage(&w.db.pool).await;
+        let pool = &w.db.pool;
+        let mut tx = pool.begin().await.expect("begin");
+        let run = Uuid::new_v4();
+        let outcome = carry_call(tenant, run, Uuid::new_v4())
+            .fetch_one(&mut *tx)
+            .await
+            .expect("the carry answers");
+        assert_eq!(outcome, "mark_only");
+        assert_eq!(run_lines(&mut tx, run).await, (1, 0), "the mark-only stream, no line kept");
+        tx.commit().await.expect("the report's transaction commits");
+        let (reason, dropped, final_set): (Option<String>, i64, bool) = sqlx::query_as(
+            "SELECT ceiling_reason, dropped_by_server, final_at IS NOT NULL FROM spike_041.step_log_streams",
+        )
+        .fetch_one(pool)
+        .await
+        .expect("the mark-only stream");
+        assert_eq!((reason.as_deref(), dropped, final_set), (Some("tenant_quota"), 10, true));
     })
     .await;
 }
