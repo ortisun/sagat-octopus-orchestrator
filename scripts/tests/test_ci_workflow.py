@@ -16,7 +16,9 @@ FULL = "needs.changes.outputs.full == 'true'"
 RELEASE_ONLY_JOBS = ("released-upgrade", "native-runners", "contracts", "local-environment", "observability",
                      "scale", "dependencies")
 # Jobs whose steps are scoped by the change (and run whole for a release).
-SCOPED_JOBS = ("rust", "sdks", "studio", "architecture", "lake-runtime")
+SCOPED_JOBS = ("rust", "integration", "sdks", "studio", "architecture", "lake-runtime")
+ANY = "needs.changes.outputs.any == 'true'"
+SHARD_TARGETS = "matrix.shard.targets"
 LAKE = "needs.changes.outputs.lake == 'true'"
 AUDIT_WORKFLOW = WORKFLOW.parent / "lake-audit.yml"
 
@@ -88,6 +90,8 @@ class CiRule(unittest.TestCase):
         self.assertIn('[ "$CRATES" = ALL ]', step)
 
     def test_every_step_that_runs_an_integration_suite_is_gated_by_the_selection(self):
+        # A step of the integration job is gated by its shard, whose targets come from the selection (the test below).
+        shard_steps = {s.splitlines()[0] for s in steps(job_block(self.text, "integration"))}
         found = 0
         for step in self.steps:
             # a comment may mention the crate; only commands count
@@ -98,8 +102,61 @@ class CiRule(unittest.TestCase):
                 continue
             found += 1
             gated = re.search(r"(?m)^        if: .*needs\.changes\.outputs", step) or "needs.changes.outputs.targets" in step
+            gated = gated or (step.splitlines()[0] in shard_steps and SHARD_TARGETS in step)
             self.assertTrue(gated, f"this step runs sagat-tests without the selection:\n{step}")
         self.assertGreater(found, 0, "the test no longer finds the steps it is meant to guard")
+
+    def test_the_selection_hands_out_the_shard_matrix(self):
+        self.assertIn("shards: ${{ steps.select.outputs.shards }}", job_block(self.text, "changes"))
+
+    def test_the_selected_integration_suites_run_in_parallel_shards_of_the_selection(self):
+        """Run one after another in one step, every suite outgrew the step's 110 minutes (run 44793165198). The
+        selection decides which suites run and how they are spread; each shard builds `sagat-tests` and runs only its
+        own targets, and one failing shard does not cancel the others."""
+        block = job_block(self.text, "integration")
+        self.assertIn("needs: changes", block)
+        self.assertRegex(block, rf"(?m)^    if: {re.escape(ANY)}\s*$")
+        self.assertRegex(block, r"(?m)^      fail-fast: false\s*$")
+        self.assertRegex(block, r"(?m)^        shard: \$\{\{ fromJSON\(needs\.changes\.outputs\.shards\) \}\}\s*$")
+        run = next(s for s in steps(block) if s.startswith("      - name: integration suites of this shard"))
+        self.assertIn(f"TARGETS: ${{{{ {SHARD_TARGETS} }}}}", run)
+        self.assertIn('for target in $TARGETS; do args+=(--test "$target"); done', run)
+        self.assertIn("cargo test -p sagat-tests --locked --no-fail-fast", run)
+        self.assertRegex(run, r"(?m)^        timeout-minutes: 110\s*$")
+
+    def test_each_shard_prepares_what_its_suites_need_and_runs_their_preflight(self):
+        block = job_block(self.text, "integration")
+        names = [s.splitlines()[0] for s in steps(block)]
+        for name in ("isolated C# compiler and runtime images", "build isolated database executor, control plane and engine for process tests",
+                     "capacity and migration regression preflight", "bounded ChildRoot holder discovery",
+                     "scoped event quota rollback boundary", "worker capacity lease boundary"):
+            self.assertIn(f"      - name: {name}", names)
+        for step in steps(block):
+            self.assertNotIn("needs.changes.outputs.targets", step,
+                             f"a step of a shard must follow the shard's targets, not the whole selection:\n{step}")
+        primitives = [s for s in steps(block) if "--test integration_workflow_primitives" in s]
+        self.assertGreater(len(primitives), 3)
+        for step in primitives:
+            if "TARGETS" in step:
+                continue  # the preflight decides per suite from the shard's targets
+            self.assertIn(f"if: contains(format(' {{0}} ', {SHARD_TARGETS}), ' integration_workflow_primitives ')", step)
+
+    def test_the_rust_job_leaves_the_integration_suites_to_the_shards(self):
+        block = job_block(self.text, "rust")
+        for step in steps(block):
+            commands = [l for l in step.splitlines() if not l.lstrip().startswith("#")]
+            self.assertFalse(any(re.search(r"cargo test -p sagat-tests\b", l) for l in commands),
+                             f"the rust job runs an integration suite:\n{step}")
+        self.assertNotIn("needs.changes.outputs.any", block.split("steps:", 1)[0],
+                         "the rust job has nothing to do for a change that selects only suites")
+
+    def test_one_check_says_whether_every_shard_passed(self):
+        """The number of shards follows the selection; one job of a fixed name sums them up."""
+        block = job_block(self.text, "integration-result")
+        self.assertRegex(block, r"(?m)^    needs: \[changes, integration\]\s*$")
+        self.assertRegex(block, rf"(?m)^    if: always\(\) && {re.escape(ANY)}\s*$")
+        self.assertIn("RESULT: ${{ needs.integration.result }}", block)
+        self.assertIn('[ "$RESULT" = success ]', block)
 
     def test_the_sdk_unit_tests_follow_the_changed_languages(self):
         for language in ("TypeScript", "Python", "Go", "C#", "Java", "Rust"):

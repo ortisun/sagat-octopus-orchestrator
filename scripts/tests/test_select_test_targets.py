@@ -3,8 +3,11 @@
 Every case builds a throwaway git repository with a small Cargo workspace and a tests/Cargo.toml that mimics the
 real one, commits a base, changes files, and asks the script what the CI must run.
 """
+import importlib.util
+import json
 import os
 import pathlib
+import re
 import subprocess
 import sys
 import tempfile
@@ -110,7 +113,8 @@ class Scope(unittest.TestCase):
         values = {}
         for line in result.stdout.splitlines():
             key, sep, value = line.partition("=")
-            if sep and key in {"full", "crates", "sdks", "frontend", "scripts", "lake", "targets", "any", "all"}:
+            if sep and key in {"full", "crates", "sdks", "frontend", "scripts", "lake", "targets", "any", "all",
+                                          "shards"}:
                 values[key] = value
         return values
 
@@ -223,6 +227,98 @@ class Scope(unittest.TestCase):
         self.commit()
         self.assertEqual(self.chosen(), {"fault_b"})
 
+    # -- a contract selects the suites and the packages that read it (review finding m7) -------
+    CONTRACTS = "specs/001-platform-foundation/contracts"
+
+    def readers(self):
+        """contract_a names the full path, contract_rest_a the directory in one module and the file in another,
+        sdk_conformance reads it through the shared support module, sagat-leaf compiles it in. integration_a reads it
+        too, through the support module, but is not a contract suite; fault_b names the directory and another file."""
+        self.write(f"{self.CONTRACTS}/openapi.yaml", "openapi: 3.1.0\n")
+        self.write(f"{self.CONTRACTS}/worker.proto", "syntax = \"proto3\";\n")
+        self.write(f"{self.CONTRACTS}/README.md", "# contracts\n")
+        self.write("tests/contract/a/openapi.rs",
+                   f'const PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../{self.CONTRACTS}/openapi.yaml");\n')
+        self.write("tests/contract/a/rest/main.rs",
+                   f'use sagat_leaf::Leaf;\nconst CONTRACTS: &str = "{self.CONTRACTS}";\nmod read;\n')
+        self.write("tests/contract/a/rest/read.rs", 'fn doc() { load(super::CONTRACTS, "openapi.yaml"); }\n')
+        self.write("tests/support/contract.rs",
+                   f'pub fn load() {{ read("/../{self.CONTRACTS}/openapi.yaml"); }}\n')
+        self.write("tests/integration/a/main.rs",
+                   "use sagat_domain::Thing;\nuse crate::support::{api::TestApi, contract::OpenApi};\n")
+        self.write("tests/contract/sdk-conformance/main.rs",
+                   "mod support;\nfn spec() { crate::support::contract::OpenApi::load(); }\n")
+        self.write("tests/fault/b/main.rs",
+                   f'fn proto() {{ compile(["worker.proto"], [root().join("{self.CONTRACTS}")]); }}\n')
+        self.write("crates/leaf/build.rs",
+                   f'const CONTRACTS: &str = "../../{self.CONTRACTS}";\nfn main() {{ f(format!("{{CONTRACTS}}/worker.proto")); }}\n')
+        self.base = self.commit("readers")
+
+    def test_a_contract_change_alone_selects_every_contract_suite_that_reads_that_file(self):
+        self.readers()
+        self.write(f"{self.CONTRACTS}/openapi.yaml", "openapi: 3.1.1\n")
+        self.commit()
+        decision = self.decide()
+        # integration_a reads it too; it is not a contract suite, so only its own changes select it.
+        self.assertEqual(set(decision["targets"].split()), {"contract_a", "contract_rest_a", "sdk_conformance"})
+        self.assertEqual((decision["full"], decision["all"]), ("false", "false"))
+
+    def test_a_contract_compiled_into_a_package_selects_its_unit_tests_and_its_dependents(self):
+        self.readers()
+        self.write("crates/domain/build.rs", f'fn main() {{ f("../../{self.CONTRACTS}/worker.proto"); }}\n')
+        self.base = self.commit("the core package compiles it too")
+        self.write(f"{self.CONTRACTS}/worker.proto", "syntax = \"proto3\"; // changed\n")
+        self.commit()
+        decision = self.decide()
+        # fault_b compiles it too, and is not a contract suite.
+        self.assertEqual(decision["targets"], "")
+        self.assertEqual(set(decision["crates"].split()), {"sagat-leaf", "sagat-domain", "sagat-application",
+                                                           "sagat-cli"})
+
+    def test_the_log_says_which_contract_selected_a_suite(self):
+        self.readers()
+        self.write(f"{self.CONTRACTS}/openapi.yaml", "openapi: 3.1.1\n")
+        self.commit()
+        self.assertIn(f"select contract_a: {self.CONTRACTS}/openapi.yaml is a contract it reads",
+                      self.run_select().stdout)
+
+    def test_a_contract_file_nobody_names_selects_nothing(self):
+        self.readers()
+        self.write(f"{self.CONTRACTS}/events.asyncapi.yaml", "asyncapi: 3.0.0\n")
+        self.write("specs/018-other/contracts/openapi.yaml", "openapi: 3.1.0\n")
+        self.commit()
+        decision = self.decide()
+        self.assertEqual((decision["targets"], decision["crates"]), ("", ""))
+
+    def test_a_markdown_contract_selects_only_a_suite_that_reads_it(self):
+        self.readers()
+        self.write(f"{self.CONTRACTS}/README.md", "# changed\n")
+        self.commit()
+        self.assertEqual(self.chosen(), set())
+        self.write("tests/contract/a/errors.rs", f'const TABLE: &str = "{self.CONTRACTS}/README.md";\n')
+        self.base = self.commit("a reader of the README")
+        self.write(f"{self.CONTRACTS}/README.md", "# changed again\n")
+        self.commit()
+        self.assertEqual(self.chosen(), {"contract_a"})
+
+    def test_a_file_named_under_another_contracts_directory_is_not_a_read_of_this_one(self):
+        self.readers()
+        self.write("tests/contract/a/errors.rs", 'const TABLE: &str = "specs/014-other/contracts/README.md";\n')
+        self.base = self.commit("a reader of another README")
+        self.write(f"{self.CONTRACTS}/README.md", "# changed\n")
+        self.commit()
+        self.assertEqual(self.chosen(), set())
+
+    def test_a_comment_or_a_sentence_that_names_a_contract_is_not_a_read(self):
+        self.write("tests/contract/a/openapi.rs", f"// see {self.CONTRACTS}/openapi.yaml\n")
+        self.write("crates/domain/src/lib.rs",
+                   f'//! `{self.CONTRACTS}/openapi.yaml`\nconst HINT: &str = "the schema is {self.CONTRACTS}/openapi.yaml; see";\n')
+        self.base = self.commit("comments")
+        self.write(f"{self.CONTRACTS}/openapi.yaml", "openapi: 3.1.1\n")
+        self.commit()
+        decision = self.decide()
+        self.assertEqual((decision["targets"], decision["crates"]), ("", ""))
+
     def test_documentation_selects_nothing_at_all(self):
         self.write("README.md", "changed\n")
         self.write("docs/guide.md", "x\n")
@@ -235,7 +331,7 @@ class Scope(unittest.TestCase):
         self.assertEqual(
             decision,
             {"full": "false", "crates": "", "sdks": "", "frontend": "false", "scripts": "false", "lake": "false",
-             "targets": "", "any": "false", "all": "false"})
+             "targets": "", "any": "false", "all": "false", "shards": "[]"})
 
     def test_frontend_journeys_select_the_browser_suites(self):
         self.write("frontend/e2e/journeys/login.spec.ts", "// x\n")
@@ -482,6 +578,205 @@ class Scope(unittest.TestCase):
         for expected in ("full=false\n", "crates=sagat-leaf\n", "sdks=\n", "frontend=false\n", "scripts=false\n",
                          "targets=contract_rest_a\n", "any=true\n", "all=false\n"):
             self.assertIn(expected, text)
+        self.assertIn('shards=[{"index": 1, "count": 1, "targets": "contract_rest_a", "seconds": ', text)
+
+    # -- the shard matrix of the integration suites ----------------------------------------------
+    def shards(self, **kwargs):
+        return json.loads(self.decide(**kwargs)["shards"])
+
+    def test_no_selected_suite_gives_no_shard(self):
+        self.write("README.md", "changed\n")
+        self.commit()
+        decision = self.decide()
+        self.assertEqual((decision["any"], decision["shards"]), ("false", "[]"))
+
+    def test_a_selected_suite_runs_in_one_shard(self):
+        self.write("tests/fault/b/steps.rs", "// new\n")
+        self.commit()
+        self.assertEqual([s["targets"] for s in self.shards()], ["fault_b"])
+
+    def test_a_release_spreads_every_suite_over_the_shards_exactly_once(self):
+        shards = self.shards(event="workflow_dispatch", base="")
+        names = [name for shard in shards for name in shard["targets"].split()]
+        self.assertEqual(sorted(names), sorted(TARGETS))
+        self.assertEqual([s["index"] for s in shards], list(range(1, len(shards) + 1)))
+        self.assertTrue(all(s["count"] == len(shards) for s in shards))
+
+    def test_the_shards_are_balanced_by_the_duration_table_of_the_head(self):
+        figures = {**{name: 1 for name in TARGETS}, "integration_a": 1800, "fault_b": 1700}
+        self.write("scripts/integration-suite-durations.toml",
+                   "[seconds]\n" + "".join(f"{name} = {seconds}\n" for name, seconds in figures.items()))
+        self.write("tests/integration/a/x.rs", "// x\n")
+        self.write("tests/fault/b/x.rs", "// x\n")
+        self.write("tests/contract/a/x.rs", "// x\n")
+        self.commit()
+        self.assertEqual([s["targets"] for s in self.shards()], ["integration_a", "contract_a fault_b"])
+
+    def test_an_unreadable_duration_table_is_refused(self):
+        self.write("scripts/integration-suite-durations.toml", "[seconds\n")
+        self.commit()
+        result = self.run_select()
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("integration-suite-durations.toml", result.stderr)
+
+
+def load_selector():
+    spec = importlib.util.spec_from_file_location("select_test_targets", SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class RealRepository(unittest.TestCase):
+    """The contract readers derived from this repository's own sources (review finding m7, rule 21 of AGENTS.md)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.root = str(SCRIPT.parents[1])
+        cls.selector = load_selector()
+        cls.targets = cls.selector.head_targets(cls.root)
+        cls.readers = cls.selector.Readers(cls.root, cls.targets, cls.selector.Workspace(cls.root))
+
+    def suites(self, rel):
+        return {name for kind, name in self.readers.of(rel) if kind == "target"}
+
+    def test_the_canonical_openapi_selects_the_three_suites_of_finding_m7(self):
+        self.assertLessEqual(
+            {"contract_developer_experience", "contract_payload_classification", "contract_iceberg_writes"},
+            self.suites("specs/001-platform-foundation/contracts/openapi.yaml"))
+
+    def test_the_worker_protocol_selects_the_grpc_adapter_that_compiles_it(self):
+        self.assertIn(("package", "sagat-api-grpc"),
+                      self.readers.of("specs/001-platform-foundation/contracts/worker.proto"))
+
+    def test_only_contract_suites_are_selected_by_a_contract(self):
+        for rel in ("specs/001-platform-foundation/contracts/openapi.yaml",
+                    "specs/001-platform-foundation/contracts/events.asyncapi.yaml"):
+            with self.subTest(rel=rel):
+                for name in self.suites(rel):
+                    self.assertTrue(self.targets[name].startswith("contract/"), name)
+
+    def test_every_path_into_a_contracts_directory_is_seen_as_a_read(self):
+        # A reader that names a contracts directory, or a file in one, and is not found to read it builds the path
+        # in a way the selector does not see: a pull request that changes only that contract would not run it.
+        path = re.compile(r"(?:^|[/.])(specs/[^/\s]+/contracts)(/[^\s;:,]*)?$")
+        unseen = []
+        for reader, literals in sorted(self.readers.literals.items()):
+            for literal in sorted(literals):
+                match = path.search(literal)
+                if not match:
+                    continue
+                directory, rest = match.group(1), (match.group(2) or "").rstrip("/")
+                under = pathlib.Path(self.root, directory + rest)
+                if under.is_file():
+                    files = [directory + rest]
+                elif under.is_dir():
+                    files = [str(p.relative_to(self.root)) for p in sorted(under.rglob("*")) if p.is_file()]
+                else:
+                    continue  # a contract the head no longer has; a test of the reader fails on its own
+                if not any(reader in self.readers.of(rel) for rel in files):
+                    unseen.append(f"{reader[0]} {reader[1]}: {literal}")
+        self.assertEqual(unseen, [], "these readers name a contract the selector does not see them read")
+
+
+class Shards(unittest.TestCase):
+    """How the selected integration suites are spread over parallel CI jobs: greedy, longest suite first, into the
+    least-loaded shard, with as many shards as the measured time needs (run 44793165198 timed out with every suite in
+    one step)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.selector = load_selector()
+
+    def plan(self, names, durations):
+        return self.selector.plan_shards(names, durations)
+
+    def test_no_suite_gives_no_shard(self):
+        self.assertEqual(self.plan([], {"a": 10}), [])
+
+    def test_one_suite_gives_one_shard(self):
+        self.assertEqual(self.plan(["a"], {"a": 10}),
+                         [{"index": 1, "count": 1, "targets": "a", "seconds": 10}])
+
+    def test_suites_that_fit_the_budget_together_share_one_shard(self):
+        budget = self.selector.SHARD_BUDGET_SECONDS
+        plan = self.plan(["a", "b", "c"], {"a": budget // 2, "b": budget // 4, "c": budget // 8})
+        self.assertEqual([s["targets"] for s in plan], ["a b c"])
+
+    def test_the_longest_suite_goes_first_into_the_least_loaded_shard(self):
+        budget = self.selector.SHARD_BUDGET_SECONDS
+        durations = {"a": budget, "b": 1000, "c": 900, "d": 800, "e": 100}
+        plan = self.plan(sorted(durations), durations)
+        self.assertEqual([(s["targets"], s["seconds"]) for s in plan],
+                         [("a", budget), ("b e", 1100), ("c d", 1700)])
+        self.assertTrue(all(s["count"] == 3 for s in plan))
+
+    def test_the_plan_does_not_depend_on_the_order_of_the_selection(self):
+        durations = {"a": 700, "b": 700, "c": 700, "d": 500, "e": 500, "f": 0, "g": 0}
+        first = self.plan(sorted(durations), durations)
+        second = self.plan(sorted(durations, reverse=True), durations)
+        self.assertEqual(first, second)
+
+    def test_suites_with_no_measured_time_are_spread_and_not_piled_into_one_shard(self):
+        budget = self.selector.SHARD_BUDGET_SECONDS
+        durations = {"a": budget - 100, "b": budget - 100, **{f"z{i}": 0 for i in range(6)}}
+        plan = self.plan(sorted(durations), durations)
+        empty = [len([n for n in s["targets"].split() if n.startswith("z")]) for s in plan]
+        self.assertEqual(empty, [3, 3])
+
+    def test_a_suite_missing_from_the_table_counts_as_the_conservative_default(self):
+        default = self.selector.DEFAULT_SUITE_SECONDS
+        self.assertGreaterEqual(default, 600)
+        self.assertEqual(self.plan(["new"], {}), [{"index": 1, "count": 1, "targets": "new", "seconds": default}])
+
+    def test_a_shard_is_added_while_the_greedy_plan_overflows_the_budget(self):
+        # Three suites of two thirds of the budget each need three shards, not the two that their sum suggests.
+        budget = self.selector.SHARD_BUDGET_SECONDS
+        third = budget // 3
+        durations = {"a": 2 * third, "b": 2 * third, "c": 2 * third}
+        plan = self.plan(sorted(durations), durations)
+        self.assertEqual([s["targets"] for s in plan], ["a", "b", "c"])
+
+    def test_the_number_of_shards_is_capped(self):
+        budget = self.selector.SHARD_BUDGET_SECONDS
+        cap = self.selector.MAX_SHARDS
+        durations = {f"s{i:02d}": budget for i in range(cap * 2)}
+        plan = self.plan(sorted(durations), durations)
+        self.assertEqual(len(plan), cap)
+        self.assertEqual(sorted(n for s in plan for n in s["targets"].split()), sorted(durations))
+
+
+class DurationTable(unittest.TestCase):
+    """The checked-in table the shards are balanced by must name exactly the suites of tests/Cargo.toml (AGENTS.md rule
+    21): a suite added without a figure would be planned at the default, and a figure left for a removed suite is stale."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.root = str(SCRIPT.parents[1])
+        cls.selector = load_selector()
+        cls.targets = cls.selector.head_targets(cls.root)
+        cls.durations = cls.selector.load_durations(cls.root)
+
+    def test_the_table_names_exactly_the_suites_of_the_manifest(self):
+        self.assertEqual(sorted(set(self.targets) - set(self.durations)), [], "suites with no measured duration")
+        self.assertEqual(sorted(set(self.durations) - set(self.targets)), [], "durations of suites that do not exist")
+
+    def test_every_figure_is_a_whole_number_of_seconds(self):
+        for name, seconds in self.durations.items():
+            self.assertTrue(isinstance(seconds, int) and not isinstance(seconds, bool) and seconds >= 0, name)
+
+    def test_no_suite_is_longer_than_a_shard_may_be(self):
+        # A suite longer than the budget would make its shard the bottleneck whatever the plan: split the suite, or
+        # raise the budget knowingly, with the job's timeout in view.
+        budget = self.selector.SHARD_BUDGET_SECONDS
+        self.assertEqual({n: s for n, s in self.durations.items() if s > budget}, {})
+
+    def test_every_suite_runs_once_and_no_shard_overflows_for_a_release(self):
+        plan = self.selector.plan_shards(sorted(self.targets), self.durations)
+        self.assertEqual(sorted(n for s in plan for n in s["targets"].split()), sorted(self.targets))
+        self.assertLessEqual(len(plan), self.selector.MAX_SHARDS)
+        budget = self.selector.SHARD_BUDGET_SECONDS
+        self.assertTrue(all(s["seconds"] <= budget for s in plan), [s["seconds"] for s in plan])
 
 
 if __name__ == "__main__":
