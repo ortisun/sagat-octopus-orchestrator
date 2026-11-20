@@ -20,12 +20,14 @@ These are written out in every document and every code comment, from version 4.7
 
 | Old | Write instead | Where it was used |
 |---|---|---|
-| R8, "rule R8" | Rule 8 | the rules of `scripts/check-design-docs.py` |
-| B1, M2, m7, N3 after a reviewer ("architecture B1", "security M2, N3", "finding m7") | Blocker 1, Major 2, minor 7, Nit 3 | review findings |
-| Z3-1, C3-1, K3-1, S3-1, T3-1 | finding 1 of the third run, with the reviewer named ("the zoom-out reviewer's finding 1 of the third run") | findings of an EGM review run, numbered per reviewer and run |
-| S5, S6a after "slice" ("slice S5", "S6a slice") | slice 5, slice 6a | delivery slices |
-| W3 after "mutation" or "mutant" | mutation 3 | hand mutations |
-| UT | unit test | tests |
+| `R8`, `rule R8` | Rule 8 | the rules of `scripts/check-design-docs.py` |
+| `B1`, `M2`, `m7`, `N3` after a reviewer (`architecture B1`, `security M2, N3`, `finding m7`) | Blocker 1, Major 2, minor 7, Nit 3 | review findings |
+| `r1-M1`, `A-N14` | Major 1 of review run 1, Nit 14 of the consolidated review | findings of a numbered review run |
+| `Z3-1`, `C3-1`, `K3-1`, `S3-1`, `T3-1` | finding 1 of the third run, with the reviewer named ("the zoom-out reviewer's finding 1 of the third run") | findings of an EGM review run, numbered per reviewer and run |
+| `S5`, `S6a` after "slice" (`slice S5`, `S6a slice`) | slice 5, slice 6a | delivery slices |
+| `W3` after "mutation" or "mutant" | mutation 3 | hand mutations |
+| `UT` | unit test | tests |
+| a bare list of R-numbers (`R4, R5, R6`) | the word the letter stands for and the number (a rule, a research item, a mutant) | verification tables, research registers |
 
 A finding number, a slice or a mutation is not a stable identifier: it is local to the report or the plan that numbered
 it, so the words around it say which report.

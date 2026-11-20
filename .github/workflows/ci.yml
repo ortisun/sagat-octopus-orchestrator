@@ -263,6 +263,25 @@ jobs:
       - name: prove exact production isolation and native loading
         run: cargo test -p sagat-infra-sandbox --lib --locked -- --ignored --nocapture --test-threads=1
 
+  # Documentation first and words in full (docs/constitution.md 4.7.0; AGENTS.md rules 23 and 24): two cheap checks of
+  # every pull request, whatever it changes. They read git history only and build nothing. They judge the pull request's
+  # own commits (HEAD^1 is the tip of the base branch, HEAD^2 the head of the pull request) and only the commits whose
+  # tree already holds each check, so branches opened before the rule are not judged for what they did before it. A
+  # push, a tag and a manual run do not start this job.
+  documentation:
+    name: documentation first and words in full
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Both checks read the commits of the pull request and the blame of the files they touch.
+          fetch-depth: 0
+      - name: the document changes with the code
+        run: python3 scripts/check-docs-first.py --base "$(git rev-parse HEAD^1)" --head "$(git rev-parse HEAD^2)"
+      - name: words in full in the added lines
+        run: python3 scripts/check-plain-words.py --base "$(git rev-parse HEAD^1)" --head "$(git rev-parse HEAD^2)"
+
   architecture:
     name: architecture rules
     needs: changes
