@@ -1894,8 +1894,8 @@ async fn the_setup_lease_fills_a_full_pool_and_folds_ended_leases() {
 }
 
 /// Decision D041-121: the commit waits behind a report whose carry refilled are counted through its whole queue, not only
-/// its head: two `COMMIT`s queued in turn behind a refilling holder both count, though the second one's blocker is the
-/// first.
+/// its head: three `COMMIT`s queued in turn behind a refilling holder each count once, though the later ones are blocked
+/// by the waiters ahead of them.
 #[tokio::test]
 async fn the_commit_waits_behind_a_refilling_report_count_its_whole_queue() {
     bounded::within("refill queue", LIMIT, async {
@@ -1927,7 +1927,7 @@ async fn the_commit_waits_behind_a_refilling_report_count_its_whole_queue() {
             .await
             .expect("hold the row");
         let mut queued = Vec::new();
-        for _ in 0..2 {
+        for _ in 0..3 {
             let (mut conn, pid) = writer(pool).await;
             sqlx::query("SELECT set_config('application_name', $1, false)")
                 .bind(super::CARRY_APPLICATION)
@@ -1946,8 +1946,8 @@ async fn the_commit_waits_behind_a_refilling_report_count_its_whole_queue() {
         let (waits, _, _, by_refill) = super::sample_commit_waits(pool).await.expect("a sample");
         assert_eq!(
             (waits, by_refill),
-            (2, 2),
-            "both queued commits count behind the refilling report"
+            (3, 3),
+            "each queued commit counts once behind the refilling report"
         );
         held.commit().await.expect("release");
         for commit in queued {
