@@ -157,13 +157,14 @@ tables they would run `to_jsonb` on every update. Their shape is the proposed am
 classes:
 
 - `step_log_lines_quota_insert`: `AFTER INSERT … REFERENCING NEW TABLE AS inserted FOR EACH STATEMENT`, a `SECURITY
-  DEFINER` trigger function with the pinned `search_path` of its siblings, which sums per tenant
-  `octet_length(message) + octet_length(exception) + octet_length(fields) + 128` (nulls as 0) over `inserted` and calls
-  `sagat_quota_add_delta` once per tenant with that step-log delta;
+  DEFINER` trigger function with the pinned `search_path` of its siblings, executable by neither `PUBLIC` nor
+  `sagat_app`, which sums per tenant, over `inserted`, what `sagat_quota_measure` measures for each row's `message`,
+  `exception`, `fields` (`octet_length_utf8`) and `level` (`fixed_octets`, 128), the same function the per-row release
+  uses, and calls `sagat_quota_add_delta` once per tenant with that step-log delta; `ENABLE ALWAYS`;
 - `quota_transaction_deltas_step_log_flush`: a constraint trigger `AFTER INSERT ON quota_transaction_deltas DEFERRABLE
   INITIALLY DEFERRED FOR EACH ROW WHEN (NEW.step_log_delta <> 0) EXECUTE FUNCTION sagat_quota_flush_deltas()`, so a
   transaction whose first delta of a tenant is a step-log one queues one flush (a transaction whose delta row a content or
-  log write created has that table's flush queued already);
+  log write created has that table's flush queued already); `ENABLE ALWAYS`;
 - `step_log_lines_quota_delete` and `step_log_lines_quota_flush`: the per-row `AFTER DELETE` delta and flush triggers of
   the generator's shape, so that the purge releases exactly what it deletes;
 - no `UPDATE` trigger: lines are never updated (a trigger refuses it, §2).
@@ -194,7 +195,7 @@ before, which T041-5 tests. The down migration restores the four-argument `sagat
 replaced.
 `step_log_lines.script_execution_id` is a `uuid`, fixed-size, so it is not in the manifest.
 
-## 4. Grants (the migration's `DO $grants$` block)
+## 4. Grants (the migrations' `DO $grants$` blocks)
 
 | Table | `sagat_app` |
 |---|---|
@@ -205,7 +206,10 @@ Usage of the identity sequence of `step_log_streams`. No `TRUNCATE` and no grant
 DEFINER` function is the accessor of ADR-0027's Amendment, `sagat_quota_step_log_allowance(tenant)`, of the existing
 pattern: a fixed `search_path`, a trusted owner, `REVOKE ALL … FROM PUBLIC` (as `20261024000000_durable_quotas.up.sql:294`
 does, since PostgreSQL grants `EXECUTE` to `PUBLIC` on a new function) and `EXECUTE` to `sagat_app` (as `:572`). It
-exists because the runtime role may not read `quota_accounting_control` (`:564-572`). No other grant. The down migration
+exists because the runtime role may not read `quota_accounting_control` (`:564-572`). Two more functions, of the 2026-11-20 revision (OD-2026-11-20-1): the statement-level quota trigger function of §3
+(`SECURITY DEFINER`, pinned `search_path`, `REVOKE ALL … FROM PUBLIC`, no `EXECUTE` to `sagat_app`, since only its trigger
+calls it), and `sagat_step_log_carry` of §8a (`SECURITY INVOKER`, pinned `search_path`, `REVOKE ALL … FROM PUBLIC`,
+`EXECUTE` to `sagat_app`), created by T041-36's migration. No other grant. The down migration
 refuses while a row of `step_log_lines` exists.
 
 ## 5. Canonical JSON of `fields`
@@ -353,8 +357,10 @@ CREATE FUNCTION sagat_step_log_carry(
     p_stream_key text,            -- the attempt's stream lock, the key the ingest's T3 takes
     p_sequences bigint[], p_levels text[], p_worker_times timestamptz[], p_messages text[],
     p_exceptions text[], p_fields text[], p_truncated boolean[], p_sizes integer[],
-    p_highest bigint, p_mark_only boolean)
-RETURNS TABLE (outcome text, kept integer, dropped_by_worker bigint, dropped_by_server bigint)
+    p_highest bigint,
+    p_mark_reason text)           -- null for a full carry; else invalid, tenant_quota, secret or content_fallback
+RETURNS TABLE (outcome text, kept integer, dropped_by_worker bigint, dropped_by_server bigint,
+               dropped_reason text, ceiling_reason text)
 LANGUAGE plpgsql VOLATILE SECURITY INVOKER SET search_path = pg_catalog, public, pg_temp AS $$ … $$;
 REVOKE ALL ON FUNCTION sagat_step_log_carry(…) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION sagat_step_log_carry(…) TO sagat_app;
@@ -375,19 +381,23 @@ Its body, each statement with a snapshot of its own (the function is `VOLATILE`,
 4. **CC′.** When CC returned nothing: `SELECT … FOR UPDATE SKIP LOCKED` of the stream row with its counters,
    `removed_at`, `expires_at`, `final_at` and `last_stored_xid IS NULL OR last_stored_xid < pg_current_xact_id()` as
    `in_order`. No row: `contended`; removed, expired or final: `removed` or `final_recorded`.
-5. **Plan**, in the function: unless `p_mark_only`, the records whose sequence is above `last_sequence` (all of them when
-   `in_order`; none above it otherwise, counted `out_of_order`), in sequence order, kept while the stream's records plus
-   the kept count stay within `step_log_attempt_records`, its bytes plus their `p_sizes` within `step_log_attempt_bytes`,
-   and the kept sizes plus 128 a row (the marker included) within the tenant allowance; the first record that does not
-   fit an attempt ceiling sets `ceiling_sequence` and `ceiling_reason` and plans one `ceiling_marker` at
-   `next_marker_sequence`; the gap from `last_sequence` to `p_highest` not covered by the sent records is dropped by the
-   worker below `ceiling_sequence` and by the server above it, saturating at 2^53. This is `plan_batch` for a carry, as
-   T041-36's property test requires.
+5. **Plan**, in the function, exactly T5 and T6 of §8 for a carry (design section 2a): with `p_mark_reason` set, no
+   record is kept, no marker is planned, the records are counted as dropped by the server with that reason, and for
+   `tenant_quota` the stream's `ceiling_reason` becomes `tenant_quota`. Otherwise the records whose sequence is above
+   `last_sequence` (none above it when `in_order` is false, counted `out_of_order`) are kept in sequence order until the
+   first that does not fit `step_log_attempt_records` or `step_log_attempt_bytes` from the stream's counters; the rest
+   are dropped by the server, `ceiling_sequence` and `ceiling_reason` are set, and one `ceiling_marker` is planned at
+   `next_marker_sequence` when the ceiling is first met; then, if the kept sizes plus 128 a row, the marker included, do
+   not fit the tenant allowance, nothing is stored and all the records are counted `tenant_quota` (all or nothing). The
+   gap from `last_sequence` to `p_highest` not covered by the sent records is dropped by the worker below
+   `ceiling_sequence` and by the server above it, saturating at 2^53. T041-36's property test requires the same result
+   as `plan_batch`, the drops by reason included.
 6. **CD.** `INSERT INTO step_log_lines … SELECT … FROM unnest(…) WITH ORDINALITY … WHERE <kept> ON CONFLICT (tenant_id,
    stream_id, sequence) DO NOTHING RETURNING octet_length(…)`, and the marker. Not run when nothing is kept. The
    statement-level trigger of §3 charges the inserted rows once.
 7. **CE.** The `UPDATE` of T9 from CD's rows, plus `final_at = clock_timestamp()` and `last_stored_xid` raised as T9
-   raises it; it runs also when nothing was kept. Return `stored` or `mark_only` with the counts.
+   raises it; it runs also when nothing was kept. Return `stored` or `mark_only` with the kept count, the drops by
+   worker and by server and their reason, and the stream's `ceiling_reason`.
 
 At the commit any raise of the finalizer's step-log branch (each with a constraint name of its own, T041-5) is mapped
 to `StoreError::StepLogRefused`, which the application answers with a re-run of the report carrying a mark-only carry
