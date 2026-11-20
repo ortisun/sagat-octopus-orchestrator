@@ -2182,6 +2182,9 @@ async fn step_log_carry_spike() {
     }
     if run == "3" {
         step_log_spike::install_leases(&w.db.pool).await;
+        if let Ok(mut lease) = step_log_spike::PREWARM_LEASE.lock() {
+            *lease = Some(w.admin.tenant_id().as_uuid());
+        }
         step_log_spike::install_third_run_storage(&w.db.pool).await;
     }
     let (chain, _) = w
@@ -2265,6 +2268,7 @@ async fn step_log_carry_spike() {
                 "carry_calls": calls, "carry_written": written, "carry_contended": contended, "carry_neither": neither,
                 "carry_written_refill": counts.written_refill, "carry_mark_only_quota": counts.mark_only_quota,
                 "carry_mark_only_held": counts.mark_only_held, "carry_mark_only_busy": counts.mark_only_busy,
+                "carry_errors": counts.errors,
                 "carry_p50_ms": ms(percentile(times, 0.50)), "carry_p99_ms": ms(percentile(times, 0.99)),
                 "s_p99_ms": ms(percentile(&row.services, 0.99)), "batches": batches, "ticket_refusals": refusals,
                 "commit_waits": row.commit_waits.0, "commit_waits_by_ingest": row.commit_waits.1,
@@ -2407,6 +2411,9 @@ async fn step_log_carry_diag() {
     if set == "third" || set == "split" {
         // The third run's shape (ADR-0097's leases, D041-111's stream written once) in place of the modes above.
         step_log_spike::install_leases(&w.db.pool).await;
+        if let Ok(mut lease) = step_log_spike::PREWARM_LEASE.lock() {
+            *lease = Some(w.admin.tenant_id().as_uuid());
+        }
         step_log_spike::install_third_run_storage(&w.db.pool).await;
     }
     let (chain, _) = w
@@ -2549,6 +2556,7 @@ async fn step_log_carry_diag() {
                 "carry_calls": counts.calls, "carry_written": counts.written,
                 "carry_written_refill": counts.written_refill, "carry_mark_only_quota": counts.mark_only_quota,
                 "carry_mark_only_held": counts.mark_only_held, "carry_mark_only_busy": counts.mark_only_busy,
+                "carry_errors": counts.errors,
                 "carry_contended": counts.contended, "carry_neither": counts.neither,
                 "carry_p50_ms": ms(percentile(&counts.times, 0.50)),
                 "carry_p99_ms": ms(percentile(&counts.times, 0.99)),

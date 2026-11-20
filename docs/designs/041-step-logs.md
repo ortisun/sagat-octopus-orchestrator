@@ -1221,7 +1221,7 @@ statements.
   row can hold at the same time. Tests with held transactions and `pg_stat_activity`, each checking
   0 ≤ U ≤ S + G ≤ L after: `a_completion_holding_the_usage_row_refills_while_another_refill_waits`,
   `a_writer_holding_its_lease_waits_for_a_reclaiming_refill_without_a_deadlock` (which a reclaim waiting for a held
-  lease turns into a stall, mutation W3), `an_ingest_refill_and_a_carry_refill_wait_for_each_other_in_turn`,
+  lease turns into a stall, mutation 3 of the writer leases), `an_ingest_refill_and_a_carry_refill_wait_for_each_other_in_turn`,
   `a_release_and_a_limit_change_around_a_waiting_refill_end_without_a_deadlock`,
   `a_limit_change_waits_for_an_open_idle_reclaim_instead_of_failing`.
 - **Room held by open writers, bounded.** A grant past the charge takes at most F / (2(*A* + 1)) of the free room. When
@@ -1229,7 +1229,7 @@ statements.
   F_i ≥ F_{i−1} (1 − 1/(2*i*)); the product of (2*i* − 1)/(2*i*) for *i* = 1..*k* is C(2*k*, *k*) / 4^*k*; so at least
   F₀ · C(2*k*, *k*) / 4^*k* (> F₀ / √(π(*k* + ½))) of the room F₀ free before them stays chargeable by another writer
   while they hold their leases, and only past that can a charge be refused as held
-  (`room_held_by_open_writers_is_bounded_from_the_free_room`: *k* = 1, 2, 8, 32 from a quarter-used limit; mutation W10
+  (`room_held_by_open_writers_is_bounded_from_the_free_room`: *k* = 1, 2, 8, 32 from a quarter-used limit; mutation 10
   grants F / (*A* + 1) and fails it). Grants made earlier, when more was free, can hold more: in general the room open
   writers hold is at most the sum over their leases of min(1 MiB, F / (2(*A* + 1))) at each grant (with 128 writers
   holding, as little as about F₀ / 20 may stay chargeable). A held refusal of a carry records a mark-only final mark

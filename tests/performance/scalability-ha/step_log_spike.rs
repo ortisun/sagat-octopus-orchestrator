@@ -281,8 +281,6 @@ pub async fn install_leases(pool: &PgPool) {
            writer integer NOT NULL, granted bigint NOT NULL DEFAULT 0, used bigint NOT NULL DEFAULT 0, \
            charged_at timestamptz NOT NULL DEFAULT clock_timestamp(), \
            PRIMARY KEY (tenant_id, writer), CHECK (0 <= used AND used <= granted)) WITH (fillfactor = 50)",
-        // Refills that outwaited their bound (D041-117): counted outside the transaction they fail.
-        "CREATE SEQUENCE spike_041.step_log_refill_wait_timeouts",
         r"CREATE FUNCTION spike_041.step_log_limit(p_tenant uuid) RETURNS bigint LANGUAGE sql STABLE
             SET search_path = pg_catalog, pg_temp AS $$
             SELECT least(
@@ -301,69 +299,64 @@ pub async fn install_leases(pool: &PgPool) {
             SELECT coalesce((SELECT step_log_bytes FROM public.tenant_retained_usage WHERE tenant_id = p_tenant), 0)
                  + coalesce((SELECT sum(used) FROM spike_041.step_log_quota_leases WHERE tenant_id = p_tenant), 0)::bigint
         $$",
-        // The refill's bound b (D041-118): every other backend the server admits queued ahead on the usage row, each for
-        // a finalizer's p99 hold of 4.5 ms (D041-106), plus one refill holder (the carry's fast-path p99 at 8 × 128,
-        // 32.7 ms, run 44793160071) and its commit (4.5 ms), rounded up to whole seconds: 2 s at 400 connections.
-        r"CREATE FUNCTION spike_041.step_log_refill_bound() RETURNS interval LANGUAGE sql STABLE
-            SET search_path = pg_catalog, pg_temp AS $$
-            SELECT make_interval(secs => ceil(((current_setting('max_connections')::int - 1) * 45 + 327 + 45) / 10000.0))
-        $$",
-        // The refill of the writer's own lease (D041-117). It waits for the usage row, at most the bound b
-        // (`sagat.step_log_refill_wait` when a test sets it; a lower `lock_timeout` of the caller kept), and a wait past
-        // it fails the transaction, counted, as `55P03` named `tenant_step_log_refill_wait`: never a mark-only answer.
-        // Lock order: the step-log fence (shared, the caller's), the usage row, the writer's own lease; other writers'
-        // leases only `SKIP LOCKED`.
-        r"CREATE FUNCTION spike_041.step_log_refill(p_tenant uuid, p_bytes bigint) RETURNS void
+        // The fallback refill's budget b (D041-119): 200 ms, the budget an ingest batch already has on the same row.
+        // A function, not a session setting, so that no caller can lengthen it; a test database may replace it.
+        r"CREATE FUNCTION spike_041.step_log_refill_wait() RETURNS interval LANGUAGE sql IMMUTABLE
+            SET search_path = pg_catalog, pg_temp AS $$ SELECT interval '200 milliseconds' $$",
+        // The refill of the writer's own lease (D041-117, D041-119). `p_charge`: charge `p_bytes` (a statement's
+        // charge) or only make room for it (the ensure before a report). `p_bounded`: wait for the usage row at most b
+        // (inside a report transaction; a caller's lower `lock_timeout` is kept) or as the caller's own timeout allows
+        // (the ensure, outside any report transaction). Order: the step-log fence (shared, the caller's), the usage row,
+        // the writer's own lease `NOWAIT` (only a holder of the usage row, or a limit change holding the fence
+        // exclusively, can hold it, so it never fails short of a prepared transaction): nothing waits after the usage
+        // row. Past b the wait raises `55P03`, which the carry answers `busy`.
+        r"CREATE FUNCTION spike_041.step_log_refill(p_tenant uuid, p_bytes bigint, p_charge boolean DEFAULT true,
+                p_bounded boolean DEFAULT true) RETURNS void
             LANGUAGE plpgsql SET search_path = pg_catalog, pg_temp AS $$
         DECLARE v_limit bigint; v_s bigint; v_g bigint; v_free bigint; v_grant bigint; v_others bigint;
-                v_granted bigint; v_used bigint; r record; i integer; v_prev text; v_bound text;
+                v_granted bigint; v_used bigint; r record; i integer; v_prev text; v_bound interval;
         BEGIN
             -- The limit, read here after the fence the charge holds, never passed by a caller.
             v_limit := spike_041.step_log_limit(p_tenant);
             v_prev := current_setting('lock_timeout');
-            v_bound := coalesce(nullif(current_setting('sagat.step_log_refill_wait', true), ''),
-                                (extract(epoch FROM spike_041.step_log_refill_bound()) * 1000)::bigint || 'ms');
-            IF v_prev = '0' OR v_prev::interval > v_bound::interval THEN
-                PERFORM set_config('lock_timeout', v_bound, true);
+            IF p_bounded THEN
+                v_bound := spike_041.step_log_refill_wait();
+                IF v_prev = '0' OR v_prev::interval > v_bound THEN
+                    PERFORM set_config('lock_timeout', (extract(epoch FROM v_bound) * 1000)::bigint || 'ms', true);
+                END IF;
             END IF;
             -- The usage row, locked first; created only when it does not exist yet.
-            BEGIN
-                FOR i IN 1..2 LOOP
-                    SELECT step_log_bytes, step_log_leased_bytes INTO v_s, v_g
-                      FROM public.tenant_retained_usage WHERE tenant_id = p_tenant FOR UPDATE;
-                    EXIT WHEN FOUND;
-                    INSERT INTO public.tenant_retained_usage (tenant_id) VALUES (p_tenant) ON CONFLICT (tenant_id) DO NOTHING;
-                END LOOP;
-            EXCEPTION WHEN lock_not_available THEN
-                PERFORM nextval('spike_041.step_log_refill_wait_timeouts');
-                RAISE EXCEPTION 'step-log refill outwaited its bound' USING ERRCODE = 'lock_not_available',
-                      CONSTRAINT = 'tenant_step_log_refill_wait';
-            END;
+            FOR i IN 1..2 LOOP
+                SELECT step_log_bytes, step_log_leased_bytes INTO v_s, v_g
+                  FROM public.tenant_retained_usage WHERE tenant_id = p_tenant FOR UPDATE;
+                EXIT WHEN FOUND;
+                INSERT INTO public.tenant_retained_usage (tenant_id) VALUES (p_tenant) ON CONFLICT (tenant_id) DO NOTHING;
+            END LOOP;
             PERFORM set_config('lock_timeout', v_prev, true);
             IF v_s IS NULL THEN RAISE EXCEPTION 'tenant usage row missing' USING ERRCODE = 'data_exception'; END IF;
             IF v_limit - v_s - v_g < greatest(p_bytes, 1048576) THEN
-                -- Near or past the limit: every lease no open transaction holds gives its room back.
+                -- Near or past the limit: every other lease no open transaction holds gives its room back.
                 FOR r IN SELECT writer, granted, used FROM spike_041.step_log_quota_leases
-                          WHERE tenant_id = p_tenant AND writer <> pg_backend_pid() ORDER BY writer
+                          WHERE tenant_id = p_tenant AND writer <> pg_backend_pid() AND granted > 0 ORDER BY writer
                           FOR UPDATE SKIP LOCKED LOOP
                     v_s := v_s + r.used; v_g := v_g - r.granted;
                     UPDATE spike_041.step_log_quota_leases SET granted = 0, used = 0
                      WHERE tenant_id = p_tenant AND writer = r.writer;
                 END LOOP;
             END IF;
-            -- The writer's own lease: no other transaction can hold it now (a reclaim holds the usage row first).
+            -- The writer's own lease, NOWAIT: nothing waits after the usage row.
             SELECT granted, used INTO v_granted, v_used FROM spike_041.step_log_quota_leases
-             WHERE tenant_id = p_tenant AND writer = pg_backend_pid() FOR UPDATE;
+             WHERE tenant_id = p_tenant AND writer = pg_backend_pid() FOR UPDATE NOWAIT;
             IF NOT FOUND THEN
                 INSERT INTO spike_041.step_log_quota_leases (tenant_id, writer) VALUES (p_tenant, pg_backend_pid());
                 v_granted := 0; v_used := 0;
             END IF;
             -- Fold the writer's lease whole (its used bytes to the folded usage, its room back to the free room), then
-            -- grant it max(n, min(1 MiB, F / (2(A + 1)))), A the tenant's other leases: a grant leaves half of F.
+            -- grant it max(n, min(1 MiB, ⌊F / (2(A + 1))⌋)), A the tenant's other leases holding a grant.
             v_s := v_s + v_used; v_g := v_g - v_granted;
             v_free := v_limit - v_s - v_g;
             SELECT count(*) INTO v_others FROM spike_041.step_log_quota_leases
-             WHERE tenant_id = p_tenant AND writer <> pg_backend_pid();
+             WHERE tenant_id = p_tenant AND writer <> pg_backend_pid() AND granted > 0;
             v_grant := greatest(p_bytes, least(1048576, greatest(v_free, 0) / (2 * (v_others + 1))));
             IF v_grant > v_free THEN
                 -- Held: the room missing is in leases open transactions hold (their room, read without a lock).
@@ -376,20 +369,39 @@ pub async fn install_leases(pool: &PgPool) {
                       CONSTRAINT = 'tenant_step_log_quota_exceeded';
             END IF;
             UPDATE spike_041.step_log_quota_leases
-               SET granted = v_grant, used = p_bytes, charged_at = clock_timestamp()
+               SET granted = v_grant, used = CASE WHEN p_charge THEN p_bytes ELSE 0 END, charged_at = clock_timestamp()
              WHERE tenant_id = p_tenant AND writer = pg_backend_pid();
-            UPDATE public.tenant_retained_usage SET step_log_bytes = v_s, step_log_leased_bytes = v_g + v_grant
+            UPDATE public.tenant_retained_usage
+               SET step_log_bytes = v_s, step_log_leased_bytes = v_g + v_grant
              WHERE tenant_id = p_tenant;
         END $$",
-        // A lease idle longer than `p_idle` is folded back and deleted (D041-117; the purge pass, one tenant a
-        // transaction), skipping a lease an open transaction holds.
-        r"CREATE FUNCTION spike_041.step_log_reclaim_idle(p_tenant uuid, p_idle interval) RETURNS integer
+        // The ensure before a report (D041-119): in its own transaction on the report's connection, outside any run
+        // lock, the writer's lease is given room for `p_bytes` when it has less; waits for the usage row as the
+        // caller's own timeout allows. The built store calls it when the room the previous carry returned is short.
+        r"CREATE FUNCTION spike_041.step_log_ensure(p_tenant uuid, p_bytes bigint) RETURNS void
+            LANGUAGE plpgsql SET search_path = pg_catalog, pg_temp AS $$
+        BEGIN
+            PERFORM pg_advisory_xact_lock_shared(hashtextextended('quota-policy:tenant_step_log_bytes:' || p_tenant::text, 0));
+            IF EXISTS (SELECT 1 FROM spike_041.step_log_quota_leases
+                        WHERE tenant_id = p_tenant AND writer = pg_backend_pid() AND granted - used >= p_bytes) THEN
+                RETURN;
+            END IF;
+            PERFORM spike_041.step_log_refill(p_tenant, p_bytes, false, false);
+        END $$",
+        // Leases idle past 10 minutes (the pools' idle timeout) are folded back and deleted (D041-117, D041-119; the
+        // purge pass, one tenant a transaction). The step-log fence is tried shared first, so that holding a lease
+        // always means holding that fence (the limit change's NOWAIT relies on it); held, the tenant is skipped.
+        r"CREATE FUNCTION spike_041.step_log_reclaim_idle(p_tenant uuid) RETURNS integer
             LANGUAGE plpgsql SET search_path = pg_catalog, pg_temp AS $$
         DECLARE r record; v_n integer := 0;
         BEGIN
+            IF NOT pg_try_advisory_xact_lock_shared(
+                   hashtextextended('quota-policy:tenant_step_log_bytes:' || p_tenant::text, 0)) THEN
+                RETURN 0;
+            END IF;
             PERFORM 1 FROM public.tenant_retained_usage WHERE tenant_id = p_tenant FOR UPDATE;
             FOR r IN SELECT writer, granted, used FROM spike_041.step_log_quota_leases
-                      WHERE tenant_id = p_tenant AND charged_at < clock_timestamp() - p_idle
+                      WHERE tenant_id = p_tenant AND charged_at < clock_timestamp() - interval '10 minutes'
                       ORDER BY writer FOR UPDATE SKIP LOCKED LOOP
                 UPDATE public.tenant_retained_usage
                    SET step_log_bytes = step_log_bytes + r.used, step_log_leased_bytes = step_log_leased_bytes - r.granted
@@ -630,20 +642,23 @@ pub async fn install_third_run_storage(pool: &PgPool) {
                 v_outcome := spike_041.step_log_carry_write(p_tenant, p_namespace, p_run, p_step, p_node, p_attempt,
                     p_generation, p_messages, v_retention, v_records, v_bytes, v_kept, v_kept_bytes);
                 RETURN CASE WHEN v_outcome = 'written' THEN 'written:refill' ELSE v_outcome END;
-            EXCEPTION WHEN program_limit_exceeded THEN
-                -- Only the quota's own refusals (D041-117): a refill that outwaited its bound is not caught, it fails the
-                -- report, which its sender re-runs.
+            EXCEPTION WHEN program_limit_exceeded OR lock_not_available THEN
+                -- The quota's own refusals, and a fallback refill past its budget b (D041-119: the report lands, the
+                -- records are counted dropped as `tenant_quota_busy`, never silently). Anything else is re-raised.
                 GET STACKED DIAGNOSTICS v_state = RETURNED_SQLSTATE, v_constraint = CONSTRAINT_NAME;
-                IF v_constraint NOT IN ('tenant_step_log_quota_exceeded', 'tenant_step_log_quota_held') THEN
+                IF v_state <> '55P03'
+                   AND v_constraint NOT IN ('tenant_step_log_quota_exceeded', 'tenant_step_log_quota_held') THEN
                     RAISE;
                 END IF;
-                v_cause := CASE WHEN v_constraint = 'tenant_step_log_quota_held' THEN 'held' ELSE 'quota' END;
+                v_cause := CASE WHEN v_state = '55P03' THEN 'busy'
+                                WHEN v_constraint = 'tenant_step_log_quota_held' THEN 'held' ELSE 'quota' END;
                 -- Mark-only: the final mark and the records counted dropped (tenant_quota), nothing charged.
                 INSERT INTO spike_041.step_log_streams (tenant_id, public_id, namespace_id, run_id, step_id, node,
                         instance_path_nodes, instance_path_indices, attempt, generation, retention_days,
                         last_sequence, dropped_by_server, ceiling_reason, last_at, expires_at, final_at)
                 SELECT p_tenant, gen_random_uuid(), p_namespace, p_run, p_step, p_node, '{}'::text[], '{}'::integer[],
-                       p_attempt, p_generation, v_retention, v_kept, v_kept, 'tenant_quota', clock_timestamp(),
+                       p_attempt, p_generation, v_retention, v_kept, v_kept,
+                       CASE v_cause WHEN 'busy' THEN 'tenant_quota_busy' ELSE 'tenant_quota' END, clock_timestamp(),
                        clock_timestamp() + make_interval(days => v_retention), clock_timestamp()
                  WHERE NOT EXISTS (SELECT 1 FROM spike_041.step_log_streams WHERE tenant_id = p_tenant
                                       AND run_id = p_run AND step_id = p_step AND attempt = p_attempt
@@ -654,7 +669,8 @@ pub async fn install_third_run_storage(pool: &PgPool) {
                 -- An existing stream (a long step's): the rolled-back block released its row; take it again, if free.
                 UPDATE spike_041.step_log_streams
                    SET last_sequence = GREATEST(last_sequence, last_sequence + v_kept),
-                       dropped_by_server = dropped_by_server + v_kept, ceiling_reason = 'tenant_quota',
+                       dropped_by_server = dropped_by_server + v_kept,
+                       ceiling_reason = CASE v_cause WHEN 'busy' THEN 'tenant_quota_busy' ELSE 'tenant_quota' END,
                        last_at = clock_timestamp(), final_at = clock_timestamp()
                  WHERE (tenant_id, stream_id) = (
                        SELECT tenant_id, stream_id FROM spike_041.step_log_streams
@@ -1219,6 +1235,7 @@ pub struct CarryCounts {
     pub mark_only_quota: u64,
     pub mark_only_held: u64,
     pub mark_only_busy: u64,
+    pub errors: u64,
     pub contended: u64,
     pub neither: u64,
     pub times: Vec<Duration>,
@@ -1244,6 +1261,8 @@ pub struct CarryHook {
     pub mark_only_quota: AtomicU64,
     pub mark_only_held: AtomicU64,
     pub mark_only_busy: AtomicU64,
+    /// Carry calls that raised (their report then fails): counted, so that a round shows them.
+    pub errors: AtomicU64,
     pub times: std::sync::Mutex<Vec<Duration>>,
     /// The carry's time by path: written on the fast path, written by a refill, mark-only (any cause).
     pub times_by_path: std::sync::Mutex<[Vec<Duration>; 3]>,
@@ -1274,6 +1293,7 @@ impl CarryHook {
             mark_only_quota: AtomicU64::new(0),
             mark_only_held: AtomicU64::new(0),
             mark_only_busy: AtomicU64::new(0),
+            errors: AtomicU64::new(0),
             times: std::sync::Mutex::new(Vec::new()),
             times_by_path: std::sync::Mutex::new([Vec::new(), Vec::new(), Vec::new()]),
             probe: false,
@@ -1503,7 +1523,11 @@ impl CarryHook {
         .bind(&messages)
         .bind(CARRY_APPLICATION)
         .fetch_one(&mut *conn)
-        .await?;
+        .await
+        .inspect_err(|error| {
+            self.errors.fetch_add(1, Ordering::Relaxed);
+            eprintln!("spike-carry-error {error:?}");
+        })?;
         self.count(&outcome);
         let path = match outcome.as_str() {
             "written" => Some(0),
@@ -1550,6 +1574,7 @@ impl CarryHook {
             mark_only_quota: load(&self.mark_only_quota),
             mark_only_held: load(&self.mark_only_held),
             mark_only_busy: load(&self.mark_only_busy),
+            errors: load(&self.errors),
             contended: load(&self.contended),
             neither: load(&self.neither),
             times,
@@ -1667,6 +1692,11 @@ fn output(task: &ClaimedTask) -> Vec<u8> {
 /// rounds 4 and 5 of D041-105.
 pub static PREWARM: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
 
+/// The tenant whose writer leases the pool fill also takes (D041-119, the fourth run's declared setup): set once the
+/// leases are installed. It stands in for the built store's ensure before the first charge of each connection only;
+/// later refills run inside the report transaction, so the spike is conservative against the built design.
+pub static PREWARM_LEASE: std::sync::Mutex<Option<Uuid>> = std::sync::Mutex::new(None);
+
 /// Opens every connection of `pool` before a row is measured (D041-110). A call of the benchmark then never waits for a
 /// connection to be established: a replica has at most one call in flight per worker (each worker is sequential), 16 at
 /// both sizes, against a pool of `API_POOL` = 20, and `start` has at most 16 calls in flight per pool of 16, so with full
@@ -1683,6 +1713,16 @@ pub async fn prewarm(pool: &PgPool) {
         match pool.acquire().await {
             Ok(conn) => held.push(conn),
             Err(error) => assert!(Instant::now() < deadline, "prewarm a pool: {error}"),
+        }
+    }
+    let lease = PREWARM_LEASE.lock().ok().and_then(|tenant| *tenant);
+    if let Some(tenant) = lease {
+        for conn in &mut held {
+            sqlx::query("SELECT spike_041.step_log_ensure($1, 1048576)")
+                .bind(tenant)
+                .execute(&mut **conn)
+                .await
+                .unwrap_or_else(|error| panic!("lease a filled connection: {error}"));
         }
     }
     drop(held);
