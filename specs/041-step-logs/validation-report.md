@@ -560,3 +560,34 @@ The `-cold` rows: sixteen rows of (a) and (g) at 8 × 128 with empty pools all c
 errors (9 in shard 2, 1,066 in shard 3), every one a `COMMIT` of an ingest transaction (its 200 ms lock timeout) waiting
 on the tenant's `tenant_retained_usage` row in the finalizer (`INSERT … ON CONFLICT DO NOTHING` or `SELECT … FOR UPDATE`):
 at 8 × 128 the usage row turns batches away, which the leases of ADR-0097 remove.
+
+## 2026-11-20 — Hand mutations of the lease prototype (ADR-0097, D041-108, D041-111, D041-112)
+
+The prototype's tests, `tests/performance/scalability-ha/step_log_leases_tests.rs`, run by hand against a disposable
+PostgreSQL 18 with `pg_stat_statements` preloaded (`SAGAT_TEST_DATABASE_URL=… cargo test -p sagat-tests --test
+perf_scalability_ha --features perf-spike leases_tests`); all 14 pass as committed. Each mutation below was applied by
+hand to `step_log_spike.rs`, the tests run, the file restored and compared:
+
+| Mutation | Test that failed |
+|---|---|
+| M1 no `SKIP LOCKED` in the charge | `a_charge_skips_a_lease_another_transaction_holds_and_never_waits_for_it` |
+| M2 the charge locks the usage row (a first attempt mutated the wrong statement and survived; redone on the charge) | `a_charge_with_a_free_lease_never_takes_the_usage_row…`, `a_charge_skips…`, `the_last_bytes…` |
+| M3 no lowered-limit check | `a_lowered_limit_stops_charges_into_leases_with_room` |
+| M4 a grant past the free room | `concurrent_charges_never_exceed_the_limit_and_count_every_byte_once` |
+| M5 no reclaim near the limit (a first run survived; the deterministic test `the_last_bytes_of_the_limit_are_admitted_from_the_room_of_idle_leases` was added) | `the_last_bytes_of_the_limit_are_admitted_from_the_room_of_idle_leases` |
+| M6 the refill does not fold its lease | `a_charge_with_a_free_lease_never_takes_the_usage_row_and_a_refill_alone_waits_for_it` |
+| S1 the new stream is also updated | `a_short_steps_carry_writes_its_new_stream_once` |
+| S2 the expiry index keyed on `expires_at` | `a_carry_onto_an_existing_stream_updates_it_hot` |
+| C1 the `locks` mode of the cost breakdown writes a stream | `each_carry_mode_of_the_cost_breakdown_writes_only_its_storage` |
+| R1 a charge past a lowered limit raises (before the reclaim on a limit change existed) | `a_limit_lowered_above_the_usage_still_admits_what_fits` |
+| R2 a release waits for the leases | `a_release_never_waits_for_a_lease_and_never_goes_below_zero` |
+| R3 a release with no underflow check | `a_release_never_waits_for_a_lease_and_never_goes_below_zero` |
+| R4 the carry's refill waits (no `NOWAIT`) | `a_carry_never_waits_for_the_usage_row` |
+| R5 the carry does not catch a refusal | `a_carry_refused_by_the_limit_records_its_mark_in_the_same_call` |
+| R6 a change of the limit reclaims nothing | `a_limit_lowered_above_the_usage_still_admits_what_fits` |
+
+The budget lines were derived before they were run and seen failing where the derivation missed a statement: a charged
+insert derived as 6 nested statements ran 16 (one foreign-key check a line); a short step's carry derived as 22 ran 23
+(the stream's path check), then with the no-wait setting derived as 25 ran 24 (the new stream's path returned before a
+reset, which was removed). Not covered by the prototype: the direct charge with all 256 leases held (T041-5, with a
+lowered cap), the privileges of ADR-0097 decision 1 (T041-5's runtime-role tests).

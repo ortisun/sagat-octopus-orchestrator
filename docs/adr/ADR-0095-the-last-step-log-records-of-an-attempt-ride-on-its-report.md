@@ -75,9 +75,13 @@ Facts of the code that shape the change:
    Everything that can be checked or computed before a statement (the deployment switch, the store's proof, size, sequences,
    levels, scrubbing, cutting, sizing) is, in the application; a carry that fails a check is ignored, or recorded as a final mark
    with no line when its highest sequence alone is valid, and the report is recorded.
-5. When the report's transaction fails because of its carry, the report MUST be recorded by a re-run of the report with the
-   carry downgraded: after any raise of the commit finalizer's step-log branch (`tenant_step_log_quota_exceeded` among them), a
-   mark-only carry that charges nothing; after a failed carry statement, none. The carry only goes down, and each downgrade can
+5. A refusal of the carry's own charge (ADR-0097: `tenant_step_log_quota_exceeded` or `tenant_step_log_quota_held`, raised
+   at its insert) MUST be answered inside the carry's call, by one `BEGIN … EXCEPTION` block around its writes: the carry
+   then records a mark-only stream (the records counted `tenant_quota`) in the same call, and its charge's refill takes the
+   usage row `NOWAIT`, a held row making the carry `contended` (revised 2026-11-20, D041-112). When the report's
+   transaction fails because of its carry otherwise, the report MUST be recorded by a re-run of the report with the
+   carry downgraded: after a raise of a guard of the step-log quota that the block does not catch, a mark-only carry that
+   charges nothing; after a failed carry statement, none. The carry only goes down, and each downgrade can
    meet the content-quota fallback once, so a report runs at most four transactions. The two causes MUST reach the re-run as values of their own, never as an ordinary unavailability, which is
    never re-run. Item 1 of ADR-0027's Amendment then reads "a step-log charge never blocks a terminal state: a report whose step-log rows
    do not fit is recorded by a re-run without them". A report whose output or failure code holds a declared secret, root or
@@ -87,11 +91,14 @@ Facts of the code that shape the change:
    lowered); a carry whose transaction id is not above it stores none of its records above `last_sequence` (they are counted as
    dropped by the server) and still records the final mark.
 7. One lock order for every writer of step logs: the run rows, then the authority locks of ADR-0050 decision 7 (taken only by a
-   report), then the namespace's step-log policy fences (shared), then the attempt's stream lock, then the stream row, then at
-   commit the fences of the classes the transaction charges (content, log, step-log) and the tenant usage row. An ingest takes no
-   run row and no authority lock, and waits for the fences, the stream lock and the stream row under its lock timeout. A carrying
-   report MUST NOT wait for a step-log lock: it tries the fences, the stream lock and the stream row, and when one is held it
-   writes nothing more and the report commits. A change of a step-log resource takes only its own fence.
+   report), then the namespace's step-log policy fences (shared), then the attempt's stream lock, then the stream row, then the
+   tenant's quota class fences (shared, content, log, step-log) and a lease of the tenant's step-log quota at the insert, the
+   tenant usage row only for a refill (ADR-0097), and at commit the fences and usage row of the content and log classes the
+   transaction charges. An ingest takes no run row and no authority lock, and waits for the fences, the stream lock, the
+   stream row and a refill's usage row under its lock timeout. A carrying report MUST NOT wait for a step-log lock: it tries
+   the fences (the class fences included), the stream lock and the stream row, takes a lease only `SKIP LOCKED` and a
+   refill's usage row only `NOWAIT`, and when one is held it writes nothing more and the report commits (revised
+   2026-11-20, D041-112). A change of a step-log resource takes only its own fence.
 8. The SDK MUST send the report only after its in-flight `AppendStepLogs` call has answered, or after a wait of at most 2
    seconds; a short step (no flush before its report, and its records fit one carry) makes no `AppendStepLogs` call and no wait.
 
@@ -108,10 +115,12 @@ Facts of the code that shape the change:
    their number, and a short step would still pay a round trip and a wait for the group.
 5. **The carry written by a second transaction after the report commits, in the same call** — lost. It is the extra commit the
    owner chose to remove.
-6. **A savepoint around the carry** so that its failure rolls back only itself — lost. Two more statements on every carrying
-   report; and a finalizer raise happens at commit, which a savepoint cannot catch.
+6. **A savepoint around the carry** so that its failure rolls back only itself — lost as two statements of the client on every
+   carrying report, and while the charge raised at commit, where a savepoint cannot catch it. Since ADR-0097 the charge
+   raises at the insert, so the carry's own call now opens one `BEGIN … EXCEPTION` block (a subtransaction, no round trip)
+   for its charge's refusal (decision 5, revised 2026-11-20); its cost is measured by T041-35's third run.
 7. **A carry of up to 500 records**, the batch's cap — lost. A 500-record write took about 200 ms at p99 in T041-31, all of it
-   under the run lock and, from its first deferred flush, the tenant usage row.
+   under the run lock and, as charged then, from its first deferred flush, the tenant usage row.
 8. **Accept a lower criterion (O041-036 (c)) or defer the feature (O041-036 (e))** — not chosen by the owner.
 
 ## Consequences
@@ -120,10 +129,9 @@ Good: a short step adds no transaction and no round trip of its worker; its line
 lines are visible no later than its end and a tail never waits for a final batch that is still in flight; the final flush's
 two-second wait disappears for short steps.
 
-Bad: a report that keeps a carried record takes the tenant's usage row at its commit even when its output stores nothing, so a
-tenant's logging reports queue on that row at commit, as completions with output do today; spike T041-35 measures it with an
-output that stores nothing. The report's transaction holds the run row while its carry's one call runs (one round trip) and
-fires one statement-trigger call and, at commit, one deferred flush. Part of a rule (the carry's plan) runs in SQL, kept equal
+Bad: the report's transaction holds the run row while its carry's one call runs (one round trip, one subtransaction) and
+fires one statement-trigger call that charges a lease (ADR-0097; the usage row only for a refill, `NOWAIT`); a report that
+also stores output takes the usage row at its commit for the content class, as today. Spike T041-35 measures it. Part of a rule (the carry's plan) runs in SQL, kept equal
 to the domain's by a property test. A carry that finds a step-log lock held stores nothing (`contended`), so a rare contention loses that attempt's last
 lines. A carry whose transaction fails costs one or two more report transactions, and a re-run can be refused as a late report
 would be. A report of a client that negotiated below 1.7 may carry records,

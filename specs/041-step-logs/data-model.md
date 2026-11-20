@@ -90,8 +90,7 @@ CREATE TABLE step_log_streams (
     CONSTRAINT step_log_streams_removal_order CHECK ((deleted_at IS NULL OR removed_at IS NOT NULL)
         AND (purged_at IS NULL OR removed_at IS NOT NULL))
 ) WITH (fillfactor = 70);                                  -- room on each page for HOT updates (D041-111)
--- No run index (D041-111): a run's streams are read through the (tenant_id, run_id, …) prefix of
--- step_log_streams_attempt_uniq, sorted by stream_id (a run has at most its attempts' streams and its script markers).
+CREATE INDEX step_log_streams_run_idx ON step_log_streams (tenant_id, run_id, stream_id);  -- kept (D041-112)
 CREATE INDEX step_log_streams_expiry_idx ON step_log_streams (expires_day) WHERE removed_at IS NULL;
 CREATE INDEX step_log_streams_removal_idx ON step_log_streams (tenant_id, stream_id)
     WHERE removed_at IS NOT NULL AND purged_at IS NULL;
@@ -198,7 +197,7 @@ before, which T041-5 tests. The down migration restores the four-argument `sagat
 replaced.
 `step_log_lines.script_execution_id` is a `uuid`, fixed-size, so it is not in the manifest.
 
-## 3b. Exact leases of the step-log quota (ADR-0097, D041-108; T041-5)
+## 3b. Exact leases of the step-log quota (ADR-0097, D041-108, D041-112; T041-5)
 
 Every step-log charge goes to a lease; nothing of the class `step_log` goes to `quota_transaction_deltas.step_log_delta`
 on insert, so the deferred flush trigger `quota_transaction_deltas_step_log_flush` of §3 is **not** created, and a
@@ -208,53 +207,75 @@ transaction that only stores step-log rows queues no deferred quota call.
 ALTER TABLE tenant_retained_usage ADD COLUMN step_log_leased_bytes bigint NOT NULL DEFAULT 0;
 ALTER TABLE tenant_retained_usage ADD CONSTRAINT tenant_retained_usage_step_log_leased_nonnegative
     CHECK (step_log_leased_bytes >= 0) NOT VALID;          -- validated by the next migration, as T041-4's CHECKs
+-- T041-4's tenant_retained_usage_step_log_nonnegative (step_log_bytes >= 0) is dropped before T041-4 merges: S may be
+-- negative while released bytes were charged in leases; U = S + Σ used >= 0 is checked by every release (D041-112).
 CREATE TABLE step_log_quota_leases (
-    tenant_id uuid     NOT NULL,
+    tenant_id uuid     NOT NULL REFERENCES tenant_retained_usage (tenant_id) ON DELETE CASCADE,
     lease     smallint NOT NULL,
     granted   bigint   NOT NULL DEFAULT 0,
     used      bigint   NOT NULL DEFAULT 0,
     PRIMARY KEY (tenant_id, lease),
     CONSTRAINT step_log_quota_leases_lease_valid CHECK (lease BETWEEN 0 AND 255),
     CONSTRAINT step_log_quota_leases_used_within CHECK (0 <= used AND used <= granted)
-);
+) WITH (fillfactor = 50, autovacuum_vacuum_scale_factor = 0, autovacuum_vacuum_threshold = 1000);
 ```
 
 S is `step_log_bytes` (the folded usage), G is `step_log_leased_bytes`; the usage is U = S + Σ `used` and the leased room
-R = Σ (`granted` − `used`). Invariants, each tested: (I1) the `CHECK`s; (I2) G = Σ `granted` of the tenant's leases, both
-written only while the usage row is locked; (I3) S ≥ 0, G ≥ 0; (I4) a grant commits only with S + G ≤ L after it; (I5) a
-charge commits only with S + G ≤ L for the L it read. L is the limit the finalizer's step-log branch works out
-(`quota_limits`, else `quota_ceilings`, else 1 GiB, bounded by the ceiling), read after the step-log fence.
+R = Σ (`granted` − `used`). Invariants, each tested: (I1) the lease `CHECK`; (I2) at every commit G = Σ `granted` of the
+tenant's leases, both written only by a transaction holding the usage row; (I3) G ≥ 0 (`CHECK`) and U ≥ 0 (checked by the
+release); (I4) a grant commits only with S + G ≤ L after it; (I5) a charge into a lease commits only with S + G ≤ L for
+the L it read. L is the limit the finalizer's step-log branch works out (`quota_limits`, else `quota_ceilings`, else
+1 GiB, bounded by the ceiling), read after the step-log fence. With `quota_accounting_control.step_log_enforcement_enabled`
+off, I4 and I5 are not checked (a refill grants without the limit) and U stays exact.
 
-Three `SECURITY DEFINER` functions of ADR-0027's pattern (fixed `search_path = pg_catalog, pg_temp`, trusted owner,
-`REVOKE ALL … FROM PUBLIC`, no `EXECUTE` to `sagat_app`: only the statement trigger of §3 and the finalizer call them):
+`SECURITY DEFINER` functions of ADR-0027's pattern (fixed `search_path = pg_catalog, pg_temp`, every name written
+`public.…`, trusted owner, `REVOKE ALL … FROM PUBLIC` and `FROM sagat_app`, no `EXECUTE` to `sagat_app` except the
+accessor): the trigger function of §3 calls the first, the first the second, and the finalizer and the limit editor the
+others.
 
 - `sagat_quota_step_log_charge(tenant, bytes)`: one statement takes the content, log and step-log fences shared (in that
-  order, `pg_advisory_xact_lock_shared`); the limit; `SELECT step_log_bytes, step_log_leased_bytes` without a lock;
-  `S + G > L` raises `tenant_step_log_quota_exceeded`; `UPDATE step_log_quota_leases … SET used = used + bytes FROM (SELECT
-  lease … WHERE tenant_id = tenant AND granted - used >= bytes ORDER BY (lease + pg_backend_pid()) % 256 LIMIT 1 FOR UPDATE
-  SKIP LOCKED)`; no row: `sagat_quota_step_log_refill(tenant, bytes, L)`.
-- `sagat_quota_step_log_refill(tenant, bytes, L)`: `INSERT … ON CONFLICT DO NOTHING` of the tenant's usage row and its
-  `SELECT … FOR UPDATE`; when L − S − G < max(bytes, 1 MiB), every lease no open transaction holds (`FOR UPDATE SKIP
+  order: one select list, evaluated left to right); the limit; `SELECT step_log_bytes, step_log_leased_bytes` without a
+  lock; when S + G ≤ L, `UPDATE public.step_log_quota_leases SET used = used + bytes WHERE tenant_id = tenant AND lease =
+  (SELECT lease … WHERE tenant_id = tenant AND granted - used >= bytes ORDER BY (lease - pg_backend_pid() % 256 + 256) %
+  256 LIMIT 1 FOR UPDATE SKIP LOCKED) RETURNING lease` (an uncorrelated scalar subquery, run once: the `UPDATE … FROM
+  (subquery)` form can rescan it and update two leases, D041-112); no row, or S + G > L: the refill.
+- `sagat_quota_step_log_refill(tenant, bytes)`: reads L itself; `INSERT … ON CONFLICT DO NOTHING` of the tenant's usage
+  row and its `SELECT … FOR UPDATE` (`FOR UPDATE NOWAIT` when the transaction-local `sagat.step_log_charge_nowait` is `on`,
+  as the carry sets it); when L − S − G < max(bytes, 1 MiB), every lease no open transaction holds (`FOR UPDATE SKIP
   LOCKED`, lease order) gives its room back (S += `used`, G −= `granted`, both 0); the free lease with the least room
   (`ORDER BY granted - used, lease … FOR UPDATE SKIP LOCKED`), else the lowest unused lease number, else, with all 256
   held, a direct charge of S under the row (raising when S + G + bytes > L); the chosen lease is folded (S += `used`,
   G −= `used`, `granted` −= `used`, `used` = 0) and granted g = max(bytes − room, min(1 MiB, (L − S − G) / 64), 0),
-  raising when g > L − S − G; then `granted` += g, `used` = bytes, G += g.
+  raising `tenant_step_log_quota_exceeded` when g > L − S − G and the reclaim skipped no held lease, and
+  `tenant_step_log_quota_held` when it skipped one; then `granted` += g, `used` = bytes, G += g.
+- `sagat_quota_step_log_reclaim(tenant)`: under the usage row, every lease of the tenant gives its room back (S += `used`,
+  G = 0, leases zeroed). Called by the change of `tenant_step_log_bytes` or its ceiling, which holds the step-log fence
+  exclusively, so no lease is held and none is waited for.
+- `sagat_quota_step_log_usage(tenant)` (`EXECUTE` to `sagat_app`): S + Σ `used` in one snapshot, without a lock; the quota
+  view of `tenant_step_log_bytes` (`crates/infra-postgres/src/quotas.rs`) and `sagat_quota_step_log_allowance` read it.
+  `step_log_leased_bytes` is never shown.
 - The finalizer's step-log branch (in `sagat_quota_flush_deltas`, ADR-0027's Amendment item 3), now reached only by a
-  release (a negative `step_log_delta` from the per-row `AFTER DELETE` trigger): after the fences and before the usage
-  row, every lease of the tenant `FOR UPDATE` in lease order (waiting), each folded (S += `used`, G −= `used`, `granted`
-  −= `used`, `used` = 0); then S += the delta, which stays ≥ 0 because every committed charge is folded.
+  release (a negative `step_log_delta` from the per-row `AFTER DELETE` trigger): after the fences, under the usage row,
+  Σ `used` read after the lock; S − released + Σ `used` < 0 raises `step_log_usage_underflow`; else S −= released. It
+  takes no lease.
 
-The usage the quota API shows for `tenant_step_log_bytes` and `sagat_quota_step_log_allowance(tenant)` returns are
-S + Σ `used` in one snapshot, without a lock. Lock order: L3 (the class fences, shared) → a lease (tried, `SKIP LOCKED`,
-except by a release) → L4 (the usage row, by a refill, a release and the content and log finalizer). No transaction
-holding a lease waits for a lease; only a release waits for one, and it holds no usage row while it does.
+The usage the quota API shows for `tenant_step_log_bytes` and `sagat_quota_step_log_allowance(tenant)` returns is
+S + Σ `used`. Lock order: L3 (the class fences, shared) → a lease (only tried, `SKIP LOCKED`) → L4 (the usage row, by a
+refill, a release, a limit change and the content and log finalizer). No transaction waits for a lease.
+
+Metrics (closed labels, no tenant): `step_log_quota_refills_total{kind="refill"|"reclaim"|"direct"}`,
+`step_log_quota_refusals_total{cause="limit"|"held"}`, and the gauge `step_log_quota_lease_rows`, published by the purge
+pass.
 
 Budget line of one insert statement of *k* step-log rows charged into a free lease (pinned by
 `tests/performance/scalability-ha/step_log_leases_tests.rs::a_step_log_insert_costs_its_budget_line` on the prototype):
 rows written one lease row, no usage row, no delta row; nested statements 6 for the charge + *k* foreign-key checks
 (`step_log_lines_stream_fk`); deferred calls at the commit 0. A refill adds one write of the usage row and one lease row
-(plus one per reclaimed lease near the limit).
+(plus one per reclaimed lease near the limit). A short step's carry of ten records: 24 nested statements
+(`a_short_steps_carry_writes_its_new_stream_once`).
+
+The down migration refuses while a row of `step_log_lines` exists; otherwise U = 0, and it drops the leases, the column,
+the functions and restores what it replaced.
 
 ## 4. Grants (the migrations' `DO $grants$` blocks)
 
@@ -262,20 +283,20 @@ rows written one lease row, no usage row, no delta row; nested statements 6 for 
 |---|---|
 | `step_log_lines` | `SELECT, INSERT, DELETE` |
 | `step_log_streams` | `SELECT, INSERT, UPDATE` |
-| `step_log_quota_leases` | none: only the `SECURITY DEFINER` functions of §3b write or read it (ADR-0097) |
+| `step_log_quota_leases` | none, revoked explicitly: only the `SECURITY DEFINER` functions of §3b write or read it (ADR-0097) |
 
-Usage of the identity sequence of `step_log_streams`. No `TRUNCATE` and no grant on `namespaces`. The only new `SECURITY
+Usage of the identity sequence of `step_log_streams`. No `TRUNCATE` and no grant on `namespaces`. The first new `SECURITY
 DEFINER` function is the accessor of ADR-0027's Amendment, `sagat_quota_step_log_allowance(tenant)`, of the existing
 pattern: a fixed `search_path`, a trusted owner, `REVOKE ALL … FROM PUBLIC` (as `20261024000000_durable_quotas.up.sql:294`
 does, since PostgreSQL grants `EXECUTE` to `PUBLIC` on a new function) and `EXECUTE` to `sagat_app` (as `:572`). It
 exists because the runtime role may not read `quota_accounting_control` (`:564-572`). Two more functions, of the 2026-11-20 revision (OD-2026-11-20-1): the statement-level quota trigger function of §3
 (`SECURITY DEFINER`, pinned `search_path`, `REVOKE ALL … FROM PUBLIC`, no `EXECUTE` to `sagat_app`, since only its trigger
 calls it), and `sagat_step_log_carry` of §8a (`SECURITY INVOKER`, pinned `search_path`, `REVOKE ALL … FROM PUBLIC`,
-`EXECUTE` to `sagat_app`), created by T041-36's migration. And the two lease functions of §3b,
-`sagat_quota_step_log_charge` and `sagat_quota_step_log_refill` (`SECURITY DEFINER`, pinned `search_path`, `REVOKE ALL …
-FROM PUBLIC`, no `EXECUTE` to `sagat_app`: only the statement trigger calls the first, and the first the second); the
-runtime role gets no privilege on `tenant_retained_usage.step_log_leased_bytes` beyond what it has on the table today. No
-other grant. The down migration
+`EXECUTE` to `sagat_app`), created by T041-36's migration. And the lease functions of §3b,
+`sagat_quota_step_log_charge`, `sagat_quota_step_log_refill` and `sagat_quota_step_log_reclaim` (`SECURITY DEFINER`, pinned
+`search_path`, `REVOKE ALL … FROM PUBLIC` and `FROM sagat_app`), and the accessor `sagat_quota_step_log_usage` (`EXECUTE` to
+`sagat_app`); `REVOKE ALL ON step_log_quota_leases FROM sagat_app`; the runtime role gets no privilege on
+`tenant_retained_usage.step_log_leased_bytes` beyond what it has on the table today (none). No other grant. The down migration
 refuses while a row of `step_log_lines` exists.
 
 ## 5. Canonical JSON of `fields`
@@ -330,6 +351,8 @@ and drop metrics below; `step_log_lines_stored_total{level}`; `step_log_bytes_st
 `out_of_order`); `step_log_script_markers_total{outcome}` (`written`, `skipped_quota`, `skipped_off`,
 `skipped_finished`, `failed`); `step_log_lines_truncated_total`; `step_log_redactions_total{rule}` (`shape`, `field_name`);
 `step_log_ingest_seconds`; `step_log_lock_timeouts_total`; `step_log_quota_retries_total`;
+`step_log_quota_refills_total{kind}` (`refill`, `reclaim`, `direct`); `step_log_quota_refusals_total{cause}` (`limit`,
+`held`); the gauge `step_log_quota_lease_rows` (ADR-0097, §3b);
 `step_log_purged_lines_total`; `step_log_purge_backlog` (the streams whose `expires_at` has passed or whose removal has
 begun and whose `purged_at` is null, counted by the purge pass at the start of each run); `step_log_tails_open`; `step_log_tails_refused_total`;
 `database_oldest_transaction_age_seconds` (a gauge of the operations snapshot over `pg_stat_activity.xact_start` and
