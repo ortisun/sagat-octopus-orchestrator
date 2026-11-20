@@ -24,10 +24,14 @@ Scoped selection:
                 [[test]] entry, changed; or (b) a harness it drives changed (frontend/e2e, sdks/*/conformance, examples/,
                 runners/lake/ for the lake suites); or (c) for the budget of the hot path, a file of
                 crates/infra-postgres/ or of the claim and command path of crates/application changed
-                (OD-2026-11-12-4). Nothing else selects a suite: not a changed package that the suite
-                uses or that depends on it, and not a shared input (tests/support, tests/fixtures, runners/ other than
-                runners/lake/, a contract file under specs/, a dependency of tests/Cargo.toml, Cargo.lock): the
-                integration suites are expensive, and the release runs all of them.
+                (OD-2026-11-12-4); or (d) for a contract suite (tests/contract/), a contract file under
+                specs/<feature>/contracts/ that the suite reads changed (constitution 4.6.0). Nothing else selects a
+                suite: not a changed package that the suite uses or that depends on it, and not a shared input
+                (tests/support, tests/fixtures, runners/ other than runners/lake/, a dependency of tests/Cargo.toml,
+                Cargo.lock): the integration suites are expensive, and the release runs all of them.
+  contracts     a changed file under specs/<feature>/contracts/ (Markdown included) selects the contract suites and the
+                workspace packages whose Rust sources read it, found from their string literals (Readers), and
+                nothing else; a package selected this way also selects its dependents, as a changed package does.
   SDKs, Studio  an SDK's unit tests run when a file under sdks/<language>/ changed; the Studio's when a file under
                 frontend/ changed; the scripts' when a file under scripts/ changed; the lake runtime's (Python,
                 its lock and its image) when a file other than Markdown under runners/lake/ changed.
@@ -76,7 +80,15 @@ RUST_ROOT_INPUTS = re.compile(r"Cargo\.toml|Cargo\.lock|rust-toolchain\.toml|cli
 # Inputs of the integration suites that cannot be tied to one of them. They select no suite on their own: a pull
 # request runs the suites that were changed, and the release runs the rest (OD-2026-11-06-2). The lake runtime is not
 # one of them: it is tied to the lake suites (HARNESSES) and to its own job.
-SHARED_INPUTS = re.compile(r"runners/(?!lake/).*|specs/.*/contracts/.*")
+SHARED_INPUTS = re.compile(r"runners/(?!lake/).*")
+# A contract file. It is not shared like the inputs above: a change of one selects the suites and the packages whose
+# Rust sources read it (Readers), so that a pull request that changes only a contract still runs what checks it.
+CONTRACT = re.compile(r"(specs/[^/]+/contracts)/(.+)")
+# A path into some contracts directory (the file literal of a joined read must not be one: it names its own directory).
+CONTRACT_PATH = re.compile(r"specs/[^/]+/contracts/")
+# A string literal of Rust source: what a suite reads is named in one (a path, a directory, a file name), and a comment
+# that names a contract is not a read.
+STRING_LITERAL = re.compile(r'"((?:[^"\\\n]|\\.)*)"')
 LAKE_RUNTIME = re.compile(r"runners/lake/.*")
 MARKDOWN = re.compile(r".*\.md")
 
@@ -138,6 +150,11 @@ class Workspace:
         return reached
 
 
+def target_directories(targets):
+    """{target name: the directory of its main file, relative to the root and ending in /}."""
+    return {name: "tests/" + path.rsplit("/", 1)[0] + "/" if "/" in path else "tests/" for name, path in targets.items()}
+
+
 def head_targets(root):
     """{target name: path relative to tests/} from the manifest in the working tree."""
     try:
@@ -179,6 +196,94 @@ def manifest_selection(root, base, targets, reasons):
     return chosen
 
 
+def rust_sources(root, directory):
+    """The .rs files under directory (relative to root), relative to root, in a stable order."""
+    found = []
+    for current, subdirs, files in os.walk(os.path.join(root, directory)):
+        subdirs[:] = sorted(d for d in subdirs if d not in ("target", "node_modules", ".git"))
+        found += [os.path.relpath(os.path.join(current, f), root) for f in sorted(files) if f.endswith(".rs")]
+    return found
+
+
+class Readers:
+    """Who reads a contract file, derived from the Rust sources of the head, never from a hand list.
+
+    The readers are the contract suites (the `sagat-tests` targets under tests/contract/, the guards of the contracts)
+    and the workspace packages; an integration, fault, e2e or performance suite that also reads a contract stays a
+    suite that only its own changes select (OD-2026-11-06-2). A reader reads `specs/<feature>/contracts/<file>` when a
+    string literal of its sources is a path that ends in `specs/<feature>/contracts/<file>`, or when one is a path that
+    ends in the directory `specs/<feature>/contracts` and another is `<file>` or ends in `/<file>` (a helper that joins
+    the two). A literal that only mentions a contract inside a sentence is not a path to it, and a comment is not a
+    literal. The literals of a suite are those of the files its directory owns (the deepest target directory, as for a
+    changed file) and of a module of tests/support that it names (`contract::`, or `mod support` for
+    tests/support/mod.rs); those of a package are those of every .rs file under its directory, `build.rs` and
+    `include_str!` included. A reader that builds the path some other way is not found:
+    `scripts/tests/test_select_test_targets.py` fails when a literal of the real repository is a path into a contracts
+    directory that reads nothing, so that such a reader is seen."""
+
+    def __init__(self, root, targets, workspace):
+        self.root = root
+        directories = target_directories(targets)
+        self.literals = {}
+        owned = {name: [] for name in targets}
+        support = []
+        for rel in rust_sources(root, "tests"):
+            owners = [name for name, directory in directories.items() if rel.startswith(directory)]
+            if owners:
+                depth = max(len(directories[name]) for name in owners)
+                for name in owners:
+                    if len(directories[name]) == depth:
+                        owned[name].append(rel)
+            elif rel.startswith("tests/support/"):
+                support.append(rel)
+        texts = {}
+        for rel in [r for files in owned.values() for r in files] + support:
+            texts[rel] = self._read(rel)
+        modules = {}
+        for rel in support:
+            stem = os.path.splitext(os.path.basename(rel))[0]
+            name = os.path.basename(os.path.dirname(rel)) if stem == "mod" else stem
+            pattern = re.compile(rf"\bmod\s+{name}\b" if stem == "mod" else rf"\b{name}::")
+            modules[rel] = pattern
+        for name, files in owned.items():
+            if not targets[name].startswith("contract/"):
+                continue
+            text = "\n".join(texts[rel] for rel in files)
+            literals = set(STRING_LITERAL.findall(text))
+            for rel, pattern in modules.items():
+                if pattern.search(text):
+                    literals |= set(STRING_LITERAL.findall(texts[rel]))
+            self.literals[("target", name)] = literals
+        for package, directory in workspace.directory.items():
+            if package == TESTS_PACKAGE:
+                continue
+            text = "\n".join(self._read(rel) for rel in rust_sources(root, directory))
+            self.literals[("package", package)] = set(STRING_LITERAL.findall(text))
+
+    def _read(self, rel):
+        try:
+            with open(os.path.join(self.root, rel), encoding="utf-8", errors="replace") as handle:
+                return handle.read()
+        except OSError:
+            return ""
+
+    def of(self, rel):
+        """The (kind, name) readers of the contract file rel; empty when rel is not a contract file."""
+        match = CONTRACT.fullmatch(rel)
+        if not match:
+            return set()
+        directory, name = match.groups()
+        found = set()
+        for reader, literals in self.literals.items():
+            whole = any(literal.endswith(f"{directory}/{name}") for literal in literals)
+            joined = any(literal.rstrip("/").endswith(directory) for literal in literals) and any(
+                literal == name or (literal.endswith("/" + name) and not CONTRACT_PATH.search(literal))
+                for literal in literals)
+            if whole or joined:
+                found.add(reader)
+        return found
+
+
 class Decision:
     def __init__(self, targets):
         self.targets = targets
@@ -210,10 +315,25 @@ def scope(root, base, head, targets, workspace):
     if any(rel.startswith(".github/workflows/") for rel in files):
         decision.run_everything("the workflow itself changed, so it is checked by running all of it")
         return decision
-    directories = {name: "tests/" + path.rsplit("/", 1)[0] + "/" if "/" in path else "tests/"
-                   for name, path in targets.items()}
+    directories = target_directories(targets)
     changed_packages = set()
+    readers = None
     for rel in files:
+        if CONTRACT.fullmatch(rel):
+            # A contract is read, not owned: it selects what reads it, Markdown included (an error table, a README the
+            # suite parses), and nothing else. A contract nobody reads selects nothing; the release still checks it.
+            readers = readers or Readers(root, targets, workspace)
+            found = readers.of(rel)
+            if not found:
+                decision.reasons.append(("no suite", f"{rel} is a contract that no suite or package reads"))
+            for kind, name in sorted(found):
+                if kind == "target":
+                    decision.chosen.add(name)
+                    decision.reasons.append((name, f"{rel} is a contract it reads"))
+                else:
+                    changed_packages.add(name)
+                    decision.reasons.append((name, f"{rel} is a contract the package reads"))
+            continue
         if MARKDOWN.fullmatch(rel):
             continue
         if RUST_ROOT_INPUTS.fullmatch(rel):
