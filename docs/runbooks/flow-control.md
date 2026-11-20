@@ -124,8 +124,7 @@ with nothing created, when the key's queue is full (`CONCURRENCY_QUEUE_FULL`), t
 the key would be new beyond `concurrency_live_keys` (`FLOW_CONTROL_LIMIT`). Each refusal is counted
 `concurrency_acquisitions_total{scope="run",outcome="refused_full"}`.
 
-- `queued_runs` is counted without a namespace lock until T022-105: concurrent starts that each queue can pass it by at
-  most their number (G022-011).
+- `queued_runs` is exact: every start holds the namespace's admission lock while it is decided (D022-051).
 - A start delay, a reset, a run-level `rateLimit`, and a workflow with a `forEach`, `while` or `repeatUntil` node beside a
   top-level `concurrency` are refused `BINARY_CAPABILITY_MISSING` in this build (G022-009, G1197).
 - Rolling back migration `20270203000000` is refused while any run, finished or not, keeps `runs.flow_control_gates`:

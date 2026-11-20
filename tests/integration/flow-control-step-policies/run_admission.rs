@@ -571,3 +571,90 @@ async fn verify_run_fails_on_a_seeded_counter_or_deadline_disagreement() {
         .expect_err("a deadline that is not the journal's is an inconsistency");
     assert!(why.contains("invariants 1 and 2"), "{why}");
 }
+
+/// G022-011, T022-105 (the owner's condition on D022-050 item 3): the namespace's `queued_runs` ceiling is exact under
+/// concurrency. Every admission takes the namespace's active-run quota lock (`ensure_room_for_run`) before its runs row
+/// and holds it to its commit, and the start's gate counts the queued runs after that lock in a fresh statement (READ
+/// COMMITTED), so two starts at the boundary are decided one after the other. Proved with the lock held by the test: both
+/// starts wait on it (observed in `pg_stat_activity`, no sleep), and once it is released exactly one queues and the other
+/// is refused `FLOW_CONTROL_LIMIT` (`queued_runs`).
+#[tokio::test]
+async fn two_starts_at_the_queued_runs_ceiling_are_decided_one_after_the_other() {
+    let w = gated_world().await;
+    let workflow = publish(&w, serial_start("start-queued-race", 1)).await;
+    for account in ["a", "b", "c"] {
+        w.start(workflow, &json!({"accountId": account})).await;
+    }
+    let first = w.start(workflow, &json!({"accountId": "a"})).await;
+    assert_eq!(start_rows(&w, first).await, (0, 1), "one run queued");
+    set(&w, QuotaResource::QueuedRuns, 2).await;
+
+    let lock_key = format!(
+        "quota:{}:{}:{}",
+        QuotaResource::ActiveRuns,
+        w.admin.tenant_id(),
+        w.namespace.id()
+    );
+    let mut held = w.db.pool.begin().await.expect("a transaction");
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+        .bind(&lock_key)
+        .execute(&mut *held)
+        .await
+        .expect("the namespace's admission lock held");
+    let (input_b, input_c) = (json!({"accountId": "b"}), json!({"accountId": "c"}));
+    let start_b = w.start_with(workflow, &input_b, "race-start-b", None);
+    let start_c = w.start_with(workflow, &input_c, "race-start-c", None);
+    let release = async {
+        tokio::time::timeout(std::time::Duration::from_secs(60), async {
+            loop {
+                let waiting: i64 = sqlx::query_scalar(
+                    "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() \
+                     AND wait_event_type = 'Lock' AND wait_event = 'advisory' AND pid <> pg_backend_pid()",
+                )
+                .fetch_one(&w.db.pool)
+                .await
+                .expect("activity");
+                if waiting >= 2 {
+                    return;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("both starts wait on the namespace's admission lock");
+        held.rollback().await.expect("the lock released");
+    };
+    let (b, c, ()) = tokio::join!(start_b, start_c, release);
+    let outcomes = [b, c];
+    let queued: Vec<RunId> = outcomes
+        .iter()
+        .filter_map(|outcome| outcome.as_ref().ok().copied())
+        .collect();
+    let refused: Vec<_> = outcomes
+        .iter()
+        .filter_map(|outcome| outcome.as_ref().err())
+        .collect();
+    assert_eq!(queued.len(), 1, "exactly one start queues: {outcomes:?}");
+    assert!(
+        matches!(
+            refused.as_slice(),
+            [AppError::FlowControl(FlowControlRefusal::Limit {
+                limit: "queued_runs"
+            })]
+        ),
+        "the other is refused at the ceiling: {outcomes:?}"
+    );
+    assert_eq!(start_rows(&w, queued[0]).await, (0, 1));
+    let waiting: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM concurrency_waiters WHERE permit_scope = 'RUN'")
+            .fetch_one(&w.db.pool)
+            .await
+            .expect("waiters");
+    assert_eq!(
+        waiting, 2,
+        "the namespace holds exactly its ceiling of queued runs"
+    );
+    for run in [first, queued[0]] {
+        w.assert_consistent(run).await;
+    }
+}

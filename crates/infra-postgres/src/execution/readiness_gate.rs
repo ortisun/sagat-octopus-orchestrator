@@ -851,9 +851,10 @@ impl PgRunTx {
     /// beyond the namespace's live keys or a zero effective limit (`FLOW_CONTROL_LIMIT`), a full namespace
     /// (`queued_runs`, `FLOW_CONTROL_LIMIT`) or a full key (`CONCURRENCY_QUEUE_FULL`, counted under the key's lock: exact).
     /// The two counts of the namespace are read without a namespace lock: admissions that each create a key at the same
-    /// moment can pass the live keys by at most the keys the others create (G022-002, OD-2026-11-19-4, OD-2026-11-20-3),
-    /// and admissions that each queue can pass `queued_runs` by at most their number until its usage rows exist
-    /// (G022-011, T022-105; delegated by OD-2026-11-20-6, D022-050).
+    /// moment can pass the live keys by at most the keys the others create (G022-002, OD-2026-11-19-4, OD-2026-11-20-3).
+    /// `queued_runs` is exact: every admission holds the namespace's active-run quota lock (`ensure_room_for_run`) from
+    /// before its runs row to its commit, and this count is a fresh statement after it (READ COMMITTED), so the admissions
+    /// that could queue in a namespace are decided one after the other (D022-051, G022-011).
     ///
     /// # Errors
     /// The refusals above; `BINARY_CAPABILITY_MISSING` without a digest key ring, and for a start that declares a rate
@@ -992,7 +993,9 @@ impl PgRunTx {
             .map_err(store_error)?;
             GateChange::ConcurrencyAcquired
         } else {
-            // a queued run is an active run with a ceiling of its own (D1182): the namespace's, then the key's
+            // a queued run is an active run with a ceiling of its own (D1182): the namespace's, then the key's. Exact: only an
+            // admission adds a run waiter, and every admission holds the namespace's active-run quota lock to its commit
+            // (D022-051)
             let queued_runs: i64 = sqlx::query_scalar(
                 "SELECT count(*) FROM ( \
                      SELECT run_id FROM concurrency_waiters \
