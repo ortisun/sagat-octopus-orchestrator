@@ -84,6 +84,169 @@ pub async fn install(pool: &PgPool) {
     }
 }
 
+/// The cost breakdown of the carry (D041-107): copies of the line table without its two secondary indexes, without its
+/// foreign key, unlogged; a chunk table holding a carry's records in one row; and the carry function again, reading a
+/// mode at its start (`full`, `locks`, `stream`, `noidx`, `nofk`, `chunk`, `unlogged`). Every mode reads the mode, so
+/// each row pays that read alike. Run with the step-log charge `none`, so the storage alone is compared.
+#[cfg_attr(not(feature = "perf-spike"), allow(dead_code))]
+pub async fn install_cost(pool: &PgPool) {
+    let statements = [
+        "CREATE TABLE spike_041.carry_mode (singleton boolean PRIMARY KEY DEFAULT true CHECK (singleton), \
+           mode text NOT NULL CHECK (mode IN ('full', 'locks', 'stream', 'noidx', 'nofk', 'chunk', 'unlogged')))",
+        "INSERT INTO spike_041.carry_mode (mode) VALUES ('full')",
+        "CREATE TABLE spike_041.lines_noidx (LIKE spike_041.step_log_lines INCLUDING DEFAULTS INCLUDING CONSTRAINTS)",
+        "ALTER TABLE spike_041.lines_noidx ADD PRIMARY KEY (tenant_id, stream_id, sequence), \
+           ADD FOREIGN KEY (tenant_id, stream_id) REFERENCES spike_041.step_log_streams (tenant_id, stream_id)",
+        "CREATE TABLE spike_041.lines_nofk (LIKE spike_041.step_log_lines INCLUDING DEFAULTS INCLUDING CONSTRAINTS \
+           INCLUDING INDEXES)",
+        "CREATE UNLOGGED TABLE spike_041.lines_unlogged (LIKE spike_041.step_log_lines INCLUDING DEFAULTS \
+           INCLUDING CONSTRAINTS INCLUDING INDEXES)",
+        "ALTER TABLE spike_041.lines_unlogged ADD FOREIGN KEY (tenant_id, stream_id) \
+           REFERENCES spike_041.step_log_streams (tenant_id, stream_id)",
+        r"CREATE TABLE spike_041.chunks (
+            tenant_id uuid NOT NULL, stream_id bigint NOT NULL, first_sequence bigint NOT NULL,
+            last_sequence bigint NOT NULL, run_id uuid NOT NULL,
+            stored_xid xid8 NOT NULL DEFAULT pg_current_xact_id(), stored_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+            records integer NOT NULL, worker_times timestamptz[] NOT NULL, levels text[] NOT NULL, kinds text[] NOT NULL,
+            messages text[] NOT NULL, exceptions text[], fields text[], truncated boolean[],
+            PRIMARY KEY (tenant_id, stream_id, first_sequence),
+            FOREIGN KEY (tenant_id, stream_id) REFERENCES spike_041.step_log_streams (tenant_id, stream_id))",
+        "CREATE INDEX chunks_read_idx ON spike_041.chunks (tenant_id, run_id, stored_xid, first_sequence)",
+        "CREATE INDEX chunks_stream_idx ON spike_041.chunks (tenant_id, stream_id, stored_xid, first_sequence)",
+        r"CREATE OR REPLACE FUNCTION spike_041.step_log_carry(p_tenant uuid, p_namespace uuid, p_run uuid, p_step uuid,
+                p_node text, p_attempt integer, p_generation bigint, p_keys text[], p_stream_key text,
+                p_resources text[], p_messages text[], p_application text)
+            RETURNS text LANGUAGE plpgsql VOLATILE SET search_path = pg_catalog, public, pg_temp AS $$
+        DECLARE
+            k text; r record; v_mode text;
+            v_records bigint := 10000; v_bytes bigint := 1048576; v_retention integer := 14;
+            v_records_scoped boolean := false; v_bytes_scoped boolean := false; v_retention_scoped boolean := false;
+            v_usage bigint; v_stream bigint; v_last bigint; v_count bigint; v_sum bigint;
+            v_final boolean; v_removed boolean; v_in_order boolean; v_inserted integer := 0; v_size bigint := 0;
+        BEGIN
+            SELECT mode INTO v_mode FROM spike_041.carry_mode;
+            PERFORM set_config('application_name', p_application, true);
+            FOREACH k IN ARRAY p_keys LOOP
+                IF NOT pg_try_advisory_xact_lock_shared(hashtextextended(k, 0)) THEN RETURN 'contended'; END IF;
+            END LOOP;
+            IF NOT pg_try_advisory_xact_lock(hashtextextended(p_stream_key, 0)) THEN RETURN 'contended'; END IF;
+            FOR r IN SELECT resource, namespace_id, max_value FROM public.quota_limits
+                      WHERE tenant_id = p_tenant AND resource = ANY (p_resources)
+                        AND (namespace_id IS NULL OR namespace_id = p_namespace)
+                     UNION ALL SELECT resource, NULL::uuid, max_value FROM public.quota_ceilings
+                      WHERE tenant_id = p_tenant AND resource = ANY (p_resources) LOOP
+                IF r.resource = p_resources[1] AND (r.namespace_id IS NOT NULL OR NOT v_records_scoped) THEN
+                    v_records := r.max_value; v_records_scoped := r.namespace_id IS NOT NULL;
+                ELSIF r.resource = p_resources[2] AND (r.namespace_id IS NOT NULL OR NOT v_bytes_scoped) THEN
+                    v_bytes := r.max_value; v_bytes_scoped := r.namespace_id IS NOT NULL;
+                ELSIF r.resource = p_resources[3] AND (r.namespace_id IS NOT NULL OR NOT v_retention_scoped) THEN
+                    v_retention := r.max_value::integer; v_retention_scoped := r.namespace_id IS NOT NULL;
+                END IF;
+            END LOOP;
+            SELECT log_bytes INTO v_usage FROM public.tenant_retained_usage WHERE tenant_id = p_tenant;
+            IF v_records = 0 THEN RETURN 'off'; END IF;
+            IF v_mode = 'locks' THEN RETURN 'written'; END IF;
+            INSERT INTO spike_041.step_log_streams (tenant_id, public_id, namespace_id, run_id, step_id, node,
+                    instance_path_nodes, instance_path_indices, attempt, generation, retention_days, last_at, expires_at)
+            SELECT p_tenant, gen_random_uuid(), p_namespace, p_run, p_step, p_node, '{}'::text[], '{}'::integer[],
+                   p_attempt, p_generation, v_retention, clock_timestamp(),
+                   clock_timestamp() + make_interval(days => v_retention)
+             WHERE NOT EXISTS (SELECT 1 FROM spike_041.step_log_streams WHERE tenant_id = p_tenant AND run_id = p_run
+                                  AND step_id = p_step AND attempt = p_attempt AND generation = p_generation
+                                  AND source = 'worker')
+            ON CONFLICT (tenant_id, run_id, step_id, attempt, generation, source) DO NOTHING
+            RETURNING stream_id INTO v_stream;
+            IF v_stream IS NOT NULL THEN
+                v_last := 0; v_count := 0; v_sum := 0;
+            ELSE
+                SELECT stream_id, last_sequence, records, bytes, final_at IS NOT NULL,
+                       (removed_at IS NOT NULL OR expires_at <= clock_timestamp()),
+                       (last_stored_xid IS NULL OR last_stored_xid < pg_current_xact_id())
+                  INTO v_stream, v_last, v_count, v_sum, v_final, v_removed, v_in_order
+                  FROM spike_041.step_log_streams
+                 WHERE tenant_id = p_tenant AND run_id = p_run AND step_id = p_step AND attempt = p_attempt
+                   AND generation = p_generation AND source = 'worker'
+                   FOR UPDATE SKIP LOCKED;
+                IF NOT FOUND THEN RETURN 'contended'; END IF;
+                IF v_final OR v_removed OR NOT v_in_order THEN RETURN 'neither'; END IF;
+            END IF;
+            IF v_count + cardinality(p_messages) > v_records THEN RETURN 'neither'; END IF;
+            IF v_mode = 'full' THEN
+                WITH ins AS (
+                    INSERT INTO spike_041.step_log_lines (tenant_id, stream_id, sequence, run_id, worker_time, level, kind, message)
+                    SELECT p_tenant, v_stream, v_last + o, p_run, clock_timestamp(), 'info', 'line', m
+                      FROM unnest(p_messages) WITH ORDINALITY AS u(m, o)
+                    ON CONFLICT (tenant_id, stream_id, sequence) DO NOTHING
+                    RETURNING octet_length(message) AS n)
+                SELECT count(*)::integer, coalesce(sum(n), 0)::bigint INTO v_inserted, v_size FROM ins;
+            ELSIF v_mode = 'noidx' THEN
+                WITH ins AS (
+                    INSERT INTO spike_041.lines_noidx (tenant_id, stream_id, sequence, run_id, worker_time, level, kind, message)
+                    SELECT p_tenant, v_stream, v_last + o, p_run, clock_timestamp(), 'info', 'line', m
+                      FROM unnest(p_messages) WITH ORDINALITY AS u(m, o)
+                    ON CONFLICT (tenant_id, stream_id, sequence) DO NOTHING
+                    RETURNING octet_length(message) AS n)
+                SELECT count(*)::integer, coalesce(sum(n), 0)::bigint INTO v_inserted, v_size FROM ins;
+            ELSIF v_mode = 'nofk' THEN
+                WITH ins AS (
+                    INSERT INTO spike_041.lines_nofk (tenant_id, stream_id, sequence, run_id, worker_time, level, kind, message)
+                    SELECT p_tenant, v_stream, v_last + o, p_run, clock_timestamp(), 'info', 'line', m
+                      FROM unnest(p_messages) WITH ORDINALITY AS u(m, o)
+                    ON CONFLICT (tenant_id, stream_id, sequence) DO NOTHING
+                    RETURNING octet_length(message) AS n)
+                SELECT count(*)::integer, coalesce(sum(n), 0)::bigint INTO v_inserted, v_size FROM ins;
+            ELSIF v_mode = 'unlogged' THEN
+                WITH ins AS (
+                    INSERT INTO spike_041.lines_unlogged (tenant_id, stream_id, sequence, run_id, worker_time, level, kind, message)
+                    SELECT p_tenant, v_stream, v_last + o, p_run, clock_timestamp(), 'info', 'line', m
+                      FROM unnest(p_messages) WITH ORDINALITY AS u(m, o)
+                    ON CONFLICT (tenant_id, stream_id, sequence) DO NOTHING
+                    RETURNING octet_length(message) AS n)
+                SELECT count(*)::integer, coalesce(sum(n), 0)::bigint INTO v_inserted, v_size FROM ins;
+            ELSIF v_mode = 'chunk' THEN
+                INSERT INTO spike_041.chunks (tenant_id, stream_id, first_sequence, last_sequence, run_id, records,
+                        worker_times, levels, kinds, messages)
+                SELECT p_tenant, v_stream, v_last + 1, v_last + cardinality(p_messages), p_run, cardinality(p_messages),
+                       array_fill(clock_timestamp(), ARRAY[cardinality(p_messages)]),
+                       array_fill('info'::text, ARRAY[cardinality(p_messages)]),
+                       array_fill('line'::text, ARRAY[cardinality(p_messages)]), p_messages
+                ON CONFLICT (tenant_id, stream_id, first_sequence) DO NOTHING;
+                GET DIAGNOSTICS v_inserted = ROW_COUNT;
+                IF v_inserted = 1 THEN
+                    v_inserted := cardinality(p_messages);
+                    SELECT coalesce(sum(octet_length(m)), 0)::bigint INTO v_size FROM unnest(p_messages) AS u(m);
+                END IF;
+            END IF;
+            UPDATE spike_041.step_log_streams
+               SET last_sequence = GREATEST(last_sequence, v_last + cardinality(p_messages)),
+                   records = records + v_inserted, bytes = bytes + v_size,
+                   first_at = coalesce(first_at, clock_timestamp()), last_at = clock_timestamp(),
+                   expires_at = clock_timestamp() + make_interval(days => retention_days::integer),
+                   final_at = clock_timestamp(),
+                   last_stored_xid = CASE WHEN v_inserted > 0
+                       THEN GREATEST(coalesce(last_stored_xid, '0'::xid8), pg_current_xact_id()) ELSE last_stored_xid END
+             WHERE tenant_id = p_tenant AND stream_id = v_stream;
+            RETURN 'written';
+        END $$",
+    ];
+    for statement in statements {
+        sqlx::query(statement)
+            .execute(pool)
+            .await
+            .unwrap_or_else(|error| panic!("cost schema: {error}"));
+    }
+}
+
+/// The carry's mode for the next rows (`install_cost`).
+#[cfg_attr(not(feature = "perf-spike"), allow(dead_code))]
+pub async fn set_carry_mode(pool: &PgPool, mode: &str) {
+    sqlx::query("UPDATE spike_041.carry_mode SET mode = $1")
+        .bind(mode)
+        .execute(pool)
+        .await
+        .expect("set the carry mode");
+}
+
 /// Where the next rows' step-log charge goes: `tenant` (the usage row at commit), `none` or `slot`.
 #[cfg_attr(not(feature = "perf-spike"), allow(dead_code))]
 pub async fn set_charge(pool: &PgPool, tenant: Uuid, mode: &str) {

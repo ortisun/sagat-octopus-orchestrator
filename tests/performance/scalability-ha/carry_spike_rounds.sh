@@ -22,7 +22,7 @@ for round in $(seq "${START:-1}" "${ROUNDS:-6}"); do
   fi
   echo "$quiet" > "$OUT/second-round-$round.quiet"
   echo "round $round: begin after ${waited}s, quiet=$quiet, nproc $(nproc 2>/dev/null || sysctl -n hw.ncpu), cpu $(cpu), uptime $(uptime)" | tee -a "$OUT/rounds.log"
-  SAGAT_PERF_REPORT="$OUT/second-round-$round.md" tests/performance/scalability-ha/run.sh > "$OUT/second-round-$round.log" 2>&1
+  SAGAT_PERF_PGLOG="$OUT/second-round-$round.pglog" SAGAT_PERF_REPORT="$OUT/second-round-$round.md" tests/performance/scalability-ha/run.sh > "$OUT/second-round-$round.log" 2>&1
   echo "round $round: end exit $?, uptime $(uptime)" | tee -a "$OUT/rounds.log"
   valid=$(python3 -I tests/performance/scalability-ha/carry_spike_judge.py "$OUT" --count-valid 2>/dev/null || echo 0)
   echo "round $round: valid rounds so far $valid" | tee -a "$OUT/rounds.log"

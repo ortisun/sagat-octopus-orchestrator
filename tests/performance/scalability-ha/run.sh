@@ -47,6 +47,8 @@ REPORT="${SAGAT_PERF_REPORT:-tests/performance/reports/scalability-ha.md}"
 # Whatever happens from here on, the server is stopped and the directory removed.
 cleanup() {
   [ -f "$DATA/postmaster.pid" ] && "$PGBIN/pg_ctl" -D "$DATA" -m fast stop >/dev/null 2>&1 || true
+  # SAGAT_PERF_PGLOG: keep the server's log (its errors say what a failed call met on the server side).
+  [ -n "${SAGAT_PERF_PGLOG:-}" ] && cp "$WORK/postgres.log" "$SAGAT_PERF_PGLOG" 2>/dev/null || true
   rm -rf "$WORK"
 }
 trap cleanup EXIT

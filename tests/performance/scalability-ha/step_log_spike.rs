@@ -1281,6 +1281,51 @@ fn output(task: &ClaimedTask) -> Vec<u8> {
     serde_json::to_vec(&serde_json::json!({ "t": tag, "pad": pad })).expect("json")
 }
 
+/// Whether each row first fills its replicas' pools (D041-110). The diagnosis turns it off for the rows that reproduce
+/// rounds 4 and 5 of D041-105.
+pub static PREWARM: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+/// Opens every connection of `pool` before a row is measured (D041-110). A call of the benchmark then never waits for a
+/// connection to be established: a replica has at most one call in flight per worker (each worker is sequential), 16 at
+/// both sizes, against a pool of `API_POOL` = 20, and `start` has at most 16 calls in flight per pool of 16, so with full
+/// pools an acquire never waits and the 2 s acquire timeout of `tests/support/engine.rs` only fails a row on a real
+/// defect. Setup, not measured: each connection is retried until 120 s have passed.
+pub async fn prewarm(pool: &PgPool) {
+    if !PREWARM.load(Ordering::Relaxed) {
+        return;
+    }
+    let max = pool.options().get_max_connections();
+    let deadline = Instant::now() + Duration::from_secs(120);
+    let mut held = Vec::new();
+    while held.len() < usize::try_from(max).unwrap_or(0) {
+        match pool.acquire().await {
+            Ok(conn) => held.push(conn),
+            Err(error) => assert!(Instant::now() < deadline, "prewarm a pool: {error}"),
+        }
+    }
+    drop(held);
+    assert_eq!(
+        pool.size(),
+        max,
+        "a prewarmed pool holds all its connections"
+    );
+}
+
+/// A call of the benchmark failed: prints what tells a pool wait (about the 2 s acquire timeout of
+/// `tests/support/engine.rs`, the pool full) from a server-side cancellation or deadlock (in the server's log), then panics.
+fn failure(op: &str, elapsed: Duration, pool: &PgPool, error: &dyn std::fmt::Debug) -> ! {
+    eprintln!(
+        "spike-failure-json {}",
+        serde_json::json!({
+            "op": op, "error": format!("{error:?}"), "elapsed_ms": elapsed.as_secs_f64() * 1000.0,
+            "pool_size": pool.size(), "pool_idle": pool.num_idle(),
+            "pool_max": pool.options().get_max_connections(),
+            "acquire_timeout_ms": pool.options().get_acquire_timeout().as_secs_f64() * 1000.0,
+        })
+    );
+    panic!("{op}: {error:?}");
+}
+
 async fn start(
     w: &crate::support::engine::World,
     wf: sagat_domain::definition::WorkflowId,
@@ -1290,7 +1335,9 @@ async fn start(
     use futures_util::StreamExt as _;
     let mut apis = Vec::new();
     for _ in 0..4 {
-        apis.push(Arc::new(w.replica_with_pool(16).await));
+        let replica = w.replica_with_pool(16).await;
+        prewarm(&replica.execution_pool).await;
+        apis.push(Arc::new(replica));
     }
     let tag = Uuid::new_v4().simple().to_string();
     let started: Vec<()> = futures_util::stream::iter(0..runs)
@@ -1306,6 +1353,7 @@ async fn start(
                     }
                 };
                 let input = serde_json::to_vec(&input).expect("json");
+                let t = Instant::now();
                 api.runs
                     .start(
                         &admin,
@@ -1321,13 +1369,19 @@ async fn start(
                         &crate::support::engine::ctx(),
                     )
                     .await
-                    .expect("start");
+                    .unwrap_or_else(|error| {
+                        failure("start", t.elapsed(), &api.execution_pool, &error)
+                    });
             }
         })
         .buffer_unordered(64)
         .collect()
         .await;
     assert_eq!(started.len(), runs);
+    // Close the starting pools now, so that no row adds its connections to the next (D041-110).
+    for api in &apis {
+        api.execution_pool.close().await;
+    }
 }
 
 /// Runs one configuration: workers poll, and for each task (driver on) send a batch of the
@@ -1350,6 +1404,7 @@ pub async fn run_row(
     let mut apis = Vec::new();
     for _ in 0..spec.api_replicas {
         let mut replica = w.replica_with_pool(crate::API_POOL).await;
+        prewarm(&replica.execution_pool).await;
         #[cfg(not(feature = "perf-spike"))]
         assert!(hook.is_none(), "a carry row needs `--features perf-spike`");
         #[cfg(feature = "perf-spike")]
@@ -1650,7 +1705,9 @@ pub async fn run_row(
                                 &format!("done-{}", task.task_id()),
                             )
                             .await
-                            .unwrap_or_else(|error| panic!("complete: {error:?}"));
+                            .unwrap_or_else(|error| {
+                                failure("complete", t.elapsed(), &api.execution_pool, &error)
+                            });
                         completes.push(t.elapsed());
                         last_done = Instant::now();
                     }
@@ -1677,6 +1734,9 @@ pub async fn run_row(
     let (waits, by_ingest, carry_waits) = sampler.await.expect("the sampler");
     let commit_waits = (waits, by_ingest);
     let deltas_after = deltas_size(&w.db.pool).await;
+    for api in &apis {
+        api.execution_pool.close().await;
+    }
     let (mut completes, mut flushes, mut services) = (Vec::new(), Vec::new(), Vec::new());
     let mut finished = started;
     for (c, f, s, last) in results {

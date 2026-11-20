@@ -2363,6 +2363,10 @@ async fn step_log_carry_diag() {
     step_log_spike::install(&w.db.pool).await;
     step_log_spike::install_per_statement(&w.db.pool).await;
     step_log_diag::install(&w.db.pool).await;
+    step_log_diag::install_cost(&w.db.pool).await;
+    // `hot` (run 44730444900, D041-106) or `cost` (D041-107: the carry's cost at 1 × 16 with no charge, then (a) and
+    // (g) at 8 × 128 with the second run's charge, where rounds 4 and 5 of D041-105 stopped).
+    let set = std::env::var("SAGAT_PERF_DIAG_SET").unwrap_or_else(|_| "hot".to_owned());
     let (chain, _) = w
         .publish(document(
             "spike-chain",
@@ -2376,29 +2380,80 @@ async fn step_log_carry_diag() {
         .await;
     let activities = ["act.a", "act.b", "act.c"];
     let half_pool = usize::try_from(API_POOL / 2).unwrap_or(10);
-    // (label, records carried, a batch before the report, `{}` output, where the step-log charge goes)
-    let rows: [(&'static str, Option<usize>, bool, bool, &str); 9] = [
-        ("off-{}", None, false, true, "tenant"),
-        ("f", Some(10), false, true, "tenant"),
-        ("f-none", Some(10), false, true, "none"),
-        ("f-slot", Some(10), false, true, "slot"),
-        ("off-1K", None, false, false, "tenant"),
-        ("a", Some(10), false, false, "tenant"),
-        ("a-slot", Some(10), false, false, "slot"),
-        ("g", Some(10), true, false, "tenant"),
-        ("g-slot", Some(10), true, false, "slot"),
+    // (label, replicas, workers, records carried, a batch before the report, `{}` output, where the step-log charge
+    // goes, the carry's mode)
+    type DiagRow = (
+        &'static str,
+        usize,
+        usize,
+        Option<usize>,
+        bool,
+        bool,
+        &'static str,
+        &'static str,
+    );
+    let hot: Vec<DiagRow> = vec![
+        ("off-{}", 1, 16, None, false, true, "tenant", "full"),
+        ("f", 1, 16, Some(10), false, true, "tenant", "full"),
+        ("f-none", 1, 16, Some(10), false, true, "none", "full"),
+        ("f-slot", 1, 16, Some(10), false, true, "slot", "full"),
+        ("off-1K", 1, 16, None, false, false, "tenant", "full"),
+        ("a", 1, 16, Some(10), false, false, "tenant", "full"),
+        ("a-slot", 1, 16, Some(10), false, false, "slot", "full"),
+        ("g", 1, 16, Some(10), true, false, "tenant", "full"),
+        ("g-slot", 1, 16, Some(10), true, false, "slot", "full"),
+    ];
+    let cost: Vec<DiagRow> = vec![
+        ("off-{}", 1, 16, None, false, true, "none", "full"),
+        ("c-full", 1, 16, Some(10), false, true, "none", "full"),
+        ("c-locks", 1, 16, Some(10), false, true, "none", "locks"),
+        ("c-stream", 1, 16, Some(10), false, true, "none", "stream"),
+        ("c-noidx", 1, 16, Some(10), false, true, "none", "noidx"),
+        ("c-nofk", 1, 16, Some(10), false, true, "none", "nofk"),
+        ("c-chunk", 1, 16, Some(10), false, true, "none", "chunk"),
+        (
+            "c-unlogged",
+            1,
+            16,
+            Some(10),
+            false,
+            true,
+            "none",
+            "unlogged",
+        ),
+    ];
+    let repro: Vec<DiagRow> = vec![
+        ("a-cold", 8, 128, Some(10), false, false, "tenant", "full"),
+        ("g-cold", 8, 128, Some(10), true, false, "tenant", "full"),
     ];
     let mut body = format!("{}\n", environment(&w).await);
     body.push_str(
-        "Design 041, T041-35's hot-row diagnosis (D041-105), 1 × 16. Not a gate.\n\n| Repetition | Row | Transitions/s | Complete p50 / p99 | Waits on (samples) | Lock to COMMIT returned p50 / p99 | Back-to-back gap p50 / p99 | Row busy |\n|---|---|---:|---|---|---|---|---:|\n",
+        "Design 041, T041-35's diagnosis (D041-106, D041-107). Not a gate.\n\n| Repetition | Row | Transitions/s | Complete p50 / p99 | Waits on (samples) | Lock to COMMIT returned p50 / p99 | Back-to-back gap p50 / p99 | Row busy |\n|---|---|---:|---|---|---|---|---:|\n",
     );
+    let mut plan: Vec<(usize, DiagRow)> = Vec::new();
     for repetition in 1..=repetitions {
-        for (label, carry, ingest, empty, mode) in rows {
+        for row in if set == "cost" { &cost } else { &hot } {
+            plan.push((repetition, *row));
+        }
+    }
+    if set == "cost" {
+        // Last, so that a failure there loses no measurement of the breakdown.
+        for repetition in 1..=2 {
+            for row in &repro {
+                plan.push((repetition, *row));
+            }
+        }
+    }
+    for (repetition, (label, replicas, workers, carry, ingest, empty, mode, carry_mode)) in plan {
+        {
             step_log_diag::set_charge(&w.db.pool, w.admin.tenant_id().as_uuid(), mode).await;
+            step_log_diag::set_carry_mode(&w.db.pool, carry_mode).await;
+            // The `-cold` rows run without filling the pools first, as the second run's rounds did (D041-110).
+            step_log_spike::PREWARM.store(!label.ends_with("-cold"), Ordering::Relaxed);
             let spec = RowSpec {
                 label,
-                api_replicas: 1,
-                workers: 16,
+                api_replicas: replicas,
+                workers,
                 runs,
                 shape: Shape::Chain,
                 admission: ingest.then_some((half_pool, half_pool)),
@@ -2416,7 +2471,8 @@ async fn step_log_carry_diag() {
                 .as_ref()
                 .map_or((0, 0), |(calls, written, ..)| (*calls, *written));
             let line = json!({
-                "repetition": repetition, "label": label, "mode": mode,
+                "repetition": repetition, "label": label, "mode": mode, "carry_mode": carry_mode,
+                "replicas": replicas, "workers": workers,
                 "transitions": row.transitions, "per_second": row.per_second,
                 "complete_p50_ms": ms(percentile(&row.completes, 0.50)),
                 "complete_p99_ms": ms(percentile(&row.completes, 0.99)),
@@ -2432,7 +2488,7 @@ async fn step_log_carry_diag() {
                     .map_or("—".to_owned(), |v| format!("{:.1}", v as f64 / 1000.0))
             };
             body.push_str(&format!(
-                "| {repetition} | {label} | {:.0} | {:.1} / {:.1} ms | {} | {} / {} ms | {} / {} ms | {} |\n",
+                "| {repetition} | {label} {replicas}×{workers} | {:.0} | {:.1} / {:.1} ms | {} | {} / {} ms | {} / {} ms | {} |\n",
                 row.per_second,
                 ms(percentile(&row.completes, 0.50)),
                 ms(percentile(&row.completes, 0.99)),

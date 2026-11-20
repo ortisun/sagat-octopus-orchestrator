@@ -283,3 +283,60 @@ async fn the_last_bytes_of_the_limit_are_admitted_from_the_room_of_idle_leases()
     })
     .await;
 }
+
+/// The cost breakdown's carry modes (D041-107) write what their names say, so that the diagnosis compares what it claims.
+#[tokio::test]
+async fn each_carry_mode_of_the_cost_breakdown_writes_only_its_storage() {
+    bounded::within("cost modes", LIMIT, async {
+        let (w, tenant) = leased_world(1 << 30).await;
+        let pool = &w.db.pool;
+        crate::step_log_diag::install(pool).await;
+        crate::step_log_diag::install_cost(pool).await;
+        crate::step_log_diag::set_charge(pool, tenant, "none").await;
+        let count = |sql: &'static str| async move {
+            sqlx::query_scalar::<_, i64>(sql).fetch_one(pool).await.expect("count")
+        };
+        // (mode, streams, lines, noidx, nofk, unlogged, chunks) after the call, cumulative.
+        let expected: [(&str, i64, i64, i64, i64, i64, i64); 7] = [
+            ("locks", 0, 0, 0, 0, 0, 0),
+            ("stream", 1, 0, 0, 0, 0, 0),
+            ("full", 2, 10, 0, 0, 0, 0),
+            ("noidx", 3, 10, 10, 0, 0, 0),
+            ("nofk", 4, 10, 10, 10, 0, 0),
+            ("unlogged", 5, 10, 10, 10, 10, 0),
+            ("chunk", 6, 10, 10, 10, 10, 1),
+        ];
+        for (mode, streams, lines, noidx, nofk, unlogged, chunks) in expected {
+            crate::step_log_diag::set_carry_mode(pool, mode).await;
+            let outcome: String = sqlx::query_scalar(
+                "SELECT spike_041.step_log_carry($1, $2, $3, $4, 'a', 1, 0, '{}'::text[], $5, \
+                 ARRAY['step_log_attempt_records', 'step_log_attempt_bytes', 'step_log_retention_days'], $6, 'x')",
+            )
+            .bind(tenant)
+            .bind(Uuid::new_v4())
+            .bind(Uuid::new_v4())
+            .bind(Uuid::new_v4())
+            .bind(format!("cost-{mode}"))
+            .bind((0..10).map(|i| format!("line {i}")).collect::<Vec<_>>())
+            .fetch_one(pool)
+            .await
+            .expect("the carry");
+            assert_eq!(outcome, "written", "{mode}");
+            let got = (
+                count("SELECT count(*) FROM spike_041.step_log_streams").await,
+                count("SELECT count(*) FROM spike_041.step_log_lines").await,
+                count("SELECT count(*) FROM spike_041.lines_noidx").await,
+                count("SELECT count(*) FROM spike_041.lines_nofk").await,
+                count("SELECT count(*) FROM spike_041.lines_unlogged").await,
+                count("SELECT count(*) FROM spike_041.chunks").await,
+            );
+            assert_eq!(got, (streams, lines, noidx, nofk, unlogged, chunks), "{mode}");
+        }
+        let records: i32 = sqlx::query_scalar("SELECT records FROM spike_041.chunks")
+            .fetch_one(pool)
+            .await
+            .expect("the chunk");
+        assert_eq!(records, 10, "a chunk row holds the carry's ten records");
+    })
+    .await;
+}
