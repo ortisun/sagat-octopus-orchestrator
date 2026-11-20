@@ -33,15 +33,18 @@ flowchart LR
     s1["specs/NNN-slug/<br/>spec, plan, tasks, research,<br/>contracts, evidence, reviews"]
     s2["specs/README.md<br/>specs/AGENTS.md<br/>SPECIFICATION-INDEX.md"]
     d1["docs/designs/NNN-slug.md"]
+    t1["tasks/<br/>plans, to-do, reviews"]
   end
   subgraph after["After"]
     a1["docs/specs/NNN-slug/<br/>the same files"]
+    a4["docs/tasks/<br/>the same files"]
     a2["docs/specs/README.md (the index of every feature)<br/>docs/specs/AGENTS.md"]
     a3["docs/designs/NNN-slug.md<br/>unchanged"]
   end
   s1 --> a1
   s2 --> a2
   d1 --> a3
+  t1 --> a4
 ```
 
 - `specs/<feature>/` moves to `docs/specs/<feature>/` with `git mv`, file for file, so `git log --follow` keeps each
@@ -51,8 +54,9 @@ flowchart LR
 - `specs/AGENTS.md` and `specs/CLAUDE.md` move with the folder, as the nested agent instructions of `docs/specs/`.
 - Design docs stay in `docs/designs/`. Merging a feature's design doc and its specification folder into one place is a
   later, separate decision.
-- `tasks/` (33 files: the completion plan, a to-do list and older review notes) is also documentation outside `docs/`.
-  The owner decides whether it moves to `docs/` too; this plan does not move it.
+- `tasks/` (33 files: the cross-cutting completion plan, a to-do list and older review notes) moves to `docs/tasks/` in
+  the same pass, with `git mv` and the same link rewrite, because the owner wants all documentation in one place.
+  Decided: delegate (OD-2026-11-20-6), 2026-11-20.
 
 ## What refers to `specs/` today
 
@@ -62,7 +66,7 @@ Measured with `git grep 'specs/'` on `develop`:
 |---|---|---|---|
 | `docs/` | 126 | 660 | links in documents |
 | `specs/` itself | 248 | 1,307 | links between feature documents, now one folder deeper |
-| `tasks/` | 24 | 380 | links |
+| `tasks/` (moves too) | 24 | 380 | links |
 | `SPECIFICATION-INDEX.md` and `README.md` | 2 | 94 | links |
 | `crates/` and `apps/` | 17 | 22 | the build: `crates/api-grpc/build.rs` compiles `worker.proto` from `../../specs/001-platform-foundation/contracts`; `crates/infra-ir/src/schema.rs` embeds `workflow.schema.json` with `include_str!`; comments |
 | `tests/` | 49 | 59 | the contract suites read the contracts by path (`tests/support/contract.rs` and others); `tests/integration/schedules-bulk-operations/instances.rs` embeds `data-model.md` with `include_str!` |
@@ -163,8 +167,8 @@ Each changes in the sweep pull request, with its tests, together with the text i
 2. Run the script with `--dry-run`. Read the report: every listed string literal, every bare user story, every change in
    a contract file.
 3. Commit 1, the documents: `identifier-scheme.md` says `Sweep: done`; this plan says done; the index of `docs/specs/`.
-4. Commit 2, the move: `git mv specs docs/specs` and the link rewrite. Nothing else in this commit, so that `git` sees
-   pure renames.
+4. Commit 2, the move: `git mv specs docs/specs`, `git mv tasks docs/tasks`, the link rewrite, and the two pointer files
+   (below). Nothing else in this commit, so that `git` sees pure renames.
 5. Commit 3, the rename: `--apply`.
 6. Commit 4, the tools and the code paths of the table above.
 7. Run everything the release runs (the pull request changes `.github/workflows`, so the CI runs the whole stack
@@ -187,9 +191,11 @@ The script and this recipe are tested on a copy of one open branch before the da
 
 ## Risks
 
-- **Links from outside break**: GitHub release notes, pull request descriptions and issues that link to `specs/...`.
-  A one-line `specs/README.md` that points to `docs/specs/` softens this for one release; it is not a specification and
-  is removed after 0.3.0. The owner decides whether to keep it.
+- **Links from outside break**: GitHub release notes, pull request descriptions and issues that link to `specs/...` or
+  `tasks/...`. A one-line `specs/README.md` that points to `docs/specs/`, and a one-line `tasks/README.md` that points to
+  `docs/tasks/`, stay for one release after the move, so an old link lands somewhere; neither is a document. Both are
+  removed in the release after the one the move ships in. Decided: delegate (OD-2026-11-20-6), 2026-11-20.
+  `scripts/check-docs-index.py` reads only `docs/`, so the two pointers do not trouble it.
 - **A wrong guess of a user story's feature** in a file outside a feature folder: none is guessed; the report lists
   them.
 - **A string literal that a test compares** and that cites an identifier: string literals are not edited; the report
