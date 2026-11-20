@@ -4,6 +4,16 @@ Decisions that only the product owner could take, with what each one unblocks. E
 recorded where the open item lived (gap register, ADR, runbook or specification). "Not built"
 means the decision is taken and the implementation is still to be done; it is not evidence.
 
+## 2026-11-20 — The coordinating session decides the open questions until release 0.3.0
+
+The owner said: "Quero que fique no loop e não pare até terminar todo trabalho. Nas decisões avalie todas as
+possibilidades e escolha sempre a que dá vantagem arquitetural e de negócio, e não selecione a mais simplista só por conta
+de simplicidade. Quero que o código seja altamente flexível, coeso, adaptável, e sem erros de cálculo principalmente."
+
+| ID | Decision | Decided by | Status | Covers |
+|---|---|---|---|---|
+| OD-2026-11-20-6 | The open product, scope and design questions of release 0.3.0 are delegated to the coordinating session. Each is weighed over every option and decided for the most architectural and business advantage, never for simplicity alone. Each is recorded as "delegate (OD-2026-11-20-6)" with its reasoning where the question lives, and reported to the owner afterwards. Not covered: acts that need the owner's own hands or credentials, and acts outside this repository that cannot be undone | owner | Decided | every open O-question of the 0.3.0 features; AGENTS.md "Only the owner decides" |
+
 ## 2026-11-20 — Feature 022: the pause's returns, the live-keys bound in keys and the force's bound
 
 The fifth build of feature 022's 0.3.0 slice (pull request 237) left the owner three questions, each with a
