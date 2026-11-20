@@ -8,6 +8,8 @@
 mod control;
 #[path = "database.rs"]
 mod database;
+#[path = "flow_control.rs"]
+pub mod flow_control;
 #[path = "normalize.rs"]
 mod normalize;
 
@@ -326,6 +328,13 @@ fn token(platform: &Platform, subject: &str, tenant: &str) -> String {
 }
 
 async fn boot(scenario: &Value) -> Run {
+    // Feature 022: the gates of flow control are a capability the platform of `tests/support` cannot switch on yet (the
+    // control plane's switch, the engine's key ring and the fleet's activation, G1198). A scenario that needs them is
+    // marked `pending` and never booted; one that is not must not boot a platform without them.
+    assert!(
+        scenario["server"]["flowControl"] != true || scenario["pending"].is_string(),
+        "a scenario needs flow control, which this platform cannot run yet (G022-090)"
+    );
     let lease = scenario["server"]["leaseTtlSeconds"].as_u64().unwrap_or(30);
     let blob_dir = TempBlobDir::create();
     let mut database = if scenario["server"]["managedDatabase"] == true {
@@ -692,6 +701,93 @@ async fn scope_evidence(run: &Run, state: &Value, summary: bool) -> Result<Value
         }
     }
     Ok(Value::Array(runs))
+}
+
+/// Feature 022 (`"flowControlEvidence": true`): the gate events of every run of the scenario, read from the platform's
+/// journal, checked against the limits the scenario's workflow declares (`flow_control::check_concurrency`,
+/// `flow_control::check_rate`, from the journals' instants), and returned without instants for the golden.
+async fn flow_control_evidence(
+    run: &Run,
+    state: &Value,
+    scenario: &Value,
+) -> Result<Value, String> {
+    let pool = &run.platform.api.db.pool;
+    let mut events = Vec::new();
+    for item in state.as_array().into_iter().flatten() {
+        let id = item["runId"].as_str().ok_or("a run without an id")?;
+        let run_id = uuid::Uuid::parse_str(id).map_err(|e| format!("run id {id}: {e}"))?;
+        let rows: Vec<(i64, String, Option<String>, Value, i64)> = sqlx::query_as(
+            "SELECT seq, event_type, node, detail, \
+                    (extract(epoch FROM occurred_at) * 1000000)::bigint \
+               FROM run_events WHERE run_id = $1 \
+                AND (event_type LIKE 'concurrency.%' OR event_type LIKE 'rate_limit.%' \
+                     OR event_type = 'step.leased') \
+              ORDER BY seq",
+        )
+        .bind(run_id)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| format!("reading the gate events of run {id}: {e}"))?;
+        for (seq, kind, node, detail, at_us) in rows {
+            let text = |key: &str| detail[key].as_str().map(str::to_owned);
+            events.push(flow_control::GateEvent {
+                run: id.to_owned(),
+                seq,
+                kind,
+                node,
+                scope: text("scope"),
+                group: text("group"),
+                key: text("key_label"),
+                at_us,
+                granted_at_us: detail["granted_at_us"].as_i64(),
+                from_queue: detail["from_queue"].as_bool(),
+            });
+        }
+    }
+    let mut failures = Vec::new();
+    for workflow in scenario["workflows"]
+        .as_object()
+        .into_iter()
+        .flatten()
+        .map(|(_, w)| w)
+    {
+        if let Some(limit) = workflow["concurrency"]["limit"].as_u64() {
+            let limit = usize::try_from(limit).map_err(|e| e.to_string())?;
+            failures.extend(flow_control::check_concurrency(&events, limit));
+        }
+        if let Some(limit) = workflow["rateLimit"]["limit"].as_u64() {
+            let per =
+                flow_control::per_us(workflow["rateLimit"]["per"].as_str().unwrap_or_default())
+                    .ok_or("a rate limit without its window")?;
+            let mut nodes = std::collections::BTreeMap::new();
+            for op in workflow["program"].as_array().into_iter().flatten() {
+                let gate = &op["options"]["rateLimit"];
+                if let (Some(node), Some(node_limit), Some(node_per)) = (
+                    op["id"].as_str(),
+                    gate["limit"].as_u64(),
+                    gate["per"].as_str().and_then(flow_control::per_us),
+                ) {
+                    nodes.insert(
+                        node.to_owned(),
+                        (
+                            usize::try_from(node_limit).map_err(|e| e.to_string())?,
+                            node_per,
+                        ),
+                    );
+                }
+            }
+            let limit = usize::try_from(limit).map_err(|e| e.to_string())?;
+            failures.extend(flow_control::check_rate(&events, (limit, per), &nodes));
+        }
+    }
+    if failures.is_empty() {
+        Ok(flow_control::normalized(&events))
+    } else {
+        Err(format!(
+            "flow-control assertions failed: {}",
+            failures.join("; ")
+        ))
+    }
 }
 
 /// How each run of the scenario ended and where its collection took its items from, read from the
@@ -1320,6 +1416,16 @@ async fn play(
         };
     }
 
+    // A runtime scenario written before the server can play it says why (`pending`): it is reported as a failure, never
+    // played and never passed, so that a run of it cannot be read as conformance (feature 022, G022-090).
+    if let Some(reason) = scenario["pending"].as_str() {
+        failures.push(format!("{name}: pending, not played: {reason}"));
+        return Outcome {
+            failures,
+            played: Vec::new(),
+        };
+    }
+
     // 2. Play it, language by language, each on a platform of its own: the runs, the leases, the events
     //    and the quotas of one language are not there for the next to meet.
     let expected_path = suite().join("expected").join(format!("{name}.json"));
@@ -1389,6 +1495,12 @@ async fn play(
                     if scenario["sourceEvidence"].as_bool() == Some(true) {
                         match source_evidence(&run, &out["serverState"]).await {
                             Ok(evidence) => out["sourceEvidence"] = evidence,
+                            Err(e) => failures.push(format!("{name}/{lang}: {e}")),
+                        }
+                    }
+                    if scenario["flowControlEvidence"].as_bool() == Some(true) {
+                        match flow_control_evidence(&run, &out["serverState"], &scenario).await {
+                            Ok(evidence) => out["flowControlEvidence"] = evidence,
                             Err(e) => failures.push(format!("{name}/{lang}: {e}")),
                         }
                     }

@@ -72,6 +72,14 @@ one `map` with a short chain and one collection without operators. The server's 
 `contract_workflow_primitives` decodes the golden on publication and compares its canonical text and its chain. The
 runtime behaviour is `collection-operators-runtime` and `collection-operators-limits`, not written yet.
 
+`flow-control-builders.json` checks feature 022's `concurrency` and `rateLimit` in the six SDKs (FR-022-035,
+FR-022-050): at the workflow level and on activity and script steps, built through each SDK's public types. It is build
+only. Two of its workflows are the shared fixtures `provider-sync` and `account-serial` of
+`tests/contract/flow-control-step-policies/fixtures`, and the third carries every member at the bounds of the IR schema.
+`flow_control_builder_golden_is_the_shared_fixtures_and_the_server_canonical_definition` (this crate, no Docker) checks
+that the reviewed golden equals those fixtures, that each document's canonical text is the server codec's own and that it
+decodes to the gates the scenario declares. The runtime contracts are `flow-concurrency` and `flow-rate-limit`.
+
 `loop-builders.json` checks additive v1 `while` and `repeatUntil` authoring in the five SDKs.
 It is build-only while durable loop execution remains disabled. The reviewed fixture covers pre-test
 and post-test shapes, the maximum iteration and duration bounds, optional durable delay/error routing,
