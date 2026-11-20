@@ -416,14 +416,24 @@ async fn a_key_label_is_shown_only_to_a_caller_who_may_reveal_personal_data() {
         .await
         .expect("published");
     let holder = start(&api, &workflow, CANARY).await;
-    start(&api, &workflow, CANARY).await;
+    let waiter = start(&api, &workflow, CANARY).await;
     let label = label_of(&api, &holder).await;
     let keys = format!("/namespaces/{namespace}/concurrency-keys");
     let labels_seen_by = |subject: &'static str| {
         let api = &api;
         let holder = holder.clone();
+        let waiter = waiter.clone();
         let keys = keys.clone();
         async move {
+            let instant = |text: &Value| {
+                time::OffsetDateTime::parse(
+                    text.as_str().expect("an instant"),
+                    &time::format_description::well_known::Rfc3339,
+                )
+                .expect("rfc3339")
+            };
+            let (status, waiting) = read_as(api, &format!("/runs/{waiter}"), subject).await;
+            assert_eq!(status, StatusCode::OK, "{waiting}");
             let (status, run) = read_as(api, &format!("/runs/{holder}"), subject).await;
             assert_eq!(status, StatusCode::OK, "{run}");
             assert_eq!(run["concurrency"]["state"], "HOLDING", "{run}");
@@ -443,15 +453,21 @@ async fn a_key_label_is_shown_only_to_a_caller_who_may_reveal_personal_data() {
             // security Major 1), so without the label they are cut to the minute, which still says how long the queue
             // has waited (FR-022-022; re-review of the fixes)
             let revealed = page["items"][0]["keyLabel"].is_string();
-            for field in ["oldestHolderSince", "oldestWaitSince"] {
-                let at = time::OffsetDateTime::parse(
-                    page["items"][0][field].as_str().expect("an instant"),
-                    &time::format_description::well_known::Rfc3339,
-                )
-                .expect("rfc3339");
-                if !revealed {
-                    assert_eq!((at.second(), at.nanosecond()), (0, 0), "{field}: {page}");
-                }
+            for (field, since) in [
+                ("oldestHolderSince", &run["concurrency"]["since"]),
+                ("oldestWaitSince", &waiting["concurrency"]["since"]),
+            ] {
+                let (at, since) = (instant(&page["items"][0][field]), instant(since));
+                // whole to a caller who may see the label, its minute (toward the past) to any other: never coarser,
+                // never the whole instant (re-review of 34b8be41, minor 3)
+                let expected = if revealed {
+                    since
+                } else {
+                    since
+                        - time::Duration::seconds(i64::from(since.second()))
+                        - time::Duration::nanoseconds(i64::from(since.nanosecond()))
+                };
+                assert_eq!(at, expected, "{field}: {page}");
             }
             assert!(
                 run["concurrency"].get("keyLabel").is_some(),
@@ -733,4 +749,79 @@ async fn a_page_of_keys_reads_only_its_own_keys() {
             "the page's rows, not the namespace's: {text}"
         );
     }
+}
+
+/// The version a sealed cursor names in clear: `c1.` and its first two bytes.
+fn cursor_version(cursor: &str) -> u16 {
+    u16::from_str_radix(&cursor["c1.".len().."c1.".len() + 4], 16).expect("a version")
+}
+
+/// D022-059 end to end, and the keys reviews' minor on a leaked key (2026-11-20): a page's cursor is sealed under the
+/// version the database has active in its snapshot; during a rotation a cursor of the retiring version still opens;
+/// once the operator forces that version out (ADR-0093 decision 5, a leaked key) its cursors are refused `400` although
+/// the process still holds it, while a cursor of the active version pages on.
+#[tokio::test]
+async fn a_cursor_is_sealed_under_the_active_version_and_one_of_a_forced_version_is_refused() {
+    let api = start_with(Options {
+        flow_control: true,
+        flow_control_ring: Some(crate::support::flow_control::RING_TWO),
+        ..Options::default()
+    })
+    .await;
+    api.tenant("acme", "alice").await;
+    let workspace = api.create_workspace("alice", "acme", "flow").await;
+    let namespace = api
+        .create_namespace("alice", "acme", &workspace, "payments", "dev")
+        .await;
+    let workflow = publish(&api, "rest-rotation", serial_start("rest-rotation", 1))
+        .await
+        .expect("published");
+    for account in ["acct-1", "acct-2", "acct-3"] {
+        start(&api, &workflow, account).await;
+    }
+    let path = format!("/namespaces/{namespace}/concurrency-keys?limit=1");
+    let next = |page: &Value| page["nextCursor"].as_str().expect("a cursor").to_owned();
+    let (status, page) = read(&api, &path).await;
+    assert_eq!(status, StatusCode::OK, "{page}");
+    let under_one = next(&page);
+    assert_eq!(cursor_version(&under_one), 1, "{under_one}");
+
+    // version 2 activated while keys live under 1: 1 retires, 2 seals
+    let (outcome,): (String,) = sqlx::query_as(
+        "SELECT out_outcome FROM flow_control_key_activate(2::smallint, 'operator')",
+    )
+    .fetch_one(&api.db.pool)
+    .await
+    .expect("activated");
+    assert_eq!(outcome, "ACTIVATED");
+    let (status, page) = read(&api, &path).await;
+    assert_eq!(status, StatusCode::OK, "{page}");
+    let under_two = next(&page);
+    assert_eq!(
+        cursor_version(&under_two),
+        2,
+        "sealed under the active version"
+    );
+    let (status, body) = read(&api, &format!("{path}&cursor={under_one}")).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "a retiring version's cursor opens: {body}"
+    );
+
+    // the operator forces version 1 out: its cursors no longer open, version 2's do
+    sqlx::query(
+        "SELECT out_outcome FROM flow_control_key_force_retire(1::smallint, 'operator:incident', 'a leaked key')",
+    )
+    .execute(&api.db.pool)
+    .await
+    .expect("forced");
+    let (status, body) = read(&api, &format!("{path}&cursor={under_one}")).await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "a forced version's cursor: {body}"
+    );
+    let (status, body) = read(&api, &format!("{path}&cursor={under_two}")).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
 }

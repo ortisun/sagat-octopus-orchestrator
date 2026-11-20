@@ -534,12 +534,7 @@ pub async fn serve_with_admin(
         }
         tracing::info!("database role verified: it cannot rewrite the audit trail");
     }
-    check_flow_control_keys(
-        &pool,
-        serve.flow_control,
-        serve.flow_control_keys.as_deref(),
-    )
-    .await?;
+    check_flow_control_keys(&pool, serve.flow_control_keys.as_deref()).await?;
     let service = IdentityService::new(store, SystemClock);
     // The place of this process in the instance-capability registry (FR-018-052). Nothing is written until
     // `register`, below, once everything that can fail from configuration has been built: a closed gate refuses every
@@ -554,10 +549,7 @@ pub async fn serve_with_admin(
         sagat_application::instances::InstanceKind::ControlPlane,
         &registry::capabilities(
             serve.run_input_validation,
-            &sagat_application::flow_control::served(
-                serve.flow_control,
-                serve.flow_control_keys.is_some(),
-            ),
+            &sagat_application::flow_control::listed(serve.flow_control_keys.is_some()),
         ),
         None,
     );
@@ -1019,17 +1011,16 @@ pub async fn shutdown_signal() {
 
 /// Refuses to start a process that would serve a flow-control gate without a digest key version the database has in
 /// force (D022-057): every active and retiring version must be in `SAGAT_FLOW_CONTROL_DIGEST_KEYS_FILE` first. Nothing
-/// to check without keys or with every switch off (no gate is served then).
+/// to check without keys. A process with every switch off that holds keys still decides and grants what was admitted
+/// before (FR-022-031), so its ring is checked too (re-review of 34b8be41, Major 2).
 ///
 /// # Errors
 /// [`RunError::Refused`] naming the variable, never a key; [`RunError::Database`] when the versions cannot be read.
 pub async fn check_flow_control_keys(
     pool: &sagat_infra_postgres::PgPool,
-    switches: sagat_application::flow_control::FlowControlSwitches,
     keys: Option<&sagat_application::keyed_digest::KeyRing>,
 ) -> Result<(), RunError> {
-    // a process with every switch off serves no gate, whatever file it was given
-    let Some(keys) = keys.filter(|_| switches.concurrency_keys || switches.rate_limits) else {
+    let Some(keys) = keys else {
         return Ok(());
     };
     let missing = sagat_infra_postgres::missing_key_versions(pool, keys)

@@ -8,9 +8,8 @@
 //!
 //! What a build does not have is said by the same types, not hidden: a process lists a capability only when it runs
 //! the gate (D022-037), and the one admission point refuses a gated definition the process does not serve with
-//! [`FlowControlRefusal::BinaryCapabilityMissing`] (FR-022-059). This build runs the concurrency gate, for a process
-//! whose switch is on and which holds the deployment's digest keys ([`served`], D022-057); it does not run the rate
-//! gate (T022-072, T022-074).
+//! [`FlowControlRefusal::BinaryCapabilityMissing`] (FR-022-059). This build runs both gates, for a process whose switch
+//! is on and which holds the deployment's digest keys ([`served`], D022-057).
 
 use std::collections::BTreeSet;
 
@@ -19,18 +18,31 @@ use sagat_domain::workflow::{GateKind, WorkflowDefinition};
 use crate::instances::Capability;
 
 /// The flow-control capabilities this build runs the gate of (D022-057): the concurrency gate (admission, readiness,
-/// grant, timeout, release). The rate gate is not one until the run-level rate gate (T022-072) and the lease instant of
-/// a granted step (T022-074) exist.
-pub const BUILT: [FlowControlCapability; 1] = [FlowControlCapability::ConcurrencyKeys];
+/// grant, timeout, release) and the rate gate (admission and readiness, grant, timeout, return, the lease instant of a
+/// granted step and the purge of aged grants; T022-072, T022-074), with the namespace ceilings of both (G1199, T022-077).
+pub const BUILT: [FlowControlCapability; 2] = [
+    FlowControlCapability::ConcurrencyKeys,
+    FlowControlCapability::RateLimits,
+];
 
 /// The flow-control capabilities a process serves: built, switched on, and backed by the deployment's digest keys
-/// (`keys`). What it lists in the instance registry and what its admission point admits (D022-057).
+/// (`keys`). What its admission point admits (D022-057).
 #[must_use]
 pub fn served(switches: FlowControlSwitches, keys: bool) -> Vec<FlowControlCapability> {
     BUILT
         .into_iter()
         .filter(|capability| keys && switches.enabled(*capability))
         .collect()
+}
+
+/// The flow-control capabilities a process lists in the instance registry: built and backed by the digest keys, whatever
+/// its switches (D022-062 as amended). A listed capability promises that the process runs the gate (decides, grants,
+/// times out what was admitted); the switch says only whether it admits new gated work. So a process switched off to
+/// drain keeps its place in a fleet whose activation requires the gate, instead of being refused by the registry and
+/// serving nothing (re-review of 39157608, Major 1).
+#[must_use]
+pub fn listed(keys: bool) -> Vec<FlowControlCapability> {
+    BUILT.into_iter().filter(|_| keys).collect()
 }
 
 /// One of the two flow-control capabilities.
@@ -258,8 +270,9 @@ pub const SINGLE_KEY: &[u8] = b"null";
 /// A key whose waiters the grant routine may serve now (feature 022, T26, ADR-0089 decision 3): a step key with
 /// waiters whose next-eligible hint has come, on a home shard this replica holds. Its digest is a keyed digest, never a
 /// value (D1168); `hint` is the hint as it was read, so a pass that grants nothing may clear it only if no release
-/// moved it since (early, never late).
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// moved it since (early, never late). Its `Debug` prints the key's label, never the digest: the full digest opens the
+/// listing's position and is what a forged cursor would need (keys reviews of 2026-11-20, security minor 1).
+#[derive(Clone, PartialEq, Eq)]
 pub struct GateKey {
     pub tenant_id: sagat_domain::identity::TenantId,
     pub namespace_id: sagat_domain::identity::NamespaceId,
@@ -270,6 +283,24 @@ pub struct GateKey {
     pub digest: [u8; 32],
     pub shard: sagat_domain::sharding::Shard,
     pub hint: time::OffsetDateTime,
+}
+
+impl std::fmt::Debug for GateKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GateKey")
+            .field("tenant_id", &self.tenant_id)
+            .field("namespace_id", &self.namespace_id)
+            .field("kind", &self.kind)
+            .field("level", &self.level)
+            .field("group", &self.group)
+            .field(
+                "label",
+                &sagat_domain::execution::KeyLabel::of_digest(&self.digest).as_str(),
+            )
+            .field("shard", &self.shard)
+            .field("hint", &self.hint)
+            .finish()
+    }
 }
 
 /// A queued step of a key, or a queued run's start (`node` is `None`), or one whose queue deadline passed (T26, T27).
@@ -283,3 +314,30 @@ pub struct GateWaiter {
 /// How many waiters of one key one pass tries (D022-015, ADR-0089 decision 3, plan "grant pass": at most 256 grants per
 /// key, so a flood on one key does not hold back the keys behind it).
 pub const GRANTS_PER_KEY_PER_PASS: u32 = 256;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A gate key's `Debug` (logged by the grant pass) names its label, never its full digest (keys reviews of
+    /// 2026-11-20, security minor 1).
+    #[test]
+    fn a_gate_keys_debug_prints_its_label_and_never_its_digest() {
+        let digest: [u8; 32] = std::array::from_fn(|i| u8::try_from(0xa0 + i).unwrap_or(0));
+        let key = GateKey {
+            tenant_id: sagat_domain::identity::TenantId::generate(),
+            namespace_id: sagat_domain::identity::NamespaceId::generate(),
+            kind: GateKind::Concurrency,
+            level: sagat_domain::workflow::GateLevel::Step,
+            group: sagat_domain::workflow::ResolvedGroup::parse("providers").expect("a group"),
+            digest,
+            shard: sagat_domain::sharding::Shard::new(3).expect("a shard"),
+            hint: time::OffsetDateTime::UNIX_EPOCH,
+        };
+        let printed = format!("{key:?}");
+        assert!(printed.contains("a0a1a2a3a4a5"), "the label: {printed}");
+        // the seventh byte on, in the spellings a derived or hexadecimal Debug would use
+        assert!(!printed.contains("a6a7a8"), "{printed}");
+        assert!(!printed.contains("166, 167, 168"), "{printed}");
+    }
+}

@@ -1556,3 +1556,83 @@ async fn a_reset_never_takes_a_free_permit_a_queued_run_waits_for() {
         "the waiter is granted"
     );
 }
+
+/// The two guards of a gate a process does not serve (keys reviews of 2026-11-20, the surviving mutation), each proved
+/// alone. A reset's run is created through the admission point: on a control plane whose store holds no digest keys it
+/// is refused `BINARY_CAPABILITY_MISSING` there, nothing reset (the start gate's guard answers an admission or a reset
+/// with an internal error, so dropping the admission point's check turns this red, as it does
+/// `admission::a_process_with_the_switch_the_activation_and_the_keys_admits_a_concurrency_gated_run`). A release has no
+/// admission point: on such a scheduler the start gate's own guard decides nothing, the pass fails it (a configuration
+/// to look at, not a key's ceiling to defer, D022-054), and nothing of the run is written.
+#[tokio::test]
+async fn a_process_without_the_digest_keys_refuses_a_reset_and_decides_no_release() {
+    let w = gated_world().await;
+    let ringless = || {
+        sagat_infra_postgres::PgRunStore::new(w.execution_pool.clone(), w.cache.clone())
+            .with_flow_control(crate::support::flow_control::switches(true))
+    };
+    let workflow = publish(&w, serial_pair("creators-reset-ringless")).await;
+    let source = w.start(workflow, &json!({"accountId": "acct-1"})).await;
+    assert_eq!(complete_all(&w, "act.a").await, 1);
+    assert_eq!(complete_all(&w, "act.b").await, 1);
+    let after_a = w
+        .runs
+        .reset_points(&w.admin, source, &ctx())
+        .await
+        .expect("points")
+        .iter()
+        .find(|point| point.node.as_deref() == Some("a"))
+        .expect("the completion of `a` is a point")
+        .sequence;
+    let runs_before = runs_of(&w, workflow).await;
+    let refused = sagat_application::runs::RunService::new(
+        ringless(),
+        sagat_application::clock::SystemClock,
+        sagat_application::execution::Engine::new(sagat_infra_ir::JsonEvaluator),
+        w.cache.clone(),
+    )
+    .reset(
+        &w.admin,
+        source,
+        reset_request(after_a),
+        &idempotency(),
+        &ctx(),
+    )
+    .await
+    .expect_err("no digest keys");
+    assert_eq!(
+        refused,
+        AppError::FlowControl(FlowControlRefusal::BinaryCapabilityMissing)
+    );
+    assert_eq!(
+        runs_of(&w, workflow).await,
+        runs_before,
+        "no reset run was created"
+    );
+
+    let delayed_workflow = publish(&w, serial_start("creators-delay-ringless", 1)).await;
+    let delayed = start_delayed(&w, delayed_workflow, Some("acct-9")).await;
+    let scheduler = sagat_scheduler::Scheduler::new(
+        ringless(),
+        sagat_application::execution::Engine::new(sagat_infra_ir::JsonEvaluator),
+        sagat_application::entropy::SystemEntropy,
+        sagat_scheduler::SchedulerSettings::default(),
+    )
+    .with_children(w.cache.clone());
+    let report = scheduler.tick().await;
+    assert_eq!(
+        (
+            report.starts_released,
+            report.gate_starts_deferred,
+            report.failed
+        ),
+        (0, 0, 1),
+        "{report:?}"
+    );
+    assert_eq!(
+        w.journal(delayed).await,
+        ["run.started", "run.start_delayed"]
+    );
+    assert_eq!(start_rows(&w, delayed).await, (0, 0));
+    w.assert_consistent(delayed).await;
+}

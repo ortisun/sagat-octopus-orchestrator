@@ -19,6 +19,11 @@ use crate::identity::{Slug, clip};
 
 /// The most holders one key of a concurrency group may have (plan, "Finite ceilings").
 pub const MAX_CONCURRENCY_LIMIT: u32 = 10_000;
+
+/// The deployment's ceiling of a per-second rate limit until the benchmark of SC-022-029 has met its floor (FR-022-047:
+/// "until then the deployment ceiling is the lower default of the plan"). A declaration may say up to
+/// [`RatePeriod::max_limit`] (100); a key counts at most this many grants a second whatever it declares.
+pub const DEPLOYMENT_PER_SECOND_LIMIT: u32 = 20;
 /// The queue timeout when a declaration names none: ten minutes.
 pub const DEFAULT_QUEUE_TIMEOUT: Duration = Duration::from_millis(600_000);
 /// The longest a run or a step may wait for a permit or a slot: one day.
@@ -461,6 +466,9 @@ pub enum FlowControlLimit {
     /// `concurrency_live_keys`.
     #[error("the namespace holds as many flow-control keys as its ceiling allows")]
     LiveKeys,
+    /// `rate_limit_live_keys` (T022-077).
+    #[error("the namespace holds as many rate-limit keys as its ceiling allows")]
+    RateLiveKeys,
     /// `flow_control_node_declarations`.
     #[error("a definition of the namespace may hold at most {max} node-level {kind} declarations")]
     NodeDeclarations { kind: GateKind, max: u64 },
@@ -483,6 +491,12 @@ pub struct FlowControlCeilings {
     pub queue_timeout_ms: u64,
     /// `flow_control_node_declarations`.
     pub node_declarations: u64,
+    /// `rate_limit_live_keys` (T022-077).
+    pub rate_live_keys: u64,
+    /// `rate_limit_per_second`, `rate_limit_per_minute`, `rate_limit_per_hour` (T022-077).
+    pub rate_per_second: u64,
+    pub rate_per_minute: u64,
+    pub rate_per_hour: u64,
 }
 
 impl FlowControlCeilings {
@@ -494,6 +508,10 @@ impl FlowControlCeilings {
         concurrency_limit: crate::quota::QuotaResource::ConcurrencyLimit.default_limit(),
         queue_timeout_ms: crate::quota::QuotaResource::FlowControlQueueTimeoutMs.default_limit(),
         node_declarations: crate::quota::QuotaResource::FlowControlNodeDeclarations.default_limit(),
+        rate_live_keys: crate::quota::QuotaResource::RateLimitLiveKeys.default_limit(),
+        rate_per_second: crate::quota::QuotaResource::RateLimitPerSecond.default_limit(),
+        rate_per_minute: crate::quota::QuotaResource::RateLimitPerMinute.default_limit(),
+        rate_per_hour: crate::quota::QuotaResource::RateLimitPerHour.default_limit(),
     };
 
     /// The run waiters one key may hold: its ceiling, and always fewer than the namespace's `queued_runs`, so that one
@@ -538,6 +556,29 @@ impl FlowControlCeilings {
             return Err(FlowControlLimit::LiveKeys);
         }
         Ok(())
+    }
+
+    /// Whether a new rate-limit window row may be created, given the namespace's live rate-limit keys before it.
+    ///
+    /// # Errors
+    /// [`FlowControlLimit::RateLiveKeys`] at the ceiling.
+    pub const fn admits_rate_key(&self, live_keys: u64) -> Result<(), FlowControlLimit> {
+        if live_keys >= self.rate_live_keys {
+            return Err(FlowControlLimit::RateLiveKeys);
+        }
+        Ok(())
+    }
+
+    /// The most grants one key of `declared` may count in its window: the lower of the declaration and the namespace's
+    /// ceiling for that window's length (FR-022-047; the per-second ceiling already holds the deployment's, D022-064).
+    #[must_use]
+    pub fn rate_limit(&self, declared: &RateLimitPolicy) -> u32 {
+        let ceiling = match declared.per() {
+            RatePeriod::Second => self.rate_per_second,
+            RatePeriod::Minute => self.rate_per_minute,
+            RatePeriod::Hour => self.rate_per_hour,
+        };
+        u32::try_from(ceiling.min(u64::from(declared.limit()))).unwrap_or(declared.limit())
     }
 
     /// The most holders one key of `declared` may be granted: the lower of the declaration and the namespace.

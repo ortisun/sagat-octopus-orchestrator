@@ -34,26 +34,64 @@ use crate::flow_control::{
 /// The longest a gate projection of one step may be (two slots of a 130-character group).
 const MAX_PROJECTION_BYTES: usize = 1024;
 
-/// One gate of one step, as this transaction decides it.
+/// One gate of one step or of the run's start, as this transaction decides it: the one shape both levels are decided
+/// in ([`PgRunTx::decide_filed`], G022-012).
 struct Pending {
-    node: NodeId,
+    /// The step, or `None` for the run's start (T022-022, T022-072).
+    node: Option<NodeId>,
+    /// The attempt the decision is for: the step's attempt plus one; 0 for the run's start.
     attempt: u32,
     kind: GateKind,
     group: sagat_domain::workflow::ResolvedGroup,
+    /// The effective limit: the lower of the declaration and the namespace's ceiling (FR-022-034, FR-022-047).
     limit: u32,
     /// The window of a rate limit, `None` for a concurrency permit.
     per: Option<sagat_domain::workflow::RatePeriod>,
+    /// The effective queue timeout.
     timeout: std::time::Duration,
     /// Its key, once filed.
     filed: Option<FiledKey>,
 }
 
-/// A key row and the window its grants were counted for: (rate, group, digest, period in milliseconds).
-type CountKey = (bool, String, [u8; 32], i64);
+impl Pending {
+    const fn level(&self) -> GateLevel {
+        if self.node.is_some() {
+            GateLevel::Step
+        } else {
+            GateLevel::Run
+        }
+    }
+
+    /// The `node` column of its rows: the node, or `''` for the run's own row.
+    fn node_column(&self) -> &str {
+        self.node.as_ref().map_or("", NodeId::as_str)
+    }
+
+    fn target(&self) -> GateTarget {
+        self.node
+            .as_ref()
+            .map_or(GateTarget::Run, |node| GateTarget::Step {
+                node: node.clone(),
+                attempt: self.attempt,
+            })
+    }
+}
+
+/// What the start of a run adds to the shared decision ([`PgRunTx::decide_filed`]): a queue it may not join, and the
+/// ceilings a run waiter meets (D022-049, D022-052, D022-053).
+#[derive(Clone, Copy)]
+struct StartRules {
+    cause: StartCause,
+    ceilings: sagat_domain::workflow::FlowControlCeilings,
+}
+
+/// A key row and the window its grants were counted for: (rate, level, group, digest, period in milliseconds).
+type CountKey = (bool, GateLevel, String, [u8; 32], i64);
 
 fn count_key(gate: &Pending, filed: &FiledKey) -> CountKey {
     (
         gate.kind == GateKind::RateLimit,
+        gate.level(),
         gate.group.as_str().to_owned(),
         filed.digest,
         period_ms(gate),
@@ -105,7 +143,7 @@ impl PgRunTx {
         let tenant = self.info.tenant_id;
         let namespace = self.info.namespace_id;
         let versions = key_versions(&mut self.tx).await?;
-        // the namespace's ceilings bound what a declaration asks (G1199; FR-022-047, FR-022-054)
+        // the namespace's ceilings bound what a declaration asks (G1199, T022-077; FR-022-047, FR-022-054)
         let ceilings = crate::quotas::step_gate_ceilings(&mut self.tx, tenant, namespace).await?;
         let mut pending = Vec::new();
         let (mut semaphores, mut windows) = (Vec::new(), Vec::new());
@@ -116,52 +154,18 @@ impl PgRunTx {
                 .ok_or_else(|| StoreError::Internal {
                     detail: "a gated step is not in its definition".into(),
                 })?;
-            let flow = node.flow_control();
-            let declared = [
-                (
-                    GateKind::RateLimit,
-                    flow.rate_limit().map(|policy| {
-                        (
-                            policy.group(),
-                            policy.limit(),
-                            Some(policy.per()),
-                            policy.queue_timeout(),
-                        )
-                    }),
-                    step.rate.as_deref(),
-                ),
-                (
-                    GateKind::Concurrency,
-                    flow.concurrency().map(|policy| {
-                        (policy.group(), policy.limit(), None, policy.queue_timeout())
-                    }),
-                    step.concurrency.as_deref(),
-                ),
-            ];
-            for (kind, policy, canonical) in declared {
-                let Some((group, limit, per, timeout)) = policy else {
-                    continue;
-                };
-                let canonical = canonical.ok_or_else(|| StoreError::Internal {
-                    detail: "a declared gate of a step came without its key".into(),
-                })?;
-                let purpose = match kind {
-                    GateKind::Concurrency => KeyPurpose::Concurrency,
-                    GateKind::RateLimit => KeyPurpose::RateLimit,
-                };
-                let candidates = ring
-                    .candidates(versions, purpose, tenant, namespace, canonical)
-                    .map_err(key_refusal)?;
-                let group = group.resolve(self.def.name(), Some(&step.node));
-                let key = KeyToFile {
-                    tenant,
-                    namespace,
-                    pool: GatePool::Ordinary,
-                    level: GateLevel::Step,
-                    shard: key_shard(GateLevel::Step, &group, candidates.active.as_bytes()),
-                    group: group.clone(),
-                    candidates,
-                };
+            let flow = node.flow_control().clone();
+            for gate in self.gates_of(
+                &ring,
+                versions,
+                &ceilings,
+                &flow,
+                Some(&step.node),
+                step.attempt,
+                step.concurrency.as_deref(),
+                step.rate.as_deref(),
+            )? {
+                let (kind, key, gate) = gate;
                 let index = match kind {
                     GateKind::Concurrency => {
                         semaphores.push(key);
@@ -172,31 +176,11 @@ impl PgRunTx {
                         windows.len() - 1
                     }
                 };
-                let limit = match kind {
-                    GateKind::Concurrency => {
-                        u32::try_from(u64::from(limit).min(ceilings.concurrency_limit))
-                            .unwrap_or(limit)
-                    }
-                    // a namespace ceiling of a rate limit is T022-077's
-                    GateKind::RateLimit => limit,
-                };
-                pending.push((
-                    index,
-                    Pending {
-                        node: step.node.clone(),
-                        attempt: step.attempt,
-                        kind,
-                        group,
-                        limit,
-                        per,
-                        timeout: ceilings.queue_timeout(timeout),
-                        filed: None,
-                    },
-                ));
+                pending.push((index, gate));
             }
         }
         let refused = self
-            .refused_by_ceilings(&pending, &semaphores, &ceilings, versions)
+            .refused_by_ceilings(&pending, &semaphores, &windows, &ceilings, versions)
             .await?;
         if !refused.is_empty() {
             // nothing is filed: the domain fails these steps and the next round decides the others
@@ -240,12 +224,122 @@ impl PgRunTx {
         )
         .await?;
         self.apply_returns(returns).await?;
-        for (index, gate) in &mut pending {
-            let filed = match gate.kind {
-                GateKind::Concurrency => &filed_semaphores,
-                GateKind::RateLimit => &filed_windows,
+        let decisions = self
+            .decide_filed(pending, &filed_semaphores, &filed_windows, None)
+            .await?;
+        Ok(sagat_application::flow_control::StepGateAnswer {
+            decisions,
+            refused: Vec::new(),
+        })
+    }
+
+    /// The gates `flow` declares at one level (a step's node, or the run's start when `node` is `None`), each with the
+    /// key to file and its effective limit and timeout, rate first: the one place both levels turn a declaration into
+    /// what is decided (G022-012).
+    #[allow(clippy::too_many_arguments)]
+    fn gates_of(
+        &self,
+        ring: &sagat_application::keyed_digest::KeyRing,
+        versions: sagat_application::keyed_digest::KeyVersions,
+        ceilings: &sagat_domain::workflow::FlowControlCeilings,
+        flow: &sagat_domain::workflow::FlowControl,
+        node: Option<&NodeId>,
+        attempt: u32,
+        concurrency: Option<&[u8]>,
+        rate: Option<&[u8]>,
+    ) -> Result<Vec<(GateKind, KeyToFile, Pending)>, StoreError> {
+        let (tenant, namespace) = (self.info.tenant_id, self.info.namespace_id);
+        let level = if node.is_some() {
+            GateLevel::Step
+        } else {
+            GateLevel::Run
+        };
+        let declared = [
+            flow.rate_limit().map(|policy| {
+                (
+                    GateKind::RateLimit,
+                    policy.group(),
+                    ceilings.rate_limit(policy),
+                    Some(policy.per()),
+                    policy.queue_timeout(),
+                    rate,
+                )
+            }),
+            flow.concurrency().map(|policy| {
+                (
+                    GateKind::Concurrency,
+                    policy.group(),
+                    ceilings.concurrency_limit(policy),
+                    None,
+                    policy.queue_timeout(),
+                    concurrency,
+                )
+            }),
+        ];
+        let mut gates = Vec::new();
+        for (kind, group, limit, per, timeout, canonical) in declared.into_iter().flatten() {
+            let canonical = canonical.ok_or_else(|| StoreError::Internal {
+                detail: "a declared gate came without its key".into(),
+            })?;
+            let purpose = match kind {
+                GateKind::Concurrency => KeyPurpose::Concurrency,
+                GateKind::RateLimit => KeyPurpose::RateLimit,
             };
-            gate.filed = filed.iter().find(|key| key.index == *index).cloned();
+            let candidates = ring
+                .candidates(versions, purpose, tenant, namespace, canonical)
+                .map_err(key_refusal)?;
+            let group = group.resolve(self.def.name(), node);
+            let key = KeyToFile {
+                tenant,
+                namespace,
+                pool: GatePool::Ordinary,
+                level,
+                shard: key_shard(level, &group, candidates.active.as_bytes()),
+                group: group.clone(),
+                candidates,
+            };
+            gates.push((
+                kind,
+                key,
+                Pending {
+                    node: node.cloned(),
+                    attempt,
+                    kind,
+                    group,
+                    limit,
+                    per,
+                    timeout: ceilings.queue_timeout(timeout),
+                    filed: None,
+                },
+            ));
+        }
+        Ok(gates)
+    }
+
+    /// Decides filed gates under their keys' locks, one target (a step's attempt, or the run's start) at a time, in
+    /// target order: every gate of a target admits it (holders or counted grants plus the key's waiters below its own
+    /// limit, the reservation rule of D022-021) and it is granted every one, or it waits for every one with the earlier
+    /// of their deadlines (FR-022-044, D022-006). A start adds its own rules (`start`): a reset never waits, and a run
+    /// waiter meets the namespace's `queued_runs` and the key's waiter ceiling, rate first (FR-022-052). The one decision
+    /// of both levels and both gates (G022-012).
+    async fn decide_filed(
+        &mut self,
+        pending: Vec<(usize, Pending)>,
+        filed_semaphores: &[FiledKey],
+        filed_windows: &[FiledKey],
+        start: Option<StartRules>,
+    ) -> Result<Vec<GateEvent>, StoreError> {
+        let mut by_target: BTreeMap<(Option<NodeId>, u32), Vec<Pending>> = BTreeMap::new();
+        for (index, mut gate) in pending {
+            let filed = match gate.kind {
+                GateKind::Concurrency => filed_semaphores,
+                GateKind::RateLimit => filed_windows,
+            };
+            gate.filed = filed.iter().find(|key| key.index == index).cloned();
+            by_target
+                .entry((gate.node.clone(), gate.attempt))
+                .or_default()
+                .push(gate);
         }
         // the grant instant is the database clock after the keys' locks (D022-027)
         let now: OffsetDateTime = sqlx::query_scalar("SELECT clock_timestamp()")
@@ -254,22 +348,18 @@ impl PgRunTx {
             .map_err(store_error)?;
         let mut counts: BTreeMap<CountKey, KeyCount> = BTreeMap::new();
         let mut events = Vec::new();
-        let mut by_step: BTreeMap<(NodeId, u32), Vec<Pending>> = BTreeMap::new();
-        for (_, gate) in pending {
-            by_step
-                .entry((gate.node.clone(), gate.attempt))
-                .or_default()
-                .push(gate);
-        }
-        for ((node, attempt), gates) in by_step {
+        for ((node, _), gates) in by_target {
             let mut admits = true;
             for gate in &gates {
-                let count = self.key_count(&mut counts, gate).await?;
+                let count = self.key_count(&mut counts, gate, now).await?;
                 admits &= count.taken + count.waiters < i64::from(gate.limit);
+            }
+            if let (false, Some(rules)) = (admits, start) {
+                self.start_may_wait(&gates, &counts, rules).await?;
             }
             let deadline = gates.iter().map(|gate| gate.timeout).min().ok_or_else(|| {
                 StoreError::Internal {
-                    detail: "a gated step declares no gate".into(),
+                    detail: "a gated target declares no gate".into(),
                 }
             })?;
             let deadline = now
@@ -282,13 +372,19 @@ impl PgRunTx {
                     detail: "a gate's key was not filed".into(),
                 })?;
                 let change = if admits {
-                    self.grant(&node, attempt, gate, filed, now).await?
+                    let waiting = counts
+                        .get(&count_key(gate, filed))
+                        .is_some_and(|count| count.waiters > 0);
+                    self.grant(gate, filed, now, waiting).await?
                 } else {
-                    self.queue(&node, attempt, gate, filed, now, deadline)
-                        .await?
+                    self.queue(gate, filed, now, deadline).await?
                 };
-                self.gate_outcomes
-                    .push((gate.kind, GateOutcome::of(change)));
+                let outcomes = if node.is_some() {
+                    &mut self.gate_outcomes
+                } else {
+                    &mut self.run_gate_outcomes
+                };
+                outcomes.push((gate.kind, GateOutcome::of(change)));
                 // the span names the group, never the key (FR-022-033)
                 let outcome = if admits { "granted" } else { "queued" };
                 match gate.kind {
@@ -306,10 +402,10 @@ impl PgRunTx {
                     .in_scope(|| ()),
                 }
                 // the row is the same whatever the window its grants were counted for: every count of it moves
-                let (rate, group, digest, _) = count_key(gate, filed);
+                let (rate, level, group, digest, _) = count_key(gate, filed);
                 let mut moved = false;
-                for ((r, g, d, _), entry) in &mut counts {
-                    if *r == rate && *g == group && *d == digest {
+                for ((r, l, g, d, _), entry) in &mut counts {
+                    if *r == rate && *l == level && *g == group && *d == digest {
                         moved = true;
                         if admits {
                             entry.taken += 1;
@@ -322,10 +418,7 @@ impl PgRunTx {
                     return Err(corrupt("flow-control key count"));
                 }
                 events.push(GateEvent {
-                    target: GateTarget::Step {
-                        node: node.clone(),
-                        attempt,
-                    },
+                    target: gate.target(),
                     gate: GateRef {
                         pool: GatePool::Ordinary,
                         group: gate.group.clone(),
@@ -335,22 +428,74 @@ impl PgRunTx {
                 });
             }
         }
-        Ok(sagat_application::flow_control::StepGateAnswer {
-            decisions: events,
-            refused: Vec::new(),
-        })
+        Ok(events)
     }
 
-    /// The steps of this round a namespace ceiling refuses `FLOW_CONTROL_LIMIT` (G1199): a ceiling of zero (the effective
-    /// limit or queue timeout), or a new step key beyond the live-keys ceiling (FR-022-054; counted on the semaphores,
-    /// D022-043). The keys that exist cost one statement; only a round that would create a key counts the namespace's
-    /// keys, under the versions in force only: a row a forced retirement left (ADR-0093 decision 5) is being replaced and
-    /// drains on its own, so the ceiling is passed by at most those rows meanwhile. Not serialized between transactions:
-    /// concurrent rounds pass it by at most the new keys the others create (G022-002, D022-047, O1173).
+    /// Whether a start that its gates do not admit now may wait (T022-022, T022-072): a reset never waits (018's plan,
+    /// row 17); a run waiter meets the namespace's `queued_runs` (exact: every transaction that adds a run waiter holds
+    /// the namespace's admission lock, D022-051) and each key's waiter ceiling, counted under the key's lock. Refused
+    /// rate first (FR-022-052): `RATE_LIMIT_QUEUE_FULL` when the start declares a rate limit, else
+    /// `CONCURRENCY_QUEUE_FULL` for the key and `FLOW_CONTROL_LIMIT` for the namespace (`contracts/errors.md`).
+    async fn start_may_wait(
+        &mut self,
+        gates: &[Pending],
+        counts: &BTreeMap<CountKey, KeyCount>,
+        rules: StartRules,
+    ) -> Result<(), StoreError> {
+        let declared = sagat_domain::execution::DeclaredGates {
+            concurrency: gates.iter().any(|gate| gate.kind == GateKind::Concurrency),
+            rate: gates.iter().any(|gate| gate.kind == GateKind::RateLimit),
+        };
+        if !rules.cause.may_queue() {
+            sagat_telemetry::flow_control::record_concurrency(
+                sagat_telemetry::flow_control::FlowControlScope::Run,
+                sagat_telemetry::flow_control::ConcurrencyOutcome::RefusedReset,
+            );
+            return Err(StoreError::FlowControl(
+                FlowControlRefusal::PermitUnavailable,
+            ));
+        }
+        let (tenant, namespace) = (self.info.tenant_id, self.info.namespace_id);
+        // a queued run is an active run with a ceiling of its own (D1182): the namespace's, then each key's
+        let queued_runs: i64 = sqlx::query_scalar(crate::flow_control::QUEUED_RUNS_SQL)
+            .bind(tenant.as_uuid())
+            .bind(namespace.as_uuid())
+            .fetch_one(&mut *self.tx)
+            .await
+            .map_err(store_error)?;
+        // rate first: the waiters of each key, under its lock (gates are rate first)
+        for gate in gates {
+            let filed = gate
+                .filed
+                .as_ref()
+                .ok_or_else(|| corrupt("a gate's key was not filed"))?;
+            let waiters = counts
+                .get(&count_key(gate, filed))
+                .map_or(0, |count| count.waiters);
+            rules
+                .ceilings
+                .admits_waiter(
+                    u64::try_from(queued_runs).unwrap_or(u64::MAX),
+                    u64::try_from(waiters).unwrap_or(u64::MAX),
+                    false,
+                )
+                .map_err(|limit| start_refused(limit, declared, Some(gate.kind), rules.cause))?;
+        }
+        Ok(())
+    }
+
+    /// The steps of this round a namespace ceiling refuses `FLOW_CONTROL_LIMIT` (G1199, T022-077): a ceiling of zero (the
+    /// effective limit or queue timeout), or a new step key beyond the live-keys ceiling of its kind (FR-022-054;
+    /// semaphores `concurrency_live_keys`, D022-043; windows `rate_limit_live_keys`). The keys that exist cost one
+    /// statement a kind; only a round that would create a key counts the namespace's keys of that kind, under the versions
+    /// in force only: a row a forced retirement left (ADR-0093 decision 5) is being replaced and drains on its own, so
+    /// the ceiling is passed by at most those rows meanwhile. Not serialized between transactions: concurrent rounds pass
+    /// it by at most the new keys the others create (G022-002, D022-047, O1173).
     async fn refused_by_ceilings(
         &mut self,
         pending: &[(usize, Pending)],
         semaphores: &[KeyToFile],
+        windows: &[KeyToFile],
         ceilings: &sagat_domain::workflow::FlowControlCeilings,
         versions: sagat_application::keyed_digest::KeyVersions,
     ) -> Result<Vec<(NodeId, sagat_domain::execution::FailureCode)>, StoreError> {
@@ -358,79 +503,47 @@ impl PgRunTx {
         let mut refused: Vec<NodeId> = pending
             .iter()
             .filter(|(_, gate)| gate.limit == 0 || gate.timeout.is_zero())
-            .map(|(_, gate)| gate.node.clone())
+            .filter_map(|(_, gate)| gate.node.clone())
             .collect();
-        if !semaphores.is_empty() {
-            let (mut groups, mut digests, mut owners) = (Vec::new(), Vec::new(), Vec::new());
-            for (index, key) in semaphores.iter().enumerate() {
-                for digest in
-                    std::iter::once(&key.candidates.active).chain(key.candidates.retiring.as_ref())
-                {
-                    groups.push(key.group.as_str().to_owned());
-                    digests.push(digest.as_bytes().to_vec());
-                    owners.push(i32::try_from(index).map_err(|_| corrupt("key index"))?);
-                }
+        for (kind, table, keys) in [
+            (GateKind::Concurrency, KeyTable::Semaphores, semaphores),
+            (GateKind::RateLimit, KeyTable::Windows, windows),
+        ] {
+            if keys.is_empty() {
+                continue;
             }
-            let existing: Vec<i32> = sqlx::query_scalar(
-                "SELECT DISTINCT k.owner FROM unnest($3::text[], $4::bytea[], $5::integer[]) AS k(g, d, owner) \
-                  WHERE EXISTS (SELECT 1 FROM concurrency_semaphores s \
-                                 WHERE s.tenant_id = $1 AND s.namespace_id = $2 AND s.pool = 'ORDINARY' \
-                                   AND s.permit_scope = 'STEP' AND s.group_name = k.g AND s.key_digest = k.d)",
-            )
-            .bind(self.info.tenant_id.as_uuid())
-            .bind(self.info.namespace_id.as_uuid())
-            .bind(&groups)
-            .bind(&digests)
-            .bind(&owners)
-            .fetch_all(&mut *self.tx)
-            .await
-            .map_err(store_error)?;
+            let existing = self.existing_keys(table, GateLevel::Step, keys).await?;
             // a key the round would create, once each (two steps may share one), in the order the steps are decided
             let mut new_keys: Vec<(String, [u8; 32])> = Vec::new();
             let mut new_of_step: Vec<(NodeId, (String, [u8; 32]))> = Vec::new();
             for (index, gate) in pending {
-                if gate.kind != GateKind::Concurrency || refused.contains(&gate.node) {
+                let Some(node) = &gate.node else { continue };
+                if gate.kind != kind || refused.contains(node) || existing.contains(index) {
                     continue;
                 }
-                let exists = i32::try_from(*index).is_ok_and(|i| existing.contains(&i));
-                if !exists {
-                    let key = &semaphores[*index];
-                    let id = (
-                        key.group.as_str().to_owned(),
-                        *key.candidates.active.as_bytes(),
-                    );
-                    if !new_keys.contains(&id) {
-                        new_keys.push(id.clone());
-                    }
-                    new_of_step.push((gate.node.clone(), id));
+                let key = &keys[*index];
+                let id = (
+                    key.group.as_str().to_owned(),
+                    *key.candidates.active.as_bytes(),
+                );
+                if !new_keys.contains(&id) {
+                    new_keys.push(id.clone());
                 }
+                new_of_step.push((node.clone(), id));
             }
-            if !new_keys.is_empty() {
-                let in_force: Vec<i16> = std::iter::once(versions.active)
-                    .chain(versions.retiring)
-                    .map(|v| i16::try_from(v).map_err(|_| corrupt("digest key version")))
-                    .collect::<Result<_, _>>()?;
-                let live: i64 = sqlx::query_scalar(
-                    "SELECT count(*) FROM concurrency_semaphores WHERE tenant_id = $1 AND namespace_id = $2 \
-                     AND key_version = ANY($3)",
-                )
-                .bind(self.info.tenant_id.as_uuid())
-                .bind(self.info.namespace_id.as_uuid())
-                .bind(&in_force)
-                .fetch_one(&mut *self.tx)
-                .await
-                .map_err(store_error)?;
-                let room = usize::try_from(
-                    ceilings
-                        .live_keys
-                        .saturating_sub(u64::try_from(live).unwrap_or(u64::MAX)),
-                )
-                .unwrap_or(usize::MAX);
-                let admitted = &new_keys[..new_keys.len().min(room)];
-                for (node, id) in new_of_step {
-                    if !admitted.contains(&id) && !refused.contains(&node) {
-                        refused.push(node);
-                    }
+            if new_keys.is_empty() {
+                continue;
+            }
+            let live = self.live_keys(table, versions).await?;
+            let ceiling = match table {
+                KeyTable::Semaphores => ceilings.live_keys,
+                KeyTable::Windows => ceilings.rate_live_keys,
+            };
+            let room = usize::try_from(ceiling.saturating_sub(live)).unwrap_or(usize::MAX);
+            let admitted = &new_keys[..new_keys.len().min(room)];
+            for (node, id) in new_of_step {
+                if !admitted.contains(&id) && !refused.contains(&node) {
+                    refused.push(node);
                 }
             }
         }
@@ -439,12 +552,97 @@ impl PgRunTx {
         Ok(refused.into_iter().map(|node| (node, code())).collect())
     }
 
+    /// Which of `keys` (by position) already have a row of `level` in `table`, under either digest in force.
+    async fn existing_keys(
+        &mut self,
+        table: KeyTable,
+        level: GateLevel,
+        keys: &[KeyToFile],
+    ) -> Result<Vec<usize>, StoreError> {
+        let (mut groups, mut digests, mut owners) = (Vec::new(), Vec::new(), Vec::new());
+        for (index, key) in keys.iter().enumerate() {
+            for digest in
+                std::iter::once(&key.candidates.active).chain(key.candidates.retiring.as_ref())
+            {
+                groups.push(key.group.as_str().to_owned());
+                digests.push(digest.as_bytes().to_vec());
+                owners.push(i32::try_from(index).map_err(|_| corrupt("key index"))?);
+            }
+        }
+        let statement = match table {
+            KeyTable::Semaphores => {
+                "SELECT DISTINCT k.owner FROM unnest($3::text[], $4::bytea[], $5::integer[]) AS k(g, d, owner) \
+                  WHERE EXISTS (SELECT 1 FROM concurrency_semaphores s \
+                                 WHERE s.tenant_id = $1 AND s.namespace_id = $2 AND s.pool = 'ORDINARY' \
+                                   AND s.permit_scope = $6 AND s.group_name = k.g AND s.key_digest = k.d)"
+            }
+            KeyTable::Windows => {
+                "SELECT DISTINCT k.owner FROM unnest($3::text[], $4::bytea[], $5::integer[]) AS k(g, d, owner) \
+                  WHERE EXISTS (SELECT 1 FROM rate_limit_windows s \
+                                 WHERE s.tenant_id = $1 AND s.namespace_id = $2 AND s.pool = 'ORDINARY' \
+                                   AND s.limit_scope = $6 AND s.group_name = k.g AND s.key_digest = k.d)"
+            }
+        };
+        let existing: Vec<i32> = sqlx::query_scalar(statement)
+            .bind(self.info.tenant_id.as_uuid())
+            .bind(self.info.namespace_id.as_uuid())
+            .bind(&groups)
+            .bind(&digests)
+            .bind(&owners)
+            .bind(level.as_str())
+            .fetch_all(&mut *self.tx)
+            .await
+            .map_err(store_error)?;
+        Ok(existing
+            .into_iter()
+            .filter_map(|owner| usize::try_from(owner).ok())
+            .collect())
+    }
+
+    /// The namespace's key rows of `table` under the digest versions in force (ADR-0093 decision 5), both levels.
+    async fn live_keys(
+        &mut self,
+        table: KeyTable,
+        versions: sagat_application::keyed_digest::KeyVersions,
+    ) -> Result<u64, StoreError> {
+        let in_force: Vec<i16> = std::iter::once(versions.active)
+            .chain(versions.retiring)
+            .map(|v| i16::try_from(v).map_err(|_| corrupt("digest key version")))
+            .collect::<Result<_, _>>()?;
+        let statement = match table {
+            KeyTable::Semaphores => {
+                "SELECT count(*) FROM concurrency_semaphores WHERE tenant_id = $1 AND namespace_id = $2 \
+                 AND key_version = ANY($3)"
+            }
+            // a window counts while a waiter or a grant that can still count keeps it: one whose grants all aged out is
+            // only waiting for the purge, which another tenant's backlog may delay (security review Major 1 of 2026-11-20)
+            KeyTable::Windows => {
+                "SELECT count(*) FROM rate_limit_windows w WHERE w.tenant_id = $1 AND w.namespace_id = $2 \
+                 AND w.key_version = ANY($3) \
+                 AND (w.waiters > 0 OR EXISTS (SELECT 1 FROM rate_limit_grants g \
+                   WHERE g.tenant_id = w.tenant_id AND g.namespace_id = w.namespace_id AND g.pool = w.pool \
+                     AND g.limit_scope = w.limit_scope AND g.group_name = w.group_name AND g.key_digest = w.key_digest \
+                     AND (g.leased_at IS NULL \
+                          OR g.leased_at + make_interval(secs => w.max_period_ms / 1000.0) > clock_timestamp())))"
+            }
+        };
+        let live: i64 = sqlx::query_scalar(statement)
+            .bind(self.info.tenant_id.as_uuid())
+            .bind(self.info.namespace_id.as_uuid())
+            .bind(&in_force)
+            .fetch_one(&mut *self.tx)
+            .await
+            .map_err(store_error)?;
+        Ok(u64::try_from(live).unwrap_or(u64::MAX))
+    }
+
     /// The holders (or the grants that count for `gate`'s window) and the waiters of a key, read once per key and
     /// period in this transaction, under its lock.
     async fn key_count(
         &mut self,
         counts: &mut BTreeMap<CountKey, KeyCount>,
         gate: &Pending,
+        now: OffsetDateTime,
     ) -> Result<KeyCount, StoreError> {
         let filed = gate.filed.as_ref().ok_or_else(|| StoreError::Internal {
             detail: "a gate's key was not filed".into(),
@@ -456,20 +654,21 @@ impl PgRunTx {
         let query = match gate.kind {
             GateKind::Concurrency => sqlx::query_as::<_, (i64, i64)>(
                 "SELECT holders::bigint, waiters::bigint FROM concurrency_semaphores \
-                 WHERE tenant_id = $1 AND namespace_id = $2 AND pool = $3 AND permit_scope = 'STEP' \
-                   AND group_name = $4 AND key_digest = $5 AND $6::bigint >= 0",
+                 WHERE tenant_id = $1 AND namespace_id = $2 AND pool = $3 AND permit_scope = $7 \
+                   AND group_name = $4 AND key_digest = $5 AND $6::bigint >= 0 AND $8::timestamptz IS NOT NULL",
             ),
-            // a step's grant counts while it is unleased and for its window after its lease (data-model, Rate limits)
+            // a step's grant counts while it is unleased and for its window after its lease; a run's for its window after
+            // its grant, which is its lease instant (data-model, Rate limits)
             GateKind::RateLimit => sqlx::query_as::<_, (i64, i64)>(
                 "SELECT (SELECT count(*) FROM rate_limit_grants g \
                           WHERE g.tenant_id = w.tenant_id AND g.namespace_id = w.namespace_id AND g.pool = w.pool \
                             AND g.limit_scope = w.limit_scope AND g.group_name = w.group_name \
                             AND g.key_digest = w.key_digest \
                             AND (g.leased_at IS NULL \
-                                 OR g.leased_at > clock_timestamp() - make_interval(secs => $6::bigint / 1000.0))), \
+                                 OR g.leased_at > $8 - make_interval(secs => $6::bigint / 1000.0))), \
                         w.waiters::bigint \
                    FROM rate_limit_windows w \
-                  WHERE w.tenant_id = $1 AND w.namespace_id = $2 AND w.pool = $3 AND w.limit_scope = 'STEP' \
+                  WHERE w.tenant_id = $1 AND w.namespace_id = $2 AND w.pool = $3 AND w.limit_scope = $7 \
                     AND w.group_name = $4 AND w.key_digest = $5",
             ),
         };
@@ -480,6 +679,8 @@ impl PgRunTx {
             .bind(gate.group.as_str())
             .bind(filed.digest.as_slice())
             .bind(period_ms(gate))
+            .bind(gate.level().as_str())
+            .bind(now)
             .fetch_one(&mut *self.tx)
             .await
             .map_err(store_error)?;
@@ -490,46 +691,49 @@ impl PgRunTx {
 
     async fn grant(
         &mut self,
-        node: &NodeId,
-        attempt: u32,
         gate: &Pending,
         filed: &FiledKey,
         now: OffsetDateTime,
+        waiting: bool,
     ) -> Result<GateChange, StoreError> {
-        let attempt_column = i32::try_from(attempt).map_err(|_| corrupt("attempt"))?;
+        let attempt_column = i32::try_from(gate.attempt).map_err(|_| corrupt("attempt"))?;
         let limit = i32::try_from(gate.limit).map_err(|_| corrupt("declared limit"))?;
         match (gate.kind, gate.per) {
             (GateKind::Concurrency, _) => {
                 sqlx::query(
                     "INSERT INTO concurrency_holders (tenant_id, namespace_id, run_id, holder_scope, node, attempt, pool, \
                      group_name, key_digest, declared_limit, acquired_at) \
-                     VALUES ($1, $2, $3, 'STEP', $4, $5, $6, $7, $8, $9, $10)",
+                     VALUES ($1, $2, $3, $11, $4, $5, $6, $7, $8, $9, $10)",
                 )
                 .bind(self.info.tenant_id.as_uuid())
                 .bind(self.info.namespace_id.as_uuid())
                 .bind(self.info.run_id.as_uuid())
-                .bind(node.as_str())
+                .bind(gate.node_column())
                 .bind(attempt_column)
                 .bind(GatePool::Ordinary.as_str())
                 .bind(gate.group.as_str())
                 .bind(filed.digest.as_slice())
                 .bind(limit)
                 .bind(now)
+                .bind(gate.level().as_str())
                 .execute(&mut *self.tx)
                 .await
                 .map_err(store_error)?;
                 Ok(GateChange::ConcurrencyAcquired)
             }
             (GateKind::RateLimit, Some(per)) => {
+                // a run's slot counts from its grant, which is its lease instant; a step's from its attempt's lease, which
+                // the lease pass records (data-model, `rate_limit_grants`; T022-072, T022-074)
                 sqlx::query(
                     "INSERT INTO rate_limit_grants (tenant_id, namespace_id, run_id, node, attempt, pool, limit_scope, \
                      group_name, key_digest, declared_limit, period_ms, granted_at, leased_at, shard) \
-                     VALUES ($1, $2, $3, $4, $5, $6, 'STEP', $7, $8, $9, $10, $11, NULL, run_shard($3))",
+                     VALUES ($1, $2, $3, $4, $5, $6, $12, $7, $8, $9, $10, $11, \
+                             CASE WHEN $12 = 'RUN' THEN $11 END, run_shard($3))",
                 )
                 .bind(self.info.tenant_id.as_uuid())
                 .bind(self.info.namespace_id.as_uuid())
                 .bind(self.info.run_id.as_uuid())
-                .bind(node.as_str())
+                .bind(gate.node_column())
                 .bind(attempt_column)
                 .bind(GatePool::Ordinary.as_str())
                 .bind(gate.group.as_str())
@@ -537,9 +741,26 @@ impl PgRunTx {
                 .bind(limit)
                 .bind(i32::try_from(period_ms(gate)).map_err(|_| corrupt("period"))?)
                 .bind(now)
+                .bind(gate.level().as_str())
                 .execute(&mut *self.tx)
                 .await
                 .map_err(store_error)?;
+                // a key with waiters that this grant fills must wake when the grant may stop counting (correctness
+                // review, Major 4, of 2026-11-20): only then, so the uncontended path costs nothing more
+                if waiting {
+                    window_due_after_grant(
+                        &mut self.tx,
+                        (
+                            self.info.tenant_id,
+                            self.info.namespace_id,
+                            gate.level(),
+                            &gate.group,
+                        ),
+                        &filed.digest,
+                        now,
+                    )
+                    .await?;
+                }
                 Ok(GateChange::RateGranted {
                     limit: gate.limit,
                     per,
@@ -553,28 +774,28 @@ impl PgRunTx {
 
     async fn queue(
         &mut self,
-        node: &NodeId,
-        attempt: u32,
         gate: &Pending,
         filed: &FiledKey,
         now: OffsetDateTime,
         deadline: OffsetDateTime,
     ) -> Result<GateChange, StoreError> {
-        let attempt_column = i32::try_from(attempt).map_err(|_| corrupt("attempt"))?;
+        let attempt_column = i32::try_from(gate.attempt).map_err(|_| corrupt("attempt"))?;
         let limit = i32::try_from(gate.limit).map_err(|_| corrupt("declared limit"))?;
         let deadline_us = unix_micros(deadline)?;
+        let level = gate.level();
         match (gate.kind, gate.per) {
             (GateKind::Concurrency, _) => {
-                self.key_is_due(KeyTable::Semaphores, gate, filed).await?;
+                self.key_due(KeyTable::Semaphores, level, &gate.group, &filed.digest)
+                    .await?;
                 sqlx::query(
                     "INSERT INTO concurrency_waiters (tenant_id, namespace_id, run_id, node, permit_scope, attempt, pool, \
                      group_name, key_digest, declared_limit, enqueued_at, deadline_at, shard) \
-                     VALUES ($1, $2, $3, $4, 'STEP', $5, $6, $7, $8, $9, $10, $11, run_shard($3))",
+                     VALUES ($1, $2, $3, $4, $12, $5, $6, $7, $8, $9, $10, $11, run_shard($3))",
                 )
                 .bind(self.info.tenant_id.as_uuid())
                 .bind(self.info.namespace_id.as_uuid())
                 .bind(self.info.run_id.as_uuid())
-                .bind(node.as_str())
+                .bind(gate.node_column())
                 .bind(attempt_column)
                 .bind(GatePool::Ordinary.as_str())
                 .bind(gate.group.as_str())
@@ -582,6 +803,7 @@ impl PgRunTx {
                 .bind(limit)
                 .bind(now)
                 .bind(deadline)
+                .bind(level.as_str())
                 .execute(&mut *self.tx)
                 .await
                 .map_err(store_error)?;
@@ -590,16 +812,17 @@ impl PgRunTx {
                 })
             }
             (GateKind::RateLimit, Some(per)) => {
-                self.key_is_due(KeyTable::Windows, gate, filed).await?;
+                self.key_due(KeyTable::Windows, level, &gate.group, &filed.digest)
+                    .await?;
                 sqlx::query(
                     "INSERT INTO rate_limit_waiters (tenant_id, namespace_id, run_id, node, attempt, pool, limit_scope, \
                      group_name, key_digest, declared_limit, period_ms, enqueued_at, deadline_at, shard) \
-                     VALUES ($1, $2, $3, $4, $5, $6, 'STEP', $7, $8, $9, $10, $11, $12, run_shard($3))",
+                     VALUES ($1, $2, $3, $4, $5, $6, $13, $7, $8, $9, $10, $11, $12, run_shard($3))",
                 )
                 .bind(self.info.tenant_id.as_uuid())
                 .bind(self.info.namespace_id.as_uuid())
                 .bind(self.info.run_id.as_uuid())
-                .bind(node.as_str())
+                .bind(gate.node_column())
                 .bind(attempt_column)
                 .bind(GatePool::Ordinary.as_str())
                 .bind(gate.group.as_str())
@@ -608,6 +831,7 @@ impl PgRunTx {
                 .bind(i32::try_from(period_ms(gate)).map_err(|_| corrupt("period"))?)
                 .bind(now)
                 .bind(deadline)
+                .bind(level.as_str())
                 .execute(&mut *self.tx)
                 .await
                 .map_err(store_error)?;
@@ -844,18 +1068,21 @@ impl PgRunTx {
 }
 
 impl PgRunTx {
-    /// Decides the gates of a new run's start in its admission transaction (T10 of the plan, T022-022; FR-022-018,
-    /// FR-022-021): after the run's row (slot 6 of ADR-0050's merged order) the key's semaphore is filed and locked
-    /// (slot 7), then counted; the run holds a permit when the key's holders plus its waiters are below the acquirer's
-    /// limit (a new arrival never takes a permit ahead of a queued run, D022-021), else it waits in the key's queue until
-    /// the earlier of its declared queue timeout and the namespace's. Nothing is written when a ceiling refuses: a key
-    /// beyond the namespace's live keys or a zero effective limit (`FLOW_CONTROL_LIMIT`), a full namespace
-    /// (`queued_runs`, `FLOW_CONTROL_LIMIT`) or a full key (`CONCURRENCY_QUEUE_FULL`, counted under the key's lock: exact).
-    /// The two counts of the namespace are read without a namespace lock: admissions that each create a key at the same
-    /// moment can pass the live keys by at most the keys the others create (G022-002, OD-2026-11-19-4, OD-2026-11-20-3).
-    /// `queued_runs` is exact: every admission holds the namespace's active-run quota lock (`ensure_room_for_run`) from
-    /// before its runs row to its commit, and this count is a fresh statement after it (READ COMMITTED), so the admissions
-    /// that could queue in a namespace are decided one after the other (D022-051, G022-011).
+    /// Decides the gates of a new run's start in its admission transaction (T10 and transaction T19 of the plan, T022-022,
+    /// T022-072; FR-022-018, FR-022-021, FR-022-041, FR-022-044): after the run's row (slot 6 of ADR-0050's merged order)
+    /// the start's semaphore (slot 7) and then its window are filed and locked, then counted, by the one decision of
+    /// both levels ([`Self::decide_filed`], G022-012): the run is granted every gate it declares when each key's holders
+    /// or counted grants plus its waiters are below the acquirer's limit (a new arrival never takes a permit or a slot
+    /// ahead of a queued run, D022-021), else it waits in every key's queue until the earliest of its effective queue
+    /// timeouts (D022-006). A run's slot counts from its grant (its lease instant). Nothing is written when a ceiling
+    /// refuses: a key beyond the namespace's live keys of its kind or a zero effective limit or timeout
+    /// (`FLOW_CONTROL_LIMIT`), a full namespace (`queued_runs`) or a full key, rate first (`RATE_LIMIT_QUEUE_FULL` for a
+    /// start that declares a rate limit, else `FLOW_CONTROL_LIMIT` and `CONCURRENCY_QUEUE_FULL`). The live keys are read
+    /// without a namespace lock: admissions that each create a key at the same moment can pass them by at most the keys
+    /// the others create (G022-002, OD-2026-11-19-4, OD-2026-11-20-3). `queued_runs` is exact: every admission holds the
+    /// namespace's active-run quota lock (`ensure_room_for_run`) from before its runs row to its commit, and the count is a
+    /// fresh statement after it (READ COMMITTED), so the admissions that could queue in a namespace are decided one after
+    /// the other (D022-051, G022-011).
     ///
     /// The same decision is taken later for a delayed start at its release ([`StartCause::Release`]: the namespace's
     /// admission lock is taken first, as an admission holds it, so `queued_runs` stays exact; a ceiling's refusal is
@@ -863,33 +1090,49 @@ impl PgRunTx {
     /// fresh permit or `CONCURRENCY_PERMIT_UNAVAILABLE`, counted `refused_reset`; never a wait) (D022-052, D022-053).
     ///
     /// # Errors
-    /// The refusals above; `BINARY_CAPABILITY_MISSING` without a digest key ring, for a start that declares a rate limit
-    /// (its admission is T022-072) and for a definition with a `forEach`, `while` or `repeatUntil` node (G1197), whatever
-    /// asks; [`StoreError::Unavailable`] when no digest key version is active.
+    /// The refusals above; `BINARY_CAPABILITY_MISSING` without a digest key ring, for a definition with a `forEach`,
+    /// `while` or `repeatUntil` node (G1197) whatever asks, and for a reset of a start that declares a rate limit
+    /// (`RATE_LIMIT_SLOT_UNAVAILABLE` and the reset rules of the `rate_limit.*` events are T022-086, G022-016);
+    /// [`StoreError::Unavailable`] when no digest key version is active.
     pub(super) async fn decide_start_gates(
         &mut self,
         keys: &sagat_application::flow_control::RunGateKeys,
     ) -> Result<Vec<GateEvent>, StoreError> {
         let Some(ring) = self.flow_control_keys.clone() else {
+            // an admission and a reset (whose run is created by `PgRunStore::create`) reach this only past the admission
+            // point, which refuses a gate its process does not serve (`flow_control_admission`): reaching it without the
+            // ring is a defect, not a refusal, so the admission point's guard is proved on its own (the mutation of
+            // 2026-11-20 that dropped it survived behind this one). A release has no admission point: this is its guard.
+            if keys.cause != StartCause::Release {
+                return Err(StoreError::Internal {
+                    detail: "an admission reached a start gate its process does not serve".into(),
+                });
+            }
             return Err(StoreError::FlowControl(
                 FlowControlRefusal::BinaryCapabilityMissing,
             ));
         };
         let flow = self.def.run_flow_control().clone();
-        // fail closed for every cause, a reset or a release included (reviews of 2026-11-20, security minor 4): a start's
-        // rate limit (T022-072), and collections and loops, whose finish paths would never give the permit back (G1197)
+        // fail closed for every cause, a reset or a release included (reviews of 2026-11-20, security minor 4):
+        // collections and loops, whose finish paths would never give the permit back (G1197); a reset of a rate-limited
+        // start until its refusal and the reset rules of its events are built (T022-086, G022-016)
         let kinds = self.def.projected_state();
-        if flow.rate_limit().is_some() || kinds.collections || kinds.loops {
+        if kinds.collections
+            || kinds.loops
+            || (keys.cause == StartCause::Reset && flow.rate_limit().is_some())
+        {
             return Err(StoreError::FlowControl(
                 FlowControlRefusal::BinaryCapabilityMissing,
             ));
         }
-        let (Some(policy), Some(canonical)) = (flow.concurrency(), keys.concurrency.as_deref())
-        else {
+        if flow.concurrency().is_some() != keys.concurrency.is_some()
+            || flow.rate_limit().is_some() != keys.rate.is_some()
+            || !flow.is_gated()
+        {
             return Err(StoreError::Internal {
-                detail: "a gated start came without its key".into(),
+                detail: "a gated start came without its keys".into(),
             });
-        };
+        }
         let (tenant, namespace) = (self.info.tenant_id, self.info.namespace_id);
         // the release of a start delay may queue a run outside its creation: it takes the namespace's admission lock
         // first, as every admission holds it from before its runs row, so that `queued_runs` stays exact (D022-051,
@@ -899,209 +1142,86 @@ impl PgRunTx {
         }
         let versions = key_versions(&mut self.tx).await?;
         let ceilings = crate::quotas::step_gate_ceilings(&mut self.tx, tenant, namespace).await?;
-        let limit = ceilings.concurrency_limit(policy);
-        let timeout = ceilings.queue_timeout(policy.queue_timeout());
-        if limit == 0 {
-            return Err(StoreError::FlowControl(FlowControlRefusal::Limit {
-                limit: "concurrency_limit",
-            }));
-        }
-        if timeout.is_zero() {
-            return Err(StoreError::FlowControl(FlowControlRefusal::Limit {
-                limit: "flow_control_queue_timeout_ms",
-            }));
-        }
-        let candidates = ring
-            .candidates(
-                versions,
-                KeyPurpose::Concurrency,
-                tenant,
-                namespace,
-                canonical,
-            )
-            .map_err(key_refusal)?;
-        let group = policy.group().resolve(self.def.name(), None);
-        let active = *candidates.active.as_bytes();
-        let retiring = candidates.retiring.as_ref().map(|d| d.as_bytes().to_vec());
-        let key = KeyToFile {
-            tenant,
-            namespace,
-            pool: GatePool::Ordinary,
-            level: GateLevel::Run,
-            shard: key_shard(GateLevel::Run, &group, &active),
-            group: group.clone(),
-            candidates,
-        };
-        // a key the admission would create meets the namespace's live-keys ceiling (FR-022-054, G1199), counted on the
-        // versions in force only (ADR-0093 decision 5)
-        let exists: bool = sqlx::query_scalar(
-            "SELECT EXISTS (SELECT 1 FROM concurrency_semaphores WHERE tenant_id = $1 AND namespace_id = $2 \
-              AND pool = 'ORDINARY' AND permit_scope = 'RUN' AND group_name = $3 \
-              AND (key_digest = $4 OR key_digest = $5))",
-        )
-        .bind(tenant.as_uuid())
-        .bind(namespace.as_uuid())
-        .bind(group.as_str())
-        .bind(active.as_slice())
-        .bind(retiring.as_deref())
-        .fetch_one(&mut *self.tx)
-        .await
-        .map_err(store_error)?;
-        // a refused admission rolls back, so it is counted here; a refused release is deferred and counted by its pass,
-        // once per deferral (reviews of 2026-11-20, correctness M2)
         let cause = keys.cause;
-        let refusal = |limit| start_refused(limit, cause);
-        if !exists {
-            let in_force: Vec<i16> = std::iter::once(versions.active)
-                .chain(versions.retiring)
-                .map(|v| i16::try_from(v).map_err(|_| corrupt("digest key version")))
-                .collect::<Result<_, _>>()?;
-            let live: i64 = sqlx::query_scalar(
-                "SELECT count(*) FROM concurrency_semaphores WHERE tenant_id = $1 AND namespace_id = $2 \
-                 AND key_version = ANY($3)",
-            )
-            .bind(tenant.as_uuid())
-            .bind(namespace.as_uuid())
-            .bind(&in_force)
-            .fetch_one(&mut *self.tx)
-            .await
-            .map_err(store_error)?;
-            ceilings
-                .admits_key(u64::try_from(live).unwrap_or(u64::MAX))
-                .map_err(refusal)?;
-        }
-        let filed = file_keys_with(&mut self.tx, KeyTable::Semaphores, &[key], &[])
-            .await?
-            .into_iter()
-            .next()
-            .ok_or_else(|| corrupt("a start key that was not filed"))?;
-        // the decision's instant is the database clock after the key's lock (D022-027)
-        let now: OffsetDateTime = sqlx::query_scalar("SELECT clock_timestamp()")
-            .fetch_one(&mut *self.tx)
-            .await
-            .map_err(store_error)?;
-        let (holders, waiters): (i64, i64) = sqlx::query_as(
-            "SELECT holders::bigint, waiters::bigint FROM concurrency_semaphores \
-              WHERE tenant_id = $1 AND namespace_id = $2 AND pool = 'ORDINARY' AND permit_scope = 'RUN' \
-                AND group_name = $3 AND key_digest = $4",
-        )
-        .bind(tenant.as_uuid())
-        .bind(namespace.as_uuid())
-        .bind(group.as_str())
-        .bind(filed.digest.as_slice())
-        .fetch_one(&mut *self.tx)
-        .await
-        .map_err(store_error)?;
-        let declared_limit = i32::try_from(limit).map_err(|_| corrupt("declared limit"))?;
-        let admits = holders + waiters < i64::from(limit);
-        // a reset takes a fresh permit or is refused; it never waits (018's plan, row 17; FR-022-018). The reservation rule
-        // holds for it too: a free permit with a run waiting for it is the waiter's (D022-021)
-        if !admits && keys.cause == StartCause::Reset {
-            sagat_telemetry::flow_control::record_concurrency(
-                sagat_telemetry::flow_control::FlowControlScope::Run,
-                sagat_telemetry::flow_control::ConcurrencyOutcome::RefusedReset,
-            );
-            return Err(StoreError::FlowControl(
-                FlowControlRefusal::PermitUnavailable,
-            ));
-        }
-        let change = if admits {
-            sqlx::query(
-                "INSERT INTO concurrency_holders (tenant_id, namespace_id, run_id, holder_scope, node, attempt, pool, \
-                 group_name, key_digest, declared_limit, acquired_at) \
-                 VALUES ($1, $2, $3, 'RUN', '', 0, 'ORDINARY', $4, $5, $6, $7)",
-            )
-            .bind(tenant.as_uuid())
-            .bind(namespace.as_uuid())
-            .bind(self.info.run_id.as_uuid())
-            .bind(group.as_str())
-            .bind(filed.digest.as_slice())
-            .bind(declared_limit)
-            .bind(now)
-            .execute(&mut *self.tx)
-            .await
-            .map_err(store_error)?;
-            GateChange::ConcurrencyAcquired
-        } else {
-            // a queued run is an active run with a ceiling of its own (D1182): the namespace's, then the key's. Exact: only an
-            // admission adds a run waiter, and every admission holds the namespace's active-run quota lock to its commit
-            // (D022-051)
-            let queued_runs: i64 = sqlx::query_scalar(crate::flow_control::QUEUED_RUNS_SQL)
-                .bind(tenant.as_uuid())
-                .bind(namespace.as_uuid())
-                .fetch_one(&mut *self.tx)
-                .await
-                .map_err(store_error)?;
-            ceilings
-                .admits_waiter(
-                    u64::try_from(queued_runs).unwrap_or(u64::MAX),
-                    u64::try_from(waiters).unwrap_or(u64::MAX),
-                    false,
-                )
-                .map_err(refusal)?;
-            let deadline = now
-                .checked_add(
-                    time::Duration::try_from(timeout).map_err(|_| corrupt("queue timeout"))?,
-                )
-                .ok_or_else(|| corrupt("queue deadline"))?;
-            self.key_due(KeyTable::Semaphores, GateLevel::Run, &group, &filed.digest)
-                .await?;
-            sqlx::query(
-                "INSERT INTO concurrency_waiters (tenant_id, namespace_id, run_id, node, permit_scope, attempt, pool, \
-                 group_name, key_digest, declared_limit, enqueued_at, deadline_at, shard) \
-                 VALUES ($1, $2, $3, '', 'RUN', 0, 'ORDINARY', $4, $5, $6, $7, $8, run_shard($3))",
-            )
-            .bind(tenant.as_uuid())
-            .bind(namespace.as_uuid())
-            .bind(self.info.run_id.as_uuid())
-            .bind(group.as_str())
-            .bind(filed.digest.as_slice())
-            .bind(declared_limit)
-            .bind(now)
-            .bind(deadline)
-            .execute(&mut *self.tx)
-            .await
-            .map_err(store_error)?;
-            GateChange::ConcurrencyQueued {
-                queue_deadline_us: unix_micros(deadline)?,
+        let declared = sagat_domain::execution::DeclaredGates::of(&flow)
+            .ok_or_else(|| corrupt("a gated start that declares no gate"))?;
+        let (mut semaphores, mut windows, mut pending) = (Vec::new(), Vec::new(), Vec::new());
+        for (kind, key, gate) in self.gates_of(
+            &ring,
+            versions,
+            &ceilings,
+            &flow,
+            None,
+            0,
+            keys.concurrency.as_deref(),
+            keys.rate.as_deref(),
+        )? {
+            // a zero effective limit or timeout refuses before anything is filed (FR-022-034: zero is not unlimited)
+            if gate.limit == 0 {
+                return Err(StoreError::FlowControl(FlowControlRefusal::Limit {
+                    limit: match gate.per {
+                        None => "concurrency_limit",
+                        Some(sagat_domain::workflow::RatePeriod::Second) => "rate_limit_per_second",
+                        Some(sagat_domain::workflow::RatePeriod::Minute) => "rate_limit_per_minute",
+                        Some(sagat_domain::workflow::RatePeriod::Hour) => "rate_limit_per_hour",
+                    },
+                }));
             }
-        };
-        self.run_gate_outcomes
-            .push((GateKind::Concurrency, GateOutcome::of(change)));
-        // the span names the group, never the key (FR-022-033)
-        tracing::info_span!(
-            sagat_telemetry::FlowControlSpan::ConcurrencyAcquire.as_str(),
-            "sagat.concurrency.group" = group.as_str(),
-            "sagat.outcome" = if admits { "granted" } else { "queued" },
+            if gate.timeout.is_zero() {
+                return Err(StoreError::FlowControl(FlowControlRefusal::Limit {
+                    limit: "flow_control_queue_timeout_ms",
+                }));
+            }
+            let index = match kind {
+                GateKind::Concurrency => {
+                    semaphores.push(key);
+                    semaphores.len() - 1
+                }
+                GateKind::RateLimit => {
+                    windows.push(key);
+                    windows.len() - 1
+                }
+            };
+            pending.push((index, gate));
+        }
+        // a key the start would create meets the namespace's live-keys ceiling of its kind (FR-022-054, G1199, T022-077),
+        // counted on the versions in force only (ADR-0093 decision 5)
+        for (table, keys_of) in [
+            (KeyTable::Semaphores, &semaphores),
+            (KeyTable::Windows, &windows),
+        ] {
+            if keys_of.is_empty()
+                || !self
+                    .existing_keys(table, GateLevel::Run, keys_of)
+                    .await?
+                    .is_empty()
+            {
+                continue;
+            }
+            let live = self.live_keys(table, versions).await?;
+            match table {
+                KeyTable::Semaphores => ceilings.admits_key(live),
+                KeyTable::Windows => ceilings.admits_rate_key(live),
+            }
+            .map_err(|limit| start_refused(limit, declared, None, cause))?;
+        }
+        let filed_semaphores =
+            file_keys_with(&mut self.tx, KeyTable::Semaphores, &semaphores, &[]).await?;
+        let filed_windows = file_keys_with(&mut self.tx, KeyTable::Windows, &windows, &[]).await?;
+        self.decide_filed(
+            pending,
+            &filed_semaphores,
+            &filed_windows,
+            Some(StartRules { cause, ceilings }),
         )
-        .in_scope(|| ());
-        Ok(vec![GateEvent {
-            target: GateTarget::Run,
-            gate: GateRef {
-                pool: GatePool::Ordinary,
-                group,
-                key_label: KeyLabel::of_digest(&filed.digest),
-            },
-            change,
-        }])
+        .await
     }
 }
 
 impl PgRunTx {
-    /// A key gains a waiter: unless it is due already, it is due now (correctness review M1, 2026-11-19). The readiness
-    /// gate counts every waiter of the key and the grant routine only the eligible ones, so a new waiter behind ineligible
+    /// A key gains a waiter: unless it is due already, it is due now (correctness review Major 1, 2026-11-19). The gate
+    /// counts every waiter of the key and the grant routine only the eligible ones, so a new waiter behind ineligible
     /// ones may be grantable at once; the next pass decides, and rests the key if not (early, never late).
-    async fn key_is_due(
-        &mut self,
-        table: KeyTable,
-        gate: &Pending,
-        filed: &FiledKey,
-    ) -> Result<(), StoreError> {
-        self.key_due(table, GateLevel::Step, &gate.group, &filed.digest)
-            .await
-    }
-
-    /// [`Self::key_is_due`] for a key of either level.
     async fn key_due(
         &mut self,
         table: KeyTable,
@@ -1309,6 +1429,45 @@ pub(super) fn gate_waiting_kind(
     }
 }
 
+/// A rate grant was added to a window that has waiters: the window's hint moves no later than `now` plus the shortest
+/// window its waiters count over (an unleased grant frees by a return, which sets the hint, or by a lease from now on;
+/// a run's grant counts from `now`), so a waiter refused by this grant's slot is visited when it may first count no more
+/// (correctness review Major 4 of 2026-11-20; plan "The grant pass, by key"). The window row is the caller's, locked.
+pub(super) async fn window_due_after_grant(
+    tx: &mut sqlx::PgConnection,
+    (tenant, namespace, level, group): (
+        sagat_domain::identity::TenantId,
+        sagat_domain::identity::NamespaceId,
+        GateLevel,
+        &sagat_domain::workflow::ResolvedGroup,
+    ),
+    digest: &[u8; 32],
+    now: OffsetDateTime,
+) -> Result<(), StoreError> {
+    sqlx::query(
+        "UPDATE rate_limit_windows w \
+            SET next_eligible_at = least(coalesce(w.next_eligible_at, 'infinity'::timestamptz), \
+                    $6 + make_interval(secs => (SELECT min(x.period_ms) FROM rate_limit_waiters x \
+                                                 WHERE x.tenant_id = w.tenant_id AND x.namespace_id = w.namespace_id \
+                                                   AND x.pool = w.pool AND x.limit_scope = w.limit_scope \
+                                                   AND x.group_name = w.group_name AND x.key_digest = w.key_digest) \
+                                        / 1000.0)), \
+                updated_at = clock_timestamp() \
+          WHERE w.tenant_id = $1 AND w.namespace_id = $2 AND w.pool = 'ORDINARY' AND w.limit_scope = $3 \
+            AND w.group_name = $4 AND w.key_digest = $5 AND w.waiters > 0",
+    )
+    .bind(tenant.as_uuid())
+    .bind(namespace.as_uuid())
+    .bind(level.as_str())
+    .bind(group.as_str())
+    .bind(digest.as_slice())
+    .bind(now)
+    .execute(&mut *tx)
+    .await
+    .map_err(store_error)?;
+    Ok(())
+}
+
 fn key_refusal(error: KeyedDigestError) -> StoreError {
     match error {
         // the application bounds a key before it asks; a longer one here is a defect, not the author's
@@ -1390,17 +1549,38 @@ impl GateOutcome {
 /// back and nothing of it is counted at commit (architecture review M3 of 2026-11-20).
 pub(super) fn start_refused(
     limit: sagat_domain::workflow::FlowControlLimit,
+    declared: sagat_domain::execution::DeclaredGates,
+    key_of: Option<GateKind>,
     cause: StartCause,
 ) -> StoreError {
     use sagat_domain::workflow::FlowControlLimit;
-    use sagat_telemetry::flow_control::{ConcurrencyOutcome, FlowControlScope, record_concurrency};
+    use sagat_telemetry::flow_control::{
+        ConcurrencyOutcome, FlowControlScope, RateLimitOutcome, record_concurrency,
+        record_rate_limit,
+    };
     if cause != StartCause::Release {
-        record_concurrency(FlowControlScope::Run, ConcurrencyOutcome::RefusedFull);
+        // each family counts the refusal of a start that declares its gate
+        if declared.concurrency {
+            record_concurrency(FlowControlScope::Run, ConcurrencyOutcome::RefusedFull);
+        }
+        if declared.rate {
+            record_rate_limit(FlowControlScope::Run, RateLimitOutcome::RefusedFull);
+        }
     }
+    // a full key is named by its own kind (`key_of`, the gate whose key's buffer is full; correctness review minor 1 and
+    // architecture review Major 6 of 2026-11-20); a full namespace is `RATE_LIMIT_QUEUE_FULL` for a start that declares a rate
+    // limit, rate first (FR-022-052, `contracts/errors.md` US07)
     StoreError::FlowControl(match limit {
+        FlowControlLimit::KeyWaiters if key_of == Some(GateKind::RateLimit) => {
+            FlowControlRefusal::RateLimitQueueFull
+        }
+        FlowControlLimit::QueuedRuns if declared.rate => FlowControlRefusal::RateLimitQueueFull,
         FlowControlLimit::KeyWaiters => FlowControlRefusal::ConcurrencyQueueFull,
         FlowControlLimit::QueuedRuns => FlowControlRefusal::Limit {
             limit: "queued_runs",
+        },
+        FlowControlLimit::RateLiveKeys => FlowControlRefusal::Limit {
+            limit: "rate_limit_live_keys",
         },
         FlowControlLimit::LiveKeys | FlowControlLimit::NodeDeclarations { .. } => {
             FlowControlRefusal::Limit {
@@ -1452,7 +1632,101 @@ pub(super) fn record_gate_outcomes(
 #[cfg(test)]
 mod tests {
     use super::{GateOutcome, record_gate_outcomes, start_refused};
-    use sagat_domain::execution::StartCause;
+    use sagat_domain::execution::{DeclaredGates, StartCause};
+
+    const CONCURRENCY: DeclaredGates = DeclaredGates {
+        concurrency: true,
+        rate: false,
+    };
+
+    /// A start that declares a rate limit is refused rate first (FR-022-052, `contracts/errors.md` US07): its key's full
+    /// buffer and the namespace's full `queued_runs` are `RATE_LIMIT_QUEUE_FULL`, its live keys `FLOW_CONTROL_LIMIT`
+    /// naming `rate_limit_live_keys`; each declared family counts the refusal once.
+    #[test]
+    fn a_refused_rate_limited_start_is_refused_rate_first_and_counted_by_each_family() {
+        use sagat_application::error::StoreError;
+        use sagat_application::flow_control::FlowControlRefusal;
+        use sagat_domain::workflow::FlowControlLimit;
+        let both = DeclaredGates {
+            concurrency: true,
+            rate: true,
+        };
+        let rate = DeclaredGates {
+            concurrency: false,
+            rate: true,
+        };
+        let (telemetry, recorder) =
+            sagat_telemetry::Metrics::detached(std::time::Duration::from_secs(60));
+        let reasons = metrics::with_local_recorder(&recorder, || {
+            [
+                (
+                    FlowControlLimit::KeyWaiters,
+                    rate,
+                    Some(GateKind::RateLimit),
+                ),
+                (
+                    FlowControlLimit::QueuedRuns,
+                    rate,
+                    Some(GateKind::RateLimit),
+                ),
+                (
+                    FlowControlLimit::KeyWaiters,
+                    both,
+                    Some(GateKind::RateLimit),
+                ),
+                (FlowControlLimit::RateLiveKeys, rate, None),
+                (FlowControlLimit::LiveKeys, both, None),
+                // a dual-gated start whose concurrency key is full names that key, not the rate buffer
+                (
+                    FlowControlLimit::KeyWaiters,
+                    both,
+                    Some(GateKind::Concurrency),
+                ),
+                // a full namespace is the rate refusal of a start that declares a rate limit, whichever key counted it
+                (
+                    FlowControlLimit::QueuedRuns,
+                    both,
+                    Some(GateKind::Concurrency),
+                ),
+            ]
+            .map(|(limit, declared, key_of)| {
+                match start_refused(limit, declared, key_of, StartCause::Admission) {
+                    StoreError::FlowControl(reason) => reason,
+                    other => panic!("{other:?}"),
+                }
+            })
+        });
+        assert_eq!(
+            reasons,
+            [
+                FlowControlRefusal::RateLimitQueueFull,
+                FlowControlRefusal::RateLimitQueueFull,
+                FlowControlRefusal::RateLimitQueueFull,
+                FlowControlRefusal::Limit {
+                    limit: "rate_limit_live_keys"
+                },
+                FlowControlRefusal::Limit {
+                    limit: "concurrency_live_keys"
+                },
+                FlowControlRefusal::ConcurrencyQueueFull,
+                FlowControlRefusal::RateLimitQueueFull,
+            ]
+        );
+        let rendered = telemetry.render();
+        let counted = |family: &str, n: &str| {
+            rendered.lines().any(|line| {
+                line.starts_with(family)
+                    && line.contains("scope=\"run\"")
+                    && line.contains("outcome=\"refused_full\"")
+                    && line.ends_with(n)
+            })
+        };
+        assert!(counted("rate_limit_decisions_total", " 7"), "{rendered}");
+        assert!(
+            counted("concurrency_acquisitions_total", " 4"),
+            "{rendered}"
+        );
+    }
 
     /// A refused start is counted at run scope as `refused_full` and maps each ceiling to its typed refusal.
     #[test]
@@ -1467,11 +1741,23 @@ mod tests {
                 FlowControlLimit::QueuedRuns,
                 FlowControlLimit::LiveKeys,
             ]
-            .map(|limit| start_refused(limit, StartCause::Admission))
+            .map(|limit| {
+                start_refused(
+                    limit,
+                    CONCURRENCY,
+                    Some(GateKind::Concurrency),
+                    StartCause::Admission,
+                )
+            })
         });
         // a release's refusal is deferred and counted by its pass (reviews of 2026-11-20, correctness M2): not here
         let deferred = metrics::with_local_recorder(&recorder, || {
-            start_refused(FlowControlLimit::KeyWaiters, StartCause::Release)
+            start_refused(
+                FlowControlLimit::KeyWaiters,
+                CONCURRENCY,
+                Some(GateKind::Concurrency),
+                StartCause::Release,
+            )
         });
         assert!(matches!(
             deferred,

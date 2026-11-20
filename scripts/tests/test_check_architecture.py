@@ -962,21 +962,26 @@ class EveryRunIsCreatedWithACheckedInput(unittest.TestCase):
         self.assertEqual(code, 1, out)
         self.assertIn("feature `testing` enables", out)
 
-    def test_the_rate_gates_feature_of_the_postgres_adapter_belongs_in_dev_dependencies_only(self):
-        # feature 022 (D022-057): the test-only service of the step-level rate gate never reaches a production build
-        def packages(dependency):
-            postgres = pkg("sagat-infra-postgres", "crates/infra-postgres", [])
-            user = pkg("sagat-tests", "tests", [])
-            user["dependencies"] = [dependency]
-            return [postgres, user]
 
-        dev = {"name": "sagat-infra-postgres", "kind": "dev", "features": ["rate-gates-for-tests"]}
-        code, out = creator_check(creator_tree(), packages(dev))
-        self.assertNotIn("rate-gates-for-tests", out)
-        normal = {"name": "sagat-infra-postgres", "kind": None, "features": ["rate-gates-for-tests"]}
-        code, out = creator_check(creator_tree(), packages(normal))
+class ThePurgeAsOfAChosenInstantIsTheTestsOnly(unittest.TestCase):
+    """Feature 022 (D022-064): no production source calls the purge of rate grants with an instant of its choosing."""
+
+    HOME = (
+        "impl S { pub async fn purge_rate_grants_as_of(&self, now: T) {} "
+        "async fn purge_rate_grants(&self) { self.purge_rate_grants_as_of(now).await; } }\n"
+    )
+
+    def test_its_definition_and_the_pass_are_allowed(self):
+        code, out = creator_check(creator_tree(**{"crates/infra-postgres/src/maintenance.rs": self.HOME}))
+        self.assertEqual(code, 0, out)
+
+    def test_a_production_call_elsewhere_is_an_error(self):
+        code, out = creator_check(creator_tree(**{
+            "crates/infra-postgres/src/maintenance.rs": self.HOME,
+            "crates/scheduler/src/passes.rs": "fn f(s: S) { s.store.purge_rate_grants_as_of(later); }\n",
+        }))
         self.assertEqual(code, 1, out)
-        self.assertIn("`sagat-infra-postgres/rate-gates-for-tests` as a normal dependency", out)
+        self.assertIn("`purge_rate_grants_as_of` is called outside the tests", out)
 
 
 if __name__ == "__main__":

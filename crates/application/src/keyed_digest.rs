@@ -304,6 +304,23 @@ impl KeyRing {
         Some(text)
     }
 
+    /// The digest key version a cursor names in clear (its first two bytes), unauthenticated: only meaningful once
+    /// [`Self::open_cursor`] accepted the same text, since the version is part of the cursor's associated data. A caller
+    /// checks it against the versions the database has in force, so that a version taken out of force (a forced
+    /// retirement of a leaked key, ADR-0093 decision 5) opens no cursor although a process still holds it.
+    #[must_use]
+    pub fn sealed_version(text: &str) -> Option<u16> {
+        let hex = text.strip_prefix(SEALED_PREFIX)?.as_bytes();
+        if hex.len() < 4 {
+            return None;
+        }
+        let mut version = 0u16;
+        for digit in &hex[..4] {
+            version = version << 4 | u16::from(hex_value(*digit)?);
+        }
+        Some(version)
+    }
+
     /// Opens a cursor [`Self::seal_cursor`] wrote for this namespace of this tenant: `None` for any other text, an
     /// altered one, one written for another namespace, or one sealed under a version this process no longer holds.
     #[must_use]

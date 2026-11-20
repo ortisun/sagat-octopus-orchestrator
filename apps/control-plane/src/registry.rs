@@ -414,11 +414,10 @@ mod tests {
         assert!(capabilities(InputValidationMode::Report, &[]).is_empty());
     }
 
-    /// D022-057: the concurrency gate is listed by a process whose switch is on and which holds the digest keys; the
-    /// rate gate by none until T022-072 and T022-074.
+    /// Decision D022-057, tasks T022-072 and T022-074: a gate is listed by a process whose switch for it is on and which
+    /// holds the digest keys; this build serves both gates.
     #[test]
-    fn the_control_plane_lists_the_concurrency_gate_switched_on_with_its_keys_and_never_the_rate_gate()
-     {
+    fn the_control_plane_lists_each_gate_switched_on_with_its_keys() {
         use sagat_application::flow_control::{FlowControlSwitches, served};
         use sagat_application::run_input::InputValidationMode;
         let on = FlowControlSwitches {
@@ -429,7 +428,8 @@ mod tests {
             capabilities(InputValidationMode::Enforce, &served(on, true)),
             vec![
                 Capability::RunInputValidationV1,
-                Capability::FlowControlConcurrencyV1
+                Capability::FlowControlConcurrencyV1,
+                Capability::FlowControlRateV1
             ]
         );
         assert!(capabilities(InputValidationMode::Report, &served(on, false)).is_empty());
@@ -437,7 +437,10 @@ mod tests {
             concurrency_keys: false,
             rate_limits: true,
         };
-        assert!(capabilities(InputValidationMode::Report, &served(rate_only, true)).is_empty());
+        assert_eq!(
+            capabilities(InputValidationMode::Report, &served(rate_only, true)),
+            vec![Capability::FlowControlRateV1]
+        );
     }
 
     #[test]

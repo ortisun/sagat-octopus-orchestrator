@@ -2,7 +2,7 @@
 #
 # It turns the concurrency gate on in the control plane and the engine and gives both the deployment's digest keys
 # (D022-057): the file infra/docker/flow-control.keys (ignored by git), mounted read-only, never a variable's value.
-# Make it once, readable by you and by the images' user (uid 10001) only:
+# Make it once, readable by you and by the images' user and group (uid and gid 10001, infra/docker/Dockerfile) only:
 #
 #   umask 077 && printf '1:%s\n' "$(openssl rand -hex 32)" > infra/docker/flow-control.keys
 #   sudo chgrp 10001 infra/docker/flow-control.keys && chmod 0640 infra/docker/flow-control.keys

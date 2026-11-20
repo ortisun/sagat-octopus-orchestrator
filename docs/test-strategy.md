@@ -33,9 +33,13 @@ merges a pull request would prove again what the pull request proved):
   suites (`integration`, `fault`, `e2e` and `performance` of `iceberg-writes`) when `runners/lake/` changes; the budget of the
   hot path (`integration_claim_transition_efficiency`, design 038) when a file of `crates/infra-postgres/` or of the worker,
   execution and run modules of `crates/application` changes (constitution 4.4.0, OD-2026-11-12-4).
-  What is shared selects no suite: `tests/support`, `tests/fixtures`, any other `runners/` directory, a contract file
-  under `specs/`, a dependency of `tests/Cargo.toml` and `Cargo.lock` (which does select the unit tests of every package)
-  are used by suites nobody changed, and the release runs those (OD-2026-11-06-2). The log of the selector says
+  A contract file (`specs/<feature>/contracts/`, Markdown included) selects the contract suites (`tests/contract/`) and
+  the workspace packages whose Rust sources read it, and the packages that depend on those; the selector finds them from
+  the string literals that are paths to the file, or to its directory joined with its name (constitution 4.6.0,
+  OD-2026-11-20-7). An integration, fault, e2e or performance suite that also reads a contract is not selected by it.
+  What is shared selects no suite: `tests/support`, `tests/fixtures`, any other `runners/` directory, a dependency of
+  `tests/Cargo.toml` and `Cargo.lock` (which does select the unit tests of every package) are used by suites nobody
+  changed, and the release runs those (OD-2026-11-06-2). The log of the selector says
   `select no suite: <file> is shared by the suites` so that nobody wonders why a suite did not run.
 
 Nothing else runs: no formatting, no `clippy`, no architecture, agent-configuration or design-doc check, no contract

@@ -43,7 +43,8 @@ pub async fn list_concurrency_keys<B: Governance>(
         })
         .transpose()?;
     // A cursor is the position sealed for this namespace of this tenant (D022-059): anything else, altered, or sealed
-    // for another namespace is a `400`, decided before admission and the same whether the namespace exists or not.
+    // for another namespace is a `400`, decided before admission and the same whether the namespace exists or not. One
+    // sealed under a digest key version out of force is a `400` too, asked after admission (it reads the database).
     let after = query
         .cursor
         .as_deref()
@@ -67,6 +68,14 @@ pub async fn list_concurrency_keys<B: Governance>(
         ApiTarget::Namespace(namespace),
     )
     .await?;
+    if let Some(cursor) = query.cursor.as_deref()
+        && !service
+            .concurrency_cursor_in_force(cursor)
+            .await
+            .map_err(ApiError::from)?
+    {
+        return Err(ApiError::bad_request("the cursor is not valid"));
+    }
     let page = service
         .concurrency_keys(
             &caller.session.principal,

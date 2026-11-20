@@ -15,6 +15,7 @@ mod lifecycle;
 mod migrations;
 mod publication;
 mod queue;
+mod rate_gate;
 mod readiness;
 mod readiness_sources;
 mod rest;

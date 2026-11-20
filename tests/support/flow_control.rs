@@ -32,6 +32,10 @@ pub async fn gated_world() -> World {
 /// The digest key ring of [`gated_world`]'s processes: version 1.
 pub const RING: &str = "1:5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a";
 
+/// A ring of versions 1 and 2, for a rotation: version 1 is [`RING`]'s.
+pub const RING_TWO: &str = "1:5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a,\
+                            2:6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b";
+
 /// The switches of a process with flow control `on`, or of one without it.
 pub const fn switches(on: bool) -> FlowControlSwitches {
     if on {
@@ -44,16 +48,16 @@ pub const fn switches(on: bool) -> FlowControlSwitches {
     }
 }
 
-/// `store` running the gates: both switches on, the key ring [`RING`], step gates admitted (tests only).
+/// `store` running the gates: both switches on, the key ring [`RING`].
 pub fn gate(store: PgRunStore) -> PgRunStore {
     gate_with_keys(store, RING)
 }
 
-fn gate_with_keys(store: PgRunStore, ring: &str) -> PgRunStore {
+/// `store` running the gates with the digest key ring `ring` (`version:hex,...`).
+pub fn gate_with_keys(store: PgRunStore, ring: &str) -> PgRunStore {
     store
         .with_flow_control(BOTH_ON)
         .with_flow_control_keys(Arc::new(KeyRing::parse(ring).expect("a key ring")))
-        .serving_rate_gates_for_tests()
 }
 
 /// [`gated_world`], whose processes hold the digest key ring `ring` (`version:hex,...`); version 1 is activated.
@@ -80,13 +84,6 @@ pub async fn activate(pool: &sqlx::PgPool) {
         ],
     )
     .await;
-}
-
-/// [`activate`] for the concurrency gate only: what a fleet of this build's real processes can activate (D022-057: none
-/// lists the rate gate), so that a control plane or an engine started for real afterwards is not refused at its
-/// registration for lacking `flow-control-rate-v1`.
-pub async fn activate_concurrency(pool: &sqlx::PgPool) {
-    activate_capabilities(pool, &[Capability::FlowControlConcurrencyV1]).await;
 }
 
 async fn activate_capabilities(pool: &sqlx::PgPool, capabilities: &[Capability]) {
@@ -120,13 +117,14 @@ async fn activate_capabilities(pool: &sqlx::PgPool, capabilities: &[Capability])
     }
 }
 
-/// The environment of a real control plane or `execution-engine` (`EngineConfig::from_lookup`) that serves the
-/// concurrency gate with [`RING`] (D022-057): the switch on and the digest key file, which lives as long as the test
-/// binary. Such a process lists `flow-control-concurrency-v1`; pair it with [`activate_concurrency`].
+/// The environment of a real control plane or `execution-engine` (`EngineConfig::from_lookup`) that serves both gates
+/// with [`RING`] (D022-057): the switches on and the digest key file, which lives as long as the test binary. Such a
+/// process lists `flow-control-concurrency-v1` and `flow-control-rate-v1` (from the ring, D022-062); pair it with
+/// [`activate`].
 ///
 /// # Panics
 /// When the file cannot be written.
-pub fn process_env() -> [(&'static str, String); 2] {
+pub fn process_env() -> [(&'static str, String); 3] {
     static FILE: std::sync::OnceLock<tempfile::NamedTempFile> = std::sync::OnceLock::new();
     let file = FILE.get_or_init(|| {
         use std::io::Write as _;
@@ -139,6 +137,7 @@ pub fn process_env() -> [(&'static str, String); 2] {
             "SAGAT_FLOW_CONTROL_CONCURRENCY_KEYS_ENABLED",
             "true".to_owned(),
         ),
+        ("SAGAT_FLOW_CONTROL_RATE_LIMITS_ENABLED", "true".to_owned()),
         (
             "SAGAT_FLOW_CONTROL_DIGEST_KEYS_FILE",
             file.path().to_str().expect("a path").to_owned(),
@@ -289,15 +288,32 @@ pub async fn set_start_deadline(
     .execute(&mut *tx)
     .await
     .expect("waiter deadline set");
+    // a start that waits for a slot too has one deadline on both rows (D022-006)
     sqlx::query(
-        "UPDATE runs SET flow_control_gates = jsonb_set(flow_control_gates, '{concurrency,deadlineUs}', to_jsonb($2)) \
-          WHERE id = $1 AND flow_control_gates -> 'concurrency' ->> 'phase' = 'QUEUED'",
+        "WITH gone AS (DELETE FROM rate_limit_waiters WHERE run_id = $1 AND limit_scope = 'RUN' RETURNING *) \
+         INSERT INTO rate_limit_waiters (tenant_id, namespace_id, run_id, node, attempt, pool, limit_scope, \
+                group_name, key_digest, declared_limit, period_ms, enqueued_at, deadline_at, shard) \
+         SELECT tenant_id, namespace_id, run_id, node, attempt, pool, limit_scope, group_name, key_digest, \
+                declared_limit, period_ms, clock_timestamp() - interval '1 hour', \
+                timestamptz 'epoch' + $2 * interval '1 microsecond', shard FROM gone",
     )
     .bind(run.as_uuid())
     .bind(deadline)
     .execute(&mut *tx)
     .await
-    .expect("projection deadline set");
+    .expect("rate waiter deadline set");
+    for gate in ["concurrency", "rate"] {
+        sqlx::query(
+            "UPDATE runs SET flow_control_gates = jsonb_set(flow_control_gates, ARRAY[$3, 'deadlineUs'], to_jsonb($2)) \
+              WHERE id = $1 AND flow_control_gates -> $3 ->> 'phase' = 'QUEUED'",
+        )
+        .bind(run.as_uuid())
+        .bind(deadline)
+        .bind(gate)
+        .execute(&mut *tx)
+        .await
+        .expect("projection deadline set");
+    }
     tx.commit().await.expect("deadline set");
     deadline
 }

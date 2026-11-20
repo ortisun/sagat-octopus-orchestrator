@@ -155,6 +155,25 @@ pub trait MaintenanceStore: Send + Sync {
         holder: Option<(&str, crate::shards::Lease)>,
     ) -> impl Future<Output = Result<(), StoreError>> + Send;
 
+    /// Feature 022 (transaction T23, T022-074): copies the lease instant of the attempt a slot was granted for onto the granted,
+    /// unleased step grants of the run shards of `window` (at most `window.limit` a shard): the instant of that attempt's
+    /// `step.leased`, journaled after the grant (D022-029), or the grant's own instant when later. Locks the grant rows
+    /// only (no run, no window: the key's hint never waits for it, D022-021). Returns how many it recorded.
+    fn record_rate_leases(
+        &self,
+        window: &Window,
+    ) -> impl Future<Output = Result<u64, StoreError>> + Send;
+
+    /// Feature 022 (transaction T25): deletes leased grants that no acquirer can count any more, those leased longer ago than their
+    /// window row's longest period plus one minute (FR-022-056): at most `keys` keys a call and `limit` grants a key
+    /// (so at most `keys × limit` rows), each key in a transaction of its own that takes its window row first and skips a
+    /// key another transaction holds. Returns how many grant rows it deleted.
+    fn purge_rate_grants(
+        &self,
+        keys: u32,
+        limit: u32,
+    ) -> impl Future<Output = Result<u64, StoreError>> + Send;
+
     /// Feature 022 (T27): queued steps whose queue deadline passed, on the run shards of `window`, earliest first.
     fn due_gate_waits(
         &self,

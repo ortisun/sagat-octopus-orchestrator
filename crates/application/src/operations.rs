@@ -713,7 +713,8 @@ impl<S: AlertReader + FlowControlKeyReader, C: Clock> OperationsService<S, C> {
             .ok_or(AppError::Unavailable)
     }
 
-    /// The position a cursor of this namespace's listing names; `None` for anything else (a `400`).
+    /// The position a cursor of this namespace's listing names; `None` for anything else (a `400`). Whether its version
+    /// is still in force is [`Self::concurrency_cursor_in_force`], asked once the caller is admitted.
     #[must_use]
     pub fn concurrency_key_position(
         &self,
@@ -727,6 +728,19 @@ impl<S: AlertReader + FlowControlKeyReader, C: Clock> OperationsService<S, C> {
             principal.tenant_id(),
             namespace,
         )
+    }
+
+    /// Whether the digest key version an opened cursor was sealed under is still in force (active, or retiring with
+    /// rows left): `false` (a `400`) for any other, a forced retirement of a leaked key included, whose holder could
+    /// otherwise forge positions a process still holding the version would open (D022-063).
+    ///
+    /// # Errors
+    /// A storage error while the versions in force are read.
+    pub async fn concurrency_cursor_in_force(&self, cursor: &str) -> Result<bool, AppError> {
+        let Some(version) = crate::keyed_digest::KeyRing::sealed_version(cursor) else {
+            return Ok(false);
+        };
+        Ok(self.store.key_version_in_force(version).await?)
     }
 }
 
@@ -770,10 +784,38 @@ fn worker_subject(subject: &str) -> Result<&str, AppError> {
     Ok(subject)
 }
 
-/// An instant cut down to its minute (seconds and fractions zero): what a caller who may not see a key's label reads of
-/// the key's oldest instants (D022-060).
+/// An instant cut down to its minute, toward the past (seconds and fractions zero, in its own offset): what a caller who
+/// may not see a key's label reads of the key's oldest instants (D022-060). The arithmetic cannot fail, so no path hands
+/// back the whole instant (re-review of 34b8be41, minor 4).
 fn to_the_minute(at: OffsetDateTime) -> OffsetDateTime {
-    at.replace_second(0)
-        .and_then(|at| at.replace_nanosecond(0))
-        .unwrap_or(at)
+    at - time::Duration::new(i64::from(at.second()), 0)
+        - time::Duration::nanoseconds(i64::from(at.nanosecond()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::to_the_minute;
+    use time::OffsetDateTime;
+
+    fn at(nanos: i128) -> OffsetDateTime {
+        OffsetDateTime::from_unix_timestamp_nanos(nanos).expect("an instant")
+    }
+
+    /// D022-060: a key's instants reach a caller without the reveal right cut to their minute, toward the past, before
+    /// 1970 too; an exact minute is unchanged.
+    #[test]
+    fn an_instant_is_cut_to_its_minute_toward_the_past() {
+        const S: i128 = 1_000_000_000;
+        // 2026-11-20T10:41:00Z
+        let minute = 1_795_171_260 * S;
+        for (instant, cut) in [
+            // 1969-12-31T23:59:59.999999Z to 23:59:00Z
+            (-1_000, -60 * S),
+            (minute + 2 * S + 118_004_000, minute),
+            (minute + 59 * S + 999_999_999, minute),
+            (minute, minute),
+        ] {
+            assert_eq!(to_the_minute(at(instant)), at(cut), "{instant}");
+        }
+    }
 }

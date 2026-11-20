@@ -153,10 +153,6 @@ pub struct PgRunStore {
     flow_control: sagat_application::flow_control::FlowControlSwitches,
     /// The digest keys of the gates (feature 022): without them a gated step is never decided (fail closed).
     flow_control_keys: Option<Arc<sagat_application::keyed_digest::KeyRing>>,
-    /// Tests only (`rate-gates-for-tests`): serve the step-level rate gate, which this build does not list (the
-    /// run-level rate gate, T022-072, and the lease instant, T022-074, are missing), so that the readiness gate's rate
-    /// half can be exercised against PostgreSQL. No production build can set it (D022-057).
-    rate_gates_for_tests: bool,
 }
 
 impl PgRunStore {
@@ -176,7 +172,6 @@ impl PgRunStore {
                 rate_limits: false,
             },
             flow_control_keys: None,
-            rate_gates_for_tests: false,
         }
     }
 
@@ -195,24 +190,10 @@ impl PgRunStore {
         self.flow_control_keys.as_deref()
     }
 
-    /// Tests only: serves the step-level rate gate as well (see `rate_gates_for_tests`), behind the same switch, digest
-    /// keys and fleet activation as every gate. A start's `rateLimit` (T022-072) stays refused.
-    #[cfg(feature = "rate-gates-for-tests")]
-    #[must_use]
-    pub const fn serving_rate_gates_for_tests(mut self) -> Self {
-        self.rate_gates_for_tests = true;
-        self
-    }
-
     /// The flow-control capabilities this process serves (D022-057): built, switched on, and backed by the digest keys.
     fn served_flow_control(&self) -> Vec<sagat_application::flow_control::FlowControlCapability> {
-        use sagat_application::flow_control::{FlowControlCapability, served};
-        let keys = self.flow_control_keys.is_some();
-        let mut capabilities = served(self.flow_control, keys);
-        if self.rate_gates_for_tests && keys && self.flow_control.rate_limits {
-            capabilities.push(FlowControlCapability::RateLimits);
-        }
-        capabilities
+        use sagat_application::flow_control::served;
+        served(self.flow_control, self.flow_control_keys.is_some())
     }
 
     /// The deployment's `flow-control.*` switches (feature 022), read by the one admission point.
@@ -227,8 +208,7 @@ impl PgRunStore {
 
     /// Whether a gated definition is admitted here (FR-022-059, D022-057): every capability it needs is switched on,
     /// activated for the fleet, and served by this process; `None` admits it, a refusal says which condition failed,
-    /// in that order. A start's `rateLimit` is refused `BINARY_CAPABILITY_MISSING` until the run-level rate gate exists
-    /// (T022-072).
+    /// in that order.
     async fn flow_control_admission(
         &self,
         tx: &mut sqlx::PgConnection,
@@ -264,10 +244,9 @@ impl PgRunStore {
             }));
         }
         let served = self.served_flow_control();
-        if definition.run_flow_control().rate_limit().is_some()
-            || required
-                .iter()
-                .any(|capability| !served.contains(capability))
+        if required
+            .iter()
+            .any(|capability| !served.contains(capability))
         {
             return Ok(Some(FlowControlRefusal::BinaryCapabilityMissing));
         }
@@ -779,6 +758,7 @@ impl PgRunStore {
                  {holders} holder(s) and {waiters} waiter(s), the key's counters agree: {counters_agree}"
             ));
         }
+        verify_start_rate(&mut stored_tx.tx, tenant, run, &replayed, &events).await?;
         drop(stored_tx);
         // The run's result (G21) is the payload its `end.reached` event names.
         let result_agrees: bool = sqlx::query_scalar(
@@ -799,6 +779,134 @@ impl PgRunStore {
             Err("the run's result is not the payload its end.reached event names".into())
         }
     }
+}
+
+/// Feature 022, invariants 8 to 10 of `data-model.md` for the rate gate of a run's start (T022-072, T022-079): the run
+/// has a waiter row (with the journal's deadline) exactly while its journal waits for a slot; a grant row with the
+/// journal's grant instant, whose lease instant is that instant, while its journal holds one and the grant can still
+/// count (the purge may delete it only after its window and one minute more); the key's counters equal its rows; and no
+/// window of the grant's length ending at its instant holds more run-scope grants of the key than its limit, counted
+/// from the journals of the key (its pool, group and label).
+async fn verify_start_rate(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: TenantId,
+    run: RunId,
+    replayed: &RunState,
+    events: &[AddressedRunEvent],
+) -> Result<(), String> {
+    use sagat_domain::execution::{GateChange, GatePhase, GateTarget};
+    let (grants, granted_at, leased_is_granted, waiters, deadline, counters_agree, now): (
+        i64,
+        Option<OffsetDateTime>,
+        Option<bool>,
+        i64,
+        Option<OffsetDateTime>,
+        bool,
+        OffsetDateTime,
+    ) = sqlx::query_as(
+        "SELECT (SELECT count(*) FROM rate_limit_grants WHERE tenant_id = $1 AND run_id = $2 AND limit_scope = 'RUN'), \
+                (SELECT granted_at FROM rate_limit_grants WHERE tenant_id = $1 AND run_id = $2 AND limit_scope = 'RUN'), \
+                (SELECT leased_at = granted_at FROM rate_limit_grants \
+                  WHERE tenant_id = $1 AND run_id = $2 AND limit_scope = 'RUN'), \
+                (SELECT count(*) FROM rate_limit_waiters WHERE tenant_id = $1 AND run_id = $2 AND limit_scope = 'RUN'), \
+                (SELECT deadline_at FROM rate_limit_waiters WHERE tenant_id = $1 AND run_id = $2 AND limit_scope = 'RUN'), \
+                NOT EXISTS (SELECT 1 FROM rate_limit_windows w \
+                             WHERE w.tenant_id = $1 AND w.limit_scope = 'RUN' \
+                               AND EXISTS (SELECT 1 FROM ( \
+                                     SELECT namespace_id, pool, group_name, key_digest FROM rate_limit_grants \
+                                      WHERE tenant_id = $1 AND run_id = $2 AND limit_scope = 'RUN' \
+                                     UNION SELECT namespace_id, pool, group_name, key_digest FROM rate_limit_waiters \
+                                      WHERE tenant_id = $1 AND run_id = $2 AND limit_scope = 'RUN') k \
+                                    WHERE k.namespace_id = w.namespace_id AND k.pool = w.pool \
+                                      AND k.group_name = w.group_name AND k.key_digest = w.key_digest) \
+                               AND (w.live_grants <> (SELECT count(*) FROM rate_limit_grants g \
+                                                       WHERE g.tenant_id = w.tenant_id AND g.namespace_id = w.namespace_id \
+                                                         AND g.pool = w.pool AND g.limit_scope = w.limit_scope \
+                                                         AND g.group_name = w.group_name AND g.key_digest = w.key_digest) \
+                                 OR w.waiters <> (SELECT count(*) FROM rate_limit_waiters x \
+                                                   WHERE x.tenant_id = w.tenant_id AND x.namespace_id = w.namespace_id \
+                                                     AND x.pool = w.pool AND x.limit_scope = w.limit_scope \
+                                                     AND x.group_name = w.group_name AND x.key_digest = w.key_digest))), \
+                clock_timestamp()",
+    )
+    .bind(tenant.as_uuid())
+    .bind(run.as_uuid())
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(|e| e.to_string())?;
+    let micros = |at: OffsetDateTime| i64::try_from(at.unix_timestamp_nanos() / 1_000);
+    // the last run-scope grant of the journal: its instant, limit, window and key
+    let grant = events
+        .iter()
+        .rev()
+        .find_map(|addressed| match addressed.event() {
+            RunEvent::Gate(gate) if matches!(gate.target, GateTarget::Run) => match gate.change {
+                GateChange::RateGranted {
+                    limit,
+                    per,
+                    granted_at_us,
+                    ..
+                } => Some((limit, per, granted_at_us, gate.gate.clone())),
+                _ => None,
+            },
+            _ => None,
+        });
+    let journal = replayed.run_gates().rate().map(|slot| slot.phase());
+    let row_at = granted_at
+        .map(micros)
+        .transpose()
+        .map_err(|e| e.to_string())?;
+    let deadline_us = deadline
+        .map(micros)
+        .transpose()
+        .map_err(|e| e.to_string())?;
+    let now_us = micros(now).map_err(|e| e.to_string())?;
+    let agrees = match (journal, &grant) {
+        (Some(GatePhase::Held), Some((_, per, at, _))) => {
+            let window_us = i64::try_from(per.duration().as_micros()).map_err(|e| e.to_string())?;
+            waiters == 0
+                && ((grants == 1 && row_at == Some(*at) && leased_is_granted == Some(true))
+                    // purged: only once it cannot count any more (the purge keeps it a minute longer)
+                    || (grants == 0 && *at + window_us <= now_us))
+        }
+        (Some(GatePhase::Queued { deadline_us: due }), _) => {
+            grants == 0 && waiters == 1 && deadline_us == Some(due)
+        }
+        _ => grants == 0 && waiters == 0,
+    };
+    if !agrees || !counters_agree {
+        return Err(format!(
+            "invariants 8 and 9 of feature 022 fail for the run's start: the journal says {journal:?}, the rows are \
+             {grants} grant(s) and {waiters} waiter(s), the key's counters agree: {counters_agree}"
+        ));
+    }
+    // invariant 10 for this run's grant, from the journals of its key: the run-scope grants whose instants lie in
+    // (t - period, t] are at most its limit (D022-032)
+    if let Some((limit, per, at, gate)) = grant {
+        let window_us = i64::try_from(per.duration().as_micros()).map_err(|e| e.to_string())?;
+        let within: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM run_events \
+              WHERE tenant_id = $1 AND event_type = 'rate_limit.granted' AND detail->>'scope' = 'RUN' \
+                AND detail->>'pool' = $2 AND detail->>'group' = $3 AND detail->>'key_label' = $4 \
+                AND (detail->>'granted_at_us')::bigint > $5 AND (detail->>'granted_at_us')::bigint <= $6",
+        )
+        .bind(tenant.as_uuid())
+        .bind(gate.pool.as_str())
+        .bind(gate.group.as_str())
+        .bind(gate.key_label.as_str())
+        .bind(at - window_us)
+        .bind(at)
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(|e| e.to_string())?;
+        if within > i64::from(limit) {
+            return Err(format!(
+                "invariant 10 of feature 022 fails for the run's start: {within} grants of its key in the window of \
+                 {per:?} ending at its grant, over its limit {limit}"
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Serialize a pinned member mutation on its immutable, tenant-scoped chain before its own run.

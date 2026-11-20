@@ -4,7 +4,7 @@
 //! `verify_run`, which replays the journal alone and checks invariant 11.
 //!
 //! The runs are admitted by the one admission point of a store that serves the gates (`support::flow_control::gate`: the
-//! switches, the digest keys and the activation, D022-057; the rate gate through the tests' `rate-gates-for-tests`).
+//! switches, the digest keys and the activation, D022-057).
 
 use sagat_application::runs::RunOperation;
 use sagat_domain::execution::{RunId, RunStatus};

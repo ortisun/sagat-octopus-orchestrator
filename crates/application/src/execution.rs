@@ -2123,13 +2123,13 @@ impl<E: ExpressionEvaluator> Engine<E> {
                 })
                 .await;
         }
-        // fail closed, before any key is evaluated or anything is written (G1197): a start's rate limit (T022-072), and a
-        // definition with a `forEach`, `while` or `repeatUntil` node, whose finish paths end the run without the reducer
-        // and so would never give the permit back
+        // fail closed, before any key is evaluated or anything is written (G1197): a definition with a `forEach`, `while`
+        // or `repeatUntil` node, whose finish paths end the run without the reducer and so would never give the permit
+        // back
         let unsupported = {
             let (def, _) = tx.parts();
             let kinds = def.projected_state();
-            flow.rate_limit().is_some() || kinds.collections || kinds.loops
+            kinds.collections || kinds.loops
         };
         if unsupported {
             return Err(EngineError::Store(StoreError::FlowControl(

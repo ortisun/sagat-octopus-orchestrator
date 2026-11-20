@@ -60,7 +60,8 @@ FROM debian:bookworm-slim AS runtime
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
-    && useradd --system --uid 10001 --no-create-home --shell /usr/sbin/nologin sagat
+    && groupadd --system --gid 10001 sagat \
+    && useradd --system --uid 10001 --gid 10001 --no-create-home --shell /usr/sbin/nologin sagat
 
 # The execution engine: the worker gRPC API, the scheduler loop and the outbox dispatcher.
 FROM runtime AS execution-engine

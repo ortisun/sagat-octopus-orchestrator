@@ -30,7 +30,7 @@ The ring is a file, never an environment value: `SAGAT_FLOW_CONTROL_DIGEST_KEYS_
 
 ```sh
 umask 077 && printf '1:%s\n' "$(openssl rand -hex 32)" > flow-control.keys
-# the images run as uid 10001: on a Linux host let that group read it
+# the images run as uid and gid 10001 (infra/docker/Dockerfile; the chart's fsGroup): on a Linux host let that group read it
 sudo chgrp 10001 flow-control.keys && chmod 0640 flow-control.keys
 ```
 
@@ -45,14 +45,24 @@ A process refuses to start when:
   read, is larger than 16 KiB, is not a ring, or holds no key (the error names the variable, never the content);
 - the database has a version in force (active, or retiring during a rotation) that the file lacks.
 
-With the switch on and the ring set, a process lists `flow-control-concurrency-v1` in the instance registry, and only then
-can the fleet activation of step 3 of 1.2 pass. No process of this release lists `flow-control-rate-v1` (the rate gate needs
-T022-072 and T022-074).
+With the ring set, a process lists `flow-control-concurrency-v1` and `flow-control-rate-v1` in the instance registry (its
+switches decide only what it admits, D022-062), and only then can the fleet activation of step 3 of 1.2 (or of section 6)
+pass. A process of an older build does not list `flow-control-rate-v1`: the activation of `rate-limits` is refused while one
+is live.
 
 ### 1.2 Turning concurrency keys on
 
 **Not in production before T022-104** (G022-015): publication does not yet refuse a key over a `secret` field. Until
-then a key's label, and its oldest instants, are shown only to callers with the namespace's reveal grant.
+then a key's label and its whole oldest instants are shown only to callers with the namespace's reveal grant; other
+readers get the instants truncated to the minute, which narrows but does not stop linking a key's runs (D022-061).
+
+**Turning the switch off** stops new gated publications and starts; keep the key file mounted so that what was admitted
+drains: a process with the switches off that is given the file still lists the gate (so a fleet that requires it keeps
+serving), grants queued waiters, releases delayed gated starts and decides gated steps (FR-022-031, D022-062). Without
+the file a process does not list the gate: once the activation requires it, the registry refuses that process and it
+serves nothing, and its queued waiters can only time out. Every process that holds the file checks it against the
+versions in force at start, switched on or off. A child run that a draining run starts is a new start: it is refused
+`CAPABILITY_DISABLED` (its node's typed failure is T022-102).
 
 1. Make the ring (1.1) and give it to every control plane and engine, with `SAGAT_FLOW_CONTROL_CONCURRENCY_KEYS_ENABLED=true`;
    restart them.
@@ -76,10 +86,10 @@ expires.
 3. The rotation ends when the retiring version's last row goes. Its rows belong to runs that hold, wait for or were
    granted a key; a run-level permit lives as long as its run, so one long run keeps a rotation open. To see them:
    `SELECT * FROM flow_control_key_version_runs(<old>::smallint);` (tenant, namespace, run, holders, waiters, grants).
-   Wait for them, or cancel them through the API if the owner of each run agrees. **Rate-limit rows do not drain in this
-   build:** a grant's lease instant is not recorded yet, so a granted slot counts for ever and its window row stays
-   (G022-003, T022-074); a rotation with rate-limit rows ends only by the force of section 3. Runs listed only with
-   `grants` are such rows, and cancelling them changes nothing.
+   Wait for them, or cancel them through the API if the owner of each run agrees. Rate-limit rows drain by time: a
+   run's grant and a leased step's grant are deleted by the housekeeping once their window row's longest period and one
+   more minute have passed since the lease (section 6), and the window row goes with its last grant and waiter. Runs
+   listed only with `grants` are such rows: cancelling them changes nothing; wait for the purge.
 4. Once `SELECT * FROM flow_control_key_versions_in_force();` answers `retiring = NULL`, remove the old key from the
    rings at the next restart. The next activation records the old version `RETIRED`.
 
@@ -162,8 +172,38 @@ the key would be new beyond `concurrency_live_keys` (`FLOW_CONTROL_LIMIT`). Each
 `concurrency_acquisitions_total{scope="run",outcome="refused_full"}`.
 
 - `queued_runs` is exact: every start holds the namespace's admission lock while it is decided (D022-051).
-- A start delay, a reset, a run-level `rateLimit`, and a workflow with a `forEach`, `while` or `repeatUntil` node beside a
-  top-level `concurrency` are refused `BINARY_CAPABILITY_MISSING` in this build (G022-009, G1197).
+- A start delay takes its permit or queues at its release, and a reset takes a fresh permit or is refused
+  `CONCURRENCY_PERMIT_UNAVAILABLE` (D022-052, D022-053). A workflow with a `forEach`, `while` or `repeatUntil` node
+  beside a top-level gate is refused `BINARY_CAPABILITY_MISSING` in this build (G1197), and so is a reset of a run whose
+  start declares `rateLimit` (G022-016, until T022-086).
 - Rolling back migration `20270203000000` is refused while any run, finished or not, keeps `runs.flow_control_gates`:
   archive those runs first.
 
+## 6. Rate limits (T022-072, T022-074, T022-077)
+
+**Not in production before T022-080, T022-081, T022-086 and T022-104** (ADR-0088's fault suite and lock-order barriers;
+G022-016: a reset of a run whose start declares `rateLimit` is refused `BINARY_CAPABILITY_MISSING`, a retryable code no
+process of this build lifts; G022-015). Finish the rolling upgrade before setting any `rate_limit_*` limit (an older
+replica's quota listing refuses a name it does not know, G1192); rolling back migration `20270206000000` refuses while one
+is set.
+
+A process with the ring lists `flow-control-rate-v1` beside the concurrency gate. Turn it on as 1.2, with
+`SAGAT_FLOW_CONTROL_RATE_LIMITS_ENABLED=true` and `control-plane flow-control-activate rate-limits --operator <you>`.
+
+- A run's start that declares `rateLimit` takes a slot of its key when it is admitted, or is buffered `WAITING`
+  (`rate_limit.queued`); a run's slot counts from its grant and is never given back: it stops counting after its window.
+  A synchronous start is refused `RATE_LIMIT_QUEUE_FULL` when its key's buffer (`flow_control_key_waiters`) or the
+  namespace's `queued_runs` is full, rate first for a start that also declares `concurrency`, and `FLOW_CONTROL_LIMIT`
+  (`rate_limit_live_keys`) when its key would be a new window beyond the namespace's ceiling.
+- A step's slot counts while it is granted and not leased, then for its window from the lease. The scheduler copies the
+  lease instant from the journal each tick (`scheduler_actions_total{kind="rate_lease"}`, `outcome` `done` or `failed`);
+  a late copy only keeps a slot longer, and a waiter is visited at the latest one copy after its slot frees. With no
+  worker, at most `limit` granted steps of a key wait unleased.
+- The effective limit is the lowest of the declaration and the namespace's `rate_limit_per_second` (20 at most until the
+  published benchmark), `rate_limit_per_minute` (6,000) or `rate_limit_per_hour` (10,000), by the declaration's window.
+- The housekeeping deletes a grant once its window row's longest period and one more minute have passed since its lease
+  (`scheduler_actions_total{kind="rate_purge"}`), at most 64 keys and 500 grants a key a call, skipping a key another
+  transaction holds. A window whose grants all aged out no longer counts against `rate_limit_live_keys`, purged or not.
+  A definition published later with a longer window on the same group and key (`RATE_LIMIT_MISMATCH` warns at
+  publication) does not count the grants already deleted, so in its first window it may be admitted up to that many
+  early (G022-017): give definitions that share a group the same window.

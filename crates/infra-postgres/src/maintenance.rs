@@ -9,6 +9,7 @@
 //! entries that are due and stops. The queries only *find* candidates; the authority is the
 //! run's row lock, taken by the caller, under which the domain re-checks the condition.
 
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 use sagat_application::error::StoreError;
@@ -21,10 +22,12 @@ use sagat_domain::execution::{Fence, InstancePath, RunId};
 use sagat_domain::identity::TenantId;
 use sagat_domain::workflow::{MAX_NODES, NodeId};
 use sqlx::postgres::PgRow;
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::execution::PgRunStore;
 use crate::identity::{col, corrupt, store_error, store_error_without_text};
+use crate::pool::BeginSafely as _;
 
 fn micros(duration: Duration) -> i64 {
     i64::try_from(duration.as_micros()).unwrap_or(i64::MAX)
@@ -110,6 +113,9 @@ fn outbox_messages(rows: &[sqlx::postgres::PgRow]) -> Result<Vec<OutboxMessage>,
     out.sort_by_key(|m| m.created_at);
     Ok(out)
 }
+
+/// A window row's key as read: tenant, namespace, pool, scope, group and digest.
+type WindowKey = (Uuid, Uuid, String, String, String, Vec<u8>);
 
 /// The window as the three parameters every candidate query takes: how many, the shards to look at
 /// and the tenants to leave out.
@@ -246,16 +252,28 @@ impl MaintenanceStore for PgRunStore {
                     AND ($6::text IS NULL OR EXISTS (SELECT 1 FROM scheduler_shards s WHERE s.shard = $7 \
                          AND s.owner = $6 AND s.generation = $8 AND s.expires_at > clock_timestamp()))"
             }
+            // the first instant a grant that counted when the pass began may stop counting for one of the key's waiters:
+            // each waiter counts over its own window (D022-009), so the instant is taken for every window length its
+            // waiters declare; a leased grant ages out at its lease plus that length, an unleased one no earlier than the
+            // pass's start plus it (it frees by a return, which sets the hint, or by a lease, whose recording lowers the
+            // hint). The pass's start is the hint it was selected by ($5, at or before every count it made): a grant that
+            // aged out while the pass ran then yields an instant already past, so the key is due again at once rather than
+            // never (correctness review Major 3 of 2026-11-20). Early, never late, and no window lock for the lease pass
+            // (D022-021, D022-064; plan "The grant pass, by key")
             sagat_domain::workflow::GateKind::RateLimit => {
                 "UPDATE rate_limit_windows w \
-                    SET next_eligible_at = (SELECT min(g.leased_at + make_interval(secs => g.period_ms / 1000.0)) \
-                                              FROM rate_limit_grants g \
-                                             WHERE g.tenant_id = w.tenant_id AND g.namespace_id = w.namespace_id \
-                                               AND g.pool = w.pool AND g.limit_scope = w.limit_scope \
-                                               AND g.group_name = w.group_name AND g.key_digest = w.key_digest \
-                                               AND g.leased_at IS NOT NULL \
-                                               AND g.leased_at + make_interval(secs => g.period_ms / 1000.0) \
-                                                   > clock_timestamp()), \
+                    SET next_eligible_at = ( \
+                        SELECT min(coalesce(g.leased_at, $5) + make_interval(secs => p.period_ms / 1000.0)) \
+                          FROM rate_limit_grants g \
+                         CROSS JOIN (SELECT DISTINCT wt.period_ms FROM rate_limit_waiters wt \
+                                      WHERE wt.tenant_id = w.tenant_id AND wt.namespace_id = w.namespace_id \
+                                        AND wt.pool = w.pool AND wt.limit_scope = w.limit_scope \
+                                        AND wt.group_name = w.group_name AND wt.key_digest = w.key_digest) p \
+                         WHERE g.tenant_id = w.tenant_id AND g.namespace_id = w.namespace_id \
+                           AND g.pool = w.pool AND g.limit_scope = w.limit_scope \
+                           AND g.group_name = w.group_name AND g.key_digest = w.key_digest \
+                           AND (g.leased_at IS NULL \
+                                OR g.leased_at + make_interval(secs => p.period_ms / 1000.0) > $5)), \
                         updated_at = clock_timestamp() \
                   WHERE w.tenant_id = $1 AND w.namespace_id = $2 AND w.pool = 'ORDINARY' AND w.limit_scope = $9 \
                     AND w.group_name = $3 AND w.key_digest = $4 AND w.next_eligible_at = $5 \
@@ -279,6 +297,106 @@ impl MaintenanceStore for PgRunStore {
             .await
             .map_err(store_error)?;
         Ok(())
+    }
+
+    async fn record_rate_leases(&self, window: &Window) -> Result<u64, StoreError> {
+        let (limit, shards, exclude) = window_params(window);
+        // the root step's journal is read through its instance (`steps.step_id` is the `instance_id` of its events,
+        // `run_events_instance_idx`), and only for a step whose projection says the attempt was leased (security review
+        // Major 2 of 2026-11-20: a grant no worker leased costs no journal probe); a lease counts only when it is the
+        // granted attempt's and was journaled after the grant (D022-029); the instant is the lease's, or the grant's when
+        // the lease's transaction read its clock first (a later instant only keeps a slot longer: under-delivery, never an
+        // early grant, plan "Failure and recovery")
+        let recorded = sqlx::query(
+            "UPDATE rate_limit_grants g SET leased_at = greatest(d.leased_at, g.granted_at) \
+               FROM (SELECT c.tenant_id, c.run_id, c.node, c.attempt, c.leased_at \
+                       FROM unnest($2::smallint[]) AS sh(s) \
+                      CROSS JOIN LATERAL ( \
+                        SELECT u.tenant_id, u.run_id, u.node, u.attempt, l.occurred_at AS leased_at \
+                          FROM rate_limit_grants u \
+                          JOIN steps st ON st.tenant_id = u.tenant_id AND st.run_id = u.run_id \
+                                       AND st.instance_path_nodes = '{}' AND st.instance_path_indices = '{}' \
+                                       AND st.node = u.node AND st.attempt >= u.attempt \
+                         CROSS JOIN LATERAL ( \
+                           SELECT e.occurred_at FROM run_events e \
+                            WHERE e.tenant_id = u.tenant_id AND e.run_id = u.run_id AND e.instance_id = st.step_id \
+                              AND e.event_type = 'step.leased' AND e.attempt = u.attempt \
+                              AND e.seq > (SELECT max(gr.seq) FROM run_events gr \
+                                            WHERE gr.tenant_id = u.tenant_id AND gr.run_id = u.run_id \
+                                              AND gr.instance_id = st.step_id AND gr.event_type = 'rate_limit.granted' \
+                                              AND gr.attempt = u.attempt) \
+                            ORDER BY e.seq LIMIT 1) l \
+                         WHERE u.shard = sh.s AND u.leased_at IS NULL AND u.limit_scope = 'STEP' \
+                           AND u.tenant_id <> ALL($3::uuid[]) \
+                         ORDER BY u.granted_at LIMIT $1) c) d \
+              WHERE g.tenant_id = d.tenant_id AND g.run_id = d.run_id AND g.node = d.node AND g.attempt = d.attempt \
+                AND g.leased_at IS NULL \
+             RETURNING g.tenant_id, g.namespace_id, g.pool, g.limit_scope, g.group_name, g.key_digest, g.leased_at",
+        )
+        .bind(limit)
+        .bind(shards)
+        .bind(exclude)
+        .fetch_all(self.pool())
+        .await;
+        let recorded = match recorded {
+            // a schema that predates feature 022 has no grant to record
+            Err(error) if absent_table(&error) => return Ok(0),
+            recorded => recorded.map_err(store_error)?,
+        };
+        // the windows of the recorded slots wake no later than the first instant a slot may stop counting for one of
+        // their waiters (the lease plus the shortest window they wait over): the rest rule saw these grants unleased and
+        // waited from its own instant, which a lease journaled earlier makes late (correctness review minor 2, architecture
+        // review on D022-064 item 5). After the grants' commit, one window a statement, so no transaction holds a grant
+        // row and waits for a window, nor two windows
+        let mut earliest: BTreeMap<WindowKey, OffsetDateTime> = BTreeMap::new();
+        for row in &recorded {
+            let key = (
+                col::<Uuid>(row, "tenant_id")?,
+                col::<Uuid>(row, "namespace_id")?,
+                col::<String>(row, "pool")?,
+                col::<String>(row, "limit_scope")?,
+                col::<String>(row, "group_name")?,
+                col::<Vec<u8>>(row, "key_digest")?,
+            );
+            let leased: OffsetDateTime = col(row, "leased_at")?;
+            earliest
+                .entry(key)
+                .and_modify(|at| *at = (*at).min(leased))
+                .or_insert(leased);
+        }
+        for ((tenant, namespace, pool, scope, group, digest), leased) in earliest {
+            sqlx::query(
+                "UPDATE rate_limit_windows w \
+                    SET next_eligible_at = least(coalesce(w.next_eligible_at, 'infinity'::timestamptz), \
+                            $7 + make_interval(secs => (SELECT min(x.period_ms) FROM rate_limit_waiters x \
+                                                         WHERE x.tenant_id = w.tenant_id AND x.namespace_id = w.namespace_id \
+                                                           AND x.pool = w.pool AND x.limit_scope = w.limit_scope \
+                                                           AND x.group_name = w.group_name \
+                                                           AND x.key_digest = w.key_digest) / 1000.0)), \
+                        updated_at = clock_timestamp() \
+                  WHERE w.tenant_id = $1 AND w.namespace_id = $2 AND w.pool = $3 AND w.limit_scope = $4 \
+                    AND w.group_name = $5 AND w.key_digest = $6 AND w.waiters > 0",
+            )
+            .bind(tenant)
+            .bind(namespace)
+            .bind(pool)
+            .bind(scope)
+            .bind(group)
+            .bind(digest)
+            .bind(leased)
+            .execute(self.pool())
+            .await
+            .map_err(store_error)?;
+        }
+        Ok(u64::try_from(recorded.len()).unwrap_or(u64::MAX))
+    }
+
+    async fn purge_rate_grants(&self, keys: u32, limit: u32) -> Result<u64, StoreError> {
+        let now: OffsetDateTime = sqlx::query_scalar("SELECT clock_timestamp()")
+            .fetch_one(self.pool())
+            .await
+            .map_err(store_error)?;
+        self.purge_rate_grants_as_of(now, keys, limit).await
     }
 
     async fn due_gate_waits(
@@ -1173,6 +1291,99 @@ impl OutboxStore for PgRunStore {
                 .await
                 .map_err(store_error)?;
         Ok(u64::try_from(n).unwrap_or(0))
+    }
+}
+
+impl PgRunStore {
+    /// [`MaintenanceStore::purge_rate_grants`] as of the database instant `now` (feature 022, transaction T25): a grant is deleted
+    /// when `leased_at + max_period_ms + 1 minute < now`, so one leased exactly that long before `now` is kept. Public so
+    /// that a test can place its rows on either side of the boundary; the pass passes the database clock.
+    ///
+    /// # Errors
+    /// A store error.
+    #[doc(hidden)]
+    pub async fn purge_rate_grants_as_of(
+        &self,
+        now: OffsetDateTime,
+        keys: u32,
+        limit: u32,
+    ) -> Result<u64, StoreError> {
+        let candidates = sqlx::query(
+            "SELECT DISTINCT g.tenant_id, g.namespace_id, g.pool, g.limit_scope, g.group_name, g.key_digest \
+               FROM rate_limit_grants g \
+               JOIN rate_limit_windows w ON w.tenant_id = g.tenant_id AND w.namespace_id = g.namespace_id \
+                AND w.pool = g.pool AND w.limit_scope = g.limit_scope AND w.group_name = g.group_name \
+                AND w.key_digest = g.key_digest \
+              WHERE g.leased_at IS NOT NULL \
+                AND g.leased_at + make_interval(secs => w.max_period_ms / 1000.0 + 60) < $1 \
+              LIMIT $2",
+        )
+        .bind(now)
+        .bind(i64::from(keys))
+        .fetch_all(self.pool())
+        .await;
+        let candidates = match candidates {
+            Err(error) if absent_table(&error) => return Ok(0),
+            rows => rows.map_err(store_error)?,
+        };
+        let mut deleted = 0u64;
+        for row in &candidates {
+            let tenant: Uuid = col(row, "tenant_id")?;
+            let namespace: Uuid = col(row, "namespace_id")?;
+            let pool: String = col(row, "pool")?;
+            let scope: String = col(row, "limit_scope")?;
+            let group: String = col(row, "group_name")?;
+            let digest: Vec<u8> = col(row, "key_digest")?;
+            let mut tx = self.pool().begin_safely().await.map_err(store_error)?;
+            // the window first, as every transaction that changes a grant of the key (plan transaction T25; D022-038)
+            let window: Option<i32> = sqlx::query_scalar(
+                "SELECT max_period_ms FROM rate_limit_windows WHERE tenant_id = $1 AND namespace_id = $2 AND pool = $3 \
+                 AND limit_scope = $4 AND group_name = $5 AND key_digest = $6 FOR UPDATE SKIP LOCKED",
+            )
+            .bind(tenant)
+            .bind(namespace)
+            .bind(&pool)
+            .bind(&scope)
+            .bind(&group)
+            .bind(&digest)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(store_error)?;
+            // a key another transaction holds (a decision, another replica's purge) is left to a later call
+            let Some(_) = window else {
+                tx.rollback().await.map_err(store_error)?;
+                continue;
+            };
+            let gone = sqlx::query(
+                "DELETE FROM rate_limit_grants g USING rate_limit_windows w \
+                  WHERE w.tenant_id = $1 AND w.namespace_id = $2 AND w.pool = $3 AND w.limit_scope = $4 \
+                    AND w.group_name = $5 AND w.key_digest = $6 \
+                    AND g.tenant_id = w.tenant_id AND g.namespace_id = w.namespace_id AND g.pool = w.pool \
+                    AND g.limit_scope = w.limit_scope AND g.group_name = w.group_name AND g.key_digest = w.key_digest \
+                    AND (g.tenant_id, g.run_id, g.node, g.attempt) IN ( \
+                        SELECT o.tenant_id, o.run_id, o.node, o.attempt FROM rate_limit_grants o \
+                         WHERE o.tenant_id = w.tenant_id AND o.namespace_id = w.namespace_id AND o.pool = w.pool \
+                           AND o.limit_scope = w.limit_scope AND o.group_name = w.group_name \
+                           AND o.key_digest = w.key_digest AND o.leased_at IS NOT NULL \
+                           AND o.leased_at + make_interval(secs => w.max_period_ms / 1000.0 + 60) < $7 \
+                         LIMIT $8)",
+            )
+            .bind(tenant)
+            .bind(namespace)
+            .bind(&pool)
+            .bind(&scope)
+            .bind(&group)
+            .bind(&digest)
+            .bind(now)
+            .bind(i64::from(limit))
+            .execute(&mut *tx)
+            .await
+            .map_err(store_error)?
+            .rows_affected();
+            tx.commit().await.map_err(store_error)?;
+            deleted += gone;
+        }
+        Ok(deleted)
     }
 }
 
