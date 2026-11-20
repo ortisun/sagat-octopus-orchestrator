@@ -2199,7 +2199,7 @@ async fn step_log_carry_spike() {
     let half_pool = usize::try_from(API_POOL / 2).unwrap_or(10);
     let mut body = format!("{}\n", environment(&w).await);
     body.push_str(&format!(
-        "Design 041, T041-35 ({}): the carry of section 2a run by the report hook inside the report transaction of each root completion, against the scratch schema `spike_041`. {runs} runs of three chained activities per measurement. Logs class cap and tickets of (g): {half_pool}.\n\n| Measurement | Transitions/s | Complete p50 / p99 | Carry calls / written / contended / neither | Carry p50 / p99 | S p99 | Batches | Ticket refusals | Commit waits / by ingest / by carry |\n|---|---:|---|---|---|---:|---:|---:|---|\n",
+        "Design 041, T041-35 ({}): the carry of section 2a run by the report hook inside the report transaction of each root completion, against the scratch schema `spike_041`. {runs} runs of three chained activities per measurement. Logs class cap and tickets of (g): {half_pool}.\n\n| Measurement | Transitions/s | Complete p50 / p99 | Carry calls / written (by a refill) / mark-only quota, held, busy / contended / neither | Carry p50 / p99 | S p99 | Batches | Ticket refusals | Commit waits / by ingest / by carry |\n|---|---:|---|---|---|---:|---:|---:|---|\n",
         if run == "3" {
             "third run: one function call, a charge per insert statement to the tenant's exact leases, a new stream written once"
         } else if second_run {
@@ -2238,8 +2238,15 @@ async fn step_log_carry_spike() {
     let mut lines = Vec::new();
     let mut push =
         |body: &mut String, (label, replicas, workers, row): (&str, usize, usize, RowResult)| {
-            let (calls, written, contended, neither, times) =
-                row.carry.clone().unwrap_or((0, 0, 0, 0, Vec::new()));
+            let counts = row.carry.clone().unwrap_or_default();
+            let step_log_spike::CarryCounts {
+                calls,
+                written,
+                contended,
+                neither,
+                ..
+            } = counts;
+            let times = &counts.times;
             if row.carry.is_some() {
                 assert_eq!(
                     usize::try_from(calls).unwrap_or(0),
@@ -2256,7 +2263,9 @@ async fn step_log_carry_spike() {
                 "complete_p50_ms": ms(percentile(&row.completes, 0.50)),
                 "complete_p99_ms": ms(percentile(&row.completes, 0.99)),
                 "carry_calls": calls, "carry_written": written, "carry_contended": contended, "carry_neither": neither,
-                "carry_p50_ms": ms(percentile(&times, 0.50)), "carry_p99_ms": ms(percentile(&times, 0.99)),
+                "carry_written_refill": counts.written_refill, "carry_mark_only_quota": counts.mark_only_quota,
+                "carry_mark_only_held": counts.mark_only_held, "carry_mark_only_busy": counts.mark_only_busy,
+                "carry_p50_ms": ms(percentile(times, 0.50)), "carry_p99_ms": ms(percentile(times, 0.99)),
                 "s_p99_ms": ms(percentile(&row.services, 0.99)), "batches": batches, "ticket_refusals": refusals,
                 "commit_waits": row.commit_waits.0, "commit_waits_by_ingest": row.commit_waits.1,
                 "commit_waits_by_carry": row.carry_waits,
@@ -2265,12 +2274,16 @@ async fn step_log_carry_spike() {
             });
             eprintln!("spike-carry-json {json}");
             body.push_str(&format!(
-            "| {label} {replicas}×{workers} | {:.0} | {:.1} / {:.1} ms | {calls} / {written} / {contended} / {neither} | {:.2} / {:.2} ms | {:.2} ms | {batches} | {refusals} | {} / {} / {} |\n",
+            "| {label} {replicas}×{workers} | {:.0} | {:.1} / {:.1} ms | {calls} / {written} ({}) / {}, {}, {} / {contended} / {neither} | {:.2} / {:.2} ms | {:.2} ms | {batches} | {refusals} | {} / {} / {} |\n",
             row.per_second,
             ms(percentile(&row.completes, 0.50)),
             ms(percentile(&row.completes, 0.99)),
-            ms(percentile(&times, 0.50)),
-            ms(percentile(&times, 0.99)),
+            counts.written_refill,
+            counts.mark_only_quota,
+            counts.mark_only_held,
+            counts.mark_only_busy,
+            ms(percentile(times, 0.50)),
+            ms(percentile(times, 0.99)),
             ms(percentile(&row.services, 0.99)),
             row.commit_waits.0,
             row.commit_waits.1,
@@ -2368,7 +2381,7 @@ async fn step_log_carry_diag() {
     // `hot` (run 44730444900, D041-106) or `cost` (D041-107: the carry's cost at 1 × 16 with no charge, then (a) and
     // (g) at 8 × 128 with the second run's charge, where rounds 4 and 5 of D041-105 stopped).
     let set = std::env::var("SAGAT_PERF_DIAG_SET").unwrap_or_else(|_| "hot".to_owned());
-    if set == "third" {
+    if set == "third" || set == "split" {
         // The third run's shape (ADR-0097's leases, D041-111's stream written once) in place of the modes above.
         step_log_spike::install_leases(&w.db.pool).await;
         step_log_spike::install_third_run_storage(&w.db.pool).await;
@@ -2436,6 +2449,19 @@ async fn step_log_carry_diag() {
         ("f3", 1, 16, Some(10), false, true, "lease", "full"),
         ("g3", 1, 16, Some(10), true, false, "lease", "full"),
     ];
+    // T041-35 after run 44766210424: the carries' outcome split (written, by a refill, mark-only by cause) of the third
+    // shape at both sizes, and its 8 × 128 rows with and without the pools filled first (D041-110), paired.
+    let split: Vec<DiagRow> = vec![
+        ("off-1K", 1, 16, None, false, false, "lease", "full"),
+        ("a3", 1, 16, Some(10), false, false, "lease", "full"),
+        ("f3", 1, 16, Some(10), false, true, "lease", "full"),
+        ("g3", 1, 16, Some(10), true, false, "lease", "full"),
+        ("h3", 1, 16, Some(64), false, false, "lease", "full"),
+        ("off-1K", 8, 128, None, false, false, "lease", "full"),
+        ("a3", 8, 128, Some(10), false, false, "lease", "full"),
+        ("off-1K-cold", 8, 128, None, false, false, "lease", "full"),
+        ("a3-cold", 8, 128, Some(10), false, false, "lease", "full"),
+    ];
     let repro: Vec<DiagRow> = vec![
         ("a-cold", 8, 128, Some(10), false, false, "tenant", "full"),
         ("g-cold", 8, 128, Some(10), true, false, "tenant", "full"),
@@ -2449,6 +2475,7 @@ async fn step_log_carry_diag() {
         for row in match set.as_str() {
             "cost" => &cost,
             "third" => &third,
+            "split" => &split,
             _ => &hot,
         } {
             plan.push((repetition, *row));
@@ -2486,17 +2513,19 @@ async fn step_log_carry_diag() {
             };
             let row = step_log_spike::run_row(&w, chain, &spec, &activities).await;
             let diag = row.diag.clone().unwrap_or_default();
-            let (calls, written) = row
-                .carry
-                .as_ref()
-                .map_or((0, 0), |(calls, written, ..)| (*calls, *written));
+            let counts = row.carry.clone().unwrap_or_default();
             let line = json!({
                 "repetition": repetition, "label": label, "mode": mode, "carry_mode": carry_mode,
                 "replicas": replicas, "workers": workers,
                 "transitions": row.transitions, "per_second": row.per_second,
                 "complete_p50_ms": ms(percentile(&row.completes, 0.50)),
                 "complete_p99_ms": ms(percentile(&row.completes, 0.99)),
-                "carry_calls": calls, "carry_written": written,
+                "carry_calls": counts.calls, "carry_written": counts.written,
+                "carry_written_refill": counts.written_refill, "carry_mark_only_quota": counts.mark_only_quota,
+                "carry_mark_only_held": counts.mark_only_held, "carry_mark_only_busy": counts.mark_only_busy,
+                "carry_contended": counts.contended, "carry_neither": counts.neither,
+                "carry_p50_ms": ms(percentile(&counts.times, 0.50)),
+                "carry_p99_ms": ms(percentile(&counts.times, 0.99)),
                 "s_p99_ms": ms(percentile(&row.services, 0.99)),
                 "commit_waits": row.commit_waits.0,
                 "diag": diag,

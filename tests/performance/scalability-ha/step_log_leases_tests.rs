@@ -593,10 +593,11 @@ async fn a_short_steps_carry_writes_its_new_stream_once() {
         count_stream_updates(pool).await;
         // A first carry leases (a refill), so that the measured one charges a free lease.
         let mut tx = pool.begin().await.expect("begin");
-        carry_call(tenant, Uuid::new_v4(), Uuid::new_v4())
+        let first = carry_call(tenant, Uuid::new_v4(), Uuid::new_v4())
             .fetch_one(&mut *tx)
             .await
             .expect("a first carry");
+        assert_eq!(first, "written:refill", "the first carry leases on the slow path");
         tx.commit().await.expect("commit");
         for _ in 0..8 {
             let evicted = evictions(pool).await;
@@ -665,7 +666,7 @@ async fn a_carry_onto_an_existing_stream_updates_it_hot() {
         .expect("a long step's stream");
         let mut tx = pool.begin().await.expect("begin");
         let outcome = carry_call(tenant, run, step).fetch_one(&mut *tx).await.expect("the carry");
-        assert_eq!(outcome, "written");
+        assert_eq!(outcome, "written:refill", "the tenant's first carry leases on the slow path");
         assert_eq!(table_writes(&mut tx, "step_log_streams").await, (0, 1, 1), "one update, HOT");
         tx.commit().await.expect("commit");
     })
@@ -786,7 +787,7 @@ async fn a_carry_never_waits_for_the_usage_row() {
         )
         .await;
         assert!(
-            matches!(&outcome, Ok(Ok(o)) if o == "mark_only"),
+            matches!(&outcome, Ok(Ok(o)) if o == "mark_only:busy"),
             "the carry waited or did not record its mark: {outcome:?}"
         );
         assert_eq!(
@@ -822,7 +823,7 @@ async fn a_long_steps_carry_refused_by_the_limit_records_its_mark_on_its_stream(
         .expect("a long step's stream");
         let mut tx = pool.begin().await.expect("begin");
         let outcome = carry_call(tenant, run, step).fetch_one(&mut *tx).await.expect("the carry answers");
-        assert_eq!(outcome, "mark_only");
+        assert_eq!(outcome, "mark_only:quota");
         tx.commit().await.expect("the report's transaction commits");
         let (reason, dropped, final_set, lines): (Option<String>, i64, bool, i64) = sqlx::query_as(
             "SELECT ceiling_reason, dropped_by_server, final_at IS NOT NULL, \
@@ -924,7 +925,7 @@ async fn a_carry_refused_by_the_limit_records_its_mark_in_the_same_call() {
             .fetch_one(&mut *tx)
             .await
             .expect("the carry answers");
-        assert_eq!(outcome, "mark_only");
+        assert_eq!(outcome, "mark_only:quota");
         assert_eq!(run_lines(&mut tx, run).await, (1, 0), "the mark-only stream, no line kept");
         tx.commit().await.expect("the report's transaction commits");
         let (reason, dropped, final_set): (Option<String>, i64, bool) = sqlx::query_as(
@@ -936,4 +937,78 @@ async fn a_carry_refused_by_the_limit_records_its_mark_in_the_same_call() {
         assert_eq!((reason.as_deref(), dropped, final_set), (Some("tenant_quota"), 10, true));
     })
     .await;
+}
+
+/// T041-35's outcome split: a carry refused while the room it needs is in a lease an open transaction holds records its
+/// mark as `mark_only:held`, told apart from a refusal by the limit (`mark_only:quota`) and from a held usage row
+/// (`mark_only:busy`). Limit 2 MiB; a committed charge of 1 byte leases 32,768 (1/64 of the free room); a second
+/// transaction charges 1 byte from that lease and stays open (it holds the lease, not the usage row); a committed charge
+/// of 2,097,152 − 32,768 − 2,000 leases exactly that on a lease of its own, leaving 2,000 free; the carry needs
+/// 10 × (200 + 128) = 3,280, more than 2,000 and less than 2,000 plus the held lease's 32,766 of room.
+#[tokio::test]
+async fn a_carry_refused_while_the_room_is_in_a_held_lease_says_held() {
+    bounded::within("carry held", LIMIT, async {
+        let (w, tenant) = leased_world(2_097_152).await;
+        super::install_third_run_storage(&w.db.pool).await;
+        let pool = &w.db.pool;
+        charge_committed(pool, tenant, 1)
+            .await
+            .expect("the first lease");
+        let mut holder = pool.begin().await.expect("begin");
+        charge(&mut holder, tenant, 1)
+            .await
+            .expect("a charge from the first lease, held");
+        charge_committed(pool, tenant, 2_097_152 - 32_768 - 2_000)
+            .await
+            .expect("all but 2,000 bytes and the held lease");
+        let mut tx = pool.begin().await.expect("begin");
+        let run = Uuid::new_v4();
+        let outcome = carry_call(tenant, run, Uuid::new_v4())
+            .fetch_one(&mut *tx)
+            .await
+            .expect("the carry answers");
+        assert_eq!(outcome, "mark_only:held");
+        assert_eq!(
+            run_lines(&mut tx, run).await,
+            (1, 0),
+            "the mark-only stream, no line kept"
+        );
+        tx.commit().await.expect("the report's transaction commits");
+        holder.rollback().await.expect("rollback");
+    })
+    .await;
+}
+
+/// T041-35's outcome split: each answer of the carry lands in one counter, a refill's write in `written` too.
+#[test]
+fn the_carry_hook_counts_each_outcome_in_its_own_counter() {
+    let hook = super::CarryHook::new(10, 200);
+    for outcome in [
+        "written",
+        "written:refill",
+        "mark_only:quota",
+        "mark_only:held",
+        "mark_only:held",
+        "mark_only:busy",
+        "mark_only:busy",
+        "mark_only:busy",
+        "contended",
+        "contended:busy",
+        "off",
+    ] {
+        hook.count(outcome);
+    }
+    let c = hook.counts();
+    assert_eq!(
+        (
+            c.written,
+            c.written_refill,
+            c.mark_only_quota,
+            c.mark_only_held,
+            c.mark_only_busy,
+            c.contended,
+            c.neither
+        ),
+        (2, 1, 1, 2, 3, 2, 1)
+    );
 }

@@ -547,7 +547,7 @@ pub async fn install_third_run_storage(pool: &PgPool) {
             k text; r record; v_state text; v_constraint text; v_stream bigint;
             v_records bigint := 10000; v_bytes bigint := 1048576; v_retention integer := 14;
             v_records_scoped boolean := false; v_bytes_scoped boolean := false; v_retention_scoped boolean := false;
-            v_usage bigint; v_kept integer; v_kept_bytes bigint; v_charge bigint;
+            v_usage bigint; v_kept integer; v_kept_bytes bigint; v_charge bigint; v_cause text; v_outcome text;
         BEGIN
             PERFORM set_config('application_name', p_application, true);
             -- A carry never waits for the usage row: its charge's refill takes it NOWAIT (D041-112). Transaction-local,
@@ -591,16 +591,21 @@ pub async fn install_third_run_storage(pool: &PgPool) {
                 RETURN spike_041.step_log_carry_write(p_tenant, p_namespace, p_run, p_step, p_node, p_attempt,
                     p_generation, p_messages, v_retention, v_records, v_bytes, v_kept, v_kept_bytes);
             END IF;
-            -- The slow path: a refill is needed; its refusal or a held usage row is answered here, in the same call.
+            -- The slow path: a refill is needed; its refusal or a held usage row is answered here, in the same call. The
+            -- outcome names the path and the cause (T041-35's split): `written:refill`, `mark_only:quota` (the limit),
+            -- `mark_only:held` (the room is in leases open transactions hold), `mark_only:busy` (the usage row was held).
             BEGIN
-                RETURN spike_041.step_log_carry_write(p_tenant, p_namespace, p_run, p_step, p_node, p_attempt,
+                v_outcome := spike_041.step_log_carry_write(p_tenant, p_namespace, p_run, p_step, p_node, p_attempt,
                     p_generation, p_messages, v_retention, v_records, v_bytes, v_kept, v_kept_bytes);
+                RETURN CASE WHEN v_outcome = 'written' THEN 'written:refill' ELSE v_outcome END;
             EXCEPTION WHEN program_limit_exceeded OR lock_not_available THEN
                 GET STACKED DIAGNOSTICS v_state = RETURNED_SQLSTATE, v_constraint = CONSTRAINT_NAME;
                 IF v_state <> '55P03'
                    AND v_constraint NOT IN ('tenant_step_log_quota_exceeded', 'tenant_step_log_quota_held') THEN
                     RAISE;
                 END IF;
+                v_cause := CASE WHEN v_state = '55P03' THEN 'busy'
+                                WHEN v_constraint = 'tenant_step_log_quota_held' THEN 'held' ELSE 'quota' END;
                 -- Mark-only: the final mark and the records counted dropped (tenant_quota), nothing charged.
                 INSERT INTO spike_041.step_log_streams (tenant_id, public_id, namespace_id, run_id, step_id, node,
                         instance_path_nodes, instance_path_indices, attempt, generation, retention_days,
@@ -613,7 +618,7 @@ pub async fn install_third_run_storage(pool: &PgPool) {
                                       AND generation = p_generation AND source = 'worker')
                 ON CONFLICT (tenant_id, run_id, step_id, attempt, generation, source) DO NOTHING
                 RETURNING stream_id INTO v_stream;
-                IF v_stream IS NOT NULL THEN RETURN 'mark_only'; END IF;
+                IF v_stream IS NOT NULL THEN RETURN 'mark_only:' || v_cause; END IF;
                 -- An existing stream (a long step's): the rolled-back block released its row; take it again, if free.
                 UPDATE spike_041.step_log_streams
                    SET last_sequence = GREATEST(last_sequence, last_sequence + v_kept),
@@ -626,7 +631,7 @@ pub async fn install_third_run_storage(pool: &PgPool) {
                           AND removed_at IS NULL AND expires_at > clock_timestamp()
                           FOR UPDATE SKIP LOCKED)
                 RETURNING stream_id INTO v_stream;
-                RETURN CASE WHEN v_stream IS NOT NULL THEN 'mark_only' ELSE 'contended' END;
+                RETURN CASE WHEN v_stream IS NOT NULL THEN 'mark_only:' ELSE 'contended:' END || v_cause;
             END;
         END $$",
     ];
@@ -1171,6 +1176,22 @@ type PolicyRead = (
     Option<i64>,
 );
 
+/// The carry hook's counters at the end of a row (T041-35). `calls` = `written` + the three mark-only causes +
+/// `contended` + `neither`; `written_refill` is part of `written`.
+#[derive(Clone, Debug, Default)]
+#[cfg_attr(not(feature = "perf-spike"), allow(dead_code))]
+pub struct CarryCounts {
+    pub calls: u64,
+    pub written: u64,
+    pub written_refill: u64,
+    pub mark_only_quota: u64,
+    pub mark_only_held: u64,
+    pub mark_only_busy: u64,
+    pub contended: u64,
+    pub neither: u64,
+    pub times: Vec<Duration>,
+}
+
 /// The carry of design 041 section 2a, statements CA to CE of data-model.md §8a, run by the report hook inside the
 /// report transaction of a root attempt, before its commit. It plans inline the two cases the workloads meet: a new
 /// stream, and a stream holding one batch, every record kept.
@@ -1183,6 +1204,12 @@ pub struct CarryHook {
     pub written: AtomicU64,
     pub contended: AtomicU64,
     pub neither: AtomicU64,
+    /// The third shape's outcome split (T041-35, the coordinator's request of 2026-11-20): of `written`, the carries
+    /// that took the slow path (a refill); and the mark-only answers by cause, which `neither` no longer counts.
+    pub written_refill: AtomicU64,
+    pub mark_only_quota: AtomicU64,
+    pub mark_only_held: AtomicU64,
+    pub mark_only_busy: AtomicU64,
     pub times: std::sync::Mutex<Vec<Duration>>,
     /// T041-35's second run (`SAGAT_PERF_STEP_LOG_CARRY_RUN=2`): the carry as one call of `spike_041.step_log_carry`.
     pub one_call: bool,
@@ -1207,6 +1234,10 @@ impl CarryHook {
             written: AtomicU64::new(0),
             contended: AtomicU64::new(0),
             neither: AtomicU64::new(0),
+            written_refill: AtomicU64::new(0),
+            mark_only_quota: AtomicU64::new(0),
+            mark_only_held: AtomicU64::new(0),
+            mark_only_busy: AtomicU64::new(0),
             times: std::sync::Mutex::new(Vec::new()),
             probe: false,
             timed: crate::step_log_diag::enabled(),
@@ -1436,13 +1467,47 @@ impl CarryHook {
         .bind(CARRY_APPLICATION)
         .fetch_one(&mut *conn)
         .await?;
-        match outcome.as_str() {
-            "written" => self.written.fetch_add(1, Ordering::Relaxed),
-            "contended" => self.contended.fetch_add(1, Ordering::Relaxed),
-            _ => self.neither.fetch_add(1, Ordering::Relaxed),
-        };
+        self.count(&outcome);
         self.record(started);
         Ok(())
+    }
+
+    /// Counts one answer of `spike_041.step_log_carry`: `written`, `written:refill`, `mark_only:<cause>`,
+    /// `contended[:<cause>]`, anything else `neither`.
+    #[cfg_attr(not(feature = "perf-spike"), allow(dead_code))]
+    pub fn count(&self, outcome: &str) {
+        let counter = match outcome {
+            "written" => &self.written,
+            "written:refill" => {
+                self.written_refill.fetch_add(1, Ordering::Relaxed);
+                &self.written
+            }
+            "mark_only:quota" => &self.mark_only_quota,
+            "mark_only:held" => &self.mark_only_held,
+            "mark_only:busy" => &self.mark_only_busy,
+            o if o == "contended" || o.starts_with("contended:") => &self.contended,
+            _ => &self.neither,
+        };
+        counter.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// The counters as the reports print them.
+    #[cfg_attr(not(feature = "perf-spike"), allow(dead_code))]
+    pub fn counts(&self) -> CarryCounts {
+        let mut times = self.times.lock().map(|t| t.clone()).unwrap_or_default();
+        times.sort_unstable();
+        let load = |c: &AtomicU64| c.load(Ordering::Relaxed);
+        CarryCounts {
+            calls: load(&self.calls),
+            written: load(&self.written),
+            written_refill: load(&self.written_refill),
+            mark_only_quota: load(&self.mark_only_quota),
+            mark_only_held: load(&self.mark_only_held),
+            mark_only_busy: load(&self.mark_only_busy),
+            contended: load(&self.contended),
+            neither: load(&self.neither),
+            times,
+        }
     }
 
     #[cfg_attr(not(feature = "perf-spike"), allow(dead_code))]
@@ -1523,10 +1588,10 @@ pub struct RowResult {
     pub commit_waits: (u64, u64),
     pub deltas_bytes: (i64, i64),
     pub held_for: Option<Duration>,
-    /// T041-35: the carry hook's counters (calls, written, contended, neither) and statement times, sorted. Read
-    /// only by the carry spike, which needs `perf-spike`.
+    /// T041-35: the carry hook's counters and statement times, sorted. Read only by the carry spike, which needs
+    /// `perf-spike`.
     #[cfg_attr(not(feature = "perf-spike"), allow(dead_code))]
-    pub carry: Option<(u64, u64, u64, u64, Vec<Duration>)>,
+    pub carry: Option<CarryCounts>,
     /// 10 ms samples of a commit wait whose blocker was a carrying report.
     #[cfg_attr(not(feature = "perf-spike"), allow(dead_code))]
     pub carry_waits: u64,
@@ -2055,17 +2120,7 @@ pub async fn run_row(
         deltas_bytes: (deltas_before, deltas_after),
         held_for,
         diag,
-        carry: hook.filter(|hook| !hook.probe).map(|hook| {
-            let mut times = hook.times.lock().map(|t| t.clone()).unwrap_or_default();
-            times.sort_unstable();
-            (
-                hook.calls.load(Ordering::Relaxed),
-                hook.written.load(Ordering::Relaxed),
-                hook.contended.load(Ordering::Relaxed),
-                hook.neither.load(Ordering::Relaxed),
-                times,
-            )
-        }),
+        carry: hook.filter(|hook| !hook.probe).map(|hook| hook.counts()),
         carry_waits,
     }
 }
