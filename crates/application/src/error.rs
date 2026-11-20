@@ -131,6 +131,7 @@ impl StoreError {
             Self::Internal { .. } => "internal",
             Self::UnreadableDefinition => "unreadable_definition",
             Self::BusinessIdHeld { .. } => "business_id_held",
+            Self::FlowControl(_) => "flow_control",
         }
     }
 
@@ -452,6 +453,12 @@ mod tests {
                     reusable_after: None,
                 },
                 "business_id_held",
+            ),
+            (
+                StoreError::FlowControl(crate::flow_control::FlowControlRefusal::Limit {
+                    limit: canary,
+                }),
+                "flow_control",
             ),
         ];
         let mut seen = std::collections::BTreeSet::new();
