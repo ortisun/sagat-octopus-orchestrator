@@ -819,3 +819,20 @@ passed).
 | Mutation 21 | The refill overrides a caller's lower `lock_timeout` (`IF true THEN`) | `a_callers_lower_lock_timeout_is_kept`: the stage "lower timeout kept" did not finish within 60 s (the staged tests' 300 s budget, replacing the caller's 100 ms) |
 
 Each of the six failed only its named test (33 of the 34 passed under each).
+
+Then, for decision D041-121 (the answers to the second re-reads), each fix seen failing before it was made:
+
+- **The fourth run's setup on a full pool.** `the_setup_lease_fills_a_full_pool_and_folds_ended_leases` (not ignored)
+  runs the setup on a pool of two connections after an ended backend's lease. On the code of `9361a112` it failed:
+  "fold the leases of ended backends: pool timed out while waiting for an open connection", the defect that would have
+  stopped every row of the fourth run. With the fold on a held connection it passes; it also checks that the ended
+  lease is folded and that each filled connection holds a 1 MiB grant charged its share, *u* for *i* = 3 and 4.
+- **The busy reason in the domain.** `the_contracts_ceiling_reasons_are_the_domains` (`contract_platform_foundation`)
+  failed before the variant: the contract's set {`attempt_bytes`, `attempt_records`, `tenant_quota`,
+  `tenant_quota_busy`} against the domain's three. With `CeilingReason::TenantQuotaBusy` it passes, and the domain's
+  step-log unit tests pass (15).
+- **Hand mutation 14 again** (the ensure refills even with room, `ELSIF false AND EXISTS …`): the ensure-with-room
+  assertion of `the_ensure_before_a_report_gives_the_carry_its_fast_path` now checks the answer `room` (before, a
+  bounded ensure that waited answered `busy` within its budget and still passed). Under the mutation that test fails
+  ("an ensure with room answers from the lease, without the usage row"), and so does
+  `the_ensure_answers_without_raising`; 33 of the 35 lease tests passed. After the restore a fresh build passed the whole performance test binary (51 tests, 10 ignored benchmarks).

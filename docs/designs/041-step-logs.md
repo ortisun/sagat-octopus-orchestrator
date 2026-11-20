@@ -2329,7 +2329,9 @@ Slice A, decisions, contracts and the spike:
     index ⌈0.99 *n*⌉ − 1 of the sorted times), the longest refill-written and mark-only carry (the carry's whole time,
     not the refill's wait alone), the tenant's lease rows after the row, and, from each completion tagged with its
     carry's path, the completion p99 over the completions whose carry took neither a refill nor a mark-only answer
-    (`complete_p99_without_slow_paths_ms`, decision D041-121).
+    (`complete_p99_without_slow_paths_ms`, with the count it leaves out, `complete_slow_paths_tagged`, which must equal
+    the row's `written:refill` and `mark_only` carries) and the fast path's carry p99 (`carry_fast_p99_ms`; decision
+    D041-121).
     *What the change is expected to do*, from runs 44783898911 and 44793160071, written before any round (those runs and
     the second and third runs were on the build before `5458820b`, so each comparison below is across builds): no
     `mark_only` answer (the tenant is at the catalogue's maximum, so nothing is refused or held, and a refill finds the
@@ -2765,7 +2767,8 @@ Slice B, the server stores:
     call with a mark-only final mark, its outcome and output as without a carry, its records counted `tenant_quota`, no
     re-run; for a completion and for a failure;
   - the ensure before a report: a fresh connection's first carry finds its room made; an ensure at the tenant's limit
-    answers `limit` and the report lands with a mark-only carry and no refill; an ensure whose usage row is held past
+    answers `limit` and the report lands with a mark-only carry and no refill; an ensure whose missing room is in a
+    lease an open transaction holds answers `held` and the report lands the same way; an ensure whose usage row is held past
     its budget answers `busy` and the report lands; an ensure whose lease a prepared transaction holds answers `busy`;
     an ensure whose transaction raises (the usage row held and the ensure run under a statement timeout of 100 ms,
     `57014` on the prototype) is answered `error` and the report lands as if no ensure had run; after an ensure answered
