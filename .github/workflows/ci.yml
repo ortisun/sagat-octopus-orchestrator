@@ -295,6 +295,9 @@ jobs:
       - name: design docs
         if: needs.changes.outputs.full == 'true'
         run: python3 scripts/check-design-docs.py
+      - name: documentation index
+        if: needs.changes.outputs.full == 'true'
+        run: python3 scripts/check-docs-index.py
 
   sdks:
     name: sdks (unit tests, conformance suite, user stories, faults)
