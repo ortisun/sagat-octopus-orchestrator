@@ -71,7 +71,10 @@ Facts of the code that shape the change:
 3. The carry MUST be written by the transaction that records the report, after the report's own checks and the engine's change
    and before the commit, and only when the report is recorded now (never on a replay, never on a refused report). The worker and
    execution modules MUST reach the step-log tables only through one port, `StepLogCarryTx`, whose one method makes that call
-   and holds no rule. The function plans the carry from the policy and the stream it reads; the domain's `plan_batch` stays
+   and holds no rule; and, before the report's transaction, through the store's method that begins a carrying report,
+   which runs ADR-0097's ensure on the connection it acquired and returns its answer as a closed `CarryRoom`, holding no
+   rule either: the application maps a `Limit` or `Held` answer to a mark-only carry plan (revised by design 041's
+   decision D041-121). The function plans the carry from the policy and the stream it reads; the domain's `plan_batch` stays
    the rule, and a property test requires the two to plan alike. A carry needs no session: the report's own checks (lease, binding and membership under their locks)
    apply, and a carry MUST be ignored when the caller's role is runner or database-runner or the step is a managed step, as the
    ingest refuses them.
@@ -93,11 +96,13 @@ Facts of the code that shape the change:
    transaction fails because of its carry otherwise, the report MUST be recorded by a re-run of the report with the
    carry downgraded: after a raise of a guard of the step-log quota that the block does not catch (or on the fast path,
    where no block runs), a mark-only carry that charges nothing; after a failed carry statement, none. The carry only goes down, and each downgrade can
-   meet the content-quota fallback once, so a report runs at most four transactions. The two causes MUST reach the re-run as values of their own, never as an ordinary unavailability, which the
+   meet the content-quota fallback once, so a report runs at most four transactions, besides the ensure's own
+   transaction before them (ADR-0097 decision 3b). The two causes MUST reach the re-run as values of their own, never as an ordinary unavailability, which the
    server never re-runs. A fallback refill that waits for the usage row past its budget (ADR-0097 decisions 3b and 4,
    D041-119) MUST NOT fail the report: the carry's block answers it in the same call with a mark-only final mark whose
    reason is `tenant_quota_busy`, counted and alerted, and the report lands. When the ensure before the report answered
-   that the quota is full or held, the carry answers mark-only at once, without a refill. Item 1 of ADR-0027's Amendment then reads "a step-log charge never blocks a terminal state: a report whose step-log rows
+   that the quota is full or held, the carry answers mark-only at once, without a refill; after any other answer the
+   carry may still fall back, so a report waits on the usage row at most twice, once under its run lock. Item 1 of ADR-0027's Amendment then reads "a step-log charge never blocks a terminal state: a report whose step-log rows
    do not fit records them as dropped in the same call, and only a guard the call does not answer leads to a re-run without them". A report whose output or failure code holds a declared secret, root or
    scoped, and a report re-run for its retained content, write a mark-only carry.
 6. Within an attempt, stored lines MUST stay in sequence order under the read order of ADR-0084 decision 9 (storing transaction
@@ -147,7 +152,8 @@ two-second wait disappears for short steps.
 
 Bad: the report's transaction holds the run row while its carry's one call runs (one round trip; a subtransaction only
 on the fallback path) and fires one statement-trigger call that charges the writer's lease (ADR-0097; the usage row
-only for a fallback refill, waited for at most 200 ms; the store's ensure before the report, when the lease is short,
+only for a fallback refill, each lock acquisition waited for at most 200 ms and the statement timeout the hard bound;
+the store's ensure before the report, when the lease is short,
 is a transaction of its own under no run lock); a report that
 also stores output takes the usage row at its commit for the content class, as today. Spike T041-35 measures it. Part of a rule (the carry's plan) runs in SQL, kept equal
 to the domain's by a property test. A carry that finds a step-log lock held stores nothing (`contended`), so a rare contention loses that attempt's last
