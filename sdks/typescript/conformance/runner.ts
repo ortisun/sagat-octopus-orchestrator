@@ -100,6 +100,8 @@ function builderOf(definition: Obj): WorkflowBuilder {
   if (definition['limits']) builder.limits(definition['limits']);
   if (definition['state']) builder.state(definition['state'] as StateDefinition);
   if (definition['chainPolicy']) builder.chainPolicy(definition['chainPolicy']);
+  if (definition['concurrency']) builder.concurrency(definition['concurrency']);
+  if (definition['rateLimit']) builder.rateLimit(definition['rateLimit']);
   for (const [name, bodyDefinition] of Object.entries<Obj>(definition['bodies'] ?? {})) {
     const nested = body();
     apply(nested, bodyDefinition['program']);

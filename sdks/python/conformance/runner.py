@@ -41,9 +41,11 @@ from sagat_octopus_orchestrator import (
     BlobOutput,
     Body,
     ClientConfig,
+    ConcurrencyPolicy,
     Flow,
     Operator,
     QueryDefinition,
+    RateLimitPolicy,
     Reset,
     RetryPolicy,
     Run,
@@ -136,17 +138,37 @@ def operators(stages: list[Obj] | None) -> list[Operator] | None:
     return chain
 
 
+def concurrency_policy(policy: Obj) -> ConcurrencyPolicy:
+    """A scenario's ``concurrency`` in the IR's names, built through the public type (feature 022)."""
+    return ConcurrencyPolicy(**snake(policy))
+
+
+def rate_limit_policy(policy: Obj) -> RateLimitPolicy:
+    """A scenario's ``rateLimit`` in the IR's names, built through the public type (feature 022)."""
+    return RateLimitPolicy(**snake(policy))
+
+
+def gated(options: Obj | None) -> Obj:
+    """Step or script options in Python's names, with their flow-control policies as the public types."""
+    named = snake(options)
+    if named.get("concurrency") is not None:
+        named["concurrency"] = concurrency_policy(named["concurrency"])
+    if named.get("rate_limit") is not None:
+        named["rate_limit"] = rate_limit_policy(named["rate_limit"])
+    return named
+
+
 def apply(target: Flow, ops: list[Obj]) -> None:
     for op in ops:
         kind = op["op"]
         if kind == "step":
-            target.step(op["id"], op["activity"], **snake(op.get("options")))
+            target.step(op["id"], op["activity"], **gated(op.get("options")))
         elif kind == "database":
             target.database(op["id"], **snake(op["options"]))
         elif kind == "icebergWrite":
             target.iceberg_write(op["id"], **snake(op["options"]))
         elif kind == "script":
-            target.script(op["id"], op["artifactDigest"], **snake(op.get("options")))
+            target.script(op["id"], op["artifactDigest"], **gated(op.get("options")))
         elif kind == "sleep":
             target.sleep(op["id"], op["durationMs"])
         elif kind == "waitForEvent":
@@ -291,6 +313,10 @@ def builder_of(definition: Obj) -> Any:
     if definition.get("chainPolicy") is not None:
         policy = definition["chainPolicy"]
         builder.chain_policy(max_segments=policy["maxSegments"], timeout_ms=policy["timeoutMs"])
+    if definition.get("concurrency") is not None:
+        builder.concurrency(concurrency_policy(definition["concurrency"]))
+    if definition.get("rateLimit") is not None:
+        builder.rate_limit(rate_limit_policy(definition["rateLimit"]))
     for name, body_definition in (definition.get("bodies") or {}).items():
         nested = body()
         apply(nested, body_definition["program"])

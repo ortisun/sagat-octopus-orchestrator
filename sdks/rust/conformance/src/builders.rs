@@ -193,6 +193,12 @@ pub fn builder_of(definition: &Value) -> Result<Builder, SagatError> {
     if let Some(policy) = definition.get("chainPolicy") {
         builder.chain_policy(number(policy, "maxSegments"), number(policy, "timeoutMs"));
     }
+    if let Some(policy) = definition.get("concurrency") {
+        builder.concurrency(decode(policy.clone())?);
+    }
+    if let Some(policy) = definition.get("rateLimit") {
+        builder.rate_limit(decode(policy.clone())?);
+    }
     if let Some(bodies) = definition.get("bodies").and_then(Value::as_object) {
         for (name, definition) in bodies {
             let body = Builder::flow();
