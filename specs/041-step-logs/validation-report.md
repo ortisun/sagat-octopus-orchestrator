@@ -260,3 +260,102 @@ three rounds either.
 For O041-036, which is the owner's to answer: option (a), measuring on a quiet machine, is now done. It shows the
 failure is not noise. By the path O041-036 recommends ("(b) if (a') meets the criterion there and (c) or (e) if it
 does not"), (a') did not meet the criterion consistently. It fell short by less than one point at the medians.
+
+## 2026-11-20 — T041-35, the spike of the carry (OD-2026-11-19-1)
+
+**Result: T041-35 fails gate (2), the completion p99, at both sizes; gates (1), (3) and (4) pass. By its rule the
+design changes and is reviewed again before T041-5 starts.** The owner question is O041-039 in
+[research.md](research.md). T041-35 stays unticked.
+
+### How it was measured
+
+`SAGAT_PERF_STEP_LOG_SPIKE=1 SAGAT_PERF_STEP_LOG_CARRY=1 SAGAT_PERF_SCENARIOS=step_log_carry_spike
+SAGAT_PERF_CARGO_FEATURES=perf-spike tests/performance/scalability-ha/run.sh`, one invocation per round on a fresh
+database, the driver at commit 2c6ad584. The report hook (`sagat-infra-postgres`'s `perf-spike` feature, enabled only by
+`sagat-tests --features perf-spike`) runs the carry's statements CA, CB, CC, CC′, CD and CE of data-model.md §8a inside
+the real report transaction of each root completion, before its `COMMIT`, against the scratch tables `spike_041`
+(their text charged to the `log` class through the ADR-0027 triggers). The plan is inline (a new stream, or a stream
+holding one batch, every record kept). Departures, recorded with no threshold of their own: the hook runs right before
+the commit, after the journal writes, as section 2a says, but in `PgRunTx::commit` rather than in `finish`; the tenant's
+`tenant_log_bytes` stands in for `tenant_step_log_bytes`; the resources' defaults are used. Workloads, 3,000 runs of
+three chained activities per measurement, 9,000 transitions each: (a) ten 200-byte lines carried on every completion,
+1 KiB output differing per task; (f) the same with output `{}`; (g) one `AppendStepLogs` batch of ten lines (stream lock
+in T3), its answer awaited, then a carry of ten more, cap and tickets 10; (h) 64-record carries at 1 × 16; (d) (a) at
+1 × 16 with a transaction held for the measurement. Off-1K and off-{} are capture off with the 1 KiB and `{}` outputs,
+each taken first and again at the end of its size.
+
+Rule (fixed in T041-35 before the first round, with the waiting rule the coordinator set on 2026-11-19: each round waits
+at most 45 minutes for a 1-minute load under 3, else runs marked "not quiet"; at most six attempts): a round is void
+when a size's two off figures differ by more than 10% or more than 0.1% of a workload's carries were not written; gates
+(1) to (3) pass on the median of three valid rounds (two quiet rounds meeting it), gate (4) in every valid round.
+
+### Environment
+
+Apple M3 Max (16 logical cores), 48 GiB; Darwin 25.3.0 arm64; release build; PostgreSQL 18.6 (Homebrew) on the same
+machine, `shared_buffers=2621448kB`, `effective_cache_size=20971528kB`, `work_mem=16384kB`, `max_connections=400`,
+`max_wal_size=16384MB`, `checkpoint_timeout=900s`, `wal_level=replica`, `fsync=on`, `synchronous_commit=on`,
+`full_page_writes=on`. Other work on the machine (virtual machines, desktop applications, another project's tests) was
+not touched. The machine rebooted between attempts 1 and 2.
+
+| Attempt | Waited | Load at start (1 / 5 / 15) | Load at end | Quiet | Valid |
+|---|---:|---|---|---|---|
+| 1 | 315 s | 2.87 / 4.12 / 4.44 | 17.32 / 14.70 / 9.44 | yes | **void**: off-1K at 8 × 128 drifted 22.2% |
+| 2 | 2,220 s | 2.98 / 11.04 / 14.14 | 8.05 / 9.64 / 12.62 | yes | yes (drifts ≤ 0.8%) |
+| 3 | 120 s | 2.93 / 7.24 / 11.29 | 9.70 / 8.59 / 10.74 | yes | yes (drifts ≤ 0.9%) |
+| 4 | 120 s | 2.94 / 6.34 / 9.56 | 10.57 / 8.58 / 9.63 | yes | yes (drifts ≤ 2.5%) |
+
+Every carry of every valid round was written (9,000 of 9,000 in each workload; none `contended`, none skipped), and the
+hook fired once per completion.
+
+### Transitions per second and completion p50 / p99 (ms), valid rounds
+
+| Measurement | Round 2 | Round 3 | Round 4 |
+|---|---|---|---|
+| 1×16 off-1K | 1,156/s, 6.5 / 7.5 | 1,160/s, 6.5 / 7.4 | 1,166/s, 6.5 / 7.5 |
+| 1×16 (a) | 1,080/s, 7.7 / 12.5 | 1,088/s, 7.7 / 10.3 | 1,098/s, 7.7 / 10.5 |
+| 1×16 off-{} | 1,166/s, 6.4 / 7.5 | 1,170/s, 6.4 / 7.3 | 1,153/s, 6.4 / 7.5 |
+| 1×16 (f) | 1,094/s, 7.4 / 10.6 | 1,101/s, 7.4 / 9.1 | 1,100/s, 7.4 / 9.1 |
+| 1×16 (g) | 949/s, 7.5 / 11.5 | 957/s, 7.5 / 9.4 | 953/s, 7.6 / 10.1 |
+| 8×128 off-1K | 580/s, 44.0 / 75.1 | 580/s, 43.5 / 84.3 | 596/s, 41.5 / 73.9 |
+| 8×128 (a) | 560/s, 51.2 / 92.9 | 572/s, 47.7 / 90.2 | 560/s, 50.4 / 91.4 |
+| 8×128 off-{} | 581/s, 42.9 / 71.7 | 588/s, 43.6 / 73.6 | 577/s, 43.1 / 74.3 |
+| 8×128 (f) | 580/s, 47.9 / 86.4 | 559/s, 51.0 / 88.3 | 561/s, 50.4 / 88.8 |
+| 8×128 (g) | 515/s, 55.0 / 89.3 | 515/s, 54.9 / 92.7 | 512/s, 54.1 / 89.4 |
+| 1×16 (h), 64 records | 1,040/s, 8.6 / 19.7 | 1,009/s, 9.0 / 18.0 | 1,051/s, 8.6 / 14.2 |
+| 1×16 (d), a transaction held | 1,032/s, 7.6 / 14.8 | 1,027/s, 7.9 / 11.3 | 1,071/s, 7.5 / 10.1 |
+
+### Against the criteria
+
+| Gate | 1 × 16, per round (median) | 8 × 128, per round (median) | Verdict |
+|---|---|---|---|
+| (1) rate of (a) ≥ 90% of off-1K | 93.5%, 93.8%, 94.2% (93.8%) | 96.4%, 98.8%, 94.0% (96.4%) | **pass** |
+| (2) completion p99 of (a) ≤ off-1K + 10% | +66.6%, +38.6%, +40.6% (+40.6%) | +23.8%, +6.9%, +23.7% (+23.7%) | **fail** at both sizes |
+| (3) rate of (f) ≥ 90% of off-{} | 93.8%, 94.1%, 95.4% (94.1%) | 99.8%, 95.2%, 97.2% (97.2%) | **pass** |
+| (4) tickets for (g) ≤ 10, refusals < 1% | 5, 5, 5 (refusals ≤ 0.07%) | 4, 4, 4 (no refusal) | **pass** |
+
+Recorded with no threshold: the carry's statements CA to CE took p50 1.35 to 1.40 ms and p99 2.29 to 2.31 ms per
+completion of (a) at 1 × 16, and p50 5.2 to 5.6 ms and p99 15.1 to 16.2 ms at 8 × 128; (h)'s 64-record carry p50 2.2 to
+2.3 ms and p99 2.8 to 3.9 ms, its rate 87% to 90% of off-1K and its completion p99 14.2 to 19.7 ms; (g)'s rate 82% of
+off-1K at 1 × 16 and 86% to 89% at 8 × 128 (every step a long step: a batch transaction and a carry), its S p99 3.2 to
+3.3 ms and 33.4 to 33.8 ms; (d) held a transaction for 8.4 to 8.8 s, `quota_transaction_deltas` grew from 10.3–10.8 MB to
+13.0 MB, its completion p99 10.1 to 14.8 ms. Commit waits sampled every 10 ms during (a) at 1 × 16: 82, 38 and 45, of
+which 55, 29 and 28 behind a carrying report (none in off-{}, where no completion takes the tenant usage row); during
+(f) at 1 × 16, 46, 28 and 32, of which 37, 15 and 17 behind a carrying report; at 8 × 128 they were 13 to 23 per row.
+
+### Reading
+
+The carry removes what failed T041-31: the rate with capture on is now 93.5% to 99.8% of the rate with capture off in
+every valid round, the `{}` output included, and the ticket gate passes with half its allowance. What fails is the tail
+of a completion that carries records. At 1 × 16 the capture-off p99 is 7.4 to 7.5 ms, so +10% is 0.75 ms, while the
+carry's own five statements take 1.4 ms at the median and 2.3 ms at the 99th percentile, and the completion p50 rises
+by about 1.2 ms (6.5 to 7.7 ms): on this machine a five-statement carry cannot meet +10% of a 7.5 ms p99 whatever the
+rest does. At 8 × 128 the excess is smaller relative to the p99 (+7% to +24%).
+
+O041-026's condition (the sampled commit waits on the tenant usage row more than half of the p99 excess) is not shown
+either way: the samples are a lower bound on the time spent waiting and are not tied to the slowest completions; in
+the three rounds at 1 × 16 they total 0.28 to 0.55 s behind carrying reports, of the order of the slowest 1% of
+completions' excess (about 90 completions × 3 to 5 ms), and the carry's own statement time is a direct share of the
+same size. By T041-35's rule O041-026 is therefore not put, and the change is asked as O041-039.
+
+Not measured, as T041-35 states: the scoped report path (G041-019), a database on another host (G041-022), the CPU of C2
+and C3 and the larger gRPC message, a purge beside the workloads.

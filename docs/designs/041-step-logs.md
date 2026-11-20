@@ -406,6 +406,15 @@ Technical, each closed by the task named:
 
 ### Open
 
+- **O041-039 The carry's tail** (asked by T041-35, which failed gate (2) on 2026-11-20 with every other gate passing;
+  validation-report.md). On this machine the capture-off p99 at 1 × 16 is 7.5 ms, so +10% is 0.75 ms, and the carry's
+  five statements alone take 1.4 ms at the median. (a) Cut the carry's cost and measure again: one round trip for CA to
+  CE (a single statement or one function call) and the step-log charge taken once per transaction from the sizes C3
+  computes instead of a trigger and a deferred call per row (an ADR-0027 Amendment change), then T041-35 again with the
+  same rule. (b) Restate SC-041-007's p99 criterion for a completion that carries records as an absolute allowance (for
+  example 3 ms at the median p99), keeping the rate criterion that the carry now meets. (c) Write the carry in a second,
+  short transaction of the same call after the report commits, off the run lock, at the cost of one more commit per
+  step that logs. (d) Defer step logs from 0.3.0. Recommended (a), then (b) if (a) does not reach +10%.
 - **O041-038 Accept ADR-0095** (asked once T041-35 passes; T041-3 and T041-36 wait for it). (a) Accept it as written,
   which supersedes ADR-0084 decisions 2, 6 and 11 and decision 5's session clause for a carry, and the terminal-report
   clause of ADR-0027's Amendment item 1; (b) accept with changes; (c) reject, and the design changes again. Recommended
@@ -1852,6 +1861,14 @@ Slice A, decisions, contracts and the spike:
   Files: modify `tests/performance/scalability-ha/{main.rs,step_log_spike.rs}`, `tests/Cargo.toml` (the opt-in feature),
   `crates/infra-postgres/{Cargo.toml,src/execution.rs,src/lib.rs}` (the report hook, behind the feature),
   `specs/041-step-logs/{validation-report.md,data-model.md,research.md}`.
+  Evidence (2026-11-20): not done; the spike ran and fails gate (2). Prototype at 2c6ad584 (report hook behind the
+    perf-spike feature; driver scenario step_log_carry_spike); integration_claim_transition_efficiency: 17 passed before
+    (7e7dcc3b) and after (2c6ad584), default and runtime role. Attempt 1 void (off-1K drift 22.2% at 8 x 128); attempts 2
+    to 4 valid and quiet (validation-report.md, 2026-11-20). Gate (1) rate of (a): medians 93.8% (1 x 16) and 96.4%
+    (8 x 128), pass. Gate (2) completion p99 of (a): medians +40.6% and +23.7%, fail at both sizes. Gate (3) rate of (f):
+    94.1% and 97.2%, pass. Gate (4) tickets of (g): 5 and 4 in every round, refusals under 0.1%, pass. Every carry written.
+    By this task's rule the design changes and is reviewed again before T041-5 starts: asked as O041-039 (research.md,
+    D041-099); O041-026 is not put (its condition is not shown); O041-038 is not put.
 - [ ] T041-3 Contracts: contracts.md §1, as revised on 2026-11-19 (D041-090), and §2.
   Waits for O041-038 (the owner's acceptance of ADR-0095, asked once T041-35 passes).
   Built on this branch before the revision (D041-091); what changes from that build: the proto's field 13 on both
