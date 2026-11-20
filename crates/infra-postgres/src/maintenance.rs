@@ -61,6 +61,15 @@ fn gate_waiter(row: &PgRow) -> Result<sagat_application::flow_control::GateWaite
     })
 }
 
+/// Whether `error` is PostgreSQL's `undefined_table` (42P01): a schema that predates the tables a pass reads (a rollback,
+/// or a rollout whose migration has not run). Such a pass has nothing to do, and must not fail every tick.
+fn absent_table(error: &sqlx::Error) -> bool {
+    error
+        .as_database_error()
+        .and_then(sqlx::error::DatabaseError::code)
+        .is_some_and(|code| code == "42P01")
+}
+
 fn addressed_step_ref(row: &PgRow) -> Result<StepRef, StoreError> {
     let mut step = step_ref(row)?;
     let nodes: Vec<String> = col(row, "instance_path_nodes")?;
@@ -144,8 +153,12 @@ impl MaintenanceStore for PgRunStore {
         .bind(shards)
         .bind(exclude)
         .fetch_all(self.pool())
-        .await
-        .map_err(store_error)?;
+        .await;
+        // a schema that predates feature 022 has no key to serve (the scheduler goes on with the schema it finds)
+        let rows = match rows {
+            Err(error) if absent_table(&error) => return Ok(Vec::new()),
+            rows => rows.map_err(store_error)?,
+        };
         rows.iter()
             .map(|row| {
                 let kind: String = col(row, "kind")?;
@@ -274,7 +287,7 @@ impl MaintenanceStore for PgRunStore {
     ) -> Result<Vec<sagat_application::flow_control::GateWaiter>, StoreError> {
         let (limit, shards, exclude) = window_params(window);
         // a step queued for both gates has one deadline, the earlier, on both rows: `UNION` names it once
-        sqlx::query(
+        let rows = sqlx::query(
             "SELECT t.tenant_id, t.run_id, t.node FROM unnest($2::smallint[]) AS sh(s) \
              CROSS JOIN LATERAL ( \
                  (SELECT tenant_id, run_id, node, deadline_at FROM concurrency_waiters \
@@ -290,11 +303,12 @@ impl MaintenanceStore for PgRunStore {
         .bind(shards)
         .bind(exclude)
         .fetch_all(self.pool())
-        .await
-        .map_err(store_error)?
-        .iter()
-        .map(gate_waiter)
-        .collect()
+        .await;
+        // a schema that predates feature 022 has no waiter to time out
+        match rows {
+            Err(error) if absent_table(&error) => Ok(Vec::new()),
+            rows => rows.map_err(store_error)?.iter().map(gate_waiter).collect(),
+        }
     }
 
     /// Boundaries that can be handed off now. A run that still holds open work is not a candidate: it

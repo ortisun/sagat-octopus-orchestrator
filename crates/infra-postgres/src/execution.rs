@@ -5684,8 +5684,7 @@ impl RunTx for PgRunTx {
                 "UPDATE runs SET status = $4, run_version = $5, stop_reason = $6, stop_code = $7, \
                         paused = $8, updated_at = $9, \
                         finished_at = CASE WHEN $10 THEN COALESCE(finished_at, $9) ELSE NULL END, \
-                        result_digest = COALESCE($11, result_digest), \
-                        flow_control_gates = CASE WHEN $12 THEN $13 ELSE flow_control_gates END \
+                        result_digest = COALESCE($11, result_digest) \
                  WHERE tenant_id = $1 AND id = $2 AND run_version = $3",
             )
             .bind(tenant.as_uuid())
@@ -5699,14 +5698,6 @@ impl RunTx for PgRunTx {
             .bind(self.now)
             .bind(self.state.status().is_terminal())
             .bind(result)
-            // feature 022 (T022-022): the gates of the run's start follow its gate events, in this statement; a run with
-            // no such event leaves the column as it is (no statement more, NFR-022-007)
-            .bind(run_gates_changed)
-            .bind(if run_gates_changed {
-                readiness_gate::run_gates_projection(self.state.run_gates())?
-            } else {
-                None
-            })
             .execute(&mut *self.tx)
             .await
             .map_err(store_error)?
@@ -5715,6 +5706,22 @@ impl RunTx for PgRunTx {
                 return Err(StoreError::Internal {
                     detail: "the run changed while its row was locked".into(),
                 });
+            }
+            // feature 022 (T022-022): the gates of the run's start follow its gate events, in a statement of their own: the
+            // run's own UPDATE does not name the column, so a process runs on a schema that predates it (a rollback, or a
+            // rollout whose migration has not run), and a run with no such event writes nothing more (NFR-022-007)
+            if run_gates_changed {
+                sqlx::query(
+                    "UPDATE runs SET flow_control_gates = $3 WHERE tenant_id = $1 AND id = $2",
+                )
+                .bind(tenant.as_uuid())
+                .bind(run.as_uuid())
+                .bind(readiness_gate::run_gates_projection(
+                    self.state.run_gates(),
+                )?)
+                .execute(&mut *self.tx)
+                .await
+                .map_err(store_error)?;
             }
             // The start delay is a column of its own so that the pass that releases it finds the due
             // ones by index; it follows the two events that set and clear it, in this transaction.

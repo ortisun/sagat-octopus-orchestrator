@@ -432,16 +432,19 @@ measured!(
 /// key that its last holder emptied (an empty key row is pruned, so each start files it again): the plain admission
 /// (33, 1, 11) and ten statements, itemised against a plain start: the digest key versions in force, the ceilings, the
 /// key's existence, the namespace's live keys (a key filed again), the key's insert and its lock, the decision's clock,
-/// the key's count, the holder row and the `concurrency.acquired` journal row; three rows more (holder, key, journal
-/// row; the projection goes in the run's own UPDATE).
-const GATED_START_ADMISSION: Work = cost(43, 1, 14);
+/// the key's count, the holder row and the `concurrency.acquired` journal row; and four for the projection: its own
+/// `UPDATE runs` (the run's UPDATE does not name the column, so a process runs on a schema that predates it) and the
+/// three statements of the content accounting that a write of a run row runs. Four rows more: holder, key, journal row,
+/// projection.
+const GATED_START_ADMISSION: Work = cost(47, 1, 15);
 /// The same admission when the key is full and the run queues: the namespace's queued runs, the key's hint and the
 /// waiter row in place of the holder row, and no entry released (no ready step, task hint or outbox row).
-const QUEUED_START_ADMISSION: Work = cost(43, 1, 11);
-/// The completion that ends a run holding a start permit: the plain one (47, 1, 9) and seven statements, among them the
-/// counter-slot lock (D022-050 item 8), the return of the permit under its key's lock (the holder's key, the lock, the
-/// delete, the key's hint) and the `concurrency.released` journal row; three rows more.
-const COMPLETION_THAT_ENDS_A_GATED_START: Work = cost(54, 1, 12);
+const QUEUED_START_ADMISSION: Work = cost(47, 1, 12);
+/// The completion that ends a run holding a start permit: the plain one (47, 1, 9) and eleven statements: seven, among
+/// them the counter-slot lock (D022-050 item 8), the return of the permit under its key's lock (the holder's key, the
+/// lock, the delete, the key's hint) and the `concurrency.released` journal row, and the projection's four as at
+/// admission; four rows more.
+const COMPLETION_THAT_ENDS_A_GATED_START: Work = cost(58, 1, 13);
 
 async fn a_gated_start_costs_what_the_budget_says_once() -> Result<(), Evicted> {
     let w = crate::support::flow_control::gated_world().await;

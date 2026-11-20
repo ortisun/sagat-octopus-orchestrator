@@ -225,6 +225,17 @@ async fn on_a_clean_schema_the_rollback_restores_the_checks_and_the_trigger_and_
     )
     .await
     .expect("an old-style entry");
+    // the migrations after this one (feature 022's flow-control resources among them) rewrite the same three lists: they
+    // are rolled back first, so that the lists read below are this migration's own and its rollback removes exactly its
+    // name; what every migration gives is read first, for the forward step at the end
+    let current = (
+        quota_checks(&f).await,
+        definition(&f, FAILURE_CHECK).await,
+        definition(&f, GUARD).await,
+    );
+    undo_to(&f.w.db, THIS)
+        .await
+        .expect("the later migrations roll back with no fact of theirs");
 
     let (checks, failure, guard) = (
         quota_checks(&f).await,
@@ -331,9 +342,9 @@ async fn on_a_clean_schema_the_rollback_restores_the_checks_and_the_trigger_and_
 
     // the up applies again, to a register that has entries, and gives back what the first time gave
     migrate(&f.w.db.pool).await.expect("forward again");
-    assert_eq!(quota_checks(&f).await, checks);
-    assert_eq!(definition(&f, FAILURE_CHECK).await, failure);
-    assert_eq!(definition(&f, GUARD).await, guard);
+    assert_eq!(quota_checks(&f).await, current.0);
+    assert_eq!(definition(&f, FAILURE_CHECK).await, current.1);
+    assert_eq!(definition(&f, GUARD).await, current.2);
     let column: bool = sqlx::query_scalar(HAS_COLUMN)
         .fetch_one(&f.w.db.pool)
         .await
