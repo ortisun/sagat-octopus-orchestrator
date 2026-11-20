@@ -621,14 +621,14 @@ async fn a_short_steps_carry_writes_its_new_stream_once() {
             assert_eq!(rows, (1, 0, 10), "one stream, inserted once and never updated, and its ten lines");
             assert_eq!(written, (1, 0, 0), "one lease row, no usage or delta row");
             assert_eq!(after - at_commit, 0, "no deferred quota call at the commit");
-            // The function's seven statements (the application name, the no-wait setting, the policy read, the usage
-            // read, the plan's size, the stream insert, the lines insert), the stream's path check
-            // (`execution_instance_path_valid`, a SQL function its CHECK calls), the charge's six and the ten
-            // foreign-key checks. Derived first as 22 (seen failing at 23: the path check had been left out), then
-            // with D041-112's no-wait setting as 25 (seen failing at 24: the new stream's path returns before a reset,
-            // which was then removed as needless: the setting is transaction-local and the carry is the report's last
-            // statement).
-            assert_eq!(during - before, 7 + 1 + 6 + 10, "the nested statements of a short step's carry");
+            // The fast path (D041-113): the function's five statements (the application name, the no-wait setting, the
+            // policy read, the usage read, the plan's size), the reservation's three (the usage read, the limit, the lease
+            // locked), the writes' two (the stream insert, the lines insert; both functions are called as expressions, which
+            // are not statements), the stream's path check (`execution_instance_path_valid`, a SQL function its CHECK
+            // calls), the charge's six and the ten foreign-key checks. Derived first as 22 (seen failing at 23: the path
+            // check), then 25 with the no-wait setting (seen failing at 24: a reset left out), then 29 with the fast path
+            // (seen failing at 27: a function called in an `IF` or a `RETURN` is an expression, not a statement).
+            assert_eq!(during - before, 5 + 3 + 2 + 1 + 6 + 10, "the nested statements of a short step's carry");
         let (records, bytes, last, xid_set): (i32, i64, i64, bool) = sqlx::query_as(
             "SELECT records, bytes, last_sequence, last_stored_xid IS NOT NULL FROM spike_041.step_log_streams \
               ORDER BY stream_id DESC LIMIT 1",
@@ -755,8 +755,9 @@ async fn a_release_never_waits_for_a_lease_and_never_goes_below_zero() {
     .await;
 }
 
-/// D041-112: a carry whose charge needs a refill while the usage row is held does not wait: it answers `contended` and
-/// writes nothing, and its transaction commits.
+/// D041-112, D041-113: a carry whose charge needs a refill while the usage row is held by a transaction that updated it
+/// (as every real holder does: a refill, the content finalizer, a release) does not wait: it records a mark-only stream
+/// and its transaction commits.
 #[tokio::test]
 async fn a_carry_never_waits_for_the_usage_row() {
     bounded::within("carry nowait", LIMIT, async {
@@ -770,11 +771,13 @@ async fn a_carry_never_waits_for_the_usage_row() {
         .await
         .expect("the usage row");
         let mut row = pool.begin().await.expect("begin");
-        sqlx::query("SELECT 1 FROM tenant_retained_usage WHERE tenant_id = $1 FOR UPDATE")
-            .bind(tenant)
-            .execute(&mut *row)
-            .await
-            .expect("hold the usage row");
+        sqlx::query(
+            "UPDATE tenant_retained_usage SET step_log_bytes = step_log_bytes WHERE tenant_id = $1",
+        )
+        .bind(tenant)
+        .execute(&mut *row)
+        .await
+        .expect("hold the usage row, updated");
         let mut tx = pool.begin().await.expect("begin");
         let run = Uuid::new_v4();
         let outcome = tokio::time::timeout(
@@ -783,12 +786,126 @@ async fn a_carry_never_waits_for_the_usage_row() {
         )
         .await;
         assert!(
-            matches!(&outcome, Ok(Ok(o)) if o == "contended"),
-            "the carry waited or did not answer contended: {outcome:?}"
+            matches!(&outcome, Ok(Ok(o)) if o == "mark_only"),
+            "the carry waited or did not record its mark: {outcome:?}"
         );
-        assert_eq!(run_lines(&mut tx, run).await, (0, 0), "nothing stored");
+        assert_eq!(
+            run_lines(&mut tx, run).await,
+            (1, 0),
+            "the mark-only stream, no line"
+        );
         tx.commit().await.expect("the report's transaction commits");
         row.commit().await.expect("commit");
+    })
+    .await;
+}
+
+/// D041-113: a long step's carry refused by the limit records its final mark and its drops on the existing stream.
+#[tokio::test]
+async fn a_long_steps_carry_refused_by_the_limit_records_its_mark_on_its_stream() {
+    bounded::within("long step refused", LIMIT, async {
+        let (w, tenant) = leased_world(100).await;
+        super::install_third_run_storage(&w.db.pool).await;
+        let pool = &w.db.pool;
+        let (run, step) = (Uuid::new_v4(), Uuid::new_v4());
+        sqlx::query(
+            "INSERT INTO spike_041.step_log_streams (tenant_id, public_id, namespace_id, run_id, step_id, node, \
+               instance_path_nodes, instance_path_indices, attempt, generation, retention_days, last_at, expires_at) \
+             VALUES ($1, gen_random_uuid(), gen_random_uuid(), $2, $3, 'a', '{}', '{}', 1, 0, 14, clock_timestamp(), \
+               clock_timestamp() + interval '14 days')",
+        )
+        .bind(tenant)
+        .bind(run)
+        .bind(step)
+        .execute(pool)
+        .await
+        .expect("a long step's stream");
+        let mut tx = pool.begin().await.expect("begin");
+        let outcome = carry_call(tenant, run, step).fetch_one(&mut *tx).await.expect("the carry answers");
+        assert_eq!(outcome, "mark_only");
+        tx.commit().await.expect("the report's transaction commits");
+        let (reason, dropped, final_set, lines): (Option<String>, i64, bool, i64) = sqlx::query_as(
+            "SELECT ceiling_reason, dropped_by_server, final_at IS NOT NULL, \
+                    (SELECT count(*) FROM spike_041.step_log_lines WHERE run_id = $1) \
+               FROM spike_041.step_log_streams WHERE run_id = $1",
+        )
+        .bind(run)
+        .fetch_one(pool)
+        .await
+        .expect("the stream");
+        assert_eq!((reason.as_deref(), dropped, final_set, lines), (Some("tenant_quota"), 10, true, 0));
+    })
+    .await;
+}
+
+/// D041-113: a carry charged into a lease it reserved writes with no subtransaction (its rows carry the transaction's own
+/// id); a carry that needs a refill writes inside the block (its rows carry a subtransaction's id).
+#[tokio::test]
+async fn only_a_carry_that_needs_a_refill_opens_a_subtransaction() {
+    bounded::within("fast path", LIMIT, async {
+        let (w, tenant) = third_run_world().await;
+        let pool = &w.db.pool;
+        let own = |run: Uuid| {
+            sqlx::query_scalar::<_, bool>(
+                "SELECT bool_and(xmin = pg_current_xact_id()::xid) FROM spike_041.step_log_lines WHERE run_id = $1",
+            )
+            .bind(run)
+        };
+        let mut tx = pool.begin().await.expect("begin");
+        let first = Uuid::new_v4();
+        carry_call(tenant, first, Uuid::new_v4()).fetch_one(&mut *tx).await.expect("a first carry");
+        assert!(!own(first).fetch_one(&mut *tx).await.expect("xmin"), "the refill's carry wrote in a subtransaction");
+        tx.commit().await.expect("commit");
+        let mut tx = pool.begin().await.expect("begin");
+        let second = Uuid::new_v4();
+        carry_call(tenant, second, Uuid::new_v4()).fetch_one(&mut *tx).await.expect("a second carry");
+        assert!(own(second).fetch_one(&mut *tx).await.expect("xmin"), "a fast-path carry opened a subtransaction");
+        tx.commit().await.expect("commit");
+    })
+    .await;
+}
+
+/// D041-112: with S + G past the limit and no reclaim by a limit change (the trigger disabled, as when the default limit
+/// changes in a release), a charge goes to the refill, which reclaims and admits what fits.
+#[tokio::test]
+async fn a_charge_past_the_leased_room_reclaims_before_it_refuses() {
+    bounded::within("past the leased room", LIMIT, async {
+        let (w, tenant) = leased_world(1 << 30).await;
+        let pool = &w.db.pool;
+        charge_committed(pool, tenant, 1_000)
+            .await
+            .expect("lease 0: 1 MiB granted");
+        for statement in [
+            "ALTER TABLE quota_limits DISABLE TRIGGER quota_limits_step_log_reclaim",
+            "ALTER TABLE quota_ceilings DISABLE TRIGGER quota_ceilings_step_log_reclaim",
+        ] {
+            sqlx::query(statement)
+                .execute(pool)
+                .await
+                .expect("no reclaim on the change");
+        }
+        w.quotas
+            .set(
+                &w.admin,
+                None,
+                QuotaResource::TenantStepLogBytes,
+                10_000,
+                &ctx(),
+            )
+            .await
+            .expect("lower the limit below the leased room");
+        let (_, g, _, _, _) = ledger(pool, tenant).await;
+        assert!(g > 10_000, "the leased room is past the new limit");
+        charge_committed(pool, tenant, 2_000)
+            .await
+            .expect("what fits is admitted after a reclaim");
+        assert!(
+            refused(charge_committed(pool, tenant, 7_001).await),
+            "past the limit is refused"
+        );
+        let (s, g, granted, used, _) = ledger(pool, tenant).await;
+        assert_eq!(g, granted);
+        assert_eq!(s + used, 3_000);
     })
     .await;
 }
