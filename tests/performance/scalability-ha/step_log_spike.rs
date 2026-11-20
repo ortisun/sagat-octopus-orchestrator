@@ -317,6 +317,7 @@ pub async fn install_leases(pool: &PgPool) {
                 EXIT WHEN FOUND;
                 INSERT INTO public.tenant_retained_usage (tenant_id) VALUES (p_tenant) ON CONFLICT (tenant_id) DO NOTHING;
             END LOOP;
+            IF v_s IS NULL THEN RAISE EXCEPTION 'tenant usage row missing' USING ERRCODE = 'data_exception'; END IF;
             IF v_limit - v_s - v_g < greatest(p_bytes, 1048576) THEN
                 -- Near or past the limit: every lease no open transaction holds gives its room back.
                 FOR r IN SELECT lease, granted, used FROM spike_041.step_log_quota_leases
@@ -370,6 +371,12 @@ pub async fn install_leases(pool: &PgPool) {
             LANGUAGE plpgsql SET search_path = pg_catalog, pg_temp AS $$
         DECLARE v_s bigint; v_g bigint; v_lease integer;
         BEGIN
+            -- Holding a lease always means holding the step-log fence (the reclaim's NOWAIT relies on it): tried here
+            -- shared, at once when the carry already holds it (D041-114).
+            IF p_bytes <= 0 OR NOT pg_try_advisory_xact_lock_shared(
+                   hashtextextended('quota-policy:tenant_step_log_bytes:' || p_tenant::text, 0)) THEN
+                RETURN false;
+            END IF;
             SELECT step_log_bytes, step_log_leased_bytes INTO v_s, v_g
               FROM public.tenant_retained_usage WHERE tenant_id = p_tenant;
             IF coalesce(v_s, 0) + coalesce(v_g, 0) > spike_041.step_log_limit(p_tenant) THEN RETURN false; END IF;
@@ -616,6 +623,7 @@ pub async fn install_third_run_storage(pool: &PgPool) {
                        SELECT tenant_id, stream_id FROM spike_041.step_log_streams
                         WHERE tenant_id = p_tenant AND run_id = p_run AND step_id = p_step AND attempt = p_attempt
                           AND generation = p_generation AND source = 'worker' AND final_at IS NULL
+                          AND removed_at IS NULL AND expires_at > clock_timestamp()
                           FOR UPDATE SKIP LOCKED)
                 RETURNING stream_id INTO v_stream;
                 RETURN CASE WHEN v_stream IS NOT NULL THEN 'mark_only' ELSE 'contended' END;

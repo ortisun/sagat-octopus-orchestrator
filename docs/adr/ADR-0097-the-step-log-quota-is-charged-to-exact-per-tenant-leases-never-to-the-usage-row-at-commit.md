@@ -82,8 +82,10 @@ them; a report must never wait under its run lock for another tenant's, replica'
    (run once) `… ORDER BY (lease - pg_backend_pid() % 256 + 256) % 256 LIMIT 1 FOR UPDATE SKIP LOCKED`, so that a lease
    another open transaction holds is skipped and one this transaction holds is found. It MUST NOT lock
    `tenant_retained_usage` and MUST NOT wait for a lease. Otherwise it calls the refill. A carry first reserves a lease
-   with room for its planned charge (`sagat_quota_step_log_reserve`: the lease locked `SKIP LOCKED`, nothing written), so
-   that its charge cannot be refused and needs no subtransaction (ADR-0095 decision 5).
+   with room for its planned charge (`sagat_quota_step_log_reserve`: the step-log fence tried shared, the lease locked `SKIP
+   LOCKED`, nothing written; false for a non-positive amount), so that its charge cannot be refused and needs no
+   subtransaction (ADR-0095 decision 5). The planned charge MUST bound what the trigger will measure: every sent record's
+   `sagat_quota_measure` sizes plus 128 a row, plus 128 for a possible marker, computed before CC for either stream case.
 4. **A refill** locks the usage row (the one wait a charge can have; `NOWAIT` when the transaction set
    `sagat.step_log_charge_nowait`, as a carry does, ADR-0095) before it would ever insert it: an `INSERT … ON CONFLICT`
    first would wait for a holder that updated the row, whatever `NOWAIT` says. The setting is set transaction-locally by
@@ -140,12 +142,12 @@ them; a report must never wait under its run lock for another tenant's, replica'
    commit together; a crash between them leaves rows uncharged.
 8. **Deferring the leases** (D041-106 showed the queue did not fail T041-35 at 1 × 16): keeps a measured ceiling of about
    800 charging commits a second per tenant and the batch refusals at 8 × 128; rejected for advantage (OD-2026-11-20-6).
+9. **A release that folds every lease, waiting for each** (this ADR's first text): it would hold a tenant's leases on the
+   purge's cadence and send its charges to the usage row meanwhile; replaced by decision 5, which waits for no lease.
 10. **A subtransaction on every carrying report** (one `BEGIN … EXCEPTION` block around its writes, this ADR's second
    text): every carrying report would take a second transaction id (XID use and freeze pressure doubled for them, and
    `pg_subtrans` lookups for readers under a long transaction); replaced by the reservation of decision 3, which keeps the
    block for the carries that need a refill (about one in 300 far from the limit).
-9. **A release that folds every lease, waiting for each** (this ADR's first text): it would hold a tenant's leases on the
-   purge's cadence and send its charges to the usage row meanwhile; replaced by decision 5, which waits for no lease.
 
 ## Consequences
 

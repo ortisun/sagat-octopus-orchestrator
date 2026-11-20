@@ -873,7 +873,8 @@ its L3 fence exclusively and nothing else. The purge and the delete route take s
 and nothing earlier, then at commit L3, L3b and L4. The script marker (section 7) takes L1, then a stream row no other
 transaction can see, then at its insert L3, a lease and, on a refill, L4. A report that carries nothing takes none of
 L1, L1b, L2 and L3b; a carrying report holds L0 and then only tries L1, L1b and L2 (for its own attempt's stream), never
-waiting for them, tries L3 in CA (so that CD's charge holds it already), L3b at CD and, on a refill, L4 `NOWAIT`, and
+waiting for them, tries L3 in CA (so that CD's charge holds it already), L3b by its reservation before CC (or at CD
+without one) and, on a refill, L4 `NOWAIT`, and
 takes L3 and L4 at its commit only when it stores output. Putting L1 before L2 is the reading of ADR-0084 decision 11 the owner accepted (O041-025,
 OD-2026-11-16-11). No cycle can form: no holder of L1, L1b, L2, L3, L3b or L4 then waits for a run row or an authority
 lock, a carrying report waits for none of L1, L1b, L2, L3b and L4 before its commit, and nobody waits for a lease. The
@@ -1181,7 +1182,7 @@ statements.
 - **The regime near the limit.** While at least 64 MiB is free, a refill comes once per lease of up to 1 MiB (about 300
   ten-line carries). Below that, grants shrink to 1/64 of the free room, and at the limit a refill comes about once per
   charge, each holding the usage row to the end of its commit, as before the leases; a carry's refill then answers
-  `contended` when the row is held instead of waiting, and an ingest's waits under its 200 ms lock timeout. T041-9 measures
+  with a mark-only final mark when the row is held instead of waiting (G041-023), and an ingest's waits under its 200 ms lock timeout. T041-9 measures
   this regime with a purge beside it, and the share of carries answered by the block (mark-only, nothing lost uncounted).
 - **Observability.** `step_log_quota_refills_total{kind="refill"|"reclaim"|"direct"}`,
   `step_log_quota_refusals_total{cause="limit"|"held"}`, `step_log_purge_failures_total{cause="underflow"}` and a gauge of
@@ -2110,7 +2111,8 @@ Slice A, decisions, contracts and the spike:
     By this task's rule the design changes and is reviewed again before T041-5 starts: asked as O041-039 (research.md,
     D041-099); O041-026 is not put (its condition is not shown); O041-038 is not put.
 - [ ] T041-3 Contracts: contracts.md §1, as revised on 2026-11-19 (D041-090), and §2.
-  Waits for O041-038 (the owner's acceptance of ADR-0095, asked once T041-35 passes).
+  Waits for O041-038 (the acceptance of ADR-0095 by the coordinating session under OD-2026-11-20-6, once T041-35 passes;
+  D041-113).
   Built on this branch before the revision (D041-091); what changes from that build: the proto's field 13 on both
   reports and `StepLogCarry`, fields 11 and 12 of `AppendStepLogsRequest` reserved (the baseline loses `final_batch` and
   `highest_sequence`, a removal that is expected because 1.7 is unreleased), `StepLogCarry` in the three `skip_debug`
@@ -2393,7 +2395,8 @@ Slice B, the server stores:
   `tests/integration/database-runner/proxy.rs`); modify `tests/integration/database-runner/main.rs`,
   `tests/integration/step-logs/main.rs`.
 - [ ] T041-36 The carry on a report (section 2a).
-  Waits for O041-038 (the owner's acceptance of ADR-0095) and O041-040 (the wording of the ADR-0027 amendment).
+  Waits for O041-038 (the acceptance of ADR-0095) and O041-040 (the wording of the ADR-0027 amendment), both settled by the
+  coordinating session under OD-2026-11-20-6 (D041-113).
   Builds:
   - the domain type `sagat_domain::step_logs::Carry` (records, `highest_sequence`, encoded size) and `CarryPlan`
     (`Full`, `MarkOnly`, `None`);

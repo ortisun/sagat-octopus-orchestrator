@@ -595,3 +595,22 @@ insert derived as 6 nested statements ran 16 (one foreign-key check a line); a s
 reset, which was removed), then with the fast path derived as 29 ran 27 (a function called in an `IF` or a `RETURN` is an
 expression, not a statement). Not covered by the prototype: the direct charge with all 256 leases held (T041-5, with a
 lowered cap), the privileges of ADR-0097 decision 1 (T041-5's runtime-role tests).
+
+## 2026-11-20 — Preview of the third shape at 3f1f0aba (not a gate)
+
+Run 44761982218 on `perf/041-diag-third` (the diagnosis's `third` set: off-1K, (a), off-{}, (f) and (g) at 1 × 16, three
+repetitions on each of four runners, twelve paired blocks, the step-log charge on the tenant's leases). The shape is the
+one of `3f1f0aba`: every carry ran its writes inside the `BEGIN … EXCEPTION` block (a subtransaction on every carrying
+report) and its refill inserted the usage row before its `NOWAIT` lock; D041-113 then gave the carry a fast path with no
+subtransaction, which this preview does not measure. Its first attempt (run 44753470534, `0b3f14b3`) stopped on the
+prototype's lease pick (`query returned more than one row`).
+
+| Pair (1 × 16, paired medians of 12) | Rate [min, max] | p50 | p99 [min, max] |
+|---|---|---|---|
+| (a) / off-1K | 0.882 [0.820, 0.924] | +4.73 ms | +17.9 ms [+7.0, +40.8] |
+| (f) / off-{} | 0.897 [0.854, 0.921] | +4.21 ms | +21.7 ms [+4.4, +45.3] |
+| (g) / off-1K | 0.772 [0.714, 0.802] | +4.82 ms | +19.7 ms [+5.0, +45.4] |
+
+Against the second run's shape in run 44730444900 ((a) / off-1K 0.906, (f) / off-{} 0.893, (g) / off-1K 0.786): no gain at
+1 × 16, as T041-35's third-run text expected, with every carry paying a subtransaction here. (g)'s batch service time p99
+was 24.2 ms (median of rows) and its commits no longer waited on the usage row for their step-log charge.

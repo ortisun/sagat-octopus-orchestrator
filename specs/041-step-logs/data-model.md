@@ -207,8 +207,8 @@ transaction that only stores step-log rows queues no deferred quota call.
 ALTER TABLE tenant_retained_usage ADD COLUMN step_log_leased_bytes bigint NOT NULL DEFAULT 0;
 ALTER TABLE tenant_retained_usage ADD CONSTRAINT tenant_retained_usage_step_log_leased_nonnegative
     CHECK (step_log_leased_bytes >= 0) NOT VALID;          -- validated by the next migration, as T041-4's CHECKs
--- T041-4's tenant_retained_usage_step_log_nonnegative (step_log_bytes >= 0) is dropped before T041-4 merges: S may be
--- negative while released bytes were charged in leases; U = S + Σ used >= 0 is checked by every release (D041-112).
+-- T041-4 adds no CHECK (step_log_bytes >= 0) (removed from its unmerged migrations, D041-113): S may be negative while
+-- released bytes were charged in leases; U = S + Σ used >= 0 is checked by every release (D041-112).
 CREATE TABLE step_log_quota_leases (
     tenant_id uuid     NOT NULL REFERENCES tenant_retained_usage (tenant_id) ON DELETE CASCADE,
     lease     smallint NOT NULL,
@@ -251,8 +251,13 @@ others.
   lock) and `tenant_step_log_quota_exceeded` otherwise; then `granted` += g, `used` = bytes, G += g. With
   `step_log_enforcement_enabled` off, the charge skips its S + G ≤ L test and the refill its I4 check.
 - `sagat_quota_step_log_reserve(tenant, bytes)` (`EXECUTE` to `sagat_app`, called by the carry before any write,
-  D041-113): after the fences the carry holds, S + G ≤ L read without a lock and one lease with room ≥ bytes locked
-  `FOR UPDATE SKIP LOCKED` for the transaction, nothing written; returns whether it found one. The charge of CD then finds
+  D041-113, D041-114): false for `bytes` ≤ 0 or when the tenant's step-log fence cannot be had shared at once (it tries it
+  itself: holding a lease always means holding that fence, which the reclaim's `NOWAIT` relies on); otherwise, unless the
+  quota is not enforced, S + G ≤ L read without a lock, and one lease with room ≥ bytes locked `FOR UPDATE SKIP LOCKED`
+  for the transaction, nothing written; returns whether it found one. The carry's `bytes` is an upper bound of what CD's
+  trigger will measure, computed before CC for either stream case: every sent record's `sagat_quota_measure` sizes plus 128
+  a row, plus 128 for a possible ceiling marker (a property test of T041-36 compares it with the measured charge over new
+  and existing streams, each ceiling, Unicode, JSON fields and NUL-replaced text). The charge of CD then finds
   that lease (a transaction's own lock is not skipped), so a reserved carry's charge cannot be refused. It can lock a
   lease of any tenant it is given for the rest of the caller's transaction, which only sends that tenant's charges to
   other leases; the carry passes its report's tenant.
@@ -275,9 +280,10 @@ refill, a release, a limit change and the content and log finalizer). No transac
 Metrics (closed labels, no tenant): `step_log_quota_refills_total{kind="refill"|"reclaim"|"direct"}`,
 `step_log_quota_refusals_total{cause="limit"|"held"}`, `step_log_purge_failures_total{cause="underflow"}`, and the gauge
 `step_log_quota_lease_rows`. Events inside SQL never update a counter row (it would be a hot row again): the refill and
-the release advance sequences (`step_log_quota_refills_seq`, one per kind, and one per refusal cause), which a definer
-accessor `sagat_quota_step_log_counters()` returns with the lease-row count; the purge pass calls it and publishes the
-deltas. The carry's function returns its refusal cause with its outcome.
+the release advance sequences (`step_log_quota_refills_seq`, one per kind, and one per refusal cause; `REVOKE ALL … FROM
+sagat_app` on each, in the privilege audit), which a definer accessor `sagat_quota_step_log_counters()` returns with the
+lease-row count; only the replica that holds shard 0 publishes them (as the raw, monotonic values), so a sum across
+replicas is never multiplied. The carry's function returns its refusal cause with its outcome.
 
 Budget line of one insert statement of *k* step-log rows charged into a free lease (pinned by
 `tests/performance/scalability-ha/step_log_leases_tests.rs::a_step_log_insert_costs_its_budget_line` on the prototype):

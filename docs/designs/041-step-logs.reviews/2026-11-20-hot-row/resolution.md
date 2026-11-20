@@ -55,3 +55,13 @@ folds Σ `used` into S; a test of the S + G > L path with the reclaim disabled; 
 the carry's cause returned, `contended` in the carries' outcomes, an underflow counted; the stale rows of the Risks and
 the Constitution Check, ADR-0027's Note, the architecture principle's row, ADR-0095's Enforced by, G041-023; the probe
 expression in ADR-0097; the setting's description against ADR-0027's rule on session flags.
+
+## Second re-reads of 35ec06b1
+
+Saved verbatim as `rereads-35ec06b1-{correctness,security,architecture,egm-design}.md`. **No Blocker and no Major remains
+from any of the four reviewers.** Their new Minors and Nits are answered by D041-114 (the reservation takes its own fence
+and refuses a non-positive amount; the reservation's amount is an upper bound of the measured charge, with a property test
+in T041-36; the handler's retake rechecks removal and expiry; the refill raises when the usage row is missing; the counter
+sequences revoked and published by one replica; the stale acceptance and lock-order text; the busy case stated in
+G041-023) or recorded there as Minors left open (a reason of its own for the busy case, the refill's `NOWAIT` under a
+constraint name of its own, preferring the reserved lease).
