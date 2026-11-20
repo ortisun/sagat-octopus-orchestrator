@@ -3,8 +3,10 @@
 Every case builds a throwaway git repository with a small Cargo workspace and a tests/Cargo.toml that mimics the
 real one, commits a base, changes files, and asks the script what the CI must run.
 """
+import importlib.util
 import os
 import pathlib
+import re
 import subprocess
 import sys
 import tempfile
@@ -222,6 +224,98 @@ class Scope(unittest.TestCase):
         self.write("tests/fault/b/x.rs", "// x\n")
         self.commit()
         self.assertEqual(self.chosen(), {"fault_b"})
+
+    # -- a contract selects the suites and the packages that read it (review finding m7) -------
+    CONTRACTS = "specs/001-platform-foundation/contracts"
+
+    def readers(self):
+        """contract_a names the full path, contract_rest_a the directory in one module and the file in another,
+        sdk_conformance reads it through the shared support module, sagat-leaf compiles it in. integration_a reads it
+        too, through the support module, but is not a contract suite; fault_b names the directory and another file."""
+        self.write(f"{self.CONTRACTS}/openapi.yaml", "openapi: 3.1.0\n")
+        self.write(f"{self.CONTRACTS}/worker.proto", "syntax = \"proto3\";\n")
+        self.write(f"{self.CONTRACTS}/README.md", "# contracts\n")
+        self.write("tests/contract/a/openapi.rs",
+                   f'const PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../{self.CONTRACTS}/openapi.yaml");\n')
+        self.write("tests/contract/a/rest/main.rs",
+                   f'use sagat_leaf::Leaf;\nconst CONTRACTS: &str = "{self.CONTRACTS}";\nmod read;\n')
+        self.write("tests/contract/a/rest/read.rs", 'fn doc() { load(super::CONTRACTS, "openapi.yaml"); }\n')
+        self.write("tests/support/contract.rs",
+                   f'pub fn load() {{ read("/../{self.CONTRACTS}/openapi.yaml"); }}\n')
+        self.write("tests/integration/a/main.rs",
+                   "use sagat_domain::Thing;\nuse crate::support::{api::TestApi, contract::OpenApi};\n")
+        self.write("tests/contract/sdk-conformance/main.rs",
+                   "mod support;\nfn spec() { crate::support::contract::OpenApi::load(); }\n")
+        self.write("tests/fault/b/main.rs",
+                   f'fn proto() {{ compile(["worker.proto"], [root().join("{self.CONTRACTS}")]); }}\n')
+        self.write("crates/leaf/build.rs",
+                   f'const CONTRACTS: &str = "../../{self.CONTRACTS}";\nfn main() {{ f(format!("{{CONTRACTS}}/worker.proto")); }}\n')
+        self.base = self.commit("readers")
+
+    def test_a_contract_change_alone_selects_every_contract_suite_that_reads_that_file(self):
+        self.readers()
+        self.write(f"{self.CONTRACTS}/openapi.yaml", "openapi: 3.1.1\n")
+        self.commit()
+        decision = self.decide()
+        # integration_a reads it too; it is not a contract suite, so only its own changes select it.
+        self.assertEqual(set(decision["targets"].split()), {"contract_a", "contract_rest_a", "sdk_conformance"})
+        self.assertEqual((decision["full"], decision["all"]), ("false", "false"))
+
+    def test_a_contract_compiled_into_a_package_selects_its_unit_tests_and_its_dependents(self):
+        self.readers()
+        self.write("crates/domain/build.rs", f'fn main() {{ f("../../{self.CONTRACTS}/worker.proto"); }}\n')
+        self.base = self.commit("the core package compiles it too")
+        self.write(f"{self.CONTRACTS}/worker.proto", "syntax = \"proto3\"; // changed\n")
+        self.commit()
+        decision = self.decide()
+        # fault_b compiles it too, and is not a contract suite.
+        self.assertEqual(decision["targets"], "")
+        self.assertEqual(set(decision["crates"].split()), {"sagat-leaf", "sagat-domain", "sagat-application",
+                                                           "sagat-cli"})
+
+    def test_the_log_says_which_contract_selected_a_suite(self):
+        self.readers()
+        self.write(f"{self.CONTRACTS}/openapi.yaml", "openapi: 3.1.1\n")
+        self.commit()
+        self.assertIn(f"select contract_a: {self.CONTRACTS}/openapi.yaml is a contract it reads",
+                      self.run_select().stdout)
+
+    def test_a_contract_file_nobody_names_selects_nothing(self):
+        self.readers()
+        self.write(f"{self.CONTRACTS}/events.asyncapi.yaml", "asyncapi: 3.0.0\n")
+        self.write("specs/018-other/contracts/openapi.yaml", "openapi: 3.1.0\n")
+        self.commit()
+        decision = self.decide()
+        self.assertEqual((decision["targets"], decision["crates"]), ("", ""))
+
+    def test_a_markdown_contract_selects_only_a_suite_that_reads_it(self):
+        self.readers()
+        self.write(f"{self.CONTRACTS}/README.md", "# changed\n")
+        self.commit()
+        self.assertEqual(self.chosen(), set())
+        self.write("tests/contract/a/errors.rs", f'const TABLE: &str = "{self.CONTRACTS}/README.md";\n')
+        self.base = self.commit("a reader of the README")
+        self.write(f"{self.CONTRACTS}/README.md", "# changed again\n")
+        self.commit()
+        self.assertEqual(self.chosen(), {"contract_a"})
+
+    def test_a_file_named_under_another_contracts_directory_is_not_a_read_of_this_one(self):
+        self.readers()
+        self.write("tests/contract/a/errors.rs", 'const TABLE: &str = "specs/014-other/contracts/README.md";\n')
+        self.base = self.commit("a reader of another README")
+        self.write(f"{self.CONTRACTS}/README.md", "# changed\n")
+        self.commit()
+        self.assertEqual(self.chosen(), set())
+
+    def test_a_comment_or_a_sentence_that_names_a_contract_is_not_a_read(self):
+        self.write("tests/contract/a/openapi.rs", f"// see {self.CONTRACTS}/openapi.yaml\n")
+        self.write("crates/domain/src/lib.rs",
+                   f'//! `{self.CONTRACTS}/openapi.yaml`\nconst HINT: &str = "the schema is {self.CONTRACTS}/openapi.yaml; see";\n')
+        self.base = self.commit("comments")
+        self.write(f"{self.CONTRACTS}/openapi.yaml", "openapi: 3.1.1\n")
+        self.commit()
+        decision = self.decide()
+        self.assertEqual((decision["targets"], decision["crates"]), ("", ""))
 
     def test_documentation_selects_nothing_at_all(self):
         self.write("README.md", "changed\n")
@@ -482,6 +576,65 @@ class Scope(unittest.TestCase):
         for expected in ("full=false\n", "crates=sagat-leaf\n", "sdks=\n", "frontend=false\n", "scripts=false\n",
                          "targets=contract_rest_a\n", "any=true\n", "all=false\n"):
             self.assertIn(expected, text)
+
+
+def load_selector():
+    spec = importlib.util.spec_from_file_location("select_test_targets", SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class RealRepository(unittest.TestCase):
+    """The contract readers derived from this repository's own sources (review finding m7, rule 21 of AGENTS.md)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.root = str(SCRIPT.parents[1])
+        cls.selector = load_selector()
+        cls.targets = cls.selector.head_targets(cls.root)
+        cls.readers = cls.selector.Readers(cls.root, cls.targets, cls.selector.Workspace(cls.root))
+
+    def suites(self, rel):
+        return {name for kind, name in self.readers.of(rel) if kind == "target"}
+
+    def test_the_canonical_openapi_selects_the_three_suites_of_finding_m7(self):
+        self.assertLessEqual(
+            {"contract_developer_experience", "contract_payload_classification", "contract_iceberg_writes"},
+            self.suites("specs/001-platform-foundation/contracts/openapi.yaml"))
+
+    def test_the_worker_protocol_selects_the_grpc_adapter_that_compiles_it(self):
+        self.assertIn(("package", "sagat-api-grpc"),
+                      self.readers.of("specs/001-platform-foundation/contracts/worker.proto"))
+
+    def test_only_contract_suites_are_selected_by_a_contract(self):
+        for rel in ("specs/001-platform-foundation/contracts/openapi.yaml",
+                    "specs/001-platform-foundation/contracts/events.asyncapi.yaml"):
+            with self.subTest(rel=rel):
+                for name in self.suites(rel):
+                    self.assertTrue(self.targets[name].startswith("contract/"), name)
+
+    def test_every_path_into_a_contracts_directory_is_seen_as_a_read(self):
+        # A reader that names a contracts directory, or a file in one, and is not found to read it builds the path
+        # in a way the selector does not see: a pull request that changes only that contract would not run it.
+        path = re.compile(r"(?:^|[/.])(specs/[^/\s]+/contracts)(/[^\s;:,]*)?$")
+        unseen = []
+        for reader, literals in sorted(self.readers.literals.items()):
+            for literal in sorted(literals):
+                match = path.search(literal)
+                if not match:
+                    continue
+                directory, rest = match.group(1), (match.group(2) or "").rstrip("/")
+                under = pathlib.Path(self.root, directory + rest)
+                if under.is_file():
+                    files = [directory + rest]
+                elif under.is_dir():
+                    files = [str(p.relative_to(self.root)) for p in sorted(under.rglob("*")) if p.is_file()]
+                else:
+                    continue  # a contract the head no longer has; a test of the reader fails on its own
+                if not any(reader in self.readers.of(rel) for rel in files):
+                    unseen.append(f"{reader[0]} {reader[1]}: {literal}")
+        self.assertEqual(unseen, [], "these readers name a contract the selector does not see them read")
 
 
 if __name__ == "__main__":

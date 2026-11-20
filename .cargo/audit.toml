@@ -8,9 +8,10 @@ ignore = [
   "RUSTSEC-2023-0071",
   # 2026-10-24 advisories (published 2026-10-13 to 2026-10-23). Their fixes were younger than the
   # two-week rule for dependencies, so each was a time-boxed ignore. The ones whose fix had passed the
-  # rule were taken on 2026-11-05 and their entries deleted (rustls 0346 to 0349, tokio 0386,
-  # rustls-webpki 0382, webpki-roots and webpki-root-certs 0381 and 0383; research.md, gaps G271, G700
-  # and G701). Each entry below says when its fix passes the rule and the date by which the ignore
+  # rule were taken on 2026-11-05 (rustls 0346 to 0349, tokio 0386, rustls-webpki 0382, webpki-roots
+  # and webpki-root-certs 0381 and 0383) and on 2026-11-12 (ctutils 0385), and their entries deleted
+  # (research.md, gaps G271, G700, G701 and G702); the 0.2 line took the same fixes in hotfix 0.2.1
+  # on 2026-11-20. Each entry below says when its fix passes the rule and the date by which the ignore
   # must be gone. See research.md, gap G700 and decision D700.
 
   # crypto-bigint 0.5.5 (timing variability in operations meant to be constant-time), reached only
