@@ -1884,7 +1884,7 @@ impl RunState {
     }
 
     /// Whether root step `node` waits, with no decision of its next attempt, only because a pause made it give back
-    /// what it was granted (FR-022-046, ADR-0096 proposed): it asks again on resume, and until then the planner does not
+    /// what it was granted (FR-022-046, ADR-0096): it asks again on resume, and until then the planner does not
     /// ask it, invariant 11 accepts it and `persist` writes it waiting for its first declared gate. The one predicate
     /// the planner, [`Self::flow_control_breach`] and the adapter share.
     #[must_use]

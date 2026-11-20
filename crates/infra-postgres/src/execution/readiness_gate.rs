@@ -1007,7 +1007,7 @@ pub(super) fn gate_waiting_kind(
 ) -> Result<&'static str, StoreError> {
     let kind = match step.gates().waiting().next() {
         Some((kind, _)) => Some(kind),
-        // `RunState::waits_for_resume`, the domain's one predicate (ADR-0096 proposed)
+        // `RunState::waits_for_resume`, the domain's one predicate (ADR-0096)
         None if waits_for_resume => declared.and_then(|declared| declared.kinds().next()),
         None => None,
     };

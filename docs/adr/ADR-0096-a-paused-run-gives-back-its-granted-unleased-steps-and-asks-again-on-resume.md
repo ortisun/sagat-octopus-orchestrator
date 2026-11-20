@@ -1,8 +1,8 @@
 # ADR-0096: A paused run gives back what its granted, unleased steps hold, and they ask again on resume
 
-**Status:** Proposed
-**Decided by:** agent proposal (feature 022, T022-100, 2026-11-20) after the security, correctness and architecture reviews of that day (`specs/022-flow-control-step-policies/reviews/2026-11-20/`); the owner accepts or changes it (O1175 of feature 022)
-**Refines / supersedes:** would refine ADR-0094 decisions 2 and 3 (accepted 2026-11-19, OD-2026-11-19-3): a step that a pause made give back its gates is not asked while the run is paused, and `persist` accepts it waiting without a decision. The rest of ADR-0094 stands.
+**Status:** Accepted (2026-11-20, OD-2026-11-20-2, "Aceitar ADR-0096": O1175 option (a))
+**Decided by:** agent proposal (feature 022, T022-100, 2026-11-20) after the security, correctness and architecture reviews of that day (`specs/022-flow-control-step-policies/reviews/2026-11-20/`); accepted by the owner (OD-2026-11-20-2)
+**Refines / supersedes:** partly supersedes ADR-0094 decisions 2 and 3 (accepted 2026-11-19, OD-2026-11-19-3): a step that a pause made give back its gates is not asked while the run is paused, and `persist` accepts it waiting without a decision. The rest of ADR-0094 stands.
 **Enforced by:** `crates/domain/tests/readiness_gate.rs::{a_pause_returns_the_gates_of_a_granted_unleased_step_and_its_resume_asks_again, a_step_granted_while_its_run_is_paused_gives_its_gates_back_in_that_commit, a_review_hold_gives_back_and_a_retry_asks_again_for_the_same_attempt}`; `integration_flow_control_step_policies::returns` (one test per path: pause, hold for review, cancellation, run end, retry after a hold, retry pass while paused, cancellation while paused, and the pause's sorted lock order against a held key row); `RunState::waits_for_resume`, the one predicate the planner, invariant 11 (`flow_control_breach`) and `persist` share.
 
 ## Context
@@ -15,7 +15,7 @@ key's limit (invariant 13) and a paused run does not hold a key it cannot use.
 ADR-0094, accepted on 2026-11-19, says the planner asks `Evaluation::Gates` for every gated step that waits without a
 decision, "running or paused" (decision 2), and that `persist` refuses a gated step waiting without a decision
 (decision 3). A step that a pause made give back its gates waits without a decision until the resume: the two texts
-disagree. The build of T022-100 follows the spec; this ADR records the exception.
+disagree. The build of T022-100 follows the spec; this ADR records the exception, which the owner accepted (OD-2026-11-20-2).
 
 Facts the design rests on:
 
@@ -42,7 +42,7 @@ Facts the design rests on:
 
 ## Considered options
 
-1. **Give back on pause, ask on resume, decide what becomes ready while paused** — proposed: it is FR-022-046 as
+1. **Give back on pause, ask on resume, decide what becomes ready while paused** — chosen (OD-2026-11-20-2): it is FR-022-046 as
    written, it keeps the journal the only source of truth for every wait, and it changes nothing for a step already
    queued.
 2. **Keep ADR-0094 as written: a paused run keeps its grants** — no exception, but a paused run holds keys it cannot use

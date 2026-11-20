@@ -597,7 +597,7 @@ taken after `git grep D022-04` on every `origin/*` branch.
   write waiter rows) and grants only its own waiters within its own limit. The over-admission is therefore, at any
   moment, at most what the old row holds at that moment (never more than its limit), until its holders and waiters drain;
   order holds within each row, not across them (the exception to ADR-0088 decision 2 and ADR-0056 decision 5 that
-  ADR-0093 states; O1174 asks the owner to confirm this reading of "its old row's holders"). One forced version drains at
+  ADR-0093 states; the owner confirmed this reading of "its old row's holders", O1174 (a), OD-2026-11-20-4). One forced version drains at
   a time (`FORCED_VERSION_DRAINING`), so a key has at most two rows (reviews of 2026-11-20). No release, grant or timeout
   path digests a key, so no Rust change is needed there; the readiness round's live-keys count reads only the rows of
   the versions in force, so a key filed again after a force is not refused for the row it replaces (correctness review
@@ -612,11 +612,11 @@ taken after `git grep D022-04` on every `origin/*` branch.
   moment do not see each other's uncommitted rows, so together they can pass the ceiling by at most the new keys that
   the others create. When each creates one key (one gated step decided per round, the usual case) that is at most their
   number minus one, within the owner's bound; a round that decides several gated steps with distinct new keys (parallel
-  branches released in one commit) can add up to its own room, so the exact bound is in keys, not transactions (O1173).
+  branches released in one commit) can add up to its own room, so the exact bound is in keys, not transactions (O1173 (a), accepted OD-2026-11-20-3).
   The bound is written in `docs/runbooks/flow-control.md`; the text of `contracts/errors.md` (`FLOW_CONTROL_LIMIT`) gains
   it when the approved texts are next revised with G1195.
-- **D022-048 — A pause gives back, a resume asks again (T022-100, T29; FR-022-040, FR-022-046; ADR-0096 proposed, O1175;
-  2026-11-20).** The pause settles the run (`execution::pause_run` now returns a `Progress`): the planner gives back the
+- **D022-048 — A pause gives back, a resume asks again (T022-100, T29; FR-022-040, FR-022-046; ADR-0096, accepted
+  OD-2026-11-20-2; 2026-11-20).** The pause settles the run (`execution::pause_run` now returns a `Progress`): the planner gives back the
   permit and the slot of every gated root step granted for its next attempt and not leased, and the reducer makes it wait
   again (`WAITING`, `Gate`) from those return events, so the journal alone reaches the same state. While the run is
   paused that step is not asked (`RunState::waits_for_resume`, shared by the planner, invariant 11 and `persist`, whose
@@ -625,7 +625,7 @@ taken after `git grep D022-04` on every `origin/*` branch.
   review, the step asks again for the same attempt: the reducer accepts a decision over a slot that attempt gave back
   unleased (`ENDED`). A pause or resume locks the keys of its returns and of the run's waiters in one sorted pass before
   it writes any (correctness review M1 of 2026-11-20). Hold for review, cancellation and run end gave back already (the
-  step leaves `READY`); T022-100 adds their tests. The exception to ADR-0094 decisions 2 and 3 is ADR-0096 (proposed).
+  step leaves `READY`); T022-100 adds their tests. The exception to ADR-0094 decisions 2 and 3 is ADR-0096 (accepted 2026-11-20, OD-2026-11-20-2).
 
 ## Gaps
 
@@ -663,13 +663,13 @@ taken after `git grep D022-04` on every `origin/*` branch.
 | G1198 | No deployment configuration carries the digest keys (`KeyRing`) to the stores of the control plane and the engine: a gated step is refused `BINARY_CAPABILITY_MISSING` without them. Lands with the capability listing (D022-037). *Extended 2026-11-19 (D022-045): a scheduler replica needs the ring too; without it the grant pass grants nothing (`unsupported`) and keeps its keys due; the timeout routine does not need it.* | Open; capability listing |
 | G1199 | The readiness gate applies the declared `limit` and `queueTimeout`; the namespace's `concurrency_limit` and `flow_control_queue_timeout_ms` ceilings (`FlowControlCeilings`) are not read there yet, nor the live-keys ceiling (`FLOW_CONTROL_LIMIT` of FR-022-054) or a waiters-per-key bound (security review of 2026-11-19, Major): with distinct keys a caller can create key rows without bound in one namespace. No process may list the capabilities before these are applied. *Partly closed 2026-11-19 (D022-045): the namespace limit, queue timeout and live-keys ceilings apply at readiness (`FLOW_CONTROL_LIMIT`); step waiters are bounded by the plan per run and gated node, not per key. Open: a namespace ceiling of rate-limit keys and values (T022-077); run waiters per key (T022-022, T022-072).* | Open; T022-077, T022-022 |
 | G022-001 | The readiness gate records no metric or span yet (`concurrency_acquisitions_total`, `rate_limit_decisions_total`, `workflow.concurrency.acquire`, `workflow.rate_limit.admit`, rule 10; architecture review of 2026-11-19, M3). A grant counts as unleased until the pass records its lease (T022-074), so a rate-limited step key admits only `limit` steps in all until then. A key that yields `null` shares the group's single key. *Partly closed 2026-11-19 (D022-045): decisions, grants, timeouts, dequeues and returns of the step scope are counted after commit and spanned by group. Open: the wait histograms and waiter gauges, the grant-lag and unleased-grant series and their alerts (T022-082).* | Open; T022-082, T022-074, T022-104 |
-| G022-002 | The live-keys ceiling is checked without a namespace lock: concurrent transactions that each create a new key at the boundary can pass it by at most the new keys the others create (their number minus one when each creates one key). *Accepted 2026-11-19 by the owner (O1172 (a), OD-2026-11-19-4) for 0.3.0; the bound is documented in `docs/runbooks/flow-control.md` (D022-047). The exact bound is in keys when a round creates several (O1173).* | Accepted for one key per transaction (OD-2026-11-19-4); O1173 open |
+| G022-002 | The live-keys ceiling is checked without a namespace lock: concurrent transactions that each create a new key at the boundary can pass it by at most the new keys the others create (their number minus one when each creates one key). *Accepted 2026-11-19 by the owner (O1172 (a), OD-2026-11-19-4) for 0.3.0; the bound is documented in `docs/runbooks/flow-control.md` (D022-047). The exact bound is in keys when a round creates several (O1173), accepted 2026-11-20 (OD-2026-11-20-3).* | Accepted (OD-2026-11-19-4; in keys, OD-2026-11-20-3) |
 | G022-003 | A rate-limit grant's lease instant is recorded by a pass that is not built (T23, T022-074): a leased grant counts for ever, so a rate key that reached its limit frees only by a returned slot or a dequeue, and its window never rests until an age-out instant. T022-097's rate half rests on it. | Open; T022-074 |
 | G022-004 | `verify_run` does not check that a `wait_timed_out` comes at or after the deadline its `*.queued` journaled; the reservation counts an eligible waiter ahead without its own position (conservative). | Open |
 | G022-005 | An orphaned waiter (of a run that ended) is logged and counted (`outcome="orphan"`), not alerted; the runbook does not list the `gate_grant` and `gate_timeout` action kinds. | Open; T022-061, T022-082 |
 | G022-006 | The digest-key commands (activation, force, listing) are SQL functions with no audited API, CLI, span or metric (NFR-022-005, constitution VI; security review of 2026-11-20, finding 4); the force's history is append-only only for roles that may not drop its trigger, and a deployment where operators share the schema owner's login records whatever name they type and can retire a version by a direct `UPDATE` with no record (finding 5). The runbook tells operators to use their own login and never to edit the table by hand. | Open; T022-061, T022-082; a dedicated operator role |
 | G022-007 | FR-022-021 says "pausing a holder MUST NOT release its permit", and FR-022-019 counts a granted, unleased step as a holder, while FR-022-046 says a pause returns the permit and slot of a granted, unleased step: the approved texts disagree for that case; the build follows FR-022-046 (D022-048). T022-025's "pause keeps permit" holds for a leased step and a run holder. `data-model.md` ("Steps and their gates", invariant 11) does not say that a step a pause gave back waits with no waiter row. Revised when the approved texts are next re-approved. | Open; re-approval of the texts |
-| G022-008 | A step queued when its run pauses keeps its waiter row and its deadline, which runs during the pause: a long pause can fail it `CONCURRENCY_WAIT_TIMEOUT` or `RATE_LIMIT_WAIT_TIMEOUT` (the timeout routine does not look at the pause), while a step granted before the pause waits with no deadline (correctness review 4 and architecture M2 of 2026-11-20). Not introduced by T022-100. | Open; O1175 |
+| G022-008 | A step queued when its run pauses keeps its waiter row and its deadline, which runs during the pause: a long pause can fail it `CONCURRENCY_WAIT_TIMEOUT` or `RATE_LIMIT_WAIT_TIMEOUT` (the timeout routine does not look at the pause), while a step granted before the pause waits with no deadline (correctness review 4 and architecture M2 of 2026-11-20). Not introduced by T022-100. | Open; O1175 (a) accepted without option (c) (OD-2026-11-20-2), so the deadline rule is a later decision |
 | G1189 | Nothing in the database computes or checks `key_shard` and the waiter `shard`; two binaries that hashed differently would file one key under two shards. | Open; T022-097 |
 | G1190 | `flow_control_key_activate` records the operator as typed and keeps no history row with the database role, unlike the registry's activations. *Partly closed 2026-11-16 (D022-042): the version row records `activated_role` (`session_user`); a history of earlier activations of the same version is not kept, since a version is activated once. 2026-11-19 (D022-046): every force has an append-only history row with the database role and a reason; the runbook part is `docs/runbooks/flow-control.md`.* | Open; T022-061 (the rest of the runbook) |
 | G1191 | Untested: the down migrations' refusal when `run_events` holds a `concurrency.*` or `rate_limit.*` event; no contract test parses 018's reset-rule table against `RULES`. | Open |
@@ -789,6 +789,7 @@ new key, and a new lock to keep in the one order); (c) a counter row per namespa
 if the owner wants the ceiling exact.
 
 ### O1173 — Is the live-keys overshoot bounded in keys rather than in transactions?
+**Answered 2026-11-20 (OD-2026-11-20-3, "Aceitar as duas"): (a) — the bound is in keys: at most the new keys created by the other transactions of the same moment; documented in `docs/runbooks/flow-control.md` section 4, no lock added.**
 Asked 2026-11-19 (D022-047), after OD-2026-11-19-4 accepted O1172 (a) as "at most the number of transactions creating
 keys at the same moment". That holds when each transaction creates one key. A round that releases several gated steps
 with distinct new keys in one commit (parallel branches) creates up to the room it saw, so concurrent rounds can pass the
@@ -799,6 +800,7 @@ by the other transactions of the same moment; each is bounded by the plan's gate
 needs several gated nodes released together at the boundary. Nothing is built differently until the owner answers.
 
 ### O1174 — Does "at most its old row's holders" count the waiters the old row grants after the force?
+**Answered 2026-11-20 (OD-2026-11-20-4, "Aceitar as duas"): (a) — the excess is the old row's holders at each moment, never more than its limit, until its holders and waiters drain; ADR-0093 decision 5 and the runbook say so.**
 Asked 2026-11-20 (correctness review M1, D022-046). As built, a forced key's old row keeps its waiters and grants them
 within its own limit, so the key is over-admitted at any moment by what the old row holds then, which can grow back to
 its limit after the force while its waiters are granted (for instance a dual-gated head that waited on its other gate).
@@ -812,6 +814,7 @@ the wording of ADR-0093 decision 5.
 
 
 ### O1175 — May a pause give back a granted, unleased step and ask again on resume (ADR-0096)?
+**Answered 2026-11-20 (OD-2026-11-20-2, "Aceitar ADR-0096"): (a) — ADR-0096 is Accepted and partly supersedes ADR-0094 decisions 2 and 3; T022-100 is ticked with its evidence. G022-008 (option (c)'s deadline rule) stays open.**
 Asked 2026-11-20 (T022-100, D022-048; architecture review B1 of 2026-11-20). FR-022-046 (approved) says a pause returns
 the permit and slot of a granted, unleased step, makes it wait again, and the resume makes it ask again. ADR-0094
 (accepted 2026-11-19) says the planner asks every undecided gated step "running or paused" and `persist` refuses an
@@ -861,6 +864,19 @@ recomendado?"; the owner answered "Sim, como recomendado".
   `persist` (T022-096).
 - **OD-2026-11-19-4 — O1172 (a).** The live-keys ceiling may be overshot by at most the number of transactions creating
   keys at the same moment, in 0.3.0; the bound is documented (G022-002).
+
+## Owner decisions of 2026-11-20
+
+Recorded in `docs/owner-decisions.md` (section "2026-11-20 — Feature 022: the pause's returns, the live-keys bound in
+keys and the force's bound"). The owner answered "Aceitar ADR-0096" (O1175) and "Aceitar as duas" (O1173, O1174).
+
+- **OD-2026-11-20-2 — O1175 (a).** ADR-0096 is Accepted and partly supersedes ADR-0094 decisions 2 and 3: a pause gives
+  back the permit and slot of a granted, unleased step and the resume asks again (T022-100, D022-048). G022-008 stays
+  open.
+- **OD-2026-11-20-3 — O1173 (a).** The live-keys overshoot is bounded in keys, not transactions, when one commit creates
+  several keys (G022-002, D022-047).
+- **OD-2026-11-20-4 — O1174 (a).** "Its old row's holders" in the force's bound is read at each moment, up to the old
+  row's limit (ADR-0093 decision 5, D022-046).
 
 ## External semantics for rate limits (not re-read on 2026-11-13)
 

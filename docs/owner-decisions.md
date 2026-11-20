@@ -4,6 +4,19 @@ Decisions that only the product owner could take, with what each one unblocks. E
 recorded where the open item lived (gap register, ADR, runbook or specification). "Not built"
 means the decision is taken and the implementation is still to be done; it is not evidence.
 
+## 2026-11-20 — Feature 022: the pause's returns, the live-keys bound in keys and the force's bound
+
+The fifth build of feature 022's 0.3.0 slice (pull request 237) left the owner three questions, each with a
+recommendation: O1175 (ADR-0096), O1173 and O1174. The owner answered on 2026-11-20: "Aceitar ADR-0096" for O1175 and
+"Aceitar as duas" for O1173 and O1174. The three rows of feature 022 follow; the other numbers of the 2026-11-20 range
+are recorded on the branches they belong to.
+
+| ID | Decision | Decided by | Status | Covers |
+|---|---|---|---|---|
+| OD-2026-11-20-2 | "Aceitar ADR-0096": O1175 option (a). Pausing a run gives back the permit and the slot of each of its gated steps that is granted and not leased and makes it wait again; resuming asks again for the same attempt; a step made ready while the run is paused is decided in that commit and a grant is given back at once. ADR-0096 is Accepted and partly supersedes ADR-0094 decisions 2 and 3 (a step a pause gave back is not asked while its run is paused, and `persist` accepts it waiting without a decision). The deadline of a step queued before the pause still runs during the pause (G022-008; option (c) was not chosen) | owner | Decided; built and ticked under T022-100 | docs/adr/ADR-0096-*.md, docs/adr/ADR-0094-*.md, specs/022-flow-control-step-policies/research.md O1175, D022-048, tasks.md T022-100 |
+| OD-2026-11-20-3 | "Aceitar as duas": O1173 option (a). When one commit creates several new keys (gated steps released together), the live-keys overshoot accepted by OD-2026-11-19-4 is bounded in keys, not transactions: at most the new keys created by the other transactions of the same moment, each bounded by the plan's gated steps per commit. The bound is documented; no namespace lock is added | owner | Decided | specs/022-flow-control-step-policies/research.md O1173, G022-002, D022-047, docs/runbooks/flow-control.md section 4 |
+| OD-2026-11-20-4 | "Aceitar as duas": O1174 option (a). "Its old row's holders" in the force's bound (ADR-0093 decision 5, OD-2026-11-19-2) is read at each moment: a forced key is over-admitted by what its old row holds at that moment, never more than that row's limit, until its holders and waiters drain; the old row keeps its waiters and grants them within its own limit | owner | Decided | docs/adr/ADR-0093-*.md decision 5, specs/022-flow-control-step-policies/research.md O1174, D022-046, tasks.md T022-108, docs/runbooks/flow-control.md section 3 |
+
 ## 2026-11-19 — Feature 022: the digest-key rotation, the readiness round and the live-keys bound
 
 The fourth build of feature 022's 0.3.0 slice (pull request 237) left the owner six pending decisions, each with a

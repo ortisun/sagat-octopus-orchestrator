@@ -43,7 +43,8 @@ Facts the design rests on:
    that version: a key decided afterwards is filed under the active one, so a key MAY have two rows until the old one
    drains. The old row keeps its holders, grants and waiters, gains no new waiter and grants only its own waiters within
    its own limit, so **a key's limit is over-admitted, at any moment, by at most what its old row holds at that moment
-   (its holders, or its counted grants), never more than its limit, until the old row's holders and waiters drain**.
+   (its holders, or its counted grants), never more than its limit, until the old row's holders and waiters drain**
+   (this reading of "its old row's holders", at each moment, was confirmed by the owner: O1174 (a), OD-2026-11-20-4).
    Order across the two rows is lost meanwhile: a new decision is granted on the active row while older waiters wait
    on the old one (an exception to ADR-0088 decision 2 and ADR-0056 decision 5, bounded by the drain). One forced
    version drains at a time (`FORCED_VERSION_DRAINING` refuses a second force), so a key never has more than two rows.

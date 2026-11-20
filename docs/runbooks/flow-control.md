@@ -87,7 +87,8 @@ What it costs, and what to tell the tenants:
 - The old row keeps its holders, grants and waiters, gains no new waiter, and grants only its own waiters within its own
   limit. **A key's limit can therefore be exceeded, at any moment, by at most what its old row holds at that moment
   (holders for concurrency, counted grants for a rate limit), never more than the limit, until the old row's holders
-  and waiters drain.**
+  and waiters drain.** The excess is read at each moment and can grow back to the limit while the old row grants its
+  own waiters (accepted by the owner, OD-2026-11-20-4).
 - Order is kept within each row, not across the two: a new decision can be granted on the new row while older waiters
   still wait on the old one.
 - The processes no longer need the retired key; remove it from the rings at the next restart. Digests computed with the
@@ -107,7 +108,8 @@ namespace's committed keys under the versions in force before it creates its own
 
 - transactions that create keys at the same moment can together pass the ceiling by at most the new keys the others
   create: at most their number minus one when each creates one key; a transaction that releases several gated steps
-  with distinct new keys in one commit can add more (O1173);
+  with distinct new keys in one commit can add more, so the bound is in keys, not transactions: at most the new keys
+  the other transactions of the same moment create (accepted by the owner, OD-2026-11-20-3);
 - after an emergency rotation, the rows the force left are not counted: the ceiling is passed by at most those rows,
   until they drain, and a key filed again is not refused for the row it replaces.
 
