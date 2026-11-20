@@ -413,7 +413,13 @@ async fn no_command_prints_the_token_not_when_it_works_and_not_when_it_fails() {
         run(
             "run",
             env(Some(base), "payments"),
-            &["workflow", "run", "hello-world", "--input", "{}"],
+            &[
+                "workflow",
+                "run",
+                "hello-world",
+                "--input",
+                r#"{"name":"Ada"}"#,
+            ],
         )
         .await,
     );
