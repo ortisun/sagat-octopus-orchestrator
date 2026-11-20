@@ -359,3 +359,22 @@ same size. By T041-35's rule O041-026 is therefore not put, and the change is as
 
 Not measured, as T041-35 states: the scoped report path (G041-019), a database on another host (G041-022), the CPU of C2
 and C3 and the larger gRPC message, a purge beside the workloads.
+
+## 2026-11-20 — T041-35 second run, first job on a hosted runner: not decided
+
+Run 44706547359 of `.github/workflows/perf-spike.yml` at `a34e18df` (D041-102): one GitHub-hosted `ubuntu-latest`
+runner, AMD EPYC 9V74 (4 logical cores), 16 GiB, PostgreSQL 18.7, release build, three rounds in a row, every round
+quiet by the declared environment. Each round was judged by `carry_spike_judge.py` with the pre-fixed rule (a capture-off
+baseline whose rate moves more than 10% between its first and its second measurement voids the round).
+
+| Round | off-1K drift 1 × 16 / 8 × 128 | off-{} drift 1 × 16 / 8 × 128 | Valid | Why |
+|---|---|---|---|---|
+| 1 | 16.0% / 1.4% | 5.6% / 1.4% | no | off-1K at 1 × 16 drifted 16.0% |
+| 2 | 1.5% / 3.1% | 19.2% / 0.0% | no | off-{} at 1 × 16 drifted 19.2% |
+| 3 | 2.3% / 0.8% | 11.1% / 1.1% | no | off-{} at 1 × 16 drifted 11.1% |
+
+Verdict: **not decided** (no valid round). The gates of void rounds are not read: a void round decides nothing,
+neither a pass nor a fail. The load average went from 5 to 14–16 during each round on 4 cores (the benchmark itself:
+PostgreSQL, up to 8 replicas and 128 workers), and every void round failed at 1 × 16, where a row lasts about 11 s and
+a short stall of a shared cloud host moves its rate most. The second job follows D041-104. The rounds, their reports
+and the verdict are kept as the run's artifact `carry-spike-a34e18dfa7179b2266060628c52cad2089d4f82c`.

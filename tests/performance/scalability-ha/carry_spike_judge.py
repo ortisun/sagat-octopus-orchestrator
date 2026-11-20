@@ -4,11 +4,11 @@ import json, math, statistics, sys
 OUT = sys.argv[1]
 HALF = 10
 rounds = {}
-for r in range(1, 7):
-    try:
-        text = open(f"{OUT}/second-round-{r}.log").read()
-    except FileNotFoundError:
-        continue
+import glob, os
+# every round present, in its number's order (a round number is the fixed order of D041-104 on the runners)
+numbers = sorted(int(os.path.basename(p)[len("second-round-"):-len(".log")]) for p in glob.glob(f"{OUT}/second-round-*.log"))
+for r in numbers:
+    text = open(f"{OUT}/second-round-{r}.log").read()
     rows = [json.loads(l.split("spike-carry-json ", 1)[1]) for l in text.splitlines() if "spike-carry-json " in l]
     quiet = open(f"{OUT}/second-round-{r}.quiet").read().strip() == "1"
     rounds[r] = ({(x["label"], x["replicas"]): x for x in rows}, quiet)

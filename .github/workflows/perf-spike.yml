@@ -16,6 +16,13 @@ concurrency:
 
 jobs:
   carry-spike:
+    # Four runners, three rounds each (D041-104): a round's validity looks only at its capture-off baselines, so more
+    # rounds make three valid ones likely without touching the gates; `judge` takes the first three valid in the order
+    # shard 1 to 4, round 1 to 3, fixed before measuring.
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     runs-on: ubuntu-latest
     # A cold release build of sagat-tests takes about 30 minutes; each round about 10 to 20 minutes here.
     timeout-minutes: 300
@@ -58,5 +65,34 @@ jobs:
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: carry-spike-${{ github.sha }}
+          name: carry-spike-${{ github.sha }}-${{ matrix.shard }}
           path: ${{ runner.temp }}/carry-spike/
+
+  judge:
+    needs: carry-spike
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: carry-spike-${{ github.sha }}-*
+          path: ${{ runner.temp }}/shards
+      - name: rounds in the fixed order (shard, then round)
+        run: |
+          all="$RUNNER_TEMP/all"; mkdir -p "$all"; k=0
+          for shard in 1 2 3 4; do
+            dir="$RUNNER_TEMP/shards/carry-spike-${GITHUB_SHA}-$shard"
+            for r in 1 2 3; do
+              k=$((k+1))
+              [ -f "$dir/second-round-$r.log" ] || { echo "shard $shard round $r: missing (round $k)"; continue; }
+              for ext in log md quiet; do cp "$dir/second-round-$r.$ext" "$all/second-round-$k.$ext"; done
+              echo "shard $shard round $r -> round $k"
+            done
+          done
+      - name: verdict over every shard
+        run: python3 -I tests/performance/scalability-ha/carry_spike_judge.py "$RUNNER_TEMP/all" | tee "$RUNNER_TEMP/all/verdict.txt"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: carry-spike-${{ github.sha }}-verdict
+          path: ${{ runner.temp }}/all/
