@@ -860,7 +860,7 @@ taken after `git grep D022-04` on every `origin/*` branch.
   `support::flow_control::process_env` and activates the concurrency capability only (`activate_concurrency`);
   `admission::a_real_engine_with_the_ring_lists_the_gate_and_one_missing_the_active_version_does_not_start` starts a real
   engine with it (it registers listing the capability) and one whose ring lacks the active version (it does not start).
-  A process with every switch off ignores a key file it was given (review of the fixes, m5).
+  A process with every switch off neither reads nor holds a key file it was given (review of the fixes, m5; re-review).
   *Listing before T022-104 (review of the fixes, architecture M3).* Listing the capability makes activation possible
   while publication does not yet refuse a key over a `secret` location (T022-104). Options: hold the listing back until
   T022-104 (blocks the SDK conformance of the release slice for a publication rule); build the `secret` refusal alone now
@@ -929,7 +929,9 @@ taken after `git grep D022-04` on every `origin/*` branch.
   read the label).
   *Revised after the review of the fixes (security Major 1).* A key's `oldestHolderSince` and `oldestWaitSince` equal
   the `since` of its runs to the microsecond, so a caller who may not see the label could still link the runs of one key
-  by them: for such a caller they are `null` too. A weaker channel stays (the counts of a key and the oldest-wait order,
+  by them. First made `null` for such a caller; the re-review (correctness Major) found that this breaks FR-022-022's
+  "oldest wait" for most operators, so such a caller gets them cut to the minute: how long a queue has waited stays
+  visible, and linking needs runs one minute apart. A weaker channel stays (the counts of a key and the oldest-wait order,
   G022-014). The reveal rule has one implementation, `reveal_grants::may_reveal_payload_unlocked`, and a fitness rule
   keeps `payload_reveal_grants` read only there (review of the fixes, architecture M1).
 

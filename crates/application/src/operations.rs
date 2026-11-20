@@ -683,10 +683,11 @@ impl<S: AlertReader + FlowControlKeyReader, C: Clock> OperationsService<S, C> {
                     &key.position.digest,
                 ));
             } else {
-                // the instants of a key equal its runs' `since` to the microsecond: shown to a caller who may not see
-                // the label, they would link the runs of one key as the label would (D022-060, review of the fixes)
-                key.oldest_wait_since = None;
-                key.oldest_holder_since = None;
+                // the instants of a key equal its runs' `since` to the microsecond: shown whole to a caller who may not
+                // see the label, they would link the runs of one key as the label would. Such a caller gets them to the
+                // minute, which still says how long a queue has waited (FR-022-022) (D022-060, re-review of the fixes)
+                key.oldest_wait_since = key.oldest_wait_since.map(to_the_minute);
+                key.oldest_holder_since = key.oldest_holder_since.map(to_the_minute);
             }
         }
         Ok(page)
@@ -767,4 +768,12 @@ fn worker_subject(subject: &str) -> Result<&str, AppError> {
         return Err(AppError::NotAllowed("the worker identity is not valid"));
     }
     Ok(subject)
+}
+
+/// An instant cut down to its minute (seconds and fractions zero): what a caller who may not see a key's label reads of
+/// the key's oldest instants (D022-060).
+fn to_the_minute(at: OffsetDateTime) -> OffsetDateTime {
+    at.replace_second(0)
+        .and_then(|at| at.replace_nanosecond(0))
+        .unwrap_or(at)
 }

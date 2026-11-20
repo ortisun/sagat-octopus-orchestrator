@@ -43,6 +43,7 @@ An architectural rule that nothing checks is a wish. Each row is a rule and what
 | Every path that takes a run's permit takes the run, its active-run counter row, then the key (ADR-0056 decision 2, ADR-0050 decision 7) | `integration_flow_control_step_policies::concurrency_locks` (a reference in slot order per path, and a reversed control that deadlocks) |
 | The queued runs of a namespace are counted by one statement (feature 022, D022-055) | `queued_runs_count_errors` in `scripts/check-architecture.py` and its fixtures |
 | Key values appear only as labels, and a label only to a caller who may reveal personal data (feature 022, D1168, D022-060) | `key_value_free_errors` in `scripts/check-architecture.py`; `integration_flow_control_step_policies::rest` (a canary value in no body; labels `null` without the grant) |
+| Feature 009's reveal rule has one implementation; a key label goes by it (feature 022, D022-060) | `reveal_rule_errors` in `scripts/check-architecture.py` and its fixture |
 | Every statement of the store is audited as the runtime role, fragments spliced from another module included | `integration_platform_foundation::runtime_privileges` (`rust_source.rs` resolves macros by module path and by import) |
 
 When you add a rule worth keeping, add its row and its check in the same change.

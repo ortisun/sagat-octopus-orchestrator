@@ -189,12 +189,12 @@ pub fn flow_control_keys(
         name: FLOW_CONTROL_KEYS_FILE,
         reason: reason.to_owned(),
     };
+    // a process with every switch off serves no gate: it neither reads nor holds a key file it was given
+    if !(switches.concurrency_keys || switches.rate_limits) {
+        return Ok(None);
+    }
     let Some(path) = get(FLOW_CONTROL_KEYS_FILE).filter(|path| !path.trim().is_empty()) else {
-        return if switches.concurrency_keys || switches.rate_limits {
-            Err(ConfigError::Missing(FLOW_CONTROL_KEYS_FILE))
-        } else {
-            Ok(None)
-        };
+        return Err(ConfigError::Missing(FLOW_CONTROL_KEYS_FILE));
     };
     let file = std::fs::File::open(path.trim())
         .map_err(|_| invalid("must name a readable file of at most 16 KiB"))?;

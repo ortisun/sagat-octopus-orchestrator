@@ -113,6 +113,18 @@ US7 rate limits and the release 0.3.0 slice (OD-2026-11-13-11) are in [Release 0
   `HOLDING`, the cursor comparison `>=` (a page repeats a key), the group filter removed. The test API gained
   `Options::flow_control`. Not in it: `keyLabel` `null` for a caller who may not disclose (T022-104); the route in the
   canonical OpenAPI (T022-060).
+  *Revised 2026-11-20 (keys reviews; D022-058..060):* the cursor is the position sealed for its namespace under the active
+  digest key version (400 for an altered, forged or foreign one); `keyLabel` only for a caller who may reveal personal
+  data (`null` otherwise) and the key's instants cut to the minute for any other caller; a page walks an index in its
+  order (`oldest_wait_at` kept by the count trigger) with a 2 s statement timeout; the route and `Run.concurrency` in the
+  canonical OpenAPI with 400 and 422 (the battery attacks it). Evidence (2026-11-20, `40854f4d` and its successor):
+  `integration_flow_control_step_policies` 124 passed owner and `SAGAT_TEST_AS_RUNTIME_ROLE=1` (the four `run_creators`
+  delayed-start tests after waiting on the database clock), among them `rest::{a_key_label_is_shown_only_to_a_caller_who_may_reveal_personal_data,
+  a_listing_shows_only_its_own_namespaces_keys_and_queued_runs, a_page_of_keys_reads_only_its_own_keys}`;
+  `contract_rest_security_multitenancy` 21, `contract_developer_experience` 8, `contract_payload_classification` 18,
+  `contract_rest_platform_foundation` 9 passed; `cargo test -p sagat-application --lib` (keyed_digest, flow_control_keys)
+  passed. Hand mutations caught: labels always revealed, the listing's order off its index, the namespace filter
+  removed, the cursor's associated data without the namespace.
 - [x] T022-027 [US2] Invariants 1–2 of `data-model.md` in `verify_run` (`crates/infra-postgres/src/execution.rs`) and `assert_consistent` (`tests/support/engine.rs`). FR-022-020. Evidence: fails on seeded inconsistency, passes after every fault case.
   - *Amended 2026-11-13 after review* (D022-033): reduced to the consistency assertion in `tests/support/engine.rs` and the seeded-failure tests; the `verify_run` checks land with T022-022.
   *Done 2026-11-20 (0.3.0 slice, as amended; D022-056).* `World::assert_consistent` (every test of the suites) also runs
@@ -136,6 +148,10 @@ US7 rate limits and the release 0.3.0 slice (OD-2026-11-13-11) are in [Release 0
   queue. Evidence: `fault_flow_control_step_policies` 8 passed, owner and `SAGAT_TEST_AS_RUNTIME_ROLE=1`, every run
   checked by `assert_consistent` (T022-027). Hand mutation caught: both deadline guards of the grant removed (the
   listing's filter and the check under the key's lock: the race red). Recorded as ADR-0056 evidence by this entry.
+  *Revised 2026-11-20 (keys review, correctness M1 and M2):* the race has four orders, the fourth making the grant decide
+  about a start that becomes due while the grant waits for the key (`queue.rs` has the step twin); the release crash runs
+  20 rounds on one world. Evidence: `fault_flow_control_step_policies` 8 passed owner and `SAGAT_TEST_AS_RUNTIME_ROLE=1`;
+  hand mutation caught: only the grant's check under the key removed (round 3 red in both suites).
 - [x] T022-029 [P] [US2] Lock-order barriers `tests/integration/flow-control-step-policies/concurrency_locks.rs` for each per-path order of ADR-0056 decision 2 (admission, grant, timeout, terminal, claim against attempt end, cancellation, policy edits). FR-022-019,020. Evidence: no deadlock; reversed-order control waits as expected.
   - *Amended 2026-11-13 after review* (D022-026): also the slot-8b counter rows of `flow_control_counts` after the semaphores, and the merged routine of T022-097 against attempt end and cancellation.
   *Done 2026-11-20 (0.3.0 slice: a run's permit).* `tests/integration/flow-control-step-policies/concurrency_locks.rs`
@@ -148,6 +164,9 @@ US7 rate limits and the release 0.3.0 slice (OD-2026-11-13-11) are in [Release 0
   passed, owner and `SAGAT_TEST_AS_RUNTIME_ROLE=1`. Hand mutation caught: the counter-row pre-lock at a run's end off
   (the end-of-run test red). Not in it: `flow_control_counts` (T022-105) and policy edits (a lowered limit is read
   without a lock: `lifecycle::a_lowered_limit_revokes_nothing_and_applies_to_the_next_start`).
+  *Revised 2026-11-20 (keys review, correctness M3 and m1):* `an_admission_takes_its_counter_row_before_its_key` (every
+  counter slot of the namespace held, then the key); cancellation and timeout take the run, its counter row, then the key,
+  from both starts. Hand mutation caught: the key locked before the runs insert (the admission test red, a deadlock).
 
 ## Phase 5: US3 — Handle a failed workflow (P1)
 

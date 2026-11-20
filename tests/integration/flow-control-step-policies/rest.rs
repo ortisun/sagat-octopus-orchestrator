@@ -439,19 +439,20 @@ async fn a_key_label_is_shown_only_to_a_caller_who_may_reveal_personal_data() {
             let (status, page) = read_as(api, &keys, subject).await;
             assert_eq!(status, StatusCode::OK, "{page}");
             assert_eq!(page["items"][0]["holders"], 1, "{page}");
-            // the key's instants go with its label: without it they would link the runs of one key (review of the
-            // fixes, security Major 1)
+            // the key's instants: whole they would link the runs of one key as the label would (review of the fixes,
+            // security Major 1), so without the label they are cut to the minute, which still says how long the queue
+            // has waited (FR-022-022; re-review of the fixes)
             let revealed = page["items"][0]["keyLabel"].is_string();
-            assert_eq!(
-                page["items"][0]["oldestHolderSince"].is_string(),
-                revealed,
-                "{page}"
-            );
-            assert_eq!(
-                page["items"][0]["oldestWaitSince"].is_string(),
-                revealed,
-                "{page}"
-            );
+            for field in ["oldestHolderSince", "oldestWaitSince"] {
+                let at = time::OffsetDateTime::parse(
+                    page["items"][0][field].as_str().expect("an instant"),
+                    &time::format_description::well_known::Rfc3339,
+                )
+                .expect("rfc3339");
+                if !revealed {
+                    assert_eq!((at.second(), at.nanosecond()), (0, 0), "{field}: {page}");
+                }
+            }
             assert!(
                 run["concurrency"].get("keyLabel").is_some(),
                 "the field is there: {run}"
