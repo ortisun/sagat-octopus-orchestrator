@@ -282,6 +282,10 @@ pub struct Options {
     /// A `forEach` may be published with `operators` (`SAGAT_COLLECTION_OPERATORS_ENABLED`, design 042). Off, as in
     /// production, unless a test turns it on.
     pub collection_operators: bool,
+    /// Flow control (feature 022) is on: both switches, a digest key ring whose version 1 is active, both capabilities
+    /// activated for a fleet that lists them, and step gates admitted (tests only), as `support::flow_control::gated_world`
+    /// sets up the engine's world. Off unless a test turns it on.
+    pub flow_control: bool,
 }
 
 impl Default for Options {
@@ -321,6 +325,7 @@ impl Default for Options {
             lake: false,
             run_input_validation: sagat_application::run_input::InputValidationMode::Enforce,
             collection_operators: false,
+            flow_control: false,
         }
     }
 }
@@ -397,9 +402,13 @@ async fn start_on_ready_db(db: TestDb, options: Options, supplied_pool: Option<P
         options.limits.max_in_flight_per_tenant,
     ));
     let cache = DefinitionCache::new(Arc::new(JsonIrCodec), 64);
-    let executions = PgRunStore::new(api_pool.clone(), cache.clone())
+    let mut executions = PgRunStore::new(api_pool.clone(), cache.clone())
         .with_scoped_worker_protocol()
         .with_lake_enabled(options.lake);
+    if options.flow_control {
+        super::flow_control::activate(&db.pool).await;
+        executions = super::flow_control::gate(executions);
+    }
     let key_k1 = sagat_infra_secrets::generate_key().expect("a key");
     let keys =
         sagat_infra_secrets::SecretsConfig::parse(&format!("k1:{key_k1}")).expect("a key ring");
@@ -572,7 +581,8 @@ async fn start_on_ready_db(db: TestDb, options: Options, supplied_pool: Option<P
         sagat_application::api_admission::ApiAdmissionService::new(executions.clone(), SystemClock),
         DefinitionService::new(executions.clone(), SystemClock, JsonIrCodec)
             .with_lake_enabled(options.lake)
-            .with_collection_operators_enabled(options.collection_operators),
+            .with_collection_operators_enabled(options.collection_operators)
+            .with_flow_control(super::flow_control::switches(options.flow_control)),
         runs,
     )
     .with_blob_transfer(sagat_api_http::HttpBlobTransfer {
@@ -585,7 +595,8 @@ async fn start_on_ready_db(db: TestDb, options: Options, supplied_pool: Option<P
             SystemClock,
             JsonIrCodec,
         )
-        .with_collection_operators_enabled(options.collection_operators),
+        .with_collection_operators_enabled(options.collection_operators)
+        .with_flow_control(super::flow_control::switches(options.flow_control)),
     )
     .with_database_results(Arc::new(
         sagat_application::database_results::DatabaseResultService::new(

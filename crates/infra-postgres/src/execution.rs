@@ -1819,21 +1819,23 @@ impl RunStore for PgRunStore {
         before: Option<RunId>,
         limit: u32,
     ) -> Result<Vec<RunRecord>, StoreError> {
-        sqlx::query(
+        sqlx::query(concat!(
             "SELECT id, tenant_id, namespace_id, workflow_id, workflow_version_id, status, run_version, \
                     stop_reason, stop_code, paused, correlation_id, started_by, trace_id, deadline_at, \
                     created_at, updated_at, finished_at, parent_run_id, root_run_id, parent_node, \
                     cancel_policy, depth, trace_parent_span, rerun_of, origin, business_id, \
                     start_delayed_until, schedule_id, schedule_nominal_at, schedule_action_kind, \
                     schedule_revision, reset_sequence, \
-                    seg_chain_id, seg_index, seg_completion, seg_successor \
+                    seg_chain_id, seg_index, seg_completion, seg_successor, \
+                    cc_state, cc_pool, cc_group, cc_key, cc_since, cc_deadline \
              FROM runs LEFT JOIN LATERAL ( \
                SELECT chain_id AS seg_chain_id, segment_index AS seg_index, \
                       completion_kind AS seg_completion, successor_run_id AS seg_successor \
                FROM chain_segments \
                WHERE chain_segments.tenant_id = runs.tenant_id \
-                 AND chain_segments.run_id = runs.id) segment ON true \
-             WHERE runs.tenant_id = $1 AND runs.namespace_id = $2 \
+                 AND chain_segments.run_id = runs.id) segment ON true",
+            crate::flow_control::run_permit_lateral_sql!(),
+            "WHERE runs.tenant_id = $1 AND runs.namespace_id = $2 \
                AND ($3::uuid IS NULL OR runs.id < $3) \
                AND ($4::uuid IS NULL OR runs.workflow_id = $4) \
                AND ($5::text IS NULL OR runs.status = $5) \
@@ -1842,7 +1844,7 @@ impl RunStore for PgRunStore {
                AND ($9::text IS NULL OR runs.business_id LIKE $9 ESCAPE '\\') \
                AND ($10::uuid IS NULL OR runs.schedule_id = $10) \
              ORDER BY runs.id DESC LIMIT $6",
-        )
+        ))
         .bind(tenant.as_uuid())
         .bind(namespace.as_uuid())
         .bind(before.map(RunId::as_uuid))
@@ -2341,19 +2343,23 @@ async fn claim_reservation(
 // when present): one lateral index probe (`chain_segments_run_unique`) that yields nothing for a run
 // outside any chain. They read as well the columns a run was created with that say where it came from
 // (the schedule action and the reset sequence), from the row they already load: no query per run.
-const RUN_SELECT: &str = "SELECT id, tenant_id, namespace_id, workflow_id, workflow_version_id, status, \
+const RUN_SELECT: &str = concat!(
+    "SELECT id, tenant_id, namespace_id, workflow_id, workflow_version_id, status, \
      run_version, stop_reason, stop_code, paused, correlation_id, started_by, trace_id, deadline_at, \
      created_at, updated_at, finished_at, parent_run_id, root_run_id, parent_node, cancel_policy, depth, \
      trace_parent_span, rerun_of, origin, business_id, start_delayed_until, \
      schedule_id, schedule_nominal_at, schedule_action_kind, schedule_revision, reset_sequence, \
-     seg_chain_id, seg_index, seg_completion, seg_successor \
+     seg_chain_id, seg_index, seg_completion, seg_successor, \
+     cc_state, cc_pool, cc_group, cc_key, cc_since, cc_deadline \
      FROM runs LEFT JOIN LATERAL ( \
        SELECT chain_id AS seg_chain_id, segment_index AS seg_index, \
               completion_kind AS seg_completion, successor_run_id AS seg_successor \
        FROM chain_segments \
        WHERE chain_segments.tenant_id = runs.tenant_id AND chain_segments.run_id = runs.id) segment \
-     ON true \
-     WHERE runs.tenant_id = $1 AND runs.id = $2";
+     ON true",
+    crate::flow_control::run_permit_lateral_sql!(),
+    "WHERE runs.tenant_id = $1 AND runs.id = $2"
+);
 
 /// The columns a command transaction reads about a run; `$tail` is the lock clause, if any.
 ///
@@ -2494,6 +2500,7 @@ pub(crate) fn run_record(row: &PgRow) -> Result<RunRecord, StoreError> {
         failure_code: selected::<String>(row, "stop_code")?
             .map(|code| FailureCode::parse(&code).map_err(|_| corrupt("stop code")))
             .transpose()?,
+        concurrency: crate::flow_control::run_permit(row)?,
     })
 }
 

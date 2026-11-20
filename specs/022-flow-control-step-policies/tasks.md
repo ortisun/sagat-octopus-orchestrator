@@ -97,12 +97,57 @@ US7 rate limits and the release 0.3.0 slice (OD-2026-11-13-11) are in [Release 0
   `SAGAT_TEST_AS_RUNTIME_ROLE=1`. Hand mutations caught: the namespace limit ignored (the lowered-limit test, red after its
   first version was found too weak: declared 2 with two holders could not tell), a stopped start never dequeued (the
   deadline test). The pause and active-run tests pin behaviour this change does not write (no code to mutate).
-- [ ] T022-026 [US2] `Run.concurrency` in new `crates/api-http/src/dto_flow_control.rs`; `GET .../concurrency-keys` in new `crates/api-http/src/routes/concurrency.rs`. FR-022-022. Evidence: REST tests; raw-key canary absent.
-- [ ] T022-027 [US2] Invariants 1–2 of `data-model.md` in `verify_run` (`crates/infra-postgres/src/execution.rs`) and `assert_consistent` (`tests/support/engine.rs`). FR-022-020. Evidence: fails on seeded inconsistency, passes after every fault case.
+- [x] T022-026 [US2] `Run.concurrency` in new `crates/api-http/src/dto_flow_control.rs`; `GET .../concurrency-keys` in new `crates/api-http/src/routes/concurrency.rs`. FR-022-022. Evidence: REST tests; raw-key canary absent.
+  *Done 2026-11-20 (0.3.0 slice; D022-055).* `Run.concurrency` (`HOLDING`/`WAITING`, pool, group, `keyLabel`, `since`,
+  `queueDeadline`), read in `get` and `list` from the run's holder and waiter rows (`run_permit_lateral_sql!`), absent
+  for a run that neither holds nor waits; `GET /namespaces/{namespaceId}/concurrency-keys` (`crates/api-http/src/routes/concurrency.rs`,
+  `dto_flow_control.rs`; `OperationsService::concurrency_keys`, `ops:read`; port `FlowControlKeyReader` in
+  `crates/application/src/flow_control_keys.rs`): oldest wait first, nobody-waiting keys last, exact keyset paging by an
+  opaque versioned cursor, `group` filter, `queuedRuns` read by the one statement the ceiling reads (`QUEUED_RUNS_SQL`).
+  Evidence: `integration_flow_control_step_policies::rest::{a_run_shows_the_permit_it_holds_or_waits_for_by_its_label_only,
+  the_namespace_lists_its_keys_oldest_wait_first_and_pages_them_exactly, the_keys_of_a_namespace_are_its_tenants_and_need_ops_read}`
+  3 passed, owner and `SAGAT_TEST_AS_RUNTIME_ROLE=1` (the raw key value `acct-canary-5517` is in no body; the label is
+  the first six bytes of the row's digest; the deadline equals the waiter row's to the microsecond; 404 for another
+  tenant's namespace, 403 for a worker identity, 400 for a cursor not written by the server, 422 for an invalid group);
+  `cargo test -p sagat-application --lib flow_control_keys` 2 passed. Hand mutations caught: a waiting permit shown
+  `HOLDING`, the cursor comparison `>=` (a page repeats a key), the group filter removed. The test API gained
+  `Options::flow_control`. Not in it: `keyLabel` `null` for a caller who may not disclose (T022-104); the route in the
+  canonical OpenAPI (T022-060).
+- [x] T022-027 [US2] Invariants 1–2 of `data-model.md` in `verify_run` (`crates/infra-postgres/src/execution.rs`) and `assert_consistent` (`tests/support/engine.rs`). FR-022-020. Evidence: fails on seeded inconsistency, passes after every fault case.
   - *Amended 2026-11-13 after review* (D022-033): reduced to the consistency assertion in `tests/support/engine.rs` and the seeded-failure tests; the `verify_run` checks land with T022-022.
-- [ ] T022-028 [P] [US2] Race and fault suite `tests/fault/flow-control-step-policies/concurrency.rs` (grant vs timeout ×20, crash at T10/T11/T12/T14, takeover duplicate grant, lost hint, restart). SC-022-003,004. Evidence: results recorded as ADR-0056 evidence.
-- [ ] T022-029 [P] [US2] Lock-order barriers `tests/integration/flow-control-step-policies/concurrency_locks.rs` for each per-path order of ADR-0056 decision 2 (admission, grant, timeout, terminal, claim against attempt end, cancellation, policy edits). FR-022-019,020. Evidence: no deadlock; reversed-order control waits as expected.
+  *Done 2026-11-20 (0.3.0 slice, as amended; D022-056).* `World::assert_consistent` (every test of the suites) also runs
+  `support::flow_control::key_consistency` across the tenant in one `REPEATABLE READ` snapshot: counters equal rows;
+  each holder row is a `HELD` permit of its run's or step's gate projection (attempt, pool, group, label) and each waiter
+  row a `QUEUED` one (and its deadline to the microsecond); each `HELD`/`QUEUED` projection has its row; every run a row
+  names is verified against its journal. Evidence: `integration_flow_control_step_policies::consistency` 5 passed (one
+  seeded inconsistency per check, written with the tables' user triggers off: a counter, a holder row the journal does
+  not hold, a held permit without its row, a waiter deadline off by one microsecond, a queued permit without its row);
+  the whole suite (113) and `fault_flow_control_step_policies` (8) pass with the assertion, owner and
+  `SAGAT_TEST_AS_RUNTIME_ROLE=1`. Hand mutation caught: the deadline equality removed (the deadline test red).
+- [x] T022-028 [P] [US2] Race and fault suite `tests/fault/flow-control-step-policies/concurrency.rs` (grant vs timeout ×20, crash at T10/T11/T12/T14, takeover duplicate grant, lost hint, restart). SC-022-003,004. Evidence: results recorded as ADR-0056 evidence.
+  *Done 2026-11-20 (0.3.0 slice: a run's permit; the step permit's races are `queue::*`, T022-098).*
+  `tests/fault/flow-control-step-policies/concurrency.rs`: a crash (the deciding backend terminated while it waits for a
+  key the test holds) at T10 (no run, no count; the retried request queues once and replays), T11 (still queued; the next
+  pass grants once), T12 (still queued; the next pass times out once) and T14 at the run's end (nothing ended or
+  released; the retried report releases once and the waiter is granted); grant versus timeout of a queued start, 20
+  rounds in three orders, exactly one outcome and nothing decided twice; a takeover of the key's shard waits for a grant
+  in flight (the grant holds the shard row from its fence to its commit), so nothing is granted twice; a lost
+  `task.ready` delivery delays nothing the next poll finds; a restarted process (fresh store and scheduler) grants the
+  queue. Evidence: `fault_flow_control_step_policies` 8 passed, owner and `SAGAT_TEST_AS_RUNTIME_ROLE=1`, every run
+  checked by `assert_consistent` (T022-027). Hand mutation caught: both deadline guards of the grant removed (the
+  listing's filter and the check under the key's lock: the race red). Recorded as ADR-0056 evidence by this entry.
+- [x] T022-029 [P] [US2] Lock-order barriers `tests/integration/flow-control-step-policies/concurrency_locks.rs` for each per-path order of ADR-0056 decision 2 (admission, grant, timeout, terminal, claim against attempt end, cancellation, policy edits). FR-022-019,020. Evidence: no deadlock; reversed-order control waits as expected.
   - *Amended 2026-11-13 after review* (D022-026): also the slot-8b counter rows of `flow_control_counts` after the semaphores, and the merged routine of T022-097 against attempt end and cancellation.
+  *Done 2026-11-20 (0.3.0 slice: a run's permit).* `tests/integration/flow-control-step-policies/concurrency_locks.rs`
+  runs each real path against a reference in the slots' order (`support::lock_order::against_at`, `pg_blocking_pids`):
+  the end of a gated run (run, then its active-run counter row, then the key; from both starts), a cancellation of a
+  queued start (run, key), the timeout of a queued start (run, key), and the control: a plan in the reversed order is a
+  deadlock. The grant takes a run with `SKIP LOCKED`, so it never waits for a run while it holds a key; admission
+  (`run_admission::two_starts_at_the_queued_runs_ceiling_are_decided_one_after_the_other`), readiness (`readiness::*`
+  sorted lock order) and the pause's returns (`returns::*`) have their held-lock tests. Evidence: `concurrency_locks` 4
+  passed, owner and `SAGAT_TEST_AS_RUNTIME_ROLE=1`. Hand mutation caught: the counter-row pre-lock at a run's end off
+  (the end-of-run test red). Not in it: `flow_control_counts` (T022-105) and policy edits (a lowered limit is read
+  without a lock: `lifecycle::a_lowered_limit_revokes_nothing_and_applies_to_the_next_start`).
 
 ## Phase 5: US3 — Handle a failed workflow (P1)
 

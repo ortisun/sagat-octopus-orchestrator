@@ -365,3 +365,196 @@ async fn lock_row(
         .map(|v| u16::try_from(v).map_err(|_| corrupt("digest key version")))
         .transpose()
 }
+
+/// The namespace's queued runs as the `queued_runs` ceiling counts them (feature 022, T022-013, D022-051): a run waiting
+/// for both gates counts once. The one statement the ceiling's check, its quota usage and the key listing read, so they
+/// never disagree; `$1` is the tenant, `$2` the namespace.
+pub(crate) const QUEUED_RUNS_SQL: &str = "SELECT count(*) FROM ( \
+         SELECT run_id FROM concurrency_waiters \
+          WHERE tenant_id = $1 AND namespace_id = $2 AND permit_scope = 'RUN' \
+         UNION \
+         SELECT run_id FROM rate_limit_waiters \
+          WHERE tenant_id = $1 AND namespace_id = $2 AND limit_scope = 'RUN') waiting";
+
+/// The run-level permit of a run, as `get` and `list` read it beside the run's row (T022-026): one lateral probe of the
+/// holder and waiter primary keys, which yields nothing for a run that neither holds nor waits. Invariants 1 and 2 allow
+/// at most one of the two rows; `verify_run` checks it, and the read prefers the holder if both were ever there.
+macro_rules! run_permit_lateral_sql {
+    () => {
+        " LEFT JOIN LATERAL ( \
+           SELECT p.cc_state, p.cc_pool, p.cc_group, p.cc_key, p.cc_since, p.cc_deadline FROM ( \
+             SELECT 'HOLDING' AS cc_state, h.pool AS cc_pool, h.group_name AS cc_group, h.key_digest AS cc_key, \
+                    h.acquired_at AS cc_since, NULL::timestamptz AS cc_deadline \
+               FROM concurrency_holders h \
+              WHERE h.tenant_id = runs.tenant_id AND h.run_id = runs.id AND h.holder_scope = 'RUN' AND h.node = '' \
+             UNION ALL \
+             SELECT 'WAITING', w.pool, w.group_name, w.key_digest, w.enqueued_at, w.deadline_at \
+               FROM concurrency_waiters w \
+              WHERE w.tenant_id = runs.tenant_id AND w.run_id = runs.id AND w.permit_scope = 'RUN' AND w.node = '' \
+           ) p ORDER BY p.cc_state LIMIT 1) permit ON true "
+    };
+}
+pub(crate) use run_permit_lateral_sql;
+
+/// The run-level permit of a row that `get` or `list` read with [`run_permit_lateral_sql`]; `None` for a row without
+/// those columns (a command transaction's) or a run that neither holds nor waits.
+pub(crate) fn run_permit(
+    row: &sqlx::postgres::PgRow,
+) -> Result<Option<sagat_application::flow_control_keys::RunPermit>, StoreError> {
+    use sagat_application::flow_control_keys::{RunPermit, RunPermitState};
+    use sqlx::Row as _;
+    let Ok(Some(state)) = row.try_get::<Option<String>, _>("cc_state") else {
+        return Ok(None);
+    };
+    let pool: String = row.try_get("cc_pool").map_err(store_error)?;
+    let group: String = row.try_get("cc_group").map_err(store_error)?;
+    let digest: Vec<u8> = row.try_get("cc_key").map_err(store_error)?;
+    let since: time::OffsetDateTime = row.try_get("cc_since").map_err(store_error)?;
+    let deadline: Option<time::OffsetDateTime> = row.try_get("cc_deadline").map_err(store_error)?;
+    let digest: [u8; 32] = digest
+        .try_into()
+        .map_err(|_| corrupt("concurrency key digest"))?;
+    let state = match (state.as_str(), deadline) {
+        ("HOLDING", None) => RunPermitState::Holding,
+        ("WAITING", Some(deadline)) => RunPermitState::Waiting { deadline },
+        _ => return Err(corrupt("run permit")),
+    };
+    Ok(Some(RunPermit {
+        key: sagat_domain::execution::GateRef {
+            pool: GatePool::parse(&pool).ok_or_else(|| corrupt("concurrency pool"))?,
+            group: ResolvedGroup::parse(&group).map_err(|_| corrupt("concurrency group"))?,
+            key_label: sagat_domain::execution::KeyLabel::of_digest(&digest),
+        },
+        state,
+        since,
+    }))
+}
+
+impl sagat_application::flow_control_keys::FlowControlKeyReader for crate::PgRunStore {
+    async fn concurrency_keys(
+        &self,
+        tenant: TenantId,
+        namespace: NamespaceId,
+        group: Option<&ResolvedGroup>,
+        after: Option<&sagat_application::flow_control_keys::KeyPosition>,
+        limit: u32,
+    ) -> Result<sagat_application::flow_control_keys::ConcurrencyKeyPage, StoreError> {
+        use sagat_application::flow_control_keys::{
+            ConcurrencyKeyPage, ConcurrencyKeyView, KeyPosition,
+        };
+        use sqlx::Row as _;
+        // one snapshot for the page and the count, so a page's keys and its queued runs are of one instant
+        let mut tx = crate::pool::BeginSafely::begin_safely(self.pool())
+            .await
+            .map_err(store_error)?;
+        sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+            .execute(&mut *tx)
+            .await
+            .map_err(store_error)?;
+        let after_since = after
+            .and_then(|p| p.oldest_wait_us)
+            .map(|us| {
+                time::OffsetDateTime::from_unix_timestamp_nanos(i128::from(us) * 1_000)
+                    .map_err(|_| corrupt("concurrency key cursor"))
+            })
+            .transpose()?;
+        // a key nobody waits for sorts after every key somebody waits for ('infinity'); the five sort columns are the
+        // row's key within the namespace, so the order is total and a page resumes exactly after its last key
+        let rows = sqlx::query(
+            "WITH keys AS ( \
+               SELECT s.pool, s.permit_scope, s.group_name, s.key_digest, s.holders, s.waiters, \
+                      (SELECT min(w.enqueued_at) FROM concurrency_waiters w \
+                        WHERE w.tenant_id = s.tenant_id AND w.namespace_id = s.namespace_id AND w.pool = s.pool \
+                          AND w.permit_scope = s.permit_scope AND w.group_name = s.group_name \
+                          AND w.key_digest = s.key_digest) AS oldest_wait, \
+                      (SELECT min(h.acquired_at) FROM concurrency_holders h \
+                        WHERE h.tenant_id = s.tenant_id AND h.namespace_id = s.namespace_id AND h.pool = s.pool \
+                          AND h.holder_scope = s.permit_scope AND h.group_name = s.group_name \
+                          AND h.key_digest = s.key_digest) AS oldest_holder \
+                 FROM concurrency_semaphores s \
+                WHERE s.tenant_id = $1 AND s.namespace_id = $2 AND ($3::text IS NULL OR s.group_name = $3)) \
+             SELECT pool, permit_scope, group_name, key_digest, holders, waiters, oldest_wait, oldest_holder \
+               FROM keys \
+              WHERE NOT $4::bool \
+                 OR (COALESCE(oldest_wait, 'infinity'::timestamptz), pool, permit_scope, group_name, key_digest) \
+                    > (COALESCE($5::timestamptz, 'infinity'::timestamptz), $6::text, $7::text, $8::text, $9::bytea) \
+              ORDER BY COALESCE(oldest_wait, 'infinity'::timestamptz), pool, permit_scope, group_name, key_digest \
+              LIMIT $10",
+        )
+        .bind(tenant.as_uuid())
+        .bind(namespace.as_uuid())
+        .bind(group.map(ResolvedGroup::as_str))
+        .bind(after.is_some())
+        .bind(after_since)
+        .bind(after.map(|p| p.pool.as_str()))
+        .bind(after.map(|p| p.scope.as_str()))
+        .bind(after.map(|p| p.group.as_str()))
+        .bind(after.map(|p| p.digest.as_slice()))
+        .bind(i64::from(limit))
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(store_error)?;
+        let queued_runs: i64 = sqlx::query_scalar(QUEUED_RUNS_SQL)
+            .bind(tenant.as_uuid())
+            .bind(namespace.as_uuid())
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(store_error)?;
+        tx.commit().await.map_err(store_error)?;
+        let mut items = Vec::with_capacity(rows.len());
+        for row in &rows {
+            let pool = GatePool::parse(&row.try_get::<String, _>("pool").map_err(store_error)?)
+                .ok_or_else(|| corrupt("concurrency pool"))?;
+            let scope = match row
+                .try_get::<String, _>("permit_scope")
+                .map_err(store_error)?
+                .as_str()
+            {
+                "RUN" => GateLevel::Run,
+                "STEP" => GateLevel::Step,
+                _ => return Err(corrupt("concurrency scope")),
+            };
+            let group = ResolvedGroup::parse(
+                &row.try_get::<String, _>("group_name")
+                    .map_err(store_error)?,
+            )
+            .map_err(|_| corrupt("concurrency group"))?;
+            let digest: [u8; 32] = row
+                .try_get::<Vec<u8>, _>("key_digest")
+                .map_err(store_error)?
+                .try_into()
+                .map_err(|_| corrupt("concurrency key digest"))?;
+            let count = |name: &str| -> Result<u32, StoreError> {
+                u32::try_from(row.try_get::<i32, _>(name).map_err(store_error)?)
+                    .map_err(|_| corrupt("concurrency counter"))
+            };
+            let oldest_wait: Option<time::OffsetDateTime> =
+                row.try_get("oldest_wait").map_err(store_error)?;
+            let oldest_wait_us = oldest_wait
+                .map(|at| i64::try_from(at.unix_timestamp_nanos() / 1_000))
+                .transpose()
+                .map_err(|_| corrupt("concurrency wait instant"))?;
+            items.push(ConcurrencyKeyView {
+                label: sagat_domain::execution::KeyLabel::of_digest(&digest),
+                holders: count("holders")?,
+                waiters: count("waiters")?,
+                oldest_wait_since: oldest_wait,
+                oldest_holder_since: row.try_get("oldest_holder").map_err(store_error)?,
+                position: KeyPosition {
+                    oldest_wait_us,
+                    pool,
+                    scope,
+                    group: group.clone(),
+                    digest,
+                },
+                pool,
+                scope,
+                group,
+            });
+        }
+        Ok(ConcurrencyKeyPage {
+            items,
+            queued_runs: u64::try_from(queued_runs).map_err(|_| corrupt("queued runs"))?,
+        })
+    }
+}

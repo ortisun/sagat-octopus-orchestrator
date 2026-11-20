@@ -1026,19 +1026,12 @@ impl PgRunTx {
             // a queued run is an active run with a ceiling of its own (D1182): the namespace's, then the key's. Exact: only an
             // admission adds a run waiter, and every admission holds the namespace's active-run quota lock to its commit
             // (D022-051)
-            let queued_runs: i64 = sqlx::query_scalar(
-                "SELECT count(*) FROM ( \
-                     SELECT run_id FROM concurrency_waiters \
-                      WHERE tenant_id = $1 AND namespace_id = $2 AND permit_scope = 'RUN' \
-                     UNION \
-                     SELECT run_id FROM rate_limit_waiters \
-                      WHERE tenant_id = $1 AND namespace_id = $2 AND limit_scope = 'RUN') waiting",
-            )
-            .bind(tenant.as_uuid())
-            .bind(namespace.as_uuid())
-            .fetch_one(&mut *self.tx)
-            .await
-            .map_err(store_error)?;
+            let queued_runs: i64 = sqlx::query_scalar(crate::flow_control::QUEUED_RUNS_SQL)
+                .bind(tenant.as_uuid())
+                .bind(namespace.as_uuid())
+                .fetch_one(&mut *self.tx)
+                .await
+                .map_err(store_error)?;
             ceilings
                 .admits_waiter(
                     u64::try_from(queued_runs).unwrap_or(u64::MAX),

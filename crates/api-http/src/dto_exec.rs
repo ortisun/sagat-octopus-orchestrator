@@ -536,6 +536,10 @@ pub struct RunBody {
     /// for its input. Absent for every other run.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub failure_code: Option<String>,
+    /// The run-level concurrency permit the run holds or waits for (feature 022, FR-022-022), its key shown as
+    /// its label only; absent for a run that neither holds nor waits, as for every run before feature 022.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub concurrency: Option<crate::dto_flow_control::RunConcurrencyBody>,
 }
 
 /// Which schedule started a run, for which nominal time, by which kind of action and under which
@@ -624,6 +628,10 @@ impl From<&RunRecord> for RunBody {
                 successor_run_id: segment.successor.map(|run| run.to_string()),
             }),
             failure_code: r.failure_code.as_ref().map(|code| code.as_str().to_owned()),
+            concurrency: r
+                .concurrency
+                .as_ref()
+                .map(crate::dto_flow_control::RunConcurrencyBody::from),
         }
     }
 }
@@ -1270,6 +1278,7 @@ mod switch_graph_tests {
                 schedule: None,
                 reset_from: None,
                 failure_code: None,
+                concurrency: None,
             },
             definition: std::sync::Arc::new(definition),
             steps: vec![
@@ -1476,6 +1485,7 @@ mod provenance_tests {
             schedule: None,
             reset_from: None,
             failure_code: None,
+            concurrency: None,
         }
     }
 

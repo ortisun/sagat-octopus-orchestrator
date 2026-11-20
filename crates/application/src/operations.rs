@@ -18,6 +18,7 @@ use uuid::Uuid;
 use crate::authz::{NamespaceDirectory, require_namespace};
 use crate::clock::Clock;
 use crate::error::{AppError, StoreError};
+use crate::flow_control_keys::{ConcurrencyKeyPage, FlowControlKeyReader, KeyPosition};
 use crate::identity::{MAX_PAGE_SIZE, RequestContext};
 
 /// How long a condition must last before it is an alert. Each is a count of seconds the platform
@@ -453,7 +454,9 @@ impl<S, C> std::fmt::Debug for OperationsService<S, C> {
     }
 }
 
-impl<S: AlertReader + WorkerAdmin + AuditStore, C: Clock> OperationsService<S, C> {
+impl<S: AlertReader + WorkerAdmin + AuditStore + FlowControlKeyReader, C: Clock>
+    OperationsService<S, C>
+{
     /// `runbook_base` is the URL or path of `alerts.md`, to which each alert's anchor is appended.
     pub fn new(store: S, clock: C, runbook_base: impl Into<String>) -> Self {
         Self {
@@ -643,6 +646,31 @@ impl<S: AlertReader + WorkerAdmin + AuditStore, C: Clock> OperationsService<S, C
         Ok(self
             .store
             .list_alerts(principal.tenant_id(), namespace, state, before, limit)
+            .await?)
+    }
+
+    /// The live concurrency keys of a namespace, oldest wait first, with the namespace's queued runs (feature 022,
+    /// FR-022-022, T022-026). Keys are shown as labels only.
+    ///
+    /// # Errors
+    /// [`AppError::Forbidden`] without `ops:read`; [`AppError::NotFound`] for a namespace that is not the caller's
+    /// tenant's.
+    pub async fn concurrency_keys(
+        &self,
+        principal: &Principal,
+        namespace: NamespaceId,
+        group: Option<&sagat_domain::workflow::ResolvedGroup>,
+        after: Option<&KeyPosition>,
+        limit: Option<u32>,
+        ctx: &RequestContext,
+    ) -> Result<ConcurrencyKeyPage, AppError> {
+        principal.authorize(Permission::OpsRead)?;
+        require_namespace(&self.store, &self.clock, principal, namespace, ctx).await?;
+        // as `alerts`: a caller that asks for one more than its page is answered with that one more
+        let limit = limit.unwrap_or(50).clamp(1, MAX_PAGE_SIZE + 1);
+        Ok(self
+            .store
+            .concurrency_keys(principal.tenant_id(), namespace, group, after, limit)
             .await?)
     }
 }

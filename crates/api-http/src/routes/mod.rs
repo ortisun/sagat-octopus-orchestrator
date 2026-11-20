@@ -2,6 +2,7 @@
 
 pub mod batch;
 pub mod chains;
+pub mod concurrency;
 pub mod connectors;
 pub mod database;
 pub mod declared_operations;

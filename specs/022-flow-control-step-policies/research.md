@@ -791,6 +791,40 @@ taken after `git grep D022-04` on every `origin/*` branch.
       commit ends and nothing reads it across commits. *Not changed:* a deferral's own deadline beyond the run's
       (architecture B1 item 7).
 
+### Decisions of the eighth build (2026-11-20)
+
+- **D022-055 — What the reads of a key show, and from where (T022-026; FR-022-022; delegate (OD-2026-11-20-6)).**
+  1. *Source of `Run.concurrency`.* Options: (a) the run's gate projection `runs.flow_control_gates` alone; (b) the
+     run's holder and waiter rows; (c) the projection with the rows for `since`. Chosen: **(b)**, one lateral probe of
+     the two primary keys in `get` and `list` (`run_permit_lateral_sql!`). The rows are what the gate decides with and
+     what the keys listing reads, so a run's permit and the listing of its key cannot disagree; they carry `since`
+     (`acquired_at`, `enqueued_at`) and the exact queue deadline, which the projection lacks; invariants 1 and 2 tie
+     them to the journal (`verify_run`, `assert_consistent`). (a) would show no `since` and be a second source for the
+     same fact; (c) reads two sources for one field. A run that neither holds nor waits has no `concurrency` field
+     (absent rather than `null`, so no existing body or golden changes; the contract makes it optional and nullable).
+  2. *Order and cursor of the listing.* Oldest wait first, keys nobody waits for last, then pool, scope, group and
+     digest: a total order, since those five are the row's key within a namespace. Options for the cursor: an offset
+     (moves under live rows and costs a scan), the label alone (two keys of one group may share a 48-bit label: a page
+     boundary between them would skip or repeat one), server-side cursor state (a table and its expiry for a read), or
+     the full keyed digest in an opaque, versioned cursor. Chosen: **the digest** (`KeyPosition`, `k1.` text of hex
+     fields). It is the output of the same keyed function as the label (an HMAC under the deployment's secret key), so
+     it lets nobody test a guessed key value, and it goes only to the caller the labels already go to. A cursor this
+     process did not write is a `400`; a page and its `queuedRuns` are one `REPEATABLE READ` snapshot, and a key whose
+     oldest wait changes between two pages may move (live state, stated in the contract's "snapshot").
+  3. *One count of queued runs.* The listing, the `queued_runs` ceiling at admission and its quota usage read one
+     statement (`QUEUED_RUNS_SQL`), so the number an operator reads is the number the ceiling compares, by
+     construction. T022-105's counter rows replace that statement in one place.
+  4. *`keyLabel` is always the label for now.* Its `null` for a caller who may not disclose every location the key reads
+     is T022-104's (G1185); the listing needs `ops:read`, which every human role holds and no machine role does.
+- **D022-056 — Invariants 1 and 2 across runs (T022-027).** `verify_run` checks one run; the invariants are about a
+  key, whose rows belong to many runs. `World::assert_consistent` (every test of the suites) now also runs
+  `support::flow_control::key_consistency` over the tenant in one `REPEATABLE READ` snapshot: counters equal rows; every
+  holder row is a `HELD` permit of its run's or step's gate projection with the same attempt, pool, group and label, and
+  every waiter row a `QUEUED` one with the same deadline to the microsecond; every `HELD` or `QUEUED` projection has its
+  row; and each run a row names is verified against its journal (restored events are excluded by the replay). Rejected:
+  checking from the journals alone across runs (a replay of every run of the tenant per assertion, where the
+  projections are already proved equal to the replay run by run).
+
 ## Gaps
 
 | ID | Gap | Status |
