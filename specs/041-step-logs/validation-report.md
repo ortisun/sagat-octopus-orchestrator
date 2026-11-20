@@ -468,3 +468,58 @@ The verdict is FAIL by the rule fixed before the first round. On a 4-core runner
 8 × 128 rows pass every gate. On the laptop (first run) the 1 × 16 rates passed and the p99 failed at both sizes. (f)
 waits in `COMMIT` in every round and size and off-{} never does; (a) against off-1K is not consistent (more waits in
 eight of its twelve comparisons with the two off-1K measurements of its round and size, fewer in four). The design changes and is reviewed again (D041-105).
+
+## 2026-11-20 — The commit waits of T041-35's second run, diagnosed: the usage row, but not the cause of the fail
+
+**Result: the commits of T041-35's carrying rows wait on the tenant's `tenant_retained_usage` row, held from ADR-0027's
+deferred finalizer to the end of the commit's WAL flush; but moving the step-log charge off that row, or removing it,
+changes the 1 × 16 rate by at most 2% and the completion p99 by about 1 ms at the median. The 1 × 16 fail is the
+carry's own cost per completion on a CPU-saturated 4-core runner, not the serialization on the row.** Not a gate; the
+figures support D041-106.
+
+Run 44730444900 of `.github/workflows/perf-spike.yml` at `5986fca9` on `perf/041-diag-hot-row` (the branch prefix runs
+`carry_diag_rounds.sh` instead of the gated rounds): four `ubuntu-latest` runners (4 logical cores, 16 GiB, PostgreSQL
+18 of the image, `track_wal_io_timing=on`), each one invocation of `step_log_carry_diag`: three repetitions of nine rows
+at 1 replica × 16 workers, 3,000 runs of three chained activities per row, so twelve paired blocks per row. Rows:
+off-{} and off-1K (capture off); (f) and (a) as in T041-35 (the step-log charge on the transaction's delta row and the
+finalizer at commit, the second run's shape); `f-none` (the carry with no quota charge, an ablation); `f-slot` and
+`a-slot` (the charge added, in the statement trigger, to one of 64 per-tenant rows taken `FOR UPDATE SKIP LOCKED`, never
+the usage row); (g) and `g-slot`. Every report's `COMMIT` was timed by the report hook (capture-off rows get a hook that
+carries nothing), every lock of the usage row was timed by a scratch `AFTER UPDATE` trigger on it, and every 10 ms the
+sampler recorded what each backend waiting in `COMMIT` waited for and what each other backend in `COMMIT` was doing.
+
+| Row (1 × 16, medians of 12) | Rate / its baseline [min, max] | p99 − baseline | Waiting in `COMMIT` on the usage row, per sample | Row busy | Lock → `COMMIT` returned p50 / p99 | Back-to-back gap p50 / p99 |
+|---|---|---|---|---|---|---|
+| (f) / off-{} | 0.893 [0.877, 0.986] | +9.3 ms | 0.111 | 23.1% | 1.10 / 4.04 ms | 0.76 / 4.08 ms |
+| `f-none` / off-{} | 0.911 [0.885, 1.063] | +8.0 ms | 0 | — | — | — |
+| `f-slot` / off-{} | 0.901 [0.872, 0.920] | +13.3 ms | 0 | — | — | — |
+| (a) / off-1K | 0.906 [0.822, 0.917] | +11.0 ms | 0.217 | 23.9% | 1.15 / 4.45 ms | 0.80 / 3.88 ms |
+| `a-slot` / off-1K | 0.903 [0.821, 0.918] | +10.6 ms | 0.179 | 23.8% | 1.16 / 4.30 ms | 0.80 / 3.81 ms |
+| (g) / off-1K | 0.786 [0.743, 0.805] | +10.7 ms | 0.181 | 68.1% | 1.15 / 3.91 ms | 0.69 / 3.13 ms |
+| `g-slot` / off-1K | 0.794 [0.727, 0.816] | +9.7 ms | 0.111 | 20.9% | 1.15 / 4.07 ms | 0.80 / 3.80 ms |
+| off-1K / off-{} | 0.966 [0.926, 1.131] | +2.5 ms | 0.095 (off-1K) | 24.0% | 1.09 / 3.73 ms | 0.78 / 3.32 ms |
+
+Paired within a block: (f) / `f-none` 0.982 [0.928, 1.009], p99 +1.1 ms; (f) / `f-slot` 0.993 [0.979, 1.102], p99
+−1.3 ms; `f-slot` / `f-none` 0.988 [0.842, 1.006], p99
++3.4 ms; (a) / `a-slot` 1.008 [0.936, 1.020], p99 +0.1 ms. Capture itself, without any quota charge (`f-none` / off-{}):
+rate 0.911, completion p50 +5.1 ms, p99 +8.0 ms.
+
+What the waits are on. Every backend waiting in `COMMIT` in the rows that charge the usage row at commit waited on a
+row lock of `tenant_retained_usage` (the relation of its tuple lock) or on the transaction holding it
+(`transactionid`): in (f) 772 samples named the relation, 4,336 the transaction id, 12 a tuple lock, 863 had already
+been granted when their locks were read; no other relation and no advisory lock appeared. In `f-none` and `f-slot`, 4
+and 1 samples in the whole run named any lock at all. The committing backends that held no lock spent their samples in
+`LWLock:WALWrite` and `IO:WalSync` (0.12 to 0.43 and 0.12 to 0.16 backends per sample), so the hold of the row includes
+the holder's WAL flush; a WAL `fsync` took 0.31 to 0.36 ms on average, with 1.25 to 1.31 commits per `fsync`. A carry adds
+about 3.1 to 3.5 KiB of WAL per commit (off-{} 4,097 B, (f) 7,226 B, `f-none` 7,633 B; off-1K 4,900 B, (a) 8,356 B).
+
+How long it is held. From the finalizer's lock to the `COMMIT`'s return (an upper bound: the lock is released before the
+client sees the answer) p50 1.1 ms and p99 4.0 to 4.5 ms; the gap between two locks when the second report was already
+committing (its hold plus the hand-over) p50 0.69 to 0.80 ms and p99 3.1 to 4.1 ms; the row is held 23% to 24% of the time
+in (f), (a) and off-1K (about 1.2 ms per lock at 195 locks a second), and 68% in (g), where each step locks it twice (its
+batch and its report). The row therefore caps one tenant at roughly 800 charging commits a second on this runner, half
+that with a batch per step; at 1 × 16 neither row reaches the cap.
+
+Recorded, no threshold: rounds 4 and 5 of the second job (D041-105) stopped with `complete: Unavailable` at 8 × 128; the
+benchmark's replicas acquire a connection with a 2-second timeout (`tests/support/engine.rs:764`), which a 2.1 s
+completion p99 (round 9's (f) at 8 × 128) can reach. Not checked further.
