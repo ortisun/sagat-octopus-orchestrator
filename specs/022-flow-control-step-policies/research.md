@@ -986,6 +986,15 @@ taken after `git grep D022-04` on every `origin/*` branch.
   the runtime contract). A run of `SAGAT_SDK_SCENARIO=flow-concurrency` therefore fails, saying why, until the server
   side lands; then the key is removed, the result golden blessed after review and the run repeated without the switch.
 
+- **D022-095 — The worker log of `flow-concurrency` is compared as a set (2026-11-20).** Delegate (OD-2026-11-20-6).
+  When the worker starts, the holders of key A and of key B are ready together, and the order in which a worker takes
+  two ready tasks is the claim order, not part of any contract: the first run differed between languages there only.
+  Options: (a) serialize the two holders in the scenario (B would no longer run while A holds, losing "the other key is
+  not delayed"); (b) a scenario flag `"workerLogOrder": "unordered"` that sorts each worker's normalized log by its
+  canonical text before comparing; (c) drop the worker log from the comparison. Chosen: (b): every delivery is still
+  compared (none missing, none extra, each its first attempt), and the order the contract does fix (key A's grants) is
+  checked by the harness from the journal's instants (`check_concurrency`), which is also compared through
+  `flowControlEvidence`.
 
 ## Gaps
 
@@ -1046,7 +1055,7 @@ taken after `git grep D022-04` on every `origin/*` branch.
 | G1195 | Approved texts still describe the drain-first rotation: FR-022-020's last sentence, `data-model.md` (key versions, "only by an audited operator command"), G1163; `data-model.md` does not list `flow_control_group_declarations` or `activated_role`; `contracts/errors.md` does not say that `*_POLICY_INVALID` covers the namespace's ceiling of node-level declarations. Changing them makes the docs drafts again (constitution, Approval). *O1170 answered 2026-11-19 (OD-2026-11-19-2). Also out of date since the force (D022-046): FR-022-056's "no key is ever split between two rows" and SC-022-028 (a forced rotation splits a key into at most two rows), and `data-model.md` lacks `flow_control_key_forced_retirements`. The texts, and the bound of D022-047 in `contracts/errors.md`, are revised when the approved texts are next re-approved (a change makes them drafts again).* | Open; re-approval of the texts |
 | G1196 | A rotation's progress (rows left under the retiring version) has no metric and no audit record; the operator learns it by running the command again. *2026-11-19: likewise the rows left under a forced version (an over-admission in progress, D022-046); a force has an audit row, an activation does not.* | Open; T022-061, T022-082 |
 | G1183 | A database clock that moves backwards under-delivers until it catches up (NFR-022-008); no alert tells the operator why grants paused beyond `rate_limit_grant_lagging`. | Accepted; runbook |
-| G022-090 | The runtime scenarios `flow-concurrency` and `flow-rate-limit` cannot be played: a production build refuses every gated start (`BINARY_CAPABILITY_MISSING`, D022-037) until the capability listing and the deployment's digest key ring land (G1198), and the control plane of `tests/support` (`Options`) has no flow-control switch, so the suite's platform cannot even publish a gated workflow (`CAPABILITY_DISABLED`). Both scenarios are written with their independent assertions and marked `pending` (D022-094). | Open; server side of US02 and US07 (T022-072, T022-074, the capability listing) |
+| G022-090 | The runtime scenarios `flow-concurrency` and `flow-rate-limit` cannot be played: a production build refuses every gated start (`BINARY_CAPABILITY_MISSING`, D022-037) until the capability listing and the deployment's digest key ring land (G1198), and the control plane of `tests/support` (`Options`) has no flow-control switch, so the suite's platform cannot even publish a gated workflow (`CAPABILITY_DISABLED`). Both scenarios are written with their independent assertions and marked `pending` (D022-094). *Partly closed 2026-11-20: with G1198 the harness boots the concurrency gate (`Options::flow_control`, `flow_control::process_env`) and `flow-concurrency` passes in six languages (T022-053). Open: `flow-rate-limit`, which no process can serve yet (D022-057).* | Open; T022-072, T022-074 |
 | G022-091 | The SDKs' `Run` types do not carry the run resource's `concurrency` and `rateLimit` (state, position, estimate; FR-022-022, FR-022-048): the canonical OpenAPI does not have them yet (T022-026). `flow-rate-limit` observes a buffered run's `WAITING` status through the SDK (`get`); the contract's `rateLimit.state=WAITING` with a `position` is asserted once T022-120 adds the field to the six SDKs. | Open; T022-120 |
 
 ## Owner questions
