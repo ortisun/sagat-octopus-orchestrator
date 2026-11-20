@@ -1901,7 +1901,8 @@ Slice A, decisions, contracts and the spike:
     rules are those of the first run. Gates (1), (3) and (4) are unchanged. Gate (2) becomes (2b), judged per size: the
     completion p99 of (a) is at most off-1K's p99 + max(10% of it, 2 ms) at that size ("Cortar custo, depois limite
     absoluto": the absolute allowance relaxes +10% where the capture-off p99 is under 20 ms, here at 1 × 16, and leaves
-    +10% where it is larger, here at 8 × 128; D041-101). A size passes when the median of three valid rounds meets it and
+    +10% where it is larger, here at 8 × 128; D041-101: the coordinator's reading of OD-2026-11-20-1, pending the owner's
+    confirmation). A size passes when the median of three valid rounds meets it and
     two quiet rounds meet it; a round that is not quiet is never the deciding vote for a pass. The second run passes when
     gates (1), (2b), (3) and (4) pass at both sizes with three valid rounds; the report says, for each size, whether +10%
     or +2 ms was the allowance. Recorded besides: the function call's time per completion (p50, p99), and the completion
