@@ -1012,11 +1012,16 @@ async fn only_a_carry_that_needs_a_refill_opens_a_subtransaction() {
         let first = Uuid::new_v4();
         carry_call(tenant, first, Uuid::new_v4()).fetch_one(&mut *tx).await.expect("a first carry");
         assert!(!own(first).fetch_one(&mut *tx).await.expect("xmin"), "the refill's carry wrote in a subtransaction");
+        // Decision D041-121: a report whose carry refilled holds the usage row to its commit; it names itself so that
+        // the commit waits behind it are sampled apart (`commit_waits_by_refill`).
+        let name = || sqlx::query_scalar::<_, String>("SELECT current_setting('application_name')");
+        assert_eq!(name().fetch_one(&mut *tx).await.expect("name"), "x:refill");
         tx.commit().await.expect("commit");
         let mut tx = sqlx::Connection::begin(&mut *conn).await.expect("begin");
         let second = Uuid::new_v4();
         carry_call(tenant, second, Uuid::new_v4()).fetch_one(&mut *tx).await.expect("a second carry");
         assert!(own(second).fetch_one(&mut *tx).await.expect("xmin"), "a fast-path carry opened a subtransaction");
+        assert_eq!(name().fetch_one(&mut *tx).await.expect("name"), "x", "a fast-path carry keeps its name");
         tx.commit().await.expect("commit");
     })
     .await;

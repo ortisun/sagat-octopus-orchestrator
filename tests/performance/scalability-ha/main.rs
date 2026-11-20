@@ -2268,6 +2268,7 @@ async fn step_log_carry_spike() {
                 "complete_p99_without_slow_paths_ms": (!row.completes_without_slow_paths.0.is_empty())
                     .then(|| ms(percentile(&row.completes_without_slow_paths.0, 0.99))),
                 "complete_slow_paths_tagged": row.completes_without_slow_paths.1,
+                "complete_minus_carry_p99_ms": ms(percentile(&row.completes_minus_carry, 0.99)),
                 "carry_calls": calls, "carry_written": written, "carry_contended": contended, "carry_neither": neither,
                 "carry_written_refill": counts.written_refill, "carry_mark_only_quota": counts.mark_only_quota,
                 "carry_mark_only_held": counts.mark_only_held, "carry_mark_only_busy": counts.mark_only_busy,
@@ -2282,6 +2283,7 @@ async fn step_log_carry_spike() {
                 "s_p99_ms": ms(percentile(&row.services, 0.99)), "batches": batches, "ticket_refusals": refusals,
                 "commit_waits": row.commit_waits.0, "commit_waits_by_ingest": row.commit_waits.1,
                 "commit_waits_by_carry": row.carry_waits,
+                "commit_waits_by_refill": row.refill_waits,
                 "deltas_bytes": [row.deltas_bytes.0, row.deltas_bytes.1],
                 "held_ms": row.held_for.map(ms),
             });

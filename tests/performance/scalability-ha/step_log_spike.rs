@@ -686,6 +686,11 @@ pub async fn install_third_run_storage(pool: &PgPool) {
             BEGIN
                 v_outcome := spike_041.step_log_carry_write(p_tenant, p_namespace, p_run, p_step, p_node, p_attempt,
                     p_generation, p_messages, v_retention, v_records, v_bytes, v_kept, v_kept_bytes);
+                IF v_outcome = 'written' THEN
+                    -- The refill holds the usage row to the report's commit: the report names itself for the rest of
+                    -- its transaction, so that the commit waits behind it are sampled apart (decision D041-121).
+                    PERFORM set_config('application_name', p_application || ':refill', true);
+                END IF;
                 RETURN CASE WHEN v_outcome = 'written' THEN 'written:refill' ELSE v_outcome END;
             EXCEPTION WHEN program_limit_exceeded OR lock_not_available THEN
                 -- The quota's own refusals, and a fallback refill past its budget b (D041-119: the report lands, the
@@ -1254,6 +1259,8 @@ pub async fn send_until(
 
 /// The application name a carrying report's backend takes in CA, so the sampler can tell it apart.
 pub const CARRY_APPLICATION: &str = "spike041carry";
+/// The name a carrying report takes once its carry refilled, holding the usage row to its commit (decision D041-121).
+pub const CARRY_REFILL_APPLICATION: &str = "spike041carry:refill";
 
 /// The attempt's stream lock (design 041 section 2a, L1b): an advisory key of tenant, run, step, attempt and generation.
 fn stream_lock_key(tenant: Uuid, run: Uuid, step: Uuid, attempt: i32, generation: i64) -> String {
@@ -1314,6 +1321,8 @@ pub struct CarryHook {
     /// The steps whose carry was written by a refill or answered mark-only, so that each completion can be tagged with
     /// its carry's path (the fourth run's gate (2b) reading rule, decision D041-121).
     pub slow_steps: std::sync::Mutex<std::collections::HashSet<Uuid>>,
+    /// Each step's carry time, so that a completion's time can be read without its own carry's (decision D041-121).
+    pub carry_by_step: std::sync::Mutex<std::collections::HashMap<Uuid, Duration>>,
     /// T041-35's second run (`SAGAT_PERF_STEP_LOG_CARRY_RUN=2`): the carry as one call of `spike_041.step_log_carry`.
     pub one_call: bool,
     /// The hot-row diagnosis (`step_log_diag`): a hook that carries nothing and only times the report's `COMMIT`.
@@ -1345,6 +1354,7 @@ impl CarryHook {
             times: std::sync::Mutex::new(Vec::new()),
             times_by_path: std::sync::Mutex::new([Vec::new(), Vec::new(), Vec::new()]),
             slow_steps: std::sync::Mutex::new(std::collections::HashSet::new()),
+            carry_by_step: std::sync::Mutex::new(std::collections::HashMap::new()),
             probe: false,
             timed: crate::step_log_diag::enabled(),
             committed: std::sync::Mutex::new(Vec::new()),
@@ -1592,6 +1602,9 @@ impl CarryHook {
         {
             slow.insert(a.step);
         }
+        if let Ok(mut by_step) = self.carry_by_step.lock() {
+            by_step.insert(a.step, started.elapsed());
+        }
         self.record(started);
         Ok(())
     }
@@ -1719,6 +1732,9 @@ pub struct RowResult {
     /// leaves out (decision D041-121). Read only by the carry spike.
     #[cfg_attr(not(feature = "perf-spike"), allow(dead_code))]
     pub completes_without_slow_paths: (Vec<Duration>, usize),
+    /// Each completion's time less its own carry's, sorted (decision D041-121). Read only by the carry spike.
+    #[cfg_attr(not(feature = "perf-spike"), allow(dead_code))]
+    pub completes_minus_carry: Vec<Duration>,
     pub flushes: Vec<Duration>,
     pub services: Vec<Duration>,
     pub tally: Arc<Tally>,
@@ -1734,9 +1750,13 @@ pub struct RowResult {
     /// The scenario's lease rows after the row (decision D041-120), when the leases are installed.
     #[cfg_attr(not(feature = "perf-spike"), allow(dead_code))]
     pub lease_rows: Option<i64>,
-    /// 10 ms samples of a commit wait whose blocker was a carrying report.
+    /// 10 ms samples of a commit wait whose blocker was a carrying report (one whose carry did not refill).
     #[cfg_attr(not(feature = "perf-spike"), allow(dead_code))]
     pub carry_waits: u64,
+    /// 10 ms samples of a commit wait whose blocker was a report whose carry refilled, holding the usage row to its
+    /// commit (decision D041-121).
+    #[cfg_attr(not(feature = "perf-spike"), allow(dead_code))]
+    pub refill_waits: u64,
     /// The hot-row diagnosis of the row (`SAGAT_PERF_STEP_LOG_DIAG=1`), as `step_log_diag::Probe::finish` reports it.
     #[cfg_attr(not(feature = "perf-spike"), allow(dead_code))]
     pub diag: Option<serde_json::Value>,
@@ -2077,31 +2097,36 @@ pub async fn run_row(
     let sampler = tokio::spawn({
         let (pool, stop) = (w.db.pool.clone(), Arc::clone(&stop));
         async move {
-            let (mut waits, mut by_ingest, mut by_carry) = (0u64, 0u64, 0u64);
+            let (mut waits, mut by_ingest, mut by_carry, mut by_refill) = (0u64, 0u64, 0u64, 0u64);
             while !stop.load(Ordering::Relaxed) {
-                let row: Result<(i64, i64, i64), _> = sqlx::query_as(
+                let row: Result<(i64, i64, i64, i64), _> = sqlx::query_as(
                     "SELECT count(*), count(*) FILTER (WHERE EXISTS ( \
                          SELECT 1 FROM pg_stat_activity b WHERE b.pid = ANY (pg_blocking_pids(a.pid)) \
                             AND b.application_name = $1)), \
                             count(*) FILTER (WHERE EXISTS ( \
                          SELECT 1 FROM pg_stat_activity b WHERE b.pid = ANY (pg_blocking_pids(a.pid)) \
-                            AND b.application_name = $2)) \
+                            AND b.application_name = $2)), \
+                            count(*) FILTER (WHERE EXISTS ( \
+                         SELECT 1 FROM pg_stat_activity b WHERE b.pid = ANY (pg_blocking_pids(a.pid)) \
+                            AND b.application_name = $3)) \
                        FROM pg_stat_activity a \
                       WHERE a.wait_event_type = 'Lock' AND a.backend_type = 'client backend' \
                         AND a.pid <> pg_backend_pid() AND a.application_name <> $1 AND a.query = 'COMMIT'",
                 )
                 .bind(INGEST_APPLICATION)
                 .bind(CARRY_APPLICATION)
+                .bind(CARRY_REFILL_APPLICATION)
                 .fetch_one(&pool)
                 .await;
-                if let Ok((n, m, c)) = row {
+                if let Ok((n, m, c, r)) = row {
                     waits += u64::try_from(n).unwrap_or(0);
                     by_ingest += u64::try_from(m).unwrap_or(0);
                     by_carry += u64::try_from(c).unwrap_or(0);
+                    by_refill += u64::try_from(r).unwrap_or(0);
                 }
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
-            (waits, by_ingest, by_carry)
+            (waits, by_ingest, by_carry, by_refill)
         }
     });
     let holder = if spec.hold {
@@ -2272,7 +2297,7 @@ pub async fn run_row(
     } else {
         None
     };
-    let (waits, by_ingest, carry_waits) = sampler.await.expect("the sampler");
+    let (waits, by_ingest, carry_waits, refill_waits) = sampler.await.expect("the sampler");
     let commit_waits = (waits, by_ingest);
     let deltas_after = deltas_size(&w.db.pool).await;
     for api in &apis {
@@ -2283,10 +2308,25 @@ pub async fn run_row(
         .as_ref()
         .and_then(|hook| hook.slow_steps.lock().ok().map(|slow| slow.clone()))
         .unwrap_or_default();
+    let carry_by_step = hook
+        .as_ref()
+        .and_then(|hook| {
+            hook.carry_by_step
+                .lock()
+                .ok()
+                .map(|by_step| by_step.clone())
+        })
+        .unwrap_or_default();
     let (mut without_slow, mut slow_tagged) = (Vec::new(), 0_usize);
+    let mut minus_carry = Vec::new();
     let mut finished = started;
     for (c, f, s, last, steps) in results {
         for (time, step) in c.iter().zip(&steps) {
+            minus_carry.push(
+                carry_by_step
+                    .get(step)
+                    .map_or(*time, |carry| time.saturating_sub(*carry)),
+            );
             if slow_steps.contains(step) {
                 slow_tagged += 1;
             } else {
@@ -2300,6 +2340,7 @@ pub async fn run_row(
     }
     completes.sort_unstable();
     without_slow.sort_unstable();
+    minus_carry.sort_unstable();
     flushes.sort_unstable();
     services.sort_unstable();
     let transitions = completes.len();
@@ -2342,6 +2383,7 @@ pub async fn run_row(
         per_second: transitions as f64 / elapsed.as_secs_f64().max(1e-9),
         completes,
         completes_without_slow_paths: (without_slow, slow_tagged),
+        completes_minus_carry: minus_carry,
         flushes,
         services,
         tally,
@@ -2358,6 +2400,7 @@ pub async fn run_row(
         .await
         .ok(),
         carry_waits,
+        refill_waits,
     }
 }
 

@@ -37,9 +37,24 @@ for r, (m, quiet) in rounds.items():
         out[f"g3 {size}"] = f["per_second"] / oe["per_second"]
         out[f"g4 {size}"] = math.ceil((gg["per_second"] / size) * gg["s_p99_ms"] / 1000 / 0.7)
         out[f"g4 refusals {size}"] = gg["ticket_refusals"] / max(gg["batches"], 1)
+        # The fourth run's gate (2b) attribution (design 041, T041-35, decision D041-121), recorded, not a gate: the
+        # excess over the allowance without the refill and mark-only completions (i), and of the completions less their
+        # own carry (ii); a row whose tagged count is not its refill and mark-only carries has no attribution.
+        slow = a.get("carry_written_refill", 0) + sum(a.get(k, 0) for k in
+                                                       ("carry_mark_only_quota", "carry_mark_only_held", "carry_mark_only_busy"))
+        if a.get("complete_slow_paths_tagged") == slow and a.get("complete_p99_without_slow_paths_ms") is not None:
+            out[f"g2b i {size}"] = a["complete_p99_without_slow_paths_ms"] - o1["complete_p99_ms"] - allowance
+            out[f"g2b ii {size}"] = a["complete_minus_carry_p99_ms"] - o1["complete_p99_ms"] - allowance
+        else:
+            out["why_attribution"] = out.get("why_attribution", []) + [f"(2b) attribution void at {size}: tagged {a.get('complete_slow_paths_tagged')} against {slow}"]
+        out[f"waits by carry {size}"] = a.get("commit_waits_by_carry")
+        out[f"waits by refill {size}"] = a.get("commit_waits_by_refill")
     for l in ("h", "d"):
         x = m.get((l, 1))
-        if x and x["carry_calls"] and (x["carry_calls"] - x["carry_written"]) / x["carry_calls"] > 0.001:
+        if not x:
+            # a round that stops is void (design 041, T041-35, decision D041-121), its last rows included
+            out["valid"] = False; out["why"].append(f"{l} missing"); continue
+        if x["carry_calls"] and (x["carry_calls"] - x["carry_written"]) / x["carry_calls"] > 0.001:
             out["valid"] = False; out["why"].append(f"{l}: carries not written")
     res[r] = out
 valid = [r for r in sorted(res) if res[r]["valid"]][:3]
@@ -61,5 +76,9 @@ for size in (1, 8):
     verdict[f"g2b allowance ms {size}"] = {"values": [res[r][f"g2b allowance {size}"] for r in valid]}
     vals = [(res[r][f"g4 {size}"], res[r][f"g4 refusals {size}"]) for r in valid]
     verdict[f"g4 {size}"] = {"values": vals, "pass": all(t <= HALF and rf < 0.01 for t, rf in vals)}
+    for part in ("i", "ii"):
+        got = [res[r].get(f"g2b {part} {size}") for r in valid]
+        if all(v is not None for v in got):
+            verdict[f"g2b attribution {part} ms {size}"] = {"values": got, "median": statistics.median(got)}
 print(json.dumps(verdict, indent=1))
 print("PASS" if all(v["pass"] for v in verdict.values() if "pass" in v) else "FAIL")
