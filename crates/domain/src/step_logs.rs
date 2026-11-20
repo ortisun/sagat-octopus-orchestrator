@@ -112,30 +112,40 @@ pub enum CeilingReason {
     AttemptRecords,
     AttemptBytes,
     TenantQuota,
+    /// The tenant quota could not be checked within the fallback refill's budget (design 041 section 2b, decision
+    /// D041-119): produced only by the carry's SQL, never by `plan_batch`.
+    TenantQuotaBusy,
 }
 
 impl CeilingReason {
+    /// Every reason, in the order of the contract's `StepLogStream.ceiling` enum.
+    pub const ALL: [Self; 4] = [
+        Self::AttemptRecords,
+        Self::AttemptBytes,
+        Self::TenantQuota,
+        Self::TenantQuotaBusy,
+    ];
+
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::AttemptRecords => "attempt_records",
             Self::AttemptBytes => "attempt_bytes",
             Self::TenantQuota => "tenant_quota",
+            Self::TenantQuotaBusy => "tenant_quota_busy",
         }
     }
 
     #[must_use]
     pub fn parse(name: &str) -> Option<Self> {
-        [Self::AttemptRecords, Self::AttemptBytes, Self::TenantQuota]
-            .into_iter()
-            .find(|reason| reason.as_str() == name)
+        Self::ALL.into_iter().find(|reason| reason.as_str() == name)
     }
 
     const fn marker(self) -> Option<MarkerReason> {
         match self {
             Self::AttemptRecords => Some(MarkerReason::AttemptRecords),
             Self::AttemptBytes => Some(MarkerReason::AttemptBytes),
-            Self::TenantQuota => None,
+            Self::TenantQuota | Self::TenantQuotaBusy => None,
         }
     }
 }

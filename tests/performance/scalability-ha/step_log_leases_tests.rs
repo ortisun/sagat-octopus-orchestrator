@@ -383,7 +383,8 @@ async fn a_small_quota_with_many_idle_writers_admits_everything_their_leases_hol
 
 /// D041-117's bound on room held by open transactions: each grant leaves at least half of the unleased room, so with k
 /// writers holding their leases at least L · C(2k, k) / 4^k stays chargeable by another writer (k = 8, L = 1 MiB:
-/// 1,048,576 · 12,870 / 65,536 = 205,920), and only past it is a charge refused as held.
+/// 1,048,576 · 12,870 / 65,536 = 205,920), and a charge within its share is refused as held only when it needs more than
+/// that room.
 #[tokio::test]
 async fn room_held_by_open_writers_is_bounded_by_the_grant() {
     bounded::within("held bound", LIMIT, async {
@@ -1548,14 +1549,19 @@ async fn the_ensure_before_a_report_gives_the_carry_its_fast_path() {
             .expect("hold the usage row");
         let again = tokio::time::timeout(
             Duration::from_secs(20),
-            sqlx::query("SELECT spike_041.step_log_ensure($1, 3280)")
-                .bind(tenant)
-                .execute(&mut *c),
+            sqlx::query_scalar::<_, String>(
+                "SELECT outcome FROM spike_041.step_log_ensure($1, 3280)",
+            )
+            .bind(tenant)
+            .fetch_one(&mut *c),
         )
         .await;
-        assert!(
-            matches!(again, Ok(Ok(_))),
-            "an ensure with room waited for the usage row: {again:?}"
+        // Decision D041-121: with the bounded ensure, one that waited would answer `busy` within its budget, so the
+        // answer itself is checked, not only that it came.
+        assert_eq!(
+            again.ok().and_then(Result::ok).as_deref(),
+            Some("room"),
+            "an ensure with room answers from the lease, without the usage row"
         );
         row.commit().await.expect("commit");
         assert_exact(pool, tenant, 1 << 30).await;
@@ -1816,6 +1822,68 @@ async fn the_lease_of_an_ended_backend_is_reclaimed_at_once() {
         assert_eq!((g, leases), (0, 0), "the ended backend's lease is gone");
         assert_eq!(s + used, s0 + used0, "its use folded into S");
         assert_exact(pool, tenant, 1 << 30).await;
+    })
+    .await;
+}
+
+/// Decision D041-121: the fourth run's setup runs on a pool whose every connection it holds, so the fold of ended leases
+/// runs on one of them; each filled connection then holds a 1 MiB lease charged its share of the row's fill.
+#[tokio::test]
+async fn the_setup_lease_fills_a_full_pool_and_folds_ended_leases() {
+    bounded::within("setup lease", LIMIT, async {
+        let (w, tenant) = leased_world(1 << 40).await;
+        let pool = &w.db.pool;
+        let (mut gone, pid_gone) = writer(pool).await;
+        charge_on(&mut gone, tenant, 1_000).await.expect("a lease");
+        sqlx::Connection::close(*gone)
+            .await
+            .expect("the backend ends");
+        bounded::within("the backend is gone", LIMIT, async {
+            loop {
+                let alive: bool = sqlx::query_scalar(
+                    "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE pid = $1)",
+                )
+                .bind(pid_gone)
+                .fetch_one(pool)
+                .await
+                .expect("pg_stat_activity");
+                if !alive {
+                    return;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
+        let small = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .acquire_timeout(Duration::from_secs(2))
+            .connect_with((*pool.connect_options()).clone())
+            .await
+            .expect("a pool of two");
+        super::prewarm_leased(&small, 3, Some(tenant)).await;
+        assert_eq!(small.size(), 2, "the pool stays full");
+        let leases: Vec<(i32, i64, i64)> = sqlx::query_as(
+            "SELECT writer, granted, used FROM spike_041.step_log_quota_leases WHERE tenant_id = $1 ORDER BY used",
+        )
+        .bind(tenant)
+        .fetch_all(pool)
+        .await
+        .expect("the leases");
+        assert!(
+            leases.iter().all(|(writer, _, _)| *writer != pid_gone),
+            "the ended backend's lease is folded"
+        );
+        let mut shares = [super::setup_share(3), super::setup_share(4)];
+        shares.sort_unstable();
+        assert_eq!(
+            leases
+                .iter()
+                .map(|(_, granted, used)| (*granted, *used))
+                .collect::<Vec<_>>(),
+            shares.iter().map(|share| (1 << 20, *share)).collect::<Vec<_>>(),
+            "each filled connection leased 1 MiB and charged its share"
+        );
+        assert_exact(pool, tenant, 1 << 40).await;
     })
     .await;
 }

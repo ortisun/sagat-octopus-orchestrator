@@ -2265,11 +2265,16 @@ async fn step_log_carry_spike() {
                 "transitions": row.transitions, "per_second": row.per_second,
                 "complete_p50_ms": ms(percentile(&row.completes, 0.50)),
                 "complete_p99_ms": ms(percentile(&row.completes, 0.99)),
+                "complete_p99_without_slow_paths_ms": (!row.completes_without_slow_paths.0.is_empty())
+                    .then(|| ms(percentile(&row.completes_without_slow_paths.0, 0.99))),
+                "complete_slow_paths_tagged": row.completes_without_slow_paths.1,
                 "carry_calls": calls, "carry_written": written, "carry_contended": contended, "carry_neither": neither,
                 "carry_written_refill": counts.written_refill, "carry_mark_only_quota": counts.mark_only_quota,
                 "carry_mark_only_held": counts.mark_only_held, "carry_mark_only_busy": counts.mark_only_busy,
                 "carry_errors": counts.errors,
                 "carry_over_p99_by_path": over_p99_by_path(&counts),
+                "carry_fast_p99_ms": (!counts.times_by_path[0].is_empty())
+                    .then(|| ms(percentile(&counts.times_by_path[0], 0.99))),
                 "carry_refill_max_ms": counts.times_by_path[1].last().map(|t| ms(*t)),
                 "carry_mark_max_ms": counts.times_by_path[2].last().map(|t| ms(*t)),
                 "lease_rows": row.lease_rows,
@@ -2344,13 +2349,11 @@ async fn step_log_carry_spike() {
     );
 }
 
-/// The carries slower than the row's carry p99, by path (fast, refill, mark-only): the fourth run's reading rule for
-/// gate (2b) (decision D041-120).
+/// The carries slower than the row's carry p99, by path (fast, refill, mark-only), recorded with the fourth run
+/// (decisions D041-120 and D041-121); the threshold is the printed `carry_p99_ms`, the same `percentile`.
 #[cfg(feature = "perf-spike")]
 fn over_p99_by_path(counts: &step_log_spike::CarryCounts) -> [usize; 3] {
-    let Some(p99) =
-        (counts.times.len() >= 100).then(|| counts.times[counts.times.len() * 99 / 100])
-    else {
+    let Some(p99) = (counts.times.len() >= 100).then(|| percentile(&counts.times, 0.99)) else {
         return [0; 3];
     };
     counts

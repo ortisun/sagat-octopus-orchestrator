@@ -261,9 +261,10 @@ pub async fn install_per_statement(pool: &PgPool) {
 /// tenant's exact leases (data-model.md §3b) instead of the transaction's delta row and the finalizer at commit: the
 /// statement trigger calls `spike_041.step_log_charge` once per tenant, which takes the three class fences shared, reads
 /// the limit and, without a lock, the folded usage and the leased bytes, and, unless they already pass the limit, adds the
-/// bytes to a lease it can lock at once (`SKIP LOCKED`); otherwise `spike_041.step_log_refill` locks the tenant usage row
-/// (`NOWAIT` when the transaction set `sagat.step_log_charge_nowait`, as a carry does), reclaims the idle leases near the
-/// limit and grants one. `spike_041.step_log_release` is the release (a purge's), applied to the folded usage under the
+/// bytes to the writer's own lease when it can lock it at once (`SKIP LOCKED`); otherwise `spike_041.step_log_refill`
+/// locks the tenant usage row (each lock acquisition at most the budget of `spike_041.step_log_refill_wait()`, decision
+/// D041-119), then the writer's own lease `NOWAIT`, reclaims the other leases no open transaction holds near the limit,
+/// and grants the writer's lease (decisions D041-117 and D041-119). `spike_041.step_log_release` is the release (a purge's), applied to the folded usage under the
 /// usage row only, never waiting for a lease. `step_log_bytes` is the folded usage (it may be negative), the scratch
 /// column `step_log_leased_bytes` the leased bytes.
 #[cfg(feature = "perf-spike")]
@@ -1310,6 +1311,9 @@ pub struct CarryHook {
     pub times: std::sync::Mutex<Vec<Duration>>,
     /// The carry's time by path: written on the fast path, written by a refill, mark-only (any cause).
     pub times_by_path: std::sync::Mutex<[Vec<Duration>; 3]>,
+    /// The steps whose carry was written by a refill or answered mark-only, so that each completion can be tagged with
+    /// its carry's path (the fourth run's gate (2b) reading rule, decision D041-121).
+    pub slow_steps: std::sync::Mutex<std::collections::HashSet<Uuid>>,
     /// T041-35's second run (`SAGAT_PERF_STEP_LOG_CARRY_RUN=2`): the carry as one call of `spike_041.step_log_carry`.
     pub one_call: bool,
     /// The hot-row diagnosis (`step_log_diag`): a hook that carries nothing and only times the report's `COMMIT`.
@@ -1340,6 +1344,7 @@ impl CarryHook {
             errors: AtomicU64::new(0),
             times: std::sync::Mutex::new(Vec::new()),
             times_by_path: std::sync::Mutex::new([Vec::new(), Vec::new(), Vec::new()]),
+            slow_steps: std::sync::Mutex::new(std::collections::HashSet::new()),
             probe: false,
             timed: crate::step_log_diag::enabled(),
             committed: std::sync::Mutex::new(Vec::new()),
@@ -1582,6 +1587,11 @@ impl CarryHook {
         if let (Some(path), Ok(mut by_path)) = (path, self.times_by_path.lock()) {
             by_path[path].push(started.elapsed());
         }
+        if matches!(path, Some(1 | 2))
+            && let Ok(mut slow) = self.slow_steps.lock()
+        {
+            slow.insert(a.step);
+        }
         self.record(started);
         Ok(())
     }
@@ -1705,6 +1715,10 @@ pub struct RowResult {
     pub transitions: usize,
     pub per_second: f64,
     pub completes: Vec<Duration>,
+    /// The completions whose carry took neither a refill nor a mark-only answer, sorted, and the count of those it
+    /// leaves out (decision D041-121). Read only by the carry spike.
+    #[cfg_attr(not(feature = "perf-spike"), allow(dead_code))]
+    pub completes_without_slow_paths: (Vec<Duration>, usize),
     pub flushes: Vec<Duration>,
     pub services: Vec<Duration>,
     pub tally: Arc<Tally>,
@@ -1750,9 +1764,29 @@ pub static PREWARM_LEASE: std::sync::Mutex<Option<Uuid>> = std::sync::Mutex::new
 /// pools an acquire never waits and the 2 s acquire timeout of `tests/support/engine.rs` only fails a row on a real
 /// defect. Setup, not measured: each connection is retried until 120 s have passed.
 pub async fn prewarm(pool: &PgPool) {
+    prewarm_from(pool, 0).await;
+}
+
+/// [`prewarm`] for the `replica`-th pool of a row, whose connections' indexes in the row's fill start at
+/// `replica × API_POOL` (the fourth run's declared share index, decision D041-121).
+pub async fn prewarm_from(pool: &PgPool, first: usize) {
     if !PREWARM.load(Ordering::Relaxed) {
         return;
     }
+    let lease = PREWARM_LEASE.lock().ok().and_then(|tenant| *tenant);
+    prewarm_leased(pool, first, lease).await;
+}
+
+/// The share of its 1 MiB setup lease charged to the connection of index `i` in its row's fill (decision D041-120):
+/// u = ((i + 1) × 2,654,435,761) mod 2^20 bytes.
+pub fn setup_share(i: usize) -> i64 {
+    let share = ((u64::try_from(i).unwrap_or(0) + 1) * 2_654_435_761) % (1 << 20);
+    i64::try_from(share).unwrap_or(0)
+}
+
+/// Fills `pool` and, with `lease`, takes the fourth run's declared setup lease on each filled connection, the first of
+/// index `first` in its row's fill.
+pub async fn prewarm_leased(pool: &PgPool, first: usize, lease: Option<Uuid>) {
     let max = pool.options().get_max_connections();
     let deadline = Instant::now() + Duration::from_secs(120);
     let mut held = Vec::new();
@@ -1762,32 +1796,42 @@ pub async fn prewarm(pool: &PgPool) {
             Err(error) => assert!(Instant::now() < deadline, "prewarm a pool: {error}"),
         }
     }
-    let lease = PREWARM_LEASE.lock().ok().and_then(|tenant| *tenant);
     if let Some(tenant) = lease {
-        // The fourth run's declared setup (decision D041-120): the leases of ended backends folded first, then each
-        // filled connection leased 1 MiB and charged a deterministic share of it, u = ((i + 1) × 2,654,435,761) mod
-        // 2^20 bytes, i its index in this pool's fill, so that leases start spread over (0, 1 MiB] as in a steady fleet.
-        sqlx::query("SELECT spike_041.step_log_reclaim_idle($1)")
-            .bind(tenant)
-            .execute(pool)
-            .await
-            .unwrap_or_else(|error| panic!("fold the leases of ended backends: {error}"));
+        // The fourth run's declared setup (decisions D041-120 and D041-121): the leases of ended backends folded first,
+        // on a connection the fill holds (the pool has no other), then each filled connection leased 1 MiB and charged a
+        // deterministic share of it, u = ((i + 1) × 2,654,435,761) mod 2^20 bytes, i its index in the row's fill across
+        // the row's replicas, so that leases start spread over (0, 1 MiB] as in a steady fleet. A setup lease answered
+        // `busy` or `contended` is retried at most 10 times; past that the row stops, and its round is void.
+        if let Some(first_conn) = held.first_mut() {
+            sqlx::query("SELECT spike_041.step_log_reclaim_idle($1)")
+                .bind(tenant)
+                .execute(&mut **first_conn)
+                .await
+                .unwrap_or_else(|error| panic!("fold the leases of ended backends: {error}"));
+        }
         for (i, conn) in held.iter_mut().enumerate() {
-            let outcome: String =
-                sqlx::query_scalar("SELECT outcome FROM spike_041.step_log_ensure($1, 1048576)")
-                    .bind(tenant)
-                    .fetch_one(&mut **conn)
-                    .await
-                    .unwrap_or_else(|error| panic!("lease a filled connection: {error}"));
+            let mut outcome = String::new();
+            for _ in 0..=10 {
+                outcome = sqlx::query_scalar(
+                    "SELECT outcome FROM spike_041.step_log_ensure($1, 1048576)",
+                )
+                .bind(tenant)
+                .fetch_one(&mut **conn)
+                .await
+                .unwrap_or_else(|error| panic!("lease a filled connection: {error}"));
+                if !matches!(outcome.as_str(), "busy" | "contended") {
+                    break;
+                }
+            }
             assert!(
                 matches!(outcome.as_str(), "made" | "room"),
                 "the setup lease answered {outcome}"
             );
-            let share = ((u64::try_from(i).unwrap_or(0) + 1) * 2_654_435_761) % (1 << 20);
+            let share = setup_share(first + i);
             if share > 0 {
                 sqlx::query("SELECT spike_041.step_log_charge($1, $2)")
                     .bind(tenant)
-                    .bind(i64::try_from(share).unwrap_or(0))
+                    .bind(share)
                     .execute(&mut **conn)
                     .await
                     .unwrap_or_else(|error| panic!("charge the setup share: {error}"));
@@ -1893,9 +1937,13 @@ pub async fn run_row(
                 .then(|| Arc::new(CarryHook::probe()))
         });
     let mut apis = Vec::new();
-    for _ in 0..spec.api_replicas {
+    for replica_index in 0..spec.api_replicas {
         let mut replica = w.replica_with_pool(crate::API_POOL).await;
-        prewarm(&replica.execution_pool).await;
+        prewarm_from(
+            &replica.execution_pool,
+            replica_index * usize::try_from(crate::API_POOL).unwrap_or(0),
+        )
+        .await;
         #[cfg(not(feature = "perf-spike"))]
         assert!(hook.is_none(), "a carry row needs `--features perf-spike`");
         #[cfg(feature = "perf-spike")]
@@ -2093,6 +2141,7 @@ pub async fn run_row(
                 let mut counters = crate::poll_client::PollCounters::default();
                 let (mut completes, mut flushes, mut services) =
                     (Vec::new(), Vec::new(), Vec::new());
+                let mut completed_steps = Vec::new();
                 let mut last_done = Instant::now();
                 let mut empty = 0;
                 while empty < patience {
@@ -2200,10 +2249,11 @@ pub async fn run_row(
                                 failure("complete", t.elapsed(), &api.execution_pool, &error)
                             });
                         completes.push(t.elapsed());
+                        completed_steps.push(task.step_id);
                         last_done = Instant::now();
                     }
                 }
-                (completes, flushes, services, last_done)
+                (completes, flushes, services, last_done, completed_steps)
             }
         }))
         .await;
@@ -2229,14 +2279,27 @@ pub async fn run_row(
         api.execution_pool.close().await;
     }
     let (mut completes, mut flushes, mut services) = (Vec::new(), Vec::new(), Vec::new());
+    let slow_steps = hook
+        .as_ref()
+        .and_then(|hook| hook.slow_steps.lock().ok().map(|slow| slow.clone()))
+        .unwrap_or_default();
+    let (mut without_slow, mut slow_tagged) = (Vec::new(), 0_usize);
     let mut finished = started;
-    for (c, f, s, last) in results {
+    for (c, f, s, last, steps) in results {
+        for (time, step) in c.iter().zip(&steps) {
+            if slow_steps.contains(step) {
+                slow_tagged += 1;
+            } else {
+                without_slow.push(*time);
+            }
+        }
         completes.extend(c);
         flushes.extend(f);
         services.extend(s);
         finished = finished.max(last);
     }
     completes.sort_unstable();
+    without_slow.sort_unstable();
     flushes.sort_unstable();
     services.sort_unstable();
     let transitions = completes.len();
@@ -2278,6 +2341,7 @@ pub async fn run_row(
         transitions,
         per_second: transitions as f64 / elapsed.as_secs_f64().max(1e-9),
         completes,
+        completes_without_slow_paths: (without_slow, slow_tagged),
         flushes,
         services,
         tally,
@@ -2286,10 +2350,13 @@ pub async fn run_row(
         held_for,
         diag,
         carry: hook.filter(|hook| !hook.probe).map(|hook| hook.counts()),
-        lease_rows: sqlx::query_scalar("SELECT count(*) FROM spike_041.step_log_quota_leases")
-            .fetch_one(&w.db.pool)
-            .await
-            .ok(),
+        lease_rows: sqlx::query_scalar(
+            "SELECT count(*) FROM spike_041.step_log_quota_leases WHERE tenant_id = $1",
+        )
+        .bind(w.admin.tenant_id().as_uuid())
+        .fetch_one(&w.db.pool)
+        .await
+        .ok(),
         carry_waits,
     }
 }
