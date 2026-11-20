@@ -431,6 +431,72 @@ macro_rules! run_permit_lateral_sql {
 }
 pub(crate) use run_permit_lateral_sql;
 
+/// The run-level rate-limit slot of a run, as `get` and `list` read it beside the run's row (T022-078, decision D022-067
+/// item 1): its grant while it counts at the statement's instant (`leased_at > now() - per`, the gate's half-open window;
+/// a run's grant counts from its grant) or its waiter, one probe of each primary key; nothing for a run with neither.
+macro_rules! run_rate_lateral_sql {
+    () => {
+        " LEFT JOIN LATERAL ( \
+           SELECT q.rl_state, q.rl_pool, q.rl_group, q.rl_key, q.rl_since, q.rl_deadline, q.rl_limit, q.rl_period \
+             FROM ( \
+             SELECT 'GRANTED' AS rl_state, g.pool AS rl_pool, g.group_name AS rl_group, g.key_digest AS rl_key, \
+                    g.granted_at AS rl_since, NULL::timestamptz AS rl_deadline, g.declared_limit AS rl_limit, \
+                    g.period_ms AS rl_period \
+               FROM rate_limit_grants g \
+              WHERE g.tenant_id = runs.tenant_id AND g.run_id = runs.id AND g.node = '' AND g.attempt = 0 \
+                AND g.leased_at > now() - make_interval(secs => g.period_ms / 1000.0) \
+             UNION ALL \
+             SELECT 'WAITING', w.pool, w.group_name, w.key_digest, w.enqueued_at, w.deadline_at, w.declared_limit, \
+                    w.period_ms \
+               FROM rate_limit_waiters w \
+              WHERE w.tenant_id = runs.tenant_id AND w.run_id = runs.id AND w.node = '' \
+           ) q ORDER BY q.rl_state LIMIT 1) slot ON true "
+    };
+}
+pub(crate) use run_rate_lateral_sql;
+
+/// The run-level rate-limit slot of a row that `get` or `list` read with [`run_rate_lateral_sql`]; `None` for a row
+/// without those columns (a command transaction's) or a run that neither holds a counting slot nor waits.
+pub(crate) fn run_rate_slot(
+    row: &sqlx::postgres::PgRow,
+) -> Result<Option<sagat_application::flow_control_keys::RunRateSlot>, StoreError> {
+    use sagat_application::flow_control_keys::{RunPermitState, RunRateSlot};
+    use sqlx::Row as _;
+    let Some(state) = crate::execution::selected::<String>(row, "rl_state")? else {
+        return Ok(None);
+    };
+    let pool: String = row.try_get("rl_pool").map_err(store_error)?;
+    let group: String = row.try_get("rl_group").map_err(store_error)?;
+    let digest: Vec<u8> = row.try_get("rl_key").map_err(store_error)?;
+    let since: time::OffsetDateTime = row.try_get("rl_since").map_err(store_error)?;
+    let deadline: Option<time::OffsetDateTime> = row.try_get("rl_deadline").map_err(store_error)?;
+    let limit: i32 = row.try_get("rl_limit").map_err(store_error)?;
+    let period: i32 = row.try_get("rl_period").map_err(store_error)?;
+    let digest: [u8; 32] = digest
+        .try_into()
+        .map_err(|_| corrupt("rate-limit key digest"))?;
+    let state = match (state.as_str(), deadline) {
+        ("GRANTED", None) => RunPermitState::Holding,
+        ("WAITING", Some(deadline)) => RunPermitState::Waiting { deadline },
+        _ => return Err(corrupt("run rate-limit slot")),
+    };
+    let per = u64::try_from(period)
+        .ok()
+        .and_then(sagat_domain::workflow::RatePeriod::from_millis)
+        .ok_or_else(|| corrupt("rate-limit period"))?;
+    Ok(Some(RunRateSlot::new(
+        GatePool::parse(&pool).ok_or_else(|| corrupt("rate-limit pool"))?,
+        ResolvedGroup::parse(&group).map_err(|_| corrupt("rate-limit group"))?,
+        digest,
+        state,
+        since,
+        (
+            u32::try_from(limit).map_err(|_| corrupt("rate-limit limit"))?,
+            per,
+        ),
+    )))
+}
+
 /// The run-level permit of a row that `get` or `list` read with [`run_permit_lateral_sql`]; `None` for a row without
 /// those columns (a command transaction's) or a run that neither holds nor waits.
 pub(crate) fn run_permit(
@@ -607,6 +673,179 @@ impl sagat_application::flow_control_keys::FlowControlKeyReader for crate::PgRun
         })
     }
 
+    async fn rate_limit_keys(
+        &self,
+        tenant: TenantId,
+        namespace: NamespaceId,
+        group: Option<&ResolvedGroup>,
+        after: Option<&sagat_application::flow_control_keys::KeyPosition>,
+        limit: u32,
+    ) -> Result<sagat_application::flow_control_keys::RateLimitKeyPage, StoreError> {
+        use sagat_application::flow_control_keys::{
+            KeyPosition, RateLimitKeyPage, RateLimitKeyView,
+        };
+        use sqlx::Row as _;
+        // one snapshot and one instant (`now()`, the transaction's) for the page, its counts and its queued runs
+        let mut tx = crate::pool::BeginSafely::begin_safely(self.pool())
+            .await
+            .map_err(store_error)?;
+        sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+            .execute(&mut *tx)
+            .await
+            .map_err(store_error)?;
+        sqlx::query(LISTING_TIMEOUT_SQL)
+            .execute(&mut *tx)
+            .await
+            .map_err(store_error)?;
+        let after_since = after
+            .and_then(|p| p.oldest_wait_us)
+            .map(|us| {
+                time::OffsetDateTime::from_unix_timestamp_nanos(i128::from(us) * 1_000)
+                    .map_err(|_| corrupt("rate-limit key cursor"))
+            })
+            .transpose()?;
+        let sql = if group.is_some() {
+            RATE_KEY_LISTING_OF_GROUP_SQL
+        } else {
+            RATE_KEY_LISTING_SQL
+        };
+        let after_bucket = match after {
+            None => "-infinity",
+            Some(_) => "infinity",
+        };
+        let rows = sqlx::query(sql)
+            .bind(tenant.as_uuid())
+            .bind(namespace.as_uuid())
+            .bind(group.map(ResolvedGroup::as_str))
+            .bind(after_bucket)
+            .bind(after_since)
+            .bind(after.map_or("", |p| p.pool.as_str()))
+            .bind(after.map_or("", |p| p.scope.as_str()))
+            .bind(after.map_or_else(
+                || group.map_or("", ResolvedGroup::as_str),
+                |p| p.group.as_str(),
+            ))
+            .bind(after.map_or(&[][..], |p| p.digest.as_slice()))
+            .bind(i64::from(limit))
+            .fetch_all(&mut *tx)
+            .await
+            .map_err(store_error)?;
+        let queued_runs: i64 = sqlx::query_scalar(QUEUED_RUNS_SQL)
+            .bind(tenant.as_uuid())
+            .bind(namespace.as_uuid())
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(store_error)?;
+        let cursor_version: Option<i16> = sqlx::query_scalar(
+            "SELECT version FROM flow_control_key_versions WHERE state = 'ACTIVE'",
+        )
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(store_error)?;
+        tx.commit().await.map_err(store_error)?;
+        let mut items = Vec::with_capacity(rows.len());
+        for row in &rows {
+            let pool = GatePool::parse(&row.try_get::<String, _>("pool").map_err(store_error)?)
+                .ok_or_else(|| corrupt("rate-limit pool"))?;
+            let scope = match row
+                .try_get::<String, _>("limit_scope")
+                .map_err(store_error)?
+                .as_str()
+            {
+                "RUN" => GateLevel::Run,
+                "STEP" => GateLevel::Step,
+                _ => return Err(corrupt("rate-limit scope")),
+            };
+            let group = ResolvedGroup::parse(
+                &row.try_get::<String, _>("group_name")
+                    .map_err(store_error)?,
+            )
+            .map_err(|_| corrupt("rate-limit group"))?;
+            let digest: [u8; 32] = row
+                .try_get::<Vec<u8>, _>("key_digest")
+                .map_err(store_error)?
+                .try_into()
+                .map_err(|_| corrupt("rate-limit key digest"))?;
+            let count = |name: &str| -> Result<u32, StoreError> {
+                u32::try_from(row.try_get::<i64, _>(name).map_err(store_error)?)
+                    .map_err(|_| corrupt("rate-limit counter"))
+            };
+            let waiters = u32::try_from(row.try_get::<i32, _>("waiters").map_err(store_error)?)
+                .map_err(|_| corrupt("rate-limit counter"))?;
+            let unleased = count("unleased")?;
+            let oldest_wait: Option<time::OffsetDateTime> =
+                row.try_get("oldest_wait").map_err(store_error)?;
+            let oldest_wait_us = oldest_wait
+                .map(|at| i64::try_from(at.unix_timestamp_nanos() / 1_000))
+                .transpose()
+                .map_err(|_| corrupt("rate-limit wait instant"))?;
+            items.push(RateLimitKeyView {
+                label: None,
+                grants_in_window: unleased.saturating_add(count("leased_counting")?),
+                unleased_grants: unleased,
+                waiters,
+                oldest_wait_since: oldest_wait,
+                next_slot_at: row.try_get("next_slot").map_err(store_error)?,
+                position: KeyPosition {
+                    oldest_wait_us,
+                    pool,
+                    scope,
+                    group: group.clone(),
+                    digest,
+                },
+                pool,
+                scope,
+                group,
+            });
+        }
+        Ok(RateLimitKeyPage {
+            items,
+            queued_runs: u64::try_from(queued_runs).map_err(|_| corrupt("queued runs"))?,
+            cursor_version: cursor_version
+                .map(|version| u16::try_from(version).map_err(|_| corrupt("digest key version")))
+                .transpose()?,
+        })
+    }
+
+    async fn rate_place(
+        &self,
+        tenant: TenantId,
+        run: sagat_domain::execution::RunId,
+    ) -> Result<Option<sagat_application::flow_control_keys::RatePlace>, StoreError> {
+        let row: Option<(
+            i32,
+            i32,
+            i64,
+            i64,
+            time::OffsetDateTime,
+            Option<time::OffsetDateTime>,
+        )> = sqlx::query_as(RATE_PLACE_SQL)
+            .bind(tenant.as_uuid())
+            .bind(run.as_uuid())
+            .fetch_optional(self.pool())
+            .await
+            .map_err(store_error)?;
+        let Some((limit, period, counted, ahead, at, kth)) = row else {
+            return Ok(None);
+        };
+        let per = u64::try_from(period)
+            .ok()
+            .and_then(sagat_domain::workflow::RatePeriod::from_millis)
+            .ok_or_else(|| corrupt("rate-limit period"))?;
+        let limit = u32::try_from(limit).map_err(|_| corrupt("rate-limit limit"))?;
+        let counted = u64::try_from(counted).map_err(|_| corrupt("rate-limit count"))?;
+        let ahead = u64::try_from(ahead).map_err(|_| corrupt("rate-limit waiters"))?;
+        Ok(Some(sagat_application::flow_control_keys::RatePlace {
+            position: u32::try_from(ahead.saturating_add(1)).unwrap_or(u32::MAX),
+            estimated_grant_at: sagat_application::flow_control_keys::estimated_grant(
+                at,
+                (counted, ahead, limit),
+                kth,
+                per,
+            ),
+        }))
+    }
+
     async fn key_version_in_force(&self, version: u16) -> Result<bool, StoreError> {
         // the one reading of the versions in force (`flow_control_key_versions_in_force`): a forced or ended retirement
         // is out of force at once (ADR-0093 decision 5)
@@ -659,6 +898,90 @@ pub const KEY_LISTING_SQL: &str = "SELECT s.pool, s.permit_scope, s.group_name, 
       ORDER BY COALESCE(s.oldest_wait_at, 'infinity'::timestamptz), s.pool, s.permit_scope, s.group_name, \
                s.key_digest \
       LIMIT $10";
+
+/// The columns of one window of the rate-limit listing at the page's instant (`now()`, its transaction's; plan "Visibility
+/// of the rate gate"): its unleased grants, its leased grants that count over its longest period, and, when somebody
+/// waits and no grant is unleased, the first instant a counted grant stops counting for one of its waiters.
+macro_rules! rate_key_columns_sql {
+    () => {
+        "SELECT w.pool, w.limit_scope, w.group_name, w.key_digest, w.waiters, w.oldest_wait_at AS oldest_wait, \
+                (SELECT count(*) FROM rate_limit_grants g \
+                  WHERE g.tenant_id = w.tenant_id AND g.namespace_id = w.namespace_id AND g.pool = w.pool \
+                    AND g.limit_scope = w.limit_scope AND g.group_name = w.group_name AND g.key_digest = w.key_digest \
+                    AND g.leased_at IS NULL) AS unleased, \
+                (SELECT count(*) FROM rate_limit_grants g \
+                  WHERE g.tenant_id = w.tenant_id AND g.namespace_id = w.namespace_id AND g.pool = w.pool \
+                    AND g.limit_scope = w.limit_scope AND g.group_name = w.group_name AND g.key_digest = w.key_digest \
+                    AND g.leased_at > now() - make_interval(secs => w.max_period_ms / 1000.0)) AS leased_counting, \
+                CASE WHEN w.waiters > 0 AND NOT EXISTS (SELECT 1 FROM rate_limit_grants g \
+                       WHERE g.tenant_id = w.tenant_id AND g.namespace_id = w.namespace_id AND g.pool = w.pool \
+                         AND g.limit_scope = w.limit_scope AND g.group_name = w.group_name \
+                         AND g.key_digest = w.key_digest AND g.leased_at IS NULL) \
+                     THEN (SELECT min(g.leased_at + make_interval(secs => p.period_ms / 1000.0)) \
+                             FROM rate_limit_grants g \
+                            CROSS JOIN (SELECT DISTINCT x.period_ms FROM rate_limit_waiters x \
+                                         WHERE x.tenant_id = w.tenant_id AND x.namespace_id = w.namespace_id \
+                                           AND x.pool = w.pool AND x.limit_scope = w.limit_scope \
+                                           AND x.group_name = w.group_name AND x.key_digest = w.key_digest) p \
+                            WHERE g.tenant_id = w.tenant_id AND g.namespace_id = w.namespace_id AND g.pool = w.pool \
+                              AND g.limit_scope = w.limit_scope AND g.group_name = w.group_name \
+                              AND g.key_digest = w.key_digest \
+                              AND g.leased_at + make_interval(secs => p.period_ms / 1000.0) > now()) \
+                END AS next_slot \
+           FROM rate_limit_windows w "
+    };
+}
+
+/// The listing of a namespace's rate-limit windows (`$3` is null), in the order of `rate_limit_windows_listing_idx`,
+/// after the position `(COALESCE($5, $4), $6, $7, $8, $9)` (as [`KEY_LISTING_SQL`]).
+pub const RATE_KEY_LISTING_SQL: &str = concat!(
+    rate_key_columns_sql!(),
+    "WHERE w.tenant_id = $1 AND w.namespace_id = $2 AND $3::text IS NULL \
+        AND (COALESCE(w.oldest_wait_at, 'infinity'::timestamptz), w.pool, w.limit_scope, w.group_name, w.key_digest) \
+            > (COALESCE($5::timestamptz, $4::text::timestamptz), $6::text, $7::text, $8::text, $9::bytea) \
+      ORDER BY COALESCE(w.oldest_wait_at, 'infinity'::timestamptz), w.pool, w.limit_scope, w.group_name, \
+               w.key_digest \
+      LIMIT $10"
+);
+
+/// The listing of one group's rate-limit windows (`$3`), in the order of `rate_limit_windows_group_listing_idx`.
+pub const RATE_KEY_LISTING_OF_GROUP_SQL: &str = concat!(
+    rate_key_columns_sql!(),
+    "WHERE w.tenant_id = $1 AND w.namespace_id = $2 AND w.group_name = $3 AND $8::text = $3 \
+        AND (COALESCE(w.oldest_wait_at, 'infinity'::timestamptz), w.pool, w.limit_scope, w.key_digest) \
+            > (COALESCE($5::timestamptz, $4::text::timestamptz), $6::text, $7::text, $9::bytea) \
+      ORDER BY COALESCE(w.oldest_wait_at, 'infinity'::timestamptz), w.pool, w.limit_scope, w.key_digest \
+      LIMIT $10"
+);
+
+/// Where the run-level rate-limit waiter of run `$2` of tenant `$1` stands at one instant `t` (`now()`; plan
+/// "Visibility of the rate gate", D022-014): its limit and window, `n` the key's grants that count over its window at
+/// `t`, `a` the waiters ahead of it that the pass visits (not past their deadline, their run live and not paused, in the
+/// queue's order), `t`, and the
+/// lease of the `k`-th oldest counted grant for `k = n + a - limit + 1` (offset `k - 1`, at least 0).
+pub const RATE_PLACE_SQL: &str = "WITH me AS ( \
+         SELECT w.tenant_id, w.namespace_id, w.pool, w.limit_scope, w.group_name, w.key_digest, w.run_id, w.node, \
+                w.enqueued_at, w.declared_limit, w.period_ms, now() AS t \
+           FROM rate_limit_waiters w WHERE w.tenant_id = $1 AND w.run_id = $2 AND w.node = ''), \
+       counted AS ( \
+         SELECT count(*) AS n FROM rate_limit_grants g, me \
+          WHERE g.tenant_id = me.tenant_id AND g.namespace_id = me.namespace_id AND g.pool = me.pool \
+            AND g.limit_scope = me.limit_scope AND g.group_name = me.group_name AND g.key_digest = me.key_digest \
+            AND (g.leased_at IS NULL OR g.leased_at > me.t - make_interval(secs => me.period_ms / 1000.0))), \
+       ahead AS ( \
+         SELECT count(*) AS a FROM rate_limit_waiters x \
+           JOIN runs r ON r.tenant_id = x.tenant_id AND r.id = x.run_id, me \
+          WHERE x.tenant_id = me.tenant_id AND x.namespace_id = me.namespace_id AND x.pool = me.pool \
+            AND x.limit_scope = me.limit_scope AND x.group_name = me.group_name AND x.key_digest = me.key_digest \
+            AND (x.enqueued_at, x.run_id, x.node) < (me.enqueued_at, me.run_id, me.node) \
+            AND x.deadline_at > me.t AND r.status IN ('RUNNING', 'WAITING') AND NOT r.paused) \
+     SELECT me.declared_limit, me.period_ms, counted.n, ahead.a, me.t, \
+            (SELECT g.leased_at FROM rate_limit_grants g \
+              WHERE g.tenant_id = me.tenant_id AND g.namespace_id = me.namespace_id AND g.pool = me.pool \
+                AND g.limit_scope = me.limit_scope AND g.group_name = me.group_name AND g.key_digest = me.key_digest \
+                AND g.leased_at > me.t - make_interval(secs => me.period_ms / 1000.0) \
+              ORDER BY g.leased_at OFFSET greatest(counted.n + ahead.a - me.declared_limit, 0) LIMIT 1) AS kth \
+       FROM me, counted, ahead";
 
 /// The listing of one group's keys (`$3`), in the order of `concurrency_semaphores_group_listing_idx`: the order of
 /// [`KEY_LISTING_SQL`] within one group, after a position of that group (`$8`).

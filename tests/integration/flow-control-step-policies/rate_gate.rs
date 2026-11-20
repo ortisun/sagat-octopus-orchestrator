@@ -439,8 +439,11 @@ async fn a_step_slot_counts_from_the_lease_the_pass_copies_from_the_journal() {
 }
 
 /// An unleased slot frees by a return (which sets the hint) or by a lease, whose recording lowers the hint, so the key
-/// rests until the pass's start plus the waiter's window: the hint the pass was selected by plus a minute, exactly
-/// (early, never late; D022-021, D022-064, correctness review Major 3 of 2026-11-20).
+/// rests until the pass's start plus the waiter's window: the instant of the statement that selected the key plus a
+/// minute (early, never late; D022-021, D022-064, correctness review Major 3 of 2026-11-20). That statement runs within
+/// the tick, so the hint lies between the database clock read before the tick and the one read after it, each plus a
+/// minute, and after the hint the key was selected by plus a minute (decision D022-066 item 3: the selection's instant,
+/// not the older hint, which fell behind real time after a lag).
 #[tokio::test]
 async fn an_unleased_slot_rests_its_key_until_the_pass_start_plus_the_window() {
     let w = gated_world().await;
@@ -450,11 +453,18 @@ async fn an_unleased_slot_rests_its_key_until_the_pass_start_plus_the_window() {
     let selected_by = hint_us(&w, second)
         .await
         .expect("a new waiter makes its key due");
-    assert!(selected_by <= database_now_us(&w.db.pool).await);
+    let before = database_now_us(&w.db.pool).await;
+    assert!(selected_by < before);
     assert_eq!(w.scheduler.tick().await.gates_granted, 0);
-    assert_eq!(
-        hint_us(&w, second).await,
-        Some(selected_by + 60 * SECOND_US)
+    let after = database_now_us(&w.db.pool).await;
+    let rested = hint_us(&w, second).await.expect("a hint");
+    assert!(
+        (before + 60 * SECOND_US..=after + 60 * SECOND_US).contains(&rested),
+        "the selection's instant plus the window: {before} <= {rested} - 60 s <= {after}"
+    );
+    assert!(
+        rested > selected_by + 60 * SECOND_US,
+        "not the older hint's"
     );
     w.assert_consistent(second).await;
 }
@@ -703,4 +713,278 @@ async fn the_purge_keeps_a_short_grant_for_the_longest_period_its_window_has_see
         1
     );
     w.complete(&session, &task, &json!({})).await.expect("done");
+}
+
+// ------------------------------------------------------------------------------- the re-reviews of 2026-11-20 (D022-066)
+
+/// The namespace's rate-limit window rows (both scopes, every version).
+async fn window_rows(w: &World) -> i64 {
+    sqlx::query_scalar("SELECT count(*) FROM rate_limit_windows WHERE namespace_id = $1")
+        .bind(w.namespace.id().as_uuid())
+        .fetch_one(&w.db.pool)
+        .await
+        .expect("windows")
+}
+
+/// Architecture Blocker 1 and security Major 1 of the re-reviews (decision D022-066 item 1): a window row counts against
+/// `rate_limit_live_keys` until it goes, whether or not its grants still count, so a key whose slot aged out keeps its
+/// place: at the ceiling a new key is refused, and the aged key is decided as before on the row that exists (no row is
+/// added). Before, an aged window did not count, so a new key passed the ceiling and the aged one could be revived beyond it.
+#[tokio::test]
+async fn an_aged_window_counts_against_the_live_keys_ceiling_until_it_goes() {
+    let w = gated_world().await;
+    let workflow = publish(&w, rated_start("rate-aged", 1, "second")).await;
+    set(&w, QuotaResource::RateLimitLiveKeys, 1).await;
+    let first = w.start(workflow, &json!({"accountId": "acct-1"})).await;
+    let leased = start_slot(&w, first)
+        .await
+        .3
+        .expect("a run's slot counts from its grant");
+    // the slot no longer counts; the row is not one the purge may delete before its window and one minute more
+    until_past(&w.db.pool, leased + SECOND_US).await;
+    let new_key = w
+        .start_with(
+            workflow,
+            &json!({"accountId": "acct-2"}),
+            "rate-aged-new",
+            None,
+        )
+        .await;
+    assert_eq!(
+        refused(new_key),
+        FlowControlRefusal::Limit {
+            limit: "rate_limit_live_keys"
+        },
+        "the aged row still counts"
+    );
+    let again = w.start(workflow, &json!({"accountId": "acct-1"})).await;
+    let (grants, waiters, _, _) = start_slot(&w, again).await;
+    assert_eq!((grants, waiters), (1, 0), "granted on the row that exists");
+    assert_eq!(window_rows(&w).await, 1, "no row beyond the ceiling");
+    let usage = w
+        .quotas
+        .list(
+            &w.admin,
+            Some(w.namespace.id()),
+            &crate::support::engine::ctx(),
+        )
+        .await
+        .expect("usage");
+    let counted = usage
+        .iter()
+        .find(|row| row.resource == QuotaResource::RateLimitLiveKeys)
+        .expect("the resource's usage");
+    assert_eq!(
+        counted.used,
+        Some(1),
+        "the usage counts the rows the gate counts"
+    );
+    for run in [first, again] {
+        w.assert_consistent(run).await;
+    }
+}
+
+/// Decision D022-066 item 1: a decision that would be refused by `rate_limit_live_keys` first reclaims a window of its own
+/// namespace that no waiter and only grants the purge may delete keep (FR-022-056: its longest period and one minute
+/// after the lease, the purge's own predicate), and decides with the room that frees; the reclaimed window goes at the
+/// commit with its grant. The namespace never waits for the deployment-wide purge.
+#[tokio::test]
+async fn a_new_key_at_the_ceiling_reclaims_a_window_only_purgeable_grants_keep() {
+    let w = gated_world().await;
+    let workflow = publish(&w, rated_start("rate-reclaim", 1, "second")).await;
+    set(&w, QuotaResource::RateLimitLiveKeys, 1).await;
+    let first = w.start(workflow, &json!({"accountId": "acct-1"})).await;
+    let leased = start_slot(&w, first).await.3.expect("a lease instant");
+    until_past(&w.db.pool, leased + SECOND_US + 60 * SECOND_US).await;
+    let second = w.start(workflow, &json!({"accountId": "acct-2"})).await;
+    assert_eq!(
+        start_slot(&w, second).await.0,
+        1,
+        "granted: the aged window was reclaimed"
+    );
+    assert_eq!(
+        start_slot(&w, first).await.0,
+        0,
+        "the first's grant is gone"
+    );
+    assert_eq!(window_rows(&w).await, 1, "one row: the new key's");
+    for run in [first, second] {
+        w.assert_consistent(run).await;
+    }
+}
+
+/// OD-2026-11-20-11 (the owner, "Yes, extend it"): the rate live-keys count reads the committed window rows without a
+/// namespace lock, as the concurrency count does, so it misses only the keys other transactions of the same moment have
+/// created and not committed. With the ceiling at two, one key committed and one created by a transaction still in
+/// flight, a readiness round creates a second key (it counts one); once both commit the ceiling is passed by exactly the
+/// other transaction's key, and the next new key, which counts every committed row, is refused.
+#[tokio::test]
+async fn the_rate_live_keys_count_misses_only_the_keys_other_transactions_have_not_committed() {
+    let w = gated_world().await;
+    let workflow = publish(&w, rated_step("rate-overshoot", "provider", 1, "hour")).await;
+    set(&w, QuotaResource::RateLimitLiveKeys, 2).await;
+    let first = w.start(workflow, &json!({"accountId": "acct-1"})).await;
+    assert_eq!(window_rows(&w).await, 1);
+    // another transaction of the same moment has created a key of the namespace and not committed
+    let mut other = w.db.pool.begin().await.expect("a transaction");
+    sqlx::query(
+        "INSERT INTO rate_limit_windows (tenant_id, namespace_id, pool, limit_scope, group_name, key_digest, key_version, \
+                                        key_shard, updated_at) \
+         SELECT $1, $2, 'ORDINARY', 'STEP', 'provider', $3, active, 0, clock_timestamp() \
+           FROM flow_control_key_versions_in_force()",
+    )
+    .bind(w.admin.tenant_id().as_uuid())
+    .bind(w.namespace.id().as_uuid())
+    .bind(vec![0x42_u8; 32])
+    .execute(&mut *other)
+    .await
+    .expect("a key in flight");
+    let second = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        w.start(workflow, &json!({"accountId": "acct-2"})),
+    )
+    .await
+    .expect("the round takes no namespace lock");
+    other.commit().await.expect("the other key commits");
+    assert_eq!(
+        window_rows(&w).await,
+        3,
+        "the ceiling of two passed by exactly the other transaction's one key"
+    );
+    let third = w.start(workflow, &json!({"accountId": "acct-3"})).await;
+    let (status, code, attempt): (String, Option<String>, i32) = sqlx::query_as(
+        "SELECT status, failure_code, attempt FROM steps WHERE run_id = $1 AND node = 'g'",
+    )
+    .bind(third.as_uuid())
+    .fetch_one(&w.db.pool)
+    .await
+    .expect("the step");
+    assert_eq!(
+        (status.as_str(), code.as_deref(), attempt),
+        ("FAILED", Some("FLOW_CONTROL_LIMIT"), 0),
+        "every committed row is counted"
+    );
+    assert_eq!(window_rows(&w).await, 3, "no row for the refused key");
+    for run in [first, second, third] {
+        w.assert_consistent(run).await;
+    }
+    sqlx::query("DELETE FROM rate_limit_windows WHERE key_digest = $1")
+        .bind(vec![0x42_u8; 32])
+        .execute(&w.db.pool)
+        .await
+        .expect("the stand-in key goes");
+}
+
+/// Correctness Major 1 of the re-review (decision D022-066 item 2): a rest that waits for the window a grant in flight
+/// holds computes its hint after that grant commits. The grant's `least` leaves an already-due hint unchanged, so the
+/// rest's compare-and-set still matches; a single statement then counted from the snapshot it took before the grant
+/// committed and rested the window with no hint, and the waiter could only time out.
+#[tokio::test]
+async fn a_rest_that_waits_for_a_grant_in_flight_counts_that_grant() {
+    use sagat_application::maintenance::MaintenanceStore;
+
+    let w = gated_world().await;
+    let workflow = publish(&w, rated_start("rate-rest-race", 1, "second")).await;
+    let plain = publish(&w, document("rate-rest-plain", "g", vec![activity("g")])).await;
+    let first = w.start(workflow, &json!({"accountId": "acct-1"})).await;
+    let waiter = w.start(workflow, &json!({"accountId": "acct-1"})).await;
+    assert_eq!(start_slot(&w, waiter).await.1, 1, "it waits");
+    let leased = start_slot(&w, first).await.3.expect("a lease instant");
+    until_past(&w.db.pool, leased + SECOND_US).await;
+    // the key is due and nothing counts on it: the pass selects it (its hint, its instant)
+    let (shard, digest, hint): (i16, Vec<u8>, OffsetDateTime) = sqlx::query_as(
+        "UPDATE rate_limit_windows SET next_eligible_at = clock_timestamp() \
+          WHERE namespace_id = $1 AND group_name = 'accounts' RETURNING key_shard, key_digest, next_eligible_at",
+    )
+    .bind(w.namespace.id().as_uuid())
+    .fetch_one(&w.db.pool)
+    .await
+    .expect("the key made due");
+    let key = sagat_application::flow_control::GateKey {
+        tenant_id: w.admin.tenant_id(),
+        namespace_id: w.namespace.id(),
+        kind: sagat_domain::workflow::GateKind::RateLimit,
+        level: sagat_domain::workflow::GateLevel::Run,
+        group: sagat_domain::workflow::ResolvedGroup::parse("accounts").expect("a group"),
+        digest: digest.clone().try_into().expect("a digest"),
+        shard: u8::try_from(shard)
+            .ok()
+            .and_then(sagat_domain::sharding::Shard::new)
+            .expect("a shard"),
+        hint,
+        selected_at: hint,
+    };
+    // a grant in flight: the window locked, a slot granted to another run, the hint moved with `least` (unchanged)
+    let other = w.start(plain, &json!({})).await;
+    let mut grant = w.db.pool.begin().await.expect("a transaction");
+    sqlx::query(
+        "SELECT 1 FROM rate_limit_windows WHERE namespace_id = $1 AND group_name = 'accounts' FOR UPDATE",
+    )
+    .bind(w.namespace.id().as_uuid())
+    .execute(&mut *grant)
+    .await
+    .expect("the window held");
+    let granted: OffsetDateTime = sqlx::query_scalar("SELECT clock_timestamp()")
+        .fetch_one(&mut *grant)
+        .await
+        .expect("an instant");
+    sqlx::query(
+        "INSERT INTO rate_limit_grants (tenant_id, namespace_id, run_id, node, attempt, pool, limit_scope, group_name, \
+                                       key_digest, declared_limit, period_ms, granted_at, leased_at, shard) \
+         VALUES ($1, $2, $3, '', 0, 'ORDINARY', 'RUN', 'accounts', $4, 1, 1000, $5, $5, 0)",
+    )
+    .bind(w.admin.tenant_id().as_uuid())
+    .bind(w.namespace.id().as_uuid())
+    .bind(other.as_uuid())
+    .bind(&digest)
+    .bind(granted)
+    .execute(&mut *grant)
+    .await
+    .expect("a grant");
+    sqlx::query(
+        "UPDATE rate_limit_windows SET next_eligible_at = least(next_eligible_at, $2 + interval '1 second') \
+          WHERE namespace_id = $1 AND group_name = 'accounts'",
+    )
+    .bind(w.namespace.id().as_uuid())
+    .bind(granted)
+    .execute(&mut *grant)
+    .await
+    .expect("the hint moved");
+    let rest = tokio::spawn({
+        let store = w.store.clone();
+        async move { store.rest_gate_key(&key, None).await }
+    });
+    crate::support::bounded::within(
+        "the rest waiting for the window".to_owned(),
+        std::time::Duration::from_secs(30),
+        async {
+            loop {
+                let waiting: i64 = sqlx::query_scalar(
+                    "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() \
+                     AND wait_event_type = 'Lock' AND state = 'active' AND query LIKE '%rate_limit_windows%' \
+                     AND pid <> pg_backend_pid()",
+                )
+                .fetch_one(&w.db.pool)
+                .await
+                .expect("activity");
+                if waiting > 0 {
+                    return;
+                }
+                tokio::task::yield_now().await;
+            }
+        },
+    )
+    .await;
+    grant.commit().await.expect("the grant commits");
+    rest.await.expect("joined").expect("the rest");
+    assert_eq!(
+        hint_us(&w, waiter).await,
+        Some(us(granted) + SECOND_US),
+        "the window wakes when the grant in flight may first stop counting"
+    );
+    sqlx::query("DELETE FROM rate_limit_grants WHERE run_id = $1")
+        .bind(other.as_uuid())
+        .execute(&w.db.pool)
+        .await
+        .expect("the stand-in grant goes");
 }

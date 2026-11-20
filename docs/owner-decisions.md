@@ -4,6 +4,20 @@ Decisions that only the product owner could take, with what each one unblocks. E
 recorded where the open item lived (gap register, ADR, runbook or specification). "Not built"
 means the decision is taken and the implementation is still to be done; it is not evidence.
 
+## 2026-11-20 — Feature 022: the rate live-keys count
+
+The security re-review of feature 022's rate gate (pull request 237) asked in writing whether the owner's acceptance of
+an unlocked live-keys count, given for the concurrency keys, also covers the rate-limit keys. The coordinating session
+asked the owner: "Extend the acceptance of the unlocked live-keys count (OD-2026-11-19-4, OD-2026-11-20-3, concurrency
+only) to the rate keys? Yes: same documented bound (overshoot at most the number of transactions creating rate keys at
+the same moment), no namespace lock on rate-key creation. No: make it exact, at the cost of that lock." The owner
+answered on 2026-11-20: "Yes, extend it". The numbers OD-2026-11-20-8, -9 and -10 belong to an open governance pull
+request.
+
+| ID | Decision | Decided by | Status | Covers |
+|---|---|---|---|---|
+| OD-2026-11-20-11 | "Yes, extend it": the acceptance of OD-2026-11-19-4 and OD-2026-11-20-3 extends to `rate_limit_live_keys`. The count of a namespace's rate-limit window rows is read without a namespace lock, as the concurrency count is: transactions that create rate-limit keys at the same moment can pass the ceiling by at most the new keys the other transactions of that moment create (their number minus one when each creates one key). The bound is documented; no namespace lock is added to rate-key creation | owner | Decided; the bound is pinned by `rate_gate::the_rate_live_keys_count_misses_only_the_keys_other_transactions_have_not_committed` | specs/022-flow-control-step-policies/research.md G022-002, D022-066, docs/runbooks/flow-control.md section 4, specs/022-flow-control-step-policies/plan.md "Finite ceilings (rate limits)", data-model.md "Revision of 2026-11-20 (rate re-review)" |
+
 ## 2026-11-20 — The coordinating session decides the open questions until release 0.3.0
 
 The owner said: "Quero que fique no loop e não pare até terminar todo trabalho. Nas decisões avalie todas as

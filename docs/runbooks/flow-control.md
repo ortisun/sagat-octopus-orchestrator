@@ -89,7 +89,9 @@ expires.
    Wait for them, or cancel them through the API if the owner of each run agrees. Rate-limit rows drain by time: a
    run's grant and a leased step's grant are deleted by the housekeeping once their window row's longest period and one
    more minute have passed since the lease (section 6), and the window row goes with its last grant and waiter. Runs
-   listed only with `grants` are such rows: cancelling them changes nothing; wait for the purge.
+   listed only with `grants` are such rows: cancelling them changes nothing; wait for the purge. A key in continuous use
+   keeps its row under the retiring version (a decision reuses the row that exists): when its traffic never pauses for
+   its window row's longest period and one minute, the rotation ends only by the force of section 3.
 4. Once `SELECT * FROM flow_control_key_versions_in_force();` answers `retiring = NULL`, remove the old key from the
    rings at the next restart. The next activation records the old version `RETIRED`.
 
@@ -146,12 +148,13 @@ role of the session, the reason, the time). The table is append-only, and rollin
 has a row. The record is only as good as the roles: run the commands from your own login (not a shared owner login), and
 never change `flow_control_key_versions` by hand — a direct `UPDATE` retires a version with no record (G022-006).
 
-## 4. The live-keys ceiling is not exact under concurrency
+## 4. The live-keys ceilings are not exact under concurrency
 
-The namespace's `concurrency_live_keys` ceiling refuses a step whose key would be a new semaphore beyond it
-(`FLOW_CONTROL_LIMIT`, through the step's failure route, no attempt spent). Each deciding transaction counts the
-namespace's committed keys under the versions in force before it creates its own, without a namespace lock
-(OD-2026-11-19-4). So:
+The namespace's `concurrency_live_keys` ceiling refuses a step whose key would be a new semaphore beyond it, and its
+`rate_limit_live_keys` ceiling one whose key would be a new rate-limit window beyond it (`FLOW_CONTROL_LIMIT`, through
+the step's failure route, no attempt spent; a run's start is refused with nothing created). Each deciding transaction
+counts the namespace's committed key rows of that kind under the versions in force before it creates its own, without a
+namespace lock (OD-2026-11-19-4; for the rate-limit keys OD-2026-11-20-11). So, for each of the two ceilings:
 
 - transactions that create keys at the same moment can together pass the ceiling by at most the new keys the others
   create: at most their number minus one when each creates one key; a transaction that releases several gated steps
@@ -161,6 +164,14 @@ namespace's committed keys under the versions in force before it creates its own
   until they drain, and a key filed again is not refused for the row it replaces.
 
 While the count is above the ceiling, a step whose key is new is refused; keys that exist are decided as before.
+
+A run's start counts under the namespace's admission lock, so two starts never pass a ceiling together; a step's
+readiness round takes no such lock. A rate-limit window row stays while a waiter or a grant the purge must keep uses it
+(its window row's longest period and one more minute after the grant's lease), so a key used once counts for that long.
+When a new rate-limit key would pass the ceiling, the deciding transaction first deletes, in its own namespace, windows
+that no waiter and only grants the purge may delete keep (at most 64 grants each, never one another transaction holds),
+and decides with the room that frees; a namespace never waits for another tenant's purge backlog, except for a window of
+more than 64 grants (G022-018).
 
 ## 5. Queued runs (a run's start that waits for its permit)
 
@@ -181,9 +192,11 @@ the key would be new beyond `concurrency_live_keys` (`FLOW_CONTROL_LIMIT`). Each
 
 ## 6. Rate limits (T022-072, T022-074, T022-077)
 
-**Not in production before T022-080, T022-081, T022-086 and T022-104** (ADR-0088's fault suite and lock-order barriers;
-G022-016: a reset of a run whose start declares `rateLimit` is refused `BINARY_CAPABILITY_MISSING`, a retryable code no
-process of this build lifts; G022-015). Finish the rolling upgrade before setting any `rate_limit_*` limit (an older
+**Not in production before T022-079, T022-080, T022-081, T022-086 and T022-104, and gap G022-018** (ADR-0088's
+consistency check of the rate tables across runs, fault suite and lock-order barriers; G022-016: a reset of a run whose
+start declares `rateLimit` is refused `BINARY_CAPABILITY_MISSING`, a retryable code no process of this build lifts, so a
+pending reset of such a run is retried until it is cancelled; G022-015; G022-018: the deployment-wide purge scans every
+grant a call, in no order, and has no backlog gauge). Finish the rolling upgrade before setting any `rate_limit_*` limit (an older
 replica's quota listing refuses a name it does not know, G1192); rolling back migration `20270206000000` refuses while one
 is set.
 
@@ -203,7 +216,11 @@ A process with the ring lists `flow-control-rate-v1` beside the concurrency gate
   published benchmark), `rate_limit_per_minute` (6,000) or `rate_limit_per_hour` (10,000), by the declaration's window.
 - The housekeeping deletes a grant once its window row's longest period and one more minute have passed since its lease
   (`scheduler_actions_total{kind="rate_purge"}`), at most 64 keys and 500 grants a key a call, skipping a key another
-  transaction holds. A window whose grants all aged out no longer counts against `rate_limit_live_keys`, purged or not.
+  transaction holds. A window row counts against `rate_limit_live_keys` until it goes; a decision that needs room
+reclaims its own namespace's purgeable windows first (section 4). To see the backlog of a namespace: `SELECT count(*)
+FROM rate_limit_grants g JOIN rate_limit_windows w USING (tenant_id, namespace_id, pool, limit_scope, group_name,
+key_digest) WHERE g.namespace_id = '<namespace>' AND g.leased_at + make_interval(secs => w.max_period_ms / 1000.0 + 60)
+< clock_timestamp();`.
   A definition published later with a longer window on the same group and key (`RATE_LIMIT_MISMATCH` warns at
   publication) does not count the grants already deleted, so in its first window it may be admitted up to that many
   early (G022-017): give definitions that share a group the same window.

@@ -16,6 +16,7 @@ pub mod outbound;
 pub mod payload_disclosure;
 pub mod payload_inspection;
 pub mod primitives;
+pub mod rate_limits;
 pub mod resets;
 pub mod runner;
 pub mod schedules;

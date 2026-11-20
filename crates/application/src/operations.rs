@@ -709,7 +709,15 @@ impl<S: AlertReader + FlowControlKeyReader, C: Clock> OperationsService<S, C> {
         self.store
             .flow_control_key_ring()
             .zip(page.cursor_version)
-            .and_then(|(ring, version)| last.seal(ring, version, principal.tenant_id(), namespace))
+            .and_then(|(ring, version)| {
+                last.seal(
+                    crate::flow_control_keys::KeyListing::Concurrency,
+                    ring,
+                    version,
+                    principal.tenant_id(),
+                    namespace,
+                )
+            })
             .ok_or(AppError::Unavailable)
     }
 
@@ -724,6 +732,92 @@ impl<S: AlertReader + FlowControlKeyReader, C: Clock> OperationsService<S, C> {
     ) -> Option<KeyPosition> {
         KeyPosition::open(
             cursor,
+            crate::flow_control_keys::KeyListing::Concurrency,
+            self.store.flow_control_key_ring()?,
+            principal.tenant_id(),
+            namespace,
+        )
+    }
+
+    /// The rate-limit windows of a namespace (FR-022-048, T022-078), at most `limit` (one more than the page tells the
+    /// caller another page follows), with the protections of [`Self::concurrency_keys`]: a label only to a caller who may
+    /// reveal personal data in the namespace; for any other caller the oldest wait and the next slot's instant to the
+    /// minute (they equal or derive from the instants of the key's runs, D022-060, decision D022-067 item 6).
+    ///
+    /// # Errors
+    /// [`AppError::Forbidden`] without `ops:read`; [`AppError::NotFound`] for a namespace not in the caller's tenant
+    /// (audited); a storage error.
+    pub async fn rate_limit_keys(
+        &self,
+        principal: &Principal,
+        namespace: NamespaceId,
+        group: Option<&sagat_domain::workflow::ResolvedGroup>,
+        after: Option<&KeyPosition>,
+        limit: Option<u32>,
+        ctx: &RequestContext,
+    ) -> Result<crate::flow_control_keys::RateLimitKeyPage, AppError> {
+        principal.authorize(Permission::OpsRead)?;
+        require_namespace(&self.store, &self.clock, principal, namespace, ctx).await?;
+        let limit = limit.unwrap_or(50).clamp(1, MAX_PAGE_SIZE + 1);
+        let mut page = self
+            .store
+            .rate_limit_keys(principal.tenant_id(), namespace, group, after, limit)
+            .await?;
+        let reveal = self
+            .store
+            .reveals_personal_data(principal.tenant_id(), namespace, principal.subject())
+            .await?;
+        for key in &mut page.items {
+            if reveal {
+                key.label = Some(sagat_domain::execution::KeyLabel::of_digest(
+                    &key.position.digest,
+                ));
+            } else {
+                key.oldest_wait_since = key.oldest_wait_since.map(to_the_minute);
+                key.next_slot_at = key.next_slot_at.map(to_the_minute);
+            }
+        }
+        Ok(page)
+    }
+
+    /// The cursor of a rate-limit page, which ends with `last`, of that listing's own kind (decision D022-067 item 5).
+    ///
+    /// # Errors
+    /// [`AppError::Unavailable`] when this process does not hold the version that seals it.
+    pub fn rate_limit_key_cursor(
+        &self,
+        principal: &Principal,
+        namespace: NamespaceId,
+        page: &crate::flow_control_keys::RateLimitKeyPage,
+        last: &KeyPosition,
+    ) -> Result<String, AppError> {
+        self.store
+            .flow_control_key_ring()
+            .zip(page.cursor_version)
+            .and_then(|(ring, version)| {
+                last.seal(
+                    crate::flow_control_keys::KeyListing::RateLimit,
+                    ring,
+                    version,
+                    principal.tenant_id(),
+                    namespace,
+                )
+            })
+            .ok_or(AppError::Unavailable)
+    }
+
+    /// The position a cursor of this namespace's rate-limit listing names; `None` for anything else (a `400`), a
+    /// concurrency listing's cursor included.
+    #[must_use]
+    pub fn rate_limit_key_position(
+        &self,
+        principal: &Principal,
+        namespace: NamespaceId,
+        cursor: &str,
+    ) -> Option<KeyPosition> {
+        KeyPosition::open(
+            cursor,
+            crate::flow_control_keys::KeyListing::RateLimit,
             self.store.flow_control_key_ring()?,
             principal.tenant_id(),
             namespace,

@@ -1,6 +1,7 @@
-//! What an operator and a run's reader see of the live keys of flow control (feature 022, FR-022-022; T022-026): the
-//! run-level permit of one run (`Run.concurrency`) and the concurrency keys of a namespace with their holders, waiters
-//! and oldest ages (`GET /namespaces/{namespaceId}/concurrency-keys`).
+//! What an operator and a run's reader see of the live keys of flow control (feature 022, FR-022-022, FR-022-048;
+//! T022-026, T022-078): the run-level permit of one run (`Run.concurrency`) and its rate-limit slot (`Run.rateLimit`,
+//! with its position and estimate in a single-run read), and the concurrency keys and rate-limit windows of a namespace
+//! (`GET /namespaces/{namespaceId}/concurrency-keys` and `.../rate-limit-keys`; plan "Visibility of the rate gate").
 //!
 //! Both are read from the same rows the gate decides with (`concurrency_semaphores`, `concurrency_holders`,
 //! `concurrency_waiters`), so a run's permit and the listing of its key never disagree about what they read. A key is
@@ -13,7 +14,7 @@ use std::future::Future;
 
 use sagat_domain::execution::{GatePool, KeyLabel};
 use sagat_domain::identity::{NamespaceId, Subject, TenantId};
-use sagat_domain::workflow::{GateLevel, ResolvedGroup};
+use sagat_domain::workflow::{GateLevel, RatePeriod, ResolvedGroup};
 use time::OffsetDateTime;
 
 use crate::error::StoreError;
@@ -131,6 +132,169 @@ pub struct ConcurrencyKeyPage {
     pub cursor_version: Option<u16>,
 }
 
+/// The run-level rate-limit slot of a run as its rows say now (`Run.rateLimit`, FR-022-048, decision D022-067 item 1):
+/// granted while it counts (less than its window since its grant), or waited for until a queue deadline. `None` on a
+/// run whose definition declares no run-level `rateLimit`, and on one whose slot no longer counts or that no longer
+/// waits (timed out, dequeued): the journal keeps those facts. Its label is hidden until [`Self::reveal_label`], as a
+/// permit's; its position and estimate are set only by a single-run read ([`Self::place`]).
+#[derive(Clone, PartialEq, Eq)]
+pub struct RunRateSlot {
+    pub pool: GatePool,
+    pub group: ResolvedGroup,
+    pub state: RunPermitState,
+    /// The database clock of the statement that granted the slot or buffered the run.
+    pub since: OffsetDateTime,
+    /// The effective limit the row was decided with.
+    pub limit: u32,
+    pub per: RatePeriod,
+    /// The run's rank among the eligible waiters of its key (1 is next), in a single-run read of a waiting run.
+    pub position: Option<u32>,
+    /// When enough counted grants age out for that rank, or the read's instant when there is room; in a single-run read
+    /// of a waiting run, and `None` when it cannot be computed (D022-014).
+    pub estimated_grant_at: Option<OffsetDateTime>,
+    label: Option<KeyLabel>,
+    digest: [u8; 32],
+}
+
+impl RunRateSlot {
+    /// A slot as its rows say, its label hidden and its place unread.
+    #[must_use]
+    pub const fn new(
+        pool: GatePool,
+        group: ResolvedGroup,
+        digest: [u8; 32],
+        state: RunPermitState,
+        since: OffsetDateTime,
+        (limit, per): (u32, RatePeriod),
+    ) -> Self {
+        Self {
+            pool,
+            group,
+            state,
+            since,
+            limit,
+            per,
+            position: None,
+            estimated_grant_at: None,
+            label: None,
+            digest,
+        }
+    }
+
+    /// The key's label, if it was revealed to this reader.
+    #[must_use]
+    pub const fn label(&self) -> Option<&KeyLabel> {
+        self.label.as_ref()
+    }
+
+    /// Shows the key's label: for a caller who may reveal personal data in the run's namespace.
+    pub fn reveal_label(&mut self) {
+        self.label = Some(KeyLabel::of_digest(&self.digest));
+    }
+
+    /// Sets the place a single-run read computed for a waiting run.
+    pub fn place(&mut self, place: RatePlace) {
+        self.position = Some(place.position);
+        self.estimated_grant_at = place.estimated_grant_at;
+    }
+}
+
+/// Prints the key as its label only, revealed or not, never the digest (NFR-022-002: logs).
+impl std::fmt::Debug for RunRateSlot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RunRateSlot")
+            .field("pool", &self.pool)
+            .field("group", &self.group)
+            .field("state", &self.state)
+            .field("since", &self.since)
+            .field("limit", &self.limit)
+            .field("per", &self.per)
+            .field("position", &self.position)
+            .field("estimated_grant_at", &self.estimated_grant_at)
+            .field("label", &self.label)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Where a waiting run stands in its key's queue at one instant `t` (plan "Visibility of the rate gate", D022-014).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RatePlace {
+    /// `a + 1`, with `a` the waiters ahead of it that the pass visits (not past their deadline, their run live and not
+    /// paused, in the queue's order).
+    pub position: u32,
+    pub estimated_grant_at: Option<OffsetDateTime>,
+}
+
+/// The estimate of a waiter's grant from what one statement read at `t` (plan "Visibility of the rate gate"): `counted`
+/// its key's grants that count over its window `per` at `t`, `ahead` the eligible waiters ahead of it, `limit` its own
+/// limit, and `kth_lease` the lease instant of the `k`-th oldest counted grant for `k = counted + ahead - limit + 1`
+/// when `1 <= k <= counted`. The grant routine grants it when `counted + ahead < limit`; a grant to a waiter ahead moves
+/// one from `ahead` to `counted`, so the sum falls only when a counted grant ages out, at its lease plus `per` (the
+/// half-open window). `t` when `k <= 0` (room now), `None` when `k > counted` (beyond one window).
+#[must_use]
+pub fn estimated_grant(
+    t: OffsetDateTime,
+    (counted, ahead, limit): (u64, u64, u32),
+    kth_lease: Option<OffsetDateTime>,
+    per: RatePeriod,
+) -> Option<OffsetDateTime> {
+    let sum = counted.saturating_add(ahead);
+    if sum < u64::from(limit) {
+        return Some(t);
+    }
+    // k = sum - limit + 1, at least 1 here
+    let k = sum - u64::from(limit) + 1;
+    if k > counted {
+        return None;
+    }
+    kth_lease.map(|lease| lease + per.duration())
+}
+
+/// One rate-limit window row of a namespace, read without its lock at the page's instant (FR-022-048, D022-067).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RateLimitKeyView {
+    pub pool: GatePool,
+    pub scope: GateLevel,
+    pub group: ResolvedGroup,
+    /// `None` unless the reader may reveal personal data in the namespace; the service sets it.
+    pub label: Option<KeyLabel>,
+    /// Grants that count over the row's longest period: unleased, or leased less than that period ago.
+    pub grants_in_window: u32,
+    pub unleased_grants: u32,
+    pub waiters: u32,
+    pub oldest_wait_since: Option<OffsetDateTime>,
+    /// When somebody waits and no grant is unleased: the first instant a counted grant stops counting for one of the
+    /// waiters (each over its own window).
+    pub next_slot_at: Option<OffsetDateTime>,
+    /// Where a page that ends with this key resumes.
+    pub position: KeyPosition,
+}
+
+/// A page of rate-limit windows, oldest wait first, and the namespace's queued runs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RateLimitKeyPage {
+    pub items: Vec<RateLimitKeyView>,
+    pub queued_runs: u64,
+    /// The digest key version the database had active in the page's snapshot, which seals its cursor.
+    pub cursor_version: Option<u16>,
+}
+
+/// Which listing a key's place belongs to: the cursor of one is refused by the other (decision D022-067 item 5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyListing {
+    Concurrency,
+    RateLimit,
+}
+
+impl KeyListing {
+    const fn tag(self) -> &'static str {
+        match self {
+            Self::Concurrency => "k1",
+            Self::RateLimit => "r1",
+        }
+    }
+}
+
 /// The place of a key in the listing's order: oldest wait first (a key nobody waits for last), then pool, scope, group
 /// and digest, a total order since those five are the row's key within a namespace (D022-055).
 ///
@@ -161,8 +325,6 @@ impl std::fmt::Debug for KeyPosition {
     }
 }
 
-const CURSOR_VERSION: &str = "k1";
-
 impl KeyPosition {
     /// The cursor a caller is given: the position sealed for this namespace of this tenant under `version`, the digest
     /// key version the database has active. `None` when this process does not hold it (it cannot then hand out a
@@ -170,30 +332,32 @@ impl KeyPosition {
     #[must_use]
     pub fn seal(
         &self,
+        listing: KeyListing,
         ring: &KeyRing,
         version: u16,
         tenant: TenantId,
         namespace: NamespaceId,
     ) -> Option<String> {
-        ring.seal_cursor(version, tenant, namespace, self.encode().as_bytes())
+        ring.seal_cursor(version, tenant, namespace, self.encode(listing).as_bytes())
     }
 
     /// The position a cursor [`Self::seal`] wrote for this namespace of this tenant; `None` for anything else.
     #[must_use]
     pub fn open(
         text: &str,
+        listing: KeyListing,
         ring: &KeyRing,
         tenant: TenantId,
         namespace: NamespaceId,
     ) -> Option<Self> {
         let plain = ring.open_cursor(tenant, namespace, text)?;
-        Self::decode(std::str::from_utf8(&plain).ok()?)
+        Self::decode(std::str::from_utf8(&plain).ok()?, listing)
     }
 
-    /// The position's text before it is sealed.
-    fn encode(&self) -> String {
+    /// The position's text before it is sealed, tagged with its listing.
+    fn encode(&self, listing: KeyListing) -> String {
         let mut text = String::with_capacity(160);
-        text.push_str(CURSOR_VERSION);
+        text.push_str(listing.tag());
         text.push('.');
         match self.oldest_wait_us {
             Some(us) => {
@@ -213,9 +377,9 @@ impl KeyPosition {
     }
 
     /// Reads a position back; `None` for anything [`Self::encode`] did not write.
-    fn decode(text: &str) -> Option<Self> {
+    fn decode(text: &str, listing: KeyListing) -> Option<Self> {
         let mut parts = text.split('.');
-        if parts.next()? != CURSOR_VERSION {
+        if parts.next()? != listing.tag() {
             return None;
         }
         let since = parts.next()?;
@@ -283,6 +447,25 @@ pub trait FlowControlKeyReader {
         limit: u32,
     ) -> impl Future<Output = Result<ConcurrencyKeyPage, StoreError>> + Send;
 
+    /// The namespace's rate-limit windows after `after` (from the first when `None`), at most `limit`, optionally of one
+    /// group, with the namespace's queued runs (FR-022-048). Every label is `None`: the service decides who sees them.
+    fn rate_limit_keys(
+        &self,
+        tenant: TenantId,
+        namespace: NamespaceId,
+        group: Option<&ResolvedGroup>,
+        after: Option<&KeyPosition>,
+        limit: u32,
+    ) -> impl Future<Output = Result<RateLimitKeyPage, StoreError>> + Send;
+
+    /// Where the run-level rate-limit waiter of `run` stands now, read by one statement at one instant; `None` when the
+    /// run does not wait for a slot.
+    fn rate_place(
+        &self,
+        tenant: TenantId,
+        run: sagat_domain::execution::RunId,
+    ) -> impl Future<Output = Result<Option<RatePlace>, StoreError>> + Send;
+
     /// Whether `subject` may reveal personal data in the namespace now: its role in the tenant may use a reveal grant
     /// and it holds one for the namespace (feature 009's `payload:reveal-pii`). What a key's label needs (FR-022-057,
     /// D022-060). Read without a lock: a label is a pseudonym, not a disclosure that is audited.
@@ -327,13 +510,16 @@ mod tests {
             position(None, "=order-intake/charge"),
             position(Some(0), "=order-intake"),
         ] {
-            assert_eq!(KeyPosition::decode(&p.encode()), Some(p));
+            assert_eq!(
+                KeyPosition::decode(&p.encode(KeyListing::Concurrency), KeyListing::Concurrency),
+                Some(p)
+            );
         }
     }
 
     #[test]
     fn a_position_it_did_not_write_is_refused() {
-        let good = position(None, "payments").encode();
+        let good = position(None, "payments").encode(KeyListing::Concurrency);
         for bad in [
             String::new(),
             "k2".to_owned() + &good[2..],
@@ -356,7 +542,11 @@ mod tests {
             // a digest of the wrong length
             format!("k1.n.ORDINARY.RUN.{}.{}", "ab".repeat(31), hex(b"payments")),
         ] {
-            assert_eq!(KeyPosition::decode(&bad), None, "{bad}");
+            assert_eq!(
+                KeyPosition::decode(&bad, KeyListing::Concurrency),
+                None,
+                "{bad}"
+            );
         }
     }
 
@@ -367,7 +557,9 @@ mod tests {
         let ring = KeyRing::parse(RING).expect("ring");
         let (tenant, namespace) = (TenantId::generate(), NamespaceId::generate());
         let p = position(Some(1_763_640_000_123_456), "payments.eu");
-        let cursor = p.seal(&ring, 1, tenant, namespace).expect("sealed");
+        let cursor = p
+            .seal(KeyListing::Concurrency, &ring, 1, tenant, namespace)
+            .expect("sealed");
         assert!(!cursor.contains(&hex(&p.digest)), "{cursor}");
         assert!(!cursor.contains(&hex(&p.digest[..6])), "{cursor}");
         assert!(
@@ -377,19 +569,40 @@ mod tests {
             "{cursor}"
         );
         assert_eq!(
-            KeyPosition::open(&cursor, &ring, tenant, namespace),
+            KeyPosition::open(&cursor, KeyListing::Concurrency, &ring, tenant, namespace),
             Some(p.clone())
         );
         assert_eq!(
-            KeyPosition::open(&cursor, &ring, tenant, NamespaceId::generate()),
+            KeyPosition::open(
+                &cursor,
+                KeyListing::Concurrency,
+                &ring,
+                tenant,
+                NamespaceId::generate()
+            ),
             None
         );
         // the plain position a caller might forge is no cursor
         assert_eq!(
-            KeyPosition::open(&p.encode(), &ring, tenant, namespace),
+            KeyPosition::open(
+                &p.encode(KeyListing::Concurrency),
+                KeyListing::Concurrency,
+                &ring,
+                tenant,
+                namespace
+            ),
             None
         );
-        assert_eq!(p.seal(&KeyRing::default(), 1, tenant, namespace), None);
+        assert_eq!(
+            p.seal(
+                KeyListing::Concurrency,
+                &KeyRing::default(),
+                1,
+                tenant,
+                namespace
+            ),
+            None
+        );
         // what is printed carries the label at most, never the digest
         assert!(!format!("{p:?}").contains(&hex(&p.digest)));
     }
@@ -415,10 +628,14 @@ mod tests {
             group,
             digest: [0xff; 32],
         };
-        assert!(p.encode().len() <= crate::keyed_digest::MAX_CURSOR_PLAIN_BYTES);
-        let cursor = p.seal(&ring, 1, tenant, namespace).expect("sealed");
+        assert!(
+            p.encode(KeyListing::Concurrency).len() <= crate::keyed_digest::MAX_CURSOR_PLAIN_BYTES
+        );
+        let cursor = p
+            .seal(KeyListing::Concurrency, &ring, 1, tenant, namespace)
+            .expect("sealed");
         assert_eq!(
-            KeyPosition::open(&cursor, &ring, tenant, namespace),
+            KeyPosition::open(&cursor, KeyListing::Concurrency, &ring, tenant, namespace),
             Some(p)
         );
     }

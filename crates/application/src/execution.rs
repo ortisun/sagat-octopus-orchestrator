@@ -714,6 +714,10 @@ pub struct RunRecord {
     /// by `get` and `list` from the holder and waiter rows; `None` for a run that neither holds nor waits, and for a
     /// record loaded inside a command transaction.
     pub concurrency: Option<crate::flow_control_keys::RunPermit>,
+    /// The run-level rate-limit slot the run holds while it counts or waits for now (feature 022, `Run.rateLimit`,
+    /// T022-078). Read by `get` and `list` from the grant and waiter rows; its place only by a single-run read. `None` for
+    /// a run that neither holds a counting slot nor waits, and for a record loaded inside a command transaction.
+    pub rate_limit: Option<crate::flow_control_keys::RunRateSlot>,
 }
 
 /// Which schedule started a run, for which nominal time, by which kind of action and under which

@@ -1958,7 +1958,8 @@ impl RunStore for PgRunStore {
                     start_delayed_until, schedule_id, schedule_nominal_at, schedule_action_kind, \
                     schedule_revision, reset_sequence, \
                     seg_chain_id, seg_index, seg_completion, seg_successor, \
-                    cc_state, cc_pool, cc_group, cc_key, cc_since, cc_deadline \
+                    cc_state, cc_pool, cc_group, cc_key, cc_since, cc_deadline, \
+                    rl_state, rl_pool, rl_group, rl_key, rl_since, rl_deadline, rl_limit, rl_period \
              FROM runs LEFT JOIN LATERAL ( \
                SELECT chain_id AS seg_chain_id, segment_index AS seg_index, \
                       completion_kind AS seg_completion, successor_run_id AS seg_successor \
@@ -1966,6 +1967,7 @@ impl RunStore for PgRunStore {
                WHERE chain_segments.tenant_id = runs.tenant_id \
                  AND chain_segments.run_id = runs.id) segment ON true",
             crate::flow_control::run_permit_lateral_sql!(),
+            crate::flow_control::run_rate_lateral_sql!(),
             "WHERE runs.tenant_id = $1 AND runs.namespace_id = $2 \
                AND ($3::uuid IS NULL OR runs.id < $3) \
                AND ($4::uuid IS NULL OR runs.workflow_id = $4) \
@@ -2326,6 +2328,9 @@ impl RunStore for PgRunStore {
                         Some("LOOP") => Some("loop"),
                         Some("APPROVAL") => Some("approval"),
                         Some("COLLECTION") => Some("collection"),
+                        // feature 022 (T022-078, decision D022-067 item 7): the gate the step's row waits for, rate first
+                        Some("RATE_LIMIT") => Some("rate_limit"),
+                        Some("CONCURRENCY") => Some("concurrency"),
                         _ => None,
                     },
                     child_run: col::<Option<Uuid>>(row, "child_run_id")?.map(RunId::new),
@@ -2481,7 +2486,8 @@ const RUN_SELECT: &str = concat!(
      trace_parent_span, rerun_of, origin, business_id, start_delayed_until, \
      schedule_id, schedule_nominal_at, schedule_action_kind, schedule_revision, reset_sequence, \
      seg_chain_id, seg_index, seg_completion, seg_successor, \
-     cc_state, cc_pool, cc_group, cc_key, cc_since, cc_deadline \
+     cc_state, cc_pool, cc_group, cc_key, cc_since, cc_deadline, \
+                    rl_state, rl_pool, rl_group, rl_key, rl_since, rl_deadline, rl_limit, rl_period \
      FROM runs LEFT JOIN LATERAL ( \
        SELECT chain_id AS seg_chain_id, segment_index AS seg_index, \
               completion_kind AS seg_completion, successor_run_id AS seg_successor \
@@ -2489,6 +2495,7 @@ const RUN_SELECT: &str = concat!(
        WHERE chain_segments.tenant_id = runs.tenant_id AND chain_segments.run_id = runs.id) segment \
      ON true",
     crate::flow_control::run_permit_lateral_sql!(),
+    crate::flow_control::run_rate_lateral_sql!(),
     "WHERE runs.tenant_id = $1 AND runs.id = $2"
 );
 
@@ -2632,6 +2639,7 @@ pub(crate) fn run_record(row: &PgRow) -> Result<RunRecord, StoreError> {
             .map(|code| FailureCode::parse(&code).map_err(|_| corrupt("stop code")))
             .transpose()?,
         concurrency: crate::flow_control::run_permit(row)?,
+        rate_limit: crate::flow_control::run_rate_slot(row)?,
     })
 }
 
