@@ -1366,15 +1366,10 @@ impl QuotaStore for PgRunStore {
             .bind(namespace)
             .fetch_one(&self.pool)
             .await,
-            // the windows of both scopes that a waiter or a grant that can still count keeps (T022-077), as the gate
-            // counts them before it creates one (it also leaves out the rows of a forcibly retired digest version)
+            // the window rows of both scopes (T022-077, decision D022-066 item 1), as the gate counts them before it creates
+            // one; like the semaphores' usage, every digest version (the gate leaves out a forcibly retired one's rows)
             QuotaResource::RateLimitLiveKeys => sqlx::query_scalar(
-                "SELECT count(*) FROM rate_limit_windows w WHERE w.tenant_id = $1 AND w.namespace_id = $2 \
-                 AND (w.waiters > 0 OR EXISTS (SELECT 1 FROM rate_limit_grants g \
-                   WHERE g.tenant_id = w.tenant_id AND g.namespace_id = w.namespace_id AND g.pool = w.pool \
-                     AND g.limit_scope = w.limit_scope AND g.group_name = w.group_name AND g.key_digest = w.key_digest \
-                     AND (g.leased_at IS NULL \
-                          OR g.leased_at + make_interval(secs => w.max_period_ms / 1000.0) > clock_timestamp())))",
+                "SELECT count(*) FROM rate_limit_windows WHERE tenant_id = $1 AND namespace_id = $2",
             )
             .bind(tenant.as_uuid())
             .bind(namespace)

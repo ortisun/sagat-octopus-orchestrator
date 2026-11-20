@@ -1636,3 +1636,115 @@ async fn a_process_without_the_digest_keys_refuses_a_reset_and_decides_no_releas
     assert_eq!(start_rows(&w, delayed).await, (0, 0));
     w.assert_consistent(delayed).await;
 }
+
+/// Gap G022-016, a release gate (decision D022-066 item 5; architecture Major 2 of the re-review): until task T022-086
+/// builds `RATE_LIMIT_SLOT_UNAVAILABLE` and the reset rules of the `rate_limit.*` events, a reset of a run whose start
+/// declares `rateLimit` is refused `BINARY_CAPABILITY_MISSING` with nothing created, synchronous or pending; the pending
+/// entry stays pending (no process of this build completes it), which is why the runbook forbids production activation
+/// before that task. Pins the interim refusal so that dropping it (a permit's refusal, or a grant) fails here.
+#[tokio::test]
+async fn a_reset_of_a_rate_limited_start_is_refused_until_its_rules_are_built() {
+    use sagat_application::reset_completion::ResetCompleter;
+    use sagat_application::runs::ResetSourcePolicy;
+
+    let w = Arc::new(gated_world().await);
+    let mut doc = document(
+        "creators-rate-reset",
+        "a",
+        vec![with(activity("a"), "next", json!("b")), activity("b")],
+    );
+    doc["rateLimit"] =
+        json!({"group": "accounts", "key": "input.accountId", "limit": 100, "per": "hour"});
+    let workflow = publish(&w, doc).await;
+    let completer = ResetCompleter::new(
+        w.store.clone(),
+        Completions(Arc::clone(&w)),
+        PgIdentityStore::new(w.db.pool.clone()),
+        sagat_application::clock::SystemClock,
+    );
+    let session = w.session(&["act.a", "act.b"]).await;
+
+    // a synchronous reset of an ended source
+    let source = w.start(workflow, &json!({"accountId": "acct-1"})).await;
+    assert_eq!(complete_all(&w, "act.a").await, 1);
+    assert_eq!(complete_all(&w, "act.b").await, 1);
+    assert_eq!(w.run_status(source).await, RunStatus::Succeeded);
+    // the reset rules of the `rate_limit.*` events are task T022-086's: the source's start, its first event, is a point
+    let first_point = |points: Vec<sagat_application::runs::ResetPointInfo>| {
+        points
+            .first()
+            .expect("the source's start is a point")
+            .sequence
+    };
+    let start_point = first_point(
+        w.runs
+            .reset_points(&w.admin, source, &ctx())
+            .await
+            .expect("points"),
+    );
+    let runs_before = runs_of(&w, workflow).await.len();
+    let refused = w
+        .runs
+        .reset(
+            &w.admin,
+            source,
+            reset_request(start_point),
+            &idempotency(),
+            &ctx(),
+        )
+        .await
+        .expect_err("refused until task T022-086");
+    assert_eq!(
+        refused,
+        AppError::FlowControl(FlowControlRefusal::BinaryCapabilityMissing)
+    );
+    assert_eq!(
+        runs_of(&w, workflow).await.len(),
+        runs_before,
+        "nothing is created"
+    );
+
+    // a pending reset of a source in flight: once its source ends, its completion is refused the same way and it stays
+    let open = w.start(workflow, &json!({"accountId": "acct-2"})).await;
+    let a = w.one_task_of(&session, "act.a").await;
+    w.complete(&session, &a, &json!({})).await.expect("a");
+    let b = w.one_task_of(&session, "act.b").await;
+    let point = first_point(
+        w.runs
+            .reset_points(&w.admin, open, &ctx())
+            .await
+            .expect("points"),
+    );
+    let mut request = reset_request(point);
+    request.source_policy = ResetSourcePolicy::CancelSource;
+    let made = w
+        .runs
+        .reset(&w.admin, open, request, &idempotency(), &ctx())
+        .await
+        .expect("a pending reset");
+    assert!(made.run.is_none(), "it waits for its source");
+    w.complete(&session, &b, &json!({})).await.expect("b");
+    assert!(w.run_status(open).await.is_terminal());
+    let runs_before = runs_of(&w, workflow).await.len();
+    let due = sagat_application::reset_completion::DueReset {
+        tenant_id: w.admin.tenant_id(),
+        id: made.reset.id,
+    };
+    assert_eq!(
+        completer.step(&due, None).await,
+        Err(AppError::FlowControl(
+            FlowControlRefusal::BinaryCapabilityMissing
+        ))
+    );
+    let (state, reason, new_run) = reset_entry(&w, made.reset.id).await;
+    assert_eq!(
+        (state.as_str(), reason.as_deref(), new_run),
+        ("PENDING_SOURCE", None, None),
+        "the entry stays pending"
+    );
+    assert_eq!(
+        runs_of(&w, workflow).await.len(),
+        runs_before,
+        "nothing is created"
+    );
+}

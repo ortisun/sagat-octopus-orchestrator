@@ -550,6 +550,11 @@ async fn the_tenant_view_has_no_single_usage_for_a_per_namespace_resource() {
             (QuotaResource::ConcurrencyLimit, false),
             (QuotaResource::FlowControlQueueTimeoutMs, false),
             (QuotaResource::FlowControlNodeDeclarations, false),
+            // feature 022, task T022-077: the rate-limit ceilings are per namespace (plan "Finite ceilings (rate limits)")
+            (QuotaResource::RateLimitLiveKeys, false),
+            (QuotaResource::RateLimitPerSecond, false),
+            (QuotaResource::RateLimitPerMinute, false),
+            (QuotaResource::RateLimitPerHour, false),
         ]
     );
     let used = tenant_view
@@ -607,6 +612,11 @@ async fn the_tenant_view_has_no_single_usage_for_a_per_namespace_resource() {
             (QuotaResource::ConcurrencyLimit, None),
             (QuotaResource::FlowControlQueueTimeoutMs, None),
             (QuotaResource::FlowControlNodeDeclarations, None),
+            // feature 022, task T022-077: the window rows are counted; the three window limits are policies
+            (QuotaResource::RateLimitLiveKeys, Some(0)),
+            (QuotaResource::RateLimitPerSecond, None),
+            (QuotaResource::RateLimitPerMinute, None),
+            (QuotaResource::RateLimitPerHour, None),
         ]
     );
 }

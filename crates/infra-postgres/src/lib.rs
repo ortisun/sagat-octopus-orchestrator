@@ -6,6 +6,24 @@
 
 use sqlx::migrate::Migrator;
 
+/// The predicate of a rate-limit grant (alias `$g`, its window row `$w`) that the purge may delete at the instant `$now`
+/// (FR-022-056: once its window row's longest period and one minute more have passed since its lease; exactly at that
+/// instant it is kept). One text for the purge (transaction T25) and for a decision's reclaim of its namespace's windows
+/// (decision D022-066 item 1), so the purge's boundary test holds for both.
+macro_rules! purgeable_grant {
+    ($g:literal, $w:literal, $now:literal) => {
+        concat!(
+            $g,
+            ".leased_at IS NOT NULL AND ",
+            $g,
+            ".leased_at + make_interval(secs => ",
+            $w,
+            ".max_period_ms / 1000.0 + 60) < ",
+            $now
+        )
+    };
+}
+
 mod api_admission;
 mod approval_progress;
 mod approval_scheduler;

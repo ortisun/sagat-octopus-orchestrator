@@ -148,7 +148,9 @@ pub trait MaintenanceStore: Send + Sync {
 
     /// Clears the next-eligible hint of `key` when it is still the one the pass read and `holder` (when given) still holds
     /// the key's home shard: a pass that could grant none of its waiters leaves the key to the next release, queue, pause
-    /// or resume, which sets the hint again (early, never late); a window rests until its oldest counted grant ages out.
+    /// or resume, which sets the hint again (early, never late); a window rests until the first instant a grant counted
+    /// at the key's `selected_at` may stop counting for one of its waiters, computed after the window is locked
+    /// (decision D022-066 items 2 and 3).
     fn rest_gate_key(
         &self,
         key: &crate::flow_control::GateKey,
@@ -157,8 +159,11 @@ pub trait MaintenanceStore: Send + Sync {
 
     /// Feature 022 (transaction T23, T022-074): copies the lease instant of the attempt a slot was granted for onto the granted,
     /// unleased step grants of the run shards of `window` (at most `window.limit` a shard): the instant of that attempt's
-    /// `step.leased`, journaled after the grant (D022-029), or the grant's own instant when later. Locks the grant rows
-    /// only (no run, no window: the key's hint never waits for it, D022-021). Returns how many it recorded.
+    /// `step.leased`, journaled after the grant (D022-029), or the grant's own instant when later. Its one statement locks
+    /// the grant rows only (no run, no window: the key's hint never waits for it, D022-021); after it commits, each
+    /// recorded window's hint is lowered to the lease plus the shortest window its waiters count over, one window a
+    /// statement, so no transaction of it holds a grant row and waits for a window (decision D022-065 item 2). Returns
+    /// how many it recorded.
     fn record_rate_leases(
         &self,
         window: &Window,

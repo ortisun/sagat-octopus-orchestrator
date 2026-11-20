@@ -33,6 +33,9 @@ use crate::flow_control::{
 
 /// The longest a gate projection of one step may be (two slots of a 130-character group).
 const MAX_PROJECTION_BYTES: usize = 1024;
+/// The most grants a window may hold for a decision to reclaim it (decision D022-066 item 1): the reclaim deletes them in
+/// the deciding transaction, so its work is bounded; a window of more waits for the purge (gap G022-018).
+const RECLAIM_GRANTS: i32 = 64;
 
 /// One gate of one step or of the run's start, as this transaction decides it: the one shape both levels are decided
 /// in ([`PgRunTx::decide_filed`], G022-012).
@@ -534,11 +537,22 @@ impl PgRunTx {
             if new_keys.is_empty() {
                 continue;
             }
-            let live = self.live_keys(table, versions).await?;
+            let mut live = self.live_keys(table, versions).await?;
             let ceiling = match table {
                 KeyTable::Semaphores => ceilings.live_keys,
                 KeyTable::Windows => ceilings.rate_live_keys,
             };
+            // a window row the namespace's purge backlog keeps makes room for the keys of this round (D022-066 item 1)
+            let lacking = u64::try_from(new_keys.len())
+                .unwrap_or(u64::MAX)
+                .saturating_add(live)
+                .saturating_sub(ceiling);
+            if table == KeyTable::Windows && lacking > 0 {
+                let wanted = usize::try_from(lacking)
+                    .unwrap_or(usize::MAX)
+                    .min(new_keys.len());
+                live = live.saturating_sub(self.reclaim_windows(wanted, versions, keys).await?);
+            }
             let room = usize::try_from(ceiling.saturating_sub(live)).unwrap_or(usize::MAX);
             let admitted = &new_keys[..new_keys.len().min(room)];
             for (node, id) in new_of_step {
@@ -614,16 +628,12 @@ impl PgRunTx {
                 "SELECT count(*) FROM concurrency_semaphores WHERE tenant_id = $1 AND namespace_id = $2 \
                  AND key_version = ANY($3)"
             }
-            // a window counts while a waiter or a grant that can still count keeps it: one whose grants all aged out is
-            // only waiting for the purge, which another tenant's backlog may delay (security review Major 1 of 2026-11-20)
+            // every window row, as the semaphores: a row whose grants aged out still counts until it goes, and a decision that
+            // lacks room reclaims its own namespace's purgeable windows first (`reclaim_windows`), so no namespace waits
+            // for another tenant's purge backlog and the rows stay bounded by the ceiling (decision D022-066 item 1)
             KeyTable::Windows => {
-                "SELECT count(*) FROM rate_limit_windows w WHERE w.tenant_id = $1 AND w.namespace_id = $2 \
-                 AND w.key_version = ANY($3) \
-                 AND (w.waiters > 0 OR EXISTS (SELECT 1 FROM rate_limit_grants g \
-                   WHERE g.tenant_id = w.tenant_id AND g.namespace_id = w.namespace_id AND g.pool = w.pool \
-                     AND g.limit_scope = w.limit_scope AND g.group_name = w.group_name AND g.key_digest = w.key_digest \
-                     AND (g.leased_at IS NULL \
-                          OR g.leased_at + make_interval(secs => w.max_period_ms / 1000.0) > clock_timestamp())))"
+                "SELECT count(*) FROM rate_limit_windows WHERE tenant_id = $1 AND namespace_id = $2 \
+                 AND key_version = ANY($3)"
             }
         };
         let live: i64 = sqlx::query_scalar(statement)
@@ -634,6 +644,102 @@ impl PgRunTx {
             .await
             .map_err(store_error)?;
         Ok(u64::try_from(live).unwrap_or(u64::MAX))
+    }
+
+    /// Reclaims, for a decision that lacks room under `rate_limit_live_keys`, at most `wanted` windows of this namespace
+    /// that no waiter and only grants the purge may delete keep (decision D022-066 item 1; FR-022-056's boundary, the
+    /// purge's own predicate), under the digest versions in force, each of at most [`RECLAIM_GRANTS`] grants and none of
+    /// `own` (the keys the decision files, under either digest). Returns how many go at the commit: their grants are
+    /// deleted here and `rate_limit_window_prune` deletes each window then. The windows are locked `SKIP LOCKED`, so the
+    /// reclaim never waits and adds no lock order; their grants are read again by a second statement, whose snapshot is
+    /// taken under those locks (a grant is written only under its window's lock), so a window granted since the first
+    /// statement's snapshot is kept.
+    async fn reclaim_windows(
+        &mut self,
+        wanted: usize,
+        versions: sagat_application::keyed_digest::KeyVersions,
+        own: &[KeyToFile],
+    ) -> Result<u64, StoreError> {
+        if wanted == 0 {
+            return Ok(0);
+        }
+        let in_force: Vec<i16> = std::iter::once(versions.active)
+            .chain(versions.retiring)
+            .map(|v| i16::try_from(v).map_err(|_| corrupt("digest key version")))
+            .collect::<Result<_, _>>()?;
+        let (mut own_groups, mut own_digests) = (Vec::new(), Vec::new());
+        for key in own {
+            for digest in
+                std::iter::once(&key.candidates.active).chain(key.candidates.retiring.as_ref())
+            {
+                own_groups.push(key.group.as_str().to_owned());
+                own_digests.push(digest.as_bytes().to_vec());
+            }
+        }
+        let locked: Vec<(String, String, String, Vec<u8>)> = sqlx::query_as(concat!(
+            "SELECT w.pool, w.limit_scope, w.group_name, w.key_digest FROM rate_limit_windows w \
+              WHERE w.tenant_id = $1 AND w.namespace_id = $2 AND w.key_version = ANY($3) AND w.waiters = 0 \
+                AND w.live_grants BETWEEN 1 AND $6 \
+                AND NOT EXISTS (SELECT 1 FROM unnest($4::text[], $5::bytea[]) AS k(g, d) \
+                                 WHERE k.g = w.group_name AND k.d = w.key_digest) \
+                AND NOT EXISTS (SELECT 1 FROM rate_limit_grants g \
+                                 WHERE g.tenant_id = w.tenant_id AND g.namespace_id = w.namespace_id AND g.pool = w.pool \
+                                   AND g.limit_scope = w.limit_scope AND g.group_name = w.group_name \
+                                   AND g.key_digest = w.key_digest AND NOT (",
+            purgeable_grant!("g", "w", "clock_timestamp()"),
+            ")) ORDER BY w.updated_at LIMIT $7 FOR UPDATE SKIP LOCKED"
+        ))
+        .bind(self.info.tenant_id.as_uuid())
+        .bind(self.info.namespace_id.as_uuid())
+        .bind(&in_force)
+        .bind(&own_groups)
+        .bind(&own_digests)
+        .bind(RECLAIM_GRANTS)
+        .bind(i64::try_from(wanted).unwrap_or(i64::MAX))
+        .fetch_all(&mut *self.tx)
+        .await
+        .map_err(store_error)?;
+        if locked.is_empty() {
+            return Ok(0);
+        }
+        let (mut pools, mut scopes, mut groups, mut digests) =
+            (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        for (pool, scope, group, digest) in locked {
+            pools.push(pool);
+            scopes.push(scope);
+            groups.push(group);
+            digests.push(digest);
+        }
+        let reclaimed: i64 = sqlx::query_scalar(concat!(
+            "WITH v AS ( \
+               SELECT w.tenant_id, w.namespace_id, w.pool, w.limit_scope, w.group_name, w.key_digest \
+                 FROM unnest($3::text[], $4::text[], $5::text[], $6::bytea[]) AS k(pool, scope, g, d) \
+                 JOIN rate_limit_windows w ON w.tenant_id = $1 AND w.namespace_id = $2 AND w.pool = k.pool \
+                  AND w.limit_scope = k.scope AND w.group_name = k.g AND w.key_digest = k.d \
+                WHERE w.waiters = 0 \
+                  AND NOT EXISTS (SELECT 1 FROM rate_limit_grants g \
+                                   WHERE g.tenant_id = w.tenant_id AND g.namespace_id = w.namespace_id \
+                                     AND g.pool = w.pool AND g.limit_scope = w.limit_scope \
+                                     AND g.group_name = w.group_name AND g.key_digest = w.key_digest AND NOT (",
+            purgeable_grant!("g", "w", "clock_timestamp()"),
+            "))), \
+             gone AS ( \
+               DELETE FROM rate_limit_grants g USING v \
+                WHERE g.tenant_id = v.tenant_id AND g.namespace_id = v.namespace_id AND g.pool = v.pool \
+                  AND g.limit_scope = v.limit_scope AND g.group_name = v.group_name AND g.key_digest = v.key_digest \
+               RETURNING 1) \
+             SELECT count(*) FROM v"
+        ))
+        .bind(self.info.tenant_id.as_uuid())
+        .bind(self.info.namespace_id.as_uuid())
+        .bind(&pools)
+        .bind(&scopes)
+        .bind(&groups)
+        .bind(&digests)
+        .fetch_one(&mut *self.tx)
+        .await
+        .map_err(store_error)?;
+        Ok(u64::try_from(reclaimed).unwrap_or(0))
     }
 
     /// The holders (or the grants that count for `gate`'s window) and the waiters of a key, read once per key and
@@ -1198,7 +1304,11 @@ impl PgRunTx {
             {
                 continue;
             }
-            let live = self.live_keys(table, versions).await?;
+            let mut live = self.live_keys(table, versions).await?;
+            if table == KeyTable::Windows && ceilings.admits_rate_key(live).is_err() {
+                // the start's one window: a row the namespace's purge backlog keeps makes room (D022-066 item 1)
+                live = live.saturating_sub(self.reclaim_windows(1, versions, keys_of).await?);
+            }
             match table {
                 KeyTable::Semaphores => ceilings.admits_key(live),
                 KeyTable::Windows => ceilings.admits_rate_key(live),
@@ -1446,7 +1556,7 @@ pub(super) async fn window_due_after_grant(
 ) -> Result<(), StoreError> {
     sqlx::query(
         "UPDATE rate_limit_windows w \
-            SET next_eligible_at = least(coalesce(w.next_eligible_at, 'infinity'::timestamptz), \
+            SET next_eligible_at = least(w.next_eligible_at, \
                     $6 + make_interval(secs => (SELECT min(x.period_ms) FROM rate_limit_waiters x \
                                                  WHERE x.tenant_id = w.tenant_id AND x.namespace_id = w.namespace_id \
                                                    AND x.pool = w.pool AND x.limit_scope = w.limit_scope \

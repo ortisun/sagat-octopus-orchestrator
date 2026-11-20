@@ -283,6 +283,9 @@ pub struct GateKey {
     pub digest: [u8; 32],
     pub shard: sagat_domain::sharding::Shard,
     pub hint: time::OffsetDateTime,
+    /// The instant of the statement that selected the key: at or after its hint, at or before every count its pass makes,
+    /// so a rest computed from it is early and never late (decision D022-066 item 3).
+    pub selected_at: time::OffsetDateTime,
 }
 
 impl std::fmt::Debug for GateKey {
@@ -299,6 +302,7 @@ impl std::fmt::Debug for GateKey {
             )
             .field("shard", &self.shard)
             .field("hint", &self.hint)
+            .field("selected_at", &self.selected_at)
             .finish()
     }
 }
@@ -333,6 +337,7 @@ mod tests {
             digest,
             shard: sagat_domain::sharding::Shard::new(3).expect("a shard"),
             hint: time::OffsetDateTime::UNIX_EPOCH,
+            selected_at: time::OffsetDateTime::UNIX_EPOCH,
         };
         let printed = format!("{key:?}");
         assert!(printed.contains("a0a1a2a3a4a5"), "the label: {printed}");
