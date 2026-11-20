@@ -14,8 +14,8 @@ use std::time::Duration;
 use sagat_application::error::StoreError;
 use sagat_application::execution::MAX_RUN_OUTPUT_BYTES;
 use sagat_application::maintenance::{
-    EndedChild, LeaseLoss, LostLease, MaintenanceStore, OutboxDue, OutboxMessage, OutboxStore,
-    PendingChild, PendingContinuation, RunRef, StepRef, Window,
+    BatchPurged, EndedChild, LeaseLoss, LostLease, MaintenanceStore, OutboxDue, OutboxMessage,
+    OutboxStore, PendingChild, PendingContinuation, RunRef, StepRef, Window,
 };
 use sagat_domain::execution::{Fence, InstancePath, RunId};
 use sagat_domain::identity::TenantId;
@@ -24,7 +24,7 @@ use sqlx::postgres::PgRow;
 use uuid::Uuid;
 
 use crate::execution::PgRunStore;
-use crate::identity::{col, corrupt, store_error};
+use crate::identity::{col, corrupt, store_error, store_error_without_text};
 
 fn micros(duration: Duration) -> i64 {
     i64::try_from(duration.as_micros()).unwrap_or(i64::MAX)
@@ -920,6 +920,24 @@ impl MaintenanceStore for PgRunStore {
         Ok(u64::try_from(removed).unwrap_or(0))
     }
 
+    async fn purge_batch_jobs(&self, jobs: u32, rows: u32) -> Result<BatchPurged, StoreError> {
+        // the runtime role may not delete a job or an item; it may run this bounded function, which removes
+        // only a job that has finished and whose retention has passed, with its items, and never more than it
+        // is given. The error is read without its text: the statement works over the selector and the reason
+        // of a job, which are customer text, and the message of a database error can quote a value.
+        let (removed_jobs, removed_items): (i64, i64) =
+            sqlx::query_as("SELECT jobs_removed, items_removed FROM batch_jobs_purge($1, $2)")
+                .bind(i32::try_from(jobs).unwrap_or(i32::MAX))
+                .bind(i32::try_from(rows).unwrap_or(i32::MAX))
+                .fetch_one(self.pool())
+                .await
+                .map_err(store_error_without_text)?;
+        Ok(BatchPurged {
+            jobs: u64::try_from(removed_jobs).unwrap_or(0),
+            items: u64::try_from(removed_items).unwrap_or(0),
+        })
+    }
+
     async fn purge_sessions(&self) -> Result<u64, StoreError> {
         // Kept for an hour after expiry so a late report still finds its session's identity.
         sqlx::query("DELETE FROM worker_sessions WHERE expires_at < now() - interval '1 hour'")
@@ -1075,5 +1093,31 @@ impl OutboxStore for PgRunStore {
                 .await
                 .map_err(store_error)?;
         Ok(u64::try_from(n).unwrap_or(0))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use sagat_application::batch::MIN_RETENTION;
+
+    /// The purge of batch jobs keeps a job for `MIN_RETENTION` after it ended, and the number is written twice: in the constant the
+    /// service stamps windows with and in the SQL of `batch_jobs_purge`. The integration suites that prove it run on a release, not on
+    /// every pull request, so this one reads the text of the migration: a change of either side fails here (D2326, G2322).
+    #[test]
+    fn the_sql_of_the_purge_keeps_a_job_for_the_least_retention_the_service_stamps() {
+        let sql = include_str!("../migrations/20270119000000_batch_purge.up.sql");
+        let wanted = format!(
+            "j.finished_at < now() - interval '{} days'",
+            MIN_RETENTION.whole_days()
+        );
+        assert_eq!(
+            MIN_RETENTION.whole_seconds() % 86_400,
+            0,
+            "the SQL names whole days"
+        );
+        assert!(
+            sql.contains(&wanted),
+            "the migration does not hold `{wanted}` for MIN_RETENTION"
+        );
     }
 }

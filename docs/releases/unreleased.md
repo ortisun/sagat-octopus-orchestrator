@@ -87,6 +87,24 @@ fail up to ten rounds early, because an older engine does not reset the count), 
 that is still selecting has failed rounds on record. A cancel now brings the slot of the job back to the database's clock (a service whose clock ran ahead made a cancel wait),
 and the error of a selection round is logged as its SQLSTATE and not as text.
 
+## Batch operations: finished jobs and their items are purged after their retention (feature 018)
+
+Until now nothing removed a batch job or its items: the plan, the migration and the runbook said they were kept for 30 days (at most 90), `expiresAt` was
+stamped on every job and nothing acted on it, so `batch_jobs` and `batch_items` only grew (G2317). The migration `20270119000000_batch_purge` adds one bounded
+database function, `batch_jobs_purge`, which the housekeeping of every engine now calls: a job that has **finished** (`COMPLETED`, `CANCELLED`, `FAILED`), whose
+`expiresAt` has passed and which ended **at least 14 days ago** goes with its items; a job that has not finished, or is inside its window, never does. The service
+now stamps a window of at least 14 days (it was one day, and nothing used it; the default stays 30 and the ceiling 90). A purged job answers `404` like an id that never
+existed. `expiresAt` means "not removed before", not "removed at": a job that ended after its own window is kept for 14 days after it ended, so it outlives its window and, for a
+90-day job that ends late, the 90 days (an owner question, O1958, is pending). **What a purge does not remove is the payload of a `SIGNAL` or `UPDATE` job**: it stays in `payloads`
+and stays charged to the tenant, until feature 020's registry collects it (G2325); the job's own selector and reason are given back. There is no new route, setting, SDK surface or OpenAPI change. For an operator: **apply the migration before the engines that purge** (an engine with the
+purge against an older schema warns `could not purge batch jobs` with `sqlstate=42883` and counts `batch_purge_failures_total`, and nothing else is affected);
+**the first housekeeping pass after the upgrade removes the whole backlog** of jobs that ended more than their window ago (up to about 100,000 rows a pass, in calls
+of at most 5,000 rows), so expect `batch_purged_total{kind}` to climb and `batch_items` to shrink over several passes (a pass calls the function again while a call used its bounds, up to 100 calls or 20 seconds);
+the new alert `SagatBatchPurgeFailing` fires when a call failed in the last hour, and a failure at every pass means the job with the oldest window cannot be removed and **blocks the purge of every other
+tenant's jobs** until it is fixed (runbook section 6.1, G2323); the index the function reads takes a short `SHARE`
+lock on `batch_jobs` while it is built (build it `CONCURRENTLY` first on a large table: the migration finds it, the runbook has the recipe); the rollback drops the function and the index and loses no job
+([batch runbook](../runbooks/batch-operations.md#6-how-long-a-job-is-kept-and-how-it-goes)).
+
 ## Breaking: event detail values require an explicit reveal
 
 `getInboxEvent` omits `data` by default. `getConnectorDeadLetter` omits `body` and `headers` by

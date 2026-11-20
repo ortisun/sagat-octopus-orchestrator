@@ -12,6 +12,7 @@ mod audit_rollback;
 mod batch;
 mod batch_item_transaction;
 mod batch_locks;
+mod batch_purge;
 mod batch_selection;
 mod batch_thousand;
 mod business_ids;

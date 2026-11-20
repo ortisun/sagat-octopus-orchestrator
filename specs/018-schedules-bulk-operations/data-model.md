@@ -286,6 +286,15 @@ Index `(shard, next_slot_at) WHERE state IN ('SELECTING','RUNNING','CANCELLING')
 Items do not reference `runs` by foreign key, so a run purged by a future retention policy does not
 block item retention; the item keeps the identifier only.
 
+**Retention (T018-051, the purge half; G2317, D2324 to D2327, migration `20270119000000_batch_purge`).** The runtime role has no `DELETE` on either table;
+`batch_jobs_purge(p_jobs integer, p_rows integer) RETURNS TABLE (jobs_removed bigint, items_removed bigint)` is a `SECURITY DEFINER` function it may run. It takes
+one job at a time, the oldest `expires_at` first (`batch_jobs_purge_idx (expires_at, tenant_id, id) WHERE state IN ('COMPLETED','CANCELLED','FAILED')`), with
+`FOR UPDATE SKIP LOCKED`, among the jobs that have finished, whose `expires_at` has passed and whose `finished_at` is more than 14 days old (the database's `now()`,
+never a service clock). The items of the job go first, by `(tenant_id, job_id, ordinal)`, in a chunk of at most the rows the call has left; the row of the job goes
+last, in the call that has a row left for it, so a call that the bound cuts short leaves a finished job with the items it has left and the next call goes on with it.
+The function holds its own ceilings (1,000 jobs and 100,000 rows a call), and the pass calls it again while a call used a bound, up to 100 calls or 20 seconds. A call is one transaction: a crash leaves the tables as the call before it left them. **The payload of a `SIGNAL` or `UPDATE` job (`payload_digest`, `batch_jobs_payload_fk`) is not removed** with the job: `payloads` is content-addressed and collected by feature 020's registry (G2316, G2325), so the row stays and stays charged; `batch_items` hold no payload. The charge of the selector and the reason is given back by the
+`batch_jobs_quota_delta` trigger in the same transaction (ADR-0027). The quota of active jobs counts only the jobs that are active, so a purge never moves it.
+
 ### `run_resets`
 
 `(tenant_id, id)` PK; `namespace_id`, `source_run_id` (FK runs), `source_sequence bigint`,
@@ -346,7 +355,7 @@ on the run row only).
 | Schedule actions | last 1,000 or 30 days per schedule; `BUFFERED` always | maintenance, bounded |
 | Deleted schedule tombstone | 30 days after the last action purge | maintenance |
 | Business-id bindings | until `finished_at + window` of a terminal holder | maintenance, bounded |
-| Batch jobs and items | `expires_at` (30 d default, 90 d max) after terminal | maintenance, one job per transaction |
+| Batch jobs and items | a job that has finished (`COMPLETED`, `CANCELLED`, `FAILED`) is kept until `expires_at` (stamped at creation: 30 d default, 14 d at least, 90 d at most) and for at least 14 d after it ended; a job that has not finished is never purged; the items go with their job (D2324 to D2327) | maintenance: `batch_jobs_purge(p_jobs, p_rows)` (migration `20270119000000`), bounded: at most 100 jobs and 5,000 rows a call, the items first in chunks and the job row last, oldest window first, `FOR UPDATE SKIP LOCKED` |
 | Run resets | with the new run (no separate purge in this feature) | — (G42/G69 decide run retention) |
 
 Purges release charged content bytes in the same transaction (ADR-0027).

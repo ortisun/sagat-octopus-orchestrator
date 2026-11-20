@@ -65,6 +65,12 @@ the canonical `Error.code` the single action returned. Batch job `failureReason`
 `AUTHORITY_REVOKED`, `SELECTION_FAILED` (the platform could not select the runs: the eleventh selection round in a row
 failed, G2093; the read says the reason and nothing of the rounds, the count or the cause).
 
+A batch job **after its retention** is not an error of its own: a job is purged once it has finished, its `expiresAt` has passed and it
+ended at least 14 days ago (T018-051, D2325), and the read of the job, its items and its cancellation then answer `404 NOT_FOUND` with
+no reason, exactly as an id that never existed (a foreign resource is `NOT_FOUND` without a reason). `expiresAt` means "not removed
+before", not "removed at": the job still reads, with its own counters, until the purge reaches it, and a job whose purge a call cut short
+reads with the items it has left. No code or reason is added.
+
 Schedule action `reason`: `TRACKING_LIMIT`, `VERSION_MISSING`, `ADMISSION_REFUSED`, `AUTHORITY_REVOKED`,
 `BUSINESS_ID_IN_USE` (the outcome `BUSINESS_ID_CONFLICT` under `FAIL`, and `ALREADY_ACTED` with the holder as `runId` under
 `USE_EXISTING`) and `BUSINESS_ID_REUSE_REJECTED` (the outcome `BUSINESS_ID_CONFLICT` when a closed holder inside its reuse window and the

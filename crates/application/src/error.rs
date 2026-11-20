@@ -111,6 +111,29 @@ pub enum StoreError {
 }
 
 impl StoreError {
+    /// The kind of the error as one of a fixed set of words, never its text or its detail: what a log may say of a failed statement
+    /// besides its SQLSTATE when the statement runs over customer text (the purge of batch jobs). The `match` is exhaustive, so a
+    /// variant added to the error needs its word.
+    #[must_use]
+    pub const fn kind(&self) -> &'static str {
+        match self {
+            Self::DatabaseUnavailable => "database_unavailable",
+            Self::DatabaseLimit => "database_limit",
+            Self::RevealGrantRequired => "reveal_grant_required",
+            Self::LakeRefused { .. } => "lake_refused",
+            Self::StateConflict(_) => "state_conflict",
+            Self::Conflict(_) => "conflict",
+            Self::MissingReference => "missing_reference",
+            Self::RevisionConflict { .. } => "revision_conflict",
+            Self::IdempotencyKeyReused => "idempotency_key_reused",
+            Self::QuotaExceeded { .. } => "quota_exceeded",
+            Self::Unavailable { .. } => "unavailable",
+            Self::Internal { .. } => "internal",
+            Self::UnreadableDefinition => "unreadable_definition",
+            Self::BusinessIdHeld { .. } => "business_id_held",
+        }
+    }
+
     /// The SQLSTATE of a failure that a store reported by it and by nothing else of the error: five upper-case letters and digits
     /// (`57014` a statement over its timeout, `40P01` a deadlock), written by the adapter as `sqlstate:XXXXX` in `detail`
     /// (G2094, D2203). It is the one thing of the error of a selection round that may be logged: the text of a database error can
@@ -380,7 +403,64 @@ impl From<StoreError> for AppError {
 }
 #[cfg(test)]
 mod tests {
-    use super::StoreError;
+    use super::{ConflictKind, StoreError};
+
+    /// What a log says of a failed statement besides its SQLSTATE is the kind of the error, one of a fixed set of words and never its
+    /// text (the purge of batch jobs, whose statements run over customer text). Every variant has its word, the words are distinct, and
+    /// none holds the detail of the error. Catches: a kind that is the text of an error, two kinds that read alike, and a variant added
+    /// without a word (the `match` of `kind` is exhaustive).
+    #[test]
+    fn every_kind_of_error_has_one_closed_word_and_never_its_text() {
+        let canary = "a value the database quoted";
+        let all = [
+            (StoreError::DatabaseUnavailable, "database_unavailable"),
+            (StoreError::DatabaseLimit, "database_limit"),
+            (StoreError::RevealGrantRequired, "reveal_grant_required"),
+            (StoreError::StateConflict(canary), "state_conflict"),
+            (StoreError::Conflict(ConflictKind::TenantSlug), "conflict"),
+            (StoreError::MissingReference, "missing_reference"),
+            (
+                StoreError::RevisionConflict { current: 3 },
+                "revision_conflict",
+            ),
+            (StoreError::IdempotencyKeyReused, "idempotency_key_reused"),
+            (StoreError::QuotaExceeded { what: canary }, "quota_exceeded"),
+            (
+                StoreError::Unavailable {
+                    detail: canary.to_owned(),
+                },
+                "unavailable",
+            ),
+            (
+                StoreError::Internal {
+                    detail: canary.to_owned(),
+                },
+                "internal",
+            ),
+            (StoreError::UnreadableDefinition, "unreadable_definition"),
+            (
+                StoreError::LakeRefused {
+                    node: canary.to_owned(),
+                    refusal: sagat_domain::database::LakeRefusal::Egress(Vec::new()),
+                },
+                "lake_refused",
+            ),
+            (
+                StoreError::BusinessIdHeld {
+                    reason: canary,
+                    holder: uuid::Uuid::nil(),
+                    reusable_after: None,
+                },
+                "business_id_held",
+            ),
+        ];
+        let mut seen = std::collections::BTreeSet::new();
+        for (error, word) in &all {
+            assert_eq!(error.kind(), *word, "{error:?}");
+            assert!(seen.insert(*word), "{word} names two kinds");
+            assert!(!error.kind().contains(canary));
+        }
+    }
 
     /// The one thing of the error of a selection round that may be logged is its SQLSTATE, and only as the closed code the adapter
     /// writes: five upper-case letters and digits after `sqlstate:`. Any other text, however it is dressed, is nothing (G2094, D2203).
