@@ -60,9 +60,11 @@ Facts of the code that shape the change:
    `STOP_CAPTURE` or its session's capture is off. The carry holds the attempt's final mark; `AppendStepLogs` carries none, and
    stays, unchanged in its checks, for the records of a long step. `Heartbeat` carries no records.
 2. A report without a carry MUST cost what it costs today: no additional statement, transaction or row. A carrying report MUST add
-   no transaction and exactly one statement, one round trip: a call of the database function `sagat_step_log_carry`, which tries
+   no transaction to the report and exactly one statement to it, one round trip (revised 2026-11-20, decision D041-120: before
+   the report the store may run ADR-0097's ensure, a transaction of its own under no run lock, when its writer's lease is
+   short of the planned charge; it is counted apart from the report's budget): a call of the database function `sagat_step_log_carry`, which tries
    the locks, reads the policy, writes the stream and the kept lines and their counters (OD-2026-11-20-1). The step-log rows are
-   charged once per insert statement (ADR-0027's proposed amendment of 2026-11-20), to one of the tenant's exact leases
+   charged once per insert statement (ADR-0027's proposed amendment of 2026-11-20), to its writer's own exact lease
    (ADR-0097, Proposed), never to the usage row at the commit. These are equalities of the hot-path budget
    (constitution, CI gates), beside the existing ones, tested at every call site; since the function's writes are not top-level
    statements, the budget counts them by a second measure from the step-log tables.
@@ -73,7 +75,8 @@ Facts of the code that shape the change:
    the rule, and a property test requires the two to plan alike. A carry needs no session: the report's own checks (lease, binding and membership under their locks)
    apply, and a carry MUST be ignored when the caller's role is runner or database-runner or the step is a managed step, as the
    ingest refuses them.
-4. A carry MUST NOT change a report's outcome, output or retry, nor its timing beyond its statements and decision 5's re-run,
+4. A carry MUST NOT change a report's outcome, output or retry, nor its timing beyond its statements, ADR-0097's ensure
+   before the report and its fallback refill's budget (each a bounded delay that never fails the report), and decision 5's re-run,
    with one exception: decision 5's re-run is fenced as any report, so it is refused, and the worker told so, when between the
    failed transaction and the re-run the lease expired or was reclaimed, a cancel was requested, the run began to stop (for a
    forward step) or finished, or the worker's binding or membership was revoked.
@@ -83,8 +86,9 @@ Facts of the code that shape the change:
 5. A refusal of the carry's own charge (ADR-0097: `tenant_step_log_quota_exceeded` or `tenant_step_log_quota_held`, raised
    at its insert) MUST be answered inside the carry's call (revised 2026-11-20, D041-112, D041-113, D041-117). Before any
    write the carry reserves its own lease with room for its planned charge; with one it writes with no subtransaction,
-   and its charge cannot be refused. Without one, its writes run in one `BEGIN … EXCEPTION` block that catches only those
-   two refusals (by constraint name), re-raising anything else, and records a mark-only final mark (the records counted `tenant_quota`) in the same call: a new stream
+   and its charge cannot be refused. Without one, its writes run in one `BEGIN … EXCEPTION` block that catches those two
+   refusals (by constraint name) and the `55P03` of a fallback refill past its budget, re-raising anything else, and records
+   a mark-only final mark (the records counted `tenant_quota`, or `tenant_quota_busy` for the budget) in the same call: a new stream
    inserted, an existing one taken again `SKIP LOCKED` and updated, `contended` only when that row is held. When the report's
    transaction fails because of its carry otherwise, the report MUST be recorded by a re-run of the report with the
    carry downgraded: after a raise of a guard of the step-log quota that the block does not catch (or on the fast path,
@@ -92,8 +96,9 @@ Facts of the code that shape the change:
    meet the content-quota fallback once, so a report runs at most four transactions. The two causes MUST reach the re-run as values of their own, never as an ordinary unavailability, which the
    server never re-runs. A fallback refill that waits for the usage row past its budget (ADR-0097 decisions 3b and 4,
    D041-119) MUST NOT fail the report: the carry's block answers it in the same call with a mark-only final mark whose
-   reason is `tenant_quota_busy`, counted and alerted, and the report lands. Item 1 of ADR-0027's Amendment then reads "a step-log charge never blocks a terminal state: a report whose step-log rows
-   do not fit is recorded by a re-run without them". A report whose output or failure code holds a declared secret, root or
+   reason is `tenant_quota_busy`, counted and alerted, and the report lands. When the ensure before the report answered
+   that the quota is full or held, the carry answers mark-only at once, without a refill. Item 1 of ADR-0027's Amendment then reads "a step-log charge never blocks a terminal state: a report whose step-log rows
+   do not fit records them as dropped in the same call, and only a guard the call does not answer leads to a re-run without them". A report whose output or failure code holds a declared secret, root or
    scoped, and a report re-run for its retained content, write a mark-only carry.
 6. Within an attempt, stored lines MUST stay in sequence order under the read order of ADR-0084 decision 9 (storing transaction
    id, then sequence). The stream row records the highest id of a transaction that stored a line of it (`last_stored_xid`, never
@@ -107,7 +112,7 @@ Facts of the code that shape the change:
    stream row and a refill's usage row under its lock timeout. A carrying report MUST NOT wait for a step-log lock: it tries
    the fences (the class fences included), the stream lock and the stream row, takes its own lease only `SKIP LOCKED`, and
    when one is held it writes nothing more and the report commits (revised 2026-11-20, D041-112); a refill's usage row is
-   the one lock it waits for, at most ADR-0097's bound, and no holder of that row waits for anything the carry holds
+   the one lock it waits for, each acquisition at most ADR-0097's budget, and no holder of that row waits for anything the carry holds
    (D041-117). A change of a step-log resource takes only its own fence.
 8. The SDK MUST send the report only after its in-flight `AppendStepLogs` call has answered, or after a wait of at most 2
    seconds; a short step (no flush before its report, and its records fit one carry) makes no `AppendStepLogs` call and no wait.
@@ -146,7 +151,7 @@ only for a fallback refill, waited for at most 200 ms; the store's ensure before
 is a transaction of its own under no run lock); a report that
 also stores output takes the usage row at its commit for the content class, as today. Spike T041-35 measures it. Part of a rule (the carry's plan) runs in SQL, kept equal
 to the domain's by a property test. A carry that finds a step-log lock held stores nothing (`contended`), so a rare contention loses that attempt's last
-lines. A carry whose transaction fails costs one or two more report transactions, and a re-run can be refused as a late report
+lines. A carry whose transaction fails costs up to three more report transactions, and a re-run can be refused as a late report
 would be. A report of a client that negotiated below 1.7 may carry records,
 and they are stored (G041-001 already covers a client that does not redact).
 

@@ -230,7 +230,7 @@ StepLogStream:
     bytes: {type: integer, description: 'worker only: text bytes stored (UTF-8 octets of message, exception and fields; the tenant quota charges 128 more per line)'}
     droppedByWorker: {type: integer, description: 'worker only: sequences the worker numbered and never stored'}
     droppedByServer: {type: integer}
-    ceiling: {type: [string, 'null'], enum: [attempt_records, attempt_bytes, tenant_quota, tenant_quota_busy, null], description: 'Why the server dropped records: an attempt ceiling, the tenant quota (full, or its last room held by other writers in flight), or tenant_quota_busy (the quota had room but could not be granted within its 200 ms budget; design 041 section 2b, D041-119).'}
+    ceiling: {type: [string, 'null'], enum: [attempt_records, attempt_bytes, tenant_quota, tenant_quota_busy, null], description: 'Why the server dropped records: an attempt ceiling, the tenant quota (full, or its last room held by other writers in flight), or tenant_quota_busy (the quota could not be checked within its 200 ms budget: the log service was busy, not the tenant quota; design 041 section 2b, decisions D041-119 and D041-120).'}
     firstAt: {type: [string, 'null'], format: date-time}
     lastAt: {type: [string, 'null'], format: date-time}
     expiresAt: {type: [string, 'null'], format: date-time, description: 'worker: the last recorded batch or carry plus the retention the stream took when it was created; script: the execution expiry.'}

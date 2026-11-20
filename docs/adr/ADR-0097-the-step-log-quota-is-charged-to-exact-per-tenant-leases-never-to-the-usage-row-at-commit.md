@@ -5,7 +5,8 @@
 D041-112, D041-117 (the lease owned by its writer) and D041-119 (room made before the report, a fallback refill
 bounded by a budget); adopted by the coordinating session on 2026-11-20. Acceptance (D041-115): README rule 4 requires a person to accept, and
 the delegation does not stand in for that; the coordinating session puts this ADR to the owner with a recommendation once
-design 041's re-review has no Blocker or Major and T041-35's fourth run, which measures this ADR's text, is recorded,
+design 041's re-review has no Blocker or Major and task T041-35's fourth run, which measures decisions 1 to 4 and 5 to
+8 on the leases (decision 3b, the ensure, is measured by task T041-9), is recorded (question O041-042),
 whatever that run's result (this decision rests on D041-106's ceiling and on D041-116's diagnoses, not on the 1 × 16
 gate), together with the restated O041-040
 **Refines / supersedes:** would supersede, when accepted:
@@ -19,8 +20,14 @@ gate), together with the restated O041-040
   commit-time finalizer's raise" (a batch now charges a lease at its insert, takes the usage row only for a refill, and
   is refused at its insert), and the ingest's reading of decision 11 (the class fences at the insert, a lease, the usage
   row on a refill);
-- in [ADR-0095](ADR-0095-the-last-step-log-records-of-an-attempt-ride-on-its-report.md), nothing it states for the carry
-  except where its charge goes (ADR-0095, revised with this ADR, catches its own charge's refusal in the same call).
+- in [ADR-0084](ADR-0084-step-logs-are-a-bounded-lossy-per-attempt-record-beside-the-journal.md) decision 7 ("MUST NOT
+  fail, block, retry or delay a step beyond one bounded final flush"): a report may also wait for the ensure of decision
+  3b (a transaction of its own, under no run lock, with its own budget) and for the fallback refill of decision 4 (each
+  lock acquisition at most 200 ms); both are bounded delays, and neither fails, blocks or retries a step;
+- in [ADR-0095](ADR-0095-the-last-step-log-records-of-an-attempt-ride-on-its-report.md), decision 2 (a carrying report
+  adds no transaction: it may add the ensure, before the report and under no run lock), decision 4 (a carry may delay a
+  report by the ensure and the fallback's budget) and decision 5 (the carry's block also answers a fallback past its
+  budget, in the same call), revised with this ADR.
 
 On acceptance ADR-0027 and ADR-0084 are marked "partly superseded by ADR-0097". The content and log classes, their deltas
 and their finalizer are unchanged.
@@ -28,8 +35,8 @@ and their finalizer are unchanged.
 [design 041](../designs/041-step-logs.md): the invariant tests of decision 2, the held-lock tests of decisions 3 to 6
 (held transactions and `pg_stat_activity`, never sleeps) and a property test over random interleavings of charges,
 refills, reclaims, releases and limit changes, the runtime-role bypass tests of ADR-0027 extended to the lease table, the
-new column and the functions, and a source-text check that only the refill, the release branch and the limit change lock
-`tenant_retained_usage` for the class `step_log` (T041-5); the lock-order test with slots for L3 and the lease (T041-6,
+new column and the functions, and a source-text check that only the ensure, the refill, the release branch, the idle reclaim
+and the limit change lock `tenant_retained_usage` for the class `step_log` (T041-5); the lock-order test with slots for L3 and the lease (T041-6,
 T041-10, T041-36); the budget lines of design 041 sections 2b and 2a (T041-6, T041-36). Until then, the prototype
 `step_log_spike::install_leases` and its tests in `tests/performance/scalability-ha/step_log_leases_tests.rs` (run by
 hand with `cargo test -p sagat-tests --test perf_scalability_ha --features perf-spike leases_tests`; they prove
@@ -69,16 +76,22 @@ ADR-0095 decision 4).
    charged_at timestamptz)` holds one lease per tenant and server backend that charges for it, keyed by
    `pg_backend_pid()` (a foreign key to the tenant's usage row, `ON DELETE CASCADE`; fill factor 50). A backend runs one
    transaction at a time, so a writer's lease is never locked by another writer, behind a transaction pooler too (the
-   key is the server backend, not the client connection); a pid reused after a backend ends inherits that lease's room,
-   which is counted in G either way (D041-117). The purge pass folds and deletes, one tenant a transaction, every lease
-   not charged for 10 minutes (the pools' idle timeout), holding the step-log fence shared (tried; a tenant whose
-   fence is held is skipped) and then the usage row, leases `SKIP LOCKED`; a tenant's lease rows are then at most the
-   backends that charged for it within 10 minutes;
+   key is the server backend, not the client connection, though the ensure of decision 3b needs session affinity); a
+   pid reused after a backend ends inherits that lease's room, which is counted in G either way (decision D041-117). The
+   purge pass folds and deletes, one tenant a transaction, every lease not charged for 10 minutes (the pools' idle
+   timeout) and every lease whose backend has ended (its pid absent from `pg_stat_activity`), holding the step-log fence
+   shared (tried; a tenant whose fence is held is skipped) and then the usage row, leases `SKIP LOCKED`; it finds those
+   tenants through a definer function that returns only their ids; a tenant's lease rows are then at most the backends
+   that charged for it within 10 minutes;
    `tenant_retained_usage` gains `step_log_leased_bytes` (G). With S its `step_log_bytes` (the folded usage, which MAY be
    negative), the tenant's step-log usage is U = S + Σ `used` and its leased room is R = Σ (`granted` − `used`). The
-   runtime role MUST have no privilege on the lease table, the new column's writes or the functions, revoked explicitly;
-   only `SECURITY DEFINER` functions of ADR-0027's pattern (fixed `search_path = pg_catalog, pg_temp`, every name
-   schema-qualified, trusted owner, `REVOKE ALL … FROM PUBLIC` and `FROM sagat_app`) read or write them.
+   runtime role MUST have no privilege on the lease table, the new column's writes or the counter sequences, revoked
+   explicitly; only `SECURITY DEFINER` functions of ADR-0027's pattern (fixed `search_path = pg_catalog, pg_temp`, every
+   name schema-qualified, trusted owner, `REVOKE ALL … FROM PUBLIC`) read or write them. Of those, the runtime role may
+   execute exactly `sagat_quota_step_log_reserve`, `sagat_quota_step_log_ensure`, `sagat_quota_step_log_usage`,
+   `sagat_quota_step_log_counters`, `sagat_quota_step_log_idle_tenants` and `sagat_quota_step_log_reclaim_idle`; the
+   charge, the refill, its budget function and the limit-change trigger function are revoked from it; the privilege
+   audit checks exactly this list (design 041, NFR-041-SEC).
 2. **Invariants**, each checked by a constraint or a test: (I1) 0 ≤ `used` ≤ `granted` on every lease (a `CHECK`); (I2) at
    every commit G = Σ `granted` of the tenant's leases, both written only by a transaction holding the usage row; (I3)
    G ≥ 0 (a `CHECK`) and U ≥ 0 (checked by every release); (I4) a grant commits only with S + G ≤ L after it, L the
@@ -97,20 +110,32 @@ ADR-0095 decision 4).
    cannot be refused and needs no
    subtransaction (ADR-0095 decision 5). The planned charge MUST bound what the trigger will measure: every sent record's
    `sagat_quota_measure` sizes plus 128 a row, plus 128 for a possible marker, computed before CC for either stream case.
-3b. **Room made before the report** (D041-119). Before it opens a report transaction that will carry, the store MUST
-   make sure the writer's lease of the report's tenant has room for the planned charge: when the room the previous carry
-   on that connection returned (or nothing, for the connection's first carry of the tenant) is less, it calls
-   `sagat_quota_step_log_ensure(tenant, planned)` in a transaction of its own on the same connection, so on the same
-   backend, holding no run lock; the ensure takes the step-log fence shared and refills the writer's lease (decision 4,
-   waiting for the usage row as the store's statement timeout allows) when its room is short. The report transaction's
-   carry then reserves that room. The first charge of every (tenant, backend), and the steady refills, are thereby made
-   outside the run lock; a refill inside a report remains only as the fallback when a reclaim took the room in between
-   (near the limit, the idle reclaim, a limit change) or a carry outgrew its plan.
+3b. **Room made before the report, best effort** (decisions D041-119 and D041-120). After the carry's checks C0 to C2
+   and only for a carry that will write records, before it opens the report transaction, the store MUST make sure the
+   writer's lease of the report's tenant (the principal's tenant, never one from the request or the run) has room for
+   the planned charge, when the room it last saw for that backend and tenant is less, unknown, or older than 9 minutes:
+   it calls `sagat_quota_step_log_ensure(tenant, planned)` in a transaction of its own on the connection it will use for
+   the report, holding no run lock. The ensure refuses a planned charge larger than any valid carry's; tries the
+   step-log fence shared (held: `contended`); answers `room` when the writer's lease already has the room; reads the
+   allowance without a lock and answers `limit` when the charge cannot fit; and otherwise refills the writer's lease
+   (decision 4) under the same budget as the fallback, answering `made`, `busy`, `held` or `limit`. It never raises for
+   any of these; it returns its answer, the backend's pid and the room left. The store counts the answer
+   (`step_log_quota_ensures_total{outcome}`), never fails or re-runs a report because of it, and passes a `limit` or
+   `held` answer to the carry, which then answers mark-only at once without a refill, so a report waits on the usage
+   row at most once. Every call that charges or refills (the carry, the ensure, a batch, the script marker) returns the
+   backend's pid and the room left, and the store keeps the room per (backend pid, tenant) for 9 minutes, under the idle
+   interval. The ensure helps only with session affinity (direct connections or a session pooler): behind a pooler in
+   transaction mode the ensure and the report can run on different backends, and the report then falls back (design
+   041's gap G041-027). The first charge of every (tenant, backend), and the steady refills, are thereby made outside
+   the run lock; a refill inside a report remains the fallback when a reclaim took the room in between (near the limit,
+   the idle reclaim, a limit change) or the room the store kept was wrong.
 4. **A refill** (the writer's lease short of the charge) locks the usage row before it would ever insert it, then the
    writer's own lease `NOWAIT` (only a holder of the usage row, or a limit change holding the step-log fence exclusively,
    can hold it, so this never fails short of a prepared transaction): after the usage row nothing waits. Inside a report
-   or a batch it waits for the usage row at most its budget *b* = 200 ms (`lock_timeout` set for that statement from a
-   function no caller can change, a caller's lower `lock_timeout` kept, the caller's value restored after it); *b* is
+   or a batch each lock acquisition on the usage row waits at most its budget *b* = 200 ms (`lock_timeout` set for that
+   statement from a function no caller can change, a caller's lower `lock_timeout` kept, the caller's value restored
+   after it), and the statement timeout (5 s, 3 s for some transactions) is the hard bound, past which the carry call
+   fails and its report is re-run without the carry (ADR-0095 decision 5, the records counted `failed`); *b* is
    the budget an ingest batch already has on the same row, a latency budget, not a worst case: measured holds of the row
    are p50 1.1 ms and p99 4.5 ms (D041-106), and since `lock_timeout` applies to each lock acquisition a wait spanning
    several holders can exceed it. Past *b*, inside a carry, the carry's block catches the `55P03` and records a mark-only
@@ -129,21 +154,22 @@ ADR-0095 decision 4).
    F = L − S − G and *A* the tenant's other leases holding a grant, raising when g > F (I4):
    `tenant_step_log_quota_held` when the room missing is in leases it could not lock, `tenant_step_log_quota_exceeded`
    otherwise; else it charges *n* there (or, for the ensure, only leases g). **Room held by open writers, bounded.** A
-   grant past the charge takes at most F / (2(*A* + 1)) of the free room; when *k* writers take fresh grants one after
-   another, the *i*-th finds at least *i* − 1 other leases holding a grant, so F_i ≥ F_{i−1} (1 − 1/(2*i*)), and the
-   product of (2*i* − 1)/(2*i*) for *i* = 1..*k* is C(2*k*, *k*) / 4^*k*: at least F₀ · C(2*k*, *k*) / 4^*k*
-   (> F₀ / √(π(*k* + ½))) of the room F₀ free before them stays chargeable by another writer while they hold their
-   leases (the 1 MiB cap only lowers grants). Grants made earlier, when more was free, can hold more: in general the
-   room open writers hold is at most the sum, over their leases, of min(1 MiB, F / (2(*A* + 1))) at each grant. A carry
-   refused as held records a mark-only final mark with `tenant_quota` (the tenant is at its limit but for room in flight,
-   G041-023); idle leases give back all their room at the next refill near the limit.
+   grant's unused room is at most its share, min(1 MiB, ⌊F / (2(*A* + 1))⌋) at the grant: the rest of a grant of *n*
+   past the share is the planned charge itself, charged at once by a refill and, after an ensure, by the reservation's
+   carry in the same report. So the room open writers hold is at most the sum, over their leases, of each grant's share,
+   plus the planned charges of carries that have reserved and not yet charged. When *k* writers take fresh grants one
+   after another for charges within their share, the *i*-th finds at least *i* − 1 other leases holding a grant, so
+   F_i ≥ F_{i−1} (1 − 1/(2*i*)), and the product of (2*i* − 1)/(2*i*) for *i* = 1..*k* is C(2*k*, *k*) / 4^*k*: at least
+   F₀ · C(2*k*, *k*) / 4^*k* (> F₀ / √(π(*k* + ½))) of the room F₀ free before them stays chargeable by another writer
+   (the 1 MiB cap only lowers grants). For an operator: a charge of *n* is refused as held only when the unleased room is
+   under *n* and the tenant's open charging transactions, *k*_open of them, hold at most *k*_open × 1 MiB plus their
+   planned charges. A carry refused as held records a mark-only final mark with `tenant_quota` (the reader is told the
+   quota is full or its last room is in use by other steps, G041-023); idle leases give back all their room at the next
+   refill near the limit.
 5. **A release** (the purge's `DELETE`, which keeps ADR-0027's per-row delta and deferred flush) MUST NOT wait for a
    lease: in the finalizer's step-log branch, under the usage row, it reads Σ `used`, refuses with
    `step_log_usage_underflow` (counted) when S − released + Σ `used` < 0 (I3), and otherwise sets S −= released. No
    charge, refill or release waits for a lease.
-5b. **Idle leases.** The purge pass folds and deletes, one tenant a transaction under the usage row, every lease not
-   charged for longer than the idle interval (design 041 section 2b), `SKIP LOCKED`; the rows of a tenant are then at most
-   the backends that charged for it within that interval.
 6. **A change of the limit.** An `ENABLE ALWAYS` `SECURITY DEFINER` trigger on `quota_limits` and `quota_ceilings`, for
    `tenant_step_log_bytes`, takes the step-log fence exclusively itself (at once when the editor already holds it; so no
    transaction holds a lease), then the tenant's leases `NOWAIT`, then the usage row, and reclaims every lease (S += Σ
@@ -194,6 +220,13 @@ ADR-0095 decision 4).
    with a bound derived from `max_connections`): a report failed and resent can exhaust a worker's retries or outlive its
    lease, changing a step's outcome against ADR-0084 decision 7 and ADR-0095 decision 4; and the bound was neither a
    worst case nor independent of an unrelated server setting. Replaced by decisions 3b and 4.
+1g. **Protecting a fresh grant from the near-limit reclaim** (a `reserved_until` on the lease, so that another refill
+   cannot take an ensure's room before the report reserves it): fewer fallbacks near the limit, but room that cannot be
+   reclaimed for a while turns into held refusals there instead; not taken, and task T041-9 measures how often an
+   ensure's room is reclaimed before the reservation.
+1h. **An ensure on every carrying report**, which keeps no room in the store: correct whatever the cache, but one more
+   transaction on every carrying report; rejected for its cost, the cache being keyed by backend and expiring before
+   the idle interval.
 2. **The charge folded at commit by a deferred trigger** (ADR-0027 as built; T041-35's second run): the lock is already
    taken only at commit, and a row lock lasts to the end of the commit, its WAL flush included; no trigger releases it
    earlier. It keeps the ceiling of the Context.
@@ -228,16 +261,21 @@ ADR-0095 decision 4).
 - A charge can be refused while room exists only in leases that open transactions hold: at most the room of those
   leases (decision 4's bound), and only until those transactions end. It is counted (`cause="held"`), never an
   overshoot (design 041's G041-023).
-- A report that carries pays one more short transaction on its connection, the ensure, when its writer's lease is short
-  of the planned charge: once per grant, and for the first carry of each (tenant, backend), as after a deploy or a pool
-  recycle. That transaction waits for the usage row under no run lock.
-- The fallback refill under the run lock waits at most *b* = 200 ms; sibling reports, heartbeats, cancels and signals of
-  the same run queue behind it for that long at most. Past *b* the carry's records are dropped with the reason
-  `tenant_quota_busy`, shown to the reader and alerted: a bounded, visible loss in a rare path, traded for a report that
-  always lands (ADR-0084 decision 7). Near the limit, where reclaims take room between the ensure and the report,
-  fallbacks come more often; design 041's T041-9 measures that regime, a cold start and a small quota with many backends.
+- A report that carries pays one more short transaction on its connection, the ensure, when the room the store kept
+  for its backend is short, unknown or older than 9 minutes: once per grant, for the first carry of each (tenant,
+  backend), as after a deploy or a pool recycle, and after an idle reclaim. That transaction holds no run lock, waits
+  at most the same budget, and never fails the report.
+- A fallback refill waits for the usage row under the run lock: each lock acquisition at most *b* = 200 ms, the
+  statement timeout the hard bound; sibling reports, heartbeats, cancels and signals of the same run queue behind it
+  meanwhile. Past the budget the carry's records are dropped with the reason `tenant_quota_busy`, shown to the reader
+  ("not stored: the log service was busy", not a quota problem) and alerted on its rate: a bounded, visible loss in a
+  rare path, traded for a report that always lands (ADR-0084 decision 7). Rare means far from the limit and with
+  session affinity: near the limit, reclaims take room between the ensure and the report, and behind a transaction
+  pooler the ensure may serve another backend, so fallbacks come more often (design 041's gaps G041-026 and G041-027;
+  the owner chooses between this loss, failing and resending, and writing the records after the report commits,
+  question O041-041). Design 041's task T041-9 measures these regimes.
 - A carry that needs the fallback opens one subtransaction (its block, ADR-0095 decision 5): a second transaction id for
-  that report; the refill opens none. Design 041's T041-9 reports the XID rate and `pg_stat_slru` for `subtransaction`
+  that report; the refill and a carry with nothing to charge open none. Design 041's T041-9 reports the XID rate and `pg_stat_slru` for `subtransaction`
   near the limit and for many low-volume tenants.
 - Every step-log charge holds the content and log fences shared (ADR-0027's order against an editor that takes several
   fences), so a change of `tenant_content_bytes` or `tenant_log_bytes` waits for the charges in flight and, while queued,
@@ -264,7 +302,7 @@ ADR-0095 decision 4).
   T041-35 third run.
 - Run 44741773762 (validation-report.md, "The carry's cost, broken down"): 1,075 ingest `COMMIT`s at 8 × 128 cancelled by
   their lock timeout on the usage row (with pools not filled first, so the load at the start of a row was higher).
-- D041-117, D041-118 and D041-119 (research.md), and the reviews of the writer leases
+- Decisions D041-117 to D041-120 (research.md), and the reviews and re-reads of the writer leases
   (`docs/designs/041-step-logs.reviews/2026-11-20-writer-leases/`).
 - Runs 44783898911 and 44793160071 (validation-report.md, "split by cause"; D041-117): the shared pool's collisions and
   the `NOWAIT` refill's mark-only answers; the slow path's p99 near 95 ms at 8 × 128 against the fast path's 32.7 ms.

@@ -233,9 +233,11 @@ the L it read. L is the limit the finalizer's step-log branch works out (`quota_
 off, I4 and I5 are not checked (a refill grants without the limit) and U stays exact.
 
 `SECURITY DEFINER` functions of ADR-0027's pattern (fixed `search_path = pg_catalog, pg_temp`, every name written
-`public.…`, trusted owner, `REVOKE ALL … FROM PUBLIC` and `FROM sagat_app`, no `EXECUTE` to `sagat_app` except the
-accessor): the trigger function of §3 calls the first, the first the second, and the finalizer and the limit editor the
-others.
+`public.…`, trusted owner, `REVOKE ALL … FROM PUBLIC`); `EXECUTE` to `sagat_app` only on the six that ADR-0097 decision 1
+lists (`sagat_quota_step_log_reserve`, `sagat_quota_step_log_ensure`, `sagat_quota_step_log_usage`,
+`sagat_quota_step_log_counters`, `sagat_quota_step_log_idle_tenants`, `sagat_quota_step_log_reclaim_idle`), revoked
+explicitly from the others; the trigger function of §3 calls the charge, the charge the refill, and the finalizer and the
+limit editor the others.
 
 - `sagat_quota_step_log_charge(tenant, bytes)`: one statement takes the content, log and step-log fences shared (in that
   order: one select list, evaluated left to right); the limit; `SELECT step_log_bytes, step_log_leased_bytes` without a
@@ -244,7 +246,7 @@ others.
   granted - used >= bytes FOR UPDATE SKIP LOCKED) RETURNING writer` (the writer's own lease, an uncorrelated scalar
   subquery run once; only a reclaim, holding the usage row, can hold it); no row, or S + G > L: the refill.
 - `sagat_quota_step_log_refill_wait()`: the fallback's budget *b*, `interval '200 milliseconds'` (D041-119; design
-  section 2b), `IMMUTABLE`; read by the refill, never a session setting (the built functions read none).
+  section 2b), `STABLE`; read by the refill, never a session setting (the built functions read none).
 - `sagat_quota_step_log_refill(tenant, bytes, charge, bounded)`: reads L itself; when `bounded` (a charge inside a
   report or a batch) sets `lock_timeout` to *b* for its lock of the usage row unless the transaction's own is lower (an
   ingest's 200 ms) and restores the caller's value after it; then `SELECT … FOR UPDATE` of the tenant's usage row,
@@ -258,15 +260,25 @@ others.
   the room missing is in leases it could not lock (their room read without a lock) and `tenant_step_log_quota_exceeded`
   otherwise; then `granted` = g, `used` = bytes (0 when not `charge`), `charged_at` = now, G += g. With
   `step_log_enforcement_enabled` off, the charge skips its S + G ≤ L test and the refill its I4 check.
-- `sagat_quota_step_log_ensure(tenant, bytes)` (`EXECUTE` to `sagat_app`; the store calls it in a transaction of its own
-  on a report's connection before the report, D041-119): takes the tenant's step-log fence shared; returns when the
-  writer's own lease already has room ≥ bytes (read without a lock); otherwise the refill with `charge` false and
-  `bounded` false (its wait for the usage row bounded only by the store's statement timeout, under no run lock).
-- `sagat_quota_step_log_reclaim_idle(tenant)` (called by the purge pass, one tenant a transaction, D041-117, D041-119):
-  tries the tenant's step-log fence shared (held: returns 0, the tenant is skipped this pass, so that holding a lease
-  always means holding that fence), then under the usage row every lease with `charged_at` older than 10 minutes (fixed
-  in the function, design section 2b), `SKIP LOCKED`, is folded
-  (S += `used`, G −= `granted`) and deleted; returns the count (`step_log_quota_refills_total{kind="idle"}`).
+- `sagat_quota_step_log_ensure(tenant, bytes) RETURNS TABLE (outcome text, writer integer, room bigint)` (`EXECUTE`
+  to `sagat_app`; the store calls it with the principal's tenant, after C0 to C2 and for a carry that will write
+  records, in a transaction of its own on the report's connection before the report, under no run lock; decisions
+  D041-119 and D041-120): `invalid` when `bytes` ≤ 0 or above the largest planned charge a valid carry can have (the
+  attempt byte ceiling's maximum plus 128 for each of the attempt record ceiling's maximum rows and a marker);
+  `contended` when the tenant's step-log fence cannot be had shared at once (tried); `room` when the writer's own lease
+  already has room ≥ bytes (read without a lock); `limit` when L − U < bytes, read without a lock; otherwise the refill
+  with `charge` false and `bounded` true, inside one `BEGIN … EXCEPTION` block of its own (its own transaction, not
+  the report's): `made`, or `busy` (`55P03`), `held` or `limit` (the refill's refusals by constraint name). It never
+  raises for these; it returns its answer, `pg_backend_pid()` and the writer's room after it.
+- `sagat_quota_step_log_idle_tenants(max integer) RETURNS SETOF uuid` (`EXECUTE` to `sagat_app`; the purge pass): at most
+  `max` tenant ids that have a lease not charged for 10 minutes or whose backend has ended (its `writer` absent from
+  `pg_stat_activity`); ids only.
+- `sagat_quota_step_log_reclaim_idle(tenant)` (`EXECUTE` to `sagat_app`; called by the purge pass, one tenant a
+  transaction, decisions D041-117, D041-119, D041-120): returns 0 at once when, read without a lock, the tenant has no
+  lease idle for 10 minutes or of an ended backend; tries the tenant's step-log fence shared (held: returns 0, the
+  tenant is skipped this pass, so that holding a lease always means holding that fence); then under the usage row every
+  such lease, `SKIP LOCKED`, is folded (S += `used`, G −= `granted`) and deleted; the interval is fixed in the function;
+  returns the count (`step_log_quota_refills_total{kind="idle"}` and `{kind="ended"}`).
 - `sagat_quota_step_log_reserve(tenant, bytes)` (`EXECUTE` to `sagat_app`, called by the carry before any write,
   D041-113, D041-114): false for `bytes` ≤ 0 or when the tenant's step-log fence cannot be had shared at once (it tries it
   itself: holding a lease always means holding that fence, which the reclaim's `NOWAIT` relies on); otherwise, unless the
@@ -297,10 +309,11 @@ L4). No transaction waits for a lease it does not own,
 and no holder of L4 waits after taking it for anything a waiter holds (design section 2b), so a refill's wait for L4
 cannot deadlock.
 
-Metrics (closed labels, no tenant): `step_log_quota_refills_total{kind="refill"|"reclaim"|"idle"|"ensure"}`,
+Metrics (closed labels, no tenant): `step_log_quota_refills_total{kind="refill"|"reclaim"|"idle"|"ended"}`,
+`step_log_quota_ensures_total{outcome}`,
 `step_log_quota_refusals_total{cause="limit"|"held"|"busy"}`,
-`step_log_quota_refill_budget_exceeded_total{caller="carry"|"ingest"}` (counted by the store from the carry's returned
-cause and a batch's mapped `55P03`), `step_log_purge_failures_total{cause="underflow"}`, and the gauge
+`step_log_quota_refill_budget_exceeded_total{caller="carry"|"ingest"|"marker"}` (counted by the store from the carry's
+returned cause, a batch's refill `55P03` and the marker's), `step_log_purge_failures_total{cause="underflow"}`, and the gauge
 `step_log_quota_lease_rows`. Events inside SQL never update a counter row (it would be a hot row again): the refill and
 the release advance sequences (`step_log_quota_refills_seq`, one per kind, and one per refusal cause; `REVOKE ALL … FROM
 sagat_app` on each, in the privilege audit), which a definer accessor `sagat_quota_step_log_counters()` returns with the
@@ -397,9 +410,10 @@ and drop metrics below; `step_log_lines_stored_total{level}`; `step_log_bytes_st
 `out_of_order`); `step_log_script_markers_total{outcome}` (`written`, `skipped_quota`, `skipped_off`,
 `skipped_finished`, `failed`); `step_log_lines_truncated_total`; `step_log_redactions_total{rule}` (`shape`, `field_name`);
 `step_log_ingest_seconds`; `step_log_lock_timeouts_total`; `step_log_quota_retries_total`;
-`step_log_quota_refills_total{kind}` (`refill`, `reclaim`, `idle`, `ensure`); `step_log_quota_refusals_total{cause}`
-(`limit`, `held`, `busy`); `step_log_quota_refill_budget_exceeded_total{caller}` (`carry`, `ingest`; counted by the
-store); the gauge `step_log_quota_lease_rows` (ADR-0097, §3b);
+`step_log_quota_refills_total{kind}` (`refill`, `reclaim`, `idle`, `ended`); `step_log_quota_ensures_total{outcome}`
+(`room`, `made`, `limit`, `held`, `busy`, `contended`, `invalid`; counted by the store); `step_log_quota_refusals_total{cause}`
+(`limit`, `held`, `busy`; counted by the store from the carry's cause); `step_log_quota_refill_budget_exceeded_total{caller}`
+(`carry`, `ingest`, `marker`; counted by the store); the gauge `step_log_quota_lease_rows` (ADR-0097, §3b);
 `step_log_purged_lines_total`; `step_log_purge_backlog` (the streams whose `expires_at` has passed or whose removal has
 begun and whose `purged_at` is null, counted by the purge pass at the start of each run); `step_log_tails_open`; `step_log_tails_refused_total`;
 `database_oldest_transaction_age_seconds` (a gauge of the operations snapshot over `pg_stat_activity.xact_start` and
@@ -495,11 +509,16 @@ CREATE FUNCTION sagat_step_log_carry(
     p_sequences bigint[], p_levels text[], p_worker_times timestamptz[], p_messages text[],
     p_exceptions text[], p_fields text[], p_truncated boolean[], p_sizes integer[],
     p_highest bigint,
-    p_mark_reason text)           -- null for a full carry; else invalid, tenant_quota, secret or content_fallback
+    p_mark_reason text)           -- null for a full carry; else invalid, tenant_quota (also when the ensure before the
+                                  -- report answered limit or held: no refill then), secret or content_fallback
 RETURNS TABLE (outcome text, kept integer, dropped_by_worker bigint,
                dropped_by_server jsonb,  -- the counts per reason (out_of_order, attempt_records, attempt_bytes,
-                                         -- tenant_quota, invalid, secret, content_fallback); one carry can have two
-               ceiling_reason text)
+                                         -- tenant_quota, tenant_quota_busy, invalid, secret, content_fallback);
+                                         -- one carry can have two
+               ceiling_reason text,      -- attempt_records, attempt_bytes, tenant_quota or tenant_quota_busy
+               cause text,               -- limit, held or busy for a mark-only answer of the quota; else null
+               writer integer,           -- pg_backend_pid(): the store keeps the room per (writer, tenant)
+               room bigint)              -- the room left in the writer's lease after the call
 LANGUAGE plpgsql VOLATILE SECURITY INVOKER SET search_path = pg_catalog, public, pg_temp AS $$ … $$;
 REVOKE ALL ON FUNCTION sagat_step_log_carry(…) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION sagat_step_log_carry(…) TO sagat_app;
@@ -558,8 +577,9 @@ past its budget *b*, D041-119; the only lock the function waits for); for those 
 nothing charged: a new stream inserted with the records counted dropped by the server (`tenant_quota`, or
 `tenant_quota_busy` for `55P03`) and `ceiling_reason` the same; an existing stream (the block's rollback released the row
 CC′ locked) taken again `FOR UPDATE SKIP LOCKED` and updated the same way; `contended` when that row is held. It returns
-`mark_only` (or `contended`) with the cause (`limit`, `held`, `busy`), and the room left in the writer's lease, which
-the store keeps for the connection to decide its next ensure.
+`mark_only` (or `contended`) with the cause (`limit`, `held`, `busy`), with the backend's pid and the room left in
+the writer's lease, which the store keeps per (pid, tenant) for 9 minutes to decide its next ensure. A carry whose plan
+charges nothing (no record kept) writes with no block and no reservation.
 
 Any other raise of a guard of the step-log quota in CD (an underflow, a lease `CHECK`; each with a constraint name of its
 own, T041-5), on either path, is mapped to `StoreError::StepLogRefused`, which the application answers with a re-run of

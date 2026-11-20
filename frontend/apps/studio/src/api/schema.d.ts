@@ -6077,7 +6077,7 @@ export interface components {
             droppedByWorker?: number;
             droppedByServer?: number;
             /** @enum {string|null} */
-            ceiling?: "attempt_records" | "attempt_bytes" | "tenant_quota" | null;
+            ceiling?: "attempt_records" | "attempt_bytes" | "tenant_quota" | "tenant_quota_busy" | null;
             /** Format: date-time */
             firstAt?: string | null;
             /** Format: date-time */

@@ -7633,7 +7633,7 @@ components:
         bytes: {type: integer, description: 'worker only: text bytes stored (UTF-8 octets of message, exception and fields; the tenant quota charges 128 more per line)'}
         droppedByWorker: {type: integer, description: 'worker only: sequences the worker numbered and never stored'}
         droppedByServer: {type: integer}
-        ceiling: {type: [string, 'null'], enum: [attempt_records, attempt_bytes, tenant_quota, null]}
+        ceiling: {type: [string, 'null'], enum: [attempt_records, attempt_bytes, tenant_quota, tenant_quota_busy, null]}
         firstAt: {type: [string, 'null'], format: date-time}
         lastAt: {type: [string, 'null'], format: date-time}
         expiresAt: {type: [string, 'null'], format: date-time, description: 'worker: the last recorded batch plus the retention the stream took when it was created; script: the execution expiry.'}
