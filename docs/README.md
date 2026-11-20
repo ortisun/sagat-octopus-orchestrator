@@ -154,7 +154,7 @@ disagree, see [Where the documents disagree](#where-the-documents-disagree).
 | 011 | GitOps, versioning and definition promotion | [specification](../specs/011-gitops-versioning/spec.md) | 36 of 36 | Draft, ready for review | [GitOps](runbooks/gitops.md) |
 | 012 | CLI, quickstarts, local testing and documentation | [specification](../specs/012-developer-experience/spec.md) | 35 of 35 | Draft, ready for review | [developer experience](runbooks/developer-experience.md) |
 | 013 | Federated login | no document in this checkout | | the roadmap: "Draft specification only" | |
-| 014 | Durable workflow primitives and practical SDK examples | [specification](../specs/014-workflow-primitives/spec.md) | 43 of 45 | Architecture accepted; runtime implementation in progress (its specification's Status line) | [workflow primitives](runbooks/workflow-primitives.md) |
+| 014 | Durable workflow primitives and practical SDK examples | [specification](../specs/014-workflow-primitives/spec.md) | 43 of 45 | Architecture accepted; runtime implementation partial | [workflow primitives](runbooks/workflow-primitives.md) |
 | 015 | OpenTelemetry and OpenBao | no document in this checkout | | the roadmap: "Draft specification only" | |
 | 016 | Per-field payload classification | [specification](../specs/016-payload-classification/spec.md) | 65 of 65 | Implemented; release gates passed; merged into 0.2.0 | [payload classification](runbooks/payload-classification.md) |
 | 017 | Database connections, OpenBao secrets and shared execution | [specification](../specs/017-database-connections/spec.md) | 25 of 25 | Implemented and locally verified on 2026-10-17 | [database connections](runbooks/database-connections.md), [database runner](runbooks/database-runner.md), [OpenBao](runbooks/openbao.md), [database recovery](runbooks/database-recovery.md) |
@@ -175,7 +175,7 @@ disagree, see [Where the documents disagree](#where-the-documents-disagree).
 | 032 | Multi-region replication and active-passive failover | [specification](../specs/032-multi-region-failover/spec.md) | 0 of 64 | Draft, not implemented | |
 | 033 | Redis Streams for internal notifications and outbound callbacks | [specification](../specs/033-redis-streams/spec.md) | 6 of 7 | no Status line; the roadmap places it in release 0.3 | [events, Redis Streams section](runbooks/events.md#redis-streams-v03) |
 | 034 | Official Rust SDK | [specification](../specs/034-rust-sdk/spec.md) | 7 of 7 | no Status line; its title says release 0.3 | [packaging](runbooks/sdk-packaging.md) |
-| 035 | Apache Iceberg writes and step-output destinations | [specification](../specs/035-iceberg-write-steps/spec.md) | 20 of 129 | Draft, specified, clarified and planned | [database runner](runbooks/database-runner.md); guides: [Iceberg connections](guides/iceberg-connections.md), [Iceberg type mapping](guides/iceberg-type-mapping.md) |
+| 035 | Apache Iceberg writes and step-output destinations | [specification](../specs/035-iceberg-write-steps/spec.md) | 20 of 129 | Draft, specified, clarified and planned; not implemented | [database runner](runbooks/database-runner.md); guides: [Iceberg connections](guides/iceberg-connections.md), [Iceberg type mapping](guides/iceberg-type-mapping.md) |
 | 036 | Elastic scaling driven by telemetry | [specification](../specs/036-elastic-scaling/spec.md) | 0 of 94 | Draft, not planned, not implemented | |
 | 037 | Explicit compensation failure and uncertain effects | [specification](../specs/037-compensation-safety/spec.md) | 32 of 34 | Delivery 1 approved on 2026-11-01 | [sagas](runbooks/sagas.md) |
 | 038 | Claim and transition efficiency | [design doc](designs/038-claim-transition-efficiency.md) | 0 of 11 | Draft | |
@@ -199,8 +199,8 @@ the wrong one is corrected (constitution, Governance).
 - The roadmap says of feature 041 "Draft"; its [design doc](designs/041-step-logs.md) says "Approved".
 - The roadmap says of feature 042 "nothing built"; the [traceability table](traceability.md) records the server half of
   its collection operators on 2026-11-14.
-- The roadmap says of feature 035 "nothing built yet"; 20 of its 129 tasks are ticked, and the
-  [database runner runbook](runbooks/database-runner.md) describes its connection probe.
+- The roadmap says of feature 035 "nothing built yet" and its specification says "not implemented"; 20 of its 129
+  tasks are ticked, and the [database runner runbook](runbooks/database-runner.md) describes its connection probe.
 - The roadmap says feature 014 has "eight tasks remain open"; its `tasks.md` has 2 of 45 open.
 - Features 001 to 012 say "Draft, ready for review" in their specifications, with every task ticked.
 - The [architecture overview](architecture/overview.md) counts 17 crates; [`Cargo.toml`](../Cargo.toml) lists 18.
