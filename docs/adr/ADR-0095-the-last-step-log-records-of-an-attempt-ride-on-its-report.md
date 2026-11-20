@@ -11,10 +11,11 @@ script-output marker"; and would refine ADR-0084 decisions 3, 7 (the final batch
 acceptance both are marked "partly superseded by ADR-0095". ADR-0084's other decisions, ADR-0085 and ADR-0015 are unchanged.
 **Enforced by:** nothing yet: nothing is built. The checks that MUST exist when it is, each a task of
 [design 041](../designs/041-step-logs.md), with its row in `docs/engineering/architecture-principles.md`:
-`work_budget.rs` with its three constants unmodified for reports without a carry, and six new equalities (a completion with a
-next step that carries ten records kept, 55 statements, 1 transaction, 23 rows; a mark-only carry, 54, 1, 13; capture off in the
-namespace, 52, 1, 11; and the completion that ends the run in the same cases, 52, 1, 21; 51, 1, 11; 49, 1, 9), and the cost with
-and without a carry at every other call site (decision 2, T041-36); a source-text test that the worker and execution modules reach the step-log tables only through the port of decision
+`work_budget.rs` with its three constants unmodified for reports without a carry, and six new equalities (51 statements,
+1 transaction, 11 top-level rows for a completion with a next step that carries ten records, a mark-only carry or capture
+off; 48, 1, 9 for the completion that ends the run), each with a second measure of the step-log rows written counted from
+the step-log tables, and the cost with and without a carry at every other call site (decision 2, T041-36); the property test
+that the carry function and the domain's `plan_batch` plan alike (decision 3, T041-36); a source-text test that the worker and execution modules reach the step-log tables only through the port of decision
 3 (T041-36); the re-run tests of decision 5 for a completion and a failure, root and scoped (T041-36); the C0 tests of decision 3
 (T041-36); the order tests of decision 6 (T041-36); the lock-order test with a carrying report beside an ingest of its attempt,
 the purge and a change of a step-log resource, and the tests that a held step-log lock makes a carry `contended` with the report
@@ -54,13 +55,16 @@ Facts of the code that shape the change:
    `STOP_CAPTURE` or its session's capture is off. The carry holds the attempt's final mark; `AppendStepLogs` carries none, and
    stays, unchanged in its checks, for the records of a long step. `Heartbeat` carries no records.
 2. A report without a carry MUST cost what it costs today: no additional statement, transaction or row. A carrying report MUST add
-   no transaction and at most five statements for a short step (the tried locks, the policy values, the new stream row, the kept
-   lines when any, the stream's counters) and six for a long one (the existing stream row is locked by a statement of its own).
-   These are equalities of the hot-path budget (constitution, CI gates), beside the existing ones, tested at every call site.
+   no transaction and exactly one statement, one round trip: a call of the database function `sagat_step_log_carry`, which tries
+   the locks, reads the policy, writes the stream and the kept lines and their counters (OD-2026-11-20-1). The step-log rows are
+   charged once per insert statement (ADR-0027's proposed amendment of 2026-11-20). These are equalities of the hot-path budget
+   (constitution, CI gates), beside the existing ones, tested at every call site; since the function's writes are not top-level
+   statements, the budget counts them by a second measure from the step-log tables.
 3. The carry MUST be written by the transaction that records the report, after the report's own checks and the engine's change
    and before the commit, and only when the report is recorded now (never on a replay, never on a refused report). The worker and
-   execution modules MUST reach the step-log tables only through one port, `StepLogCarryTx`, whose six methods are those
-   statements, one each, holding no rule. A carry needs no session: the report's own checks (lease, binding and membership under their locks)
+   execution modules MUST reach the step-log tables only through one port, `StepLogCarryTx`, whose one method makes that call
+   and holds no rule. The function plans the carry from the policy and the stream it reads; the domain's `plan_batch` stays
+   the rule, and a property test requires the two to plan alike. A carry needs no session: the report's own checks (lease, binding and membership under their locks)
    apply, and a carry MUST be ignored when the caller's role is runner or database-runner or the step is a managed step, as the
    ingest refuses them.
 4. A carry MUST NOT change a report's outcome, output or retry, nor its timing beyond its statements and decision 5's re-run,
@@ -117,9 +121,9 @@ two-second wait disappears for short steps.
 
 Bad: a report that keeps a carried record takes the tenant's usage row at its commit even when its output stores nothing, so a
 tenant's logging reports queue on that row at commit, as completions with output do today; spike T041-35 measures it with an
-output that stores nothing. The report's transaction holds the run row while its carry runs up to five statements (five round
-trips to the database, six for a long step) and fires one trigger call per kept line at insert and one deferred call per kept line
-at commit. A carry that finds a step-log lock held stores nothing (`contended`), so a rare contention loses that attempt's last
+output that stores nothing. The report's transaction holds the run row while its carry's one call runs (one round trip) and
+fires one statement-trigger call and, at commit, one deferred flush. Part of a rule (the carry's plan) runs in SQL, kept equal
+to the domain's by a property test. A carry that finds a step-log lock held stores nothing (`contended`), so a rare contention loses that attempt's last
 lines. A carry whose transaction fails costs one or two more report transactions, and a re-run can be refused as a late report
 would be. A report of a client that negotiated below 1.7 may carry records,
 and they are stored (G041-001 already covers a client that does not redact).

@@ -166,6 +166,34 @@ Proposed, would let a report store its attempt's last step-log rows in its own t
 charge never blocks a terminal state would then hold by one re-run of the report without those rows. Item 1 is unchanged
 until that ADR is accepted.
 
+### Proposed amendment of the Amendment (2026-11-20), for the owner's acceptance of its wording (O041-040)
+
+Status: proposed. The owner chose its direction on 2026-11-20 ("Cortar custo, depois limite absoluto", OD-2026-11-20-1,
+design 041's O041-039 (a)); this wording is the agent's and changes nothing above until the owner accepts it. It would
+replace item 3's sentence "`sagat_quota_row_delta` routes the class `step_log` to the new delta" and item 4's per-row
+reading of the 128-byte charge as follows; items 1, 2 and 5 and the rest of items 3 and 4 are unchanged.
+
+- **Step-log rows are charged once per insert statement, not once per row.** `step_log_lines` has no per-row
+  measurement trigger and no per-row flush trigger on `INSERT`. A statement-level `AFTER INSERT` trigger over the
+  statement's transition table (`REFERENCING NEW TABLE`), `SECURITY DEFINER` with a pinned `search_path` like the other
+  quota trigger functions, sums for each tenant the UTF-8 octets of `message`, `exception` and `fields` plus 128 per row,
+  and calls `sagat_quota_add_delta` once per tenant with that step-log delta. The charge is measured by the database from
+  the rows stored, never passed by a caller, so no writer can under-charge or skip it.
+- **One flush per transaction.** A deferred constraint trigger on `quota_transaction_deltas`, `AFTER INSERT … WHEN
+  (NEW.step_log_delta <> 0)`, runs `sagat_quota_flush_deltas()` at commit, so a transaction whose first delta of a tenant
+  is a step-log one queues the finalizer once; a delta row that a content or log write created already has that table's
+  per-row flush queued.
+- **Release stays per row.** The purge's `DELETE` keeps the per-row `AFTER DELETE` delta and flush triggers, so what is
+  released equals what is deleted; the purge is off the hot path.
+- **Enforced by** the manifest test, taught that the class `step_log` is measured by this shape; a test that an insert of
+  ten lines adds one delta of their text plus 1,280 bytes and queues one flush, and that their purge releases the same;
+  and the runtime-role bypass tests of this ADR extended to the statement trigger.
+
+Why: design 041's carry stores an attempt's last lines in the report transaction, under the run lock; the first carry
+spike (T041-35, `specs/041-step-logs/validation-report.md`, 2026-11-20) measured the per-row trigger and per-row deferred
+call as part of a carry that added +40.6% and +23.7% to the completion p99. Consequence: the step-log class is the one
+class measured per statement, and the generator does not write its triggers (the migration of design 041's T041-5 does).
+
 ## Implementation slices and ownership contract
 
 1. **Shared policy and manifest:** domain resource names/units/ranges; application ports and typed rate result; migration, durable usage/rate state, exhaustive classification manifest and backfill tests; existing quota REST/CLI/OpenAPI views. Own `domain/quota.rs`, `application/quotas.rs`, `infra-postgres/quotas.rs`, new `infra-postgres/content_usage.rs` and migration. Preserve T010-040 activity lock hierarchy and broker resource arms.

@@ -150,8 +150,25 @@ In `crates/infra-postgres/storage-classification.json` (one entry per column, as
 | `step_log_lines.level` | `step_log` | `fixed_octets`, 128: the per-row charge of OD-2026-11-15-6 on a `NOT NULL` text column, which the manifest test compares (it reads columns with `typlen = -1`, `durable_quotas.rs:323-343`) |
 | every other variable-size column of the two tables | `protected_system` | evidence: closed sets of section 1, bounded identifiers |
 
-The measurement and finalizer triggers that ADR-0027 generates are created on `step_log_lines` only: the manifest test
-requires them only on tables with `content` or `log` columns (`tests/integration/security-multitenancy/durable_quotas.rs:345-411`), and on the counter tables they would run `to_jsonb` on every update. The entries' owner
+The quota triggers are created on `step_log_lines` only: the manifest test requires them only on tables with
+`content` or `log` columns (`tests/integration/security-multitenancy/durable_quotas.rs:345-411`), and on the counter
+tables they would run `to_jsonb` on every update. Their shape is the proposed amendment of ADR-0027's Amendment of
+2026-11-20 (OD-2026-11-20-1 chose it; its wording is O041-040), not the per-row shape the generator writes for the other
+classes:
+
+- `step_log_lines_quota_insert`: `AFTER INSERT … REFERENCING NEW TABLE AS inserted FOR EACH STATEMENT`, a `SECURITY
+  DEFINER` trigger function with the pinned `search_path` of its siblings, which sums per tenant
+  `octet_length(message) + octet_length(exception) + octet_length(fields) + 128` (nulls as 0) over `inserted` and calls
+  `sagat_quota_add_delta` once per tenant with that step-log delta;
+- `quota_transaction_deltas_step_log_flush`: a constraint trigger `AFTER INSERT ON quota_transaction_deltas DEFERRABLE
+  INITIALLY DEFERRED FOR EACH ROW WHEN (NEW.step_log_delta <> 0) EXECUTE FUNCTION sagat_quota_flush_deltas()`, so a
+  transaction whose first delta of a tenant is a step-log one queues one flush (a transaction whose delta row a content or
+  log write created has that table's flush queued already);
+- `step_log_lines_quota_delete` and `step_log_lines_quota_flush`: the per-row `AFTER DELETE` delta and flush triggers of
+  the generator's shape, so that the purge releases exactly what it deletes;
+- no `UPDATE` trigger: lines are never updated (a trigger refuses it, §2).
+
+The manifest test learns that the class `step_log` is measured by this shape, and checks it. The entries' owner
 path is the migration file in T041-5 and becomes `crates/infra-postgres/src/step_logs.rs` in T041-6 (the test only
 needs an existing file, `durable_quotas.rs:302-308`).
 
@@ -321,51 +338,65 @@ timeout is `SET LOCAL lock_timeout = '200ms'`.
 A marker line (either kind) has the level `info`, and `minLevel` never hides a marker: the filter applies to
 `kind = 'line'` only.
 
-## 8a. The carry, in the report's transaction (design section 2a, CA to CE)
+## 8a. The carry, in the report's transaction (design section 2a)
 
-Run by the six methods of `StepLogCarryTx` right before the report transaction's commit, after its engine change and
-journal writes, and only when the report is recorded now; at most five run for a short step, six for a long one. Every
-statement binds only values C2 and C3 checked and maps its database error with `store_error_without_text` to
-`StoreError::StepLogCarry`; those that write begin with `INSERT` or `UPDATE` (never `WITH`), so that `work_budget.rs`
-counts their rows. No lock is waited for: each is tried, and a refused one ends the carry (`contended`) with the report's
-transaction untouched. The identity is the attempt the report's fence verified (tenant, namespace, run, `steps.step_id`,
-node, instance path, attempt, generation), captured before the engine applies the report.
+One call, `SELECT * FROM sagat_step_log_carry($1, …)`, made by the one method of `StepLogCarryTx` right before the
+report transaction's commit, after its engine change and journal writes, and only when the report is recorded now
+(OD-2026-11-20-1). Its error maps through `store_error_without_text` to `StoreError::StepLogCarry`. The identity is the
+attempt the report's fence verified, captured before the engine applies the report.
 
-- **CA.** One `SELECT`: `pg_try_advisory_xact_lock_shared` on the six policy fences of the three namespace resources of
-  §6 (tenant fence then namespace fence, the resources in the order of `QuotaResource`, the keys `content_usage` uses),
-  then `pg_try_advisory_xact_lock` on the attempt's stream lock (the key the ingest's T3 takes). Any `false`: stop
-  (`contended`).
-- **CB.** One `SELECT`, whose snapshot begins after CA's locks are held: the `quota_limits` and `quota_ceilings` rows of
-  the three resources (the read `effective_policy` makes, batched as T041-6's variant of `admission_policy`; the
-  resolution is the application's) and `sagat_quota_step_log_allowance(tenant)`. `step_log_attempt_records = 0`: stop
-  (`off`).
-- **CC.** `INSERT INTO step_log_streams (…) SELECT … WHERE NOT EXISTS (SELECT 1 FROM step_log_streams WHERE tenant_id = $1
-  AND run_id = $2 AND step_id = $3 AND attempt = $4 AND generation = $5 AND source = 'worker') ON CONFLICT (tenant_id,
-  run_id, step_id, attempt, generation, source) DO NOTHING RETURNING` the new stream row (it takes the namespace's
-  retention). The `NOT EXISTS` sees an existing row under the statement's snapshot even while the purge or the delete
-  route updates it, so no row is offered and the speculative insertion's unique check, which waits for an in-progress
-  updater of the conflicting row, never runs; with the stream lock held no other transaction is inserting the row. So
-  this never waits. A row returned: a new stream, zero counters, `in_order` true; go to the plan.
-- **CC′.** Only when CC returned nothing: `SELECT … FROM step_log_streams WHERE <key> FOR UPDATE SKIP LOCKED`, returning
-  the counters, `removed_at`, `expires_at`, `final_at` and `last_stored_xid IS NULL OR last_stored_xid <
-  pg_current_xact_id()` as `in_order`. No row: stop (`contended`). `removed_at` set, `expires_at <= clock_timestamp()` or
-  `final_at` set: stop (`removed`, `final_recorded`).
-- **Plan** (domain, no statement): `plan_batch` with `final = true`, the carry's `highest_sequence` and `in_order`; when
-  `in_order` is false, no record above `last_sequence` is kept and those are counted as dropped by the server with the
-  reason `out_of_order`. A mark-only carry keeps no record and plans no marker.
-- **CD.** The `INSERT … SELECT … FROM unnest(…) ON CONFLICT (tenant_id, stream_id, sequence) DO NOTHING RETURNING` of T8,
-  for the kept lines and the planned marker. Not run when nothing is kept.
-- **CE.** The `UPDATE` of T9 from CD's rows, plus `final_at = clock_timestamp()`, and `last_stored_xid` raised as T9
-  raises it; it runs also when nothing was kept.
-- **Commit.** The report's `COMMIT`. Any raise of the finalizer's step-log branch (each with a constraint name of its own,
-  T041-5) is mapped to `StoreError::StepLogRefused`, which the application answers with a re-run of the report carrying
-  a mark-only carry (the records counted `tenant_quota`); `StoreError::StepLogCarry` with a re-run carrying none. Both
-  cross into the application as internal variants (`AppError::StepLogRefused`, `AppError::StepLogCarry`) that only the
-  re-run wrapper consumes.
+```sql
+CREATE FUNCTION sagat_step_log_carry(
+    p_tenant uuid, p_namespace uuid, p_run uuid, p_step uuid, p_node text,
+    p_path_nodes text[], p_path_indices integer[], p_attempt integer, p_generation bigint,
+    p_fence_keys text[],          -- the six policy fences of §6, tenant then namespace, in QuotaResource order
+    p_stream_key text,            -- the attempt's stream lock, the key the ingest's T3 takes
+    p_sequences bigint[], p_levels text[], p_worker_times timestamptz[], p_messages text[],
+    p_exceptions text[], p_fields text[], p_truncated boolean[], p_sizes integer[],
+    p_highest bigint, p_mark_only boolean)
+RETURNS TABLE (outcome text, kept integer, dropped_by_worker bigint, dropped_by_server bigint)
+LANGUAGE plpgsql VOLATILE SECURITY INVOKER SET search_path = pg_catalog, public, pg_temp AS $$ … $$;
+REVOKE ALL ON FUNCTION sagat_step_log_carry(…) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION sagat_step_log_carry(…) TO sagat_app;
+```
 
-Top-level statements added to the report (`work_budget.rs`'s measure): contended at CA 1; capture off 2; a short step 4
-with no row kept (2 rows) and 5 with *k* kept (2 + *k* rows); a long step 5 with none kept (1 row) and 6 with *k* kept
-(1 + *k* rows); an existing stream held, removed or final 4 (no row).
+Its body, each statement with a snapshot of its own (the function is `VOLATILE`, the transaction READ COMMITTED):
+
+1. **CA.** `pg_try_advisory_xact_lock_shared(hashtextextended(k, 0))` for each of `p_fence_keys` in order, then
+   `pg_try_advisory_xact_lock(hashtextextended(p_stream_key, 0))`. Any `false`: return `contended`.
+2. **CB.** The `quota_limits` and `quota_ceilings` rows of the three resources for the tenant and the namespace, resolved
+   as `effective_policy` resolves them (the namespace row, else the tenant row, else the default, bounded by the
+   ceiling; the same rule the property test of T041-36 compares), and `sagat_quota_step_log_allowance(p_tenant)`.
+   `step_log_attempt_records = 0`: return `off`.
+3. **CC.** `INSERT INTO step_log_streams (…) SELECT … WHERE NOT EXISTS (SELECT 1 FROM step_log_streams WHERE
+   tenant_id = p_tenant AND run_id = p_run AND step_id = p_step AND attempt = p_attempt AND generation = p_generation AND
+   source = 'worker') ON CONFLICT (tenant_id, run_id, step_id, attempt, generation, source) DO NOTHING RETURNING`
+   the row (counters zero, `in_order` true).
+4. **CC′.** When CC returned nothing: `SELECT … FOR UPDATE SKIP LOCKED` of the stream row with its counters,
+   `removed_at`, `expires_at`, `final_at` and `last_stored_xid IS NULL OR last_stored_xid < pg_current_xact_id()` as
+   `in_order`. No row: `contended`; removed, expired or final: `removed` or `final_recorded`.
+5. **Plan**, in the function: unless `p_mark_only`, the records whose sequence is above `last_sequence` (all of them when
+   `in_order`; none above it otherwise, counted `out_of_order`), in sequence order, kept while the stream's records plus
+   the kept count stay within `step_log_attempt_records`, its bytes plus their `p_sizes` within `step_log_attempt_bytes`,
+   and the kept sizes plus 128 a row (the marker included) within the tenant allowance; the first record that does not
+   fit an attempt ceiling sets `ceiling_sequence` and `ceiling_reason` and plans one `ceiling_marker` at
+   `next_marker_sequence`; the gap from `last_sequence` to `p_highest` not covered by the sent records is dropped by the
+   worker below `ceiling_sequence` and by the server above it, saturating at 2^53. This is `plan_batch` for a carry, as
+   T041-36's property test requires.
+6. **CD.** `INSERT INTO step_log_lines … SELECT … FROM unnest(…) WITH ORDINALITY … WHERE <kept> ON CONFLICT (tenant_id,
+   stream_id, sequence) DO NOTHING RETURNING octet_length(…)`, and the marker. Not run when nothing is kept. The
+   statement-level trigger of §3 charges the inserted rows once.
+7. **CE.** The `UPDATE` of T9 from CD's rows, plus `final_at = clock_timestamp()` and `last_stored_xid` raised as T9
+   raises it; it runs also when nothing was kept. Return `stored` or `mark_only` with the counts.
+
+At the commit any raise of the finalizer's step-log branch (each with a constraint name of its own, T041-5) is mapped
+to `StoreError::StepLogRefused`, which the application answers with a re-run of the report carrying a mark-only carry
+(the records counted `tenant_quota`); `StoreError::StepLogCarry` with a re-run carrying none. Both cross into the
+application as internal variants (`AppError::StepLogRefused`, `AppError::StepLogCarry`) that only the re-run wrapper
+consumes.
+
+Added to the report (`work_budget.rs`): one top-level statement, no transaction and no top-level row, whatever the
+function does; the step-log rows it wrote are the second measure of design section 2a.
 
 ## 9. The script marker's transaction (design section 7)
 

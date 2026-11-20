@@ -4,6 +4,16 @@ Decisions that only the product owner could take, with what each one unblocks. E
 recorded where the open item lived (gap register, ADR, runbook or specification). "Not built"
 means the decision is taken and the implementation is still to be done; it is not evidence.
 
+## 2026-11-20 — Design 041 (step logs): the carry's tail after its first spike
+
+The spike T041-35 of design 041 passed its rate and ticket gates and failed the completion p99 (+40.6% and +23.7% at the
+medians, against +10%; `specs/041-step-logs/validation-report.md`). The assistant asked O041-039
+(`specs/041-step-logs/research.md`).
+
+| ID | Decision | Decided by | Status | Covers |
+|---|---|---|---|---|
+| OD-2026-11-20-1 | O041-039, "Cortar custo, depois limite absoluto" ("cut the cost, then an absolute limit"): (a) cut the carry's cost (its statements in one round trip, and the step-log quota charged once per transaction instead of per row, an amendment of ADR-0027's Amendment whose wording is put to the owner as O041-040) and run the spike again; (b) if it still misses +10%, the p99 criterion for completions that carry records is the capture-off p99 plus 2 ms, at both sizes, fixed before the rounds, the other gates unchanged | owner | Decided | docs/designs/041-step-logs.md T041-5, T041-35, T041-36 |
+
 ## 2026-11-19 — Design 041 (step logs): the redesign of the transport after the ingest spike
 
 The spike T041-31 of design 041 failed SC-041-007 on a quiet machine: with an `AppendStepLogs` transaction per batch and
