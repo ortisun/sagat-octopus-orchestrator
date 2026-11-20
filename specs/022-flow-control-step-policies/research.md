@@ -791,6 +791,55 @@ taken after `git grep D022-04` on every `origin/*` branch.
       commit ends and nothing reads it across commits. *Not changed:* a deferral's own deadline beyond the run's
       (architecture B1 item 7).
 
+- **D022-090 — The SDK builders only assemble `concurrency` and `rateLimit` (T022-048..052, T022-067, T022-083;
+  2026-11-20).** Delegate (OD-2026-11-20-6). Options weighed: (a) each SDK checks the IR schema's bounds (limit 1–10000,
+  the ceilings of each window, the timeout's range, the group's pattern, a non-empty key) when the policy is given, as
+  `limits()` and `chainPolicy()` do; (b) the builders assemble the policy in the IR's names and leave every rule to the
+  server's codec, as design 042's collection operators do (§7.3 of `sdks/SPEC.md`); (c) check only the ranges the schema
+  fixes and leave the window ceilings to the server. Chosen: (b). Advantage: one source of truth for a rule the server
+  owns and clamps by policy (the namespace's `concurrency_limit` and `flow_control_queue_timeout_ms` ceilings, the window
+  ceilings of FR-022-039) — six local copies would fork the server's semantics (constitution rule 8) and would refuse or
+  accept differently the day a ceiling or a scope (G1160, G1175) moves, which (b) absorbs with no SDK release; it is the
+  newest precedent of the same kind (an additive authoring field whose rules are publication's). Cost: an author sees
+  a bad bound at publication rather than at `build()`; publication is not an SDK operation anyway, and its refusal
+  (`CONCURRENCY_POLICY_INVALID`, `RATE_LIMIT_POLICY_INVALID`, `SCOPED_*`, `FLOW_CONTROL_COMBINATION`) names the field.
+  Kept: what a language cannot write as the IR is refused where it can occur — a timeout that is not a whole number of
+  milliseconds (Go `time.Duration`, C# `TimeSpan`) and a window outside the three (an undefined C# enum value, a Java
+  `null`), each `VALIDATION_FAILED`.
+- **D022-091 — The shape of the builders in the six SDKs (2026-11-20).** Delegate (OD-2026-11-20-6). The policy types
+  are named after the IR's `$defs` (`ConcurrencyPolicy`, `RateLimitPolicy`, `RatePeriod`) in every language; the
+  workflow-level call sits beside `limits` and `chainPolicy` on the workflow builder and replaces an earlier one; a
+  step and a script take the policy in the options they already have (TypeScript `StepOptions`/`ScriptOptions`, Go
+  option functions `Concurrency`/`RateLimit` and `ScriptConcurrency`/`ScriptRateLimit`, Python keywords, C# init
+  properties, Java fluent setters, Rust struct fields); durations follow each SDK's existing timeouts (Go
+  `time.Duration`, C# `TimeSpan`, the others milliseconds). Over a single `flowControl({...})` object (it would not be
+  the IR's shape, and the Studio and the codec speak `concurrency`/`rateLimit`) and over milliseconds everywhere (it
+  would break the idiom each SDK's other timeouts set). Java's policies are mutable fluent builders like
+  `RetryOptions` and are read when given, so a later change to one never alters a document already assembled; Rust's
+  are serde types that refuse an unknown member when decoded (the conformance runner decodes them, as for an Iceberg
+  write).
+- **D022-092 — Python takes the policy types only, not a mapping (2026-11-20).** Delegate (OD-2026-11-20-6). `RetrySpec`
+  also takes a mapping in the IR's keys for a field a newer schema adds; doing the same here would let a Python author
+  pass a member (a `burst`, say) that no other SDK can write, which breaks the byte-identity of FR-022-050 and has no
+  forward value (a new member is an SDK change in six languages anyway). Frozen dataclasses, as the rest of the
+  module's declarations.
+- **D022-093 — The two runtime scenarios, where they go beyond the contract's table (2026-11-20).** Delegate
+  (OD-2026-11-20-6). `flow-concurrency` queues a fourth run of key A (the contract has three, the third cancelled), so
+  that the grant order is observed between two waiters and not only behind the holder. `flow-rate-limit` limits starts
+  per minute, not per second: five REST starts on a loaded machine can take more than a second, which would let run 3
+  be granted without waiting and change the golden; a minute keeps which runs wait fixed, and the assertions are the
+  contract's (no window of `per` holds more than two run grants of P, nor more than one lease of the activity per
+  second). The cost is about a minute per language. The golden holds no instant: the windows and the order are checked
+  by the harness from the journals (`flow_control.rs`), the shape the contract asks for.
+- **D022-094 — A runtime scenario written before its server is `pending`, never green (2026-11-20).** Delegate
+  (OD-2026-11-20-6). A scenario carries `"pending": "<why, with the task or gap>"`; the harness still checks its
+  builder phase (the six SDKs write the same documents, its `.workflows.json` golden), then reports it as a failure
+  without booting a platform, and the registry test requires the reason to name a task or gap and no result golden.
+  Over leaving the scenarios out until the server is there (the assertions and the documents would be written later,
+  under time pressure) and over marking them `buildOnly` (that would read as conformance of the authoring alone and lose
+  the runtime contract). A run of `SAGAT_SDK_SCENARIO=flow-concurrency` therefore fails, saying why, until the server
+  side lands; then the key is removed, the result golden blessed after review and the run repeated without the switch.
+
 ## Gaps
 
 | ID | Gap | Status |
@@ -847,6 +896,8 @@ taken after `git grep D022-04` on every `origin/*` branch.
 | G1195 | Approved texts still describe the drain-first rotation: FR-022-020's last sentence, `data-model.md` (key versions, "only by an audited operator command"), G1163; `data-model.md` does not list `flow_control_group_declarations` or `activated_role`; `contracts/errors.md` does not say that `*_POLICY_INVALID` covers the namespace's ceiling of node-level declarations. Changing them makes the docs drafts again (constitution, Approval). *O1170 answered 2026-11-19 (OD-2026-11-19-2). Also out of date since the force (D022-046): FR-022-056's "no key is ever split between two rows" and SC-022-028 (a forced rotation splits a key into at most two rows), and `data-model.md` lacks `flow_control_key_forced_retirements`. The texts, and the bound of D022-047 in `contracts/errors.md`, are revised when the approved texts are next re-approved (a change makes them drafts again).* | Open; re-approval of the texts |
 | G1196 | A rotation's progress (rows left under the retiring version) has no metric and no audit record; the operator learns it by running the command again. *2026-11-19: likewise the rows left under a forced version (an over-admission in progress, D022-046); a force has an audit row, an activation does not.* | Open; T022-061, T022-082 |
 | G1183 | A database clock that moves backwards under-delivers until it catches up (NFR-022-008); no alert tells the operator why grants paused beyond `rate_limit_grant_lagging`. | Accepted; runbook |
+| G022-090 | The runtime scenarios `flow-concurrency` and `flow-rate-limit` cannot be played: a production build refuses every gated start (`BINARY_CAPABILITY_MISSING`, D022-037) until the capability listing and the deployment's digest key ring land (G1198), and the control plane of `tests/support` (`Options`) has no flow-control switch, so the suite's platform cannot even publish a gated workflow (`CAPABILITY_DISABLED`). Both scenarios are written with their independent assertions and marked `pending` (D022-094). | Open; server side of US02 and US07 (T022-072, T022-074, the capability listing) |
+| G022-091 | The SDKs' `Run` types do not carry the run resource's `concurrency` and `rateLimit` (state, position, estimate; FR-022-022, FR-022-048): the canonical OpenAPI does not have them yet (T022-026). `flow-rate-limit` observes a buffered run's `WAITING` status through the SDK (`get`); the contract's `rateLimit.state=WAITING` with a `position` is asserted once T022-120 adds the field to the six SDKs. | Open; T022-120 |
 
 ## Owner questions
 
