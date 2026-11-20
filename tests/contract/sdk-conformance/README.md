@@ -514,7 +514,7 @@ stop the scenario.
 | `startWorker` / `stopWorker` | `worker` (stop: `timeoutMs?`) | `start()` / `stop(timeout)` | `{protocolVersion}` for start |
 | `restartWorker` | `worker`, `timeoutMs?` | `stop()` then `start()` **on the same host object** (the host is restartable, SPEC §6.8) | `{protocolVersion}` |
 | `probeWorker` | `protocolVersion`, `activities?` | a throw-away host registered with that offer | `{accepted}` or the error |
-| `awaitJournal` | `run`, `eventType`, `stepId?`, `timeoutMs` | polls `events` until the journal has an event of that type (for that step) | none |
+| `awaitJournal` | `run`, `eventType`, `stepId?`, `timeoutMs` | polls `events` until the journal has an event of that type (for that step); each poll reads every page of the journal, each page with the `nextCursor` of the page before it, so an event past the first page of a long journal is found | none |
 | `awaitWorkerLog` | `worker`, `count`, `timeoutMs` | waits until the worker's log has `count` entries | none |
 | `workflowByName` | `name`, `input` | `start` with the workflow **name** | the Run |
 

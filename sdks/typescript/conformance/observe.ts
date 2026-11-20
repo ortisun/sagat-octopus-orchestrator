@@ -1,6 +1,6 @@
 // What the conformance runner prints for a schedule (tests/contract/sdk-conformance/README.md). It lives apart from
 // the runner, which starts a scenario as soon as it is loaded, so that a unit test can feed it a typed answer.
-import type { Schedule, ScheduleActionRecord, ScheduleDescription } from '../src/index.js';
+import type { JournalEvent, Schedule, ScheduleActionRecord, ScheduleDescription } from '../src/index.js';
 
 type Obj = Record<string, any>;
 
@@ -47,4 +47,21 @@ export function descriptionJson(d: ScheduleDescription): Obj {
     nextActions: d.nextActions.map((n) => ({ nominalTimeEpochMs: n.nominalTime.getTime(), actualTimeEpochMs: n.actualTime.getTime() })),
     recentActions: d.recentActions.map(actionJson), openRuns: d.openRuns, bufferedCount: d.bufferedCount, counters: d.counters,
   };
+}
+
+/** A page of a run's journal, as `client.events` answers it. */
+export type JournalPageReader = (cursor: string | undefined) => Promise<{ items: JournalEvent[]; nextCursor: string | null }>;
+
+/**
+ * Whether the journal of a run has an event of `eventType` (of the step `stepId`, when it is given). Every page is
+ * read, each with the cursor the page before it gave: an event past the first page of a long journal is found.
+ */
+export async function journalHas(read: JournalPageReader, eventType: string, stepId: string | undefined): Promise<boolean> {
+  let cursor: string | undefined;
+  for (;;) {
+    const page = await read(cursor);
+    if (page.items.some((e) => e.raw['eventType'] === eventType && (stepId === undefined || e.raw['stepId'] === stepId))) return true;
+    if (!page.nextCursor) return false;
+    cursor = page.nextCursor;
+  }
 }

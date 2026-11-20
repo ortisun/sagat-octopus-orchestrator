@@ -474,7 +474,7 @@ pub async fn run(scenario: &Value, config: &Value) -> Result<Value, Failure> {
             "sleep"=>{tokio::time::sleep(millis(step,"ms",0)).await;None}
             "control"=>{let mut body=json!({"action":step["action"]});if step.get("run").is_some(){body["run"]=json!(run_of(step,&results)?);}
 if let Some(node)=step.get("node"){body["node"]=node.clone();}let response=control::client()?.post(format!("{}/control",text(config,"controlUrl"))).json(&body).send().await.map_err(|_|SagatError::validation("control transport failed"))?;if !response.status().is_success(){return Err(SagatError::validation("control request refused"));}None}
-            "awaitJournal"=>{let run=run_of(step,&results)?;let end=tokio::time::Instant::now()+millis(step,"timeoutMs",20000);loop{let journal=client.events(&run,PageOptions{limit:Some(200),..Default::default()},Default::default()).await?;if journal.items.iter().any(|e|e.event_type==text(step,"eventType")&&(step.get("stepId").is_none()||e.step_id.as_deref()==step["stepId"].as_str())){break;}
+            "awaitJournal"=>{let run=run_of(step,&results)?;let end=tokio::time::Instant::now()+millis(step,"timeoutMs",20000);loop{let read=|cursor:Option<String>|client.events(&run,PageOptions{limit:Some(200),cursor},Default::default());if journal_has(read,text(step,"eventType"),step["stepId"].as_str()).await?{break;}
 if tokio::time::Instant::now()>=end{return Err(SagatError::validation("the scenario journal barrier was not reached"));}tokio::time::sleep(Duration::from_millis(25)).await;}None}
             "awaitWorkerLog"=>{let worker=workers.get(text(step,"worker")).ok_or_else(||SagatError::validation("unknown scenario worker"))?;let end=tokio::time::Instant::now()+millis(step,"timeoutMs",20000);loop{if worker.measure.lock().map_err(|_|SagatError::validation("measurement unavailable"))?.log.len()>=step["count"].as_u64().unwrap_or(0) as usize{break;}
 if tokio::time::Instant::now()>=end{return Err(SagatError::validation("the scenario worker log barrier was not reached"));}tokio::time::sleep(Duration::from_millis(20)).await;}None}
@@ -523,9 +523,92 @@ if tokio::time::Instant::now()>=end{return Err(SagatError::validation("the scena
     )
 }
 
+/// Whether the journal of a run has an event of `event_type` (of the step `step_id`, when it is given). Every page is
+/// read, each with the cursor the page before it gave: an event past the first page of a long journal is found.
+async fn journal_has<F, Fut>(
+    mut read: F,
+    event_type: &str,
+    step_id: Option<&str>,
+) -> Result<bool, SagatError>
+where
+    F: FnMut(Option<String>) -> Fut,
+    Fut: std::future::Future<Output = Result<JournalPage, SagatError>>,
+{
+    let mut cursor = None;
+    loop {
+        let page = read(cursor).await?;
+        if page.items.iter().any(|e| {
+            e.event_type == event_type && (step_id.is_none() || e.step_id.as_deref() == step_id)
+        }) {
+            return Ok(true);
+        }
+        match page.next_cursor {
+            Some(next) if !next.is_empty() => cursor = Some(next),
+            _ => return Ok(false),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A journal of two pages: the first holds only a `step.leased` of step `held`, the second its `step.started`.
+    /// The cursors the reader was asked for are kept.
+    fn two_pages(
+        asked: &std::sync::Mutex<Vec<Option<String>>>,
+        cursor: Option<String>,
+    ) -> impl std::future::Future<Output = Result<JournalPage, SagatError>> {
+        asked.lock().expect("asked").push(cursor.clone());
+        let (event, next) = if cursor.as_deref() == Some("second") {
+            ("step.started", None)
+        } else {
+            ("step.leased", Some("second".to_owned()))
+        };
+        let item: JournalEvent = serde_json::from_value(json!({
+            "seq": 1, "eventType": event, "occurredAt": "2026-11-20T10:00:00Z", "actor": "worker",
+            "stepId": "held", "attempt": 1
+        }))
+        .expect("event");
+        std::future::ready(Ok(Page {
+            items: vec![item],
+            next_cursor: next,
+            raw: json!({}),
+        }))
+    }
+
+    #[tokio::test]
+    async fn await_journal_finds_an_event_on_the_second_page_asked_for_with_the_cursor_of_the_first()
+     {
+        let asked = std::sync::Mutex::new(Vec::new());
+        let found = journal_has(
+            |cursor| two_pages(&asked, cursor),
+            "step.started",
+            Some("held"),
+        )
+        .await;
+        assert!(found.expect("read"));
+        assert_eq!(
+            *asked.lock().expect("asked"),
+            vec![None, Some("second".to_owned())]
+        );
+    }
+
+    #[tokio::test]
+    async fn await_journal_reads_every_page_before_it_says_the_journal_has_no_such_event() {
+        let asked = std::sync::Mutex::new(Vec::new());
+        let found = journal_has(
+            |cursor| two_pages(&asked, cursor),
+            "step.completed",
+            Some("held"),
+        )
+        .await;
+        assert!(!found.expect("read"));
+        assert_eq!(
+            *asked.lock().expect("asked"),
+            vec![None, Some("second".to_owned())]
+        );
+    }
 
     #[test]
     fn operation_options_preserve_manual_outcomes_and_failure_codes() {

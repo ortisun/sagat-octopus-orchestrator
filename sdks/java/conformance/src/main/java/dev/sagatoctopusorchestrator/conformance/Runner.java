@@ -918,6 +918,33 @@ public final class Runner {
         return resolved.asText();
     }
 
+    /** A page of a run's journal, read with the cursor of the page before it (null for the first). */
+    @FunctionalInterface
+    interface JournalPageReader {
+        JournalPage read(String cursor) throws Exception;
+    }
+
+    /**
+     * Whether the journal of a run has an event of {@code eventType} (of the step {@code stepId}, when it is not null).
+     * Every page is read, each with the cursor the page before it gave: an event past the first page of a long journal
+     * is found.
+     */
+    static boolean journalHas(JournalPageReader read, String eventType, String stepId) throws Exception {
+        String cursor = null;
+        for (;;) {
+            JournalPage page = read.read(cursor);
+            boolean found = page.items().stream().anyMatch(e -> eventType.equals(e.eventType())
+                    && (stepId == null || stepId.equals(e.stepId())));
+            if (found) {
+                return true;
+            }
+            if (page.nextCursor() == null || page.nextCursor().isEmpty()) {
+                return false;
+            }
+            cursor = page.nextCursor();
+        }
+    }
+
     private static void pause(long millis) throws InterruptedException {
         Thread.sleep(millis);
     }
@@ -1366,11 +1393,10 @@ public final class Runner {
             case "awaitJournal": {
                 String id = runOf(step, results);
                 long end = System.nanoTime() + Duration.ofMillis(step.has("timeoutMs") ? step.get("timeoutMs").asLong() : 20_000).toNanos();
+                String eventType = step.get("eventType").asText();
+                String stepId = step.has("stepId") ? step.get("stepId").asText() : null;
                 for (;;) {
-                    JournalPage page = client.events(id, null, 200);
-                    boolean found = page.items().stream().anyMatch(e -> step.get("eventType").asText().equals(e.eventType())
-                            && (!step.has("stepId") || step.get("stepId").asText().equals(e.stepId())));
-                    if (found) {
+                    if (journalHas(cursor -> client.events(id, cursor, 200), eventType, stepId)) {
                         return null;
                     }
                     if (System.nanoTime() > end) {
