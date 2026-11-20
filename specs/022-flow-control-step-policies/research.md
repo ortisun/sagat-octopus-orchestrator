@@ -996,6 +996,17 @@ taken after `git grep D022-04` on every `origin/*` branch.
   checked by the harness from the journal's instants (`check_concurrency`), which is also compared through
   `flowControlEvidence`.
 
+- **D022-096 — How the six SDKs read a run's permit (T022-120, concurrency part; 2026-11-20).** Delegate
+  (OD-2026-11-20-6). `Run.concurrency` follows the canonical `RunConcurrency` and the run's other nested objects
+  (`schedule`, `resetFrom`): `state`, `pool`, `group` and `since` are required, and a permit without one, or that is not an
+  object, is the SDK's `PROTOCOL` error (never a run with half of it); `state` and `pool` are kept as strings, a value the
+  SDK does not know included, since the enumerations only grow (over closed enums, which would turn a newer server's
+  answer into an error); `keyLabel` and `queueDeadline` are optional (null or absent is no label, no deadline), so a
+  caller without the reveal grant reads the same shape. The conformance observation writes a disclosed label as
+  `"disclosed"`: the label is a digest under each platform's own key, so its value differs per language while whether
+  it was disclosed is the contract. The OpenAPI has no `position` on a run permit (only the rate limit's does), so none
+  is added.
+
 ## Gaps
 
 | ID | Gap | Status |
@@ -1056,7 +1067,7 @@ taken after `git grep D022-04` on every `origin/*` branch.
 | G1196 | A rotation's progress (rows left under the retiring version) has no metric and no audit record; the operator learns it by running the command again. *2026-11-19: likewise the rows left under a forced version (an over-admission in progress, D022-046); a force has an audit row, an activation does not.* | Open; T022-061, T022-082 |
 | G1183 | A database clock that moves backwards under-delivers until it catches up (NFR-022-008); no alert tells the operator why grants paused beyond `rate_limit_grant_lagging`. | Accepted; runbook |
 | G022-090 | The runtime scenarios `flow-concurrency` and `flow-rate-limit` cannot be played: a production build refuses every gated start (`BINARY_CAPABILITY_MISSING`, D022-037) until the capability listing and the deployment's digest key ring land (G1198), and the control plane of `tests/support` (`Options`) has no flow-control switch, so the suite's platform cannot even publish a gated workflow (`CAPABILITY_DISABLED`). Both scenarios are written with their independent assertions and marked `pending` (D022-094). *Partly closed 2026-11-20: with G1198 the harness boots the concurrency gate (`Options::flow_control`, `flow_control::process_env`) and `flow-concurrency` passes in six languages (T022-053). Open: `flow-rate-limit`, which no process can serve yet (D022-057).* | Open; T022-072, T022-074 |
-| G022-091 | The SDKs' `Run` types do not carry the run resource's `concurrency` and `rateLimit` (state, position, estimate; FR-022-022, FR-022-048): the canonical OpenAPI does not have them yet (T022-026). `flow-rate-limit` observes a buffered run's `WAITING` status through the SDK (`get`); the contract's `rateLimit.state=WAITING` with a `position` is asserted once T022-120 adds the field to the six SDKs. | Open; T022-120 |
+| G022-091 | The SDKs' `Run` types do not carry the run resource's `concurrency` and `rateLimit` (state, position, estimate; FR-022-022, FR-022-048): the canonical OpenAPI does not have them yet (T022-026). `flow-rate-limit` observes a buffered run's `WAITING` status through the SDK (`get`); the contract's `rateLimit.state=WAITING` with a `position` is asserted once T022-120 adds the field to the six SDKs. | Open for `rateLimit` (T022-078, T022-120). *Partly closed 2026-11-20: the six `Run` types carry `concurrency` (D022-096) and `flow-concurrency` observes it through each SDK.* |
 
 ## Owner questions
 
