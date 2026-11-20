@@ -2182,6 +2182,7 @@ async fn step_log_carry_spike() {
     }
     if run == "3" {
         step_log_spike::install_leases(&w.db.pool).await;
+        step_log_spike::install_third_run_storage(&w.db.pool).await;
     }
     let (chain, _) = w
         .publish(document(
@@ -2200,7 +2201,7 @@ async fn step_log_carry_spike() {
     body.push_str(&format!(
         "Design 041, T041-35 ({}): the carry of section 2a run by the report hook inside the report transaction of each root completion, against the scratch schema `spike_041`. {runs} runs of three chained activities per measurement. Logs class cap and tickets of (g): {half_pool}.\n\n| Measurement | Transitions/s | Complete p50 / p99 | Carry calls / written / contended / neither | Carry p50 / p99 | S p99 | Batches | Ticket refusals | Commit waits / by ingest / by carry |\n|---|---:|---|---|---|---:|---:|---:|---|\n",
         if run == "3" {
-            "third run: one function call, a charge per insert statement to the tenant's exact leases"
+            "third run: one function call, a charge per insert statement to the tenant's exact leases, a new stream written once"
         } else if second_run {
             "second run: one function call, a charge per insert statement"
         } else {
@@ -2367,6 +2368,11 @@ async fn step_log_carry_diag() {
     // `hot` (run 44730444900, D041-106) or `cost` (D041-107: the carry's cost at 1 × 16 with no charge, then (a) and
     // (g) at 8 × 128 with the second run's charge, where rounds 4 and 5 of D041-105 stopped).
     let set = std::env::var("SAGAT_PERF_DIAG_SET").unwrap_or_else(|_| "hot".to_owned());
+    if set == "third" {
+        // The third run's shape (ADR-0097's leases, D041-111's stream written once) in place of the modes above.
+        step_log_spike::install_leases(&w.db.pool).await;
+        step_log_spike::install_third_run_storage(&w.db.pool).await;
+    }
     let (chain, _) = w
         .publish(document(
             "spike-chain",
@@ -2422,6 +2428,14 @@ async fn step_log_carry_diag() {
             "unlogged",
         ),
     ];
+    // The third run's shape at 1 × 16, paired with capture off: a preview of its cost, not the gate.
+    let third: Vec<DiagRow> = vec![
+        ("off-1K", 1, 16, None, false, false, "lease", "full"),
+        ("a3", 1, 16, Some(10), false, false, "lease", "full"),
+        ("off-{}", 1, 16, None, false, true, "lease", "full"),
+        ("f3", 1, 16, Some(10), false, true, "lease", "full"),
+        ("g3", 1, 16, Some(10), true, false, "lease", "full"),
+    ];
     let repro: Vec<DiagRow> = vec![
         ("a-cold", 8, 128, Some(10), false, false, "tenant", "full"),
         ("g-cold", 8, 128, Some(10), true, false, "tenant", "full"),
@@ -2432,7 +2446,11 @@ async fn step_log_carry_diag() {
     );
     let mut plan: Vec<(usize, DiagRow)> = Vec::new();
     for repetition in 1..=repetitions {
-        for row in if set == "cost" { &cost } else { &hot } {
+        for row in match set.as_str() {
+            "cost" => &cost,
+            "third" => &third,
+            _ => &hot,
+        } {
             plan.push((repetition, *row));
         }
     }
@@ -2446,8 +2464,10 @@ async fn step_log_carry_diag() {
     }
     for (repetition, (label, replicas, workers, carry, ingest, empty, mode, carry_mode)) in plan {
         {
-            step_log_diag::set_charge(&w.db.pool, w.admin.tenant_id().as_uuid(), mode).await;
-            step_log_diag::set_carry_mode(&w.db.pool, carry_mode).await;
+            if mode != "lease" {
+                step_log_diag::set_charge(&w.db.pool, w.admin.tenant_id().as_uuid(), mode).await;
+                step_log_diag::set_carry_mode(&w.db.pool, carry_mode).await;
+            }
             // The `-cold` rows run without filling the pools first, as the second run's rounds did (D041-110).
             step_log_spike::PREWARM.store(!label.ends_with("-cold"), Ordering::Relaxed);
             let spec = RowSpec {

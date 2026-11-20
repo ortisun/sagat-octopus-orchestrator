@@ -352,6 +352,14 @@ async fn nested_calls(pool: &PgPool) -> i64 {
     .expect("pg_stat_statements")
 }
 
+/// Entries `pg_stat_statements` evicted so far: a measure taken while it evicted is not trusted (as `work_budget.rs`).
+async fn evictions(pool: &PgPool) -> i64 {
+    sqlx::query_scalar("SELECT dealloc FROM pg_stat_statements_info")
+        .fetch_one(pool)
+        .await
+        .expect("pg_stat_statements_info")
+}
+
 /// Nested statements per query text, for the itemised budget.
 async fn nested_by_query(pool: &PgPool) -> std::collections::BTreeMap<String, i64> {
     sqlx::query_as::<_, (String, i64)>(
@@ -420,32 +428,167 @@ async fn a_step_log_insert_costs_its_budget_line() {
         insert(1).execute(&mut *tx).await.expect("the first ten lines");
         assert_eq!(written_by_me(&mut tx).await, (1, 1, 0), "a refill writes one lease row and the usage row once");
         tx.commit().await.expect("commit");
-        // The second finds lease room: the hot path.
-        let mut tx = pool.begin().await.expect("begin");
-        let before = nested_calls(pool).await;
-        let items = nested_by_query(pool).await;
-        insert(11).execute(&mut *tx).await.expect("ten more lines");
-        let during = nested_calls(pool).await;
-        let ran: Vec<(String, i64)> = nested_by_query(pool)
+        // The next ones find lease room: the hot path. Measured again while `pg_stat_statements` evicts entries.
+        for attempt in 0..8 {
+            let evicted = evictions(pool).await;
+            let mut tx = pool.begin().await.expect("begin");
+            let before = nested_calls(pool).await;
+            let items = nested_by_query(pool).await;
+            insert(11 + 10 * attempt).execute(&mut *tx).await.expect("ten more lines");
+            let during = nested_calls(pool).await;
+            let ran: Vec<(String, i64)> = nested_by_query(pool)
+                .await
+                .into_iter()
+                .map(|(q, n)| (q.chars().take(90).collect::<String>(), n - items.get(&q).copied().unwrap_or(0)))
+                .filter(|(_, n)| *n > 0)
+                .collect();
+            let written = written_by_me(&mut tx).await;
+            let at_commit = nested_calls(pool).await;
+            tx.commit().await.expect("commit");
+            let after = nested_calls(pool).await;
+            if evictions(pool).await != evicted {
+                continue;
+            }
+            let foreign_key: i64 = ran
+                .iter()
+                .filter(|(q, _)| q.starts_with("SELECT $3 FROM ONLY \"spike_041\".\"step_log_streams\""))
+                .map(|(_, n)| n)
+                .sum();
+            assert_eq!(foreign_key, 10, "one foreign-key check a line: {ran:#?}");
+            assert_eq!(written, (1, 0, 0), "a charge writes one lease row, no usage and no delta row");
+            // The reads of this test are top-level statements of another connection, and a subquery is not a
+            // statement: the difference is the insert's nested statements, its charge's six and one foreign-key check
+            // for each line.
+            assert_eq!(during - before, 6 + 10, "the nested statements of one charged insert: {ran:#?}");
+            assert_eq!(after - at_commit, 0, "the commit runs no deferred quota call for a step-log-only transaction");
+            return;
+        }
+        panic!("pg_stat_statements evicted entries during every one of eight attempts");
+    })
+    .await;
+}
+
+async fn third_run_world() -> (World, Uuid) {
+    let (w, tenant) = leased_world(1 << 30).await;
+    super::install_third_run_storage(&w.db.pool).await;
+    (w, tenant)
+}
+
+fn carry_call<'q>(
+    tenant: Uuid,
+    run: Uuid,
+    step: Uuid,
+) -> sqlx::query::QueryScalar<'q, sqlx::Postgres, String, sqlx::postgres::PgArguments> {
+    sqlx::query_scalar(
+        "SELECT spike_041.step_log_carry($1, $2, $3, $4, 'a', 1, 0, '{}'::text[], $5, \
+         ARRAY['step_log_attempt_records', 'step_log_attempt_bytes', 'step_log_retention_days'], $6, 'x')",
+    )
+    .bind(tenant)
+    .bind(Uuid::new_v4())
+    .bind(run)
+    .bind(step)
+    .bind(format!("stream-lock-{run}-{step}"))
+    .bind((0..10).map(|i| format!("{i:0>200}")).collect::<Vec<_>>())
+}
+
+/// Inserts, updates and HOT updates of a table by the open transaction.
+async fn table_writes(conn: &mut PgConnection, table: &str) -> (i64, i64, i64) {
+    sqlx::query_as(
+        "SELECT coalesce(sum(n_tup_ins), 0)::bigint, coalesce(sum(n_tup_upd), 0)::bigint, \
+                coalesce(sum(n_tup_hot_upd), 0)::bigint \
+           FROM pg_stat_xact_user_tables WHERE schemaname = 'spike_041' AND relname = $1",
+    )
+    .bind(table)
+    .fetch_one(conn)
+    .await
+    .expect("pg_stat_xact_user_tables")
+}
+
+/// D041-111: a short step's carry writes its new stream once (no update in the same transaction), and its ten lines;
+/// the budget line of the whole call is pinned in nested statements.
+#[tokio::test]
+async fn a_short_steps_carry_writes_its_new_stream_once() {
+    bounded::within("one write", LIMIT, async {
+        let (w, tenant) = third_run_world().await;
+        let pool = &w.db.pool;
+        sqlx::query("CREATE EXTENSION IF NOT EXISTS pg_stat_statements")
+            .execute(pool)
             .await
-            .into_iter()
-            .map(|(q, n)| (q.chars().take(90).collect::<String>(), n - items.get(&q).copied().unwrap_or(0)))
-            .filter(|(_, n)| *n > 0)
-            .collect();
-        let foreign_key: i64 = ran
-            .iter()
-            .filter(|(q, _)| q.starts_with("SELECT $3 FROM ONLY \"spike_041\".\"step_log_streams\""))
-            .map(|(_, n)| n)
-            .sum();
-        assert_eq!(foreign_key, 10, "one foreign-key check a line: {ran:#?}");
-        assert_eq!(written_by_me(&mut tx).await, (1, 0, 0), "a charge writes one lease row, no usage and no delta row");
-        let at_commit = nested_calls(pool).await;
+            .expect("the test PostgreSQL preloads pg_stat_statements");
+        // A first carry leases (a refill), so that the measured one charges a free lease.
+        let mut tx = pool.begin().await.expect("begin");
+        carry_call(tenant, Uuid::new_v4(), Uuid::new_v4())
+            .fetch_one(&mut *tx)
+            .await
+            .expect("a first carry");
         tx.commit().await.expect("commit");
-        let after = nested_calls(pool).await;
-        // The reads of this test are top-level statements of another connection, and a subquery is not a statement: the
-        // difference is the insert's nested statements, its charge's six and one foreign-key check for each line.
-        assert_eq!(during - before, 6 + 10, "the nested statements of one charged insert: {ran:#?}");
-        assert_eq!(after - at_commit, 0, "the commit runs no deferred quota call for a step-log-only transaction");
+        for _ in 0..8 {
+            let evicted = evictions(pool).await;
+            let mut tx = pool.begin().await.expect("begin");
+            let before = nested_calls(pool).await;
+            let outcome = carry_call(tenant, Uuid::new_v4(), Uuid::new_v4())
+                .fetch_one(&mut *tx)
+                .await
+                .expect("the carry");
+            let during = nested_calls(pool).await;
+            assert_eq!(outcome, "written");
+            let stream = table_writes(&mut tx, "step_log_streams").await;
+            let lines = table_writes(&mut tx, "step_log_lines").await;
+            let written = written_by_me(&mut tx).await;
+            let at_commit = nested_calls(pool).await;
+            tx.commit().await.expect("commit");
+            let after = nested_calls(pool).await;
+            if evictions(pool).await != evicted {
+                continue;
+            }
+            assert_eq!(stream, (1, 0, 0), "the stream is inserted once, never updated");
+            assert_eq!(lines, (10, 0, 0));
+            assert_eq!(written, (1, 0, 0), "one lease row, no usage or delta row");
+            assert_eq!(after - at_commit, 0, "no deferred quota call at the commit");
+            // The function's six statements (the application name, the policy read, the usage read, the plan's size,
+            // the stream insert, the lines insert), the stream's path check (`execution_instance_path_valid`, a SQL
+            // function its CHECK calls), the charge's six and the ten foreign-key checks. Derived first as 22, seen
+            // failing at 23: the path check had been left out.
+            assert_eq!(during - before, 6 + 1 + 6 + 10, "the nested statements of a short step's carry");
+        let (records, bytes, last, xid_set): (i32, i64, i64, bool) = sqlx::query_as(
+            "SELECT records, bytes, last_sequence, last_stored_xid IS NOT NULL FROM spike_041.step_log_streams \
+              ORDER BY stream_id DESC LIMIT 1",
+        )
+        .fetch_one(pool)
+        .await
+        .expect("the stream");
+        assert_eq!((records, bytes, last, xid_set), (10, 2_000, 10, true), "the counters the plan wrote");
+            return;
+        }
+        panic!("pg_stat_statements evicted entries during every one of eight attempts");
+    })
+    .await;
+}
+
+/// D041-111: a carry onto an existing stream (a long step's) updates it HOT when the day of its expiry is unchanged.
+#[tokio::test]
+async fn a_carry_onto_an_existing_stream_updates_it_hot() {
+    bounded::within("hot update", LIMIT, async {
+        let (w, tenant) = third_run_world().await;
+        let pool = &w.db.pool;
+        let (run, step) = (Uuid::new_v4(), Uuid::new_v4());
+        sqlx::query(
+            "INSERT INTO spike_041.step_log_streams (tenant_id, public_id, namespace_id, run_id, step_id, node, \
+               instance_path_nodes, instance_path_indices, attempt, generation, retention_days, last_at, expires_at) \
+             VALUES ($1, gen_random_uuid(), gen_random_uuid(), $2, $3, 'a', '{}', '{}', 1, 0, 14, clock_timestamp(), \
+               clock_timestamp() + interval '14 days')",
+        )
+        .bind(tenant)
+        .bind(run)
+        .bind(step)
+        .execute(pool)
+        .await
+        .expect("a long step's stream");
+        let mut tx = pool.begin().await.expect("begin");
+        let outcome = carry_call(tenant, run, step).fetch_one(&mut *tx).await.expect("the carry");
+        assert_eq!(outcome, "written");
+        assert_eq!(table_writes(&mut tx, "step_log_streams").await, (0, 1, 1), "one update, HOT");
+        tx.commit().await.expect("commit");
     })
     .await;
 }

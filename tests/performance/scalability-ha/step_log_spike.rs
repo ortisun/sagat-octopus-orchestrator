@@ -377,6 +377,123 @@ pub async fn install_leases(pool: &PgPool) {
     }
 }
 
+/// T041-35's third run, the storage of D041-111 (after `install_per_statement`): the stream row loses its run index (a
+/// run's streams are read through the prefix of the attempt key), its expiry index is keyed on the day of `expires_at`, a
+/// stored generated column, so that an update that keeps the day changes no indexed column (HOT, with room left on each
+/// page), and the carry writes a new stream once, with its counters, final mark, expiry and order guard, before its lines.
+#[cfg(feature = "perf-spike")]
+pub async fn install_third_run_storage(pool: &PgPool) {
+    let statements = [
+        "DROP INDEX spike_041.step_log_streams_run_idx",
+        "DROP INDEX spike_041.step_log_streams_expiry_idx",
+        "ALTER TABLE spike_041.step_log_streams ADD COLUMN expires_day integer GENERATED ALWAYS AS \
+           ((floor(extract(epoch FROM (expires_at - '1970-01-01 00:00:00+00'::timestamptz)) / 86400))::integer) STORED",
+        "CREATE INDEX step_log_streams_expiry_idx ON spike_041.step_log_streams (expires_day) WHERE removed_at IS NULL",
+        "ALTER TABLE spike_041.step_log_streams SET (fillfactor = 70)",
+        r"CREATE OR REPLACE FUNCTION spike_041.step_log_carry(p_tenant uuid, p_namespace uuid, p_run uuid, p_step uuid,
+                p_node text, p_attempt integer, p_generation bigint, p_keys text[], p_stream_key text,
+                p_resources text[], p_messages text[], p_application text)
+            RETURNS text LANGUAGE plpgsql VOLATILE SET search_path = pg_catalog, public, pg_temp AS $$
+        DECLARE
+            k text; r record;
+            v_records bigint := 10000; v_bytes bigint := 1048576; v_retention integer := 14;
+            v_records_scoped boolean := false; v_bytes_scoped boolean := false; v_retention_scoped boolean := false;
+            v_usage bigint; v_stream bigint; v_last bigint; v_count bigint; v_sum bigint;
+            v_final boolean; v_removed boolean; v_in_order boolean; v_inserted integer; v_size bigint;
+            v_kept integer; v_kept_bytes bigint;
+        BEGIN
+            PERFORM set_config('application_name', p_application, true);
+            FOREACH k IN ARRAY p_keys LOOP
+                IF NOT pg_try_advisory_xact_lock_shared(hashtextextended(k, 0)) THEN RETURN 'contended'; END IF;
+            END LOOP;
+            IF NOT pg_try_advisory_xact_lock(hashtextextended(p_stream_key, 0)) THEN RETURN 'contended'; END IF;
+            -- The tenant's quota class fences (L3), tried, so that CD's charge never waits for them (ADR-0097).
+            FOREACH k IN ARRAY ARRAY['quota-policy:tenant_content_bytes:', 'quota-policy:tenant_log_bytes:',
+                                     'quota-policy:tenant_step_log_bytes:'] LOOP
+                IF NOT pg_try_advisory_xact_lock_shared(hashtextextended(k || p_tenant::text, 0)) THEN
+                    RETURN 'contended';
+                END IF;
+            END LOOP;
+            FOR r IN SELECT resource, namespace_id, max_value FROM public.quota_limits
+                      WHERE tenant_id = p_tenant AND resource = ANY (p_resources)
+                        AND (namespace_id IS NULL OR namespace_id = p_namespace)
+                     UNION ALL SELECT resource, NULL::uuid, max_value FROM public.quota_ceilings
+                      WHERE tenant_id = p_tenant AND resource = ANY (p_resources) LOOP
+                IF r.resource = p_resources[1] AND (r.namespace_id IS NOT NULL OR NOT v_records_scoped) THEN
+                    v_records := r.max_value; v_records_scoped := r.namespace_id IS NOT NULL;
+                ELSIF r.resource = p_resources[2] AND (r.namespace_id IS NOT NULL OR NOT v_bytes_scoped) THEN
+                    v_bytes := r.max_value; v_bytes_scoped := r.namespace_id IS NOT NULL;
+                ELSIF r.resource = p_resources[3] AND (r.namespace_id IS NOT NULL OR NOT v_retention_scoped) THEN
+                    v_retention := r.max_value::integer; v_retention_scoped := r.namespace_id IS NOT NULL;
+                END IF;
+            END LOOP;
+            SELECT step_log_bytes INTO v_usage FROM public.tenant_retained_usage WHERE tenant_id = p_tenant;
+            IF v_records = 0 THEN RETURN 'off'; END IF;
+            -- The plan of a new stream, before any write: every record kept when it fits the attempt ceilings.
+            v_kept := cardinality(p_messages);
+            SELECT coalesce(sum(octet_length(m)), 0)::bigint INTO v_kept_bytes FROM unnest(p_messages) AS u(m);
+            IF v_kept > v_records OR v_kept_bytes > v_bytes THEN RETURN 'neither'; END IF;
+            -- CC: a new stream, written once with what the plan stores.
+            INSERT INTO spike_041.step_log_streams (tenant_id, public_id, namespace_id, run_id, step_id, node,
+                    instance_path_nodes, instance_path_indices, attempt, generation, retention_days, last_sequence,
+                    records, bytes, first_at, last_at, expires_at, final_at, last_stored_xid)
+            SELECT p_tenant, gen_random_uuid(), p_namespace, p_run, p_step, p_node, '{}'::text[], '{}'::integer[],
+                   p_attempt, p_generation, v_retention, v_kept, v_kept, v_kept_bytes,
+                   CASE WHEN v_kept > 0 THEN clock_timestamp() END, clock_timestamp(),
+                   clock_timestamp() + make_interval(days => v_retention), clock_timestamp(),
+                   CASE WHEN v_kept > 0 THEN pg_current_xact_id() END
+             WHERE NOT EXISTS (SELECT 1 FROM spike_041.step_log_streams WHERE tenant_id = p_tenant AND run_id = p_run
+                                  AND step_id = p_step AND attempt = p_attempt AND generation = p_generation
+                                  AND source = 'worker')
+            ON CONFLICT (tenant_id, run_id, step_id, attempt, generation, source) DO NOTHING
+            RETURNING stream_id INTO v_stream;
+            IF v_stream IS NOT NULL THEN
+                -- CD only: the new stream's lines; nothing to update.
+                INSERT INTO spike_041.step_log_lines (tenant_id, stream_id, sequence, run_id, worker_time, level, kind, message)
+                SELECT p_tenant, v_stream, o, p_run, clock_timestamp(), 'info', 'line', m
+                  FROM unnest(p_messages) WITH ORDINALITY AS u(m, o);
+                RETURN 'written';
+            END IF;
+            -- CC': the existing stream, locked only if free; then CD and CE as before.
+            SELECT stream_id, last_sequence, records, bytes, final_at IS NOT NULL,
+                   (removed_at IS NOT NULL OR expires_at <= clock_timestamp()),
+                   (last_stored_xid IS NULL OR last_stored_xid < pg_current_xact_id())
+              INTO v_stream, v_last, v_count, v_sum, v_final, v_removed, v_in_order
+              FROM spike_041.step_log_streams
+             WHERE tenant_id = p_tenant AND run_id = p_run AND step_id = p_step AND attempt = p_attempt
+               AND generation = p_generation AND source = 'worker'
+               FOR UPDATE SKIP LOCKED;
+            IF NOT FOUND THEN RETURN 'contended'; END IF;
+            IF v_final OR v_removed OR NOT v_in_order THEN RETURN 'neither'; END IF;
+            IF v_count + cardinality(p_messages) > v_records THEN RETURN 'neither'; END IF;
+            WITH ins AS (
+                INSERT INTO spike_041.step_log_lines (tenant_id, stream_id, sequence, run_id, worker_time, level, kind, message)
+                SELECT p_tenant, v_stream, v_last + o, p_run, clock_timestamp(), 'info', 'line', m
+                  FROM unnest(p_messages) WITH ORDINALITY AS u(m, o)
+                ON CONFLICT (tenant_id, stream_id, sequence) DO NOTHING
+                RETURNING octet_length(message) AS n)
+            SELECT count(*)::integer, coalesce(sum(n), 0)::bigint INTO v_inserted, v_size FROM ins;
+            IF v_sum + v_size > v_bytes THEN RAISE EXCEPTION 'spike carry over the attempt bytes'; END IF;
+            UPDATE spike_041.step_log_streams
+               SET last_sequence = GREATEST(last_sequence, v_last + cardinality(p_messages)),
+                   records = records + v_inserted, bytes = bytes + v_size,
+                   first_at = coalesce(first_at, clock_timestamp()), last_at = clock_timestamp(),
+                   expires_at = clock_timestamp() + make_interval(days => retention_days::integer),
+                   final_at = clock_timestamp(),
+                   last_stored_xid = CASE WHEN v_inserted > 0
+                       THEN GREATEST(coalesce(last_stored_xid, '0'::xid8), pg_current_xact_id()) ELSE last_stored_xid END
+             WHERE tenant_id = p_tenant AND stream_id = v_stream;
+            RETURN 'written';
+        END $$",
+    ];
+    for statement in statements {
+        sqlx::query(statement)
+            .execute(pool)
+            .await
+            .unwrap_or_else(|error| panic!("spike schema (third run, storage): {error}"));
+    }
+}
+
 #[cfg(all(test, feature = "perf-spike"))]
 #[path = "step_log_leases_tests.rs"]
 mod leases_tests;

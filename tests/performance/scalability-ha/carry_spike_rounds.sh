@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Rounds of design 041's spike T041-35, second run (one-call carry, OD-2026-11-20-1), each one invocation of run.sh on a
+# Rounds of design 041's spike T041-35, third run (D041-106 to D041-111; second run: SAGAT_PERF_STEP_LOG_CARRY_RUN=2), each one invocation of run.sh on a
 # fresh database. On a dedicated runner (SAGAT_SPIKE_DEDICATED=1, the declared environment of OD-2026-11-20-6) nothing
 # else runs, so a round begins at once and counts as quiet; elsewhere it waits at most 45 minutes for a 1-minute load
 # under 3 and is marked not quiet otherwise. Stops once three rounds are valid (carry_spike_judge.py) or after ROUNDS.
@@ -8,7 +8,7 @@ set -uo pipefail
 cd "$(dirname "$0")/../../.."
 OUT="${OUT:?set OUT to the directory for the rounds}"
 mkdir -p "$OUT"
-export SAGAT_PERF_STEP_LOG_SPIKE=1 SAGAT_PERF_STEP_LOG_CARRY=1 SAGAT_PERF_STEP_LOG_CARRY_RUN=2
+export SAGAT_PERF_STEP_LOG_SPIKE=1 SAGAT_PERF_STEP_LOG_CARRY=1 SAGAT_PERF_STEP_LOG_CARRY_RUN="${SAGAT_PERF_STEP_LOG_CARRY_RUN:-3}"
 export SAGAT_PERF_SCENARIOS=step_log_carry_spike SAGAT_PERF_CARGO_FEATURES=perf-spike
 load1() { awk '{print $1}' /proc/loadavg 2>/dev/null || sysctl -n vm.loadavg | awk '{print $2}'; }
 cpu() { (lscpu 2>/dev/null | sed -n 's/^Model name: *//p') || sysctl -n machdep.cpu.brand_string; }
