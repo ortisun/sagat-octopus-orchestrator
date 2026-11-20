@@ -58,6 +58,7 @@ admission entry point.
 | GET, PUT, DELETE | `/namespaces/{namespaceId}/egress-policy` | `EgressManage` |
 | GET | `/namespaces/{namespaceId}/alerts` | `OpsRead` |
 | GET | `/namespaces/{namespaceId}/concurrency-keys` | `OpsRead` |
+| GET | `/namespaces/{namespaceId}/rate-limit-keys` | `OpsRead` |
 | GET | `/namespaces/{namespaceId}/workers` | `OpsRead` |
 | POST | `/namespaces/{namespaceId}/workers/{subject}/drain` | `WorkerManage` |
 | POST | `/namespaces/{namespaceId}/workers/{subject}/undrain` | `WorkerManage` |

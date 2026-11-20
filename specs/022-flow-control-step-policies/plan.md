@@ -636,8 +636,11 @@ What a reader sees is read from the rows the gate decides with, without a lock, 
   the waiter's deadline. The label follows FR-022-057 (the reveal grant, D022-060).
 - **Position and estimate** (`getRun` only, a `WAITING` run; never in a listing): read at one instant `t` by one
   statement. With `L` the waiter's limit, `p` its window, `n` the key's grants that count over `p` at `t` and `a` the
-  eligible waiters ahead of it (the grant routine's own predicate, `admits`: not past their deadline, their run running
-  or waiting and not paused, their own limit above `n`, ordered by `(enqueued_at, run_id, node)`):
+  waiters ahead of it that the pass visits (not past their deadline, their run running or waiting and not paused, in
+  the queue's order `(enqueued_at, run_id, node)`). The grant routine also skips a waiter ahead whose own limit is
+  below the count at the moment (`admits`); read at a full key that filter would rank every waiter first, so the
+  position leaves it out: with the one limit a key has in practice (a second one is warned `RATE_LIMIT_MISMATCH` at
+  publication) the waiters ahead are granted first, in that order:
   - `position = a + 1` (1 is next), exact at `t` (D022-014);
   - the routine grants the waiter when `n + a < L`; a grant to a waiter ahead moves one from `a` to `n`, so the sum
     falls only when a counted grant ages out. With `k = n + a - L + 1`: `k <= 0` gives `t` (there is room; the next pass
@@ -645,7 +648,8 @@ What a reader sees is read from the rows the gate decides with, without a lock, 
     counted grants (at that instant the `k`-th one counts no more); `k > n` gives `null` (beyond one window). It is
     `null` too while the run also waits for a concurrency permit. A run-scope window holds only run grants, which count
     from their grant, so no slot ahead is held by an unleased step (D022-014's first case cannot arise here). An
-    estimate, never a promise: the pass's lag and later waiters' deadlines move it.
+    estimate, never a promise: the pass's lag and later waiters' deadlines move it. It is shown only to a caller with
+    the namespace's reveal grant (D022-067 item 8): it is another run's grant instant plus the window.
   - Cost: one statement, the `n` counted leases read in order up to the `k`-th through `rate_limit_grants_count_idx`
     (at most the key's limit, 10,000) and the waiters ahead through `rate_limit_waiters_order_idx` (at most the key's
     run waiters, `flow_control_key_waiters`, 10,000 at most).

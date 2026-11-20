@@ -2362,6 +2362,28 @@ where
             Some(mut run) => {
                 self.reveal_permit_labels(principal, std::slice::from_mut(&mut run))
                     .await?;
+                // a single-run read of a buffered run says where it stands (FR-022-048; never a listing, D022-014)
+                if let Some(slot) = run.rate_limit.as_mut()
+                    && matches!(
+                        slot.state,
+                        crate::flow_control_keys::RunPermitState::Waiting { .. }
+                    )
+                    && let Some(mut place) =
+                        self.store.rate_place(principal.tenant_id(), id).await?
+                {
+                    // a run that also waits for its permit is granted both or neither: no estimate (D022-014); and the
+                    // estimate is another run's grant instant plus the window, which would link the two runs for a
+                    // caller who may not see the label (D022-067 item 8)
+                    if slot.label().is_none()
+                        || matches!(
+                            run.concurrency.as_ref().map(|permit| permit.state),
+                            Some(crate::flow_control_keys::RunPermitState::Waiting { .. })
+                        )
+                    {
+                        place.estimated_grant_at = None;
+                    }
+                    slot.place(place);
+                }
                 Ok(run)
             }
             None => Err(self.missing(principal, id, ctx).await),
@@ -2377,9 +2399,9 @@ where
     ) -> Result<(), AppError> {
         let mut decided: Vec<(sagat_domain::identity::NamespaceId, bool)> = Vec::new();
         for run in runs {
-            let Some(permit) = run.concurrency.as_mut() else {
+            if run.concurrency.is_none() && run.rate_limit.is_none() {
                 continue;
-            };
+            }
             let namespace = run.info.namespace_id;
             let reveal = if let Some((_, reveal)) = decided.iter().find(|(n, _)| *n == namespace) {
                 *reveal
@@ -2392,7 +2414,12 @@ where
                 reveal
             };
             if reveal {
-                permit.reveal_label();
+                if let Some(permit) = run.concurrency.as_mut() {
+                    permit.reveal_label();
+                }
+                if let Some(slot) = run.rate_limit.as_mut() {
+                    slot.reveal_label();
+                }
             }
         }
         Ok(())

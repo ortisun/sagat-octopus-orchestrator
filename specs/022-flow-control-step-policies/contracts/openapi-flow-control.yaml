@@ -551,8 +551,8 @@ components:
             per: {type: string, enum: [second, minute, hour]}
             since: {type: string, format: date-time, description: 'When the run was buffered (WAITING) or granted (GRANTED).'}
             queueDeadline: {type: [string, 'null'], format: date-time}
-            position: {type: [integer, 'null'], minimum: 1, description: 'WAITING only, and only in the single-run read (getRun); null in listings: rank among the eligible waiters of the key at read time (the grant pass''s own rule: not past their deadline, their run live and not paused, their limit above the counted grants); 1 is next.'}
-            estimatedGrantAt: {type: [string, 'null'], format: date-time, description: 'WAITING only, and only in the single-run read (getRun): an estimate computed at read time, never a promise: the instant enough counted grants age out for the run''s position (plan "Visibility of the rate gate"), or the read''s instant when there is room now; null when the position is beyond one window or the run also waits for a concurrency permit.'}
+            position: {type: [integer, 'null'], minimum: 1, description: 'WAITING only, and only in the single-run read (getRun); null in listings: rank among the eligible waiters of the key at read time (the waiters the grant pass visits ahead of it, in its order: not past their deadline, their run live and not paused); 1 is next.'}
+            estimatedGrantAt: {type: [string, 'null'], format: date-time, description: 'WAITING only, and only in the single-run read (getRun): an estimate computed at read time, never a promise: the instant enough counted grants age out for the run''s position (plan "Visibility of the rate gate"), or the read''s instant when there is room now; null for a caller who may not reveal personal data in the run''s namespace (it is another run''s grant instant plus the window, D022-067), when the position is beyond one window or the run also waits for a concurrency permit.'}
     RunOriginAdditions:
       description: Values added to the canonical `DatabaseExecutionOrigin` enumeration (name kept for compatibility) used by `Run.origin` and `listRuns?origin=`.
       type: string

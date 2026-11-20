@@ -16,6 +16,7 @@ mod migrations;
 mod publication;
 mod queue;
 mod rate_gate;
+mod rate_rest;
 mod readiness;
 mod readiness_sources;
 mod rest;

@@ -1667,6 +1667,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/namespaces/{namespaceId}/rate-limit-keys": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List the rate-limit keys of a namespace, oldest wait first
+         * @description Feature 022 (FR-022-048, release 0.3.0 slice; T022-078). Needs `ops:read`. Every rate-limit window of the namespace (the rows the `rate_limit_live_keys` ceiling counts), each with the grants that count over its longest window, its unleased grants, its waiters, the age of its oldest wait and the instant its next slot frees, oldest wait first; keys nobody waits for come last. `queuedRuns` counts the namespace's queued runs (concurrency and rate-limit waiters together, a run once) as the `queued_runs` ceiling counts them; the `group` filter narrows the keys, not that count. A key is never shown by its value: `keyLabel` is the 12-hex label of its keyed digest, and is null unless the caller may reveal personal data in the namespace (a role that may use a reveal grant, and the namespace's `payload:reveal-pii` grant); for any other caller `oldestWaitSince` and `nextSlotAt` are truncated to their minute (toward the past, UTC; seconds and fractions zero), since whole they equal or derive from the instants of the key's runs. A page that has a next one is a 503 when the serving process lacks the digest key version in force (it cannot seal the cursor). Counts are read without the keys' locks, in one snapshot per page, at the page's instant; a key's counts and place may change between two pages. `nextCursor` is opaque, sealed for this namespace under the digest key version in force and of this listing's own kind: an altered cursor, one of another namespace, one of the concurrency-key listing, one of another group's listing, or one sealed under a version no longer in force is a 400. A namespace of another tenant is a 404, like one that does not exist.
+         */
+        get: operations["listRateLimitKeys"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/namespaces/{namespaceId}/workers": {
         parameters: {
             query?: never;
@@ -3942,6 +3962,7 @@ export interface components {
             /** @description Design 043 (FR-043-015): the failure code the stop of the run carries, when it stopped with one: the code of the step whose failure failed the run, a ceiling (`STORAGE_QUOTA_EXCEEDED`, ...), or `CONTINUATION_INPUT_INVALID` and `RUN_INPUT_SCHEMA_UNUSABLE` for a continue-as-new refused for its input. Absent for every other run. Read by getRun and listRuns. Never holds an input value. */
             failureCode?: string;
             concurrency?: components["schemas"]["RunConcurrency"];
+            rateLimit?: components["schemas"]["RunRateLimit"];
         };
         RunPage: {
             items: components["schemas"]["Run"][];
@@ -4183,10 +4204,10 @@ export interface components {
             /** Format: date-time */
             dueAt?: string | null;
             /**
-             * @description `saga`: a saga node while its body works, compensates or waits. `reconciliation`: the lookup `<id>~r` is finding out whether the effect happened. `operator`: a person has to decide (RETRY_STEP, RETRY_COMPENSATION, SKIP_COMPENSATION or RESOLVE_STEP). `loop` and `collection`: the owner while its iterations run. `approval`: the node while its request is open.
+             * @description `rate_limit` and `concurrency` (feature 022): a step waiting for its rate-limit slot or its concurrency permit, rate first when it waits for both. `saga`: a saga node while its body works, compensates or waits. `reconciliation`: the lookup `<id>~r` is finding out whether the effect happened. `operator`: a person has to decide (RETRY_STEP, RETRY_COMPENSATION, SKIP_COMPENSATION or RESOLVE_STEP). `loop` and `collection`: the owner while its iterations run. `approval`: the node while its request is open.
              * @enum {string|null}
              */
-            waitingOn?: "timer" | "event" | "branches" | "child" | "saga" | "reconciliation" | "operator" | "loop" | "approval" | "collection" | null;
+            waitingOn?: "timer" | "event" | "branches" | "child" | "saga" | "reconciliation" | "operator" | "loop" | "approval" | "collection" | "rate_limit" | "concurrency" | null;
             /**
              * Format: uuid
              * @description The child run a `child` node reserved.
@@ -5662,6 +5683,74 @@ export interface components {
             items: components["schemas"]["ConcurrencyKey"][];
             /** @description Opaque, sealed for this namespace; null after the last page. */
             nextCursor?: string | null;
+        };
+        /** @description Feature 022 (FR-022-048). One rate-limit window row of the namespace; counts are a snapshot read without the key's lock, at the page's instant. */
+        RateLimitKey: {
+            /**
+             * @description Draft test trees use their own pool and never share a key with ordinary runs.
+             * @enum {string}
+             */
+            pool: "ORDINARY" | "DRAFT_TEST";
+            /** @enum {string} */
+            scope: "RUN" | "STEP";
+            group: string;
+            /** @description The 12-hex label of the key's keyed digest; null unless the caller may reveal personal data in the namespace (FR-022-057). */
+            keyLabel: string | null;
+            /** @description Grants that still count over the longest window the row has seen (its grants and waiters): unleased, or leased less than that window ago. */
+            grantsInWindow: number;
+            /** @description Granted steps no worker has leased yet; each holds a slot. Always 0 at RUN scope. */
+            unleasedGrants: number;
+            waiters: number;
+            /**
+             * Format: date-time
+             * @description The oldest waiter's queueing instant; null when nobody waits.
+             */
+            oldestWaitSince: string | null;
+            /**
+             * Format: date-time
+             * @description When somebody waits and no grant is unleased: the first instant a counted grant stops counting for one of the waiters (each over its own window). Null when nobody waits or a grant is unleased (it frees by a lease or a return, not by time).
+             */
+            nextSlotAt: string | null;
+        };
+        RateLimitKeyPage: {
+            queuedRuns: number;
+            items: components["schemas"]["RateLimitKey"][];
+            /** @description Opaque, sealed for this namespace and this listing; null after the last page. */
+            nextCursor?: string | null;
+        };
+        /** @description Feature 022 (FR-022-048). The run-level rate-limit slot the run holds or waits for. Absent on a run that neither holds a slot that still counts nor waits; read by getRun and listRuns. A step waiting for a node-level slot is shown on its node (`waitingOn` `rate_limit`), not here. */
+        RunRateLimit: {
+            /**
+             * @description GRANTED while the run's slot counts (less than `per` since its grant); WAITING while it is buffered.
+             * @enum {string}
+             */
+            state: "GRANTED" | "WAITING";
+            /** @enum {string} */
+            pool: "ORDINARY" | "DRAFT_TEST";
+            group: string;
+            /** @description The 12-hex label of the key's keyed digest; null unless the caller may reveal personal data in the run's namespace (FR-022-057). */
+            keyLabel: string | null;
+            /** @description The effective limit the slot was decided with: the lowest of the declaration and the namespace's ceiling of its window. */
+            limit: number;
+            /** @enum {string} */
+            per: "second" | "minute" | "hour";
+            /**
+             * Format: date-time
+             * @description When the slot was granted (GRANTED) or the run was buffered (WAITING).
+             */
+            since: string;
+            /**
+             * Format: date-time
+             * @description WAITING: when the run fails RATE_LIMIT_WAIT_TIMEOUT if not granted before; null while GRANTED.
+             */
+            queueDeadline?: string | null;
+            /** @description WAITING, and only in getRun (null in listRuns and while GRANTED): the run's rank among the eligible waiters of the key at read time (the waiters the grant pass visits ahead of it, in its order: not past their deadline, their run live and not paused); 1 is next. */
+            position?: number | null;
+            /**
+             * Format: date-time
+             * @description WAITING, and only in getRun: an estimate computed at read time, never a promise: the instant enough counted grants age out for the run's position, or the read's instant when there is room now; null for a caller who may not reveal personal data in the run's namespace (it is another run's grant instant plus the window, D022-067), when the position is beyond one window, when the run also waits for a concurrency permit, in listRuns and while GRANTED.
+             */
+            estimatedGrantAt?: string | null;
         };
         /** @description Feature 022 (FR-022-022). The run-level concurrency permit the run holds or waits for. Absent on a run that neither holds nor waits; read by getRun and listRuns. */
         RunConcurrency: {
@@ -10122,6 +10211,45 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ConcurrencyKeyPage"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            422: components["responses"]["ValidationError"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    listRateLimitKeys: {
+        parameters: {
+            query?: {
+                /** @description An explicit group or a derived one (`=<workflow>` or `=<workflow>/<node>`); 422 when it is no group name. */
+                group?: string;
+                /** @description Opaque cursor returned as `nextCursor` by the previous page. */
+                cursor?: components["parameters"]["Cursor"];
+                /** @description Page size; values outside 1..200 are clamped. */
+                limit?: components["parameters"]["Limit"];
+            };
+            header?: never;
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description A page of keys */
+            200: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RateLimitKeyPage"];
                 };
             };
             400: components["responses"]["BadRequest"];

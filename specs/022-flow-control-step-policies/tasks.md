@@ -389,6 +389,14 @@ T022-063 (020 erasure).
   148 passed as the owner and as `sagat_app`; `security_multitenancy::quotas::the_tenant_view_has_no_single_usage_for_a_per_namespace_resource`
   lists the four rate resources as per namespace.
 - [ ] T022-078 [US7] `Run.rateLimit`, the step's waiting state and `GET /namespaces/{namespaceId}/rate-limit-keys` in `crates/api-http/src/{dto_flow_control.rs,routes/rate_limits.rs}`; position and estimate computed at read. FR-022-048. Evidence: REST tests; the estimate is absent in the cases of D022-014; raw-key canary absent.
+  - *Built 2026-11-20 (0.3.0 slice; decision D022-067), not ticked:* `Run.rateLimit` (getRun and listRuns; position
+    and estimate in getRun only, the estimate withheld from a caller without the reveal grant), `waitingOn` `rate_limit`
+    and `concurrency`, `GET /namespaces/{namespaceId}/rate-limit-keys`, migrations `20270207000000` and `20270207000100`,
+    the canonical OpenAPI, the API reference and the Studio client. Evidence so far: `rate_rest::*` 5 passed as the owner
+    and as `sagat_app`, each red under its hand mutation (the estimate a microsecond early, room giving no estimate, the
+    rate cursor tagged as the concurrency one, the minute truncation of `nextSlotAt` dropped, the `waitingOn` mapping
+    dropped, the reveal check of the estimate dropped); `integration_flow_control_step_policies` 153 passed in both roles.
+    Open: the Majors of `reviews/2026-11-20/rate-reads-responses.md`.
 - [ ] T022-079 [US7] Invariants 8–10 of `data-model.md` in `verify_run` (`crates/infra-postgres/src/execution.rs`) and `assert_consistent` (`tests/support/engine.rs`), with the journal window check. FR-022-040,045. Evidence: fails on a seeded extra grant and on a waiter without its event; passes after every fault case.
   - *Amended 2026-11-13 after review* (D022-032, D022-033): invariant 10 per grant over `(t_e − period_e, t_e]`; the `verify_run` checks land with T022-072 and T022-096, this task keeps `assert_consistent`.
   - *Partly done 2026-11-20 (0.3.0 slice), not ticked.* `verify_run` checks invariants 8 to 10 for a run's start

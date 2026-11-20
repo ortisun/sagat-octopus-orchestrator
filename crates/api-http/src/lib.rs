@@ -478,6 +478,10 @@ where
             "/namespaces/{namespace_id}/concurrency-keys",
             get(routes::concurrency::list_concurrency_keys::<B<S, C, G>>),
         )
+        .route(
+            "/namespaces/{namespace_id}/rate-limit-keys",
+            get(routes::rate_limits::list_rate_limit_keys::<B<S, C, G>>),
+        )
         .route("/audit", get(ops::list_audit::<B<S, C, G>>))
         .route(
             "/namespaces/{namespace_id}/workers",

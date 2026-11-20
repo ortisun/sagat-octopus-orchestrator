@@ -1141,11 +1141,13 @@ taken after `git grep D022-04` on every `origin/*` branch.
      after: a run-level slot is never given back and its row stays until the purge, so a state read from the row's
      existence would show a slot that no longer limits anything for up to the window and one minute more. Taken over
      "while the row exists" (misleading) and over a third state (`EXPIRED`, a value no client needs: the journal has it).
-  2. *The position and the estimate follow the grant routine's own rule* (`admits`), so the number a reader is shown is
-     the one the pass decides by; the estimate is the `k`-th oldest counted lease plus the window with `k = n + a - L +
-     1`, derived in the plan, `null` beyond one window or while the run also waits for a permit. Taken over a FIFO
-     rank of every waiter (it ignores waiters past their deadline or paused, which the pass skips, so it would be wrong
-     by them) and over an estimate from an average rate (not derivable, D022-014).
+  2. *The position ranks the waiters the pass visits ahead of the run* (not past their deadline, their run live and not
+     paused, in the queue's order), and the estimate is the `k`-th oldest counted lease plus the window with `k = n + a
+     - L + 1`, derived in the plan, `null` beyond one window or while the run also waits for a permit. Taken over a rank
+     of every waiter (it counts waiters past their deadline or paused, which the pass skips) and over the grant
+     routine's full predicate (`admits` also skips a waiter whose own limit is below the count at that moment: read at
+     a full key it ranks every waiter first, as the first build of this read showed), and over an estimate from an
+     average rate (not derivable, D022-014).
   3. *The listing lists every window row* (the unit `rate_limit_live_keys` counts, D022-066 item 1), so an operator sees
      exactly the keys a ceiling counts; `nextSlotAt` is the first instant a counted grant stops counting for one of the
      waiters (each waiter's own window, the rest rule's instant at `t`), `null` when nobody waits (nothing waits for a
@@ -1159,6 +1161,12 @@ taken after `git grep D022-04` on every `origin/*` branch.
   6. *Instants that derive from a run's own instants are truncated for a reader without the reveal grant*:
      `oldestWaitSince` (a waiter's `since`) and `nextSlotAt` (a grant's instant plus a window), to their minute toward
      the past, as D022-060 does for the concurrency listing.
+  8. *The estimate is shown only to a caller with the reveal grant* (security review Major 1 of task T022-078): at run
+     scope it is another run's grant instant plus the window, to the microsecond, and that run's `since` is shown whole
+     by `listRuns`, so it would tell a caller who may not see the label that the two runs share a key (the linking
+     D022-060 and D022-061 narrow). Taken over truncating it to the minute (it only narrows the link, the other run's
+     `since` stays whole). The position stays for every reader of the run: it says how many runs of the key are ahead,
+     the class of gap G022-014, recorded there.
   7. *A step's wait is named in the runtime graph* (`waitingOn` `rate_limit` or `concurrency`), the gate its row records
      (rate first, FR-022-052): two values added to a response enumeration, which older clients read as unknown.
 
@@ -1210,7 +1218,7 @@ taken after `git grep D022-04` on every `origin/*` branch.
 | G022-011 | `queued_runs` was believed counted without a lock (D022-050 item 3). *Closed 2026-11-20 (D022-051):* the count is exact. Only an admission adds a run waiter, every admission holds the namespace's active-run quota lock from before its runs row to its commit, and the start's gate counts after it in a fresh READ COMMITTED statement; proved by `run_admission::two_starts_at_the_queued_runs_ceiling_are_decided_one_after_the_other` (the lock held by the test, both starts observed waiting on it, then exactly one queued and one refused), red under two hand mutations (the lock removed; the ceiling ignored). The merge blocker the owner set on it is met. T022-105's counter rows remain for the cost of the count (a scan of the namespace's run waiters, at most the ceiling) and its privileges. | Closed (exactness); T022-105 open for the counter rows |
 | G022-012 | The start's decision (`decide_start_gates`) and the step's (`decide_gates`) are two code paths over the same rules; T022-072 builds one core for both levels and both gates (D022-050 item 5; architecture review Major 1 of 2026-11-20). A paused queued run's deadline runs during its pause, as G022-008 says of a step. *2026-11-20 (D022-054): the start's three causes share one validator (`check_start_decisions`) and one adapter function; the step's decision is still its own path.* *Closed 2026-11-20 (D022-064 item 2): `gates_of` and `decide_filed` serve both levels and both gates.* | Closed; T022-072 |
 | G022-013 | Keys-review correctness m5 and m8 (2026-11-20): the takeover test races a raw `UPDATE` of the shard lease, not a keeper's takeover, and checks "nothing twice" afterwards; and SC-022-004 at run level lacks five same-key starts with `limit: 1` (at most one holder, grants in admission order) and a mixed-limit pair sharing a group. | Open; T022-110 |
-| G022-014 | Without the label, a key's counts and the oldest-wait order still let a caller who may not reveal personal data partly link runs (one key of a group with waiters: every `WAITING` run of the group waits on it). The labels are hidden and the instants truncated to the minute (D022-060), which narrows and does not stop linking (D022-061). An aggregated listing per (pool, scope, group) for such callers closes it: T022-111 (D022-061). | Open; T022-111, a release item with T022-104 |
+| G022-014 | Without the label, a key's counts and the oldest-wait order still let a caller who may not reveal personal data partly link runs (one key of a group with waiters: every `WAITING` run of the group waits on it). The labels are hidden and the instants truncated to the minute (D022-060), which narrows and does not stop linking (D022-061). An aggregated listing per (pool, scope, group) for such callers closes it: T022-111 (D022-061). *2026-11-20 (D022-067 item 8):* `getRun`'s `rateLimit.position` is another surface of the same class (how many runs of the key are ahead); the estimate is withheld from such callers. | Open; T022-111, a release item with T022-104 |
 | G022-015 | Publication does not yet refuse a concurrency key over a `secret` location (T022-104), while this build lists and can activate the concurrency capability (D022-057). The runbook forbids production activation before it; the release cannot close with it open. | Open; release gate, T022-104 |
 | G022-016 | A reset of a run whose start declares `rateLimit` is refused `BINARY_CAPABILITY_MISSING` (D022-064 item 7): `RATE_LIMIT_SLOT_UNAVAILABLE` (018's code, G1181) and the reset rules of the `rate_limit.*` events land with T022-086. The refusal is retryable and no process of this build lifts it, so a pending reset of such a run is retried until it is cancelled: the runbook forbids production activation before it (D022-066 item 5), and `run_creators::a_reset_of_a_rate_limited_start_is_refused_until_its_rules_are_built` pins it. | Open; release gate (the release cannot close with it open), T022-086 |
 | G022-017 | The purge keeps a grant for its window row's longest period seen (`max_period_ms`) plus a minute: an acquirer that later declares a longer window on the same key (a `RATE_LIMIT_MISMATCH` warned at publication) does not count the grants purged before it arrived, and may be admitted up to their number early in its first window. | Open; documented in the runbook |
