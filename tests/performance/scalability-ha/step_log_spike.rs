@@ -257,6 +257,130 @@ pub async fn install_per_statement(pool: &PgPool) {
     }
 }
 
+/// T041-35's third run (ADR-0097, D041-106): after `install_per_statement`, the step-log charge goes to the tenant's exact
+/// leases (data-model.md §3b) instead of the transaction's delta row and the finalizer at commit: the statement trigger
+/// calls `spike_041.step_log_charge` once per tenant, which takes the three class fences shared, reads the limit and,
+/// without a lock, the folded usage and the leased bytes, and adds the bytes to a lease it can lock at once
+/// (`SKIP LOCKED`); only when none has room does `spike_041.step_log_refill` lock the tenant usage row. The release path
+/// (the purge) is not part of the spike. `step_log_bytes` is the folded usage, and the scratch column
+/// `step_log_leased_bytes` the leased bytes.
+#[cfg(feature = "perf-spike")]
+pub async fn install_leases(pool: &PgPool) {
+    let statements = [
+        "DROP TRIGGER quota_transaction_deltas_spike_flush ON public.quota_transaction_deltas",
+        "ALTER TABLE public.tenant_retained_usage ADD COLUMN step_log_leased_bytes bigint NOT NULL DEFAULT 0 \
+           CHECK (step_log_leased_bytes >= 0)",
+        "CREATE TABLE spike_041.step_log_quota_leases (tenant_id uuid NOT NULL, \
+           lease smallint NOT NULL CHECK (lease BETWEEN 0 AND 255), granted bigint NOT NULL DEFAULT 0, \
+           used bigint NOT NULL DEFAULT 0, PRIMARY KEY (tenant_id, lease), CHECK (0 <= used AND used <= granted))",
+        r"CREATE FUNCTION spike_041.step_log_limit(p_tenant uuid) RETURNS bigint LANGUAGE sql STABLE
+            SET search_path = pg_catalog, pg_temp AS $$
+            SELECT least(
+                coalesce((SELECT max_value FROM public.quota_limits
+                           WHERE tenant_id = p_tenant AND namespace_id IS NULL AND resource = 'tenant_step_log_bytes'),
+                         (SELECT max_value FROM public.quota_ceilings
+                           WHERE tenant_id = p_tenant AND resource = 'tenant_step_log_bytes'),
+                         1073741824),
+                coalesce((SELECT max_value FROM public.quota_ceilings
+                           WHERE tenant_id = p_tenant AND resource = 'tenant_step_log_bytes'),
+                         1073741824))
+        $$",
+        r"CREATE FUNCTION spike_041.step_log_refill(p_tenant uuid, p_bytes bigint, p_limit bigint) RETURNS void
+            LANGUAGE plpgsql SET search_path = pg_catalog, pg_temp AS $$
+        DECLARE v_s bigint; v_g bigint; v_free bigint; v_grant bigint;
+                v_lease integer; v_granted bigint; v_used bigint; r record;
+        BEGIN
+            INSERT INTO public.tenant_retained_usage (tenant_id) VALUES (p_tenant) ON CONFLICT (tenant_id) DO NOTHING;
+            SELECT step_log_bytes, step_log_leased_bytes INTO STRICT v_s, v_g
+              FROM public.tenant_retained_usage WHERE tenant_id = p_tenant FOR UPDATE;
+            IF p_limit - v_s - v_g < greatest(p_bytes, 1048576) THEN
+                -- Near the limit: every lease no open transaction holds gives its room back.
+                FOR r IN SELECT lease, granted, used FROM spike_041.step_log_quota_leases
+                          WHERE tenant_id = p_tenant ORDER BY lease FOR UPDATE SKIP LOCKED LOOP
+                    v_s := v_s + r.used; v_g := v_g - r.granted;
+                    UPDATE spike_041.step_log_quota_leases SET granted = 0, used = 0
+                     WHERE tenant_id = p_tenant AND lease = r.lease;
+                END LOOP;
+            END IF;
+            SELECT lease, granted, used INTO v_lease, v_granted, v_used FROM spike_041.step_log_quota_leases
+             WHERE tenant_id = p_tenant ORDER BY granted - used, lease LIMIT 1 FOR UPDATE SKIP LOCKED;
+            IF v_lease IS NULL THEN
+                SELECT min(g) INTO v_lease FROM generate_series(0, 255) g
+                 WHERE NOT EXISTS (SELECT 1 FROM spike_041.step_log_quota_leases
+                                    WHERE tenant_id = p_tenant AND lease = g);
+                IF v_lease IS NULL THEN
+                    -- Every lease is held by an open transaction: charge the folded usage, under the row.
+                    IF v_s + v_g + p_bytes > p_limit THEN
+                        RAISE EXCEPTION 'tenant step-log quota exceeded' USING ERRCODE = 'program_limit_exceeded';
+                    END IF;
+                    UPDATE public.tenant_retained_usage SET step_log_bytes = v_s + p_bytes, step_log_leased_bytes = v_g
+                     WHERE tenant_id = p_tenant;
+                    RETURN;
+                END IF;
+                INSERT INTO spike_041.step_log_quota_leases (tenant_id, lease) VALUES (p_tenant, v_lease);
+                v_granted := 0; v_used := 0;
+            END IF;
+            -- Fold the lease (its used bytes to the folded usage, its room stays leased), then grant it.
+            v_s := v_s + v_used; v_g := v_g - v_used; v_granted := v_granted - v_used;
+            v_free := p_limit - v_s - v_g;
+            v_grant := greatest(p_bytes - v_granted, least(1048576, v_free / 64), 0);
+            IF v_grant > v_free THEN
+                RAISE EXCEPTION 'tenant step-log quota exceeded' USING ERRCODE = 'program_limit_exceeded';
+            END IF;
+            UPDATE spike_041.step_log_quota_leases SET granted = v_granted + v_grant, used = p_bytes
+             WHERE tenant_id = p_tenant AND lease = v_lease;
+            UPDATE public.tenant_retained_usage SET step_log_bytes = v_s, step_log_leased_bytes = v_g + v_grant
+             WHERE tenant_id = p_tenant;
+        END $$",
+        r"CREATE FUNCTION spike_041.step_log_charge(p_tenant uuid, p_bytes bigint) RETURNS void
+            LANGUAGE plpgsql SET search_path = pg_catalog, pg_temp AS $$
+        DECLARE v_limit bigint; v_s bigint; v_g bigint; v_lease integer;
+        BEGIN
+            IF p_bytes <= 0 THEN RETURN; END IF;
+            PERFORM pg_advisory_xact_lock_shared(hashtextextended('quota-policy:tenant_content_bytes:' || p_tenant::text, 0)),
+                    pg_advisory_xact_lock_shared(hashtextextended('quota-policy:tenant_log_bytes:' || p_tenant::text, 0)),
+                    pg_advisory_xact_lock_shared(hashtextextended('quota-policy:tenant_step_log_bytes:' || p_tenant::text, 0));
+            v_limit := spike_041.step_log_limit(p_tenant);
+            SELECT step_log_bytes, step_log_leased_bytes INTO v_s, v_g
+              FROM public.tenant_retained_usage WHERE tenant_id = p_tenant;
+            IF coalesce(v_s, 0) + coalesce(v_g, 0) > v_limit THEN
+                RAISE EXCEPTION 'tenant step-log quota exceeded' USING ERRCODE = 'program_limit_exceeded';
+            END IF;
+            UPDATE spike_041.step_log_quota_leases l SET used = l.used + p_bytes
+              FROM (SELECT lease FROM spike_041.step_log_quota_leases
+                     WHERE tenant_id = p_tenant AND granted - used >= p_bytes
+                     ORDER BY (lease + pg_backend_pid()) % 256 LIMIT 1 FOR UPDATE SKIP LOCKED) c
+             WHERE l.tenant_id = p_tenant AND l.lease = c.lease
+            RETURNING l.lease INTO v_lease;
+            IF v_lease IS NULL THEN
+                PERFORM spike_041.step_log_refill(p_tenant, p_bytes, v_limit);
+            END IF;
+        END $$",
+        r"CREATE OR REPLACE FUNCTION spike_041.lines_charge() RETURNS trigger LANGUAGE plpgsql
+            SET search_path = pg_catalog, pg_temp AS $$
+        DECLARE r record;
+        BEGIN
+            FOR r IN SELECT tenant_id,
+                            sum(octet_length(coalesce(message, '')) + octet_length(coalesce(exception, ''))
+                                + octet_length(coalesce(fields, '')) + 128)::bigint AS bytes
+                       FROM inserted GROUP BY tenant_id ORDER BY tenant_id LOOP
+                PERFORM spike_041.step_log_charge(r.tenant_id, r.bytes);
+            END LOOP;
+            RETURN NULL;
+        END $$",
+    ];
+    for statement in statements {
+        sqlx::query(statement)
+            .execute(pool)
+            .await
+            .unwrap_or_else(|error| panic!("spike schema (third run): {error}"));
+    }
+}
+
+#[cfg(all(test, feature = "perf-spike"))]
+#[path = "step_log_leases_tests.rs"]
+mod leases_tests;
+
 /// The admission of one replica: the Logs class cap and the tenant's tickets. No call waits for either.
 #[derive(Clone)]
 pub struct Admission {
@@ -812,7 +936,10 @@ pub struct CarryHook {
 impl CarryHook {
     pub fn new(records: usize, bytes: usize) -> Self {
         Self {
-            one_call: std::env::var("SAGAT_PERF_STEP_LOG_CARRY_RUN").as_deref() == Ok("2"),
+            one_call: matches!(
+                std::env::var("SAGAT_PERF_STEP_LOG_CARRY_RUN").as_deref(),
+                Ok("2" | "3")
+            ),
             records,
             bytes,
             calls: AtomicU64::new(0),
