@@ -378,3 +378,93 @@ neither a pass nor a fail. The load average went from 5 to 14–16 during each r
 PostgreSQL, up to 8 replicas and 128 workers), and every void round failed at 1 × 16, where a row lasts about 11 s and
 a short stall of a shared cloud host moves its rate most. The second job follows D041-104. The rounds, their reports
 and the verdict are kept as the run's artifact `carry-spike-a34e18dfa7179b2266060628c52cad2089d4f82c`.
+
+## 2026-11-20 — T041-35 second run, second job on four hosted runners: FAIL
+
+**Result: T041-35's second run fails at 1 × 16 on gates (1), (2b), (3) and (4); every gate passes at 8 × 128. By its
+rule the design changes and is reviewed again before T041-5 starts.** T041-35 stays unticked; O041-038 and O041-040 are
+not put.
+
+Run 44717007853 of `.github/workflows/perf-spike.yml` at `69dfa81b` (D041-104): four GitHub-hosted `ubuntu-latest`
+runners in parallel, three rounds each, then the `judge` job over all twelve in the fixed order (shard *s*, round *r* is
+round 3(*s* − 1) + *r*). Each runner: 4 logical cores, 16 GiB, release build, the driver of `69dfa81b` (one call of
+`spike_041.step_log_carry`, the step-log rows charged once per insert statement, the flush queued once per transaction,
+data-model.md §8a); shards 1 and 2 on AMD EPYC 9V74, shards 3 and 4 on AMD EPYC 9V45; PostgreSQL 18.7 in rounds 1 to 3
+and 7 to 9, 18.6 in rounds 6 and 10 to 12 (the image's package moved between runners); the configuration of the first
+run's table. Every round is quiet by the declared environment (D041-102). The rule, the gates and their thresholds are
+those fixed before the first job.
+
+| Round | Shard / round | CPU | off-1K drift 1 × 16 / 8 × 128 | off-{} drift 1 × 16 / 8 × 128 | Valid | Why |
+|---|---|---|---|---|---|---|
+| 1 | 1 / 1 | 9V74 | 14.5% / 0.4% | 7.3% / 6.8% | no | off-1K at 1 × 16 drifted 14.5% |
+| 2 | 1 / 2 | 9V74 | 7.4% / 2.5% | 6.0% / 1.9% | **yes** | |
+| 3 | 1 / 3 | 9V74 | 11.1% / 3.0% | 2.6% / 2.8% | no | off-1K at 1 × 16 drifted 11.1% |
+| 4 | 2 / 1 | 9V74 | 30.2% / — | 4.5% / — | no | off-1K at 1 × 16 drifted 30.2%; the round stopped in (a) at 8 × 128 (`complete: Unavailable`) |
+| 5 | 2 / 2 | 9V74 | 13.8% / — | 5.0% / — | no | off-1K at 1 × 16 drifted 13.8%; the round stopped in (g) at 8 × 128 (`complete: Unavailable`) |
+| 6 | 2 / 3 | 9V74 | 23.6% / 5.7% | 1.1% / 5.0% | no | off-1K at 1 × 16 drifted 23.6% |
+| 7 | 3 / 1 | 9V45 | 13.6% / 1.8% | 0.6% / 3.5% | no | off-1K at 1 × 16 drifted 13.6% |
+| 8 | 3 / 2 | 9V45 | 12.2% / 6.8% | 2.6% / 14.4% | no | off-1K at 1 × 16 drifted 12.2%, off-{} at 8 × 128 14.4% |
+| 9 | 3 / 3 | 9V45 | 0.2% / 5.5% | 7.2% / 4.3% | **yes** | |
+| 10 | 4 / 1 | 9V45 | 0.6% / 11.8% | 1.7% / 3.4% | no | off-1K at 8 × 128 drifted 11.8% |
+| 11 | 4 / 2 | 9V45 | 2.0% / 3.1% | 1.0% / 7.6% | **yes** | |
+| 12 | 4 / 3 | 9V45 | 0.7% / 3.8% | 1.3% / 7.9% | yes (not used) | |
+
+Valid rounds: 2, 9, 11 and 12; the judge used the first three, 2, 9 and 11. Every carry of every valid round was
+written (9,000 of 9,000 in each workload; none `contended`, none `neither`). Rounds 4 and 5 stopped with a completion
+answered `Unavailable` at 8 × 128; they are void by the drift at 1 × 16 whatever the cause, which is not diagnosed
+further here.
+
+### Transitions per second and completion p50 / p99 (ms), the three rounds used
+
+| Measurement | Round 2 | Round 9 | Round 11 |
+|---|---|---|---|
+| 1×16 off-1K | 277/s, 26.2 / 90.3 | 326/s, 23.3 / 54.8 | 353/s, 21.0 / 85.7 |
+| 1×16 (a) | 201/s, 30.6 / 294.0 | 281/s, 28.4 / 79.5 | 296/s, 26.7 / 103.8 |
+| 1×16 off-{} | 246/s, 25.1 / 205.9 | 360/s, 20.6 / 48.2 | 377/s, 19.5 / 44.5 |
+| 1×16 (f) | 231/s, 30.4 / 125.9 | 313/s, 24.6 / 83.7 | 327/s, 23.5 / 84.0 |
+| 1×16 (g) | 199/s, 29.9 / 135.5 | 262/s, 24.9 / 99.0 | 241/s, 24.0 / 118.5 |
+| 1×16 off-1K again | 256/s, 26.0 / 191.5 | 325/s, 23.0 / 86.3 | 360/s, 20.8 / 71.1 |
+| 1×16 off-{} again | 261/s, 24.7 / 160.7 | 334/s, 21.7 / 52.6 | 373/s, 19.6 / 46.9 |
+| 8×128 off-1K | 114/s, 248.2 / 945.4 | 128/s, 222.0 / 655.4 | 147/s, 183.1 / 496.6 |
+| 8×128 (a) | 111/s, 266.7 / 723.9 | 119/s, 237.7 / 711.7 | 130/s, 216.0 / 535.1 |
+| 8×128 off-{} | 118/s, 233.8 / 631.7 | 132/s, 198.1 / 518.9 | 154/s, 173.9 / 438.4 |
+| 8×128 (f) | 107/s, 271.2 / 802.3 | 120/s, 251.9 / 2,132.3 | 141/s, 188.5 / 577.3 |
+| 8×128 (g) | 99/s, 266.5 / 860.8 | 105/s, 253.1 / 795.6 | 119/s, 215.8 / 517.5 |
+| 8×128 off-1K again | 117/s, 235.8 / 713.5 | 121/s, 221.9 / 544.2 | 142/s, 190.6 / 493.1 |
+| 8×128 off-{} again | 116/s, 232.5 / 808.2 | 137/s, 190.9 / 467.4 | 142/s, 186.5 / 750.1 |
+| 1×16 (h), 64 records | 167/s, 34.1 / 377.1 | 265/s, 28.5 / 113.4 | 280/s, 27.5 / 107.4 |
+| 1×16 (d), a transaction held | 199/s, 33.6 / 235.8 | 252/s, 29.4 / 165.6 | 280/s, 27.5 / 95.5 |
+
+On these runners a row runs at a quarter to a fifth of the laptop's rate (277 to 377/s against 1,153 to 1,170/s at
+1 × 16) with a completion p50 three to four times higher: the benchmark (PostgreSQL, the replicas and the workers in one
+process) loads 4 cores to a load average of 14 to 17.
+
+### Against the criteria
+
+| Gate | 1 × 16, rounds 2 / 9 / 11 (median) | 8 × 128, rounds 2 / 9 / 11 (median) | Verdict |
+|---|---|---|---|
+| (1) rate of (a) ≥ 90% of off-1K | 72.6%, 86.4%, 83.8% (83.8%) | 97.3%, 93.2%, 88.8% (93.2%) | **fail** at 1 × 16 |
+| (2b) completion p99 of (a) ≤ off-1K p99 + max(10%, 2 ms) | +194.7, +19.3, +9.5 ms over the allowance of 9.0, 5.5, 8.6 ms (+19.3 ms) | −316.0, −9.3, −11.2 ms against 94.5, 65.5, 49.7 ms (−11.2 ms) | **fail** at 1 × 16 |
+| (3) rate of (f) ≥ 90% of off-{} | 94.1%, 86.9%, 86.8% (86.9%) | 90.9%, 90.9%, 91.8% (90.9%) | **fail** at 1 × 16 |
+| (4) tickets for (g) ≤ 10, refusals < 1% | 29, 16, 44 (refusals 0.13%, 0.04%, 0.52%) | 7, 10, 5 (0.02%, 0.13%, 0%) | **fail** at 1 × 16 |
+
+Recorded with no threshold: the +10% reading of gate (2) is +225.5%, +45.2%, +21.1% at 1 × 16 and −23.4%, +8.6%, +7.7%
+at 8 × 128; the carry function took p50 1.78, 2.33, 2.18 ms and p99 5.07, 7.51, 6.47 ms per completion of (a) at 1 × 16
+(p50 7.2 to 8.4 ms, p99 30.3 to 32.4 ms at 8 × 128); the batch service time S of (g) had p99 100.2, 42.5 and 125.7 ms at
+1 × 16 (3.2 to 3.3 ms on the laptop), which is what gate (4)'s ticket count multiplies.
+
+Commit waits (10 ms samples of a backend whose statement is `COMMIT` and which waits on a heavyweight lock; a sample
+counts the waiting backends), rounds 2 / 9 / 11 at 1 × 16: off-1K 1,399 / 525 / 1,999 and again 3,484 / 1,091 / 844;
+off-{} 0 / 0 / 0 both times; (a) 8,221 / 762 / 2,661; (f) 4,269 / 676 / 692; (g) 3,626 / 1,305 / 4,588; (h) 13,178 /
+2,584 / 2,000; (d) 6,851 / 5,609 / 1,227. At 8 × 128: off-1K 15,115 / 9,751 / 893; off-{} 0; (a) 9,753 / 3,632 / 1,345;
+(f) 12,445 / 31,951 / 1,044. In the carry rows nearly every blocker is labelled "a carrying report" because every report
+of those rows carries; the label does not say that the carry's own statements hold the lock. Off-1K, which carries
+nothing, waits in `COMMIT` too, and off-{}, which charges no quota at commit, never does. What the waits are on is the
+subject of the diagnosis that follows this run (the cause is proved there, not here).
+
+### Reading
+
+The verdict is FAIL by the rule fixed before the first round. On a 4-core runner the 1 × 16 rows fail every gate and the
+8 × 128 rows pass every gate. On the laptop (first run) the 1 × 16 rates passed and the p99 failed at both sizes. (f)
+waits in `COMMIT` in every round and size and off-{} never does; (a) against off-1K is not consistent (more waits in
+eight of its twelve comparisons with the two off-1K measurements of its round and size, fewer in four). The design changes and is reviewed again (D041-105).
