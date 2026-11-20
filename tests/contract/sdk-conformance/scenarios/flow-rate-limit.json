@@ -1,7 +1,9 @@
 {
   "name": "flow-rate-limit",
-  "pending": "Needs the server's US07 run-level rate gate (T022-072: a start's rateLimit is refused BINARY_CAPABILITY_MISSING on the parent branch), the grant pass's lease instant (T022-074, G022-003), the run resource's rateLimit with its position (FR-022-048) and, as flow-concurrency, a platform the suite can boot with the gates on (G1198, G022-090).",
-  "description": "Feature 022 US07 (SC-022-023, contracts/conformance.md): a workflow whose start is limited to two runs of the key input.providerId per window, and whose activity is limited to one lease per second for all runs. Five runs of provider P and one of provider Q start one after the other: P's first two are granted at once (from_queue false) and never wait, the next three are buffered (rate_limit.queued); Q's run is granted at once. The fifth is cancelled while buffered: CANCELLED with rate_limit.dequeued and no grant. While it is buffered the run resource reports rateLimit.state WAITING with a position. The third and fourth are granted from the queue (from_queue true) in the order they were buffered, when the first grants age out. The run-level window is a minute, not the contract's second, so that the starts of a loaded machine cannot slip past the window and change which runs wait (D022-093); the activity keeps one lease a second. The harness checks from the journals' instants that no window held more than two run grants of P nor more than one lease of the activity, and that the buffered runs were granted in admission order; the golden holds only the event order and the states.",
+  "deferred": {
+    "a buffered run reports rateLimit.state WAITING with a position": "The run resource's rateLimit is served by task T022-078 and read by the six SDKs in task T022-120 (G022-091); until then the scenario observes the buffered run's WAITING status only."
+  },
+  "description": "Feature 022 US07 (SC-022-023, contracts/conformance.md): a workflow whose start is limited to two runs of the key input.providerId per window, and whose activity is limited to one lease per second for all runs. Five runs of provider P and one of provider Q start one after the other: P's first two are granted at once (from_queue false) and never wait, the next three are buffered (rate_limit.queued); Q's run is granted at once. The fifth is cancelled while buffered: CANCELLED with rate_limit.dequeued and no grant. While it is buffered it is WAITING (the run resource's rateLimit with its position is deferred, D022-097). The third and fourth are granted from the queue (from_queue true) in the order they were buffered, when the first grants age out. The run-level window is a minute, not the contract's second, so that the starts of a loaded machine cannot slip past the window and change which runs wait (D022-093); the activity keeps one lease a second. The worker starts once every start is decided, so a step whose slot is taken by a granted, not yet leased step waits whatever the machine's speed (D022-093). The harness checks from the journals' instants that no window held more than two run grants of P nor more than one lease of the activity, and that the buffered runs were granted in admission order; the golden holds only the event order and the states.",
   "server": { "flowControl": true },
   "flowControlEvidence": true,
   "workflows": {
@@ -20,6 +22,7 @@
       "workerName": "flow-rate-worker",
       "protocolVersion": "1.5",
       "maxInflight": 4,
+      "autostart": false,
       "activities": {
         "flow.fetch": { "behavior": { "returns": { "ok": true } } }
       }
@@ -38,6 +41,7 @@
     { "id": "p5-read-buffered", "op": "get", "run": "p5" },
     { "id": "cancel-p5", "op": "cancel", "run": "p5", "reason": "not needed while it is buffered" },
     { "id": "p5-done", "op": "waitForCompletion", "run": "p5", "timeoutMs": 60000 },
+    { "id": "worker", "op": "startWorker", "worker": "w1" },
     { "id": "p1-done", "op": "waitForCompletion", "run": "p1", "timeoutMs": 60000 },
     { "id": "p2-done", "op": "waitForCompletion", "run": "p2", "timeoutMs": 60000 },
     { "id": "q1-done", "op": "waitForCompletion", "run": "q1", "timeoutMs": 60000 },

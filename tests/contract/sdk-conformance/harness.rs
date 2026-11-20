@@ -1423,6 +1423,14 @@ async fn play(
         };
     }
 
+    // The checks of the contract this scenario does not make yet (`deferred`, D022-097): printed on every run, never a pass.
+    for (check, reason) in scenario["deferred"].as_object().into_iter().flatten() {
+        println!(
+            "DEFERRED {name}: not checked: {check}: {}",
+            reason.as_str().unwrap_or_default()
+        );
+    }
+
     // A runtime scenario written before the server can play it says why (`pending`): it is reported as a failure, never
     // played and never passed, so that a run of it cannot be read as conformance (feature 022, G022-090).
     if let Some(reason) = scenario["pending"].as_str() {

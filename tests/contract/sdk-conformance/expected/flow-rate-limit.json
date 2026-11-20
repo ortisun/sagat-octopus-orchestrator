@@ -1,0 +1,1087 @@
+{
+  "faultsApplied": [],
+  "flowControlEvidence": [
+    {
+      "events": [
+        {
+          "event": "rate_limit.granted",
+          "fromQueue": false,
+          "key": "k1",
+          "scope": "RUN"
+        },
+        {
+          "event": "rate_limit.queued",
+          "key": "k2",
+          "node": "fetch",
+          "scope": "STEP"
+        },
+        {
+          "event": "rate_limit.granted",
+          "fromQueue": true,
+          "key": "k2",
+          "node": "fetch",
+          "scope": "STEP"
+        }
+      ],
+      "runId": "<uuid:8>"
+    },
+    {
+      "events": [
+        {
+          "event": "rate_limit.queued",
+          "key": "k3",
+          "scope": "RUN"
+        },
+        {
+          "event": "rate_limit.dequeued",
+          "key": "k3",
+          "scope": "RUN"
+        }
+      ],
+      "runId": "<uuid:7>"
+    },
+    {
+      "events": [
+        {
+          "event": "rate_limit.queued",
+          "key": "k3",
+          "scope": "RUN"
+        },
+        {
+          "event": "rate_limit.granted",
+          "fromQueue": true,
+          "key": "k3",
+          "scope": "RUN"
+        },
+        {
+          "event": "rate_limit.queued",
+          "key": "k2",
+          "node": "fetch",
+          "scope": "STEP"
+        },
+        {
+          "event": "rate_limit.granted",
+          "fromQueue": true,
+          "key": "k2",
+          "node": "fetch",
+          "scope": "STEP"
+        }
+      ],
+      "runId": "<uuid:6>"
+    },
+    {
+      "events": [
+        {
+          "event": "rate_limit.queued",
+          "key": "k3",
+          "scope": "RUN"
+        },
+        {
+          "event": "rate_limit.granted",
+          "fromQueue": true,
+          "key": "k3",
+          "scope": "RUN"
+        },
+        {
+          "event": "rate_limit.granted",
+          "fromQueue": false,
+          "key": "k2",
+          "node": "fetch",
+          "scope": "STEP"
+        }
+      ],
+      "runId": "<uuid:5>"
+    },
+    {
+      "events": [
+        {
+          "event": "rate_limit.granted",
+          "fromQueue": false,
+          "key": "k3",
+          "scope": "RUN"
+        },
+        {
+          "event": "rate_limit.queued",
+          "key": "k2",
+          "node": "fetch",
+          "scope": "STEP"
+        },
+        {
+          "event": "rate_limit.granted",
+          "fromQueue": true,
+          "key": "k2",
+          "node": "fetch",
+          "scope": "STEP"
+        }
+      ],
+      "runId": "<uuid:4>"
+    },
+    {
+      "events": [
+        {
+          "event": "rate_limit.granted",
+          "fromQueue": false,
+          "key": "k3",
+          "scope": "RUN"
+        },
+        {
+          "event": "rate_limit.granted",
+          "fromQueue": false,
+          "key": "k2",
+          "node": "fetch",
+          "scope": "STEP"
+        }
+      ],
+      "runId": "<uuid:1>"
+    }
+  ],
+  "observations": [
+    {
+      "id": "p1",
+      "ok": true,
+      "op": "start",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": null,
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:1>",
+        "startedBy": "alice",
+        "status": "RUNNING",
+        "traceId": "<trace:1>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "p2",
+      "ok": true,
+      "op": "start",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": null,
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:4>",
+        "startedBy": "alice",
+        "status": "WAITING",
+        "traceId": "<trace:2>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "p3",
+      "ok": true,
+      "op": "start",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": null,
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:5>",
+        "startedBy": "alice",
+        "status": "WAITING",
+        "traceId": "<trace:3>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "p3-buffered",
+      "ok": true,
+      "op": "awaitJournal"
+    },
+    {
+      "id": "p4",
+      "ok": true,
+      "op": "start",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": null,
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:6>",
+        "startedBy": "alice",
+        "status": "WAITING",
+        "traceId": "<trace:4>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "p4-buffered",
+      "ok": true,
+      "op": "awaitJournal"
+    },
+    {
+      "id": "p5",
+      "ok": true,
+      "op": "start",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": null,
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:7>",
+        "startedBy": "alice",
+        "status": "WAITING",
+        "traceId": "<trace:5>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "p5-buffered",
+      "ok": true,
+      "op": "awaitJournal"
+    },
+    {
+      "id": "q1",
+      "ok": true,
+      "op": "start",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": null,
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:8>",
+        "startedBy": "alice",
+        "status": "WAITING",
+        "traceId": "<trace:6>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "p5-read-buffered",
+      "ok": true,
+      "op": "get",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": null,
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:7>",
+        "startedBy": "alice",
+        "status": "WAITING",
+        "traceId": "<trace:5>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "cancel-p5",
+      "ok": true,
+      "op": "cancel",
+      "result": {
+        "accepted": true,
+        "runStatus": "CANCELLED"
+      }
+    },
+    {
+      "id": "p5-done",
+      "ok": true,
+      "op": "waitForCompletion",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": "<time>",
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:7>",
+        "startedBy": "alice",
+        "status": "CANCELLED",
+        "traceId": "<trace:5>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "worker",
+      "ok": true,
+      "op": "startWorker",
+      "result": {
+        "protocolVersion": "1.5"
+      }
+    },
+    {
+      "id": "p1-done",
+      "ok": true,
+      "op": "waitForCompletion",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": "<time>",
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:1>",
+        "startedBy": "alice",
+        "status": "SUCCEEDED",
+        "traceId": "<trace:1>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "p2-done",
+      "ok": true,
+      "op": "waitForCompletion",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": "<time>",
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:4>",
+        "startedBy": "alice",
+        "status": "SUCCEEDED",
+        "traceId": "<trace:2>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "q1-done",
+      "ok": true,
+      "op": "waitForCompletion",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": "<time>",
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:8>",
+        "startedBy": "alice",
+        "status": "SUCCEEDED",
+        "traceId": "<trace:6>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "p3-done",
+      "ok": true,
+      "op": "waitForCompletion",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": "<time>",
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:5>",
+        "startedBy": "alice",
+        "status": "SUCCEEDED",
+        "traceId": "<trace:3>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "p4-done",
+      "ok": true,
+      "op": "waitForCompletion",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": "<time>",
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:6>",
+        "startedBy": "alice",
+        "status": "SUCCEEDED",
+        "traceId": "<trace:4>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "p1-events",
+      "ok": true,
+      "op": "events",
+      "result": {
+        "events": [
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "run.started"
+          },
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "rate_limit.granted"
+          },
+          {
+            "attempt": null,
+            "stepId": "fetch",
+            "type": "step.released"
+          },
+          {
+            "attempt": 1,
+            "stepId": "fetch",
+            "type": "rate_limit.granted"
+          },
+          {
+            "attempt": 1,
+            "stepId": "fetch",
+            "type": "step.leased"
+          },
+          {
+            "attempt": 1,
+            "stepId": "fetch",
+            "type": "step.completed"
+          },
+          {
+            "attempt": null,
+            "stepId": "fetch",
+            "type": "step.routed"
+          },
+          {
+            "attempt": null,
+            "stepId": "done",
+            "type": "end.reached"
+          },
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "run.finished"
+          }
+        ]
+      }
+    },
+    {
+      "id": "p2-events",
+      "ok": true,
+      "op": "events",
+      "result": {
+        "events": [
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "run.started"
+          },
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "rate_limit.granted"
+          },
+          {
+            "attempt": null,
+            "stepId": "fetch",
+            "type": "step.released"
+          },
+          {
+            "attempt": 1,
+            "stepId": "fetch",
+            "type": "rate_limit.queued"
+          },
+          {
+            "attempt": 1,
+            "stepId": "fetch",
+            "type": "rate_limit.granted"
+          },
+          {
+            "attempt": 1,
+            "stepId": "fetch",
+            "type": "step.leased"
+          },
+          {
+            "attempt": 1,
+            "stepId": "fetch",
+            "type": "step.completed"
+          },
+          {
+            "attempt": null,
+            "stepId": "fetch",
+            "type": "step.routed"
+          },
+          {
+            "attempt": null,
+            "stepId": "done",
+            "type": "end.reached"
+          },
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "run.finished"
+          }
+        ]
+      }
+    },
+    {
+      "id": "p3-events",
+      "ok": true,
+      "op": "events",
+      "result": {
+        "events": [
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "run.started"
+          },
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "rate_limit.queued"
+          },
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "rate_limit.granted"
+          },
+          {
+            "attempt": null,
+            "stepId": "fetch",
+            "type": "step.released"
+          },
+          {
+            "attempt": 1,
+            "stepId": "fetch",
+            "type": "rate_limit.granted"
+          },
+          {
+            "attempt": 1,
+            "stepId": "fetch",
+            "type": "step.leased"
+          },
+          {
+            "attempt": 1,
+            "stepId": "fetch",
+            "type": "step.completed"
+          },
+          {
+            "attempt": null,
+            "stepId": "fetch",
+            "type": "step.routed"
+          },
+          {
+            "attempt": null,
+            "stepId": "done",
+            "type": "end.reached"
+          },
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "run.finished"
+          }
+        ]
+      }
+    },
+    {
+      "id": "p4-events",
+      "ok": true,
+      "op": "events",
+      "result": {
+        "events": [
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "run.started"
+          },
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "rate_limit.queued"
+          },
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "rate_limit.granted"
+          },
+          {
+            "attempt": null,
+            "stepId": "fetch",
+            "type": "step.released"
+          },
+          {
+            "attempt": 1,
+            "stepId": "fetch",
+            "type": "rate_limit.queued"
+          },
+          {
+            "attempt": 1,
+            "stepId": "fetch",
+            "type": "rate_limit.granted"
+          },
+          {
+            "attempt": 1,
+            "stepId": "fetch",
+            "type": "step.leased"
+          },
+          {
+            "attempt": 1,
+            "stepId": "fetch",
+            "type": "step.completed"
+          },
+          {
+            "attempt": null,
+            "stepId": "fetch",
+            "type": "step.routed"
+          },
+          {
+            "attempt": null,
+            "stepId": "done",
+            "type": "end.reached"
+          },
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "run.finished"
+          }
+        ]
+      }
+    },
+    {
+      "id": "p5-events",
+      "ok": true,
+      "op": "events",
+      "result": {
+        "events": [
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "run.started"
+          },
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "rate_limit.queued"
+          },
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "run.stop_requested"
+          },
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "rate_limit.dequeued"
+          },
+          {
+            "attempt": null,
+            "stepId": "fetch",
+            "type": "step.cancelled"
+          },
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "run.finished"
+          }
+        ]
+      }
+    },
+    {
+      "id": "q1-events",
+      "ok": true,
+      "op": "events",
+      "result": {
+        "events": [
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "run.started"
+          },
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "rate_limit.granted"
+          },
+          {
+            "attempt": null,
+            "stepId": "fetch",
+            "type": "step.released"
+          },
+          {
+            "attempt": 1,
+            "stepId": "fetch",
+            "type": "rate_limit.queued"
+          },
+          {
+            "attempt": 1,
+            "stepId": "fetch",
+            "type": "rate_limit.granted"
+          },
+          {
+            "attempt": 1,
+            "stepId": "fetch",
+            "type": "step.leased"
+          },
+          {
+            "attempt": 1,
+            "stepId": "fetch",
+            "type": "step.completed"
+          },
+          {
+            "attempt": null,
+            "stepId": "fetch",
+            "type": "step.routed"
+          },
+          {
+            "attempt": null,
+            "stepId": "done",
+            "type": "end.reached"
+          },
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "run.finished"
+          }
+        ]
+      }
+    }
+  ],
+  "serverState": [
+    {
+      "nodes": [
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "done",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "end",
+          "waitingOn": null
+        },
+        {
+          "attempt": 1,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "fetch",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "activity",
+          "waitingOn": null
+        }
+      ],
+      "paused": false,
+      "runId": "<uuid:8>",
+      "status": "SUCCEEDED"
+    },
+    {
+      "nodes": [
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "done",
+          "kind": "FORWARD",
+          "status": "NOT_STARTED",
+          "type": "end",
+          "waitingOn": null
+        },
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "fetch",
+          "kind": "FORWARD",
+          "status": "CANCELLED",
+          "type": "activity",
+          "waitingOn": null
+        }
+      ],
+      "paused": false,
+      "runId": "<uuid:7>",
+      "status": "CANCELLED"
+    },
+    {
+      "nodes": [
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "done",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "end",
+          "waitingOn": null
+        },
+        {
+          "attempt": 1,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "fetch",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "activity",
+          "waitingOn": null
+        }
+      ],
+      "paused": false,
+      "runId": "<uuid:6>",
+      "status": "SUCCEEDED"
+    },
+    {
+      "nodes": [
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "done",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "end",
+          "waitingOn": null
+        },
+        {
+          "attempt": 1,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "fetch",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "activity",
+          "waitingOn": null
+        }
+      ],
+      "paused": false,
+      "runId": "<uuid:5>",
+      "status": "SUCCEEDED"
+    },
+    {
+      "nodes": [
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "done",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "end",
+          "waitingOn": null
+        },
+        {
+          "attempt": 1,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "fetch",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "activity",
+          "waitingOn": null
+        }
+      ],
+      "paused": false,
+      "runId": "<uuid:4>",
+      "status": "SUCCEEDED"
+    },
+    {
+      "nodes": [
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "done",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "end",
+          "waitingOn": null
+        },
+        {
+          "attempt": 1,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "fetch",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "activity",
+          "waitingOn": null
+        }
+      ],
+      "paused": false,
+      "runId": "<uuid:1>",
+      "status": "SUCCEEDED"
+    }
+  ],
+  "workerLog": {
+    "w1": [
+      {
+        "abortedReason": null,
+        "activity": "flow.fetch",
+        "attempt": 1,
+        "deadlineAhead": true,
+        "idempotencyKey": "<uuid:1>:fetch",
+        "input": {
+          "providerId": "P"
+        },
+        "instance": {
+          "definitionNodeId": "fetch",
+          "instancePath": []
+        },
+        "kind": "activity",
+        "node": "fetch",
+        "outcome": "returned",
+        "steps": {},
+        "targetIdempotencyKey": "",
+        "targetNode": "",
+        "taskKind": "FORWARD",
+        "traceId": "<trace:1>",
+        "traceparentPresent": true
+      },
+      {
+        "abortedReason": null,
+        "activity": "flow.fetch",
+        "attempt": 1,
+        "deadlineAhead": true,
+        "idempotencyKey": "<uuid:4>:fetch",
+        "input": {
+          "providerId": "P"
+        },
+        "instance": {
+          "definitionNodeId": "fetch",
+          "instancePath": []
+        },
+        "kind": "activity",
+        "node": "fetch",
+        "outcome": "returned",
+        "steps": {},
+        "targetIdempotencyKey": "",
+        "targetNode": "",
+        "taskKind": "FORWARD",
+        "traceId": "<trace:2>",
+        "traceparentPresent": true
+      },
+      {
+        "abortedReason": null,
+        "activity": "flow.fetch",
+        "attempt": 1,
+        "deadlineAhead": true,
+        "idempotencyKey": "<uuid:8>:fetch",
+        "input": {
+          "providerId": "Q"
+        },
+        "instance": {
+          "definitionNodeId": "fetch",
+          "instancePath": []
+        },
+        "kind": "activity",
+        "node": "fetch",
+        "outcome": "returned",
+        "steps": {},
+        "targetIdempotencyKey": "",
+        "targetNode": "",
+        "taskKind": "FORWARD",
+        "traceId": "<trace:6>",
+        "traceparentPresent": true
+      },
+      {
+        "abortedReason": null,
+        "activity": "flow.fetch",
+        "attempt": 1,
+        "deadlineAhead": true,
+        "idempotencyKey": "<uuid:5>:fetch",
+        "input": {
+          "providerId": "P"
+        },
+        "instance": {
+          "definitionNodeId": "fetch",
+          "instancePath": []
+        },
+        "kind": "activity",
+        "node": "fetch",
+        "outcome": "returned",
+        "steps": {},
+        "targetIdempotencyKey": "",
+        "targetNode": "",
+        "taskKind": "FORWARD",
+        "traceId": "<trace:3>",
+        "traceparentPresent": true
+      },
+      {
+        "abortedReason": null,
+        "activity": "flow.fetch",
+        "attempt": 1,
+        "deadlineAhead": true,
+        "idempotencyKey": "<uuid:6>:fetch",
+        "input": {
+          "providerId": "P"
+        },
+        "instance": {
+          "definitionNodeId": "fetch",
+          "instancePath": []
+        },
+        "kind": "activity",
+        "node": "fetch",
+        "outcome": "returned",
+        "steps": {},
+        "targetIdempotencyKey": "",
+        "targetNode": "",
+        "taskKind": "FORWARD",
+        "traceId": "<trace:4>",
+        "traceparentPresent": true
+      }
+    ]
+  }
+}

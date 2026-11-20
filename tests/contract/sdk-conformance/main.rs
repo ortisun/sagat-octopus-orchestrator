@@ -69,6 +69,22 @@ fn every_scenario_declares_phases_with_reviewed_expected_documents() {
                 "{name}: a pending scenario is a runtime one and names the task or gap it waits for"
             );
         });
+        // A check of the contract the scenario cannot make yet is named with the task or gap it waits for (D022-097).
+        for (check, reason) in scenario
+            .get("deferred")
+            .map(|deferred| deferred.as_object().expect("deferred is an object"))
+            .into_iter()
+            .flatten()
+        {
+            let reason = reason
+                .as_str()
+                .expect("a deferred check's reason is a string");
+            assert!(
+                !check.is_empty()
+                    && (reason.contains("T0") || reason.contains("G0") || reason.contains("G1")),
+                "{name}: the deferred check {check:?} names the task or gap it waits for"
+            );
+        }
         let mut expected = vec![format!("{name}.workflows.json")];
         if !build_only && pending.is_none() {
             expected.push(format!("{name}.json"));
