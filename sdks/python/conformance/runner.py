@@ -408,6 +408,18 @@ def run_json(run: Run) -> Obj:
     # Present only for a run stopped with a failure code (design 043).
     if run.failure_code is not None:
         observed["failureCode"] = run.failure_code
+    # Present only for a run that holds or waits for a run permit (feature 022). A key label is a keyed digest under
+    # the platform's own key: whether one was disclosed is the observation, not its value.
+    if run.concurrency is not None:
+        permit = run.concurrency
+        observed["concurrency"] = {
+            "state": permit.state,
+            "pool": permit.pool,
+            "group": permit.group,
+            "keyLabel": None if permit.key_label is None else "disclosed",
+            "since": instant(permit.since),
+            "queueDeadline": instant(permit.queue_deadline),
+        }
     return observed
 
 

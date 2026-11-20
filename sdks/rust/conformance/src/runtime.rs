@@ -89,6 +89,19 @@ fn run_json(run: Run) -> Value {
     if let Some(code) = &run.failure_code {
         result["failureCode"] = json!(code);
     }
+    // Present only for a run that holds or waits for a run permit (feature 022). A key label is a
+    // keyed digest under the platform's own key: whether one was disclosed is the observation, not
+    // its value.
+    if let Some(permit) = &run.concurrency {
+        result["concurrency"] = json!({
+            "state": permit.state,
+            "pool": permit.pool,
+            "group": permit.group,
+            "keyLabel": permit.key_label.as_ref().map(|_| "disclosed"),
+            "since": operations::instant(Some(permit.since)),
+            "queueDeadline": operations::instant(permit.queue_deadline),
+        });
+    }
     result
 }
 fn log_entry(ctx: &ActivityContext, input: &Value, name: &str, kind: &str, outcome: &str) -> Value {

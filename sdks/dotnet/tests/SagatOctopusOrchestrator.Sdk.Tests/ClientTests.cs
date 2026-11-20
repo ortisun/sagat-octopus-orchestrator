@@ -445,6 +445,58 @@ public sealed class ClientTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task ARunPermitIsCarriedWhenTheRunHoldsOrWaitsForOneAndIsNullOtherwise()
+    {
+        server.Handler = _ => Reply(200, Run(run =>
+        {
+            run["status"] = "WAITING";
+            run["concurrency"] = new JsonObject
+            {
+                ["state"] = "WAITING",
+                ["pool"] = "ORDINARY",
+                ["group"] = "orders",
+                ["keyLabel"] = "0123456789ab",
+                ["since"] = "2026-11-20T10:00:00.123456Z",
+                ["queueDeadline"] = "2026-11-20T10:10:00Z",
+            };
+        }));
+        var waiting = (await NewClient().GetAsync(Ids.Run)).Concurrency;
+        Assert.Equal(
+            new RunConcurrency("WAITING", "ORDINARY", "orders", "0123456789ab", new DateTimeOffset(2026, 11, 20, 10, 0, 0, TimeSpan.Zero).AddTicks(1_234_560), new DateTimeOffset(2026, 11, 20, 10, 10, 0, TimeSpan.Zero)),
+            waiting);
+
+        server.Handler = _ => Reply(200, Run(run => run["concurrency"] = new JsonObject
+        {
+            ["state"] = "LENDING",
+            ["pool"] = "DRAFT_TEST",
+            ["group"] = "g",
+            ["keyLabel"] = null,
+            ["since"] = "2026-11-20T10:00:00Z",
+            ["queueDeadline"] = null,
+        }));
+        var holding = (await NewClient().GetAsync(Ids.Run)).Concurrency;
+        Assert.NotNull(holding);
+        Assert.Null(holding.KeyLabel);
+        Assert.Null(holding.QueueDeadline);
+        Assert.Equal("LENDING", holding.State);
+
+        server.Handler = _ => Reply(200, Run());
+        Assert.Null((await NewClient().GetAsync(Ids.Run)).Concurrency);
+
+        foreach (var broken in new JsonNode[]
+        {
+            new JsonObject { ["pool"] = "ORDINARY", ["group"] = "g", ["since"] = "2026-11-20T10:00:00Z" },
+            new JsonObject { ["state"] = "HOLDING", ["pool"] = "ORDINARY", ["group"] = "g" },
+            JsonValue.Create("HOLDING"),
+        })
+        {
+            server.Handler = _ => Reply(200, Run(run => run["concurrency"] = broken.DeepClone()));
+            var error = await Assert.ThrowsAsync<SagatException>(() => NewClient().GetAsync(Ids.Run));
+            Assert.Equal(SagatErrorCode.Protocol, error.Code);
+        }
+    }
+
+    [Fact]
     public async Task ARunStoppedWithAFailureCodeCarriesItAndARunWithoutOneHasNone()
     {
         server.Handler = _ => Reply(200, Run(run =>

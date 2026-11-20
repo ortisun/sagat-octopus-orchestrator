@@ -163,8 +163,32 @@ pub struct Run {
     /// `CONTINUATION_INPUT_INVALID` for a continue-as-new refused for its input; `None` for every
     /// other run.
     pub failure_code: Option<String>,
+    /// The run-level concurrency permit the run holds or waits for (feature 022), or `None` for a
+    /// run that does neither.
+    pub concurrency: Option<RunConcurrency>,
     #[serde(skip)]
     pub raw: Value,
+}
+/// The run-level concurrency permit a run holds or waits for (feature 022, FR-022-022).
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunConcurrency {
+    /// `HOLDING` or `WAITING`, or another string: the set only grows.
+    pub state: String,
+    /// `ORDINARY` or `DRAFT_TEST`, or another string: the set only grows.
+    pub pool: String,
+    pub group: String,
+    /// The 12-hex label of the key's keyed digest; `None` for a caller who may not reveal personal
+    /// data in the run's namespace.
+    #[serde(default)]
+    pub key_label: Option<String>,
+    /// When the permit was acquired (`HOLDING`) or the run was queued (`WAITING`), in UTC.
+    #[serde(with = "time::serde::rfc3339")]
+    pub since: OffsetDateTime,
+    /// `WAITING`: when the run fails `CONCURRENCY_WAIT_TIMEOUT` if not granted before; `None`
+    /// while `HOLDING`.
+    #[serde(default, with = "time::serde::rfc3339::option")]
+    pub queue_deadline: Option<OffsetDateTime>,
 }
 /// Which schedule started a run, for which nominal time, by which kind of action and under which
 /// revision of the schedule.
@@ -226,6 +250,10 @@ impl Run {
         run.start_delayed_until = run.start_delayed_until.map(|v| v.to_offset(UtcOffset::UTC));
         if let Some(schedule) = &mut run.schedule {
             schedule.nominal_time = schedule.nominal_time.to_offset(UtcOffset::UTC);
+        }
+        if let Some(permit) = &mut run.concurrency {
+            permit.since = permit.since.to_offset(UtcOffset::UTC);
+            permit.queue_deadline = permit.queue_deadline.map(|v| v.to_offset(UtcOffset::UTC));
         }
         run.raw = raw;
         Ok(run)

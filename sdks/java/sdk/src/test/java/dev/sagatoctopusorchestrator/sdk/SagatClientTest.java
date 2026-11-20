@@ -559,6 +559,36 @@ class SagatClientTest {
     }
 
     @Test
+    void aRunPermitIsCarriedWhenTheRunHoldsOrWaitsForOneAndIsNullOtherwise() {
+        server.prepare((req, reply) -> reply.send(200, run("status", "\"WAITING\"", "concurrency",
+                "{\"state\":\"WAITING\",\"pool\":\"ORDINARY\",\"group\":\"orders\",\"keyLabel\":\"0123456789ab\","
+                        + "\"since\":\"2026-11-20T10:00:00.123456Z\",\"queueDeadline\":\"2026-11-20T10:10:00Z\"}")));
+        assertEquals(new Run.ConcurrencyOfRun("WAITING", "ORDINARY", "orders", "0123456789ab",
+                        Instant.parse("2026-11-20T10:00:00.123456Z"), Instant.parse("2026-11-20T10:10:00Z")),
+                client().get(RUN).concurrency());
+
+        server.prepare((req, reply) -> reply.send(200, run("concurrency",
+                "{\"state\":\"LENDING\",\"pool\":\"DRAFT_TEST\",\"group\":\"g\",\"keyLabel\":null,"
+                        + "\"since\":\"2026-11-20T10:00:00Z\",\"queueDeadline\":null}")));
+        Run.ConcurrencyOfRun holding = client().get(RUN).concurrency();
+        assertEquals(null, holding.keyLabel());
+        assertEquals(null, holding.queueDeadline());
+        assertEquals("LENDING", holding.state());
+
+        server.prepare((req, reply) -> reply.send(200, run()));
+        assertEquals(null, client().get(RUN).concurrency());
+
+        for (String broken : List.of(
+                "{\"pool\":\"ORDINARY\",\"group\":\"g\",\"since\":\"2026-11-20T10:00:00Z\"}",
+                "{\"state\":\"HOLDING\",\"pool\":\"ORDINARY\",\"group\":\"g\"}",
+                "\"HOLDING\"")) {
+            server.prepare((req, reply) -> reply.send(200, run("concurrency", broken)));
+            SagatException error = assertThrows(SagatException.class, () -> client().get(RUN));
+            assertEquals(ErrorCode.PROTOCOL, error.code(), broken);
+        }
+    }
+
+    @Test
     void aRunStoppedWithAFailureCodeCarriesItAndARunWithoutOneHasNone() {
         server.prepare((req, reply) -> reply.send(200,
                 run("status", "\"FAILED\"", "failureCode", "\"CONTINUATION_INPUT_INVALID\"")));

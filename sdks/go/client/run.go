@@ -86,6 +86,9 @@ type Run struct {
 	// failure failed the run, a ceiling such as STORAGE_QUOTA_EXCEEDED, or CONTINUATION_INPUT_INVALID for a
 	// continue-as-new refused for its input. It is empty for every other run.
 	FailureCode string
+	// Concurrency is the run-level concurrency permit the run holds or waits for (feature 022), or nil for a run
+	// that does neither.
+	Concurrency *RunConcurrency
 	// Raw is the answer as the server sent it, member by member, so that a field of a newer server
 	// is reachable.
 	Raw map[string]json.RawMessage
@@ -111,6 +114,23 @@ type RunSchedule struct {
 type RunResetFrom struct {
 	RunID    string
 	Sequence int64
+}
+
+// RunConcurrency is the run-level concurrency permit a run holds or waits for (feature 022, FR-022-022).
+type RunConcurrency struct {
+	// State is "HOLDING" or "WAITING", or another string: the set only grows.
+	State string
+	// Pool is "ORDINARY" or "DRAFT_TEST", or another string: the set only grows.
+	Pool  string
+	Group string
+	// KeyLabel is the 12-hex label of the key's keyed digest; empty for a caller who may not reveal personal data
+	// in the run's namespace.
+	KeyLabel string
+	// Since is when the permit was acquired (HOLDING) or the run was queued (WAITING).
+	Since time.Time
+	// QueueDeadline is, while WAITING, when the run fails CONCURRENCY_WAIT_TIMEOUT if not granted before; zero
+	// while HOLDING.
+	QueueDeadline time.Time
 }
 
 // StartedRun is the answer to Start: the run, and whether this call created it. Started is false when
@@ -461,7 +481,41 @@ func runOf(m map[string]json.RawMessage) (*Run, error) {
 		}
 		run.ResetFrom = reset
 	}
+	if raw, present := m["concurrency"]; present && !jsonx.IsNull(raw) {
+		permit, err := runConcurrencyOf(raw)
+		if err != nil {
+			return nil, err
+		}
+		run.Concurrency = permit
+	}
 	return run, nil
+}
+
+// runConcurrencyOf reads the run permit of a run: an object without its state, pool, group or since is a PROTOCOL
+// error and never a run with half of it.
+func runConcurrencyOf(raw json.RawMessage) (*RunConcurrency, error) {
+	m, err := jsonx.Object(raw)
+	if err != nil {
+		return nil, protocolError("concurrency is invalid in the answer")
+	}
+	permit := &RunConcurrency{}
+	if permit.State, err = requiredString(m, "state"); err != nil {
+		return nil, err
+	}
+	if permit.Pool, err = requiredString(m, "pool"); err != nil {
+		return nil, err
+	}
+	if permit.Group, err = requiredString(m, "group"); err != nil {
+		return nil, err
+	}
+	since, ok := jsonx.Time(m, "since")
+	if !ok {
+		return nil, protocolError("since is missing or invalid in the answer")
+	}
+	permit.Since = since
+	permit.KeyLabel, _ = jsonx.String(m, "keyLabel")
+	permit.QueueDeadline, _ = jsonx.Time(m, "queueDeadline")
+	return permit, nil
 }
 
 // runScheduleOf reads the schedule of a run strictly: an object that lacks a member, or has one the contract does

@@ -141,6 +141,25 @@ class RunResetFrom:
 
 
 @dataclass(frozen=True)
+class RunConcurrency:
+    """The run-level concurrency permit a run holds or waits for (feature 022, FR-022-022)."""
+
+    state: str
+    """``HOLDING`` or ``WAITING``, or another string: the set only grows."""
+    pool: str
+    """``ORDINARY`` or ``DRAFT_TEST``, or another string: the set only grows."""
+    group: str
+    key_label: str | None
+    """The 12-hex label of the key's keyed digest; ``None`` for a caller who may not reveal personal data in the run's
+    namespace."""
+    since: datetime
+    """When the permit was acquired (``HOLDING``) or the run was queued (``WAITING``); aware UTC."""
+    queue_deadline: datetime | None
+    """``WAITING``: when the run fails ``CONCURRENCY_WAIT_TIMEOUT`` if not granted before; ``None`` while
+    ``HOLDING``."""
+
+
+@dataclass(frozen=True)
 class Run:
     """A run as the server reports it. ``raw`` keeps the answer as sent, so a field of a newer server is reachable."""
 
@@ -178,6 +197,9 @@ class Run:
     """The failure code the stop of the run carries (design 043): the code of the step whose failure failed the run, a
     ceiling such as ``STORAGE_QUOTA_EXCEEDED``, or ``CONTINUATION_INPUT_INVALID`` for a continue-as-new refused for its
     input; ``None`` for every other run."""
+    concurrency: RunConcurrency | None = None
+    """The run-level concurrency permit the run holds or waits for (feature 022); ``None`` for a run that does
+    neither."""
     raw: Mapping[str, Any] = field(default_factory=dict, repr=False, compare=False)
 
     @property
@@ -399,6 +421,7 @@ def _run_fields(value: Any) -> dict[str, Any]:
         "schedule": _to_run_schedule(raw.get("schedule")),
         "reset_from": _to_run_reset_from(raw.get("resetFrom")),
         "failure_code": _opt_str(raw, "failureCode"),
+        "concurrency": _to_run_concurrency(raw.get("concurrency")),
         "raw": raw,
     }
     return fields
@@ -421,6 +444,20 @@ def _to_run_reset_from(value: Any) -> RunResetFrom | None:
         return None
     reset = _object(value, "a run reset")
     return RunResetFrom(_str(reset, "runId"), _revision(reset, "sequence", 1))
+
+
+def _to_run_concurrency(value: Any) -> RunConcurrency | None:
+    if value is None:
+        return None
+    permit = _object(value, "a run permit")
+    return RunConcurrency(
+        _str(permit, "state"),
+        _str(permit, "pool"),
+        _str(permit, "group"),
+        _opt_str(permit, "keyLabel"),
+        instant_of(permit, "since"),
+        parse_instant(permit.get("queueDeadline")),
+    )
 
 
 def _completion_kind(value: Any) -> SegmentCompletionKind | None:

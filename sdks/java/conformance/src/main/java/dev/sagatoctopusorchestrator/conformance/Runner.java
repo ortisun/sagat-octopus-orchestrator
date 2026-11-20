@@ -714,6 +714,21 @@ public final class Runner {
         if (run.failureCode() != null) {
             out.put("failureCode", run.failureCode());
         }
+        // Present only for a run that holds or waits for a run permit (feature 022). A key label is a keyed digest under
+        // the platform's own key: whether one was disclosed is the observation, not its value.
+        if (run.concurrency() != null) {
+            ObjectNode permit = out.putObject("concurrency");
+            permit.put("state", run.concurrency().state());
+            permit.put("pool", run.concurrency().pool());
+            permit.put("group", run.concurrency().group());
+            if (run.concurrency().keyLabel() == null) {
+                permit.putNull("keyLabel");
+            } else {
+                permit.put("keyLabel", "disclosed");
+            }
+            permit.set("since", instant(run.concurrency().since()));
+            permit.set("queueDeadline", instant(run.concurrency().queueDeadline()));
+        }
         return out;
     }
 

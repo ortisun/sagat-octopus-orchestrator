@@ -159,6 +159,11 @@ function runJson(run: Run): Obj {
     ...(run.resetFrom !== null ? { resetFrom: { runId: run.resetFrom.runId, sequence: run.resetFrom.sequence } } : {}),
     // Present only for a run stopped with a failure code (design 043).
     ...(run.failureCode !== null ? { failureCode: run.failureCode } : {}),
+    // Present only for a run that holds or waits for a run permit (feature 022). A key label is a keyed digest under the
+    // platform's own key: whether one was disclosed is the observation, not its value.
+    ...(run.concurrency !== null
+      ? { concurrency: { state: run.concurrency.state, pool: run.concurrency.pool, group: run.concurrency.group, keyLabel: run.concurrency.keyLabel === null ? null : 'disclosed', since: iso(run.concurrency.since), queueDeadline: iso(run.concurrency.queueDeadline) } }
+      : {}),
   };
 }
 

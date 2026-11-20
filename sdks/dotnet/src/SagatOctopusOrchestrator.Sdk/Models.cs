@@ -138,6 +138,9 @@ public record Run
     /// </summary>
     public string? FailureCode { get; init; }
 
+    /// <summary>The run-level concurrency permit the run holds or waits for (feature 022); <c>null</c> for a run that does neither.</summary>
+    public RunConcurrency? Concurrency { get; init; }
+
     /// <summary>The answer as the server sent it.</summary>
     public JsonElement Raw { get; init; }
 
@@ -182,6 +185,15 @@ public sealed record RunSchedule(string ScheduleId, DateTimeOffset NominalTime, 
 /// <param name="RunId">The run that was reset.</param>
 /// <param name="Sequence">The journal sequence (1 or more) of <paramref name="RunId"/> up to which the new run keeps the history.</param>
 public sealed record RunResetFrom(string RunId, long Sequence);
+
+/// <summary>The run-level concurrency permit a run holds or waits for (feature 022, FR-022-022).</summary>
+/// <param name="State"><c>HOLDING</c> or <c>WAITING</c>, or another string a newer server sends: the set only grows.</param>
+/// <param name="Pool"><c>ORDINARY</c> or <c>DRAFT_TEST</c>, or another string: the set only grows.</param>
+/// <param name="Group">The group of the permit.</param>
+/// <param name="KeyLabel">The 12-hex label of the key's keyed digest; <c>null</c> for a caller who may not reveal personal data in the run's namespace.</param>
+/// <param name="Since">When the permit was acquired (<c>HOLDING</c>) or the run was queued (<c>WAITING</c>), UTC.</param>
+/// <param name="QueueDeadline"><c>WAITING</c>: when the run fails <c>CONCURRENCY_WAIT_TIMEOUT</c> if not granted before; <c>null</c> while <c>HOLDING</c>.</param>
+public sealed record RunConcurrency(string State, string Pool, string Group, string? KeyLabel, DateTimeOffset Since, DateTimeOffset? QueueDeadline);
 
 /// <summary>A page of runs.</summary>
 public sealed record RunPage(IReadOnlyList<Run> Items, string? NextCursor);

@@ -361,6 +361,77 @@ async fn a_run_a_reset_made_says_the_run_it_came_from_and_the_journal_sequence_i
     assert!(again.reset_from.is_none());
 }
 
+fn utc(text: &str) -> time::OffsetDateTime {
+    time::OffsetDateTime::parse(text, &time::format_description::well_known::Rfc3339)
+        .expect("an instant")
+}
+
+#[tokio::test]
+async fn a_run_permit_is_carried_when_the_run_holds_or_waits_for_one_and_is_none_otherwise() {
+    let server = Recorder::start().await;
+    server.answer_with(
+        200,
+        run(json!({"status": "WAITING", "concurrency": {
+            "state": "WAITING", "pool": "ORDINARY", "group": "orders", "keyLabel": "0123456789ab",
+            "since": "2026-11-20T10:00:00.123456+02:00", "queueDeadline": "2026-11-20T10:10:00Z"
+        }})),
+    );
+    let waiting = server
+        .client()
+        .get(RUN, CallOptions::default())
+        .await
+        .expect("get");
+    let permit = waiting.concurrency.expect("a waiting run has its permit");
+    assert_eq!(
+        (
+            permit.state.as_str(),
+            permit.pool.as_str(),
+            permit.group.as_str()
+        ),
+        ("WAITING", "ORDINARY", "orders")
+    );
+    assert_eq!(permit.key_label.as_deref(), Some("0123456789ab"));
+    assert_eq!(permit.since, utc("2026-11-20T08:00:00.123456Z"));
+    assert_eq!(permit.since.offset(), time::UtcOffset::UTC);
+    assert_eq!(permit.queue_deadline, Some(utc("2026-11-20T10:10:00Z")));
+    server.answer_with(
+        200,
+        run(json!({"concurrency": {
+            "state": "LENDING", "pool": "DRAFT_TEST", "group": "g", "keyLabel": null,
+            "since": "2026-11-20T10:00:00Z", "queueDeadline": null
+        }})),
+    );
+    let holding = server
+        .client()
+        .get(RUN, CallOptions::default())
+        .await
+        .expect("get")
+        .concurrency
+        .expect("a holder has its permit");
+    assert!(holding.key_label.is_none() && holding.queue_deadline.is_none());
+    assert_eq!(holding.state, "LENDING");
+    server.answer_with(200, run(json!({})));
+    let plain = server
+        .client()
+        .get(RUN, CallOptions::default())
+        .await
+        .expect("get");
+    assert!(plain.concurrency.is_none());
+    for broken in [
+        json!({"pool": "ORDINARY", "group": "g", "since": "2026-11-20T10:00:00Z"}),
+        json!({"state": "HOLDING", "pool": "ORDINARY", "group": "g"}),
+        json!("HOLDING"),
+    ] {
+        server.answer_with(200, run(json!({ "concurrency": broken })));
+        let error = server
+            .client()
+            .get(RUN, CallOptions::default())
+            .await
+            .expect_err("a broken permit is refused");
+        assert_eq!(error.code, "PROTOCOL", "{broken}");
+    }
+}
+
 #[tokio::test]
 async fn a_run_stopped_with_a_failure_code_carries_it_and_a_run_without_one_has_none() {
     let server = Recorder::start().await;

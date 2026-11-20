@@ -218,6 +218,13 @@ Rules:
 - A `Run` carries `failureCode` (design 043, FR-043-015), a string, when its stop carries a failure code (the code of the step whose failure
   failed it, a ceiling such as `STORAGE_QUOTA_EXCEEDED`, or `CONTINUATION_INPUT_INVALID`) and is absent/null/None/nil/empty otherwise; the
   conformance observation of a `Run` carries the key only when it is present, never as `null`.
+- A `Run` carries `concurrency` (feature 022, FR-022-022) while it holds or waits for a run-level concurrency permit, and none
+  otherwise: `state` (`HOLDING`, `WAITING`, or another string: the set only grows), `pool` (likewise), `group`, `keyLabel` (the
+  12-hex label of the key's keyed digest, null/None/nil/empty for a caller who may not reveal personal data in the run's
+  namespace), `since` (an instant) and `queueDeadline` (an instant while `WAITING`, null while `HOLDING`). A permit without
+  `state`, `pool`, `group` or a valid `since`, or one that is not an object, is the SDK's `PROTOCOL` error, never a run with half of
+  it (D022-096). The type is `RunConcurrency` (Java `Run.ConcurrencyOfRun`). The conformance observation carries the key only when
+  present, and writes a disclosed label as `"disclosed"`: its value is a digest under the platform's own key.
 - The action of a schedule may name a business-id prefix (FR-018-016): `businessIdPrefix` (a string), `businessIdConflictPolicy` and
   `businessIdReusePolicy` (the two policies of `start`), optional on the schedule write (create and update) and on the `action` of what is
   read back. **Absent means absent**: a write that sets none of them sends none of the three keys (not `null`, not empty), and a schedule whose

@@ -78,6 +78,21 @@ func runJSON(run *client.Run) object {
 	if run.FailureCode != "" {
 		observed["failureCode"] = run.FailureCode
 	}
+	// Present only for a run that holds or waits for a run permit (feature 022). A key label is a keyed digest under
+	// the platform's own key: whether one was disclosed is the observation, not its value.
+	if permit := run.Concurrency; permit != nil {
+		var label, deadline any
+		if permit.KeyLabel != "" {
+			label = "disclosed"
+		}
+		if !permit.QueueDeadline.IsZero() {
+			deadline = iso(permit.QueueDeadline)
+		}
+		observed["concurrency"] = object{
+			"state": permit.State, "pool": permit.Pool, "group": permit.Group, "keyLabel": label,
+			"since": iso(permit.Since), "queueDeadline": deadline,
+		}
+	}
 	return observed
 }
 

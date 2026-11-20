@@ -61,8 +61,25 @@ export interface Run {
    * such as `STORAGE_QUOTA_EXCEEDED`, or `CONTINUATION_INPUT_INVALID` for a continue-as-new refused for its input. Null for every other run.
    */
   failureCode: string | null;
+  /** The run-level concurrency permit the run holds or waits for (feature 022), or null for a run that does neither. */
+  concurrency: RunConcurrency | null;
   /** The answer as the server sent it, so a field of a newer server is reachable. */
   raw: Record<string, unknown>;
+}
+
+/** The run-level concurrency permit a run holds or waits for (feature 022, FR-022-022). */
+export interface RunConcurrency {
+  /** `HOLDING` or `WAITING`, or another string: the set only grows. */
+  state: string;
+  /** `ORDINARY` or `DRAFT_TEST`, or another string: the set only grows. */
+  pool: string;
+  group: string;
+  /** The 12-hex label of the key's keyed digest; null for a caller who may not reveal personal data in the run's namespace. */
+  keyLabel: string | null;
+  /** When the permit was acquired (`HOLDING`) or the run was queued (`WAITING`). A `Date`, so to the millisecond. */
+  since: Date;
+  /** `WAITING`: when the run fails `CONCURRENCY_WAIT_TIMEOUT` if not granted before; null while `HOLDING`. */
+  queueDeadline: Date | null;
 }
 
 /** Which schedule started a run, for which nominal time, by which kind of action and under which revision of the schedule. */
@@ -376,7 +393,19 @@ export function toRun(value: unknown): Run {
     schedule: toRunSchedule(raw['schedule']),
     resetFrom: toRunResetFrom(raw['resetFrom']),
     failureCode: optStr(raw, 'failureCode'),
+    concurrency: toRunConcurrency(raw['concurrency']),
     raw,
+  };
+}
+
+function toRunConcurrency(value: unknown): RunConcurrency | null {
+  if (value === null || value === undefined) return null;
+  const permit = object(value, 'a run permit');
+  const since = optDate(permit, 'since');
+  if (!since) throw new SagatError({ code: 'PROTOCOL', message: 'since is missing or invalid in the answer' });
+  return {
+    state: str(permit, 'state'), pool: str(permit, 'pool'), group: str(permit, 'group'),
+    keyLabel: optStr(permit, 'keyLabel'), since, queueDeadline: optDate(permit, 'queueDeadline'),
   };
 }
 

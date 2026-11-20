@@ -1242,7 +1242,19 @@ public final class SagatClient implements AutoCloseable {
                 toRunSchedule(raw.path("schedule")),
                 toRunResetFrom(raw.path("resetFrom")),
                 optStr(raw, "failureCode"),
+                toRunConcurrency(raw.path("concurrency")),
                 raw);
+    }
+
+    private static Run.ConcurrencyOfRun toRunConcurrency(JsonNode node) {
+        if (node.isMissingNode() || node.isNull()) return null;
+        JsonNode permit = object(node, "a run permit");
+        Instant since = optInstant(permit, "since");
+        if (since == null) {
+            throw SagatException.of(ErrorCode.PROTOCOL, "since is missing or invalid in the answer");
+        }
+        return new Run.ConcurrencyOfRun(str(permit, "state"), str(permit, "pool"), str(permit, "group"),
+                optStr(permit, "keyLabel"), since, optInstant(permit, "queueDeadline"));
     }
 
     private static Run.ScheduleOfRun toRunSchedule(JsonNode node) {

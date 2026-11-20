@@ -39,6 +39,8 @@ import java.time.Instant;
  *                      failed the run, a ceiling such as {@code STORAGE_QUOTA_EXCEEDED}, or
  *                      {@code CONTINUATION_INPUT_INVALID} for a continue-as-new refused for its input; null for every
  *                      other run
+ * @param concurrency   the run-level concurrency permit the run holds or waits for (feature 022); null for a run that
+ *                      does neither
  * @param raw           the answer as sent
  */
 public record Run(
@@ -65,7 +67,39 @@ public record Run(
         ScheduleOfRun schedule,
         ResetFromOfRun resetFrom,
         String failureCode,
+        ConcurrencyOfRun concurrency,
         JsonNode raw) {
+
+    /** A run that neither holds nor waits for a run permit. */
+    public Run(
+            String runId,
+            String workflowId,
+            String versionId,
+            RunStatus status,
+            String statusText,
+            long version,
+            boolean paused,
+            String startedBy,
+            Instant createdAt,
+            Instant updatedAt,
+            Instant finishedAt,
+            Instant deadline,
+            String traceId,
+            String correlationId,
+            int depth,
+            Parent parent,
+            ChainSegmentOfRun chain,
+            String rerunOf,
+            String businessId,
+            Instant startDelayedUntil,
+            ScheduleOfRun schedule,
+            ResetFromOfRun resetFrom,
+            String failureCode,
+            JsonNode raw) {
+        this(runId, workflowId, versionId, status, statusText, version, paused, startedBy, createdAt, updatedAt,
+                finishedAt, deadline, traceId, correlationId, depth, parent, chain, rerunOf, businessId,
+                startDelayedUntil, schedule, resetFrom, failureCode, null, raw);
+    }
 
     /** A run stopped without a failure code. */
     public Run(
@@ -194,6 +228,21 @@ public record Run(
      * @param sequence the journal sequence (1 or more) of that run the new run keeps as its own
      */
     public record ResetFromOfRun(String runId, long sequence) {}
+
+    /**
+     * The run-level concurrency permit a run holds or waits for (feature 022, FR-022-022).
+     *
+     * @param state         {@code HOLDING} or {@code WAITING}, or another string: the set only grows
+     * @param pool          {@code ORDINARY} or {@code DRAFT_TEST}, or another string: the set only grows
+     * @param group         the group of the permit
+     * @param keyLabel      the 12-hex label of the key's keyed digest; null for a caller who may not reveal personal data
+     *                      in the run's namespace
+     * @param since         when the permit was acquired ({@code HOLDING}) or the run was queued ({@code WAITING}), UTC
+     * @param queueDeadline {@code WAITING}: when the run fails {@code CONCURRENCY_WAIT_TIMEOUT} if not granted before;
+     *                      null while {@code HOLDING}
+     */
+    public record ConcurrencyOfRun(
+            String state, String pool, String group, String keyLabel, Instant since, Instant queueDeadline) {}
 
     /** The parent of a child run. */
     public record Parent(String runId, String node, String cancelPolicy) {}
