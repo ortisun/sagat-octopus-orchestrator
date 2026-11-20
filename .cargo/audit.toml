@@ -8,9 +8,10 @@ ignore = [
   "RUSTSEC-2023-0071",
   # 2026-10-24 advisories (published 2026-10-13 to 2026-10-23). Their fixes were younger than the
   # two-week rule for dependencies, so each was a time-boxed ignore. The ones whose fix had passed the
-  # rule were taken on 2026-11-05 and their entries deleted (rustls 0346 to 0349, tokio 0386,
-  # rustls-webpki 0382, webpki-roots and webpki-root-certs 0381 and 0383; research.md, gaps G271, G700
-  # and G701). Each entry below says when its fix passes the rule and the date by which the ignore
+  # rule were taken on 2026-11-05 (rustls 0346 to 0349, tokio 0386, rustls-webpki 0382, webpki-roots
+  # and webpki-root-certs 0381 and 0383) and on 2026-11-12 (ctutils 0385), and their entries deleted
+  # (research.md, gaps G271, G700, G701 and G702); the 0.2 line took the same fixes in hotfix 0.2.1
+  # on 2026-11-20. Each entry below says when its fix passes the rule and the date by which the ignore
   # must be gone. See research.md, gap G700 and decision D700.
 
   # crypto-bigint 0.5.5 (timing variability in operations meant to be constant-time), reached only
@@ -56,4 +57,13 @@ ignore = [
   # links it. sqlx-sqlite 0.9.0 requires `>=0.30.1, <0.38.0`, so the fix needs a sqlx release. Re-evaluate
   # on 2026-12-02 or when sqlx takes libsqlite3-sys >= 0.39 (research.md, gap G707).
   "RUSTSEC-2026-0459",
+  # 2026-11-18: three "unmaintained" notices (informational; no vulnerability is named), dated 2026-09-14 and
+  # added to the advisory database after 2026-11-11. chrono 0.4.45 is reached through croner (cron), object_store,
+  # rskafka (vendored), sagat-infra-ir and sagat-infra-connectors; chrono-tz 0.10.4 through sagat-infra-ir (time
+  # zones of schedules); humantime 2.4.0 through object_store (sagat-infra-blobstore). Each ships in the binaries,
+  # and none has a drop-in successor: moving off chrono (to jiff or time) touches croner, object_store and the IR,
+  # which is not a change for the closing of 0.3.0. Re-evaluate on 2026-12-02 (research.md, gap G708).
+  "RUSTSEC-2026-0543", # chrono is unmaintained
+  "RUSTSEC-2026-0555", # chrono-tz is unmaintained
+  "RUSTSEC-2026-0542", # humantime is unmaintained
 ]
