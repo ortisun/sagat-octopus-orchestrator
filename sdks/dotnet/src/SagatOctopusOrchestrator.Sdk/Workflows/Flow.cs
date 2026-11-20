@@ -77,7 +77,7 @@ public abstract partial class FlowBase<TSelf>
         Set(node, "irreversible", options.Irreversible);
         Set(node, "highRisk", options.HighRisk);
         Set(node, "onError", options.OnError);
-        return Push(node);
+        return Push(Gates(node, options.Concurrency, options.RateLimit));
     }
 
     /// <summary>Sleep: waits for a duration. A timer, not a process: nothing is kept alive.</summary>
@@ -118,7 +118,7 @@ public abstract partial class FlowBase<TSelf>
         {
             node["outputSchema"] = outputSchema.DeepClone();
         }
-        return Push(node);
+        return Push(Gates(node, options.Concurrency, options.RateLimit));
     }
 
     /// <summary>WaitForEvent: waits for an event of a type with a correlation key, or for the timeout.</summary>
@@ -639,6 +639,56 @@ public abstract partial class FlowBase<TSelf>
 
     private static long Millis(TimeSpan span, string subject) => Millis((TimeSpan?)span, subject)!.Value;
 
+    /// <summary>Writes the flow-control policies of a step onto its node (feature 022); an absent policy writes nothing.</summary>
+    private static JsonObject Gates(JsonObject node, ConcurrencyPolicy? concurrency, RateLimitPolicy? rateLimit)
+    {
+        if (concurrency is not null)
+        {
+            node["concurrency"] = ConcurrencyNode(concurrency);
+        }
+
+        if (rateLimit is not null)
+        {
+            node["rateLimit"] = RateLimitNode(rateLimit);
+        }
+
+        return node;
+    }
+
+    /// <summary>The IR object of a concurrency policy: the members given, in the IR's names.</summary>
+    internal static JsonObject ConcurrencyNode(ConcurrencyPolicy policy)
+    {
+        var node = new JsonObject { ["limit"] = policy.Limit };
+        return GateMembers(node, "concurrency", policy.Key, policy.Group, policy.QueueTimeout);
+    }
+
+    /// <summary>The IR object of a rate limit: the members given, in the IR's names.</summary>
+    internal static JsonObject RateLimitNode(RateLimitPolicy policy)
+    {
+        var per = policy.Per switch
+        {
+            RatePeriod.Second => "second",
+            RatePeriod.Minute => "minute",
+            RatePeriod.Hour => "hour",
+            _ => throw Invalid("rateLimit per is second, minute or hour"),
+        };
+        var node = new JsonObject { ["limit"] = policy.Limit, ["per"] = per };
+        return GateMembers(node, "rateLimit", policy.Key, policy.Group, policy.QueueTimeout);
+    }
+
+    /// <summary>The optional members both kinds share. A timeout is whole milliseconds: rounding would publish one the author did not write.</summary>
+    private static JsonObject GateMembers(JsonObject node, string kind, string? key, string? group, TimeSpan? queueTimeout)
+    {
+        Set(node, "key", key);
+        Set(node, "group", group);
+        if (queueTimeout is { } timeout)
+        {
+            node["queueTimeoutMs"] = WholeMillis(timeout, $"{kind} queueTimeoutMs");
+        }
+
+        return node;
+    }
+
     private static JsonObject RetryNode(StepRetry retry)
     {
         var node = new JsonObject();
@@ -710,6 +760,8 @@ public sealed partial class WorkflowBuilder : FlowBase<WorkflowBuilder>
     private JsonObject? state;
     private JsonObject? workflowLimits;
     private JsonObject? chainPolicy;
+    private JsonObject? runConcurrency;
+    private JsonObject? runRateLimit;
     private readonly SortedDictionary<string, Body> bodies = new(StringComparer.Ordinal);
 
     internal WorkflowBuilder(string name)
@@ -813,6 +865,28 @@ public sealed partial class WorkflowBuilder : FlowBase<WorkflowBuilder>
         }
 
         chainPolicy = new JsonObject { ["maxSegments"] = options.MaxSegments, ["timeoutMs"] = timeoutMs };
+        return this;
+    }
+
+    /// <summary>
+    /// Gates the start of every run (feature 022): a run holds a permit of its key from its start to its end, and waits for
+    /// one when the key has <c>Limit</c> holders. The key reads <c>input</c>. A second call replaces the first.
+    /// </summary>
+    public WorkflowBuilder Concurrency(ConcurrencyPolicy policy)
+    {
+        ArgumentNullException.ThrowIfNull(policy);
+        runConcurrency = ConcurrencyNode(policy);
+        return this;
+    }
+
+    /// <summary>
+    /// Limits the starts of runs (feature 022): at most <c>Limit</c> runs of one key are granted in any window of <c>Per</c>;
+    /// the others wait, in admission order. The key reads <c>input</c>. A second call replaces the first.
+    /// </summary>
+    public WorkflowBuilder RateLimit(RateLimitPolicy policy)
+    {
+        ArgumentNullException.ThrowIfNull(policy);
+        runRateLimit = RateLimitNode(policy);
         return this;
     }
 
@@ -1030,6 +1104,16 @@ public sealed partial class WorkflowBuilder : FlowBase<WorkflowBuilder>
         if (chainPolicy is not null)
         {
             document["chainPolicy"] = chainPolicy.DeepClone();
+        }
+
+        if (runConcurrency is not null)
+        {
+            document["concurrency"] = runConcurrency.DeepClone();
+        }
+
+        if (runRateLimit is not null)
+        {
+            document["rateLimit"] = runRateLimit.DeepClone();
         }
 
         if (bodyNodes.Count > 0)

@@ -29,6 +29,6 @@ export type { WorkerConfig, WorkerEvent, WorkerTransport } from './worker/host.j
 export { Body, Flow, WorkflowBuilder, body, flow, workflow } from './workflow.js';
 export { ops } from './ops.js';
 export type { Operator } from './ops.js';
-export type { ApprovalOptions, ApprovalPolicy, ApprovalRole, ChainPolicy, ChildOptions, CollectionOptions, DisclosurePolicy, Json, LoopOptions, QueryDefinition, RetryOptions, SagaOptions, StateDefinition, StepOptions, SwitchCase, Trigger, UpdateDefinition, WaitOptions as WaitForEventOptions } from './workflow.js';
+export type { ApprovalOptions, ApprovalPolicy, ApprovalRole, ChainPolicy, ChildOptions, CollectionOptions, ConcurrencyPolicy, DisclosurePolicy, Json, LoopOptions, QueryDefinition, RateLimitPolicy, RatePeriod, RetryOptions, SagaOptions, StateDefinition, StepOptions, SwitchCase, Trigger, UpdateDefinition, WaitOptions as WaitForEventOptions } from './workflow.js';
 export type { ConnectionRef, DatabaseType, DatabaseValue, DatabaseParameter, DatabaseLimits, DatabaseOptions } from './database.js';
 export type { IcebergTable, IcebergRecords, IcebergMapping, IcebergLimits, IcebergWriteOptions } from './iceberg.js';

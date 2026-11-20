@@ -12,6 +12,7 @@ REST client, workflow/database authoring, shared transport utilities and optiona
 - Flow, Body, WorkflowBuilder and workflow/flow/body factories author activities, scripts, databases, timers, events, children, decisions, collections, loops, approvals, continuations, parallel/saga, terminal nodes, state operations and chain policies. [workflow.ts:Flow] [workflow.ts:Body] [workflow.ts:WorkflowBuilder] [database.ts:databaseNode]
 - The separate OpenTelemetryBridge API adapts traceContext and onEvent; trace helpers validate or generate W3C traceparent values. [opentelemetry.ts:OpenTelemetryBridge] [traceparent.ts:isTraceparent] [traceparent.ts:checkTraceparent] [traceparent.ts:newTraceparent]
 - `ops` is the collection operator factory (`filter`, `map`, `flatMap`, `skip`, `take`, `distinct`, `window`) returning `Operator`; `CollectionOptions.operators` carries the chain, and absent or empty writes no `operators` (design 042). [ops.ts:ops] [workflow.ts:CollectionOptions]
+- `ConcurrencyPolicy` and `RateLimitPolicy` (`RatePeriod` is `second`, `minute` or `hour`) gate a run's start through `WorkflowBuilder.concurrency` and `rateLimit`, and an activity or script through `StepOptions`/`ScriptOptions`; the builders write the IR's names as given and leave every bound to the server (feature 022). [workflow.ts:ConcurrencyPolicy] [workflow.ts:RateLimitPolicy] [workflow.ts:WorkflowBuilder]
 
 - [worker](./worker/README.md) — component contract.
 

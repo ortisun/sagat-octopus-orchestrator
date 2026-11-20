@@ -610,6 +610,31 @@ operators allowed on a collection and the variables a stage expression reads (`e
 `run`, `state`) are checked by the server at publication. A stage the factory did not build is `VALIDATION_FAILED`
 where the language can express one. The shared scenario is `collection-operators` (build only).
 
+### 7.4 Flow control: concurrency and rate limits (feature 022)
+
+A workflow (its start) and an `activity` or `script` step may carry `concurrency` (at most `limit` holders of one key) and
+`rateLimit` (at most `limit` grants of one key in any window of `per`: `second`, `minute` or `hour`; strict, no burst).
+Both take the optional `key` (an expression: over `input` at the workflow level, over the run data on a step), `group`
+and `queueTimeoutMs`; the IR's names are written as given and an absent member is left out. A workflow-level call
+replaces an earlier one. No client call is added: a waiting run is read through the run resource.
+
+| SDK | Workflow level | Step and script | Types |
+|---|---|---|---|
+| TypeScript | `.concurrency(policy)`, `.rateLimit(policy)` | `concurrency`, `rateLimit` of `StepOptions` / `ScriptOptions` | `ConcurrencyPolicy`, `RateLimitPolicy`, `RatePeriod` |
+| Go | `(*Builder).Concurrency`, `(*Builder).RateLimit` | options `Concurrency(p)`, `RateLimit(p)`, `ScriptConcurrency(p)`, `ScriptRateLimit(p)` | `ConcurrencyPolicy`, `RateLimitPolicy` (`QueueTimeout time.Duration`), `PerSecond`/`PerMinute`/`PerHour` |
+| Python | `.concurrency(policy)`, `.rate_limit(policy)` | keyword `concurrency=`, `rate_limit=` of `step` and `script` | frozen dataclasses `ConcurrencyPolicy`, `RateLimitPolicy`; `RatePeriod` literal |
+| C# | `.Concurrency(policy)`, `.RateLimit(policy)` | init properties `Concurrency`, `RateLimit` of `StepOptions` / `ScriptOptions` | records `ConcurrencyPolicy`, `RateLimitPolicy` (`QueueTimeout` a `TimeSpan`), enum `RatePeriod` |
+| Java | `.concurrency(policy)`, `.rateLimit(policy)` | `StepOptions.concurrency(…)`, `.rateLimit(…)`; the same on `ScriptOptions` | `ConcurrencyPolicy.of(limit)`, `RateLimitPolicy.of(limit, per)`, enum `RatePeriod` |
+| Rust | `Builder::concurrency`, `Builder::rate_limit` | fields `concurrency`, `rate_limit` of `StepOptions` / `ScriptOptions` | `ConcurrencyPolicy::new(limit)`, `RateLimitPolicy::new(limit, per)`, enum `RatePeriod` |
+
+The builders only assemble the policy (as for the collection operators, §7.3, D022-090): the limit's range and the
+ceiling of each window (100 a second, 6000 a minute, 10000 an hour), the timeout's range, the group's pattern, what a
+key may read, a gate on a body node (`SCOPED_CONCURRENCY`, `SCOPED_RATE_LIMIT`) and the combination with
+`continueAsNew` are checked by the server at publication, with the namespace's own ceilings. A builder refuses only what
+its language cannot write as the IR: a timeout that is not a whole number of milliseconds (Go, C#) and a window outside
+the three (C#, Java). The shared scenario is `flow-control-builders` (build only); the runtime scenarios are
+`flow-concurrency` and `flow-rate-limit`.
+
 ## 8. Serialization
 
 - JSON only. Integers up to 2^63-1 round-trip where the language can hold them; TypeScript holds up to

@@ -106,6 +106,54 @@ class StateDefinition:
     updates: Mapping[str, UpdateDefinition] | None = None
 
 
+RatePeriod = Literal["second", "minute", "hour"]
+"""The sliding window of a rate limit."""
+
+
+@dataclass(frozen=True)
+class ConcurrencyPolicy:
+    """A concurrency gate (feature 022): at most ``limit`` holders of one key (1 to 10000).
+
+    At the workflow level a run holds a permit from its start to its end and ``key`` reads ``input``; on a step an
+    attempt holds it and ``key`` reads the run data when the step becomes ready. Without ``key`` the whole group is one
+    key; without ``group`` it is derived from the workflow (and node); ``queue_timeout_ms`` (1 ms to 1 day) is how long
+    a run or a ready step waits for a permit, 10 minutes by default. An absent member is left out of the document. The
+    builder only assembles the policy: the server checks every bound at publication."""
+
+    limit: int
+    key: str | None = None
+    group: str | None = None
+    queue_timeout_ms: int | None = None
+
+    def to_ir(self) -> dict[str, Any]:
+        return _add({"limit": self.limit}, key=self.key, group=self.group, queueTimeoutMs=self.queue_timeout_ms)
+
+
+@dataclass(frozen=True)
+class RateLimitPolicy:
+    """A rate limit (feature 022): at most ``limit`` grants of one key in any window of ``per``, strictly (no burst).
+
+    At the workflow level a run is granted at its start and ``key`` reads ``input``; on a step a grant counts from its
+    lease. ``limit`` is 1 to 10000, at most 100 a second and 6000 a minute. ``key``, ``group`` and ``queue_timeout_ms``
+    are as in ``ConcurrencyPolicy``. An absent member is left out of the document. The builder only assembles the
+    policy: the server checks every bound, and the ceiling of each window, at publication."""
+
+    limit: int
+    per: RatePeriod
+    key: str | None = None
+    group: str | None = None
+    queue_timeout_ms: int | None = None
+
+    def to_ir(self) -> dict[str, Any]:
+        return _add(
+            {"limit": self.limit, "per": self.per}, key=self.key, group=self.group, queueTimeoutMs=self.queue_timeout_ms
+        )
+
+
+def _gate(policy: ConcurrencyPolicy | RateLimitPolicy | None) -> dict[str, Any] | None:
+    return None if policy is None else policy.to_ir()
+
+
 RetrySpec = RetryOptions | Mapping[str, Any]
 """A ``RetryOptions``, or a mapping already in the IR's own keys (for a field a newer schema adds)."""
 
@@ -271,9 +319,12 @@ class Flow:
         high_risk: bool | None = None,
         on_error: str | None = None,
         output_schema: Mapping[str, Any] | None = None,
+        concurrency: ConcurrencyPolicy | None = None,
+        rate_limit: RateLimitPolicy | None = None,
     ) -> _F:
         """An activity executed by a worker. ``compensate_with`` names the activity that undoes it (idempotent);
-        ``reconcile_with`` the one that finds out whether it happened."""
+        ``reconcile_with`` the one that finds out whether it happened. ``concurrency`` bounds the attempts of one key
+        that run at once and ``rate_limit`` the leases of one key per window (feature 022)."""
         if not activity:
             raise invalid(f"step {node_id} needs an activity name")
         if irreversible and compensate_with:
@@ -296,6 +347,8 @@ class Flow:
             highRisk=high_risk,
             onError=on_error,
             outputSchema=deepcopy(dict(output_schema)) if output_schema is not None else None,
+            concurrency=_gate(concurrency),
+            rateLimit=_gate(rate_limit),
         )
         self._push(node)
         return self
@@ -382,8 +435,11 @@ class Flow:
         secrets: Sequence[str] | None = None,
         on_error: str | None = None,
         output_schema: Mapping[str, Any] | None = None,
+        concurrency: ConcurrencyPolicy | None = None,
+        rate_limit: RateLimitPolicy | None = None,
     ) -> _F:
-        """Runs one immutable script artifact in the platform's isolated runner."""
+        """Runs one immutable script artifact in the platform's isolated runner. ``concurrency`` and ``rate_limit``
+        gate it as they gate a step (feature 022)."""
         if not _ARTIFACT_DIGEST.fullmatch(artifact_digest):
             raise invalid(f"script {node_id} needs a sha256 artifact digest")
         for secret in secrets or ():
@@ -399,6 +455,8 @@ class Flow:
                 secrets=list(secrets) if secrets is not None else None,
                 onError=on_error,
                 outputSchema=deepcopy(dict(output_schema)) if output_schema is not None else None,
+                concurrency=_gate(concurrency),
+                rateLimit=_gate(rate_limit),
             )
         )
         return self
@@ -798,6 +856,8 @@ class WorkflowBuilder(Flow):
         self._state: dict[str, Any] | None = None
         self._limits: dict[str, int] | None = None
         self._chain_policy: dict[str, int] | None = None
+        self._concurrency: dict[str, Any] | None = None
+        self._rate_limit: dict[str, Any] | None = None
         self._bodies: dict[str, Body] = {}
 
     def description(self, text: str) -> WorkflowBuilder:
@@ -915,6 +975,18 @@ class WorkflowBuilder(Flow):
                 )
             state["updates"] = declared_updates
         self._state = state
+        return self
+
+    def concurrency(self, policy: ConcurrencyPolicy) -> WorkflowBuilder:
+        """Gates the start of every run (feature 022): a run holds a permit of its key from its start to its end, and
+        waits for one when the key has ``limit`` holders. The key reads ``input``. A second call replaces the first."""
+        self._concurrency = policy.to_ir()
+        return self
+
+    def rate_limit(self, policy: RateLimitPolicy) -> WorkflowBuilder:
+        """Limits the starts of runs (feature 022): at most ``limit`` runs of one key are granted in any window of
+        ``per``; the others wait, in admission order. The key reads ``input``. A second call replaces the first."""
+        self._rate_limit = policy.to_ir()
         return self
 
     def chain_policy(self, *, max_segments: int, timeout_ms: int) -> WorkflowBuilder:
@@ -1040,6 +1112,10 @@ class WorkflowBuilder(Flow):
             document["state"] = deepcopy(self._state)
         if self._chain_policy is not None:
             document["chainPolicy"] = dict(self._chain_policy)
+        if self._concurrency is not None:
+            document["concurrency"] = dict(self._concurrency)
+        if self._rate_limit is not None:
+            document["rateLimit"] = dict(self._rate_limit)
         if bodies:
             document["bodies"] = {
                 name: {"entrypoint": nested[0]["id"], "nodes": nested} for name, nested in bodies.items()
