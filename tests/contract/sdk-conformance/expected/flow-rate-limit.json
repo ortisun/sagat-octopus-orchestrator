@@ -148,6 +148,18 @@
         "finishedAt": null,
         "parent": null,
         "paused": false,
+        "rateLimit": {
+          "estimatedGrantAt": null,
+          "group": "=flow-rate-limited",
+          "keyLabel": null,
+          "limit": 2,
+          "per": "minute",
+          "pool": "ORDINARY",
+          "position": null,
+          "queueDeadline": null,
+          "since": "<time>",
+          "state": "GRANTED"
+        },
         "runId": "<uuid:1>",
         "startedBy": "alice",
         "status": "RUNNING",
@@ -170,6 +182,18 @@
         "finishedAt": null,
         "parent": null,
         "paused": false,
+        "rateLimit": {
+          "estimatedGrantAt": null,
+          "group": "=flow-rate-limited",
+          "keyLabel": null,
+          "limit": 2,
+          "per": "minute",
+          "pool": "ORDINARY",
+          "position": null,
+          "queueDeadline": null,
+          "since": "<time>",
+          "state": "GRANTED"
+        },
         "runId": "<uuid:4>",
         "startedBy": "alice",
         "status": "WAITING",
@@ -192,6 +216,18 @@
         "finishedAt": null,
         "parent": null,
         "paused": false,
+        "rateLimit": {
+          "estimatedGrantAt": null,
+          "group": "=flow-rate-limited",
+          "keyLabel": null,
+          "limit": 2,
+          "per": "minute",
+          "pool": "ORDINARY",
+          "position": null,
+          "queueDeadline": "<time>",
+          "since": "<time>",
+          "state": "WAITING"
+        },
         "runId": "<uuid:5>",
         "startedBy": "alice",
         "status": "WAITING",
@@ -219,6 +255,18 @@
         "finishedAt": null,
         "parent": null,
         "paused": false,
+        "rateLimit": {
+          "estimatedGrantAt": null,
+          "group": "=flow-rate-limited",
+          "keyLabel": null,
+          "limit": 2,
+          "per": "minute",
+          "pool": "ORDINARY",
+          "position": null,
+          "queueDeadline": "<time>",
+          "since": "<time>",
+          "state": "WAITING"
+        },
         "runId": "<uuid:6>",
         "startedBy": "alice",
         "status": "WAITING",
@@ -246,6 +294,18 @@
         "finishedAt": null,
         "parent": null,
         "paused": false,
+        "rateLimit": {
+          "estimatedGrantAt": null,
+          "group": "=flow-rate-limited",
+          "keyLabel": null,
+          "limit": 2,
+          "per": "minute",
+          "pool": "ORDINARY",
+          "position": null,
+          "queueDeadline": "<time>",
+          "since": "<time>",
+          "state": "WAITING"
+        },
         "runId": "<uuid:7>",
         "startedBy": "alice",
         "status": "WAITING",
@@ -273,6 +333,18 @@
         "finishedAt": null,
         "parent": null,
         "paused": false,
+        "rateLimit": {
+          "estimatedGrantAt": null,
+          "group": "=flow-rate-limited",
+          "keyLabel": null,
+          "limit": 2,
+          "per": "minute",
+          "pool": "ORDINARY",
+          "position": null,
+          "queueDeadline": null,
+          "since": "<time>",
+          "state": "GRANTED"
+        },
         "runId": "<uuid:8>",
         "startedBy": "alice",
         "status": "WAITING",
@@ -295,6 +367,18 @@
         "finishedAt": null,
         "parent": null,
         "paused": false,
+        "rateLimit": {
+          "estimatedGrantAt": null,
+          "group": "=flow-rate-limited",
+          "keyLabel": null,
+          "limit": 2,
+          "per": "minute",
+          "pool": "ORDINARY",
+          "position": 3,
+          "queueDeadline": "<time>",
+          "since": "<time>",
+          "state": "WAITING"
+        },
         "runId": "<uuid:7>",
         "startedBy": "alice",
         "status": "WAITING",
@@ -356,6 +440,18 @@
         "finishedAt": "<time>",
         "parent": null,
         "paused": false,
+        "rateLimit": {
+          "estimatedGrantAt": null,
+          "group": "=flow-rate-limited",
+          "keyLabel": null,
+          "limit": 2,
+          "per": "minute",
+          "pool": "ORDINARY",
+          "position": null,
+          "queueDeadline": null,
+          "since": "<time>",
+          "state": "GRANTED"
+        },
         "runId": "<uuid:1>",
         "startedBy": "alice",
         "status": "SUCCEEDED",
@@ -378,6 +474,18 @@
         "finishedAt": "<time>",
         "parent": null,
         "paused": false,
+        "rateLimit": {
+          "estimatedGrantAt": null,
+          "group": "=flow-rate-limited",
+          "keyLabel": null,
+          "limit": 2,
+          "per": "minute",
+          "pool": "ORDINARY",
+          "position": null,
+          "queueDeadline": null,
+          "since": "<time>",
+          "state": "GRANTED"
+        },
         "runId": "<uuid:4>",
         "startedBy": "alice",
         "status": "SUCCEEDED",
@@ -400,6 +508,18 @@
         "finishedAt": "<time>",
         "parent": null,
         "paused": false,
+        "rateLimit": {
+          "estimatedGrantAt": null,
+          "group": "=flow-rate-limited",
+          "keyLabel": null,
+          "limit": 2,
+          "per": "minute",
+          "pool": "ORDINARY",
+          "position": null,
+          "queueDeadline": null,
+          "since": "<time>",
+          "state": "GRANTED"
+        },
         "runId": "<uuid:8>",
         "startedBy": "alice",
         "status": "SUCCEEDED",
@@ -408,6 +528,24 @@
         "version": "<n>",
         "versionId": "<uuid:2>",
         "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "worker-stops",
+      "ok": true,
+      "op": "stopWorker"
+    },
+    {
+      "id": "p4-step-decided",
+      "ok": true,
+      "op": "awaitJournal"
+    },
+    {
+      "id": "late-worker",
+      "ok": true,
+      "op": "startWorker",
+      "result": {
+        "protocolVersion": "1.5"
       }
     },
     {
@@ -422,6 +560,18 @@
         "finishedAt": "<time>",
         "parent": null,
         "paused": false,
+        "rateLimit": {
+          "estimatedGrantAt": null,
+          "group": "=flow-rate-limited",
+          "keyLabel": null,
+          "limit": 2,
+          "per": "minute",
+          "pool": "ORDINARY",
+          "position": null,
+          "queueDeadline": null,
+          "since": "<time>",
+          "state": "GRANTED"
+        },
         "runId": "<uuid:5>",
         "startedBy": "alice",
         "status": "SUCCEEDED",
@@ -444,6 +594,18 @@
         "finishedAt": "<time>",
         "parent": null,
         "paused": false,
+        "rateLimit": {
+          "estimatedGrantAt": null,
+          "group": "=flow-rate-limited",
+          "keyLabel": null,
+          "limit": 2,
+          "per": "minute",
+          "pool": "ORDINARY",
+          "position": null,
+          "queueDeadline": null,
+          "since": "<time>",
+          "state": "GRANTED"
+        },
         "runId": "<uuid:6>",
         "startedBy": "alice",
         "status": "SUCCEEDED",
@@ -1035,7 +1197,9 @@
         "taskKind": "FORWARD",
         "traceId": "<trace:6>",
         "traceparentPresent": true
-      },
+      }
+    ],
+    "w2": [
       {
         "abortedReason": null,
         "activity": "flow.fetch",
