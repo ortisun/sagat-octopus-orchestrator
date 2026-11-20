@@ -401,6 +401,14 @@ The hard ceilings on `limit` bound the grant rows a key can hold (at most its `l
 grants) and are design bounds to verify by T022-089, not measured capacity. The per-pass bound caps one
 key at about 512 grants a second at the default interval, above the per-second ceiling.
 
+*Added 2026-11-20 (T022-077, D022-064).* The namespace sets them through four quota resources: the count
+`rate_limit_live_keys` (windows of both scopes that a waiter or a grant that can still count keeps; 10,000/100,000) and
+the policies `rate_limit_per_second` (20/20 until SC-022-029's floor), `rate_limit_per_minute` (6,000/6,000) and
+`rate_limit_per_hour` (10,000/10,000), each applied to the declarations of its window length. The run waiters of a key,
+`queued_runs` and the queue timeout are the concurrency gate's resources, shared. Lease recording (transaction T23) runs before the
+grants of each tick; the purge (transaction T25) runs in the housekeeping, at most 64 keys and 500 grants a key a call, skipping a
+key another transaction holds.
+
 ### Failure and recovery matrix (rate limits)
 
 | Failure | Expected state | Handling and test |
@@ -545,7 +553,12 @@ locks a run after either.
   `(key_shard, next_eligible_at) WHERE waiters > 0` selects due keys.
 - `next_eligible_at` is a hint that may be early and is never late: a release (T8, T14, T29) sets it to now;
   a grant that leaves the key full sets it to the instant the oldest counted grant ages out, or to now plus
-  the shortest period when an unleased grant holds a slot.
+  the shortest period when an unleased grant holds a slot. *As built (D022-064, D022-065):* a rate grant to a window
+  with waiters moves the hint no later than its instant plus the shortest window its waiters count over; a pass that
+  grants nothing rests a window until the first instant a grant that counted when the pass began may stop counting for
+  one of its waiters (each waiter's own window, D022-009; an unleased grant from the pass's start); the lease pass,
+  after its commit, lowers each recorded window's hint to the lease plus the shortest waiting window, one window a
+  statement. Every count of a decision is taken at the instant the decision journals.
 - Keys are shared between tenants by `crates/scheduler/src/fairness.rs`. A pass visits at most 256 keys and
   makes at most 256 grants per key (the existing per-key bound), each grant its own transaction.
 - Reservation rule (D022-021): on each gate, a waiter at eligible position `p` is granted only when counted
@@ -567,6 +580,24 @@ Ceilings compare the sum of the 16 slots read after the transaction's own rows, 
 | `limit` per `second` until SC-022-029 meets its floor | 20 | 20 |
 | `limit` per `second` after it | declared | 100 |
 | Keys visited per grant pass | 256 | 256 |
+
+### Hot-path budget of a gated definition
+
+The lines of `tests/integration/claim-transition-efficiency/work_budget.rs` that a gate adds to (statements, transactions,
+rows written). A line changes here first, with its reason; the test follows (OD-2026-11-20-8). The plain lines (an
+admission 33/1/11, a completion with a next step 50/1/11, one that ends the run 47/1/9, a lease 38/2/5) do not move.
+
+| Line | Budget | Reason of the last change |
+|---|---|---|
+| A start granted its permit at once | 48/1/15 | 2026-11-20: +1, the fleet activation read at the one admission point (`SELECT capability FROM platform_requirements`, `flow_control_admission`), added by commit 295b158b for decision D022-057 and found by the statement lists of commits 64b6f2d9 (47) and 34b8be41 (48) |
+| A start that queues for its permit | 48/1/12 | 2026-11-20: +1, the same activation read |
+| A completion that ends a run holding a start permit | 58/1/13 | unchanged since T022-022 |
+| A completion whose next step declares `rateLimit` | 60/1/13 | 2026-11-20: +1, whether the step's window exists, so that a new window meets `rate_limit_live_keys` before it is created (T022-077, D022-064); the live count is read only for a new window |
+| An admission whose entry step declares `rateLimit` | 44/1/13 | 2026-11-20: +1, the same activation read, and +1, the window's existence (task T022-077) |
+
+The activation read could ride on a statement the admission already issues (the digest key versions it reads later in
+the same transaction); that folding is left to the benchmark's work (tasks T022-062 and T022-089), since it moves the
+admission point's order of checks.
 
 ### Admission port and checks
 

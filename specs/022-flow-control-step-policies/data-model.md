@@ -417,3 +417,16 @@ rows it actually deleted.
   `concurrency_holders_key_idx`.
 - Invariant 12 is also checked over `rate_limit_waiters`; an empty key row and a key whose `oldest_wait_at` is not its
   waiters' oldest are breaches (`support::flow_control::key_consistency`).
+
+### Revision of 2026-11-20 (rate gate served; D022-064, D022-065)
+
+- A run's grant row stores `leased_at = granted_at` whichever routine grants it (the CHECK `rate_limit_grants_shape`
+  already required it); it is never given back and stops counting by time.
+- A step's lease instant is copied by the lease pass (transaction T23) from the granted attempt's `step.leased` journaled after the
+  grant: `greatest(step.leased.occurred_at, granted_at)`. Only the grant row is locked.
+- The purge (transaction T25) deletes a leased grant when `leased_at + max_period_ms + 1 minute < now` (exactly at that instant it is
+  kept), under its window row's lock; the window row goes with its last grant and waiter.
+- `rate_limit_live_keys` counts a window while it has a waiter or a grant that is unleased or leased within its
+  `max_period_ms`; a window whose grants all aged out does not count, purged or not.
+- Quota resources added: `rate_limit_live_keys` (count), `rate_limit_per_second`, `rate_limit_per_minute`,
+  `rate_limit_per_hour` (policies; the effective limit of a declaration is the lower of it and the policy of its window).
