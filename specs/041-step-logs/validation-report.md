@@ -713,3 +713,51 @@ gate (4) at 1 × 16 is within its threshold in eight of twelve rounds; the lease
 with a mark-only final mark while the tenant is far from its limit, a share that grows with load and was badly
 underestimated by G041-023; 8 × 128's (2b) is positive in nine of twelve rounds. The validity rule and the gates are
 unchanged (D041-116).
+
+## 2026-11-20 — The unwritten carries of the third run, split by cause (diagnosis, not a gate)
+
+Two runs of the diagnosis's `split` set on `perf/041-diag-split` (D041-116): off-1K, (a), (f), (g) and (h) at 1 × 16,
+then off-1K and (a) at 8 × 128 with the pools filled first and again without (`-cold`), three repetitions on each of four
+runners, twelve paired blocks, 108,000 carries a workload, the third shape of `8afb710f` with the carry's answer split by
+path and cause. Run 44783898911 at `06a80f61`; run 44793160071 at `22e75b1a`, which adds the carry's time by path and the
+tenant's leases before and after each row.
+
+| Workload | Slow path (a refill) | Written by a refill | `mark_only:busy` (unwritten, block median [range]) | Busy share of the slow path |
+|---|---|---|---|---|
+| (a) 1 × 16 | 1.8% / 2.7% | 1,281 / 1,356 | 0.59% [0.51, 0.92] / 1.50% [0.68, 8.18] | 0.35 / 0.55 |
+| (f) 1 × 16 | 0.9% / 1.0% | 818 / 605 | 0.08% [0.01, 0.31] / 0.45% [0.16, 0.67] | 0.10 / 0.49 |
+| (g) 1 × 16 | 0.6% / 1.3% | 360 / 212 | 0.30% [0.20, 0.57] / 1.07% [0.40, 1.63] | 0.46 / 0.84 |
+| (h) 1 × 16, 64 records | 9.5% / 11.7% | 7,284 / 6,925 | 2.84% [1.63, 3.54] / 5.30% [3.27, 11.83] | 0.29 / 0.45 |
+| (a) 8 × 128 | 1.9% / 3.3% | 907 / 931 | 1.07% [0.76, 1.21] / 2.46% [0.89, 12.11] | 0.55 / 0.75 |
+| (a) 8 × 128, `-cold` | 1.9% / 4.2% | 886 / 911 | 0.99% [0.84, 1.48] / 3.31% [0.81, 21.42] | 0.57 / 0.78 |
+
+(Each cell: run 44783898911 / run 44793160071.) Every unwritten carry was `mark_only:busy`: the refill met the usage row
+held (`NOWAIT`) while the tenant was at the catalogue's maximum. No `mark_only:quota`, `mark_only:held`, `contended` or
+`neither` in either run.
+
+**Why so many refills.** A grant is 1 MiB and an (a) carry charges 3,280 bytes, so about 0.31% of (a)'s carries would need
+a refill if refills followed the bytes; 1.8% to 2.7% did ((h): about 2% expected, 9.5% to 11.7% measured). At the end of
+every row the tenant had 6 to 13 leases, 3 to 12 of them with room for a carry, 1.2 to 6.1 MiB of room in all, against 16
+concurrent writers at 1 × 16 and 128 at 8 × 128. A lease stays locked by its report until that report commits, so a carry
+finds every lease with room held and takes the slow path; the refill then tops up the least-room *unlocked* lease and
+creates a lease only when none is unlocked, so the number of leases never reaches the number of writers and the
+collisions persist. Most refills are collisions, not a lack of room.
+
+**Why 8 × 128 moved (the coordinator's question (3)).** The carry's time by path, p50 / p99, run 44793160071:
+
+| Workload | Fast path | Written by a refill | Mark-only | All |
+|---|---|---|---|---|
+| (a) 1 × 16 | 1.85 / 5.19 ms | 2.38 / 6.42 ms | 1.88 / 10.55 ms | 1.86 / 5.31 ms |
+| (h) 1 × 16 | 2.73 / 7.49 ms | 3.20 / 8.55 ms | 2.69 / 8.78 ms | 2.76 / 7.75 ms |
+| (a) 8 × 128 | 7.97 / 32.65 ms | 10.70 / 97.60 ms | 9.33 / 90.53 ms | 8.01 / 38.32 ms |
+| (a) 8 × 128 `-cold` | 8.18 / 30.13 ms | 10.97 / 115.99 ms | 9.23 / 104.54 ms | 8.24 / 37.76 ms |
+
+The fast path at 8 × 128 costs what the second run's carry cost (7.86 / 31.71 ms in run 44717007853); the 3.3% of carries
+on the slow path, near 95 ms at p99, sit in the top 1% and lift the carry's p99 to 38.3 ms and (a)'s completion p99 with
+it. Filling the pools first (D041-110) is not the cause: off-1K `-cold` against off-1K, rate 1.011 and 0.980, p99 −20.2
+and −2.7 ms; (a) − off-1K p99 +72.7 ms warm and +67.1 ms cold in the first run, +44.4 and +85.0 ms in the second, no
+consistent sign. The second run's pass at 8 × 128 also rested on its three used rounds: over all its rounds the median of
+(a) − off-1K p99 was already +56.3 ms [−221, +712].
+
+Paired at 1 × 16 (medians of 12; first / second run): (a) / off-1K rate 0.902 / 0.890, p99 +10.6 / +8.8 ms; (f) / off-1K
+0.931 / 0.924; (g) / off-1K 0.773 / 0.750; (h) / off-1K 0.838 / 0.802.
