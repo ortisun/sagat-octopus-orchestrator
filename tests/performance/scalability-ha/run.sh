@@ -63,7 +63,7 @@ if ! "$PGBIN/pg_ctl" -D "$DATA" -l "$WORK/postgres.log" -w \
   -o "-p $PORT -c listen_addresses=127.0.0.1 -c unix_socket_directories=$WORK \
       -c shared_buffers=${SAGAT_BENCH_SHARED_BUFFERS:-2GB} -c effective_cache_size=${SAGAT_BENCH_CACHE:-16GB} \
       -c work_mem=16MB -c max_connections=400 -c max_wal_size=16GB -c checkpoint_timeout=15min \
-      -c wal_level=replica -c fsync=on -c synchronous_commit=on -c full_page_writes=on" start; then
+      -c wal_level=replica -c fsync=on -c synchronous_commit=on -c full_page_writes=on ${SAGAT_BENCH_PG_EXTRA:-}" start; then
   echo "the PostgreSQL of the benchmark did not start; its log:" >&2
   cat "$WORK/postgres.log" >&2 || true
   exit 1

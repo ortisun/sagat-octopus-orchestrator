@@ -30,6 +30,8 @@ jobs:
       SAGAT_SPIKE_DEDICATED: "1"
       ROUNDS: "3"
       CARGO_PROFILE_DEV_DEBUG: "0"
+      # A push to `perf/041-diag*` runs the hot-row diagnosis (D041-105, not a gate) instead of the rounds.
+      SPIKE_DIAG: ${{ startsWith(github.ref_name, 'perf/041-diag') && '1' || '0' }}
     steps:
       # The runner context is not available in a job's env, so the rounds' directory is set here.
       - run: echo "OUT=$RUNNER_TEMP/carry-spike" >> "$GITHUB_ENV"
@@ -57,9 +59,11 @@ jobs:
       - name: build the spike
         run: cargo test -p sagat-tests --test perf_scalability_ha --release --features perf-spike --locked --no-run
       - name: rounds
-        run: tests/performance/scalability-ha/carry_spike_rounds.sh
+        run: |
+          if [ "$SPIKE_DIAG" = 1 ]; then tests/performance/scalability-ha/carry_diag_rounds.sh
+          else tests/performance/scalability-ha/carry_spike_rounds.sh; fi
       - name: verdict
-        if: always()
+        if: always() && env.SPIKE_DIAG != '1'
         run: python3 -I tests/performance/scalability-ha/carry_spike_judge.py "$OUT" | tee "$OUT/verdict.txt"
       - name: keep the rounds and the verdict
         if: always()
@@ -70,7 +74,7 @@ jobs:
 
   judge:
     needs: carry-spike
-    if: always()
+    if: always() && !startsWith(github.ref_name, 'perf/041-diag')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

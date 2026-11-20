@@ -5658,14 +5658,27 @@ impl RunTx for PgRunTx {
                 })?;
         }
         #[cfg(feature = "perf-spike")]
+        let mut timed = None;
+        #[cfg(feature = "perf-spike")]
         if let (Some(hook), Some(attempt)) =
             (self.report_hook.0.clone(), self.reported_attempt.take())
         {
             hook.on_report_commit(&mut self.tx, &attempt)
                 .await
                 .map_err(store_error)?;
+            if hook.times_commit() {
+                let xid: i64 = sqlx::query_scalar("SELECT pg_current_xact_id()::text::bigint")
+                    .fetch_one(&mut *self.tx)
+                    .await
+                    .map_err(store_error)?;
+                timed = Some((hook, xid, crate::report_hook::now_us()));
+            }
         }
         self.tx.commit().await.map_err(store_error)?;
+        #[cfg(feature = "perf-spike")]
+        if let Some((hook, xid, sent)) = timed {
+            hook.on_committed(xid, sent, crate::report_hook::now_us());
+        }
         for waited in self.cancelled_waits {
             metrics::histogram!(
                 WorkflowPrimitiveMetric::ApprovalWait.as_str(),

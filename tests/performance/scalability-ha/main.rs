@@ -29,6 +29,7 @@ mod support;
 mod diagnostics;
 mod dr;
 mod poll_client;
+mod step_log_diag;
 mod step_log_spike;
 #[cfg(test)]
 #[path = "transition_oracle_tests.rs"]
@@ -2309,6 +2310,134 @@ async fn step_log_carry_spike() {
     let _ = lines.len();
     section(
         "Step-log carry spike (design 041, T041-35), one round",
+        &body,
+    );
+}
+
+/// The hot-row diagnosis of T041-35's second run (D041-105): at 1 × 16, each repetition runs capture off with `{}`,
+/// (f) with its step-log charge on the tenant usage row, with no charge and with the slot prototype, capture off with a
+/// 1 KiB output, (a) on the usage row and with slots, and (g) on the usage row and with slots; each row reports what its
+/// commits wait on and how long the usage row is held (`step_log_diag`). Runs only with `SAGAT_PERF_STEP_LOG_DIAG=1`
+/// (and the carry variables of `step_log_carry_spike`). Not a gate: it measures a cause, judged by no threshold.
+#[cfg(feature = "perf-spike")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "benchmark: run on purpose with --ignored"]
+#[allow(clippy::too_many_lines)]
+async fn step_log_carry_diag() {
+    use step_log_spike::{RowSpec, Shape};
+    if !step_log_diag::enabled()
+        || std::env::var("SAGAT_PERF_STEP_LOG_CARRY_RUN").as_deref() != Ok("2")
+    {
+        eprintln!(
+            "step_log_carry_diag runs only with SAGAT_PERF_STEP_LOG_DIAG=1 and SAGAT_PERF_STEP_LOG_CARRY_RUN=2"
+        );
+        return;
+    }
+    let runs = env_usize("SAGAT_PERF_TRANSITION_RUNS", 3_000);
+    let repetitions = env_usize("SAGAT_PERF_DIAG_REPETITIONS", 3);
+    let w = Arc::new(world().await);
+    for resource in [
+        QuotaResource::TenantLogBytes,
+        QuotaResource::TenantContentBytes,
+        QuotaResource::WorkerSessions,
+    ] {
+        let max = resource.maximum();
+        w.quotas
+            .grant_ceiling(w.admin.tenant_id(), resource, Some(max))
+            .await
+            .expect("grant the ceiling");
+        w.quotas
+            .set(&w.admin, None, resource, max, &ctx())
+            .await
+            .expect("set the tenant's limit");
+    }
+    step_log_spike::install(&w.db.pool).await;
+    step_log_spike::install_per_statement(&w.db.pool).await;
+    step_log_diag::install(&w.db.pool).await;
+    let (chain, _) = w
+        .publish(document(
+            "spike-chain",
+            "a",
+            vec![
+                with(activity("a"), "next", json!("b")),
+                with(activity("b"), "next", json!("c")),
+                activity("c"),
+            ],
+        ))
+        .await;
+    let activities = ["act.a", "act.b", "act.c"];
+    let half_pool = usize::try_from(API_POOL / 2).unwrap_or(10);
+    // (label, records carried, a batch before the report, `{}` output, where the step-log charge goes)
+    let rows: [(&'static str, Option<usize>, bool, bool, &str); 9] = [
+        ("off-{}", None, false, true, "tenant"),
+        ("f", Some(10), false, true, "tenant"),
+        ("f-none", Some(10), false, true, "none"),
+        ("f-slot", Some(10), false, true, "slot"),
+        ("off-1K", None, false, false, "tenant"),
+        ("a", Some(10), false, false, "tenant"),
+        ("a-slot", Some(10), false, false, "slot"),
+        ("g", Some(10), true, false, "tenant"),
+        ("g-slot", Some(10), true, false, "slot"),
+    ];
+    let mut body = format!("{}\n", environment(&w).await);
+    body.push_str(
+        "Design 041, T041-35's hot-row diagnosis (D041-105), 1 × 16. Not a gate.\n\n| Repetition | Row | Transitions/s | Complete p50 / p99 | Waits on (samples) | Lock to COMMIT returned p50 / p99 | Back-to-back gap p50 / p99 | Row busy |\n|---|---|---:|---|---|---|---|---:|\n",
+    );
+    for repetition in 1..=repetitions {
+        for (label, carry, ingest, empty, mode) in rows {
+            step_log_diag::set_charge(&w.db.pool, w.admin.tenant_id().as_uuid(), mode).await;
+            let spec = RowSpec {
+                label,
+                api_replicas: 1,
+                workers: 16,
+                runs,
+                shape: Shape::Chain,
+                admission: ingest.then_some((half_pool, half_pool)),
+                lines: (10, 200),
+                hold: false,
+                single_final: false,
+                chunk: false,
+                carry,
+                empty_output: empty,
+            };
+            let row = step_log_spike::run_row(&w, chain, &spec, &activities).await;
+            let diag = row.diag.clone().unwrap_or_default();
+            let (calls, written) = row
+                .carry
+                .as_ref()
+                .map_or((0, 0), |(calls, written, ..)| (*calls, *written));
+            let line = json!({
+                "repetition": repetition, "label": label, "mode": mode,
+                "transitions": row.transitions, "per_second": row.per_second,
+                "complete_p50_ms": ms(percentile(&row.completes, 0.50)),
+                "complete_p99_ms": ms(percentile(&row.completes, 0.99)),
+                "carry_calls": calls, "carry_written": written,
+                "s_p99_ms": ms(percentile(&row.services, 0.99)),
+                "commit_waits": row.commit_waits.0,
+                "diag": diag,
+            });
+            eprintln!("spike-diag-json {line}");
+            let us = |key: &str, q: &str| {
+                diag[key][q]
+                    .as_i64()
+                    .map_or("—".to_owned(), |v| format!("{:.1}", v as f64 / 1000.0))
+            };
+            body.push_str(&format!(
+                "| {repetition} | {label} | {:.0} | {:.1} / {:.1} ms | {} | {} / {} ms | {} / {} ms | {} |\n",
+                row.per_second,
+                ms(percentile(&row.completes, 0.50)),
+                ms(percentile(&row.completes, 0.99)),
+                diag["waits_on"],
+                us("hold_upper_us", "p50"),
+                us("hold_upper_us", "p99"),
+                us("back_to_back_gap_us", "p50"),
+                us("back_to_back_gap_us", "p99"),
+                diag["row_busy_fraction"].as_f64().map_or("—".to_owned(), |f| format!("{:.0}%", f * 100.0)),
+            ));
+        }
+    }
+    section(
+        "Step-log carry hot-row diagnosis (design 041, D041-105)",
         &body,
     );
 }

@@ -801,6 +801,12 @@ pub struct CarryHook {
     pub times: std::sync::Mutex<Vec<Duration>>,
     /// T041-35's second run (`SAGAT_PERF_STEP_LOG_CARRY_RUN=2`): the carry as one call of `spike_041.step_log_carry`.
     pub one_call: bool,
+    /// The hot-row diagnosis (`step_log_diag`): a hook that carries nothing and only times the report's `COMMIT`.
+    pub probe: bool,
+    /// The hot-row diagnosis (`SAGAT_PERF_STEP_LOG_DIAG=1`): the store times each report's `COMMIT` for this hook.
+    pub timed: bool,
+    /// Each timed report: its transaction id and when its `COMMIT` was sent and returned (Unix microseconds).
+    pub committed: std::sync::Mutex<Vec<(i64, i64, i64)>>,
 }
 
 impl CarryHook {
@@ -814,6 +820,18 @@ impl CarryHook {
             contended: AtomicU64::new(0),
             neither: AtomicU64::new(0),
             times: std::sync::Mutex::new(Vec::new()),
+            probe: false,
+            timed: crate::step_log_diag::enabled(),
+            committed: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+
+    /// The hot-row diagnosis's hook for a capture-off row: it carries nothing and only times the report's `COMMIT`.
+    pub fn probe() -> Self {
+        Self {
+            probe: true,
+            timed: true,
+            ..Self::new(0, 0)
         }
     }
 
@@ -824,6 +842,9 @@ impl CarryHook {
         conn: &mut sqlx::PgConnection,
         a: &sagat_infra_postgres::report_hook::ReportedAttempt,
     ) -> Result<(), sqlx::Error> {
+        if self.probe {
+            return Ok(());
+        }
         self.calls.fetch_add(1, Ordering::Relaxed);
         let started = Instant::now();
         if self.one_call {
@@ -1054,6 +1075,16 @@ impl sagat_infra_postgres::report_hook::ReportHook for CarryHook {
     {
         Box::pin(self.carry(conn, attempt))
     }
+
+    fn times_commit(&self) -> bool {
+        self.timed
+    }
+
+    fn on_committed(&self, xid: i64, sent_us: i64, returned_us: i64) {
+        if let Ok(mut committed) = self.committed.lock() {
+            committed.push((xid, sent_us, returned_us));
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------------- the driver
@@ -1111,6 +1142,9 @@ pub struct RowResult {
     /// 10 ms samples of a commit wait whose blocker was a carrying report.
     #[cfg_attr(not(feature = "perf-spike"), allow(dead_code))]
     pub carry_waits: u64,
+    /// The hot-row diagnosis of the row (`SAGAT_PERF_STEP_LOG_DIAG=1`), as `step_log_diag::Probe::finish` reports it.
+    #[cfg_attr(not(feature = "perf-spike"), allow(dead_code))]
+    pub diag: Option<serde_json::Value>,
 }
 
 /// A 1 KiB output that differs per task, so every completion stores a payload not yet stored.
@@ -1181,7 +1215,11 @@ pub async fn run_row(
     let fanout = matches!(spec.shape, Shape::Fanout { .. });
     let hook = spec
         .carry
-        .map(|records| Arc::new(CarryHook::new(records, spec.lines.1)));
+        .map(|records| Arc::new(CarryHook::new(records, spec.lines.1)))
+        .or_else(|| {
+            (cfg!(feature = "perf-spike") && crate::step_log_diag::enabled())
+                .then(|| Arc::new(CarryHook::probe()))
+        });
     let mut apis = Vec::new();
     for _ in 0..spec.api_replicas {
         let mut replica = w.replica_with_pool(crate::API_POOL).await;
@@ -1356,6 +1394,11 @@ pub async fn run_row(
             .await
             .expect("an xid");
         Some((conn, Instant::now()))
+    } else {
+        None
+    };
+    let diag = if crate::step_log_diag::enabled() {
+        Some(crate::step_log_diag::Probe::start(&w.db.pool, hook.clone()).await)
     } else {
         None
     };
@@ -1549,6 +1592,10 @@ pub async fn run_row(
         spec.label
     );
     let elapsed = finished - started;
+    let diag = match diag {
+        Some(probe) => Some(probe.finish(elapsed).await),
+        None => None,
+    };
     RowResult {
         transitions,
         per_second: transitions as f64 / elapsed.as_secs_f64().max(1e-9),
@@ -1559,7 +1606,8 @@ pub async fn run_row(
         commit_waits,
         deltas_bytes: (deltas_before, deltas_after),
         held_for,
-        carry: hook.map(|hook| {
+        diag,
+        carry: hook.filter(|hook| !hook.probe).map(|hook| {
             let mut times = hook.times.lock().map(|t| t.clone()).unwrap_or_default();
             times.sort_unstable();
             (
