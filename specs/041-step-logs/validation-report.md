@@ -761,3 +761,28 @@ consistent sign. The second run's pass at 8 × 128 also rested on its three used
 
 Paired at 1 × 16 (medians of 12; first / second run): (a) / off-1K rate 0.902 / 0.890, p99 +10.6 / +8.8 ms; (f) / off-1K
 0.931 / 0.924; (g) / off-1K 0.773 / 0.750; (h) / off-1K 0.838 / 0.802.
+
+## 2026-11-20 — Hand mutations of the writer-owned leases (D041-117, D041-118)
+
+The prototype of D041-117 (`step_log_spike::install_leases`, one lease per tenant and backend, a refill that waits for
+the usage row at most *b*) and its tests in `step_log_leases_tests.rs`. Before the change ten of the new or rewritten
+tests failed on the shared-pool prototype (`each_writer_…`, `a_carry_whose_refill_meets_a_held_usage_row_waits_and_writes`,
+`a_completion_holding_the_usage_row_…`, `an_ingest_refill_and_a_carry_refill_…`, `a_release_and_a_limit_change_…`,
+`a_refill_that_outwaits_its_bound_…`, `a_small_quota_…`, `room_held_by_open_writers_…`, `the_last_bytes_…`,
+`a_carry_refused_while_the_room_is_in_a_held_lease_says_held`), and `the_refill_bound_follows_max_connections` failed
+before `step_log_refill_bound()` existed. After it all 27 pass. Each mutation below was applied by hand to the prototype,
+the lease tests run, and the file restored:
+
+| Mutation | Tests that failed |
+|---|---|
+| W1 the refill takes the usage row `NOWAIT` again | `a_carry_whose_refill_meets_a_held_usage_row_waits_and_writes`, `a_charge_with_a_free_lease_…_a_refill_alone_waits_for_it`, `a_completion_holding_the_usage_row_…`, `a_release_and_a_limit_change_…`, `an_ingest_refill_and_a_carry_refill_…`, `concurrent_charges_never_exceed_the_limit_…` |
+| W2 the grant is 1/64 of the free room | `a_carry_refused_while_the_room_is_in_a_held_lease_says_held`, `the_last_bytes_of_the_limit_…` |
+| W3 the near-limit reclaim waits for held leases (`FOR UPDATE` without `SKIP LOCKED`) | `a_carry_refused_while_the_room_is_in_a_held_lease_says_held`, `room_held_by_open_writers_is_bounded_by_the_grant`; and, once (a2) was set so that its refill reclaims (L = 1.5 MiB; at 2 MiB it never reached the reclaim and passed under W3), `a_writer_holding_its_lease_waits_for_a_reclaiming_refill_without_a_deadlock` (stage did not finish within 60 s) |
+| W4 a refill past its bound is not counted | `a_refill_that_outwaits_its_bound_fails_loudly_and_is_counted` |
+| W5 a refill past its bound raised as a held refusal (so answered mark-only) | `a_refill_that_outwaits_its_bound_fails_loudly_and_is_counted` |
+| W6 the charge takes any lease with room | `a_release_and_a_limit_change_…`, `a_small_quota_…`, `an_ingest_refill_and_a_carry_refill_…`, `the_idle_reclaim_…`, `the_last_bytes_of_the_limit_…` |
+| W7 the idle reclaim takes leases not idle | `the_idle_reclaim_folds_and_deletes_only_leases_idle_past_the_interval` |
+| W8 the writer's own room stays leased on its refill | `a_charge_with_a_free_lease_…_a_refill_alone_waits_for_it` |
+
+The fast path's budget line moved from 27 to 26 nested statements: D041-117 removed the carry's no-wait setting (seen
+failing at 26 against the 27 left unchanged, then derived as the function's four statements).

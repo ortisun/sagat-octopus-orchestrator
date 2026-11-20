@@ -91,33 +91,111 @@ fn refused(result: Result<(), sqlx::Error>) -> bool {
     matches!(result, Err(sqlx::Error::Database(e)) if e.code().as_deref() == Some("54000"))
 }
 
+/// The constraint name of a refusal, if `result` is one.
+fn refusal(result: &Result<(), sqlx::Error>) -> Option<String> {
+    match result {
+        Err(sqlx::Error::Database(e)) if e.code().as_deref() == Some("54000") => {
+            e.constraint().map(str::to_owned)
+        }
+        _ => None,
+    }
+}
+
+/// A connection of its own, outside the pool (the test pool is small), and its backend: under D041-117 a lease belongs
+/// to the server backend that charges.
+async fn writer(pool: &PgPool) -> (Box<PgConnection>, i32) {
+    let options = pool.connect_options();
+    let mut conn = Box::new(
+        <PgConnection as sqlx::Connection>::connect_with(&options)
+            .await
+            .expect("a connection"),
+    );
+    let pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&mut *conn)
+        .await
+        .expect("pid");
+    (conn, pid)
+}
+
+/// A charge in a transaction of its own on `conn`, committed.
+async fn charge_on(conn: &mut PgConnection, tenant: Uuid, bytes: i64) -> Result<(), sqlx::Error> {
+    let mut tx = sqlx::Connection::begin(conn).await?;
+    charge(&mut tx, tenant, bytes).await?;
+    tx.commit().await
+}
+
+/// ADR-0097's invariants on the committed state: G = Σ granted, 0 ≤ U = S + Σ used ≤ S + G ≤ L.
+async fn assert_exact(pool: &PgPool, tenant: Uuid, limit: i64) {
+    let (s, g, granted, used, _) = ledger(pool, tenant).await;
+    assert_eq!(g, granted, "G is the sum of the grants");
+    assert!(s + used >= 0, "the usage {} is negative", s + used);
+    assert!(
+        s + used <= s + g,
+        "the usage {} passed S + G {}",
+        s + used,
+        s + g
+    );
+    assert!(s + g <= limit, "S + G {} passed the limit {limit}", s + g);
+}
+
+/// Waits until some backend waits on an advisory lock (a fence), or panics after the bound.
+async fn a_backend_waits_on_a_fence(pool: &PgPool) {
+    bounded::within("a backend waits on a fence", LIMIT, async {
+        loop {
+            let waiting: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND wait_event = 'advisory'",
+            )
+            .fetch_one(pool)
+            .await
+            .expect("pg_stat_activity");
+            if waiting > 0 {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+}
+
+/// The error of a database call, if any, as SQLSTATE and constraint name.
+fn sqlstate<T>(result: &Result<T, sqlx::Error>) -> Option<(String, Option<String>)> {
+    match result {
+        Err(sqlx::Error::Database(e)) => Some((
+            e.code().map(|c| c.to_string()).unwrap_or_default(),
+            e.constraint().map(str::to_owned),
+        )),
+        _ => None,
+    }
+}
+
+/// D041-117: each server backend charges its own lease; one writer's open transaction never makes another wait or fail,
+/// and the leases are keyed by the writers' backends.
 #[tokio::test]
-async fn a_charge_skips_a_lease_another_transaction_holds_and_never_waits_for_it() {
-    bounded::within("held lease", LIMIT, async {
+async fn each_writer_charges_its_own_lease_and_never_meets_another_writers_lock() {
+    bounded::within("own lease", LIMIT, async {
         let (w, tenant) = leased_world(1 << 30).await;
         let pool = &w.db.pool;
-        charge_committed(pool, tenant, 1_000)
-            .await
-            .expect("a first charge leases 0");
-        let mut held = pool.begin().await.expect("begin");
-        charge(&mut held, tenant, 1_000)
-            .await
-            .expect("the held transaction takes lease 0");
-        // Lease 0 has room but is held: the second charge must neither wait for it nor fail.
-        let second = tokio::time::timeout(
-            Duration::from_secs(20),
-            charge_committed(pool, tenant, 1_000),
-        )
-        .await;
-        assert!(
-            matches!(second, Ok(Ok(()))),
-            "a held lease made a charge wait or fail: {second:?}"
-        );
+        let ((mut a, pid_a), (mut b, pid_b)) = (writer(pool).await, writer(pool).await);
+        charge_on(&mut a, tenant, 1_000).await.expect("A's lease granted");
+        charge_on(&mut b, tenant, 1_000).await.expect("B's lease granted");
+        let mut held = sqlx::Connection::begin(&mut *a).await.expect("begin");
+        charge(&mut held, tenant, 1_000).await.expect("A holds its lease");
+        let second = tokio::time::timeout(Duration::from_secs(20), charge_on(&mut b, tenant, 1_000)).await;
+        assert!(matches!(second, Ok(Ok(()))), "A's open transaction made B wait or fail: {second:?}");
         held.commit().await.expect("commit");
-        let (s, g, granted, used, leases) = ledger(pool, tenant).await;
-        assert_eq!(g, granted, "G is the sum of the grants");
-        assert_eq!(s + used, 3_000, "every charged byte is counted once");
-        assert_eq!(leases, 2, "the held lease was skipped, a second one leased");
+        let writers: Vec<i32> = sqlx::query_scalar(
+            "SELECT writer FROM spike_041.step_log_quota_leases WHERE tenant_id = $1 ORDER BY writer",
+        )
+        .bind(tenant)
+        .fetch_all(pool)
+        .await
+        .expect("the leases");
+        let mut expected = vec![pid_a, pid_b];
+        expected.sort_unstable();
+        assert_eq!(writers, expected, "one lease a writer, keyed by its backend");
+        let (s, _, _, used, _) = ledger(pool, tenant).await;
+        assert_eq!(s + used, 4_000, "every charged byte is counted once");
+        assert_exact(pool, tenant, 1 << 30).await;
     })
     .await;
 }
@@ -127,32 +205,26 @@ async fn a_charge_with_a_free_lease_never_takes_the_usage_row_and_a_refill_alone
     bounded::within("usage row", LIMIT, async {
         let (w, tenant) = leased_world(1 << 30).await;
         let pool = &w.db.pool;
-        charge_committed(pool, tenant, 1_000)
+        let (mut c, pid) = writer(pool).await;
+        charge_on(&mut c, tenant, 1_000)
             .await
-            .expect("lease 0 granted");
+            .expect("C's lease granted");
         let mut row = pool.begin().await.expect("begin");
         sqlx::query("SELECT 1 FROM tenant_retained_usage WHERE tenant_id = $1 FOR UPDATE")
             .bind(tenant)
             .execute(&mut *row)
             .await
             .expect("hold the usage row");
-        let free = tokio::time::timeout(
-            Duration::from_secs(20),
-            charge_committed(pool, tenant, 1_000),
-        )
-        .await;
+        let free =
+            tokio::time::timeout(Duration::from_secs(20), charge_on(&mut c, tenant, 1_000)).await;
         assert!(
             matches!(free, Ok(Ok(()))),
-            "a charge into a free lease took the usage row: {free:?}"
+            "a charge with room in its own lease took the usage row: {free:?}"
         );
-        // A charge larger than any lease's room needs a refill, which is the one wait.
-        let mut refill_conn = pool.acquire().await.expect("a connection");
-        let pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
-            .fetch_one(&mut *refill_conn)
-            .await
-            .expect("pid");
+        // A charge larger than the writer's room needs a refill, which is the one wait.
         let refill = tokio::spawn(async move {
-            let mut tx = sqlx::Connection::begin(&mut *refill_conn).await?;
+            let mut tx = sqlx::Connection::begin(&mut *c).await?;
+            without_the_refill_bound(&mut tx).await;
             charge(&mut tx, tenant, 4 << 20).await?;
             tx.commit().await
         });
@@ -251,35 +323,121 @@ async fn a_lowered_limit_stops_charges_into_leases_with_room() {
     .await;
 }
 
+/// D041-117's grant, min(1 MiB, F / (2(A + 1))), and the reclaim near the limit: the room of idle leases completes the
+/// limit. L = 2 MiB: A's first grant is 1 MiB (F / 2), B's 262,144 (F = 1 MiB, one other lease); the room left
+/// (2,095,152) is more than the unleased room (786,432), so only the leases' room completes it.
 #[tokio::test]
 async fn the_last_bytes_of_the_limit_are_admitted_from_the_room_of_idle_leases() {
     bounded::within("reclaim", LIMIT, async {
-        // 2 MiB: far from the limit a grant is 1/64 of the free room, so the first two leases keep room.
         const L: i64 = 2 * 1024 * 1024;
         let (w, tenant) = leased_world(u64::try_from(L).expect("positive")).await;
         let pool = &w.db.pool;
-        charge_committed(pool, tenant, 1_000)
+        let ((mut a, _), (mut b, _)) = (writer(pool).await, writer(pool).await);
+        charge_on(&mut a, tenant, 1_000)
             .await
-            .expect("lease 0: 32,768 granted");
-        let mut held = pool.begin().await.expect("begin");
-        charge(&mut held, tenant, 1).await.expect("lease 0 held");
-        charge_committed(pool, tenant, 1_000)
+            .expect("A: 1 MiB granted");
+        charge_on(&mut b, tenant, 1_000)
             .await
-            .expect("lease 1: 32,256 granted");
-        held.commit().await.expect("commit");
+            .expect("B: 262,144 granted");
         let (s, g, granted, used, leases) = ledger(pool, tenant).await;
-        assert_eq!((s, g, granted, used, leases), (0, 65_024, 65_024, 2_001, 2));
-        // The room left (2,095,151) is more than the unleased room (2,032,128): only the leases' room completes it.
-        charge_committed(pool, tenant, L - 2_001)
+        assert_eq!(
+            (s, g, granted, used, leases),
+            (0, 1_310_720, 1_310_720, 2_000, 2)
+        );
+        charge_committed(pool, tenant, L - 2_000)
             .await
             .expect("the room of idle leases is given back near the limit");
         assert!(
             refused(charge_committed(pool, tenant, 1).await),
             "one byte past the limit was admitted"
         );
-        let (s, g, granted, used, _) = ledger(pool, tenant).await;
-        assert_eq!(g, granted);
+        let (s, _, _, used, _) = ledger(pool, tenant).await;
         assert_eq!(s + used, L);
+        assert_exact(pool, tenant, L).await;
+    })
+    .await;
+}
+
+/// The coordinator's small-quota case (D041-117): a tenant with a small limit served by many writers is never refused
+/// while the room of its idle leases would fit the charge. Twenty writers lease and go idle; the whole rest is admitted.
+#[tokio::test]
+async fn a_small_quota_with_many_idle_writers_admits_everything_their_leases_hold() {
+    bounded::within("small quota", LIMIT, async {
+        const L: i64 = 100_000;
+        let (w, tenant) = leased_world(u64::try_from(L).expect("positive")).await;
+        let pool = &w.db.pool;
+        let mut writers = Vec::new();
+        for _ in 0..20 {
+            let (mut conn, _) = writer(pool).await;
+            charge_on(&mut conn, tenant, 1)
+                .await
+                .expect("a writer leases");
+            writers.push(conn);
+        }
+        let (s, g, granted, used, leases) = ledger(pool, tenant).await;
+        assert_eq!(leases, 20);
+        assert_eq!(g, granted);
+        assert!(L - s - g < L - s - used, "the idle leases hold room");
+        charge_committed(pool, tenant, L - s - used)
+            .await
+            .expect("everything the idle leases hold is admitted");
+        assert!(
+            refused(charge_committed(pool, tenant, 1).await),
+            "one byte past the limit was admitted"
+        );
+        assert_exact(pool, tenant, L).await;
+        drop(writers);
+    })
+    .await;
+}
+
+/// D041-117's bound on room held by open transactions: each grant leaves at least half of the unleased room, so with k
+/// writers holding their leases at least L · C(2k, k) / 4^k stays chargeable by another writer (k = 8, L = 1 MiB:
+/// 1,048,576 · 12,870 / 65,536 = 205,920), and only past it is a charge refused as held.
+#[tokio::test]
+async fn room_held_by_open_writers_is_bounded_by_the_grant() {
+    bounded::within("held bound", LIMIT, async {
+        const L: i64 = 1024 * 1024;
+        let (w, tenant) = leased_world(u64::try_from(L).expect("positive")).await;
+        let pool = &w.db.pool;
+        let mut held = Vec::new();
+        for _ in 0..8 {
+            let (mut conn, _) = writer(pool).await;
+            charge_on(&mut conn, tenant, 1)
+                .await
+                .expect("a writer leases");
+            sqlx::query("BEGIN")
+                .execute(&mut *conn)
+                .await
+                .expect("begin");
+            charge(&mut conn, tenant, 1)
+                .await
+                .expect("the writer holds its lease");
+            held.push(conn);
+        }
+        let (s, g, _, _, _) = ledger(pool, tenant).await;
+        let free = L - s - g;
+        assert!(
+            free >= 205_920,
+            "the unleased room {free} is under the bound 205,920"
+        );
+        let (mut other, _) = writer(pool).await;
+        let past = charge_on(&mut other, tenant, free + 1).await;
+        assert_eq!(
+            refusal(&past).as_deref(),
+            Some("tenant_step_log_quota_held"),
+            "{past:?}"
+        );
+        charge_on(&mut other, tenant, free)
+            .await
+            .expect("the unleased room is chargeable while every lease is held");
+        for mut conn in held {
+            sqlx::query("COMMIT")
+                .execute(&mut *conn)
+                .await
+                .expect("commit");
+        }
+        assert_exact(pool, tenant, L).await;
     })
     .await;
 }
@@ -374,11 +532,11 @@ async fn nested_by_query(pool: &PgPool) -> std::collections::BTreeMap<String, i6
 }
 
 /// The tenant's quota rows as the open transaction sees them: its leases, its usage row and the transaction's deltas.
-type QuotaRows = (Vec<(i16, i64, i64)>, Option<(i64, i64)>, i64);
+type QuotaRows = (Vec<(i32, i64, i64)>, Option<(i64, i64)>, i64);
 
 async fn quota_rows(conn: &mut PgConnection, tenant: Uuid) -> QuotaRows {
-    let leases: Vec<(i16, i64, i64)> = sqlx::query_as(
-        "SELECT lease, granted, used FROM spike_041.step_log_quota_leases WHERE tenant_id = $1 ORDER BY lease",
+    let leases: Vec<(i32, i64, i64)> = sqlx::query_as(
+        "SELECT writer, granted, used FROM spike_041.step_log_quota_leases WHERE tenant_id = $1 ORDER BY writer",
     )
     .bind(tenant)
     .fetch_all(&mut *conn)
@@ -449,8 +607,9 @@ async fn a_step_log_insert_costs_its_budget_line() {
             .bind(stream)
             .bind(from)
         };
-        // The first insert finds no lease: a refill.
-        let mut tx = pool.begin().await.expect("begin");
+        // The first insert finds no lease of its writer: a refill. Every insert runs on one writer (D041-117).
+        let (mut conn, _) = writer(pool).await;
+        let mut tx = sqlx::Connection::begin(&mut *conn).await.expect("begin");
         let start = quota_rows(&mut tx, tenant).await;
         insert(1).execute(&mut *tx).await.expect("the first ten lines");
         assert_eq!(
@@ -462,7 +621,7 @@ async fn a_step_log_insert_costs_its_budget_line() {
         // The next ones find lease room: the hot path. Measured again while `pg_stat_statements` evicts entries.
         for attempt in 0..8 {
             let evicted = evictions(pool).await;
-            let mut tx = pool.begin().await.expect("begin");
+            let mut tx = sqlx::Connection::begin(&mut *conn).await.expect("begin");
             let start = quota_rows(&mut tx, tenant).await;
             let before = nested_calls(pool).await;
             let items = nested_by_query(pool).await;
@@ -591,8 +750,9 @@ async fn a_short_steps_carry_writes_its_new_stream_once() {
             .await
             .expect("the test PostgreSQL preloads pg_stat_statements");
         count_stream_updates(pool).await;
-        // A first carry leases (a refill), so that the measured one charges a free lease.
-        let mut tx = pool.begin().await.expect("begin");
+        // A first carry leases (a refill), so that the measured one charges its writer's lease (D041-117).
+        let (mut conn, _) = writer(pool).await;
+        let mut tx = sqlx::Connection::begin(&mut *conn).await.expect("begin");
         let first = carry_call(tenant, Uuid::new_v4(), Uuid::new_v4())
             .fetch_one(&mut *tx)
             .await
@@ -601,7 +761,7 @@ async fn a_short_steps_carry_writes_its_new_stream_once() {
         tx.commit().await.expect("commit");
         for _ in 0..8 {
             let evicted = evictions(pool).await;
-            let mut tx = pool.begin().await.expect("begin");
+            let mut tx = sqlx::Connection::begin(&mut *conn).await.expect("begin");
             let run = Uuid::new_v4();
             let start = quota_rows(&mut tx, tenant).await;
             let before = nested_calls(pool).await;
@@ -622,14 +782,15 @@ async fn a_short_steps_carry_writes_its_new_stream_once() {
             assert_eq!(rows, (1, 0, 10), "one stream, inserted once and never updated, and its ten lines");
             assert_eq!(written, (1, 0, 0), "one lease row, no usage or delta row");
             assert_eq!(after - at_commit, 0, "no deferred quota call at the commit");
-            // The fast path (D041-113): the function's five statements (the application name, the no-wait setting, the
-            // policy read, the usage read, the plan's size), the reservation's three (the usage read, the limit, the lease
-            // locked), the writes' two (the stream insert, the lines insert; both functions are called as expressions, which
-            // are not statements), the stream's path check (`execution_instance_path_valid`, a SQL function its CHECK
-            // calls), the charge's six and the ten foreign-key checks. Derived first as 22 (seen failing at 23: the path
-            // check), then 25 with the no-wait setting (seen failing at 24: a reset left out), then 29 with the fast path
-            // (seen failing at 27: a function called in an `IF` or a `RETURN` is an expression, not a statement).
-            assert_eq!(during - before, 5 + 3 + 2 + 1 + 6 + 10, "the nested statements of a short step's carry");
+            // The fast path (D041-113, D041-117): the function's four statements (the application name, the policy read,
+            // the usage read, the plan's size), the reservation's three (the usage read, the limit, the writer's lease
+            // locked), the writes' two (the stream insert, the lines insert; both functions are called as expressions,
+            // which are not statements), the stream's path check (`execution_instance_path_valid`, a SQL function its
+            // CHECK calls), the charge's six and the ten foreign-key checks. Derived first as 22 (seen failing at 23: the
+            // path check), then 25 with the no-wait setting (seen failing at 24: a reset left out), then 29 with the fast
+            // path (seen failing at 27: a function called in an `IF` or a `RETURN` is an expression, not a statement),
+            // then 26 when D041-117 dropped the no-wait setting (seen failing at 26 against the 27 left unchanged).
+            assert_eq!(during - before, 4 + 3 + 2 + 1 + 6 + 10, "the nested statements of a short step's carry");
         let (records, bytes, last, xid_set): (i32, i64, i64, bool) = sqlx::query_as(
             "SELECT records, bytes, last_sequence, last_stored_xid IS NOT NULL FROM spike_041.step_log_streams \
               ORDER BY stream_id DESC LIMIT 1",
@@ -726,10 +887,14 @@ async fn a_release_never_waits_for_a_lease_and_never_goes_below_zero() {
         charge_committed(pool, tenant, 5_000)
             .await
             .expect("a charge");
-        let mut held = pool.begin().await.expect("begin");
+        let (mut holder, _) = writer(pool).await;
+        charge_on(&mut holder, tenant, 1)
+            .await
+            .expect("the holder's lease");
+        let mut held = sqlx::Connection::begin(&mut *holder).await.expect("begin");
         charge(&mut held, tenant, 1_000)
             .await
-            .expect("a lease held");
+            .expect("a lease held, no refill");
         let release = |bytes: i64| async move {
             let mut tx = pool.begin().await?;
             sqlx::query("SELECT spike_041.step_log_release($1, $2)")
@@ -739,7 +904,7 @@ async fn a_release_never_waits_for_a_lease_and_never_goes_below_zero() {
                 .await?;
             tx.commit().await
         };
-        let released = tokio::time::timeout(Duration::from_secs(20), release(5_000)).await;
+        let released = tokio::time::timeout(Duration::from_secs(20), release(5_001)).await;
         assert!(
             matches!(released, Ok(Ok(()))),
             "a release waited for a held lease or failed: {released:?}"
@@ -756,12 +921,11 @@ async fn a_release_never_waits_for_a_lease_and_never_goes_below_zero() {
     .await;
 }
 
-/// D041-112, D041-113: a carry whose charge needs a refill while the usage row is held by a transaction that updated it
-/// (as every real holder does: a refill, the content finalizer, a release) does not wait: it records a mark-only stream
-/// and its transaction commits.
+/// D041-117: a carry whose writer's lease is short waits for the usage row a transaction holds (one that updated it, as
+/// every real holder does) and writes once the holder ends: a tenant with room never loses the carry's records.
 #[tokio::test]
-async fn a_carry_never_waits_for_the_usage_row() {
-    bounded::within("carry nowait", LIMIT, async {
+async fn a_carry_whose_refill_meets_a_held_usage_row_waits_and_writes() {
+    bounded::within("carry waits", LIMIT, async {
         let (w, tenant) = third_run_world().await;
         let pool = &w.db.pool;
         sqlx::query(
@@ -779,24 +943,24 @@ async fn a_carry_never_waits_for_the_usage_row() {
         .execute(&mut *row)
         .await
         .expect("hold the usage row, updated");
-        let mut tx = pool.begin().await.expect("begin");
+        let (mut conn, pid) = writer(pool).await;
         let run = Uuid::new_v4();
-        let outcome = tokio::time::timeout(
-            Duration::from_secs(20),
-            carry_call(tenant, run, Uuid::new_v4()).fetch_one(&mut *tx),
-        )
-        .await;
-        assert!(
-            matches!(&outcome, Ok(Ok(o)) if o == "mark_only:busy"),
-            "the carry waited or did not record its mark: {outcome:?}"
-        );
-        assert_eq!(
-            run_lines(&mut tx, run).await,
-            (1, 0),
-            "the mark-only stream, no line"
-        );
-        tx.commit().await.expect("the report's transaction commits");
-        row.commit().await.expect("commit");
+        let carry = tokio::spawn(async move {
+            let mut tx = sqlx::Connection::begin(&mut *conn).await?;
+            without_the_refill_bound(&mut tx).await;
+            let outcome = carry_call(tenant, run, Uuid::new_v4())
+                .fetch_one(&mut *tx)
+                .await?;
+            let lines = run_lines(&mut tx, run).await;
+            tx.commit().await?;
+            Ok::<_, sqlx::Error>((outcome, lines))
+        });
+        waits_on_a_lock(pool, pid).await;
+        row.commit().await.expect("the holder ends");
+        let (outcome, lines) = carry.await.expect("join").expect("the carry");
+        assert_eq!(outcome, "written:refill");
+        assert_eq!(lines, (1, 10), "the stream and its ten lines");
+        assert_exact(pool, tenant, 1 << 30).await;
     })
     .await;
 }
@@ -852,12 +1016,13 @@ async fn only_a_carry_that_needs_a_refill_opens_a_subtransaction() {
             )
             .bind(run)
         };
-        let mut tx = pool.begin().await.expect("begin");
+        let (mut conn, _) = writer(pool).await;
+        let mut tx = sqlx::Connection::begin(&mut *conn).await.expect("begin");
         let first = Uuid::new_v4();
         carry_call(tenant, first, Uuid::new_v4()).fetch_one(&mut *tx).await.expect("a first carry");
         assert!(!own(first).fetch_one(&mut *tx).await.expect("xmin"), "the refill's carry wrote in a subtransaction");
         tx.commit().await.expect("commit");
-        let mut tx = pool.begin().await.expect("begin");
+        let mut tx = sqlx::Connection::begin(&mut *conn).await.expect("begin");
         let second = Uuid::new_v4();
         carry_call(tenant, second, Uuid::new_v4()).fetch_one(&mut *tx).await.expect("a second carry");
         assert!(own(second).fetch_one(&mut *tx).await.expect("xmin"), "a fast-path carry opened a subtransaction");
@@ -940,28 +1105,28 @@ async fn a_carry_refused_by_the_limit_records_its_mark_in_the_same_call() {
 }
 
 /// T041-35's outcome split: a carry refused while the room it needs is in a lease an open transaction holds records its
-/// mark as `mark_only:held`, told apart from a refusal by the limit (`mark_only:quota`) and from a held usage row
-/// (`mark_only:busy`). Limit 2 MiB; a committed charge of 1 byte leases 32,768 (1/64 of the free room); a second
-/// transaction charges 1 byte from that lease and stays open (it holds the lease, not the usage row); a committed charge
-/// of 2,097,152 − 32,768 − 2,000 leases exactly that on a lease of its own, leaving 2,000 free; the carry needs
-/// 10 × (200 + 128) = 3,280, more than 2,000 and less than 2,000 plus the held lease's 32,766 of room.
+/// mark as `mark_only:held`, told apart from a refusal by the limit (`mark_only:quota`). L = 2 MiB; writer A leases
+/// 1 MiB (F / 2) with a charge of 1 byte and then holds its lease in an open transaction; writer B charges
+/// 2,097,152 − 1,048,576 − 2,000 = 1,046,576 (its grant, past min(1 MiB, F / 4)), leaving 2,000 unleased; the carry, on a
+/// third writer, needs 10 × (200 + 128) = 3,280: more than 2,000 once B's idle lease is folded, less than 2,000 plus A's
+/// held room.
 #[tokio::test]
 async fn a_carry_refused_while_the_room_is_in_a_held_lease_says_held() {
     bounded::within("carry held", LIMIT, async {
         let (w, tenant) = leased_world(2_097_152).await;
         super::install_third_run_storage(&w.db.pool).await;
         let pool = &w.db.pool;
-        charge_committed(pool, tenant, 1)
-            .await
-            .expect("the first lease");
-        let mut holder = pool.begin().await.expect("begin");
+        let ((mut a, _), (mut b, _)) = (writer(pool).await, writer(pool).await);
+        charge_on(&mut a, tenant, 1).await.expect("A's lease");
+        let mut holder = sqlx::Connection::begin(&mut *a).await.expect("begin");
         charge(&mut holder, tenant, 1)
             .await
-            .expect("a charge from the first lease, held");
-        charge_committed(pool, tenant, 2_097_152 - 32_768 - 2_000)
+            .expect("A holds its lease");
+        charge_on(&mut b, tenant, 2_097_152 - 1_048_576 - 2_000)
             .await
-            .expect("all but 2,000 bytes and the held lease");
-        let mut tx = pool.begin().await.expect("begin");
+            .expect("all but 2,000 bytes and A's lease");
+        let (mut c, _) = writer(pool).await;
+        let mut tx = sqlx::Connection::begin(&mut *c).await.expect("begin");
         let run = Uuid::new_v4();
         let outcome = carry_call(tenant, run, Uuid::new_v4())
             .fetch_one(&mut *tx)
@@ -975,6 +1140,7 @@ async fn a_carry_refused_while_the_room_is_in_a_held_lease_says_held() {
         );
         tx.commit().await.expect("the report's transaction commits");
         holder.rollback().await.expect("rollback");
+        assert_exact(pool, tenant, 2_097_152).await;
     })
     .await;
 }
@@ -1011,4 +1177,386 @@ fn the_carry_hook_counts_each_outcome_in_its_own_counter() {
         ),
         (2, 1, 1, 2, 3, 2, 1)
     );
+}
+
+/// The tests that hold the usage row while they stage other transactions raise the refill's bound to the test's own
+/// bound, so that no result depends on how fast the machine stages them (the bound itself has its own test).
+async fn without_the_refill_bound(conn: &mut PgConnection) {
+    sqlx::query("SET LOCAL sagat.step_log_refill_wait = '60s'")
+        .execute(conn)
+        .await
+        .expect("the test's bound");
+}
+
+/// A stream of the tenant for direct line inserts (an ingest batch), committed.
+async fn a_stream(pool: &PgPool, tenant: Uuid) -> i64 {
+    sqlx::query_scalar(
+        "INSERT INTO spike_041.step_log_streams (tenant_id, public_id, namespace_id, run_id, step_id, node, \
+           instance_path_nodes, instance_path_indices, attempt, generation, retention_days, last_at, expires_at) \
+         VALUES ($1, gen_random_uuid(), gen_random_uuid(), gen_random_uuid(), gen_random_uuid(), 'a', '{}', '{}', \
+           1, 0, 14, now(), now() + interval '14 days') RETURNING stream_id",
+    )
+    .bind(tenant)
+    .fetch_one(pool)
+    .await
+    .expect("a stream")
+}
+
+/// Ten lines of 200 bytes on `stream` from `from`: an ingest batch, its charge by the statement trigger.
+async fn ingest(
+    conn: &mut PgConnection,
+    tenant: Uuid,
+    stream: i64,
+    from: i64,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO spike_041.step_log_lines (tenant_id, stream_id, sequence, run_id, level, kind, message) \
+         SELECT $1, $2, s, gen_random_uuid(), 'info', 'line', repeat('x', 200) FROM generate_series($3, $3 + 9) s",
+    )
+    .bind(tenant)
+    .bind(stream)
+    .bind(from)
+    .execute(conn)
+    .await
+    .map(|_| ())
+}
+
+async fn usage_row(pool: &PgPool, tenant: Uuid) {
+    sqlx::query("INSERT INTO tenant_retained_usage (tenant_id) VALUES ($1) ON CONFLICT DO NOTHING")
+        .bind(tenant)
+        .execute(pool)
+        .await
+        .expect("the usage row");
+}
+
+/// The coordinator's case (a), D041-117: a completion that took the usage row for its content bytes before its own carry
+/// refills goes through, while another writer's refill waits for it; neither deadlocks.
+#[tokio::test]
+async fn a_completion_holding_the_usage_row_refills_while_another_refill_waits() {
+    bounded::within("deadlock a1", LIMIT, async {
+        let (w, tenant) = third_run_world().await;
+        let pool = &w.db.pool;
+        usage_row(pool, tenant).await;
+        let ((mut a, _), (mut b, pid_b)) = (writer(pool).await, writer(pool).await);
+        let mut first = sqlx::Connection::begin(&mut *a).await.expect("begin");
+        sqlx::query("UPDATE tenant_retained_usage SET content_bytes = content_bytes + 100 WHERE tenant_id = $1")
+            .bind(tenant)
+            .execute(&mut *first)
+            .await
+            .expect("A's content bytes, on the usage row");
+        let run_b = Uuid::new_v4();
+        let other = tokio::spawn(async move {
+            let mut tx = sqlx::Connection::begin(&mut *b).await?;
+            without_the_refill_bound(&mut tx).await;
+            let outcome = carry_call(tenant, run_b, Uuid::new_v4()).fetch_one(&mut *tx).await?;
+            tx.commit().await?;
+            Ok::<_, sqlx::Error>(outcome)
+        });
+        waits_on_a_lock(pool, pid_b).await;
+        let mine = carry_call(tenant, Uuid::new_v4(), Uuid::new_v4())
+            .fetch_one(&mut *first)
+            .await
+            .expect("A's carry refills under its own lock of the row");
+        assert_eq!(mine, "written:refill");
+        first.commit().await.expect("A commits");
+        let theirs = other.await.expect("join");
+        assert!(matches!(&theirs, Ok(o) if o == "written:refill"), "B: {theirs:?}");
+        assert_exact(pool, tenant, 1 << 30).await;
+    })
+    .await;
+}
+
+/// The coordinator's case (a), the other order (D041-117): A holds its own lease on the fast path and then waits for the
+/// usage row (its content bytes) that B's refill holds near the limit; B's reclaim skips A's lease, so B never waits for
+/// A and both commit. L = 1.5 MiB: A's grant is F / 2 = 786,432, leaving 786,432 unleased, under 1 MiB, so B's refill
+/// reclaims and meets A's held lease.
+#[tokio::test]
+async fn a_writer_holding_its_lease_waits_for_a_reclaiming_refill_without_a_deadlock() {
+    bounded::within("deadlock a2", LIMIT, async {
+        const L: i64 = 1_572_864;
+        let (w, tenant) = leased_world(u64::try_from(L).expect("positive")).await;
+        super::install_third_run_storage(&w.db.pool).await;
+        let pool = &w.db.pool;
+        let ((mut a, pid_a), (mut b, _)) = (writer(pool).await, writer(pool).await);
+        let warm = carry_call(tenant, Uuid::new_v4(), Uuid::new_v4())
+            .fetch_one(&mut *a)
+            .await
+            .expect("A's lease");
+        assert_eq!(warm, "written:refill");
+        sqlx::query("BEGIN").execute(&mut *a).await.expect("begin");
+        let fast = carry_call(tenant, Uuid::new_v4(), Uuid::new_v4())
+            .fetch_one(&mut *a)
+            .await
+            .expect("A's fast path");
+        assert_eq!(fast, "written", "A holds its own lease");
+        let mut near = sqlx::Connection::begin(&mut *b).await.expect("begin");
+        charge(&mut near, tenant, 100_000)
+            .await
+            .expect("B refills near the limit and reclaims what is idle, skipping A's lease");
+        let content = tokio::spawn(async move {
+            sqlx::query("UPDATE tenant_retained_usage SET content_bytes = content_bytes + 100 WHERE tenant_id = $1")
+                .bind(tenant)
+                .execute(&mut *a)
+                .await?;
+            sqlx::query("COMMIT").execute(&mut *a).await.map(|_| ())
+        });
+        waits_on_a_lock(pool, pid_a).await;
+        near.commit().await.expect("B commits");
+        content.await.expect("join").expect("A commits once B is done");
+        assert_exact(pool, tenant, L).await;
+    })
+    .await;
+}
+
+/// The coordinator's case (b), D041-117: an ingest batch's refill and a carry's refill, each order; the second waits for
+/// the first's commit and both write.
+#[tokio::test]
+async fn an_ingest_refill_and_a_carry_refill_wait_for_each_other_in_turn() {
+    bounded::within("deadlock b", LIMIT, async {
+        let (w, tenant) = third_run_world().await;
+        let pool = &w.db.pool;
+        usage_row(pool, tenant).await;
+        let stream = a_stream(pool, tenant).await;
+        // The ingest first.
+        let ((mut i, _), (mut c, pid_c)) = (writer(pool).await, writer(pool).await);
+        let mut batch = sqlx::Connection::begin(&mut *i).await.expect("begin");
+        ingest(&mut batch, tenant, stream, 1)
+            .await
+            .expect("the batch refills");
+        let carry = tokio::spawn(async move {
+            let mut tx = sqlx::Connection::begin(&mut *c).await?;
+            without_the_refill_bound(&mut tx).await;
+            let outcome = carry_call(tenant, Uuid::new_v4(), Uuid::new_v4())
+                .fetch_one(&mut *tx)
+                .await?;
+            tx.commit().await?;
+            Ok::<_, sqlx::Error>(outcome)
+        });
+        waits_on_a_lock(pool, pid_c).await;
+        batch.commit().await.expect("the batch commits");
+        let outcome = carry.await.expect("join");
+        assert!(
+            matches!(&outcome, Ok(o) if o == "written:refill"),
+            "{outcome:?}"
+        );
+        // The carry first.
+        let ((mut c2, _), (mut i2, pid_i)) = (writer(pool).await, writer(pool).await);
+        let mut report = sqlx::Connection::begin(&mut *c2).await.expect("begin");
+        let first = carry_call(tenant, Uuid::new_v4(), Uuid::new_v4())
+            .fetch_one(&mut *report)
+            .await
+            .expect("the carry refills");
+        assert_eq!(first, "written:refill");
+        let batch = tokio::spawn(async move {
+            let mut tx = sqlx::Connection::begin(&mut *i2).await?;
+            without_the_refill_bound(&mut tx).await;
+            ingest(&mut tx, tenant, stream, 11).await?;
+            tx.commit().await
+        });
+        waits_on_a_lock(pool, pid_i).await;
+        report.commit().await.expect("the report commits");
+        batch.await.expect("join").expect("the batch commits");
+        assert_exact(pool, tenant, 1 << 30).await;
+    })
+    .await;
+}
+
+/// The coordinator's case (c), D041-117: a carry's refill waits behind a release that holds the usage row, while a change
+/// of the limit waits for the fence the carry holds; the release ends, the carry writes and commits, the change reclaims
+/// every lease; nothing deadlocks.
+#[tokio::test]
+async fn a_release_and_a_limit_change_around_a_waiting_refill_end_without_a_deadlock() {
+    bounded::within("deadlock c", LIMIT, async {
+        let (w, tenant) = third_run_world().await;
+        let w = Arc::new(w);
+        let pool = w.db.pool.clone();
+        let (mut seed, _) = writer(&pool).await;
+        charge_on(&mut seed, tenant, 5_000)
+            .await
+            .expect("usage to release");
+        let mut release = pool.begin().await.expect("begin");
+        sqlx::query("SELECT spike_041.step_log_release($1, $2)")
+            .bind(tenant)
+            .bind(1_000_i64)
+            .execute(&mut *release)
+            .await
+            .expect("the release holds the usage row");
+        let (mut c, pid_c) = writer(&pool).await;
+        let carry = tokio::spawn(async move {
+            let mut tx = sqlx::Connection::begin(&mut *c).await?;
+            without_the_refill_bound(&mut tx).await;
+            let outcome = carry_call(tenant, Uuid::new_v4(), Uuid::new_v4())
+                .fetch_one(&mut *tx)
+                .await?;
+            tx.commit().await?;
+            Ok::<_, sqlx::Error>(outcome)
+        });
+        waits_on_a_lock(&pool, pid_c).await;
+        let change = {
+            let w = Arc::clone(&w);
+            tokio::spawn(async move {
+                w.quotas
+                    .set(
+                        &w.admin,
+                        None,
+                        QuotaResource::TenantStepLogBytes,
+                        500 << 20,
+                        &ctx(),
+                    )
+                    .await
+                    .map(|_| ())
+            })
+        };
+        a_backend_waits_on_a_fence(&pool).await;
+        release.commit().await.expect("the release commits");
+        let outcome = carry.await.expect("join");
+        assert!(
+            matches!(&outcome, Ok(o) if o == "written:refill"),
+            "{outcome:?}"
+        );
+        change
+            .await
+            .expect("join")
+            .expect("the change of the limit commits");
+        let (_, g, granted, _, _) = ledger(&pool, tenant).await;
+        assert_eq!((g, granted), (0, 0), "the change reclaimed every lease");
+        assert_exact(&pool, tenant, 500 << 20).await;
+    })
+    .await;
+}
+
+/// D041-117's bound on the refill's wait: a refill that waits longer than `sagat.step_log_refill_wait` (here 100 ms; the
+/// bound of the design otherwise) fails its transaction with `55P03` named `tenant_step_log_refill_wait` and counts it;
+/// it never turns into a mark-only answer, and the report is re-run by its sender.
+#[tokio::test]
+async fn a_refill_that_outwaits_its_bound_fails_loudly_and_is_counted() {
+    bounded::within("refill bound", LIMIT, async {
+        let (w, tenant) = third_run_world().await;
+        let pool = &w.db.pool;
+        usage_row(pool, tenant).await;
+        let count = || async {
+            sqlx::query_scalar::<_, i64>(
+                "SELECT CASE WHEN is_called THEN last_value ELSE 0 END FROM spike_041.step_log_refill_wait_timeouts",
+            )
+            .fetch_one(pool)
+            .await
+            .expect("the counter")
+        };
+        let before = count().await;
+        let mut row = pool.begin().await.expect("begin");
+        sqlx::query("UPDATE tenant_retained_usage SET step_log_bytes = step_log_bytes WHERE tenant_id = $1")
+            .bind(tenant)
+            .execute(&mut *row)
+            .await
+            .expect("hold the usage row");
+        let (mut c, _) = writer(pool).await;
+        let mut tx = sqlx::Connection::begin(&mut *c).await.expect("begin");
+        sqlx::query("SET LOCAL sagat.step_log_refill_wait = '100ms'")
+            .execute(&mut *tx)
+            .await
+            .expect("a short bound");
+        let run = Uuid::new_v4();
+        let outcome = carry_call(tenant, run, Uuid::new_v4()).fetch_one(&mut *tx).await;
+        assert_eq!(
+            sqlstate(&outcome),
+            Some(("55P03".to_owned(), Some("tenant_step_log_refill_wait".to_owned()))),
+            "{outcome:?}"
+        );
+        tx.rollback().await.expect("the report's transaction is rolled back");
+        row.commit().await.expect("commit");
+        assert_eq!(count().await, before + 1, "the timeout is counted");
+        let streams: i64 = sqlx::query_scalar("SELECT count(*) FROM spike_041.step_log_streams WHERE run_id = $1")
+            .bind(run)
+            .fetch_one(pool)
+            .await
+            .expect("streams");
+        assert_eq!(streams, 0, "no mark-only stream: the report is re-run, not marked");
+        assert_exact(pool, tenant, 1 << 30).await;
+    })
+    .await;
+}
+
+/// D041-117's idle reclaim (the purge pass, one tenant a transaction): a lease not charged for longer than the interval
+/// is folded back (S += used, G −= granted) and deleted; a fresh one and one an open transaction holds stay.
+#[tokio::test]
+async fn the_idle_reclaim_folds_and_deletes_only_leases_idle_past_the_interval() {
+    bounded::within("idle reclaim", LIMIT, async {
+        let (w, tenant) = leased_world(1 << 30).await;
+        let pool = &w.db.pool;
+        let ((mut idle, pid_idle), (mut fresh, pid_fresh), (mut busy, pid_busy)) =
+            (writer(pool).await, writer(pool).await, writer(pool).await);
+        charge_on(&mut idle, tenant, 1_000).await.expect("the idle writer's lease");
+        charge_on(&mut fresh, tenant, 2_000).await.expect("the fresh writer's lease");
+        charge_on(&mut busy, tenant, 3_000).await.expect("the busy writer's lease");
+        sqlx::query(
+            "UPDATE spike_041.step_log_quota_leases SET charged_at = clock_timestamp() - interval '11 minutes' \
+              WHERE tenant_id = $1 AND writer = ANY($2)",
+        )
+        .bind(tenant)
+        .bind(vec![pid_idle, pid_busy])
+        .execute(pool)
+        .await
+        .expect("two leases idle past the interval");
+        let mut held = sqlx::Connection::begin(&mut *busy).await.expect("begin");
+        sqlx::query("SELECT 1 FROM spike_041.step_log_quota_leases WHERE tenant_id = $1 AND writer = $2 FOR UPDATE")
+            .bind(tenant)
+            .bind(pid_busy)
+            .execute(&mut *held)
+            .await
+            .expect("an open transaction holds the busy writer's lease");
+        let (s0, g0, _, used0, _) = ledger(pool, tenant).await;
+        let mut tx = pool.begin().await.expect("begin");
+        let reclaimed: i32 = sqlx::query_scalar("SELECT spike_041.step_log_reclaim_idle($1, interval '10 minutes')")
+            .bind(tenant)
+            .fetch_one(&mut *tx)
+            .await
+            .expect("the idle reclaim");
+        tx.commit().await.expect("commit");
+        held.commit().await.expect("commit");
+        assert_eq!(reclaimed, 1, "only the idle lease no transaction holds");
+        let writers: Vec<i32> = sqlx::query_scalar(
+            "SELECT writer FROM spike_041.step_log_quota_leases WHERE tenant_id = $1 ORDER BY writer",
+        )
+        .bind(tenant)
+        .fetch_all(pool)
+        .await
+        .expect("the leases");
+        let mut kept = vec![pid_fresh, pid_busy];
+        kept.sort_unstable();
+        assert_eq!(writers, kept);
+        let (s, g, _, used, _) = ledger(pool, tenant).await;
+        assert_eq!(s + used, s0 + used0, "the usage is unchanged");
+        assert!(g < g0 && s == s0 + 1_000, "the idle lease's room and use were folded");
+        assert_exact(pool, tenant, 1 << 30).await;
+    })
+    .await;
+}
+
+/// D041-118: the refill's bound follows the server's `max_connections`, so no pool configuration can outgrow it:
+/// ⌈(max_connections − 1) · 4.5 ms + 32.7 ms + 4.5 ms⌉ in whole seconds (400 connections: ⌈1,832.7 ms⌉ = 2 s).
+#[tokio::test]
+async fn the_refill_bound_follows_max_connections() {
+    bounded::within("refill bound", LIMIT, async {
+        let (w, _) = leased_world(1 << 30).await;
+        let pool = &w.db.pool;
+        let connections: i64 =
+            sqlx::query_scalar("SELECT current_setting('max_connections')::bigint")
+                .fetch_one(pool)
+                .await
+                .expect("max_connections");
+        // In tenths of a millisecond, exact: (connections − 1) · 45 + 327 + 45.
+        let tenths = (connections - 1) * 45 + 327 + 45;
+        let seconds = (tenths + 9_999) / 10_000;
+        let bound: f64 = sqlx::query_scalar(
+            "SELECT extract(epoch FROM spike_041.step_log_refill_bound())::float8",
+        )
+        .fetch_one(pool)
+        .await
+        .expect("the bound");
+        assert_eq!(bound, seconds as f64, "{connections} connections");
+        if connections == 400 {
+            assert_eq!(seconds, 2, "the benchmark's server");
+        }
+    })
+    .await;
 }
