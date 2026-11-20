@@ -1,0 +1,129 @@
+# How long each integration suite (a [[test]] target of tests/Cargo.toml) runs on the CI runner, in whole seconds.
+# scripts/select-test-targets.py balances the shards of the CI integration jobs by these figures; it does not decide
+# which suites run. scripts/tests/test_select_test_targets.py (DurationTable) fails when this table and the manifest
+# do not list the same suites: add a figure with a new suite (until then it is planned at 600 seconds) and remove it with
+# the suite.
+#
+# How the figures were measured (2026-11-20): from the log of the step that ran the suites one after another
+# (`gh run view <run> --job <job> --log`), the time from a suite's "Running <path> (<binary>)" line to the next
+# binary's, or to the end of the step for the last one; a suite cut off by a timeout counts as a lower bound. That
+# is the suite's wall time, PostgreSQL containers included, without its build. The figure is the largest seen, rounded
+# up to ten seconds; a suite whose tests are all #[ignore] (it needs toolchains this job does not have) measures 0 to
+# 10 seconds. The comment after each figure is how many runs saw the suite.
+#
+# Source runs (run / job of `rust (fmt, clippy, tests)`), 17 of them, all on 2026-11-20:
+#   44793165198 / 136485917661  pull request #241 (feature/041), every suite, timed out at 110 minutes
+#   44783905511 / 136453649809  feature/041, every suite, timed out
+#   44766932112 / 136401487972  feature/041, every suite, timed out
+#   44765147390 / 136390979791  feature/041, every suite
+#   44761985947 / 136376723599  feature/041, every suite, timed out
+#   44757295350 / 136360370005  feature/041, every suite, timed out
+#   44777596057 / 136434400409  pull request into release/0.3.0
+#   44777587433 / 136431929237  push to release/0.3.0
+#   44678068505 / 136095441716  pull request into release/0.3.0
+#   44678062541 / 136095387401  push to release/0.3.0
+#   44776859843 / 136428857201  push to main (cargo test --workspace)
+#   44677885196 / 136093984309  push to main (cargo test --workspace)
+#   44758274618 / 136363686889  push to hotfix/0.2.1 (cargo test --workspace)
+#   44678800283 / 136096958957  push to hotfix/0.2.1 (cargo test --workspace)
+#   44678807693 / 136096983351  pull request from hotfix/0.2.1
+#   44767441802 / 136402616110  feature/022, nine suites
+#   44765364955 / 136391114805  feature/022, nine suites
+# Refresh it the same way when a suite grows or shrinks noticeably; a lower figure is a finding to explain, not a
+# number to take on one run.
+
+[seconds]
+contract_asyncapi_events_webhooks_messaging =   20  # 15
+contract_developer_experience               =   10  # 15
+contract_grpc_durable_execution             =  110  # 15
+contract_grpc_sagas_compensations           =   20  # 15
+contract_grpc_sdk_multilanguage             =   20  # 15
+contract_grpc_security_multitenancy         =   10  # 15
+contract_iceberg_writes                     =   10  # 10
+contract_manifest_gitops_versioning         =   10  # 15
+contract_observability_operations           =   10  # 15
+contract_payload_classification             =   30  # 15
+contract_platform_foundation                =   10  # 15
+contract_rest_durable_execution             =   10  # 15
+contract_rest_events_webhooks_messaging     =   10  # 15
+contract_rest_gitops_versioning             =   10  # 15
+contract_rest_inline_code_sandbox           =   10  # 15
+contract_rest_observability_operations      =   10  # 15
+contract_rest_platform_foundation           =   20  # 15
+contract_rest_sagas_compensations           =   10  # 15
+contract_rest_security_multitenancy         =   40  # 15
+contract_rest_workflow_studio               =   10  # 15
+contract_scalability_ha                     =   20  # 15
+contract_schedules_bulk_operations          =   30  # 12
+contract_workflow_primitives                =   10  # 15
+e2e_database_connections                    =   10  # 15
+e2e_developer_experience                    =   60  # 15
+e2e_durable_execution                       =   40  # 15
+e2e_events_webhooks_messaging               =   60  # 15
+e2e_gitops_versioning                       =   30  # 15
+e2e_iceberg_writes                          =   10  # 10
+e2e_inline_code_sandbox                     =   70  # 15
+e2e_observability_operations                =   70  # 15
+e2e_payload_classification                  =  100  # 15
+e2e_platform_foundation                     =   50  # 17
+e2e_sagas_compensations                     =   40  # 15
+e2e_scalability_ha                          =  100  # 15
+e2e_schedules_bulk_operations               =   10  # 10
+e2e_sdk_multilanguage                       =   10  # 15
+e2e_security_multitenancy                   =   20  # 15
+e2e_step_destinations                       =   10  # 10
+e2e_workflow_primitives                     =   10  # 15
+e2e_workflow_studio                         =   50  # 15
+fault_developer_experience                  =   60  # 15
+fault_events_webhooks_messaging             =  120  # 15
+fault_failover                              =   40  # 15
+fault_gitops_versioning                     =   30  # 15
+fault_iceberg_writes                        =   10  # 10
+fault_inline_code_sandbox                   =   30  # 15
+fault_observability_operations              =   30  # 15
+fault_payload_classification                =   20  # 15
+fault_platform_foundation                   =   60  # 17
+fault_sagas_compensations                   =   60  # 15
+fault_scalability_ha                        =   20  # 15
+fault_schedules_bulk_operations             =  300  # 10
+fault_sdk_multilanguage                     =   10  # 15
+fault_security_multitenancy                 =   40  # 15
+fault_step_destinations                     =   10  # 10
+fault_workflow_primitives                   =  190  # 15
+fault_workflow_studio                       =   20  # 15
+integration_claim_transition_efficiency     =   40  # 12
+integration_database_connections            =   90  # 15
+integration_database_runner                 =   40  # 15
+integration_durable_execution               =  290  # 15
+integration_events_webhooks_messaging       =  160  # 15
+integration_gitops_versioning               =   60  # 15
+integration_iceberg_writes                  =   30  # 10
+integration_inline_code_sandbox             =   60  # 15
+integration_inline_code_sandbox_containers  =   40  # 15
+integration_observability_operations        =   30  # 15
+integration_payload_classification          =   60  # 15
+integration_platform_foundation             =  110  # 17
+integration_redis_streams                   =   40  # 10
+integration_run_input_cache                 =   20  # 6
+integration_sagas_compensations             =  110  # 15
+integration_scalability_ha                  =   80  # 15
+integration_schedules_bulk_operations       =  970  # 12
+integration_security_multitenancy           =  170  # 17
+integration_step_destinations               =   10  # 10
+integration_workflow_primitives             = 1800  # 17
+perf_developer_experience                   =   10  # 12
+perf_durable_execution                      =   10  # 12
+perf_events_webhooks_messaging              =   10  # 12
+perf_gitops_versioning                      =   10  # 12
+perf_iceberg_writes                         =   10  # 7
+perf_inline_code_sandbox                    =   10  # 12
+perf_observability_operations               =   10  # 12
+perf_payload_classification                 =   10  # 12
+perf_platform_foundation                    =   10  # 12
+perf_sagas_compensations                    =   10  # 12
+perf_scalability_ha                         =   30  # 14
+perf_schedules_bulk_operations              =   10  # 3
+perf_sdk_multilanguage                      =   10  # 12
+perf_security_multitenancy                  =   10  # 12
+perf_workflow_primitives                    =  370  # 12
+sdk_conformance                             =   10  # 10
