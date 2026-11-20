@@ -1838,8 +1838,46 @@ pub struct RunState {
     /// leaves it `WAITING` for its gates, never `READY` (FR-022-051, D022-020). Empty for a state rebuilt from the
     /// journal alone, which then reaches the same state through the decisions every such commit journals.
     gated: BTreeMap<NodeId, super::flow_control::DeclaredGates>,
+    /// Feature 022: the last event applied is `run.reset`, or a decision of the start's gates that followed it: the
+    /// restored decisions of the source are history, and the reset run decides its start afresh right here, never later
+    /// (018's plan, row 17).
+    reset_admission: WithinCommit<bool>,
+    /// The gates the definition declares at the run's start, when this state knows its definition (feature 022): no step
+    /// is released until each of them holds (fail closed; reviews of 2026-11-20, architecture M1). `None` for a state
+    /// rebuilt from the journal alone, which reaches the same state through the decisions every such commit journals.
+    start_gated: FromDefinition<Option<super::flow_control::DeclaredGates>>,
     applied: u64,
 }
+
+/// A fact that only lasts within the commit that sets it (feature 022: the moment right after `run.reset`, in which the
+/// reset run decides its start). A state loaded from its projection starts a commit without it, and the reset's planner
+/// asks for the start's decision before that commit ends, so it never matters across commits: two states the same
+/// journal built are equal whatever it says (reviews of 2026-11-20, correctness m2; seen in `reset_corpus` when a reset
+/// commit ends right after `run.reset`).
+#[derive(Debug, Clone, Copy, Default)]
+struct WithinCommit<T>(T);
+
+impl<T> PartialEq for WithinCommit<T> {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl<T> Eq for WithinCommit<T> {}
+
+/// What a state knows from its definition rather than from its journal (feature 022): it shapes which events the state
+/// accepts, never what the journal made of it, so two states that the same journal built are equal whether or not one of
+/// them was told its definition (a replay from the journal alone is compared with a stored or folded state).
+#[derive(Debug, Clone, Copy, Default)]
+struct FromDefinition<T>(T);
+
+impl<T> PartialEq for FromDefinition<T> {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl<T> Eq for FromDefinition<T> {}
 
 impl RunState {
     /// An empty run: nothing has been journaled yet.
@@ -1859,6 +1897,8 @@ impl RunState {
             start_delayed_until_us: None,
             run_gates: super::flow_control::Gates::NONE,
             gated: BTreeMap::new(),
+            reset_admission: WithinCommit(false),
+            start_gated: FromDefinition(None),
             applied: 0,
         }
     }
@@ -1867,6 +1907,9 @@ impl RunState {
     /// to every state a transaction folds or restores for a run of `def`, before any event is applied.
     #[must_use]
     pub fn with_gated_steps(mut self, def: &crate::workflow::WorkflowDefinition) -> Self {
+        self.start_gated = FromDefinition(super::flow_control::DeclaredGates::of(
+            def.run_flow_control(),
+        ));
         self.gated = def
             .gated_nodes()
             .filter_map(|node| {
@@ -1947,6 +1990,31 @@ impl RunState {
     #[must_use]
     pub const fn run_gates(&self) -> &super::flow_control::Gates {
         &self.run_gates
+    }
+
+    /// Whether the run's start may be decided now and, if so, why (feature 022): a started run whose entry is still held by
+    /// nothing but its undecided gates (a released start delay), or a reset run right after `run.reset` (a reset never
+    /// queues). The caller checks that the definition gates its start and that no gate is decided yet.
+    #[must_use]
+    pub fn start_undecided(&self) -> Option<super::StartCause> {
+        if self.stop.is_some() || self.paused {
+            return None;
+        }
+        if self.reset_admission.0 {
+            return Some(super::StartCause::Reset);
+        }
+        (self.entry_held() && self.start_delayed_until_us.is_none())
+            .then_some(super::StartCause::Release)
+    }
+
+    /// A started run with one step, its entry, still `PENDING`: nothing of it has been released.
+    fn entry_held(&self) -> bool {
+        self.has_started()
+            && self.steps.len() == 1
+            && self
+                .steps
+                .values()
+                .all(|step| step.status == StepStatus::Pending)
     }
 
     /// The instant (microseconds since the epoch) the held entry is released at, if it is held.
@@ -2055,6 +2123,8 @@ impl RunState {
             start_delayed_until_us: None,
             run_gates: super::flow_control::Gates::NONE,
             gated: BTreeMap::new(),
+            reset_admission: WithinCommit(false),
+            start_gated: FromDefinition(None),
             applied: version,
         }
     }
@@ -3960,6 +4030,19 @@ impl RunState {
                 }
             }
             RunEvent::StepReleased { node } => {
+                // feature 022, fail closed: nothing of a run whose definition gates its start is released before every gate
+                // of its start holds (FR-022-018, FR-022-059; reviews of 2026-11-20, architecture M1)
+                if let Some(declared) = self.start_gated.0
+                    && !declared.kinds().all(|kind| {
+                        self.run_gates.of_kind(kind).is_some_and(|slot| {
+                            slot.phase() == super::flow_control::GatePhase::Held
+                        })
+                    })
+                {
+                    return Err(ExecutionError::Invariant(
+                        "nothing of a run is released before every gate of its start holds",
+                    ));
+                }
                 let gated = self.gated.contains_key(node);
                 let step = self.step_mut(node, name, &[Pending])?;
                 // feature 022: a gated step waits for its gates; only the grant of the last one makes it ready
@@ -4538,6 +4621,17 @@ impl RunState {
                         "a reset follows the restored prefix of a run that has started and is open",
                     ));
                 }
+                // feature 022: the source's decisions of the start's gates, restored with the prefix, are history; the
+                // reset run decides its own right after this event (018's plan, row 17)
+                if self.run_gates.is_waiting() {
+                    return Err(ExecutionError::Invariant(
+                        "a reset never follows a start that still waits for its gates",
+                    ));
+                }
+                self.run_gates = super::flow_control::Gates::NONE;
+                for step in self.steps.values_mut() {
+                    step.gates.retire_restored();
+                }
             }
             RunEvent::RunStopRequested { reason, code } => {
                 if self.stop.is_some() {
@@ -4556,6 +4650,20 @@ impl RunState {
             }
             RunEvent::Gate(gate) => self.apply_gate(gate)?,
         }
+        // only the start's fresh grants may follow `run.reset` within its admission; any other event ends that moment
+        self.reset_admission.0 = match event {
+            RunEvent::RunReset { .. } => true,
+            RunEvent::Gate(gate) => {
+                self.reset_admission.0
+                    && matches!(gate.target, super::flow_control::GateTarget::Run)
+                    && matches!(
+                        gate.change,
+                        super::flow_control::GateChange::ConcurrencyAcquired
+                            | super::flow_control::GateChange::RateGranted { .. }
+                    )
+            }
+            _ => false,
+        };
         self.applied += 1;
         self.refresh_status(event);
         Ok(())
@@ -4898,12 +5006,19 @@ impl RunState {
                         "a run-level slot is never returned: it stops counting by time",
                     ));
                 }
-                let entry_held = self.has_started()
-                    && self.steps.len() == 1
-                    && self
-                        .steps
-                        .values()
-                        .all(|step| step.status == StepStatus::Pending);
+                // a decision is taken by the admission, while the entry is held, or by a reset right after `run.reset`,
+                // which never queues (reviews of 2026-11-20, architecture m2)
+                if self.reset_admission.0
+                    && matches!(
+                        event.change,
+                        GateChange::ConcurrencyQueued { .. } | GateChange::RateQueued { .. }
+                    )
+                {
+                    return Err(ExecutionError::Invariant(
+                        "a reset takes a fresh permit or slot, or is refused: it never queues",
+                    ));
+                }
+                let entry_held = self.entry_held() || self.reset_admission.0;
                 let releasing = matches!(event.change, GateChange::ConcurrencyReleased);
                 if releasing && !self.steps.values().all(|step| step.status.is_terminal()) {
                     return Err(ExecutionError::Invariant(

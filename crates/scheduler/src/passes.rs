@@ -214,6 +214,9 @@ pub struct Report {
     pub deadlines_enforced: u32,
     /// Delayed starts whose entry was released (feature 018).
     pub starts_released: u32,
+    /// Delayed starts of a gated definition whose key refused them at their release (a full queue, a namespace ceiling):
+    /// nothing was written, and the next pass tries again (feature 022, D022-052). Not work.
+    pub gate_starts_deferred: u32,
     pub hints_renewed: u32,
     pub children_started: u32,
     pub children_finished: u32,
@@ -561,6 +564,9 @@ enum Outcome {
     Fenced,
     /// The attempted transition rolled back and the same run was stopped for retained storage.
     QuotaStopped,
+    /// A flow-control ceiling refused the release of a delayed start (a full key queue, a namespace ceiling; its closed
+    /// reason): it rolled back, and the run is held back from the pass with a backoff (feature 022, D022-052, D022-054).
+    Deferred(&'static str),
     /// The run cannot keep the output this transition would give it (`RetainedFits`).
     DoesNotFit,
 }
@@ -573,9 +579,24 @@ impl Outcome {
             Self::Failed => "failed",
             Self::Fenced => "fenced",
             Self::QuotaStopped => "quota_stopped",
+            Self::Deferred(_) => "deferred",
             Self::DoesNotFit => "does_not_fit",
         }
     }
+}
+
+/// The kind of the release of a start delay in `scheduler_actions_total` (feature 018), the one action that defers.
+const START_RELEASE: &str = "start_release";
+
+/// A refusal of a flow-control ceiling, which a later pass may find lifted (feature 022): not a defect of the action.
+const fn flow_control_ceiling(
+    refusal: sagat_application::flow_control::FlowControlRefusal,
+) -> bool {
+    use sagat_application::flow_control::FlowControlRefusal as R;
+    matches!(
+        refusal,
+        R::ConcurrencyQueueFull | R::RateLimitQueueFull | R::Limit { .. }
+    )
 }
 
 fn content_quota(error: &EngineError) -> bool {
@@ -1938,11 +1959,14 @@ where
                             Ok(CollectionAdvance::Waiting)
                         }
                         Outcome::Fenced => Err(CollectionAdvanceError::FenceUnavailable),
-                        Outcome::Done | Outcome::Failed => Err(CollectionAdvanceError::Engine(
-                            EngineError::Store(StoreError::Internal {
-                                detail: "unexpected collection quota recovery outcome".to_owned(),
-                            }),
-                        )),
+                        Outcome::Done | Outcome::Failed | Outcome::Deferred(_) => {
+                            Err(CollectionAdvanceError::Engine(EngineError::Store(
+                                StoreError::Internal {
+                                    detail: "unexpected collection quota recovery outcome"
+                                        .to_owned(),
+                                },
+                            )))
+                        }
                     };
                 }
                 Err(error) => {
@@ -2594,11 +2618,11 @@ where
                     Outcome::Done => Ok(CollectionAdvance::Compensated),
                     Outcome::Skipped | Outcome::DoesNotFit => Ok(CollectionAdvance::Waiting),
                     Outcome::Fenced => Err(CollectionAdvanceError::FenceUnavailable),
-                    Outcome::Failed | Outcome::QuotaStopped => Err(CollectionAdvanceError::Engine(
-                        EngineError::Store(StoreError::Internal {
+                    Outcome::Failed | Outcome::QuotaStopped | Outcome::Deferred(_) => Err(
+                        CollectionAdvanceError::Engine(EngineError::Store(StoreError::Internal {
                             detail: "scope compensation could not be committed".to_owned(),
-                        }),
-                    )),
+                        })),
+                    ),
                 };
             }
         }
@@ -3183,11 +3207,11 @@ where
             Outcome::Done => Ok(CollectionAdvance::LimitStopped),
             Outcome::Skipped | Outcome::DoesNotFit => Ok(CollectionAdvance::Waiting),
             Outcome::Fenced => Err(CollectionAdvanceError::FenceUnavailable),
-            Outcome::Failed | Outcome::QuotaStopped => Err(CollectionAdvanceError::Engine(
-                EngineError::Store(StoreError::Internal {
+            Outcome::Failed | Outcome::QuotaStopped | Outcome::Deferred(_) => Err(
+                CollectionAdvanceError::Engine(EngineError::Store(StoreError::Internal {
                     detail: "unexpected collection limit recovery outcome".to_owned(),
-                }),
-            )),
+                })),
+            ),
         }
     }
 
@@ -3225,11 +3249,11 @@ where
             }
             Outcome::Skipped | Outcome::DoesNotFit => Ok(CollectionAdvance::Waiting),
             Outcome::Fenced => Err(CollectionAdvanceError::FenceUnavailable),
-            Outcome::Failed | Outcome::QuotaStopped => Err(CollectionAdvanceError::Engine(
-                EngineError::Store(StoreError::Internal {
+            Outcome::Failed | Outcome::QuotaStopped | Outcome::Deferred(_) => Err(
+                CollectionAdvanceError::Engine(EngineError::Store(StoreError::Internal {
                     detail: "unexpected collection source recovery outcome".to_owned(),
-                }),
-            )),
+                })),
+            ),
         }
     }
 
@@ -3271,7 +3295,7 @@ where
             }
             Outcome::Skipped | Outcome::DoesNotFit => CollectionAdvance::Waiting,
             Outcome::Fenced => return Err(CollectionAdvanceError::FenceUnavailable),
-            Outcome::Failed | Outcome::QuotaStopped => {
+            Outcome::Failed | Outcome::QuotaStopped | Outcome::Deferred(_) => {
                 return Err(CollectionAdvanceError::Engine(EngineError::Store(
                     StoreError::Internal {
                         detail: "unexpected collection chain recovery outcome".to_owned(),
@@ -3420,7 +3444,7 @@ where
                         Outcome::Done => Ok(LoopAdvance::ExpressionStopped),
                         Outcome::Skipped | Outcome::DoesNotFit => Ok(LoopAdvance::Waiting),
                         Outcome::Fenced => Err(LoopAdvanceError::FenceUnavailable),
-                        Outcome::Failed | Outcome::QuotaStopped => {
+                        Outcome::Failed | Outcome::QuotaStopped | Outcome::Deferred(_) => {
                             Err(LoopAdvanceError::Expression)
                         }
                     };
@@ -3445,11 +3469,11 @@ where
                     Outcome::Done => Ok(LoopAdvance::LimitStopped),
                     Outcome::Skipped | Outcome::DoesNotFit => Ok(LoopAdvance::Waiting),
                     Outcome::Fenced => Err(LoopAdvanceError::FenceUnavailable),
-                    Outcome::Failed | Outcome::QuotaStopped => Err(LoopAdvanceError::Engine(
-                        EngineError::Store(StoreError::Internal {
+                    Outcome::Failed | Outcome::QuotaStopped | Outcome::Deferred(_) => Err(
+                        LoopAdvanceError::Engine(EngineError::Store(StoreError::Internal {
                             detail: "unexpected loop limit recovery outcome".to_owned(),
-                        }),
-                    )),
+                        })),
+                    ),
                 };
             }
             let needs_body = kind == LoopKind::RepeatUntil || evaluated.condition == Some(true);
@@ -3486,11 +3510,11 @@ where
                         Outcome::Done => Ok(LoopAdvance::LimitStopped),
                         Outcome::Skipped | Outcome::DoesNotFit => Ok(LoopAdvance::Waiting),
                         Outcome::Fenced => Err(LoopAdvanceError::FenceUnavailable),
-                        Outcome::Failed | Outcome::QuotaStopped => Err(LoopAdvanceError::Engine(
-                            EngineError::Store(StoreError::Internal {
+                        Outcome::Failed | Outcome::QuotaStopped | Outcome::Deferred(_) => Err(
+                            LoopAdvanceError::Engine(EngineError::Store(StoreError::Internal {
                                 detail: "unexpected loop limit recovery outcome".to_owned(),
-                            }),
-                        )),
+                            })),
+                        ),
                     };
                 }
                 Err(error) if loop_content_quota(&error) => {
@@ -3511,11 +3535,11 @@ where
                         Outcome::QuotaStopped => Ok(LoopAdvance::QuotaStopped),
                         Outcome::Skipped | Outcome::DoesNotFit => Ok(LoopAdvance::Waiting),
                         Outcome::Fenced => Err(LoopAdvanceError::FenceUnavailable),
-                        Outcome::Done | Outcome::Failed => Err(LoopAdvanceError::Engine(
-                            EngineError::Store(StoreError::Internal {
+                        Outcome::Done | Outcome::Failed | Outcome::Deferred(_) => Err(
+                            LoopAdvanceError::Engine(EngineError::Store(StoreError::Internal {
                                 detail: "unexpected loop quota recovery outcome".to_owned(),
-                            }),
-                        )),
+                            })),
+                        ),
                     };
                 }
                 Err(error) => return Err(error.into()),
@@ -3611,11 +3635,11 @@ where
                         Outcome::Done => Ok(LoopAdvance::Compensated),
                         Outcome::Skipped | Outcome::DoesNotFit => Ok(LoopAdvance::Waiting),
                         Outcome::Fenced => Err(LoopAdvanceError::FenceUnavailable),
-                        Outcome::Failed | Outcome::QuotaStopped => Err(LoopAdvanceError::Engine(
-                            EngineError::Store(StoreError::Internal {
+                        Outcome::Failed | Outcome::QuotaStopped | Outcome::Deferred(_) => Err(
+                            LoopAdvanceError::Engine(EngineError::Store(StoreError::Internal {
                                 detail: "scope compensation could not be committed".to_owned(),
-                            }),
-                        )),
+                            })),
+                        ),
                     };
                 }
             }
@@ -4222,11 +4246,11 @@ where
                     Outcome::QuotaStopped => Ok(LoopAdvance::QuotaStopped),
                     Outcome::Skipped | Outcome::DoesNotFit => Ok(LoopAdvance::Waiting),
                     Outcome::Fenced => Err(LoopAdvanceError::FenceUnavailable),
-                    Outcome::Done | Outcome::Failed => Err(LoopAdvanceError::Engine(
-                        EngineError::Store(StoreError::Internal {
+                    Outcome::Done | Outcome::Failed | Outcome::Deferred(_) => Err(
+                        LoopAdvanceError::Engine(EngineError::Store(StoreError::Internal {
                             detail: "unexpected loop quota recovery outcome".to_owned(),
-                        }),
-                    )),
+                        })),
+                    ),
                 };
             }
             Err(error) => return Err(error.into()),
@@ -4474,6 +4498,15 @@ where
                         if !matches!(error, ExecutionError::Invariant(_)) =>
                     {
                         Ok(Outcome::Skipped)
+                    }
+                    // Feature 022 (D022-052, D022-054): a key's ceiling refused the start a release decides; nothing is
+                    // written, and the pass holds the run back with a backoff. No other action defers (reviews of
+                    // 2026-11-20, security nit 8): a refusal anywhere else is a failure to look at.
+                    Err(EngineError::Store(StoreError::FlowControl(refusal)))
+                        if kind == START_RELEASE && flow_control_ceiling(refusal) =>
+                    {
+                        tracing::debug!(reason = refusal.reason(), %run, "a flow-control ceiling deferred a start's release");
+                        Ok(Outcome::Deferred(refusal.reason()))
                     }
                     Err(error) if content_quota(&error) => {
                         drop(tx);
@@ -4998,6 +5031,7 @@ where
             Outcome::Failed => report.failed += 1,
             Outcome::Fenced => report.fenced += 1,
             Outcome::QuotaStopped => report.quota_stops += 1,
+            Outcome::Deferred(_) => report.gate_starts_deferred += 1,
         }
     }
 
@@ -6148,15 +6182,31 @@ where
             )
             .await;
         let outcomes = self
-            .each(due, |run| {
-                self.apply_if(
-                    view,
-                    run,
-                    "start_release",
-                    Condition::StartDue,
-                    self.effects(),
-                    |def, state, now| Ok(((), execution::release_start(def, state, now)?)),
-                )
+            .each(due, |run| async move {
+                let outcome = self
+                    .apply_if(
+                        view,
+                        run.clone(),
+                        START_RELEASE,
+                        Condition::StartDue,
+                        self.effects(),
+                        |def, state, now| Ok(((), execution::release_start(def, state, now)?)),
+                    )
+                    .await;
+                // a release a ceiling refused is held back with a backoff, in a transaction of its own (D022-054)
+                if let Outcome::Deferred(reason) = outcome {
+                    let run_id = run.run_id;
+                    match self.store.defer_start_release(run, reason).await {
+                        // the first deferral of a run is worth a line; its retries are counted by
+                        // `scheduler_actions_total{kind="start_release",outcome="deferred"}`
+                        Ok(1) => tracing::warn!(reason, run = %run_id, "a flow-control ceiling deferred a start's release"),
+                        Ok(_) => {}
+                        Err(error) => {
+                            tracing::warn!(%error, run = %run_id, "a deferred release could not be held back");
+                        }
+                    }
+                }
+                outcome
             })
             .await;
         for outcome in outcomes {

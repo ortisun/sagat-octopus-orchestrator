@@ -696,6 +696,100 @@ taken after `git grep D022-04` on every `origin/*` branch.
   hand mutations caught: the lock removed (the two starts no longer wait on it), the ceiling ignored (both queue). The
   live-keys count (G022-002) is not exact in the same way: a step's key is filed by a readiness round, which takes no
   namespace lock.
+- **D022-052 — A start delay decides the start's gates at its release, through the planner (T022-064, G022-009;
+  FR-022-018; 2026-11-20).** Delegate (OD-2026-11-20-6). FR-022-018 says a run with an 018 start delay "acquires or
+  enqueues when the delay elapses". Three choices were weighed for each part, and the one with the most architectural and
+  business advantage taken:
+  1. *Where the release decides:* a new planner question, `Evaluation::StartGates { queue }`, asked when a released
+     start (or a reset, D022-053) has gates no decision reached, and answered by the engine like the readiness gate's
+     (`Engine::decide_start_gates`, the start key evaluated over the run's input, `RunTx::decide_run_gates`). Taken over a
+     scheduler-side call in the release pass (a second code path beside `Engine::start`, which G022-012 asks to
+     remove) and over deciding at admission with a not-before instant (it contradicts FR-022-018 and would hold a queue
+     place for the whole delay). Any path that releases the delay asks, so no creator can start the run around the gate;
+     `start_run_delayed` therefore no longer refuses a gated definition, and `start_run` still does.
+  2. *A key that refuses the released run* (its waiter queue, `queued_runs` or the live keys full): the release rolls
+     back and the run stays delayed; the next pass tries again (`Outcome::Deferred`, `Report.gate_starts_deferred`, a
+     warning, not a failure). Taken over failing the run with the refusal code (an accepted run lost to a moment's load,
+     and a new run-level failure code) and over queueing past the ceiling (it breaks the bounded queue the ceilings
+     exist for). It matches the asynchronous creators (an event, a cron tick, a schedule's time are retried, plan "Run
+     creators"). Cost: one transaction per such run per pass, bounded by the pass's batch; nothing is written.
+  3. *`queued_runs` stays exact:* a release queues a run outside its creation, so it takes the namespace's admission lock
+     (`lock_run_admission`, the lock `ensure_room_for_run` takes first) before it counts; an admission holds it already
+     (D022-051 extended: every transaction that adds a run waiter holds that lock). Order: the run's row (taken by the
+     pass), then the lock, then the key; no transaction holds the lock and then waits for an existing run's row, so no
+     cycle. Proved by `run_creators::a_release_and_a_start_at_the_queued_runs_ceiling_are_decided_one_after_the_other`.
+  A key that does not evaluate at the release ends the run `FAILED`/`EXPRESSION_ERROR` there (D1180).
+- **D022-053 — A reset takes a fresh permit right after `run.reset`, or is refused, and never queues (T022-064;
+  FR-022-018, FR-022-038; 018's plan, rows 17 and 18; 2026-11-20).** Delegate (OD-2026-11-20-6) for items 2 to 4; item 1
+  is the approved contract.
+  1. *The reset rules of the five `concurrency.*` events* are installed as `contracts/journal-events.md` states:
+     `queued`, `acquired`, `released` `REMATERIALIZE` (history), `wait_timed_out` and `dequeued` `REFUSE` to the end. A
+     point while a start waits is no quiet state already (`NotRunning`), and one with a step open is `OpenWork`. The
+     `rate_limit.*` events stay `EXCLUDE` until T022-086.
+  2. *How the history is kept out of the new run:* the reducer clears the start's gates at `run.reset` and retires the
+     restored step permits (`Held` to `Ended`: their attempts ended at the point), so the reset run gives nothing back for
+     them and holds no row of them; `persist` skips the returns of a restored prefix; the closed detail of a gate event
+     accepts the `restored` marker (and only `true`). Taken over special rows for restored holders (rows nobody holds)
+     and over filtering restored events in every reader (each reader would have to know).
+  3. *Where the fresh decision is taken:* the planner asks `StartGates { queue: false }` right after `run.reset`, before
+     anything of the run goes on, and the reducer accepts a run-level decision only there (`reset_admission`). The
+     adapter refuses `CONCURRENCY_PERMIT_UNAVAILABLE` when holders plus waiters reach the limit (the reservation rule of
+     D022-021: a reset never takes a permit a queued run waits for). One path with the delay's (D022-052).
+  4. *The refusal's answers:* `409 CONFLICT` with `details.reason` `CONCURRENCY_PERMIT_UNAVAILABLE` (018's contract);
+     a pending reset (`CANCEL_SOURCE`) fails its entry with that reason (018's data model lists it; it joins
+     `FAILURE_REASONS`, so its metric label is closed); a batch item `CONFLICT`. Proved by
+     `run_creators::{a_reset_takes_a_fresh_permit_or_is_refused_and_never_queues,
+     a_reset_after_a_gated_step_restores_its_permit_as_history,
+     a_pending_reset_takes_a_fresh_permit_or_fails_concurrency_permit_unavailable}`.
+- **D022-054 — What the reviews of T022-064 changed (2026-11-20; `reviews/2026-11-20/creators-*.md`).** Delegate
+  (OD-2026-11-20-6) for every choice below; each finding was checked against the code, and those a test can show were shown
+  red first (or by a hand mutation of the fix).
+  1. *A refused release no longer holds the release pass* (architecture B1, security Major 1, correctness M1): the pass
+     records the deferral in a transaction of its own (`start_release_deferrals`, migration `20270204000000`: one row per
+     run, `deferrals`, `retry_at`, the closed `reason`; cascade with the run) and the due query skips a run until its
+     `retry_at`; backoff 5 s doubling to 5 min (018's plan, row 4). Over the alternatives: moving `start_delayed_until`
+     (it must keep matching the journaled `run.start_released`), a column on `runs` (the hot table, and an UPDATE an older
+     build does not name), failing the run (loses an accepted run, D022-052). No bound beyond the run's deadline: a
+     delayed run is an active run like any other, visible (`WAITING`, its deferral row) and counted. Only `start_release`
+     defers; a ceiling's refusal in any other action is a failure (security nit 8). The first deferral of a run is logged
+     once; its retries are `scheduler_actions_total{kind="start_release",outcome="deferred"}`. Proved by
+     `run_creators::deferred_releases_back_off_and_do_not_hold_back_the_starts_behind_them` (a pass of batch 2: the two
+     refused releases do not stop the third; 5 s then 10 s).
+  2. *Counts* (correctness M2, architecture M3, security minor 5): a refused release is not counted `refused_full` (it was
+     counted once per pass); a reset's refusal is counted `refused_reset`, the closed outcome the plan's table names.
+  3. *Fail closed in the reducer* (architecture M1): a state that knows its definition releases nothing before every gate
+     of its start holds (`RunState::start_gated`, compared as configuration, not state); the reducer itself refuses a wait
+     after `run.reset` (architecture m2); the adapter refuses a start rate limit, a collection or a loop whatever the
+     cause (security minor 4). With `start_run`'s refusal and `run_start_errors`, these are the layers of FR-022-059 now
+     (D022-049's "the domain refuses a gated definition in `start_run_delayed` and `record_reset`" no longer holds: those
+     two decide their gates through the planner).
+  4. *One rule, one cause* (architecture M2): the cause of a start's decision is the domain's `StartCause` (`Admission`,
+     `Release`, `Reset`), carried by `Evaluation::StartGates` and `RunGateKeys` unchanged, and one function
+     (`check_start_decisions`) validates every start decision. G022-012 keeps the rest (one core for both levels).
+  5. *Projection and decoding* (security minor 3, correctness m3; security nit 7): `run.reset` rewrites the start's gate
+     projection of a gated definition; the closed detail accepts `restored: true` only on a `concurrency.*` event.
+  6. *A pending reset* (correctness m6, architecture m4): `BINARY_CAPABILITY_MISSING` is retried, not a final
+     `ADMISSION_REFUSED`. With `CANCEL_SOURCE` on a busy key the freed permit goes to the queued run first and the entry
+     fails `CONCURRENCY_PERMIT_UNAVAILABLE` (the reviewers' note): kept, since a reset jumping the queue would break the
+     order every queued run was promised (FR-022-042); the runbook says so (`docs/runbooks/run-reset.md`).
+  7. *Update-with-Start of a queued start* (architecture M6): D022-050 item 6 held "the signal or update" so that the outcome
+     does not depend on the key's load. An Update needs no hold to meet that: it changes the declared state, which a
+     queued run has, and its receipt is the same whether the run holds a permit or waits
+     (`run_creators::an_update_with_start_admits_through_the_key_and_applies_its_update`). Holding it would delay a
+     business answer the caller waits for, for nothing. Only the signal needs the hold (T022-109).
+  8. *Contracts* (architecture M4, security minor 6, correctness m7): `CONCURRENCY_QUEUE_FULL` and
+     `CONCURRENCY_PERMIT_UNAVAILABLE` are raised now, with 018's remediation sentences, named in the canonical OpenAPI's
+     `Error.details` (and the Studio client regenerated); the 409 has its API test.
+  9. *Rolling upgrade* (security Major 2, correctness m5, architecture m3): no build that runs the gate has left this
+     branch (pull request 237 is a draft, and no process lists `flow-control-*-v1`, D022-037), so no older replica can
+     release a gated delayed start or read a restored gate row; the capability listing (G1198) must be a build with this
+     change. A nit for this release.
+  10. *The moment after `run.reset` is a within-commit fact* (correctness m2, architecture n3): the reviewers called it
+      latent; `integration_schedules_bulk_operations::reset_corpus` showed it is not (a reset of an ungated definition
+      whose commit ends right after `run.reset`: the replay said set, the projection not; 4 tests red). It is now compared
+      as always equal (`WithinCommit`), since a gated definition's planner asks for the start's decision before that
+      commit ends and nothing reads it across commits. *Not changed:* a deferral's own deadline beyond the run's
+      (architecture B1 item 7).
 
 ## Gaps
 
@@ -740,10 +834,10 @@ taken after `git grep D022-04` on every `origin/*` branch.
 | G022-006 | The digest-key commands (activation, force, listing) are SQL functions with no audited API, CLI, span or metric (NFR-022-005, constitution VI; security review of 2026-11-20, finding 4); the force's history is append-only only for roles that may not drop its trigger, and a deployment where operators share the schema owner's login records whatever name they type and can retire a version by a direct `UPDATE` with no record (finding 5). The runbook tells operators to use their own login and never to edit the table by hand. | Open; T022-061, T022-082; a dedicated operator role |
 | G022-007 | FR-022-021 says "pausing a holder MUST NOT release its permit", and FR-022-019 counts a granted, unleased step as a holder, while FR-022-046 says a pause returns the permit and slot of a granted, unleased step: the approved texts disagree for that case; the build follows FR-022-046 (D022-048). T022-025's "pause keeps permit" holds for a leased step and a run holder. `data-model.md` ("Steps and their gates", invariant 11) does not say that a step a pause gave back waits with no waiter row. Revised when the approved texts are next re-approved. | Open; re-approval of the texts |
 | G022-008 | A step queued when its run pauses keeps its waiter row and its deadline, which runs during the pause: a long pause can fail it `CONCURRENCY_WAIT_TIMEOUT` or `RATE_LIMIT_WAIT_TIMEOUT` (the timeout routine does not look at the pause), while a step granted before the pause waits with no deadline (correctness review 4 and architecture M2 of 2026-11-20). Not introduced by T022-100. | Open; O1175 (a) accepted without option (c) (OD-2026-11-20-2), so the deadline rule is a later decision |
-| G022-009 | A start delay or a reset of a definition that gates its start is refused `BINARY_CAPABILITY_MISSING` (D022-049): the plan says the gate is decided at the delay's release, and a reset takes a fresh permit or is refused `CONCURRENCY_PERMIT_UNAVAILABLE` (never queues); neither is built. A child node whose run's start is refused (`CONCURRENCY_QUEUE_FULL`, `FLOW_CONTROL_LIMIT`) is retried by the next pass instead of failing its node with the typed retryable code (T022-102). | Open; T022-064, T022-102 |
-| G022-010 | A Signal- or Update-with-Start of a definition whose start queues is refused `SIGNAL_NOT_ACCEPTED_AT_START` (no step waits while the entry is held), so the outcome depends on the key's load (correctness review M2 of 2026-11-20). Chosen design (D022-050 item 6): hold the signal or update with the queued run and deliver it at the grant. | Open; T022-064 |
+| G022-009 | A start delay or a reset of a definition that gates its start is refused `BINARY_CAPABILITY_MISSING` (D022-049): the plan says the gate is decided at the delay's release, and a reset takes a fresh permit or is refused `CONCURRENCY_PERMIT_UNAVAILABLE` (never queues); neither is built. A child node whose run's start is refused (`CONCURRENCY_QUEUE_FULL`, `FLOW_CONTROL_LIMIT`) is retried by the next pass instead of failing its node with the typed retryable code (T022-102). *Closed in part 2026-11-20 (T022-064): the delay is decided at its release (D022-052) and the reset takes a fresh permit or is refused (D022-053). Open: the child node's typed code (T022-102).* | Open; T022-102 |
+| G022-010 | A Signal- or Update-with-Start of a definition whose start queues is refused `SIGNAL_NOT_ACCEPTED_AT_START` (no step waits while the entry is held), so the outcome depends on the key's load (correctness review M2 of 2026-11-20). Chosen design (D022-050 item 6): hold the signal or update with the queued run and deliver it at the grant. *2026-11-20 (T022-064):* an Update-with-Start is not affected (it changes the declared state, which a queued run has: `run_creators::an_update_with_start_admits_through_the_key_and_applies_its_update`); a Signal-with-Start keeps the typed refusal with nothing created (`run_creators::a_signal_with_start_whose_start_would_queue_is_refused_and_creates_nothing`). The hold-and-deliver needs a durable held signal, its delivery in the grant's transaction and the replay of its receipt: follow-up T022-109. | Open; T022-109 |
 | G022-011 | `queued_runs` was believed counted without a lock (D022-050 item 3). *Closed 2026-11-20 (D022-051):* the count is exact. Only an admission adds a run waiter, every admission holds the namespace's active-run quota lock from before its runs row to its commit, and the start's gate counts after it in a fresh READ COMMITTED statement; proved by `run_admission::two_starts_at_the_queued_runs_ceiling_are_decided_one_after_the_other` (the lock held by the test, both starts observed waiting on it, then exactly one queued and one refused), red under two hand mutations (the lock removed; the ceiling ignored). The merge blocker the owner set on it is met. T022-105's counter rows remain for the cost of the count (a scan of the namespace's run waiters, at most the ceiling) and its privileges. | Closed (exactness); T022-105 open for the counter rows |
-| G022-012 | The start's decision (`decide_start_gates`) and the step's (`decide_gates`) are two code paths over the same rules; T022-072 builds one core for both levels and both gates (D022-050 item 5; architecture review M1 of 2026-11-20). A paused queued run's deadline runs during its pause, as G022-008 says of a step. | Open; T022-072 |
+| G022-012 | The start's decision (`decide_start_gates`) and the step's (`decide_gates`) are two code paths over the same rules; T022-072 builds one core for both levels and both gates (D022-050 item 5; architecture review M1 of 2026-11-20). A paused queued run's deadline runs during its pause, as G022-008 says of a step. *2026-11-20 (D022-054): the start's three causes share one validator (`check_start_decisions`) and one adapter function; the step's decision is still its own path.* | Open; T022-072 |
 | G1189 | Nothing in the database computes or checks `key_shard` and the waiter `shard`; two binaries that hashed differently would file one key under two shards. | Open; T022-097 |
 | G1190 | `flow_control_key_activate` records the operator as typed and keeps no history row with the database role, unlike the registry's activations. *Partly closed 2026-11-16 (D022-042): the version row records `activated_role` (`session_user`); a history of earlier activations of the same version is not kept, since a version is activated once. 2026-11-19 (D022-046): every force has an append-only history row with the database role and a reason; the runbook part is `docs/runbooks/flow-control.md`.* | Open; T022-061 (the rest of the runbook) |
 | G1191 | Untested: the down migrations' refusal when `run_events` holds a `concurrency.*` or `rate_limit.*` event; no contract test parses 018's reset-rule table against `RULES`. | Open |

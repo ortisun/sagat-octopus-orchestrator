@@ -5364,7 +5364,10 @@ impl RunTx for PgRunTx {
                     .await
                     .map_err(store_error)?;
             }
-            self.persist_gate_returns(events).await?;
+            // a reset's restored prefix is history: it gave nothing back in this run and holds no row of it (FR-022-038)
+            if effects.restored.is_none() {
+                self.persist_gate_returns(events).await?;
+            }
         }
 
         // 1. Outputs: content-addressed payloads, remembered per root node.
@@ -5677,8 +5680,15 @@ impl RunTx for PgRunTx {
             _ => None,
         });
         if written > 0 {
-            let run_gates_changed = events.iter().any(|event| {
-                matches!(event, RunEvent::Gate(gate) if matches!(gate.target, sagat_domain::execution::GateTarget::Run))
+            // a reset clears the start's restored gates (D022-053): its projection is rewritten even when no fresh
+            // decision follows in the commit (reviews of 2026-11-20, security minor 3, correctness m3)
+            let gated_start = self.def.run_flow_control().is_gated();
+            let run_gates_changed = events.iter().any(|event| match event {
+                RunEvent::Gate(gate) => {
+                    matches!(gate.target, sagat_domain::execution::GateTarget::Run)
+                }
+                RunEvent::RunReset { .. } => gated_start,
+                _ => false,
             });
             let updated = sqlx::query(
                 "UPDATE runs SET status = $4, run_version = $5, stop_reason = $6, stop_code = $7, \

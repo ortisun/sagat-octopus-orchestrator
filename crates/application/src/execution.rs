@@ -1953,11 +1953,14 @@ impl<E: ExpressionEvaluator> Engine<E> {
         if let Evaluation::Gates { steps } = evaluation {
             return Ok((self.decide_gates(tx, steps, pending).await?, None, None));
         }
+        if let Evaluation::StartGates { cause } = evaluation {
+            return Ok((self.decide_start_gates(tx, *cause).await?, None, None));
+        }
         let depth = tx.info().depth;
         let parent = tx.info().run_id;
         let data = tx.data().await?;
         let (resolution, spawn) = match evaluation {
-            Evaluation::Gates { .. } => {
+            Evaluation::Gates { .. } | Evaluation::StartGates { .. } => {
                 return Err(ExecutionError::Invariant("the gates were decided above").into());
             }
             Evaluation::Condition { node, expression } => (
@@ -2089,9 +2092,8 @@ impl<E: ExpressionEvaluator> Engine<E> {
     /// without a start gate starts as before, held until `held_until_us` when it has a start delay.
     ///
     /// # Errors
-    /// The adapter's refusals (`CONCURRENCY_QUEUE_FULL`, `FLOW_CONTROL_LIMIT`, `BINARY_CAPABILITY_MISSING`); a gated start
-    /// with a start delay is refused `BINARY_CAPABILITY_MISSING`, since its gates are decided at the release and this
-    /// build does not do that yet (G022-009): never started ungated.
+    /// The adapter's refusals (`CONCURRENCY_QUEUE_FULL`, `FLOW_CONTROL_LIMIT`, `BINARY_CAPABILITY_MISSING`). A gated start
+    /// with a start delay decides nothing here: its release asks for its gates (D022-052).
     pub async fn start<Tx: RunTx>(
         &self,
         tx: &mut Tx,
@@ -2099,7 +2101,6 @@ impl<E: ExpressionEvaluator> Engine<E> {
         run_id: RunId,
         held_until_us: Option<i64>,
     ) -> Result<(), EngineError> {
-        use sagat_domain::workflow::flow_control::MAX_KEY_BYTES;
         let flow = {
             let (def, _) = tx.parts();
             def.run_flow_control().clone()
@@ -2118,22 +2119,69 @@ impl<E: ExpressionEvaluator> Engine<E> {
                 })
                 .await;
         }
-        // fail closed, before any key is evaluated or anything is written (G022-009; G1197): a start delay (its gates are
-        // decided at the release), a start's rate limit (T022-072), and a definition with a `forEach`, `while` or
-        // `repeatUntil` node, whose finish paths end the run without the reducer and so would never give the permit back
+        // fail closed, before any key is evaluated or anything is written (G1197): a start's rate limit (T022-072), and a
+        // definition with a `forEach`, `while` or `repeatUntil` node, whose finish paths end the run without the reducer
+        // and so would never give the permit back
         let unsupported = {
             let (def, _) = tx.parts();
             let kinds = def.projected_state();
-            held_until_us.is_some()
-                || flow.rate_limit().is_some()
-                || kinds.collections
-                || kinds.loops
+            flow.rate_limit().is_some() || kinds.collections || kinds.loops
         };
         if unsupported {
             return Err(EngineError::Store(StoreError::FlowControl(
                 crate::flow_control::FlowControlRefusal::BinaryCapabilityMissing,
             )));
         }
+        // a start delay decides nothing now: its release asks for the start's gates (`Evaluation::StartGates`), so the run
+        // acquires or queues when the delay elapses (FR-022-018, D022-052)
+        if let Some(until_us) = held_until_us {
+            return self
+                .run(tx, effects, move |def, state, now| {
+                    let (started, progress) =
+                        sagat_domain::execution::start_run_delayed(def, run_id, now, until_us)?;
+                    *state = started;
+                    Ok(((), progress))
+                })
+                .await;
+        }
+        let Ok((concurrency, rate)) = self.start_keys(tx).await? else {
+            return self
+                .run(tx, effects, move |def, state, now| {
+                    let (started, progress) =
+                        sagat_domain::execution::start_run_key_failed(def, run_id, now)?;
+                    *state = started;
+                    Ok(((), progress))
+                })
+                .await;
+        };
+        let decisions = tx
+            .decide_run_gates(&crate::flow_control::RunGateKeys {
+                concurrency,
+                rate,
+                cause: sagat_domain::execution::StartCause::Admission,
+            })
+            .await?;
+        self.run(tx, effects, move |def, state, now| {
+            let (started, progress) =
+                sagat_domain::execution::start_run_gated(def, run_id, now, decisions)?;
+            *state = started;
+            Ok(((), progress))
+        })
+        .await
+    }
+
+    /// The keys of the gates the run's start declares, evaluated over the run's input (feature 022): `Err(())` for a key
+    /// that does not evaluate or is longer than 256 bytes (the run then ends `FAILED`/`EXPRESSION_ERROR`, D1180). The
+    /// cause is logged by name, never by value.
+    async fn start_keys<Tx: RunTx>(
+        &self,
+        tx: &mut Tx,
+    ) -> Result<Result<(Option<Vec<u8>>, Option<Vec<u8>>), ()>, EngineError> {
+        use sagat_domain::workflow::flow_control::MAX_KEY_BYTES;
+        let flow = {
+            let (def, _) = tx.parts();
+            def.run_flow_control().clone()
+        };
         let data = tx.data().await?;
         let value = |expression: Option<&Expression>| -> Result<Vec<u8>, ()> {
             let Some(expression) = expression else {
@@ -2154,26 +2202,32 @@ impl<E: ExpressionEvaluator> Engine<E> {
         };
         let concurrency = flow.concurrency().map(|p| value(p.key())).transpose();
         let rate = flow.rate_limit().map(|p| value(p.key())).transpose();
-        let (Ok(concurrency), Ok(rate)) = (concurrency, rate) else {
-            return self
-                .run(tx, effects, move |def, state, now| {
-                    let (started, progress) =
-                        sagat_domain::execution::start_run_key_failed(def, run_id, now)?;
-                    *state = started;
-                    Ok(((), progress))
-                })
-                .await;
+        Ok(match (concurrency, rate) {
+            (Ok(concurrency), Ok(rate)) => Ok((concurrency, rate)),
+            _ => Err(()),
+        })
+    }
+
+    /// The decisions of the start's gates asked for after the run started (feature 022): at the release of a start delay
+    /// (FR-022-018) or right after a reset (a fresh permit or `CONCURRENCY_PERMIT_UNAVAILABLE`, never a wait).
+    async fn decide_start_gates<Tx: RunTx>(
+        &self,
+        tx: &mut Tx,
+        cause: sagat_domain::execution::StartCause,
+    ) -> Result<Resolution, EngineError> {
+        let Ok((concurrency, rate)) = self.start_keys(tx).await? else {
+            return Ok(Resolution::StartGates { decisions: Err(()) });
         };
         let decisions = tx
-            .decide_run_gates(&crate::flow_control::RunGateKeys { concurrency, rate })
+            .decide_run_gates(&crate::flow_control::RunGateKeys {
+                concurrency,
+                rate,
+                cause,
+            })
             .await?;
-        self.run(tx, effects, move |def, state, now| {
-            let (started, progress) =
-                sagat_domain::execution::start_run_gated(def, run_id, now, decisions)?;
-            *state = started;
-            Ok(((), progress))
+        Ok(Resolution::StartGates {
+            decisions: Ok(decisions),
         })
-        .await
     }
 
     /// The readiness gate's round (feature 022, T28): evaluates the key of each gate the asked steps declare over the

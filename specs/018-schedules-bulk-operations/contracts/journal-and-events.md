@@ -55,7 +55,9 @@ Feature interplay of the re-emitted prefix:
 - **022 run permits.** Restored `concurrency.acquired`/`concurrency.queued`/`concurrency.released` rows
   are history; ADR-0056's holder count considers only sequences after `runs.reset_sequence`. The reset
   transaction acquires a permit through 022's admission path after `run.reset` and cannot queue
-  (`CONCURRENCY_PERMIT_UNAVAILABLE`). Step permits are never open at an eligible point.
+  (`CONCURRENCY_PERMIT_UNAVAILABLE`). No attempt is in flight at an eligible point; a step whose completion is the point
+  may still hold the permit of the attempt that completed (it is given back by the next event), and `run.reset` retires it as
+  history (022 D022-053).
 - **020 search attributes.** The reset transaction inserts the reset run's `run_search_attributes` rows
   by folding the re-emitted `search_attributes.upserted` events (same sequences, so `set_seq` matches),
   keeping 020's invariant that the rows equal the fold of the run's journal.
@@ -129,7 +131,7 @@ instance) applies in addition to these rules.
 | 022 | `step.cache_hit`, `result.returned`, `concurrency.acquired`, `concurrency.released`, `run.started` provenance (`handler_for` dropped) | `REMATERIALIZE` | declared by 022 — `specs/022-flow-control-step-policies/contracts/journal-events.md` |
 | 022 | `concurrency.queued` | `REMATERIALIZE`; a point between it and its `concurrency.acquired` is refused | declared by 022 — same file |
 | 022 | `step.mocked`, `failure_handler.started`, `failure_handler.finished`, `concurrency.wait_timed_out`, `concurrency.dequeued` | `REFUSE` (until the end) | declared by 022 — same file |
-| 022 | the ten `concurrency.*` and `rate_limit.*` event types, in every build until a reset admits its run through the gate (T022-064, T022-086) | `EXCLUDE` (implemented in `crates/domain/src/execution/reset.rs`; the two rows above are the rules those tasks install) | declared by 022 — D022-035 |
+| 022 | the five `rate_limit.*` event types, until a reset admits its run through the rate gate (T022-086); the five `concurrency.*` types have the rules of the rows above since T022-064 (2026-11-20, D022-053) | `EXCLUDE` (implemented in `crates/domain/src/execution/reset.rs`) | declared by 022 — D022-035 |
 | 024 | `data.inputs_pinned`, `data.snapshot_committed` | `REMATERIALIZE` (re-create input pins / snapshot refs; refused `SNAPSHOT_RETIRED`) | declared by 024 — `specs/024-data-engines-pipelines/data-model.md` |
 | 024 | `data.published`, `data.publish_skipped`, `data.observation_recorded` | `COPY` (never re-published) | declared by 024 — same file |
 | 025 | `agent.started`, `agent.turn_scheduled`, `agent.turn_completed`, `agent.tool_planned`, `agent.tool_refused`, `agent.tool_completed`, `agent.repair_scheduled`, `agent.budget_exhausted` | `REFUSE` until `agent.finished` of the same step; after it `REMATERIALIZE` (agent rows copied, no call repeated, no budget charged) | declared by 025 — FR-025-046, D1635 |

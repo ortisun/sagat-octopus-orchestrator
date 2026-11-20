@@ -119,14 +119,16 @@ registry! {
     RunEvent::RunReset { .. } => ("run.reset", ResetRule::Copy),
     RunEvent::RunStopRequested { .. } => ("run.stop_requested", ResetRule::Exclude),
     RunEvent::RunFinished { .. } => ("run.finished", ResetRule::Exclude),
-    // Feature 022 (D022-035): until a reset admits its run through the gate (T022-064, T022-086), a prefix that holds a
-    // flow-control event offers no point, so no reset run can start with a permit or a slot it was never granted.
-    // `contracts/journal-events.md` states the rules those tasks install (`REMATERIALIZE` or `REFUSE`).
-    RunEvent::Gate(GateEvent { change: GateChange::ConcurrencyQueued { .. }, .. }) => ("concurrency.queued", ResetRule::Exclude),
-    RunEvent::Gate(GateEvent { change: GateChange::ConcurrencyAcquired, .. }) => ("concurrency.acquired", ResetRule::Exclude),
-    RunEvent::Gate(GateEvent { change: GateChange::ConcurrencyReleased, .. }) => ("concurrency.released", ResetRule::Exclude),
-    RunEvent::Gate(GateEvent { change: GateChange::ConcurrencyWaitTimedOut, .. }) => ("concurrency.wait_timed_out", ResetRule::Exclude),
-    RunEvent::Gate(GateEvent { change: GateChange::ConcurrencyDequeued, .. }) => ("concurrency.dequeued", ResetRule::Exclude),
+    // Feature 022 (`contracts/journal-events.md`, reset rules; T022-064): the permit events of the prefix are history
+    // the reset re-materializes as a fresh permit, decided right after `run.reset`; a point while a start waits is no
+    // quiet state, and every point after a wait that ended without a grant is refused.
+    RunEvent::Gate(GateEvent { change: GateChange::ConcurrencyQueued { .. }, .. }) => ("concurrency.queued", ResetRule::Rematerialize),
+    RunEvent::Gate(GateEvent { change: GateChange::ConcurrencyAcquired, .. }) => ("concurrency.acquired", ResetRule::Rematerialize),
+    RunEvent::Gate(GateEvent { change: GateChange::ConcurrencyReleased, .. }) => ("concurrency.released", ResetRule::Rematerialize),
+    RunEvent::Gate(GateEvent { change: GateChange::ConcurrencyWaitTimedOut, .. }) => ("concurrency.wait_timed_out", ResetRule::Refuse { until: None }),
+    RunEvent::Gate(GateEvent { change: GateChange::ConcurrencyDequeued, .. }) => ("concurrency.dequeued", ResetRule::Refuse { until: None }),
+    // Feature 022 (D022-035): until a reset admits its run through the rate gate (T022-086), a prefix that holds a
+    // rate-limit event offers no point, so no reset run can start with a slot it was never granted.
     RunEvent::Gate(GateEvent { change: GateChange::RateQueued { .. }, .. }) => ("rate_limit.queued", ResetRule::Exclude),
     RunEvent::Gate(GateEvent { change: GateChange::RateGranted { .. }, .. }) => ("rate_limit.granted", ResetRule::Exclude),
     RunEvent::Gate(GateEvent { change: GateChange::RateWaitTimedOut, .. }) => ("rate_limit.wait_timed_out", ResetRule::Exclude),

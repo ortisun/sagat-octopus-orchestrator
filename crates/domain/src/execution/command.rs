@@ -87,6 +87,12 @@ pub enum Resolution {
         decisions: Vec<super::GateEvent>,
         refused: Vec<(NodeId, FailureCode)>,
     },
+    /// The answer to [`super::Evaluation::StartGates`] (feature 022): a grant or a wait of each gate the start declares,
+    /// decided under the keys' locks, or `Err` for a start key that does not evaluate (the run then ends
+    /// `FAILED`/`EXPRESSION_ERROR`, D1180).
+    StartGates {
+        decisions: Result<Vec<super::GateEvent>, ()>,
+    },
 }
 
 /// What a heartbeat tells the worker.
@@ -320,17 +326,17 @@ pub fn start_run(
 /// Creates the state of a new run whose entry is held until `until_us` (microseconds since the
 /// epoch): `run.started` and `run.start_delayed`, and nothing released (feature 018, `FR-018-023`).
 ///
+/// A definition that gates its start decides nothing now: its release asks for the start's gates
+/// ([`super::Evaluation::StartGates`]), so the run acquires or queues when the delay elapses (feature 022, FR-022-018).
+///
 /// # Errors
-/// [`ExecutionError::Invariant`] for a definition that gates the run's start: its gates are decided at the delay's
-/// release, which this build does not do yet (G022-009), so it is refused rather than started ungated; otherwise only on
-/// an internal inconsistency.
+/// [`ExecutionError::Invariant`] only on an internal inconsistency.
 pub fn start_run_delayed(
     def: &WorkflowDefinition,
     run_id: RunId,
     now: OffsetDateTime,
     until_us: i64,
 ) -> Result<(RunState, Progress), ExecutionError> {
-    refuse_gated_start(def)?;
     let mut state = RunState::new(run_id).with_gated_steps(def);
     let started = RunEvent::RunStarted {
         entrypoint: def.entrypoint().clone(),
@@ -354,21 +360,10 @@ pub fn start_run_gated(
     now: OffsetDateTime,
     decisions: Vec<super::GateEvent>,
 ) -> Result<(RunState, Progress), ExecutionError> {
-    let declared = def.run_flow_control();
-    let kinds: Vec<_> = decisions
-        .iter()
-        .map(|decision| decision.change.kind())
-        .collect();
-    let decides = |kind| kinds.iter().filter(|k| **k == kind).count();
-    if decides(crate::workflow::GateKind::Concurrency)
-        != usize::from(declared.concurrency().is_some())
-        || decides(crate::workflow::GateKind::RateLimit)
-            != usize::from(declared.rate_limit().is_some())
-    {
-        return Err(ExecutionError::Invariant(
-            "an admission decides each gate the definition declares at its start, once",
-        ));
-    }
+    let declared = super::DeclaredGates::of(def.run_flow_control()).ok_or(
+        ExecutionError::Invariant("only a definition that gates its start decides its start"),
+    )?;
+    super::check_start_decisions(declared, &decisions, super::StartCause::Admission)?;
     let mut state = RunState::new(run_id).with_gated_steps(def);
     let started = RunEvent::RunStarted {
         entrypoint: def.entrypoint().clone(),
@@ -376,19 +371,6 @@ pub fn start_run_gated(
     state.apply(&started)?;
     let mut events = vec![started];
     for decision in decisions {
-        if !matches!(decision.target, super::GateTarget::Run)
-            || !matches!(
-                decision.change,
-                super::GateChange::ConcurrencyQueued { .. }
-                    | super::GateChange::ConcurrencyAcquired
-                    | super::GateChange::RateQueued { .. }
-                    | super::GateChange::RateGranted { .. }
-            )
-        {
-            return Err(ExecutionError::Invariant(
-                "an admission grants or queues the gates of the run's start",
-            ));
-        }
         let event = RunEvent::Gate(decision);
         state.apply(&event)?;
         events.push(event);
@@ -776,9 +758,8 @@ pub fn record_reset(
     prefix_digest: Digest,
     reapply: ResetReapply,
 ) -> Result<Progress, ExecutionError> {
-    // a reset of a definition that gates its start takes a fresh permit or is refused (plan, Run creators): not built
-    // (G022-009), so it is refused rather than started ungated
-    refuse_gated_start(def)?;
+    // a reset of a definition that gates its start takes a fresh permit or is refused (plan, Run creators): the restored
+    // decisions are history and the planner asks for the start's gates right after `run.reset`, without queueing
     apply_then_settle(
         def,
         state,
@@ -2675,8 +2656,47 @@ pub fn resolve(
         Resolution::Gates { decisions, refused } => {
             return resolve_gates(def, state, now, decisions, refused);
         }
+        Resolution::StartGates { decisions } => {
+            return resolve_start_gates(def, state, now, decisions);
+        }
     };
     apply_then_settle(def, state, now, event)
+}
+
+/// Journals the decisions of the start's gates asked for by a released delay or a reset (feature 022): one per gate the
+/// start declares, at run scope, a grant or (only when a wait may be taken) a wait; or, for a key that did not evaluate,
+/// the run's failure with `EXPRESSION_ERROR` (D1180).
+fn resolve_start_gates(
+    def: &WorkflowDefinition,
+    state: &mut RunState,
+    now: OffsetDateTime,
+    decisions: Result<Vec<super::GateEvent>, ()>,
+) -> Result<Progress, ExecutionError> {
+    let declared = super::DeclaredGates::of(def.run_flow_control()).ok_or(
+        ExecutionError::Invariant("only a definition that gates its start decides its start"),
+    )?;
+    let cause = super::plan::undecided_start_of(def, state).ok_or(ExecutionError::Invariant(
+        "the start's gates are decided only when they were asked for",
+    ))?;
+    let Ok(decisions) = decisions else {
+        return apply_then_settle(
+            def,
+            state,
+            now,
+            RunEvent::RunStopRequested {
+                reason: StopReason::Failed,
+                code: Some(FailureCode::expression_error()),
+            },
+        );
+    };
+    super::check_start_decisions(declared, &decisions, cause)?;
+    let mut events = Vec::with_capacity(decisions.len());
+    for decision in decisions {
+        let event = RunEvent::Gate(decision);
+        state.apply(&event)?;
+        events.push(event);
+    }
+    settle(def, state, now, events)
 }
 
 /// Journals the readiness gate's answer (feature 022, T28): every step asked about is then either failed or decided for

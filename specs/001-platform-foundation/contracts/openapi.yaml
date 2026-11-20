@@ -4975,6 +4975,12 @@ components:
             with `BINARY_CAPABILITY_MISSING` (the replica that answered runs a version that lacks a capability the
             platform now requires of it, `FR-018-052`: every call but `GET /v1/health` is refused, with
             `Retry-After`; another replica serves the call);
+            flow control (feature 022) refines `QUOTA_EXCEEDED` (`retryable: false`) with
+            `CONCURRENCY_QUEUE_FULL` (the start would wait beyond its key's queue) and `FLOW_CONTROL_LIMIT`
+            (a namespace ceiling of flow control, named in `details.limit`), `VALIDATION_FAILED` with
+            `FLOW_CONTROL_ACTIVATION_PENDING` and `CAPABILITY_DISABLED` (with `details.capability`), and `CONFLICT`
+            with `CONCURRENCY_PERMIT_UNAVAILABLE` (a reset of a run whose start takes a permit found no free one; a
+            reset never queues);
             run input validation (design 043) refines `VALIDATION_FAILED` (`retryable: false`) with
             `RUN_INPUT_INVALID` (with `details.field` and `details.rule`), `RUN_INPUT_SCHEMA_UNUSABLE` and
             `NOMINAL_TIME_FIELD_INVALID`;

@@ -67,7 +67,7 @@ pub use event::{
 };
 pub use flow_control::{
     DeclaredGates, GateChange, GateEvent, GatePhase, GatePool, GateRef, GateRequest, GateSlot,
-    GateTarget, Gates, KEY_LABEL_LEN, KeyLabel,
+    GateTarget, Gates, KEY_LABEL_LEN, KeyLabel, StartCause, check_start_decisions,
 };
 pub use instance::{
     ExecutionInstanceId, InstanceIdentityError, InstancePath, MAX_ITERATION_INDEX, MAX_SCOPE_DEPTH,

@@ -151,6 +151,10 @@ pub enum FlowControlRefusal {
     /// requirement asks for, so it does not admit the run (018's code, reused).
     #[error("this process does not run the flow-control gate")]
     BinaryCapabilityMissing,
+    /// 409 `CONFLICT` / `CONCURRENCY_PERMIT_UNAVAILABLE` (018's code): a reset of a run whose definition gates its start
+    /// found no free permit; a reset never queues, so nothing was created (FR-022-018).
+    #[error("no permit of the concurrency key is free for the reset")]
+    PermitUnavailable,
 }
 
 impl FlowControlRefusal {
@@ -164,6 +168,7 @@ impl FlowControlRefusal {
             Self::ActivationPending { .. } => "FLOW_CONTROL_ACTIVATION_PENDING",
             Self::CapabilityDisabled { .. } => "CAPABILITY_DISABLED",
             Self::BinaryCapabilityMissing => crate::instances::REASON_CAPABILITY_MISSING,
+            Self::PermitUnavailable => "CONCURRENCY_PERMIT_UNAVAILABLE",
         }
     }
 }
@@ -193,14 +198,16 @@ impl std::fmt::Debug for StepGateKeys {
     }
 }
 
-/// The keys of the gates a run's start declares, evaluated by the application over the run's input at its admission
-/// (feature 022, T10 and T19 of the plan, T022-022): the canonical value of each, at most
+/// The keys of the gates a run's start declares, evaluated by the application over the run's input when the start is
+/// decided (feature 022, T10 and T19 of the plan, T022-022: at its admission, a delay's release or a reset): the canonical value of each, at most
 /// [`sagat_domain::workflow::flow_control::MAX_KEY_BYTES`] bytes; a gate without a key expression has [`SINGLE_KEY`].
 /// The adapter digests and files them under the keys' locks; the values never leave the transaction (D1168).
 #[derive(Clone, PartialEq, Eq)]
 pub struct RunGateKeys {
     pub concurrency: Option<Vec<u8>>,
     pub rate: Option<Vec<u8>>,
+    /// Why the start is decided now, and so what may be decided (the domain's question, carried unchanged).
+    pub cause: sagat_domain::execution::StartCause,
 }
 
 /// A key's values are run data: only their sizes are shown.
@@ -209,6 +216,8 @@ impl std::fmt::Debug for RunGateKeys {
         f.debug_struct("RunGateKeys")
             .field("concurrency_len", &self.concurrency.as_ref().map(Vec::len))
             .field("rate_len", &self.rate.as_ref().map(Vec::len))
+            .field("cause", &self.cause)
+            .field("cause", &self.cause)
             .finish()
     }
 }

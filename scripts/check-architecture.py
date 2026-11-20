@@ -372,7 +372,9 @@ def run_insert_errors(src):
 # --- a run's start passes its gates in one place (feature 022, T022-022, D022-049) ------------------------------------------------
 # Every creator starts the run it was admitted for through `Engine::start` (crates/application/src/execution.rs), which evaluates
 # the start's keys and has the adapter decide them; a creator that called a domain start function itself would start a run past
-# its gates. The domain refuses a gated definition in `start_run` and `start_run_delayed` at run time; this keeps it static.
+# its gates. At run time the domain refuses a gated definition in `start_run`, and a state that knows its definition releases
+# nothing before every gate of its start holds (a delayed start and a reset decide their gates through the planner's
+# `Evaluation::StartGates`, D022-052, D022-053); this keeps it static.
 DOMAIN_START = re.compile(r"\bstart_run(?:_delayed|_gated|_key_failed)?\s*\(")
 DOMAIN_START_HOME = ("crates/application/src/execution.rs", "start")
 

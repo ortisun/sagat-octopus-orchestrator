@@ -163,6 +163,7 @@ fn error_code(error: &AppError) -> &'static str {
                 }
                 R::ActivationPending { .. } | R::CapabilityDisabled { .. } => "VALIDATION_FAILED",
                 R::BinaryCapabilityMissing => "UNAVAILABLE",
+                R::PermitUnavailable => "CONFLICT",
             }
         }
         _ => "INTERNAL",

@@ -254,6 +254,7 @@ member who asked holds **then** (their membership is read again, and locked, in 
 | `BUSINESS_ID_IN_USE` | `KEEP` and another open run holds the identifier by now |
 | `ADMISSION_REFUSED` | the namespace has no room for the run, or the platform refused it |
 | `REAPPLY_TOO_MANY` | the source received more to deliver again than a reset delivers (256) |
+| `CONCURRENCY_PERMIT_UNAVAILABLE` | the version's start takes a permit of a concurrency key (feature 022) and the key has no free permit: its holders and the runs queued for it reach its limit. A reset never queues, and a permit the source gave back when it ended goes to a run queued for it first (the reservation rule), so with `CANCEL_SOURCE` on a busy key the cancelled source's permit usually goes to the next queued run. Reset again once a holder has finished, or reset with `REQUIRE_TERMINAL` after the queue drains |
 
 The entry becomes `FAILED` with that reason (`failureReason`) and the platform records `run.reset` on the source with the closed
 reason, never your justification. A reason this version does not know is a reason a later version added: read it as another
@@ -346,7 +347,7 @@ off in every engine nothing expires an entry and the places stay pinned until on
 | Metric | Labels | Meaning |
 |---|---|---|
 | `workflow_reset_reapply_total` | `kind` (`SIGNAL`, `UPDATE`), `outcome` (`REAPPLIED`, `REJECTED`, `NOT_REAPPLIED`), `reason` (the closed reasons of section 4.1, `none` when there is none) | What a reset delivered again, counted once the reset is committed: a reset that was refused, cut off or answered from the register counts nothing. No tenant, run, signal or operation is a label |
-| `workflow_reset_completions_total` | `outcome` (`created`, `failed`, `expired`), `reason` (`none` for `created`; for `failed` one of the six closed reasons of the table of section 4.2; for `expired` always `SOURCE_DID_NOT_END`) | The resets that waited for their source and were completed or expired, counted once the transaction is committed: a step on an entry that was completed first, whose source is open and is not past its window, whose source is in the hands of another transaction, or that lost its lease counts nothing. `failed` is the judgement of the platform on the journal the source ended with and does not count an expiry. No tenant, run or reset is a label |
+| `workflow_reset_completions_total` | `outcome` (`created`, `failed`, `expired`), `reason` (`none` for `created`; for `failed` one of the seven closed reasons of the table of section 4.2; for `expired` always `SOURCE_DID_NOT_END`) | The resets that waited for their source and were completed or expired, counted once the transaction is committed: a step on an entry that was completed first, whose source is open and is not past its window, whose source is in the hands of another transaction, or that lost its lease counts nothing. `failed` is the judgement of the platform on the journal the source ended with and does not count an expiry. No tenant, run or reset is a label |
 | `workflow_resets_pending` | | Resets waiting for their source (gauge, from the monitor of the engine); it falls when an entry is completed, fails or expires. **Every replica sets it to the same count**, so read it with `max`, never `sum`: a sum multiplies the count by the number of replicas |
 | `scheduler_fenced_total{kind="reset"}` | `kind` | Steps of the pass that were refused because the replica no longer held the lease of the shard (an entry that another engine completed first is not counted: it is an ordinary race). A few during a rebalance are normal; a count that keeps rising says two replicas dispute a shard |
 | `workflow_reset_completions_total{outcome="failed"}` | `reason` | An entry ended `FAILED`: the source was cancelled and no run replaces it. Read the reasons (section 4.2) and start the run again by hand if it is still wanted |
@@ -364,10 +365,12 @@ an Update made through the API (G1986); their events are in the journal, and the
   is built (section 4.2); **no alert fires when one expires and nothing says that an entry is about to** (G2016): read `workflow_reset_completions_total{outcome="expired"}`.
   An alert on `increase(workflow_reset_completions_total{outcome="expired"}[1h]) > 0`, **with its `promtool` rule test, is a precondition for turning the feature on by default**
   (ADR-0081 decision 4, G2026); none is written until it can be tested.
-- **A permit of a concurrency key and the checks of the features that are not approved** (`CONCURRENCY_PERMIT_UNAVAILABLE`,
-  `RUN_PURGED` and the reasons of a `REMATERIALIZE` rule exist as names; nothing writes them yet).
+- **The checks of the features that are not approved** (`RUN_PURGED` and the reasons of a `REMATERIALIZE` rule exist as names;
+  nothing writes them yet).
 - **Points inside a collection, a parallel branch, a loop iteration or a child scope** (G1980 (1)).
 - **A setting for the ceiling** (G1980 (2)).
-- **The permit of a concurrency key** (feature 022, T018-053): a reset takes none; that feature is not approved, so there is no
-  `CONCURRENCY_PERMIT_UNAVAILABLE` to read yet.
+- **The permit of a concurrency key** (feature 022, T022-064, 2026-11-20): a reset of a version whose start takes a permit takes
+  a fresh one right after `run.reset`, or is refused `409 CONFLICT` `CONCURRENCY_PERMIT_UNAVAILABLE` (a pending reset fails with
+  that reason); it never queues. The source's `concurrency.*` events copied with the prefix are history (`restored`) and hold no
+  row. `rate_limit.*` events still offer no point (T022-086).
 - **Purging the register** (T018-051): the entries of `run_resets` are kept as long as the runs are.

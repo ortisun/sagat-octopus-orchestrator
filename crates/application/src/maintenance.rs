@@ -206,6 +206,16 @@ pub trait MaintenanceStore: Send + Sync {
         window: &Window,
     ) -> impl Future<Output = Result<Vec<RunRef>, StoreError>> + Send;
 
+    /// Holds a delayed start whose release a flow-control ceiling refused (feature 022, D022-052, D022-054) back from
+    /// [`Self::due_start_releases`] until a retry instant that backs off (5 s doubling to 5 min), in a transaction of its
+    /// own, so that refused releases neither take every pass's batch nor hide the starts behind them. `reason` is the
+    /// refusal's closed `details.reason`. Returns how many times the run has now been deferred.
+    fn defer_start_release(
+        &self,
+        run: RunRef,
+        reason: &'static str,
+    ) -> impl Future<Output = Result<u32, StoreError>> + Send;
+
     /// Unfinished runs past their deadline.
     fn overdue_runs(
         &self,

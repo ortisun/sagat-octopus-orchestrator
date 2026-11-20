@@ -89,6 +89,15 @@ pub async fn publish_as(
     principal: &sagat_domain::identity::Principal,
     doc: Value,
 ) -> WorkflowId {
+    try_publish_as(w, principal, doc).await.expect("published")
+}
+
+/// [`publish_as`], or why the definition service refused the document.
+pub async fn try_publish_as(
+    w: &World,
+    principal: &sagat_domain::identity::Principal,
+    doc: Value,
+) -> Result<WorkflowId, sagat_application::error::AppError> {
     let defs = DefinitionService::new(
         w.store.clone(),
         sagat_application::clock::SystemClock,
@@ -105,8 +114,7 @@ pub async fn publish_as(
             &format!("create-{}", Uuid::now_v7()),
             &ctx(),
         )
-        .await
-        .expect("created")
+        .await?
         .workflow
         .id();
     defs.publish(
@@ -117,9 +125,8 @@ pub async fn publish_as(
         &format!("publish-{}", Uuid::now_v7()),
         &ctx(),
     )
-    .await
-    .expect("published");
-    workflow
+    .await?;
+    Ok(workflow)
 }
 
 /// Moves the queue deadline of the waiting step `node` of `run` one second into the past, in its waiter rows and in

@@ -15,14 +15,14 @@ use crate::support::engine::{World, activity, child_node, ctx, document};
 use crate::support::flow_control::{gated_world, publish};
 
 /// A one-step workflow `name` whose start takes a permit of `input.accountId` with `limit`.
-fn serial_start(name: &str, limit: u32) -> Value {
+pub(crate) fn serial_start(name: &str, limit: u32) -> Value {
     let mut doc = document(name, "g", vec![activity("g")]);
     doc["concurrency"] = json!({"group": "accounts", "key": "input.accountId", "limit": limit});
     doc
 }
 
 /// The run's own holder and waiter rows (holders, waiters).
-async fn start_rows(w: &World, run: RunId) -> (i64, i64) {
+pub(crate) async fn start_rows(w: &World, run: RunId) -> (i64, i64) {
     sqlx::query_as(
         "SELECT (SELECT count(*) FROM concurrency_holders WHERE run_id = $1 AND holder_scope = 'RUN'), \
                 (SELECT count(*) FROM concurrency_waiters WHERE run_id = $1 AND permit_scope = 'RUN')",
@@ -33,11 +33,11 @@ async fn start_rows(w: &World, run: RunId) -> (i64, i64) {
     .expect("rows")
 }
 
-async fn count(w: &World, run: RunId, event: &str) -> usize {
+pub(crate) async fn count(w: &World, run: RunId, event: &str) -> usize {
     w.journal(run).await.iter().filter(|e| *e == event).count()
 }
 
-async fn set(w: &World, resource: QuotaResource, value: u64) {
+pub(crate) async fn set(w: &World, resource: QuotaResource, value: u64) {
     w.quotas
         .set(&w.admin, Some(w.namespace.id()), resource, value, &ctx())
         .await

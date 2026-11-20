@@ -46,3 +46,8 @@ each gated step. Building it (T022-096) showed two things that decision does not
 - Safety does not depend on the drivers: the reducer never makes a gated step `READY`, and `persist` refuses an undecided
   wait. What depends on a driver answering `Evaluation::Gates` is liveness: a driver that does not refuses its command.
 - A new consumer of `Progress::pending` must answer the round or refuse it (G1197 names the two that refuse today).
+
+Note (2026-11-20, T022-064, D022-052 to D022-054): the gates of a run's start that a released delay or a reset decides are a
+second question of the same round, `Evaluation::StartGates` (with its cause, `Release` or `Reset`), answered by the engine
+and decided by the adapter's one start function. The consequence above holds for it: a state that knows its definition
+releases nothing before every gate of its start holds, so safety does not depend on a driver answering the question.

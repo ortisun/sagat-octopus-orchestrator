@@ -9,8 +9,9 @@ use std::time::Duration;
 
 use common::{T0, activity, build, id, sid};
 use sagat_domain::execution::{
-    self, ExecutionError, FailureCode, GateChange, GateEvent, GatePhase, GatePool, GateRef,
-    GateTarget, KeyLabel, RunEvent, RunId, RunState, RunStatus, StepStatus, StopReason, WaitingOn,
+    self, Evaluation, ExecutionError, FailureCode, GateChange, GateEvent, GatePhase, GatePool,
+    GateRef, GateTarget, KeyLabel, Resolution, RunEvent, RunId, RunState, RunStatus, StepStatus,
+    StopReason, WaitingOn,
 };
 use sagat_domain::identity::Slug;
 use sagat_domain::workflow::flow_control::{
@@ -1036,11 +1037,6 @@ fn a_definition_that_gates_its_start_is_never_started_around_its_gates() {
             matches!(plain, Err(ExecutionError::Invariant(_))),
             "a gated start is admitted through its gates (FR-022-059): {plain:?}"
         );
-        let delayed = execution::start_run_delayed(&def, RunId::generate(), T0, DEADLINE);
-        assert!(
-            matches!(delayed, Err(ExecutionError::Invariant(_))),
-            "a delayed gated start is refused until its release decides the gates (G022-009): {delayed:?}"
-        );
     }
     assert!(execution::start_run(&chain(), RunId::generate(), T0).is_ok());
 }
@@ -1196,23 +1192,302 @@ fn a_queued_run_times_out_on_the_refusing_gate_dequeues_the_other_and_fails() {
     );
 }
 
+/// `a` then `b`, whose start takes a permit (feature 022, the reset and delay cases of T022-064).
+fn gated_pair() -> WorkflowDefinition {
+    build("a", vec![activity("a").with_next(id("b")), activity("b")])
+        .with_run_flow_control(FlowControl::new(Some(concurrency(1)), None))
+}
+
+/// FR-022-018 (a start delay decides the gates "when the delay elapses"; D022-052): a delayed run of a gated definition
+/// holds its entry and decides nothing while its delay runs; its release asks for the start's gates
+/// ([`Evaluation::StartGates`], queueing allowed) and the entry is released only once every gate granted.
 #[test]
-fn a_reset_of_a_definition_that_gates_its_start_is_refused_until_it_takes_a_fresh_permit() {
+fn a_delayed_gated_start_asks_for_its_gates_at_the_release() {
     let def = gated_chain(true, false);
+    let (mut state, started) =
+        execution::start_run_delayed(&def, RunId::generate(), T0, DEADLINE).expect("delayed");
+    assert_eq!(names(&started.events), ["run.started", "run.start_delayed"]);
+    assert_eq!(
+        started.pending, None,
+        "nothing is decided while the delay runs"
+    );
+    assert!(state.run_gates().concurrency().is_none());
+    let released = execution::release_start(&def, &mut state, T0).expect("released");
+    assert_eq!(names(&released.events), ["run.start_released"]);
+    assert_eq!(
+        released.pending,
+        Some(Evaluation::StartGates {
+            cause: execution::StartCause::Release
+        }),
+        "the release asks for the start's gates"
+    );
+    assert_eq!(
+        state.step(&id("a")).map(|s| s.status()),
+        Some(StepStatus::Pending)
+    );
+    let mut events = started.events;
+    events.extend(released.events);
+
+    // granted: the entry is released in the same commit
+    let mut granted = state.clone();
+    let progress = execution::resolve(
+        &def,
+        &mut granted,
+        Resolution::StartGates {
+            decisions: Ok(vec![run_event(GateChange::ConcurrencyAcquired)]),
+        },
+        T0,
+    )
+    .expect("granted");
+    assert_eq!(
+        names(&progress.events),
+        ["concurrency.acquired", "step.released"]
+    );
+    let mut all = events.clone();
+    all.extend(progress.events);
+    replays(&granted, &all);
+
+    // queued: the entry stays held and the run waits
+    let mut queued_state = state.clone();
+    let progress = execution::resolve(
+        &def,
+        &mut queued_state,
+        Resolution::StartGates {
+            decisions: Ok(vec![run_event(queued())]),
+        },
+        T0,
+    )
+    .expect("queued");
+    assert_eq!(names(&progress.events), ["concurrency.queued"]);
+    assert_eq!(progress.pending, None);
+    assert_eq!(queued_state.status(), RunStatus::Waiting);
+    let mut all = events.clone();
+    all.extend(progress.events);
+    replays(&queued_state, &all);
+
+    // a key that does not evaluate ends the run FAILED/EXPRESSION_ERROR (D1180)
+    let mut failed = state.clone();
+    let progress = execution::resolve(
+        &def,
+        &mut failed,
+        Resolution::StartGates { decisions: Err(()) },
+        T0,
+    )
+    .expect("ended");
+    assert_eq!(
+        names(&progress.events),
+        ["run.stop_requested", "step.cancelled", "run.finished"]
+    );
+    assert_eq!(failed.status(), RunStatus::Failed);
+    assert_eq!(
+        progress.events[0],
+        RunEvent::RunStopRequested {
+            reason: StopReason::Failed,
+            code: Some(FailureCode::expression_error()),
+        }
+    );
+    let mut all = events.clone();
+    all.extend(progress.events);
+    replays(&failed, &all);
+
+    // an answer that decides a step, decides twice or misses the declared gate is refused
+    for wrong in [
+        vec![],
+        vec![run_event(queued()), run_event(queued())],
+        vec![step_event("a", 1, GateChange::ConcurrencyAcquired)],
+        vec![run_event(GateChange::ConcurrencyReleased)],
+    ] {
+        let mut copy = state.clone();
+        let refused = execution::resolve(
+            &def,
+            &mut copy,
+            Resolution::StartGates {
+                decisions: Ok(wrong.clone()),
+            },
+            T0,
+        );
+        assert!(
+            matches!(refused, Err(ExecutionError::Invariant(_))),
+            "{wrong:?}: {refused:?}"
+        );
+    }
+}
+
+/// A definition without a start gate is released as before: nothing is asked.
+#[test]
+fn an_ungated_delayed_start_is_released_without_asking() {
+    let def = chain();
     let (mut state, _) =
-        execution::start_run_gated(&def, RunId::generate(), T0, vec![run_event(queued())])
-            .expect("admitted");
+        execution::start_run_delayed(&def, RunId::generate(), T0, DEADLINE).expect("delayed");
+    let released = execution::release_start(&def, &mut state, T0).expect("released");
+    assert_eq!(
+        names(&released.events),
+        ["run.start_released", "step.released"]
+    );
+    assert_eq!(released.pending, None);
+}
+
+/// The events of a gated `a` then `b` run that held its permit, up to and with the completion of `a`: the prefix a reset
+/// at that point restores.
+fn prefix_after_a(def: &WorkflowDefinition) -> (RunState, Vec<RunEvent>) {
+    let (mut state, started) = execution::start_run_gated(
+        def,
+        RunId::generate(),
+        T0,
+        vec![run_event(GateChange::ConcurrencyAcquired)],
+    )
+    .expect("admitted");
+    let mut events = started.events;
+    let (fence, leased) = execution::lease_step(&mut state, &sid("a")).expect("leased");
+    events.push(leased);
+    let completed =
+        execution::complete_step(def, &mut state, &sid("a"), fence, T0).expect("completed");
+    let at_a = events.len()
+        + completed
+            .events
+            .iter()
+            .position(|event| event.name() == "step.completed")
+            .expect("a completes")
+        + 1;
+    events.extend(completed.events);
+    events.truncate(at_a);
+    let restored = RunState::replay(state.run_id(), &events).expect("the prefix replays");
+    (restored, events)
+}
+
+/// FR-022-018, FR-022-038 and `contracts/journal-events.md` (reset rules; 018's plan, row 17: "`run.reset` (clears
+/// restored permit state), fresh `concurrency.acquired` when declared"): the restored acquisition is history; after
+/// `run.reset` the run asks for a fresh permit ([`Evaluation::StartGates`] without queueing), takes it before anything
+/// of the run goes on, and an answer that queues is refused (a reset never queues).
+#[test]
+fn a_reset_clears_the_restored_permit_and_asks_for_a_fresh_one_that_never_queues() {
+    let def = gated_pair();
+    let (prefix_state, prefix) = prefix_after_a(&def);
+    assert!(
+        prefix_state.run_gates().held_permit().is_some(),
+        "the source held it"
+    );
+    let sequence = u64::try_from(prefix.len()).expect("small");
+    let mut state = prefix_state.clone();
     let reset = execution::record_reset(
         &def,
         &mut state,
         T0,
         RunId::generate(),
-        1,
+        sequence,
         sagat_domain::workflow::Digest::new([0x42; 32]),
         sagat_domain::execution::ResetReapply::None,
+    )
+    .expect("the reset applies");
+    assert_eq!(names(&reset.events), ["run.reset"]);
+    assert_eq!(
+        reset.pending,
+        Some(Evaluation::StartGates {
+            cause: execution::StartCause::Reset
+        })
     );
     assert!(
-        matches!(reset, Err(ExecutionError::Invariant(_))),
-        "never started ungated (G022-009): {reset:?}"
+        state.run_gates().concurrency().is_none(),
+        "the restored acquisition is history"
+    );
+    let mut events = prefix.clone();
+    events.extend(reset.events);
+
+    let mut granted = state.clone();
+    let progress = execution::resolve(
+        &def,
+        &mut granted,
+        Resolution::StartGates {
+            decisions: Ok(vec![run_event(GateChange::ConcurrencyAcquired)]),
+        },
+        T0,
+    )
+    .expect("a fresh permit");
+    assert_eq!(
+        names(&progress.events),
+        ["concurrency.acquired", "step.routed", "step.released"],
+        "the permit first, then the run goes on from the point"
+    );
+    assert!(granted.run_gates().held_permit().is_some());
+    let mut all = events.clone();
+    all.extend(progress.events);
+    replays(&granted, &all);
+
+    let mut copy = state.clone();
+    let queued_answer = execution::resolve(
+        &def,
+        &mut copy,
+        Resolution::StartGates {
+            decisions: Ok(vec![run_event(queued())]),
+        },
+        T0,
+    );
+    assert!(
+        matches!(queued_answer, Err(ExecutionError::Invariant(_))),
+        "a reset never queues: {queued_answer:?}"
+    );
+
+    // a fresh decision comes right after `run.reset`, never later
+    let mut late = state.clone();
+    late.apply(&RunEvent::RunPaused).expect("paused");
+    late.apply(&RunEvent::RunResumed).expect("resumed");
+    assert!(
+        late.apply(&RunEvent::Gate(run_event(GateChange::ConcurrencyAcquired)))
+            .is_err(),
+        "a run-level decision after the reset's first other event is refused"
+    );
+}
+
+/// Fail closed (reviews of 2026-11-20, architecture M1): a state that knows its definition gates the run's start refuses
+/// to release anything before every gate of the start holds, whoever asks; one built from the journal alone accepts what
+/// the journal says.
+#[test]
+fn nothing_is_released_before_every_gate_of_the_start_holds() {
+    let def = gated_chain(true, false);
+    let mut state = RunState::new(RunId::generate()).with_gated_steps(&def);
+    state
+        .apply(&RunEvent::RunStarted {
+            entrypoint: id("a"),
+        })
+        .expect("started");
+    let refused = state.apply(&RunEvent::StepReleased { node: id("a") });
+    assert!(
+        matches!(refused, Err(ExecutionError::Invariant(_))),
+        "{refused:?}"
+    );
+    state
+        .apply(&RunEvent::Gate(run_event(queued())))
+        .expect("queued");
+    let refused = state.apply(&RunEvent::StepReleased { node: id("a") });
+    assert!(
+        matches!(refused, Err(ExecutionError::Invariant(_))),
+        "a wait is no grant: {refused:?}"
+    );
+    state
+        .apply(&RunEvent::Gate(run_event(GateChange::ConcurrencyAcquired)))
+        .expect("granted");
+    state
+        .apply(&RunEvent::StepReleased { node: id("a") })
+        .expect("released once the permit holds");
+}
+
+/// Reviews of 2026-11-20, architecture m2: the reducer itself refuses a wait right after `run.reset`.
+#[test]
+fn the_reducer_refuses_a_reset_that_queues() {
+    let def = gated_pair();
+    let (prefix_state, prefix) = prefix_after_a(&def);
+    let mut state = prefix_state;
+    state
+        .apply(&RunEvent::RunReset {
+            source_run_id: RunId::generate(),
+            source_sequence: u64::try_from(prefix.len()).expect("small"),
+            prefix_digest: sagat_domain::workflow::Digest::new([0x42; 32]),
+            reapply: sagat_domain::execution::ResetReapply::None,
+        })
+        .expect("reset");
+    let refused = state.apply(&RunEvent::Gate(run_event(queued())));
+    assert!(
+        matches!(refused, Err(ExecutionError::Invariant(_))),
+        "{refused:?}"
     );
 }

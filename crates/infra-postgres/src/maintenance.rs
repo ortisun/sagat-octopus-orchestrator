@@ -637,33 +637,85 @@ impl MaintenanceStore for PgRunStore {
 
     async fn due_start_releases(&self, window: &Window) -> Result<Vec<RunRef>, StoreError> {
         let (limit, shards, exclude) = window_params(window);
-        sqlx::query(
-            "SELECT t.tenant_id, t.id FROM unnest($2::smallint[]) AS sh(s) \
+        // feature 022 (D022-054): a release a flow-control ceiling refused is held back until its retry instant
+        const DUE: &str = "SELECT t.tenant_id, t.id FROM unnest($2::smallint[]) AS sh(s) \
+             CROSS JOIN LATERAL ( \
+                 SELECT tenant_id, id, start_delayed_until FROM runs \
+                 WHERE run_shard(id) = sh.s AND start_delayed_until IS NOT NULL \
+                   AND status = 'WAITING' AND start_delayed_until <= now() \
+                   AND tenant_id <> ALL($3::uuid[]) \
+                   AND NOT EXISTS (SELECT 1 FROM start_release_deferrals d \
+                                    WHERE d.tenant_id = runs.tenant_id AND d.run_id = runs.id \
+                                      AND d.retry_at > now()) \
+                 ORDER BY start_delayed_until LIMIT $1) t \
+             ORDER BY t.start_delayed_until LIMIT $1";
+        // a schema that predates the deferrals (a rollback, or a rollout whose migration has not run) holds none back
+        const DUE_WITHOUT_DEFERRALS: &str = "SELECT t.tenant_id, t.id FROM unnest($2::smallint[]) AS sh(s) \
              CROSS JOIN LATERAL ( \
                  SELECT tenant_id, id, start_delayed_until FROM runs \
                  WHERE run_shard(id) = sh.s AND start_delayed_until IS NOT NULL \
                    AND status = 'WAITING' AND start_delayed_until <= now() \
                    AND tenant_id <> ALL($3::uuid[]) \
                  ORDER BY start_delayed_until LIMIT $1) t \
-             ORDER BY t.start_delayed_until LIMIT $1",
-        )
-        .bind(limit)
-        .bind(shards)
-        .bind(exclude)
-        .fetch_all(self.pool())
-        .await
+             ORDER BY t.start_delayed_until LIMIT $1";
+        let code = |error: &sqlx::Error| match error {
+            sqlx::Error::Database(database) => database.code().map(|code| code.into_owned()),
+            _ => None,
+        };
+        let mut rows = sqlx::query(DUE)
+            .bind(limit)
+            .bind(&shards)
+            .bind(&exclude)
+            .fetch_all(self.pool())
+            .await;
+        if let Err(error) = &rows
+            && code(error).as_deref() == Some("42P01")
+        {
+            rows = sqlx::query(DUE_WITHOUT_DEFERRALS)
+                .bind(limit)
+                .bind(&shards)
+                .bind(&exclude)
+                .fetch_all(self.pool())
+                .await;
+        }
         // A schema that predates the delay (a rollback, or a rollout whose migration has not run yet)
         // has no delayed start to release: that is not a failure of the pass.
-        .or_else(|error| match &error {
-            sqlx::Error::Database(database) if database.code().as_deref() == Some("42703") => {
-                Ok(Vec::new())
-            }
+        rows.or_else(|error| match code(&error).as_deref() {
+            Some("42703") => Ok(Vec::new()),
             _ => Err(error),
         })
         .map_err(store_error)?
         .iter()
         .map(run_ref)
         .collect()
+    }
+
+    async fn defer_start_release(
+        &self,
+        run: RunRef,
+        reason: &'static str,
+    ) -> Result<u32, StoreError> {
+        // the backoff of 018's deferred items (plan row 4): 5 s, doubling, at most 5 min
+        let deferrals: i32 = sqlx::query_scalar(
+            "INSERT INTO start_release_deferrals AS d \
+                    (tenant_id, namespace_id, run_id, deferrals, first_deferred_at, retry_at, reason) \
+             SELECT r.tenant_id, r.namespace_id, r.id, 1, now(), now() + interval '5 seconds', $3 \
+               FROM runs r WHERE r.tenant_id = $1 AND r.id = $2 \
+             ON CONFLICT (tenant_id, run_id) DO UPDATE SET \
+                 deferrals = d.deferrals + 1, \
+                 retry_at = now() + least(interval '5 seconds' * power(2, least(d.deferrals, 10)), \
+                                          interval '5 minutes'), \
+                 reason = EXCLUDED.reason \
+             RETURNING deferrals",
+        )
+        .bind(run.tenant_id.as_uuid())
+        .bind(run.run_id.as_uuid())
+        .bind(reason)
+        .fetch_optional(self.pool())
+        .await
+        .map_err(store_error)?
+        .unwrap_or(0);
+        Ok(u32::try_from(deferrals).unwrap_or(0))
     }
 
     async fn overdue_runs(&self, window: &Window) -> Result<Vec<RunRef>, StoreError> {

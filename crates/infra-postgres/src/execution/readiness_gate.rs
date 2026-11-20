@@ -18,6 +18,7 @@
 
 use sagat_application::flow_control::{FlowControlRefusal, StepGateKeys};
 use sagat_application::keyed_digest::{KeyPurpose, KeyedDigestError};
+use sagat_domain::execution::StartCause;
 use sagat_domain::execution::{
     GateChange, GateEvent, GatePhase, GatePool, GateRef, GateSlot, GateTarget, Gates, KeyLabel,
     StepState,
@@ -856,9 +857,15 @@ impl PgRunTx {
     /// before its runs row to its commit, and this count is a fresh statement after it (READ COMMITTED), so the admissions
     /// that could queue in a namespace are decided one after the other (D022-051, G022-011).
     ///
+    /// The same decision is taken later for a delayed start at its release ([`StartCause::Release`]: the namespace's
+    /// admission lock is taken first, as an admission holds it, so `queued_runs` stays exact; a ceiling's refusal is
+    /// deferred by the release pass, not counted here) and for a reset right after `run.reset` ([`StartCause::Reset`]: a
+    /// fresh permit or `CONCURRENCY_PERMIT_UNAVAILABLE`, counted `refused_reset`; never a wait) (D022-052, D022-053).
+    ///
     /// # Errors
-    /// The refusals above; `BINARY_CAPABILITY_MISSING` without a digest key ring, and for a start that declares a rate
-    /// limit (its admission is T022-072); [`StoreError::Unavailable`] when no digest key version is active.
+    /// The refusals above; `BINARY_CAPABILITY_MISSING` without a digest key ring, for a start that declares a rate limit
+    /// (its admission is T022-072) and for a definition with a `forEach`, `while` or `repeatUntil` node (G1197), whatever
+    /// asks; [`StoreError::Unavailable`] when no digest key version is active.
     pub(super) async fn decide_start_gates(
         &mut self,
         keys: &sagat_application::flow_control::RunGateKeys,
@@ -869,7 +876,10 @@ impl PgRunTx {
             ));
         };
         let flow = self.def.run_flow_control().clone();
-        if flow.rate_limit().is_some() {
+        // fail closed for every cause, a reset or a release included (reviews of 2026-11-20, security minor 4): a start's
+        // rate limit (T022-072), and collections and loops, whose finish paths would never give the permit back (G1197)
+        let kinds = self.def.projected_state();
+        if flow.rate_limit().is_some() || kinds.collections || kinds.loops {
             return Err(StoreError::FlowControl(
                 FlowControlRefusal::BinaryCapabilityMissing,
             ));
@@ -881,6 +891,12 @@ impl PgRunTx {
             });
         };
         let (tenant, namespace) = (self.info.tenant_id, self.info.namespace_id);
+        // the release of a start delay may queue a run outside its creation: it takes the namespace's admission lock
+        // first, as every admission holds it from before its runs row, so that `queued_runs` stays exact (D022-051,
+        // D022-052); an admission holds it already, and a reset never queues
+        if keys.cause == StartCause::Release {
+            crate::quotas::lock_run_admission(&mut self.tx, tenant, namespace).await?;
+        }
         let versions = key_versions(&mut self.tx).await?;
         let ceilings = crate::quotas::step_gate_ceilings(&mut self.tx, tenant, namespace).await?;
         let limit = ceilings.concurrency_limit(policy);
@@ -931,7 +947,10 @@ impl PgRunTx {
         .fetch_one(&mut *self.tx)
         .await
         .map_err(store_error)?;
-        let refusal = start_refused;
+        // a refused admission rolls back, so it is counted here; a refused release is deferred and counted by its pass,
+        // once per deferral (reviews of 2026-11-20, correctness M2)
+        let cause = keys.cause;
+        let refusal = |limit| start_refused(limit, cause);
         if !exists {
             let in_force: Vec<i16> = std::iter::once(versions.active)
                 .chain(versions.retiring)
@@ -975,6 +994,17 @@ impl PgRunTx {
         .map_err(store_error)?;
         let declared_limit = i32::try_from(limit).map_err(|_| corrupt("declared limit"))?;
         let admits = holders + waiters < i64::from(limit);
+        // a reset takes a fresh permit or is refused; it never waits (018's plan, row 17; FR-022-018). The reservation rule
+        // holds for it too: a free permit with a run waiting for it is the waiter's (D022-021)
+        if !admits && keys.cause == StartCause::Reset {
+            sagat_telemetry::flow_control::record_concurrency(
+                sagat_telemetry::flow_control::FlowControlScope::Run,
+                sagat_telemetry::flow_control::ConcurrencyOutcome::RefusedReset,
+            );
+            return Err(StoreError::FlowControl(
+                FlowControlRefusal::PermitUnavailable,
+            ));
+        }
         let change = if admits {
             sqlx::query(
                 "INSERT INTO concurrency_holders (tenant_id, namespace_id, run_id, holder_scope, node, attempt, pool, \
@@ -1365,10 +1395,15 @@ impl GateOutcome {
 /// A run's start refused by a ceiling (T022-022): the typed refusal of `contracts/errors.md`, counted at once as
 /// `concurrency_acquisitions_total{scope="run",outcome="refused_full"}` (FR-022-033), since the refused transaction rolls
 /// back and nothing of it is counted at commit (architecture review M3 of 2026-11-20).
-pub(super) fn start_refused(limit: sagat_domain::workflow::FlowControlLimit) -> StoreError {
+pub(super) fn start_refused(
+    limit: sagat_domain::workflow::FlowControlLimit,
+    cause: StartCause,
+) -> StoreError {
     use sagat_domain::workflow::FlowControlLimit;
     use sagat_telemetry::flow_control::{ConcurrencyOutcome, FlowControlScope, record_concurrency};
-    record_concurrency(FlowControlScope::Run, ConcurrencyOutcome::RefusedFull);
+    if cause != StartCause::Release {
+        record_concurrency(FlowControlScope::Run, ConcurrencyOutcome::RefusedFull);
+    }
     StoreError::FlowControl(match limit {
         FlowControlLimit::KeyWaiters => FlowControlRefusal::ConcurrencyQueueFull,
         FlowControlLimit::QueuedRuns => FlowControlRefusal::Limit {
@@ -1424,6 +1459,7 @@ pub(super) fn record_gate_outcomes(
 #[cfg(test)]
 mod tests {
     use super::{GateOutcome, record_gate_outcomes, start_refused};
+    use sagat_domain::execution::StartCause;
 
     /// A refused start is counted at run scope as `refused_full` and maps each ceiling to its typed refusal.
     #[test]
@@ -1438,8 +1474,18 @@ mod tests {
                 FlowControlLimit::QueuedRuns,
                 FlowControlLimit::LiveKeys,
             ]
-            .map(start_refused)
+            .map(|limit| start_refused(limit, StartCause::Admission))
         });
+        // a release's refusal is deferred and counted by its pass (reviews of 2026-11-20, correctness M2): not here
+        let deferred = metrics::with_local_recorder(&recorder, || {
+            start_refused(FlowControlLimit::KeyWaiters, StartCause::Release)
+        });
+        assert!(matches!(
+            deferred,
+            sagat_application::error::StoreError::FlowControl(
+                FlowControlRefusal::ConcurrencyQueueFull
+            )
+        ));
         let reasons: Vec<_> = refusals
             .iter()
             .map(|e| match e {

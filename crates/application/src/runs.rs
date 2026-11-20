@@ -1984,18 +1984,10 @@ where
                     ctx.trace_id.clone(),
                 );
                 if let Some(reset) = reset {
-                    // feature 022: a reset of a definition that gates its start takes a fresh permit or is refused, never
-                    // queues (plan, Run creators); this build does not decide it yet (G022-009), so it refuses rather
-                    // than start the reset run ungated. Nothing has been written.
-                    if tx.parts().0.run_flow_control().is_gated() {
-                        drop(tx);
-                        return Err(store_failure(
-                            pending_completion,
-                            StoreError::FlowControl(
-                                crate::flow_control::FlowControlRefusal::BinaryCapabilityMissing,
-                            ),
-                        ));
-                    }
+                    // feature 022: a reset of a definition that gates its start takes a fresh permit right after
+                    // `run.reset`, or is refused `CONCURRENCY_PERMIT_UNAVAILABLE`, never queues (plan, Run creators): the
+                    // planner asks for it in `record_reset`'s settle, and the restored decisions are history.
+                    //
                     // A reset that would deliver again is refused here, where a run would be created, and not
                     // before the replay of the request: a retry of a request that succeeded must be answered from
                     // the register whatever the setting is now. Nothing has been written: the transaction is dropped.

@@ -52,6 +52,9 @@ const RAISED: &[&str] = &[
     "RESET_REAPPLY_TOO_MANY",
     "BINARY_CAPABILITY_MISSING",
     "RESET_CANCEL_SOURCE_NOT_AVAILABLE",
+    // feature 022: a full key queue (T022-022) and a reset with no free permit (T022-064)
+    "CONCURRENCY_QUEUE_FULL",
+    "CONCURRENCY_PERMIT_UNAVAILABLE",
     // design 043: raised by the schedule writes (row 14)
     "NOMINAL_TIME_FIELD_INVALID",
 ];
@@ -62,8 +65,6 @@ const NOT_YET: &[(&str, &str)] = &[
         "SCHEDULE_DELETED",
         "a deleted schedule is NOT_FOUND, as one that never existed (G1975)",
     ),
-    ("CONCURRENCY_QUEUE_FULL", "feature 022"),
-    ("CONCURRENCY_PERMIT_UNAVAILABLE", "feature 022 and US06"),
     ("RUN_PURGED", "feature 020"),
     ("RESET_SOURCE_TEST_RUN", "feature 022"),
 ];

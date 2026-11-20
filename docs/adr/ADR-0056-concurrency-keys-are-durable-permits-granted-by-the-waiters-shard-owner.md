@@ -167,3 +167,12 @@ exists under the old one) is superseded by ADR-0093, accepted with the operator'
 with live rows, and an emergency rotation (the operator's force, ADR-0093 decision 5) may over-admit a key by at most what
 its old row holds until it drains; meanwhile the order of decision 5 holds within each of the key's two rows, not across
 them.
+
+Note (2026-11-20, T022-064, D022-052 to D022-054; delegated by OD-2026-11-20-6): decision 3's delayed start "acquires or
+enqueues when the delay elapses" through the planner's `Evaluation::StartGates`, in the release's transaction; when a
+ceiling of decision 7 refuses it (a full key queue, `queued_runs`, the live keys), the release is an asynchronous creator
+and follows option 3's "must not lose work": nothing is written, and the run is held back from the release pass with a
+backoff (5 s doubling to 5 min, `start_release_deferrals`), bounded by the run's own deadline. The release takes the
+namespace's admission lock before it counts, so `queued_runs` stays exact. Decision 3's reset "acquires a fresh permit in
+the reset admission transaction or is refused" right after `run.reset`, under the reservation rule of ADR-0089 (a permit a
+queued run waits for is not free); the source's `concurrency.*` events restored with the prefix are history.

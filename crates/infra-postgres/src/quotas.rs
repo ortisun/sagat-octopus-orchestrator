@@ -212,6 +212,17 @@ pub(crate) async fn activity_admitted(
 }
 
 /// A new run fits in its namespace and in its tenant.
+/// Takes the namespace's run-admission lock (the lock [`ensure_room_for_run`] takes first) for the rest of the transaction:
+/// for a transaction that queues a run outside its creation (feature 022, the release of a start delay, D022-052), so
+/// that every count of the namespace's queued runs is still taken after it (D022-051).
+pub(crate) async fn lock_run_admission(
+    conn: &mut PgConnection,
+    tenant: TenantId,
+    namespace: NamespaceId,
+) -> Result<(), StoreError> {
+    lock(conn, QuotaResource::ActiveRuns, tenant, Some(namespace)).await
+}
+
 pub(crate) async fn ensure_room_for_run(
     conn: &mut PgConnection,
     tenant: TenantId,

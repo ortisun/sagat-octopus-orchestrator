@@ -292,6 +292,71 @@ impl GateSlot {
     }
 }
 
+/// Why the gates of a run's start are decided (feature 022, T022-064), and so what may be decided: carried from the domain
+/// to the adapter unchanged (reviews of 2026-11-20, architecture M2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StartCause {
+    /// The run's creation (T10): in the transaction that holds the namespace's admission lock; it may queue.
+    Admission,
+    /// The release of a start delay (FR-022-018: the run "acquires or enqueues when the delay elapses"): it may queue, and
+    /// takes the namespace's admission lock first (D022-051, D022-052).
+    Release,
+    /// A reset's admission, right after `run.reset` (018's plan, row 17): a fresh permit or a refusal, never a wait.
+    Reset,
+}
+
+impl StartCause {
+    /// Whether a wait in the key's queue is a decision this cause may take.
+    #[must_use]
+    pub const fn may_queue(self) -> bool {
+        !matches!(self, Self::Reset)
+    }
+}
+
+/// Checks the decisions of a run's start against what its definition declares (feature 022): exactly one per declared
+/// gate, at run scope, a grant or (only when `cause` may queue) a wait. The one rule of every start decision, whatever
+/// asked for it (architecture review M2 of 2026-11-20).
+///
+/// # Errors
+/// [`ExecutionError::Invariant`] when the decisions are not those.
+pub fn check_start_decisions(
+    declared: DeclaredGates,
+    decisions: &[GateEvent],
+    cause: StartCause,
+) -> Result<(), ExecutionError> {
+    let decided: Vec<_> = decisions.iter().map(|d| d.change.kind()).collect();
+    if decided.len() != declared.kinds().count()
+        || declared
+            .kinds()
+            .any(|kind| decided.iter().filter(|k| **k == kind).count() != 1)
+    {
+        return Err(ExecutionError::Invariant(
+            "the start's gates are decided once each, exactly the ones it declares",
+        ));
+    }
+    for decision in decisions {
+        let waits = matches!(
+            decision.change,
+            GateChange::ConcurrencyQueued { .. } | GateChange::RateQueued { .. }
+        );
+        let grants = matches!(
+            decision.change,
+            GateChange::ConcurrencyAcquired | GateChange::RateGranted { .. }
+        );
+        if !matches!(decision.target, GateTarget::Run) || !(waits || grants) {
+            return Err(ExecutionError::Invariant(
+                "the start's gates are granted or queued at run scope",
+            ));
+        }
+        if waits && !cause.may_queue() {
+            return Err(ExecutionError::Invariant(
+                "a reset takes a fresh permit or slot, or is refused: it never queues",
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// One root step whose gates the readiness gate decides, for the attempt it would start next (feature 022, T28).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GateRequest {
@@ -417,6 +482,20 @@ impl Gates {
 
     fn slots(&self) -> impl Iterator<Item = &GateSlot> {
         self.concurrency.iter().chain(self.rate.iter())
+    }
+
+    /// The decisions a reset restored with its prefix are history (FR-022-038; 018's plan, row 17): a permit or a slot
+    /// the source held at the point belongs to an attempt that ended there (no step is open at a point), so the reset run
+    /// has nothing to give back for it and holds no row of it.
+    pub(super) fn retire_restored(&mut self) {
+        for slot in [&mut self.concurrency, &mut self.rate]
+            .into_iter()
+            .flatten()
+        {
+            if slot.phase == GatePhase::Held {
+                slot.phase = GatePhase::Ended;
+            }
+        }
     }
 
     /// Rebuilds the gates of a step from trusted storage.

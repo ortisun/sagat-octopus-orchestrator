@@ -55,6 +55,11 @@ pub enum Evaluation {
     /// the attempt it would start next. Asked once the planner has nothing else to do, so that every step this
     /// transition makes ready is decided in one round, under one sorted lock of its keys (D022-020, D022-038).
     Gates { steps: Vec<super::GateRequest> },
+    /// Decide the gates of the run's start (feature 022, T10 at a later instant): asked when a delayed start is released
+    /// ([`super::StartCause::Release`], FR-022-018) and right after a reset, which takes a fresh permit or is refused and
+    /// never queues ([`super::StartCause::Reset`]; 018's plan, row 17). Asked before anything of the run goes on, so the
+    /// decision comes right after the event that asks for it.
+    StartGates { cause: super::StartCause },
 }
 
 /// One planning decision.
@@ -315,6 +320,11 @@ pub fn plan(
     if state.is_start_delayed() {
         return Ok(Plan::Idle);
     }
+    // The start's gates that no decision has reached yet (feature 022): a released delay or a reset asks for them before
+    // anything else of the run goes on.
+    if let Some(cause) = undecided_start_of(def, state) {
+        return Ok(Plan::Evaluate(Evaluation::StartGates { cause }));
+    }
     // A run whose start waits for a permit or a slot (feature 022) holds its entry the same way, until the grant
     // routine grants every gate it waits for, or it is stopped.
     if state.run_gates().holds_entry() {
@@ -434,6 +444,23 @@ pub fn undecided_gates(state: &RunState) -> Option<Vec<super::GateRequest>> {
         })
         .collect();
     (!steps.is_empty()).then_some(steps)
+}
+
+/// Whether the start of a run of `def` has gates no decision has reached, and if so why it is decided now: a delayed start
+/// once released (its entry still held), a reset right after `run.reset`. An admission decides in the transaction that
+/// starts the run ([`super::start_run_gated`]), so it is never asked here.
+pub(super) fn undecided_start_of(
+    def: &WorkflowDefinition,
+    state: &RunState,
+) -> Option<super::StartCause> {
+    let declared = super::DeclaredGates::of(def.run_flow_control())?;
+    if declared
+        .kinds()
+        .any(|kind| state.run_gates().of_kind(kind).is_some())
+    {
+        return None;
+    }
+    state.start_undecided()
 }
 
 /// The run's last event, preceded by giving back the run permit it holds (feature 022, ADR-0056 decision 4): a run

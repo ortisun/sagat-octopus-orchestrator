@@ -1,7 +1,7 @@
 //! The refusals of flow control as the API words them (feature 022, T022-012, `contracts/errors.md` "REST refusals"):
 //! one test per row that names concurrency or a rate limit, each an existing `Error.code` with its own `details.reason`,
-//! and none naming a key's value. The rows that 018's reset owns (`CONCURRENCY_PERMIT_UNAVAILABLE`,
-//! `RATE_LIMIT_SLOT_UNAVAILABLE`) are 018's contract and land with the reset case (T022-064, T022-086, G1181).
+//! and none naming a key's value. Of the rows that 018's reset owns, `CONCURRENCY_PERMIT_UNAVAILABLE` landed with the reset
+//! case (T022-064); `RATE_LIMIT_SLOT_UNAVAILABLE` lands with T022-086 (G1181).
 #![allow(clippy::expect_used, clippy::panic)]
 
 use axum::http::StatusCode;
@@ -26,6 +26,24 @@ fn a_full_concurrency_queue_is_quota_exceeded_and_not_retryable() {
     assert_eq!(
         parts.details,
         Some(json!({"reason": "CONCURRENCY_QUEUE_FULL"}))
+    );
+}
+
+/// 018's contract (`specs/018-schedules-bulk-operations/contracts/errors.md`): a reset of a run whose start takes a permit,
+/// with no free permit, is a conflict the caller resolves by retrying once a holder has finished; a reset never queues.
+#[test]
+fn a_reset_without_a_free_permit_is_a_conflict_with_its_reason_and_remedy() {
+    let parts = refused(FlowControlRefusal::PermitUnavailable);
+    assert_eq!(parts.status, StatusCode::CONFLICT);
+    assert_eq!(parts.code, ErrorCode::Conflict);
+    assert!(!parts.retryable);
+    assert_eq!(
+        parts.details,
+        Some(json!({"reason": "CONCURRENCY_PERMIT_UNAVAILABLE"}))
+    );
+    assert_eq!(
+        ErrorCode::Conflict.remediation(Some("CONCURRENCY_PERMIT_UNAVAILABLE")),
+        "Retry the reset when a holder of the key has finished."
     );
 }
 

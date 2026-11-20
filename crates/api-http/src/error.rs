@@ -46,6 +46,13 @@ impl ErrorCode {
     #[must_use]
     pub fn remediation(self, reason: Option<&str>) -> &'static str {
         match (self, reason.unwrap_or_default()) {
+            // feature 022 (018's contract, `specs/018-schedules-bulk-operations/contracts/errors.md`)
+            (Self::Conflict, "CONCURRENCY_PERMIT_UNAVAILABLE") => {
+                "Retry the reset when a holder of the key has finished."
+            }
+            (Self::QuotaExceeded, "CONCURRENCY_QUEUE_FULL") => {
+                "Retry when the key's queue has room."
+            }
             (Self::Conflict, "IDEMPOTENCY_KEY_REUSED") => {
                 "Use a new Idempotency-Key for a different request, or send the same request again with its key."
             }
@@ -1211,15 +1218,20 @@ fn flow_control_refusal(refusal: sagat_application::flow_control::FlowControlRef
             "the flow-control capability this workflow uses is disabled by this deployment",
         ),
         R::BinaryCapabilityMissing => ApiError::unavailable(),
+        // 018's contract (`specs/018-schedules-bulk-operations/contracts/errors.md`): a reset cannot queue
+        R::PermitUnavailable => ApiError::conflict(
+            "no permit of the run's concurrency key is free; a reset never queues",
+        ),
     };
     e.parts.details = Some(match refusal {
         R::Limit { limit } => json!({ "reason": refusal.reason(), "limit": limit }),
         R::ActivationPending { capability } | R::CapabilityDisabled { capability } => {
             json!({ "reason": refusal.reason(), "capability": capability.as_str() })
         }
-        R::ConcurrencyQueueFull | R::RateLimitQueueFull | R::BinaryCapabilityMissing => {
-            json!({ "reason": refusal.reason() })
-        }
+        R::ConcurrencyQueueFull
+        | R::RateLimitQueueFull
+        | R::BinaryCapabilityMissing
+        | R::PermitUnavailable => json!({ "reason": refusal.reason() }),
     });
     e
 }

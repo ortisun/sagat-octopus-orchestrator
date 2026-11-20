@@ -1080,7 +1080,14 @@ fn gate_of(event_type: &str, node: Option<&str>, d: &Map<String, Value>) -> Opti
     } else {
         4
     };
-    if d.len() != common + keys.len() || !keys.iter().all(|key| d.contains_key(*key)) {
+    // a reset re-emits a `concurrency.*` event marked `restored` (feature 018; T022-064): the one key it may add, and it
+    // says true; a `rate_limit.*` event is never restored (`EXCLUDE` until T022-086; reviews of 2026-11-20, security nit 7)
+    let marked = match d.get("restored") {
+        None => 0,
+        Some(Value::Bool(true)) if event_type.starts_with("concurrency.") => 1,
+        Some(_) => return None,
+    };
+    if d.len() != common + keys.len() + marked || !keys.iter().all(|key| d.contains_key(*key)) {
         return None;
     }
     Some(GateEvent {
@@ -1762,6 +1769,30 @@ mod tests {
                     decode(encoded.event_type, encoded.node.as_deref(), &open),
                     None,
                     "the detail is closed: an extra key is not a row this version wrote"
+                );
+                // a reset re-emits it marked `restored` (feature 018, T022-064): the marker is the only key it adds
+                let mut restored = encoded.detail.clone();
+                restored
+                    .as_object_mut()
+                    .expect("object")
+                    .insert("restored".into(), json!(true));
+                assert_eq!(
+                    decode(encoded.event_type, encoded.node.as_deref(), &restored),
+                    encoded
+                        .event_type
+                        .starts_with("concurrency.")
+                        .then(|| event.clone()),
+                    "a restored copy of a permit event reads as the event it copies; a rate-limit event is never \
+                     restored"
+                );
+                restored
+                    .as_object_mut()
+                    .expect("object")
+                    .insert("restored".into(), json!(false));
+                assert_eq!(
+                    decode(encoded.event_type, encoded.node.as_deref(), &restored),
+                    None,
+                    "the marker says true or is absent"
                 );
             }
         }
