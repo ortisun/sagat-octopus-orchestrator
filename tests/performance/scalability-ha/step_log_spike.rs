@@ -1190,6 +1190,8 @@ pub struct CarryCounts {
     pub contended: u64,
     pub neither: u64,
     pub times: Vec<Duration>,
+    /// Sorted times of the fast path's writes, the refill's writes and the mark-only answers.
+    pub times_by_path: [Vec<Duration>; 3],
 }
 
 /// The carry of design 041 section 2a, statements CA to CE of data-model.md §8a, run by the report hook inside the
@@ -1211,6 +1213,8 @@ pub struct CarryHook {
     pub mark_only_held: AtomicU64,
     pub mark_only_busy: AtomicU64,
     pub times: std::sync::Mutex<Vec<Duration>>,
+    /// The carry's time by path: written on the fast path, written by a refill, mark-only (any cause).
+    pub times_by_path: std::sync::Mutex<[Vec<Duration>; 3]>,
     /// T041-35's second run (`SAGAT_PERF_STEP_LOG_CARRY_RUN=2`): the carry as one call of `spike_041.step_log_carry`.
     pub one_call: bool,
     /// The hot-row diagnosis (`step_log_diag`): a hook that carries nothing and only times the report's `COMMIT`.
@@ -1239,6 +1243,7 @@ impl CarryHook {
             mark_only_held: AtomicU64::new(0),
             mark_only_busy: AtomicU64::new(0),
             times: std::sync::Mutex::new(Vec::new()),
+            times_by_path: std::sync::Mutex::new([Vec::new(), Vec::new(), Vec::new()]),
             probe: false,
             timed: crate::step_log_diag::enabled(),
             committed: std::sync::Mutex::new(Vec::new()),
@@ -1468,6 +1473,15 @@ impl CarryHook {
         .fetch_one(&mut *conn)
         .await?;
         self.count(&outcome);
+        let path = match outcome.as_str() {
+            "written" => Some(0),
+            "written:refill" => Some(1),
+            o if o.starts_with("mark_only:") => Some(2),
+            _ => None,
+        };
+        if let (Some(path), Ok(mut by_path)) = (path, self.times_by_path.lock()) {
+            by_path[path].push(started.elapsed());
+        }
         self.record(started);
         Ok(())
     }
@@ -1507,6 +1521,16 @@ impl CarryHook {
             contended: load(&self.contended),
             neither: load(&self.neither),
             times,
+            times_by_path: self
+                .times_by_path
+                .lock()
+                .map(|t| {
+                    t.clone().map(|mut v| {
+                        v.sort_unstable();
+                        v
+                    })
+                })
+                .unwrap_or_default(),
         }
     }
 

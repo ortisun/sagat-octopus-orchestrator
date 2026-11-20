@@ -2336,6 +2336,29 @@ async fn step_log_carry_spike() {
     );
 }
 
+/// Lease count, those with room, Σ room, largest room, S, G.
+#[cfg(feature = "perf-spike")]
+type LeaseRow = (i64, i64, Option<i64>, Option<i64>, Option<i64>, Option<i64>);
+
+/// The tenant's leases (count, those with room for a 10-record carry of 200 bytes, Σ room, largest room) and its S and G,
+/// or null before `install_leases`.
+#[cfg(feature = "perf-spike")]
+async fn lease_snapshot(pool: &sqlx::PgPool, tenant: uuid::Uuid) -> serde_json::Value {
+    let row: Result<LeaseRow, _> = sqlx::query_as(
+        "SELECT count(*), count(*) FILTER (WHERE granted - used >= 3280), sum(granted - used)::bigint, \
+                max(granted - used)::bigint, \
+                (SELECT step_log_bytes FROM tenant_retained_usage WHERE tenant_id = $1), \
+                (SELECT step_log_leased_bytes FROM tenant_retained_usage WHERE tenant_id = $1) \
+           FROM spike_041.step_log_quota_leases WHERE tenant_id = $1",
+    )
+    .bind(tenant)
+    .fetch_one(pool)
+    .await;
+    row.map_or(serde_json::Value::Null, |(n, with_room, room, max_room, s, g)| {
+        json!({"leases": n, "with_room": with_room, "room": room, "max_room": max_room, "s": s, "g": g})
+    })
+}
+
 /// The hot-row diagnosis of T041-35's second run (D041-105): at 1 × 16, each repetition runs capture off with `{}`,
 /// (f) with its step-log charge on the tenant usage row, with no charge and with the slot prototype, capture off with a
 /// 1 KiB output, (a) on the usage row and with slots, and (g) on the usage row and with slots; each row reports what its
@@ -2511,9 +2534,12 @@ async fn step_log_carry_diag() {
                 carry,
                 empty_output: empty,
             };
+            let leases_before = lease_snapshot(&w.db.pool, w.admin.tenant_id().as_uuid()).await;
             let row = step_log_spike::run_row(&w, chain, &spec, &activities).await;
+            let leases_after = lease_snapshot(&w.db.pool, w.admin.tenant_id().as_uuid()).await;
             let diag = row.diag.clone().unwrap_or_default();
             let counts = row.carry.clone().unwrap_or_default();
+            let by_path = |i: usize, q: f64| ms(percentile(&counts.times_by_path[i], q));
             let line = json!({
                 "repetition": repetition, "label": label, "mode": mode, "carry_mode": carry_mode,
                 "replicas": replicas, "workers": workers,
@@ -2526,6 +2552,12 @@ async fn step_log_carry_diag() {
                 "carry_contended": counts.contended, "carry_neither": counts.neither,
                 "carry_p50_ms": ms(percentile(&counts.times, 0.50)),
                 "carry_p99_ms": ms(percentile(&counts.times, 0.99)),
+                "carry_fast_p50_ms": by_path(0, 0.50), "carry_fast_p99_ms": by_path(0, 0.99),
+                "carry_refill_p50_ms": by_path(1, 0.50), "carry_refill_p99_ms": by_path(1, 0.99),
+                "carry_mark_p50_ms": by_path(2, 0.50), "carry_mark_p99_ms": by_path(2, 0.99),
+                "carry_over_p99": counts.times.iter().filter(|t| counts.times.len() >= 100
+                    && **t > counts.times[counts.times.len() * 99 / 100]).count(),
+                "leases_before": leases_before, "leases_after": leases_after,
                 "s_p99_ms": ms(percentile(&row.services, 0.99)),
                 "commit_waits": row.commit_waits.0,
                 "diag": diag,
