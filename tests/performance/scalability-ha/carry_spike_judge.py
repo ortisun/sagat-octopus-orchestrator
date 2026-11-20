@@ -49,6 +49,8 @@ for r, (m, quiet) in rounds.items():
             out["why_attribution"] = out.get("why_attribution", []) + [f"(2b) attribution void at {size}: tagged {a.get('complete_slow_paths_tagged')} against {slow}"]
         out[f"waits by carry {size}"] = a.get("commit_waits_by_carry")
         out[f"waits by refill {size}"] = a.get("commit_waits_by_refill")
+        if a.get("commit_waits") and a.get("commit_waits_by_refill") is not None:
+            out[f"g2b refill share {size}"] = a["commit_waits_by_refill"] / a["commit_waits"]
     for l in ("h", "d"):
         x = m.get((l, 1))
         if not x:
@@ -76,9 +78,9 @@ for size in (1, 8):
     verdict[f"g2b allowance ms {size}"] = {"values": [res[r][f"g2b allowance {size}"] for r in valid]}
     vals = [(res[r][f"g4 {size}"], res[r][f"g4 refusals {size}"]) for r in valid]
     verdict[f"g4 {size}"] = {"values": vals, "pass": all(t <= HALF and rf < 0.01 for t, rf in vals)}
-    for part in ("i", "ii"):
+    for part in ("refill share", "i", "ii"):
         got = [res[r].get(f"g2b {part} {size}") for r in valid]
         if all(v is not None for v in got):
-            verdict[f"g2b attribution {part} ms {size}"] = {"values": got, "median": statistics.median(got)}
+            verdict[f"g2b attribution {part} {size}"] = {"values": got, "median": statistics.median(got)}
 print(json.dumps(verdict, indent=1))
 print("PASS" if all(v["pass"] for v in verdict.values() if "pass" in v) else "FAIL")

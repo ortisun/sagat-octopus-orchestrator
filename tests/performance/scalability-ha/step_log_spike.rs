@@ -1603,7 +1603,8 @@ impl CarryHook {
             slow.insert(a.step);
         }
         if let Ok(mut by_step) = self.carry_by_step.lock() {
-            by_step.insert(a.step, started.elapsed());
+            // A report run again (a downgrade) carries again inside the same completion: its carries' times add up.
+            *by_step.entry(a.step).or_default() += started.elapsed();
         }
         self.record(started);
         Ok(())
@@ -2099,25 +2100,7 @@ pub async fn run_row(
         async move {
             let (mut waits, mut by_ingest, mut by_carry, mut by_refill) = (0u64, 0u64, 0u64, 0u64);
             while !stop.load(Ordering::Relaxed) {
-                let row: Result<(i64, i64, i64, i64), _> = sqlx::query_as(
-                    "SELECT count(*), count(*) FILTER (WHERE EXISTS ( \
-                         SELECT 1 FROM pg_stat_activity b WHERE b.pid = ANY (pg_blocking_pids(a.pid)) \
-                            AND b.application_name = $1)), \
-                            count(*) FILTER (WHERE EXISTS ( \
-                         SELECT 1 FROM pg_stat_activity b WHERE b.pid = ANY (pg_blocking_pids(a.pid)) \
-                            AND b.application_name = $2)), \
-                            count(*) FILTER (WHERE EXISTS ( \
-                         SELECT 1 FROM pg_stat_activity b WHERE b.pid = ANY (pg_blocking_pids(a.pid)) \
-                            AND b.application_name = $3)) \
-                       FROM pg_stat_activity a \
-                      WHERE a.wait_event_type = 'Lock' AND a.backend_type = 'client backend' \
-                        AND a.pid <> pg_backend_pid() AND a.application_name <> $1 AND a.query = 'COMMIT'",
-                )
-                .bind(INGEST_APPLICATION)
-                .bind(CARRY_APPLICATION)
-                .bind(CARRY_REFILL_APPLICATION)
-                .fetch_one(&pool)
-                .await;
+                let row = sample_commit_waits(&pool).await;
                 if let Ok((n, m, c, r)) = row {
                     waits += u64::try_from(n).unwrap_or(0);
                     by_ingest += u64::try_from(m).unwrap_or(0);
@@ -2402,6 +2385,37 @@ pub async fn run_row(
         carry_waits,
         refill_waits,
     }
+}
+
+/// One sample of the backends waiting on a lock in `COMMIT` (not ingests): all of them, those whose blocker is an
+/// ingest, those whose blocker is a carrying report, and those with a report whose carry refilled anywhere in their
+/// blocking chain (decision D041-121): in a row lock's queue every waiter but the first is blocked by the waiter ahead of
+/// it, so only the chain reaches the holder.
+pub async fn sample_commit_waits(pool: &PgPool) -> Result<(i64, i64, i64, i64), sqlx::Error> {
+    sqlx::query_as(
+        "WITH RECURSIVE waiters AS ( \
+             SELECT a.pid FROM pg_stat_activity a \
+              WHERE a.wait_event_type = 'Lock' AND a.backend_type = 'client backend' \
+                AND a.pid <> pg_backend_pid() AND a.application_name <> $1 AND a.query = 'COMMIT' \
+                AND a.datname = current_database()), \
+         chain (waiter, pid, depth) AS ( \
+             SELECT w.pid, b.blocker, 1 FROM waiters w CROSS JOIN LATERAL unnest(pg_blocking_pids(w.pid)) AS b(blocker) \
+             UNION \
+             SELECT c.waiter, b.blocker, c.depth + 1 FROM chain c \
+                    CROSS JOIN LATERAL unnest(pg_blocking_pids(c.pid)) AS b(blocker) WHERE c.depth < 8) \
+         SELECT (SELECT count(*) FROM waiters), \
+                (SELECT count(*) FROM waiters w WHERE EXISTS (SELECT 1 FROM pg_stat_activity b \
+                  WHERE b.pid = ANY (pg_blocking_pids(w.pid)) AND b.application_name = $1)), \
+                (SELECT count(*) FROM waiters w WHERE EXISTS (SELECT 1 FROM pg_stat_activity b \
+                  WHERE b.pid = ANY (pg_blocking_pids(w.pid)) AND b.application_name = $2)), \
+                (SELECT count(DISTINCT c.waiter) FROM chain c JOIN pg_stat_activity b ON b.pid = c.pid \
+                  WHERE b.application_name = $3)",
+    )
+    .bind(INGEST_APPLICATION)
+    .bind(CARRY_APPLICATION)
+    .bind(CARRY_REFILL_APPLICATION)
+    .fetch_one(pool)
+    .await
 }
 
 async fn deltas_size(pool: &PgPool) -> i64 {

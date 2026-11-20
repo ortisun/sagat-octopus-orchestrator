@@ -1893,6 +1893,70 @@ async fn the_setup_lease_fills_a_full_pool_and_folds_ended_leases() {
     .await;
 }
 
+/// Decision D041-121: the commit waits behind a report whose carry refilled are counted through its whole queue, not only
+/// its head: two `COMMIT`s queued in turn behind a refilling holder both count, though the second one's blocker is the
+/// first.
+#[tokio::test]
+async fn the_commit_waits_behind_a_refilling_report_count_its_whole_queue() {
+    bounded::within("refill queue", LIMIT, async {
+        let w = world().await;
+        let pool = &w.db.pool;
+        for statement in [
+            "CREATE TABLE spike_queue_row (id integer PRIMARY KEY, n bigint NOT NULL)",
+            "INSERT INTO spike_queue_row VALUES (1, 0)",
+            "CREATE TABLE spike_queue_writes (id serial PRIMARY KEY)",
+            "CREATE FUNCTION spike_queue_touch() RETURNS trigger LANGUAGE plpgsql AS $$ \
+             BEGIN UPDATE spike_queue_row SET n = n + 1 WHERE id = 1; RETURN NULL; END $$",
+            "CREATE CONSTRAINT TRIGGER spike_queue_at_commit AFTER INSERT ON spike_queue_writes \
+             DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION spike_queue_touch()",
+        ] {
+            sqlx::query(statement)
+                .execute(pool)
+                .await
+                .unwrap_or_else(|error| panic!("{statement}: {error}"));
+        }
+        let (mut holder, _) = writer(pool).await;
+        let mut held = sqlx::Connection::begin(&mut *holder).await.expect("begin");
+        sqlx::query("SELECT set_config('application_name', $1, true)")
+            .bind(super::CARRY_REFILL_APPLICATION)
+            .execute(&mut *held)
+            .await
+            .expect("the refilling report's name");
+        sqlx::query("UPDATE spike_queue_row SET n = n + 1 WHERE id = 1")
+            .execute(&mut *held)
+            .await
+            .expect("hold the row");
+        let mut queued = Vec::new();
+        for _ in 0..2 {
+            let (mut conn, pid) = writer(pool).await;
+            sqlx::query("SELECT set_config('application_name', $1, false)")
+                .bind(super::CARRY_APPLICATION)
+                .execute(&mut *conn)
+                .await
+                .expect("a carrying report's name");
+            queued.push(tokio::spawn(async move {
+                let mut tx = sqlx::Connection::begin(&mut *conn).await?;
+                sqlx::query("INSERT INTO spike_queue_writes DEFAULT VALUES")
+                    .execute(&mut *tx)
+                    .await?;
+                tx.commit().await
+            }));
+            waits_on_a_lock(pool, pid).await;
+        }
+        let (waits, _, _, by_refill) = super::sample_commit_waits(pool).await.expect("a sample");
+        assert_eq!(
+            (waits, by_refill),
+            (2, 2),
+            "both queued commits count behind the refilling report"
+        );
+        held.commit().await.expect("release");
+        for commit in queued {
+            commit.await.expect("joined").expect("the queued commit");
+        }
+    })
+    .await;
+}
+
 /// Decision D041-120: a carry with nothing to charge (no record kept) writes with no block, so with no subtransaction,
 /// even with no lease.
 #[tokio::test]
