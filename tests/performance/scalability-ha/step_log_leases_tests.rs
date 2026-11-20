@@ -1175,7 +1175,7 @@ fn the_carry_hook_counts_each_outcome_in_its_own_counter() {
 async fn without_the_refill_bound(pool: &PgPool) {
     sqlx::query(
         "CREATE OR REPLACE FUNCTION spike_041.step_log_refill_wait() RETURNS interval LANGUAGE sql IMMUTABLE \
-           SET search_path = pg_catalog, pg_temp AS $$ SELECT interval '60 seconds' $$",
+           SET search_path = pg_catalog, pg_temp AS $$ SELECT interval '300 seconds' $$",
     )
     .execute(pool)
     .await
@@ -1514,12 +1514,25 @@ async fn the_ensure_before_a_report_gives_the_carry_its_fast_path() {
     bounded::within("ensure", LIMIT, async {
         let (w, tenant) = third_run_world().await;
         let pool = &w.db.pool;
-        let (mut c, _) = writer(pool).await;
-        sqlx::query("SELECT spike_041.step_log_ensure($1, 3280)")
-            .bind(tenant)
-            .execute(&mut *c)
-            .await
-            .expect("the ensure");
+        let (mut c, pid) = writer(pool).await;
+        let (s0, _, _, used0, _) = ledger(pool, tenant).await;
+        let (outcome, who, room): (String, i32, i64) =
+            sqlx::query_as("SELECT outcome, writer, room FROM spike_041.step_log_ensure($1, 3280)")
+                .bind(tenant)
+                .fetch_one(&mut *c)
+                .await
+                .expect("the ensure");
+        assert_eq!(
+            (outcome.as_str(), who),
+            ("made", pid),
+            "the ensure leased the calling backend"
+        );
+        assert!(
+            room >= 3280,
+            "the room it returns covers the planned charge"
+        );
+        let (s1, _, _, used1, _) = ledger(pool, tenant).await;
+        assert_eq!(s1 + used1, s0 + used0, "an ensure charges nothing");
         let mut tx = sqlx::Connection::begin(&mut *c).await.expect("begin");
         let outcome = carry_call(tenant, Uuid::new_v4(), Uuid::new_v4())
             .fetch_one(&mut *tx)
@@ -1714,6 +1727,178 @@ async fn the_idle_reclaim_folds_and_deletes_only_leases_idle_past_the_interval()
         assert_eq!(s + used, s0 + used0, "the usage is unchanged");
         assert!(g < g0 && s == s0 + 1_000, "the idle lease's room and use were folded");
         assert_exact(pool, tenant, 1 << 30).await;
+    })
+    .await;
+}
+
+/// Decision D041-120: the ensure answers and never raises for its answers: `invalid` for an impossible charge,
+/// `contended` while a limit change holds the fence, `limit` when the charge cannot fit, `busy` when the usage row stays
+/// held past its budget, `room` when the writer's lease already has it.
+#[tokio::test]
+async fn the_ensure_answers_without_raising() {
+    bounded::within("ensure answers", LIMIT, async {
+        let (w, tenant) = leased_world(100_000).await;
+        let pool = &w.db.pool;
+        usage_row(pool, tenant).await;
+        let ensure = |bytes: i64| {
+            sqlx::query_scalar::<_, String>("SELECT outcome FROM spike_041.step_log_ensure($1, $2)")
+                .bind(tenant)
+                .bind(bytes)
+        };
+        let (mut c, _) = writer(pool).await;
+        assert_eq!(ensure(0).fetch_one(&mut *c).await.expect("ensure"), "invalid");
+        assert_eq!(ensure(1 << 40).fetch_one(&mut *c).await.expect("ensure"), "invalid");
+        assert_eq!(ensure(100_001).fetch_one(&mut *c).await.expect("ensure"), "limit");
+        let mut fence = pool.begin().await.expect("begin");
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended('quota-policy:tenant_step_log_bytes:' || $1::text, 0))")
+            .bind(tenant)
+            .execute(&mut *fence)
+            .await
+            .expect("a limit change's fence");
+        assert_eq!(ensure(1_000).fetch_one(&mut *c).await.expect("ensure"), "contended");
+        fence.rollback().await.expect("rollback");
+        let mut row = pool.begin().await.expect("begin");
+        sqlx::query("UPDATE tenant_retained_usage SET step_log_bytes = step_log_bytes WHERE tenant_id = $1")
+            .bind(tenant)
+            .execute(&mut *row)
+            .await
+            .expect("hold the usage row");
+        assert_eq!(ensure(1_000).fetch_one(&mut *c).await.expect("ensure"), "busy");
+        row.commit().await.expect("commit");
+        assert_eq!(ensure(1_000).fetch_one(&mut *c).await.expect("ensure"), "made");
+        assert_eq!(ensure(1_000).fetch_one(&mut *c).await.expect("ensure"), "room");
+        assert_exact(pool, tenant, 100_000).await;
+    })
+    .await;
+}
+
+/// Decision D041-120: the lease of a backend that has ended is folded back and deleted at the next pass, without waiting
+/// for the idle interval.
+#[tokio::test]
+async fn the_lease_of_an_ended_backend_is_reclaimed_at_once() {
+    bounded::within("ended backend", LIMIT, async {
+        let (w, tenant) = leased_world(1 << 30).await;
+        let pool = &w.db.pool;
+        let (mut gone, pid_gone) = writer(pool).await;
+        charge_on(&mut gone, tenant, 1_000).await.expect("a lease");
+        sqlx::Connection::close(*gone)
+            .await
+            .expect("the backend ends");
+        bounded::within("the backend is gone", LIMIT, async {
+            loop {
+                let alive: bool = sqlx::query_scalar(
+                    "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE pid = $1)",
+                )
+                .bind(pid_gone)
+                .fetch_one(pool)
+                .await
+                .expect("pg_stat_activity");
+                if !alive {
+                    return;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
+        let tenants: Vec<Uuid> = sqlx::query_scalar("SELECT spike_041.step_log_idle_tenants(10)")
+            .fetch_all(pool)
+            .await
+            .expect("the tenants to serve");
+        assert_eq!(tenants, vec![tenant]);
+        let (s0, _, _, used0, _) = ledger(pool, tenant).await;
+        let n: i32 = sqlx::query_scalar("SELECT spike_041.step_log_reclaim_idle($1)")
+            .bind(tenant)
+            .fetch_one(pool)
+            .await
+            .expect("the reclaim");
+        assert_eq!(n, 1);
+        let (s, g, _, used, leases) = ledger(pool, tenant).await;
+        assert_eq!((g, leases), (0, 0), "the ended backend's lease is gone");
+        assert_eq!(s + used, s0 + used0, "its use folded into S");
+        assert_exact(pool, tenant, 1 << 30).await;
+    })
+    .await;
+}
+
+/// Decision D041-120: a carry with nothing to charge (no record kept) writes with no block, so with no subtransaction,
+/// even with no lease.
+#[tokio::test]
+async fn a_carry_with_nothing_to_charge_opens_no_subtransaction() {
+    bounded::within("nothing to charge", LIMIT, async {
+        let (w, tenant) = third_run_world().await;
+        let pool = &w.db.pool;
+        let (mut c, _) = writer(pool).await;
+        let mut tx = sqlx::Connection::begin(&mut *c).await.expect("begin");
+        let run = Uuid::new_v4();
+        let outcome: String = sqlx::query_scalar(
+            "SELECT spike_041.step_log_carry($1, $2, $3, $4, 'a', 1, 0, '{}'::text[], $5, \
+             ARRAY['step_log_attempt_records', 'step_log_attempt_bytes', 'step_log_retention_days'], '{}'::text[], 'x')",
+        )
+        .bind(tenant)
+        .bind(Uuid::new_v4())
+        .bind(run)
+        .bind(Uuid::new_v4())
+        .bind(format!("stream-lock-{run}"))
+        .fetch_one(&mut *tx)
+        .await
+        .expect("the carry");
+        assert_eq!(outcome, "written");
+        let own: bool = sqlx::query_scalar(
+            "SELECT bool_and(xmin = pg_current_xact_id()::xid) FROM spike_041.step_log_streams WHERE run_id = $1",
+        )
+        .bind(run)
+        .fetch_one(&mut *tx)
+        .await
+        .expect("xmin");
+        assert!(own, "a carry with nothing to charge opened a subtransaction");
+        tx.commit().await.expect("commit");
+    })
+    .await;
+}
+
+/// Decision D041-120: a caller's lower `lock_timeout` is kept by the fallback (here 50 ms against a budget the test
+/// raises to 300 s): the carry answers busy without waiting for the budget; and the shipped budget is 200 ms.
+#[tokio::test]
+async fn a_callers_lower_lock_timeout_is_kept() {
+    bounded::within("lower timeout kept", LIMIT, async {
+        let (w, tenant) = third_run_world().await;
+        let pool = &w.db.pool;
+        let shipped: f64 = sqlx::query_scalar(
+            "SELECT extract(epoch FROM spike_041.step_log_refill_wait())::float8",
+        )
+        .fetch_one(pool)
+        .await
+        .expect("the budget");
+        assert!(
+            (shipped - 0.2).abs() < 1e-9,
+            "the shipped budget is 200 ms: {shipped}"
+        );
+        without_the_refill_bound(pool).await;
+        usage_row(pool, tenant).await;
+        let mut row = pool.begin().await.expect("begin");
+        sqlx::query(
+            "UPDATE tenant_retained_usage SET step_log_bytes = step_log_bytes WHERE tenant_id = $1",
+        )
+        .bind(tenant)
+        .execute(&mut *row)
+        .await
+        .expect("hold the usage row");
+        let (mut c, _) = writer(pool).await;
+        let mut tx = sqlx::Connection::begin(&mut *c).await.expect("begin");
+        sqlx::query("SET LOCAL lock_timeout = '50ms'")
+            .execute(&mut *tx)
+            .await
+            .expect("the caller's lower timeout");
+        let outcome = carry_call(tenant, Uuid::new_v4(), Uuid::new_v4())
+            .fetch_one(&mut *tx)
+            .await
+            .expect("the carry answers");
+        assert_eq!(
+            outcome, "mark_only:busy",
+            "the caller's 50 ms ended the wait, not the 300 s budget"
+        );
+        tx.commit().await.expect("commit");
+        row.commit().await.expect("commit");
     })
     .await;
 }

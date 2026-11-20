@@ -2269,6 +2269,10 @@ async fn step_log_carry_spike() {
                 "carry_written_refill": counts.written_refill, "carry_mark_only_quota": counts.mark_only_quota,
                 "carry_mark_only_held": counts.mark_only_held, "carry_mark_only_busy": counts.mark_only_busy,
                 "carry_errors": counts.errors,
+                "carry_over_p99_by_path": over_p99_by_path(&counts),
+                "carry_refill_max_ms": counts.times_by_path[1].last().map(|t| ms(*t)),
+                "carry_mark_max_ms": counts.times_by_path[2].last().map(|t| ms(*t)),
+                "lease_rows": row.lease_rows,
                 "carry_p50_ms": ms(percentile(times, 0.50)), "carry_p99_ms": ms(percentile(times, 0.99)),
                 "s_p99_ms": ms(percentile(&row.services, 0.99)), "batches": batches, "ticket_refusals": refusals,
                 "commit_waits": row.commit_waits.0, "commit_waits_by_ingest": row.commit_waits.1,
@@ -2338,6 +2342,21 @@ async fn step_log_carry_spike() {
         "Step-log carry spike (design 041, T041-35), one round",
         &body,
     );
+}
+
+/// The carries slower than the row's carry p99, by path (fast, refill, mark-only): the fourth run's reading rule for
+/// gate (2b) (decision D041-120).
+#[cfg(feature = "perf-spike")]
+fn over_p99_by_path(counts: &step_log_spike::CarryCounts) -> [usize; 3] {
+    let Some(p99) =
+        (counts.times.len() >= 100).then(|| counts.times[counts.times.len() * 99 / 100])
+    else {
+        return [0; 3];
+    };
+    counts
+        .times_by_path
+        .each_ref()
+        .map(|times| times.iter().filter(|t| **t > p99).count())
 }
 
 /// Lease count, those with room, Σ room, largest room, S, G.
