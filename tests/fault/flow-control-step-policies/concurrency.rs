@@ -114,35 +114,7 @@ async fn crash_the_waiting_transaction(w: &World) {
 
 /// Replaces a queued start's waiter row by one past its deadline, and its projection with it, with one instant.
 async fn age_start_deadline(w: &World, run: RunId) {
-    let mut tx = w.db.pool.begin().await.expect("tx");
-    let past: i64 = sqlx::query_scalar(
-        "SELECT (extract(epoch FROM clock_timestamp()) * 1000000)::bigint - 1000000",
-    )
-    .fetch_one(&mut *tx)
-    .await
-    .expect("clock");
-    sqlx::query(
-        "WITH gone AS (DELETE FROM concurrency_waiters WHERE run_id = $1 AND permit_scope = 'RUN' RETURNING *) \
-         INSERT INTO concurrency_waiters (tenant_id, namespace_id, run_id, node, permit_scope, attempt, pool, \
-                group_name, key_digest, declared_limit, enqueued_at, deadline_at, shard) \
-         SELECT tenant_id, namespace_id, run_id, node, permit_scope, attempt, pool, group_name, key_digest, \
-                declared_limit, clock_timestamp() - interval '1 hour', timestamptz 'epoch' + $2 * interval '1 microsecond', shard FROM gone",
-    )
-    .bind(run.as_uuid())
-    .bind(past)
-    .execute(&mut *tx)
-    .await
-    .expect("waiter aged");
-    sqlx::query(
-        "UPDATE runs SET flow_control_gates = jsonb_set(flow_control_gates, '{concurrency,deadlineUs}', to_jsonb($2)) \
-          WHERE id = $1 AND flow_control_gates -> 'concurrency' ->> 'phase' = 'QUEUED'",
-    )
-    .bind(run.as_uuid())
-    .bind(past)
-    .execute(&mut *tx)
-    .await
-    .expect("projection aged");
-    tx.commit().await.expect("aged");
+    crate::support::flow_control::age_start_deadline(w, run).await;
 }
 
 /// A world with a gated workflow, a worker session and a holder run of `acct-1` whose step is leased by the session.
@@ -257,43 +229,95 @@ async fn a_crash_inside_the_timeout_leaves_the_start_queued_and_the_next_pass_ti
     }
 }
 
-/// T14 (T8, the run's end): a completion that ends the holder and dies while it waits for the key releases nothing and
-/// ends nothing; the worker's retry of the same report ends the run, releases the permit once, and the next pass grants
-/// the queued start.
+/// T14 (T8, the run's end), 20 rounds on one world (SC-022-003; keys review, correctness M2): a completion that ends the
+/// holder and dies while it waits for the key releases nothing and ends nothing; the worker's retry of the same report
+/// ends the run, releases the permit once, and the next pass grants the queued start, once. Each round uses a fresh
+/// key on a world that keeps the history of the rounds before (a hint not re-armed after a rolled-back release, or a
+/// counter drift after a crash on a key with history, would show in a later round); the keys drain to nothing.
 #[tokio::test]
 async fn a_crash_inside_the_release_ends_nothing_and_the_retried_report_releases_once() {
-    let (w, workflow, holder) = held_key().await;
+    let w = gated_world().await;
+    let workflow = publish(&w, serial_start("fault-permit")).await;
     let session = w.session(&["act.g"]).await;
-    let waiter = w.start(workflow, &json!({"accountId": "acct-1"})).await;
-    let task = w.one_task(&session).await;
-    let key = hold_keys(&w).await;
-    let output = json!({});
-    let (crashed, ()) = tokio::join!(
-        w.complete(&session, &task, &output),
-        crash_the_waiting_transaction(&w)
-    );
-    assert!(crashed.is_err(), "the completion died: {crashed:?}");
-    key.rollback().await.expect("released");
-    assert!(!w.run_status(holder).await.is_terminal(), "nothing ended");
-    assert_eq!(start_rows(&w, holder).await, (1, 0), "nothing released");
-    assert_eq!(count(&w, holder, "concurrency.released").await, 0);
+    for round in 0..20 {
+        let account = json!({"accountId": format!("release-{round}")});
+        let holder = w.start(workflow, &account).await;
+        let waiter = w.start(workflow, &account).await;
+        assert_eq!(start_rows(&w, holder).await, (1, 0), "round {round}");
+        let task = w.one_task(&session).await;
+        assert_eq!(task.run_id, holder, "round {round}");
+        let key = hold_keys(&w).await;
+        let output = json!({});
+        let (crashed, ()) = tokio::join!(
+            w.complete(&session, &task, &output),
+            crash_the_waiting_transaction(&w)
+        );
+        assert!(
+            crashed.is_err(),
+            "round {round}: the completion died: {crashed:?}"
+        );
+        key.rollback().await.expect("released");
+        assert!(
+            !w.run_status(holder).await.is_terminal(),
+            "round {round}: nothing ended"
+        );
+        assert_eq!(
+            start_rows(&w, holder).await,
+            (1, 0),
+            "round {round}: nothing released"
+        );
+        assert_eq!(
+            count(&w, holder, "concurrency.released").await,
+            0,
+            "round {round}"
+        );
 
-    w.complete(&session, &task, &json!({}))
-        .await
-        .expect("the retried report");
-    assert!(w.run_status(holder).await.is_terminal());
-    assert_eq!(count(&w, holder, "concurrency.released").await, 1);
-    assert_eq!(start_rows(&w, holder).await, (0, 0));
-    assert_eq!(w.scheduler.grant_gates().await.gates_granted, 1);
-    assert_eq!(start_rows(&w, waiter).await, (1, 0));
-    for run in [holder, waiter] {
-        w.assert_consistent(run).await;
+        w.complete(&session, &task, &json!({}))
+            .await
+            .expect("the retried report");
+        assert!(w.run_status(holder).await.is_terminal(), "round {round}");
+        assert_eq!(
+            count(&w, holder, "concurrency.released").await,
+            1,
+            "round {round}"
+        );
+        assert_eq!(start_rows(&w, holder).await, (0, 0), "round {round}");
+        assert_eq!(
+            w.scheduler.grant_gates().await.gates_granted,
+            1,
+            "round {round}: one grant"
+        );
+        assert_eq!(
+            w.scheduler.grant_gates().await.gates_granted,
+            0,
+            "round {round}: once"
+        );
+        assert_eq!(start_rows(&w, waiter).await, (1, 0), "round {round}");
+        assert_eq!(
+            count(&w, waiter, "concurrency.acquired").await,
+            1,
+            "round {round}"
+        );
+        for run in [holder, waiter] {
+            w.assert_consistent(run).await;
+        }
+        let task = w.one_task(&session).await;
+        assert_eq!(task.run_id, waiter, "round {round}");
+        w.complete(&session, &task, &json!({}))
+            .await
+            .expect("drained");
+        assert_eq!(counters(&w).await, (0, 0), "round {round}: the key drained");
+        w.assert_consistent(waiter).await;
     }
 }
 
-/// SC-022-003: a grant and a timeout of one queued start, 20 rounds in three orders (a pass of each with the start due,
-/// the grant first and then the timeout first, both behind a held key; the grant commits before the deadline). The first commit decides: exactly one
-/// of `concurrency.acquired` and `concurrency.wait_timed_out`, no row left behind, and the next pass decides nothing.
+/// SC-022-003: a grant and a timeout of one queued start, 20 rounds in four orders: (0) the start due, the grant first
+/// and then the timeout, both behind a held key (the grant pass does not list a due start and only rests the key);
+/// (1) the timeout first; (2) the grant commits before the deadline; (3) the grant lists the start before its deadline,
+/// holds the run and waits for the key, the deadline passes while it waits, and the timeout, which lists the start
+/// due, waits for the run (keys review, correctness M1: only the grant's check of the deadline under the key's lock
+/// refuses it). The first commit decides: exactly one of `concurrency.acquired` and `concurrency.wait_timed_out`, no
+/// row left behind, and the next pass decides nothing.
 #[tokio::test]
 async fn a_grant_and_a_timeout_of_a_queued_start_are_decided_by_the_first_commit() {
     let w = gated_world().await;
@@ -309,7 +333,30 @@ async fn a_grant_and_a_timeout_of_a_queued_start_are_decided_by_the_first_commit
             .await
             .expect("the key frees");
         let other = || scheduler(&w, SchedulerSettings::default(), None);
-        match round % 3 {
+        match round % 4 {
+            3 => {
+                let deadline =
+                    crate::support::flow_control::set_start_deadline(&w.db.pool, waiter, 2_000_000)
+                        .await;
+                let key = hold_keys(&w).await;
+                let (grants, timeouts) = (other(), other());
+                let grant = tokio::spawn(async move { grants.grant_gates().await });
+                barrier(&w, 1).await;
+                assert!(
+                    crate::support::flow_control::database_now_us(&w.db.pool).await < deadline,
+                    "round {round}: the grant listed the start before its deadline"
+                );
+                crate::support::flow_control::until_past(&w.db.pool, deadline).await;
+                let timeout = tokio::spawn(async move { timeouts.time_out_gates().await });
+                barrier(&w, 2).await;
+                key.rollback().await.expect("released");
+                let (g, t) = (grant.await.expect("grant"), timeout.await.expect("timeout"));
+                assert_eq!(
+                    g.gates_granted, 0,
+                    "a start due under the key is never granted: {g:?}"
+                );
+                assert_eq!(t.gate_waits_timed_out, 1, "{t:?}");
+            }
             0 => {
                 age_start_deadline(&w, waiter).await;
                 let key = hold_keys(&w).await;
@@ -351,7 +398,7 @@ async fn a_grant_and_a_timeout_of_a_queued_start_are_decided_by_the_first_commit
             1,
             "round {round}: exactly one outcome"
         );
-        assert_eq!(timed_out == 1, round % 3 != 2, "round {round}");
+        assert_eq!(timed_out == 1, round % 4 != 2, "round {round}");
         let report = w.scheduler.tick().await;
         assert_eq!(
             report.gates_granted + report.gate_waits_timed_out,
@@ -434,11 +481,12 @@ async fn a_takeover_waits_for_a_grant_in_flight_and_nothing_is_granted_twice() {
     }
 }
 
-/// A lost hint: the grant's `task.ready` announcement is delivered to a broker that loses it (its outbox row is marked
-/// delivered and no worker hears it); PostgreSQL is
-/// the authority, so the worker's next poll leases the granted start's step all the same.
+/// A grant announces its step once (`task.ready`, one outbox row), and the step is found without the announcement: the
+/// row is marked delivered as a broker that lost it would leave it, and the worker's poll of PostgreSQL leases the
+/// granted start's step all the same. This world runs no broker, so the test proves the announcement's count and the
+/// poll path, not a hint consumer (keys review, correctness m6).
 #[tokio::test]
-async fn a_lost_task_hint_of_a_granted_start_delays_nothing_the_next_poll_finds() {
+async fn a_grant_announces_its_step_once_and_a_poll_finds_it_without_the_announcement() {
     let (w, workflow, holder) = held_key().await;
     let session = w.session(&["act.g"]).await;
     let waiter = w.start(workflow, &json!({"accountId": "acct-1"})).await;

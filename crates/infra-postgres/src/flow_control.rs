@@ -140,6 +140,38 @@ pub async fn key_versions(conn: &mut PgConnection) -> Result<KeyVersions, StoreE
     })
 }
 
+/// The digest key versions the database has in force (active, and retiring during a rotation) that `ring` lacks, read
+/// once by a process before it serves a gate (D022-057): one that served without them would refuse or never grant
+/// every key of that version. An empty answer before any version was activated.
+///
+/// # Errors
+/// A store error.
+pub async fn missing_key_versions(
+    pool: &sqlx::PgPool,
+    ring: &sagat_application::keyed_digest::KeyRing,
+) -> Result<Vec<u16>, StoreError> {
+    let mut tx = crate::pool::BeginSafely::begin_safely(pool)
+        .await
+        .map_err(store_error)?;
+    let (active, retiring): (Option<i16>, Option<i16>) =
+        sqlx::query_as("SELECT active, retiring FROM flow_control_key_versions_in_force()")
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(store_error)?;
+    tx.rollback().await.map_err(store_error)?;
+    let held: Vec<u16> = ring.versions().collect();
+    [active, retiring]
+        .into_iter()
+        .flatten()
+        .map(|version| u16::try_from(version).map_err(|_| corrupt("digest key version")))
+        .filter(|version| {
+            version
+                .as_ref()
+                .map_or(true, |version| !held.contains(version))
+        })
+        .collect()
+}
+
 /// Files and locks the keys of one table, in the one order: each key resolves to the row that exists under the
 /// retiring version, else to its digest under the active version (created when absent); then the rows are locked sorted
 /// by (pool, scope, group, digest), byte order (SQL paths that lock the same rows sort `group_name COLLATE "C"`).
@@ -403,7 +435,8 @@ pub(crate) fn run_permit(
 ) -> Result<Option<sagat_application::flow_control_keys::RunPermit>, StoreError> {
     use sagat_application::flow_control_keys::{RunPermit, RunPermitState};
     use sqlx::Row as _;
-    let Ok(Some(state)) = row.try_get::<Option<String>, _>("cc_state") else {
+    // a row without the columns (a command transaction's) has no permit; one whose columns cannot be read is corrupt
+    let Some(state) = crate::execution::selected::<String>(row, "cc_state")? else {
         return Ok(None);
     };
     let pool: String = row.try_get("cc_pool").map_err(store_error)?;
@@ -419,15 +452,13 @@ pub(crate) fn run_permit(
         ("WAITING", Some(deadline)) => RunPermitState::Waiting { deadline },
         _ => return Err(corrupt("run permit")),
     };
-    Ok(Some(RunPermit {
-        key: sagat_domain::execution::GateRef {
-            pool: GatePool::parse(&pool).ok_or_else(|| corrupt("concurrency pool"))?,
-            group: ResolvedGroup::parse(&group).map_err(|_| corrupt("concurrency group"))?,
-            key_label: sagat_domain::execution::KeyLabel::of_digest(&digest),
-        },
+    Ok(Some(RunPermit::new(
+        GatePool::parse(&pool).ok_or_else(|| corrupt("concurrency pool"))?,
+        ResolvedGroup::parse(&group).map_err(|_| corrupt("concurrency group"))?,
+        digest,
         state,
         since,
-    }))
+    )))
 }
 
 impl sagat_application::flow_control_keys::FlowControlKeyReader for crate::PgRunStore {
@@ -451,6 +482,12 @@ impl sagat_application::flow_control_keys::FlowControlKeyReader for crate::PgRun
             .execute(&mut *tx)
             .await
             .map_err(store_error)?;
+        // a page is a few index probes; one that takes longer is refused as unavailable (a `503`), never left to hold
+        // an API connection (D022-058)
+        sqlx::query(LISTING_TIMEOUT_SQL)
+            .execute(&mut *tx)
+            .await
+            .map_err(store_error)?;
         let after_since = after
             .and_then(|p| p.oldest_wait_us)
             .map(|us| {
@@ -459,41 +496,38 @@ impl sagat_application::flow_control_keys::FlowControlKeyReader for crate::PgRun
             })
             .transpose()?;
         // a key nobody waits for sorts after every key somebody waits for ('infinity'); the five sort columns are the
-        // row's key within the namespace, so the order is total and a page resumes exactly after its last key
-        let rows = sqlx::query(
-            "WITH keys AS ( \
-               SELECT s.pool, s.permit_scope, s.group_name, s.key_digest, s.holders, s.waiters, \
-                      (SELECT min(w.enqueued_at) FROM concurrency_waiters w \
-                        WHERE w.tenant_id = s.tenant_id AND w.namespace_id = s.namespace_id AND w.pool = s.pool \
-                          AND w.permit_scope = s.permit_scope AND w.group_name = s.group_name \
-                          AND w.key_digest = s.key_digest) AS oldest_wait, \
-                      (SELECT min(h.acquired_at) FROM concurrency_holders h \
-                        WHERE h.tenant_id = s.tenant_id AND h.namespace_id = s.namespace_id AND h.pool = s.pool \
-                          AND h.holder_scope = s.permit_scope AND h.group_name = s.group_name \
-                          AND h.key_digest = s.key_digest) AS oldest_holder \
-                 FROM concurrency_semaphores s \
-                WHERE s.tenant_id = $1 AND s.namespace_id = $2 AND ($3::text IS NULL OR s.group_name = $3)) \
-             SELECT pool, permit_scope, group_name, key_digest, holders, waiters, oldest_wait, oldest_holder \
-               FROM keys \
-              WHERE NOT $4::bool \
-                 OR (COALESCE(oldest_wait, 'infinity'::timestamptz), pool, permit_scope, group_name, key_digest) \
-                    > (COALESCE($5::timestamptz, 'infinity'::timestamptz), $6::text, $7::text, $8::text, $9::bytea) \
-              ORDER BY COALESCE(oldest_wait, 'infinity'::timestamptz), pool, permit_scope, group_name, key_digest \
-              LIMIT $10",
-        )
-        .bind(tenant.as_uuid())
-        .bind(namespace.as_uuid())
-        .bind(group.map(ResolvedGroup::as_str))
-        .bind(after.is_some())
-        .bind(after_since)
-        .bind(after.map(|p| p.pool.as_str()))
-        .bind(after.map(|p| p.scope.as_str()))
-        .bind(after.map(|p| p.group.as_str()))
-        .bind(after.map(|p| p.digest.as_slice()))
-        .bind(i64::from(limit))
-        .fetch_all(&mut *tx)
-        .await
-        .map_err(store_error)?;
+        // row's key within the namespace, so the order is total and a page resumes exactly after its last key. The
+        // order is an index's (`concurrency_semaphores_listing_idx`, or `_group_listing_idx` for one group), so a page
+        // reads its own keys and stops: its cost does not grow with the namespace's live keys (D022-058).
+        let sql = if group.is_some() {
+            KEY_LISTING_OF_GROUP_SQL
+        } else {
+            KEY_LISTING_SQL
+        };
+        // From the first key, the position before every key ('-infinity'); after a key nobody waits for, 'infinity'.
+        // One statement either way, its position always an index condition (never an `OR` a generic plan would
+        // turn into a filter of every key before the cursor).
+        let after_bucket = match after {
+            None => "-infinity",
+            Some(_) => "infinity",
+        };
+        let rows = sqlx::query(sql)
+            .bind(tenant.as_uuid())
+            .bind(namespace.as_uuid())
+            .bind(group.map(ResolvedGroup::as_str))
+            .bind(after_bucket)
+            .bind(after_since)
+            .bind(after.map_or("", |p| p.pool.as_str()))
+            .bind(after.map_or("", |p| p.scope.as_str()))
+            .bind(after.map_or_else(
+                || group.map_or("", ResolvedGroup::as_str),
+                |p| p.group.as_str(),
+            ))
+            .bind(after.map_or(&[][..], |p| p.digest.as_slice()))
+            .bind(i64::from(limit))
+            .fetch_all(&mut *tx)
+            .await
+            .map_err(store_error)?;
         let queued_runs: i64 = sqlx::query_scalar(QUEUED_RUNS_SQL)
             .bind(tenant.as_uuid())
             .bind(namespace.as_uuid())
@@ -535,7 +569,8 @@ impl sagat_application::flow_control_keys::FlowControlKeyReader for crate::PgRun
                 .transpose()
                 .map_err(|_| corrupt("concurrency wait instant"))?;
             items.push(ConcurrencyKeyView {
-                label: sagat_domain::execution::KeyLabel::of_digest(&digest),
+                // the service shows it to whom it may (D022-060)
+                label: None,
                 holders: count("holders")?,
                 waiters: count("waiters")?,
                 oldest_wait_since: oldest_wait,
@@ -557,4 +592,72 @@ impl sagat_application::flow_control_keys::FlowControlKeyReader for crate::PgRun
             queued_runs: u64::try_from(queued_runs).map_err(|_| corrupt("queued runs"))?,
         })
     }
+
+    async fn reveals_personal_data(
+        &self,
+        tenant: TenantId,
+        namespace: NamespaceId,
+        subject: &sagat_domain::identity::Subject,
+    ) -> Result<bool, StoreError> {
+        // feature 009's rule (`has_effective_payload_reveal_grant`) read in one snapshot without its locks: the role
+        // the subject holds in the tenant now may use a reveal grant, and it holds one for the namespace
+        let roles: Vec<String> = sqlx::query_scalar(
+            "SELECT m.role FROM memberships m \
+              WHERE m.tenant_id = $1 AND m.subject = $3 \
+                AND EXISTS (SELECT 1 FROM payload_reveal_grants g \
+                             WHERE g.tenant_id = $1 AND g.namespace_id = $2 AND g.subject = $3)",
+        )
+        .bind(tenant.as_uuid())
+        .bind(namespace.as_uuid())
+        .bind(subject.as_str())
+        .fetch_all(self.pool())
+        .await
+        .map_err(store_error)?;
+        Ok(roles.iter().any(|role| {
+            role.parse::<sagat_domain::identity::Role>()
+                .is_ok_and(|role| {
+                    role.grants(sagat_domain::identity::Permission::PayloadReadInternal)
+                })
+        }))
+    }
+
+    fn flow_control_key_ring(&self) -> Option<&sagat_application::keyed_digest::KeyRing> {
+        self.flow_control_keys()
+    }
 }
+
+/// The bound of one page of the key listing (D022-058): a page is at most 201 probes of three indexes.
+const LISTING_TIMEOUT_SQL: &str = "SET LOCAL statement_timeout = '2s'";
+
+/// The listing of a namespace's keys (`$3` is null), in the order of `concurrency_semaphores_listing_idx`, after the
+/// position `(COALESCE($5, $4), $6, $7, $8, $9)`.
+pub const KEY_LISTING_SQL: &str = "SELECT s.pool, s.permit_scope, s.group_name, s.key_digest, s.holders, s.waiters, \
+            s.oldest_wait_at AS oldest_wait, \
+            (SELECT h.acquired_at FROM concurrency_holders h \
+              WHERE h.tenant_id = s.tenant_id AND h.namespace_id = s.namespace_id AND h.pool = s.pool \
+                AND h.holder_scope = s.permit_scope AND h.group_name = s.group_name \
+                AND h.key_digest = s.key_digest \
+              ORDER BY h.acquired_at LIMIT 1) AS oldest_holder \
+       FROM concurrency_semaphores s \
+      WHERE s.tenant_id = $1 AND s.namespace_id = $2 AND $3::text IS NULL \
+        AND (COALESCE(s.oldest_wait_at, 'infinity'::timestamptz), s.pool, s.permit_scope, s.group_name, s.key_digest) \
+            > (COALESCE($5::timestamptz, $4::text::timestamptz), $6::text, $7::text, $8::text, $9::bytea) \
+      ORDER BY COALESCE(s.oldest_wait_at, 'infinity'::timestamptz), s.pool, s.permit_scope, s.group_name, \
+               s.key_digest \
+      LIMIT $10";
+
+/// The listing of one group's keys (`$3`), in the order of `concurrency_semaphores_group_listing_idx`: the order of
+/// [`KEY_LISTING_SQL`] within one group, after a position of that group (`$8`).
+pub const KEY_LISTING_OF_GROUP_SQL: &str = "SELECT s.pool, s.permit_scope, s.group_name, s.key_digest, s.holders, \
+            s.waiters, s.oldest_wait_at AS oldest_wait, \
+            (SELECT h.acquired_at FROM concurrency_holders h \
+              WHERE h.tenant_id = s.tenant_id AND h.namespace_id = s.namespace_id AND h.pool = s.pool \
+                AND h.holder_scope = s.permit_scope AND h.group_name = s.group_name \
+                AND h.key_digest = s.key_digest \
+              ORDER BY h.acquired_at LIMIT 1) AS oldest_holder \
+       FROM concurrency_semaphores s \
+      WHERE s.tenant_id = $1 AND s.namespace_id = $2 AND s.group_name = $3 AND $8::text = $3 \
+        AND (COALESCE(s.oldest_wait_at, 'infinity'::timestamptz), s.pool, s.permit_scope, s.key_digest) \
+            > (COALESCE($5::timestamptz, $4::text::timestamptz), $6::text, $7::text, $9::bytea) \
+      ORDER BY COALESCE(s.oldest_wait_at, 'infinity'::timestamptz), s.pool, s.permit_scope, s.key_digest \
+      LIMIT $10";

@@ -282,9 +282,10 @@ pub struct Options {
     /// A `forEach` may be published with `operators` (`SAGAT_COLLECTION_OPERATORS_ENABLED`, design 042). Off, as in
     /// production, unless a test turns it on.
     pub collection_operators: bool,
-    /// Flow control (feature 022) is on: both switches, a digest key ring whose version 1 is active, both capabilities
-    /// activated for a fleet that lists them, and step gates admitted (tests only), as `support::flow_control::gated_world`
-    /// sets up the engine's world. Off unless a test turns it on.
+    /// Flow control (feature 022) is on: both switches and the digest key ring `flow_control::RING` (version 1 active)
+    /// on the API's store, which therefore serves the concurrency gate (D022-057; the rate gate only through the tests'
+    /// `serving_rate_gates_for_tests`), and the concurrency capability activated for the fleet. A real engine started
+    /// beside it gets the same with `flow_control::process_env`. Off unless a test turns it on.
     pub flow_control: bool,
 }
 
@@ -406,7 +407,9 @@ async fn start_on_ready_db(db: TestDb, options: Options, supplied_pool: Option<P
         .with_scoped_worker_protocol()
         .with_lake_enabled(options.lake);
     if options.flow_control {
-        super::flow_control::activate(&db.pool).await;
+        // the concurrency gate only: a real engine a harness starts with `flow_control::process_env` lists that one
+        // (D022-057), and a fleet requirement of the rate gate would refuse its registration
+        super::flow_control::activate_concurrency(&db.pool).await;
         executions = super::flow_control::gate(executions);
     }
     let key_k1 = sagat_infra_secrets::generate_key().expect("a key");

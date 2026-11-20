@@ -454,9 +454,7 @@ impl<S, C> std::fmt::Debug for OperationsService<S, C> {
     }
 }
 
-impl<S: AlertReader + WorkerAdmin + AuditStore + FlowControlKeyReader, C: Clock>
-    OperationsService<S, C>
-{
+impl<S: AlertReader + WorkerAdmin + AuditStore, C: Clock> OperationsService<S, C> {
     /// `runbook_base` is the URL or path of `alerts.md`, to which each alert's anchor is appended.
     pub fn new(store: S, clock: C, runbook_base: impl Into<String>) -> Self {
         Self {
@@ -648,13 +646,16 @@ impl<S: AlertReader + WorkerAdmin + AuditStore + FlowControlKeyReader, C: Clock>
             .list_alerts(principal.tenant_id(), namespace, state, before, limit)
             .await?)
     }
+}
 
-    /// The live concurrency keys of a namespace, oldest wait first, with the namespace's queued runs (feature 022,
-    /// FR-022-022, T022-026). Keys are shown as labels only.
+impl<S: AlertReader + FlowControlKeyReader, C: Clock> OperationsService<S, C> {
+    /// The live concurrency keys of a namespace (FR-022-022, T022-026), at most `limit` (one more than the page tells
+    /// the caller another page follows). A key's label is shown only to a caller who may reveal personal data in the
+    /// namespace; every other caller reads `None` (FR-022-057, D022-060).
     ///
     /// # Errors
-    /// [`AppError::Forbidden`] without `ops:read`; [`AppError::NotFound`] for a namespace that is not the caller's
-    /// tenant's.
+    /// [`AppError::Forbidden`] without `ops:read`; [`AppError::NotFound`] for a namespace not in the caller's tenant
+    /// (audited); a storage error.
     pub async fn concurrency_keys(
         &self,
         principal: &Principal,
@@ -668,10 +669,55 @@ impl<S: AlertReader + WorkerAdmin + AuditStore + FlowControlKeyReader, C: Clock>
         require_namespace(&self.store, &self.clock, principal, namespace, ctx).await?;
         // as `alerts`: a caller that asks for one more than its page is answered with that one more
         let limit = limit.unwrap_or(50).clamp(1, MAX_PAGE_SIZE + 1);
-        Ok(self
+        let mut page = self
             .store
             .concurrency_keys(principal.tenant_id(), namespace, group, after, limit)
-            .await?)
+            .await?;
+        if self
+            .store
+            .reveals_personal_data(principal.tenant_id(), namespace, principal.subject())
+            .await?
+        {
+            for key in &mut page.items {
+                key.label = Some(sagat_domain::execution::KeyLabel::of_digest(
+                    &key.position.digest,
+                ));
+            }
+        }
+        Ok(page)
+    }
+
+    /// The cursor of a page that ends with `last`, sealed for the namespace (D022-059).
+    ///
+    /// # Errors
+    /// [`AppError::Unavailable`] when this process holds no flow-control key: it cannot hand out a cursor, and a page
+    /// cut short without one would hide keys.
+    pub fn concurrency_key_cursor(
+        &self,
+        principal: &Principal,
+        namespace: NamespaceId,
+        last: &KeyPosition,
+    ) -> Result<String, AppError> {
+        self.store
+            .flow_control_key_ring()
+            .and_then(|ring| last.seal(ring, principal.tenant_id(), namespace))
+            .ok_or(AppError::Unavailable)
+    }
+
+    /// The position a cursor of this namespace's listing names; `None` for anything else (a `400`).
+    #[must_use]
+    pub fn concurrency_key_position(
+        &self,
+        principal: &Principal,
+        namespace: NamespaceId,
+        cursor: &str,
+    ) -> Option<KeyPosition> {
+        KeyPosition::open(
+            cursor,
+            self.store.flow_control_key_ring()?,
+            principal.tenant_id(),
+            namespace,
+        )
     }
 }
 

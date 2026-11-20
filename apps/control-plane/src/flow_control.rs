@@ -2,9 +2,10 @@
 //! activation of `concurrencyKeys` or `rateLimits` for the fleet, through feature 018's instance-capability registry.
 //!
 //! It records that every control plane and every engine must list the capability, which the registry allows only while
-//! every live process of both kinds lists it. A process lists it only when its binary runs the gate (D022-037); this
-//! build's processes do not, so with any of them live the command is refused and nothing changes. It runs with the
-//! schema-owning role: the activation functions are not the runtime role's.
+//! every live process of both kinds lists it. A process lists it only when its binary runs the gate, its switch is on
+//! and it holds the deployment's digest keys (D022-057): this build lists `concurrency-keys` so, and never
+//! `rate-limits` (T022-072, T022-074), so an activation of the rate gate is refused with any process live. It runs with
+//! the schema-owning role: the activation functions are not the runtime role's.
 
 use sagat_application::error::StoreError;
 use sagat_application::flow_control::FlowControlCapability;
@@ -137,19 +138,23 @@ mod tests {
         );
     }
 
-    /// D022-037: this build's processes do not list a flow-control capability, so no activation can pass with them live.
+    /// D022-057: a process of this build lists the concurrency gate (switched on, with its keys) and never the rate
+    /// gate, so an activation of `rate-limits` cannot pass while one is live.
     #[test]
-    fn this_build_lists_no_flow_control_capability() {
+    fn this_build_lists_the_concurrency_gate_and_never_the_rate_gate() {
+        use sagat_application::flow_control::{FlowControlSwitches, served};
         use sagat_application::run_input::InputValidationMode;
+        let on = FlowControlSwitches {
+            concurrency_keys: true,
+            rate_limits: true,
+        };
+        let listed: Vec<_> = [InputValidationMode::Enforce, InputValidationMode::Report]
+            .into_iter()
+            .flat_map(|mode| crate::registry::capabilities(mode, &served(on, true)))
+            .collect();
         assert!(
-            [InputValidationMode::Enforce, InputValidationMode::Report]
-                .into_iter()
-                .flat_map(crate::registry::capabilities)
-                .all(|capability| !matches!(
-                    capability,
-                    sagat_application::instances::Capability::FlowControlConcurrencyV1
-                        | sagat_application::instances::Capability::FlowControlRateV1
-                ))
+            listed.contains(&sagat_application::instances::Capability::FlowControlConcurrencyV1)
         );
+        assert!(!listed.contains(&sagat_application::instances::Capability::FlowControlRateV1));
     }
 }

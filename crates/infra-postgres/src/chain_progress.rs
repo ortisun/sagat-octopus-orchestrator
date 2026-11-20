@@ -225,7 +225,7 @@ struct FinalizationRun {
 /// A continuation successor is the one writer of runs besides `PgRunStore::create` (FR-022-059): it must never admit a
 /// run of a definition with a gate, which would start it, or one of its steps, ungated. Publication refuses a gate beside
 /// a continuation (`FLOW_CONTROL_COMBINATION`); a stored definition that has one anyway is refused here, at the run level
-/// and at every node, as `create` refuses it in this build (D022-037).
+/// and at every node: a successor does not pass through the admission point's gate (FR-022-059).
 fn refuse_gated_successor(definition: &WorkflowDefinition) -> Result<(), ChainProgressError> {
     if definition.declares_gates() {
         tracing::error!(

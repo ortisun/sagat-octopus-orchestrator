@@ -12,7 +12,7 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
-use ring::hmac;
+use ring::{aead, hmac};
 use sagat_domain::execution::KeyLabel;
 use sagat_domain::identity::{NamespaceId, TenantId};
 use sagat_domain::workflow::flow_control::MAX_KEY_BYTES;
@@ -153,8 +153,9 @@ impl fmt::Debug for KeyedDigest {
     }
 }
 
-/// The versions of the digest key this process was configured with (`SAGAT_FLOW_CONTROL_DIGEST_KEYS`, a comma-separated
-/// list of `version:hex`). Which one is current is the database's row, never this list (FR-022-053).
+/// The versions of the digest key this process was configured with (the file `SAGAT_FLOW_CONTROL_DIGEST_KEYS_FILE` names, a
+/// comma-separated list of `version:hex`, D022-057). Which one is current is the database's row, never this list
+/// (FR-022-053).
 #[derive(Default)]
 pub struct KeyRing {
     keys: BTreeMap<u16, FlowControlKey>,
@@ -252,6 +253,117 @@ impl KeyRing {
             .transpose()?;
         Ok(KeyCandidates { active, retiring })
     }
+}
+
+/// Domain separation of the key that seals listing cursors: derived from a digest key version by an HMAC of this text,
+/// which no key digest can equal (every digested message starts with [`SCHEME`]).
+const CURSOR_SCHEME: &[u8] = b"sagat.flow-control.cursor.v1\0";
+
+/// The prefix of a sealed cursor's text.
+const SEALED_PREFIX: &str = "c1.";
+
+impl KeyRing {
+    /// Seals `plain`, the position of a listing page, for the listing of one namespace of one tenant: encrypted and
+    /// authenticated (ChaCha20-Poly1305) under a key derived from the newest version this process holds, so a caller
+    /// learns nothing from the text (not even a key's digest) and cannot alter it or replay it in another namespace
+    /// (D022-055 item 2 as amended by D022-059). `None` without a key or a source of randomness.
+    #[must_use]
+    pub fn seal_cursor(
+        &self,
+        tenant: TenantId,
+        namespace: NamespaceId,
+        plain: &[u8],
+    ) -> Option<String> {
+        use ring::rand::SecureRandom as _;
+        let key = self.keys.values().next_back()?;
+        let mut nonce = [0u8; aead::NONCE_LEN];
+        ring::rand::SystemRandom::new().fill(&mut nonce).ok()?;
+        let mut sealed = plain.to_vec();
+        cursor_key(key)?
+            .seal_in_place_append_tag(
+                aead::Nonce::assume_unique_for_key(nonce),
+                aead::Aad::from(cursor_aad(key.version, tenant, namespace).as_slice()),
+                &mut sealed,
+            )
+            .ok()?;
+        let mut bytes = Vec::with_capacity(2 + nonce.len() + sealed.len());
+        bytes.extend_from_slice(&key.version.to_be_bytes());
+        bytes.extend_from_slice(&nonce);
+        bytes.extend_from_slice(&sealed);
+        let mut text = String::with_capacity(SEALED_PREFIX.len() + bytes.len() * 2);
+        text.push_str(SEALED_PREFIX);
+        for byte in bytes {
+            text.push(char::from(HEX_DIGITS[usize::from(byte >> 4)]));
+            text.push(char::from(HEX_DIGITS[usize::from(byte & 0x0f)]));
+        }
+        Some(text)
+    }
+
+    /// Opens a cursor [`Self::seal_cursor`] wrote for this namespace of this tenant: `None` for any other text, an
+    /// altered one, one written for another namespace, or one sealed under a version this process no longer holds.
+    #[must_use]
+    pub fn open_cursor(
+        &self,
+        tenant: TenantId,
+        namespace: NamespaceId,
+        text: &str,
+    ) -> Option<Vec<u8>> {
+        let hex = text.strip_prefix(SEALED_PREFIX)?;
+        // a sealed position is at most a few hundred bytes; refuse long text before decoding it
+        if hex.len() > 2 * MAX_SEALED_BYTES || !hex.len().is_multiple_of(2) {
+            return None;
+        }
+        let mut bytes = Vec::with_capacity(hex.len() / 2);
+        for pair in hex.as_bytes().chunks(2) {
+            let high = hex_value(pair[0])?;
+            let low = hex_value(pair[1])?;
+            bytes.push(high << 4 | low);
+        }
+        if bytes.len() < 2 + aead::NONCE_LEN + aead::CHACHA20_POLY1305.tag_len() {
+            return None;
+        }
+        let version = u16::from_be_bytes([bytes[0], bytes[1]]);
+        let key = self.keys.get(&version)?;
+        let nonce: [u8; aead::NONCE_LEN] = bytes[2..2 + aead::NONCE_LEN].try_into().ok()?;
+        let mut sealed = bytes[2 + aead::NONCE_LEN..].to_vec();
+        let plain = cursor_key(key)?
+            .open_in_place(
+                aead::Nonce::assume_unique_for_key(nonce),
+                aead::Aad::from(cursor_aad(version, tenant, namespace).as_slice()),
+                &mut sealed,
+            )
+            .ok()?;
+        Some(plain.to_vec())
+    }
+}
+
+/// The longest sealed cursor accepted, in bytes: a version, a nonce, a tag and a position of at most 256 bytes.
+const MAX_SEALED_BYTES: usize = 2 + 12 + 16 + 256;
+
+const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
+
+const fn hex_value(digit: u8) -> Option<u8> {
+    match digit {
+        b'0'..=b'9' => Some(digit - b'0'),
+        b'a'..=b'f' => Some(digit - b'a' + 10),
+        _ => None,
+    }
+}
+
+fn cursor_key(key: &FlowControlKey) -> Option<aead::LessSafeKey> {
+    let derived = hmac::sign(&key.key, CURSOR_SCHEME);
+    aead::UnboundKey::new(&aead::CHACHA20_POLY1305, derived.as_ref())
+        .ok()
+        .map(aead::LessSafeKey::new)
+}
+
+fn cursor_aad(version: u16, tenant: TenantId, namespace: NamespaceId) -> Vec<u8> {
+    let mut aad = Vec::with_capacity(CURSOR_SCHEME.len() + 2 + 16 + 16);
+    aad.extend_from_slice(CURSOR_SCHEME);
+    aad.extend_from_slice(&version.to_be_bytes());
+    aad.extend_from_slice(tenant.as_uuid().as_bytes());
+    aad.extend_from_slice(namespace.as_uuid().as_bytes());
+    aad
 }
 
 impl fmt::Debug for KeyRing {
@@ -471,6 +583,72 @@ mod tests {
             ),
             Err(KeyedDigestError::UnknownVersion),
             "a process without the retiring key cannot find the old row"
+        );
+    }
+
+    #[test]
+    fn a_sealed_cursor_opens_only_unaltered_in_its_namespace_under_a_held_version() {
+        let ring = KeyRing::parse(&format!("1:{HEX},2:{}", "ab".repeat(32))).expect("ring");
+        let (tenant, namespace) = ids();
+        let plain = b"position of the last key";
+        let text = ring.seal_cursor(tenant, namespace, plain).expect("sealed");
+        assert!(text.starts_with("c1."), "{text}");
+        // opaque: neither the position nor any part of it is readable in the text
+        assert!(
+            !text.contains(
+                &"position"
+                    .bytes()
+                    .map(|b| format!("{b:02x}"))
+                    .collect::<String>()
+            )
+        );
+        assert_eq!(
+            ring.open_cursor(tenant, namespace, &text).as_deref(),
+            Some(&plain[..])
+        );
+        // sealed under the newest version held, with a fresh nonce each time
+        assert_eq!(&text[3..7], "0002");
+        assert_ne!(
+            ring.seal_cursor(tenant, namespace, plain),
+            Some(text.clone())
+        );
+        // every single altered byte is refused, the version and nonce included
+        for at in 3..text.len() {
+            let mut altered = text.clone().into_bytes();
+            altered[at] = if altered[at] == b'0' { b'1' } else { b'0' };
+            let altered = String::from_utf8(altered).expect("text");
+            assert_eq!(
+                ring.open_cursor(tenant, namespace, &altered),
+                None,
+                "byte {at}"
+            );
+        }
+        // another namespace or tenant, a ring without that version, a truncated or overlong text, other text
+        assert_eq!(
+            ring.open_cursor(tenant, NamespaceId::generate(), &text),
+            None
+        );
+        assert_eq!(
+            ring.open_cursor(TenantId::generate(), namespace, &text),
+            None
+        );
+        let older = KeyRing::parse(&format!("1:{HEX}")).expect("ring");
+        assert_eq!(older.open_cursor(tenant, namespace, &text), None);
+        assert_eq!(
+            ring.open_cursor(tenant, namespace, &text[..text.len() - 2]),
+            None
+        );
+        assert_eq!(
+            ring.open_cursor(tenant, namespace, &format!("{text}{}", "00".repeat(300))),
+            None
+        );
+        for other in ["", "c1.", "c1.zz", "k1.n.ORDINARY", &text.to_uppercase()] {
+            assert_eq!(ring.open_cursor(tenant, namespace, other), None, "{other}");
+        }
+        // a ring with no key seals nothing
+        assert_eq!(
+            KeyRing::default().seal_cursor(tenant, namespace, plain),
+            None
         );
     }
 }

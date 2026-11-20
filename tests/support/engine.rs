@@ -1037,8 +1037,9 @@ impl World {
             .collect()
     }
 
-    /// The projections must equal a replay of the journal; and, across the runs of the tenant, the flow-control key rows
-    /// must agree with the permits the runs' journals hold and wait for (feature 022, invariants 1 and 2, T022-027).
+    /// The projections of `run` must equal a replay of its journal; and, across every run of the world's first tenant
+    /// (not only `run`), the flow-control key rows must agree with the permits the runs' journals hold and wait for, and
+    /// each run a key row names is verified the same way (feature 022, invariants 1, 2 and 12, T022-027).
     pub async fn assert_consistent(&self, run: RunId) {
         self.store
             .verify_run(self.admin.tenant_id(), run)

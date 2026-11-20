@@ -52,6 +52,7 @@ spec:
           args: [serve]
           env:
             {{- include "sagat.oidcEnv" . | nindent 12 }}
+            {{- include "sagat.flowControl.env" . | nindent 12 }}
             {{- include "sagat.openbao.env" $ctx | nindent 12 }}
             - {name: SAGAT_REDIS_CALLBACKS_ENABLED, value: {{ .Values.redis.callbacksEnabled | quote }}}
             - {name: SAGAT_BIND_ADDR, value: "0.0.0.0:8080"}
@@ -100,6 +101,7 @@ spec:
           {{- include "sagat.containerSecurity" . | nindent 10 }}
           volumeMounts:
             {{- include "sagat.openbao.mounts" $ctx | nindent 12 }}
+            {{- include "sagat.flowControl.mounts" . | nindent 12 }}
             - {name: tmp, mountPath: /tmp}
             {{- if $nativeTls }}
             - {name: http-tls, mountPath: /etc/sagat/http-tls, readOnly: true}
@@ -113,6 +115,7 @@ spec:
             {{- end }}
       volumes:
         {{- include "sagat.openbao.volumes" $ctx | nindent 8 }}
+        {{- include "sagat.flowControl.volumes" . | nindent 8 }}
         - {name: tmp, emptyDir: {sizeLimit: 64Mi}}
         {{- if $nativeTls }}
         - name: http-tls

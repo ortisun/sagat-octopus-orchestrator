@@ -37,6 +37,115 @@ fn the_default_engine_runs_no_schedule_pass_and_lists_only_run_input_validation(
     );
 }
 
+/// A file of digest keys for the configuration tests, owner-readable only.
+fn key_file(text: &str) -> tempfile::NamedTempFile {
+    use std::io::Write as _;
+    let mut file = tempfile::NamedTempFile::new().expect("a file");
+    file.write_all(text.as_bytes()).expect("written");
+    file
+}
+
+const KEY: &str = "3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c";
+
+/// D022-057: an engine lists `flow-control-concurrency-v1` when its switch is on and it holds the deployment's digest
+/// keys, never `flow-control-rate-v1` (T022-072, T022-074), and nothing with the switch off.
+#[test]
+fn an_engine_lists_the_concurrency_gate_with_its_switch_and_keys_and_never_the_rate_gate() {
+    let keys = key_file(&format!("1:{KEY}\n"));
+    let path = keys.path().to_str().expect("a path").to_owned();
+    let listed = capabilities(&config(&[
+        ("SAGAT_FLOW_CONTROL_CONCURRENCY_KEYS_ENABLED", "true"),
+        ("SAGAT_FLOW_CONTROL_RATE_LIMITS_ENABLED", "true"),
+        ("SAGAT_FLOW_CONTROL_DIGEST_KEYS_FILE", &path),
+    ]));
+    assert_eq!(
+        listed,
+        vec![
+            Capability::RunInputValidationV1,
+            Capability::FlowControlConcurrencyV1
+        ]
+    );
+    // keys without the switch: no gate is served
+    assert_eq!(
+        capabilities(&config(&[("SAGAT_FLOW_CONTROL_DIGEST_KEYS_FILE", &path)])),
+        vec![Capability::RunInputValidationV1]
+    );
+    let engine = config(&[
+        ("SAGAT_FLOW_CONTROL_CONCURRENCY_KEYS_ENABLED", "true"),
+        ("SAGAT_FLOW_CONTROL_DIGEST_KEYS_FILE", &path),
+    ]);
+    // what a configuration dump would print names the versions, never the key
+    let printed = format!("{:?}", engine.flow_control_keys);
+    assert!(
+        printed.contains("versions") && !printed.contains(KEY) && !printed.contains("3c3c"),
+        "{printed}"
+    );
+}
+
+/// D022-057: a switch on without the digest keys, or a file that is not a ring of keys, stops the engine naming the
+/// variable and never the file's content.
+#[test]
+fn a_switch_without_usable_digest_keys_stops_the_engine_naming_the_variable_only() {
+    let refuse = |values: &[(&str, &str)]| {
+        let mut all = vec![
+            ("SAGAT_OIDC_ISSUER", "https://idp.example/"),
+            ("SAGAT_OIDC_AUDIENCE", "sagat"),
+            ("SAGAT_OIDC_JWKS_URI", "https://idp.example/jwks.json"),
+        ];
+        all.extend_from_slice(values);
+        let lookup = move |name: &str| {
+            all.iter()
+                .rev()
+                .find(|(key, _)| *key == name)
+                .map(|(_, value)| (*value).to_owned())
+        };
+        EngineConfig::from_lookup(&lookup, Environment::Dev)
+            .err()
+            .expect("refused")
+            .to_string()
+    };
+    for switch in [
+        "SAGAT_FLOW_CONTROL_CONCURRENCY_KEYS_ENABLED",
+        "SAGAT_FLOW_CONTROL_RATE_LIMITS_ENABLED",
+    ] {
+        let why = refuse(&[(switch, "true")]);
+        assert!(why.contains("SAGAT_FLOW_CONTROL_DIGEST_KEYS_FILE"), "{why}");
+    }
+    let secret_looking = format!("1:{}", &KEY[..62]);
+    let short = key_file(&secret_looking);
+    let twice = key_file(&format!("1:{KEY},1:{KEY}"));
+    let empty = key_file(" \n");
+    let large = key_file(&format!("1:{KEY}{}", " ".repeat(16 * 1024)));
+    for (file, what) in [
+        (&short, "a short key"),
+        (&twice, "a version twice"),
+        (&empty, "no key"),
+        (&large, "too large"),
+    ] {
+        let path = file.path().to_str().expect("a path").to_owned();
+        let why = refuse(&[
+            ("SAGAT_FLOW_CONTROL_CONCURRENCY_KEYS_ENABLED", "true"),
+            ("SAGAT_FLOW_CONTROL_DIGEST_KEYS_FILE", &path),
+        ]);
+        assert!(
+            why.contains("SAGAT_FLOW_CONTROL_DIGEST_KEYS_FILE"),
+            "{what}: {why}"
+        );
+        assert!(
+            !why.contains("3c3c"),
+            "{what}: the error names no key: {why}"
+        );
+    }
+    let why = refuse(&[
+        ("SAGAT_FLOW_CONTROL_CONCURRENCY_KEYS_ENABLED", "true"),
+        (
+            "SAGAT_FLOW_CONTROL_DIGEST_KEYS_FILE",
+            "/nonexistent/flow-control.keys",
+        ),
+    ]);
+    assert!(why.contains("readable file"), "{why}");
+}
+
 /// FR-043-013: the capability is listed only in `enforce`, so a replica in `report` is refused once it is required.
 #[test]
 fn an_engine_in_report_mode_does_not_list_run_input_validation() {

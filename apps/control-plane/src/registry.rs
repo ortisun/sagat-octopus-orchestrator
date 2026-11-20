@@ -33,11 +33,15 @@ pub const BINARY_VERSION: &str = env!("CARGO_PKG_VERSION");
 #[must_use]
 pub fn capabilities(
     run_input_validation: sagat_application::run_input::InputValidationMode,
+    flow_control: &[sagat_application::flow_control::FlowControlCapability],
 ) -> Vec<Capability> {
     let mut listed = Vec::new();
     if run_input_validation == sagat_application::run_input::InputValidationMode::Enforce {
         listed.push(Capability::RunInputValidationV1);
     }
+    // feature 022: a capability whose gate this process runs, switched on and backed by the digest keys (D022-057)
+    listed.extend(flow_control.iter().map(|capability| capability.registry()));
+    listed.sort_by_key(|capability| Capability::ALL.iter().position(|c| c == capability));
     listed
 }
 
@@ -404,10 +408,36 @@ mod tests {
     fn the_control_plane_lists_run_input_validation_only_in_enforce() {
         use sagat_application::run_input::InputValidationMode;
         assert_eq!(
-            capabilities(InputValidationMode::Enforce),
+            capabilities(InputValidationMode::Enforce, &[]),
             vec![Capability::RunInputValidationV1]
         );
-        assert!(capabilities(InputValidationMode::Report).is_empty());
+        assert!(capabilities(InputValidationMode::Report, &[]).is_empty());
+    }
+
+    /// D022-057: the concurrency gate is listed by a process whose switch is on and which holds the digest keys; the
+    /// rate gate by none until T022-072 and T022-074.
+    #[test]
+    fn the_control_plane_lists_the_concurrency_gate_switched_on_with_its_keys_and_never_the_rate_gate()
+     {
+        use sagat_application::flow_control::{FlowControlSwitches, served};
+        use sagat_application::run_input::InputValidationMode;
+        let on = FlowControlSwitches {
+            concurrency_keys: true,
+            rate_limits: true,
+        };
+        assert_eq!(
+            capabilities(InputValidationMode::Enforce, &served(on, true)),
+            vec![
+                Capability::RunInputValidationV1,
+                Capability::FlowControlConcurrencyV1
+            ]
+        );
+        assert!(capabilities(InputValidationMode::Report, &served(on, false)).is_empty());
+        let rate_only = FlowControlSwitches {
+            concurrency_keys: false,
+            rate_limits: true,
+        };
+        assert!(capabilities(InputValidationMode::Report, &served(rate_only, true)).is_empty());
     }
 
     #[test]

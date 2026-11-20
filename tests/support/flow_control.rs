@@ -53,7 +53,7 @@ fn gate_with_keys(store: PgRunStore, ring: &str) -> PgRunStore {
     store
         .with_flow_control(BOTH_ON)
         .with_flow_control_keys(Arc::new(KeyRing::parse(ring).expect("a key ring")))
-        .admitting_step_gates_for_tests()
+        .serving_rate_gates_for_tests()
 }
 
 /// [`gated_world`], whose processes hold the digest key ring `ring` (`version:hex,...`); version 1 is activated.
@@ -72,6 +72,24 @@ pub async fn gated_world_with_keys(ring: &str) -> World {
 /// Activates digest key version 1 and both capabilities for a fleet of processes that list them, on the database of
 /// `pool` (its owner).
 pub async fn activate(pool: &sqlx::PgPool) {
+    activate_capabilities(
+        pool,
+        &[
+            Capability::FlowControlConcurrencyV1,
+            Capability::FlowControlRateV1,
+        ],
+    )
+    .await;
+}
+
+/// [`activate`] for the concurrency gate only: what a fleet of this build's real processes can activate (D022-057: none
+/// lists the rate gate), so that a control plane or an engine started for real afterwards is not refused at its
+/// registration for lacking `flow-control-rate-v1`.
+pub async fn activate_concurrency(pool: &sqlx::PgPool) {
+    activate_capabilities(pool, &[Capability::FlowControlConcurrencyV1]).await;
+}
+
+async fn activate_capabilities(pool: &sqlx::PgPool, capabilities: &[Capability]) {
     let activated: (String, i64) = sqlx::query_as(
         "SELECT out_outcome, out_rows FROM flow_control_key_activate(1::smallint, 'operator')",
     )
@@ -81,21 +99,17 @@ pub async fn activate(pool: &sqlx::PgPool) {
     assert_eq!(activated.0, "ACTIVATED", "{activated:?}");
     let registry = PgInstanceStore::new(pool.clone());
     let actor = Subject::parse("operator:flow-control").expect("subject");
-    let both = [
-        Capability::FlowControlConcurrencyV1,
-        Capability::FlowControlRateV1,
-    ];
     for kind in KINDS {
         registry
-            .register(&registration(Uuid::new_v4(), kind, &both))
+            .register(&registration(Uuid::new_v4(), kind, capabilities))
             .await
-            .expect("a process that runs both gates");
+            .expect("a process that runs the gates");
     }
-    for capability in both {
+    for capability in capabilities {
         registry
             .activate(
                 Activation {
-                    capability,
+                    capability: *capability,
                     kinds: &KINDS,
                     actor: &actor,
                 },
@@ -104,6 +118,32 @@ pub async fn activate(pool: &sqlx::PgPool) {
             .await
             .expect("activated");
     }
+}
+
+/// The environment of a real control plane or `execution-engine` (`EngineConfig::from_lookup`) that serves the
+/// concurrency gate with [`RING`] (D022-057): the switch on and the digest key file, which lives as long as the test
+/// binary. Such a process lists `flow-control-concurrency-v1`; pair it with [`activate_concurrency`].
+///
+/// # Panics
+/// When the file cannot be written.
+pub fn process_env() -> [(&'static str, String); 2] {
+    static FILE: std::sync::OnceLock<tempfile::NamedTempFile> = std::sync::OnceLock::new();
+    let file = FILE.get_or_init(|| {
+        use std::io::Write as _;
+        let mut file = tempfile::NamedTempFile::new().expect("a key file");
+        file.write_all(RING.as_bytes()).expect("the ring written");
+        file
+    });
+    [
+        (
+            "SAGAT_FLOW_CONTROL_CONCURRENCY_KEYS_ENABLED",
+            "true".to_owned(),
+        ),
+        (
+            "SAGAT_FLOW_CONTROL_DIGEST_KEYS_FILE",
+            file.path().to_str().expect("a path").to_owned(),
+        ),
+    ]
 }
 
 /// Publishes `doc` with the switches on (a control plane of the fleet).
@@ -161,45 +201,143 @@ pub async fn try_publish_as(
 /// its gates' projection, as the time it waited had passed (the journal keeps the deadline it was queued with; the
 /// projection agrees with it again once the wait has ended).
 pub async fn age_gate_deadline(w: &World, run: sagat_domain::execution::RunId, node: &str) {
-    // a waiter row is never changed (its trigger refuses an update): the test replaces it, in one transaction, by the
-    // same row with an earlier deadline (an empty key is pruned only at commit, and no count moves)
-    let mut tx = w.db.pool.begin().await.expect("tx");
+    set_gate_deadline(&w.db.pool, run, node, -1_000_000).await;
+}
+
+/// Sets the queue deadline of the waiting step `node` of `run` to `offset_us` microseconds from the database clock now,
+/// in its waiter rows and its gates' projection, with one instant; returns that deadline in microseconds since the
+/// epoch. A waiter row is never changed (its trigger refuses an update): it is replaced, in one transaction, by the same
+/// row with that deadline (an empty key is pruned only at commit, and no count moves).
+pub async fn set_gate_deadline(
+    pool: &sqlx::PgPool,
+    run: sagat_domain::execution::RunId,
+    node: &str,
+    offset_us: i64,
+) -> i64 {
+    let mut tx = pool.begin().await.expect("tx");
+    let deadline: i64 =
+        sqlx::query_scalar("SELECT (extract(epoch FROM clock_timestamp()) * 1000000)::bigint + $1")
+            .bind(offset_us)
+            .fetch_one(&mut *tx)
+            .await
+            .expect("clock");
     for statement in [
         "WITH gone AS (DELETE FROM concurrency_waiters WHERE run_id = $1 AND node = $2 RETURNING *) \
          INSERT INTO concurrency_waiters (tenant_id, namespace_id, run_id, node, permit_scope, attempt, pool, \
                 group_name, key_digest, declared_limit, enqueued_at, deadline_at, shard) \
          SELECT tenant_id, namespace_id, run_id, node, permit_scope, attempt, pool, group_name, key_digest, \
-                declared_limit, clock_timestamp() - interval '1 hour', clock_timestamp() - interval '1 second', shard \
+                declared_limit, clock_timestamp() - interval '1 hour', timestamptz 'epoch' + $3 * interval '1 microsecond', \
+                shard \
            FROM gone",
         "WITH gone AS (DELETE FROM rate_limit_waiters WHERE run_id = $1 AND node = $2 RETURNING *) \
          INSERT INTO rate_limit_waiters (tenant_id, namespace_id, run_id, node, attempt, pool, limit_scope, \
                 group_name, key_digest, declared_limit, period_ms, enqueued_at, deadline_at, shard) \
          SELECT tenant_id, namespace_id, run_id, node, attempt, pool, limit_scope, group_name, key_digest, \
                 declared_limit, period_ms, clock_timestamp() - interval '1 hour', \
-                clock_timestamp() - interval '1 second', shard \
+                timestamptz 'epoch' + $3 * interval '1 microsecond', shard \
            FROM gone",
     ] {
         sqlx::query(statement)
             .bind(run.as_uuid())
             .bind(node)
+            .bind(deadline)
             .execute(&mut *tx)
             .await
-            .expect("waiter aged");
+            .expect("waiter deadline set");
     }
-    tx.commit().await.expect("aged");
     sqlx::query(
         "UPDATE steps SET flow_control_gates = ( \
              SELECT jsonb_object_agg(k, CASE WHEN v = 'null'::jsonb OR v->>'phase' <> 'QUEUED' THEN v \
-                 ELSE jsonb_set(v, '{deadlineUs}', \
-                      to_jsonb((extract(epoch FROM clock_timestamp()) * 1000000)::bigint - 1000000)) END) \
+                 ELSE jsonb_set(v, '{deadlineUs}', to_jsonb($3::bigint)) END) \
                FROM jsonb_each(flow_control_gates) AS e(k, v)) \
           WHERE run_id = $1 AND node = $2 AND flow_control_gates IS NOT NULL",
     )
     .bind(run.as_uuid())
     .bind(node)
-    .execute(&w.db.pool)
+    .bind(deadline)
+    .execute(&mut *tx)
     .await
-    .expect("projection aged");
+    .expect("projection deadline set");
+    tx.commit().await.expect("deadline set");
+    deadline
+}
+
+/// Sets the queue deadline of the queued start of `run` to `offset_us` microseconds from the database clock now, in
+/// its waiter row and its run's gates' projection, with one instant; returns it in microseconds since the epoch.
+pub async fn set_start_deadline(
+    pool: &sqlx::PgPool,
+    run: sagat_domain::execution::RunId,
+    offset_us: i64,
+) -> i64 {
+    let mut tx = pool.begin().await.expect("tx");
+    let deadline: i64 =
+        sqlx::query_scalar("SELECT (extract(epoch FROM clock_timestamp()) * 1000000)::bigint + $1")
+            .bind(offset_us)
+            .fetch_one(&mut *tx)
+            .await
+            .expect("clock");
+    sqlx::query(
+        "WITH gone AS (DELETE FROM concurrency_waiters WHERE run_id = $1 AND permit_scope = 'RUN' RETURNING *) \
+         INSERT INTO concurrency_waiters (tenant_id, namespace_id, run_id, node, permit_scope, attempt, pool, \
+                group_name, key_digest, declared_limit, enqueued_at, deadline_at, shard) \
+         SELECT tenant_id, namespace_id, run_id, node, permit_scope, attempt, pool, group_name, key_digest, \
+                declared_limit, clock_timestamp() - interval '1 hour', timestamptz 'epoch' + $2 * interval '1 microsecond', \
+                shard FROM gone",
+    )
+    .bind(run.as_uuid())
+    .bind(deadline)
+    .execute(&mut *tx)
+    .await
+    .expect("waiter deadline set");
+    sqlx::query(
+        "UPDATE runs SET flow_control_gates = jsonb_set(flow_control_gates, '{concurrency,deadlineUs}', to_jsonb($2)) \
+          WHERE id = $1 AND flow_control_gates -> 'concurrency' ->> 'phase' = 'QUEUED'",
+    )
+    .bind(run.as_uuid())
+    .bind(deadline)
+    .execute(&mut *tx)
+    .await
+    .expect("projection deadline set");
+    tx.commit().await.expect("deadline set");
+    deadline
+}
+
+/// Moves the queued start of `run` one second past its deadline (see [`set_start_deadline`]).
+pub async fn age_start_deadline(w: &World, run: sagat_domain::execution::RunId) {
+    set_start_deadline(&w.db.pool, run, -1_000_000).await;
+}
+
+/// Returns once the database clock is past `deadline_us` (microseconds since the epoch): a bounded condition on the
+/// clock the gates decide with, not a sleep standing in for an order. Fails by name after two minutes.
+pub async fn until_past(pool: &sqlx::PgPool, deadline_us: i64) {
+    super::bounded::within(
+        "the database clock passes the deadline".to_owned(),
+        std::time::Duration::from_secs(120),
+        async {
+            loop {
+                let past: bool = sqlx::query_scalar(
+                    "SELECT (extract(epoch FROM clock_timestamp()) * 1000000)::bigint > $1",
+                )
+                .bind(deadline_us)
+                .fetch_one(pool)
+                .await
+                .expect("clock");
+                if past {
+                    return;
+                }
+                tokio::task::yield_now().await;
+            }
+        },
+    )
+    .await;
+}
+
+/// Microseconds since the epoch on the database clock now.
+pub async fn database_now_us(pool: &sqlx::PgPool) -> i64 {
+    sqlx::query_scalar("SELECT (extract(epoch FROM clock_timestamp()) * 1000000)::bigint")
+        .fetch_one(pool)
+        .await
+        .expect("clock")
 }
 
 /// Invariants 1 and 2 of `data-model.md` across the runs of `tenant` (T022-027; FR-022-020): in one snapshot, every
@@ -208,23 +346,57 @@ pub async fn age_gate_deadline(w: &World, run: sagat_domain::execution::RunId, n
 /// deadline); and every permit the gates hold or wait for has its row. The gates' projections are a replay of the
 /// journal (what `verify_run` checks), so this ties the counters, the rows and the open `concurrency.acquired` and
 /// `concurrency.queued` events (restored ones excluded by the replay) together. Returns the runs the rows name, for the
-/// caller to verify their journals; a schema without the flow-control tables or projections has nothing to check.
+/// caller to verify their journals. Also invariant 12 (no waiter of a terminal run), FR-022-020 (no empty key row) and
+/// D022-058 (a key's oldest wait is its waiters'). A schema without the flow-control tables has nothing to check; one
+/// with them whose columns the checks cannot read is an error.
 pub async fn key_consistency(
     pool: &sqlx::PgPool,
     tenant: sagat_domain::identity::TenantId,
 ) -> Result<Vec<sagat_domain::execution::RunId>, String> {
-    const GATES: &str = "SELECT r.tenant_id, r.id AS run_id, '' AS node, 'RUN' AS scope, r.flow_control_gates -> 'concurrency' AS g \
-           FROM runs r WHERE r.tenant_id = $1 AND r.flow_control_gates IS NOT NULL \
-         UNION ALL \
-         SELECT s.tenant_id, s.run_id, s.node, 'STEP', s.flow_control_gates -> 'concurrency' \
-           FROM steps s WHERE s.tenant_id = $1 AND s.flow_control_gates IS NOT NULL \
-            AND cardinality(s.instance_path_nodes) = 0";
     let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
     sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
         .execute(&mut *tx)
         .await
         .map_err(|e| e.to_string())?;
-    let checks: [(&str, String); 5] = [
+    // What the schema has is decided once, by name (keys review 2026-11-20, architecture M2): a schema rolled back
+    // before the gates has nothing to check, and a projection or column the checks name that is missing from a schema
+    // that has the gates is a failure, never a silent pass.
+    let (tables, run_gates, step_gates, oldest_wait): (bool, bool, bool, bool) = sqlx::query_as(
+        "SELECT to_regclass('public.concurrency_semaphores') IS NOT NULL, \
+                EXISTS (SELECT 1 FROM pg_attribute WHERE attrelid = 'public.runs'::regclass \
+                         AND attname = 'flow_control_gates' AND NOT attisdropped), \
+                EXISTS (SELECT 1 FROM pg_attribute WHERE attrelid = 'public.steps'::regclass \
+                         AND attname = 'flow_control_gates' AND NOT attisdropped), \
+                to_regclass('public.concurrency_semaphores') IS NOT NULL \
+                AND EXISTS (SELECT 1 FROM pg_attribute WHERE attrelid = to_regclass('public.concurrency_semaphores') \
+                             AND attname = 'oldest_wait_at' AND NOT attisdropped)",
+    )
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(|e| e.to_string())?;
+    if !tables {
+        return Ok(Vec::new());
+    }
+    if !step_gates {
+        return Err("feature 022's tables without the steps' gate projection".to_owned());
+    }
+    // a run's own gates exist from `flow_control_run_gates` on; a schema between the two has only steps' gates.
+    // Steps inside an instance path (a loop body, a collection item) are not filed under gates in this slice (G1160):
+    // their permits are not compared here.
+    let gates: String = format!(
+        "{}SELECT s.tenant_id, s.run_id, s.node, 'STEP' AS scope, s.flow_control_gates -> 'concurrency' AS g \
+           FROM steps s WHERE s.tenant_id = $1 AND s.flow_control_gates IS NOT NULL \
+            AND cardinality(s.instance_path_nodes) = 0",
+        if run_gates {
+            "SELECT r.tenant_id, r.id AS run_id, '' AS node, 'RUN' AS scope, r.flow_control_gates -> 'concurrency' AS g \
+               FROM runs r WHERE r.tenant_id = $1 AND r.flow_control_gates IS NOT NULL \
+             UNION ALL "
+        } else {
+            ""
+        }
+    );
+    let gates = gates.as_str();
+    let mut checks: Vec<(&str, String)> = vec![
         (
             "a key's counters differ from its rows",
             "SELECT s.group_name || ':' || encode(substr(s.key_digest, 1, 6), 'hex') || ' holders ' || s.holders \
@@ -245,10 +417,26 @@ pub async fn key_consistency(
                 .to_owned(),
         ),
         (
+            // FR-022-020: the transaction that empties a key deletes it
+            "an empty key row",
+            "SELECT s.group_name || ':' || encode(substr(s.key_digest, 1, 6), 'hex') FROM concurrency_semaphores s \
+              WHERE s.tenant_id = $1 AND s.holders = 0 AND s.waiters = 0"
+                .to_owned(),
+        ),
+        (
+            // invariant 12: every waiter row belongs to a run that is not terminal
+            "a waiter row of a terminal run",
+            "SELECT w.run_id::text || '/' || w.node || ' ' || r.status FROM concurrency_waiters w \
+               JOIN runs r ON r.tenant_id = w.tenant_id AND r.id = w.run_id \
+              WHERE w.tenant_id = $1 AND r.status IN ('SUCCEEDED', 'FAILED', 'CANCELLED', 'TIMED_OUT', 'COMPENSATED', \
+                                                      'PARTIAL', 'COMPENSATION_FAILED')"
+                .to_owned(),
+        ),
+        (
             "a holder row whose gates hold no such permit",
             format!(
                 "SELECT h.run_id::text || '/' || h.node FROM concurrency_holders h WHERE h.tenant_id = $1 \
-                   AND NOT EXISTS (SELECT 1 FROM ({GATES}) p WHERE p.run_id = h.run_id AND p.node = h.node \
+                   AND NOT EXISTS (SELECT 1 FROM ({gates}) p WHERE p.run_id = h.run_id AND p.node = h.node \
                        AND p.scope = h.holder_scope AND p.g ->> 'phase' = 'HELD' \
                        AND (p.g ->> 'attempt')::int = h.attempt AND p.g ->> 'pool' = h.pool \
                        AND p.g ->> 'group' = h.group_name AND p.g ->> 'key' = encode(substr(h.key_digest, 1, 6), 'hex'))"
@@ -258,7 +446,7 @@ pub async fn key_consistency(
             "a waiter row whose gates wait for no such permit",
             format!(
                 "SELECT w.run_id::text || '/' || w.node FROM concurrency_waiters w WHERE w.tenant_id = $1 \
-                   AND NOT EXISTS (SELECT 1 FROM ({GATES}) p WHERE p.run_id = w.run_id AND p.node = w.node \
+                   AND NOT EXISTS (SELECT 1 FROM ({gates}) p WHERE p.run_id = w.run_id AND p.node = w.node \
                        AND p.scope = w.permit_scope AND p.g ->> 'phase' = 'QUEUED' \
                        AND (p.g ->> 'attempt')::int = w.attempt AND p.g ->> 'pool' = w.pool \
                        AND p.g ->> 'group' = w.group_name AND p.g ->> 'key' = encode(substr(w.key_digest, 1, 6), 'hex') \
@@ -268,7 +456,7 @@ pub async fn key_consistency(
         (
             "a permit the gates hold without its holder row",
             format!(
-                "SELECT p.run_id::text || '/' || p.node FROM ({GATES}) p WHERE p.g ->> 'phase' = 'HELD' \
+                "SELECT p.run_id::text || '/' || p.node FROM ({gates}) p WHERE p.g ->> 'phase' = 'HELD' \
                    AND NOT EXISTS (SELECT 1 FROM concurrency_holders h WHERE h.tenant_id = p.tenant_id \
                        AND h.run_id = p.run_id AND h.node = p.node AND h.holder_scope = p.scope)"
             ),
@@ -276,28 +464,33 @@ pub async fn key_consistency(
         (
             "a permit the gates wait for without its waiter row",
             format!(
-                "SELECT p.run_id::text || '/' || p.node FROM ({GATES}) p WHERE p.g ->> 'phase' = 'QUEUED' \
+                "SELECT p.run_id::text || '/' || p.node FROM ({gates}) p WHERE p.g ->> 'phase' = 'QUEUED' \
                    AND NOT EXISTS (SELECT 1 FROM concurrency_waiters w WHERE w.tenant_id = p.tenant_id \
                        AND w.run_id = p.run_id AND w.node = p.node AND w.permit_scope = p.scope)"
             ),
         ),
     ];
+    if oldest_wait {
+        checks.push((
+            // D022-058: the oldest wait the listing orders by is its waiters' oldest
+            "a key's oldest wait differs from its waiters'",
+            "SELECT s.group_name || ':' || encode(substr(s.key_digest, 1, 6), 'hex') FROM concurrency_semaphores s \
+              WHERE s.tenant_id = $1 AND s.oldest_wait_at IS DISTINCT FROM (SELECT min(w.enqueued_at) \
+                    FROM concurrency_waiters w WHERE w.tenant_id = s.tenant_id AND w.namespace_id = s.namespace_id \
+                     AND w.pool = s.pool AND w.permit_scope = s.permit_scope AND w.group_name = s.group_name \
+                     AND w.key_digest = s.key_digest)"
+                .to_owned(),
+        ));
+    }
     for (what, statement) in &checks {
-        // built from constants only, no value of a request or a row
-        let found: Vec<String> = match sqlx::query_scalar(sqlx::AssertSqlSafe(statement.clone()))
+        // built from constants only, no value of a request or a row; any error (a renamed column included) fails
+        let found: Vec<String> = sqlx::query_scalar(sqlx::AssertSqlSafe(statement.clone()))
             .bind(tenant.as_uuid())
             .fetch_all(&mut *tx)
             .await
-        {
-            Ok(found) => found,
-            // a schema that predates the gates (a rollback under test) has no permit to check
-            Err(sqlx::Error::Database(e))
-                if matches!(e.code().as_deref(), Some("42P01" | "42703")) =>
-            {
-                return Ok(Vec::new());
-            }
-            Err(e) => return Err(e.to_string()),
-        };
+            .map_err(|e| {
+                format!("feature 022's consistency check \"{what}\" could not run: {e}")
+            })?;
         if !found.is_empty() {
             return Err(format!(
                 "invariants 1 and 2 of feature 022: {what}: {found:?}"

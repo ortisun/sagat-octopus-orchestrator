@@ -39,6 +39,11 @@ An architectural rule that nothing checks is a wish. Each row is a rule and what
 | A review counts only if it ran with an accepted EGM plugin (ADR-0077) | `scripts/egm-tree-hash.py` against `docs/engineering/egm-accepted-hashes.json` (rule R2 of `check-design-docs.py`) |
 | A gated step that waits is never a claim candidate (ADR-0089 decision 1, feature 022) | `integration_claim_transition_efficiency::gated_window`, selected by every hot-path change (`scripts/select-test-targets.py`) |
 | A pause or a resume locks the keys it touches in the one sorted order, and a paused run holds no granted, unleased step (feature 022, D022-038, ADR-0096) | `integration_flow_control_step_policies::returns` |
+| A concurrency key's counters, oldest wait, holder and waiter rows, gate projections and journals agree across runs; no waiter of an ended run, no empty key row (ADR-0056, feature 022) | `support::flow_control::key_consistency`, run by `World::assert_consistent` after every test of the flow-control suites; it fails, never passes, when a column it names is gone |
+| Every path that takes a run's permit takes the run, its active-run counter row, then the key (ADR-0056 decision 2, ADR-0050 decision 7) | `integration_flow_control_step_policies::concurrency_locks` (a reference in slot order per path, and a reversed control that deadlocks) |
+| The queued runs of a namespace are counted by one statement (feature 022, D022-055) | `queued_runs_count_errors` in `scripts/check-architecture.py` and its fixtures |
+| Key values appear only as labels, and a label only to a caller who may reveal personal data (feature 022, D1168, D022-060) | `key_value_free_errors` in `scripts/check-architecture.py`; `integration_flow_control_step_policies::rest` (a canary value in no body; labels `null` without the grant) |
+| Every statement of the store is audited as the runtime role, fragments spliced from another module included | `integration_platform_foundation::runtime_privileges` (`rust_source.rs` resolves macros by module path and by import) |
 
 When you add a rule worth keeping, add its row and its check in the same change.
 

@@ -418,7 +418,12 @@ pub struct RunFilter {
 ///
 /// Every method takes the tenant explicitly; adapters MUST apply it as a filter on every statement.
 pub trait RunStore:
-    QuotaLookup + crate::telemetry::TelemetryStore + crate::authz::NamespaceDirectory + Send + Sync
+    QuotaLookup
+    + crate::telemetry::TelemetryStore
+    + crate::authz::NamespaceDirectory
+    + crate::flow_control_keys::FlowControlKeyReader
+    + Send
+    + Sync
 {
     type Tx: RunTx;
 
@@ -2354,9 +2359,43 @@ where
     ) -> Result<RunRecord, AppError> {
         principal.authorize(Permission::RunRead)?;
         match self.store.get(principal.tenant_id(), id).await? {
-            Some(run) => Ok(run),
+            Some(mut run) => {
+                self.reveal_permit_labels(principal, std::slice::from_mut(&mut run))
+                    .await?;
+                Ok(run)
+            }
             None => Err(self.missing(principal, id, ctx).await),
         }
+    }
+
+    /// Shows the key label of each run-level permit to a caller who may reveal personal data in the run's namespace;
+    /// every other caller reads it hidden (FR-022-057, D022-060). One check per namespace the runs are in.
+    async fn reveal_permit_labels(
+        &self,
+        principal: &Principal,
+        runs: &mut [RunRecord],
+    ) -> Result<(), AppError> {
+        let mut decided: Vec<(sagat_domain::identity::NamespaceId, bool)> = Vec::new();
+        for run in runs {
+            let Some(permit) = run.concurrency.as_mut() else {
+                continue;
+            };
+            let namespace = run.info.namespace_id;
+            let reveal = if let Some((_, reveal)) = decided.iter().find(|(n, _)| *n == namespace) {
+                *reveal
+            } else {
+                let reveal = self
+                    .store
+                    .reveals_personal_data(principal.tenant_id(), namespace, principal.subject())
+                    .await?;
+                decided.push((namespace, reveal));
+                reveal
+            };
+            if reveal {
+                permit.reveal_label();
+            }
+        }
+        Ok(())
     }
 
     /// # Errors
@@ -2389,6 +2428,7 @@ where
             .await?;
         let more = rows.len() > limit as usize;
         rows.truncate(limit as usize);
+        self.reveal_permit_labels(principal, &mut rows).await?;
         let next_cursor = more
             .then(|| rows.last().map(|r| r.info.run_id.to_string()))
             .flatten();

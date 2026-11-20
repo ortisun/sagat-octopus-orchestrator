@@ -44,6 +44,16 @@ oidc:
 secrets:
   existingSecret: ""
 
+# Flow control (feature 022, D022-057). Off by default. With `concurrencyKeys` on, both the control plane and the engine
+# need the deployment's digest keys: a Secret (`existingSecret`) whose key `flow-control.keys` holds `version:hex[,...]`
+# (32-byte keys in hexadecimal), mounted read-only as a file, never an environment value. The processes refuse to start
+# with the switch on and no keys, or with keys that lack a version the database has in force. Then activate the key
+# version and the capability (docs/runbooks/flow-control.md). The rate gate is not served by this release.
+flowControl:
+  concurrencyKeys: false
+  digestKeys:
+    existingSecret: ""
+
 # Opt-in managed secrets. Workload login is performed by a native OpenBao Agent sidecar (K8s 1.29+).
 # Bootstrap/unseal remains operator-owned; no root token or static provider token is accepted here.
 openbao:

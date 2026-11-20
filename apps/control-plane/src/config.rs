@@ -164,6 +164,56 @@ pub fn flow_control(
     })
 }
 
+/// The variable that names the file of the deployment's flow-control digest keys (feature 022, D022-057).
+pub const FLOW_CONTROL_KEYS_FILE: &str = "SAGAT_FLOW_CONTROL_DIGEST_KEYS_FILE";
+
+/// The most a file of digest keys may hold: far more than any ring (`32767:` and 64 hexadecimal digits a version).
+const FLOW_CONTROL_KEYS_FILE_LIMIT: u64 = 16 * 1024;
+
+/// The deployment's flow-control digest keys (feature 022, D022-057; FR-022-053), from the file
+/// `SAGAT_FLOW_CONTROL_DIGEST_KEYS_FILE` names: `version:hex[,version:hex...]`, each key 32 bytes in hexadecimal. The key
+/// material is a file the deployment mounts (a Kubernetes secret, a compose secret), as the HTTP server's private key
+/// is, never a variable's value or a row; which version is in force is the database's. A process with either
+/// `SAGAT_FLOW_CONTROL_*_ENABLED` switch on must have it: it would otherwise refuse every gated run it is asked to admit
+/// and could not grant a queued one. No error names a key or the file's content.
+///
+/// # Errors
+/// [`ConfigError::Missing`] with a switch on and no file named; [`ConfigError::Invalid`] for a file that cannot be read,
+/// is larger than 16 KiB, is not text, is not a ring, or holds no key.
+pub fn flow_control_keys(
+    get: Lookup<'_>,
+    switches: sagat_application::flow_control::FlowControlSwitches,
+) -> Result<Option<std::sync::Arc<sagat_application::keyed_digest::KeyRing>>, ConfigError> {
+    use std::io::Read as _;
+    let invalid = |reason: &str| ConfigError::Invalid {
+        name: FLOW_CONTROL_KEYS_FILE,
+        reason: reason.to_owned(),
+    };
+    let Some(path) = get(FLOW_CONTROL_KEYS_FILE).filter(|path| !path.trim().is_empty()) else {
+        return if switches.concurrency_keys || switches.rate_limits {
+            Err(ConfigError::Missing(FLOW_CONTROL_KEYS_FILE))
+        } else {
+            Ok(None)
+        };
+    };
+    let file = std::fs::File::open(path.trim())
+        .map_err(|_| invalid("must name a readable file of at most 16 KiB"))?;
+    let mut bytes = zeroize::Zeroizing::new(Vec::new());
+    file.take(FLOW_CONTROL_KEYS_FILE_LIMIT + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| invalid("must name a readable file of at most 16 KiB"))?;
+    if bytes.len() as u64 > FLOW_CONTROL_KEYS_FILE_LIMIT {
+        return Err(invalid("must name a readable file of at most 16 KiB"));
+    }
+    let text = std::str::from_utf8(&bytes).map_err(|_| invalid("must hold text"))?;
+    let ring = sagat_application::keyed_digest::KeyRing::parse(text)
+        .map_err(|error| invalid(&error.to_string()))?;
+    if ring.versions().next().is_none() {
+        return Err(invalid("holds no key"));
+    }
+    Ok(Some(std::sync::Arc::new(ring)))
+}
+
 /// Variables of the per-tenant request budget: (requests per second, burst).
 pub const TENANT_RATE_VARS: (&str, &str) = ("SAGAT_RATE_LIMIT_RPS", "SAGAT_RATE_LIMIT_BURST");
 /// Variables of the per-subject request budget: (requests per second, burst).
@@ -439,6 +489,9 @@ pub struct ServeConfig {
     /// The flow-control capabilities this deployment allows (`SAGAT_FLOW_CONTROL_*_ENABLED`, feature 022). Off by
     /// default; a capability that is on still waits for its fleet activation.
     pub flow_control: sagat_application::flow_control::FlowControlSwitches,
+    /// The deployment's flow-control digest keys (`SAGAT_FLOW_CONTROL_DIGEST_KEYS_FILE`, D022-057): required with a
+    /// switch on. Prints its versions only.
+    pub flow_control_keys: Option<std::sync::Arc<sagat_application::keyed_digest::KeyRing>>,
     /// Native TLS identity is required for the mTLS webhook profile; no forwarded headers are trusted.
     pub tls: Option<sagat_api_http::HttpTlsConfig>,
     pub webhook_oidc: Vec<sagat_api_http::auth::WebhookOidcConfig>,
@@ -645,6 +698,7 @@ impl ServeConfig {
             run_input_validation: run_input_validation(get)?,
             collection_operators_enabled: collection_operators(get)?,
             flow_control: flow_control(get)?,
+            flow_control_keys: flow_control_keys(get, flow_control(get)?)?,
             tls,
             webhook_oidc,
             webhook_oidc_development: environment == Environment::Dev,

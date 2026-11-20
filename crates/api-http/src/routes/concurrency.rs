@@ -1,11 +1,11 @@
 //! The live concurrency keys of a namespace (feature 022, FR-022-022; T022-026).
 //!
-//! A namespace that belongs to another tenant is a `404` like one that does not exist. Keys appear only as labels.
+//! A namespace that belongs to another tenant is a `404` like one that does not exist. Keys appear only as labels, and
+//! only to a caller who may reveal personal data in the namespace (D022-060); the cursor is sealed (D022-059).
 
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use sagat_application::api_admission::{ApiOperation, ApiTarget};
-use sagat_application::flow_control_keys::KeyPosition;
 use sagat_domain::identity::NamespaceId;
 use sagat_domain::workflow::ResolvedGroup;
 use serde::Deserialize;
@@ -42,13 +42,23 @@ pub async fn list_concurrency_keys<B: Governance>(
                 .map_err(|_| ApiError::validation("the group is not a valid group name"))
         })
         .transpose()?;
+    // A cursor is the position sealed for this namespace of this tenant (D022-059): anything else, altered, or sealed
+    // for another namespace is a `400`, decided before admission and the same whether the namespace exists or not.
     let after = query
         .cursor
         .as_deref()
         .map(|c| {
-            KeyPosition::decode(c).ok_or_else(|| ApiError::bad_request("the cursor is not valid"))
+            service
+                .concurrency_key_position(&caller.session.principal, namespace, c)
+                .ok_or_else(|| ApiError::bad_request("the cursor is not valid"))
         })
         .transpose()?;
+    // a group's listing resumes only after a key of that group (the order within one group is the namespace's order)
+    if let (Some(group), Some(after)) = (&group, &after)
+        && after.group != *group
+    {
+        return Err(ApiError::bad_request("the cursor is not valid"));
+    }
     let limit = query.limit.unwrap_or(50).clamp(1, 200);
     admit(
         &state,
@@ -67,5 +77,8 @@ pub async fn list_concurrency_keys<B: Governance>(
             &caller.ctx,
         )
         .await?;
-    Ok(Json(ConcurrencyKeyPageBody::of(&page, limit as usize)))
+    let body = ConcurrencyKeyPageBody::of(&page, limit as usize, |last| {
+        service.concurrency_key_cursor(&caller.session.principal, namespace, last)
+    })?;
+    Ok(Json(body))
 }

@@ -824,6 +824,96 @@ taken after `git grep D022-04` on every `origin/*` branch.
   row; and each run a row names is verified against its journal (restored events are excluded by the replay). Rejected:
   checking from the journals alone across runs (a replay of every run of the tenant per assertion, where the
   projections are already proved equal to the replay run by run).
+- **D022-057 — The deployment's digest key ring reaches both binaries as a file, and a process serves the gates it
+  runs with it (G1198; delegate (OD-2026-11-20-6)).** G1198: no configuration carried the `KeyRing` to the stores of the
+  control plane and the engine, and the admission point refused every gated run (D022-037) except through a test door.
+  *Where the key material comes from.* The codebase supplies server key material three ways: an environment value
+  (`SAGAT_SECRETS_KEYS`, `SAGAT_SCRIPT_SIGNING_KEY`), a file a variable names (`SAGAT_HTTP_TLS_KEY`,
+  `SAGAT_OPENBAO_INTENT_KEY_FILE`, `SAGAT_RUNNER_TOKEN_FILE`, read bounded), and feature 015's secret provider (OpenBao),
+  which serves tenants' secrets through intents. Options: (a) an environment value `version:hex` (copied into every child
+  process, `docker inspect`, `/proc/<pid>/environ` and crash reports); (b) a file named by
+  `SAGAT_FLOW_CONTROL_DIGEST_KEYS_FILE`, mounted read-only from a Kubernetes or compose secret; (c) fetched from OpenBao
+  at start (the gate of every run would depend on OpenBao at every restart, and the provider is the tenants', not the
+  platform's own keys); (d) a database row (forbidden by FR-022-053). Chosen: **(b)**, the strongest of the existing
+  patterns: the file is read once at start, bounded (16 KiB), wiped from memory after parsing (`zeroize`), parsed by
+  `KeyRing::parse` (whose errors name no key) and never printed (`KeyRing`'s `Debug` shows versions only); a raw-key
+  variable is not accepted at all. The Helm chart mounts a Secret (`flowControl.digestKeys.existingSecret`, mode 0440
+  as the OpenBao CA is) and compose an overlay (`compose.flow-control.yaml`, the file ignored by git).
+  *Startup rules.* Either switch on without the file is a configuration error (`Missing`) in both binaries, as is a file
+  that is unreadable, too large, not text, not a ring, or empty; and a process refuses to start when the database has a
+  version in force (active, or retiring) that its ring lacks (`check_flow_control_keys`), instead of starting and
+  refusing every key of that version (G1193).
+  *What a process lists and admits.* `flow_control::served(switches, keys)`: the capabilities this build runs the gate
+  of (`BUILT` = the concurrency gate), switched on, with the ring. Both binaries list `flow-control-concurrency-v1`
+  exactly then, and never `flow-control-rate-v1` until T022-072 and T022-074 exist. The admission point admits a gated
+  definition when every capability it needs is switched on, activated for the fleet and served by this process
+  (refusals in that order: `CAPABILITY_DISABLED`, `FLOW_CONTROL_ACTIVATION_PENDING`, `BINARY_CAPABILITY_MISSING`); a
+  start's `rateLimit` stays refused (T022-072). The test door `admitting_step_gates_for_tests` is gone: tests admit
+  concurrency gates through the real rule (switch, ring, activation), and the step-level rate gate through
+  `serving_rate_gates_for_tests` (feature `rate-gates-for-tests`, `[dev-dependencies]` only, a production call refused
+  by `scripts/check-architecture.py`) until T022-074. Rejected: listing the capability from the switch alone (a
+  process without the ring would promise a gate it cannot decide); requiring only the concurrency switch to need the
+  ring (a rate switch without keys would fail the same way once the rate gate exists).
+  Proved by `integration_flow_control_step_policies::admission::a_process_with_the_switch_the_activation_and_the_keys_admits_a_concurrency_gated_run`,
+  `apps/execution-engine/tests/registry.rs` (listing, refusals, no key in an error or a printed configuration) and the
+  control plane's registry tests. The harness gives a real engine the switch and the ring with
+  `support::flow_control::process_env` and activates the concurrency capability only (`activate_concurrency`).
+- **D022-058 — A page of the key listing costs its own keys (keys review of 2026-11-20, architecture M3; T022-026,
+  T022-105; delegate (OD-2026-11-20-6)).** The listing computed each key's oldest wait by a correlated `min()` over its
+  waiters and sorted every live key of the namespace before `LIMIT`: a page cost O(live keys), up to the 100,000 the
+  live-keys ceiling allows, and paging the whole listing was quadratic, on the API's pool, for any human with
+  `ops:read`. Options: (a) a statement timeout only (bounds the harm, keeps the cost); (b) a server-side materialized
+  view refreshed by a job (stale counts, a refresh that costs the whole table anyway); (c) keep the oldest wait on the
+  semaphore row, maintained by the trigger that already keeps its counters, and walk an index in the listing's order.
+  Chosen: **(c) and the timeout of (a)**. Migration `20270205000000_flow_control_key_listing`: `oldest_wait_at` (CHECK
+  `(waiters = 0) = (oldest_wait_at IS NULL)`, added `NOT VALID`, validated by `20270205000100`); the count trigger keeps
+  it in the transaction that adds or removes a waiter (`LEAST` on an insert; on a delete the minimum of the key's
+  waiters, read after the trigger locks the key's row by its own statement so that its snapshot sees every waiter
+  committed under that lock); `concurrency_semaphores_listing_idx` and `_group_listing_idx` in the listing's order; the
+  holders' key index extended by `acquired_at`, so the oldest holder is one probe. The listing's position is always an
+  index condition (`'-infinity'` before the first key, never an `OR` that a generic plan would make a filter). A page is
+  at most 201 index entries and 201 holder probes; `SET LOCAL statement_timeout = '2s'` refuses anything slower as
+  `Unavailable` (`503`). Proved by `rest::a_page_of_keys_reads_only_its_own_keys` (the planner, on 5,000 keys, walks
+  the index with no sort and reads exactly the page's 51 rows, for both statements, from the first key and after a
+  cursor) and by `key_consistency`'s new check that every key's oldest wait is its waiters'. Cost on the write path: an
+  update that changes `oldest_wait_at` is not HOT (an indexed column changes) once per change of a key's oldest
+  waiter. Rejected (b): its staleness contradicts "counts read in one snapshot". `queuedRuns` is still a count of the
+  namespace's run waiters, bounded by the `queued_runs` ceiling (T022-105's counter rows replace it).
+- **D022-059 — The listing's cursor is sealed for its namespace (keys review of 2026-11-20, security M2, architecture
+  M1; amends D022-055 item 2; delegate (OD-2026-11-20-6)).** D022-055 put the key's full digest in the cursor in clear;
+  the label is the digest's first six bytes, so once a label is hidden (D022-060) the cursor would show it, and a forged
+  cursor could bisect a hidden digest (about 256 requests). No cursor of the codebase is signed (they are run ids,
+  instants and offsets of the caller's own rows), so the keyed-digest machinery seals this one. Options: (a) an HMAC
+  over the clear position (tamper-evident, still readable); (b) server-side cursor state (a table, its expiry and its
+  cleanup, for a read); (c) a surrogate key column ordered instead of the digest (a sequence shared by every tenant
+  leaks their creation rate); (d) authenticated encryption of the position. Chosen: **(d)**: ChaCha20-Poly1305 under a
+  key derived from the newest version of the deployment's flow-control digest key (`HMAC(key, "sagat.flow-control.
+  cursor.v1\0")`, a message no key digest can be), a random nonce per cursor, the version in clear and the tenant and
+  namespace as associated data (`KeyRing::seal_cursor`, `KeyPosition::seal`). A caller learns nothing from it, cannot
+  alter it, and cannot use it in another namespace; a cursor sealed under a version the process no longer holds, an
+  altered one, a forged clear position (`k1.`) and one of another namespace are each a `400`, decided before admission
+  (the same answer whether the namespace exists or not). A position before 1970 is refused (the `500` of security
+  minor 2). A cursor of one group's listing must name a key of that group. Without a ring a process cannot hand out a
+  cursor: a page that has a next one is refused `503` rather than cut short (with D022-057 a process that runs the gate
+  always holds the ring). Proved by the unit tests of `keyed_digest` and `flow_control_keys` (every single altered
+  character of a cursor refused) and by `rest::the_namespace_lists_its_keys_oldest_wait_first_and_pages_them_exactly`.
+- **D022-060 — A key's label is shown only to a caller who may reveal personal data (keys review of 2026-11-20,
+  security M1; FR-022-057; amends D022-055 item 4; delegate (OD-2026-11-20-6)).** FR-022-057 gives the label only to a
+  caller who may disclose every location the key reads; T022-104 (classifying those locations at publication) is not
+  built, and an unannotated location is `pii` (`Level::UNMARKED`). D022-055 item 4 showed every label to every reader.
+  Options: (a) keep it until T022-104 (a viewer can confirm a guessed customer value, G1185); (b) refuse to start with
+  the switch on until T022-104 (blocks the feature's release slice for a read-side rule); (c) fail closed: take every
+  key to read `pii`, so the label goes only to a subject whose current role may use a reveal grant and who holds the
+  namespace's `payload:reveal-pii` grant (feature 009's rule), `null` for every other caller. Chosen: **(c)**. It is
+  built so that forgetting the check hides the label: the store returns no label (`ConcurrencyKeyView.label` is `None`,
+  `RunPermit` hides its own), and only the services reveal it (`OperationsService::concurrency_keys`,
+  `RunService::get` and `list`, one check per namespace). The check reads the membership and the grant in one statement
+  without the disclosure path's locks: a label is a pseudonym, not an audited disclosure, so a revocation that commits
+  during a read may let that one read show a label. T022-104 relaxes this per location (a key over `public` or
+  `internal` fields to their readers) and refuses `secret` keys at publication. Proved by
+  `rest::a_key_label_is_shown_only_to_a_caller_who_may_reveal_personal_data` (a viewer and a developer without a grant
+  read `null` in the run, the run listing and the key listing; an admin with the grant and the developer once granted
+  read the label).
 
 ## Gaps
 
@@ -858,7 +948,7 @@ taken after `git grep D022-04` on every `origin/*` branch.
 | G1187 | The namespace-level warnings `CONCURRENCY_LIMIT_MISMATCH` and `RATE_LIMIT_MISMATCH` need the declarations of the other published definitions of the namespace; the codec cannot see them and no store keeps them yet. *Closed 2026-11-16 (D022-041): the declarations table and the publication check; proved by `integration_flow_control_step_policies::publication`.* | Closed |
 | G1188 | `RunState::restore` (a run rebuilt from its projection) does not restore gate state. No stored run has any in this build (admission refuses gated definitions; the projection writer refuses a gated step's wait). *Partly closed 2026-11-19 (D022-044): a step's gates are restored from `steps.flow_control_gates`; a run's start gates are not (T022-022).* *Closed 2026-11-20 (D022-049): a run's start gates are restored from `runs.flow_control_gates`.* | Closed |
 | G1197 | The collection- and loop-finish paths (`crates/infra-postgres/src/primitives.rs`, `loop_progress.rs`, `crates/scheduler/src/passes.rs`) write their successor's step row directly: a gated root successor of a `forEach` or a loop is refused there (`RuntimeNotIntegrated`, fail closed; the finish is retried) instead of being decided. Corrected 2026-11-19: the first text said they refused an unexpected evaluation, which was true only for an `end` successor. | Open; T022-096 follow-up |
-| G1198 | No deployment configuration carries the digest keys (`KeyRing`) to the stores of the control plane and the engine: a gated step is refused `BINARY_CAPABILITY_MISSING` without them. Lands with the capability listing (D022-037). *Extended 2026-11-19 (D022-045): a scheduler replica needs the ring too; without it the grant pass grants nothing (`unsupported`) and keeps its keys due; the timeout routine does not need it.* | Open; capability listing |
+| G1198 | No deployment configuration carries the digest keys (`KeyRing`) to the stores of the control plane and the engine: a gated step is refused `BINARY_CAPABILITY_MISSING` without them. Lands with the capability listing (D022-037). *Extended 2026-11-19 (D022-045): a scheduler replica needs the ring too; without it the grant pass grants nothing (`unsupported`) and keeps its keys due; the timeout routine does not need it.* *Closed 2026-11-20 (D022-057): the ring is the file `SAGAT_FLOW_CONTROL_DIGEST_KEYS_FILE` in both binaries (a switch on without it does not start); both list `flow-control-concurrency-v1` with the switch and the ring; the admission point admits a gate a process serves. Open: the rate gate's listing (T022-072, T022-074).* | Closed for the concurrency gate; rate with T022-074 |
 | G1199 | The readiness gate applies the declared `limit` and `queueTimeout`; the namespace's `concurrency_limit` and `flow_control_queue_timeout_ms` ceilings (`FlowControlCeilings`) are not read there yet, nor the live-keys ceiling (`FLOW_CONTROL_LIMIT` of FR-022-054) or a waiters-per-key bound (security review of 2026-11-19, Major): with distinct keys a caller can create key rows without bound in one namespace. No process may list the capabilities before these are applied. *Partly closed 2026-11-19 (D022-045): the namespace limit, queue timeout and live-keys ceilings apply at readiness (`FLOW_CONTROL_LIMIT`); step waiters are bounded by the plan per run and gated node, not per key. Open: a namespace ceiling of rate-limit keys and values (T022-077); run waiters per key (T022-022, T022-072).* | Open; T022-077, T022-022 |
 | G022-001 | The readiness gate records no metric or span yet (`concurrency_acquisitions_total`, `rate_limit_decisions_total`, `workflow.concurrency.acquire`, `workflow.rate_limit.admit`, rule 10; architecture review of 2026-11-19, M3). A grant counts as unleased until the pass records its lease (T022-074), so a rate-limited step key admits only `limit` steps in all until then. A key that yields `null` shares the group's single key. *Partly closed 2026-11-19 (D022-045): decisions, grants, timeouts, dequeues and returns of the step scope are counted after commit and spanned by group. Open: the wait histograms and waiter gauges, the grant-lag and unleased-grant series and their alerts (T022-082).* | Open; T022-082, T022-074, T022-104 |
 | G022-002 | The live-keys ceiling is checked without a namespace lock: concurrent transactions that each create a new key at the boundary can pass it by at most the new keys the others create (their number minus one when each creates one key). *Accepted 2026-11-19 by the owner (O1172 (a), OD-2026-11-19-4) for 0.3.0; the bound is documented in `docs/runbooks/flow-control.md` (D022-047). The exact bound is in keys when a round creates several (O1173), accepted 2026-11-20 (OD-2026-11-20-3).* | Accepted (OD-2026-11-19-4; in keys, OD-2026-11-20-3) |
