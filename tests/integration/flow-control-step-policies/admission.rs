@@ -192,13 +192,13 @@ async fn the_activation_is_refused_while_a_live_process_lacks_the_capability() {
     ));
 }
 
-/// FR-022-053, FR-022-059, D022-057: before the activation, publication is refused `FLOW_CONTROL_ACTIVATION_PENDING`;
-/// after it, a start reaches the one admission point, which refuses a rate-limited definition
-/// `BINARY_CAPABILITY_MISSING` (no process of this build serves the rate gate, even with the digest keys); when the
-/// requirement is removed, the start is refused `FLOW_CONTROL_ACTIVATION_PENDING`; with the switch off,
-/// `CAPABILITY_DISABLED`. No run of the gated definition ever exists.
+/// FR-022-053, FR-022-059, D022-057, T022-072: before the activation, publication is refused
+/// `FLOW_CONTROL_ACTIVATION_PENDING`; after it, the one admission point admits a rate-limited start exactly when the
+/// process's switch is on and it holds the digest keys (`BINARY_CAPABILITY_MISSING` without the keys,
+/// `CAPABILITY_DISABLED` with the switch off); the admitted run holds its slot from its grant; when the requirement is
+/// removed, the start is refused `FLOW_CONTROL_ACTIVATION_PENDING`. Only the admitted run exists.
 #[tokio::test]
-async fn publication_and_starts_wait_for_the_activation_and_this_build_never_admits_a_rate_limited_run()
+async fn publication_and_starts_wait_for_the_activation_and_a_serving_process_admits_a_rate_limited_run()
  {
     let w = world().await;
     let workflow = create(&w, &gated("provider-sync")).await;
@@ -251,12 +251,36 @@ async fn publication_and_starts_wait_for_the_activation_and_this_build_never_adm
                     .expect("a ring"),
             )),
     );
+    let without_keys = runs(w.store.clone().with_flow_control(BOTH_ON));
     assert_eq!(
-        start(&on, &w, workflow).await,
+        start(&without_keys, &w, workflow).await,
         Err(AppError::FlowControl(
             FlowControlRefusal::BinaryCapabilityMissing
         )),
-        "this build serves no rate gate, so it admits no rate-limited run"
+        "a process without the digest keys serves no gate"
+    );
+    let (outcome,): (String,) = sqlx::query_as(
+        "SELECT out_outcome FROM flow_control_key_activate(1::smallint, 'operator')",
+    )
+    .fetch_one(&w.db.pool)
+    .await
+    .expect("the digest key version is activated");
+    assert_eq!(outcome, "ACTIVATED");
+    let run = start(&on, &w, workflow)
+        .await
+        .expect("admitted by the one admission point");
+    let (granted, leased_from_grant): (i64, bool) = sqlx::query_as(
+        "SELECT count(*), coalesce(bool_and(leased_at = granted_at), false) FROM rate_limit_grants \
+          WHERE run_id = $1 AND limit_scope = 'RUN'",
+    )
+    .bind(run.as_uuid())
+    .fetch_one(&w.db.pool)
+    .await
+    .expect("grant");
+    assert_eq!(
+        (granted, leased_from_grant),
+        (1, true),
+        "its slot counts from its grant"
     );
     assert_eq!(
         start(&runs(w.store.clone()), &w, workflow).await,
@@ -281,7 +305,11 @@ async fn publication_and_starts_wait_for_the_activation_and_this_build_never_adm
             }
         ))
     );
-    assert_eq!(runs_of(&w, workflow).await, 0, "no run of it exists");
+    assert_eq!(
+        runs_of(&w, workflow).await,
+        1,
+        "only the admitted run exists"
+    );
 }
 
 /// D022-057 (G1198): a concurrency-gated definition is admitted by the one admission point, with no test door, exactly
@@ -350,7 +378,7 @@ async fn a_process_with_the_switch_the_activation_and_the_keys_admits_a_concurre
 }
 
 /// D022-057 (G1198; review of the fixes, architecture M2): a real engine started the way the binary starts, with the
-/// switch and the ring of `support::flow_control::process_env`, registers listing `flow-control-concurrency-v1`; one whose
+/// switches and the ring of `support::flow_control::process_env`, registers listing both gates (T022-072); one whose
 /// ring lacks the version the database has active refuses to start, naming the variable and no key.
 #[tokio::test]
 async fn a_real_engine_with_the_ring_lists_the_gate_and_one_missing_the_active_version_does_not_start()
@@ -388,8 +416,8 @@ async fn a_real_engine_with_the_ring_lists_the_gate_and_one_missing_the_active_v
     .await;
     assert!(
         listed.iter().any(|c| c == "flow-control-concurrency-v1")
-            && !listed.iter().any(|c| c == "flow-control-rate-v1"),
-        "{listed:?}"
+            && listed.iter().any(|c| c == "flow-control-rate-v1"),
+        "this build serves both gates (T022-072, T022-074): {listed:?}"
     );
     engine.finish().await.expect("stopped");
 

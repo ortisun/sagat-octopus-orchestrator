@@ -89,6 +89,11 @@ const BATCH_PURGE_CALLS: u32 = 100;
 const BATCH_PURGE_TIME: Duration = Duration::from_secs(20);
 /// Batches one housekeeping call may purge (about 100 000 messages).
 const PURGE_ROUNDS: u32 = 20;
+/// The rate-limit keys one call of the grant purge visits, each in its own transaction (feature 022, transaction T25).
+const RATE_PURGE_KEYS: u32 = 64;
+/// The grants of one key one transaction of the purge deletes, so that the key's lock is held briefly (each deleted row
+/// updates the key's counters through its trigger).
+const RATE_PURGE_PER_KEY: u32 = 500;
 
 /// The code and the `reason` label of a blob source that cannot be used (T014-016).
 fn source_failure(error: CollectionSourceError) -> (FailureCode, &'static str) {
@@ -206,6 +211,8 @@ pub struct Report {
     pub gate_waits_timed_out: u32,
     /// Waiters of a run that already ended: an invariant breach, alerted and skipped (ADR-0089 decision 5).
     pub gate_orphans: u32,
+    /// Granted step slots whose lease instant was recorded (feature 022, transaction T23, T022-074).
+    pub rate_leases_recorded: u64,
     pub stopped_runs_settled: u32,
     pub timers_fired: u32,
     pub waits_timed_out: u32,
@@ -1031,6 +1038,8 @@ where
         self.retries(&self.view(), &mut report).await;
         // feature 022: a waiter past its deadline times out before the grants, which skip it anyway
         self.gate_timeouts(&self.view(), &mut report).await;
+        // a slot leased since the last tick starts its window before the grants count it (transaction T23)
+        self.rate_leases(&self.view(), &mut report).await;
         self.gate_grants(&self.view(), &mut report).await;
         self.leases(&self.view(), &mut report).await;
         self.deadlines(&self.view(), &mut report).await;
@@ -1050,6 +1059,14 @@ where
     pub async fn grant_gates(&self) -> Report {
         let mut report = Report::default();
         self.gate_grants(&self.view(), &mut report).await;
+        report
+    }
+
+    /// Feature 022: the lease recording alone (transaction T23), as a tick runs it (a test hook, as [`Self::grant_gates`]).
+    #[doc(hidden)]
+    pub async fn record_rate_leases(&self) -> Report {
+        let mut report = Report::default();
+        self.rate_leases(&self.view(), &mut report).await;
         report
     }
 
@@ -4274,6 +4291,34 @@ where
             Ok(_) => {}
             Err(error) => tracing::warn!(%error, "could not purge worker sessions"),
         }
+        // Feature 022 (transaction T25): the grants of a rate-limit key that no acquirer can count any more, a key at a time.
+        let mut grants = 0u64;
+        for _ in 0..PURGE_ROUNDS {
+            match self
+                .store
+                .purge_rate_grants(RATE_PURGE_KEYS, RATE_PURGE_PER_KEY)
+                .await
+            {
+                Ok(n) => {
+                    grants += n;
+                    if n == 0 {
+                        break;
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "could not purge aged rate-limit grants");
+                    break;
+                }
+            }
+        }
+        metrics::counter!("scheduler_actions_total", "kind" => "rate_purge", "outcome" => "done")
+            .increment(grants);
+        if grants > 0 {
+            tracing::info!(
+                removed = grants,
+                "purged rate-limit grants past every window"
+            );
+        }
         // The records scripts keep for a while (executions, test runs) end with their retention.
         let mut scripts = 0u64;
         for _ in 0..PURGE_ROUNDS {
@@ -5548,12 +5593,38 @@ where
         }
     }
 
+    /// The lease recording of feature 022 (transaction T23, T022-074; D022-005, D022-029): a granted step slot counts while unleased
+    /// and for its window after its attempt's lease; this pass copies the lease instant from the journal onto the grants
+    /// of the run shards this replica holds, in one statement that locks the grant rows only. A stale replica recording
+    /// a lease writes the same instant (it is read from the journal), so no fence is needed; a late recording keeps a slot
+    /// longer, never frees one early.
+    async fn rate_leases(&self, view: &View, report: &mut Report) {
+        let window = Window {
+            shards: view.shards,
+            exclude: Vec::new(),
+            limit: self.settings.batch,
+        };
+        match self.store.record_rate_leases(&window).await {
+            Ok(recorded) => {
+                report.rate_leases_recorded += recorded;
+                metrics::counter!("scheduler_actions_total", "kind" => "rate_lease", "outcome" => "done")
+                    .increment(recorded);
+            }
+            Err(error) => {
+                tracing::warn!(%error, "the lease instants of granted slots could not be recorded");
+                metrics::counter!("scheduler_actions_total", "kind" => "rate_lease", "outcome" => "failed")
+                    .increment(1);
+                report.failed += 1;
+            }
+        }
+    }
+
     /// The grant routine of feature 022 (T26, T022-097; ADR-0089 decisions 3 and 4, ADR-0094 pending): keys, not
     /// waiters, are selected, those whose next-eligible hint has come on a home shard this replica holds, fairly between
     /// tenants and bounded per pass; each key's waiters are tried oldest first, at most
     /// [`GRANTS_PER_KEY_PER_PASS`](sagat_application::flow_control::GRANTS_PER_KEY_PER_PASS), each in its own run
-    /// transaction under the key's fence. A key none of whose waiters this pass could grant rests until a release sets
-    /// its hint again.
+    /// transaction under the key's fence. A key none of whose waiters this pass could grant rests until a release, a return,
+    /// a new waiter or the first instant a slot may stop counting sets its hint again (D022-064).
     async fn gate_grants(&self, view: &View, report: &mut Report) {
         use sagat_application::flow_control::GateKey;
         let keys = self

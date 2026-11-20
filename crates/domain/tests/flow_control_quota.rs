@@ -10,10 +10,10 @@ use std::time::Duration;
 use common::{activity, id};
 use sagat_domain::identity::Slug;
 use sagat_domain::quota::{self, QuotaError, QuotaKind, QuotaResource, QuotaScope, QuotaUnit};
-use sagat_domain::workflow::flow_control::MAX_QUEUE_TIMEOUT;
+use sagat_domain::workflow::flow_control::{DEPLOYMENT_PER_SECOND_LIMIT, MAX_QUEUE_TIMEOUT};
 use sagat_domain::workflow::{
     ConcurrencyPolicy, FlowControl, FlowControlCeilings, FlowControlLimit, FlowGroup, GateKind,
-    WorkflowDefinition,
+    RateLimitPolicy, RatePeriod, WorkflowDefinition,
 };
 
 const NEW: [QuotaResource; 6] = [
@@ -322,4 +322,175 @@ fn one_key_never_holds_every_waiting_run_of_the_namespace() {
         100,
         "the defaults already hold it"
     );
+}
+
+/// The rate half of the ceilings (T022-077, 0.3.0 slice; FR-022-047, D022-064): the live rate-limit keys are a count;
+/// the most grants a key counts in a second, a minute and an hour are three policies, one per window length, so that a
+/// namespace lowering one never clamps a declaration of another length.
+const RATE: [(QuotaResource, &str, QuotaKind, u64, u64); 4] = [
+    (
+        QuotaResource::RateLimitLiveKeys,
+        "rate_limit_live_keys",
+        QuotaKind::Count,
+        10_000,
+        100_000,
+    ),
+    // the deployment's lower ceiling until the benchmark of SC-022-029 meets its floor: default and maximum are 20
+    (
+        QuotaResource::RateLimitPerSecond,
+        "rate_limit_per_second",
+        QuotaKind::Policy,
+        20,
+        20,
+    ),
+    (
+        QuotaResource::RateLimitPerMinute,
+        "rate_limit_per_minute",
+        QuotaKind::Policy,
+        6_000,
+        6_000,
+    ),
+    (
+        QuotaResource::RateLimitPerHour,
+        "rate_limit_per_hour",
+        QuotaKind::Policy,
+        10_000,
+        10_000,
+    ),
+];
+
+#[test]
+fn each_rate_resource_has_its_name_kind_and_the_bounds_of_the_plan() {
+    for (resource, name, kind, default, maximum) in RATE {
+        assert_eq!(resource.as_str(), name);
+        assert_eq!(name.parse::<QuotaResource>(), Ok(resource));
+        assert_eq!(
+            QuotaResource::ALL
+                .iter()
+                .filter(|r| **r == resource)
+                .count(),
+            1,
+            "{name} is listed once"
+        );
+        assert_eq!(resource.scope(), QuotaScope::Namespace, "{name}");
+        assert_eq!(resource.kind(), kind, "{name}");
+        assert_eq!(resource.unit(), QuotaUnit::Items, "{name}");
+        assert_eq!(resource.has_usage(), kind == QuotaKind::Count, "{name}");
+        assert_eq!(resource.default_limit(), default, "{name}");
+        assert_eq!(resource.maximum(), maximum, "{name}");
+        assert!(!resource.limit_name().is_empty(), "{name}");
+        // SC-022-011: at its bound accepted, one over refused, for setting and for granting
+        assert_eq!(
+            quota::validate(resource, true, maximum, maximum),
+            Ok(maximum)
+        );
+        assert_eq!(
+            quota::validate(resource, true, maximum + 1, maximum),
+            Err(QuotaError::TooLarge),
+            "{name} over its bound"
+        );
+        assert_eq!(quota::validate_ceiling(resource, maximum), Ok(maximum));
+        assert_eq!(
+            quota::validate_ceiling(resource, maximum + 1),
+            Err(QuotaError::TooLarge)
+        );
+        // zero: a count of zero refuses every new key; a policy of zero is not a value
+        let zero = quota::validate(resource, true, 0, maximum);
+        if kind == QuotaKind::Count {
+            assert_eq!(zero, Ok(0), "{name}");
+        } else {
+            assert_eq!(zero, Err(QuotaError::OutsideRange), "{name}");
+        }
+    }
+    // the per-minute and per-hour bounds are the domain's own, so that a declaration and a ceiling never disagree
+    assert_eq!(
+        QuotaResource::RateLimitPerMinute.maximum(),
+        u64::from(RatePeriod::Minute.max_limit())
+    );
+    assert_eq!(
+        QuotaResource::RateLimitPerHour.maximum(),
+        u64::from(RatePeriod::Hour.max_limit())
+    );
+    assert_eq!(
+        QuotaResource::RateLimitPerSecond.maximum(),
+        u64::from(DEPLOYMENT_PER_SECOND_LIMIT)
+    );
+    assert!(DEPLOYMENT_PER_SECOND_LIMIT < RatePeriod::Second.max_limit());
+}
+
+fn rate(limit: u32, per: RatePeriod) -> RateLimitPolicy {
+    RateLimitPolicy::new(
+        FlowGroup::Derived,
+        None,
+        limit,
+        per,
+        Duration::from_secs(60),
+    )
+    .expect("valid")
+}
+
+/// FR-022-047: effective = min(declaration, namespace, deployment), by the declaration's own window length.
+#[test]
+fn the_effective_rate_limit_is_the_lowest_of_the_declaration_and_the_namespace_for_its_window() {
+    let d = FlowControlCeilings::DEFAULT;
+    // the deployment's per-second ceiling applies by default: a declared 100 a second counts 20
+    assert_eq!(d.rate_limit(&rate(100, RatePeriod::Second)), 20);
+    assert_eq!(d.rate_limit(&rate(20, RatePeriod::Second)), 20);
+    assert_eq!(d.rate_limit(&rate(19, RatePeriod::Second)), 19);
+    assert_eq!(d.rate_limit(&rate(6_000, RatePeriod::Minute)), 6_000);
+    assert_eq!(d.rate_limit(&rate(10_000, RatePeriod::Hour)), 10_000);
+    let lowered = FlowControlCeilings {
+        rate_per_second: 3,
+        rate_per_minute: 50,
+        rate_per_hour: 700,
+        ..FlowControlCeilings::DEFAULT
+    };
+    assert_eq!(lowered.rate_limit(&rate(4, RatePeriod::Second)), 3);
+    assert_eq!(lowered.rate_limit(&rate(3, RatePeriod::Second)), 3);
+    assert_eq!(lowered.rate_limit(&rate(2, RatePeriod::Second)), 2);
+    // each window has its own ceiling: the per-second one never clamps a minute's declaration
+    assert_eq!(lowered.rate_limit(&rate(51, RatePeriod::Minute)), 50);
+    assert_eq!(lowered.rate_limit(&rate(40, RatePeriod::Minute)), 40);
+    assert_eq!(lowered.rate_limit(&rate(701, RatePeriod::Hour)), 700);
+    // a namespace value above what any declaration may hold never raises it
+    let raised = FlowControlCeilings {
+        rate_per_second: u64::MAX,
+        ..FlowControlCeilings::DEFAULT
+    };
+    assert_eq!(raised.rate_limit(&rate(7, RatePeriod::Second)), 7);
+    // zero refuses (the gate refuses a zero effective limit `FLOW_CONTROL_LIMIT`)
+    let closed = FlowControlCeilings {
+        rate_per_hour: 0,
+        ..FlowControlCeilings::DEFAULT
+    };
+    assert_eq!(closed.rate_limit(&rate(5, RatePeriod::Hour)), 0);
+}
+
+#[test]
+fn a_rate_key_is_admitted_below_its_ceiling_and_refused_at_it() {
+    let ceilings = FlowControlCeilings {
+        rate_live_keys: 2,
+        live_keys: 0,
+        ..FlowControlCeilings::DEFAULT
+    };
+    assert_eq!(ceilings.admits_rate_key(1), Ok(()));
+    assert_eq!(
+        ceilings.admits_rate_key(2),
+        Err(FlowControlLimit::RateLiveKeys)
+    );
+    // the two key ceilings are separate: the semaphores' does not bound the windows
+    assert_eq!(ceilings.admits_key(0), Err(FlowControlLimit::LiveKeys));
+    let d = FlowControlCeilings::DEFAULT;
+    assert_eq!(
+        d.rate_live_keys,
+        QuotaResource::RateLimitLiveKeys.default_limit()
+    );
+    assert_eq!(d.rate_per_second, 20);
+    assert_eq!(d.rate_per_minute, 6_000);
+    assert_eq!(d.rate_per_hour, 10_000);
+    let zero = FlowControlCeilings {
+        rate_live_keys: 0,
+        ..FlowControlCeilings::DEFAULT
+    };
+    assert_eq!(zero.admits_rate_key(0), Err(FlowControlLimit::RateLiveKeys));
 }

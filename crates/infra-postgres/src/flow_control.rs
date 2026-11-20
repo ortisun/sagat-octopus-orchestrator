@@ -211,6 +211,9 @@ pub async fn file_keys_with(
     keys: &[KeyToFile],
     existing: &[ExistingKey],
 ) -> Result<Vec<FiledKey>, StoreError> {
+    if keys.is_empty() && existing.is_empty() {
+        return Ok(Vec::new());
+    }
     let mut resolved = Vec::with_capacity(keys.len());
     for (index, key) in keys.iter().enumerate() {
         let old = match &key.candidates.retiring {

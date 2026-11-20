@@ -47,11 +47,11 @@ fn key_file(text: &str) -> tempfile::NamedTempFile {
 
 const KEY: &str = "3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c";
 
-/// D022-057, D022-062: an engine lists `flow-control-concurrency-v1` when it holds the deployment's digest keys, its
-/// switch on or off (a draining engine runs the gate for what was admitted), never `flow-control-rate-v1` (T022-072,
-/// T022-074), and nothing without the keys.
+/// D022-057, D022-062, T022-072: an engine lists both gates, `flow-control-concurrency-v1` and `flow-control-rate-v1`,
+/// when it holds the deployment's digest keys, its switches on or off (a draining engine runs the gates for what was
+/// admitted), and nothing without the keys.
 #[test]
-fn an_engine_lists_the_concurrency_gate_with_its_switch_and_keys_and_never_the_rate_gate() {
+fn an_engine_lists_both_gates_with_its_keys_whatever_its_switches() {
     let keys = key_file(&format!("1:{KEY}\n"));
     let path = keys.path().to_str().expect("a path").to_owned();
     let listed = capabilities(&config(&[
@@ -63,15 +63,17 @@ fn an_engine_lists_the_concurrency_gate_with_its_switch_and_keys_and_never_the_r
         listed,
         vec![
             Capability::RunInputValidationV1,
-            Capability::FlowControlConcurrencyV1
+            Capability::FlowControlConcurrencyV1,
+            Capability::FlowControlRateV1
         ]
     );
-    // keys without the switch: the gate is run for what was admitted (a draining engine, D022-062), so it is listed
+    // keys without the switches: the gates are run for what was admitted (a draining engine, D022-062), so listed
     assert_eq!(
         capabilities(&config(&[("SAGAT_FLOW_CONTROL_DIGEST_KEYS_FILE", &path)])),
         vec![
             Capability::RunInputValidationV1,
-            Capability::FlowControlConcurrencyV1
+            Capability::FlowControlConcurrencyV1,
+            Capability::FlowControlRateV1
         ]
     );
     // no keys and no switch: nothing listed (a switch without the keys does not start)
@@ -173,7 +175,8 @@ fn an_engine_with_its_switches_off_holds_a_given_key_file_to_drain_and_lists_the
         capabilities(&draining),
         vec![
             Capability::RunInputValidationV1,
-            Capability::FlowControlConcurrencyV1
+            Capability::FlowControlConcurrencyV1,
+            Capability::FlowControlRateV1
         ]
     );
     assert!(config(&[]).flow_control_keys.is_none());

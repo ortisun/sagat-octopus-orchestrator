@@ -144,7 +144,12 @@ impl PgRunTx {
 
     /// Whether the gate of `queued` admits the waiter now: its key's counted holders or grants plus the eligible waiters
     /// ahead of it are below its own limit (ADR-0089 decision 4). The key row is locked.
-    async fn admits(&mut self, queued: &Queued, node: Option<&NodeId>) -> Result<bool, StoreError> {
+    async fn admits(
+        &mut self,
+        queued: &Queued,
+        node: Option<&NodeId>,
+        now: OffsetDateTime,
+    ) -> Result<bool, StoreError> {
         let statement = match queued.kind {
             GateKind::Concurrency => {
                 "WITH taken AS (SELECT holders::bigint AS n FROM concurrency_semaphores \
@@ -155,7 +160,7 @@ impl PgRunTx {
                                   WHERE w.tenant_id = $1 AND w.namespace_id = $2 AND w.pool = $3 \
                                     AND w.permit_scope = $11 AND w.group_name = $4 AND w.key_digest = $5 \
                                     AND (w.enqueued_at, w.run_id, w.node) < ($6, $7, $8) \
-                                    AND w.deadline_at > clock_timestamp() \
+                                    AND w.deadline_at > $12 \
                                     AND r.status IN ('RUNNING', 'WAITING') AND NOT r.paused \
                                     AND w.declared_limit > taken.n AND $9::bigint >= 0 LIMIT $10) ahead) \
                    FROM taken"
@@ -166,13 +171,13 @@ impl PgRunTx {
                                  WHERE g.tenant_id = $1 AND g.namespace_id = $2 AND g.pool = $3 \
                                    AND g.limit_scope = $11 AND g.group_name = $4 AND g.key_digest = $5 \
                                    AND (g.leased_at IS NULL \
-                                        OR g.leased_at > clock_timestamp() - make_interval(secs => $9::bigint / 1000.0))) \
+                                        OR g.leased_at > $12 - make_interval(secs => $9::bigint / 1000.0))) \
                  SELECT taken.n, (SELECT count(*) FROM (SELECT 1 FROM rate_limit_waiters w \
                                    JOIN runs r ON r.tenant_id = w.tenant_id AND r.id = w.run_id \
                                   WHERE w.tenant_id = $1 AND w.namespace_id = $2 AND w.pool = $3 \
                                     AND w.limit_scope = $11 AND w.group_name = $4 AND w.key_digest = $5 \
                                     AND (w.enqueued_at, w.run_id, w.node) < ($6, $7, $8) \
-                                    AND w.deadline_at > clock_timestamp() \
+                                    AND w.deadline_at > $12 \
                                     AND r.status IN ('RUNNING', 'WAITING') AND NOT r.paused \
                                     AND w.declared_limit > taken.n LIMIT $10) ahead) \
                    FROM taken"
@@ -191,6 +196,9 @@ impl PgRunTx {
             // no more of the queue ahead is read than can matter: the waiter's own limit
             .bind(i64::from(queued.limit))
             .bind(level_of(node).0.as_str())
+            // every count is taken at the decision's instant, the one its grant is journaled at (correctness review Major 2
+            // of 2026-11-20: a grant that ages out between the clock read and the count would be missed)
+            .bind(now)
             .fetch_one(&mut *self.tx)
             .await
             .map_err(store_error)?;
@@ -208,7 +216,7 @@ impl PgRunTx {
             return Ok(None);
         }
         for q in &queued {
-            if !self.admits(q, node).await? {
+            if !self.admits(q, node, now).await? {
                 return Ok(None);
             }
         }
@@ -257,7 +265,8 @@ impl PgRunTx {
                     sqlx::query(
                         "INSERT INTO rate_limit_grants (tenant_id, namespace_id, run_id, node, attempt, pool, limit_scope, \
                          group_name, key_digest, declared_limit, period_ms, granted_at, leased_at, shard) \
-                         VALUES ($1, $2, $3, $4, $5, $6, $12, $7, $8, $9, $10, $11, NULL, run_shard($3))",
+                         VALUES ($1, $2, $3, $4, $5, $6, $12, $7, $8, $9, $10, $11, \
+                                 CASE WHEN $12 = 'RUN' THEN $11 END, run_shard($3))",
                     )
                     .bind(self.info.tenant_id.as_uuid())
                     .bind(self.info.namespace_id.as_uuid())
@@ -274,6 +283,19 @@ impl PgRunTx {
                     .execute(&mut *self.tx)
                     .await
                     .map_err(store_error)?;
+                    // the waiters behind it wake when this slot may first stop counting (correctness review Major 4)
+                    super::readiness_gate::window_due_after_grant(
+                        &mut self.tx,
+                        (
+                            self.info.tenant_id,
+                            self.info.namespace_id,
+                            level_of(node).0,
+                            &q.group,
+                        ),
+                        &q.digest,
+                        now,
+                    )
+                    .await?;
                     GateChange::RateGranted {
                         limit: u32::try_from(q.limit).map_err(|_| corrupt("declared limit"))?,
                         per: period(q.period_ms)?,
@@ -314,10 +336,10 @@ impl PgRunTx {
         // read without the keys' locks (correctness review M2, 2026-11-19): the rows go with the events, under the one
         // sorted lock of the round or of `persist`, so a gated failure route cannot lock a key out of order; the gate
         // named is the one that refused at the read (rate first, FR-022-052), which a concurrent commit may change
-        let (queued, _) = self.locked_queue(node, attempt, false).await?;
+        let (queued, now) = self.locked_queue(node, attempt, false).await?;
         // rate first (FR-022-052): the first gate that refuses it now, else the first it waits for
         for q in &queued {
-            if !self.admits(q, node).await? {
+            if !self.admits(q, node, now).await? {
                 return Ok(q.kind);
             }
         }

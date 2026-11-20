@@ -8,9 +8,8 @@
 //!
 //! What a build does not have is said by the same types, not hidden: a process lists a capability only when it runs
 //! the gate (D022-037), and the one admission point refuses a gated definition the process does not serve with
-//! [`FlowControlRefusal::BinaryCapabilityMissing`] (FR-022-059). This build runs the concurrency gate, for a process
-//! whose switch is on and which holds the deployment's digest keys ([`served`], D022-057); it does not run the rate
-//! gate (T022-072, T022-074).
+//! [`FlowControlRefusal::BinaryCapabilityMissing`] (FR-022-059). This build runs both gates, for a process whose switch
+//! is on and which holds the deployment's digest keys ([`served`], D022-057).
 
 use std::collections::BTreeSet;
 
@@ -19,9 +18,12 @@ use sagat_domain::workflow::{GateKind, WorkflowDefinition};
 use crate::instances::Capability;
 
 /// The flow-control capabilities this build runs the gate of (D022-057): the concurrency gate (admission, readiness,
-/// grant, timeout, release). The rate gate is not one until the run-level rate gate (T022-072) and the lease instant of
-/// a granted step (T022-074) exist.
-pub const BUILT: [FlowControlCapability; 1] = [FlowControlCapability::ConcurrencyKeys];
+/// grant, timeout, release) and the rate gate (admission and readiness, grant, timeout, return, the lease instant of a
+/// granted step and the purge of aged grants; T022-072, T022-074), with the namespace ceilings of both (G1199, T022-077).
+pub const BUILT: [FlowControlCapability; 2] = [
+    FlowControlCapability::ConcurrencyKeys,
+    FlowControlCapability::RateLimits,
+];
 
 /// The flow-control capabilities a process serves: built, switched on, and backed by the deployment's digest keys
 /// (`keys`). What its admission point admits (D022-057).

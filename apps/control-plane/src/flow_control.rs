@@ -138,10 +138,10 @@ mod tests {
         );
     }
 
-    /// D022-057: a process of this build lists the concurrency gate (switched on, with its keys) and never the rate
-    /// gate, so an activation of `rate-limits` cannot pass while one is live.
+    /// D022-057, T022-072: a process of this build serves both gates (switched on, with its keys), so it lists both and
+    /// an activation of either can pass once every live process is of this build.
     #[test]
-    fn this_build_lists_the_concurrency_gate_and_never_the_rate_gate() {
+    fn this_build_lists_both_gates() {
         use sagat_application::flow_control::{FlowControlSwitches, served};
         use sagat_application::run_input::InputValidationMode;
         let on = FlowControlSwitches {
@@ -155,6 +155,6 @@ mod tests {
         assert!(
             listed.contains(&sagat_application::instances::Capability::FlowControlConcurrencyV1)
         );
-        assert!(!listed.contains(&sagat_application::instances::Capability::FlowControlRateV1));
+        assert!(listed.contains(&sagat_application::instances::Capability::FlowControlRateV1));
     }
 }

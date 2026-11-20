@@ -156,6 +156,20 @@ async fn itemised(
     text
 }
 
+/// The statements of one more start of `workflow`, for a failing budget's message.
+async fn itemised_start(w: &World, workflow: sagat_domain::definition::WorkflowId) -> String {
+    let before = calls(w).await;
+    w.start(workflow, &json!({})).await;
+    let mut text = String::from("\nadmission:\n");
+    for (query, count) in &calls(w).await {
+        let delta = count - before.get(query).copied().unwrap_or(0);
+        if delta > 0 {
+            text.push_str(&format!("  {delta:>3}  {query}\n"));
+        }
+    }
+    text
+}
+
 /// The cost of each of the six commands of one run of three chained activities, in order: lease
 /// and completion of `a`, of `b` and of `c` (whose completion ends the run).
 async fn one_run(
@@ -338,11 +352,17 @@ measured!(
 /// Raised 2026-11-19 by one statement (58 to 59): the namespace ceilings the decision applies, read once per round
 /// (`concurrency_limit`, `flow_control_queue_timeout_ms`, `concurrency_live_keys`; G1199, FR-022-047). A rate limit
 /// alone files no semaphore, so the live-keys check costs nothing here.
-const COMPLETION_WITH_A_RATE_LIMITED_NEXT_STEP: Work = cost(59, 1, 13);
+/// Raised 2026-11-20 by one statement (59 to 60): whether the step's window exists, so that a new window meets the
+/// namespace's `rate_limit_live_keys` before it is created (T022-077, G1199's rate half, D022-064); the live count itself
+/// is read only when the window would be new.
+const COMPLETION_WITH_A_RATE_LIMITED_NEXT_STEP: Work = cost(60, 1, 13);
 /// An admission whose entry step declares `rateLimit`: the plain admission and the decision of its entry.
 /// Measured 2026-11-19: the plain admission (33, 1, 11) and the same eight statements and two rows; raised to nine
 /// statements (41 to 42) the same day for the ceilings read (G1199).
-const RATE_LIMITED_ENTRY_ADMISSION: Work = cost(42, 1, 13);
+/// Raised 2026-11-20 by two statements (42 to 44): the fleet activation read of the one admission point (as the gated
+/// start's line) and the window's existence (`rate_limit_live_keys`, task T022-077, decision D022-064); plan, "Hot-path
+/// budget of a gated definition".
+const RATE_LIMITED_ENTRY_ADMISSION: Work = cost(44, 1, 13);
 
 async fn a_rate_limited_step_costs_what_the_budget_says_once() -> Result<(), Evicted> {
     let w = crate::support::flow_control::gated_world().await;
@@ -436,10 +456,14 @@ measured!(
 /// `UPDATE runs` (the run's UPDATE does not name the column, so a process runs on a schema that predates it) and the
 /// three statements of the content accounting that a write of a run row runs. Four rows more: holder, key, journal row,
 /// projection.
-const GATED_START_ADMISSION: Work = cost(47, 1, 15);
+/// Raised 2026-11-20 by one statement (47 to 48): the fleet activation read of the one admission point (`SELECT
+/// capability FROM platform_requirements`, decision D022-057, commit 295b158b), found by diffing the statement lists of
+/// commits 64b6f2d9 (47) and 34b8be41 (48); plan, "Hot-path budget of a gated definition".
+const GATED_START_ADMISSION: Work = cost(48, 1, 15);
 /// The same admission when the key is full and the run queues: the namespace's queued runs, the key's hint and the
 /// waiter row in place of the holder row, and no entry released (no ready step, task hint or outbox row).
-const QUEUED_START_ADMISSION: Work = cost(47, 1, 12);
+/// Raised 2026-11-20 by one statement (47 to 48), the same activation read.
+const QUEUED_START_ADMISSION: Work = cost(48, 1, 12);
 /// The completion that ends a run holding a start permit: the plain one (47, 1, 9) and eleven statements: seven, among
 /// them the counter-slot lock (D022-050 item 8), the return of the permit under its key's lock (the holder's key, the
 /// lock, the delete, the key's hint) and the `concurrency.released` journal row, and the projection's four as at
@@ -494,8 +518,12 @@ async fn a_gated_start_costs_what_the_budget_says_once() -> Result<(), Evicted> 
              the reason beside it).\n\
              granted admission: {:?}, budget {GATED_START_ADMISSION:?}\n\
              queued admission: {:?}, budget {QUEUED_START_ADMISSION:?}\n\
-             completion that ends the run: {:?}, budget {COMPLETION_THAT_ENDS_A_GATED_START:?}",
-            admissions[1], queued[1], completions[1]
+             completion that ends the run: {:?}, budget {COMPLETION_THAT_ENDS_A_GATED_START:?}\n\
+             statements of one more queued start:{}",
+            admissions[1],
+            queued[1],
+            completions[1],
+            itemised_start(&w, full).await
         );
     }
     Ok(())

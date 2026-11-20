@@ -700,9 +700,10 @@ fn resolve_rows(resource: QuotaResource, rows: &[(Option<uuid::Uuid>, i64, bool)
     quota::resolve(resource, value(true), value(false), ceiling).0
 }
 
-/// The namespace ceilings the readiness gate applies to a step (feature 022, G1199): `concurrency_limit`,
-/// `flow_control_queue_timeout_ms` and `concurrency_live_keys`, read in one statement of the caller's transaction,
-/// effective as everywhere else (namespace, tenant and deployment).
+/// The namespace ceilings a gate decision applies (feature 022, G1199, T022-077): the limits of a key (`concurrency_limit`,
+/// `rate_limit_per_second`, `rate_limit_per_minute`, `rate_limit_per_hour`), the longest wait, the live keys of each kind
+/// and the two queue ceilings, read in one statement of the caller's transaction, effective as everywhere else
+/// (namespace, tenant and deployment).
 ///
 /// # Errors
 /// A store error.
@@ -713,12 +714,16 @@ pub(crate) async fn step_gate_ceilings(
 ) -> Result<sagat_domain::workflow::FlowControlCeilings, StoreError> {
     // every ceiling a gate decision applies, read in one statement (the run admission of T022-022 also applies the two
     // queue ceilings; a ceiling left out here would silently fall back to its default)
-    const READ: [QuotaResource; 5] = [
+    const READ: [QuotaResource; 9] = [
         QuotaResource::ConcurrencyLimit,
         QuotaResource::FlowControlQueueTimeoutMs,
         QuotaResource::ConcurrencyLiveKeys,
         QuotaResource::QueuedRuns,
         QuotaResource::FlowControlKeyWaiters,
+        QuotaResource::RateLimitLiveKeys,
+        QuotaResource::RateLimitPerSecond,
+        QuotaResource::RateLimitPerMinute,
+        QuotaResource::RateLimitPerHour,
     ];
     let rows: Vec<(String, Option<uuid::Uuid>, i64, bool)> = sqlx::query_as(
         "SELECT resource, namespace_id, max_value, false FROM quota_limits \
@@ -747,6 +752,10 @@ pub(crate) async fn step_gate_ceilings(
         live_keys: of(QuotaResource::ConcurrencyLiveKeys),
         queued_runs: of(QuotaResource::QueuedRuns),
         key_waiters: of(QuotaResource::FlowControlKeyWaiters),
+        rate_live_keys: of(QuotaResource::RateLimitLiveKeys),
+        rate_per_second: of(QuotaResource::RateLimitPerSecond),
+        rate_per_minute: of(QuotaResource::RateLimitPerMinute),
+        rate_per_hour: of(QuotaResource::RateLimitPerHour),
         ..sagat_domain::workflow::FlowControlCeilings::DEFAULT
     })
 }
@@ -1357,6 +1366,20 @@ impl QuotaStore for PgRunStore {
             .bind(namespace)
             .fetch_one(&self.pool)
             .await,
+            // the windows of both scopes that a waiter or a grant that can still count keeps (T022-077), as the gate
+            // counts them before it creates one (it also leaves out the rows of a forcibly retired digest version)
+            QuotaResource::RateLimitLiveKeys => sqlx::query_scalar(
+                "SELECT count(*) FROM rate_limit_windows w WHERE w.tenant_id = $1 AND w.namespace_id = $2 \
+                 AND (w.waiters > 0 OR EXISTS (SELECT 1 FROM rate_limit_grants g \
+                   WHERE g.tenant_id = w.tenant_id AND g.namespace_id = w.namespace_id AND g.pool = w.pool \
+                     AND g.limit_scope = w.limit_scope AND g.group_name = w.group_name AND g.key_digest = w.key_digest \
+                     AND (g.leased_at IS NULL \
+                          OR g.leased_at + make_interval(secs => w.max_period_ms / 1000.0) > clock_timestamp())))",
+            )
+            .bind(tenant.as_uuid())
+            .bind(namespace)
+            .fetch_one(&self.pool)
+            .await,
             // the limit applies to every key; its scalar usage is the busiest key's run waiters, as for
             // `activity_concurrency`
             QuotaResource::FlowControlKeyWaiters => sqlx::query_scalar(
@@ -1378,6 +1401,9 @@ impl QuotaStore for PgRunStore {
             | QuotaResource::ConcurrencyLimit
             | QuotaResource::FlowControlQueueTimeoutMs
             | QuotaResource::FlowControlNodeDeclarations
+            | QuotaResource::RateLimitPerSecond
+            | QuotaResource::RateLimitPerMinute
+            | QuotaResource::RateLimitPerHour
             | QuotaResource::EventsPerSecond
             | QuotaResource::EventRetentionSeconds
             | QuotaResource::ScriptRetentionDays

@@ -121,6 +121,16 @@ pub enum QuotaResource {
     /// Node-level declarations of one kind (`concurrency` or `rateLimit`) a definition of the namespace may hold
     /// (feature 022, plan "Finite ceilings": 16 by default, 64 at most). Checked at publication.
     FlowControlNodeDeclarations,
+    /// Rate-limit keys that have a window row in the namespace, run and step scope (feature 022, T022-077; plan "Finite
+    /// ceilings (rate limits)": 10,000 by default, 100,000 at most; FR-022-047).
+    RateLimitLiveKeys,
+    /// The most grants one rate-limit key may count in a second, whatever a definition declares (feature 022, T022-077):
+    /// 20 by default and at most until the benchmark of SC-022-029 meets its floor (FR-022-047, D022-064).
+    RateLimitPerSecond,
+    /// The most grants one rate-limit key may count in a minute (6,000).
+    RateLimitPerMinute,
+    /// The most grants one rate-limit key may count in an hour (10,000).
+    RateLimitPerHour,
 }
 
 /// At which level a resource is counted.
@@ -155,7 +165,7 @@ pub enum QuotaUnit {
 }
 
 impl QuotaResource {
-    pub const ALL: [Self; 43] = [
+    pub const ALL: [Self; 47] = [
         Self::ActiveRuns,
         Self::TenantActiveRuns,
         Self::Workflows,
@@ -199,6 +209,10 @@ impl QuotaResource {
         Self::ConcurrencyLimit,
         Self::FlowControlQueueTimeoutMs,
         Self::FlowControlNodeDeclarations,
+        Self::RateLimitLiveKeys,
+        Self::RateLimitPerSecond,
+        Self::RateLimitPerMinute,
+        Self::RateLimitPerHour,
     ];
 
     #[must_use]
@@ -247,6 +261,10 @@ impl QuotaResource {
             Self::ConcurrencyLimit => "concurrency_limit",
             Self::FlowControlQueueTimeoutMs => "flow_control_queue_timeout_ms",
             Self::FlowControlNodeDeclarations => "flow_control_node_declarations",
+            Self::RateLimitLiveKeys => "rate_limit_live_keys",
+            Self::RateLimitPerSecond => "rate_limit_per_second",
+            Self::RateLimitPerMinute => "rate_limit_per_minute",
+            Self::RateLimitPerHour => "rate_limit_per_hour",
         }
     }
 
@@ -288,7 +306,11 @@ impl QuotaResource {
             | Self::FlowControlKeyWaiters
             | Self::ConcurrencyLimit
             | Self::FlowControlQueueTimeoutMs
-            | Self::FlowControlNodeDeclarations => QuotaScope::Namespace,
+            | Self::FlowControlNodeDeclarations
+            | Self::RateLimitLiveKeys
+            | Self::RateLimitPerSecond
+            | Self::RateLimitPerMinute
+            | Self::RateLimitPerHour => QuotaScope::Namespace,
             Self::TenantActiveRuns
             | Self::WorkerSessions
             | Self::IterationConcurrency
@@ -316,7 +338,10 @@ impl QuotaResource {
             | Self::DatabaseIdleTimeoutMs
             | Self::ConcurrencyLimit
             | Self::FlowControlQueueTimeoutMs
-            | Self::FlowControlNodeDeclarations => QuotaKind::Policy,
+            | Self::FlowControlNodeDeclarations
+            | Self::RateLimitPerSecond
+            | Self::RateLimitPerMinute
+            | Self::RateLimitPerHour => QuotaKind::Policy,
             _ => QuotaKind::Count,
         }
     }
@@ -405,6 +430,13 @@ impl QuotaResource {
             Self::FlowControlNodeDeclarations => {
                 crate::workflow::flow_control::MAX_NODE_DECLARATIONS as u64
             }
+            // plan "Finite ceilings (rate limits)"; per second the deployment's lower ceiling until SC-022-029
+            Self::RateLimitLiveKeys => 100_000,
+            Self::RateLimitPerSecond => {
+                crate::workflow::flow_control::DEPLOYMENT_PER_SECOND_LIMIT as u64
+            }
+            Self::RateLimitPerMinute => crate::workflow::RatePeriod::Minute.max_limit() as u64,
+            Self::RateLimitPerHour => crate::workflow::RatePeriod::Hour.max_limit() as u64,
             _ => MAX_LIMIT,
         }
     }
@@ -465,6 +497,11 @@ impl QuotaResource {
             Self::FlowControlNodeDeclarations => {
                 crate::workflow::flow_control::DEFAULT_NODE_DECLARATIONS as u64
             }
+            Self::RateLimitLiveKeys => 10_000,
+            // the declaration decides unless a namespace lowers it (per second: the deployment's lower ceiling)
+            Self::RateLimitPerSecond | Self::RateLimitPerMinute | Self::RateLimitPerHour => {
+                self.maximum()
+            }
         }
     }
 
@@ -519,6 +556,10 @@ impl QuotaResource {
             Self::FlowControlNodeDeclarations => {
                 "node-level flow-control declarations of one kind per definition"
             }
+            Self::RateLimitLiveKeys => "rate-limit keys in the namespace",
+            Self::RateLimitPerSecond => "grants of one rate-limit key in a second",
+            Self::RateLimitPerMinute => "grants of one rate-limit key in a minute",
+            Self::RateLimitPerHour => "grants of one rate-limit key in an hour",
         }
     }
 
@@ -849,7 +890,8 @@ mod tests {
 
     #[test]
     fn durable_resources_have_explicit_scope_kind_unit_range_and_usage_semantics() {
-        assert_eq!(QuotaResource::ALL.len(), 43);
+        // 43, and the four rate-limit resources of task T022-077
+        assert_eq!(QuotaResource::ALL.len(), 47);
         for (resource, scope, kind, unit, maximum, default, has_usage) in [
             (
                 QuotaResource::TenantContentBytes,

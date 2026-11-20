@@ -32,9 +32,8 @@ Reads `cargo metadata` and fails when:
     (FR-043-016): every run row is written where the input of the run is a `CheckedRunInput`;
   * the legacy continue-as-new (`.continue_as_new(`, which carries an input nobody checked) is called outside the tests, other
     than by the one forwarder, `continue_as_new` in `crates/infra-postgres/src/chain_progress.rs` (FR-043-016, D043-122);
-  * the `test-support` feature of `sagat-application` (the constructor of `CheckedRunInput` that skips the gate), or the
-    `rate-gates-for-tests` feature of `sagat-infra-postgres` (feature 022's test-only service of the step-level rate gate),
-    is enabled anywhere but a `[dev-dependencies]` entry (FR-043-016, D022-057);
+  * the `test-support` feature of `sagat-application` (the constructor of `CheckedRunInput` that skips the gate) is enabled
+    anywhere but a `[dev-dependencies]` entry (FR-043-016);
   * a `CheckedRunInput` is built (a struct expression or an associated function call) outside
     `crates/application/src/run_input.rs` and the tests, or has a `Default` or a `Deserialize` anywhere (FR-043-016, D043-045).
 
@@ -452,6 +451,13 @@ GATE_ROW_WRITE = re.compile(
     re.IGNORECASE,
 )
 GATE_ROW_WRITERS = ("execution/readiness_gate.rs", "execution/gate_queue.rs")
+# The two writes of a grant row that are not a decision (feature 022, D022-064): the lease pass records the instant of a
+# lease (transaction T23, the grant row only, no key lock: ADR-0089, D022-021) and the purge deletes the grants no acquirer can count
+# (transaction T25, under the window's lock). Each is named by the start of its statement, in the one file that holds it.
+GATE_ROW_MAINTENANCE = (
+    ("maintenance.rs", re.compile(r"^\s*UPDATE\s+rate_limit_grants\s+g\s+SET\s+leased_at\b", re.IGNORECASE)),
+    ("maintenance.rs", re.compile(r"^\s*DELETE\s+FROM\s+rate_limit_grants\s+g\s+USING\s+rate_limit_windows\b", re.IGNORECASE)),
+)
 
 
 def gate_row_write_errors(src):
@@ -469,6 +475,8 @@ def gate_row_write_errors(src):
                 continue
             if rel in GATE_ROW_WRITERS:
                 found += 1
+                continue
+            if any(rel == home and rule.search(sql) for home, rule in GATE_ROW_MAINTENANCE):
                 continue
             errors.append(
                 f"crates/infra-postgres/src/{rel}:{text.count(chr(10), 0, offset) + 1}: a statement writes "
@@ -823,11 +831,10 @@ def gate_wiring_errors(root):
 
 
 # The features that open a door only a test may open, each with why: `sagat-application/test-support` builds a
-# `CheckedRunInput` no gate checked (FR-043-016); `sagat-infra-postgres/rate-gates-for-tests` serves the step-level rate
-# gate this build does not list (feature 022, D022-057).
+# `CheckedRunInput` no gate checked (FR-043-016). (Feature 022's `rate-gates-for-tests` was removed with T022-072: this
+# build lists the rate gate.)
 TEST_ONLY_FEATURES = (
     (APPLICATION_PACKAGE, TEST_SUPPORT_FEATURE, "it builds a `CheckedRunInput` no gate checked", "FR-043-016"),
-    ("sagat-infra-postgres", "rate-gates-for-tests", "it serves a flow-control gate this build does not list", "D022-057"),
 )
 
 
@@ -860,21 +867,25 @@ def test_support_errors(pkgs):
     return errors
 
 
-# The test-only door of feature 022 is opened by tests alone: no production source calls it (D022-057).
-RATE_GATES_DOOR = re.compile(r"\bserving_rate_gates_for_tests\s*\(")
-RATE_GATES_DOOR_HOME = "crates/infra-postgres/src/execution.rs"
+# The purge of feature 022's rate grants as of a chosen instant deletes grants that still count when given a future
+# one: only the tests call it, to place rows on either side of the boundary; the scheduler passes the database clock
+# (ADR-0088 decision 1, D022-064; architecture review Major 2 and security review minor 4 of 2026-11-20).
+PURGE_AS_OF_DOOR = re.compile(r"\bpurge_rate_grants_as_of\s*\(")
+PURGE_AS_OF_HOME = "crates/infra-postgres/src/maintenance.rs"
 
 
-def rate_gates_door_errors(root):
-    """`serving_rate_gates_for_tests` is called only under `tests/` (its definition aside)."""
+def purge_as_of_door_errors(root):
+    """`purge_rate_grants_as_of` is called only under `tests/` and by `purge_rate_grants`, its definition aside."""
     errors = []
     for rel, text, masked, _ in production_sources(root):
-        for m in RATE_GATES_DOOR.finditer(masked):
-            if rel == RATE_GATES_DOOR_HOME and re.search(r"fn\s+$", masked[max(0, m.start() - 8):m.start()]):
-                continue
+        for m in PURGE_AS_OF_DOOR.finditer(masked):
+            if rel == PURGE_AS_OF_HOME:
+                before = masked[max(0, m.start() - 8):m.start()]
+                if re.search(r"fn\s+$", before) or re.search(r"self\.$", before):
+                    continue
             errors.append(
-                f"{rel}:{text.count(chr(10), 0, m.start()) + 1}: `serving_rate_gates_for_tests` is called outside the "
-                f"tests: it serves a flow-control gate this build does not list (D022-057)"
+                f"{rel}:{text.count(chr(10), 0, m.start()) + 1}: `purge_rate_grants_as_of` is called outside the "
+                f"tests: a caller-chosen instant shortens a rate grant (ADR-0088 decision 1, D022-064)"
             )
     return errors
 
@@ -973,10 +984,10 @@ def main(argv):
     errors.extend(application_runtime_errors(pkgs))
     errors.extend(run_creator_errors(rust_root))
     errors.extend(run_start_errors(rust_root))
+    errors.extend(purge_as_of_door_errors(rust_root))
     errors.extend(run_input_runtime_errors(rust_root))
     errors.extend(gate_wiring_errors(rust_root))
     errors.extend(test_support_errors(pkgs))
-    errors.extend(rate_gates_door_errors(rust_root))
     errors.extend(key_value_free_errors(rust_root))
 
     # Cycle detection over workspace members (DFS, three colours).
