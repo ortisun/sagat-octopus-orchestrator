@@ -42,6 +42,10 @@ merges a pull request would prove again what the pull request proved):
   changed, and the release runs those (OD-2026-11-06-2). The log of the selector says
   `select no suite: <file> is shared by the suites` so that nobody wonders why a suite did not run.
 
+Two cheap checks run on every pull request whatever it changes, in the job `documentation`: `scripts/check-docs-first.py`
+(a pull request that changes behaviour code changes a document, or says why not) and `scripts/check-plain-words.py`
+(words in full in the lines it adds); they read git history only, build nothing and take seconds (constitution 4.7.0).
+
 Nothing else runs: no formatting, no `clippy`, no architecture, agent-configuration or design-doc check, no contract
 validation, no advisory audit, no upgrade, Compose smoke-test, scale or native-runner job. A change that touches only
 Markdown, `docs/`, `tasks/`, `.claude/` or `infra/` runs no test at all.
