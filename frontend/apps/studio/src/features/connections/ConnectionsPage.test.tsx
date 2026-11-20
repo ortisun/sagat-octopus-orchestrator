@@ -31,7 +31,7 @@ async function mount(failure?: 'secret' | 'connection' | 'provider', permissions
   const app = createApp({ fetch: platform.fetcher });
   await app.session.signIn(TOKEN, () => Promise.resolve({ ...AUTH_CONTEXT, permissions } as never));
   app.namespace.set('payments'); renderApp(<ConnectionsPage />, { app });
-  return { app, platform, user: userEvent.setup() };
+  return { app, platform, user: userEvent.setup({ delay: null }) };
 }
 async function enter(user: ReturnType<typeof userEvent.setup>) {
   await user.click(await screen.findByRole('button', { name: 'New connection' }));
