@@ -802,3 +802,20 @@ commit `fffc8446`, each mutation applied by hand, the lease tests run (30), and 
 
 These tests were written with the prototype's change in the same sitting, not before it; each is shown to bite by its
 mutation above. The whole performance test binary passes (46 tests, 10 ignored benchmarks).
+
+Then, for decision D041-120 (the bounded ensure, the ended-backend reclaim, the carry with nothing to charge, a caller's
+lower lock timeout kept), on commit `9361a112`, each mutation applied by hand as one exact replacement in
+`step_log_spike.rs`, the lease tests run (34), and the file restored. Before them the lease tests passed on that commit
+(34 passed, the staged tests' budget replaced by 300 s); after the last restore, a fresh build passed them again (34
+passed).
+
+| Mutation | Change | Test that failed, and why |
+|---|---|---|
+| Mutation 16 | The ensure no longer catches `lock_not_available` | `the_ensure_answers_without_raising`: the ensure raised `55P03` ("canceling statement due to lock timeout", locking `tenant_retained_usage`) instead of answering `busy` |
+| Mutation 17 | The ensure waits for the step-log fence (`pg_advisory_xact_lock_shared`) instead of trying it | `the_ensure_answers_without_raising`: the stage "ensure answers" did not finish within 60 s |
+| Mutation 18 | The ensure charges its bytes (`step_log_refill(p_tenant, p_bytes, true, true)`) | `the_ensure_before_a_report_gives_the_carry_its_fast_path`: "an ensure charges nothing", 3,280 bytes charged instead of 0 |
+| Mutation 19 | The reclaim's loop drops the clause on ended backends (`NOT EXISTS (… pg_stat_activity …)`) | `the_lease_of_an_ended_backend_is_reclaimed_at_once`: 0 leases reclaimed instead of 1 |
+| Mutation 20 | A carry with nothing to charge takes the reservation and the block (`IF spike_041.step_log_reserve(…)`) | `a_carry_with_nothing_to_charge_opens_no_subtransaction`: the carry answered `written:refill` instead of `written` |
+| Mutation 21 | The refill overrides a caller's lower `lock_timeout` (`IF true THEN`) | `a_callers_lower_lock_timeout_is_kept`: the stage "lower timeout kept" did not finish within 60 s (the staged tests' 300 s budget, replacing the caller's 100 ms) |
+
+Each of the six failed only its named test (33 of the 34 passed under each).
