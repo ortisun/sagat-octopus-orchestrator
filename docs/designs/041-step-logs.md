@@ -2339,10 +2339,12 @@ Slice A, decisions, contracts and the spike:
     (`complete_p99_without_slow_paths_ms`, with the count it leaves out, `complete_slow_paths_tagged`, which must equal
     the row's `written:refill` and `mark_only` carries, or that row has no attribution), the fast path's carry p99
     (`carry_fast_p99_ms`), the p99 of each completion's time less its own carry's (`complete_minus_carry_p99_ms`), and
-    the commit waits sampled behind reports whose carry refilled (`commit_waits_by_refill`: such a report names itself
-    for the rest of its transaction, since it holds the usage row to its commit) apart from those behind other carrying
-    reports (`commit_waits_by_carry`); `carry_spike_judge.py` computes the medians of (i) and (ii) below (decision
-    D041-121).
+    the commit waits sampled with a report whose carry refilled anywhere in their blocking chain
+    (`commit_waits_by_refill`: such a report names itself for the rest of its transaction, since it holds the usage row
+    to its commit; the chain is followed because in a row lock's queue every waiter but the first is blocked by the one
+    ahead of it), beside those whose immediate blocker is a carrying report (`commit_waits_by_carry`) and all of them
+    (`commit_waits`); `carry_spike_judge.py` computes the medians of the refill share of the commit waits and of (i)
+    and (ii) below (decision D041-121).
     *What the change is expected to do*, from runs 44783898911 and 44793160071, written before any round (those runs and
     the second and third runs were on the build before `5458820b`, so each comparison below is across builds): no
     `mark_only` answer (the tenant is at the catalogue's maximum, so nothing is refused or held, and a refill finds the
@@ -2360,19 +2362,23 @@ Slice A, decisions, contracts and the spike:
       refills and the 9 mark-only answers a valid round allows, among the at most 90 carries above the p99 of a row of
       9,000, that share could not exceed 37 / 90 = 41%, so it could never name the refill): attributed by the
       completions themselves, each figure the median over the three valid rounds used for the gate, each round's (a)
-      against that round's first off-1K. (i) If (a)'s `complete_p99_without_slow_paths_ms` minus off-1K's p99 meets the
-      allowance, the cause is the refills' own completions, which the spike runs inside the report and the built design
-      moves to the ensure: (2b) at 8 × 128 is not decided by this run, and the coordinating session chooses between a
-      fifth run whose hook runs the ensure before each report and the owner's answer; task T041-5 waits. (ii) Otherwise,
-      if (a)'s `complete_minus_carry_p99_ms` minus off-1K's p99 meets the allowance, the carry's own statements are the
-      lever, the lines' p99 among them (section 3's chunk rows, decision D041-111): a design change, reviewed again
-      before task T041-5 starts. (iii) Otherwise the cause is outside the carry's own time: the commit queue on the
-      tenant's usage row (behind refilling reports, `commit_waits_by_refill`, which the built design's ensure removes,
-      and behind other carrying reports, `commit_waits_by_carry`, the content class's queue, gap G041-024) and the
-      runner's load. It is not attributable to one design lever by this run: recorded as not decided for (2b) at
-      8 × 128 with those figures, and reported to the coordinating session for the owner with the environment question
-      (decision D041-109); task T041-5 waits for the owner's answer. No expectation is declared between (ii) and (iii):
-      the earlier runs did not measure these figures; (i) is not expected at the expected 28 refills a row.
+      against that round's first off-1K. (i) If the commit waits with a refilling report in their chain are at least
+      half of (a)'s commit waits (`commit_waits_by_refill` / `commit_waits`), or (a)'s
+      `complete_p99_without_slow_paths_ms` minus off-1K's p99 meets the allowance, the cause is the spike's in-report
+      refills, directly or by the queue behind them, which the built design moves out of the report transaction into
+      the ensure (still inside the report call, so this run does not show that the built design passes): (2b) at
+      8 × 128 is not decided by this run, and the coordinating session chooses between a fifth run with the ensure
+      before each report, which is the test of it, and the owner's answer; task T041-5 waits. (ii) Otherwise, if (a)'s
+      `complete_minus_carry_p99_ms` minus off-1K's p99 meets the allowance, removing the carry's own time could close
+      the gap (an upper bound: a lever recovers only part of it): the lever it names, the lines' p99 among the carry's
+      statements (section 3's chunk rows, decision D041-111), is first measured by a diagnosis (`perf/041-diag-*`), and
+      becomes a design change, reviewed again, only if its measured reduction covers the excess; task T041-5 waits.
+      (iii) Otherwise the cause is outside the carry's own time: the commit queue on the tenant's usage row (the content
+      class's, gap G041-024) and the runner's load. It is not attributable to one design lever by this run: recorded
+      as not decided for (2b) at 8 × 128 with those figures, and reported to the coordinating session for the owner
+      with the environment question (decision D041-109); task T041-5 waits for the owner's answer. A row without an
+      attribution (its tagged count differs) makes (2b) at 8 × 128 not decided, with (iii)'s consequence. No
+      expectation is declared among (i) to (iii): the earlier runs did not measure these figures.
     - Gate (1) or (3) failing at 8 × 128: a design change, reviewed again before task T041-5 starts.
     - Gate (4) failing at either size: the ingest's ticket sizing of task T041-31, reported with the service time; a
       design change, reviewed again before task T041-5 starts.
@@ -3054,8 +3060,9 @@ Slice F, measure, operate and close:
     rate below which `pg_subtrans` stays in its default buffers on the benchmark's server).
   - *Behind a transaction pooler* (PgBouncer in transaction mode before the database, workload (a) at 8 × 128):
     ensures, fallbacks and `mark_only:busy` per carry. Criterion: recorded for gap G041-027, which this scenario closes
-    or keeps open; carry fallbacks above 1% of carrying reports, or `mark_only:busy` carries above 0.1%, reopen ADR-0097
-    option 1c and question O041-041 (decision D041-121).
+    or keeps open; carry fallbacks above half of the carries' refills (ensures answered `made` plus carry fallbacks),
+    or `mark_only:busy` carries above 0.1% of carries, reopen ADR-0097 option 1c and question O041-041 (decision
+    D041-121).
   - *A fan-out run during fallback waits*, caused on purpose: a test transaction holds the usage row for 150 ms and for
     400 ms while a fan-out run's carries fall back. Criterion: no report of the run waits for the run row longer than the
     longest measured fallback wait plus one report's p99.

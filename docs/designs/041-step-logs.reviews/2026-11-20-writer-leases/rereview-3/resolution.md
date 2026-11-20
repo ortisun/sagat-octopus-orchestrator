@@ -40,3 +40,18 @@ run.
 - **The planned charge computed twice** (architecture N2), **a stale-room test with a reused pid**, **the `invalid` bound**, **the lock-order writers**, **the Helm helper and PgBouncer component**, **the T041-9 subtransaction criterion**, **the contract description and drift check**, **"Enforced by" lists** (architecture N7 and carried Minors): tasks T041-36, T041-5, T041-9 and T041-3, which build them.
 - **A pause between setup retries** (nits): nothing in the benchmark holds the fence during setup.
 - **Option (a) of the busy answer** (passing `busy` to the carry): the owner's, with question O041-041.
+
+## The narrow re-read of the design critic (8b12401f)
+
+`egm-design-narrow.md`, saved verbatim: 0 Blocker, 2 Major, on the answer above.
+
+| Finding | Answer |
+|---|---|
+| Major 1: branch (ii) still fires for almost any narrow failure, and the refill-holder evidence is read only after it | The refill branch comes first: (i) when the commit waits with a refilling report in their chain are at least half of (a)'s commit waits, or the completions without the slow paths meet the allowance. (ii) is stated as an upper bound: its lever is first measured by a diagnosis and becomes a design change only if its measured reduction covers the excess. (i) no longer claims the built design passes: the fifth run with the ensure before each report is the test |
+| Major 2: `commit_waits_by_refill` counts only the head of the queue behind a refill holder | The sample follows each waiter's blocking chain (a recursive query over `pg_blocking_pids`, at most 8 levels) and counts a waiter once when a refilling report is anywhere in it, in the measured database only. Test `the_commit_waits_behind_a_refilling_report_count_its_whole_queue` (two `COMMIT`s queued in turn behind a refilling holder) failed on the head-only sample, (2, 1) against (2, 2), and passes now |
+| Minor 2: no reading when the attribution is missing | A row without an attribution makes (2b) at 8 × 128 not decided, with (iii)'s consequence |
+| Minor 3: option 1c's trigger cannot fire for (a) | Restated relative to refills: carry fallbacks above half of the carries' refills (ensures answered `made` plus carry fallbacks) |
+| Nit 2: a re-run's second carry overwrote the first | The carry times of one step add up |
+
+Not taken: Minor 4 (the new queue test reads `pg_stat_activity` from another backend, which is what the sampler relies on); Nit 1 (the markdown table of a round, whose JSON carries the field).
+

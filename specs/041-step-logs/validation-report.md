@@ -841,4 +841,10 @@ Then, for decision D041-121 (the answers to the second re-reads), each fix seen 
   refilling carry and after a fast-path one. Before the change it failed ("x" against "x:refill"); with the slow path
   naming the report `<application>:refill` for the rest of its transaction it passes. The judge was run on synthetic
   rounds: a round without its (d) row is void ("d missing"), and with three complete rounds it prints the medians of
-  the (2b) attribution (i) and (ii). After the restore a fresh build passed the whole performance test binary (51 tests, 10 ignored benchmarks).
+  the (2b) attribution (i) and (ii).
+- **The queue behind a refilling report** (after the design critic's narrow re-read):
+  `the_commit_waits_behind_a_refilling_report_count_its_whole_queue` holds a row in a transaction named
+  `spike041carry:refill` and queues two `COMMIT`s behind it in turn (each through a deferred trigger that updates the
+  row, each seen waiting in `pg_stat_activity` before the next). On the sample that counted only the immediate
+  blocker it failed: (2, 1) against (2, 2), the second waiter being blocked by the first. With the blocking chain
+  followed it passes. After the restore a fresh build passed the whole performance test binary (51 tests, 10 ignored benchmarks).

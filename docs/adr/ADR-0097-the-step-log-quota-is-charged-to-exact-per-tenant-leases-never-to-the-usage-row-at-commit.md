@@ -237,8 +237,9 @@ ADR-0095 decision 4).
    overlap answers busy); a slot token on every charging call; a replica's lapse waits for the idle interval instead of
    the ended-backend reclaim; and a deploy still starts new slots, so the cold-start herd stays. Backend keys are kept;
    1c is the named alternative if task T041-9's pooler scenario shows carry fallbacks
-   (`step_log_quota_fallbacks_total{caller="carry"}`) above 1% of carrying reports, or carries answered
-   `mark_only:busy` above the 0.1% that reopens question O041-041 (decision D041-121).
+   (`step_log_quota_fallbacks_total{caller="carry"}`) above half of the carries' refills (ensures answered `made` plus
+   carry fallbacks: behind a pooler where decision 3b has no effect, nearly every refill is a fallback), or carries
+   answered `mark_only:busy` above the 0.1% that reopens question O041-041 (decision D041-121).
 1d. **A refill that never waits (`NOWAIT`) and answers mark-only when the row is busy** (D041-112): loses a tenant's
    records under load for no quota reason; replaced by the ensure of decision 3b and the bounded fallback of decision 4.
 1e. **A background refiller per replica** keeping every lease above a low-water mark: would take the refill off the
