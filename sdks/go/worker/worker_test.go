@@ -1138,6 +1138,14 @@ func TestTheTraceOfTheRunIsCarriedByEveryCallOfATaskButNotByTheRegistrationOrThe
 	until(t, "both reports", func() bool { return len(f.of("CompleteStep")) == 1 && len(f.of("FailStep")) == 1 })
 	for _, method := range []string{"Heartbeat", "CompleteStep"} {
 		for _, c := range f.of(method) {
+			// The failing task may beat once before it reports under load; its malformed trace is never sent,
+			// which the last check proves, so only the calls of the slow task carry one.
+			if beat, ok := c.request.(*pb.HeartbeatRequest); ok && beat.GetTaskId() != "run-1/slow/1" {
+				if got := c.md.Get("traceparent"); len(got) != 0 {
+					t.Errorf("a malformed trace is never sent, not on a heartbeat either: %v", got)
+				}
+				continue
+			}
 			if got := c.md.Get("traceparent"); len(got) != 1 || got[0] != traceparent {
 				t.Errorf("%s: %v", method, got)
 			}

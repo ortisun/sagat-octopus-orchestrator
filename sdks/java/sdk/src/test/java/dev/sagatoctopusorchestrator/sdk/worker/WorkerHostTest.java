@@ -991,8 +991,12 @@ class WorkerHostTest {
 
         h.start();
         until(() -> fake.of("CompleteStep").size() == 1, "one bounded task");
+        until(() -> fake.of("FailStep").size() == 1, "the lease beyond the credit to be handed back");
         sleep(100);
         assertEquals(1, fake.of("CompleteStep").size());
+        assertEquals(1, fake.of("FailStep").size());
+        assertEquals("run-2/charge/1", failed(0).getTaskId());
+        assertEquals("TASK_NOT_STARTED", failed(0).getErrorCode());
         assertEquals(1, ((Worker.PollTasksRequest) fake.of("StreamTasks").get(0).request()).getMaxTasks());
     }
 
@@ -1009,7 +1013,7 @@ class WorkerHostTest {
     }
 
     @Test
-    void aStreamCannotExceedTheAggregateEightMiBInputBudget() {
+    void aStreamCannotExceedTheAggregateEightMiBInputBudgetAndHandsBackTheLeaseOverIt() {
         fake.acceptedVersion = "1.4";
         fake.streamFrameSize = 1;
         String document = "{\"input\":\"" + "x".repeat(4 * 1024 * 1024) + "\"}";
@@ -1025,10 +1029,13 @@ class WorkerHostTest {
 
         h.start();
         until(() -> fake.of("CompleteStep").size() == 1, "the first frame within the aggregate budget");
+        until(() -> fake.of("FailStep").size() == 1, "the lease over the budget to be handed back");
         sleep(150);
         assertEquals(1, handled.get());
         assertEquals(1, fake.of("CompleteStep").size());
-        assertTrue(fake.of("FailStep").isEmpty());
+        assertEquals(1, fake.of("FailStep").size());
+        assertEquals("run-2/charge/1", failed(0).getTaskId());
+        assertEquals("TASK_NOT_STARTED", failed(0).getErrorCode());
     }
 
     @Test
