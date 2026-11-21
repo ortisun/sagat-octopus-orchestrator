@@ -689,6 +689,78 @@ async fn the_step_log_usage_is_shown_only_with_the_grant_in_every_namespace() {
         .await
         .expect("clear");
     assert_eq!((cleared.used, cleared.usage_withheld), (Some(0), false));
+    // `run:logs:read` is decisive: the developer's membership with both grants, presented with a viewer's token.
+    let as_viewer = Principal::new(
+        w.admin.tenant_id(),
+        developer.subject().clone(),
+        Role::Viewer,
+    );
+    assert_eq!(
+        list(as_viewer).await,
+        Some((None, true)),
+        "a token without run:logs:read"
+    );
+    // The membership role is decisive: a viewer member whose grant rows exist (written here as the owner, since the
+    // grant route refuses a viewer) is withheld even with a developer's token.
+    let demoted = w.member("a-demoted", Role::Viewer).await;
+    for namespace in [w.namespace.id(), second.id()] {
+        sqlx::query(
+            "INSERT INTO payload_reveal_grants (tenant_id, namespace_id, subject, granted_by, granted_at) \
+             VALUES ($1, $2, $3, $4, now())",
+        )
+        .bind(w.admin.tenant_id().as_uuid())
+        .bind(namespace.as_uuid())
+        .bind(demoted.subject().as_str())
+        .bind(w.admin.subject().as_str())
+        .execute(&w.db.pool)
+        .await
+        .expect("grant row");
+    }
+    let token_says_developer = Principal::new(
+        w.admin.tenant_id(),
+        demoted.subject().clone(),
+        Role::Developer,
+    );
+    assert_eq!(
+        list(token_says_developer).await,
+        Some((None, true)),
+        "a membership that cannot use a grant"
+    );
+    // The tenant is decisive: a member of both tenants who holds the grant in every namespace of the other tenant
+    // only is withheld in this one.
+    let stranger = w.member("a-stranger", Role::Developer).await;
+    let in_other = Principal::new(
+        w.other_admin.tenant_id(),
+        stranger.subject().clone(),
+        Role::Developer,
+    );
+    sagat_infra_postgres::PgIdentityStore::new(w.db.pool.clone())
+        .insert_membership(&sagat_domain::identity::Membership::restore(
+            in_other.tenant_id(),
+            in_other.subject().clone(),
+            Role::Developer,
+            time::OffsetDateTime::now_utc(),
+        ))
+        .await
+        .expect("member of the other tenant");
+    let scope = grants
+        .prepare(&w.other_admin, w.other_namespace.id(), &ctx())
+        .await
+        .expect("other admin scope");
+    grants
+        .grant(&scope, in_other.subject().as_str(), &ctx())
+        .await
+        .expect("grant in the other tenant");
+    assert_eq!(
+        list(in_other).await,
+        Some((Some(0), false)),
+        "shown in the other tenant"
+    );
+    assert_eq!(
+        list(stranger).await,
+        Some((None, true)),
+        "withheld in this one"
+    );
     // Every other resource is never withheld.
     let all = w.quotas.list(&viewer, None, &ctx()).await.expect("list");
     assert!(

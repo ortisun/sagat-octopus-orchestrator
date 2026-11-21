@@ -648,8 +648,9 @@ where
 
     /// Whether the view withholds the usage of `resource` from `principal`. The retained step-log bytes of a tenant
     /// move with what its runs log, so they are shown only to a caller who holds `run:logs:read` and the PII reveal
-    /// grant in every namespace of the tenant (decision D041-133, OD-2026-11-20-19, replacing D041-066's
-    /// permission-only rule); `shown` caches the answer across one list.
+    /// grant in every namespace of the tenant, and `run:read` as ADR-0085 rule 6 states (decision D041-133,
+    /// OD-2026-11-20-19, replacing D041-066's permission-only rule); `shown` caches the answer across one list. A store
+    /// error fails the whole view rather than show the usage (fail-closed; decision D041-140).
     async fn usage_withheld(
         &self,
         principal: &Principal,
@@ -662,7 +663,8 @@ where
         let shown = match *shown {
             Some(known) => known,
             None => {
-                let known = principal.authorize(Permission::RunLogsRead).is_ok()
+                let known = principal.authorize(Permission::RunRead).is_ok()
+                    && principal.authorize(Permission::RunLogsRead).is_ok()
                     && self
                         .store
                         .reveals_in_every_namespace(principal.tenant_id(), principal.subject())

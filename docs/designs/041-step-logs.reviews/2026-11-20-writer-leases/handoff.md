@@ -299,3 +299,25 @@ delegate amendments D041-134 and D041-137, accepted with this approval.
 
 **Next:** the build: merge the held tasks T041-3 and T041-4, then the tasks in the design's order through T041-36 and
 T041-37. The body of the approved design may now change only by ticks, evidence and follow-up tasks.
+
+## Update after the owner's answers and task T041-4 (2026-11-21)
+
+**Done:**
+- `19cc381d`: the owner's answers of 2026-11-21, documents first: rows OD-2026-11-21-8 ("Derive them too"), -9
+  ("Confirm the amendments"), -10 ("Confirm"); O041-048 to O041-050; decision D041-138 (gates (1) and (3) at 8 × 128
+  at least 88.6% and 83.3%; the release's union bound at most 26.9%; the owner report on the p99 derived again on its
+  own statistic, +73.8% at 1 × 16 and +29.9% at 8 × 128, from the fourth run's `verdict.txt`); D041-139 (the protocol
+  order: #260, then 1.7 here, then #264's 1.8); follow-up task T041-38 carries the amended bars, since the approved
+  body of SC-041-007 cannot change (`check-design-docs.py` Rule 3); ADR-0097 cites OD-2026-11-21-9; the runbook and
+  the validation report restate the bars. The derivation script and its input are in the scratchpad
+  (`041-floors.py`, `041-verdict-44834024933/`), not in the repository; T041-38 asks the judge of T041-9 to encode the
+  bars with a test that derives them.
+- `c1fc1206` and its review fixes: task T041-4 ticked (the carry's plan in the domain, `DropReason`,
+  `MarkOnlyReason`, `validate_carry`, the withheld usage of D041-133); the review of the slice in
+  `2026-11-21-domain-and-quota-view/` with D041-140.
+
+**Next (not started):** T041-5 (the quota-lease migration, the §3b functions, `PoolConfig.application_name`, *Q* from
+the pool, the per-replica names, the isolation tests), then T041-6, T041-32, T041-10 in the design's order. Hold
+T041-3, T041-36, T041-7 and every task that touches `crates/api-grpc/src/service.rs`, `crates/application/src/worker.rs`
+or the SDKs' worker hosts until the coordinator says #260 merged; then merge origin/develop (never rebase).
+For T041-6: raise `step_log_lines_dropped_total{reason}` by the saturated change of the stream's counts (D041-140 (7)).

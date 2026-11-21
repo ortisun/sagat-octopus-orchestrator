@@ -676,7 +676,8 @@ Its body, each statement with a snapshot of its own (the function is `VOLATILE`,
 5. **Plan**, in the function, exactly T5 and T6 of §8 for a carry (design section 2a): with `p_mark_reason` set, no
    record is kept, no marker is planned, each distinct sequence in (`last_sequence`, `p_highest`] that the carry sent is
    counted once as dropped by the server with that reason (an invalid carry's duplicate or out-of-range elements are not
-   counted; the rest of the range is the worker's gap), and for
+   counted; the rest of the range is the gap of T5, the worker's below `ceiling_sequence` and the ceiling's reason above
+   it, decision D041-140), and for
    `tenant_quota` the stream's `ceiling_reason` becomes `tenant_quota`. Otherwise the records whose sequence is above
    `last_sequence` (none above it when `in_order` is false, counted `out_of_order`) are kept in sequence order until the
    first that does not fit `step_log_attempt_records` or `step_log_attempt_bytes` from the stream's counters; the rest

@@ -372,6 +372,8 @@ impl Drops {
 /// A batch outside the bounds of P4 (`INVALID_ARGUMENT`). Carries no value of the batch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum BatchInvalid {
+    #[error("a step-log batch holds no record")]
+    Empty,
     #[error("a step-log batch holds more than 500 records")]
     TooManyRecords,
     #[error("a step-log batch is larger than 192 KiB")]
@@ -409,12 +411,15 @@ fn check_records(records: &[RecordShape]) -> Result<u64, BatchInvalid> {
     Ok(previous)
 }
 
-/// P4: at most 500 records and 192 KiB encoded, sequences strictly increasing in 1 to 2^62 − 1 and a known level. A
+/// P4: 1 to 500 records and at most 192 KiB encoded, sequences strictly increasing in 1 to 2^62 − 1 and a known level. A
 /// batch carries no final mark: the attempt's report does (decision D041-090).
 ///
 /// # Errors
 /// [`BatchInvalid`] naming the first bound that does not hold.
 pub fn validate_batch(records: &[RecordShape], encoded_len: usize) -> Result<(), BatchInvalid> {
+    if records.is_empty() {
+        return Err(BatchInvalid::Empty);
+    }
     if records.len() > MAX_BATCH_RECORDS {
         return Err(BatchInvalid::TooManyRecords);
     }
@@ -604,7 +609,11 @@ pub fn plan_batch(
         .max(carry.map_or(0, |carry| carry.highest_sequence))
         .max(stream.last_sequence);
     let sent = fresh.len() as u64;
-    let gap = mark - stream.last_sequence - sent;
+    // Saturating: the records passed validate_batch or validate_carry, so this never saturates; an unchecked input
+    // gives a wrong plan, never a wrapped count.
+    let gap = mark
+        .saturating_sub(stream.last_sequence)
+        .saturating_sub(sent);
     // The gap below the ceiling the worker skipped; above it, the records it stopped sending after
     // FINAL_ONLY, which the server's ceiling dropped.
     let (gap_worker, gap_server) = stream.ceiling_sequence.map_or((gap, 0), |ceiling| {
@@ -966,6 +975,11 @@ mod tests {
     fn a_batch_is_refused_outside_its_bounds() {
         assert_eq!(validate_batch(&[ok(1), ok(2)], 10), Ok(()));
         assert_eq!(
+            validate_batch(&[], 0),
+            Err(BatchInvalid::Empty),
+            "a batch holds 1 to 500 records"
+        );
+        assert_eq!(
             validate_batch(&vec![ok(1); 501], 10),
             Err(BatchInvalid::TooManyRecords)
         );
@@ -1174,6 +1188,36 @@ mod tests {
     }
 
     #[test]
+    fn a_mark_only_carry_after_a_ceiling_splits_its_gap_as_t5_does() {
+        let ceilings = AttemptCeilings {
+            records: 2,
+            bytes: 1 << 20,
+        };
+        let met = plan_batch(
+            &StreamCounters::new(),
+            ceilings,
+            OPEN,
+            &sized(&[1, 2, 3, 4], 10),
+            None,
+        );
+        assert_eq!(met.after.ceiling_sequence, Some(4));
+        let secret = CarryMark {
+            highest_sequence: 10,
+            in_order: true,
+            mark_only: Some(MarkOnlyReason::Secret),
+        };
+        let plan = plan_batch(&met.after, ceilings, OPEN, &[], Some(secret));
+        assert_eq!(
+            plan.drops.get(DropReason::AttemptRecords),
+            6,
+            "5 to 10, above the ceiling"
+        );
+        assert_eq!(plan.drops.by_worker(), 0);
+        assert_eq!(plan.drops.get(DropReason::Secret), 0, "it sent no record");
+        assert!(holds(&plan.after));
+    }
+
+    #[test]
     fn a_resend_stores_nothing_and_a_gap_is_the_workers() {
         let first = plan_batch(
             &StreamCounters::new(),
@@ -1246,6 +1290,8 @@ mod tests {
             plan.marker.map(|(_, reason)| reason),
             Some(MarkerReason::AttemptBytes)
         );
+        assert_eq!(plan.drops.get(DropReason::AttemptBytes), 1);
+        assert_eq!(plan.drops.by_server(), 1);
     }
 
     #[test]
@@ -1455,7 +1501,7 @@ mod tests {
 
     fn step() -> impl Strategy<Value = Step> {
         prop_oneof![
-            4 => (proptest::collection::btree_set(1u64..400, 0..20), 0u64..300)
+            4 => (proptest::collection::btree_set(1u64..400, 1..20), 0u64..300)
                 .prop_map(|(set, bytes)| Step::Batch { sequences: set.into_iter().collect(), bytes }),
             1 => (
                 proptest::collection::btree_set(1u64..400, 0..20),
@@ -1509,8 +1555,13 @@ mod tests {
                     Step::Refused => continue,
                     Step::Batch { sequences, bytes } => (sequences, bytes, None),
                     Step::Carry { sequences, bytes, highest_extra, in_order, mark_only } => {
-                        let highest = sequences.iter().copied().max().unwrap_or(0).max(stream.last_sequence)
-                            + highest_extra;
+                        // A full carry's highest is at least its last record's (C2); a mark-only carry's records
+                        // may lie above it.
+                        let highest = if mark_only.is_some() {
+                            stream.last_sequence + highest_extra
+                        } else {
+                            sequences.iter().copied().max().unwrap_or(0).max(stream.last_sequence) + highest_extra
+                        };
                         (sequences, bytes, Some(CarryMark { highest_sequence: highest, in_order, mark_only }))
                     }
                 };
@@ -1546,6 +1597,19 @@ mod tests {
                     }
                 } else {
                     prop_assert_eq!(plan.drops.get(DropReason::OutOfOrder), 0);
+                }
+                // Each server reason is one the rule names: a ceiling met before or by this plan, the tenant quota,
+                // out of order for an out-of-order full carry, or the mark-only carry's own reason.
+                for (reason, count) in plan.drops.iter() {
+                    let ceiling = |c: Option<CeilingReason>| c.is_some_and(|c| DropReason::from(c) == reason);
+                    let named = reason == DropReason::WorkerGap
+                        || ceiling(stream.ceiling)
+                        || ceiling(plan.after.ceiling)
+                        || (reason == DropReason::TenantQuota && carry.is_none_or(|c| c.mark_only.is_none()))
+                        || (reason == DropReason::OutOfOrder
+                            && carry.is_some_and(|c| !c.in_order && c.mark_only.is_none()))
+                        || carry.and_then(|c| c.mark_only).is_some_and(|r| r.drop_reason() == reason);
+                    prop_assert!(named, "{reason:?} {count}");
                 }
                 if stream.not_stored_reason.is_none() && plan.after.not_stored_reason.is_some() {
                     prop_assert_eq!(carry.and_then(|c| c.mark_only), Some(MarkOnlyReason::ServiceBusy));

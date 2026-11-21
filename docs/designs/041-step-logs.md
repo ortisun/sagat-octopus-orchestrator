@@ -2564,6 +2564,15 @@ Slice B, the server stores:
     32 passed; `cargo test -p sagat-application --lib`: 192 passed; `python3 scripts/check-upgrade-boundary.py`:
     boundaries match migration 20270201000100; `cargo clippy` of the five touched packages `--all-targets -D warnings`:
     clean.
+  Evidence continued (2026-11-21): the slice's review (`docs/designs/041-step-logs.reviews/2026-11-21-domain-and-quota-view/`,
+    Blocker 0, Major 2, Nit 9) answered by D041-140: an empty batch refused (`BatchInvalid::Empty`, seen failing
+    first), the mark-only gap after a ceiling pinned by `a_mark_only_carry_after_a_ceiling_splits_its_gap_as_t5_does`
+    and data-model.md §8a item 5 corrected, the drop reasons checked by the property test, `run:read` checked, three
+    more cases in the withheld-usage test. Hand mutations, each failing and restored with a fresh build: every unkept
+    record `attempt_records` (2 tests), `run:logs:read` not checked (1), the membership role not checked (1).
+    `cargo test -p sagat-domain --lib`: 105 passed; `--test integration_security_multitenancy -- quota step_log`:
+    30 passed as the owner role and as the runtime role; `sagat-application --lib`: 192 passed; clippy of the five
+    packages `-D warnings`: clean.
 - [ ] T041-5 The quota leases and the step-log tables (data-model.md §2 to §4).
   No longer waits: the owner answered O041-040 (OD-2026-11-20-16), accepted ADR-0097 (OD-2026-11-20-15), settled the
   environment question of decision D041-109 (OD-2026-11-20-13, which stands in for task T041-35's pass) and chose the
