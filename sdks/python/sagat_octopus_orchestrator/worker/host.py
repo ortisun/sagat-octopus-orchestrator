@@ -693,10 +693,19 @@ class WorkerHost:
         if len(self._hand_back_workers) < HAND_BACK_CONCURRENCY:
             worker = asyncio.create_task(self._hand_back_in_turn(), name="sagat-hand-back")
             self._hand_back_workers.add(worker)
-            worker.add_done_callback(self._hand_back_workers.discard)
 
     async def _hand_back_in_turn(self) -> None:
-        """Makes the hand-backs of the queue, one at a time, until the queue is empty."""
+        """Makes the hand-backs of the queue, one at a time, until the queue is empty. A worker leaves the set in the
+        same step in which it sees the queue empty, never later (a done callback runs a turn of the event loop after):
+        a hand-back queued in between would otherwise find every place taken by workers that have already left."""
+        try:
+            await self._hand_backs_in_turn()
+        finally:
+            current = asyncio.current_task()
+            if current is not None:
+                self._hand_back_workers.discard(current)
+
+    async def _hand_backs_in_turn(self) -> None:
         while self._hand_back_queue:
             task, key = self._hand_back_queue.popleft()
             try:

@@ -8,6 +8,7 @@ from collections.abc import Callable
 from typing import Any
 
 import grpc
+import pytest
 
 from sagat_octopus_orchestrator import ActivityContext, WorkerEvent, WorkerHost
 from sagat_octopus_orchestrator._proto import worker_pb2 as pb
@@ -420,3 +421,32 @@ async def test_a_frame_after_the_credit_is_used_up_is_read_and_handed_back(
     await until(lambda: len(fake.of("CompleteStep")) == 1, "the kept task")
     await host.stop(5)
     assert handed_back(fake) == ["run-2/charge/1", "run-3/charge/1"]
+
+
+async def test_a_hand_back_queued_as_the_last_worker_leaves_is_made_once(
+    fake: FakeWorkerService, make_host: MakeHost, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The race of a worker that has seen the queue empty: a hand-back queued in that moment is neither stranded nor
+    made twice. With one worker, the report of the first lease queues the second as its very last act, with
+    ``call_soon``: that callback runs after the worker has looked at the queue (empty) and before the event loop runs
+    the callbacks of the finished worker task, which is exactly the moment of the race."""
+    from sagat_octopus_orchestrator.worker import host as host_module
+
+    monkeypatch.setattr(host_module, "HAND_BACK_CONCURRENCY", 1)
+    host = make_host()
+    host.register_activity("charge", lambda _i, _c: 1, blocking=False)
+    await host.start()
+    reported: list[str] = []
+    loop = asyncio.get_running_loop()
+
+    async def report(task: Any, code: str, message: str, retryable: bool, started: float) -> None:
+        reported.append(task.lease.task_id)
+        if task.lease.task_id == "run-1/charge/1":
+            loop.call_soon(host._hand_back, numbered(2), "run-2/charge/1", "credit")
+
+    monkeypatch.setattr(host, "_fail", report)
+    host._hand_back(numbered(1), "run-1/charge/1", "credit")
+    await until(lambda: reported == ["run-1/charge/1", "run-2/charge/1"], "both hand-backs")
+    await until(lambda: not host._hand_back_workers and not host._handing_back, "the worker to leave")
+    assert reported == ["run-1/charge/1", "run-2/charge/1"]
+    await host.stop(1)
