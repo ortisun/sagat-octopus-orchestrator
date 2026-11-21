@@ -587,4 +587,44 @@ class WorkerHandBackTest {
         assertEquals(List.of("run-2/charge/1", "run-3/charge/1"), handedBack(), "the frame after the credit is read and handed back");
         assertEquals("run-1/charge/1", ((Worker.CompleteStepRequest) fake.of("CompleteStep").get(0).request()).getTaskId());
     }
+
+    @Test
+    void aHandlerCannotSayTaskNotStartedOnlyTheHostCan() {
+        fake.ignoreMax = true;
+        // Two forward tasks, a compensation and a reconciliation fail with the code reserved for the host; the fifth lease
+        // is beyond the credit of four and is really handed back.
+        fake.addLeases(
+                numbered(1),
+                numbered(2),
+                numbered(3, b -> b.setActivityName("refund").setTaskKind("COMPENSATION")),
+                numbered(4, b -> b.setActivityName("check").setTaskKind("RECONCILIATION").setTargetNode("charge")),
+                numbered(5));
+        WorkerHost h = host(b -> b.maxInflight(4));
+        h.registerActivity("charge", (in, ctx) -> {
+            throw ctx.taskId().equals("run-1/charge/1")
+                    ? ActivityFailure.retryable("TASK_NOT_STARTED", "custom")
+                    : ActivityFailure.permanent("TASK_NOT_STARTED", "custom");
+        });
+        h.registerCompensation("refund", (in, ctx) -> {
+            throw ActivityFailure.retryable("TASK_NOT_STARTED", "custom");
+        });
+        h.registerReconciler("check", (in, ctx) -> {
+            throw ActivityFailure.permanent("TASK_NOT_STARTED", "custom");
+        });
+        h.start();
+        until(() -> fake.of("FailStep").size() == 5, "the four failures and the hand-back");
+        h.stop(Duration.ofSeconds(5));
+        Map<String, String> sent = new java.util.TreeMap<>();
+        for (FakeWorkerServer.Call call : fake.of("FailStep")) {
+            Worker.FailStepRequest r = (Worker.FailStepRequest) call.request();
+            sent.put(r.getTaskId(), r.getErrorCode() + "/" + r.getRetryable() + "/" + r.getSafeMessage());
+        }
+        assertEquals(Map.of(
+                "run-1/charge/1", "WORKER_ERROR/true/custom",
+                "run-2/charge/1", "WORKER_ERROR/false/custom",
+                "run-3/charge/1", "WORKER_ERROR/true/custom",
+                "run-4/charge/1", "WORKER_ERROR/false/custom",
+                "run-5/charge/1", "TASK_NOT_STARTED/true/the host did not start this task"), sent,
+                "a handler's TASK_NOT_STARTED is a WORKER_ERROR with its own message and retryable; the host's hand-back keeps it");
+    }
 }

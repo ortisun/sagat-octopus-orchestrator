@@ -715,7 +715,10 @@ export class WorkerHost {
       return;
     }
     if (failure) {
-      await this.fail(lease, minor, failure.code, failure.message, failure.retryable, started);
+      // TASK_NOT_STARTED is the host's word that no handler ran (SPEC §6.2): a handler that uses it reports an ordinary
+      // failure, with its own message and retryable.
+      const code = failure.code === 'TASK_NOT_STARTED' ? 'WORKER_ERROR' : failure.code;
+      await this.fail(lease, minor, code, failure.message, failure.retryable, started);
       return;
     }
 

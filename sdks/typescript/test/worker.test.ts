@@ -1398,3 +1398,37 @@ test('a frame after the credit is used up is read and handed back whole', async 
   assert.deepEqual(handedBack(), ['run-2/charge/1', 'run-3/charge/1'], 'the frame after the credit is read and handed back');
   assert.equal(fake.of('completeStep')[0]!.request['task_id'], 'run-1/charge/1');
 });
+
+test('a handler cannot say TASK_NOT_STARTED: only the host can', async () => {
+  fake.ignoreMax = true;
+  // Two forward tasks, a compensation and a reconciliation fail with the code reserved for the host; the fifth lease is
+  // beyond the credit of four and is really handed back.
+  fake.leases = [
+    numbered(1),
+    numbered(2),
+    numbered(3, { activity_name: 'refund', task_kind: 'COMPENSATION' }),
+    numbered(4, { activity_name: 'check', task_kind: 'RECONCILIATION', target_node: 'charge' }),
+    numbered(5),
+  ];
+  const h = host({ maxInflight: 4, transport: 'poll' });
+  h.registerActivity('charge', (_input, ctx) => {
+    throw ctx.taskId === 'run-1/charge/1'
+      ? ActivityFailure.retryable('TASK_NOT_STARTED', 'custom')
+      : ActivityFailure.permanent('TASK_NOT_STARTED', 'custom');
+  });
+  h.registerCompensation('refund', () => { throw ActivityFailure.retryable('TASK_NOT_STARTED', 'custom'); });
+  h.registerReconciler('check', () => { throw ActivityFailure.permanent('TASK_NOT_STARTED', 'custom'); });
+  await h.start();
+  await until(() => fake.of('failStep').length === 5, 'the four failures and the hand-back');
+  await h.stop(5000);
+  const sent = Object.fromEntries(fake.of('failStep').map((call) => [
+    String(call.request['task_id']), `${String(call.request['error_code'])}/${String(call.request['retryable'])}/${String(call.request['safe_message'])}`,
+  ]));
+  assert.deepEqual(sent, {
+    'run-1/charge/1': 'WORKER_ERROR/true/custom',
+    'run-2/charge/1': 'WORKER_ERROR/false/custom',
+    'run-3/charge/1': 'WORKER_ERROR/true/custom',
+    'run-4/charge/1': 'WORKER_ERROR/false/custom',
+    'run-5/charge/1': 'TASK_NOT_STARTED/true/the host did not start this task',
+  }, "a handler's TASK_NOT_STARTED is a WORKER_ERROR with its own message and retryable; the host's hand-back keeps it");
+});

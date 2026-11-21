@@ -868,7 +868,10 @@ public final class WorkerHost implements AutoCloseable {
                 return;
             }
             if (failure != null) {
-                fail(channel, lease, state, minor, failure.code(), failure.getMessage(), failure.isRetryable(), started);
+                // TASK_NOT_STARTED is the host's word that no handler ran (SPEC section 6.2): a handler that uses it reports
+                // an ordinary failure, with its own message and retryable.
+                String code = "TASK_NOT_STARTED".equals(failure.code()) ? "WORKER_ERROR" : failure.code();
+                fail(channel, lease, state, minor, code, failure.getMessage(), failure.isRetryable(), started);
                 return;
             }
 
