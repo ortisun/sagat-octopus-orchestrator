@@ -824,8 +824,25 @@ measured!(
     a_checked_start_costs_what_an_unchecked_one_does_once
 );
 
+/// The calls each statement made between two [`calls`] listings, one line per statement that ran, for the message of a
+/// failed comparison: it names the statement one window ran and the other did not.
+fn listed(before: &BTreeMap<String, i64>, after: &BTreeMap<String, i64>) -> String {
+    let mut text = String::new();
+    for (query, count) in after {
+        let delta = count - before.get(query).copied().unwrap_or(0);
+        if delta > 0 {
+            text.push_str(&format!("  {delta:>3}  {query}\n"));
+        }
+    }
+    text
+}
+
 /// What one triggered start costs: an event published, then one dispatch round that starts the run of its trigger.
-async fn a_triggered_start_once(w: &World, kind: &str) -> Result<Work, Evicted> {
+async fn a_triggered_start_once(
+    w: &World,
+    dispatcher: &crate::support::engine::EventLoop,
+    kind: &str,
+) -> Result<(Work, String), Evicted> {
     let publish = |id: String| async move {
         w.events
             .publish(
@@ -846,12 +863,14 @@ async fn a_triggered_start_once(w: &World, kind: &str) -> Result<Work, Evicted> 
             .expect("published");
     };
     publish(format!("{kind}-warm")).await;
-    w.dispatcher.tick().await;
+    dispatcher.tick().await;
     publish(format!("{kind}-measured")).await;
+    let listed_before = calls(w).await;
     let before = reading(w).await;
-    let round = w.dispatcher.tick().await;
+    let round = dispatcher.tick().await;
     assert_eq!(round.runs_started, 1, "{kind}");
-    spent(w, before).await
+    let cost = spent(w, before).await?;
+    Ok((cost, listed(&listed_before, &calls(w).await)))
 }
 
 /// SC-043-003 for a triggered start: the envelope checked against an `inputSchema` costs nothing more.
@@ -872,11 +891,20 @@ async fn a_checked_triggered_start_costs_what_an_unchecked_one_does_once() -> Re
         "properties": {"data": {"type": "object", "required": ["orderId"]}}
     });
     w.publish(checked).await;
-    let without = a_triggered_start_once(&w, "budget.plain").await?;
-    let with = a_triggered_start_once(&w, "budget.checked").await?;
+    // A round reads whether the cron triggers were handed over to the schedule pass (`SELECT state FROM
+    // schedule_trigger_handover`) only when what it read last is two seconds old (`HandoverCache::LEGACY_BOUND`, D2072),
+    // so whether a window holds that read depends on how long the publications and the rounds before it took: on a loaded
+    // machine one window counted 52 statements and the other 51. With a zero bound every round reads it, once, and the
+    // two windows are compared statement for statement.
+    let dispatcher = &w
+        .dispatcher_with(sagat_scheduler::EventDispatchSettings::default())
+        .with_handover_bound(std::time::Duration::ZERO);
+    let (without, without_listed) = a_triggered_start_once(&w, dispatcher, "budget.plain").await?;
+    let (with, with_listed) = a_triggered_start_once(&w, dispatcher, "budget.checked").await?;
     assert_eq!(
         with, without,
-        "a triggered start with an inputSchema costs what one without does"
+        "a triggered start with an inputSchema costs what one without does\n\
+         statements of the round with one:\n{with_listed}statements of the round without:\n{without_listed}"
     );
     Ok(())
 }
