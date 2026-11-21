@@ -359,6 +359,18 @@ T022-063 (020 erasure).
   behaviour; the refusal `RATE_LIMIT_QUEUE_FULL` of an event's run is seen and its redelivery admitted. The reset of a
   rate-limited start stays task T022-086 (gap G022-016). `integration_flow_control_step_policies` 185 passed (184 in the full run; the one failure, `rate_gate::the_rate_live_keys_count_misses_only_the_keys_other_transactions_have_not_committed`, whose stand-in window met the new empty-window row, fixed and rerun green) as the owner
   and 185 likewise as `sagat_app`.
+  *Proved 2026-11-20 by hand mutation* (the tests above were written after the code). One mutation per rule, each applied
+  alone, seen red, then every file restored and the binary built fresh, all 6 tests green again:
+  mutation 1, the event dispatcher starts an event's run without its gates: the event test red (no run starts: the domain's
+  `refuse_gated_start` refuses an ungated start of a gated definition, so the creator's bypass creates nothing);
+  mutation 2, the same for a cron tick: the cron test red (no run); mutation 3, a start the key refuses consumes its event
+  (`Started::No`): the event test red (`DISPATCHED`, not `PENDING`); mutation 4, a schedule's action starts without its
+  gates: the schedule test red (the firing fails); mutation 5, a child starts without its gates: the child test red (no child
+  run); mutation 6, a released start delay is never decided (`start_undecided` gives no `Release`): the delay test red
+  (no start released); mutation 7, a key that does not evaluate at the release is taken as the group's single key: the delay
+  test red (`Running`, not `Failed`); mutation 8, the queue's grant of a run gives only its first gate: the dual-gated test
+  red (nothing granted); mutation 9, a run's timeout names the concurrency gate first: the dual-gated test red
+  (`CONCURRENCY_WAIT_TIMEOUT`, not `RATE_LIMIT_WAIT_TIMEOUT`).
   - *Amended 2026-11-13 after review* (D022-033, D022-024): invariants 8–10 land in this task's change; per-key run waiters default 100; the child-start outcome is T022-102.
 - [ ] T022-073 [US7] Grant pass (T20) and queue timeout (T21) in `crates/scheduler/src/flow_control.rs` and `crates/infra-postgres/src/rate_limits.rs`: shard fence, oldest admitted waiter first with skip-ahead, bounded grants per key and tenant rotation per pass, first commit wins against the timer. FR-022-041,042,047; ADR-0088. Evidence: admission-order grants; a fence rejects a stale replica; a waiter of another key and tenant is granted during a flood within two passes.
   - *Amended 2026-11-13 after review* (D022-021, D022-022): superseded by T022-097 (grant) and T022-098 (timeout), which serve both gates.
@@ -445,6 +457,18 @@ T022-063 (020 erasure).
   the run is held (they take no run). The control `a_plan_that_takes_a_window_before_its_run_deadlocks_with_the_reference`
   deadlocks with one victim. 7 passed; `integration_flow_control_step_policies` 185 passed (184 in the full run; the one failure, `rate_gate::the_rate_live_keys_count_misses_only_the_keys_other_transactions_have_not_committed`, whose stand-in window met the new empty-window row, fixed and rerun green) as the owner and 185 likewise as
   `sagat_app`.
+  *Proved 2026-11-20 by hand mutation* (the tests were written after the code). One mutation per rule, each applied alone,
+  seen red, then every file restored and the binary built fresh, all 7 tests green again: mutation 1, an admission files its
+  window before its semaphore: the admission test red (a deadlock with the reference, the path its victim); mutation 2, an
+  admission locks the windows before its active-run counter row: the admission test red (deadlock); mutation 3, a commit
+  that ends the run gives its gates back before it locks its counter row: the timeout and the cancellation tests red
+  (deadlock); mutation 4, the returns lock the windows before the semaphores: both red with a permit (deadlock); mutation 5,
+  the grant pass waits for a held run instead of passing it by (`Lock::Wait` for `SKIP LOCKED`): the grant test red (the pass
+  did not finish within 30 seconds); mutation 6, the grant locks the window before the semaphore: the grant test red
+  (deadlock, nothing granted); mutation 7, a completion locks the windows before its run: the readiness test red
+  (deadlock); mutation 8, lease recording locks the runs of its grants: the lease and purge test red (not finished within 30
+  seconds while the run is held); mutation 9, the purge locks the runs of its grants: the same test red at the purge;
+  mutation 10, the control plan taken in the slots' order: the control red (no deadlock).
   - *Amended 2026-11-13 after review* (D022-026): with the `flow_control_counts` rows last.
   - *Production gate (2026-11-20, D022-066 item 5):* `docs/runbooks/flow-control.md` section 6 forbids activating the rate capability in production before this task is ticked.
 - [ ] T022-082 [P] [US7] Metrics and spans of the plan in `crates/telemetry/src/{metrics.rs,span.rs}`; alerts `rate_limit_grant_lagging` and `rate_limit_queue_saturated` in `crates/scheduler/src/monitor.rs`. FR-022-049. Evidence: telemetry tests reject unknown labels; each alert raised and cleared in a test.
