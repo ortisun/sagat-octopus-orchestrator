@@ -14,8 +14,17 @@ internal static partial class Log
     [LoggerMessage(EventId = 2, Level = LogLevel.Warning, Message = "The connection to {Host} is plain text outside loopback: the token and the payloads travel unencrypted")]
     internal static partial void InsecureTransport(ILogger logger, string host);
 
-    [LoggerMessage(EventId = 29, Level = LogLevel.Warning, Message = "The poll answered {Got} tasks but the host asked for {Asked}: running the first {Asked} and leaving the {Ignored} others to lapse")]
+    [LoggerMessage(EventId = 29, Level = LogLevel.Warning, Message = "The poll answered {Got} tasks but the host asked for {Asked}: running the first {Asked} and handing the {Ignored} others back")]
     internal static partial void TooManyTasks(ILogger logger, int got, int asked, int ignored);
+
+    [LoggerMessage(EventId = 30, Level = LogLevel.Warning, Message = "The host hands back task {TaskId}, which it did not start: {Reason}")]
+    internal static partial void HandingBack(ILogger logger, string taskId, string reason);
+
+    [LoggerMessage(EventId = 31, Level = LogLevel.Warning, Message = "Task {TaskId} is in flight or was already received, and was leased again: ignored")]
+    internal static partial void DuplicateIgnored(ILogger logger, string taskId);
+
+    [LoggerMessage(EventId = 32, Level = LogLevel.Error, Message = "The hand-back of task {TaskId} could not be started: {ErrorType}; its lease lapses")]
+    internal static partial void HandBackNotStarted(ILogger logger, string taskId, string errorType);
 
     [LoggerMessage(EventId = 10, Level = LogLevel.Information, Message = "Worker {Worker} registered at protocol {Protocol}")]
     internal static partial void WorkerRegistered(ILogger logger, string worker, string protocol);

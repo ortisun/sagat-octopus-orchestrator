@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import collections
 import contextlib
 import contextvars
 import functools
@@ -62,6 +63,8 @@ REPORT_ATTEMPTS = 5
 _CODE = re.compile(r"[A-Z0-9_]{1,64}")
 _SURROGATES = re.compile(r"[\ud800-\udfff]")
 SHUTDOWN_GRACE = 2.0
+HAND_BACK_CONCURRENCY = 8
+"""Hand-backs on their way at once: a server that floods one answer cannot make the host open a call per lease."""
 """Seconds. After ``stop`` has cancelled the tokens of the tasks left, it waits this long for them to react and be
 reported before it closes the connection; it never interrupts a handler."""
 _VERSION = re.compile(r"1(?:\.([0-9]+))?")
@@ -189,6 +192,16 @@ def _scoped_instance(lease: pb.TaskLease, minor: int) -> dict[str, pb.ExecutionI
     return {}
 
 
+def _inflight_key(lease: pb.TaskLease, minor: int) -> str:
+    """What identifies a task while it runs: the legacy task id is ``run/node/generation``, which sibling iterations
+    of a collection share, so from protocol 1.5 the instance path is part of it."""
+    key = lease.task_id
+    if minor >= 5 and lease.HasField("instance"):
+        for segment in lease.instance.instance_path:
+            key += f"/{segment.scope_node_id}[{segment.iteration_index}]"
+    return key
+
+
 def _activity_instance(lease: pb.TaskLease, minor: int) -> ExecutionInstanceIdentity | None:
     if minor < 5 or not lease.HasField("instance"):
         return None
@@ -232,6 +245,15 @@ class WorkerHost:
         self._wake: asyncio.Event | None = None
         self._inflight: set[_Task] = set()
         self._orphans: set[_Task] = set()
+        # The hand-backs (SPEC section 6.2): the queue in the order received, the workers making them (at most
+        # HAND_BACK_CONCURRENCY), and the keys on their way, queued ones included, which count as in flight.
+        self._hand_back_queue: collections.deque[tuple[_Task, str]] = collections.deque()
+        self._hand_back_workers: set[asyncio.Task[None]] = set()
+        self._handing_back: set[str] = set()
+        self._receiving = False
+        self._frame_received: Callable[[int], Awaitable[None]] | None = None
+        """Awaited with the number of leases after a poll answer or a stream frame is read and before it is looked at;
+        ``None`` except in the tests, which hold the loop there while ``stop`` begins."""
         self._lifecycle = asyncio.Lock()
 
     @property
@@ -361,10 +383,18 @@ class WorkerHost:
         self._wake.set()
         clock = asyncio.get_running_loop().time
         grace_ends = clock() + timeout
-        # The receive owns no handler: cancel it promptly while delivered handlers keep their lifecycle.
-        self._loop_task.cancel()
+        # The receive owns no handler: cancel it promptly while delivered handlers keep their lifecycle. A receive in
+        # progress is ended by cancelling its call, never the loop: a frame the loop has already read is handed back
+        # (SPEC section 6.2), where cancelling the loop would throw it away. Anywhere else the loop holds no lease.
+        if self._receiving and self._rpc is not None:
+            self._rpc.cancel_receives()
+            _, late_loop = await asyncio.wait({self._loop_task}, timeout=max(0.0, grace_ends - clock()))
+            if late_loop:
+                self._loop_task.cancel()
+        else:
+            self._loop_task.cancel()
         await asyncio.gather(self._loop_task, return_exceptions=True)
-        pending = {task.runner for task in self._inflight if task.runner is not None}
+        pending = {task.runner for task in self._inflight if task.runner is not None} | self._hand_back_workers
         if pending:
             _, late = await asyncio.wait(pending, timeout=max(0.0, grace_ends - clock()))
             if late:
@@ -477,13 +507,19 @@ class WorkerHost:
                     input_bytes = 0
                     wait_ms: int | None = None
                     malformed = False
-                    task_ids: set[str] = set()
+                    seen: set[str] = set()
                     stream = self._rpc.stream_tasks(request)
+                    self._receiving = True
                     try:
                         async for response in stream:
-                            if self._stopping:
-                                return
                             leases = list(response.tasks)
+                            if self._frame_received is not None:
+                                await self._frame_received(len(leases))
+                            if self._stopping:
+                                # A host that is stopping starts nothing new: what it read is handed back.
+                                for lease in leases:
+                                    self._take(lease, seen, "stopping")
+                                return
                             if not leases:
                                 wait_ms = response.retry_after_ms if response.retry_after_ms > 0 else 1000
                                 malformed = response.retry_after_ms <= 0
@@ -491,26 +527,25 @@ class WorkerHost:
                             if response.retry_after_ms != 0:
                                 malformed = True
                             accepted = 0
+                            why: str | None = None
                             for lease in leases:
                                 size = len(lease.input_json.encode("utf-8"))
-                                if (
-                                    received >= asked
-                                    or len(self._inflight) >= max_inflight
-                                    or input_bytes + size > MAX_RECEIVE_INPUT_BYTES
-                                    or lease.task_id in task_ids
-                                ):
-                                    malformed = True
-                                    break
-                                task_ids.add(lease.task_id)
-                                received += 1
-                                accepted += 1
-                                input_bytes += size
-                                meaningful = True
-                                self._dispatch(lease)
+                                if why is None and (received >= asked or len(self._inflight) >= max_inflight):
+                                    why = "credit"
+                                elif why is None and input_bytes + size > MAX_RECEIVE_INPUT_BYTES:
+                                    why = "malformed"
+                                if self._take(lease, seen, why):
+                                    received += 1
+                                    accepted += 1
+                                    input_bytes += size
+                                    meaningful = True
                             self._emit(WorkerEvent("poll", tasks=accepted))
+                            if why is not None:
+                                malformed = True
                             if malformed:
                                 break
                     finally:
+                        self._receiving = False
                         await stream.aclose()
                     if meaningful:
                         failures = 0
@@ -523,29 +558,41 @@ class WorkerHost:
                         pause_ms = max(50, wait_ms or 1000)
                         await self._idle(min(MAX_SERVER_WAIT, pause_ms / 1000 * (0.8 + random.random() * 0.4)))
                     continue
-                response = await self._rpc.poll_tasks(
-                    pb.PollTasksRequest(
-                        worker_id=self._worker_id, session_token=self._session.reveal(), max_tasks=asked
+                self._receiving = True
+                try:
+                    response = await self._rpc.poll_tasks(
+                        pb.PollTasksRequest(
+                            worker_id=self._worker_id, session_token=self._session.reveal(), max_tasks=asked
+                        )
                     )
-                )
-                if len(response.tasks) > 0:
+                    leases = list(response.tasks)
+                    if self._frame_received is not None:
+                        await self._frame_received(len(leases))
+                finally:
+                    self._receiving = False
+                if len(leases) > 0:
                     failures = 0
                 refusals = 0
-                leases = list(response.tasks)
                 if len(leases) > asked:
-                    # The host runs as many tasks as it asked for; the rest are left to lapse (SPEC section 6.2).
+                    # The host runs as many tasks as it asked for; the rest are handed back (SPEC section 6.2).
                     log(
                         self._log,
                         logging.WARNING,
-                        "the poll answered more tasks than were asked for: the extra leases are left to lapse",
+                        "the poll answered more tasks than were asked for: the extra leases are handed back",
                         asked=asked,
                         got=len(leases),
-                        left_to_lapse=len(leases) - asked,
+                        handed_back=len(leases) - asked,
                     )
-                    leases = leases[:asked]
-                self._emit(WorkerEvent("poll", tasks=len(leases)))
+                seen = set()
+                taken = 0
+                stopping = self._stopping
                 for lease in leases:
-                    self._dispatch(lease)
+                    why = "stopping" if stopping else "credit" if taken >= asked else None
+                    if self._take(lease, seen, why):
+                        taken += 1
+                self._emit(WorkerEvent("poll", tasks=taken))
+                if stopping:
+                    return
                 if not leases:
                     wait_ms = max(50, response.retry_after_ms if response.retry_after_ms > 0 else 1000)
                     await self._idle(min(MAX_SERVER_WAIT, wait_ms / 1000 * (0.8 + random.random() * 0.4)))
@@ -590,6 +637,11 @@ class WorkerHost:
                 pause = min(30.0, max(backoff_delay(policy, failures), server_wait(error.retry_after_ms)))
                 failures += 1
                 await self._idle(pause)
+            except asyncio.CancelledError:
+                # ``stop`` cancelled the receive call (or, outside a receive, the loop itself): the host is going away.
+                if self._stopping:
+                    return
+                raise
             except Exception as error:  # a bug of ours must not stop the host
                 if self._stopping:
                     return
@@ -597,6 +649,76 @@ class WorkerHost:
                 await self._idle(1.0)
 
     # ---------------------------------------------------------------------------------------------------- tasks
+
+    def _take(self, lease: pb.TaskLease, seen: set[str], why: str | None) -> bool:
+        """Dispatches a lease, or hands it back when ``why`` says why it will not run, and says whether it dispatched
+        it. A lease whose key is in flight, or was already seen in the same answer or window, is a duplicate: it is
+        ignored and never reported, since its fence may be the one of the running handler (SPEC section 6.2)."""
+        minor = _minor_of(self._accepted)
+        key = _inflight_key(lease, minor)
+        in_flight = key in self._handing_back or any(
+            _inflight_key(task.lease, task.protocol_minor) == key for task in self._inflight
+        )
+        if key in seen or in_flight:
+            log(
+                self._log,
+                logging.WARNING,
+                "a task that is in flight or was already received was leased again: ignored",
+                task=lease.task_id,
+            )
+            return False
+        seen.add(key)
+        if why is not None:
+            self._hand_back(lease, key, why)
+            return False
+        self._dispatch(lease)
+        return True
+
+    def _hand_back(self, lease: pb.TaskLease, key: str, why: str) -> None:
+        """Reports a lease the host received and will not run: ``FailStep`` ``TASK_NOT_STARTED``, retryable, before any
+        handler of it runs (SPEC section 6.2). The server gives the step back without consuming the attempt when it can;
+        a lease left to lapse would be an unknown outcome. The report waits its turn behind at most
+        ``HAND_BACK_CONCURRENCY`` others; until it ends its key is in flight, and ``stop`` waits for it."""
+        log(self._log, logging.WARNING, "the host hands back a task it did not start", task=lease.task_id, reason=why)
+        task = _Task(
+            lease,
+            protocol_minor=_minor_of(self._accepted),
+            deadline_ms=lease.expires_at_epoch_ms,
+            rpc=self._rpc,
+            lease_token=Secret(lease.lease_token),
+        )
+        lease.lease_token = ""  # behind a Secret, as for a task that runs
+        self._handing_back.add(key)
+        self._hand_back_queue.append((task, key))
+        if len(self._hand_back_workers) < HAND_BACK_CONCURRENCY:
+            worker = asyncio.create_task(self._hand_back_in_turn(), name="sagat-hand-back")
+            self._hand_back_workers.add(worker)
+
+    async def _hand_back_in_turn(self) -> None:
+        """Makes the hand-backs of the queue, one at a time, until the queue is empty. A worker leaves the set in the
+        same step in which it sees the queue empty, never later (a done callback runs a turn of the event loop after):
+        a hand-back queued in between would otherwise find every place taken by workers that have already left."""
+        try:
+            await self._hand_backs_in_turn()
+        finally:
+            current = asyncio.current_task()
+            if current is not None:
+                self._hand_back_workers.discard(current)
+
+    async def _hand_backs_in_turn(self) -> None:
+        while self._hand_back_queue:
+            task, key = self._hand_back_queue.popleft()
+            try:
+                await self._fail(task, "TASK_NOT_STARTED", "the host did not start this task", True, time.monotonic())
+            except asyncio.CancelledError:
+                # ``stop`` closed the connection under the report when its grace ended (``grpc.aio`` cancels the call):
+                # the report cannot be made and the lease lapses. The rest of the queue fails at once on the closed
+                # connection and is dropped the same way, so nothing is left waiting.
+                self._emit(WorkerEvent("task.dropped", task_id=task.lease.task_id, reason="CANCELLED"))
+                log(self._log, logging.ERROR, "the hand-back could not be reported", task=task.lease.task_id,
+                    code="CANCELLED")  # fmt: skip
+            finally:
+                self._handing_back.discard(key)
 
     def _dispatch(self, lease: pb.TaskLease) -> None:
         task = _Task(
@@ -793,7 +915,10 @@ class WorkerHost:
             return
         if error is not None:
             if isinstance(error, ActivityFailure):
-                await self._fail(task, error.code, error.message, error.is_retryable, started)
+                # TASK_NOT_STARTED is the host's word that no handler ran (SPEC section 6.2): a handler that uses it
+                # reports an ordinary failure, with its own message and retryable.
+                code = "WORKER_ERROR" if error.code == "TASK_NOT_STARTED" else error.code
+                await self._fail(task, code, error.message, error.is_retryable, started)
             else:
                 # Only the type name: the text of an ordinary error may hold the data it was handed.
                 await self._fail(task, "ACTIVITY_ERROR", type(error).__name__, True, started)

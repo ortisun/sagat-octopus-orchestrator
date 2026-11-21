@@ -68,6 +68,9 @@ type fakeService struct {
 	// overfill makes a poll answer with every queued lease, whatever max_tasks asked for: a server that
 	// does not keep to the protocol.
 	overfill bool
+	// failGate, when set, is called by FailStep after the call is recorded and before it is answered: a test
+	// holds the failures there.
+	failGate func(ctx context.Context)
 }
 
 func newFakeService(t *testing.T) *fakeService { return newFakeServiceWith(t, nil) }
@@ -191,6 +194,12 @@ func (f *fakeService) CompleteStep(ctx context.Context, r *pb.CompleteStepReques
 func (f *fakeService) FailStep(ctx context.Context, r *pb.FailStepRequest) (*pb.StepCommandResponse, error) {
 	if err := f.enter(ctx, "FailStep", r); err != nil {
 		return nil, err
+	}
+	f.mu.Lock()
+	gate := f.failGate
+	f.mu.Unlock()
+	if gate != nil {
+		gate(ctx)
 	}
 	return &pb.StepCommandResponse{CommandId: "c", StepStatus: "FAILED", RunStatus: "RUNNING"}, nil
 }

@@ -273,8 +273,10 @@ public sealed class HostHardeningTests : IAsyncLifetime
         });
 
     [Fact]
-    public async Task ATaskLeasedAgainWhileItRunsIsAnotherTaskInFlightAndStopWaitsForAndCancelsBoth()
+    public async Task AStepLeasedAgainUnderANewGenerationWhileItRunsIsAnotherTaskInFlightAndStopWaitsForAndCancelsBoth()
     {
+        // The task id is run/node/generation: the new generation is another task. A lease under the task id of the running one is a
+        // duplicate and is ignored (HandBackTests).
         var host = Host(o => o.Worker.MaxInflight = 2);
         var gates = new[] { new TaskCompletionSource(), new TaskCompletionSource() };
         var started = 0;
@@ -297,7 +299,11 @@ public sealed class HostHardeningTests : IAsyncLifetime
         State.Lease(Lease());
         await host.StartAsync();
         await Eventually.UntilAsync(() => started == 1, "the first run");
-        State.Lease(Lease(l => l.Generation = 2));
+        State.Lease(Lease(l =>
+        {
+            l.TaskId = "run-1/charge/2";
+            l.Generation = 2;
+        }));
         await Eventually.UntilAsync(() => started == 2, "the second run");
 
         // The first ends; the second is still in flight, and the host knows it: one slot is free, not two.

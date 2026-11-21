@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Net;
 using Grpc.Core;
 using Microsoft.AspNetCore.Builder;
@@ -74,6 +75,9 @@ internal sealed class FakeWorkerState
     /// <summary>How many leases each nonempty stream frame carries.</summary>
     internal int StreamFrameSize { get; set; } = int.MaxValue;
 
+    /// <summary>The sizes of the next stream frames, in order, before <see cref="StreamFrameSize"/> applies again.</summary>
+    internal ConcurrentQueue<int> StreamFrameSizes { get; } = new();
+
     /// <summary>Keep a stream open after its scripted frames until the client cancels it.</summary>
     internal bool HoldStreamOpen { get; set; }
 
@@ -97,6 +101,52 @@ internal sealed class FakeWorkerState
     internal int PollRetryAfterMs { get; set; } = 50;
 
     internal int Registrations => Of("RegisterWorker").Count;
+
+    /// <summary>When set, every <c>FailStep</c> is held until this completes (after it was recorded): what is in flight can be counted.</summary>
+    internal TaskCompletionSource? FailStepHold { get; set; }
+
+    private int failStepsHeld;
+    private int failStepPeak;
+
+    /// <summary>The <c>FailStep</c> calls held now, and the most ever held at once.</summary>
+    internal int FailStepsHeld => Volatile.Read(ref failStepsHeld);
+
+    internal int FailStepPeak => Volatile.Read(ref failStepPeak);
+
+    internal async Task HoldFailStepAsync()
+    {
+        if (FailStepHold is not { } hold)
+        {
+            return;
+        }
+
+        var now = Interlocked.Increment(ref failStepsHeld);
+        int peak;
+        while ((peak = Volatile.Read(ref failStepPeak)) < now && Interlocked.CompareExchange(ref failStepPeak, now, peak) != peak)
+        {
+        }
+
+        try
+        {
+            await hold.Task.ConfigureAwait(false);
+        }
+        finally
+        {
+            Interlocked.Decrement(ref failStepsHeld);
+        }
+    }
+
+    /// <summary>The leases not handed out yet.</summary>
+    internal int Pending
+    {
+        get
+        {
+            lock (gate)
+            {
+                return leases.Count;
+            }
+        }
+    }
 
     internal void Lease(params TaskLease[] more)
     {
@@ -191,7 +241,8 @@ internal sealed class FakeWorkerService(FakeWorkerState state) : WorkerService.W
         {
             while (remaining > 0)
             {
-                var batch = state.Take(Math.Min(remaining, state.StreamFrameSize));
+                var size = state.StreamFrameSizes.TryDequeue(out var next) ? next : state.StreamFrameSize;
+                var batch = state.Take(Math.Min(remaining, size));
                 if (batch.Count == 0)
                 {
                     break;
@@ -238,8 +289,13 @@ internal sealed class FakeWorkerService(FakeWorkerState state) : WorkerService.W
             return new StepCommandResponse { CommandId = "c", StepStatus = "SUCCEEDED", RunStatus = "RUNNING" };
         });
 
-    public override Task<StepCommandResponse> FailStep(FailStepRequest request, ServerCallContext context) =>
-        Answer("FailStep", request, context, () => new StepCommandResponse { CommandId = "c", StepStatus = "FAILED", RunStatus = "RUNNING" });
+    public override async Task<StepCommandResponse> FailStep(FailStepRequest request, ServerCallContext context)
+    {
+        state.Record("FailStep", request, context.RequestHeaders, ClientCertificateOf(context));
+        await state.HoldFailStepAsync().ConfigureAwait(false);
+        Throw("FailStep");
+        return new StepCommandResponse { CommandId = "c", StepStatus = "FAILED", RunStatus = "RUNNING" };
+    }
 
     public override Task<ResolveSecretsResponse> ResolveSecrets(ResolveSecretsRequest request, ServerCallContext context) =>
         Answer("ResolveSecrets", request, context, () =>

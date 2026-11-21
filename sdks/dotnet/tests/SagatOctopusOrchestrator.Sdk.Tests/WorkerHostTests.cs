@@ -751,10 +751,16 @@ public sealed class WorkerHostTests : IAsyncLifetime
 
         await host.StartAsync();
         await Eventually.UntilAsync(() => State.Of("CompleteStep").Count == 1, "the first frame within the aggregate budget");
+
+        // The lease of the second frame breaks the budget of the window: it is handed back, never run (SPEC section 6.2).
+        await Eventually.UntilAsync(() => State.Of("FailStep").Count == 1, "the lease over the budget is handed back");
         await Task.Delay(150);
         Assert.Equal(1, Volatile.Read(ref handled));
         Assert.Single(State.Of("CompleteStep"));
-        Assert.Empty(State.Of("FailStep"));
+        var handedBack = (FailStepRequest)Assert.Single(State.Of("FailStep")).Request;
+        Assert.Equal("run-2/charge/1", handedBack.TaskId);
+        Assert.Equal("TASK_NOT_STARTED", handedBack.ErrorCode);
+        Assert.True(handedBack.Retryable);
     }
 
     [Fact]
