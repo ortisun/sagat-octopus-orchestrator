@@ -50,7 +50,7 @@ not be weakened.
 8. The requirement is a replay floor. Its removal MUST be refused while any journal holds `step.lease_withdrawn`, and a
    withdrawal MUST read the requirement under a lock the removal waits for. An engine MAY stop writing new withdrawals with
    `SAGAT_LEASE_WITHDRAWAL=off`, which keeps the capability listed. The capability lists of the registry's checks in SQL
-   MUST equal `Capability::ALL`, which `scripts/check-architecture.py` checks on every pull request.
+   MUST equal `Capability::ALL`, which `scripts/check-architecture.py` checks (CI runs it at a release) and the test `capability_lists_follow_the_code` of `crates/infra-postgres` checks on every pull request that changes that crate or the application crate. The minor of the session that holds a lease is never read above the build's own ceiling (ADR-0099 decision 9).
 
 ### Why ADR-0029 decision 5 does not hold here
 

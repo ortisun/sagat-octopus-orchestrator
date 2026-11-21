@@ -435,7 +435,9 @@ design of delivery acknowledgement, so this list starts at 030.
   server's. (c) The cap of D006-031. This build negotiates at most 1.6, so no session reaches the withdrawal yet (G006-030);
   the path is tested on a session whose stored minor the test raises to 8, the only way before 1.8 negotiates, and the
   delivery acknowledgement build replaces that with a real 1.8 session. Narrows D006-005 and D006-014. Weighed: the SDK
-  rewrite alone (older SDKs and raw clients still send the code); the cap alone (a few free re-runs per attempt for any
+  rewrite alone (older SDKs and raw clients still send the code); the minor is read never above this build's own
+  ceiling (ADR-0099 decision 9: a session another build registered may store a minor this build does not serve). Weighed
+  also: the cap alone (a few free re-runs per attempt for any
   handler); refusing the code outright before 1.8 (a host that follows `sdks/SPEC.md` §6.2 would get an error for an honest
   hand-back, where an ordinary failure is a known outcome).
 - **D006-031 — At most four withdrawals for one attempt** (security Major 1; replaces D006-006). The count is derived from
@@ -480,8 +482,9 @@ design of delivery acknowledgement, so this list starts at 030.
   (`20270130000200_flow_control_capabilities`) and this feature redefine the same three checks: `serving_instances_capabilities_known`,
   `platform_requirements_capability_known` and `platform_requirement_history_capability_known`. Each lists its own values
   only, so whichever branch merges second takes the union of both lists in its own migration, the newest one. A fitness
-  check in `scripts/check-architecture.py` fails when the newest definition of any of the three lists differs from the
-  tokens of `Capability::ALL`, so the order of the merges cannot drop a capability.
+  check in `scripts/check-architecture.py`, and the test `capability_lists_follow_the_code` of `crates/infra-postgres` (which
+  runs on every pull request that changes that crate or the application crate), fail when the newest definition of any of the
+  three lists differs from the tokens of `Capability::ALL`. Down migrations are not checked yet.
 - **D006-034 — One operator command activates a fleet requirement** (architecture Major 5): `control-plane
   capability-activate <capability> --operator NAME [--expect-live N] [--dry-run]`. `<capability>` is the registry token
   (`lease-withdrawal-v1`). The command holds a closed list of the capabilities an operator may activate this way. Each

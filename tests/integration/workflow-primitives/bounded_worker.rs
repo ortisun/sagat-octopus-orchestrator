@@ -725,7 +725,8 @@ async fn a_scoped_lease_is_withdrawn_in_its_path_for_either_cause() {
             SystemEntropy,
             WorkerSettings::default(),
         )
-        .with_lease_withdrawal(Arc::new(gate));
+        .with_lease_withdrawal(Arc::new(gate))
+        .with_hand_back_ceiling(8);
         let placement = Placement::new("scoped-withdrawal");
         Keeper::new(
             store.clone(),

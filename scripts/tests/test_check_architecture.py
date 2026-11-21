@@ -385,8 +385,6 @@ class EveryRunFinishedBodySaysItsSchedule(unittest.TestCase):
         self.assertIn("`add_schedule_origin` is named by the `run.finished` rule and is not defined", out)
 
 
-if __name__ == "__main__":
-    unittest.main()
 
 
 def run_input_check(files, packages=None):
@@ -723,8 +721,6 @@ class EveryRunIsCreatedWithACheckedInput(unittest.TestCase):
         self.assertIn("feature `testing` enables", out)
 
 
-if __name__ == "__main__":
-    unittest.main()
 
 
 
@@ -814,3 +810,7 @@ class CapabilityListsFollowTheCode(unittest.TestCase):
         code, out = run_capability_check({"20270102000000_b.up.sql": "SELECT 1;\n"})
         self.assertEqual(code, 1, out)
         self.assertIn("would check nothing", out)
+
+
+if __name__ == "__main__":
+    unittest.main()

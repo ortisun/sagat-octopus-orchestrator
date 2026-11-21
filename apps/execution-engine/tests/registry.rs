@@ -295,7 +295,10 @@ fn every_loop_the_engine_spawns_obeys_the_gate_and_the_set_of_loops_is_the_one_l
     }
     // the request surfaces: the worker API obeys the gate in its admission layer
     assert!(
-        source.contains("WorkerGrpc::new(state, workers).with_serving_gate("),
+        source
+            .split_whitespace()
+            .collect::<String>()
+            .contains("WorkerGrpc::new(state,workers).with_serving_gate("),
         "the worker API was not given the gate"
     );
 }

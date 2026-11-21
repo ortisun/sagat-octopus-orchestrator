@@ -383,7 +383,7 @@ unknown outcome and, for an `Activity`, a review (feature 037). The rules (decis
   not in `sdks/error-catalog.json`. **The code is reserved for the host**: a handler that fails with it (an
   `ActivityFailure` whose code is `TASK_NOT_STARTED`, of a forward, compensation or reconciliation handler) is reported as
   `WORKER_ERROR`, with its own message and `retryable` (§6.5), because only the host can know that no handler ran. At most eight hand-backs are on their way at once (the
-  derivation is in §6.5); the others wait their turn in the order they were received, so a server that floods one answer
+  derivation is in §6.5: seven to ten); the others wait their turn in the order they were received, so a server that floods one answer
   cannot make the host open a call per lease.
 - *What is observed.* A warning log line with the task id and the reason (`stopping`, `credit` or `malformed`, or
   `not_started` for item 4), never the lease token; the host's failure event or counter with the code `TASK_NOT_STARTED`
@@ -493,13 +493,13 @@ A handler's input type that cannot be built from the document is not a crash: th
      time-to-live, the other half being what delivery may already have used. The shortest time-to-live the platform runs
      is 3 s (some conformance scenarios run with it; the default is 30 s). With H = 8 that is 8 rounds in 1.5 s, so one
      report must be answered within 187 ms; at the default 30 s, within 1.87 s. A `FailStep` is one run transaction. With
-     H = 4 the budget at 3 s would be 93 ms, too tight for a loaded database; H ≥ 5 keeps at least 150 ms.
+     H = 6 the budget at 3 s would be 136 ms (11 rounds); H ≥ 7 keeps at least 150 ms (10 rounds).
   3. *Not more than a busy host.* A host reports each running task once, so a host of the default size (`max_inflight` 10)
      has up to 10 reports open. H ≤ 10 keeps a stopping host, whose running tasks still report, within twice that. Each call
      takes one slot of the tenant's share of the server's in-flight cap (a quarter of it: 128 with the defaults) and one
      unit of the per-identity budget (200 a second, a burst of 400). Eight is 6% of the tenant's slots, and a full batch of
      64 fits in the burst.
-  So 5 ≤ H ≤ 10, and the SDKs use 8. A hand-back that waits for its turn holds no connection; a slower database delays
+  So 7 ≤ H ≤ 10, and the SDKs use 8. A hand-back that waits for its turn holds no connection; a slower database delays
   the batch, and a lease whose hand-back comes too late lapses as before.
 
 ### 6.6 Compensation and reconciliation

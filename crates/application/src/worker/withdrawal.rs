@@ -132,6 +132,16 @@ impl<S, C, E, R> WorkerService<S, C, E, R> {
         self
     }
 
+    /// Lets a test judge hand-backs as a build whose ceiling is `ceiling` would (the minor of the session that holds a
+    /// lease is never read above this build's own ceiling, ADR-0099 decision 9). Production keeps [`super::PROTOCOL_MINOR`],
+    /// so no session of this build is honoured before 1.8 negotiates (gap G006-030).
+    #[cfg(feature = "test-support")]
+    #[must_use]
+    pub const fn with_hand_back_ceiling(mut self, ceiling: u32) -> Self {
+        self.hand_back_ceiling = ceiling;
+        self
+    }
+
     /// Stops this process writing new withdrawals when `enabled` is false (`SAGAT_LEASE_WITHDRAWAL=off`, decision D006-032):
     /// its leases lapse as before, and it still lists the capability, because it can still replay the event.
     #[must_use]
@@ -217,7 +227,11 @@ where
         let info = tx.info();
         let step_id = instance_step_id(info.version_id, info.run_id, task.instance);
         let minor = if leased {
-            tx.lease_holder_minor(step_id, &hash).await?
+            // never above this build's own ceiling: a session another build registered may store a minor this build does
+            // not serve (ADR-0099 decision 9)
+            tx.lease_holder_minor(step_id, &hash)
+                .await?
+                .map(|minor| minor.min(self.hand_back_ceiling))
         } else {
             None
         };
@@ -250,7 +264,11 @@ where
         let info = &tx.snapshot().info;
         let step_id = instance_step_id(info.version_id, info.run_id, task.instance);
         let minor = if leased {
-            tx.lease_holder_minor(step_id, &hash).await?
+            // never above this build's own ceiling: a session another build registered may store a minor this build does
+            // not serve (ADR-0099 decision 9)
+            tx.lease_holder_minor(step_id, &hash)
+                .await?
+                .map(|minor| minor.min(self.hand_back_ceiling))
         } else {
             None
         };

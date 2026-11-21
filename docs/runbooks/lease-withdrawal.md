@@ -58,7 +58,7 @@ control-plane capability-activate lease-withdrawal-v1 --operator NAME --expect-l
 | `worker_leases_undelivered_total{outcome="fence_missed"}` | The step had moved on (a heartbeat started it, it was reported, the run ended, the reaper ended the lease); nothing was changed |
 | `worker_leases_undelivered_total{outcome="lapsed"}` | The requirement is not recorded (or not yet read by this engine), or the host's session is older than 1.8: the lease lapses, or the hand-back is an ordinary failure |
 | `worker_leases_undelivered_total{outcome="capped"}` | The attempt was withdrawn four times already: a hand-back is an ordinary failure, a lease not sent lapses |
-| `worker_leases_undelivered_total{outcome="disabled"}` | This engine runs with `SAGAT_LEASE_WITHDRAWAL=off`: the lease lapses |
+| `worker_leases_undelivered_total{outcome="disabled"}` | This engine runs with `SAGAT_LEASE_WITHDRAWAL=off`: a lease not sent lapses, a hand-back is an ordinary failure |
 | `worker_leases_undelivered_total{outcome="error"}` | The store failed or the process was stopping past its grace; the lease lapses |
 | `step.lease_withdrawn` in a run's timeline | One withdrawal, with its cause (`NOT_SENT`, `NOT_STARTED`) |
 
@@ -73,7 +73,7 @@ SELECT tenant_id, run_id, node, instance_path_indices, attempt, count(*)
 
 ## Stopping it
 
-Set `SAGAT_LEASE_WITHDRAWAL=off` on the execution engines and restart them. They keep listing `lease-withdrawal-v1`
+Set `SAGAT_LEASE_WITHDRAWAL=off` on every execution engine (a mixed fleet withdraws on some replicas and not on others) and restart them. They keep listing `lease-withdrawal-v1`
 (they can still replay the event) and stop writing new withdrawals; their leases lapse as before, counted `disabled`. Set
 it back to `on` (the default) to resume. Do not remove the requirement to stop: see Rollback.
 

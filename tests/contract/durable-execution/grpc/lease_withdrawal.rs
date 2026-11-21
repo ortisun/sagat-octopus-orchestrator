@@ -92,7 +92,11 @@ fn held_past_the_window() -> Gate {
 }
 
 async fn platform(gate: Option<Arc<ServingGate>>, probe: Option<DeliveryProbe>) -> Platform {
-    let mut options = Options::default();
+    // judged as the 1.8 build will judge; `as_protocol_1_8` raises the stored minor of a session
+    let mut options = Options {
+        hand_back_ceiling: 8,
+        ..Options::default()
+    };
     options.worker.idle_retry = Duration::from_millis(50);
     options.lease_withdrawal = gate;
     options.delivery_probe = probe;
@@ -455,28 +459,6 @@ fn barrier_every() -> Barrier {
     Barrier { arrived, probe }
 }
 
-/// Holds every claim that commits leases until the test adds a permit, whatever the consumer does.
-fn held_until_released() -> Gate {
-    let arrived = Arc::new(Notify::new());
-    let release = Arc::new(Semaphore::new(0));
-    let (signal, permit) = (Arc::clone(&arrived), Arc::clone(&release));
-    let probe: DeliveryProbe = Arc::new(move |_abandoned: Abandonment| {
-        let (signal, permit) = (Arc::clone(&signal), Arc::clone(&permit));
-        Box::pin(async move {
-            signal.notify_one();
-            let _ = permit
-                .acquire()
-                .await
-                .map(tokio::sync::SemaphorePermit::forget);
-        })
-    });
-    Gate {
-        arrived,
-        release,
-        probe,
-    }
-}
-
 async fn open_stream(
     worker: &mut Worker<'_>,
     credit: i32,
@@ -754,7 +736,41 @@ async fn a_graceful_shutdown_waits_for_a_claim_in_progress_and_its_withdrawal() 
 /// its claim ends, so cancelled polls cannot run more claims at once than the tenant's cap.
 #[tokio::test]
 async fn a_cancelled_unary_poll_keeps_its_tenant_slot_until_its_claim_ends() {
-    let gate = held_until_released();
+    // each claim says when it arrived and when the server knows its handler is gone, then waits for the test's permit
+    let gone = Arc::new(Semaphore::new(0));
+    let gate = {
+        let arrived = Arc::new(Notify::new());
+        let release = Arc::new(Semaphore::new(0));
+        let (signal, permit, seen) = (
+            Arc::clone(&arrived),
+            Arc::clone(&release),
+            Arc::clone(&gone),
+        );
+        let held = Arc::new(AtomicUsize::new(0));
+        let probe: DeliveryProbe = Arc::new(move |abandoned: Abandonment| {
+            let (signal, permit, seen) =
+                (Arc::clone(&signal), Arc::clone(&permit), Arc::clone(&seen));
+            // the two cancelled polls are held; the poll after them passes
+            let first_two = held.fetch_add(1, Ordering::SeqCst) < 2;
+            Box::pin(async move {
+                if !first_two {
+                    return;
+                }
+                signal.notify_one();
+                abandoned.wait().await;
+                seen.add_permits(1);
+                let _ = permit
+                    .acquire()
+                    .await
+                    .map(tokio::sync::SemaphorePermit::forget);
+            })
+        });
+        Gate {
+            arrived,
+            release,
+            probe,
+        }
+    };
     let mut options = Options::default();
     options.worker.idle_retry = Duration::from_millis(50);
     options.lease_withdrawal = Some(withdrawing());
@@ -780,6 +796,11 @@ async fn a_cancelled_unary_poll_keeps_its_tenant_slot_until_its_claim_ends() {
         call.abort();
         let _ = call.await;
     }
+    // the server dropped both handlers: with the slots in the handlers they would be free by now
+    let _ = gone
+        .acquire_many(2)
+        .await
+        .map(tokio::sync::SemaphorePermit::forget);
     let mut client = worker.client.clone();
     let refused = client
         .poll_tasks(worker.req(worker.poll_message(1)))
@@ -792,10 +813,30 @@ async fn a_cancelled_unary_poll_keeps_its_tenant_slot_until_its_claim_ends() {
     );
     gate.release.add_permits(2);
     until_withdrawal_ran(&p, 2).await;
-    // the poll below claims a withdrawn run again: let its claim through the probe
-    gate.release.add_permits(16);
     client
         .poll_tasks(worker.req(worker.poll_message(1)))
         .await
         .expect("the slots came back with the claims");
+}
+
+/// Architecture Major 1 of the second review (ADR-0099 decision 9): a session stored at minor 8, under a build whose ceiling
+/// is 6, is judged at 6, so its hand-back is an ordinary failure.
+#[tokio::test]
+async fn a_stored_minor_above_the_build_ceiling_is_judged_at_the_ceiling() {
+    let mut options = Options::default();
+    options.worker.idle_retry = Duration::from_millis(50);
+    options.lease_withdrawal = Some(withdrawing());
+    let p = platform_with(options).await;
+    record_requirement(&p).await;
+    let workflow = p.publish("ceiling", &one_attempt("ceiling")).await;
+    let run = p.start(&workflow, &json!({})).await;
+    let mut worker = stream_worker(&p, "first").await;
+    as_protocol_1_8(&p, "first").await;
+    let lease = worker.one_task().await;
+    let ack = worker
+        .fail_with(&lease, "TASK_NOT_STARTED", true)
+        .await
+        .expect("reported");
+    assert_eq!(ack.step_status, "FAILED");
+    assert!(named(&journal(&p, &run).await, "step.lease_withdrawn").is_empty());
 }

@@ -7672,44 +7672,6 @@ impl DefinitionStore for PgRunStore {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use sagat_application::error::StoreError;
-    use serde_json::json;
-
-    use super::versioned_script_retention;
-
-    #[test]
-    fn script_retention_pin_parser_grandfathers_only_unversioned_leases() {
-        assert_eq!(
-            versioned_script_retention(&json!({"attempt": 1}), "scriptRetentionDays")
-                .expect("legacy lease"),
-            None
-        );
-        assert_eq!(
-            versioned_script_retention(
-                &json!({
-                    "scriptRetentionPolicyVersion": 1,
-                    "scriptRetentionDays": 7
-                }),
-                "scriptRetentionDays",
-            )
-            .expect("versioned pin"),
-            Some(7)
-        );
-        for corrupt in [
-            json!({"scriptRetentionPolicyVersion": 1}),
-            json!({"scriptRetentionPolicyVersion": 1, "scriptRetentionDays": 0}),
-            json!({"scriptRetentionPolicyVersion": 2, "scriptRetentionDays": 7}),
-        ] {
-            assert!(matches!(
-                versioned_script_retention(&corrupt, "scriptRetentionDays"),
-                Err(StoreError::Internal { .. })
-            ));
-        }
-    }
-}
-
 /// The withdrawals of one step that carry one attempt (feature 006, decision D006-031), over the journal's instance index:
 /// a withdrawal gives its attempt back, so every withdrawal before the attempt is spent carries its number.
 pub(crate) async fn lease_withdrawals(
@@ -7767,4 +7729,42 @@ pub(crate) async fn lease_withdrawal_required(
         .fetch_one(&mut **tx)
         .await
         .map_err(store_error)
+}
+
+#[cfg(test)]
+mod tests {
+    use sagat_application::error::StoreError;
+    use serde_json::json;
+
+    use super::versioned_script_retention;
+
+    #[test]
+    fn script_retention_pin_parser_grandfathers_only_unversioned_leases() {
+        assert_eq!(
+            versioned_script_retention(&json!({"attempt": 1}), "scriptRetentionDays")
+                .expect("legacy lease"),
+            None
+        );
+        assert_eq!(
+            versioned_script_retention(
+                &json!({
+                    "scriptRetentionPolicyVersion": 1,
+                    "scriptRetentionDays": 7
+                }),
+                "scriptRetentionDays",
+            )
+            .expect("versioned pin"),
+            Some(7)
+        );
+        for corrupt in [
+            json!({"scriptRetentionPolicyVersion": 1}),
+            json!({"scriptRetentionPolicyVersion": 1, "scriptRetentionDays": 0}),
+            json!({"scriptRetentionPolicyVersion": 2, "scriptRetentionDays": 7}),
+        ] {
+            assert!(matches!(
+                versioned_script_retention(&corrupt, "scriptRetentionDays"),
+                Err(StoreError::Internal { .. })
+            ));
+        }
+    }
 }

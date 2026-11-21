@@ -628,6 +628,8 @@ pub struct WorkerService<S, C, E, R> {
     lease_withdrawal: Option<Arc<crate::instances::ServingGate>>,
     /// `SAGAT_LEASE_WITHDRAWAL=off`: this process writes no new withdrawal (decision D006-032).
     lease_withdrawal_disabled: bool,
+    /// The highest session minor a hand-back is judged by: this build's own ceiling (ADR-0099 decision 9).
+    hand_back_ceiling: u32,
 }
 
 impl<S, C, E, R> std::fmt::Debug for WorkerService<S, C, E, R> {
@@ -665,6 +667,7 @@ where
             polls_in_flight: Arc::default(),
             lease_withdrawal: None,
             lease_withdrawal_disabled: false,
+            hand_back_ceiling: PROTOCOL_MINOR,
         }
     }
 
