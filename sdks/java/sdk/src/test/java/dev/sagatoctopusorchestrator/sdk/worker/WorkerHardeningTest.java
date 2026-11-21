@@ -137,6 +137,17 @@ class WorkerHardeningTest {
     @Test
     void theBackoffIsResetByASuccessfulPollSoALaterLostSessionIsRegisteredAgainAtOnce() {
         WorkerHost h = host(b -> b.retry(new RetryPolicy(4, Duration.ofSeconds(2), Duration.ofSeconds(10))));
+        // Each backoff the loop asks for, with the number of registrations made when it began: what the host chose to
+        // wait, read instead of measured.
+        List<long[]> backoffs = new CopyOnWriteArrayList<>();
+        h.pacing = new WorkerHost.Pacing() {
+            @Override
+            public void paused(long millis, boolean wakeable) {
+                if (!wakeable) {
+                    backoffs.add(new long[] {fake.of("RegisterWorker").size(), millis});
+                }
+            }
+        };
         h.registerActivity("charge", (in, ctx) -> 1);
         // Three refusals in a row: the second and third registration wait, the first does not.
         fake.failNext("PollTasks", many(3, FakeWorkerServer.Failure.of(Status.Code.UNAUTHENTICATED)));
@@ -147,10 +158,10 @@ class WorkerHardeningTest {
         // A poll then succeeds: the streak is over. A new refusal is registered again without a wait.
         until(() -> fake.of("PollTasks").size() >= 5, "a successful poll");
         int before = fake.of("RegisterWorker").size();
-        long refused = System.nanoTime();
         fake.failNext("PollTasks", FakeWorkerServer.Failure.of(Status.Code.UNAUTHENTICATED));
         until(() -> fake.of("RegisterWorker").size() == before + 1, "the next registration");
-        assertTrue(Duration.ofNanos(System.nanoTime() - refused).toMillis() < 1500, "a first refusal is not made to wait");
+        List<Long> waited = backoffs.stream().filter(b -> b[0] == before).map(b -> b[1]).toList();
+        assertEquals(List.of(), waited, "a first refusal after a good poll is registered again without a backoff");
     }
 
     // ----------------------------------------------------------------------------------- Jackson ReDoS
@@ -180,7 +191,7 @@ class WorkerHardeningTest {
         ThrowingLogger sink = new ThrowingLogger().armed(true);
         WorkerHost h = host(b -> b.logger(sink).heartbeatInterval(Duration.ofMillis(100)));
         h.registerActivity("slow", (in, ctx) -> {
-            Thread.sleep(1500);
+            Barrier.reached(() -> fake.of("Heartbeat").size() >= 5); // the beats counted below, not a sleep
             return Map.of("ok", true);
         });
         fake.failNext("Heartbeat", FakeWorkerServer.Failure.of(Status.Code.UNAVAILABLE));
@@ -245,26 +256,32 @@ class WorkerHardeningTest {
     @Test
     void aTokenProviderThatFailsForAWhileDoesNotEndTheHeartbeat() {
         AtomicBoolean failing = new AtomicBoolean();
-        WorkerHost h = host(b -> b.tokenProvider(() -> {
+        AtomicInteger refusals = new AtomicInteger();
+        // One slot: while the task runs the host does not poll, so every call to the provider is a heartbeat's.
+        WorkerHost h = host(b -> b.maxInflight(1).tokenProvider(() -> {
             if (failing.get()) {
+                refusals.incrementAndGet();
                 throw new IOException("idp down");
             }
             return "tok";
         }).heartbeatInterval(Duration.ofMillis(30)));
+        AtomicInteger beatsAtRecovery = new AtomicInteger(-1);
         h.registerActivity("slow", (in, ctx) -> {
-            Thread.sleep(150);
+            // Barriers, not sleeps: a beat, then an outage of the provider that two beats run into, then a beat after it.
+            Barrier.reached(() -> !fake.of("Heartbeat").isEmpty());
             failing.set(true);
-            Thread.sleep(300);
+            Barrier.reached(() -> refusals.get() >= 2);
+            int beats = fake.of("Heartbeat").size();
+            beatsAtRecovery.set(beats);
             failing.set(false);
-            Thread.sleep(600);
+            Barrier.reached(() -> fake.of("Heartbeat").size() > beats);
             return 1;
         });
         fake.addLeases(lease("run-1/slow/1", b -> b.setActivityName("slow").setStepId("slow")));
         h.start();
         until(() -> fake.of("CompleteStep").size() == 1, "the completion");
-        long lastBeat = fake.of("Heartbeat").get(fake.of("Heartbeat").size() - 1).nanos();
-        long completed = fake.of("CompleteStep").get(0).nanos();
-        assertTrue(Duration.ofNanos(completed - lastBeat).toMillis() < 400, "heartbeats resumed after the provider recovered");
+        assertTrue(refusals.get() >= 2, refusals.get() + " heartbeats ran into the outage of the provider");
+        assertTrue(fake.of("Heartbeat").size() > beatsAtRecovery.get(), "heartbeats resumed after the provider recovered");
     }
 
     // ------------------------------------------------------------------------------ waits from a service
@@ -622,7 +639,7 @@ class WorkerHardeningTest {
         WorkerHost h = host(b -> b.logger(sink).heartbeatInterval(Duration.ofMillis(100)));
         AtomicInteger ran = new AtomicInteger();
         h.registerActivity("slow", (in, ctx) -> {
-            Thread.sleep(1200);
+            Barrier.reached(() -> fake.of("Heartbeat").size() >= 5); // the beats counted below, not a sleep
             return ran.incrementAndGet();
         });
         h.registerActivity("charge", (in, ctx) -> ran.incrementAndGet());
@@ -726,15 +743,21 @@ class WorkerHardeningTest {
     void noPollPauseIsEverLongerThanTheCapWhatEverTheJitter() {
         fake.pollRetryAfterMs = Integer.MAX_VALUE;
         WorkerHost h = host(b -> b.maxServerWait(Duration.ofMillis(200)));
+        // The pause the loop asks for after each empty poll, read instead of measured between two polls on a loaded
+        // machine: the server asks for Integer.MAX_VALUE ms, which any jitter of 20 % either way leaves far above the cap.
+        List<Long> pauses = new CopyOnWriteArrayList<>();
+        h.pacing = new WorkerHost.Pacing() {
+            @Override
+            public void paused(long millis, boolean wakeable) {
+                pauses.add(millis);
+            }
+        };
         h.registerActivity("charge", (in, ctx) -> 1);
         h.start();
         until(() -> fake.of("PollTasks").size() >= 15, "fifteen polls");
-        List<FakeWorkerServer.Call> polls = fake.of("PollTasks");
-        long longest = 0;
-        for (int i = 1; i < 15; i++) {
-            longest = Math.max(longest, Duration.ofNanos(polls.get(i).nanos() - polls.get(i - 1).nanos()).toMillis());
-        }
-        assertTrue(longest <= 200 + 40, "the longest pause between polls was " + longest + " ms with a cap of 200 ms");
+        List<Long> seen = List.copyOf(pauses);
+        assertTrue(seen.size() >= 14, seen.size() + " pauses for fifteen polls");
+        assertEquals(List.of(200L), seen.stream().distinct().toList(), "every pause between polls is the cap of 200 ms: " + seen);
     }
 
     @Test
