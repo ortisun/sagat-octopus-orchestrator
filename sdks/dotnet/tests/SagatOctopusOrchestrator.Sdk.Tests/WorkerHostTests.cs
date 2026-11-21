@@ -187,7 +187,7 @@ public sealed class WorkerHostTests : IAsyncLifetime
         var host = Host(o => o.Worker.HeartbeatInterval = TimeSpan.FromMilliseconds(20));
         host.RegisterActivity<JsonNode?, int>("charge", async (_, context, ct) =>
         {
-            await Task.Delay(100, ct);
+            await Eventually.ReachedAsync(() => State.Of("Heartbeat").Count >= 1, 5_000); // the beat read below, not a delay
             await context.GetSecretsAsync(ct);
             return 1;
         });
@@ -307,10 +307,14 @@ public sealed class WorkerHostTests : IAsyncLifetime
     {
         var host = Host(o => o.Worker.HeartbeatInterval = TimeSpan.FromMilliseconds(20));
         var deadlines = new List<DateTimeOffset>();
-        host.RegisterActivity<JsonNode?, JsonNode>("slow", async (_, context, ct) =>
+        host.RegisterActivity<JsonNode?, JsonNode>("slow", async (_, context, _) =>
         {
             deadlines.Add(context.Deadline);
-            await Task.Delay(300, ct);
+
+            // A barrier, not a delay: the handler ends once three beats have reached the server and the lease they moved is the one it
+            // sees. Three beats of 20 ms did not always fit a delay of 300 ms on a loaded runner. A heartbeat that waited for the handler to
+            // end would never come, and the assertions below say so.
+            await Eventually.ReachedAsync(() => State.Of("Heartbeat").Count >= 3 && context.Deadline > deadlines[0], 5_000);
             deadlines.Add(context.Deadline);
             return new JsonObject { ["ok"] = true };
         });
@@ -485,7 +489,7 @@ public sealed class WorkerHostTests : IAsyncLifetime
         object? secretError = null;
         host.RegisterActivity<JsonNode?, int>("slow", async (_, context, ct) =>
         {
-            await Task.Delay(80, ct);
+            await Eventually.ReachedAsync(() => State.Of("Heartbeat").Count >= 1, 5_000); // the beat read below, not a delay
             try
             {
                 await context.GetSecretsAsync(ct);
@@ -516,7 +520,7 @@ public sealed class WorkerHostTests : IAsyncLifetime
         var host = Host(o => o.Worker.HeartbeatInterval = TimeSpan.FromMilliseconds(20));
         host.RegisterActivity<JsonNode?, int>("slow", async (_, context, ct) =>
         {
-            await Task.Delay(80, ct);
+            await Eventually.ReachedAsync(() => State.Of("Heartbeat").Count >= 1, 5_000); // the beat read below, not a delay
             var error = await Assert.ThrowsAsync<SagatException>(() => context.GetSecretsAsync(ct));
             Assert.Equal(SagatErrorCode.UnsupportedProtocol, error.Code);
             return 1;
@@ -775,9 +779,17 @@ public sealed class WorkerHostTests : IAsyncLifetime
         var host = Host();
         host.RegisterActivity<JsonNode?, int>("charge", (_, _, _) => Task.FromResult(1));
         await host.StartAsync();
-        await Task.Delay(400);
-        var polls = State.Of("PollTasks").Count;
-        Assert.InRange(polls, 2, 10);
+
+        // Five empty polls, then the gaps between them as the server saw them: each holds the pause the answer asked for (50 ms, less
+        // 20 % of jitter, so at least 40 ms). A gap can only grow on a loaded machine, so this is not raced against a fixed window; the
+        // 5 ms below 40 are the granularity of the timers of the platform, which count whole milliseconds.
+        await Eventually.UntilAsync(() => State.Of("PollTasks").Count >= 5, "five empty polls");
+        var polls = State.Of("PollTasks");
+        for (var i = 1; i < 5; i++)
+        {
+            var gap = System.Diagnostics.Stopwatch.GetElapsedTime(polls[i - 1].At, polls[i].At).TotalMilliseconds;
+            Assert.True(gap >= 35, $"poll {i + 1} came {gap:F1} ms after the empty one before it: no wait");
+        }
     }
 
     [Fact]
@@ -1183,14 +1195,28 @@ public sealed class WorkerHostTests : IAsyncLifetime
     [Fact]
     public async Task TheHeartbeatKeepsRunningUntilTheReportIsMadeAndNotJustUntilTheHandlerEnds()
     {
+        var sends = new SendLog();
         var host = Host(o =>
         {
             o.Worker.HeartbeatInterval = TimeSpan.FromMilliseconds(20);
             o.Retry.InitialDelay = TimeSpan.FromMilliseconds(100);
             o.Retry.MaxDelay = TimeSpan.FromMilliseconds(400);
+            o.Worker.Interceptors.Add(sends);
         });
         host.RegisterActivity<JsonNode?, int>("charge", (_, _, _) => Task.FromResult(1));
         State.Fail("CompleteStep", new Scripted(StatusCode.Unavailable), new Scripted(StatusCode.Unavailable), new Scripted(StatusCode.Unavailable));
+
+        // The third attempt is held until three beats have come after the first one: what the test claims, made to happen instead of hoped
+        // for inside the retries' backoff. A heartbeat that ended with the handler never brings them, and the count below says so.
+        State.Before["CompleteStep"] = async () =>
+        {
+            var reports = State.Of("CompleteStep");
+            if (reports.Count == 3)
+            {
+                var first = reports[0].At;
+                await Eventually.ReachedAsync(() => State.Of("Heartbeat").Count(call => call.At > first) >= 3, 5_000);
+            }
+        };
         State.Lease(Lease());
         await host.StartAsync();
         await Eventually.UntilAsync(() => meters.Total("sagat.worker.tasks.completed") == 1, "the completion");
@@ -1201,10 +1227,13 @@ public sealed class WorkerHostTests : IAsyncLifetime
         var during = State.Of("Heartbeat").Count(call => call.At > first && call.At < last);
         Assert.True(during >= 3, $"{during} heartbeats while the report was being retried");
 
-        // ... and none once the report is made.
-        var after = State.Of("Heartbeat").Count;
+        // ... and none once the report is made. The task leaves the host only after its heartbeat is cancelled and awaited, so from that
+        // mark no beat may begin. What the host sent is read, not what reached the fake, where a beat sent in time can land late; the
+        // delay gives a heartbeat left running the time to show itself, and can only hide a defect, never fail a good host.
+        await Eventually.UntilAsync(() => SendLog.InFlight(host) == 0, "the task to leave the host");
+        sends.Mark("left");
         await Task.Delay(150);
-        Assert.Equal(after, State.Of("Heartbeat").Count);
+        Assert.Equal(0, sends.After("left", "sent Heartbeat"));
     }
 
     [Fact]
@@ -1247,22 +1276,29 @@ public sealed class WorkerHostTests : IAsyncLifetime
     }
 
     [Theory]
-    [InlineData(3000, 850, 1700)]
-    [InlineData(1200, 400, 950)]
-    public async Task TheFirstHeartbeatComesAThirdOfTheLeaseAfterTheTaskWasTaken(long leaseMs, long fromMs, long toMs)
+    [InlineData(3000, 1000)]
+    [InlineData(1200, 500)]
+    public async Task TheFirstHeartbeatComesAThirdOfTheLeaseAfterTheTaskWasTaken(long leaseMs, long intervalMs)
     {
         var host = Host();
-        var taken = 0L;
+
+        // The time of day the lease is taken at is pinned and the wait before the first beat is read from the clock of the host: exact,
+        // where the wall clock of a loaded machine moved both ends of the measure (AGENTS.md rule 18). The timers still run.
+        var now = DateTimeOffset.UtcNow;
+        var clock = new RecordingClock(now).On(host);
         host.RegisterActivity<JsonNode?, int>("slow", async (_, _, ct) =>
         {
-            taken = System.Diagnostics.Stopwatch.GetTimestamp();
             await Task.Delay(Timeout.Infinite, ct).ContinueWith(_ => { }, TaskScheduler.Default);
             return 1;
         });
-        State.Lease(LeaseFor("slow", l => l.ExpiresAtEpochMs = DateTimeOffset.UtcNow.AddMilliseconds(leaseMs).ToUnixTimeMilliseconds()));
+        State.Lease(LeaseFor("slow", l => l.ExpiresAtEpochMs = now.AddMilliseconds(leaseMs).ToUnixTimeMilliseconds()));
         await host.StartAsync();
         await Eventually.UntilAsync(() => State.Of("Heartbeat").Count >= 1, "the first heartbeat");
-        var elapsed = System.Diagnostics.Stopwatch.GetElapsedTime(taken, State.Of("Heartbeat")[0].At).TotalMilliseconds;
-        Assert.InRange(elapsed, fromMs, toMs);
+
+        // The pauses of the loop after an empty poll are 40 to 60 ms; every longer wait is the wait before a beat, and each is a third of
+        // the lease when the task was taken (never under 500 ms).
+        var beats = clock.Waits.Where(wait => wait.Due > TimeSpan.FromMilliseconds(60)).ToList();
+        Assert.NotEmpty(beats);
+        Assert.All(beats, wait => Assert.Equal(TimeSpan.FromMilliseconds(intervalMs), wait.Due));
     }
 }

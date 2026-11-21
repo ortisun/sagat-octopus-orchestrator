@@ -27,7 +27,7 @@ from sagat_octopus_orchestrator import (
 )
 from sagat_octopus_orchestrator.worker import host as host_module
 
-from .fakes import FakeHttpServer, FakeWorkerService, Scripted, lease, reply, until
+from .fakes import FakeHttpServer, FakeWorkerService, Scripted, lease, reached, reply, until
 from .test_client import RUN, WORKFLOW, MakeClient, refusal, run_body
 
 ROOT = Path(__file__).resolve().parent.parent.parent.parent
@@ -392,6 +392,20 @@ async def test_the_heartbeat_goes_on_while_the_report_is_being_retried(
     fake.failures["CompleteStep"] = [Scripted(grpc.StatusCode.UNAVAILABLE) for _ in range(3)]
     fake.leases = [lease(expires_at_epoch_ms=0)]
     fake.always["Heartbeat"] = Scripted(grpc.StatusCode.UNAVAILABLE)
+    # The last attempt is held until a beat has come after the first one: the retries no longer race the interval
+    # (their backoff of 17 to 35 ms against a beat every 20 ms). A heartbeat that ended with the handler never comes,
+    # the report is never answered, and the wait below fails.
+    beat_during_the_report = asyncio.Event()
+
+    async def heartbeat() -> None:
+        if fake.of("CompleteStep"):
+            beat_during_the_report.set()
+
+    async def report() -> None:
+        if len(fake.of("CompleteStep")) == 4:
+            await beat_during_the_report.wait()
+
+    fake.before = {"Heartbeat": heartbeat, "CompleteStep": report}
     await host.start()
     await until(lambda: len(fake.of("CompleteStep")) == 4, "the report, after three failures")
     first_report = fake.of("CompleteStep")[0].at
@@ -425,7 +439,7 @@ async def test_the_traceparent_of_the_lease_is_on_the_heartbeat_the_report_and_t
 
     async def work(_i: Any, ctx: ActivityContext) -> int:
         await ctx.secrets()
-        await asyncio.sleep(0.1)
+        await reached(lambda: bool(fake.of("Heartbeat")))  # the beat whose header is read below, not a sleep
         return 1
 
     host.register_activity("charge", work)
