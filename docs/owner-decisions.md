@@ -4,6 +4,17 @@ Decisions that only the product owner could take, with what each one unblocks. E
 recorded where the open item lived (gap register, ADR, runbook or specification). "Not built"
 means the decision is taken and the implementation is still to be done; it is not evidence.
 
+## 2026-11-21 — Delivery acknowledgement: Architecture decision 0099, the reservation of protocol 1.8 and its limits
+
+Asked by the coordinating session after the design's fourteenth review round closed with no Blocker and no Major (pull request
+264). Rows 2026-11-21-1 to -4 are recorded on other branches (design 041 and the lease withdrawal of pull request 260).
+
+| ID | Decision | Decided by | Status | Covers |
+|---|---|---|---|---|
+| OD-2026-11-21-5 | "Accept it" (owner, 2026-11-21), to the question "Accept ADR-0099 (delivery acknowledgement, protocol 1.8, PR #264): a 1.8 lease is provisional until the worker acknowledges it; an unacknowledged lease past its deadline is withdrawn with no attempt spent; it trusts the worker's word that nothing started, and treats a committed acknowledgement as final; it amends ADR-0082 decision 5 (liveness) and refines ADR-0098. 14 review rounds, last one 0 Blockers and 0 Majors." Architecture decision 0099 is accepted with its two trust assumptions (decision 12) and its amendments to Architecture decision 0082 decision 5 and refinement of Architecture decision 0098; the build (Task 006-043 to Task 006-067) may start in the order its precondition sets | owner | Decided | docs/adr/ADR-0099-a-lease-of-protocol-1-8-is-provisional-until-its-host-acknowledges-it-and-a-provisional-lease-that-expires-is-withdrawn.md, specs/006-sdk-multilanguage/tasks.md |
+| OD-2026-11-21-6 | "Reserve 1.8 now" (owner, 2026-11-21), to owner question O006-002: "reserve protocol version 1.8 for delivery acknowledgement now, before its contract merges, so no other branch takes the number?" Protocol minor 1.8 is reserved for delivery acknowledgement in the register of `sdks/SPEC.md` section 9; it is offered only after its throughput gate passes (Decision 006-057) | owner | Decided | sdks/SPEC.md section 9, specs/006-sdk-multilanguage/research.md (O006-002) |
+| OD-2026-11-21-7 | "Accept as proposed" (owner, 2026-11-21), to the question "ADR-0099's operating limits and thresholds: a 15% throughput bound for 1.8, alerts on unacknowledged leases, connection caps raised (each 1.8 worker opens a second connection), and three limits that stay: no emergency stop for provisional leases already in flight, a rollback takes two restarts, an activation can wait up to a day for a silent registry row. Accept them?" The thresholds, alerts, connection caps and the three limits are accepted as written in Architecture decision 0099 and its runbook; a later change goes through a new decision | owner | Decided | docs/adr/ADR-0099-a-lease-of-protocol-1-8-is-provisional-until-its-host-acknowledges-it-and-a-provisional-lease-that-expires-is-withdrawn.md |
+
 ## 2026-11-20 — Documentation first, words in full, identifiers as words
 
 The owner gave three instructions on 2026-11-20, one after the other. They are amended into the constitution together
