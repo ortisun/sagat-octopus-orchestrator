@@ -11,12 +11,39 @@ an unlocked live-keys count, given for the concurrency keys, also covers the rat
 asked the owner: "Extend the acceptance of the unlocked live-keys count (OD-2026-11-19-4, OD-2026-11-20-3, concurrency
 only) to the rate keys? Yes: same documented bound (overshoot at most the number of transactions creating rate keys at
 the same moment), no namespace lock on rate-key creation. No: make it exact, at the cost of that lock." The owner
-answered on 2026-11-20: "Yes, extend it". The numbers OD-2026-11-20-8, -9 and -10 belong to an open governance pull
-request.
+answered on 2026-11-20: "Yes, extend it". Decisions OD-2026-11-20-8, -9 and -10 are recorded in the section below.
 
 | ID | Decision | Decided by | Status | Covers |
 |---|---|---|---|---|
 | OD-2026-11-20-11 | "Yes, extend it": the acceptance of OD-2026-11-19-4 and OD-2026-11-20-3 extends to `rate_limit_live_keys`. The count of a namespace's rate-limit window rows is read without a namespace lock, as the concurrency count is: transactions that create rate-limit keys at the same moment can pass the ceiling by at most the new keys the other transactions of that moment create (their number minus one when each creates one key). The bound is documented; no namespace lock is added to rate-key creation | owner | Decided; the bound is pinned by `rate_gate::the_rate_live_keys_count_misses_only_the_keys_other_transactions_have_not_committed` | specs/022-flow-control-step-policies/research.md G022-002, D022-066, docs/runbooks/flow-control.md section 4, specs/022-flow-control-step-policies/plan.md "Finite ceilings (rate limits)", data-model.md "Revision of 2026-11-20 (rate re-review)" |
+
+## 2026-11-20 — Documentation first, words in full, identifiers as words
+
+The owner gave three instructions on 2026-11-20, one after the other. They are amended into the constitution together
+(version 4.7.0) and carried out by [`docs/governance/identifier-scheme.md`](governance/identifier-scheme.md).
+
+First: "Adicione nova regra. Quero que o docs seja extremamente organizada e escrita a humanos. Ali estará toda
+docuentação, especificação, diagramas etc... Mantenha sempre atualizado. Qualquer alteração ou nova regra, sempre
+atualizar o documento antes do código. O código deve se guiar pelo documento e nao o contrario"
+
+In English: `docs/` is to be extremely well organized and written for people; it holds all the documentation, the
+specifications and the diagrams; it is always kept up to date; any change or new rule updates the document before the
+code; the code follows the document, never the reverse.
+
+Second: "Incrementar regra. Nas documentações e comentários de código, evitar siglas como como R para Regra, T para
+Test. Sempre usar completo. Rule, Test e assim por diante"
+
+In English: extend the rule; in documentation and code comments, avoid abbreviations such as R for Rule or T for Test;
+always write them in full: Rule, Test and so on.
+
+Third, asked whether the stable identifiers (FR-022-035, T022-064, ADR-0097 and the others) are renamed too or kept:
+"Rename everything".
+
+| ID | Decision | Decided by | Status | Covers |
+|---|---|---|---|---|
+| OD-2026-11-20-8 | A new rule, "Documentation first": the documents (constitution, architecture decision records, design doc or spec, contracts, runbooks, reference) are the source of truth. A change of behaviour or a new rule is written in its document first and the code then follows it, in the same pull request or an earlier one; when code and document disagree, the wrong one is fixed and they are never left apart. `docs/` is organized and written for people: plain language, an index in every folder, diagrams where they help. Enforced on every pull request by `scripts/check-docs-first.py`: a pull request whose own commits change behaviour code and no document fails, unless each such commit says why no document changes (`Docs: none, <reason>`). Commits written before the rule existed are not judged. Moving `specs/` under `docs/` is planned separately and done after the large open feature branches merge | owner | Decided | docs/constitution.md 4.7.0 (Documentation first), docs/governance/constitution-4.7.0-sync-impact.md, AGENTS.md rule 23, scripts/check-docs-first.py, .github/workflows/ci.yml (job `documentation`) |
+| OD-2026-11-20-9 | "Words in full": documents and code comments write words in full ("Rule 8", "test", "Blocker 1", "Major 2", "minor 7", "slice 5", "mutation 3"), never the abbreviations `R8`, `T` or `UT`, `B1`, `M2`, `m7`, `S5`, `W3`. Read by the coordinating session as: code, paths, literal output and quotations stay as they are; the abbreviations that are not identifiers are refused from now on in the lines a pull request adds, by `scripts/check-plain-words.py`, whose list of patterns is curated from the abbreviations actually used in this repository and requires the words around them (a reviewer, "rule", "slice", "mutation"), so that proper names such as Amazon S3, Cloudflare R2 or an Apple M3 are not refused. The repository's own tools follow it: `scripts/check-design-docs.py` prints "Rule 8", not "R8". The owner may correct this reading | owner | Decided | docs/constitution.md 4.7.0 (Words in full), docs/governance/identifier-scheme.md, AGENTS.md rule 24, scripts/check-plain-words.py, scripts/check-design-docs.py |
+| OD-2026-11-20-10 | "Rename everything": the stable identifiers become words, a space and the number. The scheme, chosen by the coordinating session under the delegation (OD-2026-11-20-6) and open to the owner's correction before the sweep: Task 022-064 (was T022-064), Requirement 022-035 (FR-), Success criterion 022-012 (SC-), Non-functional requirement 010-001 (NFR-), User story 022-02 (US02, always with its feature, so that it is unique and has the shape of the other kinds), Decision 041-119 (D), Gap 022-015 and Gap 708 (G), Owner question 041-040 (O), Architecture decision 0097 (ADR-0097), Owner decision 2026-11-20-10 (OD-); commit footers `Refs: Task 022-064, Requirement 022-035`. The file names of the architecture decision records (`docs/adr/ADR-NNNN-slug.md`) do not change: a path is not prose, and links from outside the repository (release notes, pull request descriptions, commit messages) cannot be rewritten. Past commits keep the old forms; `docs/governance/identifier-scheme.md` maps old to new. Until one mechanical sweep renames the existing text and the tools that parse it (after #237, #241 and #226 merge, before release 0.3.0, planned with the move of `specs/` under `docs/`), footers and new prose use the new forms and the places a tool reads keep the old ones | owner | Decided | docs/constitution.md 4.7.0 (Identifiers), docs/governance/identifier-scheme.md, AGENTS.md rule 15 and "Start here" |
 
 ## 2026-11-20 — The coordinating session decides the open questions until release 0.3.0
 
