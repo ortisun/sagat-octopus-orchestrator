@@ -416,3 +416,5 @@ revised decisions say so in place. New gaps: G1101–G1104.
 Note (2026-11-15, from feature 041): the owner gave worker-protocol minor 1.7 to feature 041 (step logs, OD-2026-11-15-8).
 Where this feature names 1.7 for its own addition, it takes the next free minor of the register in `sdks/SPEC.md` §9 when
 its contract merges.
+
+Note (2026-11-20, from ADR-0099): worker-protocol minor 1.8 is reserved for delivery acknowledgement (feature 006, OD-2026-11-20-12); the next free minor is 1.9.

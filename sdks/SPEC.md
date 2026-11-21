@@ -322,6 +322,10 @@ pools, max_inflight, protocol_version}}`:
   accepted, the host omits it from every request, even if an additive field is present on the lease.
   The server uses the echoed identity with the lease fence and tenant-bound worker session; an SDK
   never treats the identity alone as authorization.
+- Protocol `1.8` adds delivery acknowledgement (ADR-0099): the host acknowledges every lease with
+  `AcknowledgeTasks` and starts nothing for it before the server answers (§6.2). The server offers `1.8`
+  only once the operator has recorded `delivery-acknowledgement-v1` for the fleet and its lease time-to-live is
+  at least 7 s; otherwise the host runs at what it is offered, as for every minor.
 - The activity context exposes a copied, typed `ExecutionInstanceIdentity` only when protocol `1.5`
   was accepted and the lease supplied it. Its ordered path contains `{scopeNodeId, iterationIndex}`
   segments and its `definitionNodeId` identifies the node activated at that path. The field is absent
@@ -348,6 +352,18 @@ The host runs at most as many tasks as it asked for (`max_tasks`): if a poll ans
 first ones, logs the rest and leaves their leases to lapse. A wait derived from the server (`retry_after_ms`,
 `Retry-After`) is capped at 60 s, whatever it says.
 
+**At 1.8 a lease is acknowledged before anything runs for it** (ADR-0099; the full procedure, the verdicts and the
+failure table are [`stream-completion.md`](../specs/006-sdk-multilanguage/stream-completion.md), "Delivery acknowledgement
+(protocol 1.8)"). A `PollTasks` call is bounded to 6 s or the shorter configured call timeout, as a stream window is. As soon
+as a frame or a poll answer is read, the host sends one `AcknowledgeTasks` with all the leases of it that it will run,
+concurrently with its next receive, and starts no handler, heartbeat or other call of those leases before the answer.
+`ACKNOWLEDGED`: dispatch (§6.3) with the answer's expiry as the deadline; with `cancel_requested = true`, do not dispatch and
+hand the lease back (below). `NOT_HELD`: drop it, run and report nothing, free its slot, emit `dropped` with the code
+`NOT_HELD`. The call is repeated on `UNAVAILABLE`, `RESOURCE_EXHAUSTED`, a retryable `INTERNAL`, a transport failure, a
+deadline and an unusable answer, with the backoff of §5 and no limit on attempts, until a verdict or until the leases have
+expired by the host's clock; `UNAUTHENTICATED` is repeated once with a fresh token. A lease left without a verdict is never
+run and is handed back. A host below 1.8 dispatches each lease as it arrives, as before.
+
 **A lease the host will not run is handed back.** A host that drops a lease it received (it is stopping, a frame carries
 more than it may run, or the rest of a malformed frame is dropped) reports `FailStep` for it with the code
 `TASK_NOT_STARTED`, retryable, with the lease's fence, before any handler of that task runs, and never for a task whose
@@ -361,7 +377,7 @@ it starts, not before. A connection that was idle may be closed by the server; `
 
 ### 6.3 Running a task
 
-For a `TaskLease` the host:
+For a `TaskLease` the host (at 1.8, only once the lease was answered `ACKNOWLEDGED`, §6.2):
 
 1. finds the handler by `activity_name`; none → `FailStep(error_code = "NO_HANDLER", retryable = false)`
    (the server would not have leased it to a worker that did not advertise it, so this is a bug report);
@@ -388,7 +404,8 @@ A handler's input type that cannot be built from the document is not a crash: th
   SDK's clock at receipt: the lease carries no TTL), never under 500 ms and never over 10 s (a third of the
   platform's default 30 s lease). A clock skewed by more than the lease's TTL distorts the interval, which is
   why it is clamped; a host whose clock is not synchronized sets `heartbeatIntervalMs` explicitly. The
-  interval is then counted on the SDK's monotonic clock.
+  interval is then counted on the SDK's monotonic clock. At 1.8 the heartbeat starts when the lease is answered
+  `ACKNOWLEDGED`, and the time left is taken from that answer's `lease_expires_at_epoch_ms`.
 - `Heartbeat` carries `task_id, worker_id, generation, lease_token, run_id, step_id, attempt` (the last
   three only from protocol 1.1). The answer's `lease_expires_at_epoch_ms` becomes the context's new deadline.
 - A beat that was already on its way when **the same lease** reported (`CompleteStep` or `FailStep`) is answered
@@ -481,7 +498,7 @@ raises `UNSUPPORTED_PROTOCOL` instead of calling.
 ### 6.8 Lifecycle
 
 `start()` registers and begins the loop and returns once registered; `stop(timeout)` stops polling,
-cancels nothing, waits for the tasks in flight up to `timeout` (default 30 s), then cancels their tokens
+hands back every lease still waiting for its acknowledgement (§6.2, `TASK_NOT_STARTED`), cancels nothing, waits for the tasks in flight up to `timeout` (default 30 s), then cancels their tokens
 with the reason `shutdown` and returns. A task that did not finish keeps its lease until it lapses; the
 server then reconciles or holds review according to task kind and available evidence. The host is
 restartable. Metrics hooks (counters for tasks taken, completed,
@@ -664,7 +681,8 @@ where the language can express one. The shared scenario is `collection-operators
   | 1.5 | Scoped execution identity | `ExecutionInstanceIdentity` |
   | 1.6 | Managed database capabilities (`ResolveDatabase`) | feature 017, D600 |
   | 1.7 | Step logs (`AppendStepLogs`, `StepLogPolicy`) | feature 041, OD-2026-11-15-8; served from its task T041-7 |
-  | next | Drafts 020, 021, 025 and 026 each name a minor; each takes the next free one when its contract merges | |
+  | 1.8 | Delivery acknowledgement (`AcknowledgeTasks`; a lease is provisional until acknowledged) | feature 006, ADR-0099, OD-2026-11-20-12; reserved by its design on 2026-11-20, served from task T006-048, only after 1.7 is served |
+  | next | Drafts 020, 021, 025 and 026 each name a minor; each takes the next free one (1.9 or later) when its contract merges | |
 
 ## 10. Observability and safety
 
@@ -708,9 +726,10 @@ The stream has a five-second server lifetime; clients additionally bound receivi
 seconds or their shorter configured call timeout. A normal underfilled window ends with a
 positive empty retry hint. An unexpected underfilled EOF MUST wait before reconnecting.
 A lease the server committed and did not hand to the transport is withdrawn by the server, once the fleet honours it; a
-lease the host drops is handed back with `TASK_NOT_STARTED` (§6.2). A frame lost on the wire still lapses until delivery
-acknowledgement (OD-2026-11-20-12) is designed and built
-([`stream-completion.md`](../specs/006-sdk-multilanguage/stream-completion.md), "Leases that never reach a host").
+lease the host drops is handed back with `TASK_NOT_STARTED` (§6.2). A frame lost on the wire, and a lost `PollTasks`
+answer, lapse for a session below 1.8; at 1.8 the lease is provisional and is withdrawn at its expiry instead
+([`stream-completion.md`](../specs/006-sdk-multilanguage/stream-completion.md), "Leases that never reach a host" and
+"Delivery acknowledgement (protocol 1.8)").
 Protocol version changes do not themselves change package SemVer.
 
 

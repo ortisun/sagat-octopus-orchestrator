@@ -152,6 +152,10 @@ adapter does not qualify a real provider.
   the server withdrew because it never handed it to the transport, or that a host handed back with `TASK_NOT_STARTED` while
   the step was still `LEASED`, is not an attempt and has a known outcome (no handler ran), so FR-037-006 does not apply to it.
   A lease that lapses is unchanged: its outcome is unknown.
+  *Clarification (2026-11-20, decision D006-015 of the same research, ADR-0099, delegate OD-2026-11-20-6):* a lease of
+  protocol 1.8 that the server withdrew because it expired while still provisional (its host never acknowledged it, cause
+  `NOT_ACKNOWLEDGED`) is not an attempt either: a host of 1.8 starts nothing before the acknowledgement. An acknowledged lease
+  that lapses is unchanged: its outcome is unknown.
 - **FR-037-007**: An unresolved lookup or manual decision about an unknown effect MUST survive
   cancellation/deadline unless an explicitly authorized resolution or qualified action settles it.
 - **FR-037-008**: A negative lookup MUST authorize subsequent work only when the integration's

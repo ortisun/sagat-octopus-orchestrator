@@ -271,7 +271,8 @@ All decisions below are "delegate (OD-2026-11-20-6)" unless they say otherwise.
 ### Owner question
 
 - **O006-001 — Delivery acknowledgement (option C).** Answered by the owner on 2026-11-20: "Yes, in 0.3.0"
-  (OD-2026-11-20-12). The sketch the question was asked on:
+  (OD-2026-11-20-12). Designed in ADR-0099 (decisions D006-011 to D006-024 below: a provisional lease marked on the step row,
+  protocol 1.8, the lease expiry as the deadline). The sketch the question was asked on:
   - *Variant 1, a provisional lease.* A claim grants a provisional lease (`OFFERED`) with a short acknowledgement deadline;
     the host acknowledges each task (a new RPC, or a frame of a bidirectional stream) before it runs the handler; only the
     acknowledgement makes the step `LEASED`; an offer not acknowledged in time is withdrawn by the engine. Exact ("the handler
@@ -287,3 +288,116 @@ All decisions below are "delegate (OD-2026-11-20-6)" unless they say otherwise.
     unchanged (their leases keep today's semantics). The acknowledgement deadline must be derived from measured delivery and
     heartbeat latency, not guessed. The variant, the minor and the deadline are decided in the ADR that follows (design first,
     the four reviewers before any code).
+
+
+## Delivery acknowledgement (2026-11-20, D006-011 to D006-024, G006-004 to G006-008)
+
+Owner question O006-001 was answered "Yes, in 0.3.0" (owner decision OD-2026-11-20-12), which left the variant, the protocol
+minor and the deadline to this design. All decisions below are "delegate (OD-2026-11-20-6)". The contract is
+`stream-completion.md`, "Delivery acknowledgement (protocol 1.8)"; the host rules are `sdks/SPEC.md` §6.1 to §6.4 and §6.8;
+the hard-to-reverse choice is ADR-0099; the build plan is `tasks.md`, phase "Delivery acknowledgement".
+
+### Decisions
+
+- **D006-011 — The variant: a provisional lease, marked on the step row and acknowledged by a batched call.** Neither sketch
+  of O006-001 is taken as it was written. Variant 1's exactness is kept (the handler runs only on the server's committed
+  acknowledgement) without its new step status and event, which would reach every reader of `steps.status` and add a journal
+  append per task; variant 2 (the first heartbeat before the handler) is equally exact but costs, per task rather than per
+  frame, one call and one engine transaction that loads the run's state and appends `step.started` (a strict superset of the
+  chosen acknowledgement's statements), adds one journal event to every task shorter than its heartbeat interval (most tasks,
+  so most conformance goldens would change), still needs a mark of which leases carry the contract, and makes a lease
+  `RUNNING` before its handler starts, so a host can no longer hand back a lease it did not start. Weighed also: a separate
+  shorter deadline (D006-016), a statement without the run lock (breaks the invariant of D006-015), a bidirectional stream
+  (six SDKs, nothing for a unary poll, breaks ADR-0029's finite window), the acknowledgement on the next poll (the handler
+  would wait a receive). The chosen variant wins on exactness (equal), cost per task (one call per frame, no run-state load,
+  no journal event, no added claim statement), behaviour with older SDKs (nothing changes for them), and the hand-back
+  (still possible after the acknowledgement).
+- **D006-012 — Protocol minor 1.8.** The register of `sdks/SPEC.md` §9 (owner decision OD-2026-11-15-8) holds 1.1 to 1.7, 1.7
+  for feature 041; no branch or sibling worktree names 1.8 (searched 2026-11-20); drafts 020, 021, 025 and 026 take the next
+  free minor when their contract merges. 1.8 is taken and registered in the same change as this design, at the coordinator's
+  instruction, as "reserved by its design, served from task T006-048". Minors are cumulative (ADR-0015, and design 041 for
+  1.7 over 1.6), so 1.8 is served only once 1.7 is (task T041-7). If T041-7 has not merged when task T006-048 is ready, the
+  build stops there and reports; it does not make 1.8 independent of 1.7, which would change the rule of ADR-0015.
+- **D006-013 — The provisional mark is lease data.** Two nullable columns of `steps`, `lease_offered_at` and
+  `lease_acknowledged_at`, written by the statements that already write the lease, cleared with it. They are not journaled,
+  like the lease-token hash and the expiry; the replay does not derive them; a reset clears them with the lease. Adding a
+  nullable column with no default is a change of the catalogue only in PostgreSQL. The claim's budget line does not move.
+- **D006-014 — The acknowledgement is one transaction per run, under the run lock, with the checks of `Heartbeat`, and loads no
+  run state.** Tasks of one run in one call share the transaction. It writes the acknowledgement time once, moves the attempt
+  deadline (D006-019), renews the lease as a heartbeat does, and answers `ACKNOWLEDGED` with the renewed expiry and the step's
+  `cancel_requested`, or `NOT_HELD` when a check fails. No `RETRY` verdict: a store failure ends the call and the host repeats
+  it, which is safe because a second acknowledgement is a duplicate. A run of another tenant answers `NOT_HELD` and is audited
+  as `Heartbeat` audits it.
+- **D006-015 — A provisional lease that expires is withdrawn with the cause `NOT_ACKNOWLEDGED`, and exactly one of the
+  acknowledgement and the withdrawal commits.** The lost-lease pass re-checks its condition under the run lock and withdraws as
+  ADR-0098 decision 3 does (no attempt consumed, no review). Both writers hold the run lock and fence on the lease (the
+  acknowledgement on the token of a `LEASED` or `RUNNING` step, the withdrawal on a `LEASED`, unacknowledged step); the host
+  runs only on `ACKNOWLEDGED`. That is the whole argument, and it uses no clock. An acknowledged lease that expires keeps its
+  meaning (an unknown outcome). The `NOT_SENT` withdrawal of ADR-0098 also requires an empty acknowledgement, which closes the
+  impossible case by construction.
+- **D006-016 — The acknowledgement deadline is the lease expiry, and 1.8 needs a time-to-live of at least 7 s.** The
+  derivation is in `stream-completion.md` ("Why the deadline is the lease expiry"): R = 6 s, the receive bound, specified; A,
+  one acknowledgement, at most 0.103 s by the measured 99th percentile of the completion, which does strictly more; every
+  deadline in [R + A, time-to-live] is safe; the upper end is chosen because a withdrawal of a healthy but slow delivery adds
+  work when the database is slowest, while a later deadline costs time only after a loss, and because it adds no setting, no
+  column and no scan. Weighed: a deadline of about 7 s (recovers a lost lease about 23 s sooner, withdraws healthy deliveries
+  under load, one more parameter); the threshold under which 1.8 is not offered, R + ⌈A⌉ = 7 s, re-derived by task T006-064
+  from the measured acknowledgement.
+- **D006-017 — A fleet requirement gates every part, and it depends on `lease-withdrawal-v1`.** `delivery-acknowledgement-v1`
+  is listed by every control plane and engine of the build. While it is not known to be recorded, an engine does not offer
+  1.8, marks no lease and writes no `NOT_ACKNOWLEDGED`. The operator command `control-plane delivery-acknowledgement-activate`
+  refuses while `lease-withdrawal-v1` is not recorded; the removal of `lease-withdrawal-v1` refuses while this one is.
+  Weighed: gating only the mark and not the negotiation (a 1.8 host could then poll a replica of an older build that does not
+  serve `AcknowledgeTasks` and never receive a verdict); no requirement (an older replica could not decode the new cause).
+- **D006-018 — The host at 1.8 acknowledges before it starts anything, and bounds a `PollTasks` call to 6 s.** One call per
+  frame or poll answer, concurrent with the next receive; no handler, heartbeat or capability call before the verdict;
+  repeated without a limit on attempts until a verdict or until the leases expire by the host's clock; a lease without a
+  verdict is handed back with `TASK_NOT_STARTED` and never run. The 6 s bound of a stream window is extended to the unary poll
+  at 1.8 so that R holds for both transports (a lease the host reads, it reads within 6 s of its commit).
+- **D006-019 — The attempt deadline of a provisional lease counts from its acknowledgement.** The `TIMED_OUT` arm of the
+  lost-lease pass skips a provisional, unacknowledged lease, and the acknowledgement moves `attempt_deadline_at` later by the
+  time the lease waited. Without this a step whose `timeoutMs` is shorter than its delivery would either be withdrawn at every
+  attempt and loop without consuming one, or time out right after an acknowledgement into a review. With it, `timeoutMs`
+  measures the attempt from the moment its host has the task. This narrows the meaning of `timeoutMs` for 1.8 leases (delivery
+  is no longer counted, at most R); older minors keep today's meaning. Reported to the owner as a change of a public option's
+  meaning made under the delegation.
+- **D006-020 — A provisional lease receives no capability.** `ResolveSecrets`, `ResolveDatabase`, `WriteBlob`, `ReadBlob` and
+  `AppendStepLogs` are refused with `FAILED_PRECONDITION`, reason `TASK_NOT_ACKNOWLEDGED`, in the query that already checks the
+  lease. A credential or a blob is not handed to a lease the server may withdraw and give to another host. `Heartbeat`,
+  `CompleteStep` and `FailStep` are served as today: each takes the step beyond the withdrawal, the safe direction for a host
+  that did not acknowledge. Weighed: making every such call an implicit acknowledgement (a write on five read paths for a case
+  a conforming host never produces).
+- **D006-021 — Cancellation before the start is known and immediate.** The verdict carries `cancel_requested`; a host told so
+  does not start the handler and hands the lease back with `TASK_NOT_STARTED`; the withdrawal runs the engine's settle in its
+  transaction, and the planner cancels a `READY` step of a stopping run (`crates/domain/src/execution/plan.rs`). The same holds
+  for any withdrawal of ADR-0098 (to be confirmed against its build, task T006-050).
+- **D006-022 — Older minors and the internal runners are unchanged.** A session below 1.8 gets no mark and keeps today's
+  meaning of every lease. The database runner (1.6), the sandbox runner (1) and the CLI's worker probe keep their minors; moving
+  them is not part of this design (gap G006-007).
+- **D006-023 — What is counted and alerted.** `worker_task_acknowledgements_total{verdict}`,
+  `worker_leases_undelivered_total{cause="not_acknowledged", outcome}`, the histogram
+  `worker_task_acknowledgement_delay_seconds` (the measured input of D006-016), the gauges `worker_leases_provisional` and
+  `worker_leases_provisional_expired` (from the operations statistics query, not the hot path),
+  `worker_capability_calls_refused_total{method, reason}`, and the alerts `SagatLeasesNotAcknowledged` and
+  `SagatLeaseAcknowledgementSlow`.
+- **D006-024 — The tests are deterministic and the goldens do not move.** Races are held with the run lock or a barrier,
+  never a sleep; the conformance suite gains fault actions that hold a call until the scenario releases it and drop one
+  stream frame, and the scenario `delivery-acknowledgement`; every other scenario must pass at 1.8 with its existing golden,
+  unblessed, which is the evidence that the happy path writes nothing new.
+
+### Gaps
+
+- **G006-004 — A host that stops or crashes between the verdict `ACKNOWLEDGED` and the start of the handler** leaves an
+  acknowledged lease that lapses into a review. The window is inside the process and holds no call. A stopping host hands the
+  lease back instead; a crash cannot.
+- **G006-005 — An acknowledgement whose answer is lost, followed by a loss of the network for the rest of the renewed lease,**
+  leaves an acknowledged lease that the host did not start and cannot hand back: it lapses into a review.
+- **G006-006 — The guarantee binds hosts that keep the protocol.** A hand-written client at 1.8 that runs a handler without
+  acknowledging, uses no capability and dies before any call, has its lease withdrawn and its work run again with the same
+  attempt number and idempotency key. External effects stay at least once (constitution principle III); the refusals of
+  D006-020 make most such clients fail loudly.
+- **G006-007 — The internal runners stay below 1.8** (the database runner at 1.6, held there by design 041 for 1.7; the
+  sandbox runner at 1; the CLI probe). Their leases keep today's meaning; a frame lost on the way to them still lapses.
+- **G006-008 — For one registry heartbeat after an activation**, an engine that has not learned of it can claim for a 1.8
+  session without the mark; that lease keeps today's meaning. After a removal, for one heartbeat, an engine may still mark
+  leases or withdraw with `NOT_ACKNOWLEDGED`: the rollback waits for it (ADR-0099, "Rollback").
