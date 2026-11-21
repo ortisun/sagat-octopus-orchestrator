@@ -177,3 +177,14 @@ attribution medians: `g2b attribution refill share 8`, `i 8` and `ii 8`.
 
 Not merged: develop moved to `a1d77778`. It merges cleanly, but was left out so that the measured build stays the
 declared one.
+
+## The fourth run, recorded (decision D041-122)
+
+**Result.** Run 44834024933 failed at 1 × 16 on gates (1), (2b) and (3) and passed all four gates at 8 × 128. Gap
+G041-025 is closed, and gap G041-026 was measured at 1 carry of 864,000. The full record is in validation-report.md.
+
+**What is left is the owner's, through the coordinating session:**
+- the environment question (decision D041-109) for the 1 × 16 failures; task T041-5 waits for it;
+- questions O041-040, O041-041 and O041-042 (ADR-0097);
+- question O041-038 (ADR-0095), which waits for a pass.
+

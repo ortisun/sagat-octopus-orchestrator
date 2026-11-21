@@ -714,6 +714,114 @@ with a mark-only final mark while the tenant is far from its limit, a share that
 underestimated by G041-023; 8 × 128's (2b) is positive in nine of twelve rounds. The validity rule and the gates are
 unchanged (D041-116).
 
+## 2026-11-20 — T041-35 fourth run, four hosted runners: FAIL at 1 × 16, pass at 8 × 128 (D041-122)
+
+**Result: FAIL by the rule.** At 1 × 16, gates (1), (2b) and (3) fail on the medians of the three rounds used; at
+8 × 128 all four gates pass; (4) passes at both sizes. Read by the declared rules (task T041-35, "Fourth run", as
+restated by decision D041-121):
+- the 1 × 16 failures are the carry's known cost on that runner, reported for the owner with the environment question
+  (decision D041-109);
+- task T041-5 waits for the owner's answer;
+- gap G041-025 closes;
+- the busy loss of gap G041-026 was measured at 1 of 864,000 carries.
+
+T041-35 stays unticked.
+
+**The run.** Run 44834024933 of `.github/workflows/perf-spike.yml`, `SAGAT_PERF_STEP_LOG_CARRY_RUN=3`.
+- **Commit measured:** `77fcb33d`. It includes develop at `99992c70`, as declared. The branch later merged develop at
+  `2f989c1e` (`3aa6e273`), which changed no `.rs`, `Cargo.toml` or `Cargo.lock` file, so the measured build's Rust tree
+  is the branch's.
+- **Runners:** four GitHub-hosted `ubuntu-latest` runners of 4 logical cores, three rounds each, judged in the fixed
+  order of decision D041-104. CPUs: shard 1 Intel Xeon 6975P-C, shard 2 AMD EPYC 9V74, shards 3 and 4 AMD EPYC 9V45.
+- **PostgreSQL:** 18.7 in rounds 1 to 3 and 10 to 12; 18.6 in rounds 4 to 9.
+- **Every round is quiet and ran to its end:** no `spike-failure-json` line, no carry call that raised, and every
+  row's tagged count equal to its refill and mark-only carries.
+- **The lease tests** (52 tests, 10 ignored benchmarks) passed by hand on `18898a98` with the test change of `77fcb33d`;
+  the gate job does not run them.
+
+**Validity.** Eight rounds are valid. Rounds 5, 8, 10 and 12 are void by the drift rule:
+
+| Round | Void because |
+|---|---|
+| 5 | off-1K at 1 × 16 drifted 20.4% |
+| 8 | off-1K at 8 × 128 drifted 13.8% |
+| 10 | off-{} at 1 × 16 drifted 13.2% |
+| 12 | off-1K at 8 × 128 drifted 13.8% |
+
+No round is void by its carries. The rounds used are 1, 2 and 3, the first three valid rounds in the fixed order.
+
+### Gate values, the three rounds used
+
+| Gate | 1 × 16, rounds 1 / 2 / 3 | median | 8 × 128, rounds 1 / 2 / 3 | median |
+|---|---|---|---|---|
+| (1) rate of (a) / off-1K, ≥ 90% | 82.8 / 80.5 / 82.0% | 82.0%, fail | 93.1 / 89.6 / 97.2% | 93.1%, pass (two quiet rounds meet it) |
+| (2b) p99 of (a) − off-1K − max(10%, 2 ms), ≤ 0 | +7.6 / +9.7 / +8.6 ms (allowance 3.46 / 3.59 / 3.42 ms, the +10% one) | +8.6 ms, fail | −25.4 / −2.2 / −17.0 ms (allowance 47.3 / 48.2 / 48.9 ms, +10%) | −17.0 ms, pass |
+| (3) rate of (f) / off-{}, ≥ 90% | 87.1 / 87.8 / 87.0% | 87.1%, fail | 90.4 / 92.3 / 91.5% | 91.5%, pass |
+| (4) tickets of (g) ≤ 10, refusals < 1% | 7 / 7 / 7; refusals 0 / 0.022 / 0.011% | pass | 5 / 5 / 5; refusals 0.022 / 0 / 0% | pass |
+
+Recorded besides, (a) over off-1K's p99 in percent: +31.9 / +36.9 / +35.2% at 1 × 16 and +4.6 / +9.5 / +6.5% at
+8 × 128. Each figure below is the median of the three rounds used.
+
+| Row | 1 × 16 | 8 × 128 |
+|---|---|---|
+| off-1K | 364/s; completion p50 / p99 21.4 / 34.6 ms | 158/s; 173.9 / 481.5 ms |
+| (a) | 299/s; 28.0 / 46.2 ms; carry p50 / p99 2.64 / 9.06 ms | 146/s; 190.4 / 520.8 ms; carry 6.99 / 30.80 ms |
+| off-{} | 375/s; 20.3 / 33.7 ms | 166/s; 161.7 / 436.2 ms |
+| (f) | 327/s; 24.3 / 45.2 ms; carry 1.75 / 5.26 ms | 150/s; 182.5 / 495.5 ms; carry 6.83 / 31.93 ms |
+| (g) | 275/s; 25.8 / 41.0 ms; S p99 16.4 ms | 131/s; 196.0 / 516.3 ms; S p99 180.4 ms |
+| (h), 64 records | 291/s; 28.5 / 53.3 ms | — |
+| (d), a transaction held | 276/s; 29.3 / 51.5 ms | — |
+
+The gate (2b) attribution is recorded, not read: at 1 × 16 the rule reads (2b) as the carry's cost on the runner, and
+at 8 × 128 (2b) passes. Medians over the rounds used:
+- at 1 × 16, the refill share of (a)'s commit waits is 0.52%, (i) is +8.6 ms and (ii) is +4.6 ms: without its own
+  carry's time, the completion p99 of (a) is still 4.6 ms over the allowance;
+- at 8 × 128, the refill share is 2.1%, (i) is −13.9 ms and (ii) is −48.3 ms.
+
+In every round used, the carries of (a) slower than the row's carry p99 were, by fast / refill / mark-only path, 90 / 0
+/ 0, 90 / 0 / 0 and 89 / 1 / 0 at 1 × 16, and 90 / 0 / 0, 89 / 1 / 0 and 89 / 1 / 0 at 8 × 128.
+
+### Carries by path and cause, all twelve rounds
+
+**Carries.** 864,000: 12 rounds × 8 carrying workload rows × 9,000.
+- Answered other than `written`: one, `mark_only:busy` in (h), round 4. Its mark-only carry took 203.5 ms against the
+  200 ms budget.
+- `mark_only:quota`, `mark_only:held`, `contended` and `neither`: 0.
+- Carry calls that raised: 0.
+
+**Refills against the declared expectation** (refills ÷ 1 MiB of bytes charged):
+
+| Row | Refills, rounds 1 to 12 | Share | Expected | Longest refill-written carry |
+|---|---|---|---|---|
+| (a) 1 × 16 | 28, 27, 29, 28, 28, 28, 27, 27, 28, 28, 28, 27 | 0.300 to 0.322% | 28.2, 0.31% | 89.0 ms |
+| (a) 8 × 128 | 28, 29, 27, 28, 28, 28, 30, 31, 29, 27, 27, 27 | 0.300 to 0.344% | 28.2, 0.31% | 190.4 ms |
+| (h) 1 × 16 | 184, 181, 182, 184, 184, 183, 182, 185, 183, 186, 182, 181 | 2.011 to 2.067% | 180.2, 2.0% | 726.7 ms |
+
+Every row is within twice its share. (f) and (d) refilled 0.300% to 0.344% of their carries, and (g) 0.189% to 0.478%;
+no share was declared for them. The longest refill-written carry over all rows is 726.7 ms, in (h), round 7. The
+harness records the carry's whole time, not the refill's wait alone.
+
+**Lease rows of the scenario's tenant after each row.** 84 at 1 × 16 and 224 at 8 × 128 in every round. That is the
+row's 20 or 160 filled connections plus the 64 setup leases of the run's four start pools, whose backends ended with
+their pools and were not yet folded.
+
+### Reading, by the declared rules
+
+- **Gates (1), (2b) and (3) failing at 1 × 16.** This is the carry's known cost on that runner. Decision D041-106
+  measured capture with no quota charge at about 9% of the rate there. The (ii) figure shows the excess remains
+  without the carry's own time. It is reported to the coordinating session, which takes the environment question to
+  the owner (decision D041-109). Task T041-5 waits for the owner's answer.
+- **8 × 128.** All four gates pass. (2b) passes at −17.0 ms; the declaration had expected it to be close (+56 ms against
+  about 61 ms).
+- **Gate (4).** Within 10 at both sizes: 7 and 5 tickets.
+- **Gap G041-025** closes. In every round used, and in all twelve, the refills of (a) and (h) are within twice the
+  declared share, and no carry was answered `mark_only:quota` or `mark_only:held`.
+- **Gap G041-026** is measured, not closed: 1 `mark_only:busy` carry of 864,000 (0.00012%), 1 of 9,000 in its row
+  (0.011%), none in the rounds used. The regime is the one this run has: far from the limit, direct connections, and
+  the setup's leases standing in for the ensure. It goes to the owner with question O041-041.
+- **Owner questions.** ADR-0097 (question O041-042) and questions O041-040 and O041-041 go to the owner with this
+  record. ADR-0095 (question O041-038) waits for task T041-35 to pass (decision D041-115).
+
 ## 2026-11-20 — The unwritten carries of the third run, split by cause (diagnosis, not a gate)
 
 Two runs of the diagnosis's `split` set on `perf/041-diag-split` (D041-116): off-1K, (a), (f), (g) and (h) at 1 × 16,

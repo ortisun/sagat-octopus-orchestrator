@@ -2412,6 +2412,11 @@ Slice A, decisions, contracts and the spike:
     94.1% and 97.2%, pass. Gate (4) tickets of (g): 5 and 4 in every round, refusals under 0.1%, pass. Every carry written.
     By this task's rule the design changes and is reviewed again before T041-5 starts: asked as O041-039 (research.md,
     D041-099); O041-026 is not put (its condition is not shown); O041-038 is not put.
+    Fourth run (run 44834024933, commit `77fcb33d`, decision D041-122): FAIL at 1 × 16 ((1) 82.0%, (2b) +8.6 ms,
+    (3) 87.1%; (4) 7 tickets passes), pass at 8 × 128 ((1) 93.1%, (2b) −17.0 ms, (3) 91.5%, (4) 5 tickets); eight
+    valid rounds of twelve (four void by drift), rounds 1 to 3 used; G041-025 closed; G041-026 measured at 1 carry of
+    864,000. By the declared rules the 1 × 16 failures go to the owner with the environment question (decision
+    D041-109); task T041-5 waits for the answer.
 - [ ] T041-3 Contracts: contracts.md §1, as revised on 2026-11-19 (D041-090), and §2.
   Waits for O041-038 (the owner's acceptance of ADR-0095, put once T041-35 passes; D041-115).
   Built on this branch before the revision (D041-091); what changes from that build: the proto's field 13 on both
