@@ -2,7 +2,7 @@
 
 **Feature Branch:** `010-scalability-ha`  
 **Created:** 2026-10-07  
-**Status:** Draft — Ready for review  
+**Status:** Delivered: all 40 tasks of [tasks.md](tasks.md) are ticked with their evidence  
 **Input:** Durable workflow platform, Sagas, SDKs, inline scripts, messaging, webhooks, observability and Studio.
 
 ## Vision and value

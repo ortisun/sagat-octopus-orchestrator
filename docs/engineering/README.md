@@ -6,6 +6,9 @@ How this repository is built, by people and by agents. The constitution (`docs/c
 |---|---|
 | [SDD workflow](sdd-workflow.md) | you start, change or close a feature: the EGM design cycle, its gates, evidence, registers |
 | [Architecture principles](architecture-principles.md) | you decide something structural: layering, ADRs, fitness functions, quality attributes |
+| [SQL privilege audit](sql-privilege-audit.md) | you add SQL: how the runtime-privilege suite checks every literal statement against what the least-privilege role may do |
+| [Dependency overrides](dependency-overrides.md) | you touch a vendored or overridden dependency: why each temporary override exists |
+| [Accepted EGM hashes](egm-accepted-hashes.json) | you upgrade the EGM plugin: the content hashes a review may run with (read by `scripts/check-design-docs.py`) |
 | [AI engineering](ai-engineering.md) | you configure or direct an agent: instruction files, hooks, skills, subagents, verification, parallel work, security |
 
 Where each kind of guidance lives:

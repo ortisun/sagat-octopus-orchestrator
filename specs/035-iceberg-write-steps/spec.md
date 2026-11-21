@@ -4,7 +4,7 @@
 
 **Created**: 2026-10-27
 
-**Status**: Draft — specified, clarified and planned ([plan](plan.md)); not implemented
+**Status**: Draft — specified, clarified and planned ([plan](plan.md)); in implementation: 20 of the 129 tasks of [tasks.md](tasks.md) are ticked with their evidence
 
 **Input**: User description: "Quero especificar em speckit uma nova feature. Quero ter steps que permitam
 salvar os dados em apache iceberg." (Steps that let a workflow save its data into Apache Iceberg tables.)
