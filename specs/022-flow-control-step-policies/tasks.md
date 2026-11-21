@@ -338,7 +338,7 @@ T022-063 (020 erasure).
 - [x] T022-070 [US7] Additive migration for `rate_limit_windows`, `rate_limit_grants`, `rate_limit_waiters` (`data-model.md`) with `sagat_app` grants, a refusing down migration and entries in `storage-classification.json`; the digest key rotation refusal of T022-007 extended to them. FR-022-040. Evidence: up/down test; runtime-privilege sweep; manifest test.
   *Done 2026-11-15 (0.3.0 slice).* Migration `20270130000100_flow_control_rate_limits` (windows, grants, waiters; counters, `max_period_ms` and `grants_total` per life of the row (D022-039) by triggers; a grant's lease instant written once; the rotation refusal extended to windows), its entries in `storage-classification.json`. Evidence: as T022-009 and T022-010.
 - [ ] T022-071 [US7] The pure window decision in `crates/domain/src/execution/flow_control.rs`: which grants count for an acquirer (run scope from the grant, step scope from the lease or while unleased), admit or wait, position and estimate, as a function of instants passed in. FR-022-040,048; D022-003,005,014. Evidence: property tests that no sequence of decisions puts more than `limit` counted instants in any window, for mixed acquirer limits and windows; clock-backwards cases.
-- [ ] T022-072 [US7] Grant or buffer at admission (T19) through the one admission-gate port, for every run creator on the tree; permit and slot together when both are declared; queue-full and key-error outcomes; start delay evaluated at release. `crates/application/src/{rate_limits.rs,concurrency.rs,runs.rs}`, `crates/infra-postgres/src/{rate_limits.rs,execution.rs}`. FR-022-041,042,044,047. Evidence: integration tests for API, event, cron and child starts; `RATE_LIMIT_QUEUE_FULL`; a run never commits with a permit and no slot or the reverse.
+- [x] T022-072 [US7] Grant or buffer at admission (T19) through the one admission-gate port, for every run creator on the tree; permit and slot together when both are declared; queue-full and key-error outcomes; start delay evaluated at release. `crates/application/src/{rate_limits.rs,concurrency.rs,runs.rs}`, `crates/infra-postgres/src/{rate_limits.rs,execution.rs}`. FR-022-041,042,044,047. Evidence: integration tests for API, event, cron and child starts; `RATE_LIMIT_QUEUE_FULL`; a run never commits with a permit and no slot or the reverse.
   *Partly done 2026-11-20 (0.3.0 slice), not ticked (decisions D022-064 and D022-065).* A start that declares
   `rateLimit` is granted or buffered in its admission transaction by the one decision of both levels and both gates
   (`gates_of`, `decide_filed`, `start_may_wait` in `crates/infra-postgres/src/execution/readiness_gate.rs`); a run's slot
@@ -349,6 +349,16 @@ T022-063 (020 erasure).
   Open: the event, cron and child starts of a rate-limited definition, a delayed start's release, a dual-gated start
   granted from the queue and its timeout (correctness review, minor 6); the reset of a rate-limited start is refused
   `BINARY_CAPABILITY_MISSING` until task T022-086 (gap G022-016).
+  *Done 2026-11-20 (0.3.0 slice).* `rate_creators::{an_event_trigger_admits_a_rate_limited_start_and_retries_an_event_the_key_refuses,
+  a_cron_trigger_admits_a_rate_limited_start, a_schedule_action_admits_a_rate_limited_start,
+  a_child_run_of_a_rate_limited_definition_is_buffered_and_granted_from_the_queue,
+  a_delayed_rate_limited_start_is_decided_at_its_release,
+  a_dual_gated_start_is_granted_both_from_the_queue_or_times_out_rate_first}` (event, cron, schedule and child
+  starts, a delayed start's release with room, behind a holder and with no key, a dual-gated start granted both from
+  the queue and timed out rate first), each checked against its rows and the consistency check. These pin built
+  behaviour; the refusal `RATE_LIMIT_QUEUE_FULL` of an event's run is seen and its redelivery admitted. The reset of a
+  rate-limited start stays task T022-086 (gap G022-016). `integration_flow_control_step_policies` 185 passed (184 in the full run; the one failure, `rate_gate::the_rate_live_keys_count_misses_only_the_keys_other_transactions_have_not_committed`, whose stand-in window met the new empty-window row, fixed and rerun green) as the owner
+  and 185 likewise as `sagat_app`.
   - *Amended 2026-11-13 after review* (D022-033, D022-024): invariants 8–10 land in this task's change; per-key run waiters default 100; the child-start outcome is T022-102.
 - [ ] T022-073 [US7] Grant pass (T20) and queue timeout (T21) in `crates/scheduler/src/flow_control.rs` and `crates/infra-postgres/src/rate_limits.rs`: shard fence, oldest admitted waiter first with skip-ahead, bounded grants per key and tenant rotation per pass, first commit wins against the timer. FR-022-041,042,047; ADR-0088. Evidence: admission-order grants; a fence rejects a stale replica; a waiter of another key and tenant is granted during a flood within two passes.
   - *Amended 2026-11-13 after review* (D022-021, D022-022): superseded by T022-097 (grant) and T022-098 (timeout), which serve both gates.
@@ -388,7 +398,7 @@ T022-063 (020 erasure).
   (the owner's bound, OD-2026-11-20-11; red with the live count read as 0); `integration_flow_control_step_policies`
   148 passed as the owner and as `sagat_app`; `security_multitenancy::quotas::the_tenant_view_has_no_single_usage_for_a_per_namespace_resource`
   lists the four rate resources as per namespace.
-- [ ] T022-078 [US7] `Run.rateLimit`, the step's waiting state and `GET /namespaces/{namespaceId}/rate-limit-keys` in `crates/api-http/src/{dto_flow_control.rs,routes/rate_limits.rs}`; position and estimate computed at read. FR-022-048. Evidence: REST tests; the estimate is absent in the cases of D022-014; raw-key canary absent.
+- [x] T022-078 [US7] `Run.rateLimit`, the step's waiting state and `GET /namespaces/{namespaceId}/rate-limit-keys` in `crates/api-http/src/{dto_flow_control.rs,routes/rate_limits.rs}`; position and estimate computed at read. FR-022-048. Evidence: REST tests; the estimate is absent in the cases of D022-014; raw-key canary absent.
   - *Built 2026-11-20 (0.3.0 slice; decision D022-067), not ticked:* `Run.rateLimit` (getRun and listRuns; position
     and estimate in getRun only, the estimate withheld from a caller without the reveal grant), `waitingOn` `rate_limit`
     and `concurrency`, `GET /namespaces/{namespaceId}/rate-limit-keys`, migrations `20270207000000` and `20270207000100`,
@@ -397,16 +407,44 @@ T022-063 (020 erasure).
     rate cursor tagged as the concurrency one, the minute truncation of `nextSlotAt` dropped, the `waitingOn` mapping
     dropped, the reveal check of the estimate dropped); `integration_flow_control_step_policies` 153 passed in both roles.
     Open: the Majors of `reviews/2026-11-20/rate-reads-responses.md`.
-- [ ] T022-079 [US7] Invariants 8–10 of `data-model.md` in `verify_run` (`crates/infra-postgres/src/execution.rs`) and `assert_consistent` (`tests/support/engine.rs`), with the journal window check. FR-022-040,045. Evidence: fails on a seeded extra grant and on a waiter without its event; passes after every fault case.
+  - *Done 2026-11-20 (0.3.0 slice; decisions D022-067 and D022-068).* Every Blocker and Major of the reviews and
+    re-reviews `reviews/2026-11-20/rate-reads-*.md` is answered in `rate-reads-responses.md` (0 open). Evidence:
+    `rate_rest::*` 14 tests (the k-th lease, the waiters the pass skips, the deadline rule, both gates, `waitingOn`
+    `rate_limit` and `concurrency`, the place read past its timeout, the page cost by `EXPLAIN`, a key of two windows,
+    one group's pages, a forced version's cursor, bodies held to the canonical schemas); unit tests
+    `flow_control_keys::tests` 8 passed (each edge of `k`, one microsecond either side of the deadline, the listings'
+    tags both ways); `consistency::{a_windows_oldest_wait_that_is_not_its_waiters_is_found,
+    one_statement_that_adds_and_removes_waiters_of_a_window_leaves_its_oldest_wait}`; each red under its hand
+    mutation, the table in `rate-reads-responses.md`. `integration_flow_control_step_policies` 185 passed (184 in the full run; the one failure, `rate_gate::the_rate_live_keys_count_misses_only_the_keys_other_transactions_have_not_committed`, whose stand-in window met the new empty-window row, fixed and rerun green) as the owner and
+    185 likewise as `sagat_app`; `runtime_privileges::` 47 passed as `sagat_app`; `check-architecture.py` (the rate route under
+    the key-value-free rule) passed.
+- [x] T022-079 [US7] Invariants 8–10 of `data-model.md` in `verify_run` (`crates/infra-postgres/src/execution.rs`) and `assert_consistent` (`tests/support/engine.rs`), with the journal window check. FR-022-040,045. Evidence: fails on a seeded extra grant and on a waiter without its event; passes after every fault case.
   - *Amended 2026-11-13 after review* (D022-032, D022-033): invariant 10 per grant over `(t_e − period_e, t_e]`; the `verify_run` checks land with T022-072 and T022-096, this task keeps `assert_consistent`.
   - *Partly done 2026-11-20 (0.3.0 slice), not ticked.* `verify_run` checks invariants 8 to 10 for a run's start
     (`verify_start_rate`); `rate_gate::verify_run_refuses_a_start_whose_grant_row_is_gone_while_it_still_counts` is the
     seeded breach. Open: the step-scope rows, `grants_total`, and `assert_consistent` across runs (architecture review,
     Major 3).
+  - *Done 2026-11-20 (0.3.0 slice).* `support::flow_control::key_consistency`, run by `World::assert_consistent` after
+    every test of the suite, now checks the rate tables across runs: a window's counters against its rows, no empty
+    window, every waiter row against its run's or step's projection (`QUEUED`, attempt, pool, group, label, deadline)
+    and the reverse, every grant row against its `rate_limit.granted` (run, node, attempt, key, instant), every run's
+    slot that still counts against its grant row, `grants_total` between its rows and the key's journaled grants, and a
+    window's oldest wait; the runs these rows name are checked by `verify_run`. Evidence: `consistency::*` (seven new
+    seeded breaches, among them "a seeded extra grant" and "a waiter without its event", each found by its own row);
+    `integration_flow_control_step_policies` 185 passed (184 in the full run; the one failure, `rate_gate::the_rate_live_keys_count_misses_only_the_keys_other_transactions_have_not_committed`, whose stand-in window met the new empty-window row, fixed and rerun green) as the owner and 185 likewise as `sagat_app` (every test passes the
+    check).
   - *Production gate (2026-11-20, D022-066 item 5):* `docs/runbooks/flow-control.md` section 6 forbids activating the rate capability in production before this task is ticked.
 - [ ] T022-080 [P] [US7] Fault and race suite `tests/fault/flow-control-step-policies/rate_limits.rs`: grant versus timeout and grant versus cancel (20 rounds each, barriers, no sleeps), a crash at each commit point of T19–T24, a duplicate grant across a shard takeover, a lost hint, a restart after several windows, a flood of 1,000 starts on one key, the limit lowered while runs wait, replicas with offset process clocks, the database clock set back. SC-022-017,018,022,023; NFR-022-001,008. Evidence: results recorded as ADR-0088 evidence.
   - *Amended 2026-11-13 after review* (D022-027): the set-back clock uses `libfaketime` inside the PostgreSQL test container; the grant instant is `clock_timestamp()` after the window lock.
-- [ ] T022-081 [P] [US7] Lock-order barriers `tests/integration/flow-control-step-policies/rate_limit_locks.rs` for each path of ADR-0088 decision 4 (admission, grant, timeout, readiness, lease recording, cancellation, purge), alone and with a semaphore. FR-022-044; SC-022-019. Evidence: no deadlock; the reversed-order control waits as expected.
+- [x] T022-081 [P] [US7] Lock-order barriers `tests/integration/flow-control-step-policies/rate_limit_locks.rs` for each path of ADR-0088 decision 4 (admission, grant, timeout, readiness, lease recording, cancellation, purge), alone and with a semaphore. FR-022-044; SC-022-019. Evidence: no deadlock; the reversed-order control waits as expected.
+  *Done 2026-11-20 (0.3.0 slice).* `tests/integration/flow-control-step-policies/rate_limit_locks.rs`, against references
+  in the order of the slots from every start (`support::lock_order::against_at`, the new slot `RateWindows`, 8b):
+  admission (counter row, semaphore, window), queue timeout and cancellation (run, counter row, semaphore, window),
+  readiness (run, window), each alone and with a permit; the grant pass passes a held run by (`SKIP LOCKED`) and, with
+  a permit, lets a reference of the semaphore then the windows through; lease recording and the purge complete while
+  the run is held (they take no run). The control `a_plan_that_takes_a_window_before_its_run_deadlocks_with_the_reference`
+  deadlocks with one victim. 7 passed; `integration_flow_control_step_policies` 185 passed (184 in the full run; the one failure, `rate_gate::the_rate_live_keys_count_misses_only_the_keys_other_transactions_have_not_committed`, whose stand-in window met the new empty-window row, fixed and rerun green) as the owner and 185 likewise as
+  `sagat_app`.
   - *Amended 2026-11-13 after review* (D022-026): with the `flow_control_counts` rows last.
   - *Production gate (2026-11-20, D022-066 item 5):* `docs/runbooks/flow-control.md` section 6 forbids activating the rate capability in production before this task is ticked.
 - [ ] T022-082 [P] [US7] Metrics and spans of the plan in `crates/telemetry/src/{metrics.rs,span.rs}`; alerts `rate_limit_grant_lagging` and `rate_limit_queue_saturated` in `crates/scheduler/src/monitor.rs`. FR-022-049. Evidence: telemetry tests reject unknown labels; each alert raised and cleared in a test.

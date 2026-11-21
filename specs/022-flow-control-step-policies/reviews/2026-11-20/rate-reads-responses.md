@@ -52,7 +52,7 @@ Each applied alone, the binary rebuilt, the named test run, the file restored an
 | an estimate at or after the deadline shown | red: `an_estimate_after_the_queue_deadline_is_withheld` and the skipped-waiters test |
 | the earlier `nextSlotAt` scan restored; the grant filter on an expression | red: `a_page_of_rate_keys_reads_only_its_own_keys` |
 | `min(leased_at + p)` instead of `min(leased_at) + p` over the same index range | green: equal value, and it reads the window's counted grants, at most the key's limit, instead of one; accepted |
-| each waiter's window read as the row's longest | green before the fix (one grant counted for both windows); the case now holds a grant thirty minutes old as well, rerun with the suite |
+| each waiter's window read as the row's longest | green before the fix (one grant counted for both windows); red after it, with a grant thirty minutes old on the key as well: `a_page_of_rate_keys_reads_only_its_own_keys` |
 | the unleased rule of `nextSlotAt` dropped | red: `a_step_waiting_for_a_slot_is_shown_waiting_on_its_rate_limit` |
 | the place's own timeout removed | red: `a_place_that_cannot_be_read_in_time_is_left_out_and_the_run_is_shown` (before the fix by the 60-second bound, after it by the seven-second one) |
 | the place's error propagated | red: the same test |
