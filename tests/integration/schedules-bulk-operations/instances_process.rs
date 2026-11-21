@@ -148,10 +148,11 @@ async fn a_control_plane_registers_before_it_serves_and_its_row_is_gone_when_it_
         .await
         .expect("it registered before it answered its first call");
     assert_eq!(version, sagat_control_plane::registry::BINARY_VERSION);
-    // design 043: a control plane in `enforce` (the default) lists `run-input-validation-v1`, and nothing else yet
+    // design 043: a control plane in `enforce` (the default) lists `run-input-validation-v1`; feature 006: every control
+    // plane of this build lists `lease-withdrawal-v1`
     assert_eq!(
         capabilities,
-        vec!["run-input-validation-v1"],
+        vec!["run-input-validation-v1", "lease-withdrawal-v1"],
         "{capabilities:?}"
     );
     assert_eq!(
@@ -622,7 +623,7 @@ async fn an_engine_lists_schedules_v1_only_when_it_runs_the_schedule_pass_and_an
         .expect("registered");
     assert_eq!(
         capabilities,
-        vec!["run-input-validation-v1"],
+        vec!["run-input-validation-v1", "lease-withdrawal-v1"],
         "{capabilities:?}"
     );
     let refused = r
