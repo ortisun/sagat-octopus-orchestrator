@@ -160,10 +160,7 @@ async fn runs_once_afterwards(p: &Platform, run: &str, withdrawn_generation: i64
     let mut worker = stream_worker(p, "second").await;
     let lease = worker.one_task().await;
     assert_eq!(lease.attempt, 1, "the attempt that never began is reused");
-    assert_eq!(
-        i64::try_from(lease.generation).expect("generation"),
-        withdrawn_generation + 1
-    );
+    assert_eq!(lease.generation, withdrawn_generation + 1);
     worker
         .client
         .heartbeat(worker.req(worker.heartbeat_message(&lease)))
@@ -248,20 +245,15 @@ async fn a_claim_that_ends_after_the_window_withdraws_its_lease() {
     gate.arrived.notified().await;
     // the reader keeps up: the stream ends at its window without the frame of the held claim
     let mut frames = 0;
-    loop {
-        match tokio::time::timeout(WAIT, stream.message())
-            .await
-            .expect("the window ends")
-        {
-            Ok(Some(frame)) => {
-                assert!(
-                    frame.tasks.is_empty(),
-                    "the held lease never reaches the reader"
-                );
-                frames += 1;
-            }
-            Ok(None) | Err(_) => break,
-        }
+    while let Ok(Some(frame)) = tokio::time::timeout(WAIT, stream.message())
+        .await
+        .expect("the window ends")
+    {
+        assert!(
+            frame.tasks.is_empty(),
+            "the held lease never reaches the reader"
+        );
+        frames += 1;
     }
     assert!(frames <= 1, "at most the terminal hint");
     gate.release.add_permits(1);

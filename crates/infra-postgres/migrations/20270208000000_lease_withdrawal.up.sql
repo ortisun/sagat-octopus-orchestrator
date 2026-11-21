@@ -3,7 +3,8 @@
 -- `*_known` is replaced under the same name, in one `ALTER TABLE`, by a superset added `NOT VALID` (every stored row satisfies
 -- it, so nothing is scanned and the `ACCESS EXCLUSIVE` lock is taken once, briefly).
 -- `20270208000100_lease_withdrawal_validate` validates them in a transaction of its own, under `SHARE UPDATE EXCLUSIVE`, so
--- reads and writes go on while a table is scanned (as design 043 did: D043-145). No function, grant or role changes. The
+-- reads and writes go on while a table is scanned (as design 043 did: D043-145). One function, the operator's census, not
+-- executable by the runtime role; no grant or role changes. The
 -- journal needs no change: `run_events.event_type` is not a closed list, and the lease columns of `steps` are cleared by the
 -- check `steps_lease_consistent` the withdrawal already satisfies (a `READY` step holds no lease).
 
@@ -25,3 +26,20 @@ ALTER TABLE platform_requirement_history
     ADD CONSTRAINT platform_requirement_history_capability_known CHECK (
         capability IN ('schedules-v1', 'access-narrowing-v1', 'payload-encoding-v1', 'run-input-validation-v1',
                        'lease-withdrawal-v1')) NOT VALID;
+
+-- The census of `control-plane lease-withdrawal-activate`: the live processes (seen within 30 seconds, as the activation counts
+-- them) of the kinds asked, those of them that do not list the capability with up to sixteen of their ids, and whether the
+-- requirement is recorded. Read through the owner's function, as the handover's census is: the runtime role reads the
+-- registry by column only and may not run it.
+CREATE FUNCTION platform_capability_census(p_capability text, p_kinds text[])
+RETURNS TABLE (out_live integer, out_lacking integer, out_examples uuid[], out_recorded boolean)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
+    SELECT count(*)::integer,
+           (count(*) FILTER (WHERE NOT (p_capability = ANY (s.capabilities))))::integer,
+           coalesce((array_agg(s.instance_id ORDER BY s.instance_id)
+                     FILTER (WHERE NOT (p_capability = ANY (s.capabilities))))[1:16], '{}'::uuid[]),
+           EXISTS (SELECT 1 FROM public.platform_requirements r WHERE r.capability = p_capability)
+      FROM public.serving_instances s
+     WHERE s.kind = ANY (p_kinds) AND s.last_seen > clock_timestamp() - interval '30 seconds';
+$$;
+REVOKE ALL ON FUNCTION platform_capability_census(text, text[]) FROM PUBLIC;

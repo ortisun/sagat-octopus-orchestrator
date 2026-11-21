@@ -22,6 +22,8 @@ BEGIN
     END IF;
 END $guard$;
 
+DROP FUNCTION platform_capability_census(text, text[]);
+
 ALTER TABLE platform_requirement_history
     DROP CONSTRAINT platform_requirement_history_capability_known,
     ADD CONSTRAINT platform_requirement_history_capability_known CHECK (

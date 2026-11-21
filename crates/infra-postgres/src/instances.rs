@@ -384,8 +384,8 @@ pub struct CapabilityCensus {
     pub recorded: bool,
 }
 
-/// Counts the live instances of `kinds` and those that lack `capability`, in one statement. Run with the schema-owning role,
-/// as every operator command of the registry is.
+/// Counts the live instances of `kinds` and those that lack `capability`, in one statement, through the owner's function
+/// `platform_capability_census`: the runtime role may not run it.
 ///
 /// # Errors
 /// The store's.
@@ -396,13 +396,8 @@ pub async fn capability_census(
 ) -> Result<CapabilityCensus, StoreError> {
     let kinds: Vec<&str> = kinds.iter().map(|kind| kind.as_str()).collect();
     let row = sqlx::query(
-        "SELECT count(*)::int AS live, \
-                count(*) FILTER (WHERE NOT $1 = ANY (s.capabilities))::int AS lacking, \
-                COALESCE((array_agg(s.instance_id ORDER BY s.instance_id) \
-                          FILTER (WHERE NOT $1 = ANY (s.capabilities)))[1:16], '{}') AS examples, \
-                EXISTS (SELECT 1 FROM platform_requirements r WHERE r.capability = $1) AS recorded \
-           FROM serving_instances s \
-          WHERE s.kind = ANY ($2) AND s.last_seen > clock_timestamp() - interval '30 seconds'",
+        "SELECT out_live AS live, out_lacking AS lacking, out_examples AS examples, out_recorded AS recorded \
+           FROM platform_capability_census($1, $2)",
     )
     .bind(capability.as_str())
     .bind(&kinds)
