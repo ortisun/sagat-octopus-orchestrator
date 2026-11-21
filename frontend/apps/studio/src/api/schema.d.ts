@@ -5060,9 +5060,11 @@ export interface components {
             ceiling: number;
             /**
              * Format: int64
-             * @description Exact charged items or bytes, including outstanding content reservations. Absent for per-operation database and rate/retention policies and for a per-namespace resource in the tenant-wide view, and for tenant_step_log_bytes to a caller without `run:logs:read`.
+             * @description Exact charged items or bytes, including outstanding content reservations. Absent for per-operation database and rate/retention policies and for a per-namespace resource in the tenant-wide view, and for tenant_step_log_bytes unless the caller holds `run:logs:read` and the PII reveal grant in every namespace of the tenant (then usageWithheld is true).
              */
             used?: number;
+            /** @description Present and true only for tenant_step_log_bytes when used is withheld: the caller lacks `run:logs:read` or the PII reveal grant in at least one namespace of the tenant, so the live step-log usage, which moves with what other runs log, is not shown (fail-closed; design 041, decision D041-133). */
+            usageWithheld?: boolean;
         };
         QuotaList: {
             items: components["schemas"]["Quota"][];
@@ -6076,8 +6078,16 @@ export interface components {
             /** @description worker only: sequences the worker numbered and never stored */
             droppedByWorker?: number;
             droppedByServer?: number;
-            /** @enum {string|null} */
-            ceiling?: "attempt_records" | "attempt_bytes" | "tenant_quota" | "tenant_quota_busy" | null;
+            /**
+             * @description Why the server dropped records at a ceiling: an attempt ceiling, or the tenant quota (full, or its last room held by other writers in flight). A busy loss is notStoredReason, never a ceiling.
+             * @enum {string|null}
+             */
+            ceiling?: "attempt_records" | "attempt_bytes" | "tenant_quota" | null;
+            /**
+             * @description Why the server did not store some of a carry's records for a reason that is not a ceiling: service_busy means the tenant's step-log quota could not be checked within its 200 ms budget or with no wait slot free (the log service was busy, not the tenant's quota); design 041 decision D041-129, gap G041-026. Null otherwise.
+             * @enum {string|null}
+             */
+            notStoredReason?: "service_busy" | null;
             /** Format: date-time */
             firstAt?: string | null;
             /** Format: date-time */

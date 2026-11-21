@@ -195,8 +195,8 @@ unchanged except as the Note above says.
   under-charge or skip it. No step-log delta is written to `quota_transaction_deltas` on insert.
 - **No deferred flush on insert.** The deferred flush that a step-log delta would have queued at commit is replaced by
   ADR-0097: an insert of step-log rows queues no flush and does not take the tenant's `tenant_retained_usage` row at
-  commit; the usage row is locked for the class `step_log` only by the ensure, a refill, a release, an idle reclaim or a
-  limit change (ADR-0097).
+  commit; the usage row is locked for the class `step_log` only by a refill (the top-up after a report included, which
+  replaced the ensure before it: OD-2026-11-20-18), a release, an idle reclaim or a limit change (ADR-0097).
 - **Release stays per row.** The purge's `DELETE` keeps the per-row `AFTER DELETE` delta and flush triggers, so what is
   released equals what is deleted; the purge is off the hot path. The finalizer's step-log branch, reached then only by a
   release, lowers the folded usage under the usage row without taking any lease (ADR-0097 decision 5).

@@ -230,7 +230,8 @@ StepLogStream:
     bytes: {type: integer, description: 'worker only: text bytes stored (UTF-8 octets of message, exception and fields; the tenant quota charges 128 more per line)'}
     droppedByWorker: {type: integer, description: 'worker only: sequences the worker numbered and never stored'}
     droppedByServer: {type: integer}
-    ceiling: {type: [string, 'null'], enum: [attempt_records, attempt_bytes, tenant_quota, tenant_quota_busy, null], description: 'Why the server dropped records: an attempt ceiling, the tenant quota (full, or its last room held by other writers in flight), or tenant_quota_busy (the quota could not be checked within its 200 ms budget: the log service was busy, and the records were not checked against the tenant quota, which may or may not have had room; design 041 section 2b, decisions D041-119, D041-120 and D041-121).'}
+    ceiling: {type: [string, 'null'], enum: [attempt_records, attempt_bytes, tenant_quota, null], description: 'Why the server dropped records at a ceiling: an attempt ceiling, or the tenant quota (full, or its last room held by other writers in flight). A busy loss is notStoredReason, never a ceiling.'}
+    notStoredReason: {type: [string, 'null'], enum: [service_busy, null], description: 'Why the server did not store some of a carry''s records for a reason that is not a ceiling: service_busy means the tenant''s step-log quota could not be checked within its 200 ms budget or with no wait slot free (the log service was busy, not the tenant''s quota); design 041 decision D041-129, gap G041-026. Null otherwise.'}
     firstAt: {type: [string, 'null'], format: date-time}
     lastAt: {type: [string, 'null'], format: date-time}
     expiresAt: {type: [string, 'null'], format: date-time, description: 'worker: the last recorded batch or carry plus the retention the stream took when it was created; script: the execution expiry.'}
@@ -281,8 +282,11 @@ sends nothing new.
 Gain `tenant_step_log_bytes` (ADR-0027 Amendment of 2026-11-15), `step_log_attempt_records`, `step_log_attempt_bytes` and
 `step_log_retention_days` (definitions in `data-model.md`). The `Quota` description's rule that lowering a limit does
 not erase retained content holds for them as for every resource: a stream keeps the retention it was created with.
-The `used` description gains one absence: `tenant_step_log_bytes` has no `used` for a caller without `run:logs:read`
-(D041-066).
+The `used` description gains one absence: `tenant_step_log_bytes` has no `used` unless the caller holds `run:logs:read`
+(D041-066) and the PII reveal grant in every namespace of the tenant (D041-133, "Hide it without the grant",
+OD-2026-11-20-19, which closes gap G041-018). Without both, the item keeps its resource, limit, source and ceiling and
+gains `usageWithheld: true`, so the caller sees that the quota exists, not its live usage (fail-closed: one namespace
+without the grant withholds it). `usageWithheld` is absent for every other resource and when `used` is shown.
 
 ### Error table
 
@@ -339,6 +343,12 @@ but its output or failure code held a declared secret, or its output did not fit
 with no line (`ended`). A carry that found a step-log lock taken is skipped (`contended`) and leaves no final mark.
 
 ## Changes recorded after T041-3
+
+- 2026-11-20 (the approval run of the revision, decisions D041-129 and D041-133): the stream item's `ceiling` loses
+  `tenant_quota_busy`, and the busy loss is reported in a field of its own, `notStoredReason` (`service_busy`); the
+  `Quota` item gains `usageWithheld`, and `used` of `tenant_step_log_bytes` needs the PII reveal grant in every
+  namespace of the tenant besides `run:logs:read`. Both the planned `openapi.yaml` and the Studio's `schema.d.ts` carry
+  it (edited by hand; `npm run api` was not run: no `node_modules` in `frontend/apps/studio`).
 
 - 2026-11-19 (T041-3, security and correctness reviews of the build): `deleteRunLogs` declares `400` and `422` as
   `listRunLogs` does, and its `stream` says that another stream is `404`; the descriptions of `ScriptExecution.log`,

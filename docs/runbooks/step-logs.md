@@ -3,8 +3,8 @@
 Operational notes for the step logs of design 041 (`docs/designs/041-step-logs.md`): the lines a step's code writes to
 its logger, stored per attempt beside the journal with ceilings and a retention period. The architecture decisions are
 ADR-0084, ADR-0085, ADR-0095 and ADR-0097. This runbook is completed by the design's tasks T041-10 (the purge, the
-retention rule and the deployment switch) and T041-25 (the alerts and their entries); until then it holds the sizing
-facts the owner decided on.
+retention rule and the deployment switch), T041-30 (the delete route and the incident path) and T041-25 (the alerts and
+their entries); until then it holds the sizing and operating facts the owner and the design decided.
 
 ## 1. What capture costs
 
@@ -31,11 +31,76 @@ The owner accepted the measured cost ("Accept the measured cost", OD-2026-11-20-
 - **Sizing:** give the database host headroom above the benchmark's saturation point, or scale out replicas, before
   turning capture off.
 
+The release keeps these figures only while task T041-9, on the built carry, meets the per-size criterion of
+SC-041-007 (decision D041-126): at 8 × 128 the original gates; at 1 × 16 a floor at the fourth run's figures less the
+spread of its eight valid rounds (rate at least 80.4%, p99 at most 29.1 ms over the allowance, rate with output `{}` at
+least 83.5%).
+
 ## 2. Lines not stored because the log service was busy
 
-A carry whose lease must be refilled and cannot get the tenant's usage row within 200 ms drops its records; the report
-always lands. The reader sees "not stored: the log service was busy (not your quota)" on the stream and in Studio, and
-the drop is counted with the reason `tenant_quota_busy`. The owner accepted this visible loss as built ("Accept the
-visible loss", OD-2026-11-20-14; gap G041-026). Task T041-35's fourth run measured 1 such carry of 864,000, far from the
-limit with direct connections. It is more frequent near the tenant's limit and behind a transaction pooler (gap
-G041-027). If it exceeds 0.1% of carries in a regime that task T041-9 measures, the question goes back to the owner.
+Each database backend that writes step logs for a tenant holds a small *quota lease* of that tenant's step-log room. A
+carry charges its lease; when the lease is short, the carry refills it from the tenant's usage row inside the report
+(the *fallback refill*), waiting at most 200 ms for each lock of that row, and only while it holds one of the tenant's
+seven *wait slots* on that replica. A carry that cannot get the row within 200 ms, or finds the seven slots taken,
+drops its records; the report always lands. The reader sees "not stored: the log service was busy (not your quota)" on
+the stream (its field `notStoredReason` is `service_busy`, never a ceiling) and in Studio, and the drop is counted
+`step_log_lines_dropped_total{reason="service_busy"}` and `step_log_quota_refusals_total{cause="busy"}`. The owner
+accepted this visible loss as built ("Accept the visible loss", OD-2026-11-20-14; gap G041-026). Task T041-35's fourth
+run measured 1 such carry of 864,000, far from the limit with direct connections. It is more frequent near the
+tenant's limit and behind a transaction pooler (gap G041-027). If it exceeds 0.1% of carries in a regime that task
+T041-37 counts for this rule, the question goes back to the owner.
+
+**The alert** `SagatStepLogServiceBusyDrops` fires when `step_log_quota_refusals_total{cause="busy"}` is above 0.1% of
+`step_log_carries_total` for ten minutes. The server writes a structured warning naming the tenant at most once per
+tenant per minute on each replica, with the count since the last one. Look at who holds the tenant's usage row (a long
+transaction, the purge, a change of the tenant's step-log limit), at `step_log_quota_fallbacks_total` against
+`step_log_quota_top_ups_total`, and at whether the tenant is near its limit.
+
+**Wait slots.** All of one tenant's waits on its usage row through step logs (carries, batches, script markers and
+top-ups) hold at most 7 of a replica's database connections, the same as the tenant's log tickets (section 4), so one
+tenant's logging cannot take the connections other tenants' reports need. The slot count is a constant of the database
+functions (`sagat_quota_step_log_wait_slots()`), not a setting.
+
+## 3. How the quota leases are kept topped up
+
+A backend's lease is topped up *after* a carrying report commits, never before it: when the carry left less than 64 KiB
+(65,536 bytes) in the lease, the server runs one short statement on the same connection, under no run lock, and the
+report's answer does not wait for it (decision D041-124, OD-2026-11-20-18). Far from the limit a lease is granted 1 MiB,
+so a backend tops up about once every 300 ten-line carries. The first carry of each backend for a tenant, after a
+deploy, a pool recycle or an idle reclaim (10 minutes), finds no lease and refills inside its report: that is the
+expected cost of a cold start. Counted in `step_log_quota_top_ups_total{outcome}` and `step_log_quota_fallbacks_total`.
+
+**Behind a connection pooler.** Session pooling is not required. Behind a pooler in transaction mode the top-up may
+run on another backend than the next report, so more refills happen inside reports: about the fourth run's share,
+0.31% of ten-line carries and 2.0% of 64-record carries far from the limit (gap G041-027, accepted with ADR-0097,
+OD-2026-11-20-15). The pooler advice of `docs/runbooks/scaling.md` stands as written: run a pooler in transaction mode
+when replicas × pool size approaches `max_connections`; expect more fallback refills, and watch
+`step_log_quota_fallbacks_total` and `SagatStepLogServiceBusyDrops` (decision D041-130).
+
+## 4. Log admission: the Logs class and the tickets
+
+A long step streams its earlier lines through `AppendStepLogs`, admitted in a class of its own per replica:
+- `SAGAT_GRPC_MAX_LOG_CALLS`, the class cap, defaults to half of `SAGAT_DB_MAX_CONNECTIONS` rounded down, at least 1
+  (10 of the default pool of 20): at most that many connections are in a log transaction at once.
+- `SAGAT_STEP_LOGS_TENANT_CALLS`, a tenant's tickets per replica, defaults to 7, at most the cap. It comes from the
+  fourth run (decision D041-127): ⌈batches per second × the batch's p99 service time / 0.7⌉ gave 7 with 1 replica and
+  16 workers and 5 per replica with 8 replicas and 128 workers.
+
+A batch that finds no ticket free is answered `RETRY_LATER` at once and resent; it is lost only after 10 seconds.
+**Raise `SAGAT_STEP_LOGS_TENANT_CALLS`** (and the cap with it, never above half the pool) when one tenant's long steps
+see sustained `step_log_batches_total{outcome="retry_later"}` and `SagatStepLogIngestShedding` fires while the database
+has headroom: two of the fourth run's eight valid rounds needed 10 tickets for a tenant at the benchmark's saturation.
+
+## 5. Who sees the step-log quota's usage
+
+The quota route shows `used` of `tenant_step_log_bytes` only to a caller who holds `run:logs:read` and the PII reveal
+grant in every namespace of the tenant. Anyone else sees the resource, its limit and `usageWithheld: true`, never the
+live figure, which moves with what other runs log (decision D041-133, "Hide it without the grant", OD-2026-11-20-19).
+To let an administrator see it, give them the grant in every namespace.
+
+## 6. PostgreSQL logging for the runtime role
+
+A carry puts line text into the parameters of a call on the report path. Set, for the role `sagat_app`,
+`log_parameter_max_length = 0` and `log_parameter_max_length_on_error = 0` (no parameter value is logged, not even a
+prefix), and `log_error_verbosity = terse`, so that a database error never copies line text into PostgreSQL's own log
+(security review Nit S-5).
