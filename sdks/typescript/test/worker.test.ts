@@ -47,6 +47,14 @@ class FakeServer {
   streamFailureAfterFirst: number | undefined;
   holdStream = false;
   streamCancelled = 0;
+  /** A misbehaving service: answers a poll with every task it has, whatever `max_tasks` says. */
+  ignoreMax = false;
+  /** When set, a FailStep waits for this promise before it is answered. */
+  failStepGate: Promise<void> | undefined;
+  /** The FailStep calls that arrived, the ones on their way at the service now, and the most there were at once. */
+  failStepsArrived = 0;
+  failStepsOnTheirWay = 0;
+  failStepsPeak = 0;
   /**
    * Bumped by `reset()`. A host keeps the session token it registered with, so a host a previous test left
    * running (still polling while it stops) cannot take the leases of the next test: its receives are
@@ -93,7 +101,7 @@ class FakeServer {
     reply('registerWorker', () => ({ worker_id: 'w-1', session_token: `session-${this.generation}`, accepted_protocol_version: this.acceptedVersion }));
     reply('pollTasks', (request: { max_tasks: number }) => {
       // Like the real service: no more than were asked for.
-      const tasks = this.leases.splice(0, request.max_tasks);
+      const tasks = this.leases.splice(0, this.ignoreMax ? this.leases.length : request.max_tasks);
       return { tasks, retry_after_ms: this.pollRetryAfterMs };
     });
     impl['streamTasks'] = (call: grpc.ServerWritableStream<{ max_tasks: number }, unknown>) => {
@@ -139,6 +147,16 @@ class FakeServer {
     reply('heartbeat', () => ({ lease_expires_at_epoch_ms: this.heartbeatExpiresMs, cancel_requested: this.cancelRequested }));
     reply('completeStep', () => ({ command_id: 'c', already_applied: false, step_status: 'SUCCEEDED', run_status: 'RUNNING' }));
     reply('failStep', () => ({ command_id: 'c', already_applied: false, step_status: 'FAILED', run_status: 'RUNNING' }));
+    const answerFailStep = impl['failStep'] as (call: grpc.ServerUnaryCall<any, any>, callback: grpc.sendUnaryData<any>) => void;
+    impl['failStep'] = (call: grpc.ServerUnaryCall<any, any>, callback: grpc.sendUnaryData<any>) => {
+      this.failStepsArrived += 1;
+      this.failStepsOnTheirWay += 1;
+      this.failStepsPeak = Math.max(this.failStepsPeak, this.failStepsOnTheirWay);
+      void (this.failStepGate ?? Promise.resolve()).then(() => answerFailStep(call, (error, response) => {
+        this.failStepsOnTheirWay -= 1;
+        callback(error, response);
+      }));
+    };
     reply('resolveSecrets', () => ({ secrets: this.secrets }));
     this.server.addService(loaded.sagat_octopus_orchestrator.v1.WorkerService.service, impl as unknown as grpc.UntypedServiceImplementation);
     this.port = await new Promise<number>((resolve, reject) =>
@@ -176,6 +194,11 @@ class FakeServer {
     this.streamFailureAfterFirst = undefined;
     this.holdStream = false;
     this.streamCancelled = 0;
+    this.ignoreMax = false;
+    this.failStepGate = undefined;
+    this.failStepsArrived = 0;
+    this.failStepsOnTheirWay = 0;
+    this.failStepsPeak = 0;
   }
 }
 
@@ -666,23 +689,29 @@ test('a stream that exceeds capacity runs bounded work and is cancelled', async 
   });
   await worker.start();
   await until(() => handled === 1, 'one bounded handler');
+  await until(() => fake.of('failStep').length === 1, 'the lease beyond the credit to be handed back');
   await new Promise((resolve) => setTimeout(resolve, 100));
   assert.equal(handled, 1);
+  assert.equal(fake.of('failStep')[0]!.request['task_id'], 'run-2/charge/1');
+  assert.equal(fake.of('failStep')[0]!.request['error_code'], 'TASK_NOT_STARTED');
   assert.equal(fake.of('streamTasks').length, 1, 'the malformed receive is not left open or reopened at once');
   assert.equal(fake.of('streamTasks')[0]!.request['max_tasks'], 1);
   await worker.stop(50);
 });
 
-test('a stream cannot make the host own more than the aggregate input budget', async () => {
+test('a stream cannot make the host own more than the aggregate input budget: the lease over it is handed back', async () => {
   fake.acceptedVersion = '1.4';
   fake.streamBatches = [[lease({ input_json: 'x'.repeat(8 * 1024 * 1024 + 1) })]];
   let handled = false;
   const worker = host({ maxInflight: 1 });
   worker.registerActivity('charge', () => { handled = true; });
   await worker.start();
+  await until(() => fake.of('failStep').length === 1, 'the lease over the budget to be handed back');
   await new Promise((resolve) => setTimeout(resolve, 150));
   assert.equal(handled, false);
-  assert.equal(fake.of('completeStep').length + fake.of('failStep').length, 0);
+  assert.equal(fake.of('completeStep').length, 0);
+  assert.equal(fake.of('failStep').length, 1, 'handed back once');
+  assert.equal(fake.of('failStep')[0]!.request['error_code'], 'TASK_NOT_STARTED');
 });
 
 test('an empty stream hint is followed by a wait, never by another receive at once', async () => {
@@ -987,4 +1016,312 @@ test('stop cancels the poll the server holds and nothing else: a report that is 
   await new Promise((resolve) => setTimeout(resolve, 100));
   await worker.stop(600); // the poll is cancelled at 600 ms; the report (answered at 1500 ms) must not be
   await until(() => events.includes('task.completed'), 'the report to be acknowledged', 3000);
+});
+
+// ------------------------------------------------------------------------------------------ hand-back
+
+// The hand-back of SPEC §6.2: a lease the host received and will not run is reported with FailStep TASK_NOT_STARTED,
+// before any handler of it runs, once, and never for a task whose handler started (mirrors handback_test.go of Go).
+
+/** What the tests reach inside a host: the barrier of the receive loop and whether `stop` has begun. */
+type HandBackSeam = { frameReceived?: (leases: number) => Promise<void> | void; stopping: boolean };
+const seamOf = (h: WorkerHost): HandBackSeam => h as unknown as HandBackSeam;
+
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+  let resolve: () => void = () => undefined;
+  const promise = new Promise<void>((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
+const numbered = (n: number, overrides: Partial<TaskLease> = {}): TaskLease => lease({
+  task_id: `run-${n}/charge/1`, run_id: `run-${n}`, lease_token: `LEASE-TOKEN-${n}`, idempotency_key: `run-${n}:charge`,
+  input_json: JSON.stringify({ run: { id: `run-${n}` }, node: 'charge', input: {} }), ...overrides,
+});
+
+function capturingLogger(): { lines: Array<{ level: string; message: string; fields: Record<string, unknown> }>; logger: WorkerConfig['logger'] } {
+  const lines: Array<{ level: string; message: string; fields: Record<string, unknown> }> = [];
+  const at = (level: string) => (message: string, fields?: Record<string, unknown>) => { lines.push({ level, message, fields: fields ?? {} }); };
+  return { lines, logger: { debug: at('debug'), info: at('info'), warn: at('warn'), error: at('error') } };
+}
+
+/** The warnings that hand a task back, as `task:reason`. */
+const handBackWarnings = (lines: ReturnType<typeof capturingLogger>['lines']): string[] =>
+  lines.filter((line) => line.level === 'warn' && line.message.includes('hands back'))
+    .map((line) => `${String(line.fields['task'])}:${String(line.fields['reason'])}`).sort();
+
+/**
+ * The task ids of the FailStep calls, sorted, after checking that each is the whole hand-back: the code TASK_NOT_STARTED,
+ * retryable, the fixed message, the failure's idempotency key and the lease's fence and identity.
+ */
+function handedBack(): string[] {
+  const ids: string[] = [];
+  for (const call of fake.of('failStep')) {
+    const request = call.request;
+    const n = String(request['run_id']).slice('run-'.length);
+    assert.equal(request['error_code'], 'TASK_NOT_STARTED', `every failure here is a hand-back: ${JSON.stringify(request)}`);
+    assert.equal(request['retryable'], true);
+    assert.equal(request['safe_message'], 'the host did not start this task');
+    assert.equal(request['idempotency_key'], `failed-${String(request['task_id'])}`);
+    assert.equal(request['task_id'], `run-${n}/charge/1`);
+    assert.equal(request['step_id'], 'charge');
+    assert.equal(request['attempt'], 1);
+    assert.equal(Number(request['generation']), 1);
+    assert.equal(request['lease_token'], `LEASE-TOKEN-${n}`, 'the fence of the lease itself');
+    assert.equal(request['traceparent'], lease().traceparent);
+    ids.push(String(request['task_id']));
+  }
+  return ids.sort();
+}
+
+const beatsOf = (task: string): number => fake.of('heartbeat').filter((call) => call.request['task_id'] === task).length;
+
+test('a poll answer beyond the credit is handed back', async () => {
+  fake.ignoreMax = true;
+  fake.leases = [numbered(1), numbered(2), numbered(3)];
+  const { lines, logger } = capturingLogger();
+  const ran: string[] = [];
+  const h = host({ maxInflight: 1, transport: 'poll', logger });
+  h.registerActivity('charge', (_input, ctx) => { ran.push(ctx.taskId); return 1; });
+  await h.start();
+  await until(() => fake.of('completeStep').length === 1, 'the kept task to complete');
+  await h.stop(5000);
+  assert.deepEqual(handedBack(), ['run-2/charge/1', 'run-3/charge/1'], 'the two leases beyond the credit');
+  assert.deepEqual(ran, ['run-1/charge/1'], 'only the first lease runs');
+  assert.equal(beatsOf('run-2/charge/1') + beatsOf('run-3/charge/1'), 0, 'a lease that is handed back is never beaten for');
+  assert.deepEqual(handBackWarnings(lines), ['run-2/charge/1:credit', 'run-3/charge/1:credit'], 'a warning names the task and the reason');
+  assert.ok(lines.every((line) => !JSON.stringify(line).includes('LEASE-TOKEN')), 'never the lease token in a log line');
+});
+
+test('a stream frame beyond the credit is handed back and the started task is not', async () => {
+  fake.acceptedVersion = '1.4';
+  fake.holdStream = true;
+  fake.streamBatches = [[numbered(1), numbered(2), numbered(3)]];
+  const release = deferred();
+  const h = host({ maxInflight: 1, heartbeatIntervalMs: 20 });
+  h.registerActivity('charge', () => release.promise.then(() => 1));
+  await h.start();
+  await until(() => fake.of('failStep').length === 2, 'the two hand-backs');
+  await until(() => beatsOf('run-1/charge/1') > 0, 'the started task to beat');
+  release.resolve();
+  await until(() => fake.of('completeStep').length === 1, 'the kept task to complete');
+  await h.stop(5000);
+  assert.deepEqual(handedBack(), ['run-2/charge/1', 'run-3/charge/1']);
+  assert.equal(fake.of('failStep').length, 2, 'the started task is never handed back');
+  assert.equal(beatsOf('run-2/charge/1') + beatsOf('run-3/charge/1'), 0, 'a lease that is handed back is never beaten for');
+});
+
+test('the rest of a frame over the input budget is handed back', async () => {
+  fake.acceptedVersion = '1.4';
+  fake.holdStream = true;
+  const heavy = { input_json: JSON.stringify({ run: { id: 'run-1' }, node: 'charge', input: 'x'.repeat(5 * 1024 * 1024) }) };
+  fake.streamBatches = [[numbered(1, heavy), numbered(2, heavy), numbered(3)]];
+  const { lines, logger } = capturingLogger();
+  const h = host({ maxInflight: 3, logger });
+  h.registerActivity('charge', () => 1);
+  await h.start();
+  await until(() => fake.of('completeStep').length === 1, 'the kept task to complete');
+  await until(() => fake.of('failStep').length === 2, 'the hand-backs');
+  await h.stop(5000);
+  assert.deepEqual(handedBack(), ['run-2/charge/1', 'run-3/charge/1'], 'the lease over the budget and the rest of the frame');
+  assert.deepEqual(handBackWarnings(lines), ['run-2/charge/1:malformed', 'run-3/charge/1:malformed']);
+});
+
+test('a stream frame read while stopping is handed back whole', async () => {
+  fake.acceptedVersion = '1.4';
+  fake.holdStream = true;
+  fake.streamBatches = [[numbered(1), numbered(2)]];
+  const { lines, logger } = capturingLogger();
+  const h = host({ maxInflight: 4, logger });
+  const read = deferred();
+  const proceed = deferred();
+  seamOf(h).frameReceived = async () => {
+    read.resolve();
+    await proceed.promise;
+  };
+  let ran = 0;
+  h.registerActivity('charge', () => { ran += 1; return 1; });
+  await h.start();
+  await read.promise;
+  const stopped = h.stop(5000);
+  await until(() => seamOf(h).stopping, 'the stop to begin');
+  proceed.resolve();
+  await stopped;
+  // Stop returned: the hand-backs were made before the channel closed.
+  assert.deepEqual(handedBack(), ['run-1/charge/1', 'run-2/charge/1'], 'the whole frame');
+  assert.equal(ran, 0, 'a host that is stopping starts nothing new');
+  assert.deepEqual(handBackWarnings(lines), ['run-1/charge/1:stopping', 'run-2/charge/1:stopping']);
+});
+
+test('a poll answer that arrives while stopping is handed back and the running task is not', async () => {
+  fake.leases = [numbered(1)];
+  const h = host({ maxInflight: 4, transport: 'poll' });
+  const started = deferred();
+  const release = deferred();
+  h.registerActivity('charge', async () => {
+    started.resolve();
+    await release.promise;
+    return 1;
+  });
+  // The second poll answer that carries leases is held in the loop until the stop has begun.
+  const holding = deferred();
+  const hold = deferred();
+  let answers = 0;
+  seamOf(h).frameReceived = async (leases) => {
+    if (leases > 0 && ++answers === 2) {
+      holding.resolve();
+      await hold.promise;
+    }
+  };
+  await h.start();
+  await started.promise;
+  fake.leases.push(numbered(2), numbered(3));
+  await holding.promise;
+  const stopped = h.stop(5000);
+  await until(() => seamOf(h).stopping, 'the stop to begin');
+  hold.resolve();
+  await until(() => fake.of('failStep').length === 2, 'the hand-backs');
+  release.resolve();
+  await stopped;
+  assert.deepEqual(handedBack(), ['run-2/charge/1', 'run-3/charge/1']);
+  assert.equal(fake.of('completeStep').length, 1, 'the running task reports its own result');
+  assert.equal(fake.of('completeStep')[0]!.request['task_id'], 'run-1/charge/1');
+});
+
+test('a duplicate lease is ignored and never handed back', async () => {
+  fake.acceptedVersion = '1.4';
+  fake.holdStream = true;
+  // The second is the running task's own lease again; the fourth repeats a lease handed back.
+  fake.streamBatches = [[numbered(1), numbered(1), numbered(2), numbered(2)]];
+  const { lines, logger } = capturingLogger();
+  const release = deferred();
+  const h = host({ maxInflight: 1, logger });
+  h.registerActivity('charge', () => release.promise.then(() => 1));
+  await h.start();
+  await until(() => fake.of('failStep').length >= 1, 'the hand-back');
+  release.resolve();
+  await until(() => fake.of('completeStep').length === 1, 'the kept task to complete');
+  await h.stop(5000);
+  assert.deepEqual(handedBack(), ['run-2/charge/1'], 'a duplicate is never reported, a lease is handed back once');
+  assert.equal(lines.filter((line) => line.level === 'warn' && line.message.includes('ignored')).length, 2, 'each duplicate is logged');
+});
+
+const sibling = (index: number): TaskLease => numbered(1, {
+  instance: { instance_path: [{ scope_node_id: 'each', iteration_index: index }], definition_node_id: 'charge' },
+});
+
+test('sibling iterations that share a task id are not duplicates', async () => {
+  fake.acceptedVersion = '1.5';
+  fake.holdStream = true;
+  fake.streamBatches = [[sibling(0), sibling(1)]];
+  const h = host({ maxInflight: 2 });
+  h.registerActivity('charge', () => 1);
+  await h.start();
+  await until(() => fake.of('completeStep').length === 2, 'both iterations to complete');
+  await h.stop(5000);
+  assert.equal(fake.of('failStep').length, 0, 'sibling iterations run, neither is handed back');
+});
+
+test('a sibling iteration beyond the credit is handed back with its instance, not ignored', async () => {
+  fake.acceptedVersion = '1.5';
+  fake.holdStream = true;
+  fake.streamBatches = [[sibling(0), sibling(1)]];
+  const release = deferred();
+  const h = host({ maxInflight: 1 });
+  h.registerActivity('charge', () => release.promise.then(() => 1));
+  await h.start();
+  await until(() => fake.of('failStep').length === 1, 'the hand-back of the second iteration');
+  release.resolve();
+  await until(() => fake.of('completeStep').length === 1, 'the first iteration to complete');
+  await h.stop(5000);
+  assert.deepEqual(handedBack(), ['run-1/charge/1']);
+  assert.deepEqual(fake.of('failStep')[0]!.request['instance'], sibling(1).instance, 'the hand-back names the iteration it gives back');
+  assert.deepEqual(fake.of('completeStep')[0]!.request['instance'], sibling(0).instance);
+});
+
+test('a hand-back is retried with the same key and ends quietly when stale', async () => {
+  fake.ignoreMax = true;
+  fake.leases = [numbered(1), numbered(2), numbered(3)];
+  fake.failures['failStep'] = [{ code: grpc.status.UNAVAILABLE }, { code: grpc.status.ABORTED, reason: 'STALE_ATTEMPT' }];
+  const events: WorkerEvent[] = [];
+  const h = host({
+    maxInflight: 1, transport: 'poll',
+    onEvent: (event) => {
+      if (event.type === 'task.failed' || event.type === 'task.stale' || event.type === 'task.dropped') events.push(event);
+    },
+  });
+  h.registerActivity('charge', () => 1);
+  await h.start();
+  await until(() => events.length === 2, 'the outcome of both hand-backs');
+  await h.stop(5000);
+  const keys = new Map<string, number>();
+  for (const call of fake.of('failStep')) {
+    const key = String(call.request['idempotency_key']);
+    keys.set(key, (keys.get(key) ?? 0) + 1);
+  }
+  // Three calls for two leases: one answered UNAVAILABLE and repeated with its key, one stale.
+  assert.equal(fake.of('failStep').length, 3, `hand-back calls with keys ${JSON.stringify([...keys])}`);
+  assert.equal(keys.size, 2, `hand-back calls with keys ${JSON.stringify([...keys])}`);
+  handedBack();
+  const failed = events.filter((event) => event.type === 'task.failed' && event.code === 'TASK_NOT_STARTED' && event.retryable);
+  assert.equal(failed.length, 1, `one hand-back counted as a failure with its code: ${JSON.stringify(events)}`);
+  assert.equal(events.filter((event) => event.type === 'task.stale').length, 1, `one stale: ${JSON.stringify(events)}`);
+});
+
+test('a flood of leases is handed back at most eight at a time', async () => {
+  fake.ignoreMax = true;
+  fake.leases = Array.from({ length: 10_000 }, (_, i) => numbered(i + 1));
+  const gate = deferred();
+  fake.failStepGate = gate.promise;
+  const ran: string[] = [];
+  const h = host({ maxInflight: 1, transport: 'poll' });
+  h.registerActivity('charge', (_input, ctx) => { ran.push(ctx.taskId); return 1; });
+  await h.start();
+  try {
+    await until(() => fake.failStepsArrived >= 8, 'eight hand-backs held at the service', 20_000);
+    // While the eight are held, no ninth may arrive: this window only looks for an absence.
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    assert.equal(fake.failStepsArrived, 8, 'at most eight hand-backs on their way at once');
+  } finally {
+    gate.resolve();
+  }
+  await until(() => fake.of('failStep').length === 9_999, 'every lease beyond the first to be handed back', 120_000);
+  await h.stop(30_000);
+  assert.ok(fake.failStepsPeak <= 8, `peak of ${fake.failStepsPeak} hand-backs at once`);
+  const ids = handedBack();
+  assert.equal(ids.length, 9_999);
+  assert.equal(new Set(ids).size, 9_999, 'each lease is handed back once');
+  assert.ok(!ids.includes('run-1/charge/1'), 'never the task that started');
+  assert.deepEqual(ran, ['run-1/charge/1']);
+});
+
+test('a lease leased again while its hand-back is on its way is ignored', async () => {
+  fake.ignoreMax = true;
+  fake.leases = [numbered(1), numbered(2)];
+  const gate = deferred();
+  fake.failStepGate = gate.promise;
+  const { lines, logger } = capturingLogger();
+  const ran: string[] = [];
+  const h = host({ maxInflight: 1, transport: 'poll', logger });
+  h.registerActivity('charge', (_input, ctx) => { ran.push(ctx.taskId); return 1; });
+  // The number of polls when the answer that leases run-2 again is read: the next poll begins after it was looked at.
+  let answers = 0;
+  let pollsAtRepeat = -1;
+  seamOf(h).frameReceived = (leases) => {
+    if (leases > 0 && ++answers === 2) pollsAtRepeat = fake.of('pollTasks').length;
+  };
+  await h.start();
+  try {
+    await until(() => fake.failStepsArrived === 1, 'the hand-back of run-2 held at the service');
+    await until(() => fake.of('completeStep').length === 1, 'run-1 to complete');
+    fake.leases.push(numbered(2));
+    await until(() => pollsAtRepeat >= 0 && fake.of('pollTasks').length > pollsAtRepeat, 'the answer that leases run-2 again to be looked at');
+    assert.deepEqual(ran, ['run-1/charge/1'], 'a lease whose hand-back is on its way is in flight: never run');
+    assert.equal(lines.filter((line) => line.level === 'warn' && line.message.includes('ignored') && line.fields['task'] === 'run-2/charge/1').length, 1,
+      'the duplicate is logged');
+  } finally {
+    gate.resolve();
+  }
+  await h.stop(5000);
+  assert.deepEqual(handedBack(), ['run-2/charge/1'], 'exactly one hand-back for it');
+  assert.deepEqual(ran, ['run-1/charge/1']);
 });
