@@ -14,6 +14,7 @@ mod request;
 mod server;
 mod service;
 mod status;
+mod undelivered;
 
 /// Generated messages, server and client of `sagat_octopus_orchestrator.v1`.
 #[allow(
@@ -42,6 +43,7 @@ pub use blobs::{BLOB_CHUNK_BYTES, BlobTransfer};
 pub use server::{AdmissionProvider, GrpcConfig, TlsConfig, serve, worker_service};
 pub use service::WorkerGrpc;
 pub use status::{ERROR_METADATA, RETRY_AFTER_METADATA, to_status};
+pub use undelivered::{Abandonment, DeliveryProbe, Withdrawals};
 
 impl std::fmt::Debug for pb::ResolvedDatabase {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

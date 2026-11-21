@@ -785,21 +785,33 @@ pub async fn serve(
     }
     // The worker protocol obeys the registry as the passes do: a replica that may not serve answers its workers
     // UNAVAILABLE and another replica serves them.
+    // Feature 006 (decision D006-004): the leases this replica committed and never handed to a host are withdrawn once the
+    // platform requires `lease-withdrawal-v1` of control planes and engines; the gate keeps the recorded requirements.
+    let workers = workers.with_lease_withdrawal(Arc::clone(&gate));
     let mut worker_api = WorkerGrpc::new(state, workers).with_serving_gate(Arc::clone(&gate));
+    let withdrawals = worker_api.withdrawals();
     if let Some(blobs) = blobs {
         worker_api = worker_api.with_blobs(blobs, engine.blob_transfer);
     }
     let grpc_stop = stop_rx.clone();
     let grpc_config = engine.grpc.clone();
     tasks.spawn("worker gRPC server", async move {
-        serve_grpc(
+        let served = serve_grpc(
             grpc_listener,
             worker_service(worker_api),
             grpc_config,
             stopped(grpc_stop),
         )
         .await
-        .map_err(|error| RunError::Io(std::io::Error::other(error.to_string())))
+        .map_err(|error| RunError::Io(std::io::Error::other(error.to_string())));
+        // The withdrawals of the leases the last streams never handed over run to their end before the pool closes
+        // (decision D006-016); a crash does not wait (gap G006-002).
+        if !withdrawals.drain(SHUTDOWN_GRACE).await {
+            tracing::warn!(
+                "the withdrawal of undelivered leases did not finish within the grace; they lapse"
+            );
+        }
+        served
     });
 
     let outcome = supervision::supervise(

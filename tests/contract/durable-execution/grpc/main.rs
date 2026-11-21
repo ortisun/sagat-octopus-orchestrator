@@ -6,6 +6,7 @@
 #[path = "../../../support/mod.rs"]
 mod support;
 
+mod lease_withdrawal;
 mod limits;
 mod protocol;
 mod run_result;
