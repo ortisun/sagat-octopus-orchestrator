@@ -882,14 +882,15 @@ async fn the_rate_live_keys_count_misses_only_the_keys_other_transactions_have_n
         "every committed row is counted"
     );
     assert_eq!(window_rows(&w).await, 3, "no row for the refused key");
-    for run in [first, second, third] {
-        w.assert_consistent(run).await;
-    }
+    // the stand-in key has no grant and no waiter: it goes before the consistency check, which refuses an empty window
     sqlx::query("DELETE FROM rate_limit_windows WHERE key_digest = $1")
         .bind(vec![0x42_u8; 32])
         .execute(&w.db.pool)
         .await
         .expect("the stand-in key goes");
+    for run in [first, second, third] {
+        w.assert_consistent(run).await;
+    }
 }
 
 /// Correctness Major 1 of the re-review (decision D022-066 item 2): a rest that waits for the window a grant in flight
