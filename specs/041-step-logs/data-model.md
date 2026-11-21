@@ -352,8 +352,11 @@ the end of the waiting transaction.
   rows of `tenant_step_log_bytes` (D041-113): it takes the step-log fence of the row's tenant exclusively itself (at once
   when the editor holds it, so no lease can be held), then the tenant's leases `FOR UPDATE NOWAIT`, then the usage row,
   and gives every lease's room back (S += Σ `used`, G = 0, leases zeroed), whoever wrote the row. Not executable by anyone.
-- `sagat_quota_step_log_usage(tenant)` (`EXECUTE` to `sagat_app`): S + Σ `used` in one snapshot, without a lock; the quota
-  view of `tenant_step_log_bytes` (`crates/infra-postgres/src/quotas.rs`) and `sagat_quota_step_log_allowance` read it.
+- `sagat_quota_step_log_usage(tenant)` (`EXECUTE` to `sagat_app`, `STABLE`): S + Σ `used` in one snapshot, without a lock;
+  the quota view of `tenant_step_log_bytes` and `sagat_quota_step_log_allowance` read it. The quota view calls it inside
+  the one `SELECT` that also reads the membership role and the grants (`crates/infra-postgres/src/reveal_grants.rs`), so
+  that the grant and the usage share the statement's snapshot (D041-141); `STABLE`, since a `VOLATILE` function's queries
+  take snapshots of their own.
   `step_log_leased_bytes` is never shown.
 - The finalizer's step-log branch (in `sagat_quota_flush_deltas`, ADR-0027's Amendment item 3), now reached only by a
   release (a negative `step_log_delta` from the per-row `AFTER DELETE` trigger): after the fences, under the usage row,

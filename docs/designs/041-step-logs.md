@@ -3588,16 +3588,20 @@ None.
   D041-140 item 5; fail-closed as OD-2026-11-20-19 is). `QuotaStore::reveals_in_every_namespace` and the separate usage
   read of `tenant_step_log_bytes` are replaced by `QuotaStore::step_log_usage_if_revealed(tenant, subject)`, one
   `SELECT` of the membership role, the grant in every namespace and the usage; the application shows the usage only
-  when the role may use a grant and every namespace has its grant. Test
-  `quotas::a_view_that_reads_after_a_revoke_commits_never_shows_the_step_log_usage` in
-  `integration_security_multitenancy`: a revoke held open, the view's read held behind a lock on
-  `tenant_retained_usage` and seen waiting in `pg_stat_activity`, the revoke committed and the lock released; the view
-  withholds. Done when it is seen failing on the two-transaction read and passes, with the quota tests, as the owner
-  role and as the runtime role.
+  when the role may use a grant and every namespace has its grant; a view answers the grant with the usage of the same
+  snapshot, or no usage. `QuotaStore::usage` refuses `tenant_step_log_bytes`. For task T041-5: the usage subquery of that
+  `SELECT` (`crates/infra-postgres/src/reveal_grants.rs`, not `quotas.rs:1228-1235`) becomes a call of
+  `sagat_quota_step_log_usage(m.tenant_id)` in the same statement, the function `STABLE` (checked by the privilege
+  audit, and a hand mutation to `VOLATILE` fails the test below). Tests in `integration_security_multitenancy`:
+  `quotas::a_view_that_reads_after_a_revoke_commits_never_shows_the_step_log_usage` (a revoke transaction deletes the
+  grant, sets the usage to 7,777 bytes and holds `tenant_retained_usage`; the view a `clear` returns is seen waiting on
+  it in `pg_stat_activity`; the revoke commits; 7,777 is never shown with the grant, and the next view withholds) and
+  `quotas::the_store_refuses_the_step_log_usage_without_the_grant`. Done when they are seen failing (the first on the
+  two-transaction read) and pass, with the quota tests, as the owner role and as the runtime role.
   Refs: FR-041-013
   Owner-gate: OD-2026-11-20-19
   Files: modify `crates/application/src/quotas.rs`, `crates/infra-postgres/src/{quotas.rs,reveal_grants.rs}`,
-  `tests/integration/security-multitenancy/quotas.rs`, `specs/041-step-logs/{research.md,contracts.md}`,
+  `tests/integration/security-multitenancy/quotas.rs`, `specs/041-step-logs/{research.md,contracts.md,data-model.md}`,
   `docs/runbooks/step-logs.md`.
 
 ### Verification Plan
