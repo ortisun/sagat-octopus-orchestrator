@@ -918,7 +918,10 @@ async fn the_requirement_is_removed_only_under_read_committed() {
             "REPEATABLE READ",
             "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ",
         ),
-        ("SERIALIZABLE", "SET TRANSACTION ISOLATION LEVEL SERIALIZABLE"),
+        (
+            "SERIALIZABLE",
+            "SET TRANSACTION ISOLATION LEVEL SERIALIZABLE",
+        ),
     ] {
         let mut tx = db.pool.begin().await.expect("a transaction");
         sqlx::query(statement)
@@ -978,7 +981,8 @@ async fn the_removal_waits_for_a_lock_at_most_one_second_and_probes_an_index() {
     .await
     .expect("plan");
     assert!(
-        plan.iter().any(|line| line.contains("run_events_lease_withdrawn_idx")),
+        plan.iter()
+            .any(|line| line.contains("run_events_lease_withdrawn_idx")),
         "{plan:#?}"
     );
     planner.rollback().await.expect("rolled back");

@@ -14,6 +14,8 @@ Final compatibility, fault, canary, performance and workspace gates remain in th
   writes wait for it); on a large journal build it `CONCURRENTLY` first (the recipe is in the runbook, "Before upgrading").
 - The six SDKs hand a lease they will not run back with `TASK_NOT_STARTED` only on a session of worker protocol 1.8 or
   later; below it, as before, the lease lapses. A handler that raises `TASK_NOT_STARTED` is reported as `WORKER_ERROR`.
+- A release that carries this without its follow-up (the requests of ADR-0099, decision D006-090) cannot be the build a
+  protocol 1.8 build rolls back to (gap G006-032).
 
 ## Breaking: every run input is checked against its version's schema (design 043)
 

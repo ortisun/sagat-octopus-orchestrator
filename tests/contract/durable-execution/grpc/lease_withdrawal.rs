@@ -447,7 +447,11 @@ async fn a_hand_back_on_a_fleet_that_does_not_withdraw_leaves_the_lease_to_lapse
             .fail_with(&lease, "TASK_NOT_STARTED", true)
             .await
             .expect_err("nothing is recorded");
-        assert_eq!(machine_code(&refused), "STALE_ATTEMPT", "{case}: {refused:?}");
+        assert_eq!(
+            machine_code(&refused),
+            "STALE_ATTEMPT",
+            "{case}: {refused:?}"
+        );
         assert_eq!(step(&p, &run).await, ("LEASED".to_owned(), 1, 1), "{case}");
         let journal = journal(&p, &run).await;
         assert!(named(&journal, "step.failed").is_empty(), "{case}");

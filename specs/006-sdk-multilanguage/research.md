@@ -528,8 +528,8 @@ design of delivery acknowledgement, so this list starts at 030.
   (architecture Major 1). ADR-0029 decision 5 says never to release a committed lease because a write, stream or client
   was cancelled, because a closed stream never proves that a handler did not start. That reason still holds for a frame
   handed to the transport. It does not hold for a frame `poll_next` never returned: no host can have it, and the server
-  knows. ADR-0098 says so plainly and stays Proposed. Its acceptance goes to the owner, through the coordinator, because it
-  overturns part of an accepted decision about the guarantees of the worker protocol.
+  knows. ADR-0098 says so plainly. Its acceptance went to the owner, through the coordinator, because it
+  overturns part of an accepted decision about the guarantees of the worker protocol. Accepted on 2026-11-21 (OD-2026-11-21-4), after the round-3 reviews closed with no Blocker and no Major.
 
 - **G006-030 — No session honours `TASK_NOT_STARTED` before protocol 1.8 negotiates.** A host of 1.6 or 1.7 that hands a
   lease back gets an ordinary failure: the attempt is spent and retried with its backoff. That is a known outcome, never a
@@ -660,8 +660,8 @@ OD-2026-11-21-4 ("Accept, if the final review is clean"), applied when the round
   of it negotiates 1.8. The status of each request:
   - (3) the holder's minor judged at the build's own ceiling: done (`hand_back_ceiling`, tested by
     `a_stored_minor_above_the_build_ceiling_is_judged_at_the_ceiling`).
-  - (4) "Refined by ADR-0099" pointers on ADR-0098's decisions 5 and 8: at the acceptance of ADR-0099, when its pull
-    request (#264) merges, because the ADR it points to is not on this branch.
+  - (4) "Refined by ADR-0099" pointers on ADR-0098's decisions 5 and 8: when pull request #264 (ADR-0099, accepted on its
+    branch by OD-2026-11-21-5) merges, because the ADR it points to is not on this branch.
   - (1), (2) the cause `NOT_ACKNOWLEDGED` in the closed set and its codec, (5), (6), (7) the refusal of capability calls
     by an engine whose registry is silent, (8) and (9): moved to the follow-up of pull request #260 that D006-059 itself
     names, which must merge before any build negotiates 1.8. They are ADR-0099's design (its decisions and their tests);
@@ -695,4 +695,8 @@ OD-2026-11-21-4 ("Accept, if the final review is clean"), applied when the round
   - No alert on `worker_leases_undelivered_total{outcome="capped"|"error"}`; the withdrawal semaphore is per engine, not
     per tenant; every withdrawal takes `FOR SHARE` on one requirement row.
   - `release_upgrade_inflight.rs`'s "no withdrawal before the activation" cannot fail on a 0.2 journal; a lease handed back
-    after its expiry has no test of its own (the fence that refuses it is tested through the reaper).
+    after its expiry has no test of its own (the fence that refuses it is tested through the reaper), and a 1.8 hand-back
+    retried past the lease's expiry but before the reaper is an ordinary failure, not a lapse: unreachable before 1.8, to be
+    settled with ADR-0099's expiry rule (its request (1) of D006-059).
+  - The scoped half of D006-089 (`scoped_reports.rs`) is covered by the verdict's unit test and by reading, not by a test
+    of a scoped hand-back on a fleet that does not withdraw.

@@ -350,7 +350,7 @@ and leaves their leases to lapse. A wait derived from the server
 (`retry_after_ms`, `Retry-After`) is capped at 60 s, whatever it says.
 
 **A lease the host will not run is handed back, from protocol 1.8.** A host whose session negotiated protocol 1.8 or later
-(the minor of delivery acknowledgement, reserved by OD-2026-11-21-6, which reserves the code) and that drops a lease it received reports `FailStep` for it with the
+(the minor of delivery acknowledgement, reserved by OD-2026-11-21-6, recorded on pull request #264, which reserves the code) and that drops a lease it received reports `FailStep` for it with the
 code `TASK_NOT_STARTED`, retryable, with the lease's fence, before any handler of that task runs, and never for a task whose
 handler started. **Below 1.8 the host does not hand back** (decision D006-080 of
 `specs/006-sdk-multilanguage/research.md`): it drops the same leases, logs each one (the warning below, with `lapses`
@@ -729,7 +729,7 @@ where the language can express one. The shared scenario is `collection-operators
   | 1.5 | Scoped execution identity | `ExecutionInstanceIdentity` |
   | 1.6 | Managed database capabilities (`ResolveDatabase`) | feature 017, D600 |
   | 1.7 | Step logs (`AppendStepLogs`, `StepLogPolicy`) | feature 041, OD-2026-11-15-8; served from its task T041-7 |
-  | 1.8 | Reserved: delivery acknowledgement, which reserves `TASK_NOT_STARTED` for the host (§6.2); offered only after its throughput gate | ADR-0099, OD-2026-11-21-6 (pull request #264) |
+  | 1.8 | Reserved: delivery acknowledgement, which reserves `TASK_NOT_STARTED` for the host (§6.2); offered only after its throughput gate | ADR-0099, OD-2026-11-21-6 (both recorded on pull request #264) |
   | next | Drafts 020, 021, 025 and 026 each name a minor; each takes the next free one when its contract merges | |
 
 ## 10. Observability and safety

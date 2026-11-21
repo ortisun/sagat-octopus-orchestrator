@@ -836,10 +836,7 @@ async fn a_scoped_lease_is_withdrawn_in_its_path_for_either_cause() {
                     .heartbeat(&world.worker, &task_ref(&first))
                     .await
                     .expect_err("the handed-back token is dead");
-                assert!(
-                    matches!(stale, AppError::StaleAttempt),
-                    "{stale:?}"
-                );
+                assert!(matches!(stale, AppError::StaleAttempt), "{stale:?}");
             }
         }
         let withdrawn: Vec<(Option<String>, Option<i32>)> = sqlx::query_as(

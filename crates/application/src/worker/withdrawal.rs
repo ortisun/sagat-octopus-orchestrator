@@ -576,7 +576,10 @@ mod tests {
         use HandBackVerdict::{Fail, Lapse, Withdraw};
         assert_eq!(hand_back_verdict(None, true, Some(8), true, 0), Withdraw(0));
         for gate in [WithdrawalOutcome::Lapsed, WithdrawalOutcome::Disabled] {
-            assert_eq!(hand_back_verdict(Some(gate), true, Some(8), true, 0), Lapse(gate));
+            assert_eq!(
+                hand_back_verdict(Some(gate), true, Some(8), true, 0),
+                Lapse(gate)
+            );
         }
         assert_eq!(
             hand_back_verdict(None, true, Some(8), false, 0),

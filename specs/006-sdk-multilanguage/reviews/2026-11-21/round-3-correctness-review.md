@@ -129,3 +129,28 @@ Then the six SDK checks listed in `sdks/AGENTS.md`, and `npm test` in `frontend/
 **Counts: 0 Blockers, 1 Major, 8 Minors.**
 
 Files: `crates/application/src/worker/withdrawal.rs`, `crates/application/src/worker.rs`, `crates/application/src/worker/scoped_reports.rs`, `crates/api-grpc/src/undelivered.rs`, `crates/infra-postgres/migrations/20270208000200_lease_withdrawal_floor.up.sql`, `crates/infra-postgres/migrations/20270208000200_lease_withdrawal_floor.down.sql`, `tests/contract/durable-execution/grpc/lease_withdrawal.rs`, `tests/integration/platform-foundation/migrations.rs`, `docs/adr/ADR-0098-a-lease-the-server-never-handed-to-the-transport-is-withdrawn-behind-a-fleet-requirement.md`, `docs/runbooks/lease-withdrawal.md`, `specs/006-sdk-multilanguage/research.md`, `sdks/rust/src/worker.rs`
+
+## Re-read of the fix of Major 1 (commit 8e9a582a)
+
+**Verdict: commit 8e9a582a closes Major 1, and the fix adds no new Blocker or Major.** I read the fix only and ran nothing.
+
+What the fix does, confirmed by reading:
+- `hand_back_verdict` (`crates/application/src/worker/withdrawal.rs:200-216`) returns `Lapse` only in one case: the gate or the requirement refused, the step is still `LEASED` to this lease, and the holder's minor is at least 8. The cap, a step that moved on and any minor below 1.8 still get the ordinary failure.
+- Both callers return `Err(AppError::StaleAttempt)` before anything is written: `worker.rs:2513-2517` and `scoped_reports.rs:404-407`. Dropping the transaction rolls back the requirement read and the secret scan, and stores no idempotency record.
+- The step stays `LEASED` with its token live, so it lapses as on `develop`. Each SDK already ends a hand-back quietly on `STALE_ATTEMPT` (SPEC §6.2).
+- The contract test `a_hand_back_on_a_fleet_that_does_not_withdraw_leaves_the_lease_to_lapse` covers the three fleet cases: no gate, a requirement that is not kept, and the switch off. It asserts the step is `LEASED` and the run `RUNNING`, with no `step.failed`. On the old code the `expect_err` would fail, so the test can fail.
+- The unit test pins each edge of the verdict.
+- ADR-0098 decision 5, SPEC §6.2, `stream-completion.md` rule 5 and the runbook's counter rows now say the same thing.
+
+Two new Minors:
+
+1. **The scoped half of the change has no behavioural test.** At `crates/application/src/worker/scoped_reports.rs:404-407`, replacing the `Lapse` body with the `Fail` body keeps every test green. The contract test covers the root lease only, and the unit test covers only the verdict. The smallest fix is a scoped variant in `tests/integration/workflow-primitives/bounded_worker.rs`: with no requirement recorded, a 1.8 hand-back gets `StaleAttempt` and the instance stays `LEASED`. Confirmed by reading.
+
+2. **A hand-back of an expired but not yet reaped lease still spends the attempt.**
+   - **Where:** `withdrawal.rs:210` requires `leased`, and `leased` includes `lease_unexpired_instance`.
+   - **Scenario:** a 1.8 host's hand-back is retried until after the lease's time-to-live. It gets `Fail(FenceMissed)`, so a step with one attempt fails for good. On `develop` the reaper would send that lease to a review.
+   - **Status:** this predates the fix (round-2 Minor 4, still untested), but D006-089 leaves it out of the lapse.
+   - **Fix:** treat a step still `LEASED` to this token, past its expiry, as `Lapse`; or record it as a decision.
+   - **Confidence:** plausible, because it needs the retry to outlast the time-to-live.
+
+**Counts: 0 Blockers, 0 Majors, 2 Minors.** The eight Minors from my round-3 report are not re-checked here.

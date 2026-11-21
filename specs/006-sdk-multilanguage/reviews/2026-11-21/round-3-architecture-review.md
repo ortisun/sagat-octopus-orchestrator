@@ -180,3 +180,33 @@ I worked read-only with file tools and no shell. I ran no tests, no `git branch 
 **Counts: Blockers 0, Majors 1, Minors 12.**
 
 Files: `docs/adr/ADR-0098-a-lease-the-server-never-handed-to-the-transport-is-withdrawn-behind-a-fleet-requirement.md`, `specs/006-sdk-multilanguage/research.md`, `specs/006-sdk-multilanguage/stream-completion.md`, `sdks/SPEC.md`, `docs/runbooks/lease-withdrawal.md`, `docs/runbooks/instance-registry.md`, `crates/infra-postgres/tests/capability_lists.rs`, `scripts/check-architecture.py`, `crates/infra-postgres/migrations/20270208000200_lease_withdrawal_floor.up.sql`, `crates/infra-postgres/migrations/20270208000000_lease_withdrawal.down.sql`, `apps/control-plane/src/capability_activation.rs`, `tests/integration/platform-foundation/migrations.rs`, `tests/contract/durable-execution/grpc/lease_withdrawal.rs`, `sdks/rust/src/worker.rs`, `../sagat-wt-delivery-ack/specs/006-sdk-multilanguage/research.md`, `../sagat-wt-delivery-ack/docs/owner-decisions.md`, `../sagat-wt-022/apps/control-plane/src/flow_control.rs`.
+
+## Re-read of the fix of Major 1 (commit 8e9a582a)
+
+**Major 1 is closed, and the fix adds no new Blocker or Major.** I read only the parts of commit `8e9a582a` that answer it (the research hunks, the ADR-0098 hunks, the section 9 row of `sdks/SPEC.md` and the release-notes entry) and ran nothing.
+
+**Why it is closed:**
+- D006-090 (`specs/006-sdk-multilanguage/research.md:658-671`) gives every D006-059 request a status:
+  - (3) is done, with its test.
+  - (4) waits for ADR-0099 to reach this branch.
+  - (1), (2) and (5) to (9) move to the follow-up of #260 that D006-059 names, with a reason: they belong to ADR-0099's design (AGENTS rule 2), and no session of this build reaches 1.8.
+  - It states the release consequence.
+- G006-032 (`research.md:684-686`) records that consequence as a gap that stays open until the follow-up merges, which must happen before any build negotiates 1.8.
+- ADR-0098's Rollback paragraph (line 104) points to ADR-0099 and to D006-090.
+- The decision ranges now agree: D006-080 to D006-091 in "Decided by", in Evidence and in the research heading.
+
+**New findings (all Minor):**
+1. **Wording.** `research.md:663` says the pointers come "at the acceptance of ADR-0099". ADR-0099 is already accepted on its own branch (OD-2026-11-21-5). The trigger is the merge of #264, which ADR-0098 line 104 already says correctly. Fix: change `research.md:663` to "when pull request #264 merges".
+2. **An owner decision cited but not on this branch.** The new 1.8 row of the register (`sdks/SPEC.md:732`), and §6.2 at line 353, cite OD-2026-11-21-6. That decision is still missing from this branch's `docs/owner-decisions.md` (0 matches). If #260 merges before #264, `develop` cites a decision it does not have. Fix: copy the OD-2026-11-21-6 row, or say "recorded on pull request #264" beside the citation.
+3. **Release notes.** The new entry in `docs/releases/unreleased.md` (lines 426-437) does not carry G006-032's consequence. The person cutting a release is the one who has to know that this build, without the follow-up, cannot be the floor a 1.8 build rolls back to. Fix: one bullet saying so, pointing to G006-032.
+
+**Not reviewed:** D006-089, a behaviour change in the same commit (decision 5: a 1.8 hand-back on a fleet that does not withdraw records nothing and answers `STALE_ATTEMPT`). It answers the correctness review, so it is outside what I was asked to re-read.
+
+**Counts:** Blockers 0, Majors 0, Minors 3 (new). For ADR-0098, the condition of OD-2026-11-21-4 (no Blocker and no Major) now holds for the architecture review. I have not seen how the correctness and security reviews of round 3 ended.
+
+Files:
+- `specs/006-sdk-multilanguage/research.md`
+- `docs/adr/ADR-0098-a-lease-the-server-never-handed-to-the-transport-is-withdrawn-behind-a-fleet-requirement.md`
+- `sdks/SPEC.md`
+- `docs/owner-decisions.md`
+- `docs/releases/unreleased.md`

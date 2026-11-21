@@ -431,14 +431,26 @@ mod tests {
             ..*LEASE
         };
         assert!(!refused_under_lock(&each, &census(2, 0, &both), 2));
-        assert!(refused_under_lock(&each, &census(3, 0, &both), 2), "the count moved");
-        assert!(refused_under_lock(&each, &census(2, 1, &both), 2), "a process lacks it");
+        assert!(
+            refused_under_lock(&each, &census(3, 0, &both), 2),
+            "the count moved"
+        );
+        assert!(
+            refused_under_lock(&each, &census(2, 1, &both), 2),
+            "a process lacks it"
+        );
         assert!(
             refused_under_lock(&each, &census(2, 0, &[InstanceKind::ExecutionEngine]), 2),
             "a kind has none live"
         );
-        assert!(refused_under_lock(&each, &census(0, 0, &[]), 0), "an empty fleet");
-        assert!(!refused_under_lock(LEASE, &census(0, 0, &[]), 0), "the lease entry may be empty");
+        assert!(
+            refused_under_lock(&each, &census(0, 0, &[]), 0),
+            "an empty fleet"
+        );
+        assert!(
+            !refused_under_lock(LEASE, &census(0, 0, &[]), 0),
+            "the lease entry may be empty"
+        );
         assert!(!refused_under_lock(
             LEASE,
             &census(1, 0, &[InstanceKind::ExecutionEngine]),

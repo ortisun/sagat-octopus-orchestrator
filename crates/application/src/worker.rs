@@ -31,8 +31,8 @@ pub use output::BlobOutput;
 use poll_order::{PollsInFlight, start_past};
 use secrets::SecretReport;
 pub use withdrawal::{
-    HAND_BACK_PROTOCOL_MINOR, HandBackVerdict, TASK_NOT_STARTED, UndeliveredLease, WithdrawalOutcome,
-    count as count_undelivered, hand_back, hand_back_verdict,
+    HAND_BACK_PROTOCOL_MINOR, HandBackVerdict, TASK_NOT_STARTED, UndeliveredLease,
+    WithdrawalOutcome, count as count_undelivered, hand_back, hand_back_verdict,
 };
 
 use std::future::Future;
