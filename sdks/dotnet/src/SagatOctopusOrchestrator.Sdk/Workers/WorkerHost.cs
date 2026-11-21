@@ -27,6 +27,9 @@ public sealed partial class WorkerHost : IWorkerHost
 
     // Why a lease the host received is handed back (SPEC section 6.2): it arrived after the stop began, it is beyond the credit or the
     // free slots, it is in the rest of a frame that broke the receive contract, or the host could not start it.
+    // The step failure code of a lease the host received and hands back without starting it; it is never raised to a caller.
+    private const string TaskNotStarted = "TASK_NOT_STARTED";
+
     private const string HandBackStopping = "stopping";
     private const string HandBackCredit = "credit";
     private const string HandBackMalformed = "malformed";
@@ -818,7 +821,7 @@ public sealed partial class WorkerHost : IWorkerHost
                     }
                     else
                     {
-                        await FailAsync(item.Session, item.Lease, item.ProtocolMinor, "TASK_NOT_STARTED", "the host did not start this task", retryable: true, started: null, span: null).ConfigureAwait(false);
+                        await FailAsync(item.Session, item.Lease, item.ProtocolMinor, TaskNotStarted, "the host did not start this task", retryable: true, started: null, span: null, handBack: true).ConfigureAwait(false);
                     }
                 }
                 finally
@@ -1425,10 +1428,14 @@ public sealed partial class WorkerHost : IWorkerHost
     }
 
     /// <summary>Reports a failure; <paramref name="started"/> is null for a lease that is handed back, which is not an attempt and has no duration.</summary>
-    private async Task FailAsync(Session session, TaskLease lease, int protocolMinor, string code, string message, bool retryable, long? started, Activity? span)
+    /// <remarks>
+    /// <see cref="TaskNotStarted"/> is reserved for the host (SPEC section 6.2): only a hand-back (<paramref name="handBack"/>) sends it, and
+    /// any other failure that carries it, a handler's above all, is reported as <c>WORKER_ERROR</c> with its own message and retryable flag.
+    /// </remarks>
+    private async Task FailAsync(Session session, TaskLease lease, int protocolMinor, string code, string message, bool retryable, long? started, Activity? span, bool handBack = false)
     {
         var channel = session.Rpc;
-        var safeCode = CodePattern().IsMatch(code) ? code : "WORKER_ERROR";
+        var safeCode = handBack ? TaskNotStarted : CodePattern().IsMatch(code) && code != TaskNotStarted ? code : "WORKER_ERROR";
         try
         {
             var request = new FailStepRequest

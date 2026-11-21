@@ -374,6 +374,11 @@ func failureOf(ctx context.Context, err error) (code, message string, retryable 
 	var failure *ActivityFailure
 	switch {
 	case errors.As(err, &failure):
+		// TASK_NOT_STARTED is the host's word that no handler ran (sdks/SPEC.md section 6.2): a handler that
+		// uses it reports an ordinary failure, with its own message and retryable.
+		if failure.Code == "TASK_NOT_STARTED" {
+			return "WORKER_ERROR", failure.Message, failure.Retryable
+		}
 		return failure.Code, failure.Message, failure.Retryable
 	case errors.Is(err, ErrInputInvalid):
 		return "INPUT_INVALID", "the input does not have the type of the handler", false

@@ -915,7 +915,10 @@ class WorkerHost:
             return
         if error is not None:
             if isinstance(error, ActivityFailure):
-                await self._fail(task, error.code, error.message, error.is_retryable, started)
+                # TASK_NOT_STARTED is the host's word that no handler ran (SPEC section 6.2): a handler that uses it
+                # reports an ordinary failure, with its own message and retryable.
+                code = "WORKER_ERROR" if error.code == "TASK_NOT_STARTED" else error.code
+                await self._fail(task, code, error.message, error.is_retryable, started)
             else:
                 # Only the type name: the text of an ordinary error may hold the data it was handed.
                 await self._fail(task, "ACTIVITY_ERROR", type(error).__name__, True, started)

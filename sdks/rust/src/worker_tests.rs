@@ -2214,3 +2214,122 @@ async fn a_hand_back_queued_while_the_worker_leaves_is_handed_back_once() {
     assert_eq!(served.handed_back(), ["run-2/charge/1", "run-4/charge/1"]);
     assert_eq!(served.failures().len(), 2);
 }
+
+/// A handler fails with the code reserved for the host, and the next lease is beyond the credit:
+/// the handler's failure is reported as WORKER_ERROR with its own message and retryable flag, and
+/// the real hand-back still carries TASK_NOT_STARTED (`sdks/SPEC.md` section 6.2).
+async fn a_handler_failing_with_the_reserved_code(retryable: bool) {
+    let served = serve(vec![numbered(1), numbered(2)], 1).await;
+    served.control.overfill.store(true, Ordering::Release);
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let seen = events.clone();
+    let mut options = served.options.clone();
+    options.transport = WorkerTransport::Poll;
+    options.telemetry.on_event = Some(Arc::new(move |event: SdkEvent| {
+        seen.lock().expect("events").push((event.kind, event.code));
+    }));
+    let mut host = WorkerHost::new(options).expect("host");
+    host.activity("charge", move |_: ActivityContext, _: Value| async move {
+        Err::<i32, _>(if retryable {
+            ActivityFailure::retryable("TASK_NOT_STARTED", "custom")
+        } else {
+            ActivityFailure::permanent("TASK_NOT_STARTED", "custom")
+        })
+    })
+    .expect("handler");
+    host.start().await.expect("start");
+    until("the handler's failure and the hand-back", || {
+        served.failures().len() == 2
+    })
+    .await;
+    host.stop(Duration::from_secs(5)).await.expect("stop");
+    let handler = served
+        .failures()
+        .into_iter()
+        .find(|r| r.task_id == "run-1/charge/1")
+        .expect("the handler's failure");
+    assert_eq!(
+        (
+            handler.error_code.as_str(),
+            handler.safe_message.as_str(),
+            handler.retryable
+        ),
+        ("WORKER_ERROR", "custom", retryable)
+    );
+    assert_eq!(served.handed_back(), ["run-2/charge/1"]);
+    let failed_with_the_code = events
+        .lock()
+        .expect("events")
+        .iter()
+        .filter(|(kind, code)| *kind == EventKind::Failed && *code == Some("TASK_NOT_STARTED"))
+        .count();
+    assert_eq!(
+        failed_with_the_code, 1,
+        "only the hand-back carries the code"
+    );
+}
+
+#[tokio::test]
+async fn a_retryable_handler_failure_cannot_send_task_not_started() {
+    a_handler_failing_with_the_reserved_code(true).await;
+}
+
+#[tokio::test]
+async fn a_permanent_handler_failure_cannot_send_task_not_started() {
+    a_handler_failing_with_the_reserved_code(false).await;
+}
+
+#[tokio::test]
+async fn a_compensation_or_a_reconciler_cannot_send_task_not_started() {
+    let kind = |n: u32, activity: &str, task_kind: &str| pb::TaskLease {
+        activity_name: activity.into(),
+        task_kind: task_kind.into(),
+        target_node: "charge".into(),
+        ..numbered(n)
+    };
+    let served = serve(
+        vec![
+            kind(1, "refund", "COMPENSATION"),
+            kind(2, "check", "RECONCILIATION"),
+        ],
+        2,
+    )
+    .await;
+    let mut options = served.options.clone();
+    options.transport = WorkerTransport::Poll;
+    let mut host = WorkerHost::new(options).expect("host");
+    host.compensation("refund", |_: ActivityContext, _: Value| async {
+        Err::<i32, _>(ActivityFailure::retryable("TASK_NOT_STARTED", "custom"))
+    })
+    .expect("compensation");
+    host.reconciler("check", |_: ActivityContext, _: Value| async {
+        Err(ActivityFailure::permanent("TASK_NOT_STARTED", "custom"))
+    })
+    .expect("reconciler");
+    host.start().await.expect("start");
+    until("both failures", || served.failures().len() == 2).await;
+    host.stop(Duration::from_secs(5)).await.expect("stop");
+    let mut reported: Vec<_> = served
+        .failures()
+        .into_iter()
+        .map(|r| (r.task_id, r.error_code, r.safe_message, r.retryable))
+        .collect();
+    reported.sort();
+    assert_eq!(
+        reported,
+        [
+            (
+                "run-1/charge/1".to_string(),
+                "WORKER_ERROR".to_string(),
+                "custom".to_string(),
+                true
+            ),
+            (
+                "run-2/charge/1".to_string(),
+                "WORKER_ERROR".to_string(),
+                "custom".to_string(),
+                false
+            ),
+        ]
+    );
+}

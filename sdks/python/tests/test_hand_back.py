@@ -10,7 +10,7 @@ from typing import Any
 import grpc
 import pytest
 
-from sagat_octopus_orchestrator import ActivityContext, WorkerEvent, WorkerHost
+from sagat_octopus_orchestrator import ActivityContext, ActivityFailure, WorkerEvent, WorkerHost
 from sagat_octopus_orchestrator._proto import worker_pb2 as pb
 
 from .fakes import FakeWorkerService, Scripted, lease, until
@@ -450,3 +450,40 @@ async def test_a_hand_back_queued_as_the_last_worker_leaves_is_made_once(
     await until(lambda: not host._hand_back_workers and not host._handing_back, "the worker to leave")
     assert reported == ["run-1/charge/1", "run-2/charge/1"]
     await host.stop(1)
+
+
+async def test_a_handler_cannot_say_task_not_started(fake: FakeWorkerService, make_host: MakeHost) -> None:
+    """Only the host may say that no handler ran: a handler's ``TASK_NOT_STARTED`` is an ordinary failure, with its
+    own message and ``retryable``, whatever the kind of the handler."""
+    fake.accepted_version = "1.2"
+    fake.leases = [
+        lease(task_id="run-a/forward/1", run_id="run-a", activity_name="forward", step_id="forward"),
+        lease(task_id="run-b/permanent/1", run_id="run-b", activity_name="permanent", step_id="permanent"),
+        lease(task_id="run-c/undo/1", run_id="run-c", activity_name="undo", step_id="undo", task_kind="COMPENSATION"),
+        lease(
+            task_id="run-d/check/1", run_id="run-d", activity_name="check", step_id="check", task_kind="RECONCILIATION"
+        ),
+    ]
+
+    def failing(retryable: bool) -> Callable[[Any, ActivityContext], Any]:
+        def handler(_input: Any, _ctx: ActivityContext) -> Any:
+            raise ActivityFailure("TASK_NOT_STARTED", "custom", retryable)
+
+        return handler
+
+    host = make_host(max_inflight=4)
+    host.register_activity("forward", failing(True), blocking=False)
+    host.register_activity("permanent", failing(False), blocking=False)
+    host.register_compensation("undo", failing(True), blocking=False)
+    host.register_reconciler("check", failing(True), blocking=False)
+    await host.start()
+    await until(lambda: len(fake.of("FailStep")) == 4, "the four failures")
+    await host.stop(5)
+    expected = {"forward": True, "permanent": False, "undo": True, "check": True}
+    for call in fake.of("FailStep"):
+        request = call.request
+        assert (request.error_code, request.safe_message, request.retryable) == (
+            "WORKER_ERROR",
+            "custom",
+            expected[request.step_id],
+        ), request.step_id

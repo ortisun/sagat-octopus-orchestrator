@@ -518,3 +518,37 @@ func TestAFrameAfterTheCreditIsUsedUpIsReadAndHandedBack(t *testing.T) {
 		t.Fatalf("handed back %v: the frame after the credit is read and handed back", got)
 	}
 }
+
+func TestAHandlerCannotSayTaskNotStarted(t *testing.T) {
+	f := newFakeService(t)
+	f.lease(
+		lease(forActivity("forward", "1"), func(l *pb.TaskLease) { l.RunId = "run-a" }),
+		lease(forActivity("permanent", "1"), func(l *pb.TaskLease) { l.RunId = "run-b" }),
+		lease(forActivity("undo", "1"), func(l *pb.TaskLease) { l.RunId = "run-c"; l.TaskKind = "COMPENSATION" }),
+		lease(forActivity("check", "1"), func(l *pb.TaskLease) { l.RunId = "run-d"; l.TaskKind = "RECONCILIATION" }),
+	)
+	h := newHost(t, f, worker.WithMaxInflight(4))
+	must(t, h.RegisterActivity("forward", func(context.Context, json.RawMessage) (any, error) {
+		return nil, worker.Retryable("TASK_NOT_STARTED", "custom")
+	}))
+	must(t, h.RegisterActivity("permanent", func(context.Context, json.RawMessage) (any, error) {
+		return nil, worker.Permanent("TASK_NOT_STARTED", "custom")
+	}))
+	must(t, h.RegisterCompensation("undo", func(context.Context, json.RawMessage) (any, error) {
+		return nil, worker.Retryable("TASK_NOT_STARTED", "custom")
+	}))
+	must(t, h.RegisterReconciler("check", func(context.Context, json.RawMessage) (worker.Verdict, error) {
+		return worker.Verdict{}, worker.Retryable("TASK_NOT_STARTED", "custom")
+	}))
+	start(t, h)
+	until(t, "the four failures", func() bool { return len(f.of("FailStep")) == 4 })
+	stop(t, h)
+	retryable := map[string]bool{"forward": true, "permanent": false, "undo": true, "check": true}
+	for _, c := range f.of("FailStep") {
+		r := c.request.(*pb.FailStepRequest)
+		// Only the host may say that no handler ran: a handler's TASK_NOT_STARTED is an ordinary failure.
+		if r.GetErrorCode() != "WORKER_ERROR" || r.GetSafeMessage() != "custom" || r.GetRetryable() != retryable[r.GetStepId()] {
+			t.Errorf("%s: %s %q retryable %v, want WORKER_ERROR with its own message and retryable", r.GetStepId(), r.GetErrorCode(), r.GetSafeMessage(), r.GetRetryable())
+		}
+	}
+}

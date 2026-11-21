@@ -1230,8 +1230,13 @@ async fn report(
             )
         }
         Err(error) => {
+            // TASK_NOT_STARTED is reserved for the host (`sdks/SPEC.md` section 6.2): only a
+            // hand-back, the one report without a handler (`ctx` is `None`), sends it; a handler's
+            // failure that carries it is a WORKER_ERROR, with its own message and retryable flag.
+            let reserved = error.code == TASK_NOT_STARTED && ctx.is_some();
             let code = if !error.code.is_empty()
                 && error.code.len() <= 64
+                && !reserved
                 && error
                     .code
                     .bytes()

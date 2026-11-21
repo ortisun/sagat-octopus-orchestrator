@@ -591,6 +591,62 @@ public sealed class HandBackTests : IAsyncLifetime
         Assert.Equal(2, State.Of("FailStep").Count);
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task AHandlerCannotSendTaskNotStartedAndARealHandBackStillDoes(bool retryable)
+    {
+        State.IgnoreMax = true;
+        State.Lease(Numbered(1), Numbered(2));
+        var host = Host(maxInflight: 1);
+        host.RegisterActivity<JsonNode?, int>("charge", (_, _, _) => throw new ActivityFailure("TASK_NOT_STARTED", "custom", retryable));
+
+        await host.StartAsync();
+        await Eventually.UntilAsync(() => State.Of("FailStep").Count == 2, "the handler's failure and the hand-back");
+        await host.StopAsync(TimeSpan.FromSeconds(5));
+
+        // The code is reserved for the host (SPEC section 6.2): the handler's failure is reported as WORKER_ERROR, with its own message
+        // and retryable flag; the lease the host did not start is still handed back with the code.
+        var failures = State.Of("FailStep").Select(call => (FailStepRequest)call.Request).ToDictionary(request => request.TaskId);
+        var handler = failures["run-1/charge/1"];
+        Assert.Equal("WORKER_ERROR", handler.ErrorCode);
+        Assert.Equal("custom", handler.SafeMessage);
+        Assert.Equal(retryable, handler.Retryable);
+        Assert.Equal(["run-2/charge/1"], HandedBack());
+        Assert.Equal(1, meters.Total("sagat.worker.tasks.failed", "WORKER_ERROR"));
+        Assert.Equal(1, meters.Total("sagat.worker.tasks.failed", "TASK_NOT_STARTED"));
+    }
+
+    [Fact]
+    public async Task ACompensationOrAReconcilerCannotSendTaskNotStarted()
+    {
+        State.Lease(
+            Numbered(1, lease =>
+            {
+                lease.ActivityName = "refund";
+                lease.TaskKind = "COMPENSATION";
+                lease.TargetNode = "charge";
+            }),
+            Numbered(2, lease =>
+            {
+                lease.ActivityName = "check";
+                lease.TaskKind = "RECONCILIATION";
+                lease.TargetNode = "charge";
+            }));
+        var host = Host(maxInflight: 2);
+        host.RegisterActivity<JsonNode?, int>("charge", (_, _, _) => Task.FromResult(1));
+        host.RegisterCompensation<JsonNode?>("refund", (_, _, _) => throw ActivityFailure.Retryable("TASK_NOT_STARTED", "custom"));
+        host.RegisterReconciler<JsonNode?>("check", (_, _, _) => throw ActivityFailure.Permanent("TASK_NOT_STARTED", "custom"));
+
+        await host.StartAsync();
+        await Eventually.UntilAsync(() => State.Of("FailStep").Count == 2, "both failures");
+        await host.StopAsync(TimeSpan.FromSeconds(5));
+
+        var failures = State.Of("FailStep").Select(call => (FailStepRequest)call.Request).ToDictionary(request => request.TaskId);
+        Assert.Equal(("WORKER_ERROR", "custom", true), (failures["run-1/charge/1"].ErrorCode, failures["run-1/charge/1"].SafeMessage, failures["run-1/charge/1"].Retryable));
+        Assert.Equal(("WORKER_ERROR", "custom", false), (failures["run-2/charge/1"].ErrorCode, failures["run-2/charge/1"].SafeMessage, failures["run-2/charge/1"].Retryable));
+    }
+
     /// <summary>
     /// Holds the <paramref name="nonemptyAnswer"/>-th answer of <paramref name="method"/> that carries leases (a poll answer or a stream frame),
     /// once it was received, until the call's token is cancelled, which the host does when its stop begins: the loop gets the answer only then.
