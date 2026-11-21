@@ -348,7 +348,7 @@ and `worker_sessions.acknowledgement_kept boolean NOT NULL DEFAULT true`, cleare
 ### The server's acknowledgement
 
 1. Check `worker:execute` once, before anything else (`PERMISSION_DENIED`, audited as today).
-2. Read, with one statement, no lock and the unique index of the step address, the rows of the call's addresses (tenant, run,
+2. Read, with one statement, no lock and the step primary key (`steps_pkey`: tenant, run, instance path, node), the rows of the call's addresses (tenant, run,
    node, instance path) whose `lease_token_hash` matches the request's token hash and whose status is `LEASED` or `RUNNING`.
    Read the caller's bound patterns and authorization once. A task with no matching row answers `NOT_HELD` and costs no lock;
    the run ids of the call that do not exist in the caller's tenant are checked with one statement for existence in another
