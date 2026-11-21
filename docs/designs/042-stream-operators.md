@@ -818,7 +818,7 @@ to 42). ADR-0086 is accepted; T042-44 re-reads this design against `develop` bef
 - [ ] T042-4 Have ADR-0087 accepted before S1 merges and ADR-0086 before S2 starts; amend the design if either changes.
   Note (2026-11-13): done, not ticked. Both ADRs were set to Accepted in commit 540154c8 on the owner's "Aceito tudo"
   (OD-2026-11-13-17, the row added on develop by the owner's session), and revised after the reviews of the same day
-  before any code (each ADR's Revision section). Rule R9 of `scripts/check-design-docs.py` refuses a tick in a doc that
+  before any code (each ADR's Revision section). Rule 9 of `scripts/check-design-docs.py` refuses a tick in a doc that
   is not Approved, so the tick and its evidence block wait for approval.
   Refs: FR-042-003, FR-042-017
 - [ ] T042-5 Add `OperatorChain` and `Operator` to the domain with the collection rules (the seven operators, parameter
