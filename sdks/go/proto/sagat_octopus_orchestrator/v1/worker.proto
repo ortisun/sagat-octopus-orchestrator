@@ -64,6 +64,15 @@ service WorkerService {
   //   this instance; NOT_FOUND no such blob; DATA_LOSS the stored content is not what was recorded.
   rpc WriteBlob(stream WriteBlobRequest) returns (WriteBlobResponse);
   rpc ReadBlob(ReadBlobRequest) returns (stream ReadBlobResponse);
+  // Added in 1.7 (feature 041). Stores the log records of one leased attempt. Answered only after the
+  // records are committed; a record is stored at most once (attempt, generation, sequence).
+  //   Verdicts, not errors, say what the worker does next (StepLogVerdict).
+  //   Errors: UNAUTHENTICATED; PERMISSION_DENIED (no worker:execute, or a runner or database-runner
+  //   token); INVALID_ARGUMENT a malformed
+  //   batch (more than 500 records, more than 192 KiB encoded, sequences not increasing, a sequence at or
+  //   above 2^62, an unknown level); RESOURCE_EXHAUSTED (x-sagat-error RATE_LIMITED, retry-after-ms) shed
+  //   by admission; UNAVAILABLE the database or the serving gate.
+  rpc AppendStepLogs(AppendStepLogsRequest) returns (AppendStepLogsResponse);
 }
 
 message WorkerCapabilities {
@@ -76,7 +85,13 @@ message WorkerCapabilities {
   string protocol_version = 5;
 }
 message RegisterWorkerRequest { string worker_name = 1; string namespace = 2; WorkerCapabilities capabilities = 3; }
-message RegisterWorkerResponse { string worker_id = 1; string session_token = 2; string accepted_protocol_version = 3; }
+message RegisterWorkerResponse {
+  string worker_id = 1;
+  string session_token = 2;
+  string accepted_protocol_version = 3;
+  // Added in 1.7 (feature 041). Sent only when the accepted minor is at least 7.
+  StepLogPolicy step_logs = 4;
+}
 message PollTasksRequest { string worker_id = 1; string session_token = 2; int32 max_tasks = 3; }
 // One ordered scope in a logical execution path. The path is structural: node names are never
 // flattened together with indices, so equal definition nodes in different iterations stay distinct.
@@ -319,4 +334,87 @@ message ResolvedDatabase {
   IcebergConnection iceberg = 13;
   ObjectStorageConnection object_storage = 14;
   ClickHouseConnection clickhouse = 15;
+}
+
+// Added in 1.7. The attempt is named and fenced exactly as HeartbeatRequest names and fences it, plus
+// the session that registered the worker.
+message AppendStepLogsRequest {
+  string worker_id = 1;                       // the session id RegisterWorkerResponse returned
+  string session_token = 2;                   // the session token currently held (after a re-registration, the new one)
+  string task_id = 3;                         // carried as HeartbeatRequest carries it; the step is found by
+                                              // run_id, step_id and instance
+  int64 generation = 4;
+  string lease_token = 5;
+  string run_id = 6;
+  string step_id = 7;
+  int32 attempt = 8;
+  ExecutionInstanceIdentity instance = 9;
+  repeated StepLogRecord records = 10;        // 0 to 500, sequences strictly increasing
+  bool final_batch = 11;                      // the attempt's last batch, sent before CompleteStep/FailStep
+  uint64 highest_sequence = 12;               // with final_batch: the highest sequence the logger assigned (at most
+                                              // 2^62-1, else INVALID_ARGUMENT); else 0
+}
+
+enum StepLogLevel {
+  STEP_LOG_LEVEL_UNSPECIFIED = 0;             // refused as INVALID_ARGUMENT
+  STEP_LOG_LEVEL_TRACE = 1;
+  STEP_LOG_LEVEL_DEBUG = 2;
+  STEP_LOG_LEVEL_INFO = 3;
+  STEP_LOG_LEVEL_WARN = 4;
+  STEP_LOG_LEVEL_ERROR = 5;
+}
+
+message StepLogRecord {
+  uint64 sequence = 1;                        // 1 .. 2^62-1, one per logger call that passed the level floor
+  int64 worker_time_epoch_ms = 2;
+  StepLogLevel level = 3;
+  string message = 4;                         // redacted and cut by the SDK; the server cuts again at 8 KiB
+  repeated StepLogField fields = 5;           // at most 32, keys unique after redaction
+  string exception = 6;                       // formatted exception text and stack, redacted; empty when none
+  bool truncated = 7;                         // the SDK cut the message, the exception or the fields
+}
+
+message StepLogField {
+  string key = 1;
+  oneof value {
+    string string_value = 2;
+    int64 int_value = 3;
+    double double_value = 4;                  // finite only; NaN and the infinities travel as string_value
+    bool bool_value = 5;
+  }
+}
+
+enum StepLogVerdict {
+  STEP_LOG_VERDICT_UNSPECIFIED = 0;
+  STEP_LOG_VERDICT_CONTINUE = 1;              // keep sending
+  STEP_LOG_VERDICT_FINAL_ONLY = 2;            // a ceiling was met: send no more records; still send the empty final batch
+  STEP_LOG_VERDICT_STOP_ATTEMPT = 3;          // send nothing more for this attempt (stop_reason says why)
+  STEP_LOG_VERDICT_STOP_CAPTURE = 4;          // send nothing more on this session (stop_reason says why)
+  STEP_LOG_VERDICT_RETRY_LATER = 5;           // nothing stored; send the same batch again after retry_after_ms
+}
+
+enum StepLogStopReason {
+  STEP_LOG_STOP_REASON_UNSPECIFIED = 0;
+  STEP_LOG_STOP_REASON_FINAL_RECORDED = 1;    // STOP_ATTEMPT: the final batch is already stored (a resend of it gets this)
+  STEP_LOG_STOP_REASON_LEASE = 2;             // STOP_ATTEMPT: the lease is not this attempt's or has expired, or a report of
+                                              // the attempt would be refused (run finished, step cancelled, run
+                                              // stopping and the node not a compensation)
+  STEP_LOG_STOP_REASON_AUTHORITY = 3;         // STOP_ATTEMPT: binding or membership no longer covers the step
+  STEP_LOG_STOP_REASON_REMOVED = 4;           // STOP_ATTEMPT: the attempt's log was deleted or purged
+  STEP_LOG_STOP_REASON_CAPTURE_OFF = 5;       // STOP_CAPTURE: the deployment switch or the namespace turned capture off
+  STEP_LOG_STOP_REASON_SESSION = 6;           // STOP_CAPTURE: the session is unknown, expired, of another subject,
+                                              // namespace or token, or below 1.7
+}
+
+message AppendStepLogsResponse {
+  StepLogVerdict verdict = 1;
+  StepLogStopReason stop_reason = 2;          // set with STOP_ATTEMPT and STOP_CAPTURE, else UNSPECIFIED
+  uint64 stored_through_sequence = 3;         // the stream's highest worker sequence now known to the server; only
+                                              // with CONTINUE, FINAL_ONLY and FINAL_RECORDED, else 0
+  int32 retry_after_ms = 4;                   // with RETRY_LATER: 50 to 5,000
+}
+
+// Added in 1.7. Sent only when the accepted minor is at least 7.
+message StepLogPolicy {
+  bool enabled = 1;                           // the deployment switch and the namespace's capture are both on
 }

@@ -29,6 +29,7 @@ const (
 	WorkerService_ResolveDatabase_FullMethodName = "/sagat_octopus_orchestrator.v1.WorkerService/ResolveDatabase"
 	WorkerService_WriteBlob_FullMethodName       = "/sagat_octopus_orchestrator.v1.WorkerService/WriteBlob"
 	WorkerService_ReadBlob_FullMethodName        = "/sagat_octopus_orchestrator.v1.WorkerService/ReadBlob"
+	WorkerService_AppendStepLogs_FullMethodName  = "/sagat_octopus_orchestrator.v1.WorkerService/AppendStepLogs"
 )
 
 // WorkerServiceClient is the client API for WorkerService service.
@@ -98,6 +99,16 @@ type WorkerServiceClient interface {
 	//	this instance; NOT_FOUND no such blob; DATA_LOSS the stored content is not what was recorded.
 	WriteBlob(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStreamingClient[WriteBlobRequest, WriteBlobResponse], error)
 	ReadBlob(ctx context.Context, in *ReadBlobRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[ReadBlobResponse], error)
+	// Added in 1.7 (feature 041). Stores the log records of one leased attempt. Answered only after the
+	// records are committed; a record is stored at most once (attempt, generation, sequence).
+	//
+	//	Verdicts, not errors, say what the worker does next (StepLogVerdict).
+	//	Errors: UNAUTHENTICATED; PERMISSION_DENIED (no worker:execute, or a runner or database-runner
+	//	token); INVALID_ARGUMENT a malformed
+	//	batch (more than 500 records, more than 192 KiB encoded, sequences not increasing, a sequence at or
+	//	above 2^62, an unknown level); RESOURCE_EXHAUSTED (x-sagat-error RATE_LIMITED, retry-after-ms) shed
+	//	by admission; UNAVAILABLE the database or the serving gate.
+	AppendStepLogs(ctx context.Context, in *AppendStepLogsRequest, opts ...grpc.CallOption) (*AppendStepLogsResponse, error)
 }
 
 type workerServiceClient struct {
@@ -229,6 +240,16 @@ func (c *workerServiceClient) ReadBlob(ctx context.Context, in *ReadBlobRequest,
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type WorkerService_ReadBlobClient = grpc.ServerStreamingClient[ReadBlobResponse]
 
+func (c *workerServiceClient) AppendStepLogs(ctx context.Context, in *AppendStepLogsRequest, opts ...grpc.CallOption) (*AppendStepLogsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(AppendStepLogsResponse)
+	err := c.cc.Invoke(ctx, WorkerService_AppendStepLogs_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // WorkerServiceServer is the server API for WorkerService service.
 // All implementations must embed UnimplementedWorkerServiceServer
 // for forward compatibility.
@@ -296,6 +317,16 @@ type WorkerServiceServer interface {
 	//	this instance; NOT_FOUND no such blob; DATA_LOSS the stored content is not what was recorded.
 	WriteBlob(grpc.ClientStreamingServer[WriteBlobRequest, WriteBlobResponse]) error
 	ReadBlob(*ReadBlobRequest, grpc.ServerStreamingServer[ReadBlobResponse]) error
+	// Added in 1.7 (feature 041). Stores the log records of one leased attempt. Answered only after the
+	// records are committed; a record is stored at most once (attempt, generation, sequence).
+	//
+	//	Verdicts, not errors, say what the worker does next (StepLogVerdict).
+	//	Errors: UNAUTHENTICATED; PERMISSION_DENIED (no worker:execute, or a runner or database-runner
+	//	token); INVALID_ARGUMENT a malformed
+	//	batch (more than 500 records, more than 192 KiB encoded, sequences not increasing, a sequence at or
+	//	above 2^62, an unknown level); RESOURCE_EXHAUSTED (x-sagat-error RATE_LIMITED, retry-after-ms) shed
+	//	by admission; UNAVAILABLE the database or the serving gate.
+	AppendStepLogs(context.Context, *AppendStepLogsRequest) (*AppendStepLogsResponse, error)
 	mustEmbedUnimplementedWorkerServiceServer()
 }
 
@@ -335,6 +366,9 @@ func (UnimplementedWorkerServiceServer) WriteBlob(grpc.ClientStreamingServer[Wri
 }
 func (UnimplementedWorkerServiceServer) ReadBlob(*ReadBlobRequest, grpc.ServerStreamingServer[ReadBlobResponse]) error {
 	return status.Error(codes.Unimplemented, "method ReadBlob not implemented")
+}
+func (UnimplementedWorkerServiceServer) AppendStepLogs(context.Context, *AppendStepLogsRequest) (*AppendStepLogsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method AppendStepLogs not implemented")
 }
 func (UnimplementedWorkerServiceServer) mustEmbedUnimplementedWorkerServiceServer() {}
 func (UnimplementedWorkerServiceServer) testEmbeddedByValue()                       {}
@@ -512,6 +546,24 @@ func _WorkerService_ReadBlob_Handler(srv interface{}, stream grpc.ServerStream) 
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type WorkerService_ReadBlobServer = grpc.ServerStreamingServer[ReadBlobResponse]
 
+func _WorkerService_AppendStepLogs_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(AppendStepLogsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WorkerServiceServer).AppendStepLogs(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: WorkerService_AppendStepLogs_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WorkerServiceServer).AppendStepLogs(ctx, req.(*AppendStepLogsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // WorkerService_ServiceDesc is the grpc.ServiceDesc for WorkerService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -546,6 +598,10 @@ var WorkerService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ResolveDatabase",
 			Handler:    _WorkerService_ResolveDatabase_Handler,
+		},
+		{
+			MethodName: "AppendStepLogs",
+			Handler:    _WorkerService_AppendStepLogs_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

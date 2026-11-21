@@ -48,6 +48,9 @@ mod pool;
 mod primitives;
 mod privilege;
 mod quotas;
+/// Design 041's spike T041-35 only (`perf-spike`): runs the step-log carry inside a report transaction.
+#[cfg(feature = "perf-spike")]
+pub mod report_hook;
 mod reveal_grants;
 mod schedules;
 mod scope_compensation;
