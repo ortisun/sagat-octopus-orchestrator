@@ -39,6 +39,7 @@ mod delay;
 mod disclosure;
 mod disclosure_rest;
 mod firing;
+mod future_sizes;
 mod gap_store;
 mod instances;
 mod instances_hostile;

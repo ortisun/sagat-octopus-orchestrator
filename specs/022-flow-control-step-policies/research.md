@@ -1216,6 +1216,20 @@ taken after `git grep D022-04` on every `origin/*` branch.
      kept in the place's waiters ahead although no black-box test can tell it from the status filter (a pause stores the
      run `PAUSED` and the flag together): the text stays the pass's, so the two cannot drift apart.
 
+- **D022-070 — The futures a gate adds to a run creator are boxed where they are created (2026-11-21; CI of #237 at
+  `a443a04c`, a stack overflow of a feature 018 test).** Delegate (OD-2026-11-20-6, coordinator's instruction). A batch
+  item's rerun overflowed the 2 MiB test thread of a debug build on x86-64: the gated start (`Engine::start`) and the
+  admission it follows made every future on a creator's path larger, and a debug build keeps each future a frame creates in
+  that frame. Measured with `size_of_val` and by bisecting `RUST_MIN_STACK` (plan, "Stack and future sizes of a run
+  creator"): `BatchExecutor::step` held an item's whole use case inline (23,952 bytes), `RunService::start` the run's
+  admission (11,136), `Engine::start` its gated part (6,256); the test needed 2,080 KiB. Boxed where each is created
+  (`Box::pin` at the call of the item's use case and of `RunStore::create`; the gated part of `Engine::start` built inside
+  a function that returns it boxed), the sizes are 2,040, 7,624 and 5,496 bytes and the test needs 1,418 KiB. Taken over a
+  larger `RUST_MIN_STACK` or test-thread stack, which would hide the growth while production threads have the same edge,
+  and over boxing every future (one allocation per command on the hot path for no measured need). The develop build was
+  not measured beside it: develop has no `Engine::start`, and the second full build did not fit the disk; the sizes before
+  the boxes are this branch's, measured just before the change. Pinned by `future_sizes::the_futures_of_a_run_creator_stay_below_their_bounds`.
+
 ## Gaps
 
 | ID | Gap | Status |

@@ -601,6 +601,24 @@ Ceilings compare the sum of the 16 slots read after the transaction's own rows, 
 | `limit` per `second` after it | declared | 100 |
 | Keys visited per grant pass | 256 | 256 |
 
+### Stack and future sizes of a run creator
+
+A debug build polls every future on the test thread's 2 MiB stack, and each frame holds the futures it creates. The
+futures a gate added to every creator's path grew that stack past its end in a batch item's rerun (CI of 2026-11-21,
+`batch_actions::the_effect_of_each_use_case_commits_with_the_record_of_its_item`; D022-070). Three futures are boxed
+where they are created, and `tests/integration/schedules-bulk-operations/future_sizes.rs` holds each below a bound; a
+bound changes here first, with its reason.
+
+| Future | Measured (bytes) | Bound (bytes) | Reason of the last change |
+|---|---|---|---|
+| `BatchExecutor::step` (an item's use case boxed) | 2,040 | 3,072 | 2026-11-21: was 23,952 with the use case inline |
+| `RunService::start` (the run's admission boxed, as its initial reduction already was) | 7,624 | 9,216 | 2026-11-21: was 11,136 |
+| `Engine::start` (the gated part boxed; the ungated start is what remains) | 5,496 | 6,144 | 2026-11-21: was 6,256 |
+
+The bounds are the measured sizes and about a fifth to a half more, and each lies below the size it had before its box,
+so a change that inlines the future again fails the test, not a CI process. The test that overflowed needs 1,418 KiB of
+stack after the boxes, against 2,080 KiB before (bisected with `RUST_MIN_STACK`, 32 KiB steps, on the arm64 debug build).
+
 ### Hot-path budget of a gated definition
 
 The lines of `tests/integration/claim-transition-efficiency/work_budget.rs` that a gate adds to (statements, transactions,

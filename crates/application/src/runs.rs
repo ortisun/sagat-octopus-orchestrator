@@ -1814,7 +1814,9 @@ where
                     .ok_or(AppError::Internal)
             })
             .transpose()?;
-        let created = match self.store.create(new).await {
+        // boxed, as the initial reduction below: the admission of a run is a large future that every creator would
+        // otherwise carry inline (`future_sizes` pins the bound)
+        let created = match Box::pin(self.store.create(new)).await {
             Ok(created) => created,
             Err(error) => {
                 self.audit_database_denial(principal, workflow.id(), &error, ctx)
