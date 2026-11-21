@@ -38,15 +38,25 @@ Scoped selection:
                 its lock and its image) when a file other than Markdown under runners/lake/ changed.
   nothing       Markdown, docs/, tasks/, .claude/, infra/ and the rest select no test.
 
+Shards. The selected suites do not run one after another in one CI step (with every suite selected, that step outgrew
+its 110 minutes: run 44793165198). They are spread over parallel jobs, each of which builds `sagat-tests` once and runs
+its own targets. The plan is greedy, longest suite first, into the least-loaded shard, by the measured duration of each
+suite on the CI runner (scripts/integration-suite-durations.toml; a suite missing from it counts as
+DEFAULT_SUITE_SECONDS). It starts with as many shards as the total needs at SHARD_BUDGET_SECONDS each and adds one while
+a shard overflows the budget, up to MAX_SHARDS. Which suites run is decided above and is not changed by the plan.
+
 It prints the decision and appends it to $GITHUB_OUTPUT:
 
   full=true|false   crates=<package names|ALL>   sdks=<languages>   frontend=true|false   scripts=true|false
   lake=true|false
   targets=<target names>   any=true|false   all=true|false
+  shards=<JSON list of {"index", "count", "targets", "seconds"}, empty when no suite is selected>
 
-Exit codes: 0 decision printed; 2 a manifest or a name cannot be trusted.
+Exit codes: 0 decision printed; 2 a manifest, a name or the duration table cannot be trusted.
 """
 import argparse
+import json
+import math
 import os
 import re
 import subprocess
@@ -96,6 +106,20 @@ CONTRACT_PATH = re.compile(r"specs/[^/]+/contracts/")
 STRING_LITERAL = re.compile(r'"((?:[^"\\\n]|\\.)*)"')
 LAKE_RUNTIME = re.compile(r"runners/lake/.*")
 MARKDOWN = re.compile(r".*\.md")
+# The measured duration of each suite on the CI runner, by which the shards are balanced.
+DURATIONS = "scripts/integration-suite-durations.toml"
+# The test time one shard is planned for. It is the longest suite (integration_workflow_primitives, up to 1,796
+# seconds): no plan can be shorter than that suite, and a shard more than the time needs costs one more build of
+# `sagat-tests` (17 to 29 minutes on the runner) for nothing. A shard is then the build, these 30 minutes and the preflight of its suites, well
+# inside the 110 minutes of its step.
+SHARD_BUDGET_SECONDS = 1800
+# At most this many shards (parallel jobs, each with its own build), whatever the table says.
+MAX_SHARDS = 6
+# A suite the table does not know yet counts as this long: more than all but the four longest suites measured.
+DEFAULT_SUITE_SECONDS = 600
+# What a suite with no measured time (a target whose tests are all #[ignore]) still costs: it is built and started. The
+# floor also spreads such suites over the shards instead of piling them into the least-loaded one.
+MIN_SUITE_SECONDS = 5
 
 
 class Untrusted(Exception):
@@ -289,6 +313,46 @@ class Readers:
         return found
 
 
+def load_durations(root):
+    """{suite: seconds} from the duration table of the head; empty when the head has no table (every suite then counts
+    as the default)."""
+    path = os.path.join(root, DURATIONS)
+    if not os.path.exists(path):
+        return {}
+    try:
+        seconds = read_toml(path)["seconds"]
+        if not isinstance(seconds, dict):
+            raise TypeError("[seconds] is not a table")
+        for name, value in seconds.items():
+            if not TARGET_NAME.fullmatch(name) or isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(f"{name} = {value!r}")
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        raise Untrusted(f"{DURATIONS} cannot be read as [seconds] <suite> = <whole seconds>: {error}")
+    return seconds
+
+
+def plan_shards(names, durations):
+    """The selected suites spread over shards: greedy, longest first, into the least-loaded shard (ties to the lower
+    index). Deterministic: the same names and table give the same plan in any order."""
+    weight = {name: max(durations.get(name, DEFAULT_SUITE_SECONDS), MIN_SUITE_SECONDS) for name in set(names)}
+    if not weight:
+        return []
+    order = sorted(weight, key=lambda name: (-weight[name], name))
+    count = min(MAX_SHARDS, max(1, math.ceil(sum(weight.values()) / SHARD_BUDGET_SECONDS)))
+    while True:
+        loads, members = [0] * count, [[] for _ in range(count)]
+        for name in order:
+            least = min(range(count), key=lambda i: (loads[i], i))
+            loads[least] += weight[name]
+            members[least].append(name)
+        # A shard over the budget that is not a single long suite: one shard more may bring it under.
+        if count >= MAX_SHARDS or all(load <= SHARD_BUDGET_SECONDS or len(m) == 1 for load, m in zip(loads, members)):
+            break
+        count += 1
+    return [{"index": i + 1, "count": count, "targets": " ".join(sorted(members[i])), "seconds": loads[i]}
+            for i in range(count)]
+
+
 class Decision:
     def __init__(self, targets):
         self.targets = targets
@@ -412,7 +476,7 @@ def full_run_reason(event, ref_name, ref_type, base_ref, base, root):
     return None
 
 
-def emit(decision):
+def emit(decision, durations):
     if decision.full:
         crates, sdks = "ALL", list(SDK_LANGUAGES)
         frontend = scripts = lake = True
@@ -420,6 +484,10 @@ def emit(decision):
         crates = "ALL" if decision.everything else " ".join(sorted(decision.crates))
         sdks, frontend, scripts = sorted(decision.sdks), decision.frontend, decision.scripts
         lake = decision.lake
+    shards = plan_shards(decision.chosen, durations)
+    unknown = sorted(name for name in decision.chosen if name not in durations)
+    if unknown:
+        print(f"::warning::{DURATIONS} has no duration for {' '.join(unknown)}; planned at {DEFAULT_SUITE_SECONDS} seconds each")
     grouped = {}
     for name, why in decision.reasons:
         grouped.setdefault(name, []).append(why)
@@ -440,7 +508,10 @@ def emit(decision):
         f"targets={' '.join(sorted(decision.chosen))}",
         f"any={flag(decision.chosen)}",
         f"all={flag(decision.everything)}",
+        f"shards={json.dumps(shards)}",
     ]
+    for shard in shards:
+        print(f"shard {shard['index']} of {shard['count']} (about {shard['seconds']} seconds): {shard['targets']}")
     for line in lines:
         print(line)
     path = os.environ.get("GITHUB_OUTPUT")
@@ -461,6 +532,7 @@ def main(argv):
     args = parser.parse_args(argv[1:])
     try:
         targets = head_targets(args.root)
+        durations = load_durations(args.root)
         workspace = Workspace(args.root)
     except (Untrusted, OSError, KeyError, ValueError, TypeError) as error:
         message = error if isinstance(error, Untrusted) else "the workspace cannot be read"
@@ -472,7 +544,7 @@ def main(argv):
         decision.run_everything(reason)
     else:
         decision = scope(args.root, args.base, args.head, targets, workspace)
-    emit(decision)
+    emit(decision, durations)
     return 0
 
 
