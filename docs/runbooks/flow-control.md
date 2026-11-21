@@ -192,11 +192,15 @@ the key would be new beyond `concurrency_live_keys` (`FLOW_CONTROL_LIMIT`). Each
 
 ## 6. Rate limits (T022-072, T022-074, T022-077)
 
-**Not in production before T022-080, T022-086 and T022-104, and gap G022-018** (ADR-0088's fault suite; T022-086: the reset
-of a rate-limited run, built and under review, until it is ticked; G022-015; G022-018: the deployment-wide purge scans every
-grant a call, in no order, and has no backlog gauge). The consistency check of the rate tables across runs (T022-079) and
+**Not in production before T022-080, T022-104 and T022-113, and gap G022-018** (ADR-0088's fault suite; G022-015;
+T022-113: the rate twins of the run creators split from T022-086, the reset of a rate-limited run, which is done
+(D022-069 item 7); G022-018: the deployment-wide purge scans every grant a call, in no order,
+and has no backlog gauge). Task T022-114 (gap G022-019, a `CANCEL_SOURCE` reset on a full key) is deliberately not a
+gate: the strategy is off by default and its failure is recorded (D022-069 item 8). The consistency check of the rate tables across runs (T022-079) and
 the lock-order barriers (T022-081) are done. Finish the rolling upgrade before resetting a rate-limited run: a replica built
-before T022-086 cannot read the `restored` copy of a `rate_limit.*` event. Finish the rolling upgrade before setting any `rate_limit_*` limit (an older
+before T022-086 cannot read the `restored` copy of a `rate_limit.*` event, and for the same reason never roll an engine
+back past T022-086 once a rate-limited run was reset (D022-069 item 6). A refused reset counts `refused_reset` in each
+family its start declares, not only in the gate that refused it. Finish the rolling upgrade before setting any `rate_limit_*` limit (an older
 replica's quota listing refuses a name it does not know, G1192); rolling back migration `20270206000000` refuses while one
 is set.
 

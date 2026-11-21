@@ -323,6 +323,16 @@ namespace's limit while they wait: **16 per namespace by default, at most 64** (
 off in every engine nothing expires an entry and the places stay pinned until one runs** (G2024). `GET /runs/{id}/resets`,
 `sagat workflow resets <run>` and the Studio list the entries with their state and reason.
 
+**The permit and the slot of a flow-control key** (feature 022; T022-064 on 2026-11-20, T022-086 on 2026-11-21). A reset of
+a version whose start takes a permit takes a fresh one right after `run.reset`, or is refused `409 CONFLICT`
+`CONCURRENCY_PERMIT_UNAVAILABLE` (a pending reset fails with that reason); it never queues. The source's `concurrency.*`
+events copied with the prefix are history (`restored`) and hold no row. A slot of a rate-limit key follows the same rules: a
+fresh slot right after `run.reset`, or `409 CONFLICT` `RATE_LIMIT_SLOT_UNAVAILABLE` (asked first when the version also takes
+a permit); the source's `rate_limit.*` events are history, and a point after a `rate_limit.wait_timed_out` or
+`rate_limit.dequeued` is refused. **Do not roll an engine back to a build older than task T022-086 once a rate-limited run
+was reset:** the older build cannot read the `restored` copy of a `rate_limit.*` event, so it cannot load the reset run
+(D022-069 item 6).
+
 ## 5. When a reset is refused
 
 | Answer | Reason | What to do |
@@ -337,6 +347,8 @@ off in every engine nothing expires an entry and the places stay pinned until on
 | `422` | `RESET_RULE_MISSING` | the prefix holds an event this version has no rule for (`details.eventType` names it); pick an earlier point |
 | `409` | `BUSINESS_ID_IN_USE` | another open run holds the identifier; end it, or reset with `DROP` |
 | `409` | `IDEMPOTENCY_KEY_REUSED` | the same key was used for another request; use a new key |
+| `409` | `RATE_LIMIT_SLOT_UNAVAILABLE` | the version's start takes a slot of a rate-limit key (feature 022) and its window has no free slot (section 4.2, the reasons table); reset again once a slot has stopped counting. Given first when the version also takes a permit. Nothing was created |
+| `409` | `CONCURRENCY_PERMIT_UNAVAILABLE` | the version's start takes a permit of a concurrency key (feature 022) and the key has no free permit; reset again once a holder has finished. Nothing was created |
 | `422` | `RESET_REAPPLY_NOT_AVAILABLE` | `reapply` other than `NONE` on a deployment whose operator did not turn `SAGAT_RESET_REAPPLY_ENABLED` on; ask for `NONE` or turn it on (section 4.1). The sentence the API gives a caller does not name the variable |
 | `422` | `RESET_REAPPLY_TOO_MANY` | more than 256 signals and retained Updates after the point; pick a later point or `NONE` |
 | `422`, no reason | a `sourcePolicy`, a `reapply` or a `businessId` the server does not know, or a reason of fewer than 8 characters | not a policy, or too short (a reason is missing from these answers: G1981) |
@@ -370,10 +382,4 @@ an Update made through the API (G1986); their events are in the journal, and the
   nothing writes them yet).
 - **Points inside a collection, a parallel branch, a loop iteration or a child scope** (G1980 (1)).
 - **A setting for the ceiling** (G1980 (2)).
-- **The permit and the slot of a flow-control key** (feature 022, T022-064 on 2026-11-20 and T022-086 on 2026-11-21): a reset of a version whose start takes a permit takes
-  a fresh one right after `run.reset`, or is refused `409 CONFLICT` `CONCURRENCY_PERMIT_UNAVAILABLE` (a pending reset fails with
-  that reason); it never queues. The source's `concurrency.*` events copied with the prefix are history (`restored`) and hold no
-  row. A slot of a rate-limit key follows the same rules (T022-086, 2026-11-20): a fresh slot right after `run.reset`, or
-  `409 CONFLICT` `RATE_LIMIT_SLOT_UNAVAILABLE` (asked first when the version also takes a permit); the source's
-  `rate_limit.*` events are history, and a point after a `rate_limit.wait_timed_out` or `rate_limit.dequeued` is refused.
 - **Purging the register** (T018-051): the entries of `run_resets` are kept as long as the runs are.

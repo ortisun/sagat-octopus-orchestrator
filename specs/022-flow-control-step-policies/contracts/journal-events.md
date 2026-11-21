@@ -44,7 +44,7 @@ the 12-hex-character prefix of the keyed digest (D1168), never the key value.
 *Implemented 2026-11-15 (D022-035):* until a reset admits its run through the gate (T022-064, T022-086), the registry
 declares all ten `concurrency.*` and `rate_limit.*` types `EXCLUDE`, so no point after one is offered. The table below is
 the rule those tasks install. *2026-11-20 (T022-064, D022-053):* the five `concurrency.*` types have the rules of the
-table; the five `rate_limit.*` types stay `EXCLUDE` until T022-086. *2026-11-20 (T022-086, D022-069):* the five
+table; the five `rate_limit.*` types stay `EXCLUDE` until T022-086. *2026-11-21 (T022-086, D022-069):* the five
 `rate_limit.*` types have the rules of the table too, and `RATE_LIMIT_SLOT_UNAVAILABLE` is registered in 018's contract.
 A restored gate event carries `restored: true` in its otherwise closed detail. *D022-036:* every one of the ten carries `scope` in its detail (also `concurrency.dequeued`)
 and, at step scope, `attempt`.

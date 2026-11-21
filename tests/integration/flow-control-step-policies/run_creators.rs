@@ -1959,7 +1959,7 @@ async fn a_reset_after_a_rate_limited_step_restores_its_slot_as_history() {
     );
     for node in 0..2 {
         doc["nodes"][node]["rateLimit"] =
-            json!({"group": "steps", "key": "input.accountId", "limit": 4, "per": "hour"});
+            json!({"group": "steps", "key": "input.accountId", "limit": 3, "per": "hour"});
     }
     let workflow = publish(&w, doc).await;
     let source = w.start(workflow, &json!({"accountId": "acct-1"})).await;
@@ -2011,5 +2011,104 @@ async fn a_reset_after_a_rate_limited_step_restores_its_slot_as_history() {
     );
     assert_eq!(w.run_status(reset).await, RunStatus::Succeeded);
     assert_eq!(step_grants().await, ["b"]);
+    w.assert_consistent(reset).await;
+}
+
+/// Rows of the step-scope slots of `run`, by node.
+async fn step_slot_nodes(w: &World, run: RunId) -> Vec<String> {
+    sqlx::query_scalar(
+        "SELECT node FROM rate_limit_grants WHERE run_id = $1 AND limit_scope = 'STEP' ORDER BY node",
+    )
+    .bind(run.as_uuid())
+    .fetch_all(&w.db.pool)
+    .await
+    .expect("grants")
+}
+
+/// Task T022-086 (correctness re-review of 2026-11-21, minor 2; D022-069 item 2): a reset whose prefix returned a
+/// step's slot (a pause while `a` was granted and not leased journals `rate_limit.returned`; the resume asks again and
+/// the empty window grants it) restores the `granted`, `returned`, `granted` history of `a` and holds no row of it.
+/// With `limit: 3` the window has no slack: the source counts two grants (`a`'s second and `b`'s), so a restored grant
+/// counted as a third would leave the reset's `b` queued.
+#[tokio::test]
+async fn a_reset_whose_prefix_returned_a_step_slot_restores_it_as_history() {
+    let w = gated_world().await;
+    let mut doc = document(
+        "creators-rate-reset-returned",
+        "a",
+        vec![with(activity("a"), "next", json!("b")), activity("b")],
+    );
+    for node in 0..2 {
+        doc["nodes"][node]["rateLimit"] =
+            json!({"group": "steps", "key": "input.accountId", "limit": 3, "per": "hour"});
+    }
+    let workflow = publish(&w, doc).await;
+    let source = w.start(workflow, &json!({"accountId": "acct-1"})).await;
+    assert_eq!(
+        step_slot_nodes(&w, source).await,
+        ["a"],
+        "`a` is granted at the start"
+    );
+    w.operate_run(source, sagat_application::runs::RunOperation::Pause)
+        .await;
+    assert_eq!(
+        step_slot_nodes(&w, source).await,
+        Vec::<String>::new(),
+        "the pause returned the unleased slot"
+    );
+    w.operate_run(source, sagat_application::runs::RunOperation::Resume)
+        .await;
+    assert_eq!(
+        step_slot_nodes(&w, source).await,
+        ["a"],
+        "the resume asks again and the empty window grants `a` a second time"
+    );
+    assert_eq!(complete_all(&w, "act.a").await, 1);
+    assert_eq!(complete_all(&w, "act.b").await, 1);
+    assert_eq!(w.run_status(source).await, RunStatus::Succeeded);
+    assert_eq!(step_slot_nodes(&w, source).await, ["a", "b"]);
+    let after_a = point_after(&w, source, "a").await;
+    let made = w
+        .runs
+        .reset(
+            &w.admin,
+            source,
+            reset_request(after_a),
+            &idempotency(),
+            &ctx(),
+        )
+        .await
+        .expect("a reset");
+    let reset = made.run.expect("the reset run").info.run_id;
+    let journal = rows(&w, reset).await;
+    let restored = |name: &str| {
+        journal
+            .iter()
+            .filter(|(event, restored)| event == name && *restored)
+            .count()
+    };
+    assert_eq!(
+        (
+            restored("rate_limit.granted"),
+            restored("rate_limit.returned")
+        ),
+        (2, 1),
+        "`a`'s granted, returned, granted are history: {journal:?}"
+    );
+    assert!(
+        !journal
+            .iter()
+            .any(|(event, restored)| event == "rate_limit.returned" && !*restored),
+        "nothing is given back for the restored slot: {journal:?}"
+    );
+    assert_eq!(
+        step_slot_nodes(&w, reset).await,
+        ["b"],
+        "only `b`'s fresh slot"
+    );
+    w.assert_consistent(reset).await;
+    assert_eq!(complete_all(&w, "act.b").await, 1);
+    assert_eq!(w.run_status(reset).await, RunStatus::Succeeded);
+    assert_eq!(step_slot_nodes(&w, reset).await, ["b"]);
     w.assert_consistent(reset).await;
 }

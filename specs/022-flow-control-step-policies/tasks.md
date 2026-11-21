@@ -476,7 +476,7 @@ T022-063 (020 erasure).
 - [ ] T022-083 [P] [US7] `rateLimit` builder in the six SDKs (`sdks/typescript/src/workflow.ts`, `sdks/go/workflow/workflow.go`, `sdks/python/sagat_octopus_orchestrator/workflow.py`, `sdks/dotnet/src/SagatOctopusOrchestrator.Sdk/Workflows/Flow.cs`, `sdks/java/sdk/src/main/java/dev/sagatoctopusorchestrator/sdk/workflow/WorkflowBuilder.java`, `sdks/rust`). FR-022-050. Evidence: unit tests and each SDK's lints; canonical fixture byte-identical in six languages.
 - [ ] T022-084 [US7] Scenario `flow-rate-limit` of `contracts/conformance.md` in `tests/contract/sdk-conformance/scenarios/` with independent assertions and reviewed goldens. SC-022-023. Evidence: `SAGAT_SDK_SCENARIO=flow-rate-limit cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture` passes in six languages, rerun without the bless switch.
 - [ ] T022-085 [US7] Studio: `rateLimit` fields beside `concurrency` in `frontend/apps/studio/src/features/workflows/` (settings and node inspector), a run or step waiting for a rate slot with position and estimate in `features/runs/`, the rate-limit keys list in `features/operations/`; unknown capability shown as unsupported (FR-007-010); WCAG AA. FR-022-048,050. Evidence: Vitest; a browser journey including keyboard; same IR as the SDKs.
-- [ ] T022-086 [US7] Run-creator cases of T022-064 extended to the rate gate, failing when a creator bypasses the port; with 018 on the tree, its creators, the reset refusal `RATE_LIMIT_SLOT_UNAVAILABLE` and the reset rules of the five `rate_limit.*` events registered in 018's registry (G1181). FR-022-041,046; FR-022-038. Evidence: `tests/integration/flow-control-step-policies/run_creators.rs`; the 018 cases reported pending while its branch is not merged.
+- [x] T022-086 [US7] Run-creator cases of T022-064 extended to the rate gate, failing when a creator bypasses the port; with 018 on the tree, its creators, the reset refusal `RATE_LIMIT_SLOT_UNAVAILABLE` and the reset rules of the five `rate_limit.*` events registered in 018's registry (G1181). FR-022-041,046; FR-022-038. Evidence: `tests/integration/flow-control-step-policies/run_creators.rs`; the 018 cases reported pending while its branch is not merged.
   - *Amended 2026-11-21 (D022-069 item 7):* this task is the reset; the rate twins of the other creators of T022-064 are T022-113.
   - *Amended 2026-11-13 after review* (D022-031): the schedule-firing case is built now; G1181 corrected.
   - *Production gate (2026-11-20, D022-066 item 5):* `docs/runbooks/flow-control.md` section 6 forbids activating the rate capability in production before this task is ticked; gap G022-016 is a release gate, and the interim refusal is pinned by `run_creators::a_reset_of_a_rate_limited_start_is_refused_until_its_rules_are_built`.
@@ -497,6 +497,21 @@ T022-063 (020 erasure).
   `cargo test -p sagat-api-http --test flow_control_errors` 11 passed. Hand mutations caught: the last refusing gate
   named instead of the first (rate first lost), a concurrency refusal counted for a rate-only reset, the API answering
   `UNAVAILABLE`, the pending reset's reason mapped to `ADMISSION_REFUSED`, the down migration without its guard.
+  *Ticked 2026-11-21 after the re-reviews* (`reviews/2026-11-21/reset-slot-rereview-*.md`: security, correctness and
+  architecture each 0 Blockers, 0 Majors; answers in `reset-slot-responses.md`, section "Re-review"; closes gap G022-016;
+  the runbook's production gate no longer lists this task). Added with the re-review: `limit: 3` in
+  `run_creators::a_reset_after_a_rate_limited_step_restores_its_slot_as_history` (correctness Major 2 of the first
+  review) and `run_creators::a_reset_whose_prefix_returned_a_step_slot_restores_it_as_history`, written after the code and
+  proved by hand mutation: one grant more counted in a step window (`readiness_gate::key_count`) turns both red at "only
+  `b`'s fresh slot", and with the old `limit: 4` the first stays green (the slack the reviewer found); the codec refusing a
+  restored `rate_limit.returned` turns the new case red at load and leaves the other green; fresh build after restoring.
+  Evidence on the tree of this tick: `cargo test -p sagat-tests --test integration_flow_control_step_policies` 191 passed
+  as the owner and 191 passed as the runtime role (`SAGAT_TEST_AS_RUNTIME_ROLE=1`); `npm run api` then
+  `npm run check:api` ("src/api/schema.d.ts matches the OpenAPI contract"), `vitest run src/features/runs/ResetRun.test.tsx`
+  49 passed; every `scripts/check-*.py` passes (`check-docs-first.py` and `check-plain-words.py` with
+  `--base origin/develop`). The privilege audit (`integration_platform_foundation`, `runtime_privileges`) was not rerun:
+  no SQL changed since `8dcd7f37` (its migration changes a CHECK list only, no grant and no function), and the host disk
+  was under the 15 GiB floor for another build.
 - [ ] T022-087 [US7] Merge the rate-limit parts of the fragments into `specs/001-platform-foundation/contracts/{openapi.yaml,workflow.schema.json}` and regenerate the Studio client; the OpenAPI baseline is changed only after reading the diff. FR-022-039,048. Evidence: contract lint and compatibility tests; `(cd frontend/apps/studio && npm run api && npm run check:api)`.
 - [ ] T022-088 [P] [US7] Rate-limit sections of `docs/runbooks/flow-control.md` (the two alerts, a stuck or saturated key, the clock, lowering a limit) and `docs/runbooks/alerts.md`; `docs/architecture/execution-semantics.md`; `docs/traceability.md`; the release notes of 0.3.0; the quickstart's section 7 run as a demo of the happy and the failure scenario. FR-022-049; NFR-022-005. Evidence: reviewed docs; `contract_developer_experience` without the bless switch.
 - [ ] T022-089 [P] [US7] Benchmark `tests/performance/flow-control-step-policies/` for rate limits: grant lag at 1, 16 and 256 waiters on one key, one key with 10,000 waiters, 1,000 keys with one waiter each, admission cost with and without the declaration. NFR-022-004; G1174, G1178. Evidence: report with environment, raw data and failures; no figure presented as a commitment.

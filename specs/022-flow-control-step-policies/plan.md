@@ -457,6 +457,11 @@ Spans: `workflow.rate_limit.admit`, `workflow.rate_limit.grant`. Attributes as a
 | `rate_limit_grant_lag_seconds` (histogram: from the instant a slot was free with a waiter present to the grant) | — |
 | `rate_limit_unleased_grants` | — |
 
+`refused_reset` of both families counts a refused reset in each family its start declares, not only in the gate that
+refused it (D022-069 item 4): a reset refused by its slot while its permit was free counts in `rate_limit_decisions_total`
+and in `concurrency_acquisitions_total`; the first refusing gate is the answer's `details.reason`. It counts attempts: a
+pending reset whose failing transaction is retried counts again.
+
 Alerts (engine monitor, per namespace): `rate_limit_grant_lagging` (a key has had a waiter and a free
 slot for longer than a threshold: the pass is not keeping up or the clock went back),
 `rate_limit_queue_saturated` (a key's waiters above 80% of its ceiling). Both get a section in
