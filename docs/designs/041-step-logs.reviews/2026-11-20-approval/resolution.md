@@ -183,3 +183,70 @@ a committed report), S-3 (moot), S-4 (the function builds its keys and checks it
 C-9, C-10, C-11 (moot), C-12, C-13, C-14 and C-15; zoom-out's two counters for one event and the broken sentence; readiness
 Nits as listed in the plan's answers (1, 2, 4, 6, 11, 12, 13, 19, 21 to 26 and 29); intermediate N-1 (one busy string, the
 runbook modified, the release note conditional) and N-2 (the Estimate).
+
+## Second round
+
+The short re-reads at `4d6fe4cc` (architecture, security, correctness, and the zoom-out, comprehension, design-critic
+and readiness re-readers of egm-review) left the Majors below. Each is answered here, documents first; two decisions are
+new, D041-134 (wait slots across tenants, a top-up that never waits) and D041-135 (how SC-041-007 is judged at 1 × 16).
+
+- **architecture N-1, readiness R-6 (the connection hand-off):** section 2b and T041-36 state the construction: the
+  report transactions hold a `PoolConnection<Postgres>` and send `BEGIN`, `COMMIT` and `ROLLBACK` themselves; a variant
+  of `begin_safely` sends `BEGIN` inside its spawned task and marks the connection `close_on_drop()`; `commit` clears it
+  only when `COMMIT` succeeds, then moves the connection into the top-up task when `top_up` is true; a dropped or failed
+  transaction closes its connection; the helpers take `&mut PgConnection`; a fault test shows no connection returns to the
+  pool inside a transaction. The budget is unchanged.
+- **architecture A-6 remainder, correctness N-1, zoom-out Z-3 remainder, security N-3 (`failed` missing):** `failed` is a
+  planned mark-only reason in data-model.md §1, §8a and T041-36 ("outside the four"); T041-36's re-run test is split: a
+  guard's raise re-runs with a mark-only carry whose reason is `failed`, two transactions, the final mark kept; a failed
+  call re-runs with none and no final mark. The re-run tier of ADR-0095 decision 5 is kept: removing it would change an
+  accepted ADR's decision; that keeping is recorded for the owner's acceptance row.
+- **security S-1 remainder, design critic N-3, correctness N-5 (the bound across tenants):** decision D041-134: a waiter
+  holds a tenant slot (*P* = ⌈*Q* / 2⌉) and a replica slot (*Q* = max(1, ⌊N / 4⌋)), 3 and 5 at the default pool of 20, so
+  step-log work holds at most 10 + 5 of 20 connections and at least 5 are never held by it (2 of 8 at a pool of 8); *Q*
+  reaches SQL through `sagat.step_log_wait_slots`, set by the pool at connect; T041-36 tests the replica cap with five
+  waiting tenants and a sixth answered busy, and B's heartbeat and task lease getting their connections; T041-37 counts
+  only slot holders (`pg_locks`) and adds a regime with three or more tenants in the fallback regime. The claims in
+  section 2b and the runbook are restated to what the slots bound.
+- **correctness N-4 (the top-up near the limit):** decision D041-134: the top-up tries the usage row `NOWAIT` only, takes
+  no slot, never waits, reclaims no other quota lease, and grants only when its share is above the writer's room
+  (section 2b, ADR-0097 decision 3b, data-model.md §3b, T041-5).
+- **correctness N-2, design critic N-1 (the 1 × 16 floor's statistics):** decision D041-135: T041-9 runs twelve rounds and
+  judges on the median of all valid rounds (at least six); the false-stop rate of an unchanged build is stated, 5.49% per
+  gate with six valid rounds and 2.38% with twelve (20/364 and 924/38,760); a miss goes to the owner with the record,
+  never re-run; the (2b) floor is stated to admit about +94% of p99 (67.2 ms against off-1K's 34.6 ms), so T041-9 reports
+  to the owner a p99 above the accepted +36.9%; the risk row no longer claims more; the eight valid rounds' gate values
+  are recorded in validation-report.md.
+- **correctness N-3, design critic N-2 (gate (4) at an unmeasured setting):** decision D041-135: gate (4) is judged at the
+  cap and tickets of 10 the fourth run measured; T041-37 measures ticket refusals at the shipped defaults (cap 10,
+  tickets 7), and 1% or more raises the default by a design change.
+- **comprehension K-7 remainder:** section 2a's heading paragraph now says a held or short quota lease leads to the
+  fallback refill, never to `contended`.
+- **design critic D-4 remainder:** section 5's "Contract" states D041-133 (`run:logs:read` and the PII reveal grant in
+  every namespace, `usageWithheld: true`); the revision note lists section 5.
+- **design critic D-12:** still held by the critic; accepted as recommended (owner row).
+- **readiness R-11:** `holdAnswer` is written in the harness's `faults[]` form (`channel`, `match`, `action`, `times`,
+  `after`, `maxHoldMs`), applied by each SDK runner's transport hook as every fault is, with the observation `heldAnswers`
+  in `out.json` and its normalisation to `under2000` or `atLeast2000`.
+- **readiness R-13:** T041-5 states that the execution engine and the control plane create their instance id before
+  opening their pool and pass it to `pool_config` / `open_pool` and `registry::member`, with the files; the one-shot
+  processes use `sagat-octopus-orchestrator/<process kind>`; the pool also sets `sagat.step_log_wait_slots`.
+- **readiness N-1, architecture Nit 1, zoom-out Nit 2 (the privilege list):** one list everywhere: six definer functions
+  and two invoker helpers, the counter sequences revoked; T041-5 creates the helpers and the sequences; the Verification
+  row, ADR-0097 decision 1 and data-model.md §3b and §4 agree.
+- **readiness N-2:** `sagat_quota_step_log_reclaim_idle` answers `(reclaimed integer, skipped boolean)` (data-model.md
+  §3b, section 2b, T041-5, T041-10).
+- **readiness N-3:** T041-37's `pgbouncer.ini` sets `max_prepared_statements = 200` (sqlx's named prepared statements),
+  `auth_type = scram-sha-256` and an `auth_file` generated by `run.sh`; PgBouncer 1.21 or later, the version pinned in
+  `run.sh` and recorded.
+- **readiness N-4:** T041-36's tests include the source-text check that only the store's top-up calls
+  `sagat_quota_step_log_top_up`.
+
+Nits fixed with these: architecture 1 to 5 (the warm pin is observed through `pg_stat_activity` and the top-up's call
+count; the top-up takes no slot), 3 (`docs/adr/README.md` and ADR-0097 option 1's title) and 7 for G041-018 (its cell
+begins "Closed"); security N-1 (the session-setting exception stated) and N-2 (`hashtextextended` single-bigint keys);
+correctness 1 (the cap default), 2 (the held-lock tests replace the budget function) and 3; design critic n-1 ("rounded
+in the build's favour"); zoom-out's Nit to Z-1 (Complexity Tracking states the fallback-only baseline as measured and
+acceptable, and T041-37 gains a criterion that fallbacks stay at most 0.31%) and its Nit 1 (the slots' rejected
+alternatives); comprehension's Nit on "late" (FR-041-005 says what it means); readiness Nits 5 and 6 (shard 0 from
+`Keeper::shards`, the gauge cleared) and 8 (`pool.rs:11-24`).

@@ -36,7 +36,7 @@ needs no backend identity; OD-2026-11-20-19: the step-log usage is hidden from a
 coordinating session decided the others under OD-2026-11-20-6 (decisions D041-124 to D041-133); `resolution.md` of
 that folder answers each finding. Changed: the header, this Overview, FR-041-005, -006, -008, -011 and -017, SC-041-001
 and SC-041-007 (a criterion per size), the Goals, the Open Questions, the owner decisions, the Terms, the diagram,
-sections 1, 2, 2a, 2b, 3, 8 and 9, the Risks, the Constitution Check, Complexity Tracking, the Alternatives, the NFRs,
+sections 1, 2, 2a, 2b, 3, 5, 8 and 9, the Risks, the Constitution Check, Complexity Tracking, the Alternatives, the NFRs,
 the plan (T041-1, T041-3 to T041-10, T041-14, T041-22, T041-25, T041-31 withdrawn, T041-32, T041-35 and T041-36; T041-37
 new), the Verification Plan and the Estimate.
 
@@ -188,7 +188,9 @@ Each requirement is binding as written, whether or not it says MUST.
   the bounded wait of FR-041-015 before the report, the carry's own call, its fallback refill when its writer's quota
   lease is short, and, when the carry makes the report's transaction fail, its downgrade re-run (section 2a). The
   fallback refill runs after the report's fence checks, under its run lock, so it can delay the report's commit but never
-  makes the report late; the top-up runs after the commit (OD-2026-11-20-18).
+  makes the report late (refused because its task lease expired before its checks ran: the checks have already passed,
+  and an expired task lease cannot be reclaimed while the report holds the run row); the top-up runs after the commit
+  (OD-2026-11-20-18).
   The residual (G041-021): the re-run is fenced as any report, so it is refused when, after the first transaction
   failed, the task lease expired or was reclaimed, a cancel was requested, the run began to stop (for a forward step) or
   finished, or the worker's binding or membership was revoked.
@@ -405,21 +407,30 @@ Each requirement is binding as written, whether or not it says MUST.
   The gates: (1) the rate of (a) over off-1K; (2b) the completion p99 of (a) minus off-1K's, minus the *allowance*, the
   larger of 10% of off-1K's p99 and 2 ms (OD-2026-11-20-1); (3) the rate of (f) over off-{}; (4) the tenant tickets that
   (g) needs on a replica, ⌈rate × S p99 / 0.7⌉ with S the batch's service time, at most 10, with ticket refusals under
-  1%. Each gate is judged on the median of three valid rounds, by the validity rule and on the hosted runners of task
-  T041-35's fourth run (decision D041-102: GitHub-hosted runners of 4 logical cores, saturated by the scenario), and the
-  runners' CPUs, their load and the PostgreSQL configuration are stated.
+  1%, judged at the cap and tickets of 10 that the fourth run measured, since it sizes the need (the shipped defaults,
+  7 tickets, are measured by task T041-37). The runs use the validity rule and the hosted runners of task T041-35's
+  fourth run (decision D041-102: GitHub-hosted runners of 4 logical cores, saturated by the scenario), and the runners'
+  CPUs, their load and the PostgreSQL configuration are stated. Task T041-9 runs twelve rounds, as the fourth run did
+  (four runners, three rounds each), and judges each gate on the median of all its valid rounds, at least six
+  (decision D041-135).
   - **At 8 × 128, the original criterion:** (1) at least 90%, (2b) at most 0, (3) at least 90%, (4) as above.
   - **At 1 × 16, a floor at the measured cost** the owner accepted ("Accept the measured cost", OD-2026-11-20-13): the
     fourth run's figures minus a tolerance derived from the spread of its eight valid rounds (1, 2, 3, 4, 6, 7, 9 and
     11). The tolerance of each gate is the distance from the median of the three rounds used (1, 2 and 3) to the worst
-    valid round, so the floor is that worst round, rounded against the build being judged:
+    valid round, so the floor is that worst round, rounded in the build's favour:
     - (1) at least 80.4%: median 82.0%, worst valid round 80.46% (round 2), tolerance 1.6 points;
     - (2b) at most +29.1 ms: median +8.6 ms, worst valid round +29.03 ms (round 11), tolerance 20.5 ms;
     - (3) at least 83.5%: median 87.1%, worst valid round 83.52% (round 11), tolerance 3.6 points;
     - (4) as above (7 tickets in the rounds used, 10 in the worst valid round).
 
-    The build the fourth run measured meets this floor in every one of its valid rounds, so the floor fails only for a
-    build slower than the spread that run itself showed.
+    The build the fourth run measured meets this floor in every one of its valid rounds. An unchanged build can still
+    fail it by chance: with exchangeable rounds, the median of *m* new valid rounds falls below the worst of the
+    eight old ones with probability Σ_{j ≥ r} C(*m*, *j*) C(8, *r* − *j*) / C(8 + *m*, *r*), *r* = ⌈*m* / 2⌉, which is
+    5.49% per gate for *m* = 6 and 2.38% for *m* = 12; a miss stops the release and goes to the owner with the record,
+    and is never re-run. The (2b) floor is a guard against gross regressions only: it admits a completion p99 of (a) of
+    about 34.6 + 3.46 + 29.1 = 67.2 ms, about +94% over off-1K's 34.6 ms, against the +31.9% to +36.9% of the rounds
+    the owner accepted; so task T041-9 also records that p99 in percent and reports it to the owner when it exceeds
+    +36.9%.
   - **The fourth run's result** (run 44834024933, decision D041-122): at 1 × 16 the rate of (a) is 82.0% of off-1K, gate
     (2b) +8.6 ms (the completion p99 of (a) +31.9%, +36.9% and +35.2% over off-1K's in the three rounds used, 34.6 ms
     against 46.2 ms in their medians), the rate of (f) 87.1%, 7 tickets: capture costs about 18% of the rate there; at
@@ -713,8 +724,8 @@ Recorded in `docs/owner-decisions.md` and in research.md, newest first:
   short; a carry's *reservation* locks its own quota lease with room for its planned charge before it writes; the *top-up*
   is a refill without a charge that the store runs after a carrying report commits, on the same connection, when the
   carry left its quota lease under 64 KiB (OD-2026-11-20-18); *b* = 200 ms is the budget of each lock acquisition of a
-  refill on the usage row, and a *wait slot* is one of the seven a tenant has on a replica, without which no refill waits
-  for that row (decision D041-125).
+  refill on the usage row, and a *wait slot* is one of the advisory locks, a tenant's (*P* on a replica) and the
+  replica's (*Q*), without both of which no refill waits for that row (decisions D041-125 and D041-134).
 - *Step-log lock*: one of the locks L1, L1b, L2, L3 and L3b of section 2's lock order, which a carry only tries; the
   usage row (L4) is not one.
 - *Storage classification*: the class each column has in `storage-classification.json` (`log`, `content`,
@@ -832,8 +843,8 @@ languages for a gain the batch already gives.
 
 **Admission.** `AppendStepLogs` gets a fourth class, `Class::Logs`, in `crates/api-grpc/src/limits.rs:489-508`, with its
 own counter outside `Shared.in_flight`, so that a flood of log calls never moves the threshold at which discovery is
-shed (`limits.rs:548-563, 595`). Its cap is `SAGAT_GRPC_MAX_LOG_CALLS` (default a quarter of `SAGAT_DB_MAX_CONNECTIONS`,
-at least 1: 5 of the execution engine's default pool of 20, `apps/execution-engine/src/cli.rs:55`), per replica; a call
+shed (`limits.rs:548-563, 595`). Its cap is `SAGAT_GRPC_MAX_LOG_CALLS` (default half of `SAGAT_DB_MAX_CONNECTIONS` rounded down,
+at least 1: 10 of the execution engine's default pool of 20, `apps/execution-engine/src/cli.rs:55`), per replica; a call
 over it is shed `RESOURCE_EXHAUSTED` with `retry-after-ms`, as shedding is today (`limits.rs:675-678`). The cap is what
 keeps ingest from holding the connections that lease calls need: at most that many of the pool's connections are in a
 log transaction at once. The tenant is known only after authentication, so the per-tenant share is taken in the handler: a
@@ -843,8 +854,9 @@ is answered `RETRY_LATER` with 200 ms at once: no call waits for a ticket, so a 
 runs and one tenant cannot fill the Logs class with waiting calls. The SDK resends a batch until the batch is 10 seconds
 old or, once the activity has ended, until its 2-second wait before the report ends, whichever comes first. A carry is
 not admitted in this class: it is part of its report, whose class is the reserved one of calls that keep leased work
-alive; its cost there is bounded by its 64 records, by never waiting for a step-log lock and by the tenant's wait slots,
-which bound how many of a replica's connections one tenant's waits on its usage row hold (section 2b, decision D041-125).
+alive; its cost there is bounded by its 64 records, by never waiting for a step-log lock and by the wait slots, which
+bound how many of a replica's connections waits on usage rows hold: at most P = 3 for one tenant and Q = 5 for all
+tenants together at the default pool of 20 (section 2b, decisions D041-125 and D041-134).
 The defaults (decision D041-127, from task T041-35's fourth run; data-model.md §6): the cap is half of
 `SAGAT_DB_MAX_CONNECTIONS` rounded down, at least 1 (10 of the default pool of 20, the configuration that run measured),
 and the tenant tickets 7, at most the cap (section 2, "Capacity", gives the derivation), so a second tenant keeps 3 of
@@ -1014,7 +1026,8 @@ touches can wait for these, and for nothing else of step logs:
    carry writes nothing more (`contended`, section 2a).
 3. **In the same call, the fallback refill**, only when the carry's writer's quota lease is held (only by a quota
    reclaim) or short: under the run lock, it tries T's usage row (L4) `NOWAIT`; when the row is held it takes one of T's
-   seven wait slots on the replica, never waited for, and waits for the row at most *b* = 200 ms a lock acquisition, the
+   wait slots on the replica and then one of the replica's (3 and 5 at the default pool of 20, decision D041-134), both
+   tried, never waited for, and waits for the row at most *b* = 200 ms a lock acquisition, the
    statement timeout (5 s, 3 s for some transactions) the hard bound. Past *b*, or with no slot free, the carry records
    a mark-only final mark whose records are not stored because the service was busy (`service_busy`) and the report
    commits. Measured far from the limit with direct connections, a refill inside a report for 0.31% of ten-line carries
@@ -1151,8 +1164,9 @@ reason (D041-100, which refines D041-039 for the carry).
 
 **A carry never waits for a step-log lock; it waits for the usage row only in the fallback, each lock acquisition at
 most 200 ms and only with a wait slot.** Every step-log lock the function takes is tried, never waited for (its fences,
-its stream lock and row, its own quota lease `SKIP LOCKED`); a lock another transaction holds makes it write nothing
-(`contended`), and the report commits as it would without the carry. Before any write the function reserves room in
+its stream lock and row, its own quota lease `SKIP LOCKED`). A fence, the stream lock or the stream row held by another
+transaction makes it write nothing (`contended`), and the report commits as it would without the carry; its own quota
+lease held (only by a quota reclaim) or short never makes it `contended`: it takes the fallback refill below. Before any write the function reserves room in
 its writer's quota lease for its planned charge (`sagat_quota_step_log_reserve`, D041-113): with it (the fast path),
 CC to CE run as they are and the charge in CD cannot be refused, with no subtransaction. Without it (the first carry of
 a tenant on a backend; a quota lease a batch on the same backend left short; a quota reclaim that took the room near
@@ -1334,26 +1348,41 @@ quota leases; data-model.md §3b gives the table, the functions and their statem
   (nothing written; the planned charge as data-model §3b states it, a possible ceiling marker included); with one, its
   charge cannot be refused and it opens no subtransaction (the fast path); without one it runs its writes in a block that
   answers a refusal in the same call (section 2a).
-- **The fallback refill and every refill** (a batch's T8, the script marker's insert, a carry's block, the top-up), when
-  the writer's quota lease is short or S + G > L: it tries the usage row `NOWAIT`; when the row is held it takes one of
-  the tenant's wait slots on this replica (below) and waits for the row; then it takes the writer's own quota lease
+- **The fallback refill and every refill that may wait** (a batch's T8, the script marker's insert, a carry's block),
+  when the writer's quota lease is short or S + G > L: it tries the usage row `NOWAIT`; when the row is held it takes a
+  tenant wait slot and a replica wait slot (below) and waits for the row; then it takes the writer's own quota lease
   `NOWAIT`, so that nothing waits after the usage row; reads L itself; reclaims the room of every other quota lease no
   open transaction holds when the free room is under max(*n*, 1 MiB); folds the writer's own quota lease whole (its used
   bytes to S, its room back to the free room; inserted when absent); and grants it g = max(*n*, min(1 MiB,
   ⌊F / (2(*A* + 1))⌋)), F = L − S − G and *A* the tenant's other quota leases holding a grant, when that fits under L,
   charging *n* there. Otherwise it raises `tenant_step_log_quota_exceeded`, or `tenant_step_log_quota_held` when the room
   missing is in quota leases open transactions hold.
-- **The wait slots** (decision D041-125). A refill waits for the usage row only while it holds one of the tenant's
-  *P* = 7 wait slots on its replica: an advisory lock on a key the function builds from the tenant and the replica's
-  `application_name` (task T041-5 sets one per replica), slot 1 to 7, tried in order and never waited for; with none free
-  the refill raises `55P03` at once. So all of one tenant's waits on its usage row hold at most 7 of a replica's pool
-  connections, whatever its load, and another tenant's reports and heartbeats keep the rest. Seven is the tenant's Logs
-  tickets (decision D041-127): a tenant's waits on its own row hold no more of a replica's pool than its batches may hold
-  in the Logs class. Two tenants whose keys collide only share slots (more busy answers, never a wrong charge), and a
-  replica whose `application_name` is not its own shares the 7 slots with the others (stricter, never looser). Tested
-  with a second tenant as the victim in task T041-36 and measured in task T041-37.
+- **The wait slots** (decisions D041-125 and D041-134). A refill waits for the usage row only while it holds two
+  advisory locks, both tried in order and never waited for: one of the tenant's *P* wait slots on its replica, then one
+  of the replica's *Q* wait slots, which all tenants share. With N the replica's pool (`SAGAT_DB_MAX_CONNECTIONS`),
+  *Q* = max(1, ⌊N / 4⌋) and *P* = ⌈*Q* / 2⌉: 5 and 3 at the default pool of 20, 2 and 1 at a pool of 8. With no slot of
+  either kind free the refill raises `55P03` at once. The keys are single 64-bit advisory keys,
+  `hashtextextended(…, 0)`, built inside the function: a tenant slot from (tenant, `application_name`, slot), a replica
+  slot from (`application_name`, slot). *Q* reaches SQL through `sagat.step_log_wait_slots`, a setting the pool sets on
+  each connection when it connects (task T041-5, beside the per-replica `application_name`), read by
+  `sagat_quota_step_log_wait_slots()` and clamped to 1 to 64 (1 when unset); *P* is computed from it. So:
+  - one tenant's waits on its usage row hold at most *P* of a replica's connections, and all tenants' together at most
+    *Q*;
+  - step-log work holds at most the Logs cap ⌊N / 2⌋ plus *Q* of a replica's N connections, so at least
+    N − ⌊N / 2⌋ − max(1, ⌊N / 4⌋) are never held by step-log work, for task leases, heartbeats and reports that do not
+    wait: 20 − 10 − 5 = 5 at the default pool, 8 − 4 − 2 = 2 at a pool of 8;
+  - only refills that may wait take slots: a carry's fallback, a batch's T8 and the script marker's insert; the top-up
+    takes none (it never waits).
+
+  These are the one exception to "no session setting is read": the slot keys and *Q* read `application_name` and
+  `sagat.step_log_wait_slots`, which the server's pool sets at connect. The runtime role could change them, which only
+  changes which slots its session shares; the bound protects the pool against load, not against the runtime role, which
+  is trusted code. Two tenants whose keys collide only share slots (more busy answers, never a wrong charge); a replica
+  whose `application_name` is not its own shares its slots with the replicas of the same name (fewer waits allowed than
+  intended, never more for one name). Tested with a second tenant as the victim and with the replica cap reached in task
+  T041-36, and measured in task T041-37.
 - **The budget** of each lock acquisition of a refill on the usage row is *b* = 200 ms: `lock_timeout` set for that one
-  statement from `sagat_quota_step_log_refill_wait()`, a function no caller can change (no session setting is read), a
+  statement from `sagat_quota_step_log_refill_wait()`, a function no caller can change (it reads no session setting), a
   caller's lower `lock_timeout` kept (0 counts as none) and the caller's own value restored after it
   (`a_refill_restores_the_callers_lock_timeout`). *b* is a latency budget, not a worst case: it is the budget an ingest
   batch already has on the same row (section 2, T8), against measured holds of the row of p50 1.1 ms and p99 4.5 ms
@@ -1371,7 +1400,7 @@ quota leases; data-model.md §3b gives the table, the functions and their statem
     and alerted on its rate (`SagatStepLogServiceBusyDrops`); the report commits
     (`a_refill_past_its_budget_answers_busy_and_the_report_lands`);
   - in a batch, it is `RETRY_LATER`, counted as a lock-timeout retry, not alerted (an ingest's ordinary backpressure);
-  - for the script marker, `skipped_quota`; for the top-up, `busy`.
+  - for the script marker, `skipped_quota`.
 
   So no step-log refusal fails, blocks or retries a step (ADR-0084 decision 7, ADR-0095 decision 4); a loss for no quota
   reason is possible only past *b* or with no slot free, visible to the reader and the operator, and accepted by the
@@ -1382,11 +1411,18 @@ quota leases; data-model.md §3b gives the table, the functions and their statem
   `top_up` true, the store runs, on the same connection (so the same backend with direct connections or a session
   pooler), off the run lock, one statement in its own implicit transaction: `sagat_quota_step_log_top_up(tenant)`, with
   the principal's tenant. The store hands the connection to a task that runs the statement and then returns the
-  connection to the pool, so the report's answer to the worker does not wait for it. The function takes no caller amount:
-  it tries the step-log fence shared (held: `contended`), answers `room` when the writer's quota lease already has at
-  least *M*, and otherwise refills it with no charge, granting exactly its share, min(1 MiB, ⌊F / (2(*A* + 1))⌋) (so
-  the held-room bound below holds unchanged), with the wait slots and *b* of any refill; its answers are `room`, `made`,
-  `limit`, `held`, `busy` and `contended`, and it never raises for them. Any other error is the store's `error`. The
+  connection to the pool, so the report's answer to the worker does not wait for it. sqlx's `Transaction::commit`
+  consumes the transaction and gives the connection back to the pool, so the report transactions own their connection
+  instead: they hold a `PoolConnection<Postgres>` and send `BEGIN`, `COMMIT` and `ROLLBACK` themselves, the connection
+  marked `close_on_drop()` from `BEGIN` until a `COMMIT` or `ROLLBACK` succeeds, so that a dropped or failed transaction
+  closes its connection and never returns it to the pool inside a transaction (task T041-36). The function takes no caller amount:
+  it tries the step-log fence shared (held: `contended`); answers `room` when the writer's quota lease already has at
+  least *M*; tries the usage row `NOWAIT` only, taking no wait slot and never waiting (held: `busy` at once); never
+  reclaims another quota lease; and grants only when the share, min(1 MiB, ⌊F / (2(*A* + 1))⌋), is above the writer's
+  current room, folding the writer's quota lease and granting exactly that share with no charge (so the held-room bound
+  below holds unchanged), and otherwise answers `room`. Its answers are `room`, `made`, `limit`, `held`, `busy` and
+  `contended`, and it never raises for them. Near the limit a top-up follows nearly every carry, but it never takes
+  another backend's room or a wait slot (decision D041-134). Any other error is the store's `error`. The
   store counts every answer (`step_log_quota_top_ups_total{outcome}`), and neither fails nor re-runs anything because of
   it.
   - *Why M = 65,536 bytes.* A carry's reservation is at most its records' stored sizes plus 128 a row plus 128 for a
@@ -1446,8 +1482,8 @@ quota leases; data-model.md §3b gives the table, the functions and their statem
   quota lease not charged for 10 minutes and every quota lease whose backend has ended (its pid absent from
   `pg_stat_activity`), `SKIP LOCKED`: it finds those tenants through `sagat_quota_step_log_idle_tenants(limit)` (tenant
   ids only, a bounded count), checks for such a quota lease without a lock, tries the step-log fence shared (a tenant
-  whose fence is held is skipped this pass, so that holding a quota lease always means holding that fence, which a limit
-  change's `NOWAIT` relies on), then takes the usage row. The interval is fixed in the function; it is the connection
+  whose fence is held is skipped this pass and answered `skipped`, so that holding a quota lease always means holding
+  that fence, which a limit change's `NOWAIT` relies on), then takes the usage row; it answers `(reclaimed, skipped)`. The interval is fixed in the function; it is the connection
   pools' idle timeout (sqlx's default, kept by the platform): a pooled backend idle longer is closed, so its quota lease
   could only strand room; a live writer charging less often refills again, by a fallback or a top-up. A tenant's quota
   lease rows are then at most the backends that charged for it within 10 minutes and are still alive; a near-limit quota
@@ -1472,7 +1508,9 @@ quota leases; data-model.md §3b gives the table, the functions and their statem
   the limit, a writer refills once per grant (the top-up's figures above). A tenant with less volume per backend per 10
   minutes, a small quota, or one near its limit refills more often, by top-ups and by fallbacks inside reports (each with
   its block's subtransaction); near the limit the share falls under *M*, so a top-up follows nearly every carry of a
-  backend, and other refills' quota reclaims can take a backend's room before its next carry reserves it, so fallbacks
+  backend (it never takes another backend's room or a wait slot, and grants only when its share is above the room the
+  backend has: decision D041-134), and other refills' quota reclaims can take a backend's room before its next carry
+  reserves it, so fallbacks
   are frequent there (a fresh grant is not protected from the quota reclaim: ADR-0097 option 1g). Task T041-37 measures
   these regimes with a criterion each: near the limit with a purge beside it, a small quota with many backends, many
   low-volume tenants (the transaction-id rate and `pg_stat_slru` for `subtransaction`), a cold start, behind a
@@ -1549,11 +1587,12 @@ accessor `sagat_quota_step_log_allowance` of ADR-0027's Amendment, the statement
 `sagat_quota_step_log_insert_trigger` of its Amendment of the Amendment of 2026-11-20 (no `EXECUTE` to `sagat_app`:
 only its trigger calls it), and ADR-0097's quota-lease functions (ADR-0097 decision 1): `sagat_quota_step_log_charge`,
 `sagat_quota_step_log_refill`, `sagat_quota_step_log_refill_wait` and the limit-change trigger function
-`sagat_quota_step_log_reclaim` (executable by neither `PUBLIC` nor `sagat_app`, revoked explicitly), and
-`sagat_quota_step_log_reserve`, `sagat_quota_step_log_top_up`, `sagat_quota_step_log_top_up_mark`,
-`sagat_quota_step_log_wait_slots`, `sagat_quota_step_log_usage`, `sagat_quota_step_log_counters`,
-`sagat_quota_step_log_idle_tenants` and `sagat_quota_step_log_reclaim_idle` (`EXECUTE` to `sagat_app`, revoked from
-`PUBLIC`); the counter sequences revoked from `sagat_app`; no privilege on `step_log_quota_leases` for `sagat_app`,
+`sagat_quota_step_log_reclaim` (executable by neither `PUBLIC` nor `sagat_app`, revoked explicitly), and six definer
+functions `sagat_app` may execute: `sagat_quota_step_log_reserve`, `sagat_quota_step_log_top_up`,
+`sagat_quota_step_log_usage`, `sagat_quota_step_log_counters`, `sagat_quota_step_log_idle_tenants` and
+`sagat_quota_step_log_reclaim_idle` (`EXECUTE` to `sagat_app`, revoked from `PUBLIC`). Two helpers are `SECURITY
+INVOKER`, not definer functions, and `sagat_app` may execute them: `sagat_quota_step_log_top_up_mark()` (`IMMUTABLE`,
+65,536) and `sagat_quota_step_log_wait_slots()` (`STABLE`, decision D041-134), revoked from `PUBLIC`; the counter sequences revoked from `sagat_app`; no privilege on `step_log_quota_leases` for `sagat_app`,
 revoked explicitly; the carry function `sagat_step_log_carry` is `SECURITY INVOKER`, `EXECUTE` to `sagat_app` only;
 the accessor is revoked from `PUBLIC`; the functions the migration replaces keep their `SECURITY DEFINER`, pinned
 `search_path` and grants, tested in T041-5. The runtime
@@ -1698,9 +1737,11 @@ its list of approved additions. The `ScriptExecution` change of FR-041-022 is ad
 and `listScriptExecutions`, which T041-29 changes and records in the digest's comment. No check today fails when a
 component schema used by an existing operation changes; T041-29 says so in its pull request.
 `recordScriptExecution` does not change: the script marker is keyed on the execution the report creates (section 7).
-The `Quota` description states one more case in which `used` is absent: `tenant_step_log_bytes` shows no `used` to a
-caller without `run:logs:read`, so that a viewer, who holds `quota:read`, cannot watch how much a tenant's runs log (ADR-0085 decision 6;
-T041-4).
+The `Quota` description states one more case in which `used` is absent: `tenant_step_log_bytes` shows no `used`, and
+`usageWithheld: true`, to a caller who does not hold both `run:logs:read` and the PII reveal grant in every namespace
+of the tenant (fail-closed), so that neither a viewer, who holds `quota:read`, nor a reader without a namespace's grant
+can watch how much the tenant's runs log; the resource and its limit are still shown (ADR-0085 decision 6;
+OD-2026-11-20-19, decision D041-133; T041-4).
 
 ### 6. The six SDKs
 
@@ -2000,7 +2041,7 @@ the binary leaves the tables unread; rolling back the migration needs the lines 
 |---|---|
 | A step's code logs a secret the platform cannot recognise (transformed, short, obtained elsewhere) | G041-001, accepted (O041-011). Value redaction with the process's secret set, two shape scrubbers, a permission of its own, the PII grant on every read, the namespace switch, the delete route and its runbook |
 | Capture is on by default and sends text a customer wrote for their own machines | O041-001 chosen by the owner; the release notes say it first; the namespace switch and the worker option; the runbook |
-| Capture on by default costs every tenant the measured throughput at small deployments without opting in (at 1 × 16 about 18% of the rate and +31.9% to +36.9% of a carrying completion's p99) | The owner accepted the measured cost of capture as the feature ships, on by default (O041-001), with OD-2026-11-20-13; the levers are the namespace switch (`step_log_attempt_records = 0`) and the deployment switch `SAGAT_STEP_LOGS_ENABLED`, documented in the runbook and the release notes; SC-041-007's floor at 1 × 16 catches a regression beyond that cost |
+| Capture on by default costs every tenant the measured throughput at small deployments without opting in (at 1 × 16 about 18% of the rate and +31.9% to +36.9% of a carrying completion's p99) | The owner accepted the measured cost of capture as the feature ships, on by default (O041-001), with OD-2026-11-20-13; the levers are the namespace switch (`step_log_attempt_records = 0`) and the deployment switch `SAGAT_STEP_LOGS_ENABLED`, documented in the runbook and the release notes; SC-041-007's floor at 1 × 16 catches gross regressions (its (2b) floor admits about +94% of p99), and task T041-9 reports to the owner a carrying completion's p99 above the accepted +36.9% |
 | The six SDKs' redaction drifts apart | One rule (`redact`) and one canonical number form in `sdks/SPEC.md`; `step-logs-redaction` with the same goldens in six languages |
 | A hand-written 1.7 client skips redaction | ADR-0085 rule 12 states it; the server's shapes and sensitive names still apply; the permission and the grant bound who reads |
 | Log batches make completions wait | Charges go to quota leases and the usage row only to a refill (ADR-0097); no lock a report, task lease or heartbeat takes before L1; per-tenant tickets and wait slots; the queue bound of section 2, shown by the quota-lease tests of T041-6; the effect on time that SC-041-007 bounds per size, measured by T041-35 before the schema and T041-9 on the built carry |
@@ -2010,8 +2051,8 @@ the binary leaves the tables unread; rolling back the migration needs the lines 
 | The carry's own writes cost the completion rate (measured: the stream row 5.0%, the lines 2.2%, D041-107) | A new stream written once and later updates HOT (D041-111); T041-35's fourth run measured the result: every gate passed at 8 × 128 and the cost at 1 × 16 was accepted (OD-2026-11-20-13), so SC-041-007 is a criterion per size (D041-126) |
 | A carry makes its report fail or loop | Everything that can be checked is checked before the transaction and an invalid carry is ignored; a refusal of the carry's charge, or a fallback refill past its 200 ms budget or with no wait slot free, is answered inside its call by a mark-only stream that says why (one subtransaction, D041-119); a guard's raise or a failed carry call re-runs the report without the carry's lines, at most four transactions in all (section 2a); tested by T041-36 |
 | A report would wait on a step-log lock while it holds the run row (an ingest of its own attempt, the purge or the delete route on its stream, a change of a step-log resource) | A carry only tries its step-log locks (the policy fences, the attempt's stream lock, the stream row) and, when one is held, writes nothing more (`contended`), so the report never waits for them and commits in its first transaction; the SDK reports only after its batch in flight is answered or 2 seconds passed, so the case is rare; tests in T041-36 |
-| A fallback refill waits for the usage row under the run lock, so the run's other reports, heartbeats, cancels and signals queue behind it | Measured far from the limit with direct connections and every refill inside a report: 0.31% of ten-line carries and 2.0% of 64-record carries refilled, the longest refill-written carry 726.7 ms, 3.6 × *b* (T041-35's fourth run); the top-up after the commit moves the steady refills out of reports (D041-124); the row tried `NOWAIT` first, each lock acquisition at most 200 ms and only with one of the tenant's seven wait slots, the statement timeout the hard bound; past *b* or with no slot the carry answers `service_busy` and the report commits; a report waits for the usage row at most once before its commit; counted (`step_log_quota_fallbacks_total`) and alerted (`SagatStepLogServiceBusyDrops`); T041-37 measures a fan-out run during fallback waits, a cold start and the longest run-row hold, each with a criterion |
-| One tenant's waits on its usage row hold the replica's shared pool connections that other tenants' reports and heartbeats need | At most seven connections of a replica per tenant (the wait slots, D041-125), the tenant's Logs tickets; a held-lock test with a second tenant as the victim (T041-36) and the two-tenant regime of T041-37 with its criterion fixed before it runs |
+| A fallback refill waits for the usage row under the run lock, so the run's other reports, heartbeats, cancels and signals queue behind it | Measured far from the limit with direct connections and every refill inside a report: 0.31% of ten-line carries and 2.0% of 64-record carries refilled, the longest refill-written carry 726.7 ms, 3.6 × *b* (T041-35's fourth run); the top-up after the commit moves the steady refills out of reports (D041-124); the row tried `NOWAIT` first, each lock acquisition at most 200 ms and only with a tenant and a replica wait slot (3 and 5 at the default pool, D041-134), the statement timeout the hard bound; past *b* or with no slot the carry answers `service_busy` and the report commits; a report waits for the usage row at most once before its commit; counted (`step_log_quota_fallbacks_total`) and alerted (`SagatStepLogServiceBusyDrops`); T041-37 measures a fan-out run during fallback waits, a cold start and the longest run-row hold, each with a criterion |
+| One tenant's waits on its usage row hold the replica's shared pool connections that other tenants' reports and heartbeats need | At most *P* = ⌈*Q* / 2⌉ connections of a replica per tenant and *Q* = max(1, ⌊N / 4⌋) for all tenants together (3 and 5 at the default pool of 20; D041-125, D041-134), so step-log work holds at most the Logs cap plus *Q* and leaves at least 5 of 20 connections to task leases, heartbeats and reports that do not wait; held-lock tests with a second tenant as the victim and the replica cap reached (T041-36), and the two-tenant and three-tenant regimes of T041-37 with their criteria fixed before they run |
 | Behind a transaction pooler the top-up can run on another backend than the carry, so carries fall back more often (G041-027, accepted, OD-2026-11-20-15) | Correct either way; the fallback rate is then about the fourth run's, which passed at 8 × 128; `step_log_quota_fallbacks_total` and `step_log_quota_top_ups_total` show the regime; session pooling is not required and `docs/runbooks/scaling.md` stands (D041-130); T041-37 measures it behind PgBouncer in transaction mode; ADR-0097 option 1c is the named alternative past its declared threshold |
 | A carry's records are dropped while the tenant has room (a fallback past its budget or with no wait slot free, or room held by open writers' quota leases) | The reader sees why (`notStoredReason = service_busy`, `ceiling = tenant_quota`) on the stream and in Studio; the held room is bounded (section 2b); the busy case is alerted and accepted by the owner (G041-026, OD-2026-11-20-14); the fourth run counted one busy carry in 864,000 and closed G041-025 |
 | Lines of one attempt shown out of sequence order (a carry whose transaction id is below that of a batch stored after it) | The stream records `last_stored_xid`; such a carry keeps no record and counts them (`out_of_order`, section 2a); tested by T041-36 |
@@ -2067,7 +2108,7 @@ the binary leaves the tables unread; rolling back the migration needs the lines 
 | Condition on principle IV: viewers get the script execution without its log | The owner closed the script log to callers without the step-log right (OD-2026-11-13-18) | Leaving it readable under `script:read`, which contradicts ADR-0085 rule 6 |
 | Condition on principle V: the `[REDACTED]` oracle over the process's secret set (G041-017) | The secret set lives for the process (OD-2026-11-15-7), so a line is redacted with every value the process resolved; accepted by the owner (OD-2026-11-16-7) | A set per attempt, rejected by the owner (O041-017) |
 | Condition on principle V: the read cursor shows the database's transaction counter (G041-008) | The read order is the storing transactions' ids; the owner accepted the plain cursor (OD-2026-11-15-11) | A cursor encrypted with a server key, which no other cursor of the API needs (D041-035) |
-| Exact per-tenant step-log quota leases (ADR-0097): a table, a column, the charge, reserve, top-up, refill, quota-reclaim, idle-reclaim and usage functions, a release branch, the wait slots, the metrics of data-model.md §7 and two alerts; and the residual gaps G041-023, G041-026 and G041-027 | The tenant's one usage row capped a tenant's charging commits at about 800 a second and turned batches away at 8 × 128 (D041-106, D041-108); the quota must stay exact (OD-2026-11-20-6); the top-up after the commit takes steady refills out of reports with no state in the store (OD-2026-11-20-18); the leases do not change the content class's ceiling: every completion that stores output still passes the usage row at its commit (G041-024) | The simpler alternative rejected: one unlocked ceiling, read without a lock at each charge, with an overshoot proved to be at most the pool's connections times a 24 KiB carry (ADR-0097 option 4): admissible if proved and documented, but every quota view would carry that tolerance, against this machinery and its three gaps. Also: the usage row at commit (the measured ceiling); a step-log row of its own (moves the queue); striped counters (false refusals, or an overshoot); a release that folds every quota lease waiting (stalls the tenant on the purge's cadence, D041-112); an ensure before each report that needs room, which needed the backend's identity a pooled connection cannot give without a statement (replaced, OD-2026-11-20-18); a bounded fallback with no top-up (every steady refill would wait under the run lock); a quota lease per (replica, connection slot), ADR-0097 option 1c (the slot token is the client's word, not the server's) |
+| Exact per-tenant step-log quota leases (ADR-0097): a table, a column, the charge, reserve, top-up, refill, quota-reclaim, idle-reclaim and usage functions, a release branch, the wait slots, the metrics of data-model.md §7 and two alerts; and the residual gaps G041-023, G041-026 and G041-027 | The tenant's one usage row capped a tenant's charging commits at about 800 a second and turned batches away at 8 × 128 (D041-106, D041-108); the quota must stay exact (OD-2026-11-20-6); the top-up after the commit takes steady refills out of reports with no state in the store (OD-2026-11-20-18); the leases do not change the content class's ceiling: every completion that stores output still passes the usage row at its commit (G041-024) | The simpler alternative rejected: one unlocked ceiling, read without a lock at each charge, with an overshoot proved to be at most the pool's connections times a 24 KiB carry (ADR-0097 option 4): admissible if proved and documented, but every quota view would carry that tolerance, against this machinery and its three gaps. Also: the usage row at commit (the measured ceiling); a step-log row of its own (moves the queue); striped counters (false refusals, or an overshoot); a release that folds every quota lease waiting (stalls the tenant on the purge's cadence, D041-112); an ensure before each report that needs room, which needed the backend's identity a pooled connection cannot give without a statement (replaced, OD-2026-11-20-18); a bounded fallback with no top-up, a measured and acceptable baseline (the fourth run's 0.31% of ten-line carries refilled inside a report passed every gate at 8 × 128), which the owner chose to improve on by the top-up after the commit (OD-2026-11-20-18; task T041-37 shows that fallbacks stay at most at that 0.31%); per-tenant wait slots alone (decision D041-125 as first written), which bounded one tenant but not the sum over tenants, and a Rust semaphore held across every carrying report, which cannot bound a wait that starts inside the function and would take permits from carries on the fast path (decision D041-134); a quota lease per (replica, connection slot), ADR-0097 option 1c (the slot token is the client's word, not the server's) |
 | Tables with no foreign key to `runs` | A foreign key makes each insert take a lock that conflicts with the engine's run lock | Keeping the convention |
 | A new RPC in protocol minor 1.7, carrying the session token, for a long step's batches | A long step must be readable while it runs, and its batches must not share the fate of the heartbeat; the session's namespace, minor and subject must be checkable | A field on `Heartbeat` (statements under the run lock once a second per long step); an RPC with no session |
 | The last records on the report (at most 64), one database-function call in its transaction whose locks are only tried, a stream lock per attempt, a charge per insert statement, a downgrade re-run when the carry call fails, and an order guard (ADR-0095, OD-2026-11-20-1) | T041-31 showed that a transaction per batch and a final batch lowered the rate by 13% to 21% (medians); the first carry spike (T041-35, 2026-11-20) showed five round trips and a charge per row add more than +10% to a 7.5 ms p99 | Every record on the report with nothing streamed; a second transaction after the report in the same call (the extra commit the owner chose to remove); the plan kept in Rust at the cost of a second round trip (what OD-2026-11-20-1 removed) |
@@ -2428,14 +2469,18 @@ Slice B, the server stores:
     - the objects of data-model.md §3b (ADR-0097): `step_log_quota_leases`; `tenant_retained_usage.step_log_leased_bytes`
       with its CHECK `tenant_retained_usage_step_log_leased_nonnegative` added `NOT VALID` and validated by a second
       migration of this task, `<timestamp>_step_logs_validate`; the functions `sagat_quota_step_log_charge`,
-      `sagat_quota_step_log_refill` (with the wait-slot rule of decision D041-125 for every bounded wait on the usage row,
-      a carry's fallback, a batch's T8, the script marker and the top-up alike: the usage row tried `NOWAIT` first, a
-      wait only while holding one of the tenant's seven slots on this replica; the refill runs in the insert's statement
-      trigger, where nothing a caller cannot change tells a batch from a carry), `sagat_quota_step_log_refill_wait`,
-      `sagat_quota_step_log_top_up` (decision D041-124; it replaces the ensure and takes no caller amount),
-      `sagat_quota_step_log_reserve`, `sagat_quota_step_log_counters`, `sagat_quota_step_log_idle_tenants`,
-      `sagat_quota_step_log_reclaim_idle`, the limit-change trigger function `sagat_quota_step_log_reclaim` and
-      `sagat_quota_step_log_usage`; the release branch of the finalizer that never waits for a quota lease; and the
+      `sagat_quota_step_log_refill` (with the wait-slot rule of decisions D041-125 and D041-134 for every wait on the
+      usage row, a carry's fallback, a batch's T8 and the script marker alike: the usage row tried `NOWAIT` first, a
+      wait only while holding one of the tenant's *P* slots and one of the replica's *Q* slots on this replica, *Q* =
+      `sagat_quota_step_log_wait_slots()` and *P* = ⌈*Q* / 2⌉; the refill runs in the insert's statement trigger, where
+      nothing tells a batch from a carry), `sagat_quota_step_log_refill_wait`, `sagat_quota_step_log_top_up` (decision
+      D041-124; it replaces the ensure, takes no caller amount, tries the usage row `NOWAIT` only, takes no slot and
+      reclaims no other quota lease, decision D041-134), `sagat_quota_step_log_reserve`, `sagat_quota_step_log_counters`,
+      `sagat_quota_step_log_idle_tenants`, `sagat_quota_step_log_reclaim_idle` (returning `(reclaimed integer, skipped
+      boolean)`, `skipped` true when the tenant's step-log fence was held), the limit-change trigger function
+      `sagat_quota_step_log_reclaim` and `sagat_quota_step_log_usage`; the two invoker helpers
+      `sagat_quota_step_log_top_up_mark()` (`IMMUTABLE`, 65,536) and `sagat_quota_step_log_wait_slots()` (`STABLE`,
+      `sagat.step_log_wait_slots` clamped to 1 to 64, 1 when unset); the counter sequences; the release branch of the finalizer that never waits for a quota lease; and the
       quota reclaim on a change of the limit;
     - a constraint name of its own for every raise of the quota-lease functions and of the finalizer's step-log
       branch, so that the store maps each to one typed refusal;
@@ -2445,14 +2490,22 @@ Slice B, the server stores:
   - *Rust*: the quota readers of `crates/infra-postgres/src/quotas.rs` (`:1228-1235` read S today) moved to
     `sagat_quota_step_log_usage`, with a test; the typed refusals of `tenant_step_log_quota_exceeded` and
     `tenant_step_log_quota_held` in `classify` of `crates/infra-postgres/src/identity.rs` (`:787-791`); and a
-    per-replica `application_name`, so that a quota lease's backend is attributable to a replica and the wait slots of
-    decision D041-125 are per replica: `PoolConfig` (`crates/infra-postgres/src/pool.rs:30-52`) gains an
-    `application_name` field, which `pool.rs:70` uses instead of its fixed `sagat-octopus-orchestrator`, and every
-    process that builds a `PoolConfig` (`apps/control-plane/src/{lib.rs,registry.rs}`) sets it to
-    `sagat-octopus-orchestrator/<instance id>`, the id the process registers with in the instance registry
-    (`new_instance_id`, `apps/control-plane/src/registry.rs:46`); the prefix is kept, so
-    `scripts/smoke-compose.sh:81` matches `application_name LIKE 'sagat-octopus-orchestrator/%'`; a test that two pools
-    built with two instance ids show two names in `pg_stat_activity`.
+    per-replica `application_name` and the wait-slot setting, so that a quota lease's backend is attributable to a
+    replica and the wait slots of decisions D041-125 and D041-134 are per replica:
+    - `PoolConfig` (`crates/infra-postgres/src/pool.rs:11-24`) gains `application_name` and `step_log_wait_slots`
+      fields; the pool's connect options use `application_name` instead of the fixed `sagat-octopus-orchestrator`
+      (`pool.rs:70`) and set `sagat.step_log_wait_slots` to max(1, ⌊N / 4⌋), N the pool's maximum, on every
+      connection when it connects;
+    - the execution engine (`apps/execution-engine/src/lib.rs`, whose pool, opened at `:95`, is the one that charges
+      quota leases) and the control plane (`apps/control-plane/src/lib.rs`) create their instance id before they open
+      their pool (today `registry::member` creates it at `apps/control-plane/src/registry.rs:71`, after the pool is
+      opened at `apps/control-plane/src/lib.rs:523` and `apps/execution-engine/src/lib.rs:95`) and pass it both to
+      `pool_config` / `open_pool` (a new `instance_id` argument) and to `registry::member` (which takes the id instead of
+      creating it); the name is `sagat-octopus-orchestrator/<instance id>` (27 + 36 = 63 bytes, PostgreSQL's limit);
+      the one-shot processes (migrate, inventory, handover, cleanup) use `sagat-octopus-orchestrator/<process kind>`;
+    - the prefix is kept, so `scripts/smoke-compose.sh:81` matches `application_name LIKE 'sagat-octopus-orchestrator/%'`;
+    - tests: two pools built with two instance ids show two names in `pg_stat_activity`, and a pool of 20 shows
+      `current_setting('sagat.step_log_wait_slots') = '5'` on its connections.
   - *Tests*, in `tests/integration/claim-transition-efficiency/step_log_isolation.rs`, each with a plain `INSERT` into
     `step_log_lines` or a direct call of a §3b function (no carry: the carry's cases are task T041-36's), with held
     transactions and `pg_stat_activity`, never sleeps:
@@ -2463,20 +2516,25 @@ Slice B, the server stores:
       usage row; a refill alone waits for it, at most *b* inside a batch's insert, restoring the caller's
       `lock_timeout`; a caller's lower `lock_timeout` is kept, and a caller's `lock_timeout = 0` (none) counts as no
       timeout, so the refill sets *b*; a refill whose usage row is held by a holder that updated it waits and writes;
-    - the wait slots, through the top-up: with the usage row held by the test, eight top-ups of the tenant whose quota
-      leases are short, on eight backends of one `application_name`: seven wait for the row (`pg_stat_activity` shows
-      seven waiters) and the eighth answers `busy` at once; a top-up of the same tenant under another
-      `application_name` takes a slot of its own and waits; a batch's refill (a plain `INSERT` of lines) with all seven slots taken raises `55P03` at once;
+    - the wait slots, through plain `INSERT`s of lines (a batch's refill), with `sagat.step_log_wait_slots = 5` (*Q* = 5,
+      *P* = 3) and the budget function replaced by the test's own bound: with the tenant's usage row held by the test and
+      its quota leases emptied, five inserts on five backends of one `application_name`: three wait for the row, each
+      holding a tenant slot and a replica slot (`pg_stat_activity` and `pg_locks`), and two raise `55P03` at once; with
+      five tenants' rows held and one waiter each, a sixth tenant's insert raises `55P03` at once; an insert under
+      another `application_name` takes slots of its own; the slot keys are `hashtextextended` single-bigint keys;
     - the top-up (`sagat_quota_step_log_top_up`): it answers without raising (`room`, `made`, `limit`, `held`, `busy`,
       `contended`); with at least 65,536 bytes of room it answers `room` and takes no lock on the usage row; below it,
-      it grants exactly its share, min(1 MiB, ⌊F / (2(*A* + 1))⌋), and charges nothing; it answers `busy` when the usage
-      row is held past *b* or no wait slot is free; it answers `contended` with the step-log fence held;
+      it grants exactly its share, min(1 MiB, ⌊F / (2(*A* + 1))⌋), and charges nothing, and answers `room` when that
+      share is not above the writer's current room; it answers `busy` at once when the usage row is held (no wait, no
+      wait slot taken, `pg_locks`); it reclaims no other quota lease (idle quota leases keep their room after a top-up
+      near the limit); it answers `contended` with the step-log fence held;
     - the deadlock cases of section 2b, a limit change against an open idle reclaim included; a release never waits
       for a held quota lease and refuses an underflow of U; a limit lowered above the usage still admits what fits; a
       change of the limit reclaims every quota lease; with enforcement off a refill grants past the limit and the usage
       stays exact;
     - the idle reclaim folds and deletes only quota leases idle past the interval; the quota lease of an ended backend
-      is reclaimed at once;
+      is reclaimed at once; with the tenant's step-log fence held it answers `skipped` true and reclaims nothing, and
+      with nothing idle `skipped` false and 0;
     - the exact remainder admitted from idle quota leases near the limit and one byte more refused; the small-quota
       test; the held-room bound (`room_held_by_open_writers_is_bounded_from_the_free_room`: *k* = 1, 2, 8 and 32 writers
       from a quarter-used limit, a top-up's grant counted at its share); a lowered limit stopping charges into quota
@@ -2493,11 +2551,14 @@ Slice B, the server stores:
       `PUBLIC` nor `sagat_app`; every function the migration creates or replaces (`sagat_quota_step_log_allowance`,
       `sagat_quota_add_delta` with its new signature, `sagat_quota_row_delta`, `sagat_quota_flush_deltas`,
       `sagat_quota_measure`) keeps or has its `SECURITY DEFINER` and pinned `proconfig` as before, and none is
-      executable by `PUBLIC` or, except `sagat_quota_step_log_allowance` and the six quota-lease functions ADR-0097
-      decision 1 lists (`sagat_quota_step_log_reserve`, `sagat_quota_step_log_top_up`, `sagat_quota_step_log_usage`,
-      `sagat_quota_step_log_counters`, `sagat_quota_step_log_idle_tenants`, `sagat_quota_step_log_reclaim_idle`), by
-      `sagat_app`, the privilege audit checking exactly that list; the runtime-role bypass tests extended to the quota
-      lease table and functions (no session setting is read by them); a migration test that a freshly migrated
+      executable by `PUBLIC` or, except `sagat_quota_step_log_allowance`, the six definer quota-lease functions and the
+      two invoker helpers ADR-0097 decision 1 lists (`sagat_quota_step_log_reserve`, `sagat_quota_step_log_top_up`,
+      `sagat_quota_step_log_usage`, `sagat_quota_step_log_counters`, `sagat_quota_step_log_idle_tenants`,
+      `sagat_quota_step_log_reclaim_idle`; `sagat_quota_step_log_top_up_mark`, `sagat_quota_step_log_wait_slots`), by
+      `sagat_app`, the privilege audit checking exactly that list and that the counter sequences are revoked from
+      `sagat_app`; the runtime-role bypass tests extended to the quota lease table and functions (none reads a session
+      setting except the wait slots' `application_name` and `sagat.step_log_wait_slots`, set by the pool at connect,
+      which a session that changes them can only use to share other slots); a migration test that a freshly migrated
       database's `sagat_quota_step_log_refill_wait()` returns `interval '200 milliseconds'`;
     - two source-text checks of the migrations: only the top-up, the refill, the release branch, the idle reclaim and
       the limit-change trigger lock `tenant_retained_usage` for the class `step_log`; and no Rust source and no SQL
@@ -2527,7 +2588,8 @@ Slice B, the server stores:
   Files: create the migrations `<timestamp>_step_logs` and `<timestamp>_step_logs_validate` (`.up.sql`,
   `.down.sql`), `tests/integration/claim-transition-efficiency/step_log_isolation.rs`; modify
   `crates/infra-postgres/src/{identity.rs,quotas.rs,pool.rs}` (the reclaim on a change of the limit is a trigger of
-  its own, which `quotas.rs` does not call), `apps/control-plane/src/{lib.rs,registry.rs}`, `scripts/smoke-compose.sh`,
+  its own, which `quotas.rs` does not call), `apps/control-plane/src/{lib.rs,registry.rs}`,
+  `apps/execution-engine/src/lib.rs` and the one-shot processes' pool builders, `scripts/smoke-compose.sh`,
   `tests/integration/workflow-primitives/scoped_event_storage/guards.rs` (`:98`, the new column excluded from the
   snapshot as `step_log_bytes` is), `crates/infra-postgres/storage-classification.json`,
   `tests/integration/security-multitenancy/durable_quotas.rs`, `tests/integration/platform-foundation/runtime_privileges.rs`,
@@ -2631,15 +2693,18 @@ Slice B, the server stores:
   - The idle and ended-backend quota reclaims of section 2b (ADR-0097 decision 1): a third method,
     `MaintenanceStore::reclaim_idle_step_log_leases(max_tenants: u32) -> Result<IdleLeaseReclaim, StoreError>`, which
     calls `sagat_quota_step_log_idle_tenants(max_tenants)` once and then, one tenant a transaction,
-    `sagat_quota_step_log_reclaim_idle(tenant)`; `IdleLeaseReclaim` counts the tenants reclaimed and those skipped
-    because their step-log fence was held (they are tried again at the next pass); the pass calls it with
+    `sagat_quota_step_log_reclaim_idle(tenant)`, which answers `(reclaimed integer, skipped boolean)`; `IdleLeaseReclaim`
+    counts the tenants reclaimed and those the function answered `skipped` (their step-log fence was held; they are
+    tried again at the next pass), so a skip is never mistaken for a tenant with nothing idle; the pass calls it with
     `max_tenants = 100` each run.
-  - The publisher of the counters that SQL keeps (decision D041-128): on the replica that holds shard 0, each run of the
+  - The publisher of the counters that SQL keeps (decision D041-128): on the replica that holds shard 0 (the pass
+    learns it from `Keeper::shards`, `crates/scheduler/src/shards.rs:77`), each run of the
     pass reads `sagat_quota_step_log_counters()` once and adds the deltas since its last read to
     `step_log_quota_refills_total{kind="refill"|"reclaim"|"idle"|"ended"}` and sets the gauge
     `step_log_quota_lease_rows`; the sequences are not transactional, so these count attempts, rolled-back ones
     included, which the metrics' help text says; a replica that loses shard 0 stops publishing, and the next holder
-    starts from its own first read (no delta is published twice).
+    starts from its own first read (no delta is published twice) and clears its gauge, so that no stale
+    `step_log_quota_lease_rows` stays exported.
   Tests, at the store, asserting rows by SQL: a purge releases the quota bytes; a lowered retention leaves existing
   streams' expiry as it was and applies to new streams; an idle stream whose task lease lives is marked and its next
   batch is `REMOVED`; a stream row held by an ingest (the hold after T7) is skipped by the mark and marked by the next
@@ -2731,18 +2796,30 @@ Slice B, the server stores:
     (data-model.md §8a; `SECURITY INVOKER`, pinned `search_path`, `EXECUTE` to `sagat_app` only, revoked from `PUBLIC`;
     its down drops it; named `step_log*` so that T041-32's selector runs the step-log suites, as must any later
     migration that replaces it), following `.claude/skills/migration`; the function refuses at its top any
-    `p_mark_reason` other than `invalid`, `secret` and `content_fallback` (with a fixed text), returns its drops keyed by
+    `p_mark_reason` other than `invalid`, `secret`, `content_fallback` and `failed` (with a fixed text), returns its drops keyed by
     `DropReason`, `ceiling_reason`, `not_stored_reason`, `path` (`fast`, `refill`, `none`), `room` (the room left in
     the writer's quota lease, NULL exactly when `path` is `none`) and `top_up` (true exactly when `room` is not NULL
-    and under 65,536 bytes), and takes, in its fallback, the usage row `NOWAIT` first and a wait slot before it waits
-    (decision D041-125), answering `service_busy` past *b* or with no slot free; the upgrade-boundary oracle moves to
+    and under 65,536 bytes), and takes, in its fallback, the usage row `NOWAIT` first and a tenant and a replica wait slot before it waits
+    (decisions D041-125 and D041-134), answering `service_busy` past *b* or with no slot free; the upgrade-boundary oracle moves to
     it in the three files of T041-4 (`tests/integration/workflow-primitives/{release_upgrade.rs,release_upgrade_inflight.rs,release_upgrade_callback_cutover.rs}`);
     the privilege audit of `tests/integration/platform-foundation/runtime_privileges.rs` gains `sagat_step_log_carry`
     (`SECURITY INVOKER`, executable by `sagat_app` only);
-  - the top-up after the commit (ADR-0097 decision 3b as amended by OD-2026-11-20-18, decision D041-124): the report
-    transactions `PgRunTx` and `PgPathExecutionTx` own their `PoolConnection` and begin on it by `begin_safely`, keep
-    the carry's returned `top_up` and the principal's tenant, and in `commit`, once the commit has returned, when
-    `top_up` is true, hand the connection to a spawned task that runs `SELECT * FROM sagat_quota_step_log_top_up($1)`
+  - the top-up after the commit (ADR-0097 decision 3b as amended by OD-2026-11-20-18, decision D041-124), and the
+    connection ownership it needs (sqlx 0.9's `Transaction::commit(self)` consumes the transaction and returns its
+    connection to the pool, so no connection can be kept from a `Transaction<'static, Postgres>`):
+    - the report transactions `PgRunTx` and `PgPathExecutionTx` hold a `PoolConnection<Postgres>` instead of a
+      `Transaction<'static, Postgres>` (`crates/infra-postgres/src/execution.rs:3825` and `:942`) and send `BEGIN`,
+      `COMMIT` and `ROLLBACK` themselves; sqlx already sends `BEGIN` as a statement, so the budget is unchanged;
+    - a variant of `begin_safely` (`crates/infra-postgres/src/pool.rs:99-132`) acquires the connection and sends
+      `BEGIN` inside its spawned task, as `begin_safely` does, so a cancelled caller never leaves a half-begun
+      connection, and marks the connection `close_on_drop()`;
+    - `commit` sends `COMMIT` and clears `close_on_drop` only when it succeeds; `rollback` the same with `ROLLBACK`;
+      a transaction dropped without either, or whose `COMMIT` fails, closes its connection instead of returning it to
+      the pool inside a transaction;
+    - the transaction helpers of `crates/infra-postgres/src/execution.rs` that take
+      `&mut Transaction<'static, Postgres>` take `&mut PgConnection`;
+    - the transactions keep the carry's returned `top_up` and the principal's tenant, and in `commit`, once `COMMIT`
+      has returned, when `top_up` is true, move the connection into a spawned task that runs `SELECT * FROM sagat_quota_step_log_top_up($1)`
     with that tenant, as one statement in its own implicit transaction, and then drops the connection back into the
     pool; `commit` returns without waiting for it, so the report's answer is not delayed; no top-up runs after a
     transaction that did not commit, after a carry whose `path` is `none`, or for a carry C0 refused; the application
@@ -2753,7 +2830,8 @@ Slice B, the server stores:
     and path transactions, implemented for `PgRunTx` and `PgPathExecutionTx` in `crates/infra-postgres/src/step_logs.rs`
     through a `pub(crate)` connection accessor in `execution.rs`; a property test that runs the function and the
     domain's `plan_batch` on the same generated carries (new and existing streams, each ceiling met, the tenant allowance
-    exceeded, `in_order` false, duplicates, gaps, and each mark-only reason) and requires the same kept sequences,
+    exceeded, `in_order` false, duplicates, gaps, each mark-only reason, `failed` included, and each answer of the
+    function's block) and requires the same kept sequences,
     marker, counters and drops by reason (D041-100); nothing outside the function's own allowance read changes its
     plan (no answer of an earlier transaction is an input);
   - `StoreError::StepLogRefused` (a guard's raise, by its constraint name) and `StoreError::StepLogCarry` (the
@@ -2795,8 +2873,9 @@ Slice B, the server stores:
     the completion with a next step whose short step carries ten records, pinned warm-low (fast path, `top_up` true:
     exactly one top-up statement after the commit, in its own transaction, on the same backend) and cold (no quota
     lease: `path` `refill`, its block, one write of the usage row and one quota-lease insert in the second measure,
-    and no top-up after); a warm carrying report runs no statement outside its budget (`pg_stat_statements` of its
-    backend after the commit);
+    and no top-up after); a warm carrying report runs no statement outside its budget (after the commit, at a barrier,
+    `pg_stat_activity` shows the report's backend idle with no query since the `COMMIT`, and the `calls` of the
+    top-up's statement in `pg_stat_statements` are unchanged);
   - the second and third measures of section 2a asserted with each: the step-log rows a report transaction wrote,
     counted from the step-log tables; and the call's nested statements (`toplevel = false`) and their rows, an equality
     whose value the test's comment derives statement by statement for each case (the prototype's derivation of 26 for
@@ -2844,18 +2923,34 @@ Slice B, the server stores:
     are counted and change no report; no top-up runs after a mark-only, `contended` or `off` carry, a report that
     rolled back, or a carry C0 refused; a worker of tenant A sending a carrying report on tenant B's run gets the answer
     it gets for a missing run, and B's usage row, quota leases and counters are unchanged;
-  - the wait slots (decision D041-125), with held locks and `pg_stat_activity`: tenant A's usage row held by a test
-    transaction; nine carrying reports of A whose carries need a fallback (A's quota leases emptied first, as T041-6's
-    fixture does): exactly seven wait on the row's lock and the other two commit with `service_busy` while it is held
-    (7 + 2 = 9); a carrying report of tenant B, with room in its quota lease, commits while A's row is still held, so B's
-    report is not delayed by A's waits; shown failing under two hand mutations (eight slots; the slot skipped);
+  - the wait slots (decisions D041-125 and D041-134), with held locks, `pg_stat_activity` and `pg_locks`, the test's
+    connections setting `sagat.step_log_wait_slots = 5` (*Q* = 5, *P* = 3, the default pool's) and the fallback's budget
+    function replaced by the test's own bound in its database, so that no arrival depends on timing (rule 18):
+    - tenant A's usage row held by a test transaction; *P* + 2 = 5 carrying reports of A whose carries need a fallback
+      (A's quota leases emptied first, as T041-6's fixture does), on one `application_name`: exactly 3 wait on the row's
+      lock, each holding one tenant slot and one replica slot (`pg_locks` of the slot keys), and the other 2 commit with
+      `service_busy` while it is held (3 + 2 = 5);
+    - the replica cap: the usage rows of five tenants held, one waiting fallback of each (5 = *Q* replica slots held); a
+      sixth tenant's carry that needs to wait answers `service_busy` at once;
+    - meanwhile a carrying report of tenant B, with room in its quota lease, commits, and a heartbeat and a task lease
+      of B get their connections, so B is not delayed by the others' waits;
+    - shown failing under three hand mutations (*P* computed as *Q*; the replica slot skipped; the tenant slot skipped);
   - a `service_busy` carry: the stream's `not_stored_reason` is `service_busy` and `ceiling_reason` unchanged, asserted by
     SQL (the streams route reads it in task T041-11); the warning is written once for two such carries of a tenant
     within a minute, the second counted in the next one;
-  - a failing carry statement (a trigger the test installs that raises) and a guard's raise (a quota lease's `CHECK`
-    forced by the test) each re-run the report once with no carry, the same outcome and output, `failed` counted, no
-    final mark; the same failure in a content fallback's mark-only carry runs it once more with none, the third and last
-    transaction;
+  - a guard's raise (a quota lease's `CHECK` forced by the test): the report is re-run once with a mark-only carry whose
+    reason is `failed`, two transactions in all, the same outcome and output, the carry's records counted `failed`, and
+    the stream keeps its final mark (ADR-0095 decision 5);
+  - a failing carry statement (a trigger the test installs that raises): the report is re-run once with no carry, the
+    same outcome and output, `failed` counted, no final mark; the same failure in a content fallback's mark-only carry
+    runs it once more with none, the third transaction, and a guard's raise followed by a content raise and a failing
+    mark-only call reaches the fourth and last;
+  - a report future dropped between `BEGIN` and `COMMIT`, and a `COMMIT` that fails (the test terminates the backend
+    with `pg_terminate_backend` at a barrier), each close the connection: the pool's next connection is a new backend
+    and no connection is ever returned to the pool inside a transaction (`pg_stat_activity` shows no backend
+    `idle in transaction` of the pool); beside `tests/fault/events-webhooks-messaging/cancellation.rs`;
+  - the source-text check that only the store's top-up (in `crates/infra-postgres/src/step_logs.rs`) calls
+    `sagat_quota_step_log_top_up`;
   - an ordinary `AppError::Unavailable` of a report (the database stopped) is not re-run;
   - a carry on a report whose output exceeds `tenant_content_bytes` (the content fallback, a mark-only carry); on a report
     whose output holds a declared secret, root and scoped; and on a failure whose code holds one, root and scoped: a
@@ -2864,7 +2959,7 @@ Slice B, the server stores:
     the report unchanged;
   - an invalid carry with a valid `highest_sequence` (mark-only) and without one (ignored), capture off in the namespace,
     the deployment switch off, the store proof missing and a removed stream, each leaving the report's outcome and output
-    as without a carry at the cost of section 2a; a call with a `p_mark_reason` outside the three refused by the function;
+    as without a carry at the cost of section 2a; a call with a `p_mark_reason` outside the four refused by the function;
   - a long step's carrying report while its stream row is held, uncommitted, after the purge's mark has updated it
     (`removed_at`), after the purge's delete has set `purged_at`, and by the delete route held at its audit write: in each
     case CC offers no row and does not wait, CC′ finds the row locked, the carry is `contended` and the report commits at
@@ -2897,7 +2992,7 @@ Slice B, the server stores:
   files of T041-4, `tests/performance/scalability-ha/{main.rs,run.sh,carry_spike_rounds.sh,carry_spike_judge.py}`,
   `.github/workflows/perf-spike.yml`, `crates/infra-postgres/Cargo.toml` and `tests/Cargo.toml` (the feature removed),
   `docs/engineering/architecture-principles.md`, `specs/041-step-logs/data-model.md` (§7, the metric owners).
-- [ ] T041-37 Measure the built quota leases' regimes (decisions D041-124, D041-125 and D041-131), right after T041-36
+- [ ] T041-37 Measure the built quota leases' regimes (decisions D041-124, D041-125, D041-131, D041-134 and D041-135), right after T041-36
   and T041-8 and before any later task, so that nothing is built on a quota-lease mechanism that has not been measured.
   - *Environment and rounds*, as task T041-35's fourth run: the GitHub-hosted runners of decision D041-102, through
     `.github/workflows/perf-spike.yml` on a push to a `perf/**` branch (a fast-forward of the branch measured, never a
@@ -2909,10 +3004,17 @@ Slice B, the server stores:
   - *Setup*: several tenants are created by the driver, each with its own namespace and workers spread round-robin
     over the replicas, with `tenant_step_log_bytes` set as the regime states; a held usage row is a test connection's
     `SELECT … FROM tenant_retained_usage WHERE tenant_id = $1 FOR UPDATE`, held for the stated time and taken again
-    every 2 seconds during the window; the pooler is PgBouncer from the runner's Ubuntu packages (its version recorded),
-    started by `run.sh` when `SAGAT_PERF_POOLER=transaction` with `tests/performance/scalability-ha/pgbouncer.ini`
-    (`pool_mode = transaction`, `max_client_conn = 400`, `default_pool_size = 40`: the 8 replicas × 20 connections =
-    160 client connections multiplexed four to one onto 40 server backends).
+    every 2 seconds during the window; the pooler is PgBouncer 1.21 or later (1.21 is the first release that tracks protocol-level
+    prepared statements in transaction mode; the package version installed is pinned in `run.sh` and recorded), started
+    by `run.sh` when `SAGAT_PERF_POOLER=transaction` with `tests/performance/scalability-ha/pgbouncer.ini`:
+    `pool_mode = transaction`, `max_client_conn = 400`, `default_pool_size = 40` (the 8 replicas × 20 connections =
+    160 client connections multiplexed four to one onto 40 server backends), `max_prepared_statements = 200` (sqlx
+    prepares every query as a named statement and caches it per connection, so with the default 0 PgBouncer would
+    answer the platform's statements with prepared-statement errors; the value is set explicitly whatever the
+    version's default; 200 is an estimate above the statements one connection prepares on the benchmark's paths, and
+    `run.sh` fails the row when PgBouncer's `SHOW STATS` reports a prepared-statement eviction), `auth_type = scram-sha-256` and `auth_file =
+    tests/performance/scalability-ha/pgbouncer-userlist.txt`, the userlist holding the benchmark's own disposable role
+    and its SCRAM verifier, generated by `run.sh` at start (never committed with a secret).
   - *Regimes*, each criterion and its consequence fixed here, before the first round:
     - *Cold start*: every replica's pools opened fresh, as after a deploy, no setup quota lease, workload (a) at
       8 × 128, once with one tenant and once with 100 tenants. Measured: fallbacks and their waits, `service_busy`
@@ -2940,12 +3042,22 @@ Slice B, the server stores:
     - *Behind a transaction pooler*: workload (a) at 8 × 128 through the pooler. Measured: fallbacks, top-ups by
       answer and `service_busy` carries per carry. Criterion for ADR-0097 option 1c (decision D041-130): carry fallbacks
       at most half of all refills (carry fallbacks plus top-ups answered `made`), and `service_busy` carries at most 0.1%.
-    - *Two tenants, one the victim* (decision D041-125), in the near-the-limit regime and behind the pooler: tenant A
-      held in the fallback regime (its usage row held 150 ms every 300 ms), tenant B far from its limit, each with half
-      the workers. Criterion: B's completion p99 and its pool-acquire wait p99 each within the larger of 10% and 2 ms of
-      B's own figures in a solo row of the same round (A absent); no heartbeat or task-lease call of B failing to get a
-      connection; at no sample more than seven of a replica's backends waiting on A's usage row (`pg_stat_activity` by
-      `application_name`).
+    - *Two tenants, one the victim* (decisions D041-125 and D041-134), in the near-the-limit regime and behind the
+      pooler: tenant A held in the fallback regime (its usage row held 150 ms every 300 ms), tenant B far from its
+      limit, each with half the workers. Criterion: B's completion p99 and its pool-acquire wait p99 each within the
+      larger of 10% and 2 ms of B's own figures in a solo row of the same round (A absent); no heartbeat or task-lease
+      call of B failing to get a connection; at no sample more than *P* = 3 of a replica's backends holding a wait slot
+      of A (`pg_locks` of the slot keys, by `application_name`; waits at a commit for the content class hold no slot and
+      are not counted).
+    - *Three or more tenants in the fallback regime* (decision D041-134): tenants A1, A2 and A3 each held as A above,
+      tenant B far from its limit, a quarter of the workers each. Criterion: at no sample more than *Q* = 5 of a
+      replica's backends holding a replica wait slot; no heartbeat or task-lease call of B failing to get a connection;
+      B's completion p99 within the larger of 10% and 2 ms of its solo figure.
+    - *Ticket defaults* (decision D041-135): workload (g) at 1 × 16 and 8 × 128 with the shipped defaults (cap 10,
+      tickets 7). Measured: ticket refusals and gate (4)'s formula. Criterion: refusals under 1% of batches.
+    - *Fallbacks with the top-up* (the zoom-out re-read's Nit to Z-1): workload (a) at 8 × 128 far from the limit with
+      direct connections. Criterion: carry fallbacks at most 0.31% of carries, the fourth run's refill share with every
+      refill in a report, so that the top-up is shown to take steady refills out of reports.
     - *A fan-out run during fallback waits*, caused on purpose: a test transaction holds the usage row for 150 ms, and
       in a second row for 400 ms, while a fan-out run's carries fall back. Criterion: no report of the run waits for the
       run row longer than the longest measured fallback wait plus one report's p99.
@@ -2961,15 +3073,18 @@ Slice B, the server stores:
     3b, which the owner decided (OD-2026-11-20-18), put to the owner with the figures and the named alternatives (a
     background refiller, ADR-0097 option 1e, or a top-up before a backend's first carry for a tenant); the longest
     carry beyond 1,000 ms, or a fan-out wait beyond its bound, restates the risk row of section "Risks" and is reviewed
-    again; the two-tenant criterion missed lowers the wait slots or adds a per-tenant pool share, a design change
-    reviewed again before any later task.
+    again; the two-tenant or three-tenant criterion missed lowers *P* or *Q* or adds a per-tenant pool share, a design
+    change reviewed again before any later task; ticket refusals of 1% or more at the defaults raise the tickets'
+    default, a design change reviewed again; fallbacks above 0.31% with the top-up are a defect of the top-up, fixed
+    and run again.
   Done when every regime's figures are recorded in `specs/041-step-logs/validation-report.md`, each criterion is read
   with its consequence in `specs/041-step-logs/research.md`, and no consequence that stops the plan is open.
   Refs: NFR-041-PERF, SC-041-001, FR-041-005, FR-041-006
   Owner-gate: OD-2026-11-20-13, OD-2026-11-20-14, OD-2026-11-20-18
   Files: modify `tests/performance/scalability-ha/{main.rs,step_log_load.rs,run.sh,carry_spike_rounds.sh,carry_spike_judge.py}`,
   `.github/workflows/perf-spike.yml`, `specs/041-step-logs/{validation-report.md,research.md}`; create
-  `tests/performance/scalability-ha/pgbouncer.ini`.
+  `tests/performance/scalability-ha/pgbouncer.ini` (the userlist `pgbouncer-userlist.txt` is generated by `run.sh` and
+  ignored by git).
 
 Slice C, the server serves:
 
@@ -3083,12 +3198,16 @@ report, is under 1 ms.
   `sdks/SPEC.md:688`) renumbered 12; the harness additions of section 6 (the scenario
   schema of the behaviours, of the `stepLogs` op, which each SDK runner executes with a plain HTTP request and polls
   until `heldBack` is false, and of the pending languages, matched against the six unknown-op refusals of section 6;
-  `mustNotStore` and its self-test with a planted canary; and the fault `holdAnswer` of the fault proxy, which
-  `step-logs-transport-faults` uses: `{"fault": "holdAnswer", "rpc": "AppendStepLogs", "nth": <n>}` forwards the
-  *n*-th batch of the attempt, holds its answer and releases it when the harness sends the op `releaseAnswer` or when
-  its `maxHoldMs` (default 3,000) passes; the proxy records, for the golden, whether the attempt's report reached it
-  before or after the release and how long after the batch was sent, and the golden asserts the report came after the
-  release, or at least 2,000 ms after the batch while the answer was still held); the five scenarios and their goldens, written by hand from
+  `mustNotStore` and its self-test with a planted canary; and a new fault action, `holdAnswer`, which
+  `step-logs-transport-faults` uses, written in the harness's `faults[]` form
+  (`tests/contract/sdk-conformance/README.md:558-570`) and applied, as every other fault, by each SDK runner at its
+  transport hook (its gRPC interceptor; in Rust the fault proxy): `{"channel": "grpc", "match": "AppendStepLogs",
+  "action": "holdAnswer", "times": 1, "after": <n − 1>, "maxHoldMs": 3000}` lets the *n*-th matching call reach the
+  server, holds its answer, and releases it when the scenario runs the op `releaseAnswer` or when `maxHoldMs` passes;
+  each runner records in `out.json` an observation `heldAnswers`, one entry per hold in file order,
+  `{"reportSent": "beforeRelease" | "afterRelease", "afterHoldMs": <ms from the hold to the report>}`, and the
+  normalizer (`normalize.rs`) replaces `afterHoldMs` by the bucket `"under2000"` or `"atLeast2000"`, so that the golden
+  asserts, identically in six languages, `afterRelease`, or `beforeRelease` with `atLeast2000`); the five scenarios and their goldens, written by hand from
   the scenario, each listing all six languages as pending. Done when the harness's own tests pass and
   `cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored` passes with every SDK pending.
   Refs: FR-041-007, FR-041-015, SC-041-005
@@ -3162,27 +3281,33 @@ Slice F, measure, operate and close:
 
 - [ ] T041-9 Measure the built ingest and carry on the benchmark of SC-041-007, the scoped report path included, and
   judge SC-041-007 by its per-size criterion (decision D041-126), fixed in SC-041-007 before any of this task's rounds.
-  The environment, the rounds, the validity rule and the median rule are task T041-37's (the hosted runners of
-  decision D041-102, task T041-35's fourth run's rules). The driver's built mode
+  The environment and the validity rule are task T041-37's (the hosted runners of decision D041-102, task T041-35's
+  fourth run's rules); this task runs all twelve rounds (four runners, three rounds each) and judges each gate on the
+  median of all its valid rounds, at least six (decision D041-135). The driver's built mode
   (`tests/performance/scalability-ha/step_log_load.rs`, T041-36) calls the application's ingest
   (`sagat_application::step_logs`) and the carrying report entry points of T041-36 on each in-process replica, as the
-  benchmark calls the application's completion, with the ticket semaphore set to T041-7's defaults (decision
-  D041-127; the gRPC tickets themselves are covered by T041-7's tests); the baseline is the same workload with capture
+  benchmark calls the application's completion, with the ticket semaphore set to the cap and tickets of 10 that the
+  fourth run measured, since gate (4) sizes the need (decision D041-135; the shipped defaults of decision D041-127 are
+  run by task T041-37, and the gRPC tickets themselves are covered by T041-7's tests); the baseline is the same workload with capture
   off, as SC-041-007 states, and the tenant's `tenant_step_log_bytes` is set to the catalogue's maximum, so that no
   charge is refused. Workloads, named as in SC-041-007: (a) and off-1K, (f) and off-{}, at both sizes; (g) at both
   sizes, its batch's answer awaited by the driver (the SDK's wait before a report); (c) a fan-out: a workflow with a
   `forEach` over 200 items at concurrency 64 whose body is one step carrying ten lines (the scoped path), at 1 × 16;
   (h) 64-record carries at 1 × 16; (b) full batches of 500 records of 200 bytes from the tenant's seven tickets ×
   *R* concurrent attempts, *R* the replicas. It records SC-041-007's gates (1), (2b), (3) and (4) at both sizes and gates
-  (1) and (2b) for (c) against its capture-off twin; the p99 of task-lease calls while the modelled Logs class is full;
+  (1) and (2b) for (c) against its capture-off twin, recorded and not judged (the floor of SC-041-007 is derived for
+  workload (a); (c) is judged by its own risk row's remedy: below 90% of its twin's rate, the scoped path carries
+  nothing, section "Open Questions"); the p99 of task-lease calls while the modelled Logs class is full;
   the trigger cost and commit latency of a (b) batch; the purge rate against the ingest rate and the completion p99
   during a purge; what (g)'s awaited batch adds to a completion; the stored size per line and per stream row, the
   stream table's dead tuples after the run, and the HOT ratio of a long step's stream updates with the fill factor of
   70 and without it (section 3), in the dated section of the validation report. Done when the figures are recorded
   and SC-041-007 is read by its per-size criterion: at 8 × 128 the original gates, at 1 × 16 the floor of decision
   D041-126 (gate (1) at least 80.4%, (2b) at most +29.1 ms, (3) at least 83.5%, (4) at most 10 tickets with refusals
-  under 1%); a failure stops the release of the feature for a design change (at 1 × 16 the floor can fail only by a
-  regression beyond the spread the fourth run showed).
+  under 1%); a failure stops the release of the feature and goes to the owner with the record, never re-run. At
+  1 × 16 an unchanged build fails one gate with a probability of 5.49% when six rounds are valid and 2.38% when twelve
+  are (decision D041-135). It also records (a)'s completion p99 in percent over off-1K's and reports it to the owner
+  when it exceeds +36.9%, the worst of the rounds the owner accepted, since the (2b) floor admits about +94%.
   Refs: NFR-041-COST, NFR-041-PERF, SC-041-007
   Owner-gate: OD-2026-11-19-1, OD-2026-11-20-13, OD-2026-11-20-14
   Files: modify `tests/performance/scalability-ha/{main.rs,step_log_load.rs}`, `specs/041-step-logs/validation-report.md`.
@@ -3260,8 +3385,8 @@ never sleeps; an assertion on what a read returns polls until `heldBack` is fals
 | Room held by open writers is bounded (section 2b, G041-023) | `room_held_by_open_writers_is_bounded_from_the_free_room` at *k* = 1, 2, 8 and 32, a top-up's grant counted at its share; the exact remainder admitted from idle quota leases and one byte more refused; the small-quota test (T041-5); every held refusal within the operator's bound with a small quota and many backends (T041-37) |
 | The quota-lease waits cannot deadlock (section 2b) | The deadlock cases of section 2b with held transactions and `pg_stat_activity`, a limit change against an open idle reclaim included; a release never waits for a held quota lease (T041-5); the lock-order test with its L3 and L3b slots (T041-6, T041-10, T041-36) |
 | Quota reclaims | The idle reclaim folds only quota leases idle past the interval; an ended backend's quota lease is reclaimed at once; a change of the limit reclaims every quota lease (T041-5); the purge pass's reclaim, its skip of a tenant whose fence is held and the shard-0 publisher of the counters (T041-10) |
-| The top-up (decision D041-124) | Its answers without raising, `room` at 65,536 bytes with no lock taken, a grant of exactly its share and no charge, `busy` past *b* or with no slot, `contended` with the fence held (T041-5); `top_up` true at 65,535 bytes and false at 65,536; the top-up on the report's own backend after the commit; the next carry's fast path; no top-up after a mark-only, `contended`, rolled-back or C0-refused carry; the tenant boundary (T041-36); the regimes, the pooler's included (T041-37) |
-| One tenant's waits do not take another's connections (decision D041-125) | With tenant A's usage row held, seven of nine fallbacks of A wait and two answer `service_busy` at once, and tenant B's carrying report commits meanwhile, with two hand mutations (T041-36); seven top-ups wait and the eighth answers `busy` (T041-5); the two-tenant regime near the limit and behind the pooler (T041-37) |
+| The top-up (decision D041-124) | Its answers without raising, `room` at 65,536 bytes with no lock taken, a grant of exactly its share and no charge, and none when the share is not above the current room, `busy` at once with the usage row held (no wait, no slot, no quota reclaim of others, decision D041-134), `contended` with the fence held (T041-5); `top_up` true at 65,535 bytes and false at 65,536; the top-up on the report's own backend after the commit; the next carry's fast path; no top-up after a mark-only, `contended`, rolled-back or C0-refused carry; the tenant boundary (T041-36); the regimes, the pooler's included (T041-37) |
+| One tenant's waits do not take another's connections (decisions D041-125 and D041-134) | With *Q* = 5 and *P* = 3, tenant A's usage row held: three of five fallbacks of A wait and two answer `service_busy` at once; with five tenants waiting, a sixth answers busy at once; tenant B's carrying report, heartbeat and task lease get their connections meanwhile; three hand mutations (T041-36); the same through plain inserts, and the top-up answering `busy` at once without a slot (T041-5); the two-tenant and three-tenant regimes (T041-37) |
 | Crash between accept and store | The `StepLogTx` wrapper fails before the commit: nothing stored, the resend stores all, once |
 | Crash between store and answer | The wrapper commits and then fails (T041-6, T041-8); separately, the proxy of `tests/support/worker_proxy.rs` drops the answer of `AppendStepLogs` (T041-8): the resend stores nothing and gets `CONTINUE`; the same proxy drops the answer of a carrying report (T041-8, T041-36): the resent report is answered as a replay and stores nothing more |
 | Duplicate batch | The same batch twice at a barrier: the second waits on the attempt's stream lock at T3 and gets `RETRY_LATER` at the lock timeout; its resend stores nothing; counters rise once |
@@ -3280,7 +3405,7 @@ never sleeps; an assertion on what a read returns polls until `heldBack` is fals
 | Retention | A stream past its expiry returns no line, is marked, then purged 500 lines at a time and shown as expired from the first of them; quota bytes return; the stream row stays with `purged_at`; a lowered retention leaves existing streams' expiry as it was; a stream row held by an ingest is skipped by the mark and marked by the next pass (T041-10, T041-11) |
 | Script marker (OD-2026-11-15-9) | The tests of section 7 (T041-13): one marker per inserted execution, written after the report commits, with its node and attempt; one per (run, node, attempt) with two iterations; none for a repeat, a second call, a test run, a finished run, capture off or the switch off; the record kept at the step-log limit; the marker found by the execution id; no deadlock with an ingest, a delete or a policy change; delivered before `end` |
 | Separate step-log quota (OD-2026-11-15-5, -6) | A tenant at its `tenant_step_log_bytes` limit stores no step-log line while a script log, a dispatch error and a connector error are stored in full under `tenant_log_bytes`; an empty line is charged 128 bytes; the quota-lease charge raises at the limit (T041-5); the ingest at the limit (T041-6) |
-| Runtime privileges and storage classification | The privilege audit and manifest tests pass with the new statements and columns; every function the migration creates or replaces keeps its `SECURITY DEFINER`, pinned `search_path` and grants, and `sagat_app` may execute exactly the allowance and the six quota-lease functions (T041-5); `sagat_step_log_carry` is `SECURITY INVOKER`, executable by `sagat_app` only (T041-36) |
+| Runtime privileges and storage classification | The privilege audit and manifest tests pass with the new statements and columns; every function the migration creates or replaces keeps its `SECURITY DEFINER`, pinned `search_path` and grants, and `sagat_app` may execute exactly the allowance, the six definer quota-lease functions and the two invoker helpers, the counter sequences revoked from it (T041-5); `sagat_step_log_carry` is `SECURITY INVOKER`, executable by `sagat_app` only (T041-36) |
 | The busy loss is shown and counted (FR-041-006, G041-026) | A `service_busy` carry sets the stream's `not_stored_reason`, leaves `ceiling` unchanged and writes one rate-limited warning a minute (T041-36); the streams route returns `notStoredReason` (T041-11); Studio shows the busy text (T041-22); the alert's rule test (T041-25); the counted regimes' rate against OD-2026-11-20-14's 0.1% (T041-37) |
 | Studio (SC-041-006) | Unit tests of the states and markers; the axe run; the keyboard journey; a line holding markup, a URL, escape sequences and bidirectional controls is shown as inert text |
 

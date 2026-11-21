@@ -34,14 +34,17 @@ The owner accepted the measured cost ("Accept the measured cost", OD-2026-11-20-
 The release keeps these figures only while task T041-9, on the built carry, meets the per-size criterion of
 SC-041-007 (decision D041-126): at 8 × 128 the original gates; at 1 × 16 a floor at the fourth run's figures less the
 spread of its eight valid rounds (rate at least 80.4%, p99 at most 29.1 ms over the allowance, rate with output `{}` at
-least 83.5%).
+least 83.5%), judged on the median of all valid rounds of a twelve-round run (decision D041-135). The p99 floor is a
+guard against gross regressions only (it admits about +94% over capture off); task T041-9 reports to the owner a p99
+above the +36.9% the owner accepted.
 
 ## 2. Lines not stored because the log service was busy
 
 Each database backend that writes step logs for a tenant holds a small *quota lease* of that tenant's step-log room. A
 carry charges its lease; when the lease is short, the carry refills it from the tenant's usage row inside the report
 (the *fallback refill*), waiting at most 200 ms for each lock of that row, and only while it holds one of the tenant's
-seven *wait slots* on that replica. A carry that cannot get the row within 200 ms, or finds the seven slots taken,
+*wait slots* and one of the replica's on that replica (3 and 5 with the default pool of 20). A carry that cannot get the
+row within 200 ms, or finds the slots taken,
 drops its records; the report always lands. The reader sees "not stored: the log service was busy (not your quota)" on
 the stream (its field `notStoredReason` is `service_busy`, never a ceiling) and in Studio, and the drop is counted
 `step_log_lines_dropped_total{reason="service_busy"}` and `step_log_quota_refusals_total{cause="busy"}`. The owner
@@ -56,16 +59,22 @@ tenant per minute on each replica, with the count since the last one. Look at wh
 transaction, the purge, a change of the tenant's step-log limit), at `step_log_quota_fallbacks_total` against
 `step_log_quota_top_ups_total`, and at whether the tenant is near its limit.
 
-**Wait slots.** All of one tenant's waits on its usage row through step logs (carries, batches, script markers and
-top-ups) hold at most 7 of a replica's database connections, the same as the tenant's log tickets (section 4), so one
-tenant's logging cannot take the connections other tenants' reports need. The slot count is a constant of the database
-functions (`sagat_quota_step_log_wait_slots()`), not a setting.
+**Wait slots** (decisions D041-125 and D041-134). A wait on a tenant's usage row through step logs (a carry's
+fallback, a batch, a script marker; the top-up never waits) holds a tenant slot and a replica slot. A replica has
+*Q* = max(1, ⌊N / 4⌋) slots, N its pool `SAGAT_DB_MAX_CONNECTIONS`, and a tenant *P* = ⌈*Q* / 2⌉ of them: 5 and 3 with
+the default pool of 20, 2 and 1 with a pool of 8. So one tenant's waits hold at most *P* of a replica's connections and
+all tenants' at most *Q*; with the Logs cap (half the pool) that leaves at least N − ⌊N / 2⌋ − *Q* connections (5 of 20)
+that step-log work never holds, for task leases, heartbeats and reports that do not wait. *Q* follows the pool size:
+the pool sets `sagat.step_log_wait_slots` on each connection when it connects, so raising `SAGAT_DB_MAX_CONNECTIONS`
+raises it. Raising `SAGAT_STEP_LOGS_TENANT_CALLS` does not change the slots.
 
 ## 3. How the quota leases are kept topped up
 
 A backend's lease is topped up *after* a carrying report commits, never before it: when the carry left less than 64 KiB
 (65,536 bytes) in the lease, the server runs one short statement on the same connection, under no run lock, and the
-report's answer does not wait for it (decision D041-124, OD-2026-11-20-18). Far from the limit a lease is granted 1 MiB,
+report's answer does not wait for it (decision D041-124, OD-2026-11-20-18). The top-up never waits: when the tenant's
+usage row is busy it answers `busy` and gives up; it takes no wait slot and never takes another backend's room
+(decision D041-134). Far from the limit a lease is granted 1 MiB,
 so a backend tops up about once every 300 ten-line carries. The first carry of each backend for a tenant, after a
 deploy, a pool recycle or an idle reclaim (10 minutes), finds no lease and refills inside its report: that is the
 expected cost of a cold start. Counted in `step_log_quota_top_ups_total{outcome}` and `step_log_quota_fallbacks_total`.

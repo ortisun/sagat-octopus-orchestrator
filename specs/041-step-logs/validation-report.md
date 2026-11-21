@@ -759,6 +759,26 @@ No round is void by its carries. The rounds used are 1, 2 and 3, the first three
 | (3) rate of (f) / off-{}, ≥ 90% | 87.1 / 87.8 / 87.0% | 87.1%, fail | 90.4 / 92.3 / 91.5% | 91.5%, pass |
 | (4) tickets of (g) ≤ 10, refusals < 1% | 7 / 7 / 7; refusals 0 / 0.022 / 0.011% | pass | 5 / 5 / 5; refusals 0.022 / 0 / 0% | pass |
 
+### Gate values, the eight valid rounds
+
+Added 2026-11-20 for SC-041-007's per-size criterion (decisions D041-126 and D041-135), from the judge's verdict
+artifact of run 44834024933 (`verdict.txt`), rounds in the fixed order of decision D041-104; rates as fractions, (2b) as
+milliseconds over the allowance, (4) as tickets.
+
+| Gate | Size | Round 1 | Round 2 | Round 3 | Round 4 | Round 6 | Round 7 | Round 9 | Round 11 |
+|---|---|---|---|---|---|---|---|---|---|
+| (1) rate of (a) / off-1K | 1 × 16 | 0.8279 | 0.8046 | 0.8199 | 0.9224 | 0.8497 | 0.8589 | 0.9062 | 0.8267 |
+| (2b) excess, ms | 1 × 16 | +7.60 | +9.68 | +8.62 | −39.52 | +26.54 | +8.25 | +28.08 | +29.03 |
+| (3) rate of (f) / off-{} | 1 × 16 | 0.8709 | 0.8785 | 0.8705 | 0.8866 | 0.9233 | 0.8732 | 0.8995 | 0.8352 |
+| (4) tickets of (g) | 1 × 16 | 7 | 7 | 7 | 10 | 10 | 7 | 9 | 9 |
+| (1) rate of (a) / off-1K | 8 × 128 | 0.9306 | 0.8958 | 0.9723 | 0.9032 | 0.9424 | 0.9418 | 0.9053 | 0.8863 |
+| (2b) excess, ms | 8 × 128 | −25.40 | −2.19 | −17.03 | −312.64 | +112.86 | +6.30 | +11.50 | +24.68 |
+| (3) rate of (f) / off-{} | 8 × 128 | 0.9040 | 0.9228 | 0.9154 | 0.9739 | 0.9455 | 0.9296 | 0.8339 | 0.8936 |
+| (4) tickets of (g) | 8 × 128 | 5 | 5 | 5 | 4 | 4 | 4 | 5 | 5 |
+
+The worst valid round at 1 × 16, which SC-041-007's floor is set at: (1) 0.8046 (round 2), (2b) +29.03 ms (round
+11), (3) 0.8352 (round 11), (4) 10 tickets (rounds 4 and 6).
+
 Recorded besides, (a) over off-1K's p99 in percent: +31.9 / +36.9 / +35.2% at 1 × 16 and +4.6 / +9.5 / +6.5% at
 8 × 128. Each figure below is the median of the three rounds used.
 

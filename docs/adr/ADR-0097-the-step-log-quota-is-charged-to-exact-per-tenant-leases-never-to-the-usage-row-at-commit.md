@@ -94,9 +94,11 @@ ADR-0095 decision 4).
    runtime role MUST have no privilege on the lease table, the new column's writes or the counter sequences, revoked
    explicitly; only `SECURITY DEFINER` functions of ADR-0027's pattern (fixed `search_path = pg_catalog, pg_temp`, every
    name schema-qualified, trusted owner, `REVOKE ALL … FROM PUBLIC`) read or write them. Of those, the runtime role may
-   execute exactly `sagat_quota_step_log_reserve`, `sagat_quota_step_log_top_up` (OD-2026-11-20-18),
-   `sagat_quota_step_log_top_up_mark`, `sagat_quota_step_log_wait_slots`, `sagat_quota_step_log_usage`,
-   `sagat_quota_step_log_counters`, `sagat_quota_step_log_idle_tenants` and `sagat_quota_step_log_reclaim_idle`; the
+   execute exactly six definer functions, `sagat_quota_step_log_reserve`, `sagat_quota_step_log_top_up`
+   (OD-2026-11-20-18), `sagat_quota_step_log_usage`, `sagat_quota_step_log_counters`,
+   `sagat_quota_step_log_idle_tenants` and `sagat_quota_step_log_reclaim_idle`, and two invoker helpers that read or
+   write nothing, `sagat_quota_step_log_top_up_mark()` (`IMMUTABLE`) and `sagat_quota_step_log_wait_slots()`
+   (`STABLE`, design 041's decision D041-134); the
    charge, the refill, its budget function and the limit-change trigger function are revoked from it; the privilege
    audit checks exactly this list (design 041, NFR-041-SEC).
 2. **Invariants**, each checked by a constraint or a test: (I1) 0 ≤ `used` ≤ `granted` on every lease (a `CHECK`); (I2) at
@@ -127,9 +129,11 @@ ADR-0095 decision 4).
    `sagat_quota_step_log_top_up(tenant)`, with the principal's tenant (never one from the request or the run); it MUST
    NOT delay the report's answer for it, and it counts the answer (`step_log_quota_top_ups_total{outcome}`) and never
    fails or re-runs anything because of it. The function takes no caller amount: it tries the step-log fence shared
-   (held: `contended`); answers `room` when the writer's lease has at least *M*; and otherwise refills the writer's lease
-   with no charge, granting exactly its share, min(1 MiB, ⌊F / (2(*A* + 1))⌋) (decision 4), under the same budget and
-   wait slots as any refill, answering `made`, `limit`, `held` or `busy`. It never raises for these; any other error is
+   (held: `contended`); answers `room` when the writer's lease has at least *M*; tries the usage row `NOWAIT` only,
+   taking no wait slot and never waiting (held: `busy` at once); reclaims no other lease; and grants only when the
+   share, min(1 MiB, ⌊F / (2(*A* + 1))⌋) (decision 4), is above the writer's current room, folding the writer's lease
+   and granting exactly that share with no charge, answering `made`, and otherwise `room`, `limit` or `held` (design
+   041's decision D041-134, so that a top-up never takes another writer's room or a wait slot). It never raises for these; any other error is
    rolled back and is the store's `error`. *M* is above the reservation of any carry whose stored text is no longer than
    its 16 KiB encoding (16,384 + 65 × 128 = 24,704 bytes), so the next such carry after a top-up takes the fast path; far
    from the limit a backend tops up once per 1,048,576 − 65,536 = 983,040 bytes charged. The store holds no rule, no
@@ -143,10 +147,14 @@ ADR-0095 decision 4).
 4. **A refill** (the writer's lease short of the charge) locks the usage row before it would ever insert it, then the
    writer's own lease `NOWAIT` (only a holder of the usage row, or a limit change holding the step-log fence exclusively,
    can hold it, so this never fails short of a prepared transaction): after the usage row nothing waits. A refill first
-   tries the usage row `NOWAIT`; when it is held, it waits only while holding one of the tenant's *P* = 7 *wait slots* on
-   its replica (an advisory lock on a key the function builds from the tenant and the replica's `application_name`, tried
-   in order and never waited for; with none free it raises `55P03` at once; design 041's decision D041-125, under
-   OD-2026-11-20-6), so that one tenant's waits on its usage row hold at most 7 of a replica's pool connections. Each lock
+   tries the usage row `NOWAIT`; when it is held, it waits only while holding two *wait slots*, one of the tenant's *P*
+   on its replica and then one of the replica's *Q*, which all tenants share (single 64-bit advisory keys the function
+   builds with `hashtextextended` from the tenant, the replica's `application_name` and the slot, tried in order and
+   never waited for; with none free it raises `55P03` at once; design 041's decisions D041-125 and D041-134, under
+   OD-2026-11-20-6). *Q* = max(1, ⌊N / 4⌋), N the replica's pool, reaches SQL through `sagat.step_log_wait_slots`,
+   which the pool sets on each connection at connect, and *P* = ⌈*Q* / 2⌉: 5 and 3 at a pool of 20. So one tenant's
+   waits on its usage row hold at most *P* of a replica's pool connections and all tenants' at most *Q*, and step-log
+   work holds at most the Logs cap ⌊N / 2⌋ plus *Q* of them. Each lock
    acquisition on the usage row waits at most its budget *b* = 200 ms (`lock_timeout` set for that
    statement from a function no caller can change, a caller's lower `lock_timeout` kept, the caller's value restored
    after it), and the statement timeout (5 s, 3 s for some transactions) is the hard bound, past which the carry call
@@ -160,8 +168,8 @@ ADR-0095 decision 4).
    `RETRY_LATER`, as before. The fallback refill is thereby the one wait a carry has under its run lock, measured far
    from the limit at 0.31% of ten-line carries with every refill in a report, each lock acquisition bounded by *b*, held
    only with a wait slot, and counted; it runs after the report's fence checks, so it delays the commit and never makes
-   the report late; no step-log refusal fails, blocks or retries a step. The top-up (decision 3b) waits under the same
-   budget and slots, after the report. The wait cannot deadlock: no transaction waits for a lease it does not
+   the report late; no step-log refusal fails, blocks or retries a step. The top-up (decision 3b) never waits: it tries
+   the usage row `NOWAIT`, after the report. The wait cannot deadlock: no transaction waits for a lease it does not
    own (every other lease is taken `SKIP LOCKED`, or `NOWAIT` by a limit change holding the fence exclusively, and the
    writer's own lease `NOWAIT` after the usage row), and no holder of the usage row waits after taking it for anything a
    waiter holds (a content or log finalizer is the commit's last step; a refill then takes only its own lease `NOWAIT`
@@ -212,7 +220,7 @@ ADR-0095 decision 4).
 
 ## Considered options
 
-1. **Exact leases, one a writer, given room before the report** (chosen, D041-117, D041-119): each server backend
+1. **Exact leases, one a writer, topped up after the report** (chosen, D041-117, D041-119): each server backend
    charges its own lease, so no writer queues behind another's commit or lock for the step-log class; exact by I1 to
    I5. The usage row is locked by a top-up after a report (once per grant a writer: far from the limit and with
    F ≥ 2(*A* + 1) MiB, a grant is 1 MiB, about 300 ten-line carries; a tenant with less volume per backend per 10
@@ -310,8 +318,9 @@ ADR-0095 decision 4).
   the limit with every refill in a report; they come more often near the limit, where reclaims take room between a
   top-up and the next carry, and behind a transaction pooler, where a top-up may serve another backend (gap G041-027).
   A report waits on the usage row at most once before its commit. Design 041's task T041-37 measures these regimes.
-- One tenant's waits on its usage row hold at most 7 of a replica's pool connections (the wait slots); past them its
-  carries answer busy at once rather than hold more connections that other tenants need.
+- One tenant's waits on its usage row hold at most *P* of a replica's pool connections and all tenants' at most *Q*
+  (3 and 5 at a pool of 20; the wait slots); past them carries answer busy at once rather than hold more connections
+  that task leases, heartbeats and other tenants' reports need.
 - A carry that needs the fallback opens one subtransaction (its block, ADR-0095 decision 5): a second transaction id for
   that report; the refill and a carry with nothing to charge (no record and no marker planned) open none. Design 041's T041-37 reports the transaction-id rate and `pg_stat_slru` for `subtransaction`
   near the limit and for many low-volume tenants.
