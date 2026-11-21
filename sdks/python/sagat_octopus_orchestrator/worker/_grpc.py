@@ -114,6 +114,10 @@ class WorkerRpc:
     def __init__(self, config: GrpcConfig) -> None:
         self._config = config
         self._closed = False
+        self._receives: set[Any] = set()
+        # Set by cancel_receives: a receive whose call is made after it (its token was still being resolved) is
+        # cancelled as soon as it exists.
+        self._receives_stopped = False
         url = urlsplit(config.grpc_url)
         if url.scheme not in ("http", "https") or not url.hostname or not url.port:
             raise SagatError("VALIDATION_FAILED", "grpc_url is http(s)://host:port")
@@ -171,9 +175,30 @@ class WorkerRpc:
         response: pb.RegisterWorkerResponse = await self._call("RegisterWorker", request)
         return response
 
+    def cancel_receives(self) -> None:
+        """Cancels the task receives in progress and nothing else: a report on its way is left to arrive. The awaiting
+        code sees ``asyncio.CancelledError``; an answer or a frame it already read stays in its hands."""
+        self._receives_stopped = True
+        for call in list(self._receives):
+            call.cancel()
+
     async def poll_tasks(self, request: pb.PollTasksRequest) -> pb.PollTasksResponse:
-        response: pb.PollTasksResponse = await self._call("PollTasks", request)
-        return response
+        if self._closed:
+            raise SagatError("CANCELLED", "the connection to the worker service is closed")
+        metadata = await self._metadata(None)
+        call = self._stub.PollTasks(request, metadata=metadata, timeout=self._config.timeout)
+        self._receives.add(call)
+        if self._receives_stopped:
+            call.cancel()
+        try:
+            response: pb.PollTasksResponse = await call
+            return response
+        except grpc.aio.AioRpcError as error:
+            raise error_of_status("PollTasks", error) from None
+        except grpc.aio.BaseError:
+            raise SagatError("CANCELLED", "the connection to the worker service is closed") from None
+        finally:
+            self._receives.discard(call)
 
     async def stream_tasks(self, request: pb.PollTasksRequest) -> AsyncGenerator[pb.PollTasksResponse, None]:
         call = self._stub.StreamTasks(
@@ -182,6 +207,9 @@ class WorkerRpc:
             metadata=await self._metadata(None),
             timeout=min(self._config.timeout, 6.0),
         )
+        self._receives.add(call)
+        if self._receives_stopped:
+            call.cancel()
         try:
             async for response in call:
                 yield response
@@ -190,6 +218,7 @@ class WorkerRpc:
         except grpc.aio.BaseError:
             raise SagatError("CANCELLED", "the connection to the worker service is closed") from None
         finally:
+            self._receives.discard(call)
             call.cancel()
 
     async def heartbeat(self, request: pb.HeartbeatRequest, traceparent: str | None = None) -> pb.HeartbeatResponse:

@@ -6,7 +6,7 @@ import asyncio
 import json
 import threading
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Awaitable, Callable, Iterator
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, cast
@@ -151,6 +151,8 @@ class FakeWorkerService(pb_grpc.WorkerServiceServicer):
         self.stream_failure_after_first: grpc.StatusCode | None = None
         self.hold_stream = False
         self.stream_cancelled = 0
+        self.fail_gate: Callable[[], Awaitable[None]] | None = None
+        """Awaited by ``FailStep`` after the call is recorded and before it is answered: a test holds failures there."""
         self.port = 0
         self._server: grpc.aio.Server | None = None
 
@@ -241,6 +243,8 @@ class FakeWorkerService(pb_grpc.WorkerServiceServicer):
 
     async def FailStep(self, request: Any, context: Any) -> Any:
         await self._enter("FailStep", request, context)
+        if self.fail_gate is not None:
+            await self.fail_gate()
         return pb.StepCommandResponse(command_id="c", already_applied=False, step_status="FAILED", run_status="RUNNING")
 
     async def ResolveSecrets(self, request: Any, context: Any) -> Any:
