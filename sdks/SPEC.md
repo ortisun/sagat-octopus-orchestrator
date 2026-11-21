@@ -323,7 +323,7 @@ pools, max_inflight, protocol_version}}`:
   accepted, the host omits it from every request, even if an additive field is present on the lease.
   The server uses the echoed identity with the lease fence and tenant-bound worker session; an SDK
   never treats the identity alone as authorization.
-- Protocol `1.8` adds delivery acknowledgement (ADR-0099): a lease the server marked provisional carries
+- Protocol `1.8` adds delivery acknowledgement (Architecture decision 0099): a lease the server marked provisional carries
   `acknowledge_before_start = true`, and the host acknowledges it with `AcknowledgeTasks` and calls or runs
   nothing else for it but the hand-back before the server answers (§6.2); an unflagged lease is dispatched at
   once, as before. `1.8` also reserves the code `TASK_NOT_STARTED` for the host (§6.2, §6.5). `1.8` includes
@@ -355,7 +355,7 @@ The host runs at most as many tasks as it asked for (`max_tasks`): if a poll ans
 first ones, logs the rest and hands their leases back (below). A wait derived from the server (`retry_after_ms`,
 `Retry-After`) is capped at 60 s, whatever it says.
 
-**At 1.8 a flagged lease is acknowledged before anything runs or is called for it** (ADR-0099; the procedure, the verdicts
+**At 1.8 a flagged lease is acknowledged before anything runs or is called for it** (Architecture decision 0099; the procedure, the verdicts
 and the failure table are [`stream-completion.md`](../specs/006-sdk-multilanguage/stream-completion.md), "Delivery
 acknowledgement (protocol 1.8)"). A `PollTasks` call is bounded to 6 s or the shorter configured call timeout, as a stream
 window is. An unflagged lease is dispatched at once. As soon as a frame or a poll answer is read, the host sends one
@@ -373,7 +373,7 @@ and registers again offering `1.7` until it restarts.
 more than it may run, the rest of a malformed frame is dropped, or, at 1.8, a flagged lease is given up, answered `CANCELLED`
 or waiting when the host falls back) reports `FailStep` for it with the code `TASK_NOT_STARTED`, retryable, with the lease's
 fence, before any handler of that task runs, and never for a task whose handler started. The code is the host's alone: from
-`1.8` on it is reserved (ADR-0099 decision 15, the server review of pull request #260), and a handler that raises it is reported
+`1.8` on it is reserved (decision 15 of Architecture decision 0099, the server review of pull request #260), and a handler that raises it is reported
 as `WORKER_ERROR` (§6.5). From a session accepted at `1.8` or later the server gives the step back to `READY` without consuming
 the attempt while the step is `LEASED` with the lease's fence, the lease is not acknowledged and the per-attempt cap the server
 applies is not reached; otherwise, and always from an older session, it retries it as an ordinary failure. A lease left to lapse
@@ -690,7 +690,7 @@ where the language can express one. The shared scenario is `collection-operators
   | 1.5 | Scoped execution identity | `ExecutionInstanceIdentity` |
   | 1.6 | Managed database capabilities (`ResolveDatabase`) | feature 017, D600 |
   | 1.7 | Step logs (`AppendStepLogs`, `StepLogPolicy`) | feature 041, OD-2026-11-15-8; served from its task T041-7 |
-  | 1.8 | Delivery acknowledgement (`TaskLease.acknowledge_before_start`, `AcknowledgeTasks`; a flagged lease is provisional until acknowledged); `TASK_NOT_STARTED` reserved for the host | feature 006, ADR-0099, OD-2026-11-20-12; reserved by its design on 2026-11-20 at the coordinator's instruction, an exception to this register's rule put to the owner; released if ADR-0099 is not accepted or its build stops at its gate; served from task T006-048, only after 1.7 is served by the server and spoken by the SDK |
+  | 1.8 | Delivery acknowledgement (`TaskLease.acknowledge_before_start`, `AcknowledgeTasks`; a flagged lease is provisional until acknowledged); `TASK_NOT_STARTED` reserved for the host | feature 006, Architecture decision 0099, Owner decision 2026-11-20-12; reserved by its design on 2026-11-20 at the coordinator's instruction, an exception to this register's rule put to the owner; released if Architecture decision 0099 is not accepted or its build stops at its gate; served from Task 006-048, only after 1.7 is served by the server and spoken by the SDK |
   | next | Drafts 020, 021, 025 and 026 each name a minor; each takes the next free one (1.9 or later) when its contract merges | |
 
 ## 10. Observability and safety

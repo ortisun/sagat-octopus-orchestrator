@@ -127,24 +127,24 @@ actual acceptance is tracked by T034 tasks and is not supplied by this note.
 
 
 
-## Phase: Delivery acknowledgement (ADR-0099, protocol 1.8; owner decision OD-2026-11-20-12)
+## Phase: Delivery acknowledgement (Architecture decision 0099, protocol 1.8; Owner decision 2026-11-20-12)
 
-The contract is `stream-completion.md`, "Delivery acknowledgement (protocol 1.8)"; the decisions are D006-040 to D006-061 of
+The contract is `stream-completion.md`, "Delivery acknowledgement (protocol 1.8)"; the decisions are Decisions 006-040 to 006-061 of
 `research.md`. Every test below is written first and seen failing for the right reason (AGENTS.md rule 18); races are held with
 a lock or a barrier, never a sleep; every task that touches a lease has a root and a scoped row in its evidence. A task is ticked
 only with the named test and its result, or the command and its output.
 
 **Before the first task.**
-- (a) ADR-0098 is accepted and both of its builds are merged: the server (`bugfix/withdraw-undelivered-leases`, pull request #260,
+- (a) Architecture decision 0098 is accepted and both of its builds are merged: the server (`bugfix/withdraw-undelivered-leases`, pull request #260,
   with its scoped withdrawal, its reservation of `TASK_NOT_STARTED` for the new minor and its per-attempt cap) and the SDK
-  hand-back (`bugfix/withdraw-leases-sdks`), with the four requests of decision D006-059 answered.
-- (b) Task T041-7 has merged (the server serves 1.7) before task T006-048 and before the `AppendStepLogs` case of task T006-052;
-  tasks T041-15 to T041-20 (each SDK speaks 1.7) have merged before the matching SDK task T006-059 to T006-064.
-- (c) The owner has accepted ADR-0099, with the trust assumption of its decision 12 and the reservation of 1.8.
+  hand-back (`bugfix/withdraw-leases-sdks`), with the four requests of Decision 006-059 answered.
+- (b) Task 041-7 has merged (the server serves 1.7) before Task 006-048 and before the `AppendStepLogs` case of Task 006-052;
+  Tasks 041-15 to 041-20 (each SDK speaks 1.7) have merged before the matching SDK task Tasks 006-059 to 006-064.
+- (c) The owner has accepted Architecture decision 0099, with the trust assumption of its decision 12 and the reservation of 1.8.
 
-**Ownership** (as "Implementation ownership and integration order" above): the server owner, tasks T006-043 to T006-057; the
-shared conformance owner, task T006-058; one owner per SDK, tasks T006-059 to T006-064; the integrator, tasks T006-065 to
-T006-067. Shared files have one owner each.
+**Ownership** (as "Implementation ownership and integration order" above): the server owner, Tasks 006-043 to 006-057; the
+shared conformance owner, Task 006-058; one owner per SDK, Tasks 006-059 to 006-064; the integrator, tasks Task 006-065 to
+Task 006-067. Shared files have one owner each.
 
 ### Server
 
@@ -155,26 +155,26 @@ T006-067. Shared files have one owner each.
   implementation of the generated trait answers the call (`WorkerGrpc`, the `Stub`s of
   `tests/contract/durable-execution/grpc/limits.rs` and `tests/contract/security-multitenancy/grpc/stub.rs`, the `Proxy`s of
   `tests/integration/database-runner/proxy.rs` and `sdks/rust/conformance/src/faults/grpc.rs`, `Fake` in
-  `apps/database-runner/src/testing.rs`, `Service` in `sdks/rust/src/worker_tests.rs`; `UNIMPLEMENTED` until task T006-049).
+  `apps/database-runner/src/testing.rs`, `Service` in `sdks/rust/src/worker_tests.rs`; `UNIMPLEMENTED` until Task 006-049).
   Evidence: the descriptor test of `contract_grpc_durable_execution`, `cargo clippy --workspace --all-targets`, a token canary on
   the request, the element and the lease.
 - [ ] T006-044 The migration (the `/migration` checklist): on `steps`, `lease_offered_generation bigint`, `lease_offered_at` and
   `lease_acknowledged_at timestamptz`, `lease_unacknowledged_withdrawals smallint NOT NULL DEFAULT 0`, `withdrawn_lease_token_hash
   bytea`; no backfill, no `CHECK`; the three closed capability checks of the registry extended `NOT VALID` and then validated; the
-  registry guard's new body (task T006-046) and its restoration in `down`; the table-level grants of `sagat_app` cover the columns
+  registry guard's new body (Task 006-046) and its restoration in `down`; the table-level grants of `sagat_app` cover the columns
   (verified, not assumed); a `down` that refuses while a mark counts, while the history names the capability, or while a live
   process lists it; the storage classification; the privilege audit. Evidence: the forward test, each refused `down`, the privilege
   audit of `integration_platform_foundation`, also as the runtime role.
 - [ ] T006-045 The cause `NOT_ACKNOWLEDGED` of `step.lease_withdrawn` (event, replay, reset copy, the codec of
   `crates/infra-postgres/src/event_codec.rs`, the events contract, the Studio's closed list of causes), or its confirmation if the
-  ADR-0098 build added it (D006-059 (2)). Evidence: codec round trip, a fixture holding the cause in
+  Architecture decision 0098 build added it (Decision 006-059 (2)). Evidence: codec round trip, a fixture holding the cause in
   `crates/domain/tests/legacy_replay.rs`, reset copying it.
 - [ ] T006-046 The registry, dormant: the capability `delivery-acknowledgement-v1` known to the registry but listed by no process
   yet; `control-plane delivery-acknowledgement-activate` and `-remove` (owner role, `--operator`, `--expect-live N`, `--dry-run`),
   which take the epoch row first and refuse with a typed answer an activation without `lease-withdrawal-v1`; the guard of
   `platform_requirements_guard` (invoker, schema-qualified, the epoch row taken first) for both orders; the command that removes
   `lease-withdrawal-v1` refuses while a mark counts; `docs/runbooks/lease-withdrawal.md` and `docs/runbooks/instance-registry.md`
-  section 5 updated, and an amendment line for ADR-0082 prepared for its acceptance. Evidence: the commands' typed refusals; the
+  section 5 updated, and an amendment line for Architecture decision 0082 prepared for its acceptance. Evidence: the commands' typed refusals; the
   trigger refuses both orders, also with the hand SQL of the runbook, with the race between an activation and a removal held open.
 - [ ] T006-047 The claim marks and flags a lease, in each of the three lease statements (`upsert_step`, `upsert_scoped_instance`,
   the path statement), when the session was accepted at 1.8, the requirement is known, the lease's earlier deadline is at least
@@ -182,7 +182,7 @@ T006-067. Shared files have one owner each.
   the store returns the marks typed; the engine's statements keep or clear `lease_acknowledged_at`. Evidence: a matrix test in
   `integration_durable_execution` (minors 1.4, 1.7 and 1.8; requirement recorded or not; time-to-live 17 and 18 s; `timeoutMs` 17
   and 18 s; each statement; root and scoped), a lease written afterwards with the old column list is not provisional, the parity
-  test of the macro against the pure function, and the unchanged `LEASE` line of task T006-055.
+  test of the macro against the pure function, and the unchanged `LEASE` line of Task 006-055.
 - [ ] T006-048 Negotiation: `PROTOCOL_MINOR` and `DELIVERY_ACKNOWLEDGEMENT_PROTOCOL_MINOR` at 8, `protocol_ceiling` answering 8
   when it would answer 7 and the store proves the columns; the database runner keeps 6. Evidence: the ceiling unit tests of
   `crates/application/src/worker.rs` and `tests/contract/sdk-multilanguage/grpc/negotiation.rs`.
@@ -200,7 +200,7 @@ T006-067. Shared files have one owner each.
   expiry and attempt deadline (`NOT_ACKNOWLEDGED`); every withdrawal (the pass's, the hand-back's, `NOT_SENT`) re-reads the row `FOR
   UPDATE`, decides with the pure function and increments the run of withdrawals; `withdrawn_lease_token_hash`; a `TASK_NOT_STARTED`
   for an acknowledged lease or a `RUNNING` step is an ordinary retryable failure; the hand-back is honoured only from a 1.8 session and
-  under the per-attempt cap, as the ADR-0098 build applies it. Evidence: the unit test of the pure function over every combination of
+  under the per-attempt cap, as the Architecture decision 0098 build applies it. Evidence: the unit test of the pure function over every combination of
   status, marks and deadlines; a provisional `Activity` lease past its expiry, and one past its attempt deadline, withdrawn with no
   review and the attempt reused, root and scoped; an acknowledged one expired as an unknown outcome; the bound of three over mixed
   causes (two silences, one hand-back) and the unmarked fourth lease; a stopping collection drains a withdrawn instance; a cancelled
@@ -212,7 +212,7 @@ T006-067. Shared files have one owner each.
 - [ ] T006-052 The capability refusal: the fence variants (root and path) called only from the capability paths, after the token and
   the binding matched; the descriptor-driven contract test, walking nested, `oneof` and repeated fields, failing for a lease-token
   method with no case. Evidence: that test in `contract_grpc_durable_execution` (refused before, served after the acknowledgement,
-  root and scoped; the `AppendStepLogs` case once task T041-7 has merged); a report on a provisional lease is served; a wrong token
+  root and scoped; the `AppendStepLogs` case once Task 041-7 has merged); a report on a provisional lease is served; a wrong token
   gets the ordinary stale answer.
 - [ ] T006-053 What the server sees of the trust assumption: violations, and calls after a withdrawal, counted and audited once per
   step and generation (or withdrawn hash); hand-backs exempt and counted apart. Evidence: a test for each, including a give-up
@@ -232,7 +232,7 @@ T006-067. Shared files have one owner each.
   for 64 leases and the delivery delay. Done when 1.8 is no more than 15% below 1.7, the call is within 3 s at the 99th percentile,
   ready to handler entry rises by no more than the call's 99th percentile, and no heartbeat is shed while acknowledgements are
   admitted; otherwise the build stops here, the feature stays dormant, and the owner decides. Evidence: the section of
-  `tests/performance/reports/scalability-ha.md` with its raw capture, and the result recorded in ADR-0099.
+  `tests/performance/reports/scalability-ha.md` with its raw capture, and the result recorded in Architecture decision 0099.
 - [ ] T006-057 The feature leaves dormancy: every control plane and engine of the build lists `delivery-acknowledgement-v1`.
   Evidence: `apps/execution-engine/tests/registry.rs` and the control plane's registry test list it; an activation passes on a fleet
   of the build.
@@ -260,11 +260,11 @@ T006-067. Shared files have one owner each.
   after the verdict), the rewrite of a handler-raised `TASK_NOT_STARTED` to `WORKER_ERROR`, the `hold` and `dropFrame` hooks, the
   metrics hooks, unit tests including a skewed clock and a token canary of the request. Evidence: `npm test` and the checks of
   `sdks/AGENTS.md`.
-- [ ] T006-060 Go (`sdks/go`), as T006-059. Evidence: `go test ./...`, `gofmt -l`, `go vet`.
-- [ ] T006-061 Python (`sdks/python`), as T006-059. Evidence: the unit tests, `mypy`, `ruff`.
-- [ ] T006-062 C# (`sdks/dotnet`), as T006-059. Evidence: the unit tests, `dotnet format --verify-no-changes`.
-- [ ] T006-063 Java (`sdks/java`), as T006-059. Evidence: `./mvnw -q verify`.
-- [ ] T006-064 Rust (`sdks/rust`, its four lock files together), as T006-059. Evidence: its unit tests, `cargo clippy`.
+- [ ] T006-060 Go (`sdks/go`), as Task 006-059. Evidence: `go test ./...`, `gofmt -l`, `go vet`.
+- [ ] T006-061 Python (`sdks/python`), as Task 006-059. Evidence: the unit tests, `mypy`, `ruff`.
+- [ ] T006-062 C# (`sdks/dotnet`), as Task 006-059. Evidence: the unit tests, `dotnet format --verify-no-changes`.
+- [ ] T006-063 Java (`sdks/java`), as Task 006-059. Evidence: `./mvnw -q verify`.
+- [ ] T006-064 Rust (`sdks/rust`, its four lock files together), as Task 006-059. Evidence: its unit tests, `cargo clippy`.
 
 ### Integration
 
@@ -280,6 +280,6 @@ T006-067. Shared files have one owner each.
   the new server with the requirement recorded, their hand-backs answered as ordinary retryable failures. Evidence: the
   `released-upgrade` job's receipts.
 - [ ] T006-067 Documents and review: the 1.8 row of `docs/sdk-compatibility.md` table 1 with its test names, the README of the
-  conformance suite, the clarification of FR-037-006 confirmed against the build, and the correctness, security and architecture
+  conformance suite, the clarification of Requirement 037-006 confirmed against the build, and the correctness, security and architecture
   reviewers run on the merged diff with every finding answered. Evidence: the reviews saved beside this design's and the `/verify`
   output.

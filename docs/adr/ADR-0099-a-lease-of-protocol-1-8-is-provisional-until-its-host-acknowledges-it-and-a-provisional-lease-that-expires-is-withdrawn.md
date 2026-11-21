@@ -1,21 +1,21 @@
 # ADR-0099: A lease of worker protocol 1.8 is provisional until its host acknowledges it, and a provisional lease that expires is withdrawn
 
 **Status:** Proposed
-**Decided by:** agent, delegate (OD-2026-11-20-6), on the owner's answer "Yes, in 0.3.0" to delivery acknowledgement (owner decision OD-2026-11-20-12, which left the variant, the protocol minor and the deadline to this design). Reviewed on 2026-11-20 by the correctness, security, architecture and design reviewers: round 1 found 5 Blockers and 32 Majors, round 2 found 2 Blockers and 21 Majors, each answered in this text; round 3 is recorded beside them (`specs/006-sdk-multilanguage/reviews/2026-11-21-delivery-ack/`). Acceptance is the owner's, and with it the trust assumption of decision 12.
-**Refines / supersedes:** refines ADR-0029 (decision 2 said a task stream introduces no durable delivery acknowledgement; decision 5 left a lease lost on the wire to the reaper; decision 6 dispatched a received lease at once), ADR-0098 (adds the cause `NOT_ACKNOWLEDGED`, a bound on repeated withdrawals of a marked lease, a requirement that depends on `lease-withdrawal-v1`, and makes `TASK_NOT_STARTED` a code that 1.8 reserves for the host, as the server review of pull request #260 decided), ADR-0082 (a requirement that depends on another, checked by the registry's trigger; an amendment line is added to ADR-0082 at acceptance) and ADR-0015 (adds minor 1.8 under its rule; the rule does not change). Supersedes none.
+**Decided by:** agent, delegate (Owner decision 2026-11-20-6), on the owner's answer "Yes, in 0.3.0" to delivery acknowledgement (Owner decision 2026-11-20-12, which left the variant, the protocol minor and the deadline to this design). Reviewed on 2026-11-20 by the correctness, security, architecture and design reviewers: round 1 found 5 Blockers and 32 Majors, round 2 found 2 Blockers and 21 Majors, each answered in this text; round 3 is recorded beside them (`specs/006-sdk-multilanguage/reviews/2026-11-21-delivery-ack/`). Acceptance is the owner's, and with it the trust assumption of decision 12.
+**Refines / supersedes:** refines Architecture decision 0029 (decision 2 said a task stream introduces no durable delivery acknowledgement; decision 5 left a lease lost on the wire to the reaper; decision 6 dispatched a received lease at once), Architecture decision 0098 (adds the cause `NOT_ACKNOWLEDGED`, a bound on repeated withdrawals of a marked lease, a requirement that depends on `lease-withdrawal-v1`, and makes `TASK_NOT_STARTED` a code that 1.8 reserves for the host, as the server review of pull request #260 decided), Architecture decision 0082 (a requirement that depends on another, checked by the registry's trigger; an amendment line is added to Architecture decision 0082 at acceptance) and Architecture decision 0015 (adds minor 1.8 under its rule; the rule does not change). Supersedes none.
 **Enforced by:** to be built with the decision (`specs/006-sdk-multilanguage/tasks.md`, phase "Delivery acknowledgement"): the barrier tests of the acknowledgement against each withdrawal in both orders (`tests/fault/sdk-multilanguage/`); the unit test of the decision function over every combination of marks, status and deadlines, and its parity test against the SQL condition; the matrix of the mark over the three statements that write a lease, including a lease written by a binary that does not know the columns (`integration_durable_execution`); the budget lines `ACKNOWLEDGEMENT` and `FIRST_HEARTBEAT` and the unchanged `LEASE` line (`integration_claim_transition_efficiency`); the descriptor-driven test that every worker method carrying a lease token, but the four that keep or end a lease, is refused on a provisional lease (`contract_grpc_durable_execution`); the registry trigger tests; the `promtool` cases of the alerts; the host's unit tests of the give-up clamp and the fallback; the conformance scenario `delivery-acknowledgement` and the override pass in six languages; the released-v0.2 scenario `provisional-lease-cutover` and its rollback case.
 
 ## Context
 
-The engine commits a lease before it knows the task reached a host. ADR-0098 withdraws the leases the server knows it never
+The engine commits a lease before it knows the task reached a host. Architecture decision 0098 withdraws the leases the server knows it never
 handed to the transport, and a host hands back the leases it drops (`TASK_NOT_STARTED`), which the server honours as a withdrawal
-only from a session whose minor reserves the code, the minor this ADR designs (the server review of pull request #260); from an
+only from a session whose minor reserves the code, the minor this architecture decision designs (the server review of pull request #260); from an
 older session it is an ordinary retryable failure. Two losses stay out of its reach, gap
-G006-001 of `specs/006-sdk-multilanguage/research.md`: a frame of `StreamTasks` handed to the transport and lost on the wire,
+Gap 006-001 of `specs/006-sdk-multilanguage/research.md`: a frame of `StreamTasks` handed to the transport and lost on the wire,
 and the answer of a unary `PollTasks` lost after its handler returned. Each lapses after the lease time-to-live and, since
 feature 037, a lapsed lease of an `Activity` is an unknown outcome that goes to consultation or `step.needs_review`, for work
 that never ran. No such loss has been observed yet: the three cases that started this work (two CI jobs and one play of feature
-022) are ADR-0098's, where the server knew the frame never left the process. The owner chose to close the residue in release
+022) are Architecture decision 0098's, where the server knew the frame never left the process. The owner chose to close the residue in release
 0.3.0 with a new protocol minor in all six SDKs, knowing it changes the worker protocol's guarantees.
 
 What constrains the choice:
@@ -29,10 +29,10 @@ What constrains the choice:
   which `begin` takes and then restores the run's whole state. Not every write of a step row holds them: a binding revocation
   shortens leases with the binding's advisory lock only (`crates/infra-postgres/src/bindings.rs`). Each step row has its own
   row lock, which every writer of the row takes.
-- **Older SDKs, later minors and released v0.2.** The server keeps serving every older minor exactly as it does (ADR-0015
+- **Older SDKs, later minors and released v0.2.** The server keeps serving every older minor exactly as it does (Architecture decision 0015
   decision 1). Minors are cumulative, so whatever 1.8 asks of a session, every later minor asks too: drafts 020, 021, 025 and
   026 will take 1.9 onward. A release-0.2 binary does not register in the instance-capability registry.
-- **1.7 first.** A session at 1.8 also speaks 1.7 (step logs, design 041, OD-2026-11-15-8). Neither the server nor any SDK
+- **1.7 first.** A session at 1.8 also speaks 1.7 (step logs, design 041, Owner decision 2026-11-15-8). Neither the server nor any SDK
   speaks 1.7 yet.
 - **One meaning per published version** (constitution principle IV): `timeoutMs` must mean the same at every minor.
 - **Measured latencies.** Ready to handler entry, 99th percentile, 751 to 889 ms over the ten burst rows of five SDKs and both
@@ -49,7 +49,7 @@ What constrains the choice:
    offers 1.8 on the proofs of its build alone (once it serves 1.7), so no later minor depends on an operator's switch. The wire
    and the host procedure are `specs/006-sdk-multilanguage/stream-completion.md`, "Delivery acknowledgement (protocol 1.8)". 1.8
    is reserved in the register of `sdks/SPEC.md` §9 at the coordinator's instruction, an exception to the rule of
-   OD-2026-11-15-8 ("when its contract merges") put to the owner; it is released if this ADR is not accepted.
+   Owner decision 2026-11-15-8 ("when its contract merges") put to the owner; it is released if this architecture decision is not accepted.
 2. **The mark is lease data bound to its generation.** A claim marks a lease provisional, in the statement that already writes
    the lease (any of the three: the root statement, the scoped statement of a full-run transaction, the path statement), when
    the session was accepted at 1.8, the engine knows the requirement `delivery-acknowledgement-v1` is recorded, the lease's earlier
@@ -69,12 +69,12 @@ What constrains the choice:
    its earlier deadline by `clock_timestamp()`. It does not take the run lock, restore the run, renew the lease, apply a transition,
    append a journal event or write the outbox.
 4. **Exactly one of the acknowledgement and a withdrawal commits.** Every withdrawal of a lease whose mark counts (the expiry or
-   attempt deadline of decision 5, ADR-0098's hand-back and its `NOT_SENT` withdrawal) re-reads the step row `FOR UPDATE` under
+   attempt deadline of decision 5, Architecture decision 0098's hand-back and its `NOT_SENT` withdrawal) re-reads the step row `FOR UPDATE` under
    the run lock, decides with one pure function, and withdraws only a lease still provisional. The acknowledgement's statement
    takes the same row lock. Whichever takes it first wins; the other finds the row changed and does nothing (`NOT_HELD` for the
    acknowledgement, `fence_missed` for the withdrawal). The host runs only on `ACKNOWLEDGED`.
 5. **A provisional lease is withdrawn at its earlier deadline; an acknowledged lease is an attempt.** When the first of its
-   expiry and its attempt deadline passes, a provisional lease MUST be withdrawn as ADR-0098 decision 3 withdraws (one fenced
+   expiry and its attempt deadline passes, a provisional lease MUST be withdrawn as decision 3 of Architecture decision 0098 withdraws (one fenced
    transaction per run or path, `step.lease_withdrawn` with the cause `NOT_ACKNOWLEDGED`, the step back to `READY`, the attempt not
    consumed, no review); the next lease is a new claim with its own expiry and attempt deadline, so `timeoutMs` keeps its meaning.
    An acknowledged lease is never withdrawn: at its expiry or attempt deadline it keeps today's meaning (an unknown outcome,
@@ -87,7 +87,7 @@ What constrains the choice:
    earlier deadline is at least 3R = 18 s after the claim; at the default 30 s time-to-live with no attempt timeout, at most
    (30 − 6 − 6) / 6 = 3 complete attempts fit. A lease whose earlier deadline is shorter is not marked and keeps today's meaning.
 7. **Cancellation before the start needs no write.** An acknowledgement of a provisional lease whose cancellation is requested
-   answers `ACKNOWLEDGEMENT_VERDICT_CANCELLED` and writes nothing; the host hands the lease back, ADR-0098's withdrawal runs the
+   answers `ACKNOWLEDGEMENT_VERDICT_CANCELLED` and writes nothing; the host hands the lease back, Architecture decision 0098's withdrawal runs the
    settle, which cancels the step. If the hand-back is lost, the lease is withdrawn at its deadline and the settle cancels it then.
 8. **A provisional lease receives no capability.** Every worker call that carries a lease token, other than `Heartbeat`,
    `CompleteStep`, `FailStep` and `AcknowledgeTasks`, MUST be refused on a provisional lease with `FAILED_PRECONDITION` and the
@@ -131,7 +131,7 @@ What constrains the choice:
     consumed, no review) when the step is still `LEASED` with the issued fence, the lease is not acknowledged (when its mark
     counts), and the step's withdrawals on `TASK_NOT_STARTED` for that attempt number are under the per-attempt cap the server
     applies; beyond the cap, or when any condition fails, it is an ordinary retryable failure with the flag the host sent. From a
-    session below 1.8 it is always an ordinary retryable failure. The cap's value is derived by the server build of ADR-0098
+    session below 1.8 it is always an ordinary retryable failure. The cap's value is derived by the server build of Architecture decision 0098
     (pull request #260) and recorded in its decisions; this design names it and does not choose it. Every such withdrawal of a
     lease whose mark counts also increments the run of withdrawals of decision 9.
 
@@ -148,7 +148,7 @@ What constrains the choice:
    of decision 6 gives the first heartbeat the time the renewal gave.
 3. **A host rule bound to the minor ("a session at 1.8 acknowledges every lease").** One field fewer, but offering 1.8 would then
    depend on the activation and on the fleet's time-to-live, and so would every later minor (round 2: architecture Blocker 1).
-4. **Variant 1 as sketched in owner question O006-001: a new step status `OFFERED` and an acknowledgement event.** Equally exact;
+4. **Variant 1 as sketched in Owner question 006-001: a new step status `OFFERED` and an acknowledgement event.** Equally exact;
    a status reaches every reader of `steps.status` and an event per task adds a journal append per task.
 5. **Variant 2: the first heartbeat before the handler.** Equally exact, reuses `Heartbeat` and `step.started`; per task, one call
    and one transaction that restores the run's whole state, applies a transition and appends `step.started` (the build pins both
@@ -160,14 +160,14 @@ What constrains the choice:
    `timeoutMs` too, since the next lease is a new claim.
 8. **The acknowledgement in a bidirectional stream, or carried by the next poll.** The first needs bidirectional streams in six
    SDKs and gives nothing for a unary poll; the second makes the handler wait for the next receive.
-9. **Do nothing beyond ADR-0098.** Leaves G006-001. Rejected by the owner (OD-2026-11-20-12).
+9. **Do nothing beyond Architecture decision 0098.** Leaves Gap 006-001. Rejected by the owner (Owner decision 2026-11-20-12).
 
 ## Consequences
 
 Good: a frame lost on the wire and a lost `PollTasks` answer go back to `READY` at the lease's earlier deadline instead of to an
 operator, with the attempt number and the idempotency key unchanged; a provisional lease receives no secret, credential, blob or
-log stream; a cancellation that arrives before the start is known; a process that crashes between a claim and ADR-0098's
-withdrawal no longer leaves a review for a marked lease (gap G006-002 closes for them); the claim, the completion, the meaning of
+log stream; a cancellation that arrives before the start is known; a process that crashes between a claim and Architecture decision 0098's
+withdrawal no longer leaves a review for a marked lease (Gap 006-002 closes for them); the claim, the completion, the meaning of
 every option and every later minor are unchanged; a lease's meaning never changes while it is held.
 
 Bad: one more call and one more short transaction before the first handler of a frame starts; under light load that is one per
@@ -175,22 +175,22 @@ task, about 6 statements and 1 transaction more on the 88 statements and 3 trans
 trips with `BEGIN` and `COMMIT`), which the round-trip model of feature 038 predicts at about 8% of the transitions per second, an
 estimate the gate of decision 13 measures; a task with an input blob reads it only after the acknowledgement. Five columns on
 `steps`, two commands, one migration, a change of the registry's trigger. 1.8 waits for 1.7 in the server and in each SDK. Leases
-whose earlier deadline is under 18 s are not protected (gap G006-047). Gaps G006-040 to G006-047 remain, of which the trust
-assumption (G006-042) is the one the owner accepts with this ADR.
+whose earlier deadline is under 18 s are not protected (Gap 006-047). Gaps 006-040 to 006-047 remain, of which the trust
+assumption (Gap 006-042) is the one the owner accepts with this architecture decision.
 
 Compatibility with runs in flight: a lease issued before the activation is not flagged and keeps today's meaning; after it, only
 leases claimed for sessions at 1.8 are flagged.
 
 Rollback (`stream-completion.md`, "Rollback"): remove the requirement; within one registry heartbeat no engine marks a lease;
 wait until no mark counts; only then may `lease-withdrawal-v1` be removed; roll the binary back no further than a build that
-decodes the cause `NOT_ACKNOWLEDGED` (the ADR-0098 build, if it adds the cause to its closed set before it merges, as asked in
-decision D006-059; otherwise this build). A session accepted at 1.8 meeting a binary below 1.7 is design 041's case, not a new one:
+decodes the cause `NOT_ACKNOWLEDGED` (the Architecture decision 0098 build, if it adds the cause to its closed set before it merges, as asked in
+Decision 006-059; otherwise this build). A session accepted at 1.8 meeting a binary below 1.7 is design 041's case, not a new one:
 an unflagged lease asks nothing of 1.8.
 
 ## Evidence
 
-`specs/006-sdk-multilanguage/research.md` decisions D006-040 to D006-061, gaps G006-040 to G006-047 and owner question O006-001;
+`specs/006-sdk-multilanguage/research.md` Decisions 006-040 to 006-061, Gaps 006-040 to 006-047 and Owner question 006-001;
 `specs/006-sdk-multilanguage/stream-completion.md`, "Delivery acknowledgement (protocol 1.8)"; `sdks/SPEC.md` §5, §6.1 to §6.4,
-§6.8, §9 and §10; ADR-0098 and the build decisions of its branch; `tests/performance/reports/sdk-streaming.md` and
+§6.8, §9 and §10; Architecture decision 0098 and the build decisions of its branch; `tests/performance/reports/sdk-streaming.md` and
 `tests/performance/reports/scalability-ha.md`; `tests/integration/claim-transition-efficiency/work_budget.rs`; the review rounds
 under `specs/006-sdk-multilanguage/reviews/2026-11-21-delivery-ack/`.
