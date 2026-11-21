@@ -108,7 +108,11 @@ describe('ScriptEditorPage: autosave', () => {
   it('saves the source a moment after the typing stops, on the revision it read, and shows the new revision', async () => {
     const { server, user } = await openEditor();
     const box = await sourceBox();
-    await user.type(box, '// hello');
+    // One edit, as a paste makes: that several keystrokes fold into one save is proved with controlled
+    // timers in draft.test.ts; here the autosave pause is 30 ms, which a slow machine can exceed between
+    // two typed keys, and the count of saves would depend on the speed of the machine.
+    await user.click(box);
+    await user.paste('// hello');
     await waitFor(() => expect(patchesOf(server)).toHaveLength(1));
     expect(patchesOf(server)[0]).toEqual({ revision: 1, source: `${aScript().source}// hello` });
     await waitFor(() => expect(screen.getByText(/draft revision 2/)).toBeInTheDocument());
