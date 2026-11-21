@@ -1305,9 +1305,12 @@ taken after `git grep D022-04` on every `origin/*` branch.
      a grant already made counts as it was; a raised ceiling never lifts a waiter above its filed limit, which is the lower
      of its declaration and the ceiling at its admission (review of 2026-11-21, minor 3: so a ceiling raised while it
      waits is not applied to it, an under-delivery; the grant's journal records the filed limit, not the one it was
-     decided with; both open with the review's answers).
+     decided with; both open with the review's answers). *Answered 2026-11-21 (decision D022-075 item 7, minor 3):* the
+     grant row and `rate_limit.granted` record the limit the grant was decided with; a raised ceiling stays unapplied to
+     a waiter already filed.
   4. *Concurrency is unchanged:* the same question for a lowered `concurrency_limit` while runs are queued is not settled
-     by the specification (its edge case speaks of a new version's lower limit only); left open as gap G022-020.
+     by the specification (its edge case speaks of a new version's lower limit only); left open as gap G022-020. *Decided 2026-11-21 (decision D022-074):* a lowered
+     concurrency ceiling applies to the queued runs too.
 - **D022-072 — The database clock set back is tested by moving the counted instants, not with `libfaketime`
   (2026-11-21; task T022-080; amends the test method of D022-027).** Delegate (OD-2026-11-20-6). Every decision of the
   rate gate compares the stored instants of a key's grants with `clock_timestamp()`, so a database clock set back by one
@@ -1318,6 +1321,112 @@ taken after `git grep D022-04` on every `origin/*` branch.
   and shifts the clock of every database of the container at once, which the suites share; a clock port would test the
   port (D022-027's own objection). What this does not exercise: a path that reads the clock for something other than
   counting grants (the rest hint and the queue deadline keep the true clock), recorded in `rate_limits.rs`'s module text.
+- **D022-073 — Strict admission order: a new arrival queues behind an eligible waiter even when its key has room
+  (2026-11-21; task T022-080, Major 5 of its review; SC-022-017, SC-022-004, FR-022-042; ADR-0089 decision 4).**
+  Delegate (OD-2026-11-20-6); the coordinator's decision 1. The review found that admission granted a start at once
+  whenever the key's counted grants plus all its waiters were below the start's limit: with `limit: 10, per: second`,
+  starts 1 to 10 granted, 11 to 14 queued and a second gone by, start 15 saw `0 + 4 < 10` and was granted while 11 to
+  14 waited for the pass, so the journals' grants did not follow admission order, which success criterion SC-022-017
+  requires (and SC-022-004 for a permit). Options: (a) keep the reservation rule at admission and reword the success
+  criterion (an approved text: the owner's); (b) strict admission order: a new arrival queues whenever its key has an
+  eligible waiter, and the grant pass grants in order; (c) grant the waiters ahead inside the admission's own
+  transaction (it would lock other runs inside a creator's transaction, against ADR-0089 decision 3's one routine).
+  Chosen (b), as the approved criterion says:
+  1. *The rule.* At admission (both gates, both levels, the one decision `decide_filed`), a gate admits only when its
+     key has no eligible waiter and its counted holders or grants are below the acquirer's limit. Eligible is ADR-0089
+     decision 4's word: not past its deadline, of a live run that is not paused, and admitted by its own limit, which is
+     the lower of its filed limit and the namespace's current ceiling (decisions D022-071 and D022-074), counted over its
+     own window (decision D022-075 item 4). A waiter refused by its own lower limit does not hold a new arrival back
+     (D1196 stands: `queue::a_step_behind_only_an_ineligible_waiter_is_granted_at_once`, which under the counting of
+     every waiter was queued and granted by the next pass); one refused only by its other gate does, since it keeps its
+     room. This narrows ADR-0089 decision 4,
+     it does not depart from it: with `p` eligible waiters ahead, a new arrival was granted only when `taken + p < L`;
+     now also only when `p = 0`.
+  2. *The grant pass keeps the reservation rule* of ADR-0089 decision 4 (accepted by the owner) and tries the waiters of
+     a key in admission order; every decision of one pass counts the key's grants as of the instant the pass selected
+     the key (`GateKey::selected_at`, at or before each decision), not at its own instant. Found by the flood under load:
+     a pass refused a waiter, two counted grants aged out while it went on, and a younger waiter behind it found room for
+     itself and the refused one (the reservation) and was granted first. Counted as of the selection, no grant ages out
+     within a pass, so a waiter the rule refuses refuses every younger one of the same limit and window, and the next
+     pass grants them in order. It never over-grants: an earlier instant counts every grant made since and keeps those
+     that aged out meanwhile; the cost is that a grant aging out during a pass is used by the next one. The queue deadline
+     is still checked at the decision's instant. Proved by
+     `rate_limits::a_grant_that_ages_out_during_a_pass_never_puts_a_younger_waiter_first`. The exceptions are the
+     accepted decision's own: a waiter skipped because another transaction holds its run (`Busy`) keeps its room and is
+     granted by a later pass, after younger ones; and a waiter of two keys may be granted by its other key's pass
+     (ADR-0089 decision 3), before older waiters of the first key, whose room it leaves.
+  3. *Cost in statements.* The eligibility is read only when the key has waiters and the acquirer's semaphore or window
+     has room: one statement, the key's waiters in queue order up to the first eligible one. An uncontended admission
+     and one refused by a full key read nothing more, so no line of the hot-path budget moves (`plan.md`, "Hot-path
+     budget of a gated definition").
+  4. *The hint.* A start queued while its key has room lowers the key's next-eligible hint to the statement's instant
+     (`least(hint, now)`), so the next pass visits the key; a start queued at a full key keeps the hint it found (early
+     or the age-out instant, both never late).
+  5. *The delay it costs a new start* (derived in `plan.md`, "The grant pass, by key"): at most `1.2 I + 2 D`, with `I`
+     the scheduler's idle pause (`SAGAT_SCHEDULER_INTERVAL_MS`, 500 ms by default, jittered by up to 20 %) and `D` the
+     duration of one tick; one tick more when more keys are due than one pass visits (the two passes of SC-022-017).
+     Never a window: the pass grants the start under the counts that would have admitted it, unless a waiter that was
+     not eligible at its admission became eligible meanwhile (a resumed run), which is then ahead of it by admission
+     order. Tested by `run_admission::a_start_behind_an_eligible_waiter_queues_although_the_key_has_room_and_one_pass_grants_both_in_order`
+     (a permit), `rate_gate::a_start_behind_an_eligible_waiter_queues_although_the_window_has_room_and_the_next_pass_grants_it`
+     (a slot, with the window rested an hour ahead: the hint drops to the start's enqueue instant) and the flood of
+     `rate_limits` (the fifteenth start), each red before the change.
+- **D022-074 — A lowered namespace concurrency ceiling applies to the runs already queued (2026-11-21; gap G022-020;
+  task T022-025; FR-022-021; ADR-0056 decision 7).** Delegate (OD-2026-11-20-6); the coordinator's decision 2, as
+  decision D022-071 did for rate limits. A grant from the queue evaluates a permit waiter against the lower of the
+  limit filed in its waiter row and the namespace's current `concurrency_limit`, and counts a waiter ahead with the same
+  rule; admission already applied the current ceiling. Held permits are never revoked (ADR-0056 decision 7; task
+  T022-025's `lifecycle::a_lowered_limit_revokes_nothing_and_applies_to_the_next_start`), and the holder row records the
+  limit its grant was decided with. Weighed: keeping the filed limit (a namespace that lowers its ceiling to protect a
+  dependency would wait until every run queued under the old limit is granted, up to the hard bound of 10,000 run
+  waiters a key, before the new ceiling takes effect) and revoking held permits (an attempt in flight would lose its
+  permit, which ADR-0056 forbids). Cost: the grant of a permit waiter reads the namespace's ceilings, one statement of
+  the grant's transaction (it was read only for a slot waiter until now); no budget line covers the grant pass. Closes
+  gap G022-020 with `lifecycle::a_lowered_concurrency_ceiling_applies_to_the_queued_starts_and_revokes_no_permit`.
+- **D022-075 — The answers to the correctness review of task T022-080 (2026-11-21;
+  `reviews/2026-11-21/rate-faults-correctness-reviewer.md`, 0 Blockers, 6 Majors).** Delegate (OD-2026-11-20-6). Each
+  Major has a test seen failing before its fix, or a hand mutation where the test can only follow the code:
+  1. *Major 1 (rounds 0 and 1 of the timeout race never reached the grant).* The race runs in four orders of five rounds
+     each, every one reaching the decision it names: (0) the grant lists the start before its deadline (three seconds
+     ahead, minor 6), holds its run and waits for the window; the deadline passes and the timeout waits for the run; the
+     grant's check of the deadline under the window's lock refuses it. (1) The grant lists the start before its deadline
+     and finds its run held, as by any transaction of the run: it reports the start skipped (`skipped == 1`) and the
+     timeout decides after the deadline. (2) The grant commits before the deadline. (3) The grant has two starts of one
+     key in hand and waits for the window on the first; the second's deadline passes and its timeout commits; the grant
+     then finds the second timed out and grants the first only.
+  2. *Major 2 (the set-back clock never decided while the moved grant was in the future).* The holder's grant is moved
+     five windows ahead and a pass runs at once, with the database clock read below the moved instant before it; it
+     grants nothing, asserted without a condition; the waiter's grant is no earlier than the moved instant plus one
+     window.
+  3. *Major 3 (the place estimate and the run view used the filed limit).* `RATE_PLACE_SQL` and the run view's `limit`
+     use `L`, the lower of the waiter's filed limit and the namespace's current ceiling of its window length, read in
+     the estimate's read-only transaction; `rate_rest::a_lowered_ceiling_moves_the_estimate_and_the_limit_a_waiting_run_shows`.
+  4. *Major 4 (the waiters ahead were counted over the deciding waiter's window).* The grant routine and admission
+     count the key's grants once for each window length up to the window row's longest period (`max_period_ms`, which
+     is at least every waiter's period), and a waiter ahead is eligible when the lower of its own filed limit and the
+     ceiling of its own window length is above the count of its own window. For a key with one period nothing changes;
+     `rate_limits::a_waiter_of_a_longer_window_refused_by_its_own_limit_does_not_hold_back_a_shorter_one` mixes an hour
+     and a second on one key.
+  5. *Major 5 (the flood's admission order on a slow runner).* Decision D022-073. The flood is deterministic: the first
+     ten starts are granted at admission, the window is aged on the database clock while four more wait, the fifteenth
+     queues although the window has room, and every later start queues until the key's ceiling of 100 waiters, then is
+     refused: exactly 10 granted at admission, 100 buffered, 890 refused, and the pass grants in admission order.
+  6. *Major 6 (every crash came before the decision's first write).* Each of T20, T21 and T24 has a second crash point
+     after its gate writes: the test holds an uncommitted journal row at the run's next sequence number, so the deciding
+     transaction, its grant, waiter and window rows written, waits on the journal's primary key; it is killed there, and
+     grant rows, waiter rows, the window's counters and the journal are as before.
+  7. *Minors.* (1) The cancellation race asserts the run cancelled and the slot row each order leaves (a run's slot is
+     leased at its grant, so a granted then cancelled start keeps its grant row until it ages out; a dequeued one has
+     none). (2) The lease-recording crash uses `per: second` and asserts the waiter's grant no earlier than the recorded
+     lease plus one second. (3) The grant from the queue records the limit it was decided with (the lower of the filed
+     limit and the current ceiling) in its grant row and in `rate_limit.granted`; decision D022-071 item 3 is corrected:
+     a ceiling raised while a waiter waits is not applied to it, its bound being its filed limit (its declaration
+     clamped at its admission), an under-delivery and never an over-grant; the specification's "its own pinned `limit`"
+     (US07, edge cases) is read as that filed limit, reported to the owner with this decision. (4) Done before this
+     answer: `plan.md` and task T022-080's amendment line name the method of decision D022-072. (5) The second clause of
+     SC-022-017 (a second saturated key, more keys and tenants than one pass visits) is new task T022-115. (6) Done in
+     item 1. Nit 1 (the ceilings read once per waiter tried) is kept: reading them once a pass would carry a value read
+     outside the grant's transaction into it, and the statement is one primary-key range of `quota_limits`.
 
 ## Gaps
 
@@ -1373,7 +1482,7 @@ taken after `git grep D022-04` on every `origin/*` branch.
 | G022-017 | The purge keeps a grant for its window row's longest period seen (`max_period_ms`) plus a minute: an acquirer that later declares a longer window on the same key (a `RATE_LIMIT_MISMATCH` warned at publication) does not count the grants purged before it arrived, and may be admitted up to their number early in its first window. | Open; documented in the runbook |
 | G022-018 | The grant purge visits keys in no order, without key-shard partitioning or an index on the lease instant (a full scan of `rate_limit_grants` a call): under steady per-second traffic on more keys than it visits per housekeeping its backlog grows (reviews of 2026-11-20, architecture Major 5). *2026-11-20 (D022-066 item 1):* the rows of a namespace are bounded by its `rate_limit_live_keys` again, and a decision that would be refused reclaims its own namespace's purgeable windows of at most 64 grants first, so only a window of more grants waits for this purge. Open: the order, the shards, the index, a time budget, an `outcome="failed"` and an oldest-purgeable-age gauge; a call stops at the first round that deleted nothing, which a round of keys all held by others also is (re-review correctness minor 3). | Open; production gate (runbook section 6); T022-062, T022-089 |
 | G022-019 | A reset with the strategy `CANCEL_SOURCE` of a rate-limited source whose key's window is full cancels its source and then fails `RATE_LIMIT_SLOT_UNAVAILABLE`, with no run replacing it (D022-069 items 3 and 8; reviews of 2026-11-21, architecture Major 1, security minor; re-review architecture minor C). The runbooks warn and advise `REQUIRE_TERMINAL`; the two contracts say so. Task T022-114 builds the advisory refusal at the request, or a warning in the reset preview. | Open; not a production gate (D022-069 item 8); T022-114 |
-| G022-020 | A namespace's `concurrency_limit` lowered while runs are queued for a permit: the grant routine compares a queued waiter with the limit filed at its admission, as the rate gate did before D022-071; the specification's edge case speaks of a new version's lower limit only (`spec.md`, US02 edge cases). Whether a lowered concurrency ceiling applies to queued waiters at once is a product question for the coordinator (OD-2026-11-20-6) before it is built. | Open; D022-071 item 4 |
+| G022-020 | A namespace's `concurrency_limit` lowered while runs are queued for a permit: the grant routine compares a queued waiter with the limit filed at its admission, as the rate gate did before D022-071; the specification's edge case speaks of a new version's lower limit only (`spec.md`, US02 edge cases). Whether a lowered concurrency ceiling applies to queued waiters at once is a product question for the coordinator (OD-2026-11-20-6) before it is built. *Closed 2026-11-21 (decision D022-074):* the grant from the queue evaluates a permit waiter, and a waiter ahead, against the lower of its filed limit and the current `concurrency_limit`; held permits are never revoked; `lifecycle::a_lowered_concurrency_ceiling_applies_to_the_queued_starts_and_revokes_no_permit`. | Closed; D022-074 |
 | G1189 | Nothing in the database computes or checks `key_shard` and the waiter `shard`; two binaries that hashed differently would file one key under two shards. | Open; T022-097 |
 | G1190 | `flow_control_key_activate` records the operator as typed and keeps no history row with the database role, unlike the registry's activations. *Partly closed 2026-11-16 (D022-042): the version row records `activated_role` (`session_user`); a history of earlier activations of the same version is not kept, since a version is activated once. 2026-11-19 (D022-046): every force has an append-only history row with the database role and a reason; the runbook part is `docs/runbooks/flow-control.md`.* | Open; T022-061 (the rest of the runbook) |
 | G1191 | Untested: the down migrations' refusal when `run_events` holds a `concurrency.*` or `rate_limit.*` event; no contract test parses 018's reset-rule table against `RULES`. | Open |

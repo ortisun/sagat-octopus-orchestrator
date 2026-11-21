@@ -588,6 +588,34 @@ locks a run after either.
   makes at most 256 grants per key (the existing per-key bound), each grant its own transaction.
 - Reservation rule (D022-021): on each gate, a waiter at eligible position `p` is granted only when counted
   holders or grants plus `p` are below its own limit.
+- *Strict admission order (2026-11-21, decision D022-073).* Admission adds one condition to the reservation rule: a new
+  arrival (`p` is every eligible waiter of the key, all ahead of it) is granted at once only when `p = 0` and the counted
+  holders or grants are below its limit; otherwise it queues, and the pass grants in admission order. Eligible: not past
+  its deadline, of a live run that is not paused, and below the count of its own window by the lower of its filed limit
+  and the current ceiling (decisions D022-071, D022-074, D022-075 item 4). The eligibility is read only when the key has
+  waiters and the acquirer's semaphore or window has room, so no budget line moves; a start queued with room lowers the
+  key's hint to its statement's instant.
+- *The delay strict order costs a new start* that the reservation rule alone would have granted at its admission
+  instant `q` (decision D022-073 item 5). Let `I` be the idle pause of the scheduler loop (`SAGAT_SCHEDULER_INTERVAL_MS`,
+  500 ms by default; `run_scheduler` sleeps `jittered(I)`, at most `1.2 I`, only after a tick that did no work) and `D`
+  the duration of one tick.
+  1. At `q` the key is due: its hint is at or before `q` (item 4 of the decision).
+  2. The tick in progress at `q`, if any, may have selected its due keys before `q`; it ends by `q + D`.
+  3. The next tick starts at once (the previous one did work) or after at most `1.2 I`, and its grant pass selects the
+     key, provided the key is among those one pass visits (else one tick more: the two passes of SC-022-017).
+  4. In that pass the key's waiters are tried in admission order and the new start is granted under the reservation
+     rule: every grant to a waiter ahead moves one from `p` to the count, so `count + p` is what it was at `q` or lower
+     (a counted grant aged out, a waiter ahead timed out or was cancelled). It is granted unless a waiter that was not
+     eligible at `q` became eligible meanwhile (a resumed run), which is ahead of it by admission order.
+  5. So the extra delay is at most `D + 1.2 I + D = 1.2 I + 2 D` (600 ms plus two ticks by default), `2 (1.2 I + D) + D`
+     when more keys are due than one pass visits, and never a window. A pass that cannot hold the key's home shard
+     (a takeover) adds the takeover, as for every buffered grant (gap G1174).
+  The integration tests prove steps 1 and 4 (the key's hint at or before the start's commit, and one pass granting the
+  waiter ahead and then the start, in order); steps 2, 3 and 5 rest on `apps/execution-engine/src/loops.rs`.
+- *A pass counts as of its selection (decision D022-073 item 2).* Every decision of one pass counts a window's grants as
+  of the instant the pass selected the key, so no grant ages out within a pass and a younger waiter is never granted
+  before an older one the same rule refused in that pass. Never an over-grant (an earlier instant counts more); a grant
+  that ages out during a pass is used by the next one. The queue deadline is checked at the decision's instant.
 
 ### Counters (D022-026)
 
@@ -662,10 +690,13 @@ What a reader sees is read from the rows the gate decides with, without a lock, 
   and of its waiter row, as `Run.concurrency` reads the permit. `GRANTED` while the run's slot counts at the statement's
   instant `t` (`leased_at > t - per`, the gate's half-open window: at `leased_at + per` exactly it counts no more and the
   field is absent; the journal keeps the grant); `WAITING` while its waiter row exists. `since` is the grant's or the
-  queueing's database instant, `limit` the effective limit the row was decided with, `per` its window, `queueDeadline`
+  queueing's database instant, `limit` the effective limit the row was decided with (for a waiting run read by `getRun`,
+  the limit its next grant is decided with, the lower of its filed limit and the current ceiling, decision D022-075 item 3;
+  a listing shows the filed limit), `per` its window, `queueDeadline`
   the waiter's deadline. The label follows FR-022-057 (the reveal grant, D022-060).
 - **Position and estimate** (`getRun` only, a `WAITING` run; never in a listing): read at one instant `t` by one
-  statement. With `L` the waiter's limit, `p` its window, `n` the key's grants that count over `p` at `t` and `a` the
+  statement. With `L` the waiter's limit (the lower of its filed limit and the namespace's current ceiling of its window
+  length, the limit the grant routine decides it with, decision D022-075 item 3), `p` its window, `n` the key's grants that count over `p` at `t` and `a` the
   waiters ahead of it that the pass visits (not past their deadline, their run running or waiting and not paused, in
   the queue's order `(enqueued_at, run_id, node)`). The grant routine also skips a waiter ahead whose own limit is
   below the count at the moment (`admits`); read at a full key that filter would rank every waiter first, so the
