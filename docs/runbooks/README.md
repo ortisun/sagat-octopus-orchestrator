@@ -26,6 +26,7 @@ first, see the [quickstarts](../quickstarts/README.md).
 | [run-reset.md](run-reset.md) | Resetting a run to a point (feature 018) |
 | [instance-registry.md](instance-registry.md) | The instance-capability registry (feature 018, shared with features 029 and 031) |
 | [run-input-validation.md](run-input-validation.md) | Checking every run input against its version's schema (design 043) |
+| [flow-control.md](flow-control.md) | Concurrency keys and rate limits of runs and steps: activation, keys, waits, resets and the production gates (feature 022) |
 
 ## Data, secrets and databases
 

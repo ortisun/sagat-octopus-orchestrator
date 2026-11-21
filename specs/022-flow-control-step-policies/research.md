@@ -1272,7 +1272,8 @@ taken after `git grep D022-04` on every `origin/*` branch.
   larger `RUST_MIN_STACK` or test-thread stack, which would hide the growth while production threads have the same edge,
   and over boxing every future (one allocation per command on the hot path for no measured need). The develop build was
   not measured beside it: develop has no `Engine::start`, and the second full build did not fit the disk; the sizes before
-  the boxes are this branch's, measured just before the change. Pinned by `future_sizes::the_futures_of_a_run_creator_stay_below_their_bounds`.
+  the boxes are this branch's, measured just before the change. Pinned by `future_sizes::the_futures_of_a_run_creator_stay_below_their_bounds`. The one-start-point rule of
+  `scripts/check-architecture.py` accepts `start_gated` beside `Engine::start`, since it is that function's gated part.
 
 ## Gaps
 
