@@ -4,7 +4,7 @@
 
 **Created**: 2026-10-26
 
-**Status**: Draft — specification, plan and tasks proposed; not implemented; pending owner review
+**Status**: Specification, plan and tasks approved for implementation by the owner on 2026-11-11 (Owner decision 2026-11-11-1, "Aprovo os rascunhos 019–032 e 036, pode implementar"); not implemented
 
 **Input**: Bring the dispatch features of Temporal (Worker Versioning, Task Queue priority and fairness, heartbeat details, asynchronous activity completion) and Windmill (dedicated workers) to the Sagat engine without a second authority for work: worker deployment versions with deployment and build identity, a capability manifest per version, per-run and per-step routing **pinned** or **auto-upgrade**, a ramp percentage, drain and safe retirement, upgrade at Continue-As-New (feature 014), interplay with protocol-minor negotiation (ADR-0015) and worker bindings and pools (features 009 and 010); priority keys and fairness keys with weights per run and step inside the existing tenant fairness; bounded, classified heartbeat checkpoint details recorded with heartbeats and given to the next attempt; asynchronous completion by task token bound to attempt, generation and fencing, with expiry and audit; push (serverless) dispatch in which an engine-side invoker calls a registered function endpoint (HTTPS, AWS Lambda, Cloud Run) with a signed, attempt-scoped lease under the egress guard, at least once, with no credential leaving the platform except the attempt capability; opt-in warm dedicated script workers per pinned artifact digest and tenant/namespace, analysed against ADR-0013; and worker insights (pollers, last heartbeat, versions, backlog and lag per pool and version) in the API and the Studio.
 

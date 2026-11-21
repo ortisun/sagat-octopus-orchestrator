@@ -54,7 +54,7 @@ The diagram is **logical**: workers claim and report through the worker API, who
 
 ## Current repository map
 
-[`Cargo.toml`](../../Cargo.toml) is the authority for server workspace membership: 17 crates,
+[`Cargo.toml`](../../Cargo.toml) is the authority for server workspace membership: 18 crates,
 six applications and the test crate at this revision. The applications are `control-plane`,
 `execution-engine`, `sandbox-runner`, `database-runner`, `cli` and development-only `dev-idp`.
 

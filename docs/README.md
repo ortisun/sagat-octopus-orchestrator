@@ -141,42 +141,42 @@ disagree, see [Where the documents disagree](#where-the-documents-disagree).
 
 | Number | Feature | Described in | Tasks ticked | Its record says | Runbooks |
 |---|---|---|---|---|---|
-| 001 | Platform foundation and contracts | [specification](../specs/001-platform-foundation/spec.md) | 41 of 41 | Draft, ready for review | [control plane](runbooks/control-plane.md) |
-| 002 | Durable execution engine and scheduler | [specification](../specs/002-durable-execution/spec.md) | 41 of 41 | Draft, ready for review | [execution engine](runbooks/execution-engine.md) |
-| 003 | Native sagas and compensations | [specification](../specs/003-sagas-compensations/spec.md) | 35 of 35 | Draft, ready for review | [sagas](runbooks/sagas.md) |
-| 004 | Triggers, webhooks, messaging and correlation | [specification](../specs/004-events-webhooks-messaging/spec.md) | 44 of 44 | Draft, ready for review | [events](runbooks/events.md) |
-| 005 | Script registry, code editor and inline execution | [specification](../specs/005-inline-code-sandbox/spec.md) | 45 of 45 | Draft, ready for review | [scripts](runbooks/scripts.md) |
-| 006 | TypeScript, Go, Python, C# and Java SDKs | [specification](../specs/006-sdk-multilanguage/spec.md) | 42 of 42 | Draft, ready for review | [SDKs](runbooks/sdks.md), [packaging](runbooks/sdk-packaging.md) |
-| 007 | Visual Studio, Monaco and runtime graph | [specification](../specs/007-workflow-studio/spec.md) | 58 of 58 | Draft, ready for review | [Studio](runbooks/studio.md) |
-| 008 | Distributed observability and operations | [specification](../specs/008-observability-operations/spec.md) | 36 of 36 | Draft, ready for review | [observability](runbooks/observability.md), [alerts](runbooks/alerts.md) |
-| 009 | Security, isolation and multi-tenant governance | [specification](../specs/009-security-multitenancy/spec.md) | 40 of 40 | Draft, ready for review | [security and governance](runbooks/security-governance.md) |
-| 010 | Performance, scalability and high availability | [specification](../specs/010-scalability-ha/spec.md) | 40 of 40 | Draft, ready for review | [scaling](runbooks/scaling.md), [disaster recovery](runbooks/disaster-recovery.md) |
-| 011 | GitOps, versioning and definition promotion | [specification](../specs/011-gitops-versioning/spec.md) | 36 of 36 | Draft, ready for review | [GitOps](runbooks/gitops.md) |
-| 012 | CLI, quickstarts, local testing and documentation | [specification](../specs/012-developer-experience/spec.md) | 35 of 35 | Draft, ready for review | [developer experience](runbooks/developer-experience.md) |
+| 001 | Platform foundation and contracts | [specification](../specs/001-platform-foundation/spec.md) | 41 of 41 | Delivered: every task ticked with its evidence | [control plane](runbooks/control-plane.md) |
+| 002 | Durable execution engine and scheduler | [specification](../specs/002-durable-execution/spec.md) | 41 of 41 | Delivered: every task ticked with its evidence | [execution engine](runbooks/execution-engine.md) |
+| 003 | Native sagas and compensations | [specification](../specs/003-sagas-compensations/spec.md) | 35 of 35 | Delivered: every task ticked with its evidence | [sagas](runbooks/sagas.md) |
+| 004 | Triggers, webhooks, messaging and correlation | [specification](../specs/004-events-webhooks-messaging/spec.md) | 44 of 44 | Delivered: every task ticked with its evidence | [events](runbooks/events.md) |
+| 005 | Script registry, code editor and inline execution | [specification](../specs/005-inline-code-sandbox/spec.md) | 45 of 45 | Delivered: every task ticked with its evidence | [scripts](runbooks/scripts.md) |
+| 006 | TypeScript, Go, Python, C# and Java SDKs | [specification](../specs/006-sdk-multilanguage/spec.md) | 42 of 42 | Delivered: every task ticked with its evidence | [SDKs](runbooks/sdks.md), [packaging](runbooks/sdk-packaging.md) |
+| 007 | Visual Studio, Monaco and runtime graph | [specification](../specs/007-workflow-studio/spec.md) | 58 of 58 | Delivered: every task ticked with its evidence | [Studio](runbooks/studio.md) |
+| 008 | Distributed observability and operations | [specification](../specs/008-observability-operations/spec.md) | 36 of 36 | Delivered: every task ticked with its evidence | [observability](runbooks/observability.md), [alerts](runbooks/alerts.md) |
+| 009 | Security, isolation and multi-tenant governance | [specification](../specs/009-security-multitenancy/spec.md) | 40 of 40 | Delivered: every task ticked with its evidence | [security and governance](runbooks/security-governance.md) |
+| 010 | Performance, scalability and high availability | [specification](../specs/010-scalability-ha/spec.md) | 40 of 40 | Delivered: every task ticked with its evidence | [scaling](runbooks/scaling.md), [disaster recovery](runbooks/disaster-recovery.md) |
+| 011 | GitOps, versioning and definition promotion | [specification](../specs/011-gitops-versioning/spec.md) | 36 of 36 | Delivered: every task ticked with its evidence | [GitOps](runbooks/gitops.md) |
+| 012 | CLI, quickstarts, local testing and documentation | [specification](../specs/012-developer-experience/spec.md) | 35 of 35 | Delivered: every task ticked with its evidence | [developer experience](runbooks/developer-experience.md) |
 | 013 | Federated login | no document in this checkout | | the roadmap: "Draft specification only" | |
 | 014 | Durable workflow primitives and practical SDK examples | [specification](../specs/014-workflow-primitives/spec.md) | 43 of 45 | Architecture accepted; runtime implementation partial | [workflow primitives](runbooks/workflow-primitives.md) |
 | 015 | OpenTelemetry and OpenBao | no document in this checkout | | the roadmap: "Draft specification only" | |
 | 016 | Per-field payload classification | [specification](../specs/016-payload-classification/spec.md) | 65 of 65 | Implemented; release gates passed; merged into 0.2.0 | [payload classification](runbooks/payload-classification.md) |
 | 017 | Database connections, OpenBao secrets and shared execution | [specification](../specs/017-database-connections/spec.md) | 25 of 25 | Implemented and locally verified on 2026-10-17 | [database connections](runbooks/database-connections.md), [database runner](runbooks/database-runner.md), [OpenBao](runbooks/openbao.md), [database recovery](runbooks/database-recovery.md) |
 | 018 | Schedules and bulk run operations | [specification](../specs/018-schedules-bulk-operations/spec.md) | 61 of 81 | Approved for implementation by the owner on 2026-10-29 | [schedules](runbooks/schedules.md), [batch operations](runbooks/batch-operations.md), [business identifiers](runbooks/business-ids.md), [run reset](runbooks/run-reset.md), [instance registry](runbooks/instance-registry.md) |
-| 019 | Worker deployments and dispatch | [specification](../specs/019-worker-deployments-dispatch/spec.md) | 0 of 68 | Draft, not implemented | |
-| 020 | Run visibility, analytics and archival | [specification](../specs/020-visibility-analytics-archival/spec.md) | 0 of 62 | Draft, not implemented | |
-| 021 | Integration resources, managed operations, variables and triggers | [specification](../specs/021-integration-resources-triggers/spec.md) | 0 of 80 | Draft, not implemented | |
-| 022 | Flow control and step policies | [specification](../specs/022-flow-control-step-policies/spec.md) | 0 of 107 | Draft, not implemented | |
-| 023 | Additional script languages | [specification](../specs/023-script-languages/spec.md) | 0 of 66 | Draft, not implemented | |
-| 024 | Data engines and pipelines | [specification](../specs/024-data-engines-pipelines/spec.md) | 0 of 69 | Draft, not implemented | |
-| 025 | AI agents and MCP | [specification](../specs/025-ai-agents-mcp/spec.md) | 0 of 81 | Draft, not implemented | |
-| 026 | Invocation and human-interaction surfaces | [specification](../specs/026-invocation-human-surfaces/spec.md) | 0 of 68 | Draft, not implemented | |
-| 027 | Internal apps | [specification](../specs/027-internal-apps/spec.md) | 0 of 61 | Draft, not implemented | |
-| 028 | Developer tooling | [specification](../specs/028-developer-tooling/spec.md) | 0 of 74 | Draft, not implemented | |
-| 029 | Custom roles, groups, folders and per-operation access lists | [specification](../specs/029-custom-roles-folders/spec.md) | 0 of 69 | Draft, not implemented | |
-| 030 | Cross-namespace service operations | [specification](../specs/030-cross-namespace-services/spec.md) | 0 of 70 | Draft, not implemented | |
-| 031 | Client-side payload encryption | [specification](../specs/031-client-side-encryption/spec.md) | 0 of 69 | Draft, not implemented | |
-| 032 | Multi-region replication and active-passive failover | [specification](../specs/032-multi-region-failover/spec.md) | 0 of 64 | Draft, not implemented | |
+| 019 | Worker deployments and dispatch | [specification](../specs/019-worker-deployments-dispatch/spec.md) | 0 of 68 | Approved for implementation by the owner on 2026-11-11; not implemented | |
+| 020 | Run visibility, analytics and archival | [specification](../specs/020-visibility-analytics-archival/spec.md) | 0 of 62 | Approved for implementation by the owner on 2026-11-11; not implemented | |
+| 021 | Integration resources, managed operations, variables and triggers | [specification](../specs/021-integration-resources-triggers/spec.md) | 0 of 80 | Approved for implementation by the owner on 2026-11-11; not implemented | |
+| 022 | Flow control and step policies | [specification](../specs/022-flow-control-step-policies/spec.md) | 0 of 107 | Approved for implementation by the owner on 2026-11-11; not implemented | |
+| 023 | Additional script languages | [specification](../specs/023-script-languages/spec.md) | 0 of 66 | Approved for implementation by the owner on 2026-11-11; not implemented | |
+| 024 | Data engines and pipelines | [specification](../specs/024-data-engines-pipelines/spec.md) | 0 of 69 | Approved for implementation by the owner on 2026-11-11; not implemented | |
+| 025 | AI agents and MCP | [specification](../specs/025-ai-agents-mcp/spec.md) | 0 of 81 | Approved for implementation by the owner on 2026-11-11; not implemented | |
+| 026 | Invocation and human-interaction surfaces | [specification](../specs/026-invocation-human-surfaces/spec.md) | 0 of 68 | Approved for implementation by the owner on 2026-11-11; not implemented | |
+| 027 | Internal apps | [specification](../specs/027-internal-apps/spec.md) | 0 of 61 | Approved for implementation by the owner on 2026-11-11; not implemented | |
+| 028 | Developer tooling | [specification](../specs/028-developer-tooling/spec.md) | 0 of 74 | Approved for implementation by the owner on 2026-11-11; not implemented | |
+| 029 | Custom roles, groups, folders and per-operation access lists | [specification](../specs/029-custom-roles-folders/spec.md) | 0 of 69 | Approved for implementation by the owner on 2026-11-11; not implemented | |
+| 030 | Cross-namespace service operations | [specification](../specs/030-cross-namespace-services/spec.md) | 0 of 70 | Approved for implementation by the owner on 2026-11-11; not implemented | |
+| 031 | Client-side payload encryption | [specification](../specs/031-client-side-encryption/spec.md) | 0 of 69 | Approved for implementation by the owner on 2026-11-11; not implemented | |
+| 032 | Multi-region replication and active-passive failover | [specification](../specs/032-multi-region-failover/spec.md) | 0 of 64 | Approved for implementation by the owner on 2026-11-11; not implemented | |
 | 033 | Redis Streams for internal notifications and outbound callbacks | [specification](../specs/033-redis-streams/spec.md) | 6 of 7 | no Status line; the roadmap places it in release 0.3 | [events, Redis Streams section](runbooks/events.md#redis-streams-v03) |
 | 034 | Official Rust SDK | [specification](../specs/034-rust-sdk/spec.md) | 7 of 7 | no Status line; its title says release 0.3 | [packaging](runbooks/sdk-packaging.md) |
-| 035 | Apache Iceberg writes and step-output destinations | [specification](../specs/035-iceberg-write-steps/spec.md) | 20 of 129 | Draft, specified, clarified and planned; not implemented | [database runner](runbooks/database-runner.md); guides: [Iceberg connections](guides/iceberg-connections.md), [Iceberg type mapping](guides/iceberg-type-mapping.md) |
-| 036 | Elastic scaling driven by telemetry | [specification](../specs/036-elastic-scaling/spec.md) | 0 of 94 | Draft, not planned, not implemented | |
+| 035 | Apache Iceberg writes and step-output destinations | [specification](../specs/035-iceberg-write-steps/spec.md) | 20 of 129 | Draft, specified, clarified and planned; in implementation | [database runner](runbooks/database-runner.md); guides: [Iceberg connections](guides/iceberg-connections.md), [Iceberg type mapping](guides/iceberg-type-mapping.md) |
+| 036 | Elastic scaling driven by telemetry | [specification](../specs/036-elastic-scaling/spec.md) | 0 of 94 | Approved for implementation by the owner on 2026-11-11; not implemented | |
 | 037 | Explicit compensation failure and uncertain effects | [specification](../specs/037-compensation-safety/spec.md) | 32 of 34 | Delivery 1 approved on 2026-11-01 | [sagas](runbooks/sagas.md) |
 | 038 | Claim and transition efficiency | [design doc](designs/038-claim-transition-efficiency.md) | 0 of 11 | Draft | |
 | 039 | Nested collections and the capacity program | [design doc](designs/039-nested-collections.md) | 0 of 1 | Draft | |
@@ -191,21 +191,13 @@ next one from `python3 scripts/next-feature-id.py`. The [release runbook](runboo
 
 ## Where the documents disagree
 
-Found while writing this index. Each is listed, not resolved: the owner of the document decides which one is right, and
-the wrong one is corrected (constitution, Governance).
+Found while writing this index. Each is listed, not resolved here: the owner of the document decides which one is
+right, and the wrong one is corrected (constitution, Governance). Seven disagreements found on 2026-11-20 were
+corrected the same day, each toward its authority: owner decisions over the roadmap, a design doc over the roadmap,
+ticked tasks and their evidence over a status line, and `Cargo.toml` over prose. One is still open:
 
-- The [roadmap](roadmap.md) calls features 019 to 032 and 036 drafts. The owner approved them for implementation on
-  2026-11-11 ([owner decisions](owner-decisions.md), "Aprovo os rascunhos 019–032 e 036"); they are not built.
-- The roadmap says of feature 041 "Draft"; its [design doc](designs/041-step-logs.md) says "Approved".
-- The roadmap says of feature 042 "nothing built"; the [traceability table](traceability.md) records the server half of
-  its collection operators on 2026-11-14.
-- The roadmap says of feature 035 "nothing built yet" and its specification says "not implemented"; 20 of its 129
-  tasks are ticked, and the [database runner runbook](runbooks/database-runner.md) describes its connection probe.
-- The roadmap says feature 014 has "eight tasks remain open"; its `tasks.md` has 2 of 45 open.
-- Features 001 to 012 say "Draft, ready for review" in their specifications, with every task ticked.
-- The [architecture overview](architecture/overview.md) counts 17 crates; [`Cargo.toml`](../Cargo.toml) lists 18.
 - [Owner decisions](owner-decisions.md) cite an architecture decision record numbered 0091; no such file is in
-  [`adr/`](adr/README.md) on `develop`.
+  [`adr/`](adr/README.md) on `develop`. It arrives with pull request #226.
 
 ## How this folder is kept in order
 

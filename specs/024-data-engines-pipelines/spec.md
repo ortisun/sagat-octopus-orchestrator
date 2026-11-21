@@ -4,7 +4,7 @@
 
 **Created**: 2026-10-26
 
-**Status**: Draft — specification, plan and tasks proposed; not implemented; pending owner review
+**Status**: Specification, plan and tasks approved for implementation by the owner on 2026-11-11 (Owner decision 2026-11-11-1, "Aprovo os rascunhos 019–032 e 036, pode implementar"); not implemented
 
 **Input**: Add more database engines to the feature-017 database model (driver boundary in `crates/infra-database`, executor `apps/database-runner`): MySQL/MariaDB, Microsoft SQL Server, Google BigQuery, Snowflake and DuckDB (executor-local over object storage/Parquet), each with typed result-cell mapping, TLS, auth modes (BigQuery service account, Snowflake key pair) held in OpenBao, limits, probes and read-only versus execute. Add data pipelines in the sense of Windmill 2026: DuckDB/Polars transformation steps over namespace object storage, declared data assets (identity, producer, schema contract), a lineage view in the Studio, freshness status/SLAs, schema contracts and write-audit-publish (stage → validate → publish an atomic pointer).
 
