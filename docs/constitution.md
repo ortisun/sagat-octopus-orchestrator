@@ -207,17 +207,45 @@ Sources: `docs/test-strategy.md`, AGENTS.md rules 9, 11 and 12.
   `checklists/*.md` MUST block its implementation until the owner accepts them in a row of
   `docs/owner-decisions.md`. The clause ends when the last feature with open tasks has been
   converted.
-- **Identifiers:** requirements are `FR-NNN-xxx`, success criteria `SC-NNN-xxx`, non-functional
-  requirements `NFR-NNN-xxx`, user stories `US0n` and tasks `TNNN-xxx`, where `NNN` is the feature
-  number, so that an ID is unique across features; a cross-cutting design without a number uses
-  `T<prefix>-<n>` with its own `Task-prefix`. Commit footers cite them
-  (`Refs: T001-004, FR-001-001`).
+- **Identifiers:** every requirement, success criterion, non-functional requirement, user story
+  and task carries its feature number `NNN`, so that it is unique across features, and is written
+  as words, a space and the number: `Requirement NNN-xxx`, `Success criterion NNN-xxx`,
+  `Non-functional requirement NNN-xxx`, `User story NNN-0n`, `Task NNN-xxx` (a cross-cutting
+  design without a number uses `Task <PREFIX>-<n>` with its own `Task-prefix`). The registers and
+  records follow the same form: `Decision NNN-xxx`, `Gap NNN-xxx`, `Owner question NNN-xxx`,
+  `Architecture decision NNNN`, `Owner decision YYYY-MM-DD-n`. Commit footers cite them
+  (`Refs: Task 001-004, Requirement 001-001`). The old forms (`FR-NNN-xxx`, `SC-`, `NFR-`, `US0n`,
+  `TNNN-xxx`, `D…`, `G…`, `O…`, `ADR-NNNN`, `OD-…`) stay in past commits and in quoted text;
+  `docs/governance/identifier-scheme.md` maps each old form to its new one and sets the transition:
+  until one mechanical pull request (the sweep) renames the existing text and the tools that parse
+  it, the places a tool reads keep the old form.
+- **Words in full:** documents and code comments write words in full: "Rule 8", not "R8"; "test",
+  not "T" or "UT"; "Blocker 1", "Major 2", "minor 7", not "B1", "M2", "m7"; "slice 5", not "S5";
+  "mutation 3", not "W3". Code, paths, literal output and quotations are left as they are. Every
+  pull request MUST pass `scripts/check-plain-words.py`, which refuses the abbreviations listed in
+  `docs/governance/identifier-scheme.md` in the lines the pull request adds, and, once the sweep
+  has landed, the old identifier forms too.
 - **Read before you change:** this constitution and the design doc of the active feature (for a
   feature not yet converted, its `spec.md`, `plan.md` and `tasks.md`) come first. A feature MUST
   NOT implement what belongs to another feature without an approved dependency, that is, an owner
   decision cited by an `Owner-gate:` line.
 - **Same-delivery rule:** spec, contracts, tests and documentation change in the same delivery as
   the code. A ticked task in the design doc (or in `tasks.md`) names the evidence that closes it.
+- **Documentation first:** the documents are the source of truth and the code follows them, never
+  the reverse. The documents are this constitution, the architecture decision records, the design
+  doc (or the spec of a feature not yet converted), the contracts, the runbooks and the reference.
+  A change of behaviour or a new rule is written in its document first; the code that carries it
+  out comes with it or after it (the same commit, a later commit of the same pull request, or a
+  later pull request), never ahead of it. When the code and a document disagree, the one that is
+  wrong is fixed: the document, if the code is right and nobody had written it down; the code, if
+  the document is right. They are never left apart. `docs/` is organized and written for people:
+  plain language and short sentences, an index in every folder, and a diagram where it helps more
+  than prose. Every pull request, in addition to the tests the CI gates select, MUST pass
+  `scripts/check-docs-first.py`: when its own commits change behaviour code (`crates/`, `apps/`,
+  `sdks/`, `runners/`, `frontend/apps/`, `infra/`, migrations included) and no file under `docs/`
+  or `specs/`, it fails, unless each such commit carries the footer `Docs: none, <reason>` (a
+  refactor, formatting, a dependency bump, a test-only fix); the check prints every exemption so
+  that a reviewer can judge it. Commits written before the check existed are not judged.
 - **CI gates:** a pull request MUST pass the unit tests of the packages it
   changes and of the packages that depend on them (and of the SDKs, the Studio and the scripts whose
   files it changes) and the integration suites that it changes, and, when it changes the code that
@@ -263,6 +291,6 @@ it is not approval of the implementation. A violation that cannot be avoided MUS
 the design doc's Complexity Tracking table with the simpler alternative that was rejected. For a
 feature not yet converted, the Check and the table live in its `plan.md`.
 
-**Version**: 4.6.0 | **Ratified**: 2026-10-11 | **Last Amended**: 2026-11-20
+**Version**: 4.7.0 | **Ratified**: 2026-10-11 | **Last Amended**: 2026-11-20
 
-Amendment scope and preserved obligations: [4.6.0 Sync Impact Report](governance/constitution-4.6.0-sync-impact.md). Previous amendments: [4.5.0 Sync Impact Report](governance/constitution-4.5.0-sync-impact.md), [4.4.0 Sync Impact Report](governance/constitution-4.4.0-sync-impact.md), [4.3.0 Sync Impact Report](governance/constitution-4.3.0-sync-impact.md), [4.2.0 Sync Impact Report](governance/constitution-4.2.0-sync-impact.md), [4.1.0 Sync Impact Report](governance/constitution-4.1.0-sync-impact.md), [4.0.0 Sync Impact Report](governance/constitution-4.0.0-sync-impact.md), [3.0.0 Sync Impact Report](governance/constitution-3.0.0-sync-impact.md) and, for 2.0.0 (Principle III), the [compensation safety Sync Impact Report](governance/compensation-safety-sync-impact.md). Version 3.0.0 was adopted on 2026-11-01 by the owner's instruction to merge the pull request that carried that text. Version 4.0.0 was adopted on 2026-11-03 by merging the pull request that carries this text, on the owner's delegation to the assistant ("Decida por mim"); the owner may overrule it by a later amendment. Version 4.1.0 was adopted on 2026-11-04 by the owner's instruction to scope the CI to the change and to run the whole stack for a release (`docs/owner-decisions.md`, OD-2026-11-04-2). Version 4.2.0 was adopted on 2026-11-05 by the owner's instruction that a merge into `develop` starts no CI and that the CI stays for pull requests and releases (`docs/owner-decisions.md`, OD-2026-11-05-1). Version 4.5.0 is adopted by merging the pull request that carries it, on the owner's decision to amend the CI gate for step logs (`docs/owner-decisions.md`, OD-2026-11-15-10). Version 4.6.0 is adopted by merging the pull request that carries it, on the owner's delegation of the 0.3.0 decisions to the coordinating session (`docs/owner-decisions.md`, OD-2026-11-20-6 and OD-2026-11-20-7); the owner may overrule it by a later amendment.
+Amendment scope and preserved obligations: [4.7.0 Sync Impact Report](governance/constitution-4.7.0-sync-impact.md). Previous amendments: [4.6.0 Sync Impact Report](governance/constitution-4.6.0-sync-impact.md), [4.5.0 Sync Impact Report](governance/constitution-4.5.0-sync-impact.md), [4.4.0 Sync Impact Report](governance/constitution-4.4.0-sync-impact.md), [4.3.0 Sync Impact Report](governance/constitution-4.3.0-sync-impact.md), [4.2.0 Sync Impact Report](governance/constitution-4.2.0-sync-impact.md), [4.1.0 Sync Impact Report](governance/constitution-4.1.0-sync-impact.md), [4.0.0 Sync Impact Report](governance/constitution-4.0.0-sync-impact.md), [3.0.0 Sync Impact Report](governance/constitution-3.0.0-sync-impact.md) and, for 2.0.0 (Principle III), the [compensation safety Sync Impact Report](governance/compensation-safety-sync-impact.md). Version 3.0.0 was adopted on 2026-11-01 by the owner's instruction to merge the pull request that carried that text. Version 4.0.0 was adopted on 2026-11-03 by merging the pull request that carries this text, on the owner's delegation to the assistant ("Decida por mim"); the owner may overrule it by a later amendment. Version 4.1.0 was adopted on 2026-11-04 by the owner's instruction to scope the CI to the change and to run the whole stack for a release (`docs/owner-decisions.md`, OD-2026-11-04-2). Version 4.2.0 was adopted on 2026-11-05 by the owner's instruction that a merge into `develop` starts no CI and that the CI stays for pull requests and releases (`docs/owner-decisions.md`, OD-2026-11-05-1). Version 4.5.0 is adopted by merging the pull request that carries it, on the owner's decision to amend the CI gate for step logs (`docs/owner-decisions.md`, OD-2026-11-15-10). Version 4.6.0 is adopted by merging the pull request that carries it, on the owner's delegation of the 0.3.0 decisions to the coordinating session (`docs/owner-decisions.md`, OD-2026-11-20-6 and OD-2026-11-20-7); the owner may overrule it by a later amendment. Version 4.7.0 is adopted by merging the pull request that carries it, on the owner's instructions that the document leads and the code follows, that words are written in full and that the identifiers are renamed to words (`docs/owner-decisions.md`, Owner decisions 2026-11-20-8, 2026-11-20-9 and 2026-11-20-10).

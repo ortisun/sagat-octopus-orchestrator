@@ -5,6 +5,23 @@ approval. They are written with the Elephant-Goldfish Model (EGM): `egm-brainsto
 rules below are enforced by `python3 scripts/check-design-docs.py`; the full definitions are in
 [constitution-4.0.0-egm.md](constitution-4.0.0-egm.md) (sections 3 to 5), which is also the first design doc.
 
+## The design docs
+
+| Number | Design | Status | Tasks ticked |
+|---|---|---|---|
+| 038 | [Claim and transition efficiency](038-claim-transition-efficiency.md) | Draft | 0 of 11 |
+| 039 | [Nested collections and the capacity program](039-nested-collections.md) | Draft | 0 of 1 |
+| 040 | [OCSF as the standard schema for security and audit events](040-ocsf-event-standard.md) | Draft | 0 of 1 |
+| 041 | [Step logs per run](041-step-logs.md) | Approved | 2 of 32 |
+| 042 | [Stream operators](042-stream-operators.md) | Draft | 0 of 53 |
+| 043 | [Run input validation](043-run-input-validation.md) | Approved | 24 of 28 |
+| none | [Constitution 4.0.0: EGM as the only specification workflow](constitution-4.0.0-egm.md), the first design doc; it defines the rules below | Draft | |
+
+The status is the `Status` line of each doc on `develop`. A task of a doc that is not `Approved` stays unticked even when
+its work is done (the rules below), so a count of 0 does not by itself show that nothing was built. Each doc's review reports are in the
+folder `<doc>.reviews/` beside it. Features older than 038 are described by their specifications in
+[`../../specs/`](../../specs/README.md); the [documentation index](../README.md) lists every feature.
+
 ## Naming
 
 - A feature: `docs/designs/NNN-slug.md`, where `NNN` is the number printed by `python3 scripts/next-feature-id.py`. It is

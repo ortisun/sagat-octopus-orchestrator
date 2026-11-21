@@ -42,6 +42,10 @@ merges a pull request would prove again what the pull request proved):
   changed, and the release runs those (OD-2026-11-06-2). The log of the selector says
   `select no suite: <file> is shared by the suites` so that nobody wonders why a suite did not run.
 
+Two cheap checks run on every pull request whatever it changes, in the job `documentation`: `scripts/check-docs-first.py`
+(a pull request that changes behaviour code changes a document, or says why not) and `scripts/check-plain-words.py`
+(words in full in the lines it adds); they read git history only, build nothing and take seconds (constitution 4.7.0).
+
 Nothing else runs: no formatting, no `clippy`, no architecture, agent-configuration or design-doc check, no contract
 validation, no advisory audit, no upgrade, Compose smoke-test, scale or native-runner job. A change that touches only
 Markdown, `docs/`, `tasks/`, `.claude/` or `infra/` runs no test at all.
@@ -52,6 +56,25 @@ release is a push to `main`, `release/**` or `hotfix/**`, a tag `v*`, a pull req
 run (`workflow_dispatch`), a change of `.github/workflows`, or any run with no usable base commit. For the lake runtime
 that adds the types and lint, the image build, the smoke test of the image and its SBOM; its lock is also audited every
 week by `.github/workflows/lake-audit.yml`.
+
+**How the selected suites run.** The integration suites that the rules above select, for a pull request or a release,
+run in parallel shards: jobs `integration suites (shard i of n)` of `ci.yml`, summed up by one job named
+`integration suites`. Sharding changes how the suites run, not which suites run. Run one after another in one step, every
+suite took longer than that step's 110 minutes although each one passed (run 44793165198), and a rerun cannot fix that.
+`scripts/select-test-targets.py` plans the shards and writes them as `shards` (JSON) next to `targets`. It places the
+suites greedily, longest first, each into the least-loaded shard. The durations are the measured ones on the CI runner,
+from `scripts/integration-suite-durations.toml` (method and source runs in its header); a suite missing from that table
+counts as 600 seconds. The planner starts with as many shards as the total needs at 1,800 seconds of test time each, which is the
+longest suite (`integration_workflow_primitives`) and so the shortest any plan can be. It adds a shard while one holds
+more than that, up to six shards. A change that selects a few suites gets one shard, a change that selects none gets no
+shard and no job, and a release currently gets four. Each shard builds `sagat-tests` for its own targets, runs the
+preflight steps of the suites it holds, then runs those suites with `--no-fail-fast`. The environment, the 110-minute
+step limit and the runtime-role steps are the same as before. A failing shard does not cancel the others. The cost is one
+build of `sagat-tests` per shard instead of one per run: about 17 to 29 runner minutes for each extra shard. The `rust`
+job keeps formatting, `clippy` and the unit tests and no longer runs any suite.
+`scripts/tests/test_select_test_targets.py` fails when the duration table and `tests/Cargo.toml` list different suites,
+when a figure is longer than a shard, or when a release no longer fits in the shards allowed. Add a figure with a new
+suite, remove it with the suite, and refresh the table the same way when a suite's time changes noticeably.
 
 **Mutation testing** is not part of a pull request, of a merge or of the CI (OD-2026-11-06-2). It runs when a release is
 closed, by whoever closes it, over the guards that the release added or changed: each is weakened once, in a throw-away
