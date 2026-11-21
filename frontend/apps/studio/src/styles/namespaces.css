@@ -1,16 +1,7 @@
-.namespaces-heading {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  flex-wrap: wrap;
-  gap: var(--space-4);
-}
-
+/* A wide table scrolls inside its own region, which the keyboard can reach, instead of widening the page. */
 .namespaces-table {
+  /* Inside a stack this region keeps its content's height: a scroll container would otherwise be squeezed. */
+  flex: none;
   max-width: 100%;
   overflow-x: auto;
-}
-
-.namespaces-table th[scope='row'] {
-  overflow-wrap: anywhere;
 }

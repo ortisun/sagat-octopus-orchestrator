@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { Route, Routes, useLocation } from 'react-router';
 import { describe, expect, it } from 'vitest';
 import { AUTH_CONTEXT, TOKEN, fakePlatform, renderApp } from '../../../test/render';
+import { choose, chooseValue, optionsOf, selector, valueOf } from '../../../test/ui';
 import { createApp } from '../../app/context';
 import { StartRun, parseInput } from './StartRun';
 
@@ -107,14 +108,14 @@ describe('Start run', () => {
     await user.click(screen.getByRole('button', { name: 'Start run…' }));
     const dialog = await screen.findByRole('dialog', { name: 'Start a run' });
     expect(within(dialog).getByText(/recorded with your name/)).toBeInTheDocument();
-    expect(within(within(dialog).getByRole('combobox', { name: 'Workflow' })).getAllByRole('option').map((o) => o.textContent)).toEqual(['order-saga', 'refund']);
+    expect(await optionsOf(user, selector('Workflow', dialog))).toEqual(['order-saga', 'refund']);
     expect(platform.calls).toHaveLength(0);
   });
 
   it('starts the chosen workflow with the typed input and a key, and opens the run that was started', async () => {
     const { user, platform } = await mount();
     await user.click(screen.getByRole('button', { name: 'Start run…' }));
-    await user.selectOptions(await screen.findByLabelText('Workflow'), 'refund');
+    await choose(user, await screen.findByRole('combobox', { name: 'Workflow' }), 'refund');
     const field = screen.getByLabelText('Input (JSON object)');
     await user.clear(field);
     await user.click(field);
@@ -187,18 +188,18 @@ describe('Start run with a business identifier', () => {
     const { user } = await mount();
     await open(user);
     expect(screen.getByLabelText('Business identifier (optional)')).toHaveValue('');
-    expect(screen.queryByLabelText('If an open run already has it')).not.toBeInTheDocument();
+    expect(screen.queryByRole('combobox', { name: 'If an open run already has it' })).not.toBeInTheDocument();
     await user.type(screen.getByLabelText('Business identifier (optional)'), 'order-1001');
-    expect(screen.getByLabelText('If an open run already has it')).toHaveValue('FAIL');
-    expect(screen.getByLabelText('If a finished run still remembers it')).toHaveValue('ALLOW_DUPLICATE');
+    expect(valueOf('If an open run already has it')).toBe('FAIL');
+    expect(valueOf('If a finished run still remembers it')).toBe('ALLOW_DUPLICATE');
   });
 
   it('sends the identifier and the policies that are not the defaults, trimmed', async () => {
     const { user, platform } = await mount();
     await open(user);
     await user.type(screen.getByLabelText('Business identifier (optional)'), '  order-1001  ');
-    await user.selectOptions(screen.getByLabelText('If an open run already has it'), 'USE_EXISTING');
-    await user.selectOptions(screen.getByLabelText('If a finished run still remembers it'), 'REJECT_DUPLICATE');
+    await chooseValue(user, 'If an open run already has it', 'USE_EXISTING');
+    await chooseValue(user, 'If a finished run still remembers it', 'REJECT_DUPLICATE');
     await user.click(screen.getByRole('button', { name: 'Start run' }));
     await waitFor(() => expect(platform.calls).toHaveLength(1));
     expect(bodyOf(platform, 0)).toEqual({
@@ -232,7 +233,7 @@ describe('Start run with a business identifier', () => {
     const { user, platform } = await mount({ status: 200 });
     await open(user);
     await user.type(screen.getByLabelText('Business identifier (optional)'), 'order-1001');
-    await user.selectOptions(screen.getByLabelText('If an open run already has it'), 'USE_EXISTING');
+    await chooseValue(user, 'If an open run already has it', 'USE_EXISTING');
     await user.click(screen.getByRole('button', { name: 'Start run' }));
     await waitFor(() => expect(screen.getByTestId('where')).toHaveTextContent(`/runs/${RUN_ID}`));
     expect(platform.calls).toHaveLength(1);
@@ -298,7 +299,7 @@ describe('Start run after a delay', () => {
     const { user, platform } = await mount();
     await open(user);
     await user.type(screen.getByLabelText('Start after (optional)'), '2');
-    await user.selectOptions(screen.getByLabelText('Unit of the delay'), 'days');
+    await chooseValue(user, 'Unit of the delay', 'days');
     await user.click(screen.getByRole('button', { name: 'Start run' }));
     await waitFor(() => expect(platform.calls).toHaveLength(1));
     expect(bodyOf(platform, 0)).toEqual({ workflowId: WORKFLOWS[0]!.id, input: {}, startDelayMs: 172_800_000 });
@@ -313,7 +314,7 @@ describe('Start run after a delay', () => {
     expect(await screen.findByText(/whole number/)).toBeVisible();
     await user.clear(field);
     await user.type(field, '400');
-    await user.selectOptions(screen.getByLabelText('Unit of the delay'), 'days');
+    await chooseValue(user, 'Unit of the delay', 'days');
     await user.click(screen.getByRole('button', { name: 'Start run' }));
     expect(await screen.findByText(/The delay is at most 366 days/)).toBeVisible();
     expect(platform.calls).toHaveLength(0);

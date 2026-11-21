@@ -8,7 +8,7 @@ const TRACE = '0123456789abcdef0123456789abcdef';
 describe('ErrorState', () => {
   it('says what the platform said, what to do about it, and the code and trace id to quote', () => {
     render(<ErrorState error={new ApiError({ code: 'FORBIDDEN', status: 403, message: "the caller's role does not allow this operation", traceId: TRACE })} what="Retrying the step" />);
-    const alert = screen.getByText(/Retrying the step failed/).closest('div') as HTMLElement;
+    const alert = screen.getByText(/Retrying the step failed/).closest('[role="alert"]') as HTMLElement;
     expect(alert).toHaveTextContent("the caller's role does not allow this operation");
     expect(alert).toHaveTextContent('Ask an administrator for the permission it needs.');
     expect(alert).toHaveTextContent('Code FORBIDDEN.');
@@ -35,7 +35,7 @@ describe('ErrorState', () => {
         what="Starting the run"
       />,
     );
-    const alert = screen.getByText(/Starting the run failed/).closest('div') as HTMLElement;
+    const alert = screen.getByText(/Starting the run failed/).closest('[role="alert"]') as HTMLElement;
     expect(alert).toHaveTextContent('Code VALIDATION_FAILED (RUN_INPUT_INVALID).');
     expect(alert).toHaveTextContent('At /orderId, rule type.');
   });

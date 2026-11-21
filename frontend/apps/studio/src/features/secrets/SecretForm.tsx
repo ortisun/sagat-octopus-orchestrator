@@ -1,9 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
 import { useApp } from '../../app/context';
-import { Button } from '../../ui/Button';
-import { Field } from '../../ui/Field';
-import { useAnnounce } from '../../ui/Announcer';
+import { Actions, Banner, Button, Hint, Select, Stack, Text, TextInput, useAnnounce } from '../../ui';
 import { secretsApi } from './api';
 import type { Secret } from './api';
 
@@ -36,16 +34,27 @@ export function SecretForm({ namespace, secret, onClose }: { namespace: string; 
       if (live()) setError('The secret could not be saved. Check OpenBao availability and permissions, or refresh the list if another version was saved. Retrying without edits uses the same request.');
     } finally { if (live()) setBusy(false); }
   }
-  return <form className="connection-form" noValidate onSubmit={event => { void submit(event); }}>
-    <fieldset disabled={busy}>
-      <Field label="Secret name"><input value={name} disabled={!!secret} onChange={e => { receipt.current = undefined; setName(e.target.value); }} autoComplete="off" maxLength={64} /></Field>
-      {migration ? <p>Move this secret to OpenBao while preserving its name and access list. Future reads require OpenBao. The current value will not be displayed.</p> : <>
-        <Field label="Credential format"><select value={format} onChange={e => { receipt.current = undefined; setFormat(e.target.value); setValue(''); setUsername(''); setPassword(''); }}><option value="postgresql">PostgreSQL username and password</option><option value="opaque">Secret value</option></select></Field>
-        {format === 'postgresql' ? <><Field label="Username"><input value={username} onChange={e => { receipt.current = undefined; setUsername(e.target.value); }} autoComplete="off" /></Field><Field label="Password"><input type="password" value={password} onChange={e => { receipt.current = undefined; setPassword(e.target.value); }} autoComplete="new-password" /></Field></> : <Field label="Secret value" hint="Up to 16 KiB of UTF-8 text. Stored values are never displayed."><input type="password" value={value} onChange={e => { receipt.current = undefined; setValue(e.target.value); }} autoComplete="new-password" maxLength={16384} /></Field>}
-        {secret ? <p className="hint">This replaces stored version {secret.version}. Update the PostgreSQL account separately when changing its password.</p> : null}
-      </>}
-    </fieldset>
-    {error ? <p className="error" role="alert">{error}</p> : null}
-    <div className="dialog-actions"><Button onClick={onClose} disabled={busy}>Cancel</Button><Button type="submit" variant="primary" disabled={busy || !valid}>{busy ? 'Saving…' : migration ? 'Migrate to OpenBao' : 'Save secret'}</Button></div>
-  </form>;
+  return (
+    <form noValidate onSubmit={event => { void submit(event); }}>
+      <Stack gap={3}>
+        <TextInput label="Secret name" value={name} disabled={busy || !!secret} onChange={next => { receipt.current = undefined; setName(next); }} autoComplete="off" maxLength={64} />
+        {migration ? <Text>Move this secret to OpenBao while preserving its name and access list. Future reads require OpenBao. The current value will not be displayed.</Text> : <>
+          <Select
+            label="Credential format"
+            value={format}
+            disabled={busy}
+            onChange={next => { receipt.current = undefined; setFormat(next); setValue(''); setUsername(''); setPassword(''); }}
+            options={[{ value: 'postgresql', label: 'PostgreSQL username and password' }, { value: 'opaque', label: 'Secret value' }]}
+          />
+          {format === 'postgresql' ? <>
+            <TextInput label="Username" value={username} disabled={busy} onChange={next => { receipt.current = undefined; setUsername(next); }} autoComplete="off" />
+            <TextInput label="Password" type="password" value={password} disabled={busy} onChange={next => { receipt.current = undefined; setPassword(next); }} autoComplete="new-password" />
+          </> : <TextInput label="Secret value" hint="Up to 16 KiB of UTF-8 text. Stored values are never displayed." type="password" value={value} disabled={busy} onChange={next => { receipt.current = undefined; setValue(next); }} autoComplete="new-password" maxLength={16384} />}
+          {secret ? <Hint>This replaces stored version {secret.version}. Update the PostgreSQL account separately when changing its password.</Hint> : null}
+        </>}
+        {error ? <Banner tone="error">{error}</Banner> : null}
+        <Actions><Button onClick={onClose} disabled={busy}>Cancel</Button><Button type="submit" variant="primary" disabled={busy || !valid}>{busy ? 'Saving…' : migration ? 'Migrate to OpenBao' : 'Save secret'}</Button></Actions>
+      </Stack>
+    </form>
+  );
 }

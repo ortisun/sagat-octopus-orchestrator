@@ -1,11 +1,12 @@
 import { expect, test } from '@playwright/test';
-import type { Page } from '@playwright/test';
+import type { Locator, Page } from '@playwright/test';
 import { env } from '../support/env';
 import { expectAccessible } from '../support/accessibility';
 import { activate, choose, closeWithEscape, inspectDialog, landedOn, openDialog, openFromMenu, signInByKeyboard, typeInto } from '../support/keyboard';
 import { Api } from '../support/platform';
 import { failOnBrowserErrors } from '../support/studio';
-import { cancelAfterwards, cancelLeftovers, endWorkflow, openWorkflow, recordRefusals, unique, withoutRefusals } from '../support/world';
+import { expectFieldError, expectValue, factValue } from '../support/ui';
+import { cancelAfterwards, cancelLeftovers, endWorkflow, openWorkflow, recordRefusals, unique, withoutRefusals} from '../support/world';
 
 /**
  * The business identifier of a start, in the Studio in a real browser, with the keyboard alone and the accessibility rules on
@@ -17,6 +18,9 @@ test.use({ viewport: { width: 1470, height: 900 } });
 test.afterEach(cancelLeftovers);
 
 const runIdOf = (page: Page) => new URL(page.url()).pathname.split('/').at(-1)!;
+
+/** A selector of the start dialog, by its label (the list it opens carries the same label, so `getByLabel` would find two). */
+const selector = (dialog: Locator, label: string) => dialog.getByRole('combobox', { name: label, exact: true });
 
 /** The start dialog of the run list, opened with the keyboard. */
 async function openStart(page: Page) {
@@ -41,24 +45,25 @@ test('BUSINESS ID a run is started with its own identifier: a bad one is refused
 
   await signInByKeyboard(page, env.tokens.admin, env.namespace);
   const dialog = await openStart(page);
-  await expect(dialog.getByLabel('Workflow', { exact: true })).toBeFocused();
+  // On opening, focus goes to the first control of the dialog's body (the interface module's Dialog, as the platform dialog did).
+  await expect(dialog.getByRole('combobox', { name: 'Workflow', exact: true })).toBeFocused();
   await expectAccessible(page, 'the start dialog');
   // the two choices about the identifier are offered once there is one
-  await expect(dialog.getByLabel('If an open run already has it')).toHaveCount(0);
-  await choose(page, dialog.getByLabel('Workflow', { exact: true }), open);
+  await expect(selector(dialog, 'If an open run already has it')).toHaveCount(0);
+  await choose(page, selector(dialog, 'Workflow'), open);
 
   // A bad identifier is refused in words, before anything is sent.
   await typeInto(page, dialog.getByLabel('Business identifier (optional)'), 'two words');
-  await expect(dialog.getByLabel('If an open run already has it')).toBeVisible();
-  await expect(dialog.getByLabel('If a finished run still remembers it')).toBeVisible();
+  await expect(selector(dialog, 'If an open run already has it')).toBeVisible();
+  await expect(selector(dialog, 'If a finished run still remembers it')).toBeVisible();
   await activate(page, dialog.getByRole('button', { name: 'Start run', exact: true }));
-  await expect(dialog.getByRole('alert').filter({ hasText: 'Letters, digits and punctuation only: no space, no accent, no control character.' })).toBeVisible();
+  await expectFieldError(dialog.getByLabel('Business identifier (optional)'), 'Letters, digits and punctuation only: no space, no accent, no control character.');
   await expectAccessible(page, 'the start dialog, a bad identifier');
   await closeWithEscape(page, dialog, page.getByRole('button', { name: 'Start run…', exact: true }));
 
   // A good one: the run is started with it, and the page of the run says so.
   await openDialog(page, page.getByRole('button', { name: 'Start run…', exact: true }), 'Start a run');
-  await choose(page, dialog.getByLabel('Workflow', { exact: true }), open);
+  await choose(page, selector(dialog, 'Workflow'), open);
   await typeInto(page, dialog.getByLabel('Business identifier (optional)'), holderId);
   const order = await inspectDialog(page, dialog);
   expect(order).toEqual(expect.arrayContaining(['combobox: Workflow', 'textbox: Input (JSON object)', 'textbox: Business identifier (optional)', 'combobox: If an open run already has it', 'combobox: If a finished run still remembers it', 'button: Cancel', 'button: Start run']));
@@ -75,9 +80,10 @@ test('BUSINESS ID a run is started with its own identifier: a bad one is refused
 
   // The identifier is held by an open run: the default refuses, and the sentence says which identifier and why.
   await openStart(page);
-  await choose(page, dialog.getByLabel('Workflow', { exact: true }), open);
+  await choose(page, selector(dialog, 'Workflow'), open);
   await typeInto(page, dialog.getByLabel('Business identifier (optional)'), holderId);
-  await expect(dialog.getByLabel('If an open run already has it').locator('option:checked')).toHaveText('Refuse the start');
+  await expectValue(selector(dialog, 'If an open run already has it'), 'FAIL');
+  await expect(selector(dialog, 'If an open run already has it')).toContainText('Refuse the start');
   await activate(page, dialog.getByRole('button', { name: 'Start run', exact: true }));
   const refusal = dialog.getByRole('alert').filter({ hasText: 'Starting the run failed.' });
   await expect(refusal).toBeVisible();
@@ -88,7 +94,7 @@ test('BUSINESS ID a run is started with its own identifier: a bad one is refused
   expect((await api.call<{ items: unknown[] }>('GET', `/runs?businessIdPrefix=${encodeURIComponent(holderId)}`, undefined, 200)).body.items).toHaveLength(1);
 
   // The same start, asking to be taken to the open run instead: no second run, and the person lands on the holder.
-  await choose(page, dialog.getByLabel('If an open run already has it'), 'Open that run instead');
+  await choose(page, selector(dialog, 'If an open run already has it'), 'Open that run instead');
   await activate(page, dialog.getByRole('button', { name: 'Start run', exact: true }));
   await expect(dialog).toBeHidden();
   await expect(page.getByRole('heading', { level: 1 })).toContainText(holder);
@@ -97,15 +103,15 @@ test('BUSINESS ID a run is started with its own identifier: a bad one is refused
 
   // A finished run still remembers its identifier: refused when the person said so, started again when they did not.
   await openStart(page);
-  await choose(page, dialog.getByLabel('Workflow', { exact: true }), done);
+  await choose(page, selector(dialog, 'Workflow'), done);
   await typeInto(page, dialog.getByLabel('Business identifier (optional)'), rememberedId);
-  await choose(page, dialog.getByLabel('If a finished run still remembers it'), 'Refuse the start');
+  await choose(page, selector(dialog, 'If a finished run still remembers it'), 'Refuse the start');
   await activate(page, dialog.getByRole('button', { name: 'Start run', exact: true }));
   const remembered = dialog.getByRole('alert').filter({ hasText: 'Starting the run failed.' });
   await expect(remembered).toBeVisible();
   await expect(remembered).toContainText('BUSINESS_ID_REUSE_REJECTED');
   await expectAccessible(page, 'the start dialog, a finished run remembers the identifier');
-  await choose(page, dialog.getByLabel('If a finished run still remembers it'), 'Start a new run');
+  await choose(page, selector(dialog, 'If a finished run still remembers it'), 'Start a new run');
   await activate(page, dialog.getByRole('button', { name: 'Start run', exact: true }));
   await expect(dialog).toBeHidden();
   const again = await landedOn(page, holder, finished);
@@ -123,7 +129,7 @@ test('BUSINESS ID a run is started with its own identifier: a bad one is refused
   await typeInto(page, filter, rememberedId);
   await expect(rows).toHaveCount(2);
   await typeInto(page, filter, `${holderId}-nothing-has-this`);
-  await expect(page.getByText('No run matches these filters.')).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'No run matches these filters.' })).toBeVisible();
   await expectAccessible(page, 'the run list, no run has the identifier');
   expect(withoutRefusals(problems, refusals, [409])).toEqual([]);
 });
@@ -137,14 +143,14 @@ test('START DELAY a run started with a delay is held and says until when, and is
 
   await signInByKeyboard(page, env.tokens.admin, env.namespace);
   const dialog = await openStart(page);
-  await choose(page, dialog.getByLabel('Workflow', { exact: true }), name);
+  await choose(page, selector(dialog, 'Workflow'), name);
   // a delay that is not a number is refused in words, before anything is sent (the unit is hours until it is chosen)
   await typeInto(page, dialog.getByLabel('Start after (optional)'), 'soon');
   await activate(page, dialog.getByRole('button', { name: 'Start run', exact: true }));
-  await expect(dialog.getByRole('alert').filter({ hasText: 'Enter a whole number of hours, at least 1.' })).toBeVisible();
+  await expectFieldError(dialog.getByLabel('Start after (optional)'), 'Enter a whole number of hours, at least 1.');
   await expectAccessible(page, 'the start dialog, a delay that is not a number');
   // one minute is the least a start can be delayed by
-  await choose(page, dialog.getByLabel('Unit of the delay'), 'minutes');
+  await choose(page, selector(dialog, 'Unit of the delay'), 'minutes');
   await typeInto(page, dialog.getByLabel('Start after (optional)'), '1');
   expect(await inspectDialog(page, dialog)).toEqual(expect.arrayContaining(['textbox: Start after (optional)', 'combobox: Unit of the delay', 'button: Start run']));
   const admitted = page.waitForResponse((response) => response.request().method() === 'POST' && new URL(response.url()).pathname === '/v1/runs');
@@ -158,7 +164,7 @@ test('START DELAY a run started with a delay is held and says until when, and is
   const held = (await api.call<{ status: string; startDelayedUntil?: string }>('GET', `/runs/${run}`, undefined, 200)).body;
   expect(held.status).toBe('WAITING');
   expect(held.startDelayedUntil).toBeTruthy();
-  const starts = page.locator('dl.rn-facts div').filter({ has: page.getByText('Starts at', { exact: true }) });
+  const starts = factValue(page.locator('.rn-facts'), 'Starts at');
   await expect(starts).toHaveCount(1);
   await expect(starts.locator('time')).toHaveAttribute('datetime', held.startDelayedUntil!);
   await expect(page.getByText('Held by its start delay: nothing runs until the entry is released.')).toBeVisible();

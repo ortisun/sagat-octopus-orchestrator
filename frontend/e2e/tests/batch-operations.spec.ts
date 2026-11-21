@@ -1,12 +1,13 @@
 import { expect, test } from '@playwright/test';
 import type { Locator, Page } from '@playwright/test';
+import { factValue } from '../support/ui';
 import { env } from '../support/env';
 import { expectAccessible } from '../support/accessibility';
 import { activate, choose, closeWithEscape, inspectDialog, openDialog, openFromMenu, reach, signInByKeyboard, typeInto } from '../support/keyboard';
 import { Api, IR_BASE } from '../support/platform';
 import { failOnBrowserErrors } from '../support/studio';
 import { ActivityFailure, startWorker } from '../support/worker';
-import { cancelAfterwards, cancelLeftovers, namespaceIdOf, openWorkflow, ownNamespace, recordRefusals, setQuota, unique, withoutRefusals } from '../support/world';
+import { cancelAfterwards, cancelLeftovers, namespaceIdOf, openWorkflow, ownNamespace, recordRefusals, setQuota, unique, withoutRefusals} from '../support/world';
 
 /**
  * The batch operations of the Studio in a real browser, with the keyboard alone and the accessibility rules on every state
@@ -35,8 +36,8 @@ test.afterEach(cancelLeftovers);
 /** The run list of the namespace, narrowed to one workflow by the keyboard: the runs the job will take are the rows on the screen. */
 async function runsOf(page: Page, workflow: string, rows: number): Promise<void> {
   await openFromMenu(page, 'Runs', 'Runs');
-  await choose(page, page.getByLabel('Workflow', { exact: true }), workflow);
-  if (rows === 0) await expect(page.getByText('No run matches these filters.')).toBeVisible();
+  await choose(page, page.getByRole('combobox', { name: 'Workflow', exact: true }), workflow);
+  if (rows === 0) await expect(page.getByRole('heading', { name: 'No run matches these filters.' })).toBeVisible();
   else await expect(page.getByRole('table', { name: 'Runs, newest first' }).locator('tbody tr[data-index]')).toHaveCount(rows);
 }
 
@@ -46,6 +47,9 @@ async function openBatchDialog(page: Page): Promise<Locator> {
 }
 
 const jobIdOf = (page: Page) => new URL(page.url()).pathname.split('/').at(-1)!;
+
+/** A selector by its label (the list it opens carries the same label, so `getByLabel` would find two). */
+const selector = (scope: Page | Locator, label: string) => scope.getByRole('combobox', { name: label, exact: true });
 
 test('BATCH a person selects runs by the filters of the list, counts them, starts a job, follows it to its end and reads what became of each run, with the keyboard alone', async ({ page }) => {
   test.setTimeout(240_000);
@@ -63,7 +67,8 @@ test('BATCH a person selects runs by the filters of the list, counts them, start
   // The dialog: focus goes in, the page behind is not for the keyboard, nothing is sent before the person has counted.
   const opener = page.getByRole('button', { name: 'Batch operation…' });
   const dialog = await openBatchDialog(page);
-  await expect(dialog.getByLabel('Action')).toBeFocused();
+  // On opening, focus goes to the first control of the dialog's body (the interface module's Dialog, as the platform dialog did).
+  await expect(dialog.getByRole('combobox', { name: 'Action', exact: true })).toBeFocused();
   await expectAccessible(page, 'the batch dialog');
   await activate(page, dialog.getByRole('button', { name: 'Start the batch job' }));
   await expect(dialog.getByRole('alert')).toContainText('Count the runs first, so you know how many the job will take.');
@@ -72,7 +77,7 @@ test('BATCH a person selects runs by the filters of the list, counts them, start
 
   // Count: the number and a sample, in words, with a link to a run of the sample.
   await openBatchDialog(page);
-  await choose(page, dialog.getByLabel('Action'), 'Cancel');
+  await choose(page, selector(dialog, 'Action'), 'Cancel');
   await activate(page, dialog.getByRole('button', { name: 'Count the runs' }));
   const counted = dialog.getByRole('status').filter({ hasText: 'runs match' });
   await expect(counted).toContainText(/^3 runs match\./);
@@ -97,9 +102,8 @@ test('BATCH a person selects runs by the filters of the list, counts them, start
   const job = (await api.call<Job>('GET', `/namespaces/${namespaceId}/batch-operations/${batchId}`, undefined, 200)).body;
   expect(job.counts).toMatchObject({ selected: 3, succeeded: 3, failed: 0, skipped: 0 });
   await expect(page.getByText('3 of 3 runs have an outcome (100%).')).toBeVisible();
-  const counters = page.locator('dl.batch-counts');
-  await expect(counters.locator('div').filter({ hasText: 'Succeeded' }).locator('dd')).toHaveText('3');
-  await expect(counters.locator('div').filter({ hasText: 'Failed' }).locator('dd')).toHaveText('0');
+  await expect(factValue(page, 'Succeeded')).toHaveText('3');
+  await expect(factValue(page, 'Failed')).toHaveText('0');
   await expect(page.getByRole('button', { name: 'Cancel the job' })).toHaveCount(0);
   const items = page.getByRole('table', { name: 'The runs of the job and what became of each' });
   await expect(items.locator('tbody tr')).toHaveCount(3);
@@ -109,10 +113,10 @@ test('BATCH a person selects runs by the filters of the list, counts them, start
   for (const run of runs) await api.until(run, 'CANCELLED');
 
   // The outcome filter: a state nothing is in is an empty state, in words.
-  await choose(page, page.getByLabel('Outcome', { exact: true }), 'Failed');
-  await expect(page.getByText('No run with this outcome.')).toBeVisible();
+  await choose(page, selector(page, 'Outcome'), 'Failed');
+  await expect(page.getByRole('heading', { name: 'No run with this outcome.' })).toBeVisible();
   await expectAccessible(page, 'the batch job, no run with the outcome');
-  await choose(page, page.getByLabel('Outcome', { exact: true }), 'All outcomes');
+  await choose(page, selector(page, 'Outcome'), 'All outcomes');
   await expect(items.locator('tbody tr')).toHaveCount(3);
 
   // The list of the jobs of the namespace has it.
@@ -183,7 +187,7 @@ test('BATCH a job that is still at work is cancelled by the person who started i
   await runsOf(page, name, 4);
   await openBatchDialog(page);
   const dialog = page.getByRole('dialog', { name: 'Batch operation' });
-  await choose(page, dialog.getByLabel('Action'), 'Pause');
+  await choose(page, selector(dialog, 'Action'), 'Pause');
   // one run every fifty seconds: the job is still at work when the person cancels it, however slow the machine
   await typeInto(page, dialog.getByLabel('Runs a second'), '0.02');
   await activate(page, dialog.getByRole('button', { name: 'Count the runs' }));
@@ -197,6 +201,7 @@ test('BATCH a job that is still at work is cancelled by the person who started i
 
   const cancel = page.getByRole('button', { name: 'Cancel the job' });
   const cancelDialog = await openDialog(page, cancel, 'Cancel the batch job');
+  // On opening, focus goes to the first control of the dialog's body (the interface module's Dialog, as the platform dialog did).
   await expect(cancelDialog.getByLabel('Reason')).toBeFocused();
   await expect(cancelDialog).toContainText('What was already applied stays applied');
   expect(await inspectDialog(page, cancelDialog)).toEqual(expect.arrayContaining(['textbox: Reason', 'button: Confirm cancellation', 'button: Close']));
@@ -219,9 +224,8 @@ test('BATCH a job that is still at work is cancelled by the person who started i
   expect(job.counts.selected).toBe(4);
   expect(job.counts.cancelled).toBeGreaterThan(0);
   expect(job.counts.succeeded + job.counts.cancelled).toBe(4);
-  const counters = page.locator('dl.batch-counts');
-  await expect(counters.locator('div').filter({ hasText: 'Cancelled' }).locator('dd')).toHaveText(String(job.counts.cancelled));
-  await expect(counters.locator('div').filter({ hasText: 'Succeeded' }).locator('dd')).toHaveText(String(job.counts.succeeded));
+  await expect(factValue(page, 'Cancelled')).toHaveText(String(job.counts.cancelled));
+  await expect(factValue(page, 'Succeeded')).toHaveText(String(job.counts.succeeded));
   await expect(page.getByRole('button', { name: 'Cancel the job' })).toHaveCount(0);
   await expect(page.getByRole('table', { name: 'The runs of the job and what became of each' }).getByText('Cancelled', { exact: true })).toHaveCount(job.counts.cancelled);
   await expectAccessible(page, 'the batch job, cancelled');
@@ -246,7 +250,7 @@ test('BATCH an action that does not apply to a run skips it with the reason in w
 
   await signInByKeyboard(page, env.tokens.admin, own.slug);
   await openFromMenu(page, 'Batches', 'Batch operations');
-  await expect(page.getByText('No batch job yet.')).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'No batch job yet.' })).toBeVisible();
   await expectAccessible(page, 'the batch jobs, none yet');
 
   // No run matches: counted as zero, and the job is not started.
@@ -265,7 +269,7 @@ test('BATCH an action that does not apply to a run skips it with the reason in w
   // A rerun of runs that have not ended: every item is skipped, and the table says why.
   await runsOf(page, name, 2);
   await openBatchDialog(page);
-  await choose(page, dialog.getByLabel('Action'), 'Rerun');
+  await choose(page, selector(dialog, 'Action'), 'Rerun');
   // more runs match than the job may take: said in words, and counted again when the limit changes
   await typeInto(page, dialog.getByLabel('Most runs'), '1');
   await activate(page, dialog.getByRole('button', { name: 'Count the runs' }));
@@ -283,15 +287,15 @@ test('BATCH an action that does not apply to a run skips it with the reason in w
   await expect(items.locator('tbody tr')).toHaveCount(2);
   await expect(items.getByText('Skipped', { exact: true })).toHaveCount(2);
   await expect(items.getByText('The run had not ended.')).toHaveCount(2);
-  await expect(page.locator('dl.batch-counts div').filter({ hasText: 'Skipped' }).locator('dd')).toHaveText('2');
+  await expect(factValue(page, 'Skipped')).toHaveText('2');
   await expectAccessible(page, 'the batch job, every run skipped with its reason');
-  await choose(page, page.getByLabel('Outcome', { exact: true }), 'Skipped');
+  await choose(page, selector(page, 'Outcome'), 'Skipped');
   await expect(items.locator('tbody tr')).toHaveCount(2);
 
   // A step that none of the runs is waiting on: what became of each run, and why, is read from the table as the platform has it.
   await runsOf(page, name, 2);
   await openBatchDialog(page);
-  await choose(page, dialog.getByLabel('Action'), 'Retry a step');
+  await choose(page, selector(dialog, 'Action'), 'Retry a step');
   await typeInto(page, dialog.getByLabel('Step', { exact: true }), 'wait');
   await activate(page, dialog.getByRole('button', { name: 'Count the runs' }));
   await expect(dialog.getByRole('status').filter({ hasText: 'runs match' })).toContainText(/^2 runs match\./);
@@ -321,7 +325,8 @@ test('BATCH an action that does not apply to a run skips it with the reason in w
   await expectAccessible(page, 'the batch dialog, over the quota');
   const jobs = (await api.call<{ items: Job[] }>('GET', `/namespaces/${own.id}/batch-operations`, undefined, 200)).body.items;
   expect(jobs).toHaveLength(2);
-  await reach(page, dialog.getByRole('button', { name: 'Close' }));
+  // `exact`: the header of the dialog has a button of its own, named "Close Batch operation"
+  await reach(page, dialog.getByRole('button', { name: 'Close', exact: true }));
   await page.keyboard.press('Enter');
   await expect(dialog).toBeHidden();
   expect(withoutRefusals(problems, refusals, [429])).toEqual([]);
@@ -353,7 +358,7 @@ test('BATCH runs whose step has an outcome nobody knows are not retried blindly:
     await signInByKeyboard(page, env.tokens.admin, env.namespace);
     await runsOf(page, name, 2);
     const dialog = await openBatchDialog(page);
-    await choose(page, dialog.getByLabel('Action'), 'Retry a step');
+    await choose(page, selector(dialog, 'Action'), 'Retry a step');
     await expect(dialog.getByText('Steps whose outcome is unknown are never repeated blindly: those items fail.')).toBeVisible();
     await typeInto(page, dialog.getByLabel('Step', { exact: true }), 'pay');
     await activate(page, dialog.getByRole('button', { name: 'Count the runs' }));
@@ -371,16 +376,16 @@ test('BATCH runs whose step has an outcome nobody knows are not retried blindly:
     const code = failed[0]!.errorCode;
     expect(code).toBeTruthy();
     expect(failed.map((item) => item.errorCode)).toEqual([code, code]);
-    await expect(page.locator('dl.batch-counts div').filter({ hasText: 'Failed' }).locator('dd')).toHaveText('2');
+    await expect(factValue(page, 'Failed')).toHaveText('2');
     const items = page.getByRole('table', { name: 'The runs of the job and what became of each' });
     await expect(items.locator('tbody tr')).toHaveCount(2);
     await expect(items.getByText('Failed', { exact: true })).toHaveCount(2);
     await expect(items.locator('code', { hasText: code! })).toHaveCount(2);
     await expectAccessible(page, 'the batch job, every run failed with its code');
-    await choose(page, page.getByLabel('Outcome', { exact: true }), 'Failed');
+    await choose(page, selector(page, 'Outcome'), 'Failed');
     await expect(items.locator('tbody tr')).toHaveCount(2);
-    await choose(page, page.getByLabel('Outcome', { exact: true }), 'Succeeded');
-    await expect(page.getByText('No run with this outcome.')).toBeVisible();
+    await choose(page, selector(page, 'Outcome'), 'Succeeded');
+    await expect(page.getByRole('heading', { name: 'No run with this outcome.' })).toBeVisible();
     expect(problems).toEqual([]);
   } finally {
     await host.stop();

@@ -3,6 +3,7 @@ import type { Page } from '@playwright/test';
 import { env } from '../support/env';
 import { Api } from '../support/platform';
 import { failOnBrowserErrors, signIn } from '../support/studio';
+import { choose, expectAvailable, expectUnavailable, expectValue } from '../support/ui';
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
@@ -35,30 +36,31 @@ test('US01 an author builds a workflow without programming: the platform checks 
 
   const id = await newWorkflow(page, 'invoice-flow');
   // Empty: the platform's own check says so, and publishing is blocked with the reason.
-  await expect(page.getByText(/Publishing is blocked: the platform found \d+ problems? in this workflow/)).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Publish…' })).toBeDisabled();
+  // The reason is the description of the unavailable button (its hint, which its tooltip repeats).
+  await expectUnavailable(page.getByRole('button', { name: 'Publish…' }));
+  await expect(page.getByRole('button', { name: 'Publish…' })).toHaveAccessibleDescription(/Publishing is blocked: the platform found \d+ problems? in this workflow/);
 
   // Two steps and an end, added from the keyboard-reachable menu; each is linked to the one it was added after.
   await addNode(page, 'Step');
-  await inspector(page).getByRole('textbox', { name: 'Activity', exact: true }).fill('invoice.check');
+  await inspector(page).getByRole('textbox', { name: /^Activity/ }).fill('invoice.check');
   await inspector(page).getByRole('textbox', { name: 'Timeout amount' }).fill('5');
-  await inspector(page).getByRole('combobox', { name: 'Timeout unit' }).selectOption('s');
+  await choose(inspector(page).getByRole('combobox', { name: 'Timeout unit' }), 's');
   await addNode(page, 'Step');
-  await inspector(page).getByRole('textbox', { name: 'Activity', exact: true }).fill('invoice.send');
+  await inspector(page).getByRole('textbox', { name: /^Activity/ }).fill('invoice.send');
   await inspector(page).getByRole('textbox', { name: 'Timeout amount' }).fill('10');
-  await inspector(page).getByRole('combobox', { name: 'Timeout unit' }).selectOption('s');
+  await choose(inspector(page).getByRole('combobox', { name: 'Timeout unit' }), 's');
   await addNode(page, 'End');
 
   // A link that would make a cycle is refused, with a message, and nothing changes.
   await page.getByRole('button', { name: 'List' }).click();
   await page.getByRole('button', { name: 'Edit activity_2' }).click();
-  await inspector(page).getByRole('combobox', { name: 'Next' }).selectOption('activity_1');
+  await choose(inspector(page).getByRole('combobox', { name: 'Next' }), 'activity_1');
   await expect(page.getByRole('status').filter({ hasText: /cycle/i }).first()).toBeVisible();
-  await expect(inspector(page).getByRole('combobox', { name: 'Next' })).toHaveValue('end_1');
+  await expectValue(inspector(page).getByRole('combobox', { name: 'Next' }), 'end_1');
 
   // The platform finds nothing wrong; the advice about timeouts is gone because the author set them.
   await expect(page.getByTestId('validation-summary')).toHaveText('0 problems · 0 warnings · 0 pieces of advice', { timeout: 20_000 });
-  await expect(page.getByRole('button', { name: 'Publish…' })).toBeEnabled();
+  await expectAvailable(page.getByRole('button', { name: 'Publish…' }));
   await saved(page);
 
   // What the platform stored is what the author built.
@@ -97,9 +99,9 @@ test('US01 an author builds a workflow without programming: the platform checks 
   await expect(second).toContainText(/Breaking changes/i);
   await expect(second).toContainText(/invoiceId/);
   const publish = second.getByRole('button', { name: 'Publish', exact: true });
-  await expect(publish).toBeDisabled();
+  await expectUnavailable(publish);
   await second.getByRole('checkbox', { name: /I understand/ }).check();
-  await expect(publish).toBeEnabled();
+  await expectAvailable(publish);
   await publish.click();
   await expect(page.getByText('Published version 2.').first()).toBeVisible();
 
@@ -131,11 +133,11 @@ test('US01 two people editing the same draft: the second to save is shown the di
   await otherPage.getByRole('link', { name: 'shared-flow' }).click();
   await otherPage.getByRole('button', { name: 'List' }).click();
   await otherPage.getByRole('button', { name: 'Edit a' }).click();
-  await inspector(otherPage).getByRole('textbox', { name: 'Activity', exact: true }).fill('shared.theirs');
+  await inspector(otherPage).getByRole('textbox', { name: /^Activity/ }).fill('shared.theirs');
   await saved(otherPage);
 
   // Our author edits what they opened and the save is refused as stale: a dialog, with the differences.
-  await inspector(page).getByRole('textbox', { name: 'Activity', exact: true }).fill('shared.mine');
+  await inspector(page).getByRole('textbox', { name: /^Activity/ }).fill('shared.mine');
   const conflict = page.getByRole('dialog', { name: /Someone changed this draft/ });
   await expect(conflict).toBeVisible({ timeout: 20_000 });
   // The dialog says what differs (the node and the field), and offers the three ways out.
@@ -150,7 +152,7 @@ test('US01 two people editing the same draft: the second to save is shown the di
   await conflict.getByRole('button', { name: /Take theirs/ }).click();
   await expect(conflict).toBeHidden();
   await page.getByRole('button', { name: 'Edit a' }).click();
-  await expect(inspector(page).getByRole('textbox', { name: 'Activity', exact: true })).toHaveValue('shared.theirs');
+  await expect(inspector(page).getByRole('textbox', { name: /^Activity/ })).toHaveValue('shared.theirs');
   const after = (await api.call<{ ir: { nodes: Array<{ activity: string }> } }>('GET', `/workflows/${id}`, undefined, 200)).body;
   expect(after.ir.nodes[0]?.activity).toBe('shared.theirs');
   await other.close();

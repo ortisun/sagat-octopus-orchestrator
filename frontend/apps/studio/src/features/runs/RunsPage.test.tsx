@@ -7,6 +7,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest
 import { fakePlatform, renderApp } from '../../../test/render';
 import type { Routes as FakeRoutes } from '../../../test/render';
 import { installRunsDom } from '../../../test/runsDom';
+import { chooseValue, expectAvailable, optionsOf, valueOf } from '../../../test/ui';
 import { OPERATOR, VERSION_ID, WORKFLOW_ID, at, failure, runOf, signedInApp } from '../../../test/runs';
 import type { Run } from '../../api/types';
 import { RUN_STATUSES } from './display';
@@ -137,13 +138,15 @@ describe('the runs page', () => {
     const { platform, user } = await open([run(1), run(2, { status: 'FAILED' }), run(3, { status: 'FAILED' })]);
     await screen.findByRole('table', { name: 'Runs, newest first' });
     const select = screen.getByRole('combobox', { name: 'Status' });
-    const options = within(select).getAllByRole('option').map((o) => o.getAttribute('value'));
+    await user.click(select);
+    const options = (await screen.findAllByRole('option')).map((o) => o.querySelector('[data-option-value]')?.getAttribute('data-option-value'));
     expect(options).toEqual(['', ...RUN_STATUSES]);
+    await user.keyboard('{Escape}');
     expect(RUN_STATUSES).toHaveLength(13);
-    await user.selectOptions(select, 'FAILED');
+    await chooseValue(user, select, 'FAILED');
     await waitFor(() => expect(runIds()).toEqual([run(3).runId, run(2).runId]));
     expect(platform.requests.at(-1)?.get('status')).toBe('FAILED');
-    await user.selectOptions(select, '');
+    await chooseValue(user, select, '');
     await waitFor(() => expect(rows()).toHaveLength(3));
     expect(platform.requests.at(-1)?.has('status')).toBe(false);
   });
@@ -152,9 +155,9 @@ describe('the runs page', () => {
     const { platform, user } = await open([run(1), run(2, { workflowId: OTHER_WORKFLOW })]);
     await screen.findByRole('table', { name: 'Runs, newest first' });
     const select = await screen.findByRole('combobox', { name: 'Workflow' });
-    await waitFor(() => expect(select).toBeEnabled());
-    expect(within(select).getAllByRole('option').map((o) => o.textContent)).toEqual(['All workflows', 'order-saga', 'refund']);
-    await user.selectOptions(select, 'refund');
+    await waitFor(() => expectAvailable(select));
+    expect(await optionsOf(user, select)).toEqual(['All workflows', 'order-saga', 'refund']);
+    await user.click(screen.getByRole('option', { name: 'refund' }));
     await waitFor(() => expect(runIds()).toEqual([run(2).runId]));
     expect(platform.requests.at(-1)?.get('workflowId')).toBe(OTHER_WORKFLOW);
   });
@@ -194,9 +197,9 @@ describe('the runs page', () => {
 
   it('says there are no runs, and that none match the filters', async () => {
     const { user } = await open([]);
-    expect(await screen.findByText('No run has been started in dev yet.')).toBeInTheDocument();
-    await user.selectOptions(screen.getByRole('combobox', { name: 'Status' }), 'FAILED');
-    expect(await screen.findByText('No run matches these filters.')).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'No run has been started in dev yet.' })).toBeInTheDocument();
+    await chooseValue(user, screen.getByRole('combobox', { name: 'Status' }), 'FAILED');
+    expect(await screen.findByRole('heading', { name: 'No run matches these filters.' })).toBeInTheDocument();
   });
 
   it('shows the failure of the platform with its message and trace id, and a way to try again', async () => {
@@ -312,14 +315,14 @@ describe('the runs page: filters in the address', () => {
     expect(runIds()).toEqual([run(3).runId]);
     expect(platform.requests.at(-1)?.get('status')).toBe('FAILED');
     expect(platform.requests.at(-1)?.get('workflowId')).toBe(OTHER_WORKFLOW);
-    expect(screen.getByRole('combobox', { name: 'Status' })).toHaveValue('FAILED');
+    expect(valueOf(screen.getByRole('combobox', { name: 'Status' }))).toBe('FAILED');
   });
 
   it('writes a filter to the address when it is chosen, so the back button and a shared link have it, and clears them together', async () => {
     const { user } = await open([run(1), run(2, { status: 'FAILED' })]);
     await screen.findByRole('table', { name: 'Runs, newest first' });
     expect(screen.queryByRole('button', { name: 'Clear filters' })).not.toBeInTheDocument();
-    await user.selectOptions(screen.getByRole('combobox', { name: 'Status' }), 'FAILED');
+    await chooseValue(user, screen.getByRole('combobox', { name: 'Status' }), 'FAILED');
     expect(where()).toBe('/runs?status=FAILED');
     await user.click(screen.getByRole('button', { name: 'Clear filters' }));
     expect(where()).toBe('/runs');
@@ -330,17 +333,17 @@ describe('the runs page: filters in the address', () => {
     const { platform, user } = await open([run(1), run(2, { status: 'FAILED' })]);
     await screen.findByRole('table', { name: 'Runs, newest first' });
     const origin = screen.getByRole('combobox', { name: 'Origin' });
-    await user.selectOptions(origin, 'CONNECTION_PROBE');
+    await chooseValue(user, origin, 'CONNECTION_PROBE');
     await waitFor(() => expect(platform.requests.at(-1)?.get('origin')).toBe('CONNECTION_PROBE'));
     await user.click(screen.getByRole('button', { name: 'Clear filters' }));
-    expect(origin).toHaveValue('');
+    expect(valueOf(origin)).toBe('');
     await waitFor(() => expect(platform.requests.at(-1)?.has('origin')).toBe(false));
-    await user.selectOptions(origin, 'CONNECTION_PROBE');
-    await user.selectOptions(screen.getByRole('combobox', { name: 'Status' }), 'FAILED');
-    await user.selectOptions(screen.getByRole('combobox', { name: 'Workflow' }), WORKFLOW_ID);
+    await chooseValue(user, origin, 'CONNECTION_PROBE');
+    await chooseValue(user, screen.getByRole('combobox', { name: 'Status' }), 'FAILED');
+    await chooseValue(user, screen.getByRole('combobox', { name: 'Workflow' }), WORKFLOW_ID);
     await user.click(screen.getByRole('button', { name: 'Clear filters' }));
     expect(where()).toBe('/runs');
-    expect(origin).toHaveValue('');
+    expect(valueOf(origin)).toBe('');
     await waitFor(() => {
       const query = platform.requests.at(-1);
       expect(query?.has('origin')).toBe(false);
@@ -363,7 +366,9 @@ describe('the runs page: filters in the address', () => {
     await screen.findByRole('table', { name: 'Runs, newest first' });
     const field = screen.getByRole('searchbox', { name: 'Open a run by id' });
     await user.type(field, 'not-a-run{Enter}');
-    expect(await screen.findByRole('alert')).toHaveTextContent(/not a run id/);
+    expect(await screen.findByText(/not a run id/)).toBeInTheDocument();
+    expect(field).toBeInvalid();
+    expect(field).toHaveAccessibleDescription(expect.stringContaining('That is not a run id'));
     await user.clear(field);
     await user.type(field, `${run(1).runId}{Enter}`);
     await waitFor(() => expect(where()).toBe(`/runs/${run(1).runId}`));

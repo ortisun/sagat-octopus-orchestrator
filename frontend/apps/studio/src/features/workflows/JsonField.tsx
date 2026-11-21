@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import { canonical } from '../../model/ir';
+import { Banner, Heading, Stack } from '../../ui';
 import { CodeEditor } from '../scripts/CodeEditor';
 
 function pretty(value: Record<string, unknown> | undefined): string {
@@ -33,8 +34,9 @@ export function JsonField({
   const typing = pending?.base === base ? pending : undefined;
   const text = typing ? typing.text : pretty(value);
   return (
-    <div className="field" role="group" aria-label={label} aria-describedby={typing?.error ? errorId : undefined}>
-      <h4>{label}</h4>
+    <div role="group" aria-label={label} aria-describedby={typing?.error ? errorId : undefined}>
+     <Stack gap={2}>
+      <Heading level={4}>{label}</Heading>
       <CodeEditor
         label={label}
         model={model}
@@ -69,7 +71,12 @@ export function JsonField({
           onCommit(parsed as Record<string, unknown>);
         }}
       />
-      {typing?.error ? <span id={errorId} className="error" role="alert">{typing.error}</span> : null}
+      {typing?.error ? (
+        <div id={errorId}>
+          <Banner tone="error">{typing.error}</Banner>
+        </div>
+      ) : null}
+     </Stack>
     </div>
   );
 }

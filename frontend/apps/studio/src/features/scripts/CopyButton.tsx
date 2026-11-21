@@ -1,6 +1,5 @@
 import { useState } from 'react';
-import { useAnnounce } from '../../ui/Announcer';
-import { Button } from '../../ui/Button';
+import { Button, Hint, useAnnounce } from '../../ui';
 
 /**
  * Copies `text` (never a secret: a digest, an id) to the clipboard and says so. Where the browser
@@ -30,7 +29,7 @@ export function CopyButton({ text, label, what }: { text: string; label: string;
   return (
     <>
       <Button onClick={copy}>{label}</Button>
-      {failed ? <span className="hint"> The browser did not allow copying; select the text and copy it.</span> : null}
+      {failed ? <Hint>The browser did not allow copying; select the text and copy it.</Hint> : null}
     </>
   );
 }

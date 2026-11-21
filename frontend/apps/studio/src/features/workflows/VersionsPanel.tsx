@@ -1,8 +1,7 @@
 import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
-import { useId, useState } from 'react';
+import { useState } from 'react';
 import { useApp, useNamespace } from '../../app/context';
-import { Button } from '../../ui/Button';
-import { ErrorState } from '../../ui/ErrorState';
+import { Badge, Button, Code, ColumnHeader, Empty, ErrorState, Heading, Hint, Loading, Row, Select, Stack, Table, TableBody, TableCell, TableHead, TableRow, Text } from '../../ui';
 import { Moment } from '../runs/Now';
 import { clip } from './canvasModel';
 import { DiffView } from './DiffView';
@@ -21,18 +20,16 @@ function VersionView({ workflowId, number, onClose }: { workflowId: string; numb
   const namespace = useNamespace();
   const query = useQuery({ queryKey: ['workflow-version', namespace, workflowId, number], queryFn: ({ signal }) => ep.version(workflowId, number, signal), staleTime: Infinity });
   return (
-    <section className="wf-version-view" aria-label={`Version ${number}`}>
-      <div className="toolbar">
-        <h3>Version {number} (read only)</h3>
-        <Button className="spacer" onClick={onClose}>
-          Close version {number}
-        </Button>
-      </div>
-      {query.isPending ? <p>Loading the version…</p> : null}
+    <Stack as="section" gap={3} aria-label={`Version ${number}`}>
+      <Row justify="between">
+        <Heading level={3}>Version {number} (read only)</Heading>
+        <Button onClick={onClose}>Close version {number}</Button>
+      </Row>
+      {query.isPending ? <Text>Loading the version…</Text> : null}
       {query.isError ? <ErrorState error={query.error} what="Loading the version" onRetry={() => void query.refetch()} /> : null}
       {query.data ? (
         <>
-          {query.data.releaseNotes ? <p className="wf-notes-text">Release notes: {clip(query.data.releaseNotes, 2048)}</p> : <p className="hint">No release notes.</p>}
+          {query.data.releaseNotes ? <p className="wf-notes-text">Release notes: {clip(query.data.releaseNotes, 2048)}</p> : <Hint>No release notes.</Hint>}
           <NodesTable
             doc={openDraft(query.data.document).doc}
             selectedId={undefined}
@@ -48,7 +45,7 @@ function VersionView({ workflowId, number, onClose }: { workflowId: string; numb
           />
         </>
       ) : null}
-    </section>
+    </Stack>
   );
 }
 
@@ -60,7 +57,7 @@ function Comparison({ workflowId, from, to, nonce }: { workflowId: string; from:
     staleTime: Infinity,
     gcTime: 0,
   });
-  if (query.isPending) return <p role="status">Comparing…</p>;
+  if (query.isPending) return <Loading>Comparing…</Loading>;
   if (query.isError) return <ErrorState error={query.error} what="Comparing the versions" onRetry={() => void query.refetch()} />;
   return <DiffView diff={query.data} classified />;
 }
@@ -86,8 +83,6 @@ export function VersionsPanel({
   const [compare, setCompare] = useState<{ from: string; to: string; nonce: number } | undefined>();
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('draft');
-  const fromId = useId();
-  const toId = useId();
 
   const query = useInfiniteQuery({
     queryKey: ['workflow-versions', namespace, workflowId],
@@ -96,108 +91,102 @@ export function VersionsPanel({
     getNextPageParam: (last) => last.nextCursor ?? undefined,
   });
   const versions = query.data?.pages.flatMap((p) => p.items) ?? [];
+  const versionOptions = versions.map((v) => ({ value: String(v.versionNumber), label: `version ${v.versionNumber}` }));
 
   return (
-    <section className="wf-versions" aria-label="Versions">
-      <h2 className="wf-panel-title">Versions</h2>
-      {query.isPending ? <p>Loading the versions…</p> : null}
+    <Stack as="section" gap={3} aria-label="Versions">
+      <Heading level={2} look={4}>
+        Versions
+      </Heading>
+      {query.isPending ? <Text>Loading the versions…</Text> : null}
       {query.isError ? <ErrorState error={query.error} what="Loading the versions" onRetry={() => void query.refetch()} /> : null}
-      {query.isSuccess && versions.length === 0 ? <p className="empty">Nothing is published yet. Publishing the draft creates version 1.</p> : null}
+      {query.isSuccess && versions.length === 0 ? <Empty title="Nothing is published yet. Publishing the draft creates version 1." /> : null}
       {versions.length > 0 ? (
-        <table className="data wf-table">
-          <caption className="visually-hidden">Published versions, newest first</caption>
-          <thead>
-            <tr>
-              <th scope="col">Version</th>
-              <th scope="col">Digest</th>
-              <th scope="col">Published by</th>
-              <th scope="col">Published</th>
-              <th scope="col">Actions</th>
-            </tr>
-          </thead>
-          <tbody>
+        <Table label="Published versions, newest first">
+          <TableHead>
+            <TableRow>
+              <ColumnHeader>Version</ColumnHeader>
+              <ColumnHeader>Digest</ColumnHeader>
+              <ColumnHeader>Published by</ColumnHeader>
+              <ColumnHeader>Published</ColumnHeader>
+              <ColumnHeader>Actions</ColumnHeader>
+            </TableRow>
+          </TableHead>
+          <TableBody>
             {versions.map((v) => (
-              <tr key={v.versionId} aria-current={v.versionNumber === activeNumber ? 'true' : undefined}>
-                <th scope="row">
-                  v{v.versionNumber}
-                  {v.versionNumber === activeNumber ? (
-                    <span className="wf-badge" data-tone="ok">
-                      <span aria-hidden="true">✓</span> Active
-                    </span>
-                  ) : null}
-                </th>
-                <td>
-                  <code>{shortDigest(v.digest)}</code>
-                </td>
-                <td>{v.publishedBy ? clip(v.publishedBy, 60) : '—'}</td>
-                <td>
+              <TableRow key={v.versionId} aria-current={v.versionNumber === activeNumber ? 'true' : undefined}>
+                <ColumnHeader scope="row">
+                  <span className="wf-cell-id">
+                    v{v.versionNumber}
+                    {v.versionNumber === activeNumber ? (
+                      <Badge tone="ok">
+                        <span aria-hidden="true">✓</span> Active
+                      </Badge>
+                    ) : null}
+                  </span>
+                </ColumnHeader>
+                <TableCell>
+                  <Code>{shortDigest(v.digest)}</Code>
+                </TableCell>
+                <TableCell>{v.publishedBy ? clip(v.publishedBy, 60) : '—'}</TableCell>
+                <TableCell>
                   <Moment at={v.publishedAt} empty="—" />
-                </td>
-                <td>
-                  <Button aria-label={`View version ${v.versionNumber}`} onClick={() => setViewing(v.versionNumber)}>
-                    View
-                  </Button>
-                  <Button
-                    aria-label={`Compare version ${v.versionNumber} with the draft`}
-                    onClick={() => setCompare({ from: String(v.versionNumber), to: 'draft', nonce: (compare?.nonce ?? 0) + 1 })}
-                  >
-                    Compare with draft
-                  </Button>
-                </td>
-              </tr>
+                </TableCell>
+                <TableCell>
+                  <div className="wf-cell-actions">
+                    <Button size="sm" aria-label={`View version ${v.versionNumber}`} onClick={() => setViewing(v.versionNumber)}>
+                      View
+                    </Button>
+                    <Button
+                      size="sm"
+                      aria-label={`Compare version ${v.versionNumber} with the draft`}
+                      onClick={() => setCompare({ from: String(v.versionNumber), to: 'draft', nonce: (compare?.nonce ?? 0) + 1 })}
+                    >
+                      Compare with draft
+                    </Button>
+                  </div>
+                </TableCell>
+              </TableRow>
             ))}
-          </tbody>
-        </table>
+          </TableBody>
+        </Table>
       ) : null}
       {query.hasNextPage ? (
-        <Button onClick={() => void query.fetchNextPage()} disabled={query.isFetchingNextPage}>
-          {query.isFetchingNextPage ? 'Loading…' : 'Load more versions'}
-        </Button>
+        <div>
+          <Button onClick={() => void query.fetchNextPage()} disabled={query.isFetchingNextPage}>
+            {query.isFetchingNextPage ? 'Loading…' : 'Load more versions'}
+          </Button>
+        </div>
       ) : null}
 
       {versions.length > 0 ? (
         <form
-          className="wf-compare"
           onSubmit={(event) => {
             event.preventDefault();
             if (from !== '') setCompare({ from, to, nonce: (compare?.nonce ?? 0) + 1 });
           }}
         >
-          <label htmlFor={fromId}>Compare</label>
-          <select id={fromId} value={from} onChange={(event) => setFrom(event.target.value)}>
-            <option value="">(choose a version)</option>
-            {versions.map((v) => (
-              <option key={v.versionId} value={String(v.versionNumber)}>
-                version {v.versionNumber}
-              </option>
-            ))}
-          </select>
-          <label htmlFor={toId}>with</label>
-          <select id={toId} value={to} onChange={(event) => setTo(event.target.value)}>
-            <option value="draft">the saved draft</option>
-            {versions.map((v) => (
-              <option key={v.versionId} value={String(v.versionNumber)}>
-                version {v.versionNumber}
-              </option>
-            ))}
-          </select>
-          <Button type="submit" disabled={from === ''}>
-            Show differences
-          </Button>
+          <Row align="end">
+            <Select label="Compare" width="14rem" value={from} placeholder="(choose a version)" options={versionOptions} onChange={setFrom} />
+            <Select label="with" width="14rem" value={to} options={[{ value: 'draft', label: 'the saved draft' }, ...versionOptions]} onChange={setTo} />
+            <Button type="submit" disabled={from === ''}>
+              Show differences
+            </Button>
+          </Row>
         </form>
       ) : null}
 
       {compare ? (
-        <section className="wf-comparison" aria-label="Comparison">
+        <Stack as="section" gap={3} aria-label="Comparison">
           {compare.to === 'draft' || compare.from === 'draft' ? (
-            <p className="hint">
+            <Hint>
               The draft here is the one the platform has saved (revision {draftRevision}).{draftDirty ? ' Changes not saved yet are not in it.' : ''}
-            </p>
+            </Hint>
           ) : null}
           <Comparison workflowId={workflowId} from={compare.from} to={compare.to} nonce={compare.nonce} />
-        </section>
+        </Stack>
       ) : null}
       {viewing !== undefined ? <VersionView workflowId={workflowId} number={viewing} onClose={() => setViewing(undefined)} /> : null}
-    </section>
+    </Stack>
   );
 }

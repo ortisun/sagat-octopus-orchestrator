@@ -3,12 +3,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
 import type { Overlap, ScheduleBackfill } from '../../api/endpoints';
 import { useApp, useCan } from '../../app/context';
-import { useAnnounce } from '../../ui/Announcer';
-import { Button } from '../../ui/Button';
-import { Dialog } from '../../ui/Dialog';
-import { ErrorState } from '../../ui/ErrorState';
-import { Field } from '../../ui/Field';
-import { StatusBadge } from '../../ui/StatusBadge';
+import { Actions, Banner, Button, ColumnHeader, Dialog, Empty, ErrorState, Heading, Loading, Row, RowHeader, Select, Stack, StatusBadge, Table, TableBody, TableCell, TableHead, TableRow, Text, TextInput, VisuallyHidden, useAnnounce } from '../../ui';
 import type { StatusView } from '../../model/status';
 import { OVERLAPS, OVERLAP_TEXT, backfillOf, outcomeView } from './model';
 import { Time, useCommand } from './shared';
@@ -49,51 +44,52 @@ export function Backfills({ namespaceId, scheduleId }: { namespaceId: string; sc
     void queries.invalidateQueries({ queryKey: ['schedule', namespaceId, scheduleId], exact: true });
   }, [says, list.isSuccess, queries, namespaceId, scheduleId]);
   return (
-    <section aria-labelledby="backfills-title">
-      <h2 id="backfills-title">Backfills</h2>
-      <p>A backfill acts on the times of a range that has passed, for example after the schedule was created late. A time that already has a decision is never given a second run.</p>
+    <Stack as="section" gap={3} aria-labelledby="backfills-title">
+      <Heading level={2} id="backfills-title">
+        Backfills
+      </Heading>
+      <Text>A backfill acts on the times of a range that has passed, for example after the schedule was created late. A time that already has a decision is never given a second run.</Text>
       {operate && start ? <NewBackfill namespaceId={namespaceId} scheduleId={scheduleId} /> : null}
-      {list.isPending ? <p role="status">Loading the backfills…</p> : null}
+      {list.isPending ? <Loading>Loading the backfills…</Loading> : null}
       {list.error ? <ErrorState error={list.error} what="Listing the backfills" onRetry={() => void list.refetch()} /> : null}
-      {list.isSuccess && items.length === 0 ? <p>No backfill yet.</p> : null}
+      {list.isSuccess && items.length === 0 ? <Empty title="No backfill yet." /> : null}
       {items.length > 0 ? (
-        <table>
-          <caption className="visually-hidden">The latest backfills of the schedule</caption>
-          <thead>
-            <tr>
-              <th scope="col">Range</th>
-              <th scope="col">State</th>
-              <th scope="col">When a run is open</th>
-              <th scope="col">So far</th>
-              <th scope="col">
-                <span className="visually-hidden">Actions</span>
-              </th>
-            </tr>
-          </thead>
-          <tbody>
+        <Table label="The latest backfills of the schedule">
+          <TableHead>
+            <TableRow>
+              <ColumnHeader>Range</ColumnHeader>
+              <ColumnHeader>State</ColumnHeader>
+              <ColumnHeader>When a run is open</ColumnHeader>
+              <ColumnHeader>So far</ColumnHeader>
+              <ColumnHeader>
+                <VisuallyHidden>Actions</VisuallyHidden>
+              </ColumnHeader>
+            </TableRow>
+          </TableHead>
+          <TableBody>
             {items.map((backfill) => (
-              <tr key={backfill.backfillId}>
-                <th scope="row">
+              <TableRow key={backfill.backfillId}>
+                <RowHeader>
                   <Time value={backfill.start} /> to <Time value={backfill.end} />
-                </th>
-                <td>
+                </RowHeader>
+                <TableCell>
                   <StatusBadge view={STATE[backfill.state]} />
-                </td>
-                <td>{OVERLAP_TEXT[backfill.overlap].label}</td>
-                <td>
+                </TableCell>
+                <TableCell>{OVERLAP_TEXT[backfill.overlap].label}</TableCell>
+                <TableCell>
                   {Object.entries(backfill.counts).length === 0
                     ? '—'
                     : Object.entries(backfill.counts)
                         .map(([outcome, count]) => `${count} ${outcomeView(outcome).label.toLowerCase()}`)
                         .join(', ')}
-                </td>
-                <td>{operate && open(backfill) ? <Cancel namespaceId={namespaceId} scheduleId={scheduleId} backfill={backfill} /> : null}</td>
-              </tr>
+                </TableCell>
+                <TableCell>{operate && open(backfill) ? <Cancel namespaceId={namespaceId} scheduleId={scheduleId} backfill={backfill} /> : null}</TableCell>
+              </TableRow>
             ))}
-          </tbody>
-        </table>
+          </TableBody>
+        </Table>
       ) : null}
-    </section>
+    </Stack>
   );
 }
 
@@ -127,9 +123,9 @@ function NewBackfill({ namespaceId, scheduleId }: { namespaceId: string; schedul
   const [shown, setShown] = useState(false);
   return (
     <>
-      <p>
+      <Row>
         <Button onClick={() => setShown(true)}>New backfill</Button>
-      </p>
+      </Row>
       <Dialog open={shown} title="Backfill a range" onClose={() => setShown(false)}>
         {shown ? <BackfillForm namespaceId={namespaceId} scheduleId={scheduleId} onClose={() => setShown(false)} /> : null}
       </Dialog>
@@ -167,35 +163,29 @@ function BackfillForm({ namespaceId, scheduleId, onClose }: { namespaceId: strin
   };
   return (
     <form onSubmit={submit} noValidate>
-      <p>It acts on every time of the schedule from the start up to, not including, the end, at most 1,000 of them. The end cannot be in the future.</p>
-      <Field label="From" hint="Such as 2026-11-01T00:00:00Z.">
-        <input type="text" autoComplete="off" value={start} disabled={command.sending} onChange={(event) => setStart(event.target.value)} />
-      </Field>
-      <Field label="Up to, not including" hint="Such as 2026-11-02T00:00:00Z.">
-        <input type="text" autoComplete="off" value={end} disabled={command.sending} onChange={(event) => setEnd(event.target.value)} />
-      </Field>
-      <Field label="If a run is still open" hint={overlap === '' ? 'Each time waits for room, so none is dropped.' : OVERLAP_TEXT[overlap].help}>
-        <select value={overlap} disabled={command.sending} onChange={(event) => setOverlap(event.target.value as Overlap | '')}>
-          <option value="">Wait for room (recommended)</option>
-          {OVERLAPS.map((name) => (
-            <option key={name} value={name}>
-              {OVERLAP_TEXT[name].label}
-            </option>
-          ))}
-        </select>
-      </Field>
-      {problem ? (
-        <p role="alert" className="error">
-          {problem}
-        </p>
-      ) : null}
-      {command.error ? <ErrorState error={command.error} what="Starting the backfill" /> : null}
-      <div className="toolbar">
-        <Button type="submit" variant="primary" disabled={command.sending}>
-          {command.sending ? 'Starting…' : 'Start the backfill'}
-        </Button>
-        <Button onClick={onClose}>Close</Button>
-      </div>
+      <Stack gap={3}>
+        <Text>It acts on every time of the schedule from the start up to, not including, the end, at most 1,000 of them. The end cannot be in the future.</Text>
+        {/* The moments are typed as text and reach the model as typed: `backfillOf` reads them and sends them in UTC. */}
+        <TextInput label="From" hint="Such as 2026-11-01T00:00:00Z." autoComplete="off" spellCheck={false} mono value={start} disabled={command.sending} onChange={setStart} />
+        <TextInput label="Up to, not including" hint="Such as 2026-11-02T00:00:00Z." autoComplete="off" spellCheck={false} mono value={end} disabled={command.sending} onChange={setEnd} />
+        <Select<Overlap | ''>
+          label="If a run is still open"
+          hint={overlap === '' ? 'Each time waits for room, so none is dropped.' : OVERLAP_TEXT[overlap].help}
+          value={overlap}
+          placeholder="Wait for room (recommended)"
+          disabled={command.sending}
+          onChange={setOverlap}
+          options={[{ value: '', label: 'Wait for room (recommended)' }, ...OVERLAPS.map((name) => ({ value: name, label: OVERLAP_TEXT[name].label }))]}
+        />
+        {problem ? <Banner tone="error">{problem}</Banner> : null}
+        {command.error ? <ErrorState error={command.error} what="Starting the backfill" /> : null}
+        <Actions>
+          <Button onClick={onClose}>Close</Button>
+          <Button type="submit" variant="primary" disabled={command.sending}>
+            {command.sending ? 'Starting…' : 'Start the backfill'}
+          </Button>
+        </Actions>
+      </Stack>
     </form>
   );
 }

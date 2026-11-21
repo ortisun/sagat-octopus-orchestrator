@@ -6,13 +6,7 @@ import type { Run } from '../../api/types';
 import { useApp, useCan, useNamespace } from '../../app/context';
 import { runStatus } from '../../model/status';
 import '../../styles/runs.css';
-import { useAnnounce } from '../../ui/Announcer';
-import { useMediaQuery } from '../../ui/useMediaQuery';
-import { Banner } from '../../ui/Banner';
-import { Button } from '../../ui/Button';
-import { ErrorState } from '../../ui/ErrorState';
-import { Field } from '../../ui/Field';
-import { StatusBadge } from '../../ui/StatusBadge';
+import { Badge, Banner, Button, ColumnHeader, Empty, ErrorState, Heading, Hint, Link as PageLink, Loading, Row, Select, StatusBadge, TableBody, TableCell, TableHead, TableRow, TextInput, VisuallyHidden, WindowedTable, useAnnounce, useMediaQuery } from '../../ui';
 import { readBusinessPrefix } from './businessId';
 import { RUN_STATUSES, shortId } from './display';
 import { Elapsed, Moment, NowProvider } from './Now';
@@ -51,6 +45,14 @@ export function parseRunId(text: string): string | undefined {
   const last = text.trim().split('/').filter(Boolean).at(-1) ?? '';
   return RUN_ID.test(last) ? last.toLowerCase() : undefined;
 }
+
+/** Where a run can come from, besides a published workflow. The first entry is "no filter". */
+const ORIGINS = [
+  { value: '', label: 'All origins' },
+  { value: 'AD_HOC_STEP', label: 'Ad hoc database step' },
+  { value: 'AD_HOC_WORKFLOW', label: 'Ad hoc database workflow' },
+  { value: 'CONNECTION_PROBE', label: 'Connection probe' },
+];
 
 export interface RunsPageProps {
   /** The compact list shown beside `/runs/:id` on a wide viewport. */
@@ -95,43 +97,53 @@ export function RunsPage({ variant = 'page', selectedRunId }: RunsPageProps = {}
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [typed, business]);
   if (!allowed) return <NotAllowed what="Runs" permission="run:read" />;
+  // Beside a run the filters share a narrow column, two to a line; on the page each has a width of its own.
+  const filterWidth = variant === 'master' ? '100%' : '13rem';
   return (
     <section className={variant === 'master' ? 'rn-runs-page rn-runs-master-page' : 'rn-runs-page'}>
-      {variant === 'master' ? <h2>Runs</h2> : <h1>Runs</h1>}
-      <div className="toolbar rn-filters">
-        <Field label="Status">
-          <select value={status} onChange={(event) => setFilter('status', event.target.value)}>
-            <option value="">All statuses</option>
-            {RUN_STATUSES.map((value) => (
-              <option key={value} value={value}>
-                {runStatus(value).label}
-              </option>
-            ))}
-          </select>
-        </Field>
-        <Field label="Origin"><select value={origin} onChange={e => setOrigin(e.target.value)}><option value="">All origins</option><option value="AD_HOC_STEP">Ad hoc database step</option><option value="AD_HOC_WORKFLOW">Ad hoc database workflow</option><option value="CONNECTION_PROBE">Connection probe</option></select></Field>
-        <Field label="Workflow" hint={workflows.isError ? 'The workflows could not be listed; runs show their ids.' : workflows.data?.truncated ? 'Only the first workflows are listed.' : undefined}>
-          <select value={workflowId} onChange={(event) => setFilter('workflow', event.target.value)} disabled={workflows.data === undefined}>
-            <option value="">All workflows</option>
-            {(workflows.data?.list ?? []).map((workflow) => (
-              <option key={workflow.id} value={workflow.id}>
-                {clip(workflow.name, 80)}
-              </option>
-            ))}
-          </select>
-        </Field>
-        <Field label="Business id starts with" hint="Your own identifier for a run, such as an order number.">
-          <input type="search" autoComplete="off" spellCheck={false} maxLength={200} value={typed} onChange={(event) => setTyped(event.target.value)} />
-        </Field>
+      <Heading level={variant === 'master' ? 2 : 1} look={variant === 'master' ? 3 : 1}>
+        Runs
+      </Heading>
+      <Row className="rn-filters" gap={3} align="end">
+        <Select
+          label="Status"
+          width={filterWidth}
+          value={status}
+          placeholder="All statuses"
+          onChange={(value) => setFilter('status', value)}
+          options={[{ value: '', label: 'All statuses' }, ...RUN_STATUSES.map((value) => ({ value, label: runStatus(value).label }))]}
+        />
+        <Select label="Origin" width={filterWidth} value={origin} placeholder="All origins" onChange={setOrigin} options={ORIGINS} />
+        <Select
+          label="Workflow"
+          width={filterWidth}
+          value={workflowId}
+          placeholder="All workflows"
+          hint={workflows.isError ? 'The workflows could not be listed; runs show their ids.' : workflows.data?.truncated ? 'Only the first workflows are listed.' : undefined}
+          onChange={(value) => setFilter('workflow', value)}
+          disabled={workflows.data === undefined}
+          options={[{ value: '', label: 'All workflows' }, ...(workflows.data?.list ?? []).map((workflow) => ({ value: workflow.id, label: clip(workflow.name, 80) }))]}
+        />
+        <TextInput
+          label="Business id starts with"
+          width={filterWidth}
+          hint="Your own identifier for a run, such as an order number."
+          type="search"
+          autoComplete="off"
+          spellCheck={false}
+          maxLength={200}
+          value={typed}
+          onChange={setTyped}
+        />
         {status !== '' || workflowId !== '' || origin !== '' || business !== '' ? (
           <Button onClick={() => { setOrigin(''); setTyped(''); setParams((current) => { const next = new URLSearchParams(current); next.delete('status'); next.delete('workflow'); next.delete('business'); return next; }); }}>Clear filters</Button>
         ) : null}
         {variant === 'page' ? <OpenRun /> : null}
         {variant === 'page' ? <StartRun choices={(workflows.data?.list ?? []).filter((workflow) => workflow.activeVersion)} /> : null}
         {variant === 'page' ? <BatchFromRuns filters={{ status, workflowId, origin, businessIdPrefix: business }}{...(workflowId ? { workflowName: workflows.data?.list.find((workflow) => workflow.id === workflowId)?.name } : {})} /> : null}
-      </div>
+      </Row>
       {namespace === undefined ? (
-        <p role="status">Waiting for a namespace…</p>
+        <Loading>Waiting for a namespace…</Loading>
       ) : (
         // A different namespace or filter is a different list: nothing of the last one carries over.
         <RunList
@@ -195,20 +207,20 @@ function RunList({
 
   return (
     <NowProvider intervalMs={1000} enabled={running}>
-      <div className="toolbar">
+      <Row>
         <Button onClick={() => void store.refresh()} disabled={snapshot.refreshing || snapshot.phase === 'loading'}>
           {snapshot.refreshing ? 'Refreshing…' : 'Refresh'}
         </Button>
-        <span className="hint">
+        <Hint>
           {snapshot.updatedAt === undefined ? 'Reading the runs…' : `Updated ${new Date(snapshot.updatedAt).toLocaleTimeString()}. The newest runs refresh every 5 seconds while this tab is visible.`}
-        </span>
-      </div>
+        </Hint>
+      </Row>
 
       {snapshot.phase === 'error' ? <ErrorState error={snapshot.error} what="Loading the runs" onRetry={() => void store.refresh()} /> : null}
       {snapshot.refreshError !== undefined ? <ErrorState error={snapshot.refreshError} what="Refreshing the runs" /> : null}
-      {snapshot.phase === 'loading' ? <p role="status">Loading the runs of {clip(namespace, 60)}…</p> : null}
+      {snapshot.phase === 'loading' ? <Loading>{`Loading the runs of ${clip(namespace, 60)}…`}</Loading> : null}
 
-      {snapshot.phase === 'ready' && snapshot.items.length === 0 ? <p className="empty">{filtered ? 'No run matches these filters.' : `No run has been started in ${clip(namespace, 60)} yet.`}</p> : null}
+      {snapshot.phase === 'ready' && snapshot.items.length === 0 ? <Empty title={filtered ? 'No run matches these filters.' : `No run has been started in ${clip(namespace, 60)} yet.`} /> : null}
 
       {snapshot.items.length > 0 ? (
         <ScrollRegion label="Runs" scroller={scroller}>
@@ -224,49 +236,48 @@ function RunList({
               {padBottom > 0 ? <li aria-hidden="true" className="rn-pad" style={{ height: padBottom }} /> : null}
             </ul>
           ) : (
-            <table className="data rn-fixed rn-runs" aria-rowcount={snapshot.items.length + 1}>
-              <caption className="visually-hidden">Runs, newest first</caption>
-              <thead>
-                <tr aria-rowindex={1}>
-                  <th scope="col">Run</th>
-                  <th scope="col">Workflow</th>
-                  <th scope="col">Status</th>
-                  <th scope="col">Started</th>
-                  <th scope="col">Finished / duration</th>
-                  <th scope="col">Started by</th>
-                </tr>
-              </thead>
-              <tbody>
+            <WindowedTable className="rn-fixed rn-runs" label="Runs, newest first" rowCount={snapshot.items.length + 1}>
+              <TableHead>
+                <TableRow aria-rowindex={1}>
+                  <ColumnHeader scope="col">Run</ColumnHeader>
+                  <ColumnHeader scope="col">Workflow</ColumnHeader>
+                  <ColumnHeader scope="col">Status</ColumnHeader>
+                  <ColumnHeader scope="col">Started</ColumnHeader>
+                  <ColumnHeader scope="col">Finished / duration</ColumnHeader>
+                  <ColumnHeader scope="col">Started by</ColumnHeader>
+                </TableRow>
+              </TableHead>
+              <TableBody>
                 {padTop > 0 ? (
-                  <tr aria-hidden="true" className="rn-pad">
-                    <td colSpan={COLUMNS} style={{ height: padTop }} />
-                  </tr>
+                  <TableRow aria-hidden="true" className="rn-pad">
+                    <TableCell colSpan={COLUMNS} style={{ height: padTop }} />
+                  </TableRow>
                 ) : null}
                 {windowItems.map((item) => {
                   const itemRun = snapshot.items[item.index];
                   return itemRun === undefined ? null : <RunRow key={itemRun.runId} run={itemRun} index={item.index} measure={measure} workflows={workflows} />;
                 })}
                 {padBottom > 0 ? (
-                  <tr aria-hidden="true" className="rn-pad">
-                    <td colSpan={COLUMNS} style={{ height: padBottom }} />
-                  </tr>
+                  <TableRow aria-hidden="true" className="rn-pad">
+                    <TableCell colSpan={COLUMNS} style={{ height: padBottom }} />
+                  </TableRow>
                 ) : null}
-              </tbody>
-            </table>
+              </TableBody>
+            </WindowedTable>
           )}
         </ScrollRegion>
       ) : null}
 
       {snapshot.moreError !== undefined ? <ErrorState error={snapshot.moreError} what="Loading more runs" onRetry={() => void store.loadMore()} /> : null}
       {snapshot.hasMore ? (
-        <p>
+        <div>
           <Button onClick={() => void store.loadMore()} disabled={snapshot.loadingMore}>
             {snapshot.loadingMore ? 'Loading…' : 'Load more'}
           </Button>
-        </p>
+        </div>
       ) : null}
       {snapshot.capped ? <Banner tone="info">Showing the newest {snapshot.items.length.toLocaleString()} runs. Narrow the filters to see others.</Banner> : null}
-      {snapshot.items.length > 0 ? <p className="hint">{snapshot.items.length.toLocaleString()} runs loaded.</p> : null}
+      {snapshot.items.length > 0 ? <Hint>{snapshot.items.length.toLocaleString()} runs loaded.</Hint> : null}
     </NowProvider>
   );
 }
@@ -289,6 +300,7 @@ function RunMasterRow({
   const { search } = useLocation();
   return (
     <li ref={measure} data-index={index} data-status={run.status} className="rn-master-row">
+      {/* The whole card is the link, and it says which run is open (`aria-current`): the router's own link, since the interface module's link is a line of text. */}
       <Link to={{ pathname: path`/runs/${run.runId}`, search }} aria-current={selected ? 'page' : undefined}>
         <span className="rn-master-name" title={workflow?.name}>
           {originLabel(run.origin) ?? (workflow ? clip(workflow.name, 80) : `workflow ${shortId(run.workflowId)}`)}
@@ -312,46 +324,46 @@ function RunRow({ run, index, measure, workflows }: { run: Run; index: number; m
   const finished = isTerminal(run.status);
   const { search } = useLocation();
   return (
-    <tr ref={measure} data-index={index} aria-rowindex={index + 2} data-status={run.status}>
-      <td>
-        <Link className="rn-id" to={{ pathname: path`/runs/${run.runId}`, search }}>
+    <TableRow ref={measure} data-index={index} aria-rowindex={index + 2} data-status={run.status}>
+      <TableCell>
+        <PageLink className="rn-id" to={`${path`/runs/${run.runId}`}${search}`}>
           {run.runId}
-        </Link>
+        </PageLink>
         {run.businessId ? (
-          <div className="hint">
-            <span className="visually-hidden">Business id </span>
+          <div className="rn-quiet">
+            <VisuallyHidden>Business id </VisuallyHidden>
             {clip(run.businessId, 80)}
           </div>
         ) : null}
         {run.status === 'MANUAL_REVIEW' ? (
           <div>
-            <span className="rn-marker">
+            <Badge tone="bad">
               <span aria-hidden="true">☝</span> A person must decide
-            </span>
+            </Badge>
           </div>
         ) : null}
         {run.startDelayedUntil && run.status === 'WAITING' ? (
-          <div className="hint">
+          <div className="rn-quiet">
             Starts <Moment at={run.startDelayedUntil} />
           </div>
         ) : null}
-      </td>
-      <td>
+      </TableCell>
+      <TableCell>
         {originLabel(run.origin) ?? (workflow ? clip(workflow.name, 80) : `workflow ${shortId(run.workflowId)}`)}
-        <div className="hint">{versionLabel(versions.data, run.versionId, workflow?.activeVersion)}</div>
-      </td>
-      <td>
+        <div className="rn-quiet">{versionLabel(versions.data, run.versionId, workflow?.activeVersion)}</div>
+      </TableCell>
+      <TableCell>
         <StatusBadge view={runStatus(run.status)} />
-      </td>
-      <td>
+      </TableCell>
+      <TableCell>
         <Moment at={run.createdAt} />
-      </td>
-      <td>
+      </TableCell>
+      <TableCell>
         {finished ? (
           run.finishedAt ? (
             <>
               <Moment at={run.finishedAt} />
-              <div className="hint">
+              <div className="rn-quiet">
                 took <Elapsed from={run.createdAt} to={run.finishedAt} />
               </div>
             </>
@@ -363,9 +375,9 @@ function RunRow({ run, index, measure, workflows }: { run: Run; index: number; m
             running for <Elapsed from={run.createdAt} />
           </span>
         )}
-      </td>
-      <td>{run.startedBy ? clip(run.startedBy, 60) : '—'}</td>
-    </tr>
+      </TableCell>
+      <TableCell>{run.startedBy ? clip(run.startedBy, 60) : '—'}</TableCell>
+    </TableRow>
   );
 }
 
@@ -390,9 +402,20 @@ function OpenRun() {
         void navigate(path`/runs/${id}`);
       }}
     >
-      <Field label="Open a run by id" {...(invalid ? { error: 'That is not a run id. It looks like 01a13037-a113-7388-932b-5659bdd2aa84.' } : {})}>
-        <input type="search" className="input" value={text} autoComplete="off" spellCheck={false} onChange={(event) => { setText(event.target.value); setInvalid(false); }} />
-      </Field>
+      <TextInput
+        type="search"
+        label="Open a run by id"
+        width="20rem"
+        mono
+        error={invalid ? 'That is not a run id. It looks like 01a13037-a113-7388-932b-5659bdd2aa84.' : undefined}
+        value={text}
+        autoComplete="off"
+        spellCheck={false}
+        onChange={(next) => {
+          setText(next);
+          setInvalid(false);
+        }}
+      />
       <Button type="submit">Open</Button>
     </form>
   );

@@ -1,9 +1,8 @@
-import type { ReactNode } from 'react';
-import { Link } from 'react-router';
 import { path } from '../../api/client';
 import type { Run } from '../../api/types';
 import { runStatus } from '../../model/status';
-import { StatusBadge } from '../../ui/StatusBadge';
+import { Badge, Button, Code, Disclosure, Facts, Heading, Hint, Link, Row, Stack, StatusBadge, VisuallyHidden } from '../../ui';
+import type { Tone } from '../../ui';
 import { isTerminal } from '../../api/follow';
 import { CopyButton } from './CopyButton';
 import { followWords } from './liveRun';
@@ -19,24 +18,16 @@ import { TraceLink } from './TraceLink';
 import { shortId } from './display';
 
 const FOLLOW_SYMBOL: Record<LiveFollow, string> = { idle: '○', connecting: '◌', live: '●', polling: '↻', reconnecting: '↯', ended: '■', unauthorized: '✕', failed: '✕' };
-const FOLLOW_TONE: Record<LiveFollow, string> = { idle: 'idle', connecting: 'idle', live: 'ok', polling: 'waiting', reconnecting: 'waiting', ended: 'skip', unauthorized: 'bad', failed: 'bad' };
-
-function Fact({ label, children }: { label: string; children: ReactNode }) {
-  return (
-    <div>
-      <dt>{label}</dt>
-      <dd>{children}</dd>
-    </div>
-  );
-}
+const FOLLOW_TONE: Record<LiveFollow, Tone> = { idle: 'idle', connecting: 'idle', live: 'ok', polling: 'waiting', reconnecting: 'waiting', ended: 'skip', unauthorized: 'bad', failed: 'bad' };
 
 /** "Live", "Polling", "Reconnecting" or "Ended" as a word with a shape, never only a colour. */
 export function FollowIndicator({ state }: { state: LiveFollow }) {
   const words = followWords(state);
   return (
-    <span className="badge" data-tone={FOLLOW_TONE[state]} title={words.detail} data-testid="follow-state">
-      <span aria-hidden="true">{FOLLOW_SYMBOL[state]}</span>
-      <span>{words.label}</span>
+    <span data-testid="follow-state">
+      <Badge tone={FOLLOW_TONE[state]} title={words.detail}>
+        <span aria-hidden="true">{FOLLOW_SYMBOL[state]}</span> <span>{words.label}</span>
+      </Badge>
     </span>
   );
 }
@@ -78,105 +69,130 @@ export function RunHeader({
   const held = run.startDelayedUntil !== undefined && status === 'WAITING';
   return (
     <header className="rn-header">
-      <div className="rn-title">
-        <div className="rn-heading-line">
-          <h1>
-            {originLabel(run.origin) ?? (workflowName ? clip(workflowName, 80) : 'Run')}
-            <span className="visually-hidden"> run {run.runId}</span>
-          </h1>
-          <StatusBadge view={view} />
+      <Stack gap={2}>
+        <div className="rn-title">
+          <Row justify="between" align="start" gap={3}>
+            <Row gap={2}>
+              <Heading level={1} look={2}>
+                {originLabel(run.origin) ?? (workflowName ? clip(workflowName, 80) : 'Run')}
+                <VisuallyHidden> run {run.runId}</VisuallyHidden>
+              </Heading>
+              <StatusBadge view={view} />
+            </Row>
+            <Row gap={2}>
+              <FollowIndicator state={follow} />
+              <Button onClick={onRefresh} disabled={refreshing}>
+                {refreshing ? 'Refreshing…' : 'Refresh'}
+              </Button>
+              <ActionsMenu label="Run actions" buttonText="Run actions" operations={operations} onChoose={onChoose} />
+            </Row>
+          </Row>
+          <Row gap={1.5}>
+            <Code>{run.runId}</Code> <CopyButton text={run.runId} what="run id" />
+            <Hint>{held ? 'Held by its start delay: nothing runs until the entry is released.' : view.help}</Hint>
+          </Row>
         </div>
-        <div className="rn-run-reference">
-          <code title={run.runId}>{run.runId}</code> <CopyButton text={run.runId} what="run id" />
-          <span className="rn-status-help">{held ? 'Held by its start delay: nothing runs until the entry is released.' : view.help}</span>
-        </div>
-        <div className="toolbar">
-          <FollowIndicator state={follow} />
-          <button type="button" className="btn" onClick={onRefresh} disabled={refreshing}>
-            {refreshing ? 'Refreshing…' : 'Refresh'}
-          </button>
-          <ActionsMenu label="Run actions" buttonText="Run actions" operations={operations} onChoose={onChoose} />
-        </div>
-      </div>
-      <NowProvider intervalMs={1000} enabled={!finished}>
-        <dl className="rn-facts rn-grid">
-          <Fact label="Workflow">
-            {run.origin ? originLabel(run.origin) : <Link to={path`/workflows/${run.workflowId}`}>{workflowName ? clip(workflowName, 80) : `workflow ${shortId(run.workflowId)}`}</Link>}, {version}
-          </Fact>
-          <Fact label="Started">
-            <Moment at={run.createdAt} />
-          </Fact>
-          <Fact label={finished ? 'Finished' : 'Running for'}>
-            {finished ? (
-              run.finishedAt ? (
-                <>
-                  <Moment at={run.finishedAt} /> (took <Elapsed from={run.createdAt} to={run.finishedAt} />)
-                </>
-              ) : (
-                'not recorded'
-              )
-            ) : (
-              <>
-                <Elapsed from={run.createdAt} /> so far
-              </>
-            )}
-          </Fact>
-          <Fact label="Started by">{run.startedBy ? clip(run.startedBy, 80) : 'unknown'}</Fact>
-          {run.businessId ? <Fact label="Business id">{clip(run.businessId, 200)}</Fact> : null}
-          {run.schedule ? (
-            <Fact label="Started by schedule">
-              <ScheduleOrigin schedule={run.schedule} />
-            </Fact>
-          ) : null}
-          {run.resetFrom ? (
-            <Fact label="Reset from">
-              <Link to={path`/runs/${run.resetFrom.runId}`}>run {shortId(run.resetFrom.runId)}</Link>; this run keeps the first {run.resetFrom.sequence} {run.resetFrom.sequence === 1 ? 'event' : 'events'} of it
-            </Fact>
-          ) : run.rerunOf ? (
-            <Fact label="Started again from">
-              <Link to={path`/runs/${run.rerunOf}`}>run {shortId(run.rerunOf)}</Link>
-            </Fact>
-          ) : null}
-          {held && run.startDelayedUntil ? (
-            <Fact label="Starts at">
-              <Moment at={run.startDelayedUntil} />
-            </Fact>
-          ) : null}
-        </dl>
-        <details className="rn-run-details">
-          <summary>Run details</summary>
-          <dl className="rn-facts rn-grid">
-            <Fact label="Tenant / namespace">
-              {tenant ? clip(tenant, 60) : 'unknown'} / {namespace ? clip(namespace, 60) : 'none chosen'}
-            </Fact>
-            <Fact label="Correlation id">{run.correlationId ? <code>{clip(run.correlationId, 100)}</code> : 'none'}</Fact>
-            <Fact label="Trace id">
-              {run.traceId ? (
-                <>
-                  <code>{clip(run.traceId, 64)}</code> <CopyButton text={run.traceId} what="trace id" />{' '}
-                  <TraceLink template={settings.traceUrl} traceId={run.traceId} />
-                </>
-              ) : (
-                'no trace'
-              )}
-            </Fact>
-            <Fact label="Deadline">
-              {run.deadline ? (
-                <>
-                  <Moment at={run.deadline} /> (<Relative at={run.deadline} />)
-                </>
-              ) : (
-                'none'
-              )}
-            </Fact>
-            {run.parent ? (
-              <Fact label="Child of">
-                <Link to={path`/runs/${run.parent.runId}`}>run {shortId(run.parent.runId)}</Link>, step {clip(run.parent.node, 60)}
-              </Fact>
-            ) : null}
-          </dl>
-        </details>
-      </NowProvider>
+        <NowProvider intervalMs={1000} enabled={!finished}>
+          <div className="rn-facts">
+            <Facts
+              columns="multi"
+              items={[
+                {
+                  term: 'Workflow',
+                  value: (
+                    <>
+                      {run.origin ? originLabel(run.origin) : <Link to={path`/workflows/${run.workflowId}`}>{workflowName ? clip(workflowName, 80) : `workflow ${shortId(run.workflowId)}`}</Link>}, {version}
+                    </>
+                  ),
+                },
+                { term: 'Started', value: <Moment at={run.createdAt} /> },
+                {
+                  term: finished ? 'Finished' : 'Running for',
+                  value: finished ? (
+                    run.finishedAt ? (
+                      <>
+                        <Moment at={run.finishedAt} /> (took <Elapsed from={run.createdAt} to={run.finishedAt} />)
+                      </>
+                    ) : (
+                      'not recorded'
+                    )
+                  ) : (
+                    <>
+                      <Elapsed from={run.createdAt} /> so far
+                    </>
+                  ),
+                },
+                { term: 'Started by', value: run.startedBy ? clip(run.startedBy, 80) : 'unknown' },
+                ...(run.businessId ? [{ term: 'Business id', value: clip(run.businessId, 200) }] : []),
+                ...(run.schedule ? [{ term: 'Started by schedule', value: <ScheduleOrigin schedule={run.schedule} /> }] : []),
+                ...(run.resetFrom
+                  ? [
+                      {
+                        term: 'Reset from',
+                        value: (
+                          <>
+                            <Link to={path`/runs/${run.resetFrom.runId}`}>{`run ${shortId(run.resetFrom.runId)}`}</Link>; this run keeps the first {run.resetFrom.sequence} {run.resetFrom.sequence === 1 ? 'event' : 'events'} of it
+                          </>
+                        ),
+                      },
+                    ]
+                  : run.rerunOf
+                    ? [{ term: 'Started again from', value: <Link to={path`/runs/${run.rerunOf}`}>{`run ${shortId(run.rerunOf)}`}</Link> }]
+                    : []),
+                ...(held && run.startDelayedUntil ? [{ term: 'Starts at', value: <Moment at={run.startDelayedUntil} /> }] : []),
+              ]}
+            />
+          </div>
+          <Disclosure summary="Run details">
+            <Facts
+              columns="multi"
+              items={[
+                {
+                  term: 'Tenant / namespace',
+                  value: (
+                    <>
+                      {tenant ? clip(tenant, 60) : 'unknown'} / {namespace ? clip(namespace, 60) : 'none chosen'}
+                    </>
+                  ),
+                },
+                { term: 'Correlation id', value: run.correlationId ? <Code>{clip(run.correlationId, 100)}</Code> : 'none' },
+                {
+                  term: 'Trace id',
+                  value: run.traceId ? (
+                    <>
+                      <Code>{clip(run.traceId, 64)}</Code> <CopyButton text={run.traceId} what="trace id" /> <TraceLink template={settings.traceUrl} traceId={run.traceId} />
+                    </>
+                  ) : (
+                    'no trace'
+                  ),
+                },
+                {
+                  term: 'Deadline',
+                  value: run.deadline ? (
+                    <>
+                      <Moment at={run.deadline} /> (<Relative at={run.deadline} />)
+                    </>
+                  ) : (
+                    'none'
+                  ),
+                },
+                ...(run.parent
+                  ? [
+                      {
+                        term: 'Child of',
+                        value: (
+                          <>
+                            <Link to={path`/runs/${run.parent.runId}`}>run {shortId(run.parent.runId)}</Link>, step {clip(run.parent.node, 60)}
+                          </>
+                        ),
+                      },
+                    ]
+                  : []),
+              ]}
+            />
+          </Disclosure>
+        </NowProvider>
+      </Stack>
     </header>
   );
 }

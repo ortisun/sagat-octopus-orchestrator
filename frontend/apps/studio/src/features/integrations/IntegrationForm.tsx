@@ -1,10 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
 import { useApp, useCan } from '../../app/context';
-import { Field } from '../../ui/Field';
-import { Button } from '../../ui/Button';
-import { ErrorState } from '../../ui/ErrorState';
-import { useAnnounce } from '../../ui/Announcer';
+import { Actions, Banner, Button, ErrorState, Hint, Select, Stack, TextArea, TextInput, useAnnounce } from '../../ui';
+import type { SelectOption } from '../../ui';
 import { integrationsApi } from './api';
 import type { Connector, ConnectorInput } from './api';
 
@@ -75,25 +73,57 @@ export function IntegrationForm({ namespace, connector, onClose }: { namespace: 
     } catch (problem) { if (live()) setError(problem); }
     finally { if (live()) setBusy(false); }
   }
-  return <form onSubmit={(event) => { void submit(event); }} noValidate>
-    <fieldset disabled={busy}>
-      <Field label="Name" hint="A unique name of 3–63 lower-case letters, digits and hyphens."><input value={slug} onChange={(event) => setSlug(event.target.value)} disabled={!!connector} maxLength={63} autoComplete="off" /></Field>
-      <Field label="Type"><select value={kind} disabled={!!connector} onChange={(event) => { setKind(event.target.value as Connector['kind']); setAuth('none'); setSecretName(''); clearCredentials(); }}><option value="KAFKA">Kafka</option><option value="NATS">NATS JetStream</option><option value="SQS">Amazon SQS</option></select></Field>
-      {kind !== 'SQS' ? <Field label="Servers" hint="One host:port per line. Use tls://host:port for TLS. Do not include credentials in addresses." error={servers && !validServers ? 'Enter broker host:port addresses without credentials, paths or query strings.' : undefined}><textarea value={servers} onChange={(event) => setServers(event.target.value)} rows={2} spellCheck={false} /></Field> : <><Field label="Queue URL"><input value={queue} onChange={(event) => setQueue(event.target.value)} /></Field><Field label="AWS region"><input value={region} onChange={(event) => setRegion(event.target.value)} /></Field></>}
-      {kind === 'KAFKA' ? <><Field label="Topic"><input value={topic} onChange={(event) => setTopic(event.target.value)} /></Field><Field label="Initial offset"><select value={startFrom} onChange={(event) => setStartFrom(event.target.value as 'earliest' | 'latest')}><option value="earliest">Earliest</option><option value="latest">Latest</option></select></Field></> : null}
-      {kind === 'NATS' ? <><Field label="Stream"><input value={stream} onChange={(event) => setStream(event.target.value)} /></Field><Field label="Durable consumer"><input value={consumer} onChange={(event) => setConsumer(event.target.value)} /></Field><Field label="Subject filter (optional)"><input value={filter} onChange={(event) => setFilter(event.target.value)} /></Field></> : null}
-      <Field label="Authentication"><select value={auth} onChange={(event) => { setAuth(event.target.value as Auth); clearCredentials(); }}><option value="none">No credentials</option><option value="existing">Existing secret reference</option>{canSecret && kind === 'NATS' ? <><option value="token">Token</option><option value="user">Username and password</option><option value="creds">NATS credentials file contents</option></> : null}{canSecret && kind === 'KAFKA' ? <option value="sasl">SASL username and password</option> : null}{canSecret && kind === 'SQS' ? <option value="aws">AWS access keys</option> : null}</select></Field>
-      {auth === 'existing' ? <Field label="Secret reference" hint="An existing credential secret in this namespace. Stored values are never shown."><input value={secretName} onChange={(event) => setSecretName(event.target.value)} autoComplete="off" /></Field> : null}
-      {auth === 'sasl' ? <Field label="SASL mechanism"><select value={mechanism} onChange={(event) => { credentialRequest.current = undefined; setMechanism(event.target.value); }}><option>PLAIN</option><option>SCRAM-SHA-256</option><option>SCRAM-SHA-512</option></select></Field> : null}
-      {['user', 'sasl', 'aws'].includes(auth) ? <><Field label={auth === 'aws' ? 'Access key ID' : 'Username'}><input value={username} onChange={(event) => { credentialRequest.current = undefined; setUsername(event.target.value); }} autoComplete="off" /></Field><Field label={auth === 'aws' ? 'Secret access key' : 'Password'}><input type="password" value={password} onChange={(event) => { credentialRequest.current = undefined; setPassword(event.target.value); }} autoComplete="new-password" /></Field></> : null}
-      {['token', 'creds', 'aws'].includes(auth) ? <Field label={auth === 'creds' ? 'Credentials file contents' : auth === 'aws' ? 'Session token (optional)' : 'Token'}>{auth === 'creds' ? <textarea value={token} onChange={(event) => { credentialRequest.current = undefined; setToken(event.target.value); }} autoComplete="off" spellCheck={false} rows={4} /> : <input type="password" value={token} onChange={(event) => { credentialRequest.current = undefined; setToken(event.target.value); }} autoComplete="new-password" />}</Field> : null}
-      {writingSecret && !secure ? <p role="alert">Use TLS broker addresses before saving credentials.</p> : null}
-      {!canSecret ? <p className="hint">Entering new credentials requires secret:manage permission. You can reference an existing secret.</p> : null}
-      <Field label="Default event type (optional)"><input value={eventType} onChange={(event) => setEventType(event.target.value)} /></Field>
-      <Field label="Status" hint="Activating starts consumption. Existing messages may be processed according to the broker settings."><select value={status} onChange={(event) => setStatus(event.target.value as Connector['status'])}><option value="PAUSED">Paused</option><option value="ACTIVE">Active</option></select></Field>
-    </fieldset>
-    {notice ? <p role="status">{notice}</p> : null}
-    {error ? <ErrorState error={error} what="Saving the integration" /> : null}
-    <div className="dialog-actions"><Button disabled={busy} onClick={onClose}>Cancel</Button><Button type="submit" variant="primary" disabled={busy || !valid}>{busy ? 'Saving…' : 'Save integration'}</Button></div>
-  </form>;
+  const authentication: SelectOption<Auth>[] = [
+    { value: 'none', label: 'No credentials' },
+    { value: 'existing', label: 'Existing secret reference' },
+    ...(canSecret && kind === 'NATS' ? [{ value: 'token' as const, label: 'Token' }, { value: 'user' as const, label: 'Username and password' }, { value: 'creds' as const, label: 'NATS credentials file contents' }] : []),
+    ...(canSecret && kind === 'KAFKA' ? [{ value: 'sasl' as const, label: 'SASL username and password' }] : []),
+    ...(canSecret && kind === 'SQS' ? [{ value: 'aws' as const, label: 'AWS access keys' }] : []),
+  ];
+  const secret = (next: string, set: (value: string) => void) => { credentialRequest.current = undefined; set(next); };
+  return (
+    <form onSubmit={(event) => { void submit(event); }} noValidate>
+      <Stack gap={3}>
+        <TextInput label="Name" hint="A unique name of 3–63 lower-case letters, digits and hyphens." value={slug} onChange={setSlug} disabled={busy || !!connector} maxLength={63} autoComplete="off" />
+        <Select
+          label="Type"
+          value={kind}
+          disabled={busy || !!connector}
+          onChange={(next) => { setKind(next); setAuth('none'); setSecretName(''); clearCredentials(); }}
+          options={[{ value: 'KAFKA' as const, label: 'Kafka' }, { value: 'NATS' as const, label: 'NATS JetStream' }, { value: 'SQS' as const, label: 'Amazon SQS' }]}
+        />
+        {kind !== 'SQS' ? (
+          <TextArea label="Servers" hint="One host:port per line. Use tls://host:port for TLS. Do not include credentials in addresses." error={servers && !validServers ? 'Enter broker host:port addresses without credentials, paths or query strings.' : undefined} value={servers} onChange={setServers} rows={2} spellCheck={false} mono disabled={busy} />
+        ) : <>
+          <TextInput label="Queue URL" value={queue} onChange={setQueue} disabled={busy} />
+          <TextInput label="AWS region" value={region} onChange={setRegion} disabled={busy} />
+        </>}
+        {kind === 'KAFKA' ? <>
+          <TextInput label="Topic" value={topic} onChange={setTopic} disabled={busy} />
+          <Select label="Initial offset" value={startFrom} onChange={setStartFrom} disabled={busy} options={[{ value: 'earliest' as const, label: 'Earliest' }, { value: 'latest' as const, label: 'Latest' }]} />
+        </> : null}
+        {kind === 'NATS' ? <>
+          <TextInput label="Stream" value={stream} onChange={setStream} disabled={busy} />
+          <TextInput label="Durable consumer" value={consumer} onChange={setConsumer} disabled={busy} />
+          <TextInput label="Subject filter (optional)" value={filter} onChange={setFilter} disabled={busy} />
+        </> : null}
+        <Select label="Authentication" value={auth} disabled={busy} onChange={(next) => { setAuth(next); clearCredentials(); }} options={authentication} />
+        {auth === 'existing' ? <TextInput label="Secret reference" hint="An existing credential secret in this namespace. Stored values are never shown." value={secretName} onChange={setSecretName} autoComplete="off" disabled={busy} /> : null}
+        {auth === 'sasl' ? <Select label="SASL mechanism" value={mechanism} disabled={busy} onChange={(next) => secret(next, setMechanism)} options={['PLAIN', 'SCRAM-SHA-256', 'SCRAM-SHA-512'].map((value) => ({ value, label: value }))} /> : null}
+        {['user', 'sasl', 'aws'].includes(auth) ? <>
+          <TextInput label={auth === 'aws' ? 'Access key ID' : 'Username'} value={username} onChange={(next) => secret(next, setUsername)} autoComplete="off" disabled={busy} />
+          <TextInput label={auth === 'aws' ? 'Secret access key' : 'Password'} type="password" value={password} onChange={(next) => secret(next, setPassword)} autoComplete="new-password" disabled={busy} />
+        </> : null}
+        {auth === 'creds' ? <TextArea label="Credentials file contents" value={token} onChange={(next) => secret(next, setToken)} spellCheck={false} rows={4} mono disabled={busy} /> : null}
+        {auth === 'token' || auth === 'aws' ? <TextInput label={auth === 'aws' ? 'Session token (optional)' : 'Token'} type="password" value={token} onChange={(next) => secret(next, setToken)} autoComplete="new-password" disabled={busy} /> : null}
+        {writingSecret && !secure ? <Banner tone="error">Use TLS broker addresses before saving credentials.</Banner> : null}
+        {!canSecret ? <Hint>Entering new credentials requires secret:manage permission. You can reference an existing secret.</Hint> : null}
+        <TextInput label="Default event type (optional)" value={eventType} onChange={setEventType} disabled={busy} />
+        <Select label="Status" hint="Activating starts consumption. Existing messages may be processed according to the broker settings." value={status} disabled={busy} onChange={setStatus} options={[{ value: 'PAUSED' as const, label: 'Paused' }, { value: 'ACTIVE' as const, label: 'Active' }]} />
+        {notice ? <Banner tone="info">{notice}</Banner> : null}
+        {error ? <ErrorState error={error} what="Saving the integration" /> : null}
+        <Actions><Button disabled={busy} onClick={onClose}>Cancel</Button><Button type="submit" variant="primary" disabled={busy || !valid}>{busy ? 'Saving…' : 'Save integration'}</Button></Actions>
+      </Stack>
+    </form>
+  );
 }

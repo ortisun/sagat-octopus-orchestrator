@@ -1,7 +1,7 @@
 import '../../styles/code-editor.css';
 import { useEffect, useId, useRef, useState } from 'react';
 import type { ReactNode, RefObject } from 'react';
-import { Banner } from '../../ui/Banner';
+import { Banner, Button, Checkbox, Hint, Row } from '../../ui';
 import { loadEditor } from './editorModule';
 import type { EditorModule } from './editorModule';
 import type { EditorControls } from './MonacoEditor';
@@ -82,22 +82,19 @@ export function CodeEditor({ label, model, language, value, onChange, readOnly =
           You can keep working in a plain text box: it holds the same text and is saved the same way. It has no highlighting or autocomplete.
         </Banner>
       ) : null}
-      <div className="code-editor-bar">
+      <Row justify="end">
         {showMonaco ? (
           <>
-            <label className="inline-check">
-              <input type="checkbox" checked={tabMovesFocus} onChange={(event) => setTabMovesFocus(event.target.checked)} />
-              <span>Tab moves focus out of the editor</span>
-            </label>
-            <button type="button" className="btn" onClick={() => after.current?.focus()}>
+            <Checkbox label="Tab moves focus out of the editor" checked={tabMovesFocus} onChange={setTabMovesFocus} />
+            <Button size="sm" onClick={() => after.current?.focus()}>
               Skip editor
-            </button>
+            </Button>
           </>
         ) : null}
-        <button type="button" className="btn" aria-pressed={plainChosen} onClick={() => choosePlain(!plainChosen)}>
+        <Button size="sm" aria-pressed={plainChosen} onClick={() => choosePlain(!plainChosen)}>
           {plainChosen ? 'Use the code editor' : 'Use a plain text box'}
-        </button>
-      </div>
+        </Button>
+      </Row>
       {showMonaco && MonacoEditor ? (
         <div className="code-editor-frame" style={{ height }}>
           <MonacoEditor
@@ -118,6 +115,7 @@ export function CodeEditor({ label, model, language, value, onChange, readOnly =
           Loading the code editor…
         </div>
       ) : (
+        // eslint-disable-next-line no-restricted-syntax -- the plain text box stands in for the Monaco editor in the same frame: it needs the editor's height, no wrapping and the editor's own accessible name and description, which the interface module's TextArea does not take
         <textarea
           className="code-textarea"
           aria-label={label}
@@ -138,11 +136,11 @@ export function CodeEditor({ label, model, language, value, onChange, readOnly =
         End of the code editor
       </span>
       {showMonaco ? (
-        <p id={helpId} className="hint">
-          Inside the editor the Tab key inserts a tab. Press <kbd>Ctrl</kbd>+<kbd>M</kbd> (<kbd>Control</kbd>+<kbd>Shift</kbd>+<kbd>M</kbd> on a Mac) or tick the box above to let Tab leave the editor; <kbd>F1</kbd> opens the commands, <kbd>F8</kbd> goes to the next problem.
-        </p>
+        <Hint id={helpId}>
+          Inside the editor the Tab key inserts a tab. Press <kbd className="code-editor-key">Ctrl</kbd>+<kbd className="code-editor-key">M</kbd> (<kbd className="code-editor-key">Control</kbd>+<kbd className="code-editor-key">Shift</kbd>+<kbd className="code-editor-key">M</kbd> on a Mac) or tick the box above to let Tab leave the editor; <kbd className="code-editor-key">F1</kbd> opens the commands, <kbd className="code-editor-key">F8</kbd> goes to the next problem.
+        </Hint>
       ) : null}
-      {hint ? <p className="hint">{hint}</p> : null}
+      {hint ? <Hint>{hint}</Hint> : null}
     </div>
   );
 }

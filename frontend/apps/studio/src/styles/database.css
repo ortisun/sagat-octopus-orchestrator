@@ -1,14 +1,34 @@
-.database-execution { min-width: 0; }
-.database-execution header { margin-block-end: 1.5rem; }
-.database-editor-fields { border: 0; padding: 0; margin: 1rem 0; min-width: 0; }
-.database-editor-grid { display: grid; grid-template-columns: minmax(0, 2fr) minmax(15rem, 1fr); gap: 1.5rem; align-items: start; }
-.database-node-editor, .database-run-input { min-width: 0; padding: 1rem; border: 1px solid var(--border); border-radius: .5rem; }
-.database-fields textarea, .database-run-input textarea { width: 100%; box-sizing: border-box; font-family: var(--font-mono, monospace); resize: vertical; }
-.database-fields details { margin-block: 1rem; }
-.database-fields summary { cursor: pointer; margin-block-end: .75rem; }
-.database-result { min-width: 0; margin-block: 1rem; }
-.database-result-scroll { max-width: 100%; overflow: auto; max-height: 28rem; }
-.database-result table td { min-width: 7rem; max-width: 26rem; overflow-wrap: anywhere; white-space: pre-wrap; vertical-align: top; }
-.database-result-cell { max-height: 12rem; overflow: auto; }
-.database-result-controls { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; margin-block: .75rem; }
-@media (max-width: 60rem) { .database-editor-grid { grid-template-columns: minmax(0, 1fr); } }
+/* The group that is fixed while a request is locked: a fieldset without the frame a browser draws. */
+.database-editor-fields {
+  border: 0;
+  padding: 0;
+  margin: 0;
+  min-width: 0;
+}
+/* The node being edited beside the settings of the run; one column when the page is narrow. */
+.database-editor-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(15rem, 1fr);
+  gap: var(--spacing-4);
+  align-items: start;
+}
+.database-editor-grid > * { min-width: 0; }
+/* A result is as wide and as long as its data: it scrolls inside its own region, and so does a long cell. */
+.database-result-scroll {
+  /* Inside a stack this region keeps its content's height: a scroll container would otherwise be squeezed. */
+  flex: none;
+  max-width: 100%;
+  max-height: 28rem;
+  overflow: auto;
+}
+.database-result-cell {
+  min-width: 7rem;
+  max-width: 26rem;
+  max-height: 12rem;
+  overflow: auto;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+@media (max-width: 60rem) {
+  .database-editor-grid { grid-template-columns: minmax(0, 1fr); }
+}

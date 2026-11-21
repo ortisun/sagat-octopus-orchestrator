@@ -1,16 +1,10 @@
 import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
-import { Link, useParams } from 'react-router';
+import { useParams } from 'react-router';
 import type { BatchJob } from '../../api/endpoints';
 import { useApp, useCan } from '../../app/context';
-import { useAnnounce } from '../../ui/Announcer';
-import { Banner } from '../../ui/Banner';
-import { Button } from '../../ui/Button';
-import { Dialog } from '../../ui/Dialog';
-import { ErrorState } from '../../ui/ErrorState';
-import { Field } from '../../ui/Field';
-import { StatusBadge } from '../../ui/StatusBadge';
+import { Actions, Banner, Button, Code, ColumnHeader, Dialog, Empty, ErrorState, Facts, FocusHeading, Heading, Link, Loading, Page, Progress, Row, RowHeader, Select, Stack, StatusBadge, Table, TableBody, TableCell, TableHead, TableRow, Text, TextArea, useAnnounce } from '../../ui';
 import { NotAllowed } from '../runs/NotAllowed';
 import { ACTION_TEXT, ITEM_STATES, failureText, isActive, itemState, jobState, progress, reasonProblem, reasonText } from './model';
 import type { BatchActionName } from './model';
@@ -39,19 +33,21 @@ function Job({ id }: { id: string }) {
     queryFn: ({ signal }) => ep.getBatch(namespace.id as string, id, signal),
     refetchInterval: (query) => (isActive(query.state.data?.state) ? JOB_REFRESH_MS : false),
   });
-  if (namespace.pending || job.isPending) return <p role="status">Loading the batch job…</p>;
+  if (namespace.pending || job.isPending) return <Loading>Loading the batch job…</Loading>;
   if (namespace.error || job.error) {
     if (notServed(job.error)) return <Banner tone="info">Batch operations are not enabled on this deployment.</Banner>;
     return <ErrorState error={namespace.error ?? job.error} what="Loading the batch job" onRetry={() => void job.refetch()} />;
   }
   return (
-    <section aria-labelledby="batch-title">
-      <p>
-        <Link to="/batches">All batch jobs</Link>
-      </p>
-      <Summary job={job.data} namespaceId={namespace.id as string} />
-      <Items job={job.data} namespaceId={namespace.id as string} />
-    </section>
+    <Page>
+      <Stack as="section" gap={4} aria-labelledby="batch-title">
+        <Text>
+          <Link to="/batches">All batch jobs</Link>
+        </Text>
+        <Summary job={job.data} namespaceId={namespace.id as string} />
+        <Items job={job.data} namespaceId={namespace.id as string} />
+      </Stack>
+    </Page>
   );
 }
 
@@ -71,32 +67,38 @@ function Summary({ job, namespaceId }: { job: BatchJob; namespaceId: string }) {
   }, [cancelled]);
   return (
     <>
-      <h1 id="batch-title" ref={heading} tabIndex={-1}>
+      <FocusHeading level={1} id="batch-title" ref={heading}>
         Batch job: {action?.label ?? job.action} <StatusBadge view={state} />
-      </h1>
-      <p>
+      </FocusHeading>
+      <Text>
         Started by {job.createdBy} on <time dateTime={job.createdAt}>{new Date(job.createdAt).toLocaleString('en')}</time>
         {job.maxItems ? `, at most ${job.maxItems.toLocaleString('en')} runs` : ''}
         {job.itemsPerSecond ? `, ${job.itemsPerSecond} a second` : ''}.
-      </p>
-      {job.hasPayload ? <p>It carries a payload, which is not shown.</p> : null}
+      </Text>
+      {job.hasPayload ? <Text>It carries a payload, which is not shown.</Text> : null}
       {job.failureReason ? (
         <Banner tone="error" title="The job stopped.">
           {failureText(job.failureReason)}
         </Banner>
       ) : null}
-      <p>
-        <progress max={Math.max(total, 1)} value={done} aria-label="Runs with an outcome" /> {done} of {total} runs have an outcome ({percent}%).
+      <Text>
+        <Progress label="Runs with an outcome" value={done} max={total} /> {done} of {total} runs have an outcome ({percent}%).
         {isActive(job.state) ? ' This page follows the job while it works.' : ''}
-      </p>
-      <dl className="batch-counts">
-        <div><dt>Succeeded</dt><dd>{counts.succeeded}</dd></div>
-        <div><dt>Skipped</dt><dd>{counts.skipped}</dd></div>
-        <div><dt>Failed</dt><dd>{counts.failed}</dd></div>
-        <div><dt>Cancelled</dt><dd>{counts.cancelled}</dd></div>
-        <div><dt>To be tried again</dt><dd>{counts.deferred}</dd></div>
-      </dl>
-      {canCancel && (job.state === 'SELECTING' || job.state === 'RUNNING') ? <CancelJob id={job.batchId} namespaceId={namespaceId} onCancelled={() => setCancelled((count) => count + 1)} /> : null}
+      </Text>
+      <Facts
+        items={[
+          { term: 'Succeeded', value: counts.succeeded },
+          { term: 'Skipped', value: counts.skipped },
+          { term: 'Failed', value: counts.failed },
+          { term: 'Cancelled', value: counts.cancelled },
+          { term: 'To be tried again', value: counts.deferred },
+        ]}
+      />
+      {canCancel && (job.state === 'SELECTING' || job.state === 'RUNNING') ? (
+        <Row>
+          <CancelJob id={job.batchId} namespaceId={namespaceId} onCancelled={() => setCancelled((count) => count + 1)} />
+        </Row>
+      ) : null}
     </>
   );
 }
@@ -161,24 +163,20 @@ function CancelForm({ id, namespaceId, onCancelled, onClose }: { id: string; nam
 
   return (
     <form onSubmit={submit} noValidate>
-      <p>
-        The job stops after the run in hand. The runs that were waiting become cancelled. <strong>What was already applied stays applied:</strong> cancelling the job does not undo it.
-      </p>
-      <Field label="Reason" hint="8 to 2,000 characters.">
-        <textarea rows={3} autoComplete="off" value={reason} disabled={sending} onChange={(event) => setReason(event.target.value)} />
-      </Field>
-      {problem ? (
-        <p role="alert" className="error">
-          {problem}
-        </p>
-      ) : null}
-      {error ? <ErrorState error={error} what="Cancelling the job" /> : null}
-      <div className="toolbar">
-        <Button type="submit" variant="danger" disabled={sending}>
-          {sending ? 'Cancelling…' : 'Confirm cancellation'}
-        </Button>
-        <Button onClick={onClose}>Close</Button>
-      </div>
+      <Stack gap={3}>
+        <Text>
+          The job stops after the run in hand. The runs that were waiting become cancelled. <strong>What was already applied stays applied:</strong> cancelling the job does not undo it.
+        </Text>
+        <TextArea label="Reason" hint="8 to 2,000 characters." rows={3} value={reason} disabled={sending} onChange={setReason} />
+        {problem ? <Banner tone="error">{problem}</Banner> : null}
+        {error ? <ErrorState error={error} what="Cancelling the job" /> : null}
+        <Actions>
+          <Button onClick={onClose}>Close</Button>
+          <Button type="submit" variant="danger" disabled={sending}>
+            {sending ? 'Cancelling…' : 'Confirm cancellation'}
+          </Button>
+        </Actions>
+      </Stack>
     </form>
   );
 }
@@ -205,59 +203,60 @@ function Items({ job, namespaceId }: { job: BatchJob; namespaceId: string }) {
   }, [active, refetch]);
   const rows = items.data?.pages.flatMap((page) => page.items) ?? [];
   return (
-    <section aria-labelledby="batch-items-title">
-      <h2 id="batch-items-title">Runs</h2>
-      <div className="toolbar">
-        <Field label="Outcome">
-          <select value={state} onChange={(event) => setState(event.target.value)}>
-            <option value="">All outcomes</option>
-            {ITEM_STATES.map((name) => (
-              <option key={name} value={name}>
-                {itemState(name).label}
-              </option>
-            ))}
-          </select>
-        </Field>
-      </div>
-      {items.isPending ? <p role="status">Loading the runs…</p> : null}
+    <Stack as="section" gap={3} aria-labelledby="batch-items-title">
+      <Heading level={2} id="batch-items-title">
+        Runs
+      </Heading>
+      <Row gap={3} align="end">
+        <Select
+          label="Outcome"
+          width={240}
+          value={state}
+          placeholder="All outcomes"
+          onChange={setState}
+          options={[{ value: '', label: 'All outcomes' }, ...ITEM_STATES.map((name) => ({ value: name, label: itemState(name).label }))]}
+        />
+      </Row>
+      {items.isPending ? <Loading>Loading the runs…</Loading> : null}
       {items.error ? <ErrorState error={items.error} what="Listing the runs of the job" onRetry={() => void items.refetch()} /> : null}
-      {items.isSuccess && rows.length === 0 ? <p>{state ? 'No run with this outcome.' : isActive(job.state) ? 'No run has been selected yet.' : 'The job took no run.'}</p> : null}
+      {items.isSuccess && rows.length === 0 ? <Empty title={state ? 'No run with this outcome.' : isActive(job.state) ? 'No run has been selected yet.' : 'The job took no run.'} /> : null}
       {rows.length > 0 ? (
-        <table>
-          <caption className="visually-hidden">The runs of the job and what became of each</caption>
-          <thead>
-            <tr>
-              <th scope="col">#</th>
-              <th scope="col">Run</th>
-              <th scope="col">Outcome</th>
-              <th scope="col">Why</th>
-              <th scope="col">Tries</th>
-              <th scope="col">New run</th>
-            </tr>
-          </thead>
-          <tbody>
+        <Table label="The runs of the job and what became of each">
+          <TableHead>
+            <TableRow>
+              <ColumnHeader>#</ColumnHeader>
+              <ColumnHeader>Run</ColumnHeader>
+              <ColumnHeader>Outcome</ColumnHeader>
+              <ColumnHeader>Why</ColumnHeader>
+              <ColumnHeader>Tries</ColumnHeader>
+              <ColumnHeader>New run</ColumnHeader>
+            </TableRow>
+          </TableHead>
+          <TableBody>
             {rows.map((item) => (
-              <tr key={item.ordinal}>
-                <td>{item.ordinal}</td>
-                <th scope="row">
+              <TableRow key={item.ordinal}>
+                <TableCell>{item.ordinal}</TableCell>
+                <RowHeader>
                   <Link to={`/runs/${item.runId}`}>{shortId(item.runId)}</Link>
-                </th>
-                <td>
+                </RowHeader>
+                <TableCell>
                   <StatusBadge view={itemState(item.state)} />
-                </td>
-                <td>{item.errorCode ? <code>{item.errorCode}</code> : reasonText(item.reason)}</td>
-                <td>{item.attempts ?? 0}</td>
-                <td>{item.newRunId ? <Link to={`/runs/${item.newRunId}`}>{shortId(item.newRunId)}</Link> : null}</td>
-              </tr>
+                </TableCell>
+                <TableCell>{item.errorCode ? <Code>{item.errorCode}</Code> : reasonText(item.reason)}</TableCell>
+                <TableCell>{item.attempts ?? 0}</TableCell>
+                <TableCell>{item.newRunId ? <Link to={`/runs/${item.newRunId}`}>{shortId(item.newRunId)}</Link> : null}</TableCell>
+              </TableRow>
             ))}
-          </tbody>
-        </table>
+          </TableBody>
+        </Table>
       ) : null}
       {items.hasNextPage ? (
-        <Button onClick={() => void items.fetchNextPage()} disabled={items.isFetchingNextPage}>
-          {items.isFetchingNextPage ? 'Loading…' : 'Load more'}
-        </Button>
+        <Row>
+          <Button onClick={() => void items.fetchNextPage()} disabled={items.isFetchingNextPage}>
+            {items.isFetchingNextPage ? 'Loading…' : 'Load more'}
+          </Button>
+        </Row>
       ) : null}
-    </section>
+    </Stack>
   );
 }

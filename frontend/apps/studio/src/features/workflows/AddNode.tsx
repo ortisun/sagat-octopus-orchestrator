@@ -2,7 +2,7 @@ import { useId } from 'react';
 import type { DragEvent } from 'react';
 import { NODE_KINDS } from '../../model/registry';
 import type { NodeKindSpec } from '../../model/registry';
-import { Button } from '../../ui/Button';
+import { Actions, Button, Heading, Hint, Text } from '../../ui';
 import { PALETTE_MIME } from './canvasModel';
 import { Modal } from './Modal';
 
@@ -14,6 +14,7 @@ function KindButton({ kind, onPick, draggable }: { kind: NodeKindSpec; onPick: (
     event.dataTransfer.effectAllowed = 'copy';
   };
   return (
+    // eslint-disable-next-line no-restricted-syntax -- a palette tile is a drag source drawn in the shape of its node category (the same shapes as the cards of the canvas); the Button of the interface module takes neither drag handlers nor that shape
     <button
       type="button"
       className="wf-kind"
@@ -38,8 +39,10 @@ function KindButton({ kind, onPick, draggable }: { kind: NodeKindSpec; onPick: (
 export function Palette({ onPick }: { onPick: (type: string) => void }) {
   return (
     <section className="wf-palette" aria-label="Palette">
-      <h2 className="wf-panel-title">Add a node</h2>
-      <p className="hint">Drag a kind onto the canvas, or press it to add it where the dialog &quot;Add node&quot; would.</p>
+      <Heading level={2} look={4}>
+        Add a node
+      </Heading>
+      <Hint>Drag a kind onto the canvas, or press it to add it where the dialog &quot;Add node&quot; would.</Hint>
       <ul>
         {NODE_KINDS.map((kind) => (
           <li key={kind.type}>
@@ -55,7 +58,7 @@ export function Palette({ onPick }: { onPick: (type: string) => void }) {
 export function AddNodeDialog({ open, where, onClose, onPick, kinds = NODE_KINDS }: { open: boolean; where: string; onClose: () => void; onPick: (type: string) => void; kinds?: readonly NodeKindSpec[] }) {
   return (
     <Modal open={open} title="Add a node" onClose={onClose}>
-      <p>{where}</p>
+      <Text>{where}</Text>
       <ul className="wf-kinds">
         {kinds.map((kind) => (
           <li key={kind.type}>
@@ -70,9 +73,9 @@ export function AddNodeDialog({ open, where, onClose, onPick, kinds = NODE_KINDS
           </li>
         ))}
       </ul>
-      <div className="dialog-actions">
+      <Actions>
         <Button onClick={onClose}>Cancel</Button>
-      </div>
+      </Actions>
     </Modal>
   );
 }

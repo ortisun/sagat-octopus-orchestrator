@@ -175,14 +175,17 @@ describe('Reset to a point', () => {
     const { user, platform } = await mount();
     await open(user);
     await user.click(screen.getByRole('button', { name: 'Confirm: reset the run' }));
-    expect(await screen.findByText('Choose where to reset the run to.')).toBeVisible();
+    expect(await within(screen.getByRole('dialog')).findByText('Choose where to reset the run to.')).toBeVisible();
     await user.click(screen.getByRole('radio', { name: /After step charge/ }));
     await screen.findByRole('region', { name: 'What the reset does' });
     await user.click(screen.getByRole('button', { name: 'Confirm: reset the run' }));
-    expect(await screen.findByText(/Write at least 8 characters/)).toBeVisible();
+    expect(await within(screen.getByRole('dialog')).findByText(/Write at least 8 characters/)).toBeVisible();
     await user.type(screen.getByLabelText('Reason'), REASON);
     await user.click(screen.getByRole('button', { name: 'Confirm: reset the run' }));
-    expect(await screen.findByText('Confirm that you know these steps will run again.')).toBeVisible();
+    // the error is the checkbox's own: tied to it, and the checkbox is marked invalid
+    const acknowledgement = screen.getByRole('checkbox', { name: /will run again/ });
+    await waitFor(() => expect(acknowledgement).toHaveAccessibleDescription(expect.stringContaining('Confirm that you know these steps will run again.')));
+    expect(acknowledgement).toBeInvalid();
     expect(posts(platform, '/resets')).toHaveLength(0);
   });
 
@@ -336,7 +339,9 @@ describe('Cancel the run and reset it when it ends', () => {
     await openCancel(user);
     const dialog = screen.getByRole('dialog');
     expect(within(dialog).getByRole('heading', { name: 'Cancel the run and reset it when it ends' })).toBeVisible();
-    expect(dialog).toHaveTextContent('This run has not ended. Confirming cancels it, in the ordinary way.');
+    // the banner's title and its words are separate elements: each is looked for on its own
+    expect(dialog).toHaveTextContent('This run has not ended.');
+    expect(dialog).toHaveTextContent('Confirming cancels it, in the ordinary way.');
     expect(dialog).toHaveTextContent('The new run is made once it has ended; if the reset can no longer be made by then, or the run has not ended within the time the platform waits for it, the reset fails and the list of resets made from this run says why.');
     expect(within(dialog).getByRole('button', { name: CONFIRM_CANCEL })).toBeVisible();
     // the run stays as it is only in the plain reset
@@ -368,7 +373,8 @@ describe('Cancel the run and reset it when it ends', () => {
     expect(box).not.toBeChecked();
     expect(screen.getByText(/The Studio cannot tell which steps will complete while the run is being cancelled/)).toBeVisible();
     await user.click(confirm());
-    expect(await screen.findByText('Confirm that you know steps may run again.')).toBeVisible();
+    await waitFor(() => expect(box).toHaveAccessibleDescription(expect.stringContaining('Confirm that you know steps may run again.')));
+    expect(box).toBeInvalid();
     expect(posts(platform, '/resets')).toHaveLength(0);
     await user.click(box);
     await user.click(confirm());
@@ -435,7 +441,7 @@ describe('Cancel the run and reset it when it ends', () => {
     expect(screen.getByTestId('where')).toHaveTextContent('/');
     expect(within(dialog).queryByRole('button', { name: 'Open the new run' })).not.toBeInTheDocument();
     expect(dialog).not.toHaveTextContent('The reset was made');
-    expect(document.querySelector('[aria-live="polite"]')).toHaveTextContent('The run is being cancelled. The new run is made when it has ended.');
+    expect(document.querySelector('[aria-live="polite"][aria-relevant="additions"]')).toHaveTextContent('The run is being cancelled. The new run is made when it has ended.');
     // the register is read again, and shows the reset as waiting
     const list = await screen.findByRole('region', { name: 'Resets made from this run' });
     expect(list).toHaveTextContent('A reset to point 5');
@@ -478,7 +484,7 @@ describe('Cancel the run and reset it when it ends', () => {
       await user.click(within(dialog).getByRole('button', { name: 'Close' }));
       expect(screen.queryByText(/The reset could not be made: /)).not.toBeInTheDocument();
       // what is announced is the short sentence, and it is announced
-      expect(document.querySelector('[aria-live="polite"]')).toHaveTextContent('The reset could not be made.');
+      expect(document.querySelector('[aria-live="polite"][aria-relevant="additions"]')).toHaveTextContent('The reset could not be made.');
       unmount();
     }
   });
@@ -642,7 +648,7 @@ describe('Resets made from a run', () => {
     ];
     await list({ items: reasons.map(([failureReason], index) => ({ ...FAILED, resetId: `reset-${index}`, sequence: index + 1, failureReason })) });
     const section = await screen.findByRole('region', { name: 'Resets made from this run' });
-    const items = Array.from(section.querySelectorAll('li')).map((item) => item.querySelector('.hint')?.textContent ?? '');
+    const items = Array.from(section.querySelectorAll('li')).map((item) => item.querySelector('.rn-quiet')?.textContent ?? '');
     expect(items).toHaveLength(reasons.length);
     reasons.forEach(([, words], index) => expect(items[index]).toMatch(new RegExp(`^\\(could not be made: ${words}, `)));
   });
@@ -713,8 +719,8 @@ describe('Delivering signals and updates again', () => {
   it('offers the four choices, with nothing delivered again as the one chosen, and sends none of them by default', async () => {
     const { user, platform } = await mount({ routes: withCandidates([SIGNAL]) });
     await open(user);
-    const group = screen.getByRole('group', { name: /Deliver again what the run received after that point/ });
-    expect(group).toHaveTextContent('go to the new run in the order they arrived');
+    const group = screen.getByRole('radiogroup', { name: /Deliver again what the run received after that point/ });
+    expect(group).toHaveAccessibleDescription(expect.stringContaining('go to the new run in the order they arrived'));
     expect(screen.getByRole('radio', { name: /Nothing: the new run does not receive them/ })).toBeChecked();
     for (const name of [/The signals the run received/, /The updates whose arguments were kept/, /Both, in the order they arrived/]) {
       expect(screen.getByRole('radio', { name })).not.toBeChecked();
@@ -868,7 +874,7 @@ describe('The report of a reset in the register', () => {
     renderApp(<ResetsMade runId="run-1" />, { app });
     const summary = await screen.findByText('Delivered again (2)');
     const section = screen.getByRole('region', { name: 'Resets made from this run' });
-    expect(section.querySelectorAll('details')).toHaveLength(1);
+    expect(within(section).getAllByRole('button', { name: /Delivered again/ })).toHaveLength(1);
     await userEvent.setup().click(summary);
     expect(section).toHaveTextContent('Signal payment.confirmed (event 9): delivered');
     expect(section).toHaveTextContent('Update balance.replace (event 12): rejected: the state was not at the revision the update was applied to');

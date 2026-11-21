@@ -7,6 +7,7 @@ import type { scriptsServer} from './testing';
 import { DIGEST, DEVELOPER, VIEWER, aRunSummary, aScript, aVersion, aVersionSummary, json, problem, stubStorage } from './testing';
 import { alerts, openEditor, patchesOf } from './testingEditor';
 import { eventually, jump, manualTime, restoreTime } from './testingTime';
+import { expectAvailable } from '../../../test/ui';
 
 vi.mock('./editorModule', () => ({ loadEditor: () => Promise.reject(new Error('no Monaco in jsdom')) }));
 
@@ -58,7 +59,7 @@ describe('Publishing a version', () => {
     expect(within(dialog).getByText('Not tested.')).toBeInTheDocument();
     expect(dialog).toHaveTextContent('This draft has not been tried in the sandbox.');
     expect(dialog).toHaveTextContent('The platform does not require a test run before publishing');
-    expect(within(dialog).getByRole('button', { name: 'Publish version' })).toBeEnabled();
+    expectAvailable(within(dialog).getByRole('button', { name: 'Publish version' }));
     expect(dialog).toHaveTextContent('TypeScript types are erased');
   });
 
@@ -185,7 +186,7 @@ describe('Publishing a version', () => {
     const text = within(dialog).getAllByRole('alert').map((alert) => alert.textContent).join(' ');
     expect(text).toContain('a limit was reached');
     expect(text).toContain('a'.repeat(32));
-    expect(within(dialog).getByRole('button', { name: 'Publish version' })).toBeEnabled();
+    expectAvailable(within(dialog).getByRole('button', { name: 'Publish version' }));
   });
 
   it('gives up looking at a build that does not end, and says the version stays in the list', async () => {

@@ -1,16 +1,11 @@
 import { useQueryClient } from '@tanstack/react-query';
 import { useEffect, useRef, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
-import { Link, useNavigate } from 'react-router';
+import { useNavigate } from 'react-router';
 import type { Overlap, Schedule } from '../../api/endpoints';
 import { isApiError } from '../../api/errors';
 import { useApp, useCan } from '../../app/context';
-import { useAnnounce } from '../../ui/Announcer';
-import { Banner } from '../../ui/Banner';
-import { Button } from '../../ui/Button';
-import { Dialog } from '../../ui/Dialog';
-import { ErrorState } from '../../ui/ErrorState';
-import { Field } from '../../ui/Field';
+import { Actions, Banner, Button, Dialog, ErrorState, Hint, Link, Row, Select, Stack, Text, TextArea, useAnnounce } from '../../ui';
 import { MAX_NOTE, OVERLAPS, OVERLAP_TEXT, noteProblem, outcomeView, reasonText } from './model';
 import { useCommand } from './shared';
 
@@ -35,7 +30,7 @@ export function ScheduleControls({ schedule, namespaceId }: { schedule: Schedule
     hadToggle.current = toggle;
   }, [toggle]);
   return (
-    <div className="toolbar" role="group" aria-label="Actions on the schedule">
+    <Row role="group" aria-label="Actions on the schedule">
       {waiting && operate ? (
         <>
           {!paused && !schedule.exhausted ? (
@@ -53,9 +48,7 @@ export function ScheduleControls({ schedule, namespaceId }: { schedule: Schedule
               Run now
             </Button>
           ) : null}
-          <p className="muted" role="note">
-            {reason}
-          </p>
+          <Hint role="note">{reason}</Hint>
         </>
       ) : (
         <>
@@ -63,13 +56,9 @@ export function ScheduleControls({ schedule, namespaceId }: { schedule: Schedule
           {operate && start ? <Trigger schedule={schedule} namespaceId={namespaceId} /> : null}
         </>
       )}
-      {write && start && !owned ? (
-        <Link className="btn" to={`/schedules/${schedule.scheduleId}/edit`}>
-          Edit
-        </Link>
-      ) : null}
+      {write && start && !owned ? <Link to={`/schedules/${schedule.scheduleId}/edit`}>Edit</Link> : null}
       {write && start && !owned ? <Delete schedule={schedule} namespaceId={namespaceId} /> : null}
-    </div>
+    </Row>
   );
 }
 
@@ -135,26 +124,22 @@ function NoteForm({ schedule, namespaceId, verb, onClose }: { schedule: Schedule
   };
   return (
     <form onSubmit={submit} noValidate>
-      <p>
-        {verb === 'pause'
-          ? 'While it is paused no time is acted on, and none is caught up afterwards. Runs already started go on.'
-          : 'The times that passed while it was paused are not caught up: it acts again from the next one.'}
-      </p>
-      <Field label="Why" hint={`1 to ${MAX_NOTE} characters. It is kept with the schedule.`}>
-        <textarea rows={2} autoComplete="off" value={note} disabled={command.sending} onChange={(event) => setNote(event.target.value)} />
-      </Field>
-      {problem ? (
-        <p role="alert" className="error">
-          {problem}
-        </p>
-      ) : null}
-      {command.error ? <ErrorState error={command.error} what={verb === 'pause' ? 'Pausing the schedule' : 'Resuming the schedule'} /> : null}
-      <div className="toolbar">
-        <Button type="submit" variant="primary" disabled={command.sending}>
-          {command.sending ? 'Saving…' : verb === 'pause' ? 'Confirm pause' : 'Confirm resume'}
-        </Button>
-        <Button onClick={onClose}>Close</Button>
-      </div>
+      <Stack gap={3}>
+        <Text>
+          {verb === 'pause'
+            ? 'While it is paused no time is acted on, and none is caught up afterwards. Runs already started go on.'
+            : 'The times that passed while it was paused are not caught up: it acts again from the next one.'}
+        </Text>
+        <TextArea label="Why" hint={`1 to ${MAX_NOTE} characters. It is kept with the schedule.`} rows={2} value={note} disabled={command.sending} onChange={setNote} />
+        {problem ? <Banner tone="error">{problem}</Banner> : null}
+        {command.error ? <ErrorState error={command.error} what={verb === 'pause' ? 'Pausing the schedule' : 'Resuming the schedule'} /> : null}
+        <Actions>
+          <Button onClick={onClose}>Close</Button>
+          <Button type="submit" variant="primary" disabled={command.sending}>
+            {command.sending ? 'Saving…' : verb === 'pause' ? 'Confirm pause' : 'Confirm resume'}
+          </Button>
+        </Actions>
+      </Stack>
     </form>
   );
 }
@@ -189,39 +174,42 @@ function TriggerForm({ schedule, namespaceId, onClose }: { schedule: Schedule; n
   if (result) {
     const view = outcomeView(result.outcome);
     return (
-      <div>
+      <Stack gap={3}>
         <Banner tone={view.tone === 'bad' ? 'warn' : 'ok'} title={`${view.label}.`}>
           {view.help}{' '}
           {reasonText(result.reason) ? <>{reasonText(result.reason)} </> : null}
           {result.runId ? <Link to={`/runs/${result.runId}`}>Open the run</Link> : null}
         </Banner>
-        <Button onClick={onClose}>Close</Button>
-      </div>
+        <Actions>
+          <Button onClick={onClose}>Close</Button>
+        </Actions>
+      </Stack>
     );
   }
   return (
     <form onSubmit={submit} noValidate>
-      <p>
-        This decides one time now, as the schedule would at a time of its own. It does not move the next time and, if the schedule has a limit on its actions, it takes one.
-        {schedule.state === 'PAUSED' ? ' The schedule is paused; this still runs it once.' : ''}
-      </p>
-      <Field label="If a run is still open" hint={overlap === '' ? `The rule of the schedule applies: ${OVERLAP_TEXT[schedule.policies?.overlap ?? 'SKIP'].label.toLowerCase()}.` : OVERLAP_TEXT[overlap].help}>
-        <select value={overlap} disabled={command.sending} onChange={(event) => setOverlap(event.target.value as Overlap | '')}>
-          <option value="">Use the rule of the schedule</option>
-          {OVERLAPS.map((name) => (
-            <option key={name} value={name}>
-              {OVERLAP_TEXT[name].label}
-            </option>
-          ))}
-        </select>
-      </Field>
-      {command.error ? <ErrorState error={command.error} what="Running the schedule" /> : null}
-      <div className="toolbar">
-        <Button type="submit" variant="primary" disabled={command.sending}>
-          {command.sending ? 'Running…' : 'Run now'}
-        </Button>
-        <Button onClick={onClose}>Close</Button>
-      </div>
+      <Stack gap={3}>
+        <Text>
+          This decides one time now, as the schedule would at a time of its own. It does not move the next time and, if the schedule has a limit on its actions, it takes one.
+          {schedule.state === 'PAUSED' ? ' The schedule is paused; this still runs it once.' : ''}
+        </Text>
+        <Select<Overlap | ''>
+          label="If a run is still open"
+          hint={overlap === '' ? `The rule of the schedule applies: ${OVERLAP_TEXT[schedule.policies?.overlap ?? 'SKIP'].label.toLowerCase()}.` : OVERLAP_TEXT[overlap].help}
+          value={overlap}
+          placeholder="Use the rule of the schedule"
+          disabled={command.sending}
+          onChange={setOverlap}
+          options={[{ value: '', label: 'Use the rule of the schedule' }, ...OVERLAPS.map((name) => ({ value: name, label: OVERLAP_TEXT[name].label }))]}
+        />
+        {command.error ? <ErrorState error={command.error} what="Running the schedule" /> : null}
+        <Actions>
+          <Button onClick={onClose}>Close</Button>
+          <Button type="submit" variant="primary" disabled={command.sending}>
+            {command.sending ? 'Running…' : 'Run now'}
+          </Button>
+        </Actions>
+      </Stack>
     </form>
   );
 }
@@ -263,21 +251,23 @@ function DeleteForm({ schedule, namespaceId, onClose }: { schedule: Schedule; na
   }, [conflict, queries, namespaceId, schedule.scheduleId]);
   return (
     <form onSubmit={submit} noValidate>
-      <p>
-        <strong>{schedule.name}</strong> will stop acting. The times that were waiting for a run to end are dropped, runs already started go on, and its history stays. The name becomes free.
-      </p>
-      {conflict ? (
-        <Banner tone="warn" title="The schedule changed since you opened it.">
-          Close this and look at it again before deleting it.
-        </Banner>
-      ) : null}
-      {command.error ? <ErrorState error={command.error} what="Deleting the schedule" /> : null}
-      <div className="toolbar">
-        <Button type="submit" variant="danger" disabled={command.sending}>
-          {command.sending ? 'Deleting…' : 'Confirm deletion'}
-        </Button>
-        <Button onClick={onClose}>Close</Button>
-      </div>
+      <Stack gap={3}>
+        <Text>
+          <strong>{schedule.name}</strong> will stop acting. The times that were waiting for a run to end are dropped, runs already started go on, and its history stays. The name becomes free.
+        </Text>
+        {conflict ? (
+          <Banner tone="warn" title="The schedule changed since you opened it.">
+            Close this and look at it again before deleting it.
+          </Banner>
+        ) : null}
+        {command.error ? <ErrorState error={command.error} what="Deleting the schedule" /> : null}
+        <Actions>
+          <Button onClick={onClose}>Close</Button>
+          <Button type="submit" variant="danger" disabled={command.sending}>
+            {command.sending ? 'Deleting…' : 'Confirm deletion'}
+          </Button>
+        </Actions>
+      </Stack>
     </form>
   );
 }

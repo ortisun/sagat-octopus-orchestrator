@@ -91,6 +91,10 @@ Offer intuitive authoring and operation of complex processes with a faithful dep
   graph's cards and edges. Where the direction and FR-007-008 disagree, FR-007-008 wins and the deviation is listed, with its
   contrast ratio, in `design/README.md`. The Studio's labels stay in English. It has a light and a dark theme, both derived from
   the same tokens, and **follows the system's colour scheme by default** (D157; `prefers-color-scheme`, with forced colours as before).
+  Since 2026-11-21 the direction is carried by the **Astryx design system** ([Architecture decision 0101](../../docs/adr/ADR-0101-the-studio-builds-its-interface-on-the-astryx-design-system.md), Decision 2400 to Decision 2404): the Studio's controls, navigation,
+  dialogs, tables and feedback elements are Astryx components reached only through the Studio's interface module (`src/ui`), and the
+  recorded tokens are the Studio's own Astryx theme, `sagat`. A stylesheet of the Studio exists only for a surface Astryx has no
+  component for, and takes its values from the theme's tokens.
 - **FR-007-010**: An element of the design for which the platform has no data or no feature MUST NOT be drawn with sample values or as a
   link to nothing: it is omitted, or shown unavailable with the reason (queue, worker and trigger kind of a run, counts, workers and
   backlog of the platform, pages of other features, the payload tab). The table of such elements is in `design/README.md`.
@@ -142,7 +146,8 @@ dark and forced-colour modes; presence-only and page-width checks are insufficie
 - **SC-007-002:** 100% of scenarios US01..US04 pass in a reproducible automated suite.
 - **SC-007-003:** no violation of the Constitution's gates and no silent loss of persisted state.
 - **SC-007-004:** critical errors expose `code`, `trace_id` and remediation without leaking payload/secrets.
-- **SC-007-005:** (FR-007-009, FR-007-010) no stylesheet of the Studio holds a literal colour outside the token definitions; every text,
+- **Success criterion 007-005:** (Requirement 007-009, Requirement 007-010) no stylesheet of the Studio holds a literal colour outside the token definitions (since
+  Architecture decision 0101 the token definitions are the `sagat` theme source, and no module outside `src/ui` imports Astryx or renders a raw control, checked by the linter); every text,
   control-border and focus pair of every theme (light, dark, forced colours) meets its WCAG threshold, checked by a test; axe-core finds
   no serious or critical violation on any page in any of the three; the US01..US04 journeys pass unchanged in what they assert; and
   the Runs screen was compared with `design/runs-prototype.jpg` by a person (a review, reported as one: no tool judges intent).

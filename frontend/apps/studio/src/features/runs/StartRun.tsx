@@ -5,11 +5,7 @@ import { path } from '../../api/client';
 import type { Run } from '../../api/types';
 import { useApp, useCan, useNamespace, useSession } from '../../app/context';
 import { parseAuthoringJson, UnsafeJsonNumber } from '../../model/safeJson';
-import { useAnnounce } from '../../ui/Announcer';
-import { Button } from '../../ui/Button';
-import { Dialog } from '../../ui/Dialog';
-import { ErrorState } from '../../ui/ErrorState';
-import { Field } from '../../ui/Field';
+import { Actions, Banner, Button, Dialog, ErrorState, Select, Stack, Text, TextArea, TextInput, useAnnounce } from '../../ui';
 import { CONFLICTS, REUSES, businessFields, businessIdProblem } from './businessId';
 import type { Conflict, Reuse } from './businessId';
 import { DELAY_UNITS, describeDelay, startDelayFields, startDelayProblem } from './startDelay';
@@ -60,14 +56,8 @@ function ScopedStart({ choices, initialId, label }: { choices: readonly Startabl
   const only = initialId !== undefined && choices.length === 1 ? choices[0] : undefined;
   return (
     <>
-      <Button onClick={() => setOpen(true)}>
+      <Button onClick={() => setOpen(true)} {...(only ? { 'aria-label': `${label} of ${clip(only.name, 64)}` } : {})}>
         {label}
-        {only ? (
-          <>
-            {' '}
-            <span className="visually-hidden">of {clip(only.name, 64)}</span>
-          </>
-        ) : null}
       </Button>
       <Dialog open={open} title="Start a run" onClose={() => setOpen(false)}>
         {open ? <StartForm choices={choices} initialId={initialId} onClose={() => setOpen(false)} /> : null}
@@ -151,74 +141,49 @@ function StartForm({ choices, initialId, onClose }: { choices: readonly Startabl
         void submit(event);
       }}
     >
-      <p>
-        This starts a new run of the workflow's active version. It runs at once, unless you give it a delay, and is recorded with your name; steps with effects outside the platform will run.
-      </p>
-      <Field label="Workflow">
-        <select value={workflowId} disabled={starting || choices.length === 1} onChange={(event) => setWorkflowId(event.target.value)}>
-          {choices.map((choice) => (
-            <option key={choice.id} value={choice.id}>
-              {clip(choice.name, 80)}
-            </option>
-          ))}
-        </select>
-      </Field>
-      <Field label="Input (JSON object)" hint="At most 256 KiB. Do not include credentials or secrets: the input is kept with the run.">
-        <textarea rows={6} autoComplete="off" spellCheck={false} value={text} disabled={starting} onChange={(event) => setText(event.target.value)} />
-      </Field>
-      <Field label="Business identifier (optional)" hint="Your own name for the run, such as an order number: 1 to 200 letters, digits and punctuation. Only one open run can have it." error={idProblem}>
-        <input type="text" autoComplete="off" spellCheck={false} maxLength={200} value={businessId} disabled={starting} onChange={(event) => setBusinessId(event.target.value)} />
-      </Field>
-      {businessId.trim() !== '' ? (
-        <>
-          <Field label="If an open run already has it">
-            <select value={conflict} disabled={starting} onChange={(event) => setConflict(event.target.value as Conflict)}>
-              {CONFLICTS.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-          </Field>
-          <Field label="If a finished run still remembers it" hint="A finished run remembers its identifier for 30 days.">
-            <select value={reuse} disabled={starting} onChange={(event) => setReuse(event.target.value as Reuse)}>
-              {REUSES.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-          </Field>
-        </>
-      ) : null}
-      <Field
-        label="Start after (optional)"
-        hint="The run is created now and waits; its first step is released after this long (at most 366 days). While it waits it counts as an active run and holds its business identifier."
-        error={delayProblem}
-      >
-        <input type="text" inputMode="numeric" autoComplete="off" spellCheck={false} maxLength={9} value={delayAmount} disabled={starting} onChange={(event) => setDelayAmount(event.target.value)} />
-      </Field>
-      <Field label="Unit of the delay">
-        <select value={delayUnit} disabled={starting} onChange={(event) => setDelayUnit(event.target.value as DelayUnit)}>
-          {DELAY_UNITS.map((unit) => (
-            <option key={unit.value} value={unit.value}>
-              {unit.label}
-            </option>
-          ))}
-        </select>
-      </Field>
-      {problem ? (
-        <p role="alert" className="error">
-          {problem}
-        </p>
-      ) : null}
-      {error ? <ErrorState error={error} what="Starting the run" /> : null}
-      <div className="dialog-actions">
-        <Button onClick={onClose}>Cancel</Button>
-        <Button type="submit" variant="primary" disabled={starting}>
-          {starting ? 'Starting…' : 'Start run'}
-        </Button>
-      </div>
+      <Stack gap={3}>
+        <Text>This starts a new run of the workflow's active version. It runs at once, unless you give it a delay, and is recorded with your name; steps with effects outside the platform will run.</Text>
+        <Select label="Workflow" value={workflowId} disabled={starting || choices.length === 1} onChange={setWorkflowId} options={choices.map((choice) => ({ value: choice.id, label: clip(choice.name, 80) }))} />
+        <TextArea label="Input (JSON object)" hint="At most 256 KiB. Do not include credentials or secrets: the input is kept with the run." rows={6} spellCheck={false} mono value={text} disabled={starting} onChange={setText} />
+        <TextInput
+          label="Business identifier (optional)"
+          hint="Your own name for the run, such as an order number: 1 to 200 letters, digits and punctuation. Only one open run can have it."
+          error={idProblem}
+          autoComplete="off"
+          spellCheck={false}
+          maxLength={200}
+          value={businessId}
+          disabled={starting}
+          onChange={setBusinessId}
+        />
+        {businessId.trim() !== '' ? (
+          <>
+            <Select label="If an open run already has it" value={conflict} disabled={starting} onChange={setConflict} options={CONFLICTS} />
+            <Select label="If a finished run still remembers it" hint="A finished run remembers its identifier for 30 days." value={reuse} disabled={starting} onChange={setReuse} options={REUSES} />
+          </>
+        ) : null}
+        <TextInput
+          label="Start after (optional)"
+          hint="The run is created now and waits; its first step is released after this long (at most 366 days). While it waits it counts as an active run and holds its business identifier."
+          error={delayProblem}
+          numeric
+          autoComplete="off"
+          spellCheck={false}
+          maxLength={9}
+          value={delayAmount}
+          disabled={starting}
+          onChange={setDelayAmount}
+        />
+        <Select label="Unit of the delay" value={delayUnit} disabled={starting} onChange={setDelayUnit} options={DELAY_UNITS} />
+        {problem ? <Banner tone="error">{problem}</Banner> : null}
+        {error ? <ErrorState error={error} what="Starting the run" /> : null}
+        <Actions>
+          <Button onClick={onClose}>Cancel</Button>
+          <Button type="submit" variant="primary" disabled={starting}>
+            {starting ? 'Starting…' : 'Start run'}
+          </Button>
+        </Actions>
+      </Stack>
     </form>
   );
 }

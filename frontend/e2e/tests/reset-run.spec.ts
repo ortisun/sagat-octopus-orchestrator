@@ -6,6 +6,7 @@ import { expectAccessible } from '../support/accessibility';
 import { activate, choose, chooseRadio, closeWithEscape, inspectDialog, landedOn, openDialog, openFromMenu, setChecked, signInByKeyboard, typeInto } from '../support/keyboard';
 import { Api, IR_BASE } from '../support/platform';
 import { failOnBrowserErrors } from '../support/studio';
+import { expectFieldError } from '../support/ui';
 import { bindWorker, cancelAfterwards, cancelLeftovers, openWorkflow, ownNamespace, recordRefusals, setQuota, unique, withoutRefusals } from '../support/world';
 import { ActivityFailure, startWorker } from '../support/worker';
 
@@ -43,7 +44,7 @@ function threeSteps(name: string, tag: string, hold = false): Record<string, unk
 /** The page of a run, opened the way a person does: the run list, narrowed to the workflow, and the link of the run. */
 async function openRun(page: Page, workflow: string, runId: string): Promise<void> {
   await openFromMenu(page, 'Runs', 'Runs');
-  await choose(page, page.getByLabel('Workflow', { exact: true }), workflow);
+  await choose(page, page.getByRole('combobox', { name: 'Workflow', exact: true }), workflow);
   await activate(page, page.getByRole('link', { name: runId, exact: true }));
   await expect(page.getByRole('heading', { level: 1 })).toContainText(runId);
 }
@@ -77,7 +78,7 @@ test('RESET a run that ended is reset to a point: the points and the plan are re
     // The dialog: focus goes in, the points are in words, nothing is asked of the platform before the person has read them.
     const opener = page.getByRole('button', { name: 'Reset to a point…', exact: true });
     const dialog = await openDialog(page, opener, 'Reset to a point');
-    const points = dialog.getByRole('group', { name: 'Reset to' });
+    const points = dialog.getByRole('radiogroup', { name: 'Reset to' });
     await expect(points.getByRole('radio')).toHaveCount(3);
     await expect(points.getByRole('radio', { name: /^The start of the run/ })).toBeVisible();
     await expect(points.getByRole('radio', { name: /^After step a/ })).toBeVisible();
@@ -86,7 +87,7 @@ test('RESET a run that ended is reset to a point: the points and the plan are re
 
     // Confirming before choosing: told, in words, what is missing.
     await activate(page, dialog.getByRole('button', { name: 'Confirm: reset the run' }));
-    await expect(dialog.getByRole('alert').filter({ hasText: 'Choose where to reset the run to.' })).toBeVisible();
+    await expectFieldError(points, 'Choose where to reset the run to.');
     await expectAccessible(page, 'the reset dialog, no point chosen');
     await closeWithEscape(page, dialog, opener);
 
@@ -101,8 +102,8 @@ test('RESET a run that ended is reset to a point: the points and the plan are re
 
     // The acknowledgement and the reason are asked for in words, then given.
     await activate(page, dialog.getByRole('button', { name: 'Confirm: reset the run' }));
-    await expect(dialog.getByRole('alert').filter({ hasText: 'Confirm that you know these steps will run again.' })).toBeVisible();
-    await expect(dialog.getByRole('alert').filter({ hasText: /8 to 2000|at least 8/ })).toBeVisible();
+    await expectFieldError(dialog.getByRole('checkbox', { name: /I know that these steps ran before/ }), 'Confirm that you know these steps will run again.');
+    await expectFieldError(dialog.getByLabel('Reason'), /8 to 2000|at least 8/);
     await expectAccessible(page, 'the reset dialog, acknowledgement and reason missing');
     await setChecked(page, dialog.getByRole('checkbox', { name: /I know that these steps ran before/ }), true);
     await typeInto(page, dialog.getByLabel('Reason'), 'the issuer fixed the decline, run the payment again');
@@ -172,7 +173,7 @@ test('RESET a reset the platform refuses is read in words: the business identifi
     const dialog = await openDialog(page, page.getByRole('button', { name: 'Reset to a point…', exact: true }), 'Reset to a point');
     const keep = dialog.getByRole('radio', { name: /^Keep it on the new run/ });
     await expect(keep).toBeChecked();
-    await expect(dialog.getByRole('group', { name: `Business identifier ${businessId}` })).toBeVisible();
+    await expect(dialog.getByRole('radiogroup', { name: `Business identifier ${businessId}` })).toBeVisible();
     await chooseRadio(page, dialog.getByRole('radio', { name: /^After step b/ }));
     await expect(dialog.getByRole('region', { name: 'What the reset does' }).getByText(/^Kept as it was: a, b$/)).toBeVisible();
     await typeInto(page, dialog.getByLabel('Reason'), 'take the order again from the declined step');
@@ -240,7 +241,7 @@ test('RESET a run that has not ended is cancelled and reset when it ends: the en
     await typeInto(page, dialog.getByLabel('Reason'), 'the order was entered wrong, start it again');
     // The acknowledgement is always asked for here: the Studio cannot tell which step completes while the run is cancelled.
     await activate(page, dialog.getByRole('button', { name: 'Confirm: cancel the run and reset it when it ends' }));
-    await expect(dialog.getByRole('alert').filter({ hasText: 'Confirm that you know steps may run again.' })).toBeVisible();
+    await expectFieldError(dialog.getByRole('checkbox', { name: /I know that steps that completed after the point/ }), 'Confirm that you know steps may run again.');
     await expectAccessible(page, 'the cancel-and-reset dialog, acknowledgement missing');
     await setChecked(page, dialog.getByRole('checkbox', { name: /I know that steps that completed after the point/ }), true);
     await expect(dialog.getByText('The Studio cannot tell which steps will complete while the run is being cancelled')).toBeVisible();
@@ -249,7 +250,8 @@ test('RESET a run that has not ended is cancelled and reset when it ends: the en
     // The entry waits for the run to end, and the dialog says that nothing was made yet.
     await expect(dialog.getByText('The run is being cancelled.')).toBeVisible();
     await expectAccessible(page, 'the cancel-and-reset dialog, waiting for the run');
-    await activate(page, dialog.getByRole('button', { name: 'Close' }));
+    // `exact`: the header of the dialog has a button of its own, named "Close Cancel the run and reset it when it ends"
+    await activate(page, dialog.getByRole('button', { name: 'Close', exact: true }));
     await expect(dialog).toBeHidden();
     await expect(opener).toBeFocused();
     const resets = page.getByRole('region', { name: 'Resets made from this run' });
@@ -330,7 +332,8 @@ test('RESET a reset that waited for its run and could not be made says why in wo
     await setChecked(page, dialog.getByRole('checkbox', { name: /I know that steps that completed after the point/ }), true);
     await activate(page, dialog.getByRole('button', { name: 'Confirm: cancel the run and reset it when it ends' }));
     await expect(dialog.getByText('The run is being cancelled.')).toBeVisible();
-    await activate(page, dialog.getByRole('button', { name: 'Close' }));
+    // `exact`: the header of the dialog has a button of its own, named "Close Cancel the run and reset it when it ends"
+    await activate(page, dialog.getByRole('button', { name: 'Close', exact: true }));
     await expect(dialog).toBeHidden();
 
     release();

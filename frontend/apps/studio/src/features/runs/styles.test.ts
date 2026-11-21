@@ -33,19 +33,19 @@ describe('runs.css', () => {
   });
 
   it('draws a link that was taken, one not decided and one omitted differently by pattern, not only by colour', () => {
-    expect(block(css, '.react-flow__edge.edge-taken .react-flow__edge-path')).toMatch(/stroke:\s*var\(--status-ok\)/);
+    expect(block(css, '.react-flow__edge.edge-taken .react-flow__edge-path')).toMatch(/stroke:\s*var\(--sagat-status-ok\)/);
     expect(block(css, '.react-flow__edge.edge-taken .react-flow__edge-path')).not.toMatch(/dasharray/);
     expect(block(css, '.react-flow__edge.edge-pending .react-flow__edge-path')).toMatch(/stroke-dasharray:\s*var\(--graph-edge-pending-dash\)/);
     const omitted = block(css, '.react-flow__edge.edge-not-taken .react-flow__edge-path');
-    expect(omitted).toMatch(/stroke:\s*var\(--border\)/);
+    expect(omitted).toMatch(/stroke:\s*var\(--color-border-emphasized\)/);
     expect(omitted).toMatch(/stroke-dasharray:\s*var\(--graph-edge-omitted-dash\)/);
     expect(omitted).toMatch(/opacity:\s*1/);
   });
 
   it('draws the graph on the semantic dotted canvas from the prototype', () => {
     const canvas = block(css, '.rn-canvas');
-    expect(canvas).toMatch(/background-color:\s*var\(--bg-canvas\)/);
-    expect(canvas).toMatch(/radial-gradient\(var\(--graph-grid-color\)/);
+    expect(canvas).toMatch(/background-color:\s*var\(--sagat-color-canvas\)/);
+    expect(canvas).toMatch(/radial-gradient\(var\(--sagat-color-grid\)/);
     expect(canvas).toMatch(/var\(--graph-dot-size\)/);
     expect(canvas).toMatch(/background-size:\s*var\(--graph-grid-size\) var\(--graph-grid-size\)/);
   });
@@ -56,7 +56,7 @@ describe('runs.css', () => {
   });
 
   it('keeps a visible focus ring on a card and has rules for forced colours', () => {
-    expect(block(css, '.react-flow__node:focus-visible > .rn-card')).toMatch(/outline:\s*3px solid var\(--focus\)/);
+    expect(block(css, '.react-flow__node:focus-visible > .rn-card')).toMatch(/outline:\s*3px solid var\(--focus-outline-color\)/);
     const forced = block(css, '@media (forced-colors: active)');
     expect(forced).toMatch(/edge-taken/);
     expect(forced).toMatch(/Highlight/);
@@ -70,8 +70,8 @@ describe('runs.css', () => {
   });
 
   it('keeps every target in the tables at least 24 pixels', () => {
-    expect(block(css, '.link')).toMatch(/min-height:\s*24px/);
-    expect(block(css, '.btn.small')).toMatch(/min-height:\s*28px/);
+    // The controls in a row are the design system's small buttons; the stylesheet keeps the floor whatever their size becomes.
+    expect(block(css, '.rn-fixed .astryx-button')).toMatch(/min-height:\s*24px/);
   });
 
   it('places the narrow selected-step override after its two-column base rule', () => {
@@ -110,8 +110,9 @@ describe('runs.css', () => {
     for (const [table, file] of sources) {
       const source = readFileSync(resolve(process.cwd(), 'src/features/runs', file), 'utf8');
       const start = source.indexOf(`rn-fixed ${table}`);
-      const head = source.slice(start, source.indexOf('</thead>', start));
-      const columns = (head.match(/<th /g) ?? []).length;
+      const head = source.slice(start, source.indexOf('</TableHead>', start));
+      const columns = (head.match(/<ColumnHeader /g) ?? []).length;
+      expect(columns).toBeGreaterThan(0);
       const widths = new Set([...css.matchAll(new RegExp(`\\.${table} th:nth-child\\((\\d+)\\)`, 'g'))].map((match) => Number(match[1])));
       expect({ table, widths: [...widths].sort((a, b) => a - b) }).toEqual({ table, widths: Array.from({ length: columns }, (_, i) => i + 1) });
     }
@@ -120,13 +121,7 @@ describe('runs.css', () => {
   // Run summary/canvas layout is measured in the real browser by visual-layout.spec.ts.
 });
 
-describe('base.css: the shell on a phone', () => {
-  const base = readFileSync(resolve(process.cwd(), 'src/styles/base.css'), 'utf8');
-
-  it('lets the navigation, the top bar and the page scroll together below 45rem, instead of pinning 40% of a 640 px screen', () => {
-    const phone = block(base, '@media (max-width: 45rem)');
-    expect(phone).toMatch(/\.shell\s*{[^}]*display:\s*block/);
-    expect(phone).toMatch(/\.shell-frame\s*{[^}]*display:\s*block/);
-    expect(phone).toMatch(/\.shell-frame > main\s*{[^}]*overflow-x:\s*auto;[^}]*overflow-y:\s*visible/);
-  });
-});
+// The shell on a phone was a rule of base.css until 2026-11-21. The application shell is now the design
+// system's (Architecture decision 0101): below its medium breakpoint it moves the navigation into a drawer behind a
+// toggle, so nothing pins part of a small screen. A stylesheet test cannot see that; the browser
+// journey `visual-layout.spec.ts` measures the page at 320 pixels.

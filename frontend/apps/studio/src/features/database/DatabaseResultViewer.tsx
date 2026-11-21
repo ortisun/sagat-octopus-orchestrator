@@ -3,8 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import { useApp, useCan, useNamespace, useSession } from '../../app/context';
 import type { SessionSnapshot } from '../../auth/session';
 import { stringify } from 'lossless-json';
-import { Button } from '../../ui/Button';
-import { ErrorState } from '../../ui/ErrorState';
+import { Button, ColumnHeader, ErrorState, Heading, Hint, Loading, Row, Stack, Table, TableBody, TableCell, TableHead, TableRow, Text } from '../../ui';
 import { readDatabaseResult } from './readResult';
 import type { DatabaseResult } from './readResult';
 import '../../styles/database.css';
@@ -34,11 +33,18 @@ export function DatabaseResultViewer({ runId, nodeId }: { runId: string; nodeId:
       if (!next.signal.aborted && controller.current === next) setStored({ scope, session, state: { phase: 'loaded', result } });
     } catch (error) { if (!next.signal.aborted && controller.current === next) setStored({ scope, session, state: { phase: 'failed', error } }); }
   };
-  return <section className="database-result" aria-label="Database result"><h3>Database result</h3><p className="hint">Reading rows is permission checked and audited. Close this view to clear its contents.</p>
-    {namespaces.error ? <ErrorState error={namespaces.error} what="Loading the namespace" /> : null}
-    <div className="database-result-controls"><Button disabled={!namespace || state.phase === 'loading'} aria-controls={id} onClick={() => void load()}>Read database result</Button>{state.phase !== 'idle' ? <Button onClick={close}>Close database result</Button> : null}</div>
-    <div id={id} aria-live="polite">{state.phase === 'loading' ? <p role="status">Reading the complete retained result…</p> : state.phase === 'failed' ? <ErrorState error={state.error} what="Reading the database result" /> : state.phase === 'loaded' ? <ResultTable key={`${scope}:${state.result.affectedRows}`} result={state.result} /> : null}</div>
-  </section>;
+  return (
+    <Stack as="section" gap={3} aria-label="Database result">
+      <Heading level={3}>Database result</Heading>
+      <Hint>Reading rows is permission checked and audited. Close this view to clear its contents.</Hint>
+      {namespaces.error ? <ErrorState error={namespaces.error} what="Loading the namespace" /> : null}
+      <Row>
+        <Button disabled={!namespace || state.phase === 'loading'} aria-controls={id} onClick={() => void load()}>Read database result</Button>
+        {state.phase !== 'idle' ? <Button onClick={close}>Close database result</Button> : null}
+      </Row>
+      <div id={id} aria-live="polite">{state.phase === 'loading' ? <Loading>Reading the complete retained result…</Loading> : state.phase === 'failed' ? <ErrorState error={state.error} what="Reading the database result" /> : state.phase === 'loaded' ? <ResultTable key={`${scope}:${state.result.affectedRows}`} result={state.result} /> : null}</div>
+    </Stack>
+  );
 }
 
 const ROWS = 25, COLUMNS = 12, CELL_CHARS = 2000;
@@ -48,12 +54,20 @@ function Cell({ cell }: { cell: DatabaseResult['rows'][number][number] }) {
 }
 function ResultTable({ result }: { result: DatabaseResult }) {
   const [row, setRow] = useState(0); const [column, setColumn] = useState(0);
-  return <div><p>{result.rows.length} rows · {result.columns.length} columns · {result.affectedRows} affected rows</p>
-    {result.rows.length > 0 ? <>
-      <div className="database-result-controls"><Button disabled={row === 0} onClick={() => setRow(row - ROWS)}>Previous rows</Button><span>Rows {row + 1}–{Math.min(row + ROWS, result.rows.length)}</span><Button disabled={row + ROWS >= result.rows.length} onClick={() => setRow(row + ROWS)}>Next rows</Button></div>
-      {result.columns.length > COLUMNS ? <div className="database-result-controls"><Button disabled={column === 0} onClick={() => setColumn(column - COLUMNS)}>Previous columns</Button><span>Columns {column + 1}–{Math.min(column + COLUMNS, result.columns.length)}</span><Button disabled={column + COLUMNS >= result.columns.length} onClick={() => setColumn(column + COLUMNS)}>Next columns</Button></div> : null}
-      {/* eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- keyboard access to the scrollable result table */}
-      <div className="database-result-scroll" role="region" aria-label="Database result rows" tabIndex={0}><table className="data"><caption className="visually-hidden">Retained database result; typed cells in column order</caption><thead><tr>{result.columns.slice(column, column + COLUMNS).map((c, i) => <th scope="col" key={column + i}>{c.name}<br /><small>{c.type}</small></th>)}</tr></thead><tbody>{result.rows.slice(row, row + ROWS).map((r, i) => <tr key={row + i}>{r.slice(column, column + COLUMNS).map((cell, j) => <td key={column + j}><Cell cell={cell} /></td>)}</tr>)}</tbody></table></div>
-    </> : <p>No rows returned.</p>}
-  </div>;
+  return (
+    <Stack gap={3}>
+      <Text>{result.rows.length} rows · {result.columns.length} columns · {result.affectedRows} affected rows</Text>
+      {result.rows.length > 0 ? <>
+        <Row><Button disabled={row === 0} onClick={() => setRow(row - ROWS)}>Previous rows</Button><span>Rows {row + 1}–{Math.min(row + ROWS, result.rows.length)}</span><Button disabled={row + ROWS >= result.rows.length} onClick={() => setRow(row + ROWS)}>Next rows</Button></Row>
+        {result.columns.length > COLUMNS ? <Row><Button disabled={column === 0} onClick={() => setColumn(column - COLUMNS)}>Previous columns</Button><span>Columns {column + 1}–{Math.min(column + COLUMNS, result.columns.length)}</span><Button disabled={column + COLUMNS >= result.columns.length} onClick={() => setColumn(column + COLUMNS)}>Next columns</Button></Row> : null}
+        {/* eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- keyboard access to the scrollable result table */}
+        <div className="database-result-scroll" role="region" aria-label="Database result rows" tabIndex={0}>
+          <Table label="Retained database result; typed cells in column order">
+            <TableHead><TableRow>{result.columns.slice(column, column + COLUMNS).map((c, i) => <ColumnHeader key={column + i}>{c.name}<br /><small>{c.type}</small></ColumnHeader>)}</TableRow></TableHead>
+            <TableBody>{result.rows.slice(row, row + ROWS).map((r, i) => <TableRow key={row + i}>{r.slice(column, column + COLUMNS).map((cell, j) => <TableCell key={column + j}><Cell cell={cell} /></TableCell>)}</TableRow>)}</TableBody>
+          </Table>
+        </div>
+      </> : <Text>No rows returned.</Text>}
+    </Stack>
+  );
 }

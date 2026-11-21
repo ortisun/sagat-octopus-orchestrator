@@ -1,8 +1,8 @@
 import { useQuery } from '@tanstack/react-query';
-import { Link } from 'react-router';
 import { path } from '../../api/client';
 import type { Run } from '../../api/types';
 import { useApp, useCan } from '../../app/context';
+import { Link } from '../../ui';
 import { useNamespaceId } from '../batch/queries';
 import { shortId } from './display';
 import { Moment } from './Now';

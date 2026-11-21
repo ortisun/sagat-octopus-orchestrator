@@ -1,11 +1,8 @@
 import { useMemo, useState } from 'react';
-import { Link } from 'react-router';
 import { path } from '../../api/client';
 import type { Workflow } from '../../api/types';
 import type { IrDocument } from '../../model/ir';
-import { Banner } from '../../ui/Banner';
-import { Button } from '../../ui/Button';
-import { ErrorState } from '../../ui/ErrorState';
+import { Actions, Banner, Button, Code, ErrorState, Hint, Link, Stack, Text } from '../../ui';
 import { DiffView } from './DiffView';
 import { compareDocuments } from './localDiff';
 import { Modal } from './Modal';
@@ -49,17 +46,15 @@ export function ConflictDialog({ open, theirs, copied, mine, onClose, onTakeThei
 
 function Copied({ copied, onClose }: { copied: CopyResult; onClose: () => void }) {
   return (
-    <div>
+    <Stack gap={3}>
       <Banner tone="ok">
-        Your version was saved as a new workflow, <code>{copied.name}</code>. This editor now shows the other person&apos;s draft.
+        Your version was saved as a new workflow, <Code>{copied.name}</Code>. This editor now shows the other person&apos;s draft.
       </Banner>
-      <div className="dialog-actions">
+      <Actions>
         <Button onClick={onClose}>Stay here</Button>
-        <Link className="btn primary" to={path`/workflows/${copied.id}`}>
-          Open {copied.name}
-        </Link>
-      </div>
-    </div>
+        <Link to={path`/workflows/${copied.id}`}>Open {copied.name}</Link>
+      </Actions>
+    </Stack>
   );
 }
 
@@ -81,38 +76,44 @@ function ConflictBody({ theirs, mine, onClose, onTakeTheirs, onKeepMine, onSaveC
   };
 
   return (
-    <div className="wf-conflict">
-      <p>
+    <Stack gap={3}>
+      <Text>
         Another person (or another window of yours) saved this draft after you opened it, so your changes were <strong>not</strong> saved. Your copy is still here, untouched. Here
         is how their draft (revision {theirs.draftRevision}) differs from yours.
-      </p>
+      </Text>
       <DiffView diff={diff} classified={false} labels={{ from: 'their draft', to: 'your draft' }} />
       {error ? <ErrorState error={error.error} what={error.what} /> : null}
-      <div className="wf-conflict-actions">
-        <div>
-          <Button onClick={onTakeTheirs} disabled={busy !== undefined}>
-            Take theirs
-          </Button>
-          <p className="hint">Discard your changes and continue from their draft.</p>
-        </div>
-        <div>
-          <Button variant="danger" onClick={() => void run('keep', 'Saving your version', onKeepMine)} disabled={busy !== undefined}>
-            {busy === 'keep' ? 'Saving…' : 'Keep mine and save over theirs'}
-          </Button>
-          <p className="hint">Replace their draft with yours. Their changes shown above are lost from the draft.</p>
-        </div>
-        <div>
-          <Button onClick={() => void run('copy', 'Saving your version as a copy', onSaveCopy)} disabled={busy !== undefined}>
-            {busy === 'copy' ? 'Saving…' : 'Save mine as a copy'}
-          </Button>
-          <p className="hint">Keep your version as a new workflow and continue here from their draft.</p>
-        </div>
-      </div>
-      <div className="dialog-actions">
+      <Stack gap={3}>
+        <Stack gap={1}>
+          <div>
+            <Button onClick={onTakeTheirs} disabled={busy !== undefined}>
+              Take theirs
+            </Button>
+          </div>
+          <Hint>Discard your changes and continue from their draft.</Hint>
+        </Stack>
+        <Stack gap={1}>
+          <div>
+            <Button variant="danger" onClick={() => void run('keep', 'Saving your version', onKeepMine)} disabled={busy !== undefined}>
+              {busy === 'keep' ? 'Saving…' : 'Keep mine and save over theirs'}
+            </Button>
+          </div>
+          <Hint>Replace their draft with yours. Their changes shown above are lost from the draft.</Hint>
+        </Stack>
+        <Stack gap={1}>
+          <div>
+            <Button onClick={() => void run('copy', 'Saving your version as a copy', onSaveCopy)} disabled={busy !== undefined}>
+              {busy === 'copy' ? 'Saving…' : 'Save mine as a copy'}
+            </Button>
+          </div>
+          <Hint>Keep your version as a new workflow and continue here from their draft.</Hint>
+        </Stack>
+      </Stack>
+      <Actions>
         <Button onClick={onClose} disabled={busy !== undefined}>
           Decide later
         </Button>
-      </div>
-    </div>
+      </Actions>
+    </Stack>
   );
 }

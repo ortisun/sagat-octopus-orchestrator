@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { AUTH_CONTEXT, TOKEN, fakePlatform, renderApp } from '../../../test/render';
 import { createApp } from '../../app/context';
 import type { ConnectorInput } from './api';
+import { choose, chosen, expectUnavailable, optionsOf } from '../../../test/ui';
 import { IntegrationsPage } from './IntegrationsPage';
 
 const canary = 'private-password-do-not-echo';
@@ -36,7 +37,7 @@ async function kafka(user: ReturnType<typeof userEvent.setup>) {
   await user.type(screen.getByLabelText('Topic'), 'orders');
 }
 async function credentials(user: ReturnType<typeof userEvent.setup>) {
-  await user.selectOptions(screen.getByLabelText('Authentication'), 'sasl');
+  await choose(user, 'Authentication', 'SASL username and password');
   await user.type(screen.getByLabelText('Username'), 'service-user');
   await user.type(screen.getByLabelText('Password'), canary);
 }
@@ -58,12 +59,12 @@ describe('Integrations', () => {
     expect(JSON.stringify(app.queries.getQueryData(['integrations', 'ns-1']))).not.toContain(canary);
     expect(document.body.textContent).not.toContain(canary);
     await user.click(screen.getByRole('button', { name: 'Edit integration orders-kafka' }));
-    expect(screen.getByLabelText('Authentication')).toHaveValue('existing');
+    expect(chosen('Authentication')).toBe('Existing secret reference');
     expect(screen.queryByLabelText('Password')).not.toBeInTheDocument();
   });
   it('supports NATS-specific settings without credentials in public settings', async () => {
     const { user, platform } = await mount(); await kafka(user);
-    await user.selectOptions(screen.getByLabelText('Type'), 'NATS');
+    await choose(user, 'Type', 'NATS JetStream');
     expect(screen.queryByLabelText('Topic')).not.toBeInTheDocument();
     await user.type(screen.getByLabelText('Stream'), 'ORDERS');
     await user.type(screen.getByLabelText('Durable consumer'), 'sagat');
@@ -76,10 +77,10 @@ describe('Integrations', () => {
   it('refuses embedded URL credentials and plaintext credential transport', async () => {
     const { user, platform } = await mount(); await kafka(user); await credentials(user);
     await user.clear(screen.getByLabelText('Servers')); await user.type(screen.getByLabelText('Servers'), 'user:password@broker.example.com:9092');
-    expect(screen.getByRole('button', { name: 'Save integration' })).toBeDisabled();
+    expectUnavailable(screen.getByRole('button', { name: 'Save integration' }));
     await user.clear(screen.getByLabelText('Servers')); await user.type(screen.getByLabelText('Servers'), 'broker.example.com:9092');
     expect(screen.getByRole('alert')).toHaveTextContent('Use TLS');
-    expect(screen.getByRole('button', { name: 'Save integration' })).toBeDisabled();
+    expectUnavailable(screen.getByRole('button', { name: 'Save integration' }));
     expect(platform.calls.every((call) => call.method === 'GET')).toBe(true);
   });
   it('does not expose credential-request errors or proceed when storing credentials fails', async () => {
@@ -125,8 +126,7 @@ describe('Integrations', () => {
   });
   it('allows managing existing references without granting secret writes', async () => {
     const { user } = await mount({ permissions: ['event:read', 'event:manage'] }); await kafka(user);
-    expect(screen.queryByRole('option', { name: 'SASL username and password' })).not.toBeInTheDocument();
-    expect(screen.getByRole('option', { name: 'Existing secret reference' })).toBeInTheDocument();
+    expect(await optionsOf(user, 'Authentication')).toEqual(['No credentials', 'Existing secret reference']);
   });
   it('discards the open form when changing namespace', async () => {
     const { user, app, platform } = await mount(); await kafka(user); await credentials(user);
@@ -143,7 +143,7 @@ describe('Integrations', () => {
     await user.click(screen.getByRole('button', { name: 'Save integration' }));
     await user.click(await screen.findByRole('button', { name: 'Edit integration orders-kafka' }));
     await user.clear(screen.getByLabelText('Topic')); await user.type(screen.getByLabelText('Topic'), 'new-orders');
-    await user.selectOptions(screen.getByLabelText('Status'), 'ACTIVE');
+    await choose(user, 'Status', 'Active');
     await user.click(screen.getByRole('button', { name: 'Save integration' }));
     await screen.findByText('Active');
     const call = platform.calls.find((item) => item.url.endsWith('/connectors/conn-1'));
@@ -163,10 +163,10 @@ describe('Integrations', () => {
  });
  it('serializes AWS credentials separately from queue settings', async () => {
     const { user, platform } = await mount(); await kafka(user);
-    await user.selectOptions(screen.getByLabelText('Type'), 'SQS');
+    await choose(user, 'Type', 'Amazon SQS');
     await user.type(screen.getByLabelText('Queue URL'), 'https://sqs.us-east-1.amazonaws.com/123/orders');
     await user.type(screen.getByLabelText('AWS region'), 'us-east-1');
-    await user.selectOptions(screen.getByLabelText('Authentication'), 'aws');
+    await choose(user, 'Authentication', 'AWS access keys');
     await user.type(screen.getByLabelText('Access key ID'), 'test-key');
     await user.type(screen.getByLabelText('Secret access key'), canary);
     await user.click(screen.getByRole('button', { name: 'Save integration' }));

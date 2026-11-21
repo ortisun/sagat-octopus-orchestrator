@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import { useApp, useCan, useNamespace, useSession } from '../../app/context';
-import { ErrorState } from '../../ui/ErrorState';
+import { ErrorState, Loading, Page, PageHeader, Stack, Text } from '../../ui';
 import { AlertsPanel } from './AlertsPanel';
 import { operationsApi } from './api';
 import { WorkersPanel } from './WorkersPanel';
@@ -21,30 +21,31 @@ export function OperationsPage() {
   const namespace = namespaces.data?.items.find((item) => item.slug === current);
 
   if (!canRead) {
-    return <section><h1>Operations</h1><p>Viewing operational alerts and worker identities requires ops:read permission.</p></section>;
+    return <Page><PageHeader title="Operations" /><Text>Viewing operational alerts and worker identities requires ops:read permission.</Text></Page>;
   }
   if (namespaces.isPending) {
-    return <section><h1>Operations</h1><p role="status">Loading the operations context…</p></section>;
+    return <Page><PageHeader title="Operations" /><Loading>Loading the operations context…</Loading></Page>;
   }
   if (namespaces.isError) {
-    return <section><h1>Operations</h1><ErrorState error={namespaces.error} what="Loading namespaces" onRetry={() => void namespaces.refetch()} /></section>;
+    return <Page><PageHeader title="Operations" /><ErrorState error={namespaces.error} what="Loading namespaces" onRetry={() => void namespaces.refetch()} /></Page>;
   }
   if (!namespace) {
-    return <section><h1>Operations</h1><p>Select a namespace to inspect its alerts and workers.</p></section>;
+    return <Page><PageHeader title="Operations" /><Text>Select a namespace to inspect its alerts and workers.</Text></Page>;
   }
 
   const sessionKey = String(session.revision());
   const service = operationsApi(api, namespace.id);
   return (
-    <section className="operations-page" aria-labelledby="operations-title" key={`${sessionKey}:${namespace.id}`}>
-      <header className="operations-heading">
-        <h1 id="operations-title">Operations</h1>
-        <p>Review recorded alert conditions and control which worker identities can claim new attempts in <strong>{namespace.slug}</strong>.</p>
-      </header>
-      <div className="operations-layout">
-        <AlertsPanel api={service} namespaceId={namespace.id} sessionKey={sessionKey} />
-        <WorkersPanel api={service} canManage={canManage} namespace={namespace.slug} namespaceId={namespace.id} sessionKey={sessionKey} />
-      </div>
-    </section>
+    <Page key={`${sessionKey}:${namespace.id}`}>
+      <Stack as="section" gap={4} aria-labelledby="operations-title">
+        <PageHeader title={<span id="operations-title">Operations</span>}>
+          Review recorded alert conditions and control which worker identities can claim new attempts in <strong>{namespace.slug}</strong>.
+        </PageHeader>
+        <div className="operations-layout">
+          <AlertsPanel api={service} namespaceId={namespace.id} sessionKey={sessionKey} />
+          <WorkersPanel api={service} canManage={canManage} namespace={namespace.slug} namespaceId={namespace.id} sessionKey={sessionKey} />
+        </div>
+      </Stack>
+    </Page>
   );
 }

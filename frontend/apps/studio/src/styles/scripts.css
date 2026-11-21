@@ -1,142 +1,54 @@
-/* The pages are positioned so that the visually hidden helpers inside them (table captions, "End of the
-   code editor", the editor's own aria nodes) are placed within the scrolling area of the page, not the
+/* Scripts: only the surfaces the design system has no component for. Every colour, space and radius is
+   a token of the theme; nothing here is meaning carried by colour alone: states are words and shapes first. */
+
+/* The pages are positioned so that the visually hidden helpers inside them (the names of tables, "End of
+   the code editor", the editor's own aria nodes) are placed within the scrolling area of the page, not the
    window: otherwise the window itself gets scrollable and the whole shell slides up. */
 .scripts-page,
 .script-editor {
   position: relative;
-  max-width: 75rem;
-  margin-inline: auto;
 }
 
-/* Scripts and the code editor. Colours come from the tokens of base.css (contrast-checked there);
-   nothing here is meaning carried by colour alone: states are words and shapes first. */
-
-.scripts-page .lede,
-.script-editor .lede {
-  max-width: 70ch;
-  color: var(--fg-muted);
+/* The panel of a tab starts a little under the strip of tabs. */
+.script-editor [role='tabpanel'] {
+  padding-top: var(--spacing-3);
 }
 
-.script-editor .crumbs {
-  margin: 0 0 var(--space-2);
-}
-
-.script-editor .meta {
-  color: var(--fg-muted);
-  margin: 0 0 var(--gap);
-}
-
-.script-editor h2 {
-  margin-top: var(--space-page-y);
-}
-
-.script-editor h3 {
-  font-size: var(--font-size-brand);
-  margin: var(--gap) 0 var(--space-3);
-}
-
-.script-editor h4 {
-  font-size: var(--font-size-body);
-  margin: var(--gap) 0 var(--space-2);
-}
-
-:is(.scripts-page, .script-editor) .hint {
-  color: var(--fg-muted);
-  font-size: var(--font-size-mono);
-}
-
-:is(.scripts-page, .script-editor) .error {
-  color: var(--danger);
-}
-
-:is(.scripts-page, .script-editor) kbd {
-  border: 1px solid var(--border);
-  border-bottom-width: 2px;
-  border-radius: var(--radius-command);
-  padding: 0 var(--space-2);
-  background: var(--bg-subtle);
-}
-
-.script-editor .link-button {
-  background: none;
-  border: 0;
-  padding: var(--space-1) var(--space-2);
-  min-height: var(--space-page-x);
-  min-width: var(--space-page-x);
-  color: var(--accent);
-  text-decoration: underline;
-  cursor: pointer;
-}
-
-.script-editor .inline-check {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-3);
-  min-height: var(--space-page-x);
-}
-
-.script-editor .inline-check input {
-  width: var(--space-page-y);
-  height: var(--space-page-y);
-}
-
-/* ------------------------------------------------------------- status and panels */
-.save-status p {
-  margin: 0 0 var(--space-3);
-}
-
-.problems ul,
+/* ------------------------------------------------------------- lists without markers */
+.problems-list,
 .denied {
-  margin: var(--space-2) 0;
+  margin: 0;
   padding-left: 0;
   list-style: none;
 }
 
-.problems li {
-  padding: var(--space-1) 0;
+.problems-list > li {
+  padding: var(--spacing-0-5) 0;
 }
 
-.problems h3 .count {
-  font-weight: var(--weight-regular);
-  color: var(--fg-muted);
-  font-size: var(--font-size-mono);
+.problems-count {
+  font-weight: var(--font-weight-normal);
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm);
 }
 
-.source-section {
-  margin-bottom: var(--gap);
-}
-
-.script-editor .numbers {
-  display: grid;
-  grid-template-columns: max-content 1fr;
-  gap: var(--space-2) var(--space-8);
-  margin: var(--space-3) 0 var(--gap);
-}
-
-.script-editor .numbers dt {
-  font-weight: var(--weight-semibold);
-}
-
-.script-editor .numbers dd {
-  margin: 0;
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-
+/* The two schemas of a version, side by side while there is room. */
 .schema-pair {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr));
-  gap: var(--gap);
+  gap: var(--spacing-3);
 }
 
+/* A digest to copy: one click selects all of it. */
 .digest {
   display: inline-block;
   max-width: 100%;
   overflow-wrap: anywhere;
-  padding: var(--space-3) var(--space-4);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-control);
-  background: var(--bg-subtle);
+  padding: var(--spacing-1-5) var(--spacing-2);
+  border: 1px solid var(--color-border-emphasized);
+  border-radius: var(--radius-element);
+  background: var(--color-background-muted);
+  font-family: var(--font-family-code);
   user-select: all;
 }
 
@@ -147,14 +59,14 @@
 /* ------------------------------------------------------------- logs and diffs */
 pre.log,
 pre.diff {
-  margin: var(--space-2) 0;
-  padding: var(--space-4) var(--space-5);
+  margin: 0;
+  padding: var(--spacing-2) var(--spacing-2);
   max-height: 20rem;
   overflow: auto;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-panel);
-  background: var(--bg-subtle);
-  color: var(--fg);
+  border: 1px solid var(--color-border-emphasized);
+  border-radius: var(--radius-container);
+  background: var(--color-background-muted);
+  color: var(--color-text-primary);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   tab-size: 2;
@@ -168,17 +80,17 @@ pre.diff {
 .diff-added,
 .diff-removed {
   display: block;
-  font-weight: var(--weight-semibold);
+  font-weight: var(--font-weight-semibold);
 }
 
 .diff-added {
-  background: var(--ok-bg);
-  border-left: 4px solid var(--ok);
+  background: var(--color-success-muted);
+  border-left: 4px solid var(--color-text-success);
 }
 
 .diff-removed {
-  background: var(--danger-bg);
-  border-left: 4px solid var(--danger);
+  background: var(--color-error-muted);
+  border-left: 4px solid var(--color-text-error);
 }
 
 .diff-same,
@@ -188,37 +100,32 @@ pre.diff {
 }
 
 .diff-gap {
-  color: var(--fg-muted);
+  color: var(--color-text-secondary);
   font-style: italic;
 }
 
+/* Two copies of one draft: the frame says that a decision is waiting, with the heading and the banner inside it. */
 .conflict {
-  border: 2px solid var(--warn);
-  border-radius: var(--radius-panel);
-  padding: var(--gap);
-  margin-bottom: var(--gap);
+  border: 2px solid var(--color-text-warning);
+  border-radius: var(--radius-container);
+  padding: var(--spacing-3);
 }
 
-.digest,
-.scripts-table code {
-  font-family: var(--mono);
-}
-
+/* ------------------------------------------------------------- the table of scripts */
 .scripts-table-scroll {
-  /* Contain absolutely positioned accessible captions/labels within the table's own scroller. */
+  /* Inside a stack this region keeps its content's height: a scroll container would otherwise be squeezed. */
+  flex: none;
+  /* Contain absolutely positioned accessible names within the table's own scroller. */
   position: relative;
   max-width: 100%;
   overflow: auto;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-panel);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-container);
 }
 
+/* The table keeps its columns readable; at a narrow width its region scrolls sideways instead. */
 .scripts-table {
   min-width: 48rem;
-}
-
-.scripts-table tr:last-child > * {
-  border-bottom: 0;
 }
 
 @media (forced-colors: active) {
@@ -226,28 +133,4 @@ pre.diff {
   .diff-removed {
     border-left-color: CanvasText;
   }
-}
-
-@media (max-width: 720px) {
-  .script-editor .numbers {
-    grid-template-columns: 1fr;
-  }
-}
-
-/* The tabs of the page: the selected one is told by shape and weight as well as by colour. */
-.script-editor [role='tab'][aria-selected='true'] {
-  background: var(--accent);
-  color: var(--accent-fg);
-  border-color: var(--accent);
-  font-weight: 700;
-  text-decoration: underline;
-  text-underline-offset: 4px;
-}
-
-.script-editor [role='tablist'] {
-  margin-bottom: 0;
-}
-
-.script-editor [role='tabpanel'] {
-  padding-top: var(--gap);
 }

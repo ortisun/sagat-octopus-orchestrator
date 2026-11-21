@@ -5,6 +5,7 @@ import { AUTH_CONTEXT, TOKEN, fakePlatform, renderApp } from '../../../test/rend
 import type { Routes as Scripted } from '../../../test/render';
 import type { BatchJob } from '../../api/endpoints';
 import { createApp } from '../../app/context';
+import { chooseValue } from '../../../test/ui';
 import { BatchesPage } from './BatchesPage';
 
 const NS = '0194f5e2-7b1c-7000-8000-0000000000a1';
@@ -54,7 +55,7 @@ describe('The batch jobs of the namespace', () => {
   it('asks only for the jobs in the state a person filters by', async () => {
     const { user, platform } = await mount();
     await screen.findByRole('table');
-    await user.selectOptions(screen.getByLabelText('State'), 'RUNNING');
+    await chooseValue(user, 'State', 'RUNNING');
     await waitFor(() => expect(platform.calls.some((call) => call.url.includes('/batch-operations?') && call.url.includes('state=RUNNING'))).toBe(true));
   });
 
@@ -71,7 +72,7 @@ describe('The batch jobs of the namespace', () => {
 
   it('says when there is none yet', async () => {
     await mount({ routes: { [LIST]: () => ({ items: [], nextCursor: null }) } });
-    expect(await screen.findByText(/No batch job yet/)).toBeVisible();
+    expect(await screen.findByRole('heading', { name: /No batch job yet/ })).toBeVisible();
   });
 
   it('says so when the deployment does not serve batch operations', async () => {

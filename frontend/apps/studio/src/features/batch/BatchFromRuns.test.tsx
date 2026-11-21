@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { AUTH_CONTEXT, TOKEN, fakePlatform, renderApp } from '../../../test/render';
 import type { Routes as Scripted } from '../../../test/render';
 import { createApp } from '../../app/context';
+import { chooseValue } from '../../../test/ui';
 import { BatchFromRuns } from './BatchFromRuns';
 import type { RunFilters } from './model';
 
@@ -60,7 +61,7 @@ const inDialog = () => within(screen.getByRole('dialog'));
 
 async function open(user: ReturnType<typeof userEvent.setup>) {
   await user.click(await screen.findByRole('button', { name: 'Batch operation…' }));
-  await screen.findByLabelText('Action');
+  await screen.findByRole('combobox', { name: 'Action' });
 }
 
 describe('The batch operation of the run list', () => {
@@ -132,7 +133,7 @@ describe('The batch operation of the run list', () => {
   it('asks for a signal and its payload, and refuses a payload that is not a JSON object', async () => {
     const { user, platform } = await mount();
     await open(user);
-    await user.selectOptions(screen.getByLabelText('Action'), 'SIGNAL');
+    await chooseValue(user, 'Action', 'SIGNAL');
     await user.click(screen.getByRole('button', { name: 'Count the runs' }));
     await inDialog().findByText(/3 runs match/);
     await user.type(screen.getByLabelText('Reason'), REASON);
@@ -151,9 +152,9 @@ describe('The batch operation of the run list', () => {
     const { user } = await mount();
     await open(user);
     expect(screen.queryByLabelText('Step')).not.toBeInTheDocument();
-    await user.selectOptions(screen.getByLabelText('Action'), 'RETRY_STEP');
+    await chooseValue(user, 'Action', 'RETRY_STEP');
     expect(screen.getByLabelText('Step')).toBeVisible();
-    await user.selectOptions(screen.getByLabelText('Action'), 'PAUSE');
+    await chooseValue(user, 'Action', 'PAUSE');
     expect(screen.queryByLabelText('Step')).not.toBeInTheDocument();
   });
 

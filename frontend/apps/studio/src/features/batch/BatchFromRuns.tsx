@@ -1,14 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
-import { Link, useNavigate } from 'react-router';
+import { useNavigate } from 'react-router';
 import type { BatchPreview } from '../../api/endpoints';
 import { useApp, useCan, useNamespace, useSession } from '../../app/context';
-import { Banner } from '../../ui/Banner';
-import { Button } from '../../ui/Button';
-import { Dialog } from '../../ui/Dialog';
-import { ErrorState } from '../../ui/ErrorState';
-import { Field } from '../../ui/Field';
-import { useAnnounce } from '../../ui/Announcer';
+import { Actions, Banner, Button, Dialog, ErrorState, Link, Loading, Row, Select, Stack, Text, TextArea, TextInput, useAnnounce } from '../../ui';
 import { ACTION_TEXT, BATCH_ACTIONS, EMPTY_DRAFT, describeFilters, maxItemsOf, requestOf, selectorOf } from './model';
 import type { BatchActionName, Draft, RunFilters } from './model';
 import { notServed, selectorNotSupported, useNamespaceId } from './queries';
@@ -136,97 +131,90 @@ function BatchForm({ filters, workflowName, onClose }: { filters: RunFilters; wo
     );
   };
 
-  if (namespace.pending) return <p role="status">Loading the namespace…</p>;
+  if (namespace.pending) return <Loading>Loading the namespace…</Loading>;
   if (namespace.id === undefined) return <Banner tone="error">The namespace could not be found. Choose one in the menu.</Banner>;
   const action = ACTION_TEXT[draft.action];
   const idle = !sending && !previewing;
   return (
     <form onSubmit={submit} noValidate>
-      <p style={{ overflowWrap: 'anywhere' }}>
-        A batch job applies one action to {describeFilters(filters, workflowName)}, one run at a time, at a fixed rate. It selects the runs that exist when it is
-        created. What it applies is not undone if you cancel it.
-      </p>
-      <Field label="Action">
-        <select value={draft.action} disabled={!idle} onChange={(event) => set({ action: event.target.value as BatchActionName })}>
-          {BATCH_ACTIONS.map((name) => (
-            <option key={name} value={name}>
-              {ACTION_TEXT[name].label}
-            </option>
-          ))}
-        </select>
-      </Field>
-      <p>
-        <strong>{action.label}</strong> {action.effect}
-      </p>
-      {draft.action === 'SIGNAL' ? (
-        <>
-          <Field label="Signal name">
-            <input autoComplete="off" spellCheck={false} maxLength={128} value={draft.signalName} disabled={!idle} onChange={(event) => set({ signalName: event.target.value })} />
-          </Field>
-          <Field label="Payload (JSON object)" hint="At most 256 KiB. Do not include credentials or secrets.">
-            <textarea rows={5} autoComplete="off" spellCheck={false} value={draft.payload} disabled={!idle} onChange={(event) => set({ payload: event.target.value })} />
-          </Field>
-        </>
-      ) : null}
-      {draft.action === 'RETRY_STEP' || draft.action === 'MARK_MANUAL_REVIEW' ? (
-        <Field label="Step" hint="The id of a step of the workflow, such as charge, or of a compensation, such as reserve~c.">
-          <input autoComplete="off" spellCheck={false} maxLength={200} value={draft.stepId} disabled={!idle} onChange={(event) => set({ stepId: event.target.value })} />
-        </Field>
-      ) : null}
-      <div className="toolbar">
-        <Field label="Most runs" hint={`Leave empty for ${DEFAULT_MAX.toLocaleString('en')}; at most 100,000.`}>
-          <input inputMode="numeric" autoComplete="off" value={draft.maxItems} disabled={!idle} onChange={(event) => set({ maxItems: event.target.value })} />
-        </Field>
-        <Field label="Runs a second" hint="Leave empty for 20; at most 200.">
-          <input inputMode="decimal" autoComplete="off" value={draft.rate} disabled={!idle} onChange={(event) => set({ rate: event.target.value })} />
-        </Field>
-      </div>
-      <div className="toolbar">
-        <Button onClick={countThem} disabled={!idle}>
-          {previewing ? 'Counting…' : 'Count the runs'}
-        </Button>
-        {counted ? (
-          <p role="status">
-            {counted.capped
-              ? `More than ${limit.toLocaleString('en')} runs match; the job takes the first ${limit.toLocaleString('en')}.`
-              : `${counted.matched.toLocaleString('en')} ${counted.matched === 1 ? 'run matches' : 'runs match'}.`}
-            {counted.sample.length > 0 ? (
-              <>
-                {' '}
-                For example{' '}
-                {counted.sample.slice(0, 3).map((id, index) => (
-                  <span key={id}>
-                    {index > 0 ? ', ' : ''}
-                    <Link to={`/runs/${id}`}>{shortId(id)}</Link>
-                  </span>
-                ))}
-                .
-              </>
-            ) : null}
-          </p>
+      <Stack gap={3}>
+        <div style={{ overflowWrap: 'anywhere' }}>
+          <Text>
+            A batch job applies one action to {describeFilters(filters, workflowName)}, one run at a time, at a fixed rate. It selects the runs that exist when it is
+            created. What it applies is not undone if you cancel it.
+          </Text>
+        </div>
+        <Select<BatchActionName> label="Action" value={draft.action} disabled={!idle} onChange={(value) => set({ action: value })} options={BATCH_ACTIONS.map((name) => ({ value: name, label: ACTION_TEXT[name].label }))} />
+        <Text>
+          <strong>{action.label}</strong> {action.effect}
+        </Text>
+        {draft.action === 'SIGNAL' ? (
+          <>
+            <TextInput label="Signal name" autoComplete="off" spellCheck={false} mono maxLength={128} value={draft.signalName} disabled={!idle} onChange={(value) => set({ signalName: value })} />
+            <TextArea label="Payload (JSON object)" hint="At most 256 KiB. Do not include credentials or secrets." rows={5} spellCheck={false} mono value={draft.payload} disabled={!idle} onChange={(value) => set({ payload: value })} />
+          </>
         ) : null}
-      </div>
-      <Field label="Reason" hint="8 to 2,000 characters. It is kept with the job.">
-        <textarea rows={3} autoComplete="off" value={reason} disabled={!idle} onChange={(event) => setReason(event.target.value)} />
-      </Field>
-      {problem ? (
-        <p role="alert" className="error">
-          {problem}
-        </p>
-      ) : null}
-      {error && notServed(error) ? (
-        <Banner tone="info">Batch operations are not enabled on this deployment.</Banner>
-      ) : error && selectorNotSupported(error) ? (
-        <Banner tone="info">This selector is not supported by this deployment. Change the filters of the run list and count the runs again.</Banner>
-      ) : error ? (
-        <ErrorState error={error} what="The batch operation" />
-      ) : null}
-      <div className="toolbar">
-        <Button type="submit" variant="primary" disabled={!idle}>
-          {sending ? 'Starting…' : 'Start the batch job'}
-        </Button>
-        <Button onClick={onClose}>Close</Button>
-      </div>
+        {draft.action === 'RETRY_STEP' || draft.action === 'MARK_MANUAL_REVIEW' ? (
+          <TextInput
+            label="Step"
+            hint="The id of a step of the workflow, such as charge, or of a compensation, such as reserve~c."
+            autoComplete="off"
+            spellCheck={false}
+            mono
+            maxLength={200}
+            value={draft.stepId}
+            disabled={!idle}
+            onChange={(value) => set({ stepId: value })}
+          />
+        ) : null}
+        <Row gap={3} align="start">
+          <TextInput label="Most runs" width={240} hint={`Leave empty for ${DEFAULT_MAX.toLocaleString('en')}; at most 100,000.`} numeric autoComplete="off" value={draft.maxItems} disabled={!idle} onChange={(value) => set({ maxItems: value })} />
+          {/* Not `numeric`: a rate can be a fraction, and the number pad of a touch keyboard has no decimal point. */}
+          <TextInput decimal label="Runs a second" width={240} hint="Leave empty for 20; at most 200." autoComplete="off" value={draft.rate} disabled={!idle} onChange={(value) => set({ rate: value })} />
+        </Row>
+        <Row gap={3}>
+          <Button onClick={countThem} disabled={!idle}>
+            {previewing ? 'Counting…' : 'Count the runs'}
+          </Button>
+          {counted ? (
+            <Text as="span">
+              <span role="status">
+                {counted.capped
+                  ? `More than ${limit.toLocaleString('en')} runs match; the job takes the first ${limit.toLocaleString('en')}.`
+                  : `${counted.matched.toLocaleString('en')} ${counted.matched === 1 ? 'run matches' : 'runs match'}.`}
+                {counted.sample.length > 0 ? (
+                  <>
+                    {' '}
+                    For example{' '}
+                    {counted.sample.slice(0, 3).map((id, index) => (
+                      <span key={id}>
+                        {index > 0 ? ', ' : ''}
+                        <Link to={`/runs/${id}`}>{shortId(id)}</Link>
+                      </span>
+                    ))}
+                    .
+                  </>
+                ) : null}
+              </span>
+            </Text>
+          ) : null}
+        </Row>
+        <TextArea label="Reason" hint="8 to 2,000 characters. It is kept with the job." rows={3} value={reason} disabled={!idle} onChange={setReason} />
+        {problem ? <Banner tone="error">{problem}</Banner> : null}
+        {error && notServed(error) ? (
+          <Banner tone="info">Batch operations are not enabled on this deployment.</Banner>
+        ) : error && selectorNotSupported(error) ? (
+          <Banner tone="info">This selector is not supported by this deployment. Change the filters of the run list and count the runs again.</Banner>
+        ) : error ? (
+          <ErrorState error={error} what="The batch operation" />
+        ) : null}
+        <Actions>
+          <Button onClick={onClose}>Close</Button>
+          <Button type="submit" variant="primary" disabled={!idle}>
+            {sending ? 'Starting…' : 'Start the batch job'}
+          </Button>
+        </Actions>
+      </Stack>
     </form>
   );
 }

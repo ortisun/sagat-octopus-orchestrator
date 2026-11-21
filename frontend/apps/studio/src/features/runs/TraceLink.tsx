@@ -1,3 +1,5 @@
+import { Link } from '../../ui';
+
 const PLACEHOLDER = '{traceId}';
 const TRACE_ID = /^(?!0{32}$)[0-9a-fA-F]{32}$/;
 
@@ -26,8 +28,8 @@ export function traceLink(template: string | null | undefined, traceId: string |
 export function TraceLink({ template, traceId }: { template: string | null | undefined; traceId: string | null | undefined }) {
   const href = traceLink(template, traceId);
   return href ? (
-    <a href={href} target="_blank" rel="noopener noreferrer">
+    <Link to={href} external>
       Open trace
-    </a>
+    </Link>
   ) : null;
 }

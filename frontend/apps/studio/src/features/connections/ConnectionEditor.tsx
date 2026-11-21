@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useApp } from '../../app/context';
-import { Field } from '../../ui/Field';
+import { Select, Stack } from '../../ui';
 import { ConnectionForm } from './ConnectionForm';
 import { IcebergConnectionForm } from './IcebergConnectionForm';
 import { connectionsApi, editableIcebergOf } from './api';
@@ -18,10 +18,19 @@ export function ConnectionEditor({ namespace, development, connection, onClose }
   const [kind, setKind] = useState<'postgresql' | 'iceberg'>('postgresql');
   if (connection && editableIcebergOf(connection)) return <IcebergConnectionForm namespace={namespace} development={development} connection={connection} onClose={onClose} />;
   const lake = !connection && (drivers.data?.items.some(driver => driver.id === 'iceberg') ?? false);
-  return <>
-    {lake ? <Field label="Connection type"><select value={kind} onChange={e => setKind(e.target.value === 'iceberg' ? 'iceberg' : 'postgresql')}><option value="postgresql">PostgreSQL</option><option value="iceberg">Apache Iceberg (REST catalog, S3 storage)</option></select></Field> : null}
-    {lake && kind === 'iceberg'
-      ? <IcebergConnectionForm namespace={namespace} development={development} onClose={onClose} />
-      : <ConnectionForm namespace={namespace} development={development} {...(connection ? { connection } : {})} onClose={onClose} />}
-  </>;
+  return (
+    <Stack gap={3}>
+      {lake ? (
+        <Select
+          label="Connection type"
+          value={kind}
+          onChange={setKind}
+          options={[{ value: 'postgresql' as const, label: 'PostgreSQL' }, { value: 'iceberg' as const, label: 'Apache Iceberg (REST catalog, S3 storage)' }]}
+        />
+      ) : null}
+      {lake && kind === 'iceberg'
+        ? <IcebergConnectionForm namespace={namespace} development={development} onClose={onClose} />
+        : <ConnectionForm namespace={namespace} development={development} {...(connection ? { connection } : {})} onClose={onClose} />}
+    </Stack>
+  );
 }

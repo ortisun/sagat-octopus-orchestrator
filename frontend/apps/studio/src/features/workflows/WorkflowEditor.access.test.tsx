@@ -1,6 +1,7 @@
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import { mountEditor, putsOf, settle } from '../../../test/workflowsHarness';
+import { expectUnavailable } from '../../../test/ui';
 
 async function opened(options: Parameters<typeof mountEditor>[0] = {}) {
   const mounted = await mountEditor({ view: 'list', ...options });
@@ -30,18 +31,18 @@ describe('a viewer (definition:read only)', () => {
   it('shows the fields of a node but does not let them be changed', async () => {
     const { user } = await opened(viewer);
     await user.click(screen.getByRole('button', { name: 'Open pay' }));
-    expect(screen.getByRole('textbox', { name: 'Activity' })).toBeDisabled();
-    expect(screen.getByRole('textbox', { name: 'Id' })).toBeDisabled();
-    expect(screen.getByRole('combobox', { name: 'Next' })).toBeDisabled();
-    expect(screen.getByRole('textbox', { name: 'Timeout amount' })).toBeDisabled();
+    expectUnavailable(screen.getByRole('textbox', { name: /^Activity/ }));
+    expectUnavailable(screen.getByRole('textbox', { name: 'Id' }));
+    expectUnavailable(screen.getByRole('combobox', { name: 'Next' }));
+    expectUnavailable(screen.getByRole('textbox', { name: 'Timeout amount' }));
     expect(screen.queryByRole('button', { name: 'Delete node' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Rename' })).not.toBeInTheDocument();
   });
 
   it('shows the settings and the triggers read only', async () => {
     const { user } = await opened(viewer);
-    expect(screen.getByRole('textbox', { name: 'Description' })).toBeDisabled();
-    expect(screen.getByRole('combobox', { name: 'First step' })).toBeDisabled();
+    expectUnavailable(screen.getByRole('textbox', { name: 'Description' }));
+    expectUnavailable(screen.getByRole('combobox', { name: 'First step' }));
     const schema = screen.getByRole('textbox', { name: 'Input schema' });
     expect(schema).toHaveAttribute('readonly');
     const original = (schema as HTMLTextAreaElement).value;
@@ -138,7 +139,7 @@ describe('roles, names and states', () => {
     expect(screen.getByTestId('row-count')).toHaveTextContent('1 of 3 nodes');
     await user.clear(screen.getByRole('searchbox', { name: 'Filter nodes' }));
     await user.type(screen.getByRole('searchbox', { name: 'Filter nodes' }), 'zzz');
-    expect(screen.getByText(/No node matches/)).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: /No node matches/ })).toBeInTheDocument();
   });
 
   it('keeps hostile text as text: an id with markup is shown, not run', async () => {

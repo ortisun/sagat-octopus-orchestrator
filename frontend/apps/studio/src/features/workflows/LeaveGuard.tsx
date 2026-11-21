@@ -1,7 +1,6 @@
 import { useContext, useState } from 'react';
 import { UNSAFE_DataRouterContext, useBlocker } from 'react-router';
-import { Banner } from '../../ui/Banner';
-import { Button } from '../../ui/Button';
+import { Actions, Banner, Button, Text } from '../../ui';
 import { Modal } from './Modal';
 
 interface Props {
@@ -21,9 +20,9 @@ function Blocking({ active, onSave }: Props) {
   };
   return (
     <Modal open={blocked} title="Leave without saving?" onClose={stay}>
-      <p>This draft has changes that are not saved yet.</p>
+      <Text>This draft has changes that are not saved yet.</Text>
       {failed ? <Banner tone="error">The draft could not be saved, so you are still here. Look at the state next to the Save button.</Banner> : null}
-      <div className="dialog-actions">
+      <Actions>
         <Button onClick={stay}>Stay</Button>
         <Button variant="danger" onClick={() => blocker.proceed?.()}>
           Leave without saving
@@ -39,7 +38,7 @@ function Blocking({ active, onSave }: Props) {
         >
           Save and leave
         </Button>
-      </div>
+      </Actions>
     </Modal>
   );
 }

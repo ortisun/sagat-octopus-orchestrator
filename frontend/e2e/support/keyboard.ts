@@ -10,11 +10,8 @@ import type { SignInControls } from './studio';
  * the page is what is tested), and acts on it with Enter, Space or the arrows, the way a person who does not use a mouse does.
  * Text goes in with `insertText` (what a paste or an input method does), never with `fill`, so the field has to have focus.
  *
- * What is proved about a native `<select>` (`choose`): that the keyboard reaches it, in the order of the page, and that it has an
- * accessible name. What is not: how the browser operates a closed select by keyboard (type-ahead, arrows, the popup) is the
- * browser's own behaviour, differs by platform (an arrow opens the popup on macOS and changes the value on Linux) and keeps its
- * state for a second between keys, which is not the Studio's to prove and would make a journey depend on the speed of the
- * machine; the value is set with `selectOption`, which moves no pointer and fires what a choice fires.
+ * A selector (`choose`) is the Studio's own control since Architecture decision 0101, not the browser's native select, so the keys
+ * that open it, move through it and choose are pressed for real and proved.
  */
 
 /** Is the element the one holding focus? */
@@ -57,22 +54,36 @@ export async function typeInto(page: Page, target: Locator, text: string): Promi
 }
 
 /**
- * Chooses the option whose text is `label` in a native select: waits until the select is enabled and has the option (a page builds
- * them from what the platform answers: the workflows of the namespace, the namespaces of the tenant), Tabs to the select and checks
- * that it has an accessible name, then sets the value with `selectOption`, retried until the select says it holds it (see the
- * header for what that proves).
+ * Chooses the option whose text is `label` in a selector of the Studio's interface module (a button with the `combobox` role that
+ * opens a list, Architecture decision 0101), with the keyboard alone: waits until the selector is available and its list holds the
+ * option (a page builds the options from what the platform answers), Tabs to it and checks that it has an accessible name, opens it
+ * with Enter, moves with the down arrow until the highlighted option (the one `aria-activedescendant` names) is `label`, and chooses
+ * it with Enter. Unlike a native select, every key here is the Studio's own behaviour, so it is proved.
  */
 export async function choose(page: Page, select: Locator, label: string): Promise<void> {
-  await expect(select).toBeEnabled();
-  await expect(select.locator('option', { hasText: label })).not.toHaveCount(0);
+  await expect.poll(() => select.evaluate((element) => element.getAttribute('aria-disabled') === 'true' || (element as HTMLButtonElement).disabled), { message: `${String(select)} is available` }).toBe(false);
+  const listId = await select.getAttribute('aria-controls');
+  expect(listId, `${String(select)} names its list`).not.toBeNull();
+  const options = page.locator(`[id="${listId}"] [role="option"]`);
+  await expect(options.filter({ hasText: label })).not.toHaveCount(0);
   await reach(page, select);
   const node = await focusedNode(page);
-  expect(node?.role, `the focused element ${String(select)} is a select`).toMatch(/combobox|listbox/);
-  expect(node?.name.trim(), `the select ${String(select)} has no accessible name`).not.toBe('');
-  await expect(async () => {
-    await select.selectOption({ label }, { timeout: 5_000 });
-    await expect(select.locator('option:checked')).toHaveText(label, { timeout: 2_000 });
-  }).toPass({ timeout: 30_000 });
+  expect(node?.role, `the focused element ${String(select)} is a selector`).toBe('combobox');
+  expect(node?.name.trim(), `the selector ${String(select)} has no accessible name`).not.toBe('');
+  if ((await select.getAttribute('aria-expanded')) !== 'true') await page.keyboard.press('Enter');
+  await expect(select).toHaveAttribute('aria-expanded', 'true');
+  // The list opens on the option already chosen, which may be below the one wanted: Home goes to the first.
+  await page.keyboard.press('Home');
+  const highlighted = () => page.evaluate(() => {
+    const id = document.activeElement?.getAttribute('aria-activedescendant');
+    return id ? (document.getElementById(id)?.textContent ?? '').trim() : '';
+  });
+  const count = await options.count();
+  for (let step = 0; step <= count && (await highlighted()) !== label; step += 1) await page.keyboard.press('ArrowDown');
+  expect(await highlighted(), `the arrows reach the option "${label}" of ${String(select)}`).toBe(label);
+  await page.keyboard.press('Enter');
+  await expect(select).toHaveAttribute('aria-expanded', 'false');
+  await expect(select).toContainText(label);
 }
 
 /** Tabs to a checkbox and sets it with Space. */

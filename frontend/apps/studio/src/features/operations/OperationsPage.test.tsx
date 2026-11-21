@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { describe, expect, it } from 'vitest';
 import { AUTH_CONTEXT, TOKEN, fakePlatform, renderApp } from '../../../test/render';
 import { createApp } from '../../app/context';
+import { choose } from '../../../test/ui';
 import { OperationsPage } from './OperationsPage';
 
 const namespaces = [
@@ -113,8 +114,9 @@ describe('OperationsPage', () => {
     expect(await screen.findByText('Review pending')).toBeInTheDocument();
     expect(platform.calls.some((call) => call.url.includes('cursor=alert-next'))).toBe(true);
 
-    await user.selectOptions(screen.getByLabelText('Alert state'), 'RESOLVED');
-    await waitFor(() => expect(screen.getAllByText('Resolved').some((item) => item.tagName === 'SPAN')).toBe(true));
+    await choose(user, 'Alert state', 'Resolved');
+    // The one alert left is shown as resolved (the word is also the selector's choice, so it is looked for in the alert).
+    await waitFor(() => expect(screen.getAllByRole('article').map((item) => within(item).queryByText('Resolved') !== null)).toEqual([true]));
     expect(screen.getByText('docs/runbooks/alerts.md#outbox-stuck').closest('a')).toBeNull();
     await waitFor(() => expect(platform.calls.some((call) => call.url.includes('state=RESOLVED'))).toBe(true));
   });
@@ -132,7 +134,10 @@ describe('OperationsPage', () => {
     expect(dialog).toHaveTextContent('does not cancel attempts already in flight');
     await user.type(within(dialog).getByLabelText('Reason'), 'short');
     await user.click(within(dialog).getByRole('button', { name: 'Confirm drain' }));
-    expect(within(dialog).getByRole('alert')).toHaveTextContent('at least 8 characters');
+    // The refusal is the field's error: tied to the field and marking it invalid (the design system announces it).
+    expect(within(dialog).getByLabelText('Reason')).toHaveAccessibleDescription(expect.stringContaining('at least 8 characters'));
+    expect(within(dialog).getByLabelText('Reason')).toBeInvalid();
+    expect(within(dialog).getByLabelText('Reason')).toHaveFocus();
     await user.clear(within(dialog).getByLabelText('Reason'));
     await user.type(within(dialog).getByLabelText('Reason'), 'Rolling deployment of worker version 2');
     await user.click(within(dialog).getByRole('button', { name: 'Confirm drain' }));

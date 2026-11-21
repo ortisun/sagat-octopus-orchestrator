@@ -1,6 +1,4 @@
-import { Button } from '../../ui/Button';
-import { ErrorState } from '../../ui/ErrorState';
-import { StatusBadge } from '../../ui/StatusBadge';
+import { Button, Code, ColumnHeader, Empty, ErrorState, Hint, Loading, Row, Stack, StatusBadge, Table, TableBody, TableCell, TableHead, TableRow, Text, VisuallyHidden } from '../../ui';
 import type { ScriptVersionSummary } from './api';
 import { CopyButton } from './CopyButton';
 import { languageInfo } from './languages';
@@ -12,86 +10,93 @@ import { clipLabel, formatTime, shortDigest } from './text';
 export function VersionsPanel({ versions, onOpen }: { versions: ReturnType<typeof useVersionList>; onOpen: (number: number) => void }) {
   const { query, items, building } = versions;
   return (
-    <div className="versions-panel">
-      <p>
+    <Stack gap={3}>
+      <Text>
         A version is the draft frozen and built in isolation into an artifact. It never changes. A workflow pins a version by its <strong>artifact digest</strong>: copy it from here into a Script node.
-      </p>
-      <div className="toolbar">
+      </Text>
+      <Row>
         <Button onClick={() => void query.refetch()} disabled={query.isFetching}>
           {query.isFetching ? 'Refreshing…' : 'Refresh'}
         </Button>
-        {building ? <span className="hint">A version is building; this list refreshes by itself for a while.</span> : null}
-      </div>
+        {building ? <Hint>A version is building; this list refreshes by itself for a while.</Hint> : null}
+      </Row>
       {query.isError ? <ErrorState error={query.error} what="Reading the versions" onRetry={() => void query.refetch()} /> : null}
-      {query.isPending && !query.isError ? <p role="status">Loading the versions…</p> : null}
-      {query.isSuccess && items.length === 0 ? <p className="empty">Nothing published yet.</p> : null}
+      {query.isPending && !query.isError ? <Loading>Loading the versions…</Loading> : null}
+      {query.isSuccess && items.length === 0 ? <Empty title="Nothing published yet." /> : null}
       {items.length > 0 ? (
-        <table className="data">
-          <caption className="visually-hidden">Versions of this script, newest first</caption>
-          <thead>
-            <tr>
-              <th scope="col">Version</th>
-              <th scope="col">State</th>
-              <th scope="col">Artifact digest</th>
-              <th scope="col">Language</th>
-              <th scope="col">Published by</th>
-              <th scope="col">
-                <span className="visually-hidden">Actions</span>
-              </th>
-            </tr>
-          </thead>
-          <tbody>
+        <Table label="Versions of this script, newest first">
+          <TableHead>
+            <TableRow>
+              <ColumnHeader scope="col">Version</ColumnHeader>
+              <ColumnHeader scope="col">State</ColumnHeader>
+              <ColumnHeader scope="col">Artifact digest</ColumnHeader>
+              <ColumnHeader scope="col">Language</ColumnHeader>
+              <ColumnHeader scope="col">Published by</ColumnHeader>
+              <ColumnHeader scope="col">
+                <VisuallyHidden>Actions</VisuallyHidden>
+              </ColumnHeader>
+            </TableRow>
+          </TableHead>
+          <TableBody>
             {items.map((version) => (
               <VersionRow key={version.id} version={version} onOpen={onOpen} />
             ))}
-          </tbody>
-        </table>
+          </TableBody>
+        </Table>
       ) : null}
       {query.hasNextPage ? (
-        <div className="toolbar">
+        <Row>
           <Button onClick={() => void query.fetchNextPage()} disabled={query.isFetchingNextPage}>
             {query.isFetchingNextPage ? 'Loading…' : 'Load older versions'}
           </Button>
-        </div>
+        </Row>
       ) : null}
-    </div>
+    </Stack>
   );
 }
 
 function VersionRow({ version, onOpen }: { version: ScriptVersionSummary; onOpen: (number: number) => void }) {
   return (
-    <tr>
-      <th scope="row">{version.number}</th>
-      <td>
+    <TableRow>
+      <ColumnHeader scope="row">{version.number}</ColumnHeader>
+      <TableCell>
         <StatusBadge view={versionStatus(version.status)} />
         {version.status === 'FAILED' && (version.failureCode || version.failure) ? (
-          <div className="hint" title={buildFailureHelp(version.failureCode ?? version.failure)}>
-            {clipLabel(version.failureCode || version.failure || '', 120)}
+          <div title={buildFailureHelp(version.failureCode ?? version.failure)}>
+            <Text as="span" muted>
+              {clipLabel(version.failureCode || version.failure || '', 120)}
+            </Text>
           </div>
         ) : null}
-      </td>
-      <td>
+      </TableCell>
+      <TableCell>
         {version.artifactDigest ? (
-          <>
-            <code title={version.artifactDigest}>{shortDigest(version.artifactDigest)}</code>{' '}
+          <Row>
+            <span title={version.artifactDigest}>
+              <Code>{shortDigest(version.artifactDigest)}</Code>
+            </span>
             <CopyButton text={version.artifactDigest} label="Copy digest" what={`the digest of version ${version.number}`} />
-          </>
+          </Row>
         ) : (
-          <span className="hint">{version.status === 'BUILDING' ? 'not built yet' : 'none'}</span>
+          <Text as="span" muted>
+            {version.status === 'BUILDING' ? 'not built yet' : 'none'}
+          </Text>
         )}
-      </td>
-      <td>{languageInfo(version.language).label}</td>
-      <td>
+      </TableCell>
+      <TableCell>{languageInfo(version.language).label}</TableCell>
+      <TableCell>
         {clipLabel(version.createdBy)}
-        <div className="hint">
-          <time dateTime={version.createdAt}>{formatTime(version.createdAt)}</time>
+        <div>
+          <Text as="span" muted>
+            <time dateTime={version.createdAt}>{formatTime(version.createdAt)}</time>
+          </Text>
         </div>
-      </td>
-      <td>
+      </TableCell>
+      <TableCell>
         <Button onClick={() => onOpen(version.number)} aria-label={`Open version ${version.number} read-only`}>
           Open
         </Button>
-      </td>
-    </tr>
+      </TableCell>
+    </TableRow>
   );
 }

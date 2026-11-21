@@ -2,10 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import type { FormEvent } from 'react';
 import { useApp, useCan } from '../../app/context';
-import { Field } from '../../ui/Field';
-import { Button } from '../../ui/Button';
-import { ErrorState } from '../../ui/ErrorState';
-import { useAnnounce } from '../../ui/Announcer';
+import { Actions, Banner, Button, Checkbox, CheckboxGroup, Disclosure, ErrorState, Heading, Hint, Select, Stack, TextArea, TextInput, useAnnounce } from '../../ui';
 import { secretsApi } from '../secrets/api';
 import type { Secret } from '../secrets/api';
 import { connectionsApi, editableIcebergOf } from './api';
@@ -40,13 +37,32 @@ function uriProblem(value: string, development: boolean): string | undefined {
 const filled = (value: string) => value.trim().length > 0;
 const choiceReady = (choice: Choice, fields: readonly SecretField[], canCreate: boolean) => choice.source === 'existing' ? !!choice.name : canCreate && fields.every(field => field.optional || filled(choice.values[field.key] ?? ''));
 
-function SecretChoice({ title, fields, choice, onChange, secrets, canCreate }: { title: string; fields: readonly SecretField[]; choice: Choice; onChange: (next: Choice) => void; secrets: readonly Secret[]; canCreate: boolean }) {
-  return <>
-    <Field label={`${title} credentials`}><select value={choice.source} onChange={e => onChange({ source: e.target.value === 'new' ? 'new' : 'existing', name: choice.name, values: {} })}><option value="existing">Existing secret</option>{canCreate ? <option value="new">Create a secret</option> : null}</select></Field>
-    {choice.source === 'existing'
-      ? <Field label={`${title} secret reference`} hint="Choose an OpenBao secret. Migrate legacy secrets on the Secrets page first."><select value={choice.name} onChange={e => onChange({ ...choice, name: e.target.value })}><option value="">Select a secret</option>{choice.name && !secrets.some(s => s.name === choice.name) ? <option value={choice.name}>{choice.name}</option> : null}{secrets.map(s => <option key={s.name} value={s.name} disabled={s.provider !== 'openbao'}>{s.name}{s.provider !== 'openbao' ? ' · migrate first' : ''}</option>)}</select></Field>
-      : <div className="connection-credentials">{fields.map(field => <Field key={field.key} label={`${title} ${field.label.toLowerCase()}${field.optional ? ' (optional)' : ''}`}><input type="password" value={choice.values[field.key] ?? ''} onChange={e => onChange({ ...choice, values: { ...choice.values, [field.key]: e.target.value } })} autoComplete="off" /></Field>)}</div>}
-  </>;
+function SecretChoice({ title, fields, choice, onChange, secrets, canCreate, disabled }: { title: string; fields: readonly SecretField[]; choice: Choice; onChange: (next: Choice) => void; secrets: readonly Secret[]; canCreate: boolean; disabled: boolean }) {
+  const options = [
+    ...(choice.name && !secrets.some(s => s.name === choice.name) ? [{ value: choice.name, label: choice.name }] : []),
+    ...secrets.map(s => ({ value: s.name, label: s.provider !== 'openbao' ? `${s.name} · migrate first` : s.name, disabled: s.provider !== 'openbao' })),
+  ];
+  return (
+    <>
+      <Select
+        label={`${title} credentials`}
+        value={choice.source}
+        onChange={next => onChange({ source: next, name: choice.name, values: {} })}
+        options={[{ value: 'existing' as const, label: 'Existing secret' }, ...(canCreate ? [{ value: 'new' as const, label: 'Create a secret' }] : [])]}
+        disabled={disabled}
+      />
+      {choice.source === 'existing'
+        ? <Select label={`${title} secret reference`} hint="Choose an OpenBao secret. Migrate legacy secrets on the Secrets page first." value={choice.name} onChange={name => onChange({ ...choice, name })} options={options} placeholder="Select a secret" disabled={disabled} />
+        : (
+          <div className="connection-credentials">
+            {fields.map(field => (
+              // A secret value is write-only: it is typed once, masked, and never shown again.
+              <TextInput key={field.key} type="password" label={`${title} ${field.label.toLowerCase()}${field.optional ? ' (optional)' : ''}`} value={choice.values[field.key] ?? ''} onChange={next => onChange({ ...choice, values: { ...choice.values, [field.key]: next } })} autoComplete="off" disabled={disabled} />
+            ))}
+          </div>
+        )}
+    </>
+  );
 }
 
 export function IcebergConnectionForm({ namespace, development, connection, onClose }: { namespace: string; development: boolean; connection?: Connection; onClose: () => void }) {
@@ -164,40 +180,89 @@ export function IcebergConnectionForm({ namespace, development, connection, onCl
     } catch (problem) { if (live()) setError(problem); }
     finally { if (live()) setBusy(false); }
   }
-  return <form className="connection-form" noValidate onSubmit={event => { void submit(event); }}>
-    <fieldset disabled={busy}>
-      <Field label="Name" hint="A unique name of 3–63 lower-case letters, digits and hyphens."><input value={name} onChange={e => setName(e.target.value)} disabled={!!connection} maxLength={63} /></Field>
-      <p className="hint">Apache Iceberg · REST catalog · S3-compatible storage · revision {connection?.revision ?? 'new'}</p>
-      <h3>Catalog</h3>
-      <Field label="Catalog URL" hint="HTTPS outside development. Never put credentials in the URL." error={uriError}><input value={uri} onChange={e => setUri(e.target.value)} autoComplete="off" maxLength={2048} /></Field>
-      <div className="connection-credentials">
-        <Field label="Warehouse"><input value={warehouse} onChange={e => setWarehouse(e.target.value)} maxLength={1024} /></Field>
-        <Field label="Prefix (optional)"><input value={prefix} onChange={e => setPrefix(e.target.value)} maxLength={255} /></Field>
-      </div>
-      <Field label="Catalog authentication"><select value={auth} onChange={e => { setAuth(e.target.value as Auth); change('catalog', { ...catalog, values: {} }); }}><option value="oauth2">OAuth2 client credentials</option><option value="bearer">Bearer token</option><option value="sigv4">AWS SigV4</option></select></Field>
-      {auth === 'oauth2' ? <div className="connection-credentials"><Field label="Token URL" error={tokenError}><input value={tokenUri} onChange={e => setTokenUri(e.target.value)} autoComplete="off" maxLength={2048} /></Field><Field label="Scope (optional)"><input value={scope} onChange={e => setScope(e.target.value)} maxLength={1024} /></Field></div> : null}
-      {auth === 'sigv4' ? <div className="connection-credentials"><Field label="Signing region"><input value={signRegion} onChange={e => setSignRegion(e.target.value)} maxLength={63} /></Field><Field label="Signing name"><input value={signingName} onChange={e => setSigningName(e.target.value)} maxLength={63} /></Field></div> : null}
-      <label><input type="checkbox" checked={delegation} onChange={e => { setDelegation(e.target.checked); if (!e.target.checked) setVended(false); }} /> The catalog vends storage credentials</label>
-      <SecretChoice title="Catalog" fields={catalogFields} choice={catalog} onChange={next => change('catalog', next)} secrets={secretItems} canCreate={canSecret} />
-      <h3>Storage</h3>
-      <div className="connection-credentials">
-        <Field label="Region"><input value={region} onChange={e => setRegion(e.target.value)} maxLength={63} /></Field>
-        <Field label="Endpoint (optional)" hint="For S3-compatible storage." error={endpointError}><input value={endpoint} onChange={e => setEndpoint(e.target.value)} autoComplete="off" maxLength={2048} /></Field>
-      </div>
-      <label><input type="checkbox" checked={pathStyle} onChange={e => setPathStyle(e.target.checked)} /> Path-style addressing</label>
-      <Field label="Storage access"><select value={vended ? 'vended' : 'static'} onChange={e => { setVended(e.target.value === 'vended'); change('storage', { ...storage, values: {} }); }}><option value="static">Static credentials (a secret)</option>{delegation ? <option value="vended">Credentials vended by the catalog</option> : null}</select></Field>
-      {vended ? <p className="hint">Vended credentials arrive inside the sandboxed write and are never stored or shown.</p> : <SecretChoice title="Storage" fields={AWS_KEYS} choice={storage} onChange={next => change('storage', next)} secrets={secretItems} canCreate={canSecret} />}
-      <details open={roleArn || externalId ? true : undefined}><summary>Assume a role (optional)</summary><div className="connection-credentials"><Field label="Role ARN"><input value={roleArn} onChange={e => setRoleArn(e.target.value)} maxLength={2048} /></Field><Field label="External ID"><input value={externalId} onChange={e => setExternalId(e.target.value)} maxLength={1224} /></Field></div></details>
-      <h3>Writes</h3>
-      <Field label="Warehouse locations" hint="One s3:// prefix per line, 1 to 16. Every table and data location must start with one of them." error={locations && !locationsValid ? 'Enter 1 to 16 distinct s3:// prefixes, one per line.' : undefined}><textarea value={locations} onChange={e => setLocations(e.target.value)} rows={3} spellCheck={false} /></Field>
-      <fieldset><legend>Allowed write modes</legend>{MODES.map(mode => <label key={mode}><input type="checkbox" checked={modes.includes(mode)} onChange={e => setModes(e.target.checked ? [...modes, mode] : modes.filter(m => m !== mode))} /> {mode}</label>)}{modes.length === 0 ? <span className="error" role="alert">Allow at least one mode.</span> : null}</fieldset>
-      <Field label="Highest data level a step may write" hint={canReveal ? 'Writing personal data needs the reveal grant for this namespace.' : 'Writing personal data needs the payload reveal permission, which you do not hold.'}><select value={ceiling} onChange={e => setCeiling(e.target.value as Ceiling)}><option value="public">Public</option><option value="internal">Internal</option><option value="pii" disabled={!canReveal}>Personal data (pii)</option></select></Field>
-      <details open={Object.keys(limits).length ? true : undefined}><summary>Write limits (optional)</summary>{LIMIT_FIELDS.map(([key, label, min, max]) => <Field key={key} label={label} error={limitProblem(key, min, max)}><input type="number" value={limits[key] ?? ''} min={min} max={max} onChange={e => setLimits({ ...limits, [key]: e.target.value })} /></Field>)}</details>
-      <Field label="Status" hint="Saving settings does not test connectivity to the catalog or the storage."><select value={status} onChange={e => setStatus(e.target.value as typeof status)}><option value="PAUSED">Paused</option><option value="ACTIVE">Active</option></select></Field>
-      {secrets.error ? <ErrorState error={secrets.error} what="Loading secret references" onRetry={() => { void secrets.refetch(); }} /> : null}
-    </fieldset>
-    {notice ? <p role="status">{notice}</p> : null}
-    {error ? <ErrorState error={error} what="Saving the connection" /> : null}
-    <div className="dialog-actions"><Button onClick={onClose} disabled={busy}>Cancel</Button><Button type="submit" variant="primary" disabled={busy || !valid}>{busy ? 'Saving…' : 'Save connection'}</Button></div>
-  </form>;
+  return (
+    <form noValidate onSubmit={event => { void submit(event); }}>
+      <Stack gap={3}>
+        <TextInput label="Name" hint="A unique name of 3–63 lower-case letters, digits and hyphens." value={name} onChange={setName} disabled={busy || !!connection} maxLength={63} />
+        <Hint>Apache Iceberg · REST catalog · S3-compatible storage · revision {connection?.revision ?? 'new'}</Hint>
+        <Heading level={3}>Catalog</Heading>
+        <TextInput label="Catalog URL" hint="HTTPS outside development. Never put credentials in the URL." error={uriError} value={uri} onChange={setUri} autoComplete="off" maxLength={2048} disabled={busy} />
+        <div className="connection-credentials">
+          <TextInput label="Warehouse" value={warehouse} onChange={setWarehouse} maxLength={1024} disabled={busy} />
+          <TextInput label="Prefix (optional)" value={prefix} onChange={setPrefix} maxLength={255} disabled={busy} />
+        </div>
+        <Select
+          label="Catalog authentication"
+          value={auth}
+          onChange={next => { setAuth(next); change('catalog', { ...catalog, values: {} }); }}
+          options={[{ value: 'oauth2' as const, label: 'OAuth2 client credentials' }, { value: 'bearer' as const, label: 'Bearer token' }, { value: 'sigv4' as const, label: 'AWS SigV4' }]}
+          disabled={busy}
+        />
+        {auth === 'oauth2' ? (
+          <div className="connection-credentials">
+            <TextInput label="Token URL" error={tokenError} value={tokenUri} onChange={setTokenUri} autoComplete="off" maxLength={2048} disabled={busy} />
+            <TextInput label="Scope (optional)" value={scope} onChange={setScope} maxLength={1024} disabled={busy} />
+          </div>
+        ) : null}
+        {auth === 'sigv4' ? (
+          <div className="connection-credentials">
+            <TextInput label="Signing region" value={signRegion} onChange={setSignRegion} maxLength={63} disabled={busy} />
+            <TextInput label="Signing name" value={signingName} onChange={setSigningName} maxLength={63} disabled={busy} />
+          </div>
+        ) : null}
+        <Checkbox label="The catalog vends storage credentials" checked={delegation} onChange={checked => { setDelegation(checked); if (!checked) setVended(false); }} disabled={busy} />
+        <SecretChoice title="Catalog" fields={catalogFields} choice={catalog} onChange={next => change('catalog', next)} secrets={secretItems} canCreate={canSecret} disabled={busy} />
+        <Heading level={3}>Storage</Heading>
+        <div className="connection-credentials">
+          <TextInput label="Region" value={region} onChange={setRegion} maxLength={63} disabled={busy} />
+          <TextInput label="Endpoint (optional)" hint="For S3-compatible storage." error={endpointError} value={endpoint} onChange={setEndpoint} autoComplete="off" maxLength={2048} disabled={busy} />
+        </div>
+        <Checkbox label="Path-style addressing" checked={pathStyle} onChange={setPathStyle} disabled={busy} />
+        <Select
+          label="Storage access"
+          value={vended ? 'vended' : 'static'}
+          onChange={next => { setVended(next === 'vended'); change('storage', { ...storage, values: {} }); }}
+          options={[{ value: 'static' as const, label: 'Static credentials (a secret)' }, ...(delegation ? [{ value: 'vended' as const, label: 'Credentials vended by the catalog' }] : [])]}
+          disabled={busy}
+        />
+        {vended ? <Hint>Vended credentials arrive inside the sandboxed write and are never stored or shown.</Hint> : <SecretChoice title="Storage" fields={AWS_KEYS} choice={storage} onChange={next => change('storage', next)} secrets={secretItems} canCreate={canSecret} disabled={busy} />}
+        <Disclosure summary="Assume a role (optional)" open={!!(roleArn || externalId)}>
+          <div className="connection-credentials">
+            <TextInput label="Role ARN" value={roleArn} onChange={setRoleArn} maxLength={2048} disabled={busy} />
+            <TextInput label="External ID" value={externalId} onChange={setExternalId} maxLength={1224} disabled={busy} />
+          </div>
+        </Disclosure>
+        <Heading level={3}>Writes</Heading>
+        <TextArea label="Warehouse locations" hint="One s3:// prefix per line, 1 to 16. Every table and data location must start with one of them." error={locations && !locationsValid ? 'Enter 1 to 16 distinct s3:// prefixes, one per line.' : undefined} value={locations} onChange={setLocations} rows={3} spellCheck={false} mono disabled={busy} />
+        <CheckboxGroup
+          label="Allowed write modes"
+          value={modes}
+          onChange={next => setModes(MODES.filter(mode => next.includes(mode)))}
+          options={MODES.map(mode => ({ value: mode, label: mode }))}
+          error={modes.length === 0 ? 'Allow at least one mode.' : undefined}
+          disabled={busy}
+        />
+        <Select
+          label="Highest data level a step may write"
+          hint={canReveal ? 'Writing personal data needs the reveal grant for this namespace.' : 'Writing personal data needs the payload reveal permission, which you do not hold.'}
+          value={ceiling}
+          onChange={setCeiling}
+          options={[{ value: 'public' as const, label: 'Public' }, { value: 'internal' as const, label: 'Internal' }, { value: 'pii' as const, label: 'Personal data (pii)', disabled: !canReveal }]}
+          disabled={busy}
+        />
+        <Disclosure summary="Write limits (optional)" open={Object.keys(limits).length > 0}>
+          <Stack gap={3}>
+            {LIMIT_FIELDS.map(([key, label, min, max]) => (
+              <TextInput numeric key={key} label={label} error={limitProblem(key, min, max)} value={limits[key] ?? ''} onChange={next => setLimits({ ...limits, [key]: next })} disabled={busy} />
+            ))}
+          </Stack>
+        </Disclosure>
+        <Select label="Status" hint="Saving settings does not test connectivity to the catalog or the storage." value={status} onChange={setStatus} options={[{ value: 'PAUSED' as const, label: 'Paused' }, { value: 'ACTIVE' as const, label: 'Active' }]} disabled={busy} />
+        {secrets.error ? <ErrorState error={secrets.error} what="Loading secret references" onRetry={() => { void secrets.refetch(); }} /> : null}
+        {notice ? <Banner tone="info">{notice}</Banner> : null}
+        {error ? <ErrorState error={error} what="Saving the connection" /> : null}
+        <Actions><Button onClick={onClose} disabled={busy}>Cancel</Button><Button type="submit" variant="primary" disabled={busy || !valid}>{busy ? 'Saving…' : 'Save connection'}</Button></Actions>
+      </Stack>
+    </form>
+  );
 }

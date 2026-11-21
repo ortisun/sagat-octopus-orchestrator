@@ -1,6 +1,5 @@
 import { useEffect, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { Link } from 'react-router';
 import { path } from '../../api/client';
 import type { components } from '../../api/schema';
 import type { Run } from '../../api/types';
@@ -11,10 +10,7 @@ import { parseAuthoringJson } from '../../model/safeJson';
 import { emptyDocument } from '../../model/ir';
 import type { IrDocument } from '../../model/ir';
 import { NODE_KINDS, kindOf } from '../../model/registry';
-import { Banner } from '../../ui/Banner';
-import { Button } from '../../ui/Button';
-import { ErrorState } from '../../ui/ErrorState';
-import { Field } from '../../ui/Field';
+import { Banner, Button, ErrorState, Heading, Hint, Link, Page, PageHeader, Panel, Row, Select, Stack, Text, TextArea, TextInput, VisuallyHidden } from '../../ui';
 import { AddNodeDialog } from '../workflows/AddNode';
 import { ConnectDialog } from '../workflows/ConnectDialog';
 import { NodeInspector } from '../workflows/NodeInspector';
@@ -38,9 +34,9 @@ export function DatabaseExecutionsPage() {
   const adhoc = useCan('database:adhoc'); const use = useCan('database:use'); const start = useCan('run:start');
   const namespaces = useQuery({ queryKey: ['namespaces'], queryFn: ({ signal }) => ep.namespaces(signal) });
   const namespace = namespaces.data?.items.find(n => n.slug === slug)?.id;
-  if (!adhoc || !use || !start) return <section><h1>Ad hoc database execution</h1><p>Requires database:adhoc, database:use and run:start permissions.</p></section>;
-  if (namespaces.error) return <ErrorState error={namespaces.error} what="Loading the namespace" />;
-  if (!namespace) return <p role="status">Select a namespace to execute database work.</p>;
+  if (!adhoc || !use || !start) return <Page><PageHeader title="Ad hoc database execution" /><Text>Requires database:adhoc, database:use and run:start permissions.</Text></Page>;
+  if (namespaces.error) return <Page><ErrorState error={namespaces.error} what="Loading the namespace" /></Page>;
+  if (!namespace) return <Page><Hint role="status">Select a namespace to execute database work.</Hint></Page>;
   return <ExecutionEditor key={`${info?.tenant}:${info?.subject}:${namespace}`} namespace={namespace} />;
 }
 
@@ -72,29 +68,70 @@ function ExecutionEditor({ namespace }: { namespace: string }) {
     try { store.edit(fn, { ...(key ? { key } : {}), ...(select ? { select } : {}) }); setNotice(''); return undefined; }
     catch (error) { if (!(error instanceof EditError)) throw error; setNotice(error.message); return error.message; }
   };
-  if (command.state.phase === 'accepted') return <section><h1>Execution accepted</h1><p role="status">The definition and run have been retained. Closing this page does not stop the run.</p><p><Link className="btn primary" to={path`/runs/${command.state.run.runId}`}>Open run</Link></p><p><Button onClick={() => { store.reset(initial()); setMode('step'); setInput('{}'); command.reset(); }}>New execution</Button></p><p><Link to="/connections">Back to connections</Link></p></section>;
-  return <section className="database-execution" aria-labelledby="database-execution-title">
-    <header><h1 id="database-execution-title">Ad hoc database execution</h1><p>Run a single step or a workflow using the connections in this namespace.</p><p className="hint">The platform retains each submitted definition and run. This editor keeps unsent SQL and inputs only on this page.</p><Link to="/runs">Find previous executions in Runs</Link></header>
-    <fieldset disabled={command.locked} className="database-editor-fields">
-      <legend className="visually-hidden">Execution definition</legend>
-      <div className="toolbar"><Field label="Execution mode"><select value={mode} onChange={e => setMode(e.target.value as 'step' | 'workflow')}><option value="step" disabled={doc.nodes.length !== 1 || doc.nodes[0]?.type !== 'database'}>Single database step</option><option value="workflow">Ad hoc workflow</option></select></Field>
-        <Button disabled={!canUndo || command.locked} onClick={() => store.undo()}>Undo</Button><Button disabled={!canRedo || command.locked} onClick={() => store.redo()}>Redo</Button>
-        {mode === 'workflow' ? <Button disabled={doc.nodes.length >= 64 || command.locked} onClick={() => setAdd(true)}>Add node</Button> : null}
-      </div>
-      {notice ? <p role="alert">{notice}</p> : null}
-      {mode === 'workflow' ? <NodesTable doc={doc} selectedId={selected?.id} problems={problems} advice={new Map()} editable={!command.locked} caption="Ad hoc workflow nodes" onEdit={id => store.select(id)} onDelete={id => void apply(d => removeNode(d, id).doc)} onSetFirst={id => void apply(d => setEntrypoint(d, id))} onConnect={id => setFrom(id)} /> : null}
-      <div className="database-editor-grid"><div className="database-node-editor">{selected ? <NodeInspector doc={doc} node={selected} disabled={command.locked} notes={[]} actions={{ change: (fn, key) => void apply(fn, key), rename: (a, b) => apply(d => renameNode(d, a, b), undefined, b), setFirst: id => void apply(d => setEntrypoint(d, id)), remove: id => void apply(d => removeNode(d, id).doc) }} /> : <p>Add a database node to begin.</p>}</div>
-        <div className="database-run-input"><h2>Run settings</h2><Field label="Run input (JSON)" error={parsed ? undefined : 'Enter a JSON object. Use strings for exact integers and decimals.'} hint="Use expressions such as input.orderId in parameter bindings. Do not put credentials here."><textarea rows={8} spellCheck={false} autoComplete="off" maxLength={262_144} value={input} onChange={e => setInput(e.target.value)} /></Field>
-          <Field label="Run timeout (ms)" error={timeoutValid ? undefined : 'Enter a whole number from 1 to 3600000.'}><input inputMode="numeric" autoComplete="off" value={timeout} onChange={e => setTimeout(e.target.value)} /></Field>
-          <p className="hint">Query results up to 256 KiB can be read by downstream expressions. Larger results are retained as blob references.</p>
+  if (command.state.phase === 'accepted') {
+    return (
+      <Page>
+        <Heading level={1}>Execution accepted</Heading>
+        <Hint role="status">The definition and run have been retained. Closing this page does not stop the run.</Hint>
+        <Text><Link to={path`/runs/${command.state.run.runId}`}>Open run</Link></Text>
+        <div><Button onClick={() => { store.reset(initial()); setMode('step'); setInput('{}'); command.reset(); }}>New execution</Button></div>
+        <Text><Link to="/connections">Back to connections</Link></Text>
+      </Page>
+    );
+  }
+  return (
+    <Page>
+      <Stack as="section" gap={4} aria-labelledby="database-execution-title">
+        <PageHeader title={<span id="database-execution-title">Ad hoc database execution</span>}>Run a single step or a workflow using the connections in this namespace.</PageHeader>
+        <Hint>The platform retains each submitted definition and run. This editor keeps unsent SQL and inputs only on this page.</Hint>
+        <Text><Link to="/runs">Find previous executions in Runs</Link></Text>
+        {/* The fieldset fixes everything inside it, the node editor of the workflows feature included, while the request is locked. */}
+        <fieldset disabled={command.locked} className="database-editor-fields">
+          <legend><VisuallyHidden>Execution definition</VisuallyHidden></legend>
+          <Stack gap={3}>
+            <Row align="end">
+              <Select
+                label="Execution mode"
+                value={mode}
+                onChange={setMode}
+                width="16rem"
+                disabled={command.locked}
+                options={[{ value: 'step' as const, label: 'Single database step', disabled: doc.nodes.length !== 1 || doc.nodes[0]?.type !== 'database' }, { value: 'workflow' as const, label: 'Ad hoc workflow' }]}
+              />
+              <Button disabled={!canUndo || command.locked} onClick={() => store.undo()}>Undo</Button>
+              <Button disabled={!canRedo || command.locked} onClick={() => store.redo()}>Redo</Button>
+              {mode === 'workflow' ? <Button disabled={doc.nodes.length >= 64 || command.locked} onClick={() => setAdd(true)}>Add node</Button> : null}
+            </Row>
+            {notice ? <Banner tone="error">{notice}</Banner> : null}
+            {mode === 'workflow' ? <NodesTable doc={doc} selectedId={selected?.id} problems={problems} advice={new Map()} editable={!command.locked} caption="Ad hoc workflow nodes" onEdit={id => store.select(id)} onDelete={id => void apply(d => removeNode(d, id).doc)} onSetFirst={id => void apply(d => setEntrypoint(d, id))} onConnect={id => setFrom(id)} /> : null}
+            <div className="database-editor-grid">
+              <Panel>{selected ? <NodeInspector doc={doc} node={selected} disabled={command.locked} notes={[]} actions={{ change: (fn, key) => void apply(fn, key), rename: (a, b) => apply(d => renameNode(d, a, b), undefined, b), setFirst: id => void apply(d => setEntrypoint(d, id)), remove: id => void apply(d => removeNode(d, id).doc) }} /> : <Text>Add a database node to begin.</Text>}</Panel>
+              <Panel title="Run settings">
+                <TextArea label="Run input (JSON)" error={parsed ? undefined : 'Enter a JSON object. Use strings for exact integers and decimals.'} hint="Use expressions such as input.orderId in parameter bindings. Do not put credentials here." rows={8} spellCheck={false} mono maxLength={262_144} value={input} onChange={setInput} disabled={command.locked} />
+                <TextInput numeric label="Run timeout (ms)" error={timeoutValid ? undefined : 'Enter a whole number from 1 to 3600000.'} autoComplete="off" value={timeout} onChange={setTimeout} disabled={command.locked} />
+                <Hint>Query results up to 256 KiB can be read by downstream expressions. Larger results are retained as blob references.</Hint>
+              </Panel>
+            </div>
+          </Stack>
+        </fieldset>
+        {!hasDatabase ? <Banner tone="warn">Add at least one database node.</Banner> : null}
+        {forbiddenWrite ? <Banner tone="warn">Your role cannot execute database writes.</Banner> : null}
+        {command.state.phase === 'failed' ? (
+          <Stack gap={2}>
+            <ErrorState error={command.state.error} what="Starting the execution" />
+            <Banner tone="warn">{command.state.refused ? 'The request was refused. You can edit it or retry.' : 'The run may already exist. Retry this same request to recover its run ID. Check Runs before submitting another execution.'}</Banner>
+            <Row>
+              <Button onClick={() => void command.send()}>Retry same execution</Button>
+              {command.state.refused ? <Button onClick={command.reset}>Edit refused request</Button> : null}
+            </Row>
+          </Stack>
+        ) : null}
+        <div>
+          <Button variant="primary" disabled={command.locked || !parsed || !timeoutValid || !hasDatabase || problems.size > 0 || forbiddenWrite || mode === 'step' && doc.nodes.length !== 1} onClick={() => { if (parsed) void command.send({ mode, definition: doc, input: parsed, timeoutMs: Number(timeout) }); }}>{command.state.phase === 'sending' ? 'Starting execution…' : 'Run execution'}</Button>
         </div>
-      </div>
-    </fieldset>
-    {!hasDatabase ? <Banner tone="warn">Add at least one database node.</Banner> : null}
-    {forbiddenWrite ? <Banner tone="warn">Your role cannot execute database writes.</Banner> : null}
-    {command.state.phase === 'failed' ? <div><ErrorState error={command.state.error} what="Starting the execution" /><Banner tone="warn">{command.state.refused ? 'The request was refused. You can edit it or retry.' : 'The run may already exist. Retry this same request to recover its run ID. Check Runs before submitting another execution.'}</Banner><Button onClick={() => void command.send()}>Retry same execution</Button>{command.state.refused ? <Button onClick={command.reset}>Edit refused request</Button> : null}</div> : null}
-    <Button variant="primary" disabled={command.locked || !parsed || !timeoutValid || !hasDatabase || problems.size > 0 || forbiddenWrite || mode === 'step' && doc.nodes.length !== 1} onClick={() => { if (parsed) void command.send({ mode, definition: doc, input: parsed, timeoutMs: Number(timeout) }); }}>{command.state.phase === 'sending' ? 'Starting execution…' : 'Run execution'}</Button>
-    <AddNodeDialog open={add && !command.locked} kinds={KINDS} where="Adds a node after the selected node when possible. At most 64 nodes." onClose={() => setAdd(false)} onPick={type => { const added = insertNode(doc, type, selected?.id); void apply(() => added.doc, undefined, added.id); }} />
-    <ConnectDialog open={from !== undefined && !command.locked} doc={doc} from={from} onClose={() => setFrom(undefined)} onConnect={(field, to) => from ? apply(d => connect(d, from, field, to)) : 'Choose a node.'} />
-  </section>;
+        <AddNodeDialog open={add && !command.locked} kinds={KINDS} where="Adds a node after the selected node when possible. At most 64 nodes." onClose={() => setAdd(false)} onPick={type => { const added = insertNode(doc, type, selected?.id); void apply(() => added.doc, undefined, added.id); }} />
+        <ConnectDialog open={from !== undefined && !command.locked} doc={doc} from={from} onClose={() => setFrom(undefined)} onConnect={(field, to) => from ? apply(d => connect(d, from, field, to)) : 'Choose a node.'} />
+      </Stack>
+    </Page>
+  );
 }

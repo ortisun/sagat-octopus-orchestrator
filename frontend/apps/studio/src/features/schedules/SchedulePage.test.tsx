@@ -2,6 +2,7 @@ import { screen, waitFor, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import type { ScheduleActionRecord } from '../../api/endpoints';
 import { BASE, ID, NS, WORKFLOW, backfill, bodyOf, decision, described, failure, json, keyOf, mountSchedules, schedule, writes } from '../../../test/schedules';
+import { chooseValue, expectAvailable, expectUnavailable, optionsOf } from '../../../test/ui';
 import { SchedulePage } from './SchedulePage';
 
 type Options = { permissions?: string[]; routes?: Record<string, (init: RequestInit, url: string) => unknown> };
@@ -90,7 +91,7 @@ describe('A schedule', () => {
 
   it('says it is paused, why, and that no time is next', async () => {
     await mount({ routes: { [`GET ${BASE}/${ID}`]: () => described({ state: 'PAUSED', note: 'holiday', noteBy: 'bob', nextActions: [] }) } });
-    expect(await screen.findByText('Paused', { selector: '.badge span' })).toBeVisible();
+    expect(within(await screen.findByRole('heading', { level: 1, name: /nightly/ })).getByText('Paused')).toBeVisible();
     expect(screen.getByText(/holiday — bob/)).toBeVisible();
     expect(screen.getByText(/None: it is paused/)).toBeVisible();
   });
@@ -138,17 +139,19 @@ describe('A schedule', () => {
 
   it('disables pause and run now of a schedule a cron trigger owns, with the reason, until the handover, and enables them after it', async () => {
     await mount({ routes: { [`GET ${BASE}/${ID}`]: () => described({ origin: 'TRIGGER', triggerId: '0194f5e2-7b1c-7000-8000-0000000000e1', controllable: false }) } });
-    expect(await screen.findByText(/an operator has not handed the cron triggers over/)).toBeVisible();
-    expect(screen.getByRole('button', { name: 'Pause' })).toBeDisabled();
-    expect(screen.getByRole('button', { name: 'Run now' })).toBeDisabled();
-    expect(screen.getByRole('button', { name: 'Pause' })).toHaveAttribute('title', expect.stringContaining('handed the cron triggers over'));
+    // the reason is said beside the controls, and is the description of each of them
+    expect(await screen.findByRole('note')).toHaveTextContent(/an operator has not handed the cron triggers over/);
+    expect(screen.getByRole('note')).toBeVisible();
+    expectUnavailable(screen.getByRole('button', { name: 'Pause' }));
+    expectUnavailable(screen.getByRole('button', { name: 'Run now' }));
+    expect(screen.getByRole('button', { name: 'Pause' })).toHaveAccessibleDescription(expect.stringContaining('handed the cron triggers over'));
   });
 
   it('offers pause and run now of a schedule a cron trigger owns once the platform says the control is open', async () => {
     await mount({ routes: { [`GET ${BASE}/${ID}`]: () => described({ origin: 'TRIGGER', triggerId: '0194f5e2-7b1c-7000-8000-0000000000e1', controllable: true }) } });
     await screen.findByRole('heading', { name: /nightly/ });
-    expect(screen.getByRole('button', { name: 'Pause' })).toBeEnabled();
-    expect(screen.getByRole('button', { name: 'Run now' })).toBeEnabled();
+    expectAvailable(screen.getByRole('button', { name: 'Pause' }));
+    expectAvailable(screen.getByRole('button', { name: 'Run now' }));
     expect(screen.queryByText(/an operator has not handed the cron triggers over/)).not.toBeInTheDocument();
   });
 
@@ -366,7 +369,7 @@ describe('Running a schedule now', () => {
   it('can name another rule for this one time', async () => {
     const { user, platform } = await mount({ routes: { [`POST ${BASE}/${ID}/trigger`]: () => decision({ outcome: 'SKIPPED_OVERLAP', runId: null }) } });
     await user.click(await screen.findByRole('button', { name: 'Run now' }));
-    await user.selectOptions(inDialog().getByLabelText('If a run is still open'), 'ALLOW_ALL');
+    await chooseValue(user, inDialog().getByRole('combobox', { name: 'If a run is still open' }), 'ALLOW_ALL');
     await user.click(inDialog().getByRole('button', { name: 'Run now' }));
     expect(await inDialog().findByText('Skipped: a run was open.')).toBeVisible();
     expect(inDialog().queryByRole('link', { name: 'Open the run' })).not.toBeInTheDocument();
@@ -540,9 +543,8 @@ describe('The decisions of a schedule', () => {
   it('can be limited to the two business id outcomes, which the platform filters', async () => {
     const { user, platform } = await mount();
     await screen.findByRole('table', { name: /decisions of the schedule/ });
-    const select = screen.getByLabelText('Outcome');
-    expect(within(select).getByRole('option', { name: 'Business id conflict' })).toBeInTheDocument();
-    await user.selectOptions(select, 'BUSINESS_ID_CONFLICT');
+    expect(await optionsOf(user, 'Outcome')).toContain('Business id conflict');
+    await chooseValue(user, 'Outcome', 'BUSINESS_ID_CONFLICT');
     await waitFor(() => expect(platform.calls.some((call) => call.url.includes('outcome=BUSINESS_ID_CONFLICT'))).toBe(true));
   });
 
@@ -557,7 +559,7 @@ describe('The decisions of a schedule', () => {
       },
     });
     await screen.findByRole('table', { name: /decisions of the schedule/ });
-    await user.selectOptions(screen.getByLabelText('Outcome'), 'SKIPPED_OVERLAP');
+    await chooseValue(user, 'Outcome', 'SKIPPED_OVERLAP');
     await waitFor(() => expect(platform.calls.some((call) => call.url.includes('outcome=SKIPPED_OVERLAP'))).toBe(true));
     await user.click(await screen.findByRole('button', { name: 'Load more' }));
     await waitFor(() => expect(platform.calls.some((call) => call.url.includes('cursor=c1'))).toBe(true));
@@ -565,9 +567,9 @@ describe('The decisions of a schedule', () => {
 
   it('say so when there are none, or none of the outcome chosen', async () => {
     const { user } = await mount({ routes: { [`GET ${BASE}/${ID}/actions`]: () => ({ items: [], nextCursor: null }) } });
-    expect(await screen.findByText('The schedule has not decided anything yet.')).toBeVisible();
-    await user.selectOptions(screen.getByLabelText('Outcome'), 'COALESCED');
-    expect(await screen.findByText('No decision with this outcome.')).toBeVisible();
+    expect(await screen.findByRole('heading', { name: 'The schedule has not decided anything yet.' })).toBeVisible();
+    await chooseValue(user, 'Outcome', 'COALESCED');
+    expect(await screen.findByRole('heading', { name: 'No decision with this outcome.' })).toBeVisible();
   });
 });
 
@@ -633,6 +635,6 @@ describe('The backfills of a schedule', () => {
 
   it('say so when there are none', async () => {
     await mount();
-    expect(await screen.findByText('No backfill yet.')).toBeVisible();
+    expect(await screen.findByRole('heading', { name: 'No backfill yet.' })).toBeVisible();
   });
 });

@@ -4,7 +4,8 @@ import { expectAccessible } from '../support/accessibility';
 import { activate, choose, closeWithEscape, inspectDialog, landedOn, openDialog, openFromMenu, reach, signInByKeyboard, typeInto, walk } from '../support/keyboard';
 import { Api } from '../support/platform';
 import { failOnBrowserErrors } from '../support/studio';
-import { endWorkflow, namespaceIdOf, ownNamespace, setQuota, recordRefusals, unique, withoutRefusals } from '../support/world';
+import { expectUnavailable, expectValue, factValue } from '../support/ui';
+import { endWorkflow, namespaceIdOf, ownNamespace, setQuota, recordRefusals, unique, withoutRefusals} from '../support/world';
 
 /**
  * The schedules of the Studio in a real browser, with the keyboard alone and the accessibility rules on every state (T018-074,
@@ -35,7 +36,7 @@ test('SCHEDULES a person creates a schedule, finds it, pauses, resumes, runs it 
   // Empty state: a name filter nothing matches (the keyboard types into the field, the list asks once typing rests).
   const filter = page.getByLabel('Name starts with');
   await typeInto(page, filter, name);
-  await expect(page.getByText('No schedule matches these filters.')).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'No schedule matches these filters.' })).toBeVisible();
   await expectAccessible(page, 'the schedules list, nothing matches');
   await typeInto(page, filter, '');
 
@@ -48,10 +49,10 @@ test('SCHEDULES a person creates a schedule, finds it, pauses, resumes, runs it 
   await expectAccessible(page, 'the schedule form, refused');
 
   await typeInto(page, page.getByLabel('Name', { exact: true }), name);
-  await choose(page, page.getByLabel('Workflow', { exact: true }), target);
+  await choose(page, page.getByRole('combobox', { name: 'Workflow', exact: true }), target);
   await typeInto(page, page.getByLabel('Input', { exact: true }), '{"region":"eu"}');
   await typeInto(page, page.getByLabel('Every', { exact: true }), '90');
-  await choose(page, page.getByLabel('Unit', { exact: true }), 'minutes');
+  await choose(page, page.getByRole('combobox', { name: 'Unit', exact: true }), 'minutes');
   // Every named control of the form is reached, in an order that follows the page, and none needs a pointer.
   const order = await walk(page);
   expect(order).toEqual(expect.arrayContaining(['textbox: Name', 'combobox: Workflow', 'textbox: Input', 'textbox: Every', 'combobox: Unit', 'button: Create schedule']));
@@ -83,6 +84,7 @@ test('SCHEDULES a person creates a schedule, finds it, pauses, resumes, runs it 
   // Pause: the dialog takes focus, asks why, refuses an empty answer in words, and Escape gives focus back.
   const pause = page.getByRole('button', { name: 'Pause', exact: true });
   const pauseDialog = await openDialog(page, pause, 'Pause the schedule');
+  // On opening, focus goes to the first control of the dialog's body (the interface module's Dialog, as the platform dialog did).
   await expect(pauseDialog.getByLabel('Why')).toBeFocused();
   await expectAccessible(page, 'the pause dialog');
   const named = await inspectDialog(page, pauseDialog);
@@ -121,9 +123,10 @@ test('SCHEDULES a person creates a schedule, finds it, pauses, resumes, runs it 
   expect(await inspectDialog(page, triggerDialog)).toEqual(expect.arrayContaining(['combobox: If a run is still open', 'button: Run now', 'button: Close']));
   await expectAccessible(page, 'the run-now dialog');
   await activate(page, triggerDialog.getByRole('button', { name: 'Run now', exact: true }));
-  await expect(triggerDialog.getByRole('status')).toContainText('Started a run.');
+  await expect(triggerDialog.getByRole('status').filter({ hasText: 'Started a run.' })).toBeVisible();
   await expectAccessible(page, 'the run-now dialog, answered');
-  await activate(page, triggerDialog.getByRole('button', { name: 'Close' }));
+  // `exact`: the header of the dialog has a button of its own, named "Close Run the schedule now"
+  await activate(page, triggerDialog.getByRole('button', { name: 'Close', exact: true }));
   await expect(triggerDialog).toBeHidden();
   // the button that opened it is still there, and holds focus again
   await expect(page.getByRole('button', { name: 'Run now', exact: true })).toBeFocused();
@@ -142,7 +145,7 @@ test('SCHEDULES a person creates a schedule, finds it, pauses, resumes, runs it 
   // back to the schedule is reached with the keyboard: what the platform recorded is what the page says.
   const run = (await api.call<{ schedule?: { scheduleId: string; nominalTime: string; kind: string; revision: number } }>('GET', `/runs/${started}`, undefined, 200)).body;
   expect(run.schedule).toMatchObject({ scheduleId, kind: 'TRIGGERED', revision: 1 });
-  const origin = page.locator('dl.rn-facts > div').filter({ hasText: 'Started by schedule' });
+  const origin = factValue(page.locator('.rn-facts'), 'Started by schedule');
   await expect(origin).toBeVisible();
   await expect(origin).toContainText('(run now)');
   await expect(origin).toContainText('nominal time');
@@ -161,7 +164,7 @@ test('SCHEDULES a person creates a schedule, finds it, pauses, resumes, runs it 
   await expect(page.getByRole('heading', { level: 1, name: 'Schedules' })).toBeVisible();
   expect((await api.call('GET', `/namespaces/${namespaceId}/schedules/${scheduleId}`)).status).toBe(404);
   await typeInto(page, page.getByLabel('Name starts with'), name);
-  await expect(page.getByText('No schedule matches these filters.')).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'No schedule matches these filters.' })).toBeVisible();
   expect(problems).toEqual([]);
 });
 
@@ -180,7 +183,7 @@ test('SCHEDULES a refusal of the platform is read in words: a name in use, a quo
   // A namespace nobody has made a schedule in: the empty state of the list, in words.
   await signInByKeyboard(page, env.tokens.admin, own.slug);
   await openFromMenu(page, 'Schedules', 'Schedules');
-  await expect(page.getByText('No schedule yet.')).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'No schedule yet.' })).toBeVisible();
   await expectAccessible(page, 'the schedules list, empty');
 
   // This one repeats by cron expressions in a time zone (the other journey's by an interval).
@@ -188,8 +191,8 @@ test('SCHEDULES a refusal of the platform is read in words: a name in use, a quo
     await activate(page, page.getByRole('link', { name: 'New schedule' }));
     await expect(page.getByRole('heading', { level: 1, name: 'New schedule' })).toBeVisible();
     await typeInto(page, page.getByLabel('Name', { exact: true }), name);
-    await choose(page, page.getByLabel('Workflow', { exact: true }), target);
-    await choose(page, page.getByLabel('Repeat by'), 'Cron expressions');
+    await choose(page, page.getByRole('combobox', { name: 'Workflow', exact: true }), target);
+    await choose(page, page.getByRole('combobox', { name: 'Repeat by', exact: true }), 'Cron expressions');
     await typeInto(page, page.getByLabel('Cron expressions', { exact: true }), '0 9 * * 1-5');
     await typeInto(page, page.getByLabel('Time zone'), 'Europe/Lisbon');
     await activate(page, page.getByRole('button', { name: 'Create schedule' }));
@@ -274,8 +277,8 @@ test('SCHEDULES a schedule a cron trigger owns shows its controls off, with the 
   await activate(page, owned.getByRole('link').first());
   await expect(page.getByRole('heading', { level: 1 })).toContainText('Active');
   const controls = page.getByRole('group', { name: 'Actions on the schedule' });
-  await expect(controls.getByRole('button', { name: 'Pause' })).toBeDisabled();
-  await expect(controls.getByRole('button', { name: 'Run now' })).toBeDisabled();
+  await expectUnavailable(controls.getByRole('button', { name: 'Pause' }));
+  await expectUnavailable(controls.getByRole('button', { name: 'Run now' }));
   await expect(controls.getByRole('note')).toContainText('an operator has not handed the cron triggers over');
   await expect(controls.getByRole('link', { name: 'Edit' })).toHaveCount(0);
   await expect(controls.getByRole('button', { name: 'Delete' })).toHaveCount(0);
@@ -306,7 +309,7 @@ test('SCHEDULES a backfill acts on the times of a past range: asked for in a dia
   await activate(page, page.getByRole('row').filter({ hasText: name }).getByRole('link', { name }));
   await expect(page.getByRole('heading', { level: 1, name: new RegExp(`^${name}`) })).toBeVisible();
   const backfills = page.getByRole('region', { name: 'Backfills' });
-  await expect(backfills.getByText('No backfill yet.')).toBeVisible();
+  await expect(backfills.getByRole('heading', { name: 'No backfill yet.' })).toBeVisible();
   await expectAccessible(page, 'the schedule, no backfill yet');
 
   // The dialog: what is wrong with a range is said in words, before anything is sent.
@@ -370,12 +373,16 @@ test('SCHEDULES the run a schedule makes carries the business id of its prefix: 
   await activate(page, page.getByRole('link', { name: 'New schedule' }));
   await expect(page.getByRole('heading', { level: 1, name: 'New schedule' })).toBeVisible();
   await typeInto(page, page.getByLabel('Name', { exact: true }), name);
-  await choose(page, page.getByLabel('Workflow', { exact: true }), target);
+  await choose(page, page.getByRole('combobox', { name: 'Workflow', exact: true }), target);
   // the policies and the id this schedule would make are offered once there is a prefix, with the defaults chosen
-  await expect(page.getByLabel('If an open run already has the id')).toHaveCount(0);
+  await expect(page.getByRole('combobox', { name: 'If an open run already has the id', exact: true })).toHaveCount(0);
   await typeInto(page, page.getByLabel('Business id prefix', { exact: true }), prefix);
-  await expect(page.getByLabel('If an open run already has the id').locator('option:checked')).toHaveText('Record a conflict and start nothing (default)');
-  await expect(page.getByLabel('If a closed run still remembers the id').locator('option:checked')).toHaveText('Start a new run (default)');
+  const conflict = page.getByRole('combobox', { name: 'If an open run already has the id', exact: true });
+  const reuse = page.getByRole('combobox', { name: 'If a closed run still remembers the id', exact: true });
+  await expectValue(conflict, 'FAIL');
+  await expect(conflict).toContainText('Record a conflict and start nothing (default)');
+  await expectValue(reuse, 'ALLOW_DUPLICATE');
+  await expect(reuse).toContainText('Start a new run (default)');
   await expect(page.getByRole('main').locator('code').filter({ hasText: businessId })).toBeVisible();
   await expectAccessible(page, 'the schedule form, with a business id prefix');
   await activate(page, page.getByRole('button', { name: 'Create schedule' }));
@@ -383,8 +390,8 @@ test('SCHEDULES the run a schedule makes carries the business id of its prefix: 
   // The schedule says its prefix and its policies, in words.
   await expect(page.getByRole('heading', { level: 1, name: new RegExp(`^${name}`) })).toBeVisible();
   const scheduleId = new URL(page.url()).pathname.split('/').at(-1)!;
-  await expect(page.locator('dl.batch-counts > div').filter({ hasText: 'Business id prefix' }).locator('code')).toHaveText(prefix);
-  await expect(page.locator('dl.batch-counts > div').filter({ hasText: 'If an open run has the id' })).toContainText('Record a conflict and start nothing');
+  await expect(factValue(page.getByRole('main'), 'Business id prefix').locator('code')).toHaveText(prefix);
+  await expect(factValue(page.getByRole('main'), 'If an open run has the id')).toContainText('Record a conflict and start nothing');
   await expectAccessible(page, 'the schedule, with a business id prefix');
   const stored = (await api.call<{ action: Record<string, string> }>('GET', `/namespaces/${namespaceId}/schedules/${scheduleId}`, undefined, 200)).body.action;
   expect(stored).toMatchObject({ businessIdPrefix: prefix, businessIdConflictPolicy: 'FAIL', businessIdReusePolicy: 'ALLOW_DUPLICATE' });
@@ -392,13 +399,12 @@ test('SCHEDULES the run a schedule makes carries the business id of its prefix: 
   // Run now takes one time at once; the run it made is the one the dialog links, and it carries the id.
   const triggerDialog = await openDialog(page, page.getByRole('button', { name: 'Run now', exact: true }), 'Run the schedule now');
   await activate(page, triggerDialog.getByRole('button', { name: 'Run now', exact: true }));
-  await expect(triggerDialog.getByRole('status')).toContainText('Started a run.');
+  await expect(triggerDialog.getByRole('status').filter({ hasText: 'Started a run.' })).toBeVisible();
   await activate(page, triggerDialog.getByRole('link', { name: 'Open the run' }));
   // the address of the schedule ends in an identifier too: the run is the one it moves to
   const runId = await landedOn(page, scheduleId);
   await expect(page.getByRole('heading', { level: 1 })).toContainText(runId);
-  const fact =page.locator('dl.rn-facts > div').filter({ hasText: 'Business id' }).filter({ hasNotText: 'Started by schedule' });
-  await expect(fact.locator('dd')).toHaveText(businessId);
+  await expect(factValue(page.locator('.rn-facts'), 'Business id')).toHaveText(businessId);
   expect((await api.call<{ businessId?: string }>('GET', `/runs/${runId}`, undefined, 200)).body.businessId).toMatch(businessId);
   await expectAccessible(page, 'the run a schedule started, with its business id');
   expect(problems).toEqual([]);

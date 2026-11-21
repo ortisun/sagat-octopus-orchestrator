@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { describe, expect, it } from 'vitest';
 import { AUTH_CONTEXT, TOKEN, fakePlatform, renderApp } from '../../../test/render';
 import { createApp } from '../../app/context';
+import { choose, expectAvailable, expectUnavailable } from '../../../test/ui';
 import { DatabaseExecutionsPage } from './DatabaseExecutionsPage';
 
 const permissions = ['namespace:read', 'database:use', 'database:adhoc', 'run:start', 'run:read'];
@@ -15,8 +16,10 @@ async function setup() {
   });
   const app = createApp({ fetch: platform.fetcher }); await app.session.signIn(TOKEN, () => Promise.resolve({ ...AUTH_CONTEXT, permissions } as never));
   app.namespace.set('payments'); renderApp(<DatabaseExecutionsPage />, { app });
-  const user = userEvent.setup(); await screen.findByRole('option', { name: 'orders · revision 1' });
-  await user.selectOptions(screen.getByLabelText('Connection'), 'orders');
+  const user = userEvent.setup();
+  // The connections have arrived when the selector can be used; its choices are in the page only while it is open.
+  await waitFor(() => expectAvailable(screen.getByRole('combobox', { name: 'Connection' })));
+  await choose(user, 'Connection', 'orders · revision 1');
   return { platform, app, user };
 }
 describe('Ad hoc database editor', () => {
@@ -24,9 +27,9 @@ describe('Ad hoc database editor', () => {
     const { platform, user } = await setup();
     const parameters = screen.getByLabelText('Typed parameters (JSON)');
     fireEvent.change(parameters, { target: { value: '[' } });
-    expect(screen.getByRole('button', { name: 'Run execution' })).toBeDisabled();
+    expectUnavailable(screen.getByRole('button', { name: 'Run execution' }));
     fireEvent.change(parameters, { target: { value: '[{"literal":{"type":"json","value":{"id":9007199254740993}}}]' } });
-    expect(screen.getByRole('button', { name: 'Run execution' })).toBeDisabled();
+    expectUnavailable(screen.getByRole('button', { name: 'Run execution' }));
     expect(parameters).toHaveValue('[{"literal":{"type":"json","value":{"id":9007199254740993}}}]');
     fireEvent.change(parameters, { target: { value: '[{"type":"integer","expression":"input.number"}]' } });
     fireEvent.change(screen.getByLabelText('Run input (JSON)'), { target: { value: '{"number":"9223372036854775807"}' } });
@@ -45,9 +48,11 @@ describe('Ad hoc database editor', () => {
   });
   it('restricts workflow nodes and writes, and discards unsent SQL on namespace change', async () => {
     const { user, app } = await setup();
-    expect(screen.getByRole('option', { name: /Execute ·/ })).toBeDisabled();
+    await user.click(screen.getByRole('combobox', { name: 'Operation' }));
+    expectUnavailable(await screen.findByRole('option', { name: /Execute ·/ }));
+    await user.keyboard('{Escape}');
     fireEvent.change(screen.getByLabelText('SQL statement'), { target: { value: 'SELECT private_canary' } });
-    await user.selectOptions(screen.getByLabelText('Execution mode'), 'workflow');
+    await choose(user, 'Execution mode', 'Ad hoc workflow');
     await user.click(screen.getByRole('button', { name: 'Add node' }));
     expect(screen.queryByRole('button', { name: 'Script' })).not.toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Database' }));

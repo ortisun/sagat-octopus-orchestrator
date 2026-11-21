@@ -104,7 +104,7 @@ for (const theme of ['light', 'dark', 'forced'] as const) {
             header: rect('.rn-header'),
             body: rect('.rn-body'),
             graph: rect('.rn-graph'),
-            toolbar: rect('.rn-graph > .toolbar'),
+            toolbar: rect('.rn-graph > :first-child'),
             legend: rect('.rn-legend'),
             canvas: rect('.rn-canvas'),
             flow: rect('.rn-canvas .react-flow'),

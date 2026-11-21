@@ -4,6 +4,17 @@ Decisions that only the product owner could take, with what each one unblocks. E
 recorded where the open item lived (gap register, ADR, runbook or specification). "Not built"
 means the decision is taken and the implementation is still to be done; it is not evidence.
 
+## 2026-11-21 — Astryx design system for the Studio
+
+The owner asked: "Use astryx as design system for admin". The repository has no application called admin, so two questions were put and answered the same day.
+
+| # | Item | Decision | Recorded in | Status |
+|---|---|---|---|---|
+| 1 | What adopts Astryx | "The existing Studio": the Studio's own tokens and interface primitives move onto Astryx (`@astryxdesign/core`); no separate administration application is created. | [Architecture decision 0101](adr/ADR-0101-the-studio-builds-its-interface-on-the-astryx-design-system.md), `specs/007-workflow-studio/research.md` (Decision 2400) | Decided |
+| 2 | How far the first delivery goes | "Full migration now": the decision record, the build wiring, the primitives and every screen in one branch; the hand-written stylesheets of migrated screens are deleted. | `specs/007-workflow-studio/tasks.md` (Task 007-059 to Task 007-066) | Decided; see the task list for what is built |
+
+Decided by the agent under the owner's rule of 2026-11-20 (the architecturally stronger option, not the simplest), for the owner to confirm with Architecture decision 0101: Astryx is reached only through the Studio's interface module (Decision 2401), and the recorded visual direction of 2026-10-10 is kept as the Studio's own Astryx theme instead of a stock theme (Decision 2402).
+
 ## 2026-11-20 — Documentation first, words in full, identifiers as words
 
 The owner gave three instructions on 2026-11-20, one after the other. They are amended into the constitution together

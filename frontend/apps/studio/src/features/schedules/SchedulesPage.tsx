@@ -1,11 +1,7 @@
 import { useInfiniteQuery } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
-import { Link } from 'react-router';
 import { useApp, useCan } from '../../app/context';
-import { Button } from '../../ui/Button';
-import { ErrorState } from '../../ui/ErrorState';
-import { Field } from '../../ui/Field';
-import { StatusBadge } from '../../ui/StatusBadge';
+import { Button, ColumnHeader, Empty, ErrorState, Link, Loading, Page, PageHeader, Row, RowHeader, Select, Stack, StatusBadge, Table, TableBody, TableCell, TableHead, TableRow, Text, TextInput } from '../../ui';
 import { NotAllowed } from '../runs/NotAllowed';
 import { useWorkflowIndex } from '../runs/queries';
 import { OVERLAP_TEXT, describeSpec, scheduleState } from './model';
@@ -53,83 +49,86 @@ function Schedules() {
   });
   const schedules = list.data?.pages.flatMap((page) => page.items) ?? [];
   return (
-    <section aria-labelledby="schedules-title">
-      <h1 id="schedules-title">Schedules</h1>
-      <p>A schedule starts a run of a workflow at the times its rule gives. The platform decides each time on its own clock; this page only shows what it decided.</p>
-      {canCreate ? (
-        <p>
-          <Link className="btn primary" to="/schedules/new">
-            New schedule
-          </Link>
-        </p>
-      ) : null}
-      <div className="toolbar">
-        <Field label="State">
-          <select value={state} onChange={(event) => setState(event.target.value as '' | 'ACTIVE' | 'PAUSED')}>
-            <option value="">All states</option>
-            <option value="ACTIVE">Active</option>
-            <option value="PAUSED">Paused</option>
-          </select>
-        </Field>
-        <Field label="Workflow">
-          <select value={workflowId} onChange={(event) => setWorkflowId(event.target.value)}>
-            <option value="">All workflows</option>
-            {(workflows.data?.list ?? []).map((workflow) => (
-              <option key={workflow.id} value={workflow.id}>
-                {workflow.name}
-              </option>
-            ))}
-          </select>
-        </Field>
-        <Field label="Name starts with">
-          <input type="search" autoComplete="off" maxLength={128} value={typed} onChange={(event) => setTyped(event.target.value)} />
-        </Field>
-      </div>
-      {namespace.pending || list.isPending ? <p role="status">Loading the schedules…</p> : null}
-      {namespace.error || list.error ? <ErrorState error={namespace.error ?? list.error} what="Listing schedules" onRetry={() => void list.refetch()} /> : null}
-      {list.isSuccess && schedules.length === 0 ? <p>{filtered ? 'No schedule matches these filters.' : 'No schedule yet.'}</p> : null}
-      {schedules.length > 0 ? (
-        <table>
-          <caption className="visually-hidden">Schedules</caption>
-          <thead>
-            <tr>
-              <th scope="col">Name</th>
-              <th scope="col">State</th>
-              <th scope="col">Workflow</th>
-              <th scope="col">When</th>
-              <th scope="col">Next time</th>
-              <th scope="col">When a run is open</th>
-            </tr>
-          </thead>
-          <tbody>
-            {schedules.map((schedule) => {
-              const workflowId = schedule.action?.workflowId;
-              const workflow = workflowId ? workflows.data?.byId.get(workflowId) : undefined;
-              const overlap = schedule.policies?.overlap ?? 'SKIP';
-              return (
-                <tr key={schedule.scheduleId}>
-                  <th scope="row">
-                    <Link to={`/schedules/${schedule.scheduleId}`}>{schedule.name}</Link>
-                    {schedule.origin === 'TRIGGER' ? <small className="muted"> · cron trigger</small> : null}
-                  </th>
-                  <td>
-                    <StatusBadge view={scheduleState(schedule)} />
-                  </td>
-                  <td>{workflow ? workflow.name : workflowId ? shortId(workflowId) : '—'}</td>
-                  <td>{describeSpec(schedule)}</td>
-                  <td>{schedule.state === 'PAUSED' || schedule.exhausted ? '—' : <Time value={schedule.nextActionAt} />}</td>
-                  <td>{OVERLAP_TEXT[overlap].label}</td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      ) : null}
-      {list.hasNextPage ? (
-        <Button onClick={() => void list.fetchNextPage()} disabled={list.isFetchingNextPage}>
-          {list.isFetchingNextPage ? 'Loading…' : 'Load more'}
-        </Button>
-      ) : null}
-    </section>
+    <Page>
+      <Stack as="section" gap={4} aria-labelledby="schedules-title">
+        <PageHeader title={<span id="schedules-title">Schedules</span>} actions={canCreate ? <Link to="/schedules/new">New schedule</Link> : null}>
+          A schedule starts a run of a workflow at the times its rule gives. The platform decides each time on its own clock; this page only shows what it decided.
+        </PageHeader>
+        <Row gap={3} align="end">
+          <Select
+            label="State"
+            width={200}
+            value={state}
+            placeholder="All states"
+            onChange={(value) => setState(value)}
+            options={[
+              { value: '', label: 'All states' },
+              { value: 'ACTIVE', label: 'Active' },
+              { value: 'PAUSED', label: 'Paused' },
+            ]}
+          />
+          <Select
+            label="Workflow"
+            width={240}
+            value={workflowId}
+            placeholder="All workflows"
+            onChange={(value) => setWorkflowId(value)}
+            options={[{ value: '', label: 'All workflows' }, ...(workflows.data?.list ?? []).map((workflow) => ({ value: workflow.id, label: workflow.name }))]}
+          />
+          <TextInput label="Name starts with" width={240} type="search" autoComplete="off" maxLength={128} value={typed} onChange={setTyped} />
+        </Row>
+        {namespace.pending || list.isPending ? <Loading>Loading the schedules…</Loading> : null}
+        {namespace.error || list.error ? <ErrorState error={namespace.error ?? list.error} what="Listing schedules" onRetry={() => void list.refetch()} /> : null}
+        {list.isSuccess && schedules.length === 0 ? <Empty title={filtered ? 'No schedule matches these filters.' : 'No schedule yet.'} headingLevel={2} /> : null}
+        {schedules.length > 0 ? (
+          <Table label="Schedules">
+            <TableHead>
+              <TableRow>
+                <ColumnHeader>Name</ColumnHeader>
+                <ColumnHeader>State</ColumnHeader>
+                <ColumnHeader>Workflow</ColumnHeader>
+                <ColumnHeader>When</ColumnHeader>
+                <ColumnHeader>Next time</ColumnHeader>
+                <ColumnHeader>When a run is open</ColumnHeader>
+              </TableRow>
+            </TableHead>
+            <TableBody>
+              {schedules.map((schedule) => {
+                const workflowId = schedule.action?.workflowId;
+                const workflow = workflowId ? workflows.data?.byId.get(workflowId) : undefined;
+                const overlap = schedule.policies?.overlap ?? 'SKIP';
+                return (
+                  <TableRow key={schedule.scheduleId}>
+                    <RowHeader>
+                      <Link to={`/schedules/${schedule.scheduleId}`}>{schedule.name}</Link>
+                      {schedule.origin === 'TRIGGER' ? (
+                        <Text as="span" muted>
+                          {' '}
+                          · cron trigger
+                        </Text>
+                      ) : null}
+                    </RowHeader>
+                    <TableCell>
+                      <StatusBadge view={scheduleState(schedule)} />
+                    </TableCell>
+                    <TableCell>{workflow ? workflow.name : workflowId ? shortId(workflowId) : '—'}</TableCell>
+                    <TableCell>{describeSpec(schedule)}</TableCell>
+                    <TableCell>{schedule.state === 'PAUSED' || schedule.exhausted ? '—' : <Time value={schedule.nextActionAt} />}</TableCell>
+                    <TableCell>{OVERLAP_TEXT[overlap].label}</TableCell>
+                  </TableRow>
+                );
+              })}
+            </TableBody>
+          </Table>
+        ) : null}
+        {list.hasNextPage ? (
+          <Row>
+            <Button onClick={() => void list.fetchNextPage()} disabled={list.isFetchingNextPage}>
+              {list.isFetchingNextPage ? 'Loading…' : 'Load more'}
+            </Button>
+          </Row>
+        ) : null}
+      </Stack>
+    </Page>
   );
 }

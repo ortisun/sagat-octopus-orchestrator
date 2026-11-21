@@ -2,6 +2,7 @@ import { expect, test } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
 import { env } from '../support/env';
 import { failOnBrowserErrors, goTo, signIn } from '../support/studio';
+import { choose, expectFieldError, expectValue } from '../support/ui';
 
 test('the Studio is served with its policy, signs a user in and shows the shell of their namespace', async ({ page, request }) => {
   const problems = failOnBrowserErrors(page);
@@ -13,7 +14,7 @@ test('the Studio is served with its policy, signs a user in and shows the shell 
   expect(response.headers()['x-content-type-options']).toBe('nosniff');
 
   await signIn(page, env.tokens.admin);
-  await expect(page.getByLabel('Namespace', { exact: true })).toHaveValue(env.namespace);
+  await expectValue(page.getByRole('combobox', { name: 'Namespace', exact: true }), env.namespace);
   await expect(page.getByLabel('Signed in as')).toContainText('alice');
   await page.getByRole('link', { name: 'Runs' }).click();
   await expect(page).toHaveURL(/\/studio\/runs$/);
@@ -31,10 +32,10 @@ test('the menu follows the hierarchy: only the namespaces until one is chosen, t
   const problems = failOnBrowserErrors(page);
   await signIn(page, env.tokens.admin, { namespace: null });
   const menu = page.getByRole('navigation', { name: 'Main' });
-  const select = page.getByLabel('Namespace', { exact: true });
+  const select = menu.getByRole('combobox', { name: 'Namespace', exact: true });
 
   // A first visit: the Studio chooses nothing, so the menu offers the tenant's namespaces and nothing of a namespace.
-  await expect(select).toHaveValue('');
+  await expectValue(select, '');
   await expect(menu.getByRole('link')).toHaveText(['Namespaces']);
   for (const name of ['Workflows', 'Scripts', 'Runs', 'Schedules', 'Batches', 'Operations', 'Ad hoc database', 'Connections', 'Secrets', 'Integrations']) await expect(menu.getByRole('link', { name, exact: true })).toHaveCount(0);
 
@@ -43,8 +44,8 @@ test('the menu follows the hierarchy: only the namespaces until one is chosen, t
   await expect(page.getByRole('heading', { name: 'Choose a namespace', level: 1 })).toBeVisible();
 
   // Choosing one opens its menu, under it, and the page the person was on.
-  await select.selectOption(env.namespace);
-  await expect(page.getByRole('list', { name: `In ${env.namespace}` }).getByRole('link')).toHaveText(['Workflows', 'Scripts', 'Runs', 'Schedules', 'Batches', 'Operations', 'Ad hoc database', 'Connections', 'Secrets', 'Integrations']);
+  await choose(select, env.namespace);
+  await expect(menu.getByRole('group').filter({ hasText: `In ${env.namespace}` }).getByRole('link')).toHaveText(['Workflows', 'Scripts', 'Runs', 'Schedules', 'Batches', 'Operations', 'Ad hoc database', 'Connections', 'Secrets', 'Integrations']);
   await expect(page.getByRole('heading', { name: 'Choose a namespace', level: 1 })).toHaveCount(0);
   await expect(page).toHaveURL(/\/studio\/runs$/);
 
@@ -55,7 +56,8 @@ test('a token the platform does not accept is refused with a message and nothing
   await page.goto('./');
   await page.getByLabel('Access token').fill('aaaa.bbbb.cccc');
   await page.getByRole('button', { name: 'Sign in' }).click();
-  await expect(page.getByRole('alert')).toBeVisible();
+  // The refusal is the field's own error: the field is marked invalid and described by the message.
+  await expectFieldError(page.getByLabel('Access token'));
   await expect(page.getByLabel('Access token')).toBeVisible();
 });
 
@@ -65,7 +67,7 @@ test('a missing route stylesheet offers an explicit reload and the Studio recove
   await page.getByLabel('Access token').fill(env.tokens.admin);
   await page.getByRole('button', { name: 'Sign in' }).click();
   await expect(page.getByRole('navigation', { name: 'Main' })).toBeVisible();
-  await page.getByLabel('Namespace', { exact: true }).selectOption(env.namespace);
+  await choose(page.getByRole('combobox', { name: 'Namespace', exact: true }), env.namespace);
 
   let failedStylesheets = 0;
   await page.route('**/assets/workflows.*.css', async (route) => {

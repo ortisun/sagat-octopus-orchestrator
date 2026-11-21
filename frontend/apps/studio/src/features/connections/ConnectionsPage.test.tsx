@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { describe, expect, it } from 'vitest';
 import { AUTH_CONTEXT, TOKEN, fakePlatform, renderApp } from '../../../test/render';
 import { createApp } from '../../app/context';
+import { choose, chooseValue, expectAvailable, expectUnavailable, optionsOf, selector, valueOf } from '../../../test/ui';
 import { ConnectionsPage } from './ConnectionsPage';
 
 const canary = 'postgres-password-private';
@@ -40,7 +41,7 @@ async function enter(user: ReturnType<typeof userEvent.setup>) {
   await user.type(screen.getByLabelText('Database'), 'orders');
 }
 async function credentials(user: ReturnType<typeof userEvent.setup>) {
-  await user.selectOptions(screen.getByLabelText('Credentials'), 'new');
+  await choose(user, 'Credentials', 'Create a secret');
   await user.type(screen.getByLabelText('Username'), 'orders-reader');
   await user.type(screen.getByLabelText('Password'), canary);
 }
@@ -99,8 +100,9 @@ describe('Database connections', () => {
   });
   it('uses existing OpenBao references and keeps legacy values unavailable until migration', async () => {
     const { user, platform } = await mount(); await enter(user);
-    await user.selectOptions(screen.getByLabelText('Secret reference'), 'existing-access');
-    expect(screen.getByRole('option', { name: /legacy-access/ })).toBeDisabled();
+    await user.click(screen.getByRole('combobox', { name: 'Secret reference' }));
+    expectUnavailable(await screen.findByRole('option', { name: /legacy-access/ }));
+    await user.click(screen.getByRole('option', { name: 'existing-access' }));
     await user.click(screen.getByRole('button', { name: 'Save connection' }));
     await screen.findByRole('button', { name: 'Edit connection orders-db' });
     expect(platform.calls.filter(c => c.method === 'PUT')).toHaveLength(1);
@@ -114,7 +116,7 @@ describe('Database connections', () => {
   });
   it('requires an explicit delete action with the observed revision and a stable request', async () => {
     const { user, platform } = await mount(); await enter(user);
-    await user.selectOptions(screen.getByLabelText('Secret reference'), 'existing-access');
+    await choose(user, 'Secret reference', 'existing-access');
     await user.click(screen.getByRole('button', { name: 'Save connection' }));
     await user.click(await screen.findByRole('button', { name: 'Delete connection orders-db' }));
     expect(platform.calls.some(c => c.method === 'DELETE')).toBe(false);
@@ -135,7 +137,7 @@ type User = ReturnType<typeof userEvent.setup>;
 const LAKE_PERMISSIONS = ['namespace:read', 'database:manage', 'secret:read', 'secret:manage'];
 async function openLake(user: User) {
   await user.click(await screen.findByRole('button', { name: 'New connection' }));
-  await user.selectOptions(await screen.findByLabelText('Connection type'), 'iceberg');
+  await chooseValue(user, await screen.findByRole('combobox', { name: 'Connection type' }), 'iceberg');
 }
 async function fillLake(user: User) {
   await user.type(screen.getByLabelText('Name'), 'lake-main');
@@ -146,12 +148,12 @@ async function fillLake(user: User) {
   await user.type(screen.getByLabelText('Warehouse locations'), 's3://lake/analytics/');
 }
 async function catalogSecret(user: User) {
-  await user.selectOptions(screen.getByLabelText('Catalog credentials'), 'new');
+  await chooseValue(user, 'Catalog credentials', 'new');
   await user.type(screen.getByLabelText('Catalog client id'), 'catalog-client');
   await user.type(screen.getByLabelText('Catalog client secret'), clientSecret);
 }
 async function storageSecret(user: User) {
-  await user.selectOptions(screen.getByLabelText('Storage credentials'), 'new');
+  await chooseValue(user, 'Storage credentials', 'new');
   await user.type(screen.getByLabelText('Storage access key id'), 'AKIAEXAMPLE');
   await user.type(screen.getByLabelText('Storage secret access key'), secretKey);
 }
@@ -191,9 +193,9 @@ describe('Iceberg connections', () => {
     await user.click(screen.getByRole('button', { name: 'Save connection' }));
     await user.click(await screen.findByRole('button', { name: 'Edit connection lake-main' }));
     expect(screen.getByLabelText('Catalog URL')).toHaveValue('https://catalog.example.com');
-    expect(screen.getByLabelText('Name')).toBeDisabled();
-    expect(screen.getByLabelText<HTMLSelectElement>('Catalog secret reference').value).toMatch(/^lake-catalog-/);
-    expect(screen.getByLabelText<HTMLSelectElement>('Storage secret reference').value).toMatch(/^lake-storage-/);
+    expectUnavailable(screen.getByLabelText('Name'));
+    expect(valueOf('Catalog secret reference')).toMatch(/^lake-catalog-/);
+    expect(valueOf('Storage secret reference')).toMatch(/^lake-storage-/);
     expect(screen.queryByLabelText('Catalog client secret')).not.toBeInTheDocument();
     expect(document.body.textContent).not.toContain(clientSecret);
     expect(document.body.textContent).not.toContain(secretKey);
@@ -223,9 +225,10 @@ describe('Iceberg connections', () => {
   });
   it('takes vended storage credentials only from a catalog that delegates access, and then asks for no storage secret', async () => {
     const { user, platform } = await mount(undefined, LAKE_PERMISSIONS, undefined, true); await openLake(user); await fillLake(user);
-    expect(screen.queryByRole('option', { name: 'Credentials vended by the catalog' })).not.toBeInTheDocument();
+    expect(await optionsOf(user, 'Storage access')).not.toContain('Credentials vended by the catalog');
+    await user.click(selector('Storage access'));
     await user.click(screen.getByLabelText('The catalog vends storage credentials'));
-    await user.selectOptions(screen.getByLabelText('Storage access'), 'vended');
+    await chooseValue(user, 'Storage access', 'vended');
     expect(screen.queryByLabelText('Storage credentials')).not.toBeInTheDocument();
     await catalogSecret(user);
     await user.click(screen.getByRole('button', { name: 'Save connection' }));
@@ -235,17 +238,18 @@ describe('Iceberg connections', () => {
     expect(config).not.toHaveProperty('storageSecret');
     await user.click(screen.getByRole('button', { name: 'Edit connection lake-main' }));
     await user.click(screen.getByLabelText('The catalog vends storage credentials'));
-    expect(screen.getByLabelText('Storage access')).toHaveValue('static');
-    expect(screen.getByLabelText('Storage credentials')).toBeInTheDocument();
+    expect(valueOf('Storage access')).toBe('static');
+    expect(selector('Storage credentials')).toBeInTheDocument();
   });
   it('disables the pii ceiling for an actor without the reveal permission and says why', async () => {
     const { user } = await mount(undefined, LAKE_PERMISSIONS, undefined, true); await openLake(user);
-    expect(screen.getByRole('option', { name: 'Personal data (pii)' })).toBeDisabled();
+    await user.click(selector('Highest data level a step may write'));
+    expectUnavailable(await screen.findByRole('option', { name: 'Personal data (pii)' }));
     expect(screen.getByText(/you do not hold/)).toBeInTheDocument();
   });
   it('lets an actor with the reveal permission choose the pii ceiling and sends it', async () => {
     const { user, platform } = await mount(undefined, [...LAKE_PERMISSIONS, 'payload:reveal-pii'], undefined, true); await openLake(user); await fillLake(user);
-    await user.selectOptions(screen.getByLabelText('Highest data level a step may write'), 'pii');
+    await chooseValue(user, 'Highest data level a step may write', 'pii');
     await newSecrets(user);
     await user.click(screen.getByRole('button', { name: 'Save connection' }));
     await screen.findByRole('button', { name: 'Edit connection lake-main' });
@@ -254,24 +258,24 @@ describe('Iceberg connections', () => {
   it('refuses a plaintext catalog outside development, a credential in a URL and a location of another store before saving', async () => {
     const { user, platform } = await mount(undefined, LAKE_PERMISSIONS, undefined, true); await openLake(user); await fillLake(user); await newSecrets(user);
     const save = screen.getByRole('button', { name: 'Save connection' });
-    expect(save).toBeEnabled();
+    expectAvailable(save);
     const url = screen.getByLabelText('Catalog URL');
     await user.clear(url); await user.type(url, 'http://catalog.example.com');
-    expect(screen.getByText('Use an https URL.')).toBeInTheDocument(); expect(save).toBeDisabled();
+    expect(url).toHaveAccessibleDescription(expect.stringContaining('Use an https URL.')); expect(url).toBeInvalid(); expectUnavailable(save);
     await user.clear(url); await user.type(url, 'https://reader:hunter2@catalog.example.com');
-    expect(screen.getByText(/Credentials belong in a secret/)).toBeInTheDocument(); expect(save).toBeDisabled();
+    expect(url).toHaveAccessibleDescription(expect.stringContaining('Credentials belong in a secret')); expect(url).toBeInvalid(); expectUnavailable(save);
     await user.clear(url); await user.type(url, 'https://catalog.example.com');
-    expect(save).toBeEnabled();
+    expectAvailable(save);
     const locations = screen.getByLabelText('Warehouse locations');
     await user.clear(locations); await user.type(locations, 'gs://lake/analytics/');
-    expect(screen.getByText(/Enter 1 to 16 distinct s3:\/\/ prefixes/)).toBeInTheDocument(); expect(save).toBeDisabled();
+    expect(locations).toHaveAccessibleDescription(expect.stringContaining('Enter 1 to 16 distinct s3:// prefixes')); expect(locations).toBeInvalid(); expectUnavailable(save);
     expect(putsOf(platform)).toHaveLength(0);
   });
   it('needs at least one write mode and sends the modes in the contract order', async () => {
     const { user, platform } = await mount(undefined, LAKE_PERMISSIONS, undefined, true); await openLake(user); await fillLake(user); await newSecrets(user);
     await user.click(screen.getByLabelText('append'));
     expect(screen.getByText('Allow at least one mode.')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Save connection' })).toBeDisabled();
+    expectUnavailable(screen.getByRole('button', { name: 'Save connection' }));
     await user.click(screen.getByLabelText('upsert')); await user.click(screen.getByLabelText('append'));
     await user.click(screen.getByRole('button', { name: 'Save connection' }));
     await screen.findByRole('button', { name: 'Edit connection lake-main' });
@@ -279,7 +283,7 @@ describe('Iceberg connections', () => {
   });
   it('does not offer to create a secret to an actor who cannot manage secrets', async () => {
     const { user } = await mount(undefined, ['namespace:read', 'database:manage', 'secret:read'], undefined, true); await openLake(user);
-    expect(screen.queryByRole('option', { name: 'Create a secret' })).not.toBeInTheDocument();
+    expect(await optionsOf(user, 'Catalog credentials')).not.toContain('Create a secret');
   });
 });
 
@@ -296,13 +300,13 @@ describe('Editing an Iceberg connection', () => {
   it('shows what was saved and saves it back unchanged, against the revision it read', async () => {
     const { user, platform } = await mount(undefined, LAKE_PERMISSIONS, SAVED_LAKE, true);
     await user.click(await screen.findByRole('button', { name: 'Edit connection lake-main' }));
-    expect(screen.getByLabelText('Catalog authentication')).toHaveValue('bearer');
+    expect(valueOf('Catalog authentication')).toBe('bearer');
     expect(screen.getByLabelText('Prefix (optional)')).toHaveValue('prod');
-    expect(screen.getByLabelText('Storage access')).toHaveValue('vended');
+    expect(valueOf('Storage access')).toBe('vended');
     expect(screen.getByLabelText('Warehouse locations')).toHaveValue('s3://lake/a/\ns3://lake/b/');
-    expect(screen.getByLabelText('Catalog secret reference')).toHaveValue('existing-access');
-    expect(screen.getByLabelText('Highest data level a step may write')).toHaveValue('public');
-    expect(screen.getByLabelText('Maximum records')).toHaveValue(5000);
+    expect(valueOf('Catalog secret reference')).toBe('existing-access');
+    expect(valueOf('Highest data level a step may write')).toBe('public');
+    expect(screen.getByLabelText('Maximum records')).toHaveValue('5000');
     await user.click(screen.getByRole('button', { name: 'Save connection' }));
     await waitFor(() => expect(putsOf(platform)).toHaveLength(1));
     expect(JSON.parse(putsOf(platform)[0]?.init.body as string)).toEqual({ requestId: expect.any(String) as unknown, expectedRevision: 4, status: 'ACTIVE', config: SAVED_LAKE.config });
@@ -311,8 +315,8 @@ describe('Editing an Iceberg connection', () => {
     const pii = { ...SAVED_LAKE, config: { ...SAVED_LAKE.config, egressCeiling: 'pii' } };
     const { user } = await mount(undefined, LAKE_PERMISSIONS, pii, true);
     await user.click(await screen.findByRole('button', { name: 'Edit connection lake-main' }));
-    expect(screen.getByLabelText('Highest data level a step may write')).toHaveValue('pii');
-    expect(screen.getByRole('button', { name: 'Save connection' })).toBeDisabled();
+    expect(valueOf('Highest data level a step may write')).toBe('pii');
+    expectUnavailable(screen.getByRole('button', { name: 'Save connection' }));
   });
 });
 describe('Iceberg connection input rules', () => {
@@ -321,11 +325,11 @@ describe('Iceberg connection input rules', () => {
     const save = screen.getByRole('button', { name: 'Save connection' });
     const url = screen.getByLabelText('Catalog URL');
     await user.clear(url); await user.type(url, 'https://catalog.example.com?token=abc');
-    expect(screen.getByText(/Credentials belong in a secret/)).toBeInTheDocument(); expect(save).toBeDisabled();
+    expect(url).toHaveAccessibleDescription(expect.stringContaining('Credentials belong in a secret')); expect(url).toBeInvalid(); expectUnavailable(save);
     await user.clear(url); await user.type(url, 'https://catalog.example.com');
     const locations = screen.getByLabelText('Warehouse locations');
     await user.clear(locations); await user.type(locations, 's3://lake/a/{enter}s3://lake/a/');
-    expect(screen.getByText(/Enter 1 to 16 distinct s3:\/\/ prefixes/)).toBeInTheDocument(); expect(save).toBeDisabled();
+    expect(locations).toHaveAccessibleDescription(expect.stringContaining('Enter 1 to 16 distinct s3:// prefixes')); expect(locations).toBeInvalid(); expectUnavailable(save);
   });
   it('allows a plaintext catalog only in a development namespace', async () => {
     const { user, app } = await mount(undefined, LAKE_PERMISSIONS, undefined, true);
@@ -334,7 +338,8 @@ describe('Iceberg connection input rules', () => {
     const url = screen.getByLabelText('Catalog URL');
     await user.clear(url); await user.type(url, 'http://localhost:8181');
     expect(screen.queryByText('Use an https URL.')).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Save connection' })).toBeEnabled();
+    expect(url).not.toBeInvalid();
+    expectAvailable(screen.getByRole('button', { name: 'Save connection' }));
   });
   it('treats a secret authority that is not OpenBao as a failure and saves no connection', async () => {
     const { user, platform } = await mount('provider', LAKE_PERMISSIONS, undefined, true); await openLake(user); await fillLake(user); await newSecrets(user);
@@ -377,7 +382,7 @@ describe('Iceberg connection rules the first tests missed', () => {
     const { user, platform } = await mount(undefined, LAKE_PERMISSIONS, undefined, true); await openLake(user); await fillLake(user);
     await storageSecret(user);
     await user.click(screen.getByLabelText('The catalog vends storage credentials'));
-    await user.selectOptions(screen.getByLabelText('Storage access'), 'vended');
+    await chooseValue(user, 'Storage access', 'vended');
     await catalogSecret(user);
     await user.click(screen.getByRole('button', { name: 'Save connection' }));
     await screen.findByRole('button', { name: 'Edit connection lake-main' });
@@ -389,16 +394,16 @@ describe('Iceberg connection rules the first tests missed', () => {
   it('refuses more than sixteen warehouse locations and an empty catalog URL', async () => {
     const { user } = await mount(undefined, LAKE_PERMISSIONS, undefined, true); await openLake(user); await fillLake(user); await newSecrets(user);
     const save = screen.getByRole('button', { name: 'Save connection' });
-    expect(save).toBeEnabled();
+    expectAvailable(save);
     const locations = screen.getByLabelText('Warehouse locations');
     await user.clear(locations); await user.click(locations);
     await user.paste(Array.from({ length: 17 }, (_, i) => `s3://lake/${i}/`).join('\n'));
-    expect(screen.getByText(/Enter 1 to 16 distinct s3:\/\/ prefixes/)).toBeInTheDocument(); expect(save).toBeDisabled();
+    expect(locations).toHaveAccessibleDescription(expect.stringContaining('Enter 1 to 16 distinct s3:// prefixes')); expect(locations).toBeInvalid(); expectUnavailable(save);
     await user.clear(locations); await user.click(locations);
     await user.paste(Array.from({ length: 16 }, (_, i) => `s3://lake/${i}/`).join('\n'));
-    expect(save).toBeEnabled();
+    expectAvailable(save);
     await user.clear(screen.getByLabelText('Catalog URL'));
-    expect(save).toBeDisabled();
+    expectUnavailable(save);
   });
   it('offers no kind to choose when it edits a PostgreSQL connection after a new connection fetched the driver list', async () => {
     const postgres = {
@@ -407,7 +412,7 @@ describe('Iceberg connection rules the first tests missed', () => {
     };
     const { user } = await mount(undefined, undefined, postgres, true);
     await user.click(await screen.findByRole('button', { name: 'New connection' }));
-    await screen.findByLabelText('Connection type');
+    await screen.findByRole('combobox', { name: 'Connection type' });
     await user.click(screen.getByRole('button', { name: 'Cancel' }));
     await user.click(await screen.findByRole('button', { name: 'Edit connection orders-db' }));
     await screen.findByLabelText('Host');
@@ -415,6 +420,8 @@ describe('Iceberg connection rules the first tests missed', () => {
   });
 });
 
+/** The sentence that says whether the probe confirms the connection: the one live region of the dialog that is named. */
+const verdictIn = (dialog: HTMLElement) => within(dialog).getByRole('status', { name: 'Verdict of the probe' });
 const PROBE_PERMISSIONS = ['namespace:read', 'database:manage', 'secret:read', 'run:read', 'run:start', 'database:use', 'database:adhoc'];
 const PROBE_URL = 'GET /namespaces/ns-1/connections/lake-main/probe';
 const checks = (...outcomes: [string, string?][]) => ['CATALOG_AUTH', 'WAREHOUSE', 'STORAGE_ACCESS'].map((check, i) => ({ check, outcome: outcomes[i]?.[0] ?? 'SKIPPED', ...(outcomes[i]?.[1] ? { code: outcomes[i]?.[1] } : {}) }));
@@ -456,13 +463,13 @@ describe('The probe of an Iceberg connection', () => {
       expect.stringContaining('Catalog authentication'), expect.stringContaining('Warehouse'), expect.stringContaining('Storage access'),
     ]);
     for (const row of rows) expect(row).toHaveTextContent('Passed');
-    expect(within(dialog).getByRole('status')).toHaveTextContent('Confirmed: every check passed for revision 4.');
+    expect(verdictIn(dialog)).toHaveTextContent('Confirmed: every check passed for revision 4.');
   });
   it('does not confirm a connection whose check failed, and shows the closed code of the failure', async () => {
     const { dialog } = await probeOf(probed({ failureCode: 'STORAGE_UNAVAILABLE', checks: checks(['PASSED'], ['PASSED'], ['FAILED', 'STORAGE_UNAVAILABLE']) }));
     const list = await within(dialog).findByRole('list', { name: 'Checks of the probe' });
     expect(within(list).getAllByRole('listitem')[2]).toHaveTextContent(/Failed.*STORAGE_UNAVAILABLE/);
-    expect(within(dialog).getByRole('status')).toHaveTextContent('Not confirmed');
+    expect(verdictIn(dialog)).toHaveTextContent('Not confirmed');
     expect(within(dialog).queryByText(/Confirmed: every check passed/)).not.toBeInTheDocument();
   });
   it('shows a check that did not run as skipped and not as passed, and does not confirm the connection', async () => {
@@ -470,16 +477,16 @@ describe('The probe of an Iceberg connection', () => {
     const rows = within(await within(dialog).findByRole('list', { name: 'Checks of the probe' })).getAllByRole('listitem');
     expect(rows[1]).toHaveTextContent('Skipped');
     expect(rows[1]).not.toHaveTextContent('Passed');
-    expect(within(dialog).getByRole('status')).toHaveTextContent('Not confirmed');
+    expect(verdictIn(dialog)).toHaveTextContent('Not confirmed');
   });
   it('does not confirm a connection when one check passed and another was skipped', async () => {
     const { dialog } = await probeOf(probed({ checks: checks(['PASSED'], ['PASSED'], ['SKIPPED']) }));
     await within(dialog).findByRole('list', { name: 'Checks of the probe' });
-    expect(within(dialog).getByRole('status')).toHaveTextContent('Not confirmed');
+    expect(verdictIn(dialog)).toHaveTextContent('Not confirmed');
   });
   it('does not take a probe with no checks for a healthy connection', async () => {
     const { dialog } = await probeOf(probed({ failureCode: 'DATABASE_RESULT_UNAVAILABLE' }));
-    expect(await within(dialog).findByRole('status')).toHaveTextContent(/cannot be read.*not confirmed/);
+    expect(await within(dialog).findByRole('status', { name: 'Verdict of the probe' })).toHaveTextContent(/cannot be read.*not confirmed/);
     expect(within(dialog).queryByRole('list', { name: 'Checks of the probe' })).not.toBeInTheDocument();
     expect(within(dialog).queryByText(/Confirmed: every check passed/)).not.toBeInTheDocument();
   });
@@ -497,7 +504,7 @@ describe('The probe of an Iceberg connection', () => {
   it('shows a probe that the platform failed with its code and no checks, and does not confirm it', async () => {
     const { dialog } = await probeOf(probed({ run: { runId: 'run-9', status: 'FAILED' }, failureCode: 'LAKE_SANDBOX_UNAVAILABLE' }));
     expect(await within(dialog).findByText('LAKE_SANDBOX_UNAVAILABLE')).toBeInTheDocument();
-    expect(within(dialog).getByRole('status')).toHaveTextContent('Not confirmed');
+    expect(verdictIn(dialog)).toHaveTextContent('Not confirmed');
   });
   it('starts the probe of the current revision', async () => {
     const { user, platform, dialog } = await probeOf(null, { 'POST /namespaces/ns-1/connections/lake-main/probe': () => ({ runId: 'run-10', status: 'RUNNING' }) });

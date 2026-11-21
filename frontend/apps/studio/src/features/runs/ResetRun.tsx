@@ -1,19 +1,14 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { useEffect, useId, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
-import { Link, useNavigate } from 'react-router';
+import { useNavigate } from 'react-router';
 import { path } from '../../api/client';
 import { ApiError, isApiError } from '../../api/errors';
 import { isTerminal } from '../../api/follow';
 import type { ResetWrite } from '../../api/endpoints';
 import type { ReapplyEntry, ReapplyPolicy, Reset, ResetPlan, ResetPoint } from '../../api/types';
 import { useApp, useCan, useNamespace, useSession } from '../../app/context';
-import { Banner } from '../../ui/Banner';
-import { Button } from '../../ui/Button';
-import { Dialog } from '../../ui/Dialog';
-import { ErrorState } from '../../ui/ErrorState';
-import { Field } from '../../ui/Field';
-import { useAnnounce } from '../../ui/Announcer';
+import { Actions, Banner, Button, Checkbox, Dialog, Disclosure, ErrorState, Heading, Hint, Link, Loading, RadioGroup, Stack, Text, TextArea, useAnnounce } from '../../ui';
 import { refusal } from './OperationDialog';
 import { MAX_REASON, checkReason } from './ops';
 import { clip, formatLocal } from './time';
@@ -176,7 +171,6 @@ function ResetForm({ runId, businessId, cancelSource, onClose }: { runId: string
   const [submitted, setSubmitted] = useState(false);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<unknown>(undefined);
-  const cannotTellId = useId();
   // The key goes with the exact request: sending the same thing again (after a timeout) keeps it, so the platform
   // makes one reset; changing anything makes a new one.
   const previous = useRef<{ print: string; key: string } | undefined>(undefined);
@@ -301,100 +295,84 @@ function ResetForm({ runId, businessId, cancelSource, onClose }: { runId: string
   if (made !== undefined) return notMade(made) ? <ResetNotMade made={made} onClose={onClose} /> : <ResetMade made={made} onClose={onClose} />;
 
   return (
-    <form onSubmit={submit} noValidate className="rn-decision">
-      {cancelSource ? (
-        <Banner tone="warn" title="This run has not ended.">
-          Confirming cancels it, in the ordinary way. The new run is made once it has ended; if the reset can no longer be made by then, or the run has not ended within the time the platform waits for it, the reset fails and the list of resets made from this run says why.
-        </Banner>
-      ) : null}
-      <p>A reset starts a new run from a point of this run: what the run had done up to the point is kept as it was, and the new run goes on from there.{cancelSource ? '' : ' This run stays as it is.'}</p>
-      <p className="rn-audit">This decision is recorded with your name and reason.</p>
+    <form onSubmit={submit} noValidate>
+      <Stack gap={3}>
+        {cancelSource ? (
+          <Banner tone="warn" title="This run has not ended.">
+            Confirming cancels it, in the ordinary way. The new run is made once it has ended; if the reset can no longer be made by then, or the run has not ended within the time the platform waits for it, the reset fails and the list of resets made from this run says why.
+          </Banner>
+        ) : null}
+        <Text>A reset starts a new run from a point of this run: what the run had done up to the point is kept as it was, and the new run goes on from there.{cancelSource ? '' : ' This run stays as it is.'}</Text>
+        <Hint>This decision is recorded with your name and reason.</Hint>
 
-      {pointsError !== undefined ? <ErrorState error={pointsError} what="Reading where this run can be reset to" /> : null}
-      {points === undefined && pointsError === undefined ? <p role="status">Reading where this run can be reset to…</p> : null}
-      {points !== undefined && points.length === 0 ? (
-        <Banner tone="info" title="This run cannot be reset to any point.">
-          A point is the start of the run, or the end of a step at its root where nothing else was in flight.
-        </Banner>
-      ) : null}
-      {points !== undefined && points.length > 0 ? (
-        <fieldset className="rn-outcome">
-          <legend>Reset to</legend>
-          {points.map((point) => (
-            <label key={point.sequence}>
-              <input type="radio" name="point" value={point.sequence} checked={chosen === point.sequence} onChange={() => choose(point.sequence)} /> {pointLabel(point)}{' '}
-              <span className="hint">({formatLocal(point.occurredAt)})</span>
-            </label>
-          ))}
-        </fieldset>
-      ) : null}
-      {points !== undefined && points.length > 0 ? (
-        <fieldset className="rn-outcome">
-          <legend>Deliver again what the run received after that point</legend>
-          {POLICIES.map((policy) => (
-            <label key={policy.value}>
-              <input type="radio" name="reapply" value={policy.value} checked={reapply === policy.value} onChange={() => chooseReapply(policy.value)} /> {policy.label}
-            </label>
-          ))}
-          <span className="hint">They go to the new run in the order they arrived, when it is made. A signal that nothing waits for ends the signals; an update goes only to the state it was applied to.</span>
-        </fieldset>
-      ) : null}
-      {submitted && chosen === undefined && points !== undefined && points.length > 0 ? (
-        <span className="error" role="alert">
-          Choose where to reset the run to.
-        </span>
-      ) : null}
+        {pointsError !== undefined ? <ErrorState error={pointsError} what="Reading where this run can be reset to" /> : null}
+        {points === undefined && pointsError === undefined ? <Loading>Reading where this run can be reset to…</Loading> : null}
+        {points !== undefined && points.length === 0 ? (
+          <Banner tone="info" title="This run cannot be reset to any point.">
+            A point is the start of the run, or the end of a step at its root where nothing else was in flight.
+          </Banner>
+        ) : null}
+        {points !== undefined && points.length > 0 ? (
+          <RadioGroup
+            label="Reset to"
+            error={submitted && chosen === undefined ? 'Choose where to reset the run to.' : undefined}
+            value={chosen === undefined ? '' : String(chosen)}
+            onChange={(next) => choose(Number(next))}
+            options={points.map((point) => ({ value: String(point.sequence), label: `${pointLabel(point)} (${formatLocal(point.occurredAt)})` }))}
+          />
+        ) : null}
+        {points !== undefined && points.length > 0 ? (
+          <RadioGroup
+            label="Deliver again what the run received after that point"
+            hint="They go to the new run in the order they arrived, when it is made. A signal that nothing waits for ends the signals; an update goes only to the state it was applied to."
+            value={reapply}
+            onChange={chooseReapply}
+            options={POLICIES}
+          />
+        ) : null}
 
-      {planError !== undefined ? <ErrorState error={planError} what="Reading what the reset would do" /> : null}
-      {chosen !== undefined && plan === undefined && planError === undefined ? <p role="status">Reading what the reset would do…</p> : null}
-      {plan !== undefined ? <Plan plan={plan} policy={reapply} /> : null}
+        {planError !== undefined ? <ErrorState error={planError} what="Reading what the reset would do" /> : null}
+        {chosen !== undefined && plan === undefined && planError === undefined ? <Loading>Reading what the reset would do…</Loading> : null}
+        {plan !== undefined ? <Plan plan={plan} policy={reapply} /> : null}
 
-      {plan !== undefined && mustAcknowledge ? (
-        <div>
-          <label>
-            <input type="checkbox" checked={acknowledged} aria-describedby={cancelSource ? cannotTellId : undefined} onChange={(event) => setAcknowledged(event.target.checked)} />{' '}
-            {cancelSource
-              ? 'I know that steps that completed after the point, including any that complete before this run ends, will run again, and that running them again repeats what they did.'
-              : 'I know that these steps ran before and will run again, and that running them again repeats what they did.'}
-          </label>
-          {cancelSource ? (
-            <span id={cannotTellId} className="hint">
-              The Studio cannot tell which steps will complete while the run is being cancelled, so this is always asked.
-            </span>
-          ) : null}
-          {acknowledgeProblem ? (
-            <span className="error" role="alert">
-              {acknowledgeProblem}
-            </span>
-          ) : null}
-        </div>
-      ) : null}
+        {plan !== undefined && mustAcknowledge ? (
+          <Checkbox
+            label={
+              cancelSource
+                ? 'I know that steps that completed after the point, including any that complete before this run ends, will run again, and that running them again repeats what they did.'
+                : 'I know that these steps ran before and will run again, and that running them again repeats what they did.'
+            }
+            {...(cancelSource ? { hint: 'The Studio cannot tell which steps will complete while the run is being cancelled, so this is always asked.' } : {})}
+            error={acknowledgeProblem}
+            checked={acknowledged}
+            onChange={setAcknowledged}
+          />
+        ) : null}
 
-      {businessId !== undefined ? (
-        <fieldset className="rn-outcome">
-          <legend>Business identifier {clip(businessId, 60)}</legend>
-          <label>
-            <input type="radio" name="business" checked={!dropId} onChange={() => setDropId(false)} /> Keep it on the new run (refused while another open run holds it)
-          </label>
-          <label>
-            <input type="radio" name="business" checked={dropId} onChange={() => setDropId(true)} /> Start the new run without it
-          </label>
-        </fieldset>
-      ) : null}
+        {businessId !== undefined ? (
+          <RadioGroup
+            label={`Business identifier ${clip(businessId, 60)}`}
+            value={dropId ? 'drop' : 'keep'}
+            onChange={(next) => setDropId(next === 'drop')}
+            options={[
+              { value: 'keep', label: 'Keep it on the new run (refused while another open run holds it)' },
+              { value: 'drop', label: 'Start the new run without it' },
+            ]}
+          />
+        ) : null}
 
-      <Field label="Reason" hint={`8 to ${MAX_REASON} characters, kept with the decision. ${reasonCheck.length} / ${MAX_REASON}`} error={reasonProblem}>
-        <textarea ref={reasonRef} value={reason} rows={4} onChange={(event) => setReason(event.target.value)} />
-      </Field>
+        <TextArea label="Reason" hint={`8 to ${MAX_REASON} characters, kept with the decision. ${reasonCheck.length} / ${MAX_REASON}`} error={reasonProblem} ref={reasonRef} value={reason} rows={4} onChange={setReason} />
 
-      {error !== undefined ? <ErrorState error={resetRefusal(error)} what="Resetting the run" /> : null}
+        {error !== undefined ? <ErrorState error={resetRefusal(error)} what="Resetting the run" /> : null}
 
-      <div className="dialog-actions">
-        {/* "Cancel" beside a button that cancels the run would be read as the run being cancelled */}
-        <Button onClick={onClose}>{cancelSource ? 'Do not cancel the run' : 'Cancel'}</Button>
-        <Button type="submit" variant="primary" disabled={sending} aria-disabled={plan === undefined ? true : undefined}>
-          {sending ? 'Sending…' : cancelSource ? 'Confirm: cancel the run and reset it when it ends' : 'Confirm: reset the run'}
-        </Button>
-      </div>
+        <Actions>
+          {/* "Cancel" beside a button that cancels the run would be read as the run being cancelled */}
+          <Button onClick={onClose}>{cancelSource ? 'Do not cancel the run' : 'Cancel'}</Button>
+          <Button type="submit" variant="primary" disabled={sending} aria-disabled={plan === undefined ? true : undefined}>
+            {sending ? 'Sending…' : cancelSource ? 'Confirm: cancel the run and reset it when it ends' : 'Confirm: reset the run'}
+          </Button>
+        </Actions>
+      </Stack>
     </form>
   );
 }
@@ -402,15 +380,15 @@ function ResetForm({ runId, businessId, cancelSource, onClose }: { runId: string
 /** What a reset to the chosen point keeps and what it runs again, by step, with what each declares. */
 function Plan({ plan, policy }: { plan: ResetPlan; policy: ReapplyPolicy }) {
   return (
-    <section aria-label="What the reset does" className="rn-plan">
-      <p>
+    <Stack gap={2} as="section" aria-label="What the reset does">
+      <Text>
         <strong>Kept as it was:</strong> {plan.restored.length === 0 ? 'nothing; the new run starts from the beginning.' : plan.restored.map((step) => `${clip(step.node, 60)}${step.kind === 'APPROVAL' ? ' (an approval decision)' : ''}`).join(', ')}
-      </p>
-      <p>
+      </Text>
+      <Text>
         <strong>Runs again:</strong> {plan.reexecuted.length === 0 ? 'nothing; the run has nothing left to do.' : null}
-      </p>
+      </Text>
       {plan.reexecuted.length > 0 ? (
-        <ul>
+        <ul className="rn-plain-list">
           {plan.reexecuted.map((step) => (
             <li key={step.node}>
               {clip(step.node, 60)}
@@ -421,43 +399,43 @@ function Plan({ plan, policy }: { plan: ResetPlan; policy: ReapplyPolicy }) {
         </ul>
       ) : null}
       {policy === 'NONE' ? null : plan.reapply.length === 0 ? (
-        <p>
+        <Text>
           <strong>Delivered again:</strong> nothing came after this point.
-        </p>
+        </Text>
       ) : (
         <>
-          <p>
+          <Text>
             <strong>Delivered again, in this order:</strong>
-          </p>
-          <ul>
+          </Text>
+          <ul className="rn-plain-list">
             {plan.reapply.map((entry) => (
               <li key={entry.sequence}>{entryLabel(entry)}</li>
             ))}
           </ul>
         </>
       )}
-    </section>
+    </Stack>
   );
 }
 
 /** What the person is told when the reset is not a new run yet (the run is being cancelled), or never will be (it failed). */
 function ResetNotMade({ made, onClose }: { made: Reset; onClose: () => void }) {
   return (
-    <div className="rn-decision">
+    <Stack gap={3}>
       {made.state === 'FAILED' ? (
-        <p>The reset could not be made: {failureWords(made.failureReason)}.</p>
+        <Text>The reset could not be made: {failureWords(made.failureReason)}.</Text>
       ) : (
         <>
-          <p>The run is being cancelled.</p>
-          <p>The new run is made once it has ended; you will find it under Resets made from this run. If the reset can no longer be made by then, or the run has not ended within the time the platform waits for it, that list says why.</p>
+          <Text>The run is being cancelled.</Text>
+          <Text>The new run is made once it has ended; you will find it under Resets made from this run. If the reset can no longer be made by then, or the run has not ended within the time the platform waits for it, that list says why.</Text>
         </>
       )}
-      <div className="dialog-actions">
+      <Actions>
         <Button variant="primary" onClick={onClose}>
           Close
         </Button>
-      </div>
-    </div>
+      </Actions>
+    </Stack>
   );
 }
 
@@ -466,19 +444,19 @@ function ResetMade({ made, onClose }: { made: Reset; onClose: () => void }) {
   const navigate = useNavigate();
   const report = made.reapplyReport ?? [];
   return (
-    <div className="rn-decision">
-      <p>The reset was made. The new run starts from that point.</p>
-      <section aria-label="What was delivered again" className="rn-plan">
-        <p>
+    <Stack gap={3}>
+      <Text>The reset was made. The new run starts from that point.</Text>
+      <Stack gap={2} as="section" aria-label="What was delivered again">
+        <Text>
           <strong>Delivered again, in the order the run received them:</strong>
-        </p>
-        <ul>
+        </Text>
+        <ul className="rn-plain-list">
           {report.map((entry) => (
             <li key={entry.sequence}>{entryLabel(entry)}</li>
           ))}
         </ul>
-      </section>
-      <div className="dialog-actions">
+      </Stack>
+      <Actions>
         <Button onClick={onClose}>Close</Button>
         {made.newRunId ? (
           <Button
@@ -491,8 +469,8 @@ function ResetMade({ made, onClose }: { made: Reset; onClose: () => void }) {
             Open the new run
           </Button>
         ) : null}
-      </div>
-    </div>
+      </Actions>
+    </Stack>
   );
 }
 
@@ -520,29 +498,30 @@ export function ResetsMade({ runId }: { runId: string }) {
   const items = query.data?.items ?? [];
   if (items.length === 0) return null;
   return (
-    <section aria-label="Resets made from this run" className="rn-resets">
-      <h2>Resets made from this run</h2>
-      <ul>
+    <Stack gap={2} as="section" aria-label="Resets made from this run">
+      <Heading level={2} look={4}>
+        Resets made from this run
+      </Heading>
+      <ul className="rn-plain-list">
         {items.map((reset) => (
           <li key={reset.resetId}>
-            {reset.newRunId ? <Link to={path`/runs/${reset.newRunId}`}>A run reset to point {reset.sequence}</Link> : <>A reset to point {reset.sequence}</>}{' '}
-            <span className="hint">
+            {reset.newRunId ? <Link to={path`/runs/${reset.newRunId}`}>{`A run reset to point ${reset.sequence}`}</Link> : <>A reset to point {reset.sequence}</>}{' '}
+            <span className="rn-quiet">
               ({stateWords(reset)}
               {reset.createdAt ? `, ${formatLocal(reset.createdAt)}` : ''})
             </span>
             {(reset.reapplyReport ?? []).length > 0 ? (
-              <details>
-                <summary>Delivered again ({(reset.reapplyReport ?? []).length})</summary>
-                <ul>
+              <Disclosure summary={`Delivered again (${(reset.reapplyReport ?? []).length})`}>
+                <ul className="rn-plain-list">
                   {(reset.reapplyReport ?? []).map((entry) => (
                     <li key={entry.sequence}>{entryLabel(entry)}</li>
                   ))}
                 </ul>
-              </details>
+              </Disclosure>
             ) : null}
           </li>
         ))}
       </ul>
-    </section>
+    </Stack>
   );
 }

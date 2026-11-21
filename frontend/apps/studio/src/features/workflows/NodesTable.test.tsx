@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { emptyDocument } from '../../model/ir';
 import type { IrDocument } from '../../model/ir';
 import { NodesTable, VIRTUAL_ABOVE } from './NodesTable';
+import { expectAvailable, expectUnavailable } from '../../../test/ui';
 
 const none = new Map<string, number>();
 
@@ -61,9 +62,9 @@ describe('NodesTable', () => {
 
   it('does not offer to connect a node that has no way out, or to make the first step the first step again', () => {
     table({ ...chain(2), nodes: [...chain(2).nodes, { id: 'z', type: 'end' }] });
-    expect(screen.getByRole('button', { name: 'Connect z…' })).toBeDisabled();
-    expect(screen.getByRole('button', { name: 'Set n0 as first step' })).toBeDisabled();
-    expect(screen.getByRole('button', { name: 'Set n1 as first step' })).toBeEnabled();
+    expectUnavailable(screen.getByRole('button', { name: 'Connect z…' }));
+    expectUnavailable(screen.getByRole('button', { name: 'Set n0 as first step' }));
+    expectAvailable(screen.getByRole('button', { name: 'Set n1 as first step' }));
   });
 
   it('has no editing actions when it only displays', () => {

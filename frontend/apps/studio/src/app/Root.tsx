@@ -1,6 +1,6 @@
 import { QueryClientProvider } from '@tanstack/react-query';
 import { RouterProvider, createBrowserRouter } from 'react-router';
-import { AnnouncerProvider } from '../ui/Announcer';
+import { AnnouncerProvider, UiProvider } from '../ui';
 import { useMemo } from 'react';
 import { CALLBACK_PATH } from '../auth/oidc';
 import { AppContext, useApp, useSession } from './context';
@@ -14,9 +14,11 @@ export function Root({ app }: { app: App }) {
   return (
     <AppContext.Provider value={app}>
       <QueryClientProvider client={app.queries}>
-        <AnnouncerProvider>
-          <Gate />
-        </AnnouncerProvider>
+        <UiProvider>
+          <AnnouncerProvider>
+            <Gate />
+          </AnnouncerProvider>
+        </UiProvider>
       </QueryClientProvider>
     </AppContext.Provider>
   );

@@ -1,12 +1,7 @@
 import { useQueryClient } from '@tanstack/react-query';
 import { useEffect, useRef, useState } from 'react';
 import { isApiError } from '../../api/errors';
-import { useAnnounce } from '../../ui/Announcer';
-import { Banner } from '../../ui/Banner';
-import { Button } from '../../ui/Button';
-import { Dialog } from '../../ui/Dialog';
-import { ErrorState } from '../../ui/ErrorState';
-import { StatusBadge } from '../../ui/StatusBadge';
+import { Actions, Banner, Button, Code, Dialog, ErrorState, Hint, Loading, Stack, StatusBadge, Text, useAnnounce } from '../../ui';
 import type { ScriptVersion, ScriptsApi } from './api';
 import { CopyButton } from './CopyButton';
 import type { DraftSaver } from './draft';
@@ -139,63 +134,64 @@ function PublishBody({ api, scriptId, saver, tested, language, onClose }: { api:
 
   const busy = phase === 'saving' || phase === 'asking';
   return (
-    <div className="publish">
+    <Stack gap={3}>
       {phase === 'review' || busy ? (
         <>
-          <p>
+          <Text>
             Publishing freezes the saved draft as the next numbered version and builds it in isolation. The version can be used by a workflow only when the build succeeds; a version never changes after it is published.
-          </p>
+          </Text>
           {tested?.kind === 'passed' ? <Banner tone="ok">{testednessText(tested)}</Banner> : null}
           {tested !== undefined && tested.kind !== 'passed' ? (
             <Banner tone="warn" title="Not tested.">
               {testednessText(tested)} The platform does not require a test run before publishing, so you can go on; trying it first in the sandbox is better.
             </Banner>
           ) : null}
-          {language === 'typescript' ? <p className="hint">TypeScript types are erased when the version is built and are not checked by the platform.</p> : null}
+          {language === 'typescript' ? <Hint>TypeScript types are erased when the version is built and are not checked by the platform.</Hint> : null}
           {message ? <Banner tone="error">{message}</Banner> : null}
           {error !== undefined ? <ErrorState error={error} what="Publishing" /> : null}
-          <div className="dialog-actions">
+          <Actions>
             <Button onClick={onClose}>Cancel</Button>
             <Button variant="primary" onClick={() => void publish()} disabled={busy}>
               {phase === 'saving' ? 'Saving the draft…' : phase === 'asking' ? 'Publishing…' : 'Publish version'}
             </Button>
-          </div>
+          </Actions>
         </>
       ) : (
         <div ref={outcome} tabIndex={-1} className="publish-outcome">
+          <Stack gap={3}>
           {version ? (
-            <p>
+            <Text>
               Version <strong>{version.number}</strong>{' '}
               <StatusBadge view={versionStatus(version.status)} />
               {!created ? ' — the draft is the same as this version, so no new version was made.' : ''}
-            </p>
+            </Text>
           ) : null}
-          {phase === 'building' ? <p role="status">Building in isolation. This usually takes a few seconds; the Studio looks every second or so, and for at most ten minutes.</p> : null}
+          {phase === 'building' ? <Loading>Building in isolation. This usually takes a few seconds; the Studio looks every second or so, and for at most ten minutes.</Loading> : null}
           {phase === 'ready' && version?.artifactDigest ? (
             <>
-              <p>
+              <Text>
                 <strong>Artifact digest</strong>
-              </p>
-              <p>
+              </Text>
+              <div>
                 <code className="digest">{version.artifactDigest}</code>
-              </p>
-              <p>
+              </div>
+              <div>
                 <CopyButton text={version.artifactDigest} label="Copy digest" what={`the digest of version ${version.number}`} />
-              </p>
-              <p>Use this digest in a Script node of a workflow.</p>
+              </div>
+              <Text>Use this digest in a Script node of a workflow.</Text>
               {version.activity ? (
-                <p className="hint">
-                  Workers bind it by its activity name, <code>{clipLabel(version.activity, 100)}</code>.
-                </p>
+                <Hint>
+                  Workers bind it by its activity name, <Code>{clipLabel(version.activity, 100)}</Code>.
+                </Hint>
               ) : null}
             </>
           ) : null}
           {phase === 'failed' && version ? (
             <>
               <Banner tone="error" title="The build failed.">
-                {(version.failureCode || version.failure) ? <code>{clipLabel(version.failureCode || version.failure || '', 300)}</code> : 'The platform gave no reason.'} {buildFailureHelp(version.failureCode ?? version.failure)} Nothing can use this version. {version.failureCode === 'STORAGE_QUOTA_EXCEEDED' ? 'Publish again after capacity is available.' : 'Fix the draft and publish again.'}
+                {(version.failureCode || version.failure) ? <Code>{clipLabel(version.failureCode || version.failure || '', 300)}</Code> : 'The platform gave no reason.'} {buildFailureHelp(version.failureCode ?? version.failure)} Nothing can use this version. {version.failureCode === 'STORAGE_QUOTA_EXCEEDED' ? 'Publish again after capacity is available.' : 'Fix the draft and publish again.'}
               </Banner>
-              {version.buildLogTruncated ? <p role="status">Build diagnostics were truncated by the retained-log limit.</p> : null}
+              {version.buildLogTruncated ? <Hint role="status">Build diagnostics were truncated by the retained-log limit.</Hint> : null}
               {version.buildLog ? <LogView text={version.buildLog} label="Build log" empty="(empty)" /> : null}
             </>
           ) : null}
@@ -205,13 +201,14 @@ function PublishBody({ api, scriptId, saver, tested, language, onClose }: { api:
             </Banner>
           ) : null}
           {phase === 'error' ? <ErrorState error={error} what="Reading the build" /> : null}
-          <div className="dialog-actions">
+          <Actions>
             <Button variant="primary" onClick={onClose}>
               Close
             </Button>
-          </div>
+          </Actions>
+          </Stack>
         </div>
       )}
-    </div>
+    </Stack>
   );
 }

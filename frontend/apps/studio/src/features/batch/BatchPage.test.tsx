@@ -6,6 +6,7 @@ import { AUTH_CONTEXT, TOKEN, fakePlatform, renderApp } from '../../../test/rend
 import type { Routes as Scripted } from '../../../test/render';
 import type { BatchJob } from '../../api/endpoints';
 import { createApp } from '../../app/context';
+import { chooseValue } from '../../../test/ui';
 import { BatchPage } from './BatchPage';
 
 const NS = '0194f5e2-7b1c-7000-8000-0000000000a1';
@@ -52,7 +53,7 @@ describe('A batch job', () => {
     await mount();
     expect(await screen.findByRole('heading', { name: /Batch job: Retry a step/ })).toBeVisible();
     expect(screen.getByText(/25 of 40 runs have an outcome \(62%\)/)).toBeVisible();
-    expect(screen.getByRole('progressbar', { name: 'Runs with an outcome' })).toHaveAttribute('value', '25');
+    expect(screen.getByRole('progressbar', { name: 'Runs with an outcome' })).toHaveAttribute('aria-valuenow', '25');
     const counts = within(screen.getByText('Succeeded', { selector: 'dt' }).closest('dl') as HTMLElement);
     expect(counts.getByText('To be tried again').nextSibling).toHaveTextContent('3');
     const table = await screen.findByRole('table', { name: /what became of each/ });
@@ -92,7 +93,7 @@ describe('A batch job', () => {
         [`GET ${BASE}/items`]: () => ({ items: ended ? [item(1, 'SUCCEEDED')] : [], nextCursor: null }),
       },
     });
-    expect(await screen.findByText('No run has been selected yet.')).toBeVisible();
+    expect(await screen.findByRole('heading', { name: 'No run has been selected yet.' })).toBeVisible();
     const reads = () => platform.calls.filter((call) => call.method === 'GET' && call.url.includes(`${BASE}/items`)).length;
     expect(reads()).toBe(1);
     // the page follows the job every two seconds while it works: this is one of those reads, after the job has ended
@@ -100,13 +101,13 @@ describe('A batch job', () => {
     await app.queries.invalidateQueries({ queryKey: ['batch', NS, JOB] });
     const table = await screen.findByRole('table', { name: /what became of each/ });
     expect(within(table).getAllByRole('row')).toHaveLength(2);
-    expect(screen.queryByText(/The job took no run|No run has been selected yet/)).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: /The job took no run|No run has been selected yet/ })).not.toBeInTheDocument();
   });
 
   it('asks the platform for the outcome a person filters by', async () => {
     const { user, platform } = await mount();
     await screen.findByRole('table', { name: /what became of each/ });
-    await user.selectOptions(screen.getByLabelText('Outcome'), 'SKIPPED');
+    await chooseValue(user, 'Outcome', 'SKIPPED');
     await waitFor(() => expect(platform.calls.some((call) => call.url.includes('/items') && call.url.includes('state=SKIPPED'))).toBe(true));
   });
 

@@ -1,6 +1,7 @@
-import { fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { fireEvent, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { BASE, ID, NS, WORKFLOW, bodyOf, described, failure, json, keyOf, mountSchedules, schedule, writes } from '../../../test/schedules';
+import { chooseValue, optionsOf, selector, valueOf } from '../../../test/ui';
 import { ScheduleFormPage } from './ScheduleFormPage';
 
 const create = (options: { permissions?: string[]; routes?: Record<string, (init: RequestInit, url: string) => unknown> } = {}) =>
@@ -11,16 +12,23 @@ const edit = (options: { permissions?: string[]; routes?: Record<string, (init: 
 async function fillMinimum(user: Awaited<ReturnType<typeof create>>['user'], name = 'nightly') {
   await screen.findByRole('heading', { name: 'New schedule' });
   await user.type(screen.getByLabelText('Name'), name);
-  await user.selectOptions(await screen.findByLabelText('Workflow'), WORKFLOW);
+  await chooseValue(user, await screen.findByRole('combobox', { name: 'Workflow' }), WORKFLOW);
+}
+
+/** The values a selector offers, in their order, after opening it. */
+async function valuesOf(user: Awaited<ReturnType<typeof create>>['user'], name: string): Promise<string[]> {
+  await optionsOf(user, name);
+  const list = document.getElementById(selector(name).getAttribute('aria-controls') ?? '');
+  return [...(list?.querySelectorAll('[data-option-value]') ?? [])].map((option) => option.getAttribute('data-option-value') ?? '');
 }
 
 describe('Creating a schedule', () => {
   it('offers only the workflows that have a published version', async () => {
-    await create();
-    const select = await screen.findByLabelText('Workflow');
-    await waitFor(() => expect(screen.getByRole('option', { name: 'nightly-report' })).toBeVisible());
-    expect(screen.queryByRole('option', { name: 'unpublished' })).not.toBeInTheDocument();
-    expect(select).toHaveValue('');
+    const { user } = await create();
+    const select = await screen.findByRole('combobox', { name: 'Workflow' });
+    await waitFor(async () => expect(await optionsOf(user, select)).toContain('nightly-report'));
+    expect(await optionsOf(user, select)).not.toContain('unpublished');
+    expect(valueOf(select)).toBe('');
   });
 
   it('posts what was typed, once, and goes to the new schedule', async () => {
@@ -29,8 +37,8 @@ describe('Creating a schedule', () => {
     fireEvent.change(screen.getByLabelText('Input'), { target: { value: '{"region":"eu"}' } });
     await user.clear(screen.getByLabelText('Every'));
     await user.type(screen.getByLabelText('Every'), '6');
-    await user.selectOptions(screen.getByLabelText('Unit'), 'HOURS');
-    await user.selectOptions(screen.getByLabelText('When a run is still open'), 'BUFFER_ONE');
+    await chooseValue(user, 'Unit', 'HOURS');
+    await chooseValue(user, 'When a run is still open', 'BUFFER_ONE');
     await user.click(screen.getByRole('button', { name: 'Create schedule' }));
     await screen.findByRole('heading', { name: 'Schedule landing' });
     const [post] = writes(platform);
@@ -49,7 +57,7 @@ describe('Creating a schedule', () => {
   it('writes cron expressions when asked to repeat by them', async () => {
     const { user, platform } = await create({ routes: { [`POST ${BASE}`]: () => schedule() } });
     await fillMinimum(user);
-    await user.selectOptions(screen.getByLabelText('Repeat by'), 'CRON');
+    await chooseValue(user, 'Repeat by', 'CRON');
     expect(screen.queryByLabelText('Every')).not.toBeInTheDocument();
     await user.type(screen.getByLabelText('Cron expressions'), '0 9 * * 1-5');
     await user.clear(screen.getByLabelText('Time zone'));
@@ -67,7 +75,7 @@ describe('Creating a schedule', () => {
     await user.type(screen.getByLabelText('Name'), 'nightly');
     await user.click(screen.getByRole('button', { name: 'Create schedule' }));
     expect(screen.getByRole('alert')).toHaveTextContent('Choose the workflow');
-    await user.selectOptions(await screen.findByLabelText('Workflow'), WORKFLOW);
+    await chooseValue(user, await screen.findByRole('combobox', { name: 'Workflow' }), WORKFLOW);
     fireEvent.change(screen.getByLabelText('Input'), { target: { value: '[1]' } });
     await user.click(screen.getByRole('button', { name: 'Create schedule' }));
     expect(screen.getByRole('alert')).toHaveTextContent('JSON object');
@@ -116,11 +124,11 @@ describe('Editing a schedule', () => {
     await edit({ routes: { [`GET ${BASE}/${ID}`]: () => described({ note: 'for the report', remainingActions: 12 }) } });
     expect(await screen.findByRole('heading', { name: 'Edit nightly' })).toBeVisible();
     expect(screen.getByLabelText('Name')).toHaveValue('nightly');
-    await waitFor(() => expect(screen.getByLabelText('Workflow')).toHaveValue(WORKFLOW));
+    await waitFor(() => expect(valueOf('Workflow')).toBe(WORKFLOW));
     expect(screen.getByLabelText('Input')).toHaveValue('{}');
     expect(screen.getByText(/never returns the input of a schedule/)).toBeVisible();
     expect(screen.getByLabelText('Every')).toHaveValue('2');
-    expect(screen.getByLabelText('Unit')).toHaveValue('HOURS');
+    expect(valueOf('Unit')).toBe('HOURS');
     expect(screen.getByLabelText('Actions left')).toHaveValue('12');
     expect(screen.getByLabelText('Note')).toHaveValue('for the report');
   });
@@ -138,7 +146,7 @@ describe('Editing a schedule', () => {
       },
     });
     await screen.findByRole('heading', { name: 'Edit nightly' });
-    await waitFor(() => expect(screen.getByLabelText('Workflow')).toHaveValue(WORKFLOW));
+    await waitFor(() => expect(valueOf('Workflow')).toBe(WORKFLOW));
     fireEvent.change(screen.getByLabelText('Input'), { target: { value: '{"k":1}' } });
     await user.click(screen.getByRole('button', { name: 'Save changes' }));
     await screen.findByRole('heading', { name: 'Schedule landing' });
@@ -154,7 +162,7 @@ describe('Editing a schedule', () => {
   it('says so when somebody saved a newer revision meanwhile', async () => {
     const { user } = await edit({ routes: { [`PUT ${BASE}/${ID}`]: () => failure(409, 'CONFLICT', 'REVISION_CONFLICT') } });
     await screen.findByRole('heading', { name: 'Edit nightly' });
-    await waitFor(() => expect(screen.getByLabelText('Workflow')).toHaveValue(WORKFLOW));
+    await waitFor(() => expect(valueOf('Workflow')).toBe(WORKFLOW));
     await user.click(screen.getByRole('button', { name: 'Save changes' }));
     expect(await screen.findByText(/changed while you were editing/)).toBeVisible();
   });
@@ -172,7 +180,7 @@ describe('Editing a schedule', () => {
       },
     });
     await screen.findByRole('heading', { name: 'Edit nightly' });
-    await waitFor(() => expect(screen.getByLabelText('Workflow')).toHaveValue(WORKFLOW));
+    await waitFor(() => expect(valueOf('Workflow')).toBe(WORKFLOW));
     await user.click(screen.getByRole('button', { name: 'Save changes' }));
     expect(await screen.findByText(/changed while you were editing/)).toBeVisible();
     // whatever the page reads again after the conflict has been read by now
@@ -189,7 +197,7 @@ describe('Editing a schedule', () => {
     // what the page of the schedule read when it was opened: fresh for five seconds, and the platform has changed it since
     app.queries.setQueryData(['schedule', NS, ID], described({ revision: 3 }));
     await screen.findByRole('heading', { name: 'Edit nightly' });
-    await waitFor(() => expect(screen.getByLabelText('Workflow')).toHaveValue(WORKFLOW));
+    await waitFor(() => expect(valueOf('Workflow')).toBe(WORKFLOW));
     expect(app.queries.getQueryState(['schedule', NS, ID])?.isInvalidated).toBe(false);
     await user.click(screen.getByRole('button', { name: 'Save changes' }));
     expect(await screen.findByText(/changed while you were editing/)).toBeVisible();
@@ -234,6 +242,9 @@ describe('The business id of the runs of a schedule', () => {
   const CLOSED_RUN = 'If a closed run still remembers the id';
   const refusedPrefix = () =>
     json(422, { code: 'VALIDATION_FAILED', message: 'The schedule is not valid.', retryable: false, details: { reason: 'SCHEDULE_SPEC_INVALID', field: '/action/businessIdPrefix' } });
+  // What the page shows, without the live region of the design system: it keeps what it announced for about two seconds,
+  // so the message the field showed a moment ago is still there after the field has taken it off.
+  const onScreen = { ignore: 'script, style, [data-astryx-live-region]' };
   const keysOfAction = (platform: Parameters<typeof writes>[0]) => Object.keys(bodyOf(writes(platform)[0]!)['action'] as Record<string, unknown>).sort();
 
   afterEach(() => {
@@ -260,16 +271,17 @@ describe('The business id of the runs of a schedule', () => {
     await user.type(screen.getByLabelText(PREFIX), 'order');
     expect(screen.getByText(/5 of 160 characters/)).toBeVisible();
     // the defaults are what is chosen, and they are said
-    expect(screen.getByLabelText(OPEN_RUN)).toHaveValue('FAIL');
-    expect(screen.getByLabelText(CLOSED_RUN)).toHaveValue('ALLOW_DUPLICATE');
-    expect(screen.getByRole('option', { name: 'Record a conflict and start nothing (default)' })).toBeInTheDocument();
-    expect(screen.getByRole('option', { name: 'Start a new run (default)' })).toBeInTheDocument();
-    expect(screen.getByRole('option', { name: 'Record that run and start nothing' })).toBeInTheDocument();
-    expect(screen.getAllByRole('option', { name: /^Record a conflict and start nothing/ })).toHaveLength(2);
-    const closed = within(screen.getByLabelText(CLOSED_RUN)).getAllByRole<HTMLOptionElement>('option');
-    expect(closed.map((option) => option.value)).toEqual(['ALLOW_DUPLICATE', 'ALLOW_DUPLICATE_FAILED_ONLY', 'REJECT_DUPLICATE']);
-    await user.selectOptions(screen.getByLabelText(OPEN_RUN), 'USE_EXISTING');
-    await user.selectOptions(screen.getByLabelText(CLOSED_RUN), 'REJECT_DUPLICATE');
+    expect(valueOf(OPEN_RUN)).toBe('FAIL');
+    expect(valueOf(CLOSED_RUN)).toBe('ALLOW_DUPLICATE');
+    const open = await optionsOf(user, OPEN_RUN);
+    const closedOptions = await optionsOf(user, CLOSED_RUN);
+    expect(open).toContain('Record a conflict and start nothing (default)');
+    expect(closedOptions).toContain('Start a new run (default)');
+    expect(open).toContain('Record that run and start nothing');
+    expect([...open, ...closedOptions].filter((option) => /^Record a conflict and start nothing/.test(option))).toHaveLength(2);
+    expect(await valuesOf(user, CLOSED_RUN)).toEqual(['ALLOW_DUPLICATE', 'ALLOW_DUPLICATE_FAILED_ONLY', 'REJECT_DUPLICATE']);
+    await chooseValue(user, OPEN_RUN, 'USE_EXISTING');
+    await chooseValue(user, CLOSED_RUN, 'REJECT_DUPLICATE');
     await user.click(screen.getByRole('button', { name: 'Create schedule' }));
     await screen.findByRole('heading', { name: 'Schedule landing' });
     expect(bodyOf(writes(platform)[0]!)['action']).toEqual({
@@ -331,8 +343,8 @@ describe('The business id of the runs of a schedule', () => {
     await screen.findByRole('heading', { name: 'New schedule' });
     await user.type(screen.getByLabelText(PREFIX), 'order');
     expect(screen.getByText(/^If an open run holds the id, the action records a business id conflict and starts nothing; .* the action starts a new run\.$/)).toBeVisible();
-    await user.selectOptions(screen.getByLabelText(OPEN_RUN), 'USE_EXISTING');
-    await user.selectOptions(screen.getByLabelText(CLOSED_RUN), 'ALLOW_DUPLICATE_FAILED_ONLY');
+    await chooseValue(user, OPEN_RUN, 'USE_EXISTING');
+    await chooseValue(user, CLOSED_RUN, 'ALLOW_DUPLICATE_FAILED_ONLY');
     expect(screen.getByText(/^If an open run holds the id, the action records that run as the answer and starts nothing; .* starts a new run unless that run succeeded/)).toBeVisible();
     expect(screen.queryByText(/the action starts a new run\.$/)).not.toBeInTheDocument();
   });
@@ -373,7 +385,7 @@ describe('The business id of the runs of a schedule', () => {
     // the generic banner stays, with the code, for whoever has to report it
     expect(screen.getByText('SCHEDULE_SPEC_INVALID', { selector: 'code' })).toBeVisible();
     await user.type(screen.getByLabelText(PREFIX), '-2');
-    expect(screen.queryByText(/The platform refused this prefix/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/The platform refused this prefix/, onScreen)).not.toBeInTheDocument();
     expect(screen.getByLabelText(PREFIX)).toBeValid();
     refuse = false;
     await user.click(screen.getByRole('button', { name: 'Create schedule' }));
@@ -390,7 +402,7 @@ describe('The business id of the runs of a schedule', () => {
     await user.type(screen.getByLabelText(PREFIX), 'order');
     await user.click(screen.getByRole('button', { name: 'Create schedule' }));
     expect(await screen.findByText(/Creating the schedule failed/)).toBeVisible();
-    expect(screen.queryByText(/The platform refused this prefix/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/The platform refused this prefix/, onScreen)).not.toBeInTheDocument();
     expect(screen.getByLabelText(PREFIX)).toBeValid();
   });
 
@@ -415,9 +427,9 @@ describe('The business id of the runs of a schedule', () => {
     });
     await screen.findByRole('heading', { name: 'Edit nightly' });
     expect(screen.getByLabelText(PREFIX)).toHaveValue('order-');
-    expect(screen.getByLabelText(OPEN_RUN)).toHaveValue('USE_EXISTING');
-    expect(screen.getByLabelText(CLOSED_RUN)).toHaveValue('ALLOW_DUPLICATE_FAILED_ONLY');
-    await waitFor(() => expect(screen.getByLabelText('Workflow')).toHaveValue(WORKFLOW));
+    expect(valueOf(OPEN_RUN)).toBe('USE_EXISTING');
+    expect(valueOf(CLOSED_RUN)).toBe('ALLOW_DUPLICATE_FAILED_ONLY');
+    await waitFor(() => expect(valueOf('Workflow')).toBe(WORKFLOW));
     await user.click(screen.getByRole('button', { name: 'Save changes' }));
     await screen.findByRole('heading', { name: 'Schedule landing' });
     expect(bodyOf(writes(platform)[0]!)['action']).toEqual({
@@ -440,7 +452,7 @@ describe('The business id of the runs of a schedule', () => {
       },
     });
     await screen.findByRole('heading', { name: 'Edit nightly' });
-    await waitFor(() => expect(screen.getByLabelText('Workflow')).toHaveValue(WORKFLOW));
+    await waitFor(() => expect(valueOf('Workflow')).toBe(WORKFLOW));
     await user.clear(screen.getByLabelText(PREFIX));
     expect(screen.queryByLabelText(OPEN_RUN)).not.toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Save changes' }));

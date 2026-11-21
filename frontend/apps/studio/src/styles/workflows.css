@@ -1,65 +1,32 @@
-/* The workflow builder. Plain CSS on the tokens of base.css; colour is never the only signal (every
+/* The workflow builder: only the surfaces the interface module (src/ui) has no component for. Plain CSS on the tokens of base.css; colour is never the only signal (every
    state also has a word and a shape), and forced-colors mode keeps the borders. */
-
-/* ------------------------------------------------------------------ workflows list */
-.wf-page-head {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--gap);
-  margin-bottom: var(--gap);
-}
-
-.wf-page-head h1 {
-  margin: 0;
-  margin-right: auto;
-}
-
-.wf-reason {
-  color: var(--fg-muted);
-  margin: 0 0 var(--gap);
-}
-
-.btn[aria-disabled="true"] {
-  opacity: 0.6;
-  cursor: not-allowed;
-}
 
 /* ------------------------------------------------------------------ editor frame */
 .wf-editor {
   display: flex;
   flex-direction: column;
-  gap: var(--space-4);
-  min-height: calc(100vh - var(--topbar-height) - (var(--space-page-y) * 2));
+  gap: var(--spacing-2);
+  min-height: calc(100vh - var(--topbar-height) - (var(--spacing-4) * 2));
 }
 
 .wf-head {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: var(--gap);
-}
-
-.wf-head h1 {
-  margin: 0;
-  overflow-wrap: anywhere;
+  gap: var(--spacing-3);
 }
 
 .wf-toolbar {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--space-4);
+  gap: var(--spacing-2);
   align-items: center;
-}
-
-.wf-toolbar .spacer {
-  margin-left: auto;
 }
 
 .wf-tools {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--space-4);
+  gap: var(--spacing-2);
   align-items: center;
 }
 
@@ -67,79 +34,43 @@
   margin-left: auto;
 }
 
-.wf-toggle {
-  display: inline-flex;
-}
-
-.wf-toggle .btn {
-  border-radius: 0;
-}
-
-.wf-toggle .btn:first-child {
-  border-radius: var(--radius) 0 0 var(--radius);
-}
-
-.wf-toggle .btn:last-child {
-  border-radius: 0 var(--radius) var(--radius) 0;
-  margin-left: -1px;
-}
-
-/* A pressed toggle is filled and has a bar under it: not only a colour. */
-.btn[aria-pressed="true"] {
-  background: var(--accent);
-  color: var(--accent-fg);
-  border-color: var(--accent);
-  box-shadow: inset 0 -3px 0 var(--accent-fg);
-}
-
-.btn[aria-pressed="true"]:hover:not(:disabled),
-.wf-dock [role="tab"][aria-selected="true"]:hover:not(:disabled) {
-  background: var(--accent);
-  filter: brightness(1.1);
-}
-
 .wf-save {
   display: inline-flex;
-  gap: var(--space-3);
+  gap: var(--spacing-1-5);
   align-items: center;
-  padding: var(--space-1) var(--space-5);
+  padding: var(--spacing-0-5) var(--spacing-2);
   border: 1px solid currentColor;
-  border-radius: var(--radius-pill);
-  font-size: var(--font-size-mono);
-  font-weight: var(--weight-semibold);
+  border-radius: var(--radius-full);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-semibold);
 }
 
 .wf-save[data-state="saved"] {
-  color: var(--status-ok);
+  color: var(--sagat-status-ok);
 }
 .wf-save[data-state="dirty"],
 .wf-save[data-state="saving"] {
-  color: var(--status-waiting);
+  color: var(--sagat-status-waiting);
 }
 .wf-save[data-state="conflict"],
 .wf-save[data-state="failed"] {
-  color: var(--status-bad);
+  color: var(--sagat-status-bad);
 }
 .wf-save[data-state="readonly"] {
-  color: var(--status-idle);
-}
-
-.wf-publish-reason {
-  margin: 0;
-  color: var(--fg-muted);
+  color: var(--sagat-status-idle);
 }
 
 .wf-notice {
   min-height: 1.4em;
-  color: var(--fg-muted);
-  font-size: var(--font-size-mono);
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm);
 }
 
 .wf-body {
   flex: 1;
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) minmax(16.25rem, 20rem);
-  gap: var(--space-6);
+  gap: var(--spacing-3);
   align-items: start;
 }
 
@@ -183,27 +114,17 @@
   }
 }
 
-.wf-panel-title {
-  font-size: var(--font-size-list-title);
-  margin: 0 0 var(--space-4);
-}
-
 .wf-main {
   min-width: 0;
-}
-
-.wf-empty-hint {
-  margin: 0 0 var(--space-4);
-  color: var(--fg-muted);
 }
 
 /* ------------------------------------------------------------------ palette */
 .wf-palette {
   width: 11.875rem;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-panel);
-  padding: var(--space-5);
-  background: var(--bg-subtle);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-container);
+  padding: var(--spacing-2);
+  background: var(--color-background-muted);
   max-height: max(64vh, 26.25rem);
   overflow: auto;
 }
@@ -215,7 +136,7 @@
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: var(--space-3);
+  gap: var(--spacing-1-5);
 }
 
 @media (max-width: 87.5rem) {
@@ -237,27 +158,27 @@
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: var(--space-1);
+  gap: var(--spacing-0-5);
   width: 100%;
   min-height: 2.5rem;
-  padding: var(--space-3) var(--space-5);
+  padding: var(--spacing-1-5) var(--spacing-2);
   text-align: left;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-control);
-  background: var(--bg-raised);
+  border: 1px solid var(--color-border-emphasized);
+  border-radius: var(--radius-element);
+  background: var(--color-background-card);
 }
 
 .wf-kind:hover {
-  background: var(--bg-subtle);
+  background: var(--color-background-muted);
 }
 
 .wf-kind-label {
-  font-weight: var(--weight-semibold);
+  font-weight: var(--font-weight-semibold);
 }
 
 .wf-kind-desc {
-  font-size: var(--font-size-micro);
-  color: var(--fg-muted);
+  font-size: var(--font-size-sm);
+  color: var(--color-text-secondary);
 }
 
 .wf-kind[data-category="flow"] {
@@ -271,62 +192,62 @@
   border-width: 4px;
 }
 .wf-kind[data-category="end"] {
-  border-radius: var(--radius-pill);
+  border-radius: var(--radius-full);
 }
 
 /* ------------------------------------------------------------------ canvas */
 .wf-canvas {
   position: relative;
   height: max(64vh, 26.25rem);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-panel);
+  border: 1px solid var(--color-border-emphasized);
+  border-radius: var(--radius-container);
   overflow: hidden;
 }
 
 .wf-canvas .react-flow {
-  --xy-background-color-default: var(--bg-subtle);
-  --xy-edge-stroke-default: var(--fg-muted);
-  --xy-edge-stroke-selected-default: var(--accent);
-  --xy-edge-label-color-default: var(--fg);
-  --xy-edge-label-background-color-default: var(--bg);
-  --xy-handle-background-color-default: var(--bg-raised);
-  --xy-handle-border-color-default: var(--fg-muted);
-  --xy-controls-button-background-color-default: var(--bg-raised);
-  --xy-controls-button-background-color-hover-default: var(--bg-subtle);
-  --xy-controls-button-color-default: var(--fg);
-  --xy-controls-button-border-color-default: var(--border);
-  --xy-minimap-background-color-default: var(--bg-raised);
-  --xy-minimap-mask-background-color-default: var(--minimap-mask);
-  --xy-minimap-node-background-color-default: var(--fg-muted);
-  --xy-attribution-background-color-default: var(--bg-raised);
+  --xy-background-color-default: var(--color-background-muted);
+  --xy-edge-stroke-default: var(--color-text-secondary);
+  --xy-edge-stroke-selected-default: var(--color-accent);
+  --xy-edge-label-color-default: var(--color-text-primary);
+  --xy-edge-label-background-color-default: var(--color-background-surface);
+  --xy-handle-background-color-default: var(--color-background-card);
+  --xy-handle-border-color-default: var(--color-text-secondary);
+  --xy-controls-button-background-color-default: var(--color-background-card);
+  --xy-controls-button-background-color-hover-default: var(--color-background-muted);
+  --xy-controls-button-color-default: var(--color-text-primary);
+  --xy-controls-button-border-color-default: var(--color-border-emphasized);
+  --xy-minimap-background-color-default: var(--color-background-card);
+  --xy-minimap-mask-background-color-default: var(--sagat-color-minimap-mask);
+  --xy-minimap-node-background-color-default: var(--color-text-secondary);
+  --xy-attribution-background-color-default: var(--color-background-card);
 }
 
 .wf-canvas .react-flow__attribution a {
-  color: var(--fg-muted);
+  color: var(--color-text-secondary);
 }
 
 .wf-canvas .react-flow__handle {
-  width: var(--space-5);
-  height: var(--space-5);
+  width: var(--spacing-2);
+  height: var(--spacing-2);
   border-width: 2px;
 }
 
 .wf-canvas .react-flow__edge-textbg {
-  fill: var(--bg);
+  fill: var(--color-background-surface);
 }
 
 .wf-canvas .react-flow__edge-text {
-  fill: var(--fg);
+  fill: var(--color-text-primary);
 }
 
 /* RF removes the outline of a focused node; the card gets its own, and a selected card a second mark. */
 .wf-canvas .react-flow__node:focus-visible .wf-card {
-  outline: 3px solid var(--focus);
+  outline: 3px solid var(--focus-outline-color);
   outline-offset: 2px;
 }
 
 .wf-canvas .react-flow__node.selected .wf-card {
-  box-shadow: 0 0 0 3px var(--accent);
+  box-shadow: 0 0 0 3px var(--color-accent);
 }
 
 .wf-card {
@@ -336,13 +257,13 @@
   height: 100%;
   display: flex;
   flex-direction: column;
-  gap: var(--space-1);
-  padding: var(--space-4) var(--wf-port-rail) var(--space-4) var(--space-6);
-  border: 2px solid var(--border);
-  border-radius: var(--radius-nav);
-  background: var(--bg-raised);
-  color: var(--fg);
-  font-size: var(--font-size-mono);
+  gap: var(--spacing-0-5);
+  padding: var(--spacing-2) var(--wf-port-rail) var(--spacing-2) var(--spacing-3);
+  border: 2px solid var(--color-border-emphasized);
+  border-radius: var(--radius-element);
+  background: var(--color-background-card);
+  color: var(--color-text-primary);
+  font-size: var(--font-size-sm);
   line-height: 1.3;
 }
 
@@ -352,7 +273,7 @@
 }
 
 .wf-card[data-simplified="true"] {
-  padding: var(--space-2) var(--space-4);
+  padding: var(--spacing-1) var(--spacing-2);
   justify-content: center;
 }
 
@@ -360,7 +281,7 @@
   border-left-width: 8px;
 }
 .wf-card[data-category="wait"] {
-  border-radius: var(--radius-panel);
+  border-radius: var(--radius-container);
   border-style: dashed;
 }
 .wf-card[data-category="saga"] {
@@ -369,20 +290,20 @@
 }
 .wf-card[data-category="end"] {
   border-width: 3px;
-  border-radius: var(--radius-panel);
+  border-radius: var(--radius-container);
 }
 .wf-card[data-category="start"] {
   border-style: dashed;
 }
 
 .wf-card[data-problems="true"] {
-  border-color: var(--danger);
+  border-color: var(--color-text-error);
 }
 
 .wf-card-head {
   display: flex;
   align-items: flex-start;
-  gap: var(--space-3);
+  gap: var(--spacing-1-5);
   min-width: 0;
 }
 
@@ -391,63 +312,63 @@
 }
 
 .wf-kind-line {
-  font-weight: var(--weight-semibold);
+  font-weight: var(--font-weight-semibold);
   overflow-wrap: anywhere;
 }
 
 .wf-id {
   flex: 1 1 auto;
   min-width: 0;
-  font-weight: var(--weight-semibold);
+  font-weight: var(--font-weight-semibold);
   white-space: normal;
   overflow-wrap: anywhere;
-  font-family: var(--mono);
+  font-family: var(--font-family-code);
 }
 
 .wf-detail {
   white-space: normal;
   overflow-wrap: anywhere;
-  color: var(--fg-muted);
+  color: var(--color-text-secondary);
 }
 
 .wf-badges {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--space-2);
+  gap: var(--spacing-1);
   margin-top: auto;
 }
 
 .wf-badge {
   display: inline-flex;
   align-items: center;
-  gap: var(--space-1);
-  padding: 0 var(--space-3);
+  gap: var(--spacing-0-5);
+  padding: 0 var(--spacing-1-5);
   border: 1px solid currentColor;
-  border-radius: var(--radius-pill);
-  font-size: var(--font-size-micro);
-  font-weight: var(--weight-semibold);
+  border-radius: var(--radius-full);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-semibold);
   white-space: nowrap;
 }
 
 .wf-badge[data-tone="bad"] {
-  color: var(--status-bad);
+  color: var(--sagat-status-bad);
 }
 .wf-badge[data-tone="warn"] {
-  color: var(--status-waiting);
+  color: var(--sagat-status-waiting);
 }
 .wf-badge[data-tone="info"] {
-  color: var(--info);
+  color: var(--color-text-info);
 }
 .wf-badge[data-tone="ok"] {
-  color: var(--status-ok);
+  color: var(--sagat-status-ok);
 }
 
 .wf-ports {
   position: absolute;
   top: 0;
   bottom: 0;
-  right: var(--space-6);
-  width: calc(var(--wf-port-rail) - var(--space-6) * 2);
+  right: var(--spacing-3);
+  width: calc(var(--wf-port-rail) - var(--spacing-3) * 2);
   display: flex;
   flex-direction: column;
   pointer-events: none;
@@ -458,22 +379,22 @@
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  font-size: var(--font-size-micro);
-  color: var(--fg-muted);
+  font-size: var(--font-size-sm);
+  color: var(--color-text-secondary);
   white-space: nowrap;
 }
 
 .wf-card[data-direction="TB"]:not([data-simplified="true"]) {
-  padding: var(--space-4) var(--space-6) calc(var(--space-8) * 2);
+  padding: var(--spacing-2) var(--spacing-3) calc(var(--spacing-4) * 2);
 }
 
 .wf-card[data-direction="TB"] .wf-ports {
   top: auto;
   left: 0;
   right: 0;
-  bottom: var(--space-2);
+  bottom: var(--spacing-1);
   width: auto;
-  height: var(--space-7);
+  height: var(--spacing-3);
   flex-direction: row;
 }
 
@@ -483,226 +404,83 @@
 
 /* ------------------------------------------------------------------ inspector */
 .wf-inspector {
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-panel);
-  padding: var(--space-6);
-  background: var(--bg-raised);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-container);
+  padding: var(--spacing-3);
+  background: var(--color-background-card);
   max-height: max(64vh, 26.25rem);
   overflow: auto;
-}
-
-.wf-inspector h2 {
-  overflow-wrap: anywhere;
-}
-
-.wf-inspector h3 {
-  font-size: var(--font-size-brand);
-  margin-top: var(--space-8);
-}
-
-.wf-inspector fieldset {
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-control);
-  margin: 0 0 var(--gap);
-  padding: var(--space-4) var(--space-5);
-  min-width: 0;
-}
-
-.wf-inspector legend {
-  font-weight: var(--weight-semibold);
-  padding: 0 var(--space-2);
 }
 
 .wf-rename {
   display: flex;
   flex-wrap: wrap;
   align-items: flex-end;
-  gap: var(--space-4);
-}
-
-.wf-rename .field {
-  flex: 1;
-}
-
-.wf-duration-row {
-  display: flex;
-  gap: var(--space-4);
-  align-items: center;
-}
-
-.wf-duration-row input,
-.wf-duration-row select {
-  min-height: var(--control-height);
-  padding: var(--space-3) var(--space-5);
-  border-radius: var(--radius-control);
-  border: 1px solid var(--border);
-  background: var(--bg);
-  min-width: 0;
-}
-
-.wf-duration-row input {
-  flex: 1;
-}
-
-/* The button sits at the foot of the select it belongs to, and its two words stay on one line. */
-.wf-add-trigger {
-  align-items: flex-end;
-}
-
-.wf-add-trigger .btn {
-  flex: none;
-  white-space: nowrap;
-}
-
-.wf-add-trigger .field {
-  flex: 1;
-  margin-bottom: 0;
-}
-
-/* A description is a sentence for people, not code. */
-.field textarea.wf-prose {
-  font-family: var(--font);
-}
-
-/* This row is also used by tags and rename controls; only durations have a unit selector. */
-.wf-duration > .wf-duration-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 4.75rem;
-}
-
-.wf-duration > .wf-duration-row input {
-  min-width: 0;
-  font-variant-numeric: tabular-nums;
-}
-
-.wf-duration > .wf-duration-row select {
-  width: 100%;
-}
-
-.wf-duration {
-  container-type: inline-size;
-}
-
-@container (max-width: 15rem) {
-  .wf-duration > .wf-duration-row {
-    grid-template-columns: minmax(0, 1fr);
-  }
-  .wf-duration > .wf-duration-row select {
-    width: 4.75rem;
-  }
-}
-
-.wf-check label {
-  font-weight: var(--weight-regular);
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-}
-
-.wf-check input {
-  width: var(--space-10);
-  height: var(--space-10);
-  min-height: 0;
+  gap: var(--spacing-2);
 }
 
 .wf-chips {
   list-style: none;
   display: flex;
   flex-wrap: wrap;
-  gap: var(--space-3);
+  gap: var(--spacing-1-5);
   padding: 0;
-  margin: 0 0 var(--space-4);
+  margin: 0 0 var(--spacing-2);
 }
 
 .wf-chips li {
   display: inline-flex;
   align-items: center;
-  gap: var(--space-2);
-  padding: 0 var(--space-2) 0 var(--space-4);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-pill);
-}
-
-.wf-chip-remove {
-  min-width: var(--space-page-x);
-  min-height: var(--space-page-x);
-  border: 0;
-  background: transparent;
-  border-radius: var(--radius-pill);
-}
-
-.wf-branches ol {
-  list-style: none;
-  margin: 0 0 var(--space-4);
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-}
-
-.wf-branches li {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-4);
-}
-
-.wf-inspector-actions {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-4);
-  margin-top: var(--space-8);
+  gap: var(--spacing-1);
+  padding: 0 var(--spacing-1) 0 var(--spacing-2);
+  border: 1px solid var(--color-border-emphasized);
+  border-radius: var(--radius-full);
 }
 
 .wf-notes {
-  padding-left: var(--space-page-y);
+  padding-left: var(--spacing-4);
 }
 
 .wf-notes li[data-kind="problem"] strong {
-  color: var(--danger);
-}
-
-.wf-picker {
-  margin-bottom: var(--gap);
+  color: var(--color-text-error);
 }
 
 /* ------------------------------------------------------------------ dock: validation and versions */
 .wf-dock {
-  border-top: 1px solid var(--border-subtle);
-  padding-top: var(--space-4);
+  border-top: 1px solid var(--color-border);
+  padding-top: var(--spacing-2);
 }
 
 .wf-dock-head {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: var(--gap);
+  gap: var(--spacing-3);
 }
 
 .wf-summary {
-  font-weight: var(--weight-semibold);
+  font-weight: var(--font-weight-semibold);
 }
 
 .wf-dock-body {
-  margin-top: var(--space-4);
+  margin-top: var(--spacing-2);
   max-height: 40vh;
   overflow: auto;
 }
 
 .wf-validation:focus,
 .wf-validation:focus-visible {
-  outline: 3px solid var(--focus);
+  outline: 3px solid var(--focus-outline-color);
   outline-offset: 2px;
 }
 
 .wf-findings {
   list-style: none;
-  margin: 0 0 var(--gap);
+  margin: 0 0 var(--spacing-3);
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: var(--space-3);
+  gap: var(--spacing-1-5);
 }
 
 .wf-findings li {
@@ -710,66 +488,30 @@
 }
 
 .wf-findings[data-kind="problem"] li > span:first-child {
-  color: var(--danger);
-  font-weight: var(--weight-semibold);
-}
-
-.wf-chip {
-  min-height: var(--space-page-x);
-  padding: 0 var(--space-4);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-pill);
-  background: var(--bg-subtle);
-  font-family: var(--mono);
-  font-size: var(--font-size-mono);
+  color: var(--color-text-error);
+  font-weight: var(--font-weight-semibold);
 }
 
 .wf-chip-plain {
   font-style: italic;
 }
 
-.wf-versions h3 {
-  margin-top: var(--space-8);
-}
-
-.wf-compare {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-4);
-  align-items: center;
-  margin: var(--gap) 0;
-}
-
-.wf-compare select {
-  min-height: var(--control-height);
-  border-radius: var(--radius-control);
-  border: 1px solid var(--border);
-  padding: var(--space-2) var(--space-4);
-  background: var(--bg);
-}
-
 /* ------------------------------------------------------------------ table */
 .wf-table-tools {
   display: flex;
   flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-4);
-  margin-bottom: var(--space-4);
-}
-
-.wf-table-tools input {
-  min-height: var(--control-height);
-  padding: var(--space-3) var(--space-5);
-  border-radius: var(--radius-control);
-  border: 1px solid var(--border);
-  background: var(--bg);
+  align-items: flex-end;
+  gap: var(--spacing-2);
+  margin-bottom: var(--spacing-2);
 }
 
 .wf-table-scroll {
+  /* Inside a stack this region keeps its content's height: a scroll container would otherwise be squeezed. */
+  flex: none;
   overflow: auto;
   max-height: 64vh;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-panel);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-container);
 }
 
 .wf-table-scroll[data-virtual="true"] .wf-table {
@@ -804,8 +546,8 @@
 }
 
 .wf-table tr[data-selected="true"] {
-  background: var(--info-bg);
-  box-shadow: inset 4px 0 0 var(--accent);
+  background: var(--color-info-muted);
+  box-shadow: inset 4px 0 0 var(--color-accent);
 }
 
 .wf-table td,
@@ -813,66 +555,32 @@
   vertical-align: middle;
 }
 
-.wf-cell-id .wf-badge {
-  margin-left: var(--space-3);
-}
-
 .wf-cell-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--space-2);
-}
-
-.wf-cell-actions .btn {
-  min-height: 1.75rem;
-  padding: var(--space-1) var(--space-4);
+  gap: var(--spacing-1);
 }
 
 /* ------------------------------------------------------------------ diff, publish, conflict */
-.wf-diff ul {
-  margin: 0 0 var(--gap);
-  padding-left: 20px;
-}
-
-.wf-diff h3 {
-  font-size: var(--font-size-brand);
-  margin: var(--space-6) 0 var(--space-3);
-}
-
 .wf-breaking,
 .wf-attention {
-  border: 2px solid var(--danger);
+  border: 2px solid var(--color-text-error);
   border-left-width: 10px;
-  border-radius: var(--radius-control);
-  padding: var(--space-4) var(--space-6);
-  margin: 0 0 var(--gap);
-  background: var(--danger-bg);
+  border-radius: var(--radius-element);
+  padding: var(--spacing-2) var(--spacing-3);
+  margin: 0 0 var(--spacing-3);
+  background: var(--color-error-muted);
 }
 
 .wf-attention {
   border-style: dashed;
   border-left-style: solid;
-  border-color: var(--warn);
-  background: var(--warn-bg);
-}
-
-.wf-conflict-actions {
-  display: grid;
-  gap: var(--gap);
-  margin-top: var(--gap);
-}
-
-.wf-conflict-actions p {
-  margin: var(--space-2) 0 0;
+  border-color: var(--color-text-warning);
+  background: var(--color-warning-muted);
 }
 
 dialog .wf-kinds {
   max-height: 60vh;
-  overflow: auto;
-}
-
-dialog {
-  max-height: 90vh;
   overflow: auto;
 }
 
@@ -891,31 +599,10 @@ dialog {
   .wf-canvas .react-flow__node.selected .wf-card {
     outline: 3px solid Highlight;
   }
-  .btn[aria-pressed="true"]:hover:not(:disabled),
-  .wf-dock [role="tab"][aria-selected="true"]:hover:not(:disabled) {
-    filter: none;
-  }
-}
-
-/* The cells that name a row are not column headers: base.css shouts those. */
-table.data tbody th[scope="row"] {
-  text-transform: none;
-  letter-spacing: 0;
-  font-size: inherit;
-  color: var(--fg);
-  font-weight: var(--weight-semibold);
-}
-
-/* The selected tab is filled and underlined, as a pressed toggle is. */
-.wf-dock [role="tab"][aria-selected="true"] {
-  background: var(--accent);
-  color: var(--accent-fg);
-  border-color: var(--accent);
-  box-shadow: inset 0 -3px 0 var(--accent-fg);
 }
 
 .wf-toolbar .wf-summary {
-  font-size: var(--font-size-mono);
+  font-size: var(--font-size-sm);
 }
 
 /* Wherever the canvas needs the room more than the palette needs its sentences (a laptop, a tablet, a phone, where the
@@ -938,20 +625,6 @@ table.data tbody th[scope="row"] {
   }
 }
 
-/* The search above the list of workflows: its field is a field, not a banner. */
-.wf-find {
-  align-items: flex-end;
-}
-
-.wf-find .field {
-  width: min(100%, 24rem);
-  margin-bottom: 0;
-}
-
-.wf-find .hint {
-  padding-bottom: var(--space-3);
-}
-
 /* A workflow's name is a slug that may be long and has no spaces: it breaks anywhere rather than widen the table. On a phone the
    draft revision (the editor's business) and the time of the last update give way, so the name, the version and the way to start
    a run fit in 320 px; both are there from 45rem up. */
@@ -968,6 +641,128 @@ table.data tbody th[scope="row"] {
   }
 }
 
-.wf-list td .btn {
+/* ------------------------------------------------------------------ what the interface module does not draw */
+.wf-head {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* The two views are one control: the pressed one is filled (the primary button) and has a bar under it, not only a colour. */
+.wf-toggle {
+  display: inline-flex;
+  gap: var(--spacing-0-5);
+}
+
+.wf-toggle [aria-pressed='true'] {
+  box-shadow: inset 0 -3px 0 var(--color-on-accent);
+}
+
+.wf-publish-reason {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--spacing-2);
+}
+
+.wf-quiet {
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm);
+}
+
+.wf-validation {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-2);
+}
+
+/* Several controls that are one setting: a named group with a frame. */
+.wf-group {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-element);
+  margin: 0;
+  padding: var(--spacing-2);
+  min-width: 0;
+}
+
+.wf-group-title {
+  font-weight: var(--font-weight-semibold);
+  padding: 0 var(--spacing-1);
+}
+
+.wf-rename > :first-child {
+  flex: 1;
+  min-width: 0;
+}
+
+/* A control and the button that acts on it: the button sits at the foot of the control and keeps its words on one line. */
+.wf-add-row {
+  display: flex;
+  gap: var(--spacing-2);
+  align-items: flex-end;
+}
+
+.wf-add-row > :first-child {
+  flex: 1;
+  min-width: 0;
+}
+
+.wf-add-row > :last-child {
+  flex: none;
   white-space: nowrap;
+}
+
+/* A duration is an amount beside a bounded unit selector; in a narrow inspector the selector goes under the amount. */
+.wf-duration {
+  container-type: inline-size;
+}
+
+.wf-duration-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 6.5rem;
+  gap: var(--spacing-2);
+  align-items: start;
+  font-variant-numeric: tabular-nums;
+}
+
+@container (max-width: 15rem) {
+  .wf-duration-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .wf-duration-row > :last-child {
+    max-width: 6.5rem;
+  }
+}
+
+.wf-branches {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-1-5);
+}
+
+.wf-branches > li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-2);
+}
+
+.wf-plain-list {
+  margin: 0;
+  padding-left: var(--spacing-5);
+}
+
+.wf-banner-line {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.wf-cell-id,
+.wf-cell-checks {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--spacing-1-5);
 }

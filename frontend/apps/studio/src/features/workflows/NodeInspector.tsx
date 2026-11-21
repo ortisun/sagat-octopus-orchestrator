@@ -1,13 +1,11 @@
-import { forwardRef, useId, useState } from 'react';
+import { forwardRef, useState } from 'react';
 import type { Ref } from 'react';
 import { connect, disconnect } from '../../model/edit';
 import type { IrDocument, IrNode } from '../../model/ir';
 import { kindOf } from '../../model/registry';
 import type { HandleSpec } from '../../model/registry';
-import { Banner } from '../../ui/Banner';
-import { Button } from '../../ui/Button';
-import { Field } from '../../ui/Field';
-import { FieldEditor } from './fields';
+import { Banner, Button, Code, FocusHeading, Heading, Hint, Row, Select, Stack, TextInput } from '../../ui';
+import { FieldEditor, Group } from './fields';
 import type { Change } from './fields';
 import { DatabaseFields } from './DatabaseFields';
 import { ScriptPicker } from './ScriptPicker';
@@ -40,25 +38,21 @@ function RenameField({ node, disabled, rename }: { node: IrNode; disabled: boole
   };
   return (
     <div className="wf-rename">
-      <Field label="Id" hint="How other nodes and the run refer to this node." error={error}>
-        <input
-          type="text"
-          value={text}
-          disabled={disabled}
-          autoComplete="off"
-          onChange={(event) => {
-            setDraft({ id: node.id, text: event.target.value });
-            setError(undefined);
-          }}
-          onBlur={apply}
-          onKeyDown={(event) => {
-            if (event.key === 'Enter') {
-              event.preventDefault();
-              apply();
-            }
-          }}
-        />
-      </Field>
+      <TextInput
+        label="Id"
+        hint="How other nodes and the run refer to this node."
+        error={error}
+        value={text}
+        disabled={disabled}
+        autoComplete="off"
+        mono
+        onChange={(value) => {
+          setDraft({ id: node.id, text: value });
+          setError(undefined);
+        }}
+        onBlur={apply}
+        onEnter={apply}
+      />
       {disabled ? null : (
         <Button onClick={apply} disabled={text === node.id}>
           Rename
@@ -83,24 +77,18 @@ function SingleLink({ doc, node, handle, disabled, change }: { doc: IrDocument; 
   const ids = targets(doc, node.id);
   const missing = value !== '' && !ids.includes(value);
   return (
-    <Field label={handle.label}>
-      <select
-        value={value}
-        disabled={disabled}
-        onChange={(event) => {
-          const to = event.target.value;
-          change((d) => (to === '' ? disconnect(d, node.id, handle.field) : connect(d, node.id, handle.field, to)), `link:${node.id}:${handle.field}`);
-        }}
-      >
-        <option value="">—</option>
-        {missing ? <option value={value}>{value} (no such node)</option> : null}
-        {ids.map((id) => (
-          <option key={id} value={id}>
-            {optionLabel(doc, id)}
-          </option>
-        ))}
-      </select>
-    </Field>
+    <Select
+      label={handle.label}
+      value={value}
+      placeholder="—"
+      disabled={disabled}
+      options={[
+        { value: '', label: '—' },
+        ...(missing ? [{ value, label: `${value} (no such node)` }] : []),
+        ...ids.map((id) => ({ value: id, label: optionLabel(doc, id) })),
+      ]}
+      onChange={(to) => change((d) => (to === '' ? disconnect(d, node.id, handle.field) : connect(d, node.id, handle.field, to)), `link:${node.id}:${handle.field}`)}
+    />
   );
 }
 
@@ -108,17 +96,15 @@ function ListLink({ doc, node, handle, disabled, change }: { doc: IrDocument; no
   const raw = node[handle.field];
   const list = Array.isArray(raw) ? raw.filter((t): t is string => typeof t === 'string') : [];
   const [adding, setAdding] = useState('');
-  const addId = useId();
   const ids = targets(doc, node.id);
   return (
-    <fieldset className="field wf-branches">
-      <legend>{handle.label}es</legend>
-      {list.length === 0 ? <p className="hint">None yet.</p> : null}
-      <ol>
+    <Group label={`${handle.label}es`}>
+      {list.length === 0 ? <Hint>None yet.</Hint> : null}
+      <ol className="wf-branches">
         {list.map((target, index) => (
           <li key={`${target}-${index}`}>
             <span>
-              {handle.label} {index + 1}: <code>{target}</code>
+              {handle.label} {index + 1}: <Code>{target}</Code>
             </span>
             {disabled ? null : (
               <Button
@@ -132,18 +118,15 @@ function ListLink({ doc, node, handle, disabled, change }: { doc: IrDocument; no
         ))}
       </ol>
       {disabled ? null : (
-        <div className="wf-duration-row">
-          <label htmlFor={addId} className="visually-hidden">
-            Add a {handle.label.toLowerCase()}
-          </label>
-          <select id={addId} value={adding} onChange={(event) => setAdding(event.target.value)}>
-            <option value="">(choose a node)</option>
-            {ids.map((id) => (
-              <option key={id} value={id}>
-                {optionLabel(doc, id)}
-              </option>
-            ))}
-          </select>
+        <div className="wf-add-row">
+          <Select
+            label={`Add a ${handle.label.toLowerCase()}`}
+            hideLabel
+            value={adding}
+            placeholder="(choose a node)"
+            options={ids.map((id) => ({ value: id, label: optionLabel(doc, id) }))}
+            onChange={setAdding}
+          />
           <Button
             disabled={adding === ''}
             onClick={() => {
@@ -155,7 +138,7 @@ function ListLink({ doc, node, handle, disabled, change }: { doc: IrDocument; no
           </Button>
         </div>
       )}
-    </fieldset>
+    </Group>
   );
 }
 
@@ -167,12 +150,12 @@ export const NodeInspector = forwardRef(function NodeInspector(
   const spec = kindOf(node.type);
   const first = doc.entrypoint === node.id;
   return (
-    <div className="wf-inspector-body">
-      <h2 ref={ref} tabIndex={-1}>
+    <Stack gap={3}>
+      <FocusHeading level={2} look={3} ref={ref}>
         {spec?.label ?? node.type}: {node.id}
-      </h2>
+      </FocusHeading>
       {spec ? (
-        <p className="hint">{spec.description}</p>
+        <Hint>{spec.description}</Hint>
       ) : (
         <Banner tone="warn">This kind of node ({node.type}) is not one this Studio knows. It is kept as it is and cannot be edited here.</Banner>
       )}
@@ -183,15 +166,17 @@ export const NodeInspector = forwardRef(function NodeInspector(
       {node.type === 'database' ? <DatabaseFields node={node} disabled={disabled} change={actions.change} /> : null}
 
       {(spec?.fields ?? []).map((field) => (
-        <div key={field.name}>
+        <Stack key={field.name} gap={3}>
           {node.type === 'script' && field.name === 'artifactDigest' ? <ScriptPicker node={node} disabled={disabled} change={actions.change} /> : null}
           <FieldEditor spec={field} node={node} disabled={disabled} change={actions.change} />
-        </div>
+        </Stack>
       ))}
 
       {(spec?.handles ?? []).length > 0 ? (
-        <section aria-label="Where this node leads">
-          <h3>Leads to</h3>
+        <Stack as="section" gap={3} aria-label="Where this node leads">
+          <Heading level={3} look={4}>
+            Leads to
+          </Heading>
           {(spec?.handles ?? []).map((handle) =>
             handle.multiple ? (
               <ListLink key={handle.field} doc={doc} node={node} handle={handle} disabled={disabled} change={actions.change} />
@@ -199,28 +184,26 @@ export const NodeInspector = forwardRef(function NodeInspector(
               <SingleLink key={handle.field} doc={doc} node={node} handle={handle} disabled={disabled} change={actions.change} />
             ),
           )}
-        </section>
+        </Stack>
       ) : null}
 
       {disabled ? null : (
-        <div className="wf-inspector-actions">
+        <Row>
           <Button onClick={() => actions.setFirst(node.id)} disabled={first} aria-describedby={first ? 'wf-first-note' : undefined}>
             Set as first step
           </Button>
-          {first ? (
-            <span id="wf-first-note" className="hint">
-              This is the first step.
-            </span>
-          ) : null}
+          {first ? <Hint id="wf-first-note">This is the first step.</Hint> : null}
           <Button variant="danger" onClick={() => actions.remove(node.id)}>
             Delete node
           </Button>
-        </div>
+        </Row>
       )}
 
       {notes.length > 0 ? (
-        <section aria-label="Checks for this node">
-          <h3>Checks for this node</h3>
+        <Stack as="section" gap={2} aria-label="Checks for this node">
+          <Heading level={3} look={4}>
+            Checks for this node
+          </Heading>
           <ul className="wf-notes">
             {notes.map((note, index) => (
               <li key={index} data-kind={note.kind}>
@@ -228,8 +211,8 @@ export const NodeInspector = forwardRef(function NodeInspector(
               </li>
             ))}
           </ul>
-        </section>
+        </Stack>
       ) : null}
-    </div>
+    </Stack>
   );
 });

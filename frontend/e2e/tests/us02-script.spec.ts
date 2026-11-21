@@ -3,6 +3,7 @@ import type { Page } from '@playwright/test';
 import { env } from '../support/env';
 import { Api } from '../support/platform';
 import { failOnBrowserErrors, signIn } from '../support/studio';
+import { choose, expectUnavailable } from '../support/ui';
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
@@ -46,7 +47,7 @@ test('US02 a developer edits the code of a node, tries it in the sandbox, publis
   await page.getByRole('dialog').getByRole('button', { name: /^Publish/ }).last().click();
   const digest = await page.getByText(/sha256:[0-9a-f]{64}/).first().innerText({ timeout: 180_000 });
   expect(digest.replace(/\s+/g, '')).toMatch(/^sha256:[0-9a-f]{64}$/);
-  await page.getByRole('dialog').getByRole('button', { name: 'Close' }).click();
+  await page.getByRole('dialog').getByRole('button', { name: 'Close', exact: true }).click();
 
   // A workflow with a script node: it can be published because the code was built. The picker offers the version.
   await page.getByRole('link', { name: 'Workflows' }).click();
@@ -64,13 +65,13 @@ test('US02 a developer edits the code of a node, tries it in the sandbox, publis
   await inspector.getByRole('textbox', { name: 'Artifact' }).fill(`sha256:${'a'.repeat(64)}`);
   await addEnd(page);
   await expect(page.getByRole('region', { name: 'Validation' })).toContainText('UNKNOWN_SCRIPT', { timeout: 30_000 });
-  await expect(page.getByRole('button', { name: 'Publish…' })).toBeDisabled();
+  await expectUnavailable(page.getByRole('button', { name: 'Publish…' }));
 
   // The picker offers what was built, and the node pins exactly that digest.
   await page.getByRole('button', { name: 'List' }).click();
   await page.getByRole('button', { name: 'Edit script_1' }).click();
-  await inspector.getByRole('combobox', { name: 'Script', exact: true }).selectOption({ label: 'double-it (typescript)' });
-  await inspector.getByRole('combobox', { name: 'Built version' }).selectOption({ label: 'v1 · typescript' });
+  await choose(inspector.getByRole('combobox', { name: 'Script', exact: true }), { label: 'double-it (typescript)' });
+  await choose(inspector.getByRole('combobox', { name: 'Built version' }), { label: 'v1 · typescript' });
   await expect(inspector.getByRole('textbox', { name: 'Artifact' })).toHaveValue(digest.replace(/\s+/g, ''), { timeout: 20_000 });
   await expect(page.getByTestId('validation-summary')).toContainText('0 problems', { timeout: 30_000 });
 

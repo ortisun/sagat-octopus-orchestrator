@@ -5,8 +5,7 @@ import type { components } from '../../api/schema';
 import { useApp, useCan, useNamespace } from '../../app/context';
 import { setField } from '../../model/edit';
 import type { IrNode } from '../../model/ir';
-import { ErrorState } from '../../ui/ErrorState';
-import { Field } from '../../ui/Field';
+import { ErrorState, Hint, Select, Stack } from '../../ui';
 import type { Change } from './fields';
 
 type ScriptList = components['schemas']['ScriptList'];
@@ -37,7 +36,7 @@ export function ScriptPicker({ node, disabled, change }: { node: IrNode; disable
   });
 
   if (!canRead) {
-    return <p className="hint">Picking a script needs the script:read permission. You can still paste the digest of a build below.</p>;
+    return <Hint>Picking a script needs the script:read permission. You can still paste the digest of a build below.</Hint>;
   }
   if (namespaces.isError) return <ErrorState error={namespaces.error} what="Loading the namespace" />;
   if (scripts.isError) return <ErrorState error={scripts.error} what="Loading the scripts" onRetry={() => void scripts.refetch()} />;
@@ -46,21 +45,20 @@ export function ScriptPicker({ node, disabled, change }: { node: IrNode; disable
   const current = typeof node['artifactDigest'] === 'string' ? node['artifactDigest'] : '';
 
   return (
-    <div className="wf-picker">
-      <Field label="Script" hint={scripts.isPending ? 'Loading the scripts…' : (scripts.data?.items.length ?? 0) === 0 ? 'This namespace has no scripts yet.' : undefined}>
-        <select value={scriptId} disabled={disabled || scripts.isPending} onChange={(event) => setScriptId(event.target.value)}>
-          <option value="">(choose a script)</option>
-          {(scripts.data?.items ?? []).map((s) => (
-            <option key={s.id} value={s.id}>
-              {s.name} ({s.language})
-            </option>
-          ))}
-        </select>
-      </Field>
+    <Stack gap={3}>
+      <Select
+        label="Script"
+        hint={scripts.isPending ? 'Loading the scripts…' : (scripts.data?.items.length ?? 0) === 0 ? 'This namespace has no scripts yet.' : undefined}
+        value={scriptId}
+        placeholder="(choose a script)"
+        disabled={disabled || scripts.isPending}
+        options={(scripts.data?.items ?? []).map((s) => ({ value: s.id, label: `${s.name} (${s.language})` }))}
+        onChange={setScriptId}
+      />
       {scriptId !== '' ? (
         <>
           {versions.isError ? <ErrorState error={versions.error} what="Loading the versions" onRetry={() => void versions.refetch()} /> : null}
-          <Field
+          <Select
             label="Built version"
             hint={
               versions.isPending
@@ -69,26 +67,18 @@ export function ScriptPicker({ node, disabled, change }: { node: IrNode; disable
                   ? 'This script has no version that built successfully.'
                   : 'The node keeps the digest of the build you pick.'
             }
-          >
-            <select
-              value={ready.find((v) => v.artifactDigest === current)?.artifactDigest ?? ''}
-              disabled={disabled || versions.isPending}
-              onChange={(event) => {
-                const chosen = ready.find((v) => v.artifactDigest === event.target.value);
-                if (!chosen) return;
-                change((doc) => setField(setField(doc, node.id, 'artifactDigest', chosen.artifactDigest), node.id, 'language', chosen.language), `script:${node.id}`);
-              }}
-            >
-              <option value="">(choose a version)</option>
-              {ready.map((v) => (
-                <option key={v.id} value={v.artifactDigest}>
-                  v{v.number} · {v.language}
-                </option>
-              ))}
-            </select>
-          </Field>
+            value={ready.find((v) => v.artifactDigest === current)?.artifactDigest ?? ''}
+            placeholder="(choose a version)"
+            disabled={disabled || versions.isPending}
+            options={ready.map((v) => ({ value: v.artifactDigest ?? '', label: `v${v.number} · ${v.language}` }))}
+            onChange={(value) => {
+              const chosen = ready.find((v) => v.artifactDigest === value);
+              if (!chosen) return;
+              change((doc) => setField(setField(doc, node.id, 'artifactDigest', chosen.artifactDigest), node.id, 'language', chosen.language), `script:${node.id}`);
+            }}
+          />
         </>
       ) : null}
-    </div>
+    </Stack>
   );
 }

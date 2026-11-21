@@ -3,11 +3,7 @@ import { useState } from 'react';
 import type { FormEvent } from 'react';
 import { useNavigate } from 'react-router';
 import { isApiError } from '../../api/errors';
-import { Button } from '../../ui/Button';
-import { Dialog } from '../../ui/Dialog';
-import { ErrorState } from '../../ui/ErrorState';
-import { Field } from '../../ui/Field';
-import { useAnnounce } from '../../ui/Announcer';
+import { Actions, Button, Dialog, ErrorState, Hint, Select, Stack, TextInput, useAnnounce } from '../../ui';
 import type { ScriptsApi } from './api';
 import { LANGUAGES, NOT_BUILT, SCRIPT_NAME, sampleSource } from './languages';
 
@@ -61,26 +57,36 @@ function CreateForm({ api, onClose }: { api: ScriptsApi; onClose: () => void }) 
 
   return (
     <form onSubmit={submit} noValidate>
-      <Field label="Name" hint="3 to 63 characters: lower-case letters, digits and hyphens, starting with a letter." error={problem.name ?? (nameInvalid ? 'Use lower-case letters, digits and hyphens, starting with a letter and not ending with a hyphen.' : undefined)}>
-        <input value={name} onChange={(event) => setName(event.target.value)} autoComplete="off" spellCheck={false} maxLength={63} required />
-      </Field>
-      <Field label="Language" hint="The platform builds and runs TypeScript, Python and C#." error={problem.language}>
-        <select value={language} onChange={(event) => setLanguage(event.target.value)}>
-          {LANGUAGES.map((option) => (
-            <option key={option.id} value={option.id} disabled={!option.built}>
-              {option.built ? option.label : `${option.label} (${NOT_BUILT})`}
-            </option>
-          ))}
-        </select>
-      </Field>
-      <p className="hint">The script starts from a small sample for the language; you can change everything.</p>
-      {problem.other !== undefined ? <ErrorState error={problem.other} what="Creating the script" /> : null}
-      <div className="dialog-actions">
-        <Button onClick={onClose}>Cancel</Button>
-        <Button type="submit" variant="primary" disabled={busy || !SCRIPT_NAME.test(name)}>
-          {busy ? 'Creating…' : 'Create script'}
-        </Button>
-      </div>
+      <Stack gap={3}>
+        <TextInput
+          label="Name"
+          hint="3 to 63 characters: lower-case letters, digits and hyphens, starting with a letter."
+          error={problem.name ?? (nameInvalid ? 'Use lower-case letters, digits and hyphens, starting with a letter and not ending with a hyphen.' : undefined)}
+          value={name}
+          onChange={setName}
+          autoComplete="off"
+          spellCheck={false}
+          maxLength={63}
+          mono
+          required
+        />
+        <Select
+          label="Language"
+          hint="The platform builds and runs TypeScript, Python and C#."
+          error={problem.language}
+          value={language}
+          onChange={setLanguage}
+          options={LANGUAGES.map((option) => ({ value: option.id, label: option.built ? option.label : `${option.label} (${NOT_BUILT})`, disabled: !option.built }))}
+        />
+        <Hint>The script starts from a small sample for the language; you can change everything.</Hint>
+        {problem.other !== undefined ? <ErrorState error={problem.other} what="Creating the script" /> : null}
+        <Actions>
+          <Button onClick={onClose}>Cancel</Button>
+          <Button type="submit" variant="primary" disabled={busy || !SCRIPT_NAME.test(name)}>
+            {busy ? 'Creating…' : 'Create script'}
+          </Button>
+        </Actions>
+      </Stack>
     </form>
   );
 }

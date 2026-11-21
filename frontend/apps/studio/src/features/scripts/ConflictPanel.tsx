@@ -1,14 +1,8 @@
 import { useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
-import { Link } from 'react-router';
 import { isApiError } from '../../api/errors';
-import { useAnnounce } from '../../ui/Announcer';
-import { Banner } from '../../ui/Banner';
-import { Button } from '../../ui/Button';
-import { Dialog } from '../../ui/Dialog';
-import { ErrorState } from '../../ui/ErrorState';
-import { Field } from '../../ui/Field';
+import { Actions, Banner, Button, Dialog, ErrorState, FocusHeading, Link, Loading, Row, Stack, Text, TextInput, VisuallyHidden, useAnnounce } from '../../ui';
 import type { Script, ScriptsApi } from './api';
 import { lineDiff } from './diff';
 import type { LineDiff } from './diff';
@@ -22,14 +16,14 @@ import { clipLabel, formatTime } from './text';
 const FIELDS: readonly DraftField[] = ['source', 'inputSchema', 'outputSchema'];
 
 function DiffView({ diff, label }: { diff: LineDiff; label: string }) {
-  if (diff.added === 0 && diff.removed === 0) return <p>No difference in {label}.</p>;
+  if (diff.added === 0 && diff.removed === 0) return <Text>No difference in {label}.</Text>;
   return (
     <>
-      <p>
+      <Text>
         {label.charAt(0).toUpperCase()}
         {label.slice(1)}: {diff.added} {diff.added === 1 ? 'line' : 'lines'} only in yours, {diff.removed} only in theirs.
         {diff.exact ? '' : ' The two are too different to compare line by line; theirs is shown first, then yours.'}
-      </p>
+      </Text>
       {/* A diff can be long; the region scrolls and so must be reachable by keyboard. */}
       {/* eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex */}
       <pre className="diff" role="region" aria-label={`Differences in ${label}`} tabIndex={0}>
@@ -40,7 +34,7 @@ function DiffView({ diff, label }: { diff: LineDiff; label: string }) {
             </span>
           ) : (
             <span key={index} className={`diff-${line.kind}`}>
-              <span className="visually-hidden">{line.kind === 'added' ? 'Yours: ' : line.kind === 'removed' ? 'Theirs: ' : 'Both: '}</span>
+              <VisuallyHidden>{line.kind === 'added' ? 'Yours: ' : line.kind === 'removed' ? 'Theirs: ' : 'Both: '}</VisuallyHidden>
               {`${line.kind === 'added' ? '+ ' : line.kind === 'removed' ? '- ' : '  '}${line.text}\n`}
             </span>
           ),
@@ -103,23 +97,24 @@ export function ConflictPanel({ api, scriptId, scriptName, language, saver, draf
 
   return (
     <section className="conflict" aria-labelledby="conflict-title">
-      <h2 id="conflict-title" ref={heading} tabIndex={-1}>
+      <Stack gap={3}>
+      <FocusHeading level={2} id="conflict-title" ref={heading}>
         Someone else changed this draft
-      </h2>
+      </FocusHeading>
       <Banner tone="warn">
         Your changes are kept here and are <strong>not saved</strong>: the platform&apos;s draft is at revision {theirs?.revision ?? current ?? 'newer than yours'}, and yours is based on revision {draft.revision}. Nothing is overwritten until you choose.
       </Banner>
       {error !== undefined ? <ErrorState error={error} what="Reading the platform’s copy" /> : null}
-      {theirs === undefined && error === undefined ? <p role="status">Reading the platform&apos;s copy…</p> : null}
+      {theirs === undefined && error === undefined ? <Loading>Reading the platform’s copy…</Loading> : null}
       {theirs ? (
         <>
-          <p>
+          <Text>
             The platform&apos;s copy was last changed <time dateTime={theirs.updatedAt}>{formatTime(theirs.updatedAt)}</time>. Lines marked + are only in your copy, lines marked - only in theirs.
-          </p>
+          </Text>
           {diffs.map(({ field, diff }) => (
             <DiffView key={field} diff={diff} label={FIELD_LABEL[field].toLowerCase()} />
           ))}
-          <div className="toolbar">
+          <Row>
             <Button onClick={takeTheirs} disabled={busy}>
               Load theirs (drop my changes)
             </Button>
@@ -129,7 +124,7 @@ export function ConflictPanel({ api, scriptId, scriptName, language, saver, draf
             <Button onClick={() => setCopying(true)} disabled={busy}>
               Save mine as a new script…
             </Button>
-          </div>
+          </Row>
           {copied ? (
             <Banner tone="ok">
               Saved as <Link to={`/scripts/${encodeURIComponent(copied.id)}`}>{clipLabel(copied.name)}</Link>. This draft still has the conflict: load theirs or keep yours.
@@ -137,6 +132,7 @@ export function ConflictPanel({ api, scriptId, scriptName, language, saver, draf
           ) : null}
         </>
       ) : null}
+      </Stack>
       <CopyDialog
         open={copying}
         api={api}
@@ -196,17 +192,17 @@ function CopyForm({ api, language, suggestion, draft, onClose, onCopied }: { api
   };
   return (
     <form onSubmit={submit} noValidate>
-      <p>Your copy of the source and the schemas becomes a new script in this namespace. The script you are editing is not changed.</p>
-      <Field label="Name" error={nameError}>
-        <input value={name} onChange={(event) => setName(event.target.value)} autoComplete="off" spellCheck={false} maxLength={63} required />
-      </Field>
-      {problem !== undefined && !(isApiError(problem) && problem.status === 409) ? <ErrorState error={problem} what="Saving the copy" /> : null}
-      <div className="dialog-actions">
-        <Button onClick={onClose}>Cancel</Button>
-        <Button type="submit" variant="primary" disabled={busy || !SCRIPT_NAME.test(name)}>
-          {busy ? 'Saving…' : 'Save as a new script'}
-        </Button>
-      </div>
+      <Stack gap={3}>
+        <Text>Your copy of the source and the schemas becomes a new script in this namespace. The script you are editing is not changed.</Text>
+        <TextInput label="Name" error={nameError} value={name} onChange={setName} autoComplete="off" spellCheck={false} maxLength={63} mono required />
+        {problem !== undefined && !(isApiError(problem) && problem.status === 409) ? <ErrorState error={problem} what="Saving the copy" /> : null}
+        <Actions>
+          <Button onClick={onClose}>Cancel</Button>
+          <Button type="submit" variant="primary" disabled={busy || !SCRIPT_NAME.test(name)}>
+            {busy ? 'Saving…' : 'Save as a new script'}
+          </Button>
+        </Actions>
+      </Stack>
     </form>
   );
 }

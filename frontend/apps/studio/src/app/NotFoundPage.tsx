@@ -1,12 +1,12 @@
-import { Link } from 'react-router';
+import { Link, Page, PageHeader, Text } from '../ui';
 
 export function NotFoundPage() {
   return (
-    <section>
-      <h1>Page not found</h1>
-      <p>
+    <Page>
+      <PageHeader title="Page not found" />
+      <Text>
         <Link to="/workflows">Go to the workflows</Link>
-      </p>
-    </section>
+      </Text>
+    </Page>
   );
 }

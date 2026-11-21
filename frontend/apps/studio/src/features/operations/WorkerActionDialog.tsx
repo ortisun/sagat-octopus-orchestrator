@@ -1,10 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
-import { useAnnounce } from '../../ui/Announcer';
-import { Button } from '../../ui/Button';
-import { Dialog } from '../../ui/Dialog';
-import { ErrorState } from '../../ui/ErrorState';
-import { Field } from '../../ui/Field';
+import { Actions, Button, Dialog, ErrorState, Hint, Stack, Text, TextArea, useAnnounce } from '../../ui';
 import type { OperationsApi } from './api';
 
 const MIN_REASON = 8;
@@ -105,27 +101,27 @@ function WorkerActionForm({ action, api, namespace, subject, onClose, onChanged 
 
   const problem = submitted ? reasonProblem(reason) : undefined;
   return (
-    <form className="operations-action" onSubmit={submit} noValidate>
-      {action === 'drain' ? (
-        <p>
-          This applies to every session of <strong>{subject}</strong> in <strong>{namespace}</strong>. It prevents this identity from claiming new attempts and does not cancel attempts already in flight.
-        </p>
-      ) : (
-        <p>
-          This applies to every session of <strong>{subject}</strong> in <strong>{namespace}</strong>. It lets this identity claim new attempts again; attempts already in flight are unchanged.
-        </p>
-      )}
-      <p className="hint">The platform records this action with your identity and reason.</p>
-      <Field label="Reason" hint={`${[...reason.trim()].length} / ${MAX_REASON} characters; stored in the audit trail.`} error={problem}>
-        <textarea ref={reasonRef} rows={4} value={reason} onChange={(event) => setReason(event.target.value)} />
-      </Field>
-      {error === undefined ? null : <ErrorState error={error} what={action === 'drain' ? 'Draining the worker identity' : 'Resuming the worker identity'} onRetry={() => void send()} />}
-      <div className="dialog-actions">
-        <Button onClick={onClose}>Cancel</Button>
-        <Button type="submit" variant={action === 'drain' ? 'danger' : 'primary'} disabled={sending}>
-          {sending ? 'Sending…' : action === 'drain' ? 'Confirm drain' : 'Confirm resume'}
-        </Button>
-      </div>
+    <form onSubmit={submit} noValidate>
+      <Stack gap={3}>
+        {action === 'drain' ? (
+          <Text>
+            This applies to every session of <strong>{subject}</strong> in <strong>{namespace}</strong>. It prevents this identity from claiming new attempts and does not cancel attempts already in flight.
+          </Text>
+        ) : (
+          <Text>
+            This applies to every session of <strong>{subject}</strong> in <strong>{namespace}</strong>. It lets this identity claim new attempts again; attempts already in flight are unchanged.
+          </Text>
+        )}
+        <Hint>The platform records this action with your identity and reason.</Hint>
+        <TextArea ref={reasonRef} label="Reason" hint={`${[...reason.trim()].length} / ${MAX_REASON} characters; stored in the audit trail.`} error={problem} rows={4} value={reason} onChange={setReason} />
+        {error === undefined ? null : <ErrorState error={error} what={action === 'drain' ? 'Draining the worker identity' : 'Resuming the worker identity'} onRetry={() => void send()} />}
+        <Actions>
+          <Button onClick={onClose}>Cancel</Button>
+          <Button type="submit" variant={action === 'drain' ? 'danger' : 'primary'} disabled={sending}>
+            {sending ? 'Sending…' : action === 'drain' ? 'Confirm drain' : 'Confirm resume'}
+          </Button>
+        </Actions>
+      </Stack>
     </form>
   );
 }

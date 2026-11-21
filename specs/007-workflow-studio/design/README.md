@@ -12,6 +12,34 @@ project reaches the Studio by updating this record first.
 | **Not used** | the logo page (the choice is not made, G162) and the Temporal × Windmill analysis (a market comparison, not a visual specification) |
 | **History of this record** | first written from a capture of the running prototype (colours sampled from a JPEG); rewritten the same day from the export. **A correction:** the first version reported the list's secondary text at 3.98 : 1; the export shows its role is lightness 0.60, which is 4.98 : 1. The sample had hit an anti-aliased pixel |
 
+## The direction on the Astryx design system, 2026-11-21 (Task 007-059 to Task 007-066)
+
+The owner asked for the Astryx design system across the Studio ([Architecture decision 0101](../../../docs/adr/ADR-0101-the-studio-builds-its-interface-on-the-astryx-design-system.md),
+Decision 2400 to Decision 2404). What this record fixes is kept; who draws it changed.
+
+**Kept, as values of the Studio's own Astryx theme** (`frontend/apps/studio/src/ui/theme/roles.ts`, the only file with a
+literal colour, mapped by `sagatTheme.ts`): every dark role of the tables below (page `#0a0b0e`, sidebar `#06070a`, canvas `#08090c`, raised `#121417`, the
+accent `#5ed99e`, the status colours), the light derivation, Geist and Geist Mono from the application bundle, the 13 px body
+size and the 4, 8 and 12 px radii. `theme.test.ts` measures every text, control-boundary and focus pair of both modes against the
+floors of Decision 155 and fails when a role is not mapped to a token of the theme.
+
+**Now Astryx's, not this record's:** the shape, padding, height and motion of buttons, inputs, selectors, tabs, dialogs, banners,
+badges and tables; the type scale above the body size (a ratio of 1.2 from 13 px: 16, 19 and 22 px, where the prototype had
+15 and 20 px); the spacing scale (steps of 4 px, where the prototype also used 10 and 14 px); the application shell's own
+skip link and the way the sidebar and top bar are laid out. The graph cards, edges, the dotted canvas, the timeline bars and the
+code editor's frame are still the Studio's own stylesheets and keep the sizes recorded below; they read the theme's tokens.
+
+**Additions for the accessibility floor (Decision 2404), where an Astryx component alone would fall short of Requirement 007-008:**
+
+| Element | What the interface module adds | Why |
+|---|---|---|
+| Banner | the `alert` role for an error or a warning, `status` otherwise | an Astryx banner is not a live region; the Studio's errors are announced |
+| Status of a run or a step | a symbol and a word inside the badge, and the tone as `data-tone` | a state is never colour alone |
+| Selector | the value on the control (`data-value`) and on each option (`data-option-value`) | a journey chooses by the value the platform receives, not by a label that may be reworded |
+
+**Not yet reviewed by the owner (Gap 2401):** the screens as Astryx draws them. The approval of 2026-10-11 was of the hand-written
+interface; this change keeps its colours and typefaces and replaces its controls.
+
 ## Graph reading and selection, 2026-10-12 (T007-051)
 
 The owner requested Temporal and Windmill as UX references after reporting clipped graph text.

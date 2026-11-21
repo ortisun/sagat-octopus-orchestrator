@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { Route, Routes } from 'react-router';
 import { describe, expect, it } from 'vitest';
 import { AUTH_CONTEXT, TOKEN, fakePlatform, renderApp } from '../../test/render';
+import { choose } from '../../test/ui';
 import { createApp } from './context';
 import { Landing, NamespaceGate } from './NamespaceGate';
 import { Shell } from './Shell';
@@ -41,7 +42,8 @@ describe('the pages of a namespace', () => {
   it('wait on a deep link too, and open it as soon as a namespace is chosen in the menu', async () => {
     const { user, app } = await mount('/runs/019b5d6e-0000-7000-8000-0000000000aa');
     expect(await screen.findByRole('heading', { name: 'Choose a namespace' })).toBeInTheDocument();
-    await user.selectOptions(await screen.findByLabelText('Namespace'), 'production');
+    await waitFor(() => expect(app.queries.getQueryData(['namespaces'])).toBeDefined());
+    await choose(user, 'Namespace', 'production');
     expect(app.namespace.current()).toBe('production');
     expect(await screen.findByRole('heading', { name: 'One run' })).toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: 'Choose a namespace' })).not.toBeInTheDocument();

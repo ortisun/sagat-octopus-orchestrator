@@ -2,7 +2,7 @@ import { useMemo, useRef, useState } from 'react';
 import type { RuntimeNode } from '../../api/types';
 import type { RunModel } from '../../model/runGraph';
 import { nodeStatus } from '../../model/status';
-import { StatusBadge } from '../../ui/StatusBadge';
+import { Button, Checkbox, Code, ColumnHeader, Empty, Hint, WindowedTable, Row, Stack, StatusBadge, TableBody, TableCell, TableHead, TableRow, TextInput } from '../../ui';
 import { ScrollRegion } from './ScrollRegion';
 import { isAttention, kindView, waitingWords } from './display';
 import { Relative } from './Now';
@@ -51,70 +51,62 @@ export function TableView({
   const arrow = (key: SortKey) => (query.sort !== key ? '' : query.descending ? ' ▾' : ' ▴');
 
   return (
-    <div className="rn-table">
-      <div className="toolbar">
-        <label className="rn-check">
-          <input type="checkbox" checked={query.attentionOnly} onChange={(event) => setQuery((q) => ({ ...q, attentionOnly: event.target.checked }))} /> Only what needs attention ({attention})
-        </label>
-        <label className="rn-find">
-          <span>Find a step</span>
-          <input type="search" className="input" value={query.text} autoComplete="off" spellCheck={false} onChange={(event) => setQuery((q) => ({ ...q, text: event.target.value }))} />
-        </label>
-        <span className="hint" role="status">
-          {rows.length === model.nodes.size ? `${rows.length} steps` : `${rows.length} of ${model.nodes.size} steps`}
-        </span>
-      </div>
+    <Stack gap={3}>
+      <Row gap={3} align="end">
+        <TextInput type="search" label="Find a step" width="16rem" value={query.text} autoComplete="off" spellCheck={false} onChange={(text) => setQuery((q) => ({ ...q, text }))} />
+        <Checkbox label={`Only what needs attention (${attention})`} checked={query.attentionOnly} onChange={(attentionOnly) => setQuery((q) => ({ ...q, attentionOnly }))} />
+        <Hint role="status">{rows.length === model.nodes.size ? `${rows.length} steps` : `${rows.length} of ${model.nodes.size} steps`}</Hint>
+      </Row>
       {rows.length === 0 ? (
-        <p className="empty">{model.nodes.size === 0 ? 'This run has no steps.' : query.attentionOnly && query.text === '' ? 'Nothing needs attention right now.' : 'No step matches.'}</p>
+        <Empty title={model.nodes.size === 0 ? 'This run has no steps.' : query.attentionOnly && query.text === '' ? 'Nothing needs attention right now.' : 'No step matches.'} />
       ) : (
         <ScrollRegion label="Steps of the run" scroller={scroller}>
-          <table className="data rn-fixed rn-steps" aria-rowcount={rows.length + 1}>
-            <caption className="visually-hidden">Steps of the run</caption>
-            <thead>
-              <tr aria-rowindex={1}>
-                <th scope="col" aria-sort={aria('id')}>
-                  <button type="button" className="link" onClick={() => sortBy('id')}>
+          <WindowedTable className="rn-fixed rn-steps" label="Steps of the run" rowCount={rows.length + 1}>
+            <TableHead>
+              <TableRow aria-rowindex={1}>
+                <ColumnHeader scope="col" aria-sort={aria('id')}>
+                  <Button variant="ghost" size="sm" onClick={() => sortBy('id')}>
                     Step{arrow('id')}
-                  </button>
-                </th>
-                <th scope="col">Kind</th>
-                <th scope="col" aria-sort={aria('status')}>
-                  <button type="button" className="link" onClick={() => sortBy('status')}>
+                  </Button>
+                </ColumnHeader>
+                <ColumnHeader scope="col">Kind</ColumnHeader>
+                <ColumnHeader scope="col" aria-sort={aria('status')}>
+                  <Button variant="ghost" size="sm" onClick={() => sortBy('status')}>
                     Status{arrow('status')}
-                  </button>
-                </th>
-                <th scope="col">Attempt</th>
-                <th scope="col">Failure</th>
-                <th scope="col">Waiting on</th>
-                <th scope="col">Next attempt / due</th>
-                <th scope="col">Actions</th>
-              </tr>
-            </thead>
-            <tbody>
+                  </Button>
+                </ColumnHeader>
+                <ColumnHeader scope="col">Attempt</ColumnHeader>
+                <ColumnHeader scope="col">Failure</ColumnHeader>
+                <ColumnHeader scope="col">Waiting on</ColumnHeader>
+                <ColumnHeader scope="col">Next attempt / due</ColumnHeader>
+                <ColumnHeader scope="col">Actions</ColumnHeader>
+              </TableRow>
+            </TableHead>
+            <TableBody>
               {padTop > 0 ? (
-                <tr aria-hidden="true" className="rn-pad">
-                  <td colSpan={COLUMNS} style={{ height: padTop }} />
-                </tr>
+                <TableRow aria-hidden="true" className="rn-pad">
+                  <TableCell colSpan={COLUMNS} style={{ height: padTop }} />
+                </TableRow>
               ) : null}
               {items.map((item) => {
                 const node = rows[item.index];
                 if (node === undefined) return null;
-                return <Row key={node.id} index={item.index} measure={measure} node={node} selected={node.id === selectedId} onSelect={onSelect} operations={operationsFor(node)} onChoose={onChoose} />;
+                return <StepRow key={node.id} index={item.index} measure={measure} node={node} selected={node.id === selectedId} onSelect={onSelect} operations={operationsFor(node)} onChoose={onChoose} />;
               })}
               {padBottom > 0 ? (
-                <tr aria-hidden="true" className="rn-pad">
-                  <td colSpan={COLUMNS} style={{ height: padBottom }} />
-                </tr>
+                <TableRow aria-hidden="true" className="rn-pad">
+                  <TableCell colSpan={COLUMNS} style={{ height: padBottom }} />
+                </TableRow>
               ) : null}
-            </tbody>
-          </table>
+            </TableBody>
+          </WindowedTable>
         </ScrollRegion>
       )}
-    </div>
+    </Stack>
   );
 }
 
-function Row({
+function StepRow({
   index,
   measure,
   node,
@@ -134,20 +126,20 @@ function Row({
   const kind = kindView(node);
   const waiting = waitingWords(node);
   return (
-    <tr ref={measure} data-index={index} aria-rowindex={index + 2} data-status={node.status} data-selected={selected ? 'true' : undefined}>
-      <td>
-        <button type="button" className="link rn-id" aria-current={selected ? 'true' : undefined} title={node.id} onClick={() => onSelect(node.id)}>
+    <TableRow ref={measure} data-index={index} aria-rowindex={index + 2} data-status={node.status} data-selected={selected ? 'true' : undefined}>
+      <TableCell>
+        <Button variant="ghost" size="sm" className="rn-id" aria-current={selected ? 'true' : undefined} {...(node.id.length > 60 ? { title: node.id } : {})} onClick={() => onSelect(node.id)}>
           {clip(node.id, 60)}
-        </button>
-      </td>
-      <td>{kind.label}</td>
-      <td>
+        </Button>
+      </TableCell>
+      <TableCell>{kind.label}</TableCell>
+      <TableCell>
         <StatusBadge view={nodeStatus(node.status)} />
-      </td>
-      <td>{node.attempt && node.attempt > 0 ? node.attempt : '—'}</td>
-      <td>{node.failureCode ? <code>{clip(node.failureCode, 40)}</code> : '—'}</td>
-      <td>{waiting ?? '—'}</td>
-      <td>
+      </TableCell>
+      <TableCell>{node.attempt && node.attempt > 0 ? node.attempt : '—'}</TableCell>
+      <TableCell>{node.failureCode ? <Code>{clip(node.failureCode, 40)}</Code> : '—'}</TableCell>
+      <TableCell>{waiting ?? '—'}</TableCell>
+      <TableCell>
         {node.nextAttemptAt ? (
           <span>
             retry <Relative at={node.nextAttemptAt} />
@@ -159,10 +151,10 @@ function Row({
           </span>
         ) : null}
         {!node.nextAttemptAt && !node.dueAt ? '—' : null}
-      </td>
-      <td>
+      </TableCell>
+      <TableCell>
         <ActionsMenu inline label={`Actions for ${clip(node.id, 60)}`} buttonText="Actions" operations={operations} onChoose={(operation, opener) => onChoose(operation, node, opener)} />
-      </td>
-    </tr>
+      </TableCell>
+    </TableRow>
   );
 }

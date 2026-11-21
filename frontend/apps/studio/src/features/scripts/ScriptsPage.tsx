@@ -1,12 +1,7 @@
 import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
-import { Link } from 'react-router';
 import { useCan } from '../../app/context';
-import { Banner } from '../../ui/Banner';
-import { Button } from '../../ui/Button';
-import { Dialog } from '../../ui/Dialog';
-import { ErrorState } from '../../ui/ErrorState';
-import { useAnnounce } from '../../ui/Announcer';
+import { Actions, Banner, Button, Code, ColumnHeader, Dialog, Empty, ErrorState, Heading, Hint, Link, Loading, Page, Row, Stack, Table, TableBody, TableCell, TableHead, TableRow, Text, VisuallyHidden, useAnnounce } from '../../ui';
 import '../../styles/scripts.css';
 import type { ScriptSummary, ScriptsApi } from './api';
 import { CreateScriptDialog } from './CreateScriptDialog';
@@ -22,16 +17,19 @@ export function ScriptsPage() {
   const canRead = useCan('script:read');
   return (
     <section className="scripts-page" aria-labelledby="scripts-title">
-      <h1 id="scripts-title">Scripts</h1>
-      <p className="lede">
-        Code that runs in the platform&apos;s sandbox as a step of a workflow. A script is a draft you edit and try; publishing it builds an immutable version whose digest a workflow pins.
-      </p>
+      <Page>
+        <Stack gap={1}>
+          <Heading level={1} id="scripts-title">
+            Scripts
+          </Heading>
+          <Hint>Code that runs in the platform&apos;s sandbox as a step of a workflow. A script is a draft you edit and try; publishing it builds an immutable version whose digest a workflow pins.</Hint>
+        </Stack>
       {!canRead ? (
         <Banner tone="warn" title="Your role cannot see scripts.">
-          Reading scripts needs the permission <code>script:read</code>.
+          Reading scripts needs the permission <Code>script:read</Code>.
         </Banner>
       ) : context.state === 'loading' ? (
-        <p role="status">Loading…</p>
+        <Loading>Loading…</Loading>
       ) : context.state === 'failed' ? (
         <ErrorState error={context.error} what="Reading your namespaces" onRetry={context.retry} />
       ) : context.state === 'none' ? (
@@ -39,6 +37,7 @@ export function ScriptsPage() {
       ) : (
         <ScriptList api={context.api} namespace={context.namespace} />
       )}
+      </Page>
     </section>
   );
 }
@@ -60,58 +59,61 @@ function ScriptList({ api, namespace }: { api: ScriptsApi; namespace: string }) 
 
   return (
     <>
-      <div className="toolbar">
-        <span className="hint">
+      <Row justify="between">
+        <Hint>
           Namespace <strong>{clipLabel(namespace, 63)}</strong>
-        </span>
-        <span className="spacer" />
+        </Hint>
         {canWrite ? (
           <Button variant="primary" onClick={() => setCreating(true)}>
             New script
           </Button>
         ) : (
-          <span className="hint">Writing scripts needs the permission script:write.</span>
+          <Hint>Writing scripts needs the permission script:write.</Hint>
         )}
-      </div>
+      </Row>
 
       {list.isError ? <ErrorState error={list.error} what="Reading the scripts" onRetry={() => void list.refetch()} /> : null}
-      {list.isPending && !list.isError ? <p role="status">Loading the scripts…</p> : null}
+      {list.isPending && !list.isError ? <Loading>Loading the scripts…</Loading> : null}
       {list.isSuccess && items.length === 0 ? (
-        <p className="empty">
-          No scripts in this namespace yet.
-          {canWrite ? ' Make one with “New script”.' : ''}
-        </p>
+        <Empty title={`No scripts in this namespace yet.${canWrite ? ' Make one with “New script”.' : ''}`} />
       ) : null}
       {items.length > 0 ? (
         // eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- keyboard users must be able to scroll the table (WCAG 2.1.1)
         <div className="scripts-table-scroll" role="region" aria-label="Scripts table" tabIndex={0}>
-          <table className="data scripts-table">
-            <caption className="visually-hidden">Scripts in the namespace, by name</caption>
-            <thead>
-              <tr>
-                <th scope="col">Name</th>
-                <th scope="col">Language</th>
-                <th scope="col">Latest version</th>
-                <th scope="col">Source</th>
-                <th scope="col">Updated</th>
-                <th scope="col">
-                  <span className="visually-hidden">Actions</span>
-                </th>
-              </tr>
-            </thead>
-            <tbody>
+          <Table label="Scripts in the namespace, by name" className="scripts-table">
+            <TableHead>
+              <TableRow>
+                <ColumnHeader scope="col">Name</ColumnHeader>
+                <ColumnHeader scope="col">Language</ColumnHeader>
+                <ColumnHeader scope="col">Latest version</ColumnHeader>
+                <ColumnHeader scope="col">Source</ColumnHeader>
+                <ColumnHeader scope="col">Updated</ColumnHeader>
+                <ColumnHeader scope="col">
+                  <VisuallyHidden>Actions</VisuallyHidden>
+                </ColumnHeader>
+              </TableRow>
+            </TableHead>
+            <TableBody>
               {items.map((script) => (
-                <tr key={script.id}>
-                  <th scope="row">
+                <TableRow key={script.id}>
+                  <ColumnHeader scope="row">
                     <Link to={`/scripts/${encodeURIComponent(script.id)}`}>{clipLabel(script.name)}</Link>
-                  </th>
-                  <td>{languageInfo(script.language).label}</td>
-                  <td>{script.latestVersion === undefined ? <span className="hint">not published</span> : `Version ${script.latestVersion}`}</td>
-                  <td>{formatBytes(script.sourceBytes)}</td>
-                  <td>
+                  </ColumnHeader>
+                  <TableCell>{languageInfo(script.language).label}</TableCell>
+                  <TableCell>
+                    {script.latestVersion === undefined ? (
+                      <Text as="span" muted>
+                        not published
+                      </Text>
+                    ) : (
+                      `Version ${script.latestVersion}`
+                    )}
+                  </TableCell>
+                  <TableCell>{formatBytes(script.sourceBytes)}</TableCell>
+                  <TableCell>
                     <time dateTime={script.updatedAt}>{formatTime(script.updatedAt)}</time>
-                  </td>
-                  <td>
+                  </TableCell>
+                  <TableCell>
                     {canWrite ? (
                       script.latestVersion === undefined ? (
                         <Button variant="danger" onClick={() => setDeleting(script)} aria-label={`Delete ${clipLabel(script.name)}`}>
@@ -123,19 +125,19 @@ function ScriptList({ api, namespace }: { api: ScriptsApi; namespace: string }) 
                         </Button>
                       )
                     ) : null}
-                  </td>
-                </tr>
+                  </TableCell>
+                </TableRow>
               ))}
-            </tbody>
-          </table>
+            </TableBody>
+          </Table>
         </div>
       ) : null}
       {list.hasNextPage ? (
-        <div className="toolbar">
+        <Row>
           <Button onClick={() => void list.fetchNextPage()} disabled={list.isFetchingNextPage}>
             {list.isFetchingNextPage ? 'Loading…' : 'Load more scripts'}
           </Button>
-        </div>
+        </Row>
       ) : null}
 
       <CreateScriptDialog open={creating} api={api} onClose={() => setCreating(false)} />
@@ -177,16 +179,16 @@ function DeleteBody({ script, api, onClose, onDeleted }: { script: ScriptSummary
   };
   return (
     <>
-      <p>
+      <Text>
         Delete <strong>{clipLabel(script.name)}</strong> and its draft? This cannot be undone. Only a script that was never published can be deleted.
-      </p>
+      </Text>
       {error !== undefined ? <ErrorState error={error} what="Deleting the script" /> : null}
-      <div className="dialog-actions">
+      <Actions>
         <Button onClick={onClose}>Keep it</Button>
         <Button variant="danger" onClick={remove} disabled={busy}>
           {busy ? 'Deleting…' : 'Delete script'}
         </Button>
-      </div>
+      </Actions>
     </>
   );
 }

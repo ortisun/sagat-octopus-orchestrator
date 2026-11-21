@@ -3,8 +3,11 @@ import type { Locator, Page } from '@playwright/test';
 import { env } from '../support/env';
 import { Api, IR_BASE } from '../support/platform';
 import { failOnBrowserErrors, goTo, signIn } from '../support/studio';
+import { expectValue, settled } from '../support/ui';
 
 const DESKTOP_HEIGHT = 812;
+/** Below this width the application shell folds the sidebar into a drawer behind "Open navigation" (the theme's `md` breakpoint). */
+const SIDEBAR_FROM = 768;
 
 function fanOut(name: string): Record<string, unknown> {
   const branches = Array.from({ length: 6 }, (_, index) => `branch-${index + 1}`);
@@ -22,7 +25,7 @@ function fanOut(name: string): Record<string, unknown> {
 async function expectNoPageHorizontalOverflow(page: Page, where: string): Promise<void> {
   await expect.poll(
     () => page.evaluate(() => {
-      const main = document.querySelector('.shell-frame > main');
+      const main = document.querySelector('[role="main"]');
       const pageOverflow = Math.max(document.documentElement.scrollWidth, document.body.scrollWidth) - window.innerWidth;
       const mainOverflow = main instanceof HTMLElement ? main.scrollWidth - main.clientWidth : 0;
       return Math.max(pageOverflow, mainOverflow);
@@ -32,6 +35,8 @@ async function expectNoPageHorizontalOverflow(page: Page, where: string): Promis
 }
 
 async function expectHorizontallyInside(container: Locator, items: Locator, where: string): Promise<void> {
+  // Geometry of the page at rest: a drawer sliding in or a dialog growing in would put its controls anywhere.
+  await settled(container.page());
   const outer = await container.boundingBox();
   expect(outer, `${where}: container has bounds`).not.toBeNull();
   const count = await items.count();
@@ -116,9 +121,17 @@ async function expectForcedControlInk(page: Page, control: Locator): Promise<voi
 }
 
 async function expectNamespaceInsideShell(page: Page): Promise<void> {
-  const select = page.getByRole('combobox', { name: 'Namespace' });
-  await expect(select).toHaveValue(env.namespace);
-  await expectHorizontallyInside(page.locator('.shell-sidebar'), select, 'namespace selector');
+  const drawer = (page.viewportSize()?.width ?? SIDEBAR_FROM) < SIDEBAR_FROM;
+  if (drawer) await page.getByRole('button', { name: 'Open navigation' }).click();
+  const shell = drawer ? page.getByRole('dialog', { name: 'Navigation' }) : page.getByRole('navigation', { name: 'Main' });
+  const select = shell.getByRole('combobox', { name: 'Namespace', exact: true });
+  await expect(select).toBeVisible();
+  await expectValue(select, env.namespace);
+  await expectHorizontallyInside(shell, select, 'namespace selector');
+  if (drawer) {
+    await page.keyboard.press('Escape');
+    await expect(shell).toBeHidden();
+  }
 }
 
 test('VISUAL an editable workflow keeps its canvas, inspector and dialogs usable from desktop to 320px', async ({ page }) => {
@@ -139,7 +152,7 @@ test('VISUAL an editable workflow keeps its canvas, inspector and dialogs usable
   await expect(inspector.getByRole('heading').first()).not.toHaveText('Workflow settings');
   await expect(page).toHaveTitle('Sagat Studio');
   await expectNamespaceInsideShell(page);
-  await expectHorizontallyInside(inspector, inspector.locator('input, select, textarea, button'), 'desktop inspector');
+  await expectHorizontallyInside(inspector, inspector.locator('input, textarea, button, [role="combobox"]'), 'desktop inspector');
   expect((await page.locator('.wf-canvas').boundingBox())!.width).toBeGreaterThanOrEqual(400);
   await page.screenshot({ path: test.info().outputPath('visual-editor-light-1470x812.png'), fullPage: true });
 
@@ -148,26 +161,28 @@ test('VISUAL an editable workflow keeps its canvas, inspector and dialogs usable
 
   await page.setViewportSize({ width: 1280, height: DESKTOP_HEIGHT });
   expect((await page.locator('.wf-canvas').boundingBox())!.width).toBeGreaterThanOrEqual(360);
-  await expectHorizontallyInside(inspector, inspector.locator('input, select, textarea, button'), '1280px inspector');
+  await expectHorizontallyInside(inspector, inspector.locator('input, textarea, button, [role="combobox"]'), '1280px inspector');
 
   for (const width of [1024, 768, 320]) {
     await page.setViewportSize({ width, height: DESKTOP_HEIGHT });
     await expectNoPageHorizontalOverflow(page, `${width}px workflow editor`);
-    await expectHorizontallyInside(inspector, inspector.locator('input, select, textarea, button'), `${width}px inspector`);
+    await expectHorizontallyInside(inspector, inspector.locator('input, textarea, button, [role="combobox"]'), `${width}px inspector`);
     await expectNamespaceInsideShell(page);
   }
 
   await page.getByRole('button', { name: 'Keyboard help' }).click();
   const dialog = page.getByRole('dialog', { name: 'Keyboard help' });
   await expect(dialog).toBeVisible();
-  await expectHorizontallyInside(dialog, dialog.locator('button, input, select, textarea'), '320px dialog');
+  await expectHorizontallyInside(dialog, dialog.locator('input, textarea, button, [role="combobox"]'), '320px dialog');
   await page.emulateMedia({ colorScheme: 'light', forcedColors: 'active' });
   await expectForcedControlInk(page, dialog.getByRole('button').first());
-  await expectForcedControlInk(page, page.locator('.wf-toggle .btn[aria-pressed="true"]'));
-  await expectForcedControlInk(page, page.locator('.shell-mark'));
+  await expectForcedControlInk(page, page.locator('.wf-toggle button[aria-pressed="true"]'));
   await page.screenshot({ path: test.info().outputPath('visual-editor-forced-320x812.png'), fullPage: true });
   await page.keyboard.press('Escape');
   await expect(dialog).toBeHidden();
+  // The brand mark is drawn in the sidebar, which is not on the page at 320px: its ink is checked where it is drawn.
+  await page.setViewportSize({ width: 1024, height: DESKTOP_HEIGHT });
+  await expectForcedControlInk(page, page.locator('.shell-mark'));
   expect(problems).toEqual([]);
 });
 
