@@ -1536,7 +1536,7 @@ mod tests {
     proptest! {
         /// The counting rule of design section 2: over any sequence of batches, carries, `in_order` values and
         /// refusals, lines stored (markers excluded) + dropped by the worker + dropped by the server = last_sequence,
-        /// and the drops by reason add up to the two drop counts.
+        /// and every server drop carries a reason the rule names for that plan.
         #[test]
         fn stored_plus_dropped_is_the_last_sequence(
             steps in proptest::collection::vec(step(), 1..30),
