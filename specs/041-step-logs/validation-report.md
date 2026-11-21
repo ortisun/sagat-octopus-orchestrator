@@ -980,3 +980,20 @@ Then, for decision D041-121 (the answers to the second re-reads), each fix seen 
   restored, the whole performance test binary passes (52 tests, 10 ignored benchmarks), on commit `18898a98` plus this
   change. The lease tests are run by hand (they need `--features perf-spike` and a database); the gate job builds the
   binary and runs only the rounds. After the restore a fresh build passed the whole performance test binary (51 tests, 10 ignored benchmarks).
+
+## 2026-11-21 — The busy loss leaves the ceiling set in the domain (task T041-4, decision D041-129)
+
+The planned contract had moved the busy loss out of `StepLogStream.ceiling` into `notStoredReason` (decision D041-129)
+while the domain still listed `CeilingReason::TenantQuotaBusy`, so `the_contracts_ceiling_reasons_are_the_domains`
+(`contract_platform_foundation`) failed in CI at `4b8c64e6`: the contract's {`attempt_bytes`, `attempt_records`,
+`tenant_quota`} against the domain's four. This part of task T041-4 is built now, so that the contract and the domain
+agree in one commit: `CeilingReason` loses `TenantQuotaBusy`, and the domain gains `NotStoredReason` (`service_busy`)
+with `ALL`, `as_str` and `parse`; the fitness file gains `the_contracts_not_stored_reasons_are_the_domains`. The rest of
+task T041-4 (`DropReason`, `validate_carry`, the quota resources) is built with that task.
+
+- `cargo test -p sagat-tests --test contract_platform_foundation --locked`: 32 passed, 0 failed (2026-11-21).
+- Hand mutation: `ServiceBusy`'s name changed to `tenant_quota_busy`; `the_contracts_not_stored_reasons_are_the_domains`
+  failed ("the contract's not-stored reasons", left {`service_busy`}, right {`tenant_quota_busy`}); the file restored
+  and rebuilt, the suite passes again (32).
+- `cargo test -p sagat-domain --locked step_logs`: 15 passed; `cargo clippy -p sagat-domain --all-targets` and
+  `cargo clippy -p sagat-tests --test contract_platform_foundation` with `-D warnings`: clean.

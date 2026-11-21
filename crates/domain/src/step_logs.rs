@@ -112,19 +112,11 @@ pub enum CeilingReason {
     AttemptRecords,
     AttemptBytes,
     TenantQuota,
-    /// The tenant quota could not be checked within the fallback refill's budget (design 041 section 2b, decision
-    /// D041-119): produced only by the carry's SQL, never by `plan_batch`.
-    TenantQuotaBusy,
 }
 
 impl CeilingReason {
     /// Every reason, in the order of the contract's `StepLogStream.ceiling` enum.
-    pub const ALL: [Self; 4] = [
-        Self::AttemptRecords,
-        Self::AttemptBytes,
-        Self::TenantQuota,
-        Self::TenantQuotaBusy,
-    ];
+    pub const ALL: [Self; 3] = [Self::AttemptRecords, Self::AttemptBytes, Self::TenantQuota];
 
     #[must_use]
     pub const fn as_str(self) -> &'static str {
@@ -132,7 +124,6 @@ impl CeilingReason {
             Self::AttemptRecords => "attempt_records",
             Self::AttemptBytes => "attempt_bytes",
             Self::TenantQuota => "tenant_quota",
-            Self::TenantQuotaBusy => "tenant_quota_busy",
         }
     }
 
@@ -145,8 +136,35 @@ impl CeilingReason {
         match self {
             Self::AttemptRecords => Some(MarkerReason::AttemptRecords),
             Self::AttemptBytes => Some(MarkerReason::AttemptBytes),
-            Self::TenantQuota | Self::TenantQuotaBusy => None,
+            Self::TenantQuota => None,
         }
+    }
+}
+
+/// Why the server did not store some of a carry's records for a reason that is not a ceiling (design 041 section 2b,
+/// decision D041-129): the stream's `notStoredReason`, never its `ceiling`. Produced only by the carry's SQL, never by
+/// `plan_batch`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NotStoredReason {
+    /// The tenant's step-log quota could not be checked within the fallback refill's budget or with no wait slot free:
+    /// the log service was busy, not the tenant's quota (gap G041-026).
+    ServiceBusy,
+}
+
+impl NotStoredReason {
+    /// Every reason, in the order of the contract's `StepLogStream.notStoredReason` enum.
+    pub const ALL: [Self; 1] = [Self::ServiceBusy];
+
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ServiceBusy => "service_busy",
+        }
+    }
+
+    #[must_use]
+    pub fn parse(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|reason| reason.as_str() == name)
     }
 }
 
