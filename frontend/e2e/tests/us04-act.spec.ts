@@ -243,7 +243,7 @@ test('T037 an admin cannot retry an unknown ordinary effect, cancellation preser
     const confirmation = dialog.getByRole('textbox', { name: 'Type the step id to confirm' });
     await confirmation.fill('submi');
     await dialog.getByRole('button', { name: 'Confirm: Resolve step' }).click();
-    await expect(dialog.getByText('Type the step id exactly as shown to confirm.')).toBeVisible();
+    await expectFieldError(confirmation, 'Type the step id exactly as shown to confirm.');
     expect(await api.journal(run)).toHaveLength(stoppedJournal.length);
     await confirmation.fill('submit');
     await dialog.getByRole('button', { name: 'Confirm: Resolve step' }).click();
