@@ -1303,7 +1303,7 @@ taken after `git grep D022-04` on every `origin/*` branch.
      policy applied).
   3. *Nothing is revoked and nothing is rewritten:* the waiter row keeps its filed limit (a waiter row is never changed),
      a grant already made counts as it was; a raised ceiling never lifts a waiter above its filed limit, which is the lower
-     of its declaration and the ceiling at its admission (review of 2026-11-21, minor m3: so a ceiling raised while it
+     of its declaration and the ceiling at its admission (review of 2026-11-21, minor 3: so a ceiling raised while it
      waits is not applied to it, an under-delivery; the grant's journal records the filed limit, not the one it was
      decided with; both open with the review's answers).
   4. *Concurrency is unchanged:* the same question for a lowered `concurrency_limit` while runs are queued is not settled
