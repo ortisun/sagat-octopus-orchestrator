@@ -344,16 +344,48 @@ register → loop:
   UNAVAILABLE / transport → wait with the backoff of §5 (no limit on attempts, cap 30 s), reconnect
 ```
 
-The host runs at most as many tasks as it asked for (`max_tasks`): if a poll answer carries more, it runs the
-first ones, logs the rest and leaves their leases to lapse. A wait derived from the server (`retry_after_ms`,
-`Retry-After`) is capped at 60 s, whatever it says.
+The host runs at most as many tasks as it asked for (`max_tasks`) and has free slots for: if a poll answer or a stream
+frame carries more, it runs the first ones and hands the rest back (below). A wait derived from the server
+(`retry_after_ms`, `Retry-After`) is capped at 60 s, whatever it says.
 
-**A lease the host will not run is handed back.** A host that drops a lease it received (it is stopping, a frame carries
-more than it may run, or the rest of a malformed frame is dropped) reports `FailStep` for it with the code
-`TASK_NOT_STARTED`, retryable, with the lease's fence, before any handler of that task runs, and never for a task whose
+**A lease the host will not run is handed back.** A host that drops a lease it received reports `FailStep` for it with the
+code `TASK_NOT_STARTED`, retryable, with the lease's fence, before any handler of that task runs, and never for a task whose
 handler started. The server then gives the step back to `READY` without consuming the attempt when it can (decision D006-005
 of `specs/006-sdk-multilanguage/research.md`), otherwise retries it as an ordinary failure; a lease left to lapse would be an
-unknown outcome and, for an `Activity`, a review (feature 037).
+unknown outcome and, for an `Activity`, a review (feature 037). The rules (decisions D006-020 to D006-023):
+
+- *Which leases.* Every lease of a poll answer or a stream frame that the host received and does not dispatch:
+  1. the whole answer or frame when it arrives after `stop` began (§6.8), on either transport: a host that is stopping
+     starts nothing new;
+  2. the leases beyond what the host may run: beyond the credit it asked for in this poll or receive window, or beyond
+     its free slots;
+  3. the rest of a frame the host stops reading because the frame breaks the receive contract (§10: the 8 MiB input
+     budget of the window), the lease that broke it included. A window whose credit is used up exactly is read until it
+     ends, so a frame that still comes is handed back under item 2; a frame that breaks the credit or the budget ends
+     the window: the host hands back the rest of that frame and cancels the receive, and the frames it does not read
+     are the server's (it withdraws what it did not hand to the transport; what it did is the residue G006-001, which
+     only a server that broke the credit can cause);
+  4. a lease the host could not start for a reason of its own (its runtime refused to schedule the task, its in-flight
+     table could not be updated).
+- *Never handed back.* A lease whose in-flight key (the task id and, from protocol 1.5, the instance path; never the task
+  id alone, which sibling iterations of a collection share) is already in flight on this host (a task running, or a
+  hand-back on its way), or already dispatched or handed back in the same answer or window: it is a duplicate, it is
+  ignored and logged, and it is neither run nor reported, because its fence may be the one of the running handler or
+  of the hand-back. A lease is handed back at most once.
+- *What is sent.* `FailStep{task_id, run_id, step_id, attempt, generation, lease_token, idempotency_key = "failed-<task_id>",
+  error_code = "TASK_NOT_STARTED", safe_message = "the host did not start this task", retryable = true, traceparent}`, with
+  the execution-instance identity under protocol 1.5 as every report (§6.1). No heartbeat, no `ResolveSecrets`, no handler,
+  no "task taken" event. It is retried as a report is (§6.5); `STALE_ATTEMPT` ends it without an error (the lease is no
+  longer this host's). Every server accepts it, whatever its version: a server that cannot withdraw records an ordinary
+  retryable failure. `TASK_NOT_STARTED` is a step failure code, like `NO_HANDLER`; it is never raised to a caller and is
+  not in `sdks/error-catalog.json`. At most eight hand-backs are on their way at once; the others wait their turn in
+  the order they were received, so a server that floods one answer cannot make the host open a call per lease.
+- *What is observed.* A warning log line with the task id and the reason (`stopping`, `credit` or `malformed`, or
+  `not_started` for item 4), never the lease token; the host's failure event or counter with the code `TASK_NOT_STARTED`
+  (or, when the report cannot be made, its dropped event, as for any report).
+- *The connection stays open for it.* `stop` waits for the hand-backs on their way, within the same grace as the tasks
+  in flight (§6.8), before it closes the connection. A hand-back that cannot be made (the connection is gone) is logged
+  and the lease lapses.
 
 The host never busy-polls: an empty answer is always followed by a wait. It opens its connection when
 it starts, not before. A connection that was idle may be closed by the server; `UNAVAILABLE` on it is
@@ -480,8 +512,10 @@ raises `UNSUPPORTED_PROTOCOL` instead of calling.
 
 ### 6.8 Lifecycle
 
-`start()` registers and begins the loop and returns once registered; `stop(timeout)` stops polling,
-cancels nothing, waits for the tasks in flight up to `timeout` (default 30 s), then cancels their tokens
+`start()` registers and begins the loop and returns once registered; `stop(timeout)` stops polling (it cancels the
+receive call in progress, never the code that reads an answer or a frame already received, which is handed back, §6.2),
+cancels nothing else, waits for the tasks in flight and the hand-backs on their way up to `timeout` (default 30 s), then
+cancels their tokens
 with the reason `shutdown` and returns. A task that did not finish keeps its lease until it lapses; the
 server then reconciles or holds review according to task kind and available evidence. The host is
 restartable. Metrics hooks (counters for tasks taken, completed,

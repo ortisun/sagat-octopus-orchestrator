@@ -287,3 +287,87 @@ All decisions below are "delegate (OD-2026-11-20-6)" unless they say otherwise.
     unchanged (their leases keep today's semantics). The acknowledgement deadline must be derived from measured delivery and
     heartbeat latency, not guessed. The variant, the minor and the deadline are decided in the ADR that follows (design first,
     the four reviewers before any code).
+
+### The hosts' hand-back, as built (2026-11-20, D006-020 to D006-027, G006-020 to G006-022)
+
+The audit of the six worker hosts, every place a lease that was received is not run (before this change none reported it):
+
+| Host | Received after `stop` began | Beyond the credit or the free slots | Rest of a frame that breaks the contract | Could not start | Duplicates |
+|---|---|---|---|---|---|
+| Go | stream frame dropped; a poll answer was run | poll answer and stream frame cut | input budget: the lease and the rest | none | keyed by the task id alone: a sibling iteration overwrote the in-flight entry of the other |
+| Python | stream frame dropped, or lost when `stop` cancelled the loop task while a frame was read; a poll answer lost the same way | poll answer cut; stream: rest of the frame | input budget, or a duplicate: the rest of the frame | none | told by the task id alone: a sibling iteration was a duplicate and the rest of the frame was dropped |
+| TypeScript | stream frame dropped; a poll answer was run | poll answer cut (by the free slots, not the credit asked for); stream: rest of the frame | input budget, or a duplicate: the rest of the frame | none | stream told by the task id alone, as Python; none at all on the poll path, where a duplicate ran a second handler |
+| C# | a frame or a poll answer read in the moment between the read and the check of `stop` was run (both tests failed on the original code) | poll answer and stream frame cut | input budget: the lease and the rest | `Task.Run` refused | none: the in-flight table was keyed by a sequence number |
+| Java | a stream frame and a poll answer were run | poll answer and stream frame cut | input budget: the lease and the rest | the task pool refused (`RejectedExecutionException`), after its "task taken" event | in flight only (keyed by the in-flight key) |
+| Rust | a second buffered frame read in the same poll after `stop` cancelled the receive was run | poll answer and stream frame cut; the window ended at the credit, so later frames were never read | none (no input budget is checked) | no permit; the in-flight table poisoned | in flight only |
+
+A frame that carries tasks and a retry hint is run within the credit and then ends the window in Python and TypeScript:
+nothing of it is dropped, so it is not a hand-back.
+
+All decisions below are "delegate (OD-2026-11-20-6)".
+
+- **D006-020 — What a hand-back is.** `FailStep` with `TASK_NOT_STARTED`, `retryable = true`, the fixed safe message "the
+  host did not start this task", the idempotency key of every failure (`failed-<task_id>`) and the lease's fence and
+  identity, retried as a report, at most once per lease, with no heartbeat, secret resolution or handler before it.
+  `TASK_NOT_STARTED` is a step failure code like `NO_HANDLER` and is not added to `sdks/error-catalog.json`: the catalog
+  lists what a `SagatError` raised to a caller can carry, and a hand-back is never raised. It is observed through the
+  host's existing failure event or counter with that code, and a warning log line with the task id and the reason, so no
+  SDK grows a public event type. Weighed: a new event type in six SDKs (more surface for one counter the code already
+  separates); a catalog entry (six embedded copies and a code no caller meets); a message naming the reason (the server
+  does not need it, and the log has it).
+- **D006-021 — Which leases, the same in all six.** The whole answer or frame received after `stop` began, on both
+  transports (Go and TypeScript ran a poll answer that arrived while stopping, and Java a frame too; running it delays the
+  stop by a whole task, while a hand-back gives it to another host at once); the leases beyond the credit or the free
+  slots (all six cut them and left them to lapse); the rest of a frame that breaks the receive contract, the lease that
+  broke it included; a lease the host could not start for a reason of its own. Never a duplicate (D006-022).
+- **D006-022 — Duplicates are told by the in-flight key, never by the task id alone, and are not reported.** The legacy
+  task id is `run/node/generation`, which sibling iterations of a collection share; Python and TypeScript took the second
+  sibling of a frame for a duplicate and dropped the rest of the frame. The key is the task id and, from protocol 1.5,
+  the instance path (what Java, TypeScript and Rust already keyed the in-flight table by). A real duplicate (the key is
+  in flight, or already seen in the same answer or window) is ignored and logged: handing it back would carry the fence of
+  the running handler and fail it.
+- **D006-023 — `stop` cancels the receive call, never the code that reads a frame, and waits for the hand-backs.** Python
+  cancelled the loop task, which can replace a frame already read with the cancellation and lose it; it now cancels the
+  receive call (as TypeScript, Java and Go do) and the loop hands back what it read. Every host counts a hand-back on its
+  way as work in flight for `stop`, within the same grace, so the connection is not closed under it.
+- **D006-024 — The six-language conformance scenario waits for the server's withdrawal.** A scenario can drop a lease
+  deterministically against the real server: a fault action of the conformance fault plans that raises the credit the host
+  sends (`max_tasks`) while two steps are `READY` makes the server lease more than the host asked for, and the host hands
+  the rest back. Its golden, though, is the server's answer: today an ordinary retryable failure (`step.failed`, then a
+  retry with the next attempt), and, once the withdrawal of D006-001 to D006-005 is built and `lease-withdrawal-v1` is
+  recorded in the conformance server, `step.lease_withdrawn` with the attempt not consumed. A golden blessed now would
+  record the behaviour the fix replaces and be rewritten when the server lands. So the scenario (`worker-hand-back`, the
+  fault action in the six fault plans, the golden read before it is blessed) is added on the design branch after the
+  server side is merged into it (G006-020). Until then the deterministic proofs are the hand-back tests of each host
+  against its fake server (eight cases per host, barriers, no sleeps). Weighed: a golden of today's server (a proof of the
+  older-server path only, rewritten within days); no scenario (six hosts with no shared proof against the real server).
+- **D006-025 — Every host reads a filled window to its end, ends a broken one, and checks its input budget.** Rust
+  ended a window as soon as its credit was used, so a frame an over-sending server sent after it was never read (it
+  lapsed), and it checked no input budget. Every host now reads a window whose credit is used up exactly until it ends
+  (the next frame that carries tasks is handed back), and a frame that breaks the credit or the 8 MiB budget of the
+  window ends it: the rest of that frame is handed back and the receive is cancelled (§10, `stream-completion.md`).
+  Weighed: leaving Rust as it was (two behaviours for one contract, against rule 8 of the constitution); reading a broken
+  window to its end too (it would keep a window open for a server that has already broken its contract, for frames that
+  the server withdraws itself when the stream ends, D006-001; what it already handed to the transport is G006-001, and
+  only a server that broke the credit sends it).
+- **D006-026 — At most eight hand-backs on their way at once.** The independent review found that a server answering one
+  poll with tens of thousands of small leases (an answer may be 16 MiB) made every host start one report per lease at
+  once: in Java one thread each, until the thread limit, an error that killed the poll thread. Every host now runs at
+  most eight hand-backs at once and queues the rest in the order received; `stop` waits for the queue within its grace,
+  and what is left when the grace ends lapses. Eight is the bound of the Java heartbeat pool and well over what a server
+  that keeps to the credit can cause (at most 64 leases a window, and none beyond the credit). Weighed: no bound (the
+  defect); dropping the excess beyond a bound (back to lapsing into a review); a bound tied to `max_inflight` (a host
+  with one slot would hand back one lease at a time while stopping).
+- **D006-027 — A lease being handed back is in flight.** A hand-back still retrying (`UNAVAILABLE`) carries the lease's
+  fence; a later answer that leased the same key again (only a server that repeats a lease can) would have run a handler
+  while a `TASK_NOT_STARTED` for that fence was on its way. The duplicate check now counts the keys of the hand-backs on
+  their way as in flight, from the moment the lease is handed back until its report ends.
+
+- **G006-020 — No conformance scenario proves the hand-back yet** (D006-024): to be added on the design branch once the
+  server's withdrawal is merged into it.
+- **G006-021 — The `poll` event does not count the same thing in every host.** Go and Python count the tasks taken;
+  TypeScript and Java count the leases of the answer, and Java's stream path emits none. It was so before the
+  hand-back and changes no lease; one meaning (the tasks taken) is to be chosen in a later delivery.
+- **G006-022 — A report made after `stop` closed the connection** (a handler that ignored its token and returned late) is
+  sent on a connection TypeScript opens again, where the other hosts refuse it; a hand-back is not one, since `stop`
+  waits for them. Found in the review of this delivery, older than it.

@@ -127,8 +127,9 @@ buffer, no lease is acknowledged by a transport read, and external effects remai
   handler/report lifecycle finishes, including across reconnection, lease expiry and registration.
 - Dispatch a frame immediately and start heartbeats using the same activity path as unary polling.
   Defend against a server emitting more than the remaining credit or local capacity: accept only
-  bounded valid work, cancel the receive, record a closed diagnostic and leave excess leases to
-  expire. Never grow an unbounded queue of handlers or concatenate all frames.
+  bounded valid work, cancel the receive, record a closed diagnostic and hand the excess leases
+  back with `TASK_NOT_STARTED` (`sdks/SPEC.md` §6.2; at most eight hand-backs on their way at once).
+  Never grow an unbounded queue of handlers or concatenate all frames.
 - Normal filled EOF may reopen immediately if capacity remains. Underfilled termination obeys the
   positive retry hint with existing jitter and the host's bounded wait rules; task completion can
   wake that wait. A malformed empty frame with no positive hint still receives a minimum wait.
