@@ -3601,6 +3601,11 @@ None.
   it in `pg_stat_activity`; the revoke commits; 7,777 is never shown with the grant, and the next view withholds) and
   `quotas::the_store_refuses_the_step_log_usage_without_the_grant`. Done when they are seen failing (the first on the
   two-transaction read) and pass, with the quota tests, as the owner role and as the runtime role.
+  Refs: FR-041-013
+  Owner-gate: OD-2026-11-20-19
+  Files: modify `crates/application/src/quotas.rs`, `crates/infra-postgres/src/{quotas.rs,reveal_grants.rs}`,
+  `tests/integration/security-multitenancy/quotas.rs`, `specs/041-step-logs/{research.md,contracts.md,data-model.md}`,
+  `docs/runbooks/step-logs.md`.
   Evidence (2026-11-21): the race test, written first, failed on the two-transaction read (`c07372fd`'s parent code)
     with `left: (Some(7777), false)`; `the_store_refuses_the_step_log_usage_without_the_grant` failed before the
     refusal; both pass. Hand mutations, each failing and restored with a fresh build: the grant flag ignored (2 tests
@@ -3611,11 +3616,6 @@ None.
     sagat-tests --all-targets --locked -- -D warnings`: clean. Review: `docs/designs/041-step-logs.reviews/
     2026-11-21-quota-view-snapshot/` (security and correctness, Blocker 0, Major 1 answered; the correctness re-read
     at `7d34e23b`: Blocker 0, Major 0).
-  Refs: FR-041-013
-  Owner-gate: OD-2026-11-20-19
-  Files: modify `crates/application/src/quotas.rs`, `crates/infra-postgres/src/{quotas.rs,reveal_grants.rs}`,
-  `tests/integration/security-multitenancy/quotas.rs`, `specs/041-step-logs/{research.md,contracts.md,data-model.md}`,
-  `docs/runbooks/step-logs.md`.
 
 ### Verification Plan
 
