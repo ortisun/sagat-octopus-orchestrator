@@ -154,7 +154,7 @@ adapter does not qualify a real provider.
   four withdrawals per attempt, not acknowledged and with no capability served: the server review of pull request #260 and
   decision 9 of Architecture decision 0099), is not an attempt and has a known outcome (no handler ran), so Requirement 037-006 does not apply to it.
   A lease that lapses is unchanged: its outcome is unknown.
-  *Clarification (2026-11-20, decisions Decision 006-044, Decision 006-045, Decision 006-049, Decision 006-053 and Decision 006-061 of the same research, Architecture decision 0099,
+  *Clarification (2026-11-20, Decision 006-044, Decision 006-045, Decision 006-049, Decision 006-053 and Decision 006-061 of the same research, Architecture decision 0099,
   delegate Owner decision 2026-11-20-6, the trust assumption to be accepted by the owner with Architecture decision 0099):* a lease of protocol 1.8 flagged
   `acknowledge_before_start` that the server withdrew because the first of its expiry and its attempt deadline passed while it
   was still provisional (its host never acknowledged it, cause `NOT_ACKNOWLEDGED`) is not an attempt either, for a host that keeps
