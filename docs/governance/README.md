@@ -11,6 +11,7 @@ checks the newest report against the constitution. Newest first:
 
 | Report | Version |
 |---|---|
+| [constitution-4.7.0-sync-impact.md](constitution-4.7.0-sync-impact.md) | 4.7.0: documentation first, words in full, and the identifiers written as words |
 | [constitution-4.6.0-sync-impact.md](constitution-4.6.0-sync-impact.md) | 4.6.0: a change of a contract file runs the contract suites and the packages that read it |
 | [constitution-4.5.0-sync-impact.md](constitution-4.5.0-sync-impact.md) | 4.5.0: a change of the step-log code runs the step-log suites |
 | [constitution-4.4.0-sync-impact.md](constitution-4.4.0-sync-impact.md) | 4.4.0: a change of the engine's hot path runs the suite that budgets what it costs the database |
@@ -21,6 +22,12 @@ checks the newest report against the constitution. Newest first:
 | [constitution-3.0.0-sync-impact.md](constitution-3.0.0-sync-impact.md) | 3.0.0: the amendment its report calls "B01", split out of feature 037 and adopted on 2026-11-01 |
 | [compensation-safety-sync-impact.md](compensation-safety-sync-impact.md) | 2.0.0: Principle III, compensation safety |
 | [sync-impact-rust-sdk-2026-10-27.md](sync-impact-rust-sdk-2026-10-27.md) | 1.1.0: the official SDK languages grow from five to six with Rust (2026-10-27) |
+
+## How documents name things
+
+| Page | What it holds |
+|---|---|
+| [identifier-scheme.md](identifier-scheme.md) | The abbreviations to write out, the old and new form of every identifier (`T022-064` becomes `Task 022-064`), and the transition until the sweep |
 
 ## Plans that change the repository
 
