@@ -288,7 +288,7 @@ All decisions below are "delegate (OD-2026-11-20-6)" unless they say otherwise.
     heartbeat latency, not guessed. The variant, the minor and the deadline are decided in the ADR that follows (design first,
     the four reviewers before any code).
 
-### The hosts' hand-back, as built (2026-11-20, D006-020 to D006-027, G006-020 to G006-022)
+### The hosts' hand-back, as built (2026-11-20, D006-020 to D006-028, G006-020 to G006-022)
 
 The audit of the six worker hosts, every place a lease that was received is not run (before this change none reported it):
 
@@ -362,6 +362,14 @@ All decisions below are "delegate (OD-2026-11-20-6)".
   fence; a later answer that leased the same key again (only a server that repeats a lease can) would have run a handler
   while a `TASK_NOT_STARTED` for that fence was on its way. The duplicate check now counts the keys of the hand-backs on
   their way as in flight, from the moment the lease is handed back until its report ends.
+- **D006-028 — `TASK_NOT_STARTED` is reserved for the host** (a blocker of the server review). The server withdraws a
+  lease on that code without consuming the attempt or opening a review, on the word that no handler ran; a handler that
+  failed with it would make an attempt that may have had an effect look like one that never began, and escape feature
+  037's review. So every host reports a handler's failure with that code (forward, compensation or reconciliation) as
+  `WORKER_ERROR`, keeping its message and its `retryable`, the rule §6.5 already applies to a code that is not
+  `[A-Z0-9_]{1,64}`. Weighed: refusing the code as a programming error (`retryable = false`: it would fail a step for good
+  for a handler's mistake in naming); leaving it to the server (the server cannot tell the host's report from the
+  handler's: both come on the same lease).
 
 - **G006-020 — No conformance scenario proves the hand-back yet** (D006-024): to be added on the design branch once the
   server's withdrawal is merged into it.

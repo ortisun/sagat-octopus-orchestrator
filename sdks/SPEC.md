@@ -378,7 +378,9 @@ unknown outcome and, for an `Activity`, a review (feature 037). The rules (decis
   no "task taken" event. It is retried as a report is (§6.5); `STALE_ATTEMPT` ends it without an error (the lease is no
   longer this host's). Every server accepts it, whatever its version: a server that cannot withdraw records an ordinary
   retryable failure. `TASK_NOT_STARTED` is a step failure code, like `NO_HANDLER`; it is never raised to a caller and is
-  not in `sdks/error-catalog.json`. At most eight hand-backs are on their way at once; the others wait their turn in
+  not in `sdks/error-catalog.json`. **The code is reserved for the host**: a handler that fails with it (an
+  `ActivityFailure` whose code is `TASK_NOT_STARTED`, of a forward, compensation or reconciliation handler) is reported as
+  `WORKER_ERROR`, with its own message and `retryable` (§6.5), because only the host can know that no handler ran. At most eight hand-backs are on their way at once; the others wait their turn in
   the order they were received, so a server that floods one answer cannot make the host open a call per lease.
 - *What is observed.* A warning log line with the task id and the reason (`stopping`, `credit` or `malformed`, or
   `not_started` for item 4), never the lease token; the host's failure event or counter with the code `TASK_NOT_STARTED`
@@ -476,8 +478,8 @@ A handler's input type that cannot be built from the document is not a crash: th
   Any other raised error is reported as `error_code = "ACTIVITY_ERROR"`, `retryable = true`, and the
   `safe_message` is only its type name — never its text, which may hold the data it was handed.
   `safe_message` is cut to 512 Unicode code points (never inside a surrogate pair, and a lone surrogate becomes
-  U+FFFD, so what is sent is always valid UTF-8); a code that is not `[A-Z0-9_]{1,64}` is replaced by
-  `WORKER_ERROR`.
+  U+FFFD, so what is sent is always valid UTF-8); a code that is not `[A-Z0-9_]{1,64}`, or that is `TASK_NOT_STARTED`
+  (reserved for the host, §6.2), is replaced by `WORKER_ERROR`.
 - The report is retried per §5. `already_applied = true` in the answer is a success. The host never
   reports one attempt twice with different content.
 
