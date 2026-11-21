@@ -2164,3 +2164,53 @@ async fn a_hand_back_that_cannot_be_made_is_logged_and_its_lease_lapses() {
             .all(|c| c.idempotency_key == "failed-run-2/charge/1")
     );
 }
+
+#[tokio::test]
+async fn a_hand_back_queued_while_the_worker_leaves_is_handed_back_once() {
+    let mut served = serve(vec![numbered(1), numbered(2)], 1).await;
+    served.control.overfill.store(true, Ordering::Release);
+    let mut options = served.options.clone();
+    options.transport = WorkerTransport::Poll;
+    let mut host = WorkerHost::new(options).expect("host");
+    host.activity("charge", |_: ActivityContext, _: Value| async { Ok(1) })
+        .expect("handler");
+    // One worker place, and that worker held once it has found the queue empty and before it gives
+    // up its place.
+    host.hand_backs.bound.store(1, Ordering::Release);
+    let (found_empty, mut leaving) = tokio::sync::oneshot::channel();
+    let (release, held) = tokio::sync::oneshot::channel();
+    *super::locked(&host.hand_backs.leaving) = Some((found_empty, held));
+    host.start().await.expect("start");
+    // The worker hands back run-2, finds the queue empty and is held there.
+    tokio::time::timeout(Duration::from_secs(10), &mut leaving)
+        .await
+        .expect("the worker leaves")
+        .expect("the barrier");
+    assert_eq!(served.handed_back(), ["run-2/charge/1"]);
+    assert_eq!(served.completed().await.task_id, "run-1/charge/1");
+    // The next answer runs run-3 and hands back run-4, which finds the only place still taken.
+    served
+        .leases
+        .lock()
+        .expect("leases")
+        .extend([numbered(3), numbered(4)]);
+    let leases = served.leases.clone();
+    until("the next answer", || {
+        leases.lock().expect("leases").is_empty()
+    })
+    .await;
+    let polls = served.control.poll_calls.load(Ordering::Acquire);
+    let control = served.control.clone();
+    until("the poll after it", || {
+        control.poll_calls.load(Ordering::Acquire) > polls
+    })
+    .await;
+    assert_eq!(served.failures().len(), 1, "run-4 waits for a worker");
+    release.send(()).expect("the worker is held");
+    until("the queued hand-back", || served.failures().len() == 2).await;
+    assert_eq!(served.completed().await.task_id, "run-3/charge/1");
+    host.stop(Duration::from_secs(5)).await.expect("stop");
+    // Never stranded, never twice.
+    assert_eq!(served.handed_back(), ["run-2/charge/1", "run-4/charge/1"]);
+    assert_eq!(served.failures().len(), 2);
+}

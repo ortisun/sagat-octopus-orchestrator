@@ -54,6 +54,11 @@ public sealed partial class WorkerHost : IWorkerHost
     // How a task is started: the thread pool. The tests replace it by reflection with a runtime that refuses a task, the one path of
     // Dispatch that nothing else can reach.
     private readonly Func<Func<Task>, Task> startTask = static work => Task.Run(work);
+
+    // The bound of the hand-back workers, and what a worker does once it has found the queue empty and before it gives up its place. The
+    // tests lower the one and hold the other by reflection, to queue a hand-back exactly while a worker leaves.
+    private readonly int handBackBound = MaxHandBacks;
+    private readonly Func<Task> beforeHandBackWorkerLeaves = static () => Task.CompletedTask;
     private int handBackWorkers;
     private readonly SemaphoreSlim lifecycle = new(1, 1);
     private readonly object wakeGate = new();
@@ -754,12 +759,9 @@ public sealed partial class WorkerHost : IWorkerHost
     private void HandBack(TaskLease lease, string key, Session session, int protocolMinor, string why)
     {
         var done = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        if (!handingBack.TryAdd(key, done))
-        {
-            // Take looked for the key just before, and only the loop hands back: a lease is handed back at most once.
-            Log.DuplicateIgnored(logger, lease.TaskId);
-            return;
-        }
+        // Only the receive loop hands back, and Take looked for the same key in this table just before: a lease is handed back at most once.
+        var added = handingBack.TryAdd(key, done);
+        Debug.Assert(added, "a lease was handed back twice");
 
         Log.HandingBack(logger, lease.TaskId, why);
         handBackQueue.Enqueue(new HandBackItem(lease, key, session, protocolMinor, done));
@@ -788,7 +790,7 @@ public sealed partial class WorkerHost : IWorkerHost
         while (true)
         {
             var workers = Volatile.Read(ref handBackWorkers);
-            if (workers >= MaxHandBacks)
+            if (workers >= handBackBound)
             {
                 return false;
             }
@@ -826,6 +828,7 @@ public sealed partial class WorkerHost : IWorkerHost
                 }
             }
 
+            await beforeHandBackWorkerLeaves().ConfigureAwait(false);
             Interlocked.Decrement(ref handBackWorkers);
 
             // A hand-back queued while this worker was leaving may have found every place taken: it is taken up again here.
@@ -842,13 +845,10 @@ public sealed partial class WorkerHost : IWorkerHost
         try
         {
             entry = new InFlight(new TaskRuntime(lease.ExpiresAtEpochMs));
-            if (!inflight.TryAdd(key, entry))
-            {
-                // Only the loop adds to the table, and it looked for the key just before: nothing else can be under it.
-                entry = null;
-                Log.DuplicateIgnored(logger, lease.TaskId);
-                return;
-            }
+            // Only the receive loop adds to the table, and Take looked for the same key in it just before: a lease of a running task is
+            // never started again.
+            var added = inflight.TryAdd(key, entry);
+            Debug.Assert(added, "a running task was leased again");
 
             var started = entry;
             _ = startTask(async () =>

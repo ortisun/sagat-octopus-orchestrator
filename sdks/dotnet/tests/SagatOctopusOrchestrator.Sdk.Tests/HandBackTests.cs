@@ -540,6 +540,57 @@ public sealed class HandBackTests : IAsyncLifetime
         Assert.Equal(20, Enumerable.Range(2, 20).Count(n => dropped.Count(line => line.Contains($"task run-{n}/charge/1 ", StringComparison.Ordinal)) == 1));
     }
 
+    [Fact]
+    public async Task AHandBackQueuedWhileTheWorkerLeavesIsHandedBackOnce()
+    {
+        State.IgnoreMax = true;
+        State.Lease(Numbered(1), Numbered(2));
+        var host = Host(maxInflight: 1);
+        host.RegisterActivity<JsonNode?, int>("charge", (_, _, _) => Task.FromResult(1));
+
+        // One worker place, and that worker held once it has found the queue empty and before it gives up its place (the private seams of
+        // the host, set by reflection).
+        var foundEmpty = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var leaving = 0;
+        Func<Task> hold = () =>
+        {
+            if (Interlocked.Increment(ref leaving) != 1)
+            {
+                return Task.CompletedTask;
+            }
+
+            foundEmpty.SetResult();
+            return release.Task;
+        };
+        typeof(WorkerHost).GetField("handBackBound", BindingFlags.NonPublic | BindingFlags.Instance)!.SetValue(host, 1);
+        typeof(WorkerHost).GetField("beforeHandBackWorkerLeaves", BindingFlags.NonPublic | BindingFlags.Instance)!.SetValue(host, hold);
+
+        await host.StartAsync();
+
+        // The worker hands back run-2, finds the queue empty and is held there.
+        await foundEmpty.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Equal(["run-2/charge/1"], HandedBack());
+        await Eventually.UntilAsync(() => State.Of("CompleteStep").Count == 1, "run-1 completes");
+
+        // The next answer runs run-3 and hands back run-4, which finds the only place still taken. The poll after that answer shows the
+        // host has looked at it.
+        State.Lease(Numbered(3), Numbered(4));
+        await Eventually.UntilAsync(() => State.Pending == 0, "the next answer");
+        var polls = State.Polls;
+        await Eventually.UntilAsync(() => State.Polls > polls, "the poll after it");
+        Assert.Single(State.Of("FailStep"));
+
+        release.SetResult();
+        await Eventually.UntilAsync(() => State.Of("FailStep").Count == 2, "the queued hand-back");
+        await Eventually.UntilAsync(() => State.Of("CompleteStep").Count == 2, "run-3 completes");
+        await host.StopAsync(TimeSpan.FromSeconds(5));
+
+        // Never stranded, never twice.
+        Assert.Equal(["run-2/charge/1", "run-4/charge/1"], HandedBack());
+        Assert.Equal(2, State.Of("FailStep").Count);
+    }
+
     /// <summary>
     /// Holds the <paramref name="nonemptyAnswer"/>-th answer of <paramref name="method"/> that carries leases (a poll answer or a stream frame),
     /// once it was received, until the call's token is cancelled, which the host does when its stop begins: the loop gets the answer only then.

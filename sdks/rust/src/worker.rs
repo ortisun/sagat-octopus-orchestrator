@@ -131,6 +131,18 @@ struct HandBacks {
     queue: Mutex<VecDeque<HandBackJob>>,
     workers: AtomicUsize,
     keys: Mutex<BTreeSet<TaskKey>>,
+    /// A bound below `MAX_HAND_BACKS` for the tests (zero is the real bound).
+    #[cfg(test)]
+    bound: AtomicUsize,
+    /// The barrier of the tests at the moment a worker leaves: it reports that it found the queue
+    /// empty on the first sender and waits for the second before it gives up its place.
+    #[cfg(test)]
+    leaving: Mutex<
+        Option<(
+            tokio::sync::oneshot::Sender<()>,
+            tokio::sync::oneshot::Receiver<()>,
+        )>,
+    >,
 }
 struct HandBackJob {
     session: Session,
@@ -138,10 +150,18 @@ struct HandBackJob {
     key: TaskKey,
 }
 impl HandBacks {
+    fn bound(&self) -> usize {
+        #[cfg(test)]
+        if let bound @ 1.. = self.bound.load(Ordering::Acquire) {
+            return bound;
+        }
+        MAX_HAND_BACKS
+    }
     /// Takes one of the `MAX_HAND_BACKS` places of a worker, if one is free.
     fn take_worker(&self) -> bool {
+        let bound = self.bound();
         let mut workers = self.workers.load(Ordering::Acquire);
-        while workers < MAX_HAND_BACKS {
+        while workers < bound {
             match self.workers.compare_exchange_weak(
                 workers,
                 workers + 1,
@@ -893,12 +913,10 @@ fn hand_back(
     life: &CancellationToken,
     tracker: &TaskTracker,
 ) {
-    if !locked(&core.hand_backs.keys).insert(key.clone()) {
-        // `take` looked for the key just before, and only the loop hands back: a lease is handed
-        // back at most once.
-        warn_duplicate(&lease.task_id);
-        return;
-    }
+    let inserted = locked(&core.hand_backs.keys).insert(key.clone());
+    // Only the receive loop hands back, and `take` checked the same key in this set just before:
+    // a lease is handed back at most once.
+    debug_assert!(inserted, "a lease was handed back twice");
     let _ = std::panic::catch_unwind(AssertUnwindSafe(|| {
         tracing::warn!(
             task = lease.task_id.as_str(),
@@ -937,6 +955,13 @@ async fn drain_hand_backs(core: Core, life: CancellationToken) {
                 }));
             }
             locked(&core.hand_backs.keys).remove(&job.key);
+        }
+        #[cfg(test)]
+        let barrier = locked(&core.hand_backs.leaving).take();
+        #[cfg(test)]
+        if let Some((found_empty, release)) = barrier {
+            let _ = found_empty.send(());
+            let _ = release.await;
         }
         core.hand_backs.workers.fetch_sub(1, Ordering::AcqRel);
         // A hand-back queued while this worker was leaving may have found every place taken: it
@@ -1032,10 +1057,9 @@ fn dispatch(
     };
     match core.tasks.lock() {
         Ok(mut tasks) => {
-            if tasks.contains_key(&key) {
-                warn_duplicate(&lease.task_id);
-                return;
-            }
+            // Only the receive loop inserts, and `take` checked the same key in this table just
+            // before: a lease of a running task is never started again.
+            debug_assert!(!tasks.contains_key(&key), "a running task was leased again");
             tasks.insert(key.clone(), ctx.clone());
         }
         Err(_) => {
