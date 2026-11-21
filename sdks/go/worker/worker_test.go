@@ -1158,19 +1158,38 @@ func TestTheHostCanBeStartedAgainAfterItWasStopped(t *testing.T) {
 func TestTheTraceOfTheRunIsCarriedByEveryCallOfATaskButNotByTheRegistrationOrThePoll(t *testing.T) {
 	f := newFakeService(t)
 	h := newHost(t, f, worker.WithHeartbeatInterval(10*time.Millisecond))
+	// The calls of the task whose lease carries a good traceparent. The task with the malformed one may beat too
+	// before it fails, without a traceparent, as it should: its calls are checked below.
+	of := func(method, task string) []call {
+		var out []call
+		for _, c := range f.of(method) {
+			if r, ok := c.request.(interface{ GetTaskId() string }); ok && r.GetTaskId() == task {
+				out = append(out, c)
+			}
+		}
+		return out
+	}
 	must(t, h.RegisterActivity("slow", func(ctx context.Context, _ json.RawMessage) (any, error) {
-		time.Sleep(40 * time.Millisecond)
+		reached(func() bool { return len(of("Heartbeat", "run-1/slow/1")) > 0 }) // the beat checked below, not a sleep
 		return 1, nil
 	}))
 	must(t, h.RegisterActivity("bad", func(context.Context, json.RawMessage) (any, error) { return nil, worker.Permanent("X", "x") }))
 	f.lease(lease(forActivity("slow", "1")), lease(forActivity("bad", "1"), func(l *pb.TaskLease) { l.Traceparent = "garbage" }))
 	start(t, h)
 	until(t, "both reports", func() bool { return len(f.of("CompleteStep")) == 1 && len(f.of("FailStep")) == 1 })
+	if len(of("Heartbeat", "run-1/slow/1")) == 0 {
+		t.Error("no heartbeat of the task to check")
+	}
 	for _, method := range []string{"Heartbeat", "CompleteStep"} {
-		for _, c := range f.of(method) {
+		for _, c := range of(method, "run-1/slow/1") {
 			if got := c.md.Get("traceparent"); len(got) != 1 || got[0] != traceparent {
 				t.Errorf("%s: %v", method, got)
 			}
+		}
+	}
+	for _, c := range of("Heartbeat", "run-1/bad/1") {
+		if got := c.md.Get("traceparent"); len(got) != 0 {
+			t.Errorf("a heartbeat of the task with a malformed traceparent carries one: %v", got)
 		}
 	}
 	for _, method := range []string{"RegisterWorker", "PollTasks"} {
