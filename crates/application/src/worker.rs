@@ -30,7 +30,10 @@ use claim_counters::{ClaimProgress, count_claim};
 pub use output::BlobOutput;
 use poll_order::{PollsInFlight, start_past};
 use secrets::SecretReport;
-pub use withdrawal::{TASK_NOT_STARTED, UndeliveredLease, WithdrawalOutcome};
+pub use withdrawal::{
+    HAND_BACK_PROTOCOL_MINOR, TASK_NOT_STARTED, UndeliveredLease, WithdrawalOutcome,
+    count as count_undelivered, hand_back,
+};
 
 use std::future::Future;
 use std::sync::Arc;
@@ -478,6 +481,32 @@ fn require_supported_task(
     }
 }
 
+/// What the caller of a claim says while the claim runs (feature 006, decision D006-035 of
+/// `specs/006-sdk-multilanguage/research.md`). A claim commits one transaction per run; between two of them nothing is half
+/// done, so it stops there once its consumer is gone and returns what it already committed, which the caller hands to the
+/// withdrawal.
+pub trait ClaimWatch: Send + Sync {
+    /// Whether the consumer of the claim is gone (a stream body dropped or past its window, a unary handler dropped);
+    /// asked before each run's transaction.
+    fn consumer_gone(&self) -> bool;
+
+    /// Awaited after each run's transaction committed at least one lease, before the next run is claimed: a test's barrier
+    /// (decision D006-008). Production returns at once.
+    fn committed(&self) -> std::pin::Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+        Box::pin(std::future::ready(()))
+    }
+}
+
+/// A claim whose consumer never goes away: [`WorkerService::poll`].
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Unwatched;
+
+impl ClaimWatch for Unwatched {
+    fn consumer_gone(&self) -> bool {
+        false
+    }
+}
+
 /// Identifies the attempt a worker is reporting on.
 #[derive(Clone)]
 pub struct TaskRef<'a> {
@@ -597,6 +626,8 @@ pub struct WorkerService<S, C, E, R> {
     /// The gate whose recorded requirements say whether undelivered leases are withdrawn (feature 006, decision
     /// D006-004); `None`: never.
     lease_withdrawal: Option<Arc<crate::instances::ServingGate>>,
+    /// `SAGAT_LEASE_WITHDRAWAL=off`: this process writes no new withdrawal (decision D006-032).
+    lease_withdrawal_disabled: bool,
 }
 
 impl<S, C, E, R> std::fmt::Debug for WorkerService<S, C, E, R> {
@@ -633,6 +664,7 @@ where
             lake_probes: None,
             polls_in_flight: Arc::default(),
             lease_withdrawal: None,
+            lease_withdrawal_disabled: false,
         }
     }
 
@@ -934,13 +966,16 @@ where
             max_tasks,
             MAX_POLL_BYTES,
             trace_id,
+            &Unwatched,
         )
         .await
     }
 
     /// Claims through the canonical poll path while respecting a caller-owned aggregate byte
     /// budget. Task streams pass their remaining finite-window budget here; unary polling passes
-    /// [`MAX_POLL_BYTES`].
+    /// [`MAX_POLL_BYTES`]. The claim stops before its next run once `watch` says its consumer is gone
+    /// (decision D006-035).
+    #[allow(clippy::too_many_arguments)] // the claim's budgets, its trace and its watch travel together
     pub async fn poll_bounded(
         &self,
         principal: &Principal,
@@ -949,6 +984,7 @@ where
         max_tasks: u32,
         max_bytes: usize,
         trace_id: Option<&str>,
+        watch: &dyn ClaimWatch,
     ) -> Result<Vec<ClaimedTask>, AppError>
     where
         S: PathExecutionStore,
@@ -1013,6 +1049,7 @@ where
             wanted as usize,
             byte_budget,
             trace_id,
+            watch,
             &mut claimed,
         )
         .await?;
@@ -1037,6 +1074,7 @@ where
         wanted: usize,
         byte_budget: usize,
         trace_id: Option<&str>,
+        watch: &dyn ClaimWatch,
         claimed: &mut Vec<ClaimedTask>,
     ) -> Result<(), AppError>
     where
@@ -1057,6 +1095,10 @@ where
             if remaining == 0 || bytes >= byte_budget {
                 break;
             }
+            // nobody will receive more: what committed so far goes back to the caller and to the withdrawal
+            if watch.consumer_gone() {
+                break;
+            }
             probed += 1;
             match self
                 .claim_run(
@@ -1074,7 +1116,11 @@ where
                 .await
             {
                 Ok(tasks) => {
+                    let leased = !tasks.is_empty();
                     claimed.extend(tasks);
+                    if leased {
+                        watch.committed().await;
+                    }
                     if progress.session_full {
                         break;
                     }
@@ -2423,44 +2469,45 @@ where
             code = FailureCode::secret_in_output();
             retryable = false;
         }
-        // A host hands back a lease it never ran (decision D006-005): with the requirement recorded and the step still
-        // `LEASED` to this very lease it is withdrawn, the attempt given back; otherwise it is the ordinary failure below,
-        // with the flag the host sent (decision D006-014). Never an unknown outcome. A report that leaked a secret carries
-        // `SECRET_IN_OUTPUT` by now, so it never reaches the withdrawal.
-        if code.as_str() == TASK_NOT_STARTED
-            && self.withdraws_leases()
-            && tx.parts().1.instance(task.instance).is_some_and(|step| {
-                step.status() == StepStatus::Leased
-                    && step.attempt() == task.fence.attempt
-                    && step.generation() == task.fence.generation
-            })
-        {
-            let node = task.instance.node().clone();
-            let fence = task.fence;
-            self.engine
-                .run(&mut tx, effects, move |def, state, now| {
-                    Ok((
-                        (),
-                        execution::withdraw_lease(
-                            def,
-                            state,
-                            &node,
-                            fence,
-                            execution::WithdrawalCause::NotStarted,
-                            now,
-                        )?,
-                    ))
-                })
-                .await
-                .map_err(engine_error)?;
-            let ack = self.finish(tx, task, idempotency).await?;
-            metrics::counter!(
-                "worker_leases_undelivered_total",
-                "cause" => "NOT_STARTED",
-                "outcome" => "withdrawn"
-            )
-            .increment(1);
-            return Ok(ack);
+        // A host hands back a lease it never ran (decisions D006-005 and D006-030): with the requirement recorded, the step
+        // still `LEASED` to this very lease, a session of a minor that reserves the code and the attempt below the cap, it is
+        // withdrawn and the attempt given back; otherwise it is the ordinary failure below, with the flag the host sent
+        // (decision D006-014). Never an unknown outcome. A report that leaked a secret carries `SECRET_IN_OUTPUT` by now, so it
+        // never reaches the withdrawal.
+        if code.as_str() == TASK_NOT_STARTED {
+            match self.root_hand_back(&mut tx, task).await? {
+                Ok(before) => {
+                    let node = task.instance.node().clone();
+                    let fence = task.fence;
+                    self.engine
+                        .run(&mut tx, effects, move |def, state, now| {
+                            Ok((
+                                (),
+                                execution::withdraw_lease(
+                                    def,
+                                    state,
+                                    &node,
+                                    fence,
+                                    execution::WithdrawalCause::NotStarted,
+                                    before,
+                                    now,
+                                )?,
+                            ))
+                        })
+                        .await
+                        .map_err(engine_error)?;
+                    let ack = self.finish(tx, task, idempotency).await?;
+                    count_undelivered(
+                        execution::WithdrawalCause::NotStarted,
+                        WithdrawalOutcome::Withdrawn,
+                        1,
+                    );
+                    return Ok(ack);
+                }
+                Err(outcome) => {
+                    count_undelivered(execution::WithdrawalCause::NotStarted, outcome, 1)
+                }
+            }
         }
         let jitter = self.entropy.unit();
         let fallback_code = code.clone();

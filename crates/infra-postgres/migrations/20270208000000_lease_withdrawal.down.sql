@@ -22,6 +22,9 @@ BEGIN
     END IF;
 END $guard$;
 
+DROP FUNCTION lease_withdrawal_required();
+DROP TRIGGER platform_requirements_replay_floor_guard ON platform_requirements;
+DROP FUNCTION platform_requirements_replay_floor_guard();
 DROP FUNCTION platform_capability_census(text, text[]);
 
 ALTER TABLE platform_requirement_history

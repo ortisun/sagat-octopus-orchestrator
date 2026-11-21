@@ -321,16 +321,31 @@ impl Harness {
         fence: Fence,
         cause: WithdrawalCause,
     ) -> Result<(), ExecutionError> {
+        let before = self.withdrawals_of(node, fence.attempt);
         let progress = execution::withdraw_lease(
             &self.def,
             &mut self.state,
             &sid(node),
             fence,
             cause,
+            before,
             self.now,
         )?;
         self.absorb(progress);
         Ok(())
+    }
+
+    /// The withdrawals of `node` that carry `attempt`, counted in the journal as the store counts them (decision D006-031).
+    pub fn withdrawals_of(&self, node: &str, attempt: u32) -> u32 {
+        let node = sid(node);
+        let n = self
+            .journal
+            .iter()
+            .filter(|event| {
+                matches!(event, RunEvent::StepLeaseWithdrawn { node: n, attempt: a, .. } if *n == node && *a == attempt)
+            })
+            .count();
+        u32::try_from(n).unwrap_or(u32::MAX)
     }
 
     pub fn retry_due(&mut self, node: &str) -> Result<(), ExecutionError> {

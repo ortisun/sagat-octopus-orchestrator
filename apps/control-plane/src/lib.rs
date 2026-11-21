@@ -40,12 +40,12 @@ use time::OffsetDateTime;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
+pub mod capability_activation;
 pub mod cleanup;
 pub mod cli;
 pub mod config;
 pub mod handover;
 pub mod inventory;
-pub mod lease_withdrawal;
 pub mod registry;
 
 /// Parsed workflow versions kept in memory (they are immutable, so they never go stale).

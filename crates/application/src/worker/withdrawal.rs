@@ -2,12 +2,14 @@
 //! `specs/006-sdk-multilanguage/research.md`; ADR-0098).
 //!
 //! A lease is withdrawn only while the platform requires `lease-withdrawal-v1` of control planes and engines (the gate
-//! keeps the recorded requirements), in one fenced transaction per run (root leases) or per run and instance path (scoped
-//! leases), and only while its step is still `LEASED` with the generation and the lease-token hash the server issued.
-//! Anything else is counted and changes nothing: the lease lapses as it did before.
+//! keeps the recorded requirements, and each transaction reads the requirement again under a share lock a removal waits
+//! for, decision D006-032), in one fenced transaction per run (root leases) or per run and instance path (scoped leases),
+//! only while its step is still `LEASED` with the generation and the lease-token hash the server issued, and at most
+//! [`MAX_WITHDRAWALS_PER_ATTEMPT`] times for one attempt (decision D006-031). Anything else is counted and changes nothing:
+//! the lease lapses as it did before, or a host's hand-back is an ordinary failure.
 use std::collections::BTreeMap;
 
-use sagat_domain::execution::{InstancePath, WithdrawalCause};
+use sagat_domain::execution::{InstancePath, MAX_WITHDRAWALS_PER_ATTEMPT, WithdrawalCause};
 
 use super::*;
 use crate::instances::{Capability, InstanceKind, ServingGate};
@@ -15,6 +17,10 @@ use crate::instances::{Capability, InstanceKind, ServingGate};
 /// The code a host reports through `FailStep` for a lease it received and will not run (`sdks/SPEC.md` §6.2, decision
 /// D006-005).
 pub const TASK_NOT_STARTED: &str = "TASK_NOT_STARTED";
+
+/// The first protocol minor that reserves [`TASK_NOT_STARTED`] for the host (delivery acknowledgement, 1.8; decision
+/// D006-030, ADR-0099). A session of an older minor may forward a handler's code, so its hand-back is an ordinary failure.
+pub const HAND_BACK_PROTOCOL_MINOR: u32 = 8;
 
 /// A lease the server committed that no handler received: what its withdrawal is fenced on.
 #[derive(Clone)]
@@ -62,8 +68,14 @@ pub enum WithdrawalOutcome {
     Withdrawn,
     /// The step had moved on (a heartbeat started it, it was reported, or the run ended): nothing was changed.
     FenceMissed,
-    /// The platform does not require `lease-withdrawal-v1` yet: the lease lapses as before.
+    /// The platform does not require `lease-withdrawal-v1` yet, or the host's session is older than
+    /// [`HAND_BACK_PROTOCOL_MINOR`]: the lease lapses as before, or the hand-back is an ordinary failure.
     Lapsed,
+    /// The attempt was withdrawn [`MAX_WITHDRAWALS_PER_ATTEMPT`] times already (decision D006-031): a lease not sent lapses,
+    /// a hand-back is an ordinary failure.
+    Capped,
+    /// This engine runs with `SAGAT_LEASE_WITHDRAWAL=off` (decision D006-032): the lease lapses.
+    Disabled,
     /// The store failed: the lease lapses.
     Error,
 }
@@ -75,12 +87,16 @@ impl WithdrawalOutcome {
             Self::Withdrawn => "withdrawn",
             Self::FenceMissed => "fence_missed",
             Self::Lapsed => "lapsed",
+            Self::Capped => "capped",
+            Self::Disabled => "disabled",
             Self::Error => "error",
         }
     }
 }
 
-fn count(cause: WithdrawalCause, outcome: WithdrawalOutcome, n: u64) {
+/// Counts `n` leases of `cause` that ended in `outcome` (`worker_leases_undelivered_total`, decision D006-018): the one place
+/// the labels are written.
+pub fn count(cause: WithdrawalCause, outcome: WithdrawalOutcome, n: u64) {
     if n > 0 {
         metrics::counter!(
             "worker_leases_undelivered_total",
@@ -116,13 +132,65 @@ impl<S, C, E, R> WorkerService<S, C, E, R> {
         self
     }
 
-    /// Whether the platform requires `lease-withdrawal-v1` of every control plane and engine, as this process last read.
+    /// Stops this process writing new withdrawals when `enabled` is false (`SAGAT_LEASE_WITHDRAWAL=off`, decision D006-032):
+    /// its leases lapse as before, and it still lists the capability, because it can still replay the event.
+    #[must_use]
+    pub const fn with_new_withdrawals(mut self, enabled: bool) -> Self {
+        self.lease_withdrawal_disabled = !enabled;
+        self
+    }
+
+    /// Whether the platform requires `lease-withdrawal-v1` of every control plane and engine, as this process last read,
+    /// and this process writes new withdrawals. The transaction of a withdrawal reads the requirement again under a lock.
     #[must_use]
     pub fn withdraws_leases(&self) -> bool {
-        self.lease_withdrawal
-            .as_ref()
-            .is_some_and(|gate| gate.requires(Capability::LeaseWithdrawalV1, &InstanceKind::ALL))
+        self.gate_outcome().is_none()
     }
+
+    /// Why this process withdraws nothing now, or `None` when it may.
+    pub(crate) fn gate_outcome(&self) -> Option<WithdrawalOutcome> {
+        if self.lease_withdrawal_disabled {
+            return Some(WithdrawalOutcome::Disabled);
+        }
+        let required = self
+            .lease_withdrawal
+            .as_ref()
+            .is_some_and(|gate| gate.requires(Capability::LeaseWithdrawalV1, &InstanceKind::ALL));
+        (!required).then_some(WithdrawalOutcome::Lapsed)
+    }
+}
+
+/// What a host's `TASK_NOT_STARTED` becomes (decision D006-030): a withdrawal given the count of the earlier withdrawals of
+/// the attempt, or the ordinary failure, with the outcome it is counted as. The reads are the caller's, in its transaction:
+/// `gate` is [`WorkerService::withdraws_leases`]'s verdict, `leased` whether the step is still `LEASED` to this very lease,
+/// `holder_minor` the minor of the session that holds the lease, `required` the requirement under its lock, `before` the
+/// withdrawals of the attempt so far.
+///
+/// # Errors
+/// The outcome that says why the report is an ordinary failure.
+pub fn hand_back(
+    gate: Option<WithdrawalOutcome>,
+    leased: bool,
+    holder_minor: Option<u32>,
+    required: bool,
+    before: u32,
+) -> Result<u32, WithdrawalOutcome> {
+    if !leased {
+        return Err(WithdrawalOutcome::FenceMissed);
+    }
+    if holder_minor.is_none_or(|minor| minor < HAND_BACK_PROTOCOL_MINOR) {
+        return Err(WithdrawalOutcome::Lapsed);
+    }
+    if let Some(outcome) = gate {
+        return Err(outcome);
+    }
+    if !required {
+        return Err(WithdrawalOutcome::Lapsed);
+    }
+    if before >= MAX_WITHDRAWALS_PER_ATTEMPT {
+        return Err(WithdrawalOutcome::Capped);
+    }
+    Ok(before)
 }
 
 impl<S, C, E, R> WorkerService<S, C, E, R>
@@ -132,6 +200,69 @@ where
     E: ExpressionEvaluator,
     R: Entropy,
 {
+    /// The verdict on a root `TASK_NOT_STARTED` (decision D006-030), read in the report's transaction: the step still
+    /// `LEASED` to this unexpired lease, the minor of the session that holds it, the requirement under its lock, the
+    /// withdrawals of the attempt so far. The cheap checks come first; the lock is taken only when all else holds.
+    pub(super) async fn root_hand_back<Tx: RunTx>(
+        &self,
+        tx: &mut Tx,
+        task: &TaskRef<'_>,
+    ) -> Result<Result<u32, WithdrawalOutcome>, AppError> {
+        let hash = Token::hash_of(task.lease_token);
+        let leased = tx.parts().1.instance(task.instance).is_some_and(|step| {
+            step.status() == StepStatus::Leased
+                && step.attempt() == task.fence.attempt
+                && step.generation() == task.fence.generation
+        }) && tx.lease_unexpired_instance(task.instance, &hash).await?;
+        let info = tx.info();
+        let step_id = instance_step_id(info.version_id, info.run_id, task.instance);
+        let minor = if leased {
+            tx.lease_holder_minor(step_id, &hash).await?
+        } else {
+            None
+        };
+        let gate = self.gate_outcome();
+        if let Err(outcome) = hand_back(gate, leased, minor, true, 0) {
+            return Ok(Err(outcome));
+        }
+        let required = tx.lease_withdrawal_required().await?;
+        let before = tx.lease_withdrawals(step_id, task.fence.attempt).await?;
+        Ok(hand_back(gate, leased, minor, required, before))
+    }
+
+    /// [`Self::root_hand_back`] for a scoped instance, in its path transaction.
+    pub(super) async fn path_hand_back<Tx: PathExecutionTx>(
+        &self,
+        tx: &mut Tx,
+        task: &TaskRef<'_>,
+    ) -> Result<Result<u32, WithdrawalOutcome>, AppError> {
+        let hash = Token::hash_of(task.lease_token);
+        let leased = tx
+            .snapshot()
+            .state
+            .local_instance(task.instance.node())
+            .is_some_and(|step| {
+                step.status() == StepStatus::Leased
+                    && step.attempt() == task.fence.attempt
+                    && step.generation() == task.fence.generation
+            })
+            && tx.lease_unexpired(task.instance, &hash).await?;
+        let info = &tx.snapshot().info;
+        let step_id = instance_step_id(info.version_id, info.run_id, task.instance);
+        let minor = if leased {
+            tx.lease_holder_minor(step_id, &hash).await?
+        } else {
+            None
+        };
+        let gate = self.gate_outcome();
+        if let Err(outcome) = hand_back(gate, leased, minor, true, 0) {
+            return Ok(Err(outcome));
+        }
+        let required = tx.lease_withdrawal_required().await?;
+        let before = tx.lease_withdrawals(step_id, task.fence.attempt).await?;
+        Ok(hand_back(gate, leased, minor, required, before))
+    }
+
     /// Withdraws `leases`, which the server committed and never handed to the transport (decision D006-001), and returns
     /// what became of each, in the order given. Never fails: a lease it cannot withdraw lapses as before, and is counted.
     pub async fn withdraw_undelivered(
@@ -143,9 +274,9 @@ where
         if total == 0 {
             return Vec::new();
         }
-        if !self.withdraws_leases() {
-            count(cause, WithdrawalOutcome::Lapsed, total as u64);
-            return vec![WithdrawalOutcome::Lapsed; total];
+        if let Some(outcome) = self.gate_outcome() {
+            count(cause, outcome, total as u64);
+            return vec![outcome; total];
         }
         // one transaction per run (root) or per run and path (scoped), decision D006-012
         let mut groups: BTreeMap<(Uuid, RunId, InstancePath), Vec<(usize, UndeliveredLease)>> =
@@ -180,6 +311,8 @@ where
         for outcome in [
             WithdrawalOutcome::Withdrawn,
             WithdrawalOutcome::FenceMissed,
+            WithdrawalOutcome::Lapsed,
+            WithdrawalOutcome::Capped,
             WithdrawalOutcome::Error,
         ] {
             count(
@@ -203,6 +336,10 @@ where
         let Some(mut tx) = self.store.begin(tenant, run, Lock::Wait).await? else {
             return Ok(vec![WithdrawalOutcome::FenceMissed; leases.len()]);
         };
+        // read again under the lock a removal of the requirement waits for (decision D006-032)
+        if !tx.lease_withdrawal_required().await? {
+            return Ok(vec![WithdrawalOutcome::Lapsed; leases.len()]);
+        }
         let mut outcomes = Vec::with_capacity(leases.len());
         let mut withdrawn = false;
         for lease in leases {
@@ -216,6 +353,9 @@ where
                 outcomes.push(WithdrawalOutcome::FenceMissed);
                 continue;
             }
+            let before = tx
+                .lease_withdrawals(lease.step_id, lease.fence.attempt)
+                .await?;
             let node = lease.instance.node().clone();
             let fence = lease.fence;
             let effects = Effects::by(Actor::System("lease-withdrawal"), None);
@@ -224,7 +364,7 @@ where
                 .run(&mut tx, effects, move |def, state, now| {
                     Ok((
                         (),
-                        execution::withdraw_lease(def, state, &node, fence, cause, now)?,
+                        execution::withdraw_lease(def, state, &node, fence, cause, before, now)?,
                     ))
                 })
                 .await
@@ -232,6 +372,11 @@ where
                 Ok(()) => {
                     withdrawn = true;
                     outcomes.push(WithdrawalOutcome::Withdrawn);
+                }
+                Err(EngineError::Execution(ExecutionError::WithdrawalsSpent { .. })) => {
+                    tracing::warn!(%run, node = %lease.instance.node(), attempt = lease.fence.attempt,
+                        "an attempt was withdrawn as often as one attempt may be; its lease lapses");
+                    outcomes.push(WithdrawalOutcome::Capped);
                 }
                 Err(EngineError::Execution(error)) if is_fence_miss(&error) => {
                     outcomes.push(WithdrawalOutcome::FenceMissed);
@@ -265,6 +410,9 @@ where
         else {
             return Ok(vec![WithdrawalOutcome::FenceMissed; leases.len()]);
         };
+        if !tx.lease_withdrawal_required().await? {
+            return Ok(vec![WithdrawalOutcome::Lapsed; leases.len()]);
+        }
         let mut outcomes = Vec::with_capacity(leases.len());
         let mut withdrawn = false;
         for lease in leases {
@@ -278,6 +426,9 @@ where
                 outcomes.push(WithdrawalOutcome::FenceMissed);
                 continue;
             }
+            let before = tx
+                .lease_withdrawals(lease.step_id, lease.fence.attempt)
+                .await?;
             let snapshot = tx.snapshot();
             match execution::withdraw_path_instance(
                 &snapshot.definition,
@@ -285,12 +436,18 @@ where
                 &lease.instance,
                 lease.fence,
                 cause,
+                before,
             ) {
                 Ok(progress) => {
                     let effects = Effects::by(Actor::System("lease-withdrawal"), None);
                     tx.persist_addressed(&progress.events, &[], effects).await?;
                     withdrawn = true;
                     outcomes.push(WithdrawalOutcome::Withdrawn);
+                }
+                Err(ExecutionError::WithdrawalsSpent { .. }) => {
+                    tracing::warn!(%run, node = %lease.instance.node(), attempt = lease.fence.attempt,
+                        "an attempt was withdrawn as often as one attempt may be; its lease lapses");
+                    outcomes.push(WithdrawalOutcome::Capped);
                 }
                 Err(error) if is_fence_miss(&error) => {
                     outcomes.push(WithdrawalOutcome::FenceMissed);
@@ -302,5 +459,77 @@ where
             tx.commit().await?;
         }
         Ok(outcomes)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The verdict on a host's hand-back at its edges (decisions D006-030 and D006-031): the minor that reserves the code
+    /// and the one before it, the fourth withdrawal and the fifth, and each reason not to withdraw.
+    #[test]
+    fn a_hand_back_is_withdrawn_only_from_a_reserving_minor_and_below_the_cap() {
+        let open = None;
+        assert_eq!(hand_back(open, true, Some(8), true, 0), Ok(0));
+        assert_eq!(
+            hand_back(open, true, Some(9), true, 3),
+            Ok(3),
+            "the fourth withdrawal"
+        );
+        assert_eq!(
+            hand_back(open, true, Some(8), true, 4),
+            Err(WithdrawalOutcome::Capped),
+            "the fifth"
+        );
+        assert_eq!(
+            hand_back(open, true, Some(7), true, 0),
+            Err(WithdrawalOutcome::Lapsed),
+            "a minor that does not reserve the code"
+        );
+        assert_eq!(
+            hand_back(open, true, None, true, 0),
+            Err(WithdrawalOutcome::Lapsed),
+            "no live session holds the lease"
+        );
+        assert_eq!(
+            hand_back(open, false, Some(8), true, 0),
+            Err(WithdrawalOutcome::FenceMissed),
+            "the step started"
+        );
+        assert_eq!(
+            hand_back(open, true, Some(8), false, 0),
+            Err(WithdrawalOutcome::Lapsed),
+            "the requirement is not recorded"
+        );
+        for gate in [WithdrawalOutcome::Lapsed, WithdrawalOutcome::Disabled] {
+            assert_eq!(hand_back(Some(gate), true, Some(8), true, 0), Err(gate));
+        }
+    }
+
+    #[test]
+    fn the_outcomes_are_a_closed_set_of_labels() {
+        let labels: Vec<&str> = [
+            WithdrawalOutcome::Withdrawn,
+            WithdrawalOutcome::FenceMissed,
+            WithdrawalOutcome::Lapsed,
+            WithdrawalOutcome::Capped,
+            WithdrawalOutcome::Disabled,
+            WithdrawalOutcome::Error,
+        ]
+        .iter()
+        .map(|outcome| outcome.as_str())
+        .collect();
+        assert_eq!(
+            labels,
+            [
+                "withdrawn",
+                "fence_missed",
+                "lapsed",
+                "capped",
+                "disabled",
+                "error"
+            ]
+        );
     }
 }

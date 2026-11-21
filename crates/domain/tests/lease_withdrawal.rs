@@ -364,6 +364,7 @@ fn a_scoped_withdrawal_matches_the_full_run_and_touches_only_its_iteration() {
             &member(1),
             lease,
             WithdrawalCause::NotStarted,
+            0,
         );
         let actual = execution::withdraw_path_instance(
             &def,
@@ -371,6 +372,7 @@ fn a_scoped_withdrawal_matches_the_full_run_and_touches_only_its_iteration() {
             &member(1),
             lease,
             WithdrawalCause::NotStarted,
+            0,
         );
         assert_eq!(actual, expected, "case {case}");
         if case == 2 {
@@ -425,9 +427,107 @@ fn a_scoped_withdrawal_with_a_stale_fence_is_refused() {
     let before = full.clone();
     let stale = fence(lease.attempt, lease.generation + 1);
     assert!(matches!(
-        execution::withdraw_instance(&def, &mut full, &member(0), stale, WithdrawalCause::NotSent),
+        execution::withdraw_instance(
+            &def,
+            &mut full,
+            &member(0),
+            stale,
+            WithdrawalCause::NotSent,
+            0
+        ),
         Err(ExecutionError::StaleInstanceAttempt { .. })
     ));
     assert_eq!(full, before);
     let _ = OffsetDateTime::UNIX_EPOCH;
+}
+
+/// One attempt is withdrawn at most four times (decision D006-031): the fourth withdrawal of an attempt is taken, the fifth
+/// is refused and leaves the step `LEASED` to that lease. Once the attempt is spent, the next attempt has its own four.
+#[test]
+fn one_attempt_is_withdrawn_at_most_four_times() {
+    assert_eq!(execution::MAX_WITHDRAWALS_PER_ATTEMPT, 4);
+    for cause in [WithdrawalCause::NotSent, WithdrawalCause::NotStarted] {
+        let mut run = Harness::start(build("a", vec![flaky("a", 3)]));
+        for taken in 0..4u32 {
+            let lease = run.lease("a");
+            assert_eq!(lease.attempt, 1, "every withdrawn lease reuses attempt 1");
+            assert_eq!(run.withdrawals_of("a", 1), taken);
+            run.withdraw("a", lease, cause).expect("within the cap");
+        }
+        let fifth = run.lease("a");
+        assert_eq!(run.withdrawals_of("a", 1), 4);
+        let before = run.state.clone();
+        assert!(
+            matches!(
+                run.withdraw("a", fifth, cause),
+                Err(ExecutionError::WithdrawalsSpent { attempt: 1, .. })
+            ),
+            "{cause:?}"
+        );
+        assert_eq!(run.state, before, "a refused withdrawal changes nothing");
+        assert_eq!(run.status("a"), StepStatus::Leased);
+
+        // the attempt is spent by an ordinary failure; attempt 2 starts with no withdrawal of its own
+        run.heartbeat("a", fifth).expect("started");
+        run.fail("a", fifth, true).expect("fail");
+        run.advance(ms(100));
+        run.retry_due("a").expect("due");
+        let next = run.lease("a");
+        assert_eq!(next.attempt, 2);
+        assert_eq!(run.withdrawals_of("a", 2), 0);
+        run.withdraw("a", next, cause)
+            .expect("attempt 2 has its own cap");
+        run.assert_replays();
+    }
+}
+
+/// The cap holds in a scoped instance and in the bounded path reducer alike, and a count below it is taken.
+#[test]
+fn a_scoped_attempt_is_withdrawn_at_most_four_times() {
+    let def = collection();
+    let mut full = scoped_state(1);
+    for before in 0..4u32 {
+        let (lease, _) = lease_instance(&mut full, &member(0)).expect("lease");
+        execution::withdraw_instance(
+            &def,
+            &mut full,
+            &member(0),
+            lease,
+            WithdrawalCause::NotSent,
+            before,
+        )
+        .expect("within the cap");
+    }
+    let (fifth, _) = lease_instance(&mut full, &member(0)).expect("lease");
+    let mut bounded = PathExecutionState::from_run(&full, path(0)).expect("bounded");
+    let before = full.clone();
+    let expected = execution::withdraw_instance(
+        &def,
+        &mut full,
+        &member(0),
+        fifth,
+        WithdrawalCause::NotStarted,
+        4,
+    );
+    let actual = execution::withdraw_path_instance(
+        &def,
+        &mut bounded,
+        &member(0),
+        fifth,
+        WithdrawalCause::NotStarted,
+        4,
+    );
+    assert_eq!(actual, expected);
+    assert!(
+        matches!(
+            expected,
+            Err(ExecutionError::WithdrawalsSpent { attempt: 1, .. })
+        ),
+        "{expected:?}"
+    );
+    assert_eq!(full, before);
+    assert_eq!(
+        full.instance(&member(0)).expect("instance").status(),
+        StepStatus::Leased
+    );
 }

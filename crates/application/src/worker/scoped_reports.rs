@@ -372,39 +372,36 @@ where
                 failure = Some((FailureCode::storage_quota_exceeded(), false));
             }
         }
-        // A host hands back a lease it never ran (decision D006-005), as at the root.
+        // A host hands back a lease it never ran (decisions D006-005 and D006-030), as at the root.
         if failure
             .as_ref()
             .is_some_and(|(code, _)| code.as_str() == super::TASK_NOT_STARTED)
-            && self.withdraws_leases()
-            && tx
-                .snapshot()
-                .state
-                .local_instance(task.instance.node())
-                .is_some_and(|step| {
-                    step.status() == StepStatus::Leased
-                        && step.attempt() == task.fence.attempt
-                        && step.generation() == task.fence.generation
-                })
         {
-            let snapshot = tx.snapshot();
-            let progress = execution::withdraw_path_instance(
-                &snapshot.definition,
-                &mut snapshot.state,
-                task.instance,
-                task.fence,
-                execution::WithdrawalCause::NotStarted,
-            )
-            .map_err(|e| engine_error(EngineError::Execution(e)))?;
-            tx.persist_addressed(&progress.events, &[], effects).await?;
-            let ack = self.finish_path_report(tx, task, idempotency).await?;
-            metrics::counter!(
-                "worker_leases_undelivered_total",
-                "cause" => "NOT_STARTED",
-                "outcome" => "withdrawn"
-            )
-            .increment(1);
-            return Ok(PathReportApply::Finished(ack));
+            match self.path_hand_back(&mut tx, task).await? {
+                Ok(before) => {
+                    let snapshot = tx.snapshot();
+                    let progress = execution::withdraw_path_instance(
+                        &snapshot.definition,
+                        &mut snapshot.state,
+                        task.instance,
+                        task.fence,
+                        execution::WithdrawalCause::NotStarted,
+                        before,
+                    )
+                    .map_err(|e| engine_error(EngineError::Execution(e)))?;
+                    tx.persist_addressed(&progress.events, &[], effects).await?;
+                    let ack = self.finish_path_report(tx, task, idempotency).await?;
+                    super::count_undelivered(
+                        execution::WithdrawalCause::NotStarted,
+                        super::WithdrawalOutcome::Withdrawn,
+                        1,
+                    );
+                    return Ok(PathReportApply::Finished(ack));
+                }
+                Err(outcome) => {
+                    super::count_undelivered(execution::WithdrawalCause::NotStarted, outcome, 1)
+                }
+            }
         }
         let now = tx.now();
         if failure.is_none() {
