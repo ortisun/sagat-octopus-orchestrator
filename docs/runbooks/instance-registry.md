@@ -213,7 +213,7 @@ remain per-process settings with the rollout orders of their own runbooks; the r
 
 | Symptom | Likely cause | What to do |
 |---|---|---|
-| Every replica of a kind answers `503 BINARY_CAPABILITY_MISSING` | A requirement for the kind was recorded and the build you run lacks it, or its configuration does not run the pass | Section 2; or remove the requirement (section 5) |
+| Every replica of a kind answers `503 BINARY_CAPABILITY_MISSING` | A requirement for the kind was recorded and the build you run lacks it, or its configuration does not run the pass | Section 2; or remove the requirement (section 5), except `lease-withdrawal-v1` once a journal holds `step.lease_withdrawn` (it is refused: `docs/runbooks/lease-withdrawal.md`, Rollback) |
 | One replica answers `503 BINARY_CAPABILITY_MISSING`, the others serve | It is an old build that was silent at the activation and came back, or an engine started without the pass | Upgrade it, set the flag, or stop it |
 | An engine is refused after a restart that changed its flags | It no longer runs the pass that provides a required capability | Set the flag again, or remove the requirement if you mean to roll the feature back |
 | An activation is refused naming instance ids | Those processes are live and lack the capability (an engine without `SAGAT_SCHEDULES_ENABLED` is one of them) | Upgrade, set the flag, or stop them; query `serving_instances` for their version and capabilities |

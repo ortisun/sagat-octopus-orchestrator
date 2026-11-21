@@ -787,8 +787,20 @@ pub async fn serve(
     // UNAVAILABLE and another replica serves them.
     // Feature 006 (decision D006-004): the leases this replica committed and never handed to a host are withdrawn once the
     // platform requires `lease-withdrawal-v1` of control planes and engines; the gate keeps the recorded requirements.
-    let workers = workers.with_lease_withdrawal(Arc::clone(&gate));
-    let mut worker_api = WorkerGrpc::new(state, workers).with_serving_gate(Arc::clone(&gate));
+    let workers = workers
+        .with_lease_withdrawal(Arc::clone(&gate))
+        .with_new_withdrawals(engine.lease_withdrawal);
+    if !engine.lease_withdrawal {
+        tracing::warn!(
+            "SAGAT_LEASE_WITHDRAWAL=off: this engine writes no new lease withdrawal; its leases lapse as before"
+        );
+    }
+    // at most a quarter of the pool withdraws at once (decision D006-038)
+    let mut worker_api = WorkerGrpc::new(state, workers)
+        .with_serving_gate(Arc::clone(&gate))
+        .with_withdrawal_concurrency(sagat_api_grpc::withdrawal_concurrency(
+            config.database.max_connections,
+        ));
     let withdrawals = worker_api.withdrawals();
     if let Some(blobs) = blobs {
         worker_api = worker_api.with_blobs(blobs, engine.blob_transfer);
@@ -796,17 +808,26 @@ pub async fn serve(
     let grpc_stop = stop_rx.clone();
     let grpc_config = engine.grpc.clone();
     tasks.spawn("worker gRPC server", async move {
+        let stop_seen = Arc::new(std::sync::OnceLock::new());
+        let seen = Arc::clone(&stop_seen);
         let served = serve_grpc(
             grpc_listener,
             worker_service(worker_api),
             grpc_config,
-            stopped(grpc_stop),
+            async move {
+                stopped(grpc_stop).await;
+                let _ = seen.set(tokio::time::Instant::now());
+            },
         )
         .await
         .map_err(|error| RunError::Io(std::io::Error::other(error.to_string())));
-        // The withdrawals of the leases the last streams never handed over run to their end before the pool closes
-        // (decision D006-016); a crash does not wait (gap G006-002).
-        if !withdrawals.drain(SHUTDOWN_GRACE).await {
+        // The claims in progress and the withdrawals of the leases the last streams never handed over run to their end
+        // before the pool closes (decisions D006-016 and D006-036), within the grace that is left; a crash does not wait
+        // (gap G006-002).
+        if !withdrawals
+            .drain(drain_bound(stop_seen.get().copied()))
+            .await
+        {
             tracing::warn!(
                 "the withdrawal of undelivered leases did not finish within the grace; they lapse"
             );
@@ -833,6 +854,15 @@ pub async fn serve(
     metrics_upkeep.abort();
     pool.close().await;
     outcome
+}
+
+/// How long the worker API may wait for its claims and withdrawals after the stop (decision D006-036): the shutdown's grace
+/// less what has passed since the stop and a margin of one second, so that the supervisor never aborts the wait.
+fn drain_bound(stop_seen: Option<tokio::time::Instant>) -> Duration {
+    let passed = stop_seen.map_or(Duration::ZERO, |at| at.elapsed());
+    SHUTDOWN_GRACE
+        .saturating_sub(passed)
+        .saturating_sub(Duration::from_secs(1))
 }
 
 /// `/livez` (the scheduler loop is ticking and the shard keeper is rounding) and `/readyz` (and the

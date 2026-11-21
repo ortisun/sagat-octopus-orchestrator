@@ -373,7 +373,7 @@ impl InstanceStore for PgInstanceStore {
 
 /// The live instances (seen within 30 seconds, as the activation counts them) of the kinds asked, and those of them that do
 /// not list a capability, for an operator command that records a requirement of it (feature 006,
-/// `control-plane lease-withdrawal-activate`).
+/// `control-plane capability-activate`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CapabilityCensus {
     pub live: u32,

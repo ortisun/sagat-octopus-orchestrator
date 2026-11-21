@@ -105,7 +105,7 @@ const ALLOWED: &[Allowed] = &[
     Allowed {
         file: INSTANCES,
         need: "EXECUTE platform_capability_census()",
-        reason: "feature 006 (decision D006-004): what control-plane lease-withdrawal-activate tells the operator about the live processes is read by the owner's function, operator only like the activation it precedes (see the entry for platform_requirement_activate); lease_withdrawal_activation::the_runtime_role_cannot_run_it_and_is_told_to_use_the_owner_role proves the role is refused",
+        reason: "feature 006 (decision D006-004): what control-plane capability-activate tells the operator about the live processes is read by the owner's function, operator only like the activation it precedes (see the entry for platform_requirement_activate); lease_withdrawal_activation::the_runtime_role_cannot_run_it_and_is_told_to_use_the_owner_role proves the role is refused",
     },
     Allowed {
         file: TRIGGER_SCHEDULES,

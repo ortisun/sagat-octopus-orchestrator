@@ -1,0 +1,397 @@
+//! `control-plane capability-activate <capability>` (feature 006, decision D006-034 of
+//! `specs/006-sdk-multilanguage/research.md`; ADR-0098 decision 4; the pattern of ADR-0082): the one operator command that
+//! records a fleet requirement of the instance-capability registry. Each capability it may activate is an entry of
+//! [`ACTIVATABLE`]: the kinds the requirement covers, whether an empty fleet may be activated, and what follows. Feature 022
+//! adds its own entries. The one-way handover of `schedules-v1` (`schedule-trigger-handover`) is not one of them: it
+//! changes the platform's state in the same transaction and has no way back.
+//!
+//! It runs with the schema-owning role, in one bounded transaction (the registry's), with a second count of the fleet under
+//! the epoch lock. It takes the number of live processes the operator expects (the kinds together), because an activation
+//! that finds none would pass vacuously; it has a dry run that verifies everything and changes nothing; a second run says
+//! the requirement is recorded already.
+
+use std::fmt;
+
+use sagat_application::instances::{
+    Activated, Activation, Capability, ChangeRefused, InstanceKind,
+};
+use sagat_domain::identity::Subject;
+use sagat_infra_postgres::{
+    CapabilityCensus, PgInstanceStore, capability_census, census_step, may_activate,
+};
+
+use crate::config::{ConfigError, DatabaseConfig};
+use crate::handover::{shown, unprintable};
+use crate::{RunError, open_pool};
+
+/// A capability the operator may activate with this command.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Activatable {
+    pub capability: Capability,
+    /// The kinds of process the requirement covers.
+    pub kinds: &'static [InstanceKind],
+    /// Whether `--expect-live 0` may activate it with nothing live (a requirement nothing serves under yet).
+    pub empty_fleet: bool,
+    /// What follows the activation, in words for the operator, and where the runbook is.
+    pub after: &'static str,
+}
+
+/// The capabilities this command activates (decision D006-034). A capability listed in the registry but not here has its
+/// own command or none.
+pub const ACTIVATABLE: &[Activatable] = &[Activatable {
+    capability: Capability::LeaseWithdrawalV1,
+    kinds: &InstanceKind::ALL,
+    empty_fleet: true,
+    after: "Each engine withdraws the leases it never handed to a host from its next heartbeat on (within about ten \
+            seconds). The activation is one-way once a lease is withdrawn; to stop, set SAGAT_LEASE_WITHDRAWAL=off on the \
+            engines: docs/runbooks/lease-withdrawal.md.",
+}];
+
+/// The entry of `token`, the registry token the command line names.
+#[must_use]
+pub fn activatable(token: &str) -> Option<&'static Activatable> {
+    ACTIVATABLE
+        .iter()
+        .find(|entry| entry.capability.as_str() == token)
+}
+
+/// The flags of `capability-activate`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ActivationArgs {
+    /// The registry token of the capability, one of [`ACTIVATABLE`].
+    pub capability: String,
+    /// `--operator NAME`: who records it, kept with the database role of the session in the requirement's history.
+    pub operator: Option<String>,
+    /// `--expect-live N`: how many live control planes and execution engines, together, the operator expects.
+    pub expect_live: Option<u32>,
+    /// `--dry-run`: verify and change nothing.
+    pub dry_run: bool,
+}
+
+/// What the command did, in words for the operator.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ActivationOutcome {
+    /// The requirement is recorded in this run.
+    Activated {
+        entry: &'static Activatable,
+        live: u32,
+        epoch: i64,
+    },
+    /// It was recorded before; nothing was done.
+    AlreadyActive { entry: &'static Activatable },
+    /// A dry run found nothing that would stop the activation.
+    WouldActivate {
+        entry: &'static Activatable,
+        live: u32,
+    },
+}
+
+impl fmt::Display for ActivationOutcome {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Activated { entry, live, epoch } => write!(
+                f,
+                "activated: {} is required of every {} ({live} live process(es) list it, requirement epoch {epoch}). {}",
+                entry.capability.as_str(),
+                kinds_named(entry),
+                entry.after
+            ),
+            Self::AlreadyActive { entry } => write!(
+                f,
+                "already active: {} is a recorded requirement; nothing was changed",
+                entry.capability.as_str()
+            ),
+            Self::WouldActivate { entry, live } => write!(
+                f,
+                "dry run: nothing stops the activation ({live} live process(es) of the kinds it covers, all listing {}, \
+                 and this database role may record it). Nothing was changed.",
+                entry.capability.as_str()
+            ),
+        }
+    }
+}
+
+fn kinds_named(entry: &Activatable) -> &'static str {
+    match entry.kinds {
+        [InstanceKind::ControlPlane] => "control plane",
+        [InstanceKind::ExecutionEngine] => "execution engine",
+        _ => "control plane and execution engine",
+    }
+}
+
+fn declined(message: impl Into<String>) -> RunError {
+    RunError::Declined(message.into())
+}
+
+fn store_failure(error: &impl ToString) -> RunError {
+    let text = error.to_string();
+    if text.contains("permission denied") {
+        declined(
+            "permission denied: the activation calls functions the runtime role may not execute. Run it with the \
+             schema-owning database role (the one that runs `migrate`), not the one the API and the engines use.",
+        )
+    } else {
+        RunError::Database(text)
+    }
+}
+
+fn lacking(entry: &Activatable, census: &CapabilityCensus) -> RunError {
+    let names = census
+        .lacking_examples
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(", ");
+    declined(format!(
+        "{} live process(es) do not list {} (instance ids: {names}). Upgrade those processes to a build that lists it (or \
+         stop them), wait for them to register, and run the command again. Nothing was changed.",
+        census.lacking,
+        entry.capability.as_str()
+    ))
+}
+
+/// The count of live processes against what the operator expects. Without `--expect-live` none live is a refusal, and so
+/// is none live for a capability that an empty fleet may not activate.
+fn check_live(entry: &Activatable, live: u32, expect: Option<u32>) -> Result<(), RunError> {
+    if live == 0 && !entry.empty_fleet {
+        return Err(declined(format!(
+            "no process of the kinds {} covers is live (seen within 30 seconds), and it is not activated with none live. \
+             Start them and run the command again. Nothing was changed.",
+            entry.capability.as_str()
+        )));
+    }
+    match expect {
+        Some(expected) if live != expected => Err(declined(format!(
+            "{live} control plane(s) and execution engine(s) are live (seen within 30 seconds) and --expect-live says \
+             {expected}. If fewer are live, one has not registered yet or is down; if more, one is not yours or is not \
+             stopped. Nothing was changed."
+        ))),
+        None if live == 0 => Err(declined(
+            "no control plane or execution engine is live (seen within 30 seconds), so there is nothing to verify. Start \
+             them and run the command again, or pass --expect-live 0 if that is what you mean. Nothing was changed.",
+        )),
+        _ => Ok(()),
+    }
+}
+
+/// Records the requirement `args.capability` of the kinds its entry covers.
+///
+/// # Errors
+/// [`RunError::Declined`] when the operator is told no (a capability this command does not activate, a process that lacks
+/// the capability, a count that is not the one expected, a role that may not record it), with the sentence that says what
+/// to do; [`RunError::Config`] for an operator name that is not a subject; [`RunError::Database`] otherwise.
+pub async fn capability_activate(
+    db: &DatabaseConfig,
+    args: &ActivationArgs,
+) -> Result<ActivationOutcome, RunError> {
+    let Some(entry) = activatable(&args.capability) else {
+        return Err(declined(not_activatable(&args.capability)));
+    };
+    let operator = match (&args.operator, args.dry_run) {
+        (Some(name), _) => {
+            if let Some(reason) = unprintable(name) {
+                return Err(ConfigError::Invalid {
+                    name: "--operator",
+                    reason: reason.to_owned(),
+                }
+                .into());
+            }
+            Some(Subject::parse(name).map_err(|error| ConfigError::Invalid {
+                name: "--operator",
+                reason: error.to_string(),
+            })?)
+        }
+        (None, true) => None,
+        (None, false) => {
+            return Err(declined(
+                "--operator NAME is required: the activation is recorded with who made it",
+            ));
+        }
+    };
+    let pool = open_pool(db, db.statement_timeout).await?;
+    let result = run(&pool, entry, args, operator.as_ref()).await;
+    pool.close().await;
+    result
+}
+
+/// The sentence for a capability this command does not activate, with the ones it does.
+#[must_use]
+pub fn not_activatable(token: &str) -> String {
+    let known = ACTIVATABLE
+        .iter()
+        .map(|entry| entry.capability.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("capability-activate does not activate '{token}'; it activates: {known}")
+}
+
+async fn run(
+    pool: &sagat_infra_postgres::PgPool,
+    entry: &'static Activatable,
+    args: &ActivationArgs,
+    operator: Option<&Subject>,
+) -> Result<ActivationOutcome, RunError> {
+    let capability = entry.capability;
+    let kinds = entry.kinds;
+    let mut conn = pool
+        .acquire()
+        .await
+        .map_err(|error| RunError::Database(error.to_string()))?;
+    let census = capability_census(&mut conn, capability, kinds)
+        .await
+        .map_err(|error| store_failure(&error))?;
+    if census.recorded {
+        return Ok(ActivationOutcome::AlreadyActive { entry });
+    }
+    check_live(entry, census.live, args.expect_live)?;
+    if census.lacking > 0 {
+        return Err(lacking(entry, &census));
+    }
+    if args.dry_run {
+        if !may_activate(&mut conn)
+            .await
+            .map_err(|error| store_failure(&error))?
+        {
+            return Err(store_failure(
+                &"permission denied for function platform_requirement_activate",
+            ));
+        }
+        return Ok(ActivationOutcome::WouldActivate {
+            entry,
+            live: census.live,
+        });
+    }
+    drop(conn);
+    let Some(operator) = operator else {
+        return Err(declined("--operator NAME is required"));
+    };
+    let seen = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+    let counted = std::sync::Arc::clone(&seen);
+    let expect = args.expect_live;
+    let first = census.live;
+    // under the epoch lock the fleet is counted again: a process that registered or went silent since the first count
+    // changes nothing
+    let empty_fleet = entry.empty_fleet;
+    let judge = move |census: &CapabilityCensus| {
+        counted.store(census.live, std::sync::atomic::Ordering::Relaxed);
+        census.live != expect.unwrap_or(first)
+            || census.lacking > 0
+            || (census.live == 0 && !empty_fleet)
+    };
+    let activated = PgInstanceStore::new(pool.clone())
+        .activate(
+            Activation {
+                capability,
+                kinds,
+                actor: operator,
+            },
+            census_step(capability, kinds, judge),
+        )
+        .await;
+    match activated {
+        Ok(Activated::Recorded { epoch }) => {
+            let live = seen.load(std::sync::atomic::Ordering::Relaxed);
+            tracing::info!(capability = capability.as_str(), operator = %shown(operator.as_str()), epoch, live,
+                "a fleet requirement was recorded");
+            Ok(ActivationOutcome::Activated { entry, live, epoch })
+        }
+        Ok(Activated::AlreadyRecorded) => Ok(ActivationOutcome::AlreadyActive { entry }),
+        Err(ChangeRefused::InstancesLackCapability { missing, examples }) => Err(lacking(
+            entry,
+            &CapabilityCensus {
+                live: 0,
+                lacking: missing,
+                lacking_examples: examples,
+                recorded: false,
+            },
+        )),
+        Err(ChangeRefused::KindsDiffer) => Err(declined(format!(
+            "{} is recorded for other kinds of process than this command records; remove it first \
+             (docs/runbooks/instance-registry.md, section 5). Nothing was changed.",
+            capability.as_str()
+        ))),
+        Err(ChangeRefused::Store(sagat_application::error::StoreError::StateConflict(_))) => {
+            Err(declined(
+                "the live processes changed while the activation was being made. Nothing was changed; run the command \
+                 again.",
+            ))
+        }
+        Err(ChangeRefused::Store(error)) => Err(store_failure(&error)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const LEASE: &Activatable = &ACTIVATABLE[0];
+
+    #[test]
+    fn the_live_count_must_be_the_one_expected_and_none_live_is_refused_without_it() {
+        assert!(check_live(LEASE, 3, Some(3)).is_ok());
+        assert!(check_live(LEASE, 0, Some(0)).is_ok());
+        assert!(check_live(LEASE, 2, None).is_ok());
+        for (live, expect) in [(2, Some(3)), (4, Some(3)), (0, None)] {
+            assert!(
+                matches!(check_live(LEASE, live, expect), Err(RunError::Declined(_))),
+                "{live} {expect:?}"
+            );
+        }
+        let no_empty_fleet = Activatable {
+            empty_fleet: false,
+            ..*LEASE
+        };
+        assert!(matches!(
+            check_live(&no_empty_fleet, 0, Some(0)),
+            Err(RunError::Declined(_))
+        ));
+        assert!(check_live(&no_empty_fleet, 1, Some(1)).is_ok());
+    }
+
+    #[test]
+    fn the_command_activates_only_its_listed_capabilities() {
+        assert_eq!(
+            activatable("lease-withdrawal-v1").map(|entry| entry.capability),
+            Some(Capability::LeaseWithdrawalV1)
+        );
+        for token in [
+            "schedules-v1",
+            "lease-withdrawal-v2",
+            "",
+            "LEASE-WITHDRAWAL-V1",
+        ] {
+            assert_eq!(activatable(token), None, "{token:?}");
+        }
+        assert!(not_activatable("schedules-v1").contains("lease-withdrawal-v1"));
+        // every entry is a capability the registry knows, once
+        for (index, entry) in ACTIVATABLE.iter().enumerate() {
+            assert!(Capability::ALL.contains(&entry.capability));
+            assert!(
+                ACTIVATABLE[..index]
+                    .iter()
+                    .all(|other| other.capability != entry.capability)
+            );
+        }
+    }
+
+    #[test]
+    fn what_the_operator_reads_names_the_capability_and_what_follows() {
+        let activated = ActivationOutcome::Activated {
+            entry: LEASE,
+            live: 3,
+            epoch: 9,
+        }
+        .to_string();
+        assert!(activated.contains("lease-withdrawal-v1") && activated.contains("epoch 9"));
+        assert!(activated.contains("docs/runbooks/lease-withdrawal.md"));
+        assert!(activated.contains("SAGAT_LEASE_WITHDRAWAL=off"));
+        assert!(
+            ActivationOutcome::WouldActivate {
+                entry: LEASE,
+                live: 2
+            }
+            .to_string()
+            .contains("Nothing was changed")
+        );
+    }
+}

@@ -287,8 +287,13 @@ pub struct Options {
     /// The gate whose kept requirements decide whether undelivered leases are withdrawn (feature 006, decision D006-004).
     /// `None`, as a process with no registry: never.
     pub lease_withdrawal: Option<Arc<sagat_application::instances::ServingGate>>,
-    /// A barrier after a claim committed its leases and before they are queued or answered (decision D006-008).
+    /// A barrier after each run's transaction of a claim committed leases (decisions D006-008 and D006-035).
     pub delivery_probe: Option<sagat_api_grpc::DeliveryProbe>,
+    /// `SAGAT_LEASE_WITHDRAWAL`: whether the worker API writes new withdrawals (decision D006-032). On by default.
+    pub new_withdrawals: bool,
+    /// The ceiling hand-backs are judged by; this build's own by default (ADR-0099 decision 9). A test of the honoured
+    /// hand-back raises it to 8 with the stored minor of its session.
+    pub hand_back_ceiling: u32,
 }
 
 impl Default for Options {
@@ -330,6 +335,8 @@ impl Default for Options {
             collection_operators: false,
             lease_withdrawal: None,
             delivery_probe: None,
+            new_withdrawals: true,
+            hand_back_ceiling: sagat_application::worker::PROTOCOL_MINOR,
         }
     }
 }
@@ -641,6 +648,9 @@ async fn start_on_ready_db(db: TestDb, options: Options, supplied_pool: Option<P
     if let Some(gate) = &options.lease_withdrawal {
         workers = workers.with_lease_withdrawal(Arc::clone(gate));
     }
+    workers = workers
+        .with_new_withdrawals(options.new_withdrawals)
+        .with_hand_back_ceiling(options.hand_back_ceiling);
     let mut grpc = WorkerGrpc::new(exec.clone(), workers);
     if let Some(probe) = &options.delivery_probe {
         grpc = grpc.with_delivery_probe(Arc::clone(probe));

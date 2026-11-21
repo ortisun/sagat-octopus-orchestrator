@@ -1,17 +1,20 @@
-//! `control-plane lease-withdrawal-activate` (feature 006, decision D006-004; ADR-0098 decision 4; the pattern of ADR-0082)
-//! against the real registry: it records `lease-withdrawal-v1` of control planes and engines only when every live process
-//! lists it and the count is the one expected, once, with the owner role.
+//! `control-plane capability-activate lease-withdrawal-v1` (feature 006, decisions D006-004 and D006-034; ADR-0098 decision 4;
+//! the pattern of ADR-0082) against the real registry: it records `lease-withdrawal-v1` of control planes and engines only
+//! when every live process lists it and the count is the one expected, once, with the owner role. The command is the one
+//! every fleet requirement an operator activates goes through.
 #![allow(clippy::expect_used, clippy::panic)]
 
 use std::time::Duration;
 
 use sagat_application::instances::{Capability, InstanceKind};
 use sagat_control_plane::RunError;
+use sagat_control_plane::capability_activation::{
+    ACTIVATABLE, Activatable, ActivationArgs, ActivationOutcome, capability_activate,
+};
 use sagat_control_plane::cli::{self, Command};
 use sagat_control_plane::config::DatabaseConfig;
-use sagat_control_plane::lease_withdrawal::{
-    ActivationArgs, ActivationOutcome, lease_withdrawal_activate,
-};
+
+const LEASE: &Activatable = &ACTIVATABLE[0];
 
 use crate::support::instances::{Registry, registry};
 use crate::support::{RUNTIME_ROLE, RUNTIME_ROLE_PASSWORD};
@@ -26,6 +29,7 @@ fn database(url: String) -> DatabaseConfig {
 
 fn args(operator: Option<&str>, expect_live: Option<u32>, dry_run: bool) -> ActivationArgs {
     ActivationArgs {
+        capability: "lease-withdrawal-v1".to_owned(),
         operator: operator.map(str::to_owned),
         expect_live,
         dry_run,
@@ -33,7 +37,7 @@ fn args(operator: Option<&str>, expect_live: Option<u32>, dry_run: bool) -> Acti
 }
 
 async fn activate(r: &Registry, a: &ActivationArgs) -> Result<ActivationOutcome, RunError> {
-    lease_withdrawal_activate(&database(r.db.url.clone()), a).await
+    capability_activate(&database(r.db.url.clone()), a).await
 }
 
 async fn recorded(r: &Registry) -> Option<Vec<String>> {
@@ -108,7 +112,10 @@ async fn a_dry_run_changes_nothing_and_the_activation_records_both_kinds_once() 
         activate(&r, &args(None, Some(3), true))
             .await
             .expect("dry run"),
-        ActivationOutcome::WouldActivate { live: 3 }
+        ActivationOutcome::WouldActivate {
+            entry: LEASE,
+            live: 3
+        }
     );
     assert_eq!(recorded(&r).await, None);
     let epoch = r.epoch_now().await;
@@ -116,7 +123,9 @@ async fn a_dry_run_changes_nothing_and_the_activation_records_both_kinds_once() 
         .await
         .expect("activate")
     {
-        ActivationOutcome::Activated { live, epoch: now } => {
+        ActivationOutcome::Activated {
+            live, epoch: now, ..
+        } => {
             assert_eq!(live, 3);
             assert_eq!(now, epoch + 1, "the epoch moves once");
         }
@@ -129,7 +138,7 @@ async fn a_dry_run_changes_nothing_and_the_activation_records_both_kinds_once() 
         activate(&r, &args(Some("ana"), Some(3), false))
             .await
             .expect("again"),
-        ActivationOutcome::AlreadyActive
+        ActivationOutcome::AlreadyActive { entry: LEASE }
     );
     assert_eq!(r.history().await, 1, "the history has one activation");
 }
@@ -140,7 +149,7 @@ async fn the_runtime_role_cannot_run_it_and_is_told_to_use_the_owner_role() {
     fleet(&r, false).await;
     let runtime = database(r.db.url_for(RUNTIME_ROLE, RUNTIME_ROLE_PASSWORD));
     for dry_run in [false, true] {
-        match lease_withdrawal_activate(&runtime, &args(Some("ana"), Some(3), dry_run)).await {
+        match capability_activate(&runtime, &args(Some("ana"), Some(3), dry_run)).await {
             Err(RunError::Declined(message)) => {
                 assert!(message.contains("schema-owning database role"), "{message}");
             }
@@ -151,28 +160,75 @@ async fn the_runtime_role_cannot_run_it_and_is_told_to_use_the_owner_role() {
 }
 
 #[test]
-fn the_command_line_takes_the_three_flags_and_nothing_else() {
+fn the_command_line_takes_a_capability_and_the_three_flags_and_nothing_else() {
     let parse =
         |line: &[&str]| cli::parse(&line.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>());
     assert_eq!(
         parse(&[
-            "lease-withdrawal-activate",
+            "capability-activate",
+            "lease-withdrawal-v1",
             "--operator",
             "ana",
             "--expect-live=3",
             "--dry-run"
         ]),
-        Ok(Command::LeaseWithdrawalActivate(args(
+        Ok(Command::CapabilityActivate(args(
             Some("ana"),
             Some(3),
             true
         )))
     );
     for wrong in [
-        &["lease-withdrawal-activate", "--operator", "--dry-run"][..],
-        &["lease-withdrawal-activate", "--expect-live", "many"][..],
-        &["lease-withdrawal-activate", "--apply"][..],
+        &[
+            "capability-activate",
+            "lease-withdrawal-v1",
+            "--operator",
+            "--dry-run",
+        ][..],
+        &[
+            "capability-activate",
+            "lease-withdrawal-v1",
+            "--expect-live",
+            "many",
+        ][..],
+        &["capability-activate", "lease-withdrawal-v1", "--apply"][..],
+        // the capability is named first, it is one the command may activate, and only once
+        &["capability-activate", "--operator", "ana"][..],
+        &["capability-activate"][..],
+        &[
+            "capability-activate",
+            "lease-withdrawal-v2",
+            "--operator",
+            "ana",
+        ][..],
+        &["capability-activate", "schedules-v1", "--operator", "ana"][..],
+        &[
+            "capability-activate",
+            "lease-withdrawal-v1",
+            "lease-withdrawal-v1",
+        ][..],
+        // never released, so it has no alias (decision D006-034)
+        &["lease-withdrawal-activate", "--operator", "ana"][..],
     ] {
         assert!(parse(wrong).is_err(), "{wrong:?}");
     }
+}
+
+/// While no journal holds `step.lease_withdrawn`, the requirement can be removed again (the way back before any withdrawal,
+/// decision D006-032); the refusal once one does is proved over the real engine (`contract_grpc_durable_execution`).
+#[tokio::test]
+async fn before_any_withdrawal_the_requirement_can_be_removed() {
+    let r = registry().await;
+    fleet(&r, false).await;
+    activate(&r, &args(Some("ana"), Some(3), false))
+        .await
+        .expect("activated");
+    let outcome: String = sqlx::query_scalar(
+        "SELECT out_outcome FROM platform_requirement_remove('lease-withdrawal-v1', 'ana')",
+    )
+    .fetch_one(&r.db.pool)
+    .await
+    .expect("removed");
+    assert_eq!(outcome, "REMOVED");
+    assert_eq!(recorded(&r).await, None);
 }

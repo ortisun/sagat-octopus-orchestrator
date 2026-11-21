@@ -613,3 +613,152 @@ async fn the_run_input_validation_rolls_back_only_while_nothing_names_it() {
     );
     assert!(constraint("platform_requirement_history_capability_known").await);
 }
+
+/// The stamp of the migration before feature 006's two (`20270208000000_lease_withdrawal` and its validation).
+const BEFORE_LEASE_WITHDRAWAL: i64 = 20_270_119_000_000;
+
+/// Architecture Major 4 of the 2026-11-21 review (decision D006-032, ADR-0098 "Rollback"): the rollback of the lease
+/// withdrawal refuses, each guard with its own message, while a journal holds `step.lease_withdrawn`, while a registered
+/// process lists `lease-withdrawal-v1`, while the requirement is recorded, and, after its removal, while its history names
+/// it. A refused rollback leaves the new checks and functions in place. With nothing naming it, it goes through and the
+/// old checks refuse the capability again; forward restores everything.
+#[tokio::test]
+async fn the_lease_withdrawal_rolls_back_only_while_nothing_names_it() {
+    let db = migrated_db().await;
+    let census_exists = || {
+        let pool = db.pool.clone();
+        async move {
+            sqlx::query_scalar::<_, bool>(
+                "SELECT EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'lease_withdrawal_required')",
+            )
+            .fetch_one(&pool)
+            .await
+            .expect("function")
+        }
+    };
+    let refused_rollback = || {
+        let pool = db.pool.clone();
+        async move {
+            let mut connection = pool.acquire().await.expect("a connection");
+            let refused = MIGRATOR
+                .undo(&mut *connection, BEFORE_LEASE_WITHDRAWAL)
+                .await
+                .expect_err("a row blocks the rollback");
+            sqlx::query("SELECT pg_advisory_unlock_all()")
+                .execute(&mut *connection)
+                .await
+                .expect("release the migration lock");
+            refused.to_string()
+        }
+    };
+    // The journal is append-only, so its case runs on a database of its own that is then left as it is.
+    {
+        let journal = migrated_db().await;
+        let mut tx = journal.pool.begin().await.expect("a transaction");
+        sqlx::query("SET LOCAL session_replication_role = replica")
+            .execute(&mut *tx)
+            .await
+            .expect("foreign keys off for this transaction");
+        sqlx::query(
+            "INSERT INTO run_events (tenant_id, run_id, seq, event_type, node, attempt, detail, actor, occurred_at) \
+             VALUES (gen_random_uuid(), gen_random_uuid(), 1, 'step.lease_withdrawn', 'a', 1, \
+                     '{\"attempt\": 1, \"generation\": 1, \"cause\": \"NOT_SENT\"}', 'lease-withdrawal', now())",
+        )
+        .execute(&mut *tx)
+        .await
+        .expect("a withdrawal in a journal");
+        tx.commit().await.expect("committed");
+        let mut connection = journal.pool.acquire().await.expect("a connection");
+        let refused = MIGRATOR
+            .undo(&mut *connection, BEFORE_LEASE_WITHDRAWAL)
+            .await
+            .expect_err("the journal blocks the rollback")
+            .to_string();
+        assert!(
+            refused.contains("a journal holds step.lease_withdrawn"),
+            "{refused}"
+        );
+    }
+    for (insert, delete, says) in [(
+        "INSERT INTO serving_instances (instance_id, kind, binary_version, capabilities, started_at, last_seen, token_hash) \
+             VALUES (gen_random_uuid(), 'EXECUTION_ENGINE', '0.3.0', ARRAY['lease-withdrawal-v1'], now(), now(), sha256('t'::bytea))",
+        "DELETE FROM serving_instances WHERE 'lease-withdrawal-v1' = ANY (capabilities)",
+        "a registered process lists lease-withdrawal-v1",
+    )] {
+        for statement in [insert, delete] {
+            let mut tx = db.pool.begin().await.expect("a transaction");
+            sqlx::query("SET LOCAL session_replication_role = replica")
+                .execute(&mut *tx)
+                .await
+                .expect("foreign keys off for this transaction");
+            sqlx::query(statement)
+                .execute(&mut *tx)
+                .await
+                .unwrap_or_else(|error| panic!("{statement}: {error}"));
+            tx.commit().await.expect("committed");
+            if statement == insert {
+                let message = refused_rollback().await;
+                assert!(message.contains(says), "{says}: {message}");
+                assert!(
+                    census_exists().await,
+                    "{says}: a refused rollback leaves the functions in place"
+                );
+            }
+        }
+    }
+
+    let recorded: String = sqlx::query_scalar(
+        "SELECT out_outcome FROM platform_requirement_activate('lease-withdrawal-v1', \
+         ARRAY['CONTROL_PLANE', 'EXECUTION_ENGINE'], 'operator')",
+    )
+    .fetch_one(&db.pool)
+    .await
+    .expect("activate");
+    assert_eq!(recorded, "RECORDED");
+    let message = refused_rollback().await;
+    assert!(
+        message.contains("lease-withdrawal-v1 is a recorded requirement"),
+        "{message}"
+    );
+    // no journal holds the event, so the replay floor lets the requirement go
+    let removed: String = sqlx::query_scalar(
+        "SELECT out_outcome FROM platform_requirement_remove('lease-withdrawal-v1', 'operator')",
+    )
+    .fetch_one(&db.pool)
+    .await
+    .expect("remove");
+    assert_eq!(removed, "REMOVED");
+    let message = refused_rollback().await;
+    assert!(
+        message.contains("the requirement history names lease-withdrawal-v1"),
+        "{message}"
+    );
+
+    // A fresh database with nothing naming it rolls back and forward.
+    let clean = migrated_db().await;
+    MIGRATOR
+        .undo(&clean.pool, BEFORE_LEASE_WITHDRAWAL)
+        .await
+        .expect("nothing names the lease withdrawal: the rollback goes through");
+    let refused = sqlx::query(
+        "INSERT INTO serving_instances (instance_id, kind, binary_version, capabilities, started_at, last_seen, token_hash) \
+         VALUES (gen_random_uuid(), 'EXECUTION_ENGINE', '0.3.0', ARRAY['lease-withdrawal-v1'], now(), now(), sha256('t'::bytea))",
+    )
+    .execute(&clean.pool)
+    .await
+    .expect_err("the old check does not know the capability");
+    assert!(
+        refused
+            .to_string()
+            .contains("serving_instances_capabilities_known"),
+        "{refused}"
+    );
+    migrate(&clean.pool).await.expect("forward again");
+    let lists: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'lease_withdrawal_required')",
+    )
+    .fetch_one(&clean.pool)
+    .await
+    .expect("function");
+    assert!(lists, "forward restores the functions");
+}

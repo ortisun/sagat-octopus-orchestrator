@@ -100,8 +100,17 @@ impl<St, S, C, E, R> WorkerGrpc<St, S, C, E, R> {
         self.withdrawals.clone()
     }
 
-    /// Holds every claim that committed leases at `probe` before its leases are queued or answered. For the tests of the
-    /// withdrawal only (decision D006-008): production never sets one.
+    /// Runs at most `concurrency` withdrawals at once (decision D006-038: a quarter of the pool,
+    /// [`crate::withdrawal_concurrency`]). Call it before [`Self::withdrawals`] is read.
+    #[must_use]
+    pub fn with_withdrawal_concurrency(mut self, concurrency: usize) -> Self {
+        self.withdrawals = Withdrawals::bounded(concurrency);
+        self
+    }
+
+    /// Holds every claim at `probe` after each run's transaction committed leases, before the next run is claimed and
+    /// before its leases are queued or answered. For the tests of the withdrawal only (decision D006-008): production never
+    /// sets one.
     #[must_use]
     pub fn with_delivery_probe(mut self, probe: DeliveryProbe) -> Self {
         self.probe = Some(probe);
@@ -583,31 +592,35 @@ where
                 .map_err(|_| invalid("max_tasks must not be negative"))?;
             // The claim runs in a task of its own: a client that goes away drops this handler, and with it, before,
             // the leases the claim had already committed. Its leases come back here in a guard, or, when the handler is
-            // gone, the guard is dropped with the task's output and they are withdrawn (decisions D006-001, D006-017).
+            // gone, the guard is dropped with the task's output and they are withdrawn (decisions D006-001, D006-017). The
+            // claim leases no further run once the handler is gone (D006-035), keeps the tenant's slot until it ends
+            // (D006-037), and runs on the tracker a graceful shutdown waits for (D006-036).
             let workers = Arc::clone(&self.workers);
             let principal = auth.session.principal.clone();
+            let slot = auth.slot;
             let session_token = message.session_token.clone();
             let sink = self.withdrawal_sink();
-            let probe = self.probe.clone();
-            // cancelled when this handler is dropped: what a probe waits for (decision D006-008)
+            // cancelled when this handler is dropped: what the claim and a probe watch (decision D006-008)
             let abandoned = CancellationToken::new();
             let _abandon_on_drop = abandoned.clone().drop_guard();
-            let claim = tokio::spawn(async move {
+            let watch = ConsumerWatch {
+                gone: abandoned,
+                probe: self.probe.clone(),
+            };
+            let claim = self.withdrawals.spawn(async move {
+                let _slot = slot;
                 let tasks = workers
-                    .poll(
+                    .poll_bounded(
                         &principal,
                         worker,
                         &session_token,
                         max_tasks,
+                        sagat_application::worker::MAX_POLL_BYTES,
                         request_trace.as_deref(),
+                        &watch,
                     )
                     .await?;
                 let leases = PendingLeases::of(principal.tenant_id(), &tasks, &sink);
-                if !tasks.is_empty()
-                    && let Some(probe) = &probe
-                {
-                    probe(Abandonment(abandoned)).await;
-                }
                 Ok::<_, AppError>((tasks, leases))
             });
             let (tasks, leases) = claim
@@ -703,8 +716,13 @@ where
             let stop = CancellationToken::new();
             let stopped = stop.clone();
             let sink = self.withdrawal_sink();
-            let probe = self.probe.clone();
-            let producer = tokio::spawn(async move {
+            let watch = ConsumerWatch {
+                gone: stop.clone(),
+                probe: self.probe.clone(),
+            };
+            // on the tracker a graceful shutdown waits for, so that a claim in progress and its withdrawal end before
+            // the pool closes (decision D006-036)
+            let producer = self.withdrawals.spawn(async move {
                 let mut credit = max_tasks;
                 let mut bytes_left = sagat_application::worker::MAX_POLL_BYTES;
                 loop {
@@ -833,6 +851,7 @@ where
                             credit,
                             bytes_left,
                             request_trace.as_deref(),
+                            &watch,
                         )
                         .await;
                     let tasks = match claimed {
@@ -895,12 +914,16 @@ where
                     // From the commit of the claim the leases travel in a guard: dropped before the frame is handed to the
                     // transport, they are withdrawn (decision D006-001).
                     let leases = PendingLeases::of(tenant, &tasks, &sink);
-                    if let Some(probe) = &probe {
-                        probe(Abandonment(stopped.clone())).await;
-                    }
                     let used = tasks.iter().map(|task| task.input.len()).sum::<usize>();
                     credit = credit.saturating_sub(tasks.len() as u32);
                     bytes_left = bytes_left.saturating_sub(used);
+                    if stopped.is_cancelled() {
+                        // the body is gone or past its window: nothing more is queued
+                        drop(place);
+                        drop(leases);
+                        break;
+                    }
+                    // counted only when queued: a lease that went to the withdrawal was never streamed
                     metrics::counter!(
                         "worker_task_stream_claims_total",
                         "outcome" => "ready"
@@ -908,12 +931,6 @@ where
                     .increment(1);
                     metrics::counter!("worker_task_stream_tasks_total")
                         .increment(tasks.len() as u64);
-                    if stopped.is_cancelled() {
-                        // the body is gone or past its window: nothing more is queued
-                        drop(place);
-                        drop(leases);
-                        break;
-                    }
                     place.send(Frame {
                         item: Ok(pb::PollTasksResponse {
                             tasks: tasks.iter().map(lease).collect(),
@@ -2092,5 +2109,25 @@ mod withdrawal_of_undelivered_frames {
             kept.lock().expect("lock").is_empty(),
             "the frame was handed over"
         );
+    }
+}
+
+/// What a claim of this API watches (decisions D006-035 and D006-008): its consumer, gone when the stream's producer is told
+/// to stop or the unary handler is dropped, and the test's probe after each run's commit.
+struct ConsumerWatch {
+    gone: CancellationToken,
+    probe: Option<DeliveryProbe>,
+}
+
+impl sagat_application::worker::ClaimWatch for ConsumerWatch {
+    fn consumer_gone(&self) -> bool {
+        self.gone.is_cancelled()
+    }
+
+    fn committed(&self) -> Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
+        match &self.probe {
+            Some(probe) => probe(Abandonment(self.gone.clone())),
+            None => Box::pin(std::future::ready(())),
+        }
     }
 }

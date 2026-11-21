@@ -393,14 +393,14 @@ hour, back to 10 minutes after an `ACKNOWLEDGED`), then registers again without 
 
 **A lease the host will not run is handed back.** A host that drops a lease it received reports `FailStep` for it with the
 code `TASK_NOT_STARTED`, retryable, with the lease's fence, before any handler of that task runs, and never for a task whose
-handler started. The server's rule is decision 5 of Architecture decision 0098: while the fleet honours withdrawals, it gives the step back to
-`READY` without consuming the attempt only for a lease claimed by a session at `1.8` or later (read from the lease, not from the
-session), while the step is `LEASED` with the lease's fence, the lease is not acknowledged, no capability was served to it, and the
-attempt has been withdrawn fewer than four times so far, whatever the causes (decisions 5, 7 and 8 of Architecture decision 0098); a
-provisional lease's hand-back is withdrawn even after its expiry, until the server's pass has withdrawn it; otherwise, and always for
-a lease claimed below `1.8`, before the operator's activation of `delivery-acknowledgement-v1` or after its removal (or before its
-latest recording, or on another database server), or handled by a server of the build of Architecture decision 0098, it is an ordinary failure that spends the attempt (Architecture decision 0099
-decision 9). A lease left to lapse would be an
+handler started. The server then gives the step back to `READY` without consuming the attempt when it can (decision D006-005
+of `specs/006-sdk-multilanguage/research.md`): only for a lease held by a session of protocol 1.8 or later, which reserves the
+code, with the requirement `lease-withdrawal-v1` recorded, the step still `LEASED` and at most four withdrawals of the attempt
+(decisions D006-030 and D006-031). At `1.8` (Architecture decision 0099 decision 9) the reservation is read from the lease, not
+from the session, and honoured only while the operator has activated `delivery-acknowledgement-v1`, for a lease claimed after that
+activation on the current database server; a lease that has not run (still `LEASED`, no heartbeat, no capability served) is then
+withdrawn on its hand-back whether or not it was acknowledged, also after its expiry. Otherwise it retries it as an ordinary
+failure, which spends the attempt (gap G006-031); a lease left to lapse would be an
 unknown outcome and, for an `Activity`, a review (feature 037). The rules (decisions D006-020 to D006-023):
 
 - *Which leases.* Every lease of a poll answer or a stream frame that the host received and does not dispatch:
@@ -432,8 +432,9 @@ unknown outcome and, for an `Activity`, a review (feature 037). The rules (decis
   retryable failure. `TASK_NOT_STARTED` is a step failure code, like `NO_HANDLER`; it is never raised to a caller and is
   not in `sdks/error-catalog.json`. **The code is reserved for the host**: a handler that fails with it (an
   `ActivityFailure` whose code is `TASK_NOT_STARTED`, of a forward, compensation or reconciliation handler) is reported as
-  `WORKER_ERROR`, with its own message and `retryable` (§6.5), because only the host can know that no handler ran. At most eight hand-backs are on their way at once; the others wait their turn in
-  the order they were received, so a server that floods one answer cannot make the host open a call per lease.
+  `WORKER_ERROR`, with its own message and `retryable` (§6.5), because only the host can know that no handler ran. At most eight hand-backs are on their way at once (the
+  derivation is in §6.5: seven to ten); the others wait their turn in the order they were received, so a server that floods one answer
+  cannot make the host open a call per lease.
 - *What is observed.* A warning log line with the task id and the reason (`stopping`, `credit` or `malformed`, or
   `not_started` for item 4), never the lease token; the host's failure event or counter with the code `TASK_NOT_STARTED`
   (or, when the report cannot be made, its dropped event, as for any report).
@@ -537,6 +538,22 @@ A handler's input type that cannot be built from the document is not a crash: th
   (reserved for the host, §6.2), is replaced by `WORKER_ERROR`.
 - The report is retried per §5. `already_applied = true` in the answer is a success. The host never
   reports one attempt twice with different content.
+- **Why at most eight hand-backs at once (§6.2).** The number has to be large enough to hand a full frame back before its
+  leases expire, and small enough that a host that is stopping opens no more calls than a busy host does. The bounds:
+  1. *The largest legitimate batch.* A host has one receive at a time, and one poll answer or stream frame carries at most
+     64 leases (`max_tasks` is 1 to 64, and the server's claim stops at 64), so one batch is at most B = 64 hand-backs.
+  2. *Fast enough.* The batch goes in ⌈B / H⌉ rounds of one report each. It must land within half the lease's
+     time-to-live, the other half being what delivery may already have used. The shortest time-to-live the platform runs
+     is 3 s (some conformance scenarios run with it; the default is 30 s). With H = 8 that is 8 rounds in 1.5 s, so one
+     report must be answered within 187 ms; at the default 30 s, within 1.87 s. A `FailStep` is one run transaction. With
+     H = 6 the budget at 3 s would be 136 ms (11 rounds); H ≥ 7 keeps at least 150 ms (10 rounds).
+  3. *Not more than a busy host.* A host reports each running task once, so a host of the default size (`max_inflight` 10)
+     has up to 10 reports open. H ≤ 10 keeps a stopping host, whose running tasks still report, within twice that. Each call
+     takes one slot of the tenant's share of the server's in-flight cap (a quarter of it: 128 with the defaults) and one
+     unit of the per-identity budget (200 a second, a burst of 400). Eight is 6% of the tenant's slots, and a full batch of
+     64 fits in the burst.
+  So 7 ≤ H ≤ 10, and the SDKs use 8. A hand-back that waits for its turn holds no connection; a slower database delays
+  the batch, and a lease whose hand-back comes too late lapses as before.
 
 ### 6.6 Compensation and reconciliation
 

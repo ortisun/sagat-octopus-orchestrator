@@ -17,13 +17,15 @@ use sagat_application::definitions::DefinitionStore;
 use sagat_application::entropy::Entropy;
 use sagat_application::execution::{ExpressionEvaluator, PathExecutionStore};
 use sagat_application::runs::RunStore;
-use sagat_application::worker::{ClaimedTask, UndeliveredLease, WorkerService, WorkerStore};
+use sagat_application::worker::{
+    ClaimedTask, UndeliveredLease, WithdrawalOutcome, WorkerService, WorkerStore, count_undelivered,
+};
 use sagat_domain::execution::WithdrawalCause;
 use sagat_domain::identity::TenantId;
 use tokio_util::task::TaskTracker;
 
-/// A point a test holds the delivery of a claim at, after its leases committed and before they are queued or answered
-/// (feature 006, decision D006-008: a barrier, never a sleep). It is given the [`Abandonment`] of the consumer, so a test
+/// A point a test holds a claim at, after each run's transaction committed leases and before the next run is claimed
+/// (feature 006, decisions D006-008 and D006-035: a barrier, never a sleep). It is given the [`Abandonment`] of the consumer, so a test
 /// can release the claim exactly when the server knows its consumer is gone. Production never sets one.
 pub type DeliveryProbe =
     Arc<dyn Fn(Abandonment) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
@@ -61,8 +63,13 @@ impl WithdrawalSink {
             let workers = Arc::clone(&workers);
             let n = leases.len() as u64;
             if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                let permits = Arc::clone(&withdrawals.permits);
                 withdrawals.tracker.spawn_on(
                     async move {
+                        // at most a quarter of the pool at once (decision D006-038); a waiting one holds no connection
+                        let Ok(_permit) = permits.acquire_owned().await else {
+                            return;
+                        };
                         workers
                             .withdraw_undelivered(leases, WithdrawalCause::NotSent)
                             .await;
@@ -72,12 +79,7 @@ impl WithdrawalSink {
                 withdrawals.handed(n);
             } else {
                 // the runtime is gone (the process is stopping past its grace): the leases lapse (gap G006-002)
-                metrics::counter!(
-                    "worker_leases_undelivered_total",
-                    "cause" => WithdrawalCause::NotSent.as_str(),
-                    "outcome" => "error"
-                )
-                .increment(n);
+                count_undelivered(WithdrawalCause::NotSent, WithdrawalOutcome::Error, n);
             }
         }))
     }
@@ -148,14 +150,59 @@ impl Drop for PendingLeases {
     }
 }
 
-/// The withdrawals of a worker API in flight; a graceful shutdown waits for them (decision D006-016).
-#[derive(Clone, Debug, Default)]
+/// How many withdrawals run at once when the composition root says nothing: a quarter of the default pool of 20
+/// (decision D006-038).
+pub const DEFAULT_WITHDRAWAL_CONCURRENCY: usize = 5;
+
+/// The most withdrawals an engine runs at once for a pool of `max_connections`: a quarter of it, at least one (decision
+/// D006-038). The rest of the pool stays for the scheduler, the lease keeper, the claims and the reports.
+#[must_use]
+pub const fn withdrawal_concurrency(max_connections: u32) -> usize {
+    let quarter = (max_connections / 4) as usize;
+    if quarter == 0 { 1 } else { quarter }
+}
+
+/// The withdrawals of a worker API in flight, and the claims that may hand leases to them; a graceful shutdown waits for
+/// them (decisions D006-016 and D006-036).
+#[derive(Clone, Debug)]
 pub struct Withdrawals {
     tracker: TaskTracker,
+    permits: Arc<tokio::sync::Semaphore>,
     handed: Arc<(std::sync::atomic::AtomicU64, tokio::sync::Notify)>,
 }
 
+impl Default for Withdrawals {
+    fn default() -> Self {
+        Self::bounded(DEFAULT_WITHDRAWAL_CONCURRENCY)
+    }
+}
+
 impl Withdrawals {
+    /// At most `concurrency` withdrawals at once (at least one).
+    #[must_use]
+    pub fn bounded(concurrency: usize) -> Self {
+        Self {
+            tracker: TaskTracker::new(),
+            permits: Arc::new(tokio::sync::Semaphore::new(concurrency.max(1))),
+            handed: Arc::default(),
+        }
+    }
+
+    /// Runs `task` (a stream's producer, a unary claim) on the tracker a graceful shutdown waits for.
+    pub(crate) fn spawn<F>(&self, task: F) -> tokio::task::JoinHandle<F::Output>
+    where
+        F: Future + Send + 'static,
+        F::Output: Send + 'static,
+    {
+        self.tracker.spawn(task)
+    }
+
+    /// How many withdrawals may run at once now.
+    #[must_use]
+    pub fn available(&self) -> usize {
+        self.permits.available_permits()
+    }
+
     fn handed(&self, n: u64) {
         self.handed
             .0
@@ -190,5 +237,30 @@ impl Withdrawals {
             .is_ok();
         self.tracker.reopen();
         ended
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A quarter of the pool, at least one (decision D006-038), at the edges of the division.
+    #[test]
+    fn a_quarter_of_the_pool_withdraws_at_once() {
+        for (pool, expected) in [
+            (0, 1),
+            (1, 1),
+            (3, 1),
+            (4, 1),
+            (7, 1),
+            (8, 2),
+            (20, 5),
+            (21, 5),
+            (100, 25),
+        ] {
+            assert_eq!(withdrawal_concurrency(pool), expected, "pool {pool}");
+        }
+        assert_eq!(withdrawal_concurrency(20), DEFAULT_WITHDRAWAL_CONCURRENCY);
+        assert_eq!(Withdrawals::bounded(0).available(), 1);
     }
 }

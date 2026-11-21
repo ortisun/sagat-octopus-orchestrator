@@ -4,7 +4,7 @@
 
 **Created**: 2026-10-26
 
-**Status**: Draft — specification, plan and tasks proposed; not implemented; pending owner review
+**Status**: Specification, plan and tasks approved for implementation by the owner on 2026-11-11 (Owner decision 2026-11-11-1, "Aprovo os rascunhos 019–032 e 036, pode implementar"); not implemented
 
 **Input**: Custom roles (Temporal Cloud 2026): tenant- or namespace-defined roles as named sets of catalog
 permissions; the built-in roles remain; a granter cannot grant beyond their own permissions; assignment

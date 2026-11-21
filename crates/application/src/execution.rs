@@ -883,6 +883,28 @@ pub trait PathExecutionTx: Send {
         token_hash: &[u8],
     ) -> impl Future<Output = Result<bool, StoreError>> + Send;
 
+    /// The withdrawals of the step `step_id` that carry `attempt` (`step.lease_withdrawn` in its journal; feature 006,
+    /// decision D006-031): the count the cap of the domain command is given.
+    fn lease_withdrawals(
+        &mut self,
+        step_id: uuid::Uuid,
+        attempt: u32,
+    ) -> impl Future<Output = Result<u32, StoreError>> + Send;
+
+    /// The protocol minor of the worker session that holds the lease `token_hash` on the step `step_id`, or `None` when no
+    /// live session holds it (feature 006, decision D006-030: only a minor that reserves `TASK_NOT_STARTED` is honoured).
+    fn lease_holder_minor(
+        &mut self,
+        step_id: uuid::Uuid,
+        token_hash: &[u8],
+    ) -> impl Future<Output = Result<Option<u32>, StoreError>> + Send;
+
+    /// Whether the platform requires `lease-withdrawal-v1`, read under a share lock that a removal of the requirement waits
+    /// for (feature 006, decision D006-032): a withdrawal and the removal cannot cross.
+    fn lease_withdrawal_required(
+        &mut self,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send;
+
     fn replay(
         &mut self,
         idempotency: &Idempotency,
@@ -1544,6 +1566,28 @@ pub trait RunTx: Send {
         &mut self,
         instance: &ExecutionInstanceId,
         token_hash: &[u8],
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send;
+
+    /// The withdrawals of the step `step_id` that carry `attempt` (`step.lease_withdrawn` in its journal; feature 006,
+    /// decision D006-031): the count the cap of the domain command is given.
+    fn lease_withdrawals(
+        &mut self,
+        step_id: uuid::Uuid,
+        attempt: u32,
+    ) -> impl Future<Output = Result<u32, StoreError>> + Send;
+
+    /// The protocol minor of the worker session that holds the lease `token_hash` on the step `step_id`, or `None` when no
+    /// live session holds it (feature 006, decision D006-030: only a minor that reserves `TASK_NOT_STARTED` is honoured).
+    fn lease_holder_minor(
+        &mut self,
+        step_id: uuid::Uuid,
+        token_hash: &[u8],
+    ) -> impl Future<Output = Result<Option<u32>, StoreError>> + Send;
+
+    /// Whether the platform requires `lease-withdrawal-v1`, read under a share lock that a removal of the requirement waits
+    /// for (feature 006, decision D006-032): a withdrawal and the removal cannot cross.
+    fn lease_withdrawal_required(
+        &mut self,
     ) -> impl Future<Output = Result<bool, StoreError>> + Send;
 
     /// The result stored by an earlier command with the same idempotency key, if any. A different

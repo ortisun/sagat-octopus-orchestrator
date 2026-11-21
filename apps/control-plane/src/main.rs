@@ -164,8 +164,8 @@ async fn execute(command: Command, config: &Config) -> Result<(), RunError> {
             tracing::info!(tenant = %request.tenant_id, "scheduling weight changed");
             Ok(())
         }
-        Command::LeaseWithdrawalActivate(args) => {
-            let said = sagat_control_plane::lease_withdrawal::lease_withdrawal_activate(
+        Command::CapabilityActivate(args) => {
+            let said = sagat_control_plane::capability_activation::capability_activate(
                 &config.database,
                 &args,
             )
