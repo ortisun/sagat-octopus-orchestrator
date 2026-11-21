@@ -66,6 +66,8 @@ final class FakeWorkerServer extends WorkerServiceGrpc.WorkerServiceImplBase imp
     volatile int pollRetryAfterMs = 50;
     /** Number of leases in each nonempty stream frame. */
     volatile int streamFrameSize = Integer.MAX_VALUE;
+    /** When set, the next receive sends exactly these frames, whatever its credit, instead of the queued leases. */
+    volatile List<List<Worker.TaskLease>> streamFrames;
     /** Keep the receive open after its scripted frames until the client cancels it. */
     volatile boolean holdStreamOpen;
     /** Fail after forwarding the first nonempty frame. */
@@ -73,7 +75,7 @@ final class FakeWorkerServer extends WorkerServiceGrpc.WorkerServiceImplBase imp
     volatile boolean streamCancelled;
     /** A misbehaving service: answers a poll with every task it has, whatever {@code max_tasks} says. */
     volatile boolean ignoreMax;
-    /** When set, a FailStep waits at this gate before it is answered (at most 30 s). */
+    /** When set, a FailStep waits at this gate before it is answered (at most 30 s); a scripted failure does not wait. */
     volatile CountDownLatch failStepGate;
     /** The FailStep calls that arrived, the ones on their way at the service now, and the most there were at once. */
     final AtomicInteger failStepsArrived = new AtomicInteger();
@@ -145,6 +147,7 @@ final class FakeWorkerServer extends WorkerServiceGrpc.WorkerServiceImplBase imp
         holdStreamOpen = false;
         streamFailureAfterFirst = null;
         streamCancelled = false;
+        streamFrames = null;
         ignoreMax = false;
         failStepGate = null;
         failStepsArrived.set(0);
@@ -223,6 +226,15 @@ final class FakeWorkerServer extends WorkerServiceGrpc.WorkerServiceImplBase imp
 
         int remaining = ignoreMax ? Integer.MAX_VALUE : request.getMaxTasks();
         boolean sent = false;
+        List<List<Worker.TaskLease>> scriptedFrames = streamFrames;
+        if (scriptedFrames != null) {
+            streamFrames = null;
+            for (List<Worker.TaskLease> tasks : scriptedFrames) {
+                out.onNext(Worker.PollTasksResponse.newBuilder().addAllTasks(tasks).build());
+                remaining -= tasks.size();
+            }
+            remaining = 0;
+        }
         while (remaining > 0) {
             Worker.PollTasksResponse.Builder frame = Worker.PollTasksResponse.newBuilder();
             synchronized (this) {
@@ -284,6 +296,14 @@ final class FakeWorkerServer extends WorkerServiceGrpc.WorkerServiceImplBase imp
         failStepsArrived.incrementAndGet();
         failStepsPeak.accumulateAndGet(failStepsOnTheirWay.incrementAndGet(), Math::max);
         try {
+            // A scripted failure is taken and answered under the lock, so that two calls cannot both see it and skip the gate.
+            synchronized (failures) {
+                Deque<Failure> scripted = failures.get("FailStep");
+                if (scripted != null && !scripted.isEmpty()) {
+                    answer("FailStep", request, out, r -> Worker.StepCommandResponse.getDefaultInstance());
+                    return;
+                }
+            }
             CountDownLatch gate = failStepGate;
             if (gate != null) {
                 gate.await(30, TimeUnit.SECONDS);

@@ -49,7 +49,7 @@ class FakeServer {
   streamCancelled = 0;
   /** A misbehaving service: answers a poll with every task it has, whatever `max_tasks` says. */
   ignoreMax = false;
-  /** When set, a FailStep waits for this promise before it is answered. */
+  /** When set, a FailStep waits for this promise before it is answered; a scripted failure does not wait. */
   failStepGate: Promise<void> | undefined;
   /** The FailStep calls that arrived, the ones on their way at the service now, and the most there were at once. */
   failStepsArrived = 0;
@@ -152,7 +152,8 @@ class FakeServer {
       this.failStepsArrived += 1;
       this.failStepsOnTheirWay += 1;
       this.failStepsPeak = Math.max(this.failStepsPeak, this.failStepsOnTheirWay);
-      void (this.failStepGate ?? Promise.resolve()).then(() => answerFailStep(call, (error, response) => {
+      const gate = (this.failures['failStep']?.length ?? 0) > 0 ? undefined : this.failStepGate;
+      void (gate ?? Promise.resolve()).then(() => answerFailStep(call, (error, response) => {
         this.failStepsOnTheirWay -= 1;
         callback(error, response);
       }));
@@ -1324,4 +1325,76 @@ test('a lease leased again while its hand-back is on its way is ignored', async 
   await h.stop(5000);
   assert.deepEqual(handedBack(), ['run-2/charge/1'], 'exactly one hand-back for it');
   assert.deepEqual(ran, ['run-1/charge/1']);
+});
+
+test('hand-backs still on their way when the grace ends are dropped once, and stop is bounded', async () => {
+  fake.ignoreMax = true;
+  fake.leases = Array.from({ length: 13 }, (_, i) => numbered(i + 1));
+  // The first hand-back is answered UNAVAILABLE and waits five to ten seconds before it repeats, past the stop; the next seven
+  // are held at the service; the last four (run-10 to run-13) wait their turn at the host.
+  fake.failures['failStep'] = [{ code: grpc.status.UNAVAILABLE }];
+  const gate = deferred();
+  fake.failStepGate = gate.promise;
+  const { lines, logger } = capturingLogger();
+  const events: WorkerEvent[] = [];
+  const rejections: unknown[] = [];
+  const onRejection = (reason: unknown): void => { rejections.push(reason); };
+  process.on('unhandledRejection', onRejection);
+  const h = host({
+    maxInflight: 1, transport: 'poll', logger, retry: { initialDelayMs: 10_000, maxDelayMs: 10_000 },
+    onEvent: (event) => events.push(event),
+  });
+  h.registerActivity('charge', () => 1);
+  const dropped = (): Array<{ taskId: string; reason: string }> =>
+    events.flatMap((event) => (event.type === 'task.dropped' ? [{ taskId: event.taskId, reason: event.reason }] : []));
+  try {
+    await h.start();
+    await until(() => fake.failStepsArrived === 8, 'one hand-back refused and seven held at the service');
+    await until(() => fake.of('completeStep').length === 1, 'the kept task to complete');
+    const began = Date.now();
+    await h.stop(200);
+    const took = Date.now() - began;
+    // The grace and the two seconds stop gives after it.
+    assert.ok(took < 200 + 2000 + 1500, `stop took ${took} ms`);
+    await until(() => dropped().length === 12, 'every hand-back to be dropped', 20_000);
+  } finally {
+    gate.resolve();
+    process.off('unhandledRejection', onRejection);
+  }
+  // The calls held at the service end before this test does, so that none is recorded among the next test's calls.
+  await until(() => fake.failStepsOnTheirWay === 0, 'the calls held at the service to end');
+  const queued = ['run-10/charge/1', 'run-11/charge/1', 'run-12/charge/1', 'run-13/charge/1'];
+  assert.deepEqual(dropped().filter((d) => queued.includes(d.taskId)).map((d) => `${d.taskId}:${d.reason}`).sort(),
+    queued.map((id) => `${id}:CANCELLED`), 'what waited its turn when the grace ended is not made');
+  assert.deepEqual(lines.filter((line) => line.message.includes('the host has stopped')).map((line) => String(line.fields['task'])).sort(),
+    queued, 'and each is logged as not made');
+  const ends = new Map<string, number>();
+  for (const event of events) {
+    if (event.type === 'task.dropped' || event.type === 'task.failed' || event.type === 'task.stale') {
+      ends.set(event.taskId, (ends.get(event.taskId) ?? 0) + 1);
+    }
+  }
+  assert.equal(ends.size, 12, 'every lease beyond the first ends');
+  assert.ok([...ends.values()].every((n) => n === 1), `each ends once: ${JSON.stringify([...ends])}`);
+  assert.ok(!events.some((event) => event.type === 'task.failed'), 'none is reported after the stop');
+  assert.equal(fake.failStepsArrived, 8, 'nothing more reaches the service: no connection is opened again');
+  assert.deepEqual(rejections, [], 'no unhandled rejection');
+});
+
+test('a frame after the credit is used up is read and handed back whole', async () => {
+  fake.acceptedVersion = '1.4';
+  fake.holdStream = true;
+  // One receive window: the first frame uses up the credit of one, the second carries two more.
+  fake.streamBatches = [[numbered(1)], [numbered(2), numbered(3)]];
+  const release = deferred();
+  const h = host({ maxInflight: 1 });
+  h.registerActivity('charge', () => release.promise.then(() => 1));
+  await h.start();
+  await until(() => fake.of('failStep').length === 2, 'the two hand-backs');
+  assert.equal(fake.of('completeStep').length, 0, 'run-1 is still held');
+  release.resolve();
+  await until(() => fake.of('completeStep').length === 1, 'the kept task to complete');
+  await h.stop(5000);
+  assert.deepEqual(handedBack(), ['run-2/charge/1', 'run-3/charge/1'], 'the frame after the credit is read and handed back');
+  assert.equal(fake.of('completeStep')[0]!.request['task_id'], 'run-1/charge/1');
 });

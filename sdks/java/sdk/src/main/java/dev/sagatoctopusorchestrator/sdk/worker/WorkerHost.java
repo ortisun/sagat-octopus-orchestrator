@@ -317,6 +317,9 @@ public final class WorkerHost implements AutoCloseable {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         } finally {
+            // The report pool is shut down before the channel is cleared: a hand-back made from here on is refused by the
+            // pool (its lease is dropped and lapses), so none is ever given a channel that is gone.
+            reportPool.shutdown();
             synchronized (lifecycle) {
                 running = false;
                 rpc = null;
@@ -328,7 +331,6 @@ public final class WorkerHost implements AutoCloseable {
             // The host cancels the tokens of the tasks and nothing else (SPEC section 6.4): a handler that ignores its
             // token runs to its end on its own thread, never interrupted, and its late report on the closed channel fails.
             taskPool.shutdown();
-            reportPool.shutdown();
             channel.close();
         }
     }
@@ -656,18 +658,15 @@ public final class WorkerHost implements AutoCloseable {
     private void handBack(Worker.TaskLease lease, String key, String why) {
         Hooks.log(log, System.Logger.Level.WARNING, "the host hands back a task it did not start task=" + lease.getTaskId() + " reason=" + why);
         WorkerRpc channel = rpc;
-        ExecutorService pool = reports;
-        if (channel == null || pool == null) {
-            // The host has stopped (the loop outlived the stop): the report cannot be made, and the lease lapses.
-            dropHandBack(lease);
-            return;
-        }
         int minor = minorOf(accepted);
         CompletableFuture<Void> done = new CompletableFuture<>();
         handBacks.put(key, done);
         try {
-            pool.execute(() -> {
+            reports.execute(() -> {
                 try {
+                    // Stop shuts the report pool down before it clears the channel: a hand-back the pool accepted read the
+                    // channel before it was cleared.
+                    assert channel != null : "a hand-back was accepted after the channel was cleared";
                     fail(channel, lease, new LeaseState(lease.getExpiresAtEpochMs()), minor, "TASK_NOT_STARTED", "the host did not start this task", true, System.nanoTime());
                 } catch (Throwable t) {
                     Hooks.log(log, System.Logger.Level.ERROR, "a hand-back failed task=" + lease.getTaskId() + " (" + t.getClass().getSimpleName() + ")");
@@ -694,10 +693,10 @@ public final class WorkerHost implements AutoCloseable {
     private boolean dispatch(Worker.TaskLease lease, String key) {
         WorkerRpc channel = rpc;
         Inflight task = new Inflight();
-        if (inflight.putIfAbsent(key, task) != null) {
-            Hooks.log(log, System.Logger.Level.WARNING, "a task that is in flight was leased again, ignored task=" + lease.getTaskId());
-            return false;
-        }
+        // Only the loop thread inserts into the in-flight table, here, and take checked this key just before on the same
+        // thread: the key cannot be there (a task thread only removes its own).
+        boolean fresh = inflight.putIfAbsent(key, task) == null;
+        assert fresh : "a key take found free was taken before dispatch";
         try {
             java.util.function.Consumer<Worker.TaskLease> refuse = beforeTaskStarts;
             if (refuse != null) {

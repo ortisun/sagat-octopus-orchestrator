@@ -468,4 +468,123 @@ class WorkerHandBackTest {
         assertEquals(List.of("run-2/charge/1"), handedBack(), "exactly one hand-back for it");
         assertEquals(List.of("run-1/charge/1"), ran);
     }
+
+    @Test
+    void aHandBackAfterTheStopClosedTheChannelIsDroppedNotThrown() throws Exception {
+        fake.addLeases(numbered(1), numbered(2));
+        CapturingLogger log = new CapturingLogger();
+        List<WorkerEvent> events = new CopyOnWriteArrayList<>();
+        List<String> ran = new CopyOnWriteArrayList<>();
+        WorkerHost h = host(b -> b.maxInflight(2).logger(log).onEvent(events::add));
+        h.registerActivity("charge", (in, ctx) -> {
+            ran.add(ctx.taskId());
+            return 1;
+        });
+        // The loop is held, with the answer of two leases in hand, on a latch that an interrupt does not end: stop's
+        // interrupt and its two-second join leave it alive, and it goes on after stop returned.
+        CountDownLatch holding = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        h.frameReceived = leases -> {
+            if (leases > 0 && holding.getCount() > 0) {
+                holding.countDown();
+                boolean interrupted = false;
+                while (true) {
+                    try {
+                        release.await();
+                        break;
+                    } catch (InterruptedException e) {
+                        interrupted = true;
+                    }
+                }
+                if (interrupted) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+        };
+        h.start();
+        await(holding, "the answer to be read");
+        h.stop(Duration.ofMillis(100));
+        release.countDown();
+        until(() -> events.stream().filter(e -> e instanceof WorkerEvent.TaskDropped).count() == 2, "both leases to be dropped");
+        List<String> dropped = events.stream()
+                .filter(e -> e instanceof WorkerEvent.TaskDropped d && d.reason().equals("CANCELLED"))
+                .map(e -> ((WorkerEvent.TaskDropped) e).taskId())
+                .sorted()
+                .toList();
+        assertEquals(List.of("run-1/charge/1", "run-2/charge/1"), dropped, "each lease ends as dropped, CANCELLED");
+        assertEquals(1, log.warnings("the hand-back could not be made: the host has stopped task=run-1/charge/1").size());
+        assertEquals(1, log.warnings("the hand-back could not be made: the host has stopped task=run-2/charge/1").size());
+        assertTrue(log.lines().stream().noneMatch(l -> l.message().contains("a hand-back failed") || l.message().contains("the poll loop failed")),
+                "nothing is thrown: " + log.lines());
+        assertEquals(0, fake.failStepsArrived.get(), "no FailStep reaches the service");
+        assertEquals(List.of(), ran, "no handler ran");
+    }
+
+    @Test
+    void handBacksStillOnTheirWayWhenTheGraceEndsAreDroppedOnceAndStopIsBounded() {
+        fake.ignoreMax = true;
+        for (int n = 1; n <= 13; n++) {
+            fake.addLeases(numbered(n));
+        }
+        // The first hand-back is answered UNAVAILABLE and waits five to ten seconds before it repeats, past the stop; the
+        // next seven are held at the service; the last four wait their turn at the host.
+        fake.failNext("FailStep", FakeWorkerServer.Failure.of(Status.Code.UNAVAILABLE));
+        CountDownLatch gate = new CountDownLatch(1);
+        fake.failStepGate = gate;
+        CapturingLogger log = new CapturingLogger();
+        List<WorkerEvent> events = new CopyOnWriteArrayList<>();
+        WorkerHost h = host(b -> b.maxInflight(1).logger(log).onEvent(events::add)
+                .retry(new RetryPolicy(4, Duration.ofSeconds(10), Duration.ofSeconds(10))));
+        h.registerActivity("charge", (in, ctx) -> 1);
+        h.start();
+        try {
+            until(() -> fake.failStepsArrived.get() == 8, "one hand-back refused and seven held at the service");
+            until(() -> fake.of("CompleteStep").size() == 1, "the kept task to complete");
+            long began = System.nanoTime();
+            h.stop(Duration.ofMillis(200));
+            long took = Duration.ofNanos(System.nanoTime() - began).toMillis();
+            // The grace, the two seconds stop gives after it, and the two seconds it waits for the channel to close.
+            assertTrue(took < 200 + 2_000 + 2_000, "stop took " + took + " ms");
+            until(() -> events.stream().filter(e -> e instanceof WorkerEvent.TaskDropped).count() == 12, "every hand-back to be dropped",
+                    Duration.ofSeconds(30));
+        } finally {
+            gate.countDown();
+        }
+        // The calls held at the service end before this test does, so that none is recorded among the next test's calls.
+        until(() -> fake.failStepsOnTheirWay.get() == 0, "the calls held at the service to end");
+        Map<String, Integer> ends = new HashMap<>();
+        for (WorkerEvent e : events) {
+            if (e instanceof WorkerEvent.TaskDropped d) {
+                ends.merge(d.taskId(), 1, Integer::sum);
+            } else if (e instanceof WorkerEvent.TaskFailed f) {
+                ends.merge(f.taskId(), 1, Integer::sum);
+            } else if (e instanceof WorkerEvent.TaskStale s) {
+                ends.merge(s.taskId(), 1, Integer::sum);
+            }
+        }
+        assertEquals(12, ends.size(), "every lease beyond the first ends: " + ends);
+        assertTrue(ends.values().stream().allMatch(n -> n == 1), "each ends once: " + ends);
+        assertTrue(events.stream().noneMatch(e -> e instanceof WorkerEvent.TaskFailed), "none is reported after the stop");
+        assertEquals(8, fake.failStepsArrived.get(), "the queued ones never reach the service");
+        assertTrue(log.lines().stream().noneMatch(l -> l.message().contains("a hand-back failed") || l.message().contains("the poll loop failed")),
+                "nothing is thrown: " + log.lines());
+    }
+
+    @Test
+    void aFrameAfterTheCreditIsUsedUpIsReadAndHandedBack() {
+        fake.acceptedVersion = "1.4";
+        fake.holdStreamOpen = true;
+        // One receive window: the first frame uses up the credit of one, the second carries two more.
+        fake.streamFrames = List.of(List.of(numbered(1)), List.of(numbered(2), numbered(3)));
+        WorkerHost h = host(b -> b.maxInflight(1));
+        h.registerActivity("charge", (in, ctx) -> held());
+        h.start();
+        until(() -> fake.of("FailStep").size() == 2, "the two hand-backs");
+        assertEquals(0, fake.of("CompleteStep").size(), "run-1 is still held");
+        released.countDown();
+        until(() -> fake.of("CompleteStep").size() == 1, "the kept task to complete");
+        h.stop(Duration.ofSeconds(5));
+        assertEquals(List.of("run-2/charge/1", "run-3/charge/1"), handedBack(), "the frame after the credit is read and handed back");
+        assertEquals("run-1/charge/1", ((Worker.CompleteStepRequest) fake.of("CompleteStep").get(0).request()).getTaskId());
+    }
 }
