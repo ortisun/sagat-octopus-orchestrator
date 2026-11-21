@@ -5034,7 +5034,9 @@ components:
             (a namespace ceiling of flow control, named in `details.limit`), `VALIDATION_FAILED` with
             `FLOW_CONTROL_ACTIVATION_PENDING` and `CAPABILITY_DISABLED` (with `details.capability`), and `CONFLICT`
             with `CONCURRENCY_PERMIT_UNAVAILABLE` (a reset of a run whose start takes a permit found no free one; a
-            reset never queues);
+            reset never queues) and `RATE_LIMIT_SLOT_UNAVAILABLE` (a reset of a run whose start takes a slot of a
+            rate-limit key found none free in its window; a reset never waits, and this reason comes first when the
+            start takes both);
             run input validation (design 043) refines `VALIDATION_FAILED` (`retryable: false`) with
             `RUN_INPUT_INVALID` (with `details.field` and `details.rule`), `RUN_INPUT_SCHEMA_UNUSABLE` and
             `NOMINAL_TIME_FIELD_INVALID`;
@@ -5326,7 +5328,7 @@ components:
         sourceRunId: {type: string, format: uuid}
         sequence: {type: integer, minimum: 1}
         state: {type: string, enum: [PENDING_SOURCE, CREATED, FAILED], description: 'PENDING_SOURCE: the source is being cancelled and the run is not made yet (CANCEL_SOURCE). CREATED: the run exists (newRunId). FAILED: it will not be made (failureReason).'}
-        failureReason: {type: [string, 'null'], description: 'Why a reset that failed did (FAILED only). One of BOUNDARY_NO_LONGER_ELIGIBLE (the point is not one of the journal the source ended with), ADMISSION_REFUSED (a quota or the platform refused the run), BUSINESS_ID_IN_USE, AUTHORITY_REVOKED (the member who asked no longer holds what a reset needs), REEXECUTION_NOT_ACKNOWLEDGED (steps completed after the point and the request did not acknowledge them), REAPPLY_TOO_MANY, SOURCE_DID_NOT_END (the source run had not ended when the time a reset waits for it was over, a day unless the operator of the platform set another, from one hour to seven days: no run is made and the place in the namespace is free), CONCURRENCY_PERMIT_UNAVAILABLE, RUN_PURGED. The list grows only: read a name you do not know as another reason.'}
+        failureReason: {type: [string, 'null'], description: 'Why a reset that failed did (FAILED only). One of BOUNDARY_NO_LONGER_ELIGIBLE (the point is not one of the journal the source ended with), ADMISSION_REFUSED (a quota or the platform refused the run), BUSINESS_ID_IN_USE, AUTHORITY_REVOKED (the member who asked no longer holds what a reset needs), REEXECUTION_NOT_ACKNOWLEDGED (steps completed after the point and the request did not acknowledge them), REAPPLY_TOO_MANY, SOURCE_DID_NOT_END (the source run had not ended when the time a reset waits for it was over, a day unless the operator of the platform set another, from one hour to seven days: no run is made and the place in the namespace is free), CONCURRENCY_PERMIT_UNAVAILABLE, RATE_LIMIT_SLOT_UNAVAILABLE (the start takes a slot of a rate-limit key and its window had none free), RUN_PURGED. The list grows only: read a name you do not know as another reason.'}
         newRunId: {type: [string, 'null'], format: uuid}
         reapplyReport:
           type: array

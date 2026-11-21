@@ -1440,3 +1440,71 @@ async fn the_force_is_the_operators_audited_and_retires_only_a_retiring_version(
         "{refused:?}"
     );
 }
+
+/// The migration before the reset's slot refusal (task T022-086).
+const BEFORE_RESET_SLOT: i64 = 20_270_207_000_100;
+
+/// Task T022-086 (D022-069 item 4; migration `20270209000000_reset_rate_slot`): the reset register accepts the reason
+/// `RATE_LIMIT_SLOT_UNAVAILABLE`, and the rollback refuses while an entry carries it (older code could not keep it under
+/// the reasons it restores); once the operator has removed the entry, it rolls back to the old list and forward again.
+#[tokio::test]
+async fn the_reset_slot_reason_rolls_back_only_once_no_entry_carries_it() {
+    let w = world().await;
+    let pool = &w.db.pool;
+    let (tenant, namespace, run) = a_run(&w).await;
+    let insert = |id: Uuid, reason: &'static str| async move {
+        sqlx::query(
+            "INSERT INTO run_resets (tenant_id, namespace_id, id, source_run_id, source_sequence, prefix_digest, \
+             reapply, business_id_policy, source_policy, state, failure_reason, actor, reason, created_at, completed_at) \
+             VALUES ($1, $2, $3, $4, 1, $5, 'NONE', 'KEEP', 'CANCEL_SOURCE', 'FAILED', $6, 'admin', \
+                     'a reset the key refused', now(), now())",
+        )
+        .bind(tenant)
+        .bind(namespace)
+        .bind(id)
+        .bind(run)
+        .bind(DIGEST.as_slice())
+        .bind(reason)
+        .execute(pool)
+        .await
+    };
+    let entry = Uuid::now_v7();
+    insert(entry, "RATE_LIMIT_SLOT_UNAVAILABLE")
+        .await
+        .expect("the new reason is accepted");
+    let refused = undo(pool, BEFORE_RESET_SLOT).await;
+    assert!(
+        format!("{refused:?}").contains("resets a rate-limit key refused are retained"),
+        "{refused:?}"
+    );
+    // an entry that failed for another reason is not in the way; the one the key refused is removed by the operator (a
+    // completed entry never changes)
+    insert(Uuid::now_v7(), "ADMISSION_REFUSED")
+        .await
+        .expect("an entry that failed for another reason");
+    sqlx::query("DELETE FROM run_resets WHERE id = $1")
+        .bind(entry)
+        .execute(pool)
+        .await
+        .expect("the operator removes the entry");
+    undo(pool, BEFORE_RESET_SLOT)
+        .await
+        .expect("rolled back once no entry carries it");
+    let old = insert(Uuid::now_v7(), "RATE_LIMIT_SLOT_UNAVAILABLE").await;
+    assert_eq!(
+        db_error(old.expect_err("the old list")).0,
+        "23514",
+        "the list is the old one again"
+    );
+    MIGRATOR.run(pool).await.expect("forward again");
+    insert(Uuid::now_v7(), "RATE_LIMIT_SLOT_UNAVAILABLE")
+        .await
+        .expect("accepted again");
+    let validated: bool = sqlx::query_scalar(
+        "SELECT convalidated FROM pg_constraint WHERE conname = 'run_resets_failure_reason_valid'",
+    )
+    .fetch_one(pool)
+    .await
+    .expect("the constraint");
+    assert!(validated, "20270209000100 validates it");
+}

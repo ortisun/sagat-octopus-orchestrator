@@ -631,6 +631,7 @@ describe('Resets made from a run', () => {
       ['REEXECUTION_NOT_ACKNOWLEDGED', 'steps completed after the point and the request did not say they may run again'],
       ['REAPPLY_TOO_MANY', 'there were too many signals and updates to deliver again'],
       ['CONCURRENCY_PERMIT_UNAVAILABLE', 'the limit on runs at once left no room for the new run'],
+      ['RATE_LIMIT_SLOT_UNAVAILABLE', 'the limit on runs started per period left no room for the new run'],
       ['RUN_PURGED', 'the run was deleted before the new run could be made'],
       ['SOURCE_DID_NOT_END', 'the run being cancelled had not ended within the time a reset waits for it'],
       ['SOMETHING_NEWER', 'SOMETHING_NEWER'],

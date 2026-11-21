@@ -1080,11 +1080,11 @@ fn gate_of(event_type: &str, node: Option<&str>, d: &Map<String, Value>) -> Opti
     } else {
         4
     };
-    // a reset re-emits a `concurrency.*` event marked `restored` (feature 018; T022-064): the one key it may add, and it
-    // says true; a `rate_limit.*` event is never restored (`EXCLUDE` until T022-086; reviews of 2026-11-20, security nit 7)
+    // a reset re-emits a gate event marked `restored` (feature 018; T022-064 for the `concurrency.*` events, T022-086 for
+    // the `rate_limit.*` ones, D022-069): the one key it may add, and it says true
     let marked = match d.get("restored") {
         None => 0,
-        Some(Value::Bool(true)) if event_type.starts_with("concurrency.") => 1,
+        Some(Value::Bool(true)) => 1,
         Some(_) => return None,
     };
     if d.len() != common + keys.len() + marked || !keys.iter().all(|key| d.contains_key(*key)) {
@@ -1770,7 +1770,8 @@ mod tests {
                     None,
                     "the detail is closed: an extra key is not a row this version wrote"
                 );
-                // a reset re-emits it marked `restored` (feature 018, T022-064): the marker is the only key it adds
+                // a reset re-emits it marked `restored` (feature 018; T022-064, T022-086): the marker is the only key
+                // it adds
                 let mut restored = encoded.detail.clone();
                 restored
                     .as_object_mut()
@@ -1778,12 +1779,9 @@ mod tests {
                     .insert("restored".into(), json!(true));
                 assert_eq!(
                     decode(encoded.event_type, encoded.node.as_deref(), &restored),
-                    encoded
-                        .event_type
-                        .starts_with("concurrency.")
-                        .then(|| event.clone()),
-                    "a restored copy of a permit event reads as the event it copies; a rate-limit event is never \
-                     restored"
+                    Some(event.clone()),
+                    "a restored copy of a gate event reads as the event it copies: {}",
+                    encoded.event_type
                 );
                 restored
                     .as_object_mut()

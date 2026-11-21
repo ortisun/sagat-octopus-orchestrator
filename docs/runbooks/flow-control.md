@@ -185,18 +185,18 @@ the key would be new beyond `concurrency_live_keys` (`FLOW_CONTROL_LIMIT`). Each
 - `queued_runs` is exact: every start holds the namespace's admission lock while it is decided (D022-051).
 - A start delay takes its permit or queues at its release, and a reset takes a fresh permit or is refused
   `CONCURRENCY_PERMIT_UNAVAILABLE` (D022-052, D022-053). A workflow with a `forEach`, `while` or `repeatUntil` node
-  beside a top-level gate is refused `BINARY_CAPABILITY_MISSING` in this build (G1197), and so is a reset of a run whose
-  start declares `rateLimit` (G022-016, until T022-086).
+  beside a top-level gate is refused `BINARY_CAPABILITY_MISSING` in this build (G1197). A reset of a run whose start
+  declares `rateLimit` takes a fresh slot or is refused `RATE_LIMIT_SLOT_UNAVAILABLE`, rate first (T022-086, D022-069).
 - Rolling back migration `20270203000000` is refused while any run, finished or not, keeps `runs.flow_control_gates`:
   archive those runs first.
 
 ## 6. Rate limits (T022-072, T022-074, T022-077)
 
-**Not in production before T022-079, T022-080, T022-081, T022-086 and T022-104, and gap G022-018** (ADR-0088's
-consistency check of the rate tables across runs, fault suite and lock-order barriers; G022-016: a reset of a run whose
-start declares `rateLimit` is refused `BINARY_CAPABILITY_MISSING`, a retryable code no process of this build lifts, so a
-pending reset of such a run is retried until it is cancelled; G022-015; G022-018: the deployment-wide purge scans every
-grant a call, in no order, and has no backlog gauge). Finish the rolling upgrade before setting any `rate_limit_*` limit (an older
+**Not in production before T022-080, T022-086 and T022-104, and gap G022-018** (ADR-0088's fault suite; T022-086: the reset
+of a rate-limited run, built and under review, until it is ticked; G022-015; G022-018: the deployment-wide purge scans every
+grant a call, in no order, and has no backlog gauge). The consistency check of the rate tables across runs (T022-079) and
+the lock-order barriers (T022-081) are done. Finish the rolling upgrade before resetting a rate-limited run: a replica built
+before T022-086 cannot read the `restored` copy of a `rate_limit.*` event. Finish the rolling upgrade before setting any `rate_limit_*` limit (an older
 replica's quota listing refuses a name it does not know, G1192); rolling back migration `20270206000000` refuses while one
 is set.
 

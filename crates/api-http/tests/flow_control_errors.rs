@@ -1,7 +1,7 @@
 //! The refusals of flow control as the API words them (feature 022, T022-012, `contracts/errors.md` "REST refusals"):
 //! one test per row that names concurrency or a rate limit, each an existing `Error.code` with its own `details.reason`,
 //! and none naming a key's value. Of the rows that 018's reset owns, `CONCURRENCY_PERMIT_UNAVAILABLE` landed with the reset
-//! case (T022-064); `RATE_LIMIT_SLOT_UNAVAILABLE` lands with T022-086 (G1181).
+//! case (T022-064) and `RATE_LIMIT_SLOT_UNAVAILABLE` with T022-086 (D022-069).
 #![allow(clippy::expect_used, clippy::panic)]
 
 use axum::http::StatusCode;
@@ -44,6 +44,24 @@ fn a_reset_without_a_free_permit_is_a_conflict_with_its_reason_and_remedy() {
     assert_eq!(
         ErrorCode::Conflict.remediation(Some("CONCURRENCY_PERMIT_UNAVAILABLE")),
         "Retry the reset when a holder of the key has finished."
+    );
+}
+
+/// 018's contract (D022-069): a reset of a run whose start takes a slot of a rate-limit key, with no free slot in the key's
+/// window, is a conflict the caller resolves by retrying once a slot has stopped counting; a reset never waits.
+#[test]
+fn a_reset_without_a_free_slot_is_a_conflict_with_its_reason_and_remedy() {
+    let parts = refused(FlowControlRefusal::SlotUnavailable);
+    assert_eq!(parts.status, StatusCode::CONFLICT);
+    assert_eq!(parts.code, ErrorCode::Conflict);
+    assert!(!parts.retryable);
+    assert_eq!(
+        parts.details,
+        Some(json!({"reason": "RATE_LIMIT_SLOT_UNAVAILABLE"}))
+    );
+    assert_eq!(
+        ErrorCode::Conflict.remediation(Some("RATE_LIMIT_SLOT_UNAVAILABLE")),
+        "Retry the reset once a slot of the key's window has stopped counting (the source's own slot counts for one window from its grant)."
     );
 }
 

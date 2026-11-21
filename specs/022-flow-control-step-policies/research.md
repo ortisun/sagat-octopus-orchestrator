@@ -1215,7 +1215,51 @@ taken after `git grep D022-04` on every `origin/*` branch.
      grants reads only `leased_at` at run scope, where it is never null (security minor 2). The pass's `NOT r.paused` is
      kept in the place's waiters ahead although no black-box test can tell it from the status filter (a pause stores the
      run `PAUSED` and the flag together): the text stays the pass's, so the two cannot drift apart.
-
+- **D022-069 — A reset of a rate-limited start takes a fresh slot right after `run.reset`, or is refused, and never
+  waits (task T022-086; FR-022-041, FR-022-038; `contracts/journal-events.md`, reset rules; closes gap G022-016 when
+  the task is ticked; 2026-11-21).** Item 1 is the approved contract; items 2 to 5 are delegate (OD-2026-11-20-6), each the rule
+  D022-053 set for a permit, applied to a slot.
+  1. *The reset rules of the five `rate_limit.*` events* are installed as `contracts/journal-events.md` states:
+     `queued`, `granted` and `returned` `REMATERIALIZE` (history), `wait_timed_out` and `dequeued` `REFUSE` to the end
+     of the journal. A point while a start waits for its slot is no quiet state already (`NotRunning`), and a point with
+     a step waiting for a slot, or granted and not yet completed, is `OpenWork`, as for a permit.
+  2. *The history stays out of the new run* by the mechanism of D022-053 item 2, which serves both gates: the reducer
+     clears the start's gates at `run.reset` and retires the restored slots of steps, `persist` writes no row for a
+     restored prefix, and a restored `rate_limit.granted` creates no grant row and counts in no window.
+  3. *The fresh decision* is the one decision of both levels and both gates (`decide_filed`, D022-064 item 2) with the
+     cause `Reset`, right after `run.reset`: the start is granted only when every gate it declares admits it under the
+     reservation rule (counted grants and waiters ahead below the limit, D022-021), so a reset never takes a slot a
+     buffered run waits for. A granted slot counts from its grant (`leased_at = granted_at` at run scope). The source's
+     own slot still counts in its window: a reset of a source whose grant is younger than its window, on a key at its
+     limit, is refused; the runbook says so. *After the reviews of 2026-11-21 (architecture Major 1, security minor):*
+     cancelling a source (`CANCEL_SOURCE`) frees no slot, so on a key near its limit such a reset cancels its source and
+     then fails; the runbook warns and advises `REQUIRE_TERMINAL`. Weighed: a best-effort refusal of a `CANCEL_SOURCE`
+     request whose window is full when it arrives (advisory only: the window may empty or fill before the source ends;
+     left open as task T022-114), and the reset run taking over its source's slot (it would contradict the approved
+     "fresh slot" rule of `contracts/journal-events.md`, so it is the owner's to decide; not proposed).
+  4. *The refusal, rate first (FR-022-052):* when the rate gate does not admit the reset, `409 CONFLICT` with
+     `details.reason` `RATE_LIMIT_SLOT_UNAVAILABLE`; when only the permit does not, `CONCURRENCY_PERMIT_UNAVAILABLE`
+     as before. `409` and not `429`: like the permit's, the refusal is a state of the key that a later retry may find
+     changed, not a quota of the namespace (018's contract class for a reset). A pending reset (`CANCEL_SOURCE`) fails
+     its entry with that reason: it joins `FAILURE_REASONS` and the `failure_reason` check of `run_resets` (migration
+     `20270209000000`, added `NOT VALID` then validated; its down refuses while an entry carries the reason); a batch
+     item answers `CONFLICT`. Each family the start declares counts the refusal `refused_reset` (a rate-only reset no
+     longer counts a concurrency refusal it did not have).
+  5. *The interim refusal is removed:* a reset of a rate-limited start is no longer `BINARY_CAPABILITY_MISSING`; that
+     code stays for a process without the digest key ring, and for a definition with a `forEach`, `while` or
+     `repeatUntil` node (G1197). Proved by `run_creators::{a_reset_takes_a_fresh_slot_right_after_run_reset,
+     a_reset_without_a_free_slot_is_refused_rate_first_and_never_waits,
+     a_pending_reset_takes_a_fresh_slot_or_fails_rate_limit_slot_unavailable,
+     the_reset_rules_of_the_rate_limit_events_are_the_contracts}`, which replace
+     `a_reset_of_a_rate_limited_start_is_refused_until_its_rules_are_built`.
+  6. *The capability stays `FlowControlRateV1`* (architecture minor 3 of 2026-11-21): a build that predates this task
+     cannot read a restored `rate_limit.*` event, and none was released (feature 022 is in no release), so the change
+     needs no new capability version; the runbook asks for the rolling upgrade to finish before such a reset.
+  7. *The other run creators of task T022-064 with a rate gate* (correctness Major 3, architecture Major 2 of
+     2026-11-21): every creator starts its run through `Engine::start`, which `scripts/check-architecture.py`
+     (`run_creator_errors`) enforces, and `rate_creators.rs` proves an event, a cron tick, a schedule's action, a child and
+     a delayed start; the rate twins of the start under a business identifier, the rerun, Signal- and Update-with-Start,
+     the batch rerun and the ad hoc run are task T022-113, split from T022-086, whose text is amended to the reset.
 - **D022-070 — The futures a gate adds to a run creator are boxed where they are created (2026-11-21; CI of #237 at
   `a443a04c`, a stack overflow of a feature 018 test).** Delegate (OD-2026-11-20-6, coordinator's instruction). A batch
   item's rerun overflowed the 2 MiB test thread of a debug build on x86-64: the gated start (`Engine::start`) and the
@@ -1280,7 +1324,7 @@ taken after `git grep D022-04` on every `origin/*` branch.
 | G022-013 | Keys-review correctness m5 and m8 (2026-11-20): the takeover test races a raw `UPDATE` of the shard lease, not a keeper's takeover, and checks "nothing twice" afterwards; and SC-022-004 at run level lacks five same-key starts with `limit: 1` (at most one holder, grants in admission order) and a mixed-limit pair sharing a group. | Open; T022-110 |
 | G022-014 | Without the label, a key's counts and the oldest-wait order still let a caller who may not reveal personal data partly link runs (one key of a group with waiters: every `WAITING` run of the group waits on it). The labels are hidden and the instants truncated to the minute (D022-060), which narrows and does not stop linking (D022-061). An aggregated listing per (pool, scope, group) for such callers closes it: T022-111 (D022-061). *2026-11-20 (D022-067 item 8):* `getRun`'s `rateLimit.position` is another surface of the same class (how many runs of the key are ahead); the estimate is withheld from such callers. | Open; T022-111, a release item with T022-104 |
 | G022-015 | Publication does not yet refuse a concurrency key over a `secret` location (T022-104), while this build lists and can activate the concurrency capability (D022-057). The runbook forbids production activation before it; the release cannot close with it open. | Open; release gate, T022-104 |
-| G022-016 | A reset of a run whose start declares `rateLimit` is refused `BINARY_CAPABILITY_MISSING` (D022-064 item 7): `RATE_LIMIT_SLOT_UNAVAILABLE` (018's code, G1181) and the reset rules of the `rate_limit.*` events land with T022-086. The refusal is retryable and no process of this build lifts it, so a pending reset of such a run is retried until it is cancelled: the runbook forbids production activation before it (D022-066 item 5), and `run_creators::a_reset_of_a_rate_limited_start_is_refused_until_its_rules_are_built` pins it. | Open; release gate (the release cannot close with it open), T022-086 |
+| G022-016 | A reset of a run whose start declares `rateLimit` is refused `BINARY_CAPABILITY_MISSING` (D022-064 item 7): `RATE_LIMIT_SLOT_UNAVAILABLE` (018's code, G1181) and the reset rules of the `rate_limit.*` events land with T022-086. The refusal is retryable and no process of this build lifts it, so a pending reset of such a run is retried until it is cancelled: the runbook forbids production activation before it (D022-066 item 5), and `run_creators::a_reset_of_a_rate_limited_start_is_refused_until_its_rules_are_built` pins it. *Built 2026-11-21 (T022-086, D022-069):* a reset takes a fresh slot right after `run.reset` or is refused `RATE_LIMIT_SLOT_UNAVAILABLE`, rate first, and the five `rate_limit.*` events have the rules of `contracts/journal-events.md`; the interim refusal and its test are gone. Closes when T022-086 is ticked after its re-review. | Open until T022-086 is ticked; release gate |
 | G022-017 | The purge keeps a grant for its window row's longest period seen (`max_period_ms`) plus a minute: an acquirer that later declares a longer window on the same key (a `RATE_LIMIT_MISMATCH` warned at publication) does not count the grants purged before it arrived, and may be admitted up to their number early in its first window. | Open; documented in the runbook |
 | G022-018 | The grant purge visits keys in no order, without key-shard partitioning or an index on the lease instant (a full scan of `rate_limit_grants` a call): under steady per-second traffic on more keys than it visits per housekeeping its backlog grows (reviews of 2026-11-20, architecture Major 5). *2026-11-20 (D022-066 item 1):* the rows of a namespace are bounded by its `rate_limit_live_keys` again, and a decision that would be refused reclaims its own namespace's purgeable windows of at most 64 grants first, so only a window of more grants waits for this purge. Open: the order, the shards, the index, a time budget, an `outcome="failed"` and an oldest-purgeable-age gauge; a call stops at the first round that deleted nothing, which a round of keys all held by others also is (re-review correctness minor 3). | Open; production gate (runbook section 6); T022-062, T022-089 |
 | G1189 | Nothing in the database computes or checks `key_shard` and the waiter `shard`; two binaries that hashed differently would file one key under two shards. | Open; T022-097 |

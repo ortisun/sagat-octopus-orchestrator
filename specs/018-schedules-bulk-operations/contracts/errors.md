@@ -53,6 +53,7 @@ caller or another tenant's identifier. A foreign resource is `NOT_FOUND` without
 | `VALIDATION_FAILED` | 422 | `RESET_REAPPLY_NOT_AVAILABLE` | no | preview/reset with `reapply` other than `NONE` on a deployment that does not serve it | Ask for `reapply: NONE`, or ask the operator of the platform to enable reset reapply. |
 | `VALIDATION_FAILED` | 422 | `RESET_REAPPLY_TOO_MANY` | no | preview/reset with `reapply` | The run received more than 256 signals and retained Updates after that point; choose a later point or `reapply: NONE`. |
 | `CONFLICT` | 409 | `CONCURRENCY_PERMIT_UNAVAILABLE` | no | reset of a version with run-level `concurrency` whose key has no free permit (a reset cannot queue) | Retry the reset when a holder of the key has finished. |
+| `CONFLICT` | 409 | `RATE_LIMIT_SLOT_UNAVAILABLE` (feature 022, D022-069) | no | reset of a version with run-level `rateLimit` whose key has no free slot in its window (a reset cannot wait); asked before the permit when the version declares both | Retry the reset once a slot of the key's window has stopped counting (the source's own slot counts for one window from its grant). |
 | `VALIDATION_FAILED` | 422 | `RESET_SOURCE_TEST_RUN` | no | reset points/preview/reset of a 022 draft test run | Test runs are re-run through feature 022's test API. |
 | `CONFLICT` | 409 | `RUN_PURGED` (feature 020's code and reason, reused) | no | reset or rerun of a purged source, or a purge committing during the reset | The run's history is archived or erased; it cannot be restarted from the hot store. |
 
@@ -77,7 +78,7 @@ Schedule action `reason`: `TRACKING_LIMIT`, `VERSION_MISSING`, `ADMISSION_REFUSE
 reuse policy refuse the id, added by D2173). Never the business id, the prefix or the holder's identifier of another tenant.
 
 Reset `failureReason`: `BOUNDARY_NO_LONGER_ELIGIBLE`, `ADMISSION_REFUSED`, `BUSINESS_ID_IN_USE`,
-`CONCURRENCY_PERMIT_UNAVAILABLE`, `RUN_PURGED`, and the reason of a `REMATERIALIZE` rule that could not
+`CONCURRENCY_PERMIT_UNAVAILABLE`, `RATE_LIMIT_SLOT_UNAVAILABLE` (feature 022, D022-069), `RUN_PURGED`, and the reason of a `REMATERIALIZE` rule that could not
 be applied (`RESOURCE_UNAVAILABLE`, `VARIABLE_NOT_FOUND`, `SNAPSHOT_RETIRED`, as their owners define).
 `CANCEL_SOURCE` (D1996..D2005) adds three, written by the pass that completes a pending reset:
 `AUTHORITY_REVOKED` (the member who asked no longer holds `run:operate`, `run:start` or what the reapply needs, or is

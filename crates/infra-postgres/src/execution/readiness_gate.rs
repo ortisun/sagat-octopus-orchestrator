@@ -352,13 +352,18 @@ impl PgRunTx {
         let mut counts: BTreeMap<CountKey, KeyCount> = BTreeMap::new();
         let mut events = Vec::new();
         for ((node, _), gates) in by_target {
-            let mut admits = true;
+            // the gates that do not admit the target now, in the order of `gates` (rate first)
+            let mut refusing = Vec::new();
             for gate in &gates {
                 let count = self.key_count(&mut counts, gate, now).await?;
-                admits &= count.taken + count.waiters < i64::from(gate.limit);
+                if count.taken + count.waiters >= i64::from(gate.limit) {
+                    refusing.push(gate.kind);
+                }
             }
+            let admits = refusing.is_empty();
             if let (false, Some(rules)) = (admits, start) {
-                self.start_may_wait(&gates, &counts, rules).await?;
+                self.start_may_wait(&gates, &counts, rules, &refusing)
+                    .await?;
             }
             let deadline = gates.iter().map(|gate| gate.timeout).min().ok_or_else(|| {
                 StoreError::Internal {
@@ -435,7 +440,9 @@ impl PgRunTx {
     }
 
     /// Whether a start that its gates do not admit now may wait (T022-022, T022-072): a reset never waits (018's plan,
-    /// row 17); a run waiter meets the namespace's `queued_runs` (exact: every transaction that adds a run waiter holds
+    /// row 17) and is refused by the first gate in `refusing` (rate first, FR-022-052, D022-069:
+    /// `RATE_LIMIT_SLOT_UNAVAILABLE`, else `CONCURRENCY_PERMIT_UNAVAILABLE`), counted `refused_reset` by each family the
+    /// start declares; a run waiter meets the namespace's `queued_runs` (exact: every transaction that adds a run waiter holds
     /// the namespace's admission lock, D022-051) and each key's waiter ceiling, counted under the key's lock. Refused
     /// rate first (FR-022-052): `RATE_LIMIT_QUEUE_FULL` when the start declares a rate limit, else
     /// `CONCURRENCY_QUEUE_FULL` for the key and `FLOW_CONTROL_LIMIT` for the namespace (`contracts/errors.md`).
@@ -444,19 +451,14 @@ impl PgRunTx {
         gates: &[Pending],
         counts: &BTreeMap<CountKey, KeyCount>,
         rules: StartRules,
+        refusing: &[GateKind],
     ) -> Result<(), StoreError> {
         let declared = sagat_domain::execution::DeclaredGates {
             concurrency: gates.iter().any(|gate| gate.kind == GateKind::Concurrency),
             rate: gates.iter().any(|gate| gate.kind == GateKind::RateLimit),
         };
         if !rules.cause.may_queue() {
-            sagat_telemetry::flow_control::record_concurrency(
-                sagat_telemetry::flow_control::FlowControlScope::Run,
-                sagat_telemetry::flow_control::ConcurrencyOutcome::RefusedReset,
-            );
-            return Err(StoreError::FlowControl(
-                FlowControlRefusal::PermitUnavailable,
-            ));
+            return Err(reset_refused(declared, refusing));
         }
         let (tenant, namespace) = (self.info.tenant_id, self.info.namespace_id);
         // a queued run is an active run with a ceiling of its own (D1182): the namespace's, then each key's
@@ -1193,13 +1195,14 @@ impl PgRunTx {
     /// The same decision is taken later for a delayed start at its release ([`StartCause::Release`]: the namespace's
     /// admission lock is taken first, as an admission holds it, so `queued_runs` stays exact; a ceiling's refusal is
     /// deferred by the release pass, not counted here) and for a reset right after `run.reset` ([`StartCause::Reset`]: a
-    /// fresh permit or `CONCURRENCY_PERMIT_UNAVAILABLE`, counted `refused_reset`; never a wait) (D022-052, D022-053).
+    /// fresh permit and slot, or a refusal rate first, `RATE_LIMIT_SLOT_UNAVAILABLE` then
+    /// `CONCURRENCY_PERMIT_UNAVAILABLE`, counted `refused_reset` by each family the start declares; never a wait)
+    /// (D022-052, D022-053, D022-069).
     ///
     /// # Errors
-    /// The refusals above; `BINARY_CAPABILITY_MISSING` without a digest key ring, for a definition with a `forEach`,
-    /// `while` or `repeatUntil` node (G1197) whatever asks, and for a reset of a start that declares a rate limit
-    /// (`RATE_LIMIT_SLOT_UNAVAILABLE` and the reset rules of the `rate_limit.*` events are T022-086, G022-016);
-    /// [`StoreError::Unavailable`] when no digest key version is active.
+    /// The refusals above; `BINARY_CAPABILITY_MISSING` without a digest key ring, and for a definition with a `forEach`,
+    /// `while` or `repeatUntil` node (G1197) whatever asks; [`StoreError::Unavailable`] when no digest key version is
+    /// active.
     pub(super) async fn decide_start_gates(
         &mut self,
         keys: &sagat_application::flow_control::RunGateKeys,
@@ -1220,13 +1223,9 @@ impl PgRunTx {
         };
         let flow = self.def.run_flow_control().clone();
         // fail closed for every cause, a reset or a release included (reviews of 2026-11-20, security minor 4):
-        // collections and loops, whose finish paths would never give the permit back (G1197); a reset of a rate-limited
-        // start until its refusal and the reset rules of its events are built (T022-086, G022-016)
+        // collections and loops, whose finish paths would never give the permit back (G1197)
         let kinds = self.def.projected_state();
-        if kinds.collections
-            || kinds.loops
-            || (keys.cause == StartCause::Reset && flow.rate_limit().is_some())
-        {
+        if kinds.collections || kinds.loops {
             return Err(StoreError::FlowControl(
                 FlowControlRefusal::BinaryCapabilityMissing,
             ));
@@ -1654,6 +1653,32 @@ impl GateOutcome {
     }
 }
 
+/// The refusal of a reset whose gates do not admit it (a reset never waits; D022-053, D022-069): the first gate in
+/// `refusing` names it, rate first (FR-022-052), `RATE_LIMIT_SLOT_UNAVAILABLE` or `CONCURRENCY_PERMIT_UNAVAILABLE`, and each
+/// family the start declares counts it `refused_reset`, since the refused transaction rolls back.
+pub(super) fn reset_refused(
+    declared: sagat_domain::execution::DeclaredGates,
+    refusing: &[GateKind],
+) -> StoreError {
+    use sagat_telemetry::flow_control::{
+        ConcurrencyOutcome, FlowControlScope, RateLimitOutcome, record_concurrency,
+        record_rate_limit,
+    };
+    if declared.concurrency {
+        record_concurrency(FlowControlScope::Run, ConcurrencyOutcome::RefusedReset);
+    }
+    if declared.rate {
+        record_rate_limit(FlowControlScope::Run, RateLimitOutcome::RefusedReset);
+    }
+    match refusing.first() {
+        Some(GateKind::RateLimit) => StoreError::FlowControl(FlowControlRefusal::SlotUnavailable),
+        Some(GateKind::Concurrency) => {
+            StoreError::FlowControl(FlowControlRefusal::PermitUnavailable)
+        }
+        None => corrupt("a reset refused by no gate"),
+    }
+}
+
 /// A run's start refused by a ceiling (T022-022): the typed refusal of `contracts/errors.md`, counted at once as
 /// `concurrency_acquisitions_total{scope="run",outcome="refused_full"}` (FR-022-033), since the refused transaction rolls
 /// back and nothing of it is counted at commit (architecture review M3 of 2026-11-20).
@@ -1741,13 +1766,74 @@ pub(super) fn record_gate_outcomes(
 
 #[cfg(test)]
 mod tests {
-    use super::{GateOutcome, record_gate_outcomes, start_refused};
+    use super::{GateOutcome, record_gate_outcomes, reset_refused, start_refused};
     use sagat_domain::execution::{DeclaredGates, StartCause};
 
     const CONCURRENCY: DeclaredGates = DeclaredGates {
         concurrency: true,
         rate: false,
     };
+
+    /// A reset is never buffered (D022-053, D022-069): the first gate that does not admit it names the refusal, rate
+    /// first (FR-022-052), and each family the start declares counts it `refused_reset`, a rate-only reset no concurrency
+    /// refusal.
+    #[test]
+    fn a_refused_reset_is_named_by_its_first_refusing_gate_and_counted_by_each_declared_family() {
+        use sagat_application::error::StoreError;
+        use sagat_application::flow_control::FlowControlRefusal;
+        let both = DeclaredGates {
+            concurrency: true,
+            rate: true,
+        };
+        let rate = DeclaredGates {
+            concurrency: false,
+            rate: true,
+        };
+        let permit = DeclaredGates {
+            concurrency: true,
+            rate: false,
+        };
+        let (telemetry, recorder) =
+            sagat_telemetry::Metrics::detached(std::time::Duration::from_secs(60));
+        let reasons = metrics::with_local_recorder(&recorder, || {
+            [
+                (rate, vec![GateKind::RateLimit]),
+                // both refuse: rate first (the gates are in that order)
+                (both, vec![GateKind::RateLimit, GateKind::Concurrency]),
+                (both, vec![GateKind::Concurrency]),
+                (permit, vec![GateKind::Concurrency]),
+            ]
+            .map(
+                |(declared, refusing)| match reset_refused(declared, &refusing) {
+                    StoreError::FlowControl(reason) => reason,
+                    other => panic!("{other:?}"),
+                },
+            )
+        });
+        assert_eq!(
+            reasons,
+            [
+                FlowControlRefusal::SlotUnavailable,
+                FlowControlRefusal::SlotUnavailable,
+                FlowControlRefusal::PermitUnavailable,
+                FlowControlRefusal::PermitUnavailable,
+            ]
+        );
+        let rendered = telemetry.render();
+        let counted = |family: &str, n: &str| {
+            rendered.lines().any(|line| {
+                line.starts_with(family)
+                    && line.contains("scope=\"run\"")
+                    && line.contains("outcome=\"refused_reset\"")
+                    && line.ends_with(n)
+            })
+        };
+        assert!(counted("rate_limit_decisions_total", " 3"), "{rendered}");
+        assert!(
+            counted("concurrency_acquisitions_total", " 3"),
+            "{rendered}"
+        );
+    }
 
     /// A start that declares a rate limit is refused rate first (FR-022-052, `contracts/errors.md` US07): its key's full
     /// buffer and the namespace's full `queued_runs` are `RATE_LIMIT_QUEUE_FULL`, its live keys `FLOW_CONTROL_LIMIT`

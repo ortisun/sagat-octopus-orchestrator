@@ -1991,8 +1991,9 @@ where
                     ctx.trace_id.clone(),
                 );
                 if let Some(reset) = reset {
-                    // feature 022: a reset of a definition that gates its start takes a fresh permit right after
-                    // `run.reset`, or is refused `CONCURRENCY_PERMIT_UNAVAILABLE`, never queues (plan, Run creators): the
+                    // feature 022: a reset of a definition that gates its start takes a fresh permit and slot right after
+                    // `run.reset`, or is refused `RATE_LIMIT_SLOT_UNAVAILABLE` then `CONCURRENCY_PERMIT_UNAVAILABLE`
+                    // (rate first), never queues (plan, Run creators; D022-069): the
                     // planner asks for it in `record_reset`'s settle, and the restored decisions are history.
                     //
                     // A reset that would deliver again is refused here, where a run would be created, and not

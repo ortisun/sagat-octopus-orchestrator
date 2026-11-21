@@ -2233,7 +2233,8 @@ impl<E: ExpressionEvaluator> Engine<E> {
     }
 
     /// The decisions of the start's gates asked for after the run started (feature 022): at the release of a start delay
-    /// (FR-022-018) or right after a reset (a fresh permit or `CONCURRENCY_PERMIT_UNAVAILABLE`, never a wait).
+    /// (FR-022-018) or right after a reset (a fresh permit and slot, or `RATE_LIMIT_SLOT_UNAVAILABLE` then
+    /// `CONCURRENCY_PERMIT_UNAVAILABLE`, rate first; never a wait; D022-053, D022-069).
     async fn decide_start_gates<Tx: RunTx>(
         &self,
         tx: &mut Tx,

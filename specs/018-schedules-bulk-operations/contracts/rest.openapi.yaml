@@ -445,7 +445,9 @@ paths:
         required. `REQUIRE_TERMINAL` (default) refuses an open source with 409
         `RESET_SOURCE_NOT_TERMINAL`; `CANCEL_SOURCE` answers `202` with state `PENDING_SOURCE`. A version
         with run-level `concurrency` acquires a fresh permit in the reset transaction and cannot queue:
-        409 `CONCURRENCY_PERMIT_UNAVAILABLE`. A purged source (or a purge committing during the reset) is
+        409 `CONCURRENCY_PERMIT_UNAVAILABLE`. A version with run-level `rateLimit` takes a fresh slot in the
+        reset transaction and cannot wait: 409 `RATE_LIMIT_SLOT_UNAVAILABLE`, given first when the version
+        declares both (feature 022, D022-069). A purged source (or a purge committing during the reset) is
         409 `RUN_PURGED`. A prefix with an event type that has no reset rule is 422 `RESET_RULE_MISSING`;
         a `REMATERIALIZE` rule that cannot be applied is refused with its owner's reason.
       parameters:
@@ -911,7 +913,7 @@ components:
         sourceRunId: {type: string, format: uuid}
         sequence: {type: integer}
         state: {type: string, enum: [PENDING_SOURCE, CREATED, FAILED]}
-        failureReason: {type: [string, 'null'], description: 'BOUNDARY_NO_LONGER_ELIGIBLE, ADMISSION_REFUSED, BUSINESS_ID_IN_USE, CONCURRENCY_PERMIT_UNAVAILABLE, RUN_PURGED, AUTHORITY_REVOKED, REEXECUTION_NOT_ACKNOWLEDGED, REAPPLY_TOO_MANY, SOURCE_DID_NOT_END (the source had not ended within the window: one day unless the engine is set to 1 hour to 7 days; grows only).'}
+        failureReason: {type: [string, 'null'], description: 'BOUNDARY_NO_LONGER_ELIGIBLE, ADMISSION_REFUSED, BUSINESS_ID_IN_USE, CONCURRENCY_PERMIT_UNAVAILABLE, RUN_PURGED, AUTHORITY_REVOKED, REEXECUTION_NOT_ACKNOWLEDGED, REAPPLY_TOO_MANY, SOURCE_DID_NOT_END (the source had not ended within the window: one day unless the engine is set to 1 hour to 7 days), RATE_LIMIT_SLOT_UNAVAILABLE (feature 022; grows only).'}
         newRunId: {type: [string, 'null'], format: uuid}
         reapplyReport: {type: array, maxItems: 256, items: {type: object, required: [sequence, kind, outcome], properties: {sequence: {type: integer}, kind: {type: string, enum: [signal, update]}, outcome: {type: string, enum: [REAPPLIED, REJECTED, NOT_REAPPLIED]}, reason: {type: [string, 'null']}}}}
         createdAt: {type: string, format: date-time}

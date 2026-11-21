@@ -49,13 +49,12 @@ async fn the_futures_of_a_run_creator_stay_below_their_bounds() {
     drop(start);
 
     let run = f.w.start(f.workflow, &json!({})).await;
-    let mut tx = f
-        .w
-        .store
-        .begin(f.w.admin.tenant_id(), run, Lock::Wait)
-        .await
-        .expect("begin")
-        .expect("the run");
+    let mut tx =
+        f.w.store
+            .begin(f.w.admin.tenant_id(), run, Lock::Wait)
+            .await
+            .expect("begin")
+            .expect("the run");
     let engine = Engine::new(sagat_infra_ir::JsonEvaluator);
     let started = engine.start(
         &mut tx,

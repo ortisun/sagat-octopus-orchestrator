@@ -441,7 +441,7 @@ the deployment-wide purge, except for a window of more than 64 grants (G022-018)
 | Workers down while steps are granted | At most `limit` granted and unleased; no further grant | SC-022-021 |
 | Lease recorded late or the pass crashes before T23 | The grant keeps counting as unleased | Under-delivery only; fault test asserts no early grant |
 | Granted step cancelled before lease | Slot returned in T24 | SC-022-021 |
-| Reset of a rate-limited source | Slot or refusal | With 018 (G1181), T022-086 |
+| Reset of a rate-limited source | Slot or refusal (`RATE_LIMIT_SLOT_UNAVAILABLE`, rate first; D022-069) | T022-086 |
 | Digest key version change with live waiters or grants | Activation refused | As ADR-0056 decision 7, extended to rate rows |
 
 ### Observability (rate limits)

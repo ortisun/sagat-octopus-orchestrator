@@ -52,9 +52,10 @@ const RAISED: &[&str] = &[
     "RESET_REAPPLY_TOO_MANY",
     "BINARY_CAPABILITY_MISSING",
     "RESET_CANCEL_SOURCE_NOT_AVAILABLE",
-    // feature 022: a full key queue (T022-022) and a reset with no free permit (T022-064)
+    // feature 022: a full key queue (T022-022), a reset with no free permit (T022-064) and one with no free slot (T022-086)
     "CONCURRENCY_QUEUE_FULL",
     "CONCURRENCY_PERMIT_UNAVAILABLE",
+    "RATE_LIMIT_SLOT_UNAVAILABLE",
     // design 043: raised by the schedule writes (row 14)
     "NOMINAL_TIME_FIELD_INVALID",
 ];
