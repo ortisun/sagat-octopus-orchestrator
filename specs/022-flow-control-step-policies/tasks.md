@@ -448,6 +448,26 @@ T022-063 (020 erasure).
   - *Production gate (2026-11-20, D022-066 item 5):* `docs/runbooks/flow-control.md` section 6 forbids activating the rate capability in production before this task is ticked.
 - [ ] T022-080 [P] [US7] Fault and race suite `tests/fault/flow-control-step-policies/rate_limits.rs`: grant versus timeout and grant versus cancel (20 rounds each, barriers, no sleeps), a crash at each commit point of T19–T24, a duplicate grant across a shard takeover, a lost hint, a restart after several windows, a flood of 1,000 starts on one key, the limit lowered while runs wait, replicas with offset process clocks, the database clock set back. SC-022-017,018,022,023; NFR-022-001,008. Evidence: results recorded as ADR-0088 evidence.
   - *Amended 2026-11-13 after review* (D022-027): the set-back clock uses `libfaketime` inside the PostgreSQL test container; the grant instant is `clock_timestamp()` after the window lock.
+  - *Amended 2026-11-21 (D022-072):* the set-back clock is tested by moving the counted grant instants one window ahead, not with `libfaketime`.
+  *Built 2026-11-21, not ticked:* `tests/fault/flow-control-step-policies/rate_limits.rs`, 15 cases (crashes in T19,
+  T20, T21, T22, T23 at both commits and T24; grant against timeout and grant against cancel, 20 rounds each; takeover;
+  lost hint; restart window after window; a flood of 1,000 starts on one key across a restart; a lowered policy
+  ceiling; replicas with process clocks ten minutes apart; the database clock set back). The lowered-ceiling case was
+  red first for the right reason (two grants 114 ms apart against a lowered ceiling of 1 per second) and found a defect:
+  the grant from the buffer did not apply the namespace's current ceiling (D022-071, fixed in `gate_queue.rs`; the
+  concurrency twin is gap G022-020). Hand mutations caught: no deadline check under the locks (grant against timeout,
+  round 3), the waiters ahead not counted at admission (the flood), the window measured from the decision's instant
+  (the set-back clock). Not caught, as the review found: `AND g.leased_at <= now` in the count (the set-back test never
+  decides while the moved grant is in the future). The correctness review
+  (`reviews/2026-11-21/rate-faults-correctness-reviewer.md`) found 0 Blockers and 6 Majors, open: rounds 0 and 1 of the
+  timeout race do not reach the grant; the set-back case; the place estimate and the run view still use the filed limit;
+  the waiters-ahead rule over mixed periods; the flood's admission order on a slow runner (a question for the
+  coordinator: strict order or the reservation rule); crashes only before the first write of T20, T21 and T24.
+  Runs on this tree: `fault_flow_control_step_policies` 23 passed as the owner and as the runtime role;
+  `integration_flow_control_step_policies` 191 as the owner and 191 as the runtime role (2 lost to the Docker disk,
+  `No space left on device` at migration, rerun alone and green); `integration_claim_transition_efficiency` 22 in both
+  roles; `integration_security_multitenancy` 126 as the owner and, as the runtime role, 112 plus the 14 lost to the
+  same disk, rerun with their modules (`secret_pools::`, `secrets::`, 49 passed).
 - [x] T022-081 [P] [US7] Lock-order barriers `tests/integration/flow-control-step-policies/rate_limit_locks.rs` for each path of ADR-0088 decision 4 (admission, grant, timeout, readiness, lease recording, cancellation, purge), alone and with a semaphore. FR-022-044; SC-022-019. Evidence: no deadlock; the reversed-order control waits as expected.
   *Done 2026-11-20 (0.3.0 slice).* `tests/integration/flow-control-step-policies/rate_limit_locks.rs`, against references
   in the order of the slots from every start (`support::lock_order::against_at`, the new slot `RateWindows`, 8b):

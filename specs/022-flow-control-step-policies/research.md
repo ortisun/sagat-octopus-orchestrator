@@ -1302,10 +1302,22 @@ taken after `git grep D022-04` on every `origin/*` branch.
      the ceiling of its own window length is above the key's counted grants (no head-of-line blocking, D1196, with the
      policy applied).
   3. *Nothing is revoked and nothing is rewritten:* the waiter row keeps its filed limit (a waiter row is never changed),
-     a grant already made counts as it was; a raised ceiling never lifts a waiter above its declaration (the lower of the
-     two).
+     a grant already made counts as it was; a raised ceiling never lifts a waiter above its filed limit, which is the lower
+     of its declaration and the ceiling at its admission (review of 2026-11-21, minor m3: so a ceiling raised while it
+     waits is not applied to it, an under-delivery; the grant's journal records the filed limit, not the one it was
+     decided with; both open with the review's answers).
   4. *Concurrency is unchanged:* the same question for a lowered `concurrency_limit` while runs are queued is not settled
      by the specification (its edge case speaks of a new version's lower limit only); left open as gap G022-020.
+- **D022-072 — The database clock set back is tested by moving the counted instants, not with `libfaketime`
+  (2026-11-21; task T022-080; amends the test method of D022-027).** Delegate (OD-2026-11-20-6). Every decision of the
+  rate gate compares the stored instants of a key's grants with `clock_timestamp()`, so a database clock set back by one
+  window is, for those decisions, the same as the key's counted instants moved one window ahead; the fault test moves
+  the grant rows' instants (as the owner, with the guard that forbids it switched off in that one transaction) and moves
+  them back before the consistency check, which compares them with the journal. Weighed: `libfaketime` in the test
+  container (D022-027's method) needs an image of our own beside the pinned `postgres:16-alpine` (rule 16 of `AGENTS.md`)
+  and shifts the clock of every database of the container at once, which the suites share; a clock port would test the
+  port (D022-027's own objection). What this does not exercise: a path that reads the clock for something other than
+  counting grants (the rest hint and the queue deadline keep the true clock), recorded in `rate_limits.rs`'s module text.
 
 ## Gaps
 

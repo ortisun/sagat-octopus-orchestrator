@@ -750,7 +750,7 @@ What a reader sees is read from the rows the gate decides with, without a lock, 
 | Waiter of a terminal run | Alert `flow_control_waiter_orphaned`, skipped | T022-097 |
 | An engine without the capability is live | Activation refused; use refused | SC-022-027, T022-094 |
 | Pause of a run with a granted, unleased step | Slot and permit returned; asked again on resume | T022-100 |
-| Database clock set back | No grant until it catches up | `libfaketime` in the test container (T022-080) |
+| Database clock set back | No grant until it catches up | the counted grant instants moved one window ahead (T022-080, D022-072) |
 
 ### Constitution Check (the revision)
 
