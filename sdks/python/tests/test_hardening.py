@@ -33,7 +33,7 @@ from sagat_octopus_orchestrator.worker import host as host_module
 from sagat_octopus_orchestrator.worker._grpc import GrpcConfig, error_of_status
 
 from .conftest import FAST
-from .fakes import FakeHttpServer, FakeWorkerService, Reply, Scripted, lease, reply, until
+from .fakes import FakeHttpServer, FakeWorkerService, Reply, Scripted, lease, reached, reply, until
 from .test_client import RUN, WORKFLOW, MakeClient, refusal, run_body
 
 PACKAGE = Path(__file__).resolve().parent.parent
@@ -145,7 +145,8 @@ async def test_a_token_provider_that_raises_once_does_not_kill_the_heartbeat(
     host = make_host(token=provider, heartbeat_interval=0.02)
 
     async def slow(_i: Any, _c: Any) -> int:
-        await asyncio.sleep(0.4)
+        # A barrier, not a sleep: the task ends once the provider has failed and five beats have reached the server.
+        await reached(lambda: raised and len(fake.of("Heartbeat")) >= 5)
         return 1
 
     host.register_activity("charge", slow)
@@ -160,12 +161,17 @@ async def test_a_token_provider_that_raises_once_does_not_kill_the_heartbeat(
 
 async def test_a_heartbeat_survives_any_exception_not_only_ours(fake: FakeWorkerService, make_host: MakeHost) -> None:
     host = make_host(heartbeat_interval=0.02)
-    host.register_activity("charge", lambda _i, _c: asyncio.sleep(0.3), blocking=False)
+    broken = {"left": 1}
+
+    async def slow(_i: Any, _c: Any) -> None:
+        # A barrier, not a sleep: the task ends once the beat that raised is behind it and three have reached the server.
+        await reached(lambda: not broken["left"] and len(fake.of("Heartbeat")) >= 3)
+
+    host.register_activity("charge", slow, blocking=False)
     fake.leases = [lease()]
     await host.start()
     assert host._rpc is not None
     real = host._rpc.heartbeat
-    broken = {"left": 1}
 
     async def flaky(*args: Any, **kwargs: Any) -> Any:
         if broken["left"]:

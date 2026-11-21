@@ -114,6 +114,18 @@ function activityInstanceOf(lease: TaskLease, minor: number): ExecutionInstanceI
   });
 }
 
+/**
+ * The seam of the tests of this package, not part of the public interface (the index does not export it): it sees
+ * every pause of the loop of a host, with its length in milliseconds, as the pause begins. The tests read the pacing
+ * of the host from it instead of from the wall clock (AGENTS.md Rule 18).
+ */
+const pauseObservers = new WeakMap<WorkerHost, (ms: number) => void>();
+
+/** Makes `observe` see every pause of the loop of `host` as it begins; for the tests of this package only. */
+export function observePauses(host: WorkerHost, observe: (ms: number) => void): void {
+  pauseObservers.set(host, observe);
+}
+
 /** The worker host of the SDK (SPEC §6). */
 export class WorkerHost {
   private readonly handlers = new Map<string, Registered>();
@@ -344,6 +356,7 @@ export class WorkerHost {
   // host that is stopping does not pause: `stop` may have run while a poll was in flight, with nothing to wake.
   private idle(ms: number): Promise<void> {
     if (this.stopping) return Promise.resolve();
+    pauseObservers.get(this)?.(ms);
     return new Promise((resolve) => {
       const timer = setTimeout(done, ms);
       const self = this;

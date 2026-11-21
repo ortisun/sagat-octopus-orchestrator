@@ -81,6 +81,11 @@ final class FakeWorkerServer extends WorkerServiceGrpc.WorkerServiceImplBase imp
     final AtomicInteger failStepsArrived = new AtomicInteger();
     final AtomicInteger failStepsOnTheirWay = new AtomicInteger();
     final AtomicInteger failStepsPeak = new AtomicInteger();
+    /**
+     * Runs when a call of that method arrives, once it is recorded and before it is answered: a test holds a call in
+     * flight with it until what the test claims has happened (a barrier, never a sleep: AGENTS.md Rule 18).
+     */
+    final Map<String, Runnable> before = new ConcurrentHashMap<>();
     private final Server server;
 
     FakeWorkerServer() throws IOException {
@@ -153,10 +158,15 @@ final class FakeWorkerServer extends WorkerServiceGrpc.WorkerServiceImplBase imp
         failStepsArrived.set(0);
         failStepsOnTheirWay.set(0);
         failStepsPeak.set(0);
+        before.clear();
     }
 
     private <R> void answer(String method, Object request, StreamObserver<R> out, Function<Object, R> make) {
         calls.add(new Call(method, request, HEADERS.get(), System.nanoTime()));
+        Runnable hook = before.get(method);
+        if (hook != null) {
+            hook.run();
+        }
         Deque<Failure> queue = failures.get(method);
         Failure failure = queue == null ? null : queue.poll();
         if (failure != null) {

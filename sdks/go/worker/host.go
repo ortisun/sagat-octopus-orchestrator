@@ -205,6 +205,11 @@ type Host struct {
 	session  atomic.Pointer[session]
 	current  *link // the link of the running Start; guarded by lifecycle
 	wake     chan struct{}
+
+	// pauses sees every pause of the loop as it begins. It is nil outside the tests of this package, which set it
+	// through export_test.go before Start: they read the pacing of the host from it instead of from the wall clock
+	// (AGENTS.md Rule 18).
+	pauses func(time.Duration)
 }
 
 // link is what one Start makes: the channel, the context the reports and heartbeats live in, and the

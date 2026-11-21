@@ -1,5 +1,7 @@
 package worker
 
+import "time"
+
 // What the tests of package worker_test reach inside a host: a barrier in the receive loop and whether
 // Stop has begun. Compiled only with the tests.
 
@@ -16,3 +18,7 @@ func HandBacks(h *Host) (queued, workers int) {
 	defer h.mu.Unlock()
 	return len(h.handBackQueue), h.handBackWorkers
 }
+
+// ObservePauses makes observe see every pause of the loop of h, with its length, as the pause begins. It is called
+// before Start; the tests read the pacing of the host from it instead of from the wall clock (AGENTS.md Rule 18).
+func ObservePauses(h *Host, observe func(time.Duration)) { h.pauses = observe }

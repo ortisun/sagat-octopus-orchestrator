@@ -33,18 +33,58 @@ func TestAServerThatRegistersAWorkerAndRefusesItAtOnceIsNotHammered(t *testing.T
 	h, err := worker.New(f.url(), "payments", "w", sagat.StaticToken("tok"))
 	must(t, err)
 	must(t, h.RegisterActivity("charge", rawOK))
+	f.observePauses(h)
 	must(t, h.Start(context.Background()))
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()
 		_ = h.Stop(ctx)
 	})
-	time.Sleep(2 * time.Second)
-	registers, polls := len(f.of("RegisterWorker")), len(f.of("PollTasks"))
-	t.Logf("%d registrations and %d polls in 2 s", registers, polls)
-	if registers > 10 || registers < 2 {
-		t.Errorf("%d registrations and %d polls in 2 s: the server was hammered (or the host gave up)", registers, polls)
+	until(t, "four registrations", func() bool { return len(f.of("RegisterWorker")) >= 4 })
+	// The pauses the host chose are read from the host, not counted in a window of time (AGENTS.md Rule 18): the
+	// first refusal registers again at once, each one in a row after it waits for the backoff first (100 to 200
+	// ms, then 200 to 400).
+	waits := registrationWaits(f.sequence())
+	if len(waits[0].pauses) != 0 {
+		t.Errorf("the first refusal waits for nothing, and waited %v", waits[0].pauses)
 	}
+	for k, w := range waits[1:3] {
+		low, high := (100*time.Millisecond)<<k, (200*time.Millisecond)<<k
+		if len(w.pauses) != 1 || w.pauses[0] < low || w.pauses[0] > high {
+			t.Errorf("refusal %d in a row waited %v, not one pause within [%v, %v]: the server was hammered", k+2, w.pauses, low, high)
+		} else if w.gap < w.pauses[0] {
+			t.Errorf("refusal %d in a row was registered again %v after it, before its pause of %v", k+2, w.gap, w.pauses[0])
+		}
+	}
+}
+
+// registrationWait is what came between a refused poll and the registration that followed it: the pauses of the
+// loop, and the time from the poll to the registration.
+type registrationWait struct {
+	pauses []time.Duration
+	gap    time.Duration
+}
+
+// registrationWaits returns one registrationWait for each registration after the first, in order.
+func registrationWaits(sequence []call) []registrationWait {
+	var waits []registrationWait
+	var poll *call
+	var since []time.Duration
+	for i := range sequence {
+		c := &sequence[i]
+		switch c.method {
+		case "pause":
+			since = append(since, c.pause)
+		case "PollTasks":
+			poll, since = c, nil
+		case "RegisterWorker":
+			if poll != nil {
+				waits = append(waits, registrationWait{pauses: since, gap: c.at.Sub(poll.at)})
+			}
+			poll, since = nil, nil
+		}
+	}
+	return waits
 }
 
 func TestTheBackoffAfterARefusedSessionIsResetByASuccessfulPoll(t *testing.T) {
@@ -52,34 +92,33 @@ func TestTheBackoffAfterARefusedSessionIsResetByASuccessfulPoll(t *testing.T) {
 	h, err := worker.New(f.url(), "payments", "w", sagat.StaticToken("tok"), worker.WithRetry(sagat.RetryPolicy{InitialDelay: 400 * time.Millisecond, MaxDelay: 400 * time.Millisecond}))
 	must(t, err)
 	must(t, h.RegisterActivity("charge", rawOK))
+	f.observePauses(h)
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()
 		_ = h.Stop(ctx)
 	})
 	f.set(func(f *fakeService) { f.pollRetryAfterMs = 20 })
-	// Two refusals in a row: the second registration waits for the backoff.
+	// Two refusals in a row: the second registration waits for the backoff (200 to 400 ms), the first for nothing.
+	// The pauses are read from the host, not measured against a margin of the wall clock (AGENTS.md Rule 18).
 	f.fail("PollTasks", failure{code: codes.Unauthenticated}, failure{code: codes.Unauthenticated})
 	must(t, h.Start(context.Background()))
 	until(t, "three registrations", func() bool { return len(f.of("RegisterWorker")) == 3 })
-	polls := f.of("PollTasks")
-	registers := f.of("RegisterWorker")
-	if gap := registers[2].at.Sub(polls[1].at); gap < 150*time.Millisecond {
-		t.Errorf("the second refusal in a row was answered after %v: it should have waited for the backoff", gap)
+	waits := registrationWaits(f.sequence())
+	if len(waits[0].pauses) != 0 {
+		t.Errorf("the first refusal waits for nothing, and waited %v", waits[0].pauses)
 	}
-	if gap := registers[1].at.Sub(polls[0].at); gap > 150*time.Millisecond {
-		t.Errorf("the first refusal waits for nothing, and waited %v", gap)
+	if w := waits[1]; len(w.pauses) != 1 || w.pauses[0] < 200*time.Millisecond || w.pauses[0] > 400*time.Millisecond {
+		t.Errorf("the second refusal in a row waited %v: it should have waited for the backoff", w.pauses)
+	} else if w.gap < w.pauses[0] {
+		t.Errorf("the second refusal was registered again %v after it, before its pause of %v", w.gap, w.pauses[0])
 	}
 	// A poll that succeeded resets it: the next refusal is answered at once.
 	until(t, "a poll that succeeded", func() bool { return len(f.of("PollTasks")) >= 5 })
 	f.fail("PollTasks", failure{code: codes.Unauthenticated})
-	before := len(f.of("PollTasks"))
 	until(t, "the fourth registration", func() bool { return len(f.of("RegisterWorker")) == 4 })
-	polls = f.of("PollTasks")
-	registers = f.of("RegisterWorker")
-	refused := polls[before]
-	if gap := registers[3].at.Sub(refused.at); gap > 150*time.Millisecond {
-		t.Errorf("after a good poll the first refusal waited %v", gap)
+	if w := registrationWaits(f.sequence())[2]; len(w.pauses) != 0 {
+		t.Errorf("after a good poll the first refusal waited %v", w.pauses)
 	}
 }
 

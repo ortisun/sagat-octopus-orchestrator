@@ -93,6 +93,33 @@ public final class WorkerHost implements AutoCloseable {
         }
     }
 
+    /**
+     * The clock and the waits of the host, as one seam for the tests of this package: they read the pause the loop
+     * chose and the delay of each heartbeat, and set the time of day a lease is counted from, instead of measuring
+     * them on a loaded machine (AGENTS.md Rule 18). Not part of the public API: the default reads the system clock and
+     * observes nothing.
+     */
+    interface Pacing {
+        Pacing SYSTEM = new Pacing() {};
+
+        /** The time of day in epoch milliseconds, which the time left on a lease is counted from. */
+        default long nowEpochMillis() {
+            return System.currentTimeMillis();
+        }
+
+        /** The loop begins a pause of {@code millis}: after an empty receive, a backoff, a wait for a free slot. */
+        default void paused(long millis, boolean wakeable) {}
+
+        /** The next heartbeat of {@code taskId} is due {@code millis} from now. */
+        default void beatScheduled(String taskId, long millis) {}
+
+        /** The heartbeat of {@code taskId} is stopped: no beat begins after this, one that has begun may still be sent. */
+        default void beatStopped(String taskId) {}
+    }
+
+    /** Set by the tests of this package before {@link #start()}; see {@link Pacing}. */
+    volatile Pacing pacing = Pacing.SYSTEM;
+
     private final WorkerConfig config;
     private final System.Logger log;
     private final RetryPolicy retry;
@@ -434,6 +461,7 @@ public final class WorkerHost implements AutoCloseable {
     // (`wakeable`: the pause after an empty poll and the wait for a free slot, SPEC section 6.2); a backoff or a pause the
     // server asked for is waited out whatever happens meanwhile.
     private void idle(long millis, boolean wakeable) {
+        pacing.paused(millis, wakeable);
         long end = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(Math.max(0, millis));
         synchronized (wakeLock) {
             try {
@@ -1197,13 +1225,14 @@ public final class WorkerHost implements AutoCloseable {
             if (config.heartbeatInterval() != null) {
                 return Math.max(1, config.heartbeatInterval().toMillis());
             }
-            return heartbeatIntervalMillis(state.deadline, System.currentTimeMillis());
+            return heartbeatIntervalMillis(state.deadline, pacing.nowEpochMillis());
         }
 
         private void schedule(long millis) {
             if (stopped) {
                 return;
             }
+            pacing.beatScheduled(lease.getTaskId(), millis);
             try {
                 next = beats.schedule(this::tick, millis, TimeUnit.MILLISECONDS);
             } catch (RejectedExecutionException e) {
@@ -1257,6 +1286,7 @@ public final class WorkerHost implements AutoCloseable {
 
         void stop() {
             stopped = true;
+            pacing.beatStopped(lease.getTaskId());
             ScheduledFuture<?> pending = next;
             if (pending != null) {
                 pending.cancel(false);

@@ -87,6 +87,12 @@ public sealed partial class WorkerHost : IWorkerHost
     private TaskCompletionSource stopSignal = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private bool wakePending;
 
+    // The clock of the host: the time a lease is taken at, the heartbeat interval, the pause after a failed beat and the pauses of the
+    // loop are counted on it. It is the
+    // system clock; the unit tests replace it (by reflection, before the host starts: they compile the protocol types themselves, so they
+    // cannot be given the internals) to read the pacing exactly instead of by the wall clock.
+    private readonly TimeProvider time = TimeProvider.System;
+
     /// <summary>Creates a host. <see cref="SagatOptions.GrpcUrl"/>, <see cref="SagatOptions.Namespace"/>, a token and <see cref="WorkerOptions.Name"/> are required to start it.</summary>
     public WorkerHost(SagatOptions options, ILoggerFactory? loggerFactory = null)
     {
@@ -445,7 +451,7 @@ public sealed partial class WorkerHost : IWorkerHost
         try
         {
             using var timer = new CancellationTokenSource();
-            var delay = Task.Delay(Limits.Capped(wait), timer.Token);
+            var delay = Task.Delay(Limits.Capped(wait), time, timer.Token);
             await Task.WhenAny(delay, stop, waiting.Task).ConfigureAwait(false);
             await timer.CancelAsync().ConfigureAwait(false);
         }
@@ -858,7 +864,7 @@ public sealed partial class WorkerHost : IWorkerHost
         InFlight? entry = null;
         try
         {
-            entry = new InFlight(new TaskRuntime(lease.ExpiresAtEpochMs));
+            entry = new InFlight(new TaskRuntime(lease.ExpiresAtEpochMs, time.GetUtcNow()));
             // Only the receive loop adds to the table, and Take looked for the same key in it just before: a lease of a running task is
             // never started again.
             var added = inflight.TryAdd(key, entry);
@@ -1283,7 +1289,7 @@ public sealed partial class WorkerHost : IWorkerHost
                 {
                     try
                     {
-                        await Task.Delay(interval, stop).ConfigureAwait(false);
+                        await Task.Delay(interval, time, stop).ConfigureAwait(false);
                         var request = new HeartbeatRequest
                         {
                             TaskId = lease.TaskId,
@@ -1345,11 +1351,11 @@ public sealed partial class WorkerHost : IWorkerHost
     }
 
     /// <summary>A short pause inside a failure handler of a loop: whatever raised, even before the interval was waited for, the loop cannot spin.</summary>
-    private static async Task Breathe(CancellationToken stop)
+    private async Task Breathe(CancellationToken stop)
     {
         try
         {
-            await Task.Delay(TimeSpan.FromMilliseconds(100), stop).ConfigureAwait(false);
+            await Task.Delay(TimeSpan.FromMilliseconds(100), time, stop).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {

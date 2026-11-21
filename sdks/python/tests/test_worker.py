@@ -25,7 +25,7 @@ from sagat_octopus_orchestrator import (
 from sagat_octopus_orchestrator._proto import worker_pb2 as pb
 from sagat_octopus_orchestrator.worker._grpc import error_of_status
 
-from .fakes import FakeWorkerService, Scripted, lease, until
+from .fakes import FakeWorkerService, Scripted, lease, reached, record_sends, until
 
 
 def test_a_blob_integrity_failure_is_a_protocol_error_without_server_text() -> None:
@@ -295,7 +295,9 @@ async def test_the_heartbeat_starts_before_the_handler_ends_carries_the_step_ide
 
     async def slow(_i: Any, ctx: ActivityContext) -> dict[str, bool]:
         deadlines.append(ctx.deadline.timestamp())
-        await asyncio.sleep(0.15)
+        # A barrier, not a sleep: the handler ends once three beats have reached the server and the lease they moved
+        # is the one it sees. A heartbeat that waited for the handler to end would never come in time.
+        await reached(lambda: len(fake.of("Heartbeat")) >= 3 and ctx.deadline.timestamp() > deadlines[0])
         deadlines.append(ctx.deadline.timestamp())
         return {"ok": True}
 
@@ -303,6 +305,8 @@ async def test_the_heartbeat_starts_before_the_handler_ends_carries_the_step_ide
     fake.heartbeat_expires_ms = int(time.time() * 1000) + 120_000
     fake.leases = [lease(activity_name="slow", step_id="slow", task_id="run-1/slow/1")]
     await host.start()
+    order: list[str] = []
+    record_sends(host, order)
     await until(lambda: len(fake.of("CompleteStep")) == 1, "the completion")
     beats = fake.of("Heartbeat")
     assert len(beats) >= 3, f"{len(beats)} beats"
@@ -315,9 +319,12 @@ async def test_the_heartbeat_starts_before_the_handler_ends_carries_the_step_ide
         "w-1",
     )
     assert deadlines[1] > deadlines[0], "the lease was extended"
-    count = len(fake.of("Heartbeat"))
+    # The heartbeat runs until the report is answered, so a beat sent just before may reach the fake after it: read
+    # what the host sent, not what arrived. Once the task is gone its heartbeat is cancelled and awaited; five more
+    # intervals give a heartbeat that was left running the time to show itself (a wait that can only hide a defect).
+    await until(lambda: not host._inflight, "the task to end")
     await asyncio.sleep(0.1)
-    assert len(fake.of("Heartbeat")) == count, "no beat after the report"
+    assert "sent Heartbeat" not in order[order.index("answered CompleteStep") + 1 :], "no beat after the report"
 
 
 async def test_a_cancellation_reaches_the_activity_on_its_token_and_it_ends_however_it_likes(
@@ -437,7 +444,7 @@ async def test_the_host_runs_at_the_version_the_server_agreed_to_against_1_0_it_
     outcome: list[Any] = []
 
     async def slow(_i: Any, ctx: ActivityContext) -> int:
-        await asyncio.sleep(0.08)
+        await reached(lambda: bool(fake.of("Heartbeat")))  # the beat read below, not a sleep that hopes for one
         try:
             await ctx.secrets()
         except SagatError as error:

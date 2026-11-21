@@ -24,6 +24,9 @@ func (h *Host) idle(ctx context.Context, d time.Duration) {
 	if h.stopping.Load() {
 		return
 	}
+	if h.pauses != nil {
+		h.pauses(d)
+	}
 	timer := time.NewTimer(d)
 	defer timer.Stop()
 	select {
