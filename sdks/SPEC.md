@@ -363,11 +363,15 @@ procedure, the verdicts and the failure table are [`stream-completion.md`](../sp
 "Delivery acknowledgement (protocol 1.8)"). A `PollTasks` call is bounded to 6 s or the shorter configured call timeout, as a
 stream window is. An unflagged lease is dispatched at once. As soon as a frame or a poll answer is read, the host sends one
 `AcknowledgeTasks` with its flagged leases that it will run, concurrently with its next receive, on a transport connection of its own
-(grpc-js and grpcio with `grpc.use_local_subchannel_pool = 1`, Go with a `ClientConn` of its own, Java with a `ManagedChannel` of its own, .NET with a `GrpcChannel` on a handler of its own, Rust with an `Endpoint` connected apart) with at most 4 calls in flight held by the SDK's own permit, taken per attempt (an acknowledgement waiting for
-that permit has not been sent and is not an attempt; frames waiting for it are merged into the next call sent, up to 64 leases, and
-a merged call is one call for the ordering and counting rules below); when an attempt on that connection ends with no answer while
-a call on the main connection, sent after that attempt was sent, was answered, the host closes the acknowledgement connection and
-dials it again before its next attempt; and makes no call for them but
+(grpc-js and grpcio with `grpc.use_local_subchannel_pool = 1`, Go with a `ClientConn` of its own, Java with a `ManagedChannel` of its own, .NET with a `GrpcChannel` on a handler of its own, Rust with an `Endpoint` connected apart) built by the same function as the main connection (the same target, transport credentials, TLS settings, server name,
+dial options and interceptors), with at most 4 calls in flight held by the SDK's own permit, taken per attempt (an acknowledgement
+waiting for that permit has not been sent and is not an attempt; retries take a free permit before new frames; frames waiting for
+it are merged into a new call, up to 64 leases, which is one call only for the fallback's ordering and counting, each lease keeping
+its own window, evidence and give-up); when an attempt on that connection ends with no answer (a transport failure, or the host's
+own deadline with no status received) while a call on the main connection, sent after that attempt was sent, was answered, or
+after two `ACKNOWLEDGEMENT_STORE_UNREACHABLE` in a row while a call on the main connection was answered `OK` after them, the host
+dials a new acknowledgement connection for its next attempts and closes the old one once its attempts in flight have ended; an
+attempt ended by the host's own close is not an attempt, is sent again and counts for nothing; and makes no call for them but
 the hand-back, and starts no handler or heartbeat, before the answer. It never dispatches a flagged lease without `ACKNOWLEDGED`,
 whatever it has declined: one received while it declines is handed back.
 
@@ -387,11 +391,11 @@ the evidence. The evidence: after an attempt of a lease ended with no verdict, a
 (a heartbeat, a report, a hand-back), sent after that attempt ended, is answered `OK`, or a frame with leases arrives after it. The
 host gives the lease up at the end of an attempt sent after the evidence only when that attempt ended with no verdict and with
 neither a shed (`RESOURCE_EXHAUSTED` with the reason `ACKNOWLEDGEMENT_SHED`) nor an unreachable store (`UNAVAILABLE` with the
-reason `ACKNOWLEDGEMENT_STORE_UNREACHABLE`, which the server gives when its deadline passed before it held a connection, or its
-connection failed), no attempt of the lease was shed, at least 6 s have passed since its first attempt was sent, and no try of
+reason `ACKNOWLEDGEMENT_STORE_UNREACHABLE`, which the server gives when it has not reached a writable database), no attempt of the lease was shed, at least 6 s have passed since its first attempt was sent, and no try of
 another of its calls that reaches the database (a heartbeat, a report, a hand-back, a receive; never an `AcknowledgeTasks`) ended
-with a transport failure, `DEADLINE_EXCEEDED`, `UNAVAILABLE`, `RESOURCE_EXHAUSTED` or a retryable `INTERNAL` since the evidence; a
-refusal the server answered (stale, not held) is not such an end. Attempts keep the backoff of §5 and any retry hint; only once 6 s
+with a transport failure, `DEADLINE_EXCEEDED`, `UNAVAILABLE`, `RESOURCE_EXHAUSTED` or a retryable `INTERNAL` between the latest
+evidence before that attempt was sent and its end; a refusal the server answered (stale, not held) is not such an end, nor is a
+receive ended by the host's own bound. An attempt in flight when the evidence arrives does not decide. Attempts keep the backoff of §5 and any retry hint; only once 6 s
 have passed and no attempt of the lease was shed does the evidence send its next attempt early, after a random delay of up to
 200 ms, at most once per lease in 6 s. A `RETRY` restarts the 6 s. A failover gives no evidence before its promotion; an attempt
 sent after it is answered by a working primary, and an engine whose own connections have not recovered answers
