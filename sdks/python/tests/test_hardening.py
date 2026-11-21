@@ -268,7 +268,7 @@ async def test_a_body_just_under_the_cap_is_read(http: FakeHttpServer, make_clie
 # ------------------------------------------------------------------------------------ 6. max in flight
 
 
-async def test_a_poll_answer_with_more_tasks_than_were_asked_for_runs_no_more_than_the_room_there_is(
+async def test_a_poll_answer_with_more_tasks_than_were_asked_for_runs_no_more_than_the_room_there_is_and_hands_the_rest_back(
     fake: FakeWorkerService, make_host: MakeHost, caplog: pytest.LogCaptureFixture
 ) -> None:
     fake.ignore_max_tasks = True
@@ -290,7 +290,10 @@ async def test_a_poll_answer_with_more_tasks_than_were_asked_for_runs_no_more_th
         await until(lambda: len(fake.of("CompleteStep")) + len(fake.of("FailStep")) >= 2, "the first two tasks")
         await asyncio.sleep(0.3)
     assert peak <= 2
-    assert len(fake.of("CompleteStep")) + len(fake.of("FailStep")) == 2, "the other four were left to lapse"
+    handed_back = [call.request for call in fake.of("FailStep") if call.request.error_code == "TASK_NOT_STARTED"]
+    reported = len(fake.of("CompleteStep")) + len(fake.of("FailStep")) - len(handed_back)
+    assert reported == 2, "only the first two ran"
+    assert sorted(request.task_id for request in handed_back) == [f"run-{i}/charge/1" for i in range(2, 6)]
     assert "4" in caplog.text and "SECRET-INPUT" not in caplog.text and "lt" not in caplog.text.split()
 
 

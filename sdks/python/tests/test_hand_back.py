@@ -1,0 +1,368 @@
+"""The hand-back of ``sdks/SPEC.md`` section 6.2: a lease the host received and will not run is reported with
+``FailStep`` ``TASK_NOT_STARTED`` before any handler of it runs, once, and never for a task whose handler started."""
+
+from __future__ import annotations
+
+import asyncio
+from collections.abc import Callable
+from typing import Any
+
+import grpc
+
+from sagat_octopus_orchestrator import ActivityContext, WorkerEvent, WorkerHost
+from sagat_octopus_orchestrator._proto import worker_pb2 as pb
+
+from .fakes import FakeWorkerService, Scripted, lease, until
+
+MakeHost = Callable[..., WorkerHost]
+
+
+def numbered(n: int, **overrides: Any) -> pb.TaskLease:
+    fields: dict[str, Any] = {"task_id": f"run-{n}/charge/1", "run_id": f"run-{n}", "lease_token": f"LEASE-TOKEN-{n}"}
+    fields.update(overrides)
+    return lease(**fields)
+
+
+def handed_back(fake: FakeWorkerService) -> list[str]:
+    """The task ids of the hand-backs, sorted, after checking each is the whole hand-back of the specification."""
+    ids = []
+    for call in fake.of("FailStep"):
+        request = call.request
+        if request.error_code != "TASK_NOT_STARTED":
+            continue
+        number = request.run_id.removeprefix("run-")
+        assert request.retryable
+        assert request.safe_message == "the host did not start this task"
+        assert request.idempotency_key == f"failed-{request.task_id}"
+        assert (request.attempt, request.generation, request.step_id) == (1, 1, "charge")
+        assert request.lease_token == f"LEASE-TOKEN-{number}"
+        ids.append(request.task_id)
+    return sorted(ids)
+
+
+def beats_of(fake: FakeWorkerService, task_id: str) -> int:
+    return sum(1 for call in fake.of("Heartbeat") if call.request.task_id == task_id)
+
+
+async def test_a_poll_answer_beyond_the_credit_is_handed_back(fake: FakeWorkerService, make_host: MakeHost) -> None:
+    fake.ignore_max_tasks = True
+    fake.leases = [numbered(1), numbered(2), numbered(3)]
+    ran: list[str] = []
+
+    async def charge(_input: Any, ctx: ActivityContext) -> int:
+        ran.append(ctx.task_id)
+        return 1
+
+    host = make_host(max_inflight=1)
+    host.register_activity("charge", charge)
+    await host.start()
+    await until(lambda: len(fake.of("CompleteStep")) == 1, "the kept task")
+    await host.stop(5)
+    assert handed_back(fake) == ["run-2/charge/1", "run-3/charge/1"]
+    assert ran == ["run-1/charge/1"]
+    assert beats_of(fake, "run-2/charge/1") + beats_of(fake, "run-3/charge/1") == 0
+
+
+async def test_a_stream_frame_beyond_the_credit_is_handed_back_and_the_started_task_is_not(
+    fake: FakeWorkerService, make_host: MakeHost
+) -> None:
+    fake.accepted_version = "1.4"
+    fake.hold_stream = True
+    fake.stream_batches = [[numbered(1), numbered(2), numbered(3)]]
+    release = asyncio.Event()
+
+    async def charge(_input: Any, _ctx: ActivityContext) -> int:
+        await release.wait()
+        return 1
+
+    host = make_host(max_inflight=1)
+    host.register_activity("charge", charge)
+    await host.start()
+    await until(lambda: len(fake.of("FailStep")) == 2, "the two hand-backs")
+    release.set()
+    await until(lambda: len(fake.of("CompleteStep")) == 1, "the kept task")
+    await host.stop(5)
+    assert handed_back(fake) == ["run-2/charge/1", "run-3/charge/1"]
+    assert len(fake.of("FailStep")) == 2
+
+
+async def test_the_rest_of_a_frame_over_the_input_budget_is_handed_back(
+    fake: FakeWorkerService, make_host: MakeHost
+) -> None:
+    fake.accepted_version = "1.4"
+    big = '{"input":"' + "x" * (5 * 1024 * 1024) + '"}'
+    fake.stream_batches = [[numbered(1, input_json=big), numbered(2, input_json=big), numbered(3)]]
+    host = make_host(max_inflight=3)
+    host.register_activity("charge", lambda _i, _c: 1, blocking=False)
+    await host.start()
+    await until(lambda: len(fake.of("CompleteStep")) == 1, "the kept task")
+    await until(lambda: len(fake.of("FailStep")) == 2, "the hand-backs")
+    await host.stop(5)
+    assert handed_back(fake) == ["run-2/charge/1", "run-3/charge/1"]
+
+
+async def test_a_stream_frame_read_while_stopping_is_handed_back_whole(
+    fake: FakeWorkerService, make_host: MakeHost
+) -> None:
+    fake.accepted_version = "1.4"
+    fake.hold_stream = True
+    fake.stream_batches = [[numbered(1), numbered(2)]]
+    read = asyncio.Event()
+    proceed = asyncio.Event()
+
+    async def hold(_leases: int) -> None:
+        read.set()
+        await proceed.wait()
+
+    ran: list[str] = []
+    host = make_host(max_inflight=4)
+    host._frame_received = hold
+    host.register_activity("charge", lambda _i, ctx: ran.append(ctx.task_id), blocking=False)
+    await host.start()
+    await read.wait()
+    stopping = asyncio.create_task(host.stop(5))
+    await until(lambda: host._stopping, "the stop to begin")
+    proceed.set()
+    await stopping
+    # Stop returned: the hand-backs were made before the connection closed.
+    assert handed_back(fake) == ["run-1/charge/1", "run-2/charge/1"]
+    assert ran == []
+
+
+async def test_a_poll_answer_that_arrives_while_stopping_is_handed_back_and_the_running_task_is_not(
+    fake: FakeWorkerService, make_host: MakeHost
+) -> None:
+    fake.leases = [numbered(1)]
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def charge(_input: Any, _ctx: ActivityContext) -> int:
+        started.set()
+        await release.wait()
+        return 1
+
+    hold = asyncio.Event()
+    answers = 0
+
+    async def held(leases: int) -> None:
+        nonlocal answers
+        if leases > 0:
+            answers += 1
+            if answers == 2:
+                await hold.wait()
+
+    host = make_host(max_inflight=4)
+    host._frame_received = held
+    host.register_activity("charge", charge)
+    await host.start()
+    await started.wait()
+    fake.leases = [numbered(2), numbered(3)]
+    await until(lambda: answers == 2, "the second answer to be held")
+    stopping = asyncio.create_task(host.stop(5))
+    await until(lambda: host._stopping, "the stop to begin")
+    hold.set()
+    await until(lambda: len(fake.of("FailStep")) == 2, "the hand-backs")
+    release.set()
+    await stopping
+    assert handed_back(fake) == ["run-2/charge/1", "run-3/charge/1"]
+    assert len(fake.of("CompleteStep")) == 1
+    assert len(fake.of("FailStep")) == 2
+
+
+async def test_a_duplicate_lease_is_ignored_and_never_handed_back(fake: FakeWorkerService, make_host: MakeHost) -> None:
+    fake.accepted_version = "1.4"
+    fake.hold_stream = True
+    # The second is the running task's own lease again; the fourth repeats a lease handed back.
+    fake.stream_batches = [[numbered(1), numbered(1), numbered(2), numbered(2)]]
+    release = asyncio.Event()
+
+    async def charge(_input: Any, _ctx: ActivityContext) -> int:
+        await release.wait()
+        return 1
+
+    host = make_host(max_inflight=1)
+    host.register_activity("charge", charge)
+    await host.start()
+    await until(lambda: len(fake.of("FailStep")) >= 1, "the hand-back")
+    release.set()
+    await until(lambda: len(fake.of("CompleteStep")) == 1, "the kept task")
+    await host.stop(5)
+    assert handed_back(fake) == ["run-2/charge/1"]
+
+
+async def test_sibling_iterations_that_share_a_task_id_are_not_duplicates(
+    fake: FakeWorkerService, make_host: MakeHost
+) -> None:
+    fake.accepted_version = "1.5"
+    fake.hold_stream = True
+
+    def sibling(index: int) -> pb.TaskLease:
+        identity = pb.ExecutionInstanceIdentity(
+            definition_node_id="charge",
+            instance_path=[pb.ScopePathSegment(scope_node_id="each", iteration_index=index)],
+        )
+        return numbered(1, instance=identity)
+
+    fake.stream_batches = [[sibling(0), sibling(1)]]
+    host = make_host(max_inflight=2)
+    host.register_activity("charge", lambda _i, _c: 1, blocking=False)
+    await host.start()
+    await until(lambda: len(fake.of("CompleteStep")) == 2, "both iterations")
+    await host.stop(5)
+    assert fake.of("FailStep") == []
+
+
+async def test_a_hand_back_is_retried_with_the_same_key_and_ends_quietly_when_stale(
+    fake: FakeWorkerService, make_host: MakeHost
+) -> None:
+    fake.ignore_max_tasks = True
+    fake.leases = [numbered(1), numbered(2), numbered(3)]
+    fake.failures["FailStep"] = [
+        Scripted(grpc.StatusCode.UNAVAILABLE),
+        Scripted(grpc.StatusCode.ABORTED, "STALE_ATTEMPT"),
+    ]
+    events: list[WorkerEvent] = []
+    host = make_host(max_inflight=1, on_event=events.append)
+    host.register_activity("charge", lambda _i, _c: 1, blocking=False)
+    await host.start()
+    await until(
+        lambda: len([e for e in events if e.type in ("task.failed", "task.stale")]) == 2, "both hand-backs to end"
+    )
+    await host.stop(5)
+    keys = {call.request.idempotency_key for call in fake.of("FailStep")}
+    assert len(fake.of("FailStep")) == 3
+    assert len(keys) == 2
+    failed = [e for e in events if e.type == "task.failed"]
+    assert [(e.code, e.retryable) for e in failed] == [("TASK_NOT_STARTED", True)]
+    assert len([e for e in events if e.type == "task.stale"]) == 1
+
+
+async def test_a_flood_of_leases_is_handed_back_eight_at_a_time(fake: FakeWorkerService, make_host: MakeHost) -> None:
+    total = 1000
+    fake.ignore_max_tasks = True
+    fake.leases = [numbered(i) for i in range(1, total + 1)]
+    release = asyncio.Event()
+    inside = peak = 0
+
+    async def gate() -> None:
+        nonlocal inside, peak
+        inside += 1
+        peak = max(peak, inside)
+        await release.wait()
+        inside -= 1
+
+    fake.fail_gate = gate
+    host = make_host(max_inflight=1)
+    host.register_activity("charge", lambda _i, _c: 1, blocking=False)
+    await host.start()
+    # Eight hand-backs are held at the server; every other one waits its turn in the host.
+    await until(lambda: inside == 8 and len(host._hand_back_queue) == total - 1 - 8, "eight held and the rest queued")
+    assert len(host._hand_back_workers) == 8
+    assert len(fake.of("FailStep")) == 8
+    release.set()
+    await until(lambda: len(fake.of("FailStep")) == total - 1, "every hand-back", seconds=60)
+    await host.stop(5)
+    assert peak <= 8
+    assert len(handed_back(fake)) == total - 1
+
+
+async def test_a_lease_whose_hand_back_is_on_its_way_is_a_duplicate(
+    fake: FakeWorkerService, make_host: MakeHost
+) -> None:
+    fake.ignore_max_tasks = True
+    fake.leases = [numbered(1), numbered(2), numbered(3)]
+    release = asyncio.Event()
+
+    async def gate() -> None:
+        await release.wait()
+
+    fake.fail_gate = gate
+    blocked = asyncio.Event()
+    ran: list[str] = []
+
+    async def charge(_input: Any, ctx: ActivityContext) -> int:
+        ran.append(ctx.task_id)
+        if ctx.task_id == "run-1/charge/1":
+            await blocked.wait()
+        return 1
+
+    with_leases = 0
+    looked = asyncio.Event()
+
+    async def seen(leases: int) -> None:
+        nonlocal with_leases
+        if leases > 0:
+            with_leases += 1
+        elif with_leases == 2:
+            looked.set()
+
+    host = make_host(max_inflight=2)
+    host._frame_received = seen
+    host.register_activity("charge", charge)
+    await host.start()
+    await until(lambda: len(fake.of("FailStep")) == 1, "the hand-back of lease 3 held at the server")
+    await until(lambda: len(fake.of("CompleteStep")) == 1, "lease 2 done")
+    fake.leases = [numbered(3)]
+    await looked.wait()
+    release.set()
+    blocked.set()
+    await until(lambda: len(fake.of("CompleteStep")) == 2, "lease 1 done")
+    await host.stop(5)
+    assert sorted(ran) == ["run-1/charge/1", "run-2/charge/1"]
+    assert handed_back(fake) == ["run-3/charge/1"]
+
+
+async def test_a_sibling_iteration_beyond_the_credit_is_handed_back_with_its_instance(
+    fake: FakeWorkerService, make_host: MakeHost
+) -> None:
+    fake.accepted_version = "1.5"
+    fake.hold_stream = True
+
+    def sibling(index: int) -> pb.TaskLease:
+        identity = pb.ExecutionInstanceIdentity(
+            definition_node_id="charge",
+            instance_path=[pb.ScopePathSegment(scope_node_id="each", iteration_index=index)],
+        )
+        return numbered(1, instance=identity)
+
+    fake.stream_batches = [[sibling(0), sibling(1)]]
+    host = make_host(max_inflight=1)
+    host.register_activity("charge", lambda _i, _c: 1, blocking=False)
+    await host.start()
+    await until(
+        lambda: len(fake.of("CompleteStep")) == 1 and len(fake.of("FailStep")) == 1, "the iteration and the hand-back"
+    )
+    await host.stop(5)
+    request = fake.of("FailStep")[0].request
+    assert request.error_code == "TASK_NOT_STARTED"
+    assert request.instance.instance_path[0].iteration_index == 1
+
+
+async def test_stop_cancels_a_receive_whose_call_begins_after_stop_did(
+    fake: FakeWorkerService, make_host: MakeHost
+) -> None:
+    """A token provider that is waited for when the poll is made: ``stop`` begins before the call exists, and the call
+    is cancelled as soon as it does, instead of being waited for to its end."""
+    fake.poll_delay = 10.0
+    calls = 0
+    waiting = asyncio.Event()
+    gate = asyncio.Event()
+
+    async def provider() -> str:
+        nonlocal calls
+        calls += 1
+        if calls > 1:
+            waiting.set()
+            await gate.wait()
+        return "tok"
+
+    host = make_host(token=provider)
+    host.register_activity("charge", lambda _i, _c: 1, blocking=False)
+    await host.start()
+    await waiting.wait()
+    stopping = asyncio.create_task(host.stop(30))
+    await until(lambda: host._stopping, "the stop to begin")
+    gate.set()
+    began = asyncio.get_running_loop().time()
+    await stopping
+    assert asyncio.get_running_loop().time() - began < 2, "the poll made after the stop began was cancelled"
