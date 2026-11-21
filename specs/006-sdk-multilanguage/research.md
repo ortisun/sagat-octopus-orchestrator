@@ -1056,4 +1056,4 @@ one receive call.
   minor "when its contract merges"; the coordinator instructed this design to take and register 1.8 now. The reservation is released if
   Architecture decision 0099 is not accepted; if the gate fails, the owner chooses between shipping 1.8 as "the code reserved, the flag
   never set", which fixes that meaning of 1.8 for good and moves delivery acknowledgement to a later minor, and releasing it (Decision
-  006-057). Asked through the coordinator.
+  006-057). Asked through the coordinator. **Answered 2026-11-21: "Reserve 1.8 now" (Owner decision 2026-11-21-6).**
