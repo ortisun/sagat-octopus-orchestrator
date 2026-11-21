@@ -420,6 +420,7 @@ impl PgPathExecutionTx {
             !matches!(
                 event.event(),
                 RunEvent::StepLeased { .. }
+                    | RunEvent::StepLeaseWithdrawn { .. }
                     | RunEvent::StepStarted { .. }
                     | RunEvent::StepCompleted { .. }
                     | RunEvent::StepFailed { .. }
@@ -612,6 +613,7 @@ impl PgPathExecutionTx {
                 event,
                 RunEvent::StepReleased { .. }
                     | RunEvent::StepRetryDue { .. }
+                    | RunEvent::StepLeaseWithdrawn { .. }
                     | RunEvent::StepRetryRequested { .. }
             ) {
                 hinted.insert(instance.clone());

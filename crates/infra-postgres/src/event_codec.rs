@@ -9,7 +9,7 @@ use sagat_domain::execution::{
     CollectionDrainReason, CollectionOutcome, CorrelationKey, ExecutionInstanceId, FailureCode,
     Fence, InstancePath, JoinOutcome, LoopContinuation, LoopDrainReason, LoopKind, LoopOutcome,
     PlannedEntry, ReconcileResult, ResetReapply, ReviewOutcome, RunEvent, RunId, RunStatus,
-    ScopedPlannedEntry, StopReason, SwitchSelection, WaitVia,
+    ScopedPlannedEntry, StopReason, SwitchSelection, WaitVia, WithdrawalCause,
 };
 use sagat_domain::identity::Subject;
 use sagat_domain::saga::{ReconcileVerdict, SagaOutcome};
@@ -107,6 +107,13 @@ pub(crate) fn encode(event: &RunEvent) -> Encoded {
         } => {
             json!({ "attempt": attempt, "generation": generation })
         }
+        // the fence of the lease that was taken back, and why (feature 006, decision D006-003)
+        RunEvent::StepLeaseWithdrawn {
+            attempt,
+            generation,
+            cause,
+            ..
+        } => json!({ "attempt": attempt, "generation": generation, "cause": cause.as_str() }),
         RunEvent::StepRetryScheduled {
             attempt,
             generation,
@@ -526,6 +533,15 @@ pub(crate) fn decode(event_type: &str, node: Option<&str>, detail: &Value) -> Op
                 node: node_id()?,
                 attempt,
                 generation,
+            }
+        }
+        "step.lease_withdrawn" => {
+            let (attempt, generation) = fence(d)?;
+            RunEvent::StepLeaseWithdrawn {
+                node: node_id()?,
+                attempt,
+                generation,
+                cause: WithdrawalCause::parse(text(d, "cause")?)?,
             }
         }
         "step.started" => {
@@ -975,7 +991,7 @@ mod tests {
     use sagat_domain::execution::{
         CollectionDrainReason, CollectionOutcome, ExecutionInstanceId, FailureCode, InstancePath,
         LoopContinuation, LoopDrainReason, LoopKind, LoopOutcome, RunEvent, ScopedPlannedEntry,
-        SwitchSelection,
+        SwitchSelection, WithdrawalCause,
     };
     use sagat_domain::saga::SagaOutcome;
     use sagat_domain::workflow::{ActivityName, Digest, NodeId};
@@ -1494,6 +1510,43 @@ mod tests {
             ),
             Some(RunEvent::WaitSatisfied { node, via: None })
         );
+    }
+
+    /// The withdrawal of a lease keeps its fence and its cause, both ways; a row with a cause this build does not know, or
+    /// without one, is not replayed (feature 006, decision D006-003).
+    #[test]
+    fn a_withdrawn_lease_is_an_exact_codec_inverse() {
+        for cause in [WithdrawalCause::NotSent, WithdrawalCause::NotStarted] {
+            let event = RunEvent::StepLeaseWithdrawn {
+                node: node("charge"),
+                attempt: 3,
+                generation: 7,
+                cause,
+            };
+            let encoded = encode(&event);
+            assert_eq!(encoded.event_type, "step.lease_withdrawn");
+            assert_eq!(encoded.node.as_deref(), Some("charge"));
+            assert_eq!(
+                encoded.attempt,
+                Some(3),
+                "the attempt column names the lease"
+            );
+            assert_eq!(
+                encoded.detail,
+                json!({ "attempt": 3, "generation": 7, "cause": cause.as_str() })
+            );
+            assert_eq!(
+                decode(encoded.event_type, encoded.node.as_deref(), &encoded.detail),
+                Some(event)
+            );
+        }
+        for detail in [
+            json!({ "attempt": 1, "generation": 1, "cause": "LAPSED" }),
+            json!({ "attempt": 1, "generation": 1 }),
+            json!({ "attempt": 1, "cause": "NOT_SENT" }),
+        ] {
+            assert!(decode("step.lease_withdrawn", Some("charge"), &detail).is_none());
+        }
     }
 
     #[test]
