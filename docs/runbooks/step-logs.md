@@ -32,18 +32,21 @@ The owner accepted the measured cost ("Accept the measured cost", OD-2026-11-20-
   turning capture off.
 
 The release keeps these figures only while task T041-9, on the built carry, meets the per-size criterion of
-SC-041-007 (decision D041-126): at 8 × 128 the original gates; at 1 × 16 a floor at the fourth run's figures less the
-spread of its eight valid rounds (rate at least 80.4%, p99 at most 29.1 ms over the allowance, rate with output `{}` at
-least 83.5%), judged on the median of all valid rounds of a twelve-round run (decision D041-135). The p99 floor is a
-guard against gross regressions only (it admits about +94% over capture off); task T041-9 reports to the owner a p99
-above the +36.9% the owner accepted.
+SC-041-007 (decision D041-126): at 8 × 128 the original rate gates (at least 90%) and a p99 floor at most 112.9 ms over
+the allowance (OD-2026-11-21-1); at 1 × 16 a floor at the fourth run's figures less the spread of its eight valid rounds
+(rate at least 80.4%, p99 at most 29.1 ms over the allowance, rate with output `{}` at least 83.5%), judged on the median
+of all valid rounds of a twelve-round run, at least seven (decisions D041-135 and D041-136). The p99 floors are a guard
+against gross regressions only (they admit about +94% over capture off at 1 × 16 and +33.4% at 8 × 128); task T041-9
+reports to the owner a median p99 above the +36.9% (1 × 16) or +9.5% (8 × 128) the owner accepted, and these figures
+are then restated from its record.
 
 ## 2. Lines not stored because the log service was busy
 
 Each database backend that writes step logs for a tenant holds a small *quota lease* of that tenant's step-log room. A
 carry charges its lease; when the lease is short, the carry refills it from the tenant's usage row inside the report
 (the *fallback refill*), waiting at most 200 ms for each lock of that row, and only while it holds one of the tenant's
-*wait slots* and one of the replica's on that replica (3 and 5 with the default pool of 20). A carry that cannot get the
+*wait slots* and one of the replica's on that replica (3 and 5 with a pool of 20, 1 and 2 with the binary's default
+of 10). A carry that cannot get the
 row within 200 ms, or finds the slots taken,
 drops its records; the report always lands. The reader sees "not stored: the log service was busy (not your quota)" on
 the stream (its field `notStoredReason` is `service_busy`, never a ceiling) and in Studio, and the drop is counted
@@ -61,12 +64,17 @@ transaction, the purge, a change of the tenant's step-log limit), at `step_log_q
 
 **Wait slots** (decisions D041-125 and D041-134). A wait on a tenant's usage row through step logs (a carry's
 fallback, a batch, a script marker; the top-up never waits) holds a tenant slot and a replica slot. A replica has
-*Q* = max(1, ⌊N / 4⌋) slots, N its pool `SAGAT_DB_MAX_CONNECTIONS`, and a tenant *P* = ⌈*Q* / 2⌉ of them: 5 and 3 with
-the default pool of 20, 2 and 1 with a pool of 8. So one tenant's waits hold at most *P* of a replica's connections and
-all tenants' at most *Q*; with the Logs cap (half the pool) that leaves at least N − ⌊N / 2⌋ − *Q* connections (5 of 20)
-that step-log work never holds, for task leases, heartbeats and reports that do not wait. *Q* follows the pool size:
-the pool sets `sagat.step_log_wait_slots` on each connection when it connects, so raising `SAGAT_DB_MAX_CONNECTIONS`
-raises it. Raising `SAGAT_STEP_LOGS_TENANT_CALLS` does not change the slots.
+*Q* = max(1, ⌊N / 4⌋) slots, N its pool `SAGAT_DB_MAX_CONNECTIONS` (10 by default, 20 in the Helm chart), and a tenant
+*P* = ⌈*Q* / 2⌉ of them: 5 and 3 with a pool of 20, 2 and 1 with 10 or 8. So one tenant's waits hold at most *P* of a
+replica's connections and all tenants' at most *Q*; with the Logs cap (half the pool) that leaves at least
+N − ⌊N / 2⌋ − *Q* connections (5 of 20, 3 of 10) that step-log waits and log calls never hold, for task leases,
+heartbeats and reports that do not wait; with a pool of 2 or less nothing is left, so give a replica that serves step
+logs a pool of at least 3 (which leaves 1). *Q* follows the pool size: the server computes it from its own pool and sends it with each
+transaction that may wait, so raising `SAGAT_DB_MAX_CONNECTIONS` raises it, behind a pooler too. Raising
+`SAGAT_STEP_LOGS_TENANT_CALLS` does not change the slots. While other tenants hold all *Q* slots, a carry of a quiet
+tenant whose own usage row is busy at that moment answers busy at once: one tenant's load can cause another's (rare)
+busy drops, never a wrong charge. Reports of one run that queue on the run row while a sibling's fallback waits are
+not covered by this reserve.
 
 ## 3. How the quota leases are kept topped up
 
@@ -84,13 +92,20 @@ run on another backend than the next report, so more refills happen inside repor
 0.31% of ten-line carries and 2.0% of 64-record carries far from the limit (gap G041-027, accepted with ADR-0097,
 OD-2026-11-20-15). The pooler advice of `docs/runbooks/scaling.md` stands as written: run a pooler in transaction mode
 when replicas × pool size approaches `max_connections`; expect more fallback refills, and watch
-`step_log_quota_fallbacks_total` and `SagatStepLogServiceBusyDrops` (decision D041-130).
+`step_log_quota_fallbacks_total` and `SagatStepLogServiceBusyDrops` (decision D041-130). **Size the pooler's server
+pool** for the database at least at the sum over the replicas of (half the replica's pool + its *Q*), plus one a
+replica: 8 replicas of 20 need 8 × (10 + 5) + 8 = 128. Below that, the replicas' step-log waits and log calls can take
+every server backend, and heartbeats and task leases then queue in the pooler (`SHOW POOLS`: `cl_waiting`,
+`maxwait`). The pool's statement timeouts travel as the startup `options` parameter; if the pooler refuses or drops it,
+set the same timeouts on the database role (`ALTER ROLE … SET`).
 
 ## 4. Log admission: the Logs class and the tickets
 
 A long step streams its earlier lines through `AppendStepLogs`, admitted in a class of its own per replica:
 - `SAGAT_GRPC_MAX_LOG_CALLS`, the class cap, defaults to half of `SAGAT_DB_MAX_CONNECTIONS` rounded down, at least 1
-  (10 of the default pool of 20): at most that many connections are in a log transaction at once.
+  (10 of a pool of 20, 5 of the binary's default of 10): at most that many connections are in a log transaction at
+  once. Below a pool of 16 one tenant's tickets (at most the cap) equal the cap, so one tenant can fill the class on a
+  replica; the others' batches then answer `RETRY_LATER`.
 - `SAGAT_STEP_LOGS_TENANT_CALLS`, a tenant's tickets per replica, defaults to 7, at most the cap. It comes from the
   fourth run (decision D041-127): ⌈batches per second × the batch's p99 service time / 0.7⌉ gave 7 with 1 replica and
   16 workers and 5 per replica with 8 replicas and 128 workers.

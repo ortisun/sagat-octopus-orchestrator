@@ -250,3 +250,91 @@ in the build's favour"); zoom-out's Nit to Z-1 (Complexity Tracking states the f
 acceptable, and T041-37 gains a criterion that fallbacks stay at most 0.31%) and its Nit 1 (the slots' rejected
 alternatives); comprehension's Nit on "late" (FR-041-005 says what it means); readiness Nits 5 and 6 (shard 0 from
 `Keeper::shards`, the gauge cleared) and 8 (`pool.rs:11-24`).
+
+## The reports of the second and third rounds
+
+The second round's seven reports (at `4d6fe4cc`) are in `round-2/` and the third round's five (at `c52b5d37`) in
+`round-3/`, each the reviewer's final message as returned, unedited (recovered on 2026-11-21 from the session's
+records: they had not been saved before). File names: `architecture.md`, `security.md`, `correctness.md` (the
+repository reviewers), `design.md` (egm-design, standing in for stages 5 to 8 in the third round; the critic in the
+second), `readiness.md` (egm implementation readiness), and in the second round also `comprehension.md` and
+`zoom-out.md`.
+
+## Third round
+
+The third round (at `c52b5d37`) counted 1 Blocker and 17 Majors: correctness 1 and 5 (`round-3/correctness.md`),
+architecture 0 and 2, security 0 and 1, design critic 0 and 5, readiness 0 and 4. Under the cap of OD-2026-11-20-17 no
+further full round runs: each Blocker and each Major with a known fix is fixed here, documents first, then one final
+confirmation read of these fixes. The owner answered three questions (OD-2026-11-21-1 to -3); the rest are decisions
+D041-136 and D041-137 under OD-2026-11-20-6.
+
+### The Blocker
+
+- **correctness B-1, design critic Major 1 (the 8 × 128 gate (2b) under "the median of all valid rounds"):** the owner's
+  answer "Derived floor, like 1×16" (OD-2026-11-21-1): gate (2b) at 8 × 128 is at most +112.9 ms over the allowance,
+  the worst of its eight valid rounds (+112.86 ms, round 6) rounded in the build's favour, a tolerance of 129.9 ms from
+  the median of the rounds used (−17.0 ms); SC-041-007, T041-9, the runbook and decision D041-136 state it with its
+  false-stop rate.
+
+### The Majors
+
+- **correctness N-2 remainder (the false-stop rate):** at least seven valid rounds (worst case at most 3.85% per gate at
+  m = 8), the rate per m from 7 to 12, the union bound per release (at most 34.1% at m = 8 and 20.1% at m = 12, counting
+  gates (1) and (3) at 8 × 128 by a resampling estimate, since they keep the fixed 90%), the rule for fewer than seven
+  valid rounds (a new run, then the owner) and the median of an even count (the mean of the two middle values; the
+  formula is then an upper bound): SC-041-007, T041-9, D041-136.
+- **correctness M-1, architecture N-2, readiness M-1 and M-2 (the connection hand-off):** decision D041-137 (1): an
+  `OwnedTransaction` that sends `BEGIN`, `COMMIT` and `ROLLBACK` itself, with a state `idle`, `open` or `unknown`; a
+  drop while `open` or `unknown` rolls back in a spawned task and returns the connection, and only a failed or timed-out
+  `ROLLBACK` closes it, so `close_on_drop()` is never cleared and no ordinary drop churns a backend; the top-up is the
+  last statement on the same connection, after `COMMIT`, off the run lock (OD-2026-11-20-18's meaning kept); it serves
+  every `PgRunTx` and `PgPathExecutionTx` command; T041-36 lists `primitives.rs`, `chain_progress.rs`, `breaker.rs`,
+  `declared_operations.rs`, `execution/scoped_events.rs`, `execution/database.rs` and `pool.rs`, gives
+  `begin_in_transaction`'s new parameter type, and its fault test in `cancellation.rs` shows the same
+  `pg_backend_pid()` across commits, a contended claim and a refused report on a pool of one.
+- **architecture N-3, security NF-1, design critic Major 3, readiness M-3, correctness M-4's pooler half (*Q* behind a
+  transaction pooler):** decision D041-137 (2): *Q* is set per transaction, transaction-locally, in a statement the
+  store already sends (the carry's `p_wait_slots`, a batch's T1, the marker's first statement), never at connect;
+  section 2b, data-model.md §3b and §8a, ADR-0097 decision 4 and the runbook state the server-pool sizing rule
+  (Σ (⌊N / 2⌋ + *Q*) plus one a replica: 128 for 8 replicas of 20); T041-37 sizes PgBouncer by it, checks *Q* and the
+  timeouts through it (`options` handled as the pinned version allows, else `ALTER ROLE … SET`), records `SHOW POOLS`
+  (`cl_waiting`, `maxwait`) and runs the three-tenant regime behind it.
+- **correctness M-4's other half (the bound covers less than it said):** section 2b states the bound for a replica's own
+  pool and for step-log waits and Logs calls; reports queued on a run row behind a fallback are named outside it, and
+  T041-37's fan-out regime gains a victim tenant with its criterion and consequence.
+- **correctness M-3 (the replica cap couples tenants through loss):** section 2b, a new risk row and ADR-0097's
+  consequences state the channel; T041-37's three-tenant regime gives B 64-record carries with a 1 KiB output and
+  bounds B's `service_busy` carries at 0.1%; A1 to A3 are excluded from the counted regimes as A is (D041-137,
+  applying OD-2026-11-21-3).
+- **correctness M-2 (the top-up's `limit` and `held`):** the top-up answers `limit` when its share is 0, tested before
+  `room`, and has no `held` answer (it reclaims nothing): section 2b, data-model.md §3b and §7, ADR-0097 decisions 3b
+  and 8, T041-5 and T041-36.
+- **readiness M-4 (the benchmark replicas share one `application_name`):** T041-5: `replica_with_pool` names each pool
+  `sagat-octopus-orchestrator/<a fresh UUID>` and `PoolConfig::new`'s default is `sagat-octopus-orchestrator/unnamed`;
+  T041-37's setup asserts distinct names in `pg_stat_activity`.
+- **design critic Major 2 (L4 and the Overview before D041-134):** L4 says the top-up is tried without waiting only and
+  takes no slot, and that a refill waits holding a tenant and a replica slot; the Overview names both slots.
+
+### Nits fixed with these
+
+Correctness 1 (section 2a's top-up row reclaims nothing; data-model.md's "the top-up the refill" and the refill's
+`bounded` parameter removed), 2 (the reported statistic is the median over the valid rounds of the p99 in percent), 3
+(B's heartbeat check runs on a pool of 8 with the Logs class filled), 4 (`SKIP LOCKED` plus an unlocked existence
+check instead of `NOWAIT`, so neither the refill nor the top-up opens a subtransaction) and 5 (below a pool of 16 one
+tenant's tickets equal the cap: stated in data-model.md §6 and the runbook); correctness Nit 6 (Nits 4 to 6 of its
+second report): the second report is now saved (`round-2/correctness.md`) and its Nits 4 to 6 are answered here: 4,
+`path = refill` is defined as "its block ran" (its fallback refill granted, or, in a race, the block's charge found room;
+data-model.md §8a); 5, T041-37's cold-start row has no warm-up, so its first carries are measured; 6, every count taken
+from a carry's return is recorded only when its transaction commits (data-model.md §7). Architecture 1 (the old top-up wording), 2 (the two files), 3 (ADR-0097's header names D041-134 and D041-137
+and how they are accepted) and 4 (10 in the binary, 20 in the chart; the engine's `cli.rs` help is stale). Security 1
+(no reserve at a pool of 2 or less: stated, the runbook advises at least 3), 2 (A1 to A3 excluded, B judged), 3 (the
+slots are taken before the insert of an absent row) and 4 (S-1's N-4: anyone who sees `ceiling = tenant_quota` already
+holds the PII reveal grant in every namespace, D041-077, so D041-133's condition is met by construction). Design critic
+1 (the rate per gate and per release), 2 (fewer than seven valid rounds), 3 (the owner report does not stop the
+release; the runbook's and the release notes' figures are restated), 4 (the newest revision note lists the second and
+third rounds), 5 (the bound is on step-log waits and Logs calls) and 6 (workload (b) from ten tickets). Readiness 2 (the
+one-shot processes listed, `PoolName`, the registry pool's name, *Q* computed and never configured apart), 3 (`held`),
+4 (data-model.md §3b), 5 (the top-up's helper lives in `step_logs.rs`), 6 (the SCRAM verifier read back from
+`pg_authid`), 8 (fewer than seven valid rounds) and 9 (the fault test in `cancellation.rs`, which T041-36's Files list).
+Readiness Nits 1 and 7 (the `releaseAnswer` and `heldAnswers` placement; the reason after a `MarkOnly(failed)` re-run)
+are left to the build of T041-14 and T041-36, where the goldens and the plan type are written.

@@ -777,7 +777,10 @@ milliseconds over the allowance, (4) as tickets.
 | (4) tickets of (g) | 8 × 128 | 5 | 5 | 5 | 4 | 4 | 4 | 5 | 5 |
 
 The worst valid round at 1 × 16, which SC-041-007's floor is set at: (1) 0.8046 (round 2), (2b) +29.03 ms (round
-11), (3) 0.8352 (round 11), (4) 10 tickets (rounds 4 and 6).
+11), (3) 0.8352 (round 11), (4) 10 tickets (rounds 4 and 6). At 8 × 128, where only gate (2b) has a floor
+(OD-2026-11-21-1, decision D041-136, added 2026-11-21): (2b) +112.86 ms (round 6), so the bar is +112.9 ms; the eight
+valid rounds' medians are (1) (0.9053 + 0.9306) / 2 = 0.91795, (2b) (−2.19 + 6.30) / 2 = +2.06 ms, (3)
+(0.9154 + 0.9228) / 2 = 0.9191 and (4) 5 tickets.
 
 Recorded besides, (a) over off-1K's p99 in percent: +31.9 / +36.9 / +35.2% at 1 × 16 and +4.6 / +9.5 / +6.5% at
 8 × 128. Each figure below is the median of the three rounds used.

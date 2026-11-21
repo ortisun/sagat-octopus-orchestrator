@@ -4,6 +4,18 @@ Decisions that only the product owner could take, with what each one unblocks. E
 recorded where the open item lived (gap register, ADR, runbook or specification). "Not built"
 means the decision is taken and the implementation is still to be done; it is not evidence.
 
+## 2026-11-21 — Design 041 (step logs): the third round of the approval run
+
+After the third round of short re-reads of design 041's approval run (OD-2026-11-20-17; the reports in
+`docs/designs/041-step-logs.reviews/2026-11-20-approval/round-3/`) the coordinating session put three questions to the
+owner. Each row gives the question as asked, then the answer, then what it means.
+
+| ID | Decision | Decided by | Status | Covers |
+|---|---|---|---|---|
+| OD-2026-11-21-1 | Asked: "041 Blocker: at 8×128, the eight valid rounds of the tail gate (2b) were -312.6 / -25.4 / -17.0 / -2.2 / +6.3 / +11.5 / +24.7 / +112.9 ms over the allowance. As a regression gate for later runs, the build you accepted would pass only about half the time. How should the 8×128 gate be set?" Answer: "Derived floor, like 1×16". The 8 × 128 bar of gate (2b) comes from the fourth run's measured distribution plus a tolerance derived from its spread, the same method as at 1 × 16, fixed in the document before any later round: the median of the three rounds used, −17.0 ms, and the worst valid round, +112.86 ms, give a tolerance of 129.9 ms and a bar of at most +112.9 ms over the allowance. It relaxes the allowance of OD-2026-11-20-1 at this size. The derivation and the false-stop rates (at most 3.85% per gate with seven to twelve valid rounds) are in SC-041-007 and decision D041-136 | owner | Decided | O041-045, D041-136 of specs/041-step-logs/research.md; docs/designs/041-step-logs.md SC-041-007, T041-9; docs/runbooks/step-logs.md |
+| OD-2026-11-21-2 | Asked: "041 Z-3: ADR-0095 decision 5 (accepted) keeps a re-run tier when a guard raises during a carry. Reviewers recommend keeping it as is, with an owner row, rather than removing it. Keep it?" Answer: "Keep it". The re-run tier of ADR-0095 decision 5 stays: a guard's raise during a carry re-runs the report once with a mark-only carry whose reason is `failed`. This closes review finding Z-3 | owner | Decided | O041-046 of specs/041-step-logs/research.md; docs/adr/ADR-0095 decision 5; docs/designs/041-step-logs.md section 2a, T041-36; docs/designs/041-step-logs.reviews/2026-11-20-approval/zoom_out_report.md (Z-3) |
+| OD-2026-11-21-3 | Asked: "041 I-6: the 0.1% busy-loss reopening threshold (OD-2026-11-20-14) is counted in every measured regime except the two fault-injection regimes that hold the usage row past 200 ms on purpose. Is that the right reading?" Answer: "Yes, exclude those two". The threshold of OD-2026-11-20-14 counts every regime task T041-37 measures except the fan-out's held rows and tenant A of the two-tenant regime, whose busy answers are induced; the tenant beside them counts. This closes review finding I-6 | owner | Decided | O041-047, D041-131, D041-137 of specs/041-step-logs/research.md; docs/designs/041-step-logs.md T041-37; docs/designs/041-step-logs.reviews/2026-11-20-approval/intermediate_zoom_out_report.md (I-6) |
+
 ## 2026-11-20 — Design 041 (step logs): the fourth carry spike, the busy loss, ADR-0095, ADR-0097 and the amendment of ADR-0027
 
 After task T041-35's fourth run (run 44834024933, decision D041-122 of `specs/041-step-logs/research.md`; the record in

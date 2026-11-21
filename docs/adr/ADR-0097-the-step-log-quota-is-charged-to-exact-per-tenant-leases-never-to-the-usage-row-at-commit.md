@@ -9,8 +9,13 @@ ADR-0095; OD-2026-11-20-15, question O041-042), with its residual gaps G041-026 
 built: "Accept the visible loss", OD-2026-11-20-14) and G041-027 (behind a transaction pooler). Amended once since its
 acceptance, by the owner on 2026-11-20 ("Top up after the commit", OD-2026-11-20-18, question O041-043): decision 3b's
 ensure before the report is replaced by a top-up after the report commits (design 041's decision D041-124), and the
-wait slots of decision 4 bound a tenant's waits on its usage row (D041-125, under OD-2026-11-20-6); every passage that
-change touches cites the row
+wait slots of decision 4 bound a tenant's waits on its usage row (D041-125, under OD-2026-11-20-6). Amended again
+during the approval run of design 041's revision, under OD-2026-11-20-6: decisions 1, 3b and 4 by D041-134 (the
+replica's wait slots beside the tenant's; a top-up that never waits, takes no slot and reclaims nothing) and decisions
+3b, 4 and 8 by D041-137 (the replica's *Q* passed per transaction, the usage row tried `SKIP LOCKED`, the pooler's
+sizing rule, the top-up's answers without `held`). Under rules 2 and 4 of `README.md` these delegate amendments take
+effect with the owner's approval of that revision on the owner's path (OD-2026-11-20-17), which the design's approval
+block records. Every passage a change touches cites its row.
 **Refines / supersedes:** supersedes:
 - for the class `step_log`, the charge half of item 3 of the Amendment of 2026-11-15 of
   [ADR-0027](ADR-0027-durable-content-rate-and-retention-quotas.md) (a charge goes to a lease, not to
@@ -129,11 +134,12 @@ ADR-0095 decision 4).
    `sagat_quota_step_log_top_up(tenant)`, with the principal's tenant (never one from the request or the run); it MUST
    NOT delay the report's answer for it, and it counts the answer (`step_log_quota_top_ups_total{outcome}`) and never
    fails or re-runs anything because of it. The function takes no caller amount: it tries the step-log fence shared
-   (held: `contended`); answers `room` when the writer's lease has at least *M*; tries the usage row `NOWAIT` only,
-   taking no wait slot and never waiting (held: `busy` at once); reclaims no other lease; and grants only when the
-   share, min(1 MiB, ⌊F / (2(*A* + 1))⌋) (decision 4), is above the writer's current room, folding the writer's lease
-   and granting exactly that share with no charge, answering `made`, and otherwise `room`, `limit` or `held` (design
-   041's decision D041-134, so that a top-up never takes another writer's room or a wait slot). It never raises for these; any other error is
+   (held: `contended`); answers `room` when the writer's lease has at least *M*; tries the usage row `SKIP LOCKED`
+   only, opening no subtransaction, taking no wait slot and never waiting (held: `busy` at once); reclaims no other
+   lease; answers `limit` when the share, min(1 MiB, ⌊F / (2(*A* + 1))⌋) (decision 4), is 0; and grants only when the
+   share is above the writer's current room, folding the writer's lease and granting exactly that share with no charge,
+   answering `made`, and otherwise `room` (design 041's decisions D041-134 and D041-137, so that a top-up never takes
+   another writer's room or a wait slot; it has no `held` answer, since it reclaims nothing). It never raises for these; any other error is
    rolled back and is the store's `error`. *M* is above the reservation of any carry whose stored text is no longer than
    its 16 KiB encoding (16,384 + 65 × 128 = 24,704 bytes), so the next such carry after a top-up takes the fast path; far
    from the limit a backend tops up once per 1,048,576 − 65,536 = 983,040 bytes charged. The store holds no rule, no
@@ -147,14 +153,18 @@ ADR-0095 decision 4).
 4. **A refill** (the writer's lease short of the charge) locks the usage row before it would ever insert it, then the
    writer's own lease `NOWAIT` (only a holder of the usage row, or a limit change holding the step-log fence exclusively,
    can hold it, so this never fails short of a prepared transaction): after the usage row nothing waits. A refill first
-   tries the usage row `NOWAIT`; when it is held, it waits only while holding two *wait slots*, one of the tenant's *P*
+   tries the usage row without waiting (`SKIP LOCKED`, then an unlocked check that it exists, so no exception block is
+   needed); when it is held or absent, it waits only while holding two *wait slots*, one of the tenant's *P*
    on its replica and then one of the replica's *Q*, which all tenants share (single 64-bit advisory keys the function
    builds with `hashtextextended` from the tenant, the replica's `application_name` and the slot, tried in order and
    never waited for; with none free it raises `55P03` at once; design 041's decisions D041-125 and D041-134, under
-   OD-2026-11-20-6). *Q* = max(1, ⌊N / 4⌋), N the replica's pool, reaches SQL through `sagat.step_log_wait_slots`,
-   which the pool sets on each connection at connect, and *P* = ⌈*Q* / 2⌉: 5 and 3 at a pool of 20. So one tenant's
-   waits on its usage row hold at most *P* of a replica's pool connections and all tenants' at most *Q*, and step-log
-   work holds at most the Logs cap ⌊N / 2⌋ plus *Q* of them. Each lock
+   OD-2026-11-20-6). *Q* = max(1, ⌊N / 4⌋), N the replica's pool, reaches SQL per transaction through the
+   transaction-local setting `sagat.step_log_wait_slots`, which the store sets in a statement it already sends
+   (D041-137), so it travels with its transaction through a pooler in transaction mode; *P* = ⌈*Q* / 2⌉: 5 and 3 at a
+   pool of 20. So one tenant's waits on its usage row hold at most *P* of a replica's pool connections and all tenants'
+   at most *Q*, and on a replica's own pool step-log waits and Logs calls hold at most the Logs cap ⌊N / 2⌋ plus *Q* of
+   them; behind a pooler in transaction mode the server backends MUST number at least the sum over the replicas of
+   ⌊N / 2⌋ + *Q*, plus one a replica, for that bound to hold there. Each lock
    acquisition on the usage row waits at most its budget *b* = 200 ms (`lock_timeout` set for that
    statement from a function no caller can change, a caller's lower `lock_timeout` kept, the caller's value restored
    after it), and the statement timeout (5 s, 3 s for some transactions) is the hard bound, past which the carry call
@@ -169,7 +179,7 @@ ADR-0095 decision 4).
    from the limit at 0.31% of ten-line carries with every refill in a report, each lock acquisition bounded by *b*, held
    only with a wait slot, and counted; it runs after the report's fence checks, so it delays the commit and never makes
    the report late; no step-log refusal fails, blocks or retries a step. The top-up (decision 3b) never waits: it tries
-   the usage row `NOWAIT`, after the report. The wait cannot deadlock: no transaction waits for a lease it does not
+   the usage row without waiting, after the report. The wait cannot deadlock: no transaction waits for a lease it does not
    own (every other lease is taken `SKIP LOCKED`, or `NOWAIT` by a limit change holding the fence exclusively, and the
    writer's own lease `NOWAIT` after the usage row), and no holder of the usage row waits after taking it for anything a
    waiter holds (a content or log finalizer is the commit's last step; a refill then takes only its own lease `NOWAIT`
@@ -207,7 +217,7 @@ ADR-0095 decision 4).
    exact.
 8. **Telemetry**, closed labels, no tenant, one producer for each metric (the list of design 041's data-model §7,
    decision D041-128): `step_log_quota_fallbacks_total` (a carry that returned `path = refill`; the store),
-   `step_log_quota_top_ups_total{outcome="room"|"made"|"limit"|"held"|"busy"|"contended"|"error"}` (the store),
+   `step_log_quota_top_ups_total{outcome="room"|"made"|"limit"|"busy"|"contended"|"error"}` (the store),
    `step_log_quota_refusals_total{cause="limit"|"held"|"busy"}` (the store, from the carry's returned cause and from a
    batch's insert raise by its constraint name: `held` when the room is in leases open transactions hold, raised under its
    own constraint name `tenant_step_log_quota_held`; `busy` for a fallback refill past *b* or with no wait slot free; a
@@ -320,7 +330,11 @@ ADR-0095 decision 4).
   A report waits on the usage row at most once before its commit. Design 041's task T041-37 measures these regimes.
 - One tenant's waits on its usage row hold at most *P* of a replica's pool connections and all tenants' at most *Q*
   (3 and 5 at a pool of 20; the wait slots); past them carries answer busy at once rather than hold more connections
-  that task leases, heartbeats and other tenants' reports need.
+  that task leases, heartbeats and other tenants' reports need. The replica's cap couples tenants through loss: while
+  other tenants hold all *Q* slots, a carry of a tenant far from its limit whose own usage row is held at that moment
+  answers busy at once instead of waiting up to *b* (counted and shown as any busy answer; design 041's task T041-37
+  bounds it at 0.1% of that tenant's carries). Behind a pooler in transaction mode the bound needs the server-pool
+  sizing of decision 4.
 - A carry that needs the fallback opens one subtransaction (its block, ADR-0095 decision 5): a second transaction id for
   that report; the refill and a carry with nothing to charge (no record and no marker planned) open none. Design 041's T041-37 reports the transaction-id rate and `pg_stat_slru` for `subtransaction`
   near the limit and for many low-volume tenants.
