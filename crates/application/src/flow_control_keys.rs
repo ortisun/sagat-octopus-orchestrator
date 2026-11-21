@@ -192,10 +192,12 @@ impl RunRateSlot {
         self.label = Some(KeyLabel::of_digest(&self.digest));
     }
 
-    /// Sets the place a single-run read computed for a waiting run.
+    /// Sets the place a single-run read computed for a waiting run, and the limit its grant is decided with (the lower
+    /// of its filed limit and the namespace's current ceiling, decision D022-075 item 3).
     pub fn place(&mut self, place: RatePlace) {
         self.position = Some(place.position);
         self.estimated_grant_at = place.estimated_grant_at;
+        self.limit = place.limit;
     }
 }
 
@@ -223,6 +225,8 @@ pub struct RatePlace {
     /// paused, in the queue's order).
     pub position: u32,
     pub estimated_grant_at: Option<OffsetDateTime>,
+    /// The limit the grant routine decides the waiter with.
+    pub limit: u32,
 }
 
 /// What one statement read of a waiting run's place at one instant `t` (plan "Visibility of the rate gate", D022-014).
@@ -255,6 +259,7 @@ impl PlaceReading {
         RatePlace {
             position: u32::try_from(self.ahead.saturating_add(1)).unwrap_or(u32::MAX),
             estimated_grant_at: estimated_grant(self),
+            limit: self.limit,
         }
     }
 }

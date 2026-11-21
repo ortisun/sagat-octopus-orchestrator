@@ -4,8 +4,10 @@
 //!
 //! A gate admits a waiter at position `p` (the eligible waiters of the key ahead of it) when the key's counted holders
 //! or grants plus `p` are below the waiter's own limit: the reservation rule of ADR-0089 decision 4. A waiter ahead is
-//! eligible when it is not past its deadline, its run is live and not paused, and its own limit leaves room for it
-//! (an older waiter refused by its own lower limit does not block; one refused only by its other gate keeps its room).
+//! eligible when it is not past its deadline, its run is live and not paused, and its own limit leaves room for it over
+//! its own window (an older waiter refused by its own lower limit does not block; one refused only by its other gate
+//! keeps its room). Every limit is the lower of the one filed in the waiter row and the namespace's current ceiling
+//! (decisions D022-071 and D022-074), and a grant records the limit it was decided with (decision D022-075 item 7).
 //! Both or neither (FR-022-044): every gate the step waits for admits it, or nothing is written. A waiter past its
 //! deadline is never granted: it is the timeout routine's.
 
@@ -54,9 +56,8 @@ fn level_of(node: Option<&NodeId>) -> (GateLevel, &str) {
     })
 }
 
-/// The namespace's ceiling for a window of `per`, as a bound parameter; without ceilings (a waiter of a permit only, whose
-/// statement does not read them) no bound.
-fn ceiling_of(ceilings: Option<&FlowControlCeilings>, per: RatePeriod) -> i64 {
+/// The namespace's ceiling for a window of `per`, as a bound parameter; without ceilings no bound.
+pub(super) fn ceiling_of(ceilings: Option<&FlowControlCeilings>, per: RatePeriod) -> i64 {
     match ceilings {
         Some(ceilings) => {
             let ceiling = match per {
@@ -70,16 +71,23 @@ fn ceiling_of(ceilings: Option<&FlowControlCeilings>, per: RatePeriod) -> i64 {
     }
 }
 
-/// The limit `queued` is evaluated against now: for a slot, the lower of its filed limit and the namespace's current
-/// ceiling of its window's length (D022-071; D022-009); for a permit, its filed limit.
+/// The namespace's `concurrency_limit`, as a bound parameter; without ceilings no bound.
+pub(super) fn concurrency_ceiling(ceilings: Option<&FlowControlCeilings>) -> i64 {
+    ceilings.map_or(i64::MAX, |ceilings| {
+        i64::try_from(ceilings.concurrency_limit).unwrap_or(i64::MAX)
+    })
+}
+
+/// The limit `queued` is evaluated against now: the lower of its filed limit and the namespace's current ceiling, of its
+/// window's length for a slot (D022-071; D022-009), `concurrency_limit` for a permit (D022-074).
 fn effective_limit(queued: &Queued, ceilings: Option<&FlowControlCeilings>) -> i64 {
     let own = i64::from(queued.limit);
-    match (queued.kind, ceilings) {
-        (GateKind::RateLimit, Some(_)) => match period_of(queued.period_ms) {
+    match queued.kind {
+        GateKind::RateLimit => match period_of(queued.period_ms) {
             Some(per) => own.min(ceiling_of(ceilings, per)),
             None => own,
         },
-        _ => own,
+        GateKind::Concurrency => own.min(concurrency_ceiling(ceilings)),
     }
 }
 
@@ -94,13 +102,13 @@ const fn period_of(period_ms: i32) -> Option<RatePeriod> {
 }
 
 impl PgRunTx {
-    /// The namespace's ceilings, read in the decision's transaction, when `queued` waits for a slot (D022-071); none for
-    /// a waiter of a permit only, whose decision reads nothing more.
-    async fn rate_ceilings(
+    /// The namespace's ceilings, read in the decision's transaction (decisions D022-071 and D022-074); none for a step
+    /// without waiter rows.
+    async fn ceilings(
         &mut self,
         queued: &[Queued],
     ) -> Result<Option<FlowControlCeilings>, StoreError> {
-        if !queued.iter().any(|q| q.kind == GateKind::RateLimit) {
+        if queued.is_empty() {
             return Ok(None);
         }
         crate::quotas::step_gate_ceilings(&mut self.tx, self.info.tenant_id, self.info.namespace_id)
@@ -196,12 +204,16 @@ impl PgRunTx {
     }
 
     /// Whether the gate of `queued` admits the waiter now: its key's counted holders or grants plus the eligible waiters
-    /// ahead of it are below its own limit (ADR-0089 decision 4). The key row is locked.
+    /// ahead of it are below its effective limit (ADR-0089 decision 4). A waiter ahead is counted over its own window: the
+    /// key's grants are counted once for each window length up to the longest its window row has seen (`max_period_ms`,
+    /// which is at least every waiter's), and each waiter compared with the count of its own (D022-009; decision D022-075
+    /// item 4). The key row is locked.
     async fn admits(
         &mut self,
         queued: &Queued,
         node: Option<&NodeId>,
         now: OffsetDateTime,
+        counted_at: OffsetDateTime,
         ceilings: Option<&FlowControlCeilings>,
     ) -> Result<bool, StoreError> {
         let statement = match queued.kind {
@@ -216,19 +228,29 @@ impl PgRunTx {
                                     AND (w.enqueued_at, w.run_id, w.node) < ($6, $7, $8) \
                                     AND w.deadline_at > $12 \
                                     AND r.status IN ('RUNNING', 'WAITING') AND NOT r.paused \
-                                    AND w.declared_limit > taken.n AND $9::bigint >= 0 \
+                                    AND least(w.declared_limit, $16::bigint) > taken.n AND $9::bigint >= 0 \
+                                    AND $17::timestamptz IS NOT NULL \
                                     AND $13::bigint >= 0 AND $14::bigint >= 0 AND $15::bigint >= 0 LIMIT $10) ahead) \
                    FROM taken"
             }
             // a step's grant counts while it is unleased and for its window after its lease (data-model, Rate limits)
             GateKind::RateLimit => {
-                "WITH taken AS (SELECT count(*) AS n FROM rate_limit_grants g \
-                                 WHERE g.tenant_id = $1 AND g.namespace_id = $2 AND g.pool = $3 \
-                                   AND g.limit_scope = $11 AND g.group_name = $4 AND g.key_digest = $5 \
-                                   AND (g.leased_at IS NULL \
-                                        OR g.leased_at > $12 - make_interval(secs => $9::bigint / 1000.0))) \
-                 SELECT taken.n, (SELECT count(*) FROM (SELECT 1 FROM rate_limit_waiters w \
+                "WITH counted AS ( \
+                   SELECT p.ms, (SELECT count(*) FROM rate_limit_grants g \
+                                  WHERE g.tenant_id = k.tenant_id AND g.namespace_id = k.namespace_id \
+                                    AND g.pool = k.pool AND g.limit_scope = k.limit_scope \
+                                    AND g.group_name = k.group_name AND g.key_digest = k.key_digest \
+                                    AND (g.leased_at IS NULL \
+                                         OR g.leased_at > least($17::timestamptz, $12) \
+                                                          - make_interval(secs => p.ms / 1000.0))) AS n \
+                     FROM (VALUES (1000), (60000), (3600000)) p(ms), rate_limit_windows k \
+                    WHERE k.tenant_id = $1 AND k.namespace_id = $2 AND k.pool = $3 AND k.limit_scope = $11 \
+                      AND k.group_name = $4 AND k.key_digest = $5 \
+                      AND p.ms <= greatest(k.max_period_ms, $9::bigint)) \
+                 SELECT (SELECT c.n FROM counted c WHERE c.ms = $9::bigint), \
+                        (SELECT count(*) FROM (SELECT 1 FROM rate_limit_waiters w \
                                    JOIN runs r ON r.tenant_id = w.tenant_id AND r.id = w.run_id \
+                                   LEFT JOIN counted c ON c.ms = w.period_ms \
                                   WHERE w.tenant_id = $1 AND w.namespace_id = $2 AND w.pool = $3 \
                                     AND w.limit_scope = $11 AND w.group_name = $4 AND w.key_digest = $5 \
                                     AND (w.enqueued_at, w.run_id, w.node) < ($6, $7, $8) \
@@ -236,8 +258,8 @@ impl PgRunTx {
                                     AND r.status IN ('RUNNING', 'WAITING') AND NOT r.paused \
                                     AND least(w.declared_limit, CASE w.period_ms WHEN 1000 THEN $13 \
                                               WHEN 60000 THEN $14 WHEN 3600000 THEN $15 \
-                                              ELSE w.declared_limit END) > taken.n LIMIT $10) ahead) \
-                   FROM taken"
+                                              ELSE w.declared_limit END) > coalesce(c.n, 0) \
+                                    AND $16::bigint >= 0 LIMIT $10) ahead)"
             }
         };
         let (taken, ahead): (i64, i64) = sqlx::query_as(statement)
@@ -253,14 +275,19 @@ impl PgRunTx {
             // no more of the queue ahead is read than can matter: the waiter's own limit
             .bind(i64::from(queued.limit))
             .bind(level_of(node).0.as_str())
-            // every count is taken at the decision's instant, the one its grant is journaled at (correctness review Major 2
-            // of 2026-11-20: a grant that ages out between the clock read and the count would be missed)
+            // the decision's instant, the one its grant is journaled at: the deadlines are checked at it, and a window's
+            // grants are counted at the earlier of it and `counted_at` ($17), which counts every grant made since and
+            // keeps those that aged out meanwhile (never an over-grant; correctness review Major 2 of 2026-11-20)
             .bind(now)
             // the namespace's current ceiling of each window length (D022-071): a waiter, ahead or deciding, is
             // evaluated against the lower of its filed limit and the ceiling of its own window's length
             .bind(ceiling_of(ceilings, RatePeriod::Second))
             .bind(ceiling_of(ceilings, RatePeriod::Minute))
             .bind(ceiling_of(ceilings, RatePeriod::Hour))
+            // and its current `concurrency_limit` (D022-074)
+            .bind(concurrency_ceiling(ceilings))
+            // the grants of a window are counted as of the pass's selection of the key (decision D022-073 item 2)
+            .bind(counted_at)
             .fetch_one(&mut *self.tx)
             .await
             .map_err(store_error)?;
@@ -272,17 +299,26 @@ impl PgRunTx {
         &mut self,
         node: Option<&NodeId>,
         attempt: u32,
+        counted_at: OffsetDateTime,
     ) -> Result<Option<Vec<GateEvent>>, StoreError> {
         let (queued, now) = self.locked_queue(node, attempt, true).await?;
         if queued.iter().any(|q| q.deadline_at <= now) {
             return Ok(None);
         }
-        let ceilings = self.rate_ceilings(&queued).await?;
+        let ceilings = self.ceilings(&queued).await?;
         for q in &queued {
-            if !self.admits(q, node, now, ceilings.as_ref()).await? {
+            if !self
+                .admits(q, node, now, counted_at, ceilings.as_ref())
+                .await?
+            {
                 return Ok(None);
             }
         }
+        // the limit each grant is decided with, recorded in its row and its journal (decision D022-075 item 7)
+        let decided = |q: &Queued| {
+            i32::try_from(effective_limit(q, ceilings.as_ref()))
+                .map_err(|_| corrupt("declared limit"))
+        };
         let attempt_column = i32::try_from(attempt).map_err(|_| corrupt("attempt"))?;
         let mut events = Vec::with_capacity(queued.len());
         // the rows of the grant, rate first (the order the waiter rows were read in)
@@ -309,7 +345,7 @@ impl PgRunTx {
                     .bind(GatePool::Ordinary.as_str())
                     .bind(q.group.as_str())
                     .bind(q.digest.as_slice())
-                    .bind(q.limit)
+                    .bind(decided(q)?)
                     .bind(now)
                     .bind(level_of(node).0.as_str())
                     .execute(&mut *self.tx)
@@ -339,7 +375,7 @@ impl PgRunTx {
                     .bind(GatePool::Ordinary.as_str())
                     .bind(q.group.as_str())
                     .bind(q.digest.as_slice())
-                    .bind(q.limit)
+                    .bind(decided(q)?)
                     .bind(q.period_ms)
                     .bind(now)
                     .bind(level_of(node).0.as_str())
@@ -360,7 +396,7 @@ impl PgRunTx {
                     )
                     .await?;
                     GateChange::RateGranted {
-                        limit: u32::try_from(q.limit).map_err(|_| corrupt("declared limit"))?,
+                        limit: u32::try_from(decided(q)?).map_err(|_| corrupt("declared limit"))?,
                         per: period(q.period_ms)?,
                         granted_at_us: i64::try_from(now.unix_timestamp_nanos() / 1_000)
                             .map_err(|_| corrupt("instant"))?,
@@ -400,10 +436,10 @@ impl PgRunTx {
         // sorted lock of the round or of `persist`, so a gated failure route cannot lock a key out of order; the gate
         // named is the one that refused at the read (rate first, FR-022-052), which a concurrent commit may change
         let (queued, now) = self.locked_queue(node, attempt, false).await?;
-        let ceilings = self.rate_ceilings(&queued).await?;
+        let ceilings = self.ceilings(&queued).await?;
         // rate first (FR-022-052): the first gate that refuses it now, else the first it waits for
         for q in &queued {
-            if !self.admits(q, node, now, ceilings.as_ref()).await? {
+            if !self.admits(q, node, now, now, ceilings.as_ref()).await? {
                 return Ok(q.kind);
             }
         }

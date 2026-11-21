@@ -767,10 +767,12 @@ async fn paused_heads_do_not_hold_back_the_waiters_behind_them_and_a_resume_rear
     granted(&w, paused[0], "g", (true, false)).await;
 }
 
-/// Correctness M1 (2026-11-19): a waiter the readiness gate queues behind waiters that cannot be granted (an older one
-/// refused by its own lower limit) is granted by the next pass, with no release in between: queueing makes the key due.
+/// Correctness M1 (2026-11-19) and decision D022-073 (strict admission order, D1196): a step whose key's only waiter is
+/// an older one refused by its own lower limit is not held back by it. Under the reservation rule as first built the
+/// gate counted every waiter and queued it, and the next pass granted it; under strict admission order only an eligible
+/// waiter is ahead of a new arrival, so it is granted at once and the older one keeps waiting.
 #[tokio::test]
-async fn a_waiter_queued_behind_an_ineligible_one_is_granted_without_a_release() {
+async fn a_step_behind_only_an_ineligible_waiter_is_granted_at_once() {
     let w = gated_world().await;
     let wide = publish(
         &w,
@@ -807,10 +809,9 @@ async fn a_waiter_queued_behind_an_ineligible_one_is_granted_without_a_release()
     let report = w.scheduler.tick().await;
     assert_eq!(report.gates_granted, 0, "{report:?}");
     let behind = w.start(middle, &account).await;
-    queued(&w, behind, "g", (true, false)).await;
-    let report = w.scheduler.tick().await;
-    assert_eq!(report.gates_granted, 1, "{report:?}");
     granted(&w, behind, "g", (true, false)).await;
+    let report = w.scheduler.tick().await;
+    assert_eq!(report.gates_granted, 0, "{report:?}");
     queued(&w, refused_by_its_own_limit, "g", (true, false)).await;
 }
 

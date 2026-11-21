@@ -4516,10 +4516,11 @@ impl RunTx for PgRunTx {
         &'a mut self,
         node: Option<&'a NodeId>,
         attempt: u32,
+        counted_at: OffsetDateTime,
     ) -> impl Future<Output = Result<Option<Vec<sagat_domain::execution::GateEvent>>, StoreError>>
     + Send
     + 'a {
-        self.grant_from_queue(node, attempt)
+        self.grant_from_queue(node, attempt, counted_at)
     }
 
     fn refusing_gate<'a>(

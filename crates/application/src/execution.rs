@@ -1099,11 +1099,16 @@ pub trait RunTx: Send {
     /// the queued step `node`, or of the run's start when `node` is `None` (T022-022) (semaphores, then windows), whether every gate it waits for admits it now by the
     /// reservation rule, and if so its grants, as the events to journal, with their holder and grant rows written and its
     /// waiter rows removed. `None` when a gate refuses it, or its queue deadline passed (the timeout routine's). The
+    /// key's grants are counted as of `counted_at`, the instant the pass selected its key (at or before every decision of
+    /// the pass): within one pass no grant ages out, so a waiter is never granted after a younger one that the same rule
+    /// refused earlier in that pass (strict admission order, decision D022-073 item 2); counting more grants than the
+    /// decision's own instant would is never an over-grant. The queue deadline is checked at the decision's instant. The
     /// run's state is not changed; the domain applies the events. An adapter that does not run the gate refuses.
     fn grant_queued_step<'a>(
         &'a mut self,
         _node: Option<&'a NodeId>,
         _attempt: u32,
+        _counted_at: time::OffsetDateTime,
     ) -> impl Future<Output = Result<Option<Vec<sagat_domain::execution::GateEvent>>, StoreError>>
     + Send
     + 'a {

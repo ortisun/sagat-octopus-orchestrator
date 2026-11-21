@@ -1182,3 +1182,61 @@ async fn a_rate_cursor_of_a_forced_version_is_refused() {
     let (status, body) = read(&api, &format!("{path}&cursor={under_two}")).await;
     assert_eq!(status, StatusCode::OK, "{body}");
 }
+
+/// Decision D022-075 item 3 (review of task T022-080, Major 3): a waiting run's place and limit follow the limit its grant
+/// is decided with, the lower of its filed limit and the namespace's current ceiling. With `limit: 3, per: hour`, three
+/// slots counted and one run buffered behind them, the run shows limit 3 and the first counted slot's age-out
+/// (`k = 3 + 0 - 3 + 1 = 1`). Once the namespace lowers its hourly ceiling to 1, the grant routine admits the run only
+/// when `n + a < 1`: it shows limit 1 and the third counted slot's age-out (`k = 3 + 0 - 1 + 1 = 3`).
+#[tokio::test]
+async fn a_lowered_ceiling_moves_the_estimate_and_the_limit_a_waiting_run_shows() {
+    let (api, namespace) = api().await;
+    let workflow = publish(
+        &api,
+        "rest-rate-lowered",
+        rated_start("rest-rate-lowered", 3, "hour"),
+    )
+    .await
+    .expect("published");
+    let mut holders = Vec::new();
+    for _ in 0..3 {
+        holders.push(start(&api, &workflow, CANARY).await);
+    }
+    let waiter = start(&api, &workflow, CANARY).await;
+    let (_, before) = read(&api, &format!("/runs/{waiter}")).await;
+    let slot = &before["rateLimit"];
+    assert_eq!(
+        (slot["state"].as_str(), slot["limit"].as_u64()),
+        (Some("WAITING"), Some(3)),
+        "{slot}"
+    );
+    assert_eq!(
+        us(&slot["estimatedGrantAt"]),
+        granted_us(&api, &holders[0]).await + HOUR_US
+    );
+    let lowered = api
+        .as_user(
+            Method::PUT,
+            &format!("/namespaces/{namespace}/quotas/rate_limit_per_hour"),
+            "alice",
+            "acme",
+        )
+        .json(&json!({"limit": 1}))
+        .send()
+        .await
+        .expect("lower the ceiling");
+    assert_eq!(lowered.status(), StatusCode::OK);
+    let (_, after) = read(&api, &format!("/runs/{waiter}")).await;
+    conforms("/runs/{runId}", &after);
+    let slot = &after["rateLimit"];
+    assert_eq!(
+        (slot["position"].as_u64(), slot["limit"].as_u64()),
+        (Some(1), Some(1)),
+        "the limit the grant is decided with: {slot}"
+    );
+    assert_eq!(
+        us(&slot["estimatedGrantAt"]),
+        granted_us(&api, &holders[2]).await + HOUR_US,
+        "the third counted slot's age-out"
+    );
+}

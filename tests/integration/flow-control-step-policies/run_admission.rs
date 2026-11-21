@@ -694,3 +694,83 @@ async fn with_the_switch_off_a_process_holding_the_keys_drains_the_queue() {
         w.assert_consistent(run).await;
     }
 }
+
+/// The next-eligible hint of the key `run`'s start is queued for, in microseconds.
+async fn key_hint_us(w: &World, run: RunId) -> Option<i64> {
+    sqlx::query_scalar(
+        "SELECT (extract(epoch FROM k.next_eligible_at) * 1000000)::bigint \
+           FROM concurrency_waiters x JOIN concurrency_semaphores k \
+             ON k.tenant_id = x.tenant_id AND k.namespace_id = x.namespace_id AND k.pool = x.pool \
+            AND k.permit_scope = x.permit_scope AND k.group_name = x.group_name AND k.key_digest = x.key_digest \
+          WHERE x.run_id = $1 AND x.permit_scope = 'RUN'",
+    )
+    .bind(run.as_uuid())
+    .fetch_one(&w.db.pool)
+    .await
+    .expect("the start's waiter and its key")
+}
+
+/// Decision D022-073 (strict admission order; SC-022-004, FR-022-042): with `limit: 3`, three holders and one start
+/// queued behind them, two holders end, so the key has room for two; a new start finds an eligible waiter ahead and
+/// queues instead of taking a permit before it. Its key is due once it has committed (so the next pass visits it: plan
+/// "The grant pass, by key", the delay strict order costs), and one pass grants the waiter and then the new start, in
+/// admission order.
+#[tokio::test]
+async fn a_start_behind_an_eligible_waiter_queues_although_the_key_has_room_and_one_pass_grants_both_in_order()
+ {
+    let w = gated_world().await;
+    let workflow = publish(&w, serial_start("start-strict-order", 3)).await;
+    let session = w.session(&["act.g"]).await;
+    let input = json!({"accountId": "acct-1"});
+    let mut holders = Vec::new();
+    for _ in 0..3 {
+        holders.push(w.start(workflow, &input).await);
+    }
+    let waiter = w.start(workflow, &input).await;
+    assert_eq!(start_rows(&w, waiter).await, (0, 1), "the key is full");
+    for task in w.poll(&session, 8).await {
+        if task.run_id != holders[2] {
+            w.complete(&session, &task, &json!({})).await.expect("done");
+        }
+    }
+    for run in &holders[..2] {
+        assert_eq!(start_rows(&w, *run).await, (0, 0), "its permit given back");
+    }
+    let late = w.start(workflow, &input).await;
+    let committed = crate::support::flow_control::database_now_us(&w.db.pool).await;
+    assert_eq!(
+        start_rows(&w, late).await,
+        (0, 1),
+        "room for two, an eligible waiter ahead: it queues: {:?}",
+        w.journal(late).await
+    );
+    assert_eq!(count(&w, late, "concurrency.queued").await, 1);
+    let hint = key_hint_us(&w, late).await;
+    assert!(
+        hint.is_some_and(|hint| hint <= committed),
+        "the key is due once the start has committed: {hint:?} > {committed}"
+    );
+    let report = w.scheduler.grant_gates().await;
+    assert_eq!(report.gates_granted, 2, "{report:?}");
+    let acquired: Vec<(uuid::Uuid, time::OffsetDateTime)> = sqlx::query_as(
+        "SELECT run_id, acquired_at FROM concurrency_holders WHERE run_id = ANY($1) AND holder_scope = 'RUN' \
+          ORDER BY acquired_at, run_id",
+    )
+    .bind(vec![waiter.as_uuid(), late.as_uuid()])
+    .fetch_all(&w.db.pool)
+    .await
+    .expect("holders");
+    let order: Vec<uuid::Uuid> = acquired.iter().map(|(run, _)| *run).collect();
+    assert_eq!(
+        order,
+        [waiter.as_uuid(), late.as_uuid()],
+        "admission order: {acquired:?}"
+    );
+    assert!(
+        acquired[0].1 < acquired[1].1,
+        "two grants, one after the other: {acquired:?}"
+    );
+    for run in holders.iter().copied().chain([waiter, late]) {
+        w.assert_consistent(run).await;
+    }
+}
