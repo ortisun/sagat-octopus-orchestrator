@@ -187,7 +187,7 @@ public sealed class WorkerHostTests : IAsyncLifetime
         var host = Host(o => o.Worker.HeartbeatInterval = TimeSpan.FromMilliseconds(20));
         host.RegisterActivity<JsonNode?, int>("charge", async (_, context, ct) =>
         {
-            await Task.Delay(100, ct);
+            await Eventually.ReachedAsync(() => State.Of("Heartbeat").Count >= 1, 5_000); // the beat read below, not a delay
             await context.GetSecretsAsync(ct);
             return 1;
         });
@@ -307,10 +307,14 @@ public sealed class WorkerHostTests : IAsyncLifetime
     {
         var host = Host(o => o.Worker.HeartbeatInterval = TimeSpan.FromMilliseconds(20));
         var deadlines = new List<DateTimeOffset>();
-        host.RegisterActivity<JsonNode?, JsonNode>("slow", async (_, context, ct) =>
+        host.RegisterActivity<JsonNode?, JsonNode>("slow", async (_, context, _) =>
         {
             deadlines.Add(context.Deadline);
-            await Task.Delay(300, ct);
+
+            // A barrier, not a delay: the handler ends once three beats have reached the server and the lease they moved is the one it
+            // sees. Three beats of 20 ms did not always fit a delay of 300 ms on a loaded runner. A heartbeat that waited for the handler to
+            // end would never come, and the assertions below say so.
+            await Eventually.ReachedAsync(() => State.Of("Heartbeat").Count >= 3 && context.Deadline > deadlines[0], 5_000);
             deadlines.Add(context.Deadline);
             return new JsonObject { ["ok"] = true };
         });
@@ -485,7 +489,7 @@ public sealed class WorkerHostTests : IAsyncLifetime
         object? secretError = null;
         host.RegisterActivity<JsonNode?, int>("slow", async (_, context, ct) =>
         {
-            await Task.Delay(80, ct);
+            await Eventually.ReachedAsync(() => State.Of("Heartbeat").Count >= 1, 5_000); // the beat read below, not a delay
             try
             {
                 await context.GetSecretsAsync(ct);
@@ -516,7 +520,7 @@ public sealed class WorkerHostTests : IAsyncLifetime
         var host = Host(o => o.Worker.HeartbeatInterval = TimeSpan.FromMilliseconds(20));
         host.RegisterActivity<JsonNode?, int>("slow", async (_, context, ct) =>
         {
-            await Task.Delay(80, ct);
+            await Eventually.ReachedAsync(() => State.Of("Heartbeat").Count >= 1, 5_000); // the beat read below, not a delay
             var error = await Assert.ThrowsAsync<SagatException>(() => context.GetSecretsAsync(ct));
             Assert.Equal(SagatErrorCode.UnsupportedProtocol, error.Code);
             return 1;
@@ -1191,14 +1195,28 @@ public sealed class WorkerHostTests : IAsyncLifetime
     [Fact]
     public async Task TheHeartbeatKeepsRunningUntilTheReportIsMadeAndNotJustUntilTheHandlerEnds()
     {
+        var sends = new SendLog();
         var host = Host(o =>
         {
             o.Worker.HeartbeatInterval = TimeSpan.FromMilliseconds(20);
             o.Retry.InitialDelay = TimeSpan.FromMilliseconds(100);
             o.Retry.MaxDelay = TimeSpan.FromMilliseconds(400);
+            o.Worker.Interceptors.Add(sends);
         });
         host.RegisterActivity<JsonNode?, int>("charge", (_, _, _) => Task.FromResult(1));
         State.Fail("CompleteStep", new Scripted(StatusCode.Unavailable), new Scripted(StatusCode.Unavailable), new Scripted(StatusCode.Unavailable));
+
+        // The third attempt is held until three beats have come after the first one: what the test claims, made to happen instead of hoped
+        // for inside the retries' backoff. A heartbeat that ended with the handler never brings them, and the count below says so.
+        State.Before["CompleteStep"] = async () =>
+        {
+            var reports = State.Of("CompleteStep");
+            if (reports.Count == 3)
+            {
+                var first = reports[0].At;
+                await Eventually.ReachedAsync(() => State.Of("Heartbeat").Count(call => call.At > first) >= 3, 5_000);
+            }
+        };
         State.Lease(Lease());
         await host.StartAsync();
         await Eventually.UntilAsync(() => meters.Total("sagat.worker.tasks.completed") == 1, "the completion");
@@ -1209,10 +1227,13 @@ public sealed class WorkerHostTests : IAsyncLifetime
         var during = State.Of("Heartbeat").Count(call => call.At > first && call.At < last);
         Assert.True(during >= 3, $"{during} heartbeats while the report was being retried");
 
-        // ... and none once the report is made.
-        var after = State.Of("Heartbeat").Count;
+        // ... and none once the report is made. The task leaves the host only after its heartbeat is cancelled and awaited, so from that
+        // mark no beat may begin. What the host sent is read, not what reached the fake, where a beat sent in time can land late; the
+        // delay gives a heartbeat left running the time to show itself, and can only hide a defect, never fail a good host.
+        await Eventually.UntilAsync(() => SendLog.InFlight(host) == 0, "the task to leave the host");
+        sends.Mark("left");
         await Task.Delay(150);
-        Assert.Equal(after, State.Of("Heartbeat").Count);
+        Assert.Equal(0, sends.After("left", "sent Heartbeat"));
     }
 
     [Fact]

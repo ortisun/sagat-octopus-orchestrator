@@ -63,12 +63,25 @@ public sealed class HostHardeningTests : IAsyncLifetime
     {
         State.FailAlways("PollTasks", new Scripted(StatusCode.Unauthenticated));
         var host = Host();
+        var clock = new RecordingClock().On(host);
+        clock.Seen = () => (State.Registrations, State.Polls);
         host.RegisterActivity<JsonNode?, int>("charge", (_, _, _) => Task.FromResult(1));
         await host.StartAsync();
-        await Task.Delay(2000);
-        var registrations = State.Registrations;
-        Assert.InRange(registrations, 2, 14);
-        Assert.InRange(State.Polls, 2, 40);
+
+        // The waits the host asks for between registrations are read, not counted in a window of two seconds. The first refusal is
+        // registered again at once; from the second refusal in a row each registration waits the backoff of the retry policy (5 ms
+        // doubled per refusal, halved at most by the jitter), and the waits grow.
+        await Eventually.UntilAsync(() => State.Registrations >= 6, "six registrations");
+        var waits = clock.Waits;
+        Assert.DoesNotContain(waits, wait => wait.Registrations == 1);
+        for (var registrations = 2; registrations <= 5; registrations++)
+        {
+            var ceiling = 5 * Math.Pow(2, registrations - 2);
+            var after = waits.Where(wait => wait.Registrations == registrations).Select(wait => wait.Due.TotalMilliseconds).ToList();
+            Assert.True(
+                after.Count == 1 && after[0] >= Math.Round(ceiling / 2) && after[0] <= ceiling,
+                $"after registration {registrations} the host waited [{string.Join(", ", after)}] ms, not one backoff of {ceiling / 2} to {ceiling} ms");
+        }
     }
 
     [Fact]
@@ -447,10 +460,12 @@ public sealed class HostHardeningTests : IAsyncLifetime
     {
         var host = Host(o => o.Worker.HeartbeatInterval = TimeSpan.FromMilliseconds(20));
         var release = new TaskCompletionSource();
+        var cancelledByTheRun = new TaskCompletionSource();
         string? reasonAfterShutdown = null;
         host.RegisterActivity<JsonNode?, int>("charge", async (_, context, ct) =>
         {
             await Task.Delay(Timeout.Infinite, ct).ContinueWith(_ => { }, TaskScheduler.Default);
+            cancelledByTheRun.TrySetResult();
             await release.Task;
             reasonAfterShutdown = context.CancellationReason;
             return 1;
@@ -458,8 +473,9 @@ public sealed class HostHardeningTests : IAsyncLifetime
         State.CancelRequested = true;
         State.Lease(Lease());
         await host.StartAsync();
-        await Eventually.UntilAsync(() => State.Of("Heartbeat").Count >= 1, "the heartbeat that cancels");
-        await Task.Delay(100);
+        // The stop begins once the handler has seen the cancellation of the run, not 100 ms after the beat that carries it: on a loaded
+        // machine the answer could still be on its way, and the shutdown would then be the first reason.
+        await cancelledByTheRun.Task.WaitAsync(TimeSpan.FromSeconds(10));
         var stopping = host.StopAsync(TimeSpan.FromMilliseconds(100));
         await Task.Delay(400);
         release.SetResult();
@@ -536,12 +552,21 @@ public sealed class HostHardeningTests : IAsyncLifetime
             }
         };
         var host = Host();
+        var clock = new RecordingClock().On(host);
         host.RegisterActivity<JsonNode?, int>("charge", (_, _, _) => Task.FromResult(1));
         State.Lease(Lease(l => { l.TaskId = "run-1/charge/1"; l.RunId = "run-1"; }));
-        var clock = Stopwatch.StartNew();
         await host.StartAsync();
         await Eventually.UntilAsync(() => State.Of("CompleteStep").Count == Steps, "the chain", 60_000);
-        Assert.True(clock.ElapsedMilliseconds < 4000, $"{Steps} chained quick steps took {clock.ElapsedMilliseconds} ms (a lost wake costs a second each)");
+
+        // A lost wake shows as a pause of the loop (the second the empty poll asks for, 800 to 1200 ms with its jitter) waited out to its
+        // end while the next step was ready. Read from the clock of the host, not from the time the chain took on a loaded machine: every
+        // pause begun during the chain must have been cut short by the step that finished, or not taken at all. The heartbeat waits (10 s
+        // for these leases) are not pauses of the loop and are left out.
+        var chainEnded = State.Of("CompleteStep")[^1].At;
+        var waitedOut = clock.FiredWaits
+            .Where(wait => wait.Due >= TimeSpan.FromMilliseconds(800) && wait.Due <= TimeSpan.FromMilliseconds(1200) && wait.At < chainEnded)
+            .ToList();
+        Assert.True(waitedOut.Count == 0, $"{waitedOut.Count} pauses of the loop ran to their end during the chain of {Steps} quick steps (a lost wake costs a second each)");
     }
 
     // -------------------------------------------------------------- round 4: the heartbeat, the message, the session, the kind
