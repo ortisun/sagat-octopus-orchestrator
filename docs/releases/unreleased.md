@@ -132,3 +132,12 @@ The integrated protocol is 1.6: scoped identity was introduced in 1.5 and manage
 capabilities in 1.6. Ordinary workers retain the documented feature gates. Do not reuse the
 standalone unreleased 017 migration numbering against an existing integration database; preserve
 backups and follow ADR-0036's checksum refusal policy.
+
+## Step logs: the measured cost of capture
+
+Step logs (design 041) store the lines a step writes to its logger. Capture is on by default at `info`. On a saturated
+host with 1 API replica and 16 workers it costs about 18% of the step rate (82.0% of the rate with capture off) and
+8.6 ms of completion p99 over the allowance; with 8 replicas and 128 workers every criterion is met (93.1% of the rate).
+The owner accepted this measured cost (OD-2026-11-20-13). A namespace can turn capture off or lower its ceilings. Lines
+can be dropped, visibly, when the log service is busy ("not stored: the log service was busy (not your quota)"); the
+report always lands (OD-2026-11-20-14). See [the step-logs runbook](../runbooks/step-logs.md#1-what-capture-costs).

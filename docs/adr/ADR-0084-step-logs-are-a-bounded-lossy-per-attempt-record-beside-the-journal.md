@@ -1,6 +1,6 @@
 # ADR-0084: Step logs are a bounded, lossy, per-attempt record beside the journal
 
-**Status:** Accepted (2026-11-13, OD-2026-11-13-17: the owner's "Aceito tudo"); revised the same day after review, before any code (see Revision)
+**Status:** Accepted (2026-11-13, OD-2026-11-13-17: the owner's "Aceito tudo"); revised the same day after review, before any code (see Revision); partly superseded by [ADR-0095](ADR-0095-the-last-step-log-records-of-an-attempt-ride-on-its-report.md) and [ADR-0097](ADR-0097-the-step-log-quota-is-charged-to-exact-per-tenant-leases-never-to-the-usage-row-at-commit.md) (both accepted 2026-11-20, OD-2026-11-20-15; see the Notes of 2026-11-19 and 2026-11-20)
 **Decided by:** owner, on the agent's proposal (OD-2026-11-13-17, accepting the text of commit 35b752b3). The owner chose the feature
 (OD-2026-11-13-9) and, among the options of the design, the store (O041-004), the ceilings (O041-005), the retention (O041-006), what
 is kept at a ceiling (O041-007) and the tail route (O041-008) (OD-2026-11-13-14). The revision of 2026-11-13 is the agent's, answering
@@ -255,6 +255,11 @@ reading of decision 11: a batch's rows are charged at its insert to its writer's
 quota class fences, shared), the usage row is taken only by a refill under the ingest's lock timeout, and a refusal raises
 at the insert and is answered `RETRY_LATER` as before. Nothing above changes until ADR-0097 is accepted; on acceptance this
 ADR is marked "partly superseded by ADR-0097".
+
+Note (2026-11-20, OD-2026-11-20-15): the owner accepted ADR-0095 and ADR-0097 ("Accept both"). The two Notes above now
+apply: decisions 2, 6 and 11 and the session clause of decision 5 for a carry are superseded by ADR-0095, which refines
+decisions 3, 7 and 9; the clauses of decision 3 and the reading of decision 11 named in the Note of 2026-11-20 and the
+delay clause of decision 7 are superseded by ADR-0097.
 
 ## Evidence
 

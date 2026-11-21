@@ -1,21 +1,23 @@
 # ADR-0097: The step-log quota is charged to exact per-tenant leases, never to the usage row at commit
 
-**Status:** Proposed
-**Decided by:** agent under the owner's delegation OD-2026-11-20-6 ("decide for advantage"), design 041's D041-108,
+**Status:** Accepted (2026-11-20, OD-2026-11-20-15)
+**Decided by:** owner, on the proposal of the agent under the owner's delegation OD-2026-11-20-6 ("decide for advantage"), design 041's D041-108,
 D041-112, D041-117 (the lease owned by its writer), D041-119 (room made before the report, a fallback refill
 bounded by a budget), D041-120 (the bounded ensure, the ended-backend reclaim) and D041-121 (the second re-reads'
-answers); adopted by the coordinating session on 2026-11-20. Acceptance (D041-115): README rule 4 requires a person to accept, and
+answers); adopted by the coordinating session on 2026-11-20, and accepted by the owner on 2026-11-20 ("Accept both", with
+ADR-0095; OD-2026-11-20-15, question O041-042), with its residual gaps G041-026 (the busy loss past the budget, accepted as
+built: "Accept the visible loss", OD-2026-11-20-14) and G041-027 (behind a transaction pooler). Acceptance (D041-115): README rule 4 requires a person to accept, and
 the delegation does not stand in for that; the coordinating session puts this ADR to the owner with a recommendation once
 design 041's re-review has no Blocker or Major and task T041-35's fourth run, which measures decisions 1 to 4 and 5 to
 8 on the leases (decision 3b, the ensure, is measured by task T041-9), is recorded (question O041-042),
 whatever that run's result (this decision rests on D041-106's ceiling and on D041-116's diagnoses, not on the 1 × 16
 gate), together with the restated O041-040
-**Refines / supersedes:** would supersede, when accepted:
+**Refines / supersedes:** supersedes:
 - for the class `step_log`, the charge half of item 3 of the Amendment of 2026-11-15 of
   [ADR-0027](ADR-0027-durable-content-rate-and-retention-quotas.md) (a charge goes to a lease, not to
-  `quota_transaction_deltas.step_log_delta` and the finalizer at commit) and the second bullet ("One flush per
-  transaction") of its proposed amendment of 2026-11-20 (O041-040), whose statement-level measurement and per-row release
-  it keeps; and, for that class, ADR-0027's rule that the usage counters never go below zero (S may, U may not);
+  `quota_transaction_deltas.step_log_delta` and the finalizer at commit) and the deferred flush on insert of its proposed amendment of 2026-11-20 (O041-040), which its Amendment of the
+  Amendment as accepted on 2026-11-20 (OD-2026-11-20-16) replaces by this ADR, keeping the statement-level measurement and
+  the per-row release; and, for that class, ADR-0027's rule that the usage counters never go below zero (S may, U may not);
 - in [ADR-0084](ADR-0084-step-logs-are-a-bounded-lossy-per-attempt-record-beside-the-journal.md) (Revision), the clause of
   decision 3 that a batch "MUST NOT take the tenant's `tenant_retained_usage` row before its commit" and refuses "by the
   commit-time finalizer's raise" (a batch now charges a lease at its insert, takes the usage row only for a refill, and
@@ -30,7 +32,7 @@ gate), together with the restated O041-040
   report by the ensure and the fallback's budget) and decision 5 (the carry's block also answers a fallback past its
   budget, in the same call), revised with this ADR.
 
-On acceptance ADR-0027 and ADR-0084 are marked "partly superseded by ADR-0097". The content and log classes, their deltas
+ADR-0027 and ADR-0084 are marked "partly superseded by ADR-0097". The content and log classes, their deltas
 and their finalizer are unchanged.
 **Enforced by:** nothing yet: nothing is built. The checks that MUST exist when it is, each a task of
 [design 041](../designs/041-step-logs.md): the invariant tests of decision 2, the held-lock tests of decisions 3 to 6

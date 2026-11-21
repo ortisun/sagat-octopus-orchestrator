@@ -1,15 +1,16 @@
 # ADR-0095: The last step-log records of an attempt ride on its report
 
-**Status:** Proposed
-**Decided by:** owner chose the direction (OD-2026-11-19-1, O041-036 option (d), "Redesenhar (CompleteStep)"); this text is the
-agent's proposal of how, for the owner to accept (O041-038), put by the coordinating session with a recommendation once
-design 041's spike T041-35 passes and the re-review of its revision of 2026-11-20 has no Blocker or Major (D041-115)
-**Refines / supersedes:** would supersede, when accepted, decisions 2, 6 and 11 of
+**Status:** Accepted (2026-11-20, OD-2026-11-20-15)
+**Decided by:** owner. The owner chose the direction (OD-2026-11-19-1, O041-036 option (d), "Redesenhar (CompleteStep)"); this text is the
+agent's proposal of how, and the owner accepted it on 2026-11-20 ("Accept both", with ADR-0097; OD-2026-11-20-15, question
+O041-038), after design 041's task T041-35 recorded its fourth run (decision D041-122) and the owner accepted the measured
+cost at 1 × 16 (OD-2026-11-20-13)
+**Refines / supersedes:** supersedes decisions 2, 6 and 11 of
 [ADR-0084](ADR-0084-step-logs-are-a-bounded-lossy-per-attempt-record-beside-the-journal.md) (as revised on 2026-11-15 and read
 by its Notes), the session clause of its decision 5 for a carry, and the clause of item 1 of the Amendment of 2026-11-15 of
 [ADR-0027](ADR-0027-durable-content-rate-and-retention-quotas.md) that "no terminal report writes a step-log row except the
-script-output marker"; and would refine ADR-0084 decisions 3, 7 (the final batch becomes the carry's final mark) and 9. On
-acceptance both are marked "partly superseded by ADR-0095". ADR-0084's other decisions, ADR-0085 and ADR-0015 are unchanged.
+script-output marker"; and refines ADR-0084 decisions 3, 7 (the final batch becomes the carry's final mark) and 9. Both
+are marked "partly superseded by ADR-0095". ADR-0084's other decisions, ADR-0085 and ADR-0015 are unchanged.
 **Enforced by:** nothing yet: nothing is built. The checks that MUST exist when it is, each a task of
 [design 041](../designs/041-step-logs.md), with its row in `docs/engineering/architecture-principles.md`:
 `work_budget.rs` with its three constants unmodified for reports without a carry, and six new equalities (51 statements,
@@ -64,8 +65,8 @@ Facts of the code that shape the change:
    the report the store may run ADR-0097's ensure, a transaction of its own under no run lock, when its writer's lease is
    short of the planned charge; it is counted apart from the report's budget): a call of the database function `sagat_step_log_carry`, which tries
    the locks, reads the policy, writes the stream and the kept lines and their counters (OD-2026-11-20-1). The step-log rows are
-   charged once per insert statement (ADR-0027's proposed amendment of 2026-11-20), to its writer's own exact lease
-   (ADR-0097, Proposed), never to the usage row at the commit. These are equalities of the hot-path budget
+   charged once per insert statement (ADR-0027's Amendment of the Amendment of 2026-11-20, OD-2026-11-20-16), to its writer's own exact lease
+   (ADR-0097), never to the usage row at the commit. These are equalities of the hot-path budget
    (constitution, CI gates), beside the existing ones, tested at every call site; since the function's writes are not top-level
    statements, the budget counts them by a second measure from the step-log tables.
 3. The carry MUST be written by the transaction that records the report, after the report's own checks and the engine's change

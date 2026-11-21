@@ -156,8 +156,8 @@ In `crates/infra-postgres/storage-classification.json` (one entry per column, as
 
 The quota triggers are created on `step_log_lines` only: the manifest test requires them only on tables with
 `content` or `log` columns (`tests/integration/security-multitenancy/durable_quotas.rs:345-411`), and on the counter
-tables they would run `to_jsonb` on every update. Their shape is the proposed amendment of ADR-0027's Amendment of
-2026-11-20 (OD-2026-11-20-1 chose it; its wording is O041-040), not the per-row shape the generator writes for the other
+tables they would run `to_jsonb` on every update. Their shape is ADR-0027's Amendment of the Amendment of
+2026-11-20 (OD-2026-11-20-1 chose it; its wording was accepted as O041-040 (a), OD-2026-11-20-16), not the per-row shape the generator writes for the other
 classes:
 
 - `step_log_lines_quota_insert`: `AFTER INSERT … REFERENCING NEW TABLE AS inserted FOR EACH STATEMENT`, a `SECURITY

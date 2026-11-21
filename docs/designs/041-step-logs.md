@@ -3,7 +3,7 @@
 *   **Author:** Claude Code, for the owner
 *   **Status:** Draft
 *   **Date:** 2026-11-19
-*   **Owner-acceptance:** OD-2026-11-15-17 (the design, for 0.3.0); OD-2026-11-16-7 (the approval path); OD-2026-11-19-1 (the direction of the redesign; its text is pending review)
+*   **Owner-acceptance:** OD-2026-11-15-17 (the design, for 0.3.0); OD-2026-11-16-7 (the approval path); OD-2026-11-19-1 (the direction of the redesign); OD-2026-11-20-13 to OD-2026-11-20-16 (the fourth carry spike's cost, the busy loss, ADR-0095 and ADR-0097, the amendment of ADR-0027)
 
 --------------------------------------------------------------------------------
 
@@ -28,6 +28,12 @@ row at most 200 ms and the statement timeout the hard bound; the fallback is rar
 affinity (decisions D041-119, D041-120 and D041-121), which SC-041-007 covers. A carry takes its step-log locks only
 when they are free and otherwise skips itself, so it adds no other lock wait before the commit, and its rows are
 charged to its writer's lease, never to the tenant's usage row (ADR-0097).
+
+**Revision of 2026-11-20, after the owner's answers to the fourth run (Draft).** The owner settled SC-041-007 by the
+measured cost of task T041-35's fourth run (OD-2026-11-20-13), accepted the busy loss past the budget as built
+(OD-2026-11-20-14), accepted ADR-0095 and ADR-0097 (OD-2026-11-20-15) and amended ADR-0027 (OD-2026-11-20-16); decision
+D041-123 records the consequences. Changed: the owner-acceptance line, this Overview's references, the Open Questions,
+the owner decisions, SC-041-007 and the waits of tasks T041-3, T041-5, T041-35 and T041-36; nothing in the Technical Plan.
 
 **Revision of 2026-11-20, after task T041-35's third run (Draft): writer leases.** The third run was not decided:
 its carries were answered mark-only while the tenant had room (decision D041-116). Two diagnoses split them by cause:
@@ -73,7 +79,9 @@ the contract this design freezes is [specs/041-step-logs/contracts.md](../../spe
 schema detail is [specs/041-step-logs/data-model.md](../../specs/041-step-logs/data-model.md). The architecture decisions
 are [ADR-0084](../adr/ADR-0084-step-logs-are-a-bounded-lossy-per-attempt-record-beside-the-journal.md),
 [ADR-0085](../adr/ADR-0085-step-log-text-is-read-under-its-own-permission-and-redacted-by-value-in-the-worker.md) and,
-proposed, [ADR-0095](../adr/ADR-0095-the-last-step-log-records-of-an-attempt-ride-on-its-report.md). How
+[ADR-0095](../adr/ADR-0095-the-last-step-log-records-of-an-attempt-ride-on-its-report.md) and
+[ADR-0097](../adr/ADR-0097-the-step-log-quota-is-charged-to-exact-per-tenant-leases-never-to-the-usage-row-at-commit.md),
+both accepted on 2026-11-20 (OD-2026-11-20-15). How
 each finding of the reviews of 2026-11-15 was answered is in
 [resolution.md](041-step-logs.reviews/2026-11-15/resolution.md) of that review folder; the reports of 2026-11-13 carry their answers inline.
 
@@ -370,7 +378,12 @@ Each requirement is binding as written, whether or not it says MUST.
   carries records is, at each row, the capture-off p99 plus the larger of 10% of it and 2 ms, the rate criterion
   unchanged ("Cortar custo, depois
   limite absoluto", OD-2026-11-20-1; T041-35 states how it is judged). The machine, its load and the PostgreSQL
-  configuration are stated; the figures are criteria to verify, not promises.
+  configuration are stated; the figures are criteria to verify, not promises. Settled by the measured cost ("Accept the
+  measured cost", OD-2026-11-20-13, decision D041-123), as measured by task T041-35's fourth run (run 44834024933,
+  decision D041-122, four hosted runners of 4 cores, saturated): at 1 × 16 the rate of workload (a) is 82.0% of capture
+  off, gate (2b) is +8.6 ms over the allowance, the rate of workload (f) is 87.1% and 7 tickets are used, so capture costs
+  about 18% of the rate there; at 8 × 128 every gate passes (93.1%, −17.0 ms against the allowance, 91.5%, 5 tickets).
+  The 1 × 16 cost is documented in `docs/runbooks/step-logs.md` and the release notes.
 
 ### User stories
 
@@ -435,7 +448,8 @@ Technical, each closed by the task named:
   round trips (five for a short step) are counted by the budget, so a remote database adds a known multiple of its
   round trip (G041-022), which T041-9 records with the deployment's; and the purge's hold of the tenant usage
   row (500 rows a transaction) is unchanged by the carry. T041-9 measures all three before the release, and a failure
-  there stops the release.
+  there stops the release. T041-35's fourth run failed at 1 × 16 and passed at 8 × 128 (decision D041-122); the owner
+  settled SC-041-007 by the measured cost ("Accept the measured cost", OD-2026-11-20-13), so no design change follows.
 - **Does the read horizon and its end rule hold on PostgreSQL 16 and 18?** T041-11 and T041-12, with held transactions
   on both, each in a disposable container of its own (the horizon is cluster-wide).
 
@@ -443,18 +457,7 @@ Technical, each closed by the task named:
 
 ### Open
 
-- **O041-040 The wording of the proposed amendment of ADR-0027's Amendment** (restated 2026-11-20, D041-113; put to the
-  owner with ADR-0097 by the coordinating session, with a recommendation, once the re-review of the revision has no
-  Blocker or Major and T041-35's fourth run is recorded, D041-115, D041-119): step-log rows charged once per insert statement by a statement-level trigger, and the
-  purge's release kept per row (ADR-0027, "Proposed amendment of 2026-11-20"); its deferred flush on insert is replaced by
-  ADR-0097's leases. (a) Accept the statement-level measurement, with the charge going to a lease as ADR-0097 states it,
-  and the per-row release, as a section of ADR-0027 (an exception to `docs/adr/README.md` rule 2, as OD-2026-11-15-16
-  granted for the first Amendment); (b) the same moved into ADR-0097; (c) accept with changes. Recommended (a).
-- **O041-038 Accept ADR-0095** (put to the owner by the coordinating session once T041-35 passes and the re-review has no
-  Blocker or Major, D041-115; T041-3 and T041-36 wait for it). (a) Accept it as written,
-  which supersedes ADR-0084 decisions 2, 6 and 11 and decision 5's session clause for a carry, and the terminal-report
-  clause of ADR-0027's Amendment item 1; (b) accept with changes; (c) reject, and the design changes again. Recommended
-  (a) if T041-35 passes.
+None is open since 2026-11-20 (OD-2026-11-20-13 to -16).
 
 - **O041-026 A step-log usage row of its own.** Settled 2026-11-20 without being put (D041-108, delegate
   OD-2026-11-20-6): its condition was not met (D041-106: the queue on the usage row was not what failed T041-35), and the
@@ -534,6 +537,21 @@ Recorded in `docs/owner-decisions.md` and in research.md:
   (OD-2026-11-20-1): (a) the carry in one round trip and the step-log charge once per insert statement, then T041-35
   again; (b) if the p99 still misses +10%, the p99 criterion for a completion that carries records is the capture-off p99
   plus 2 ms, fixed in T041-35 before its rounds. Rejected: (c) a second transaction after the report; (d) deferring.
+- **O041-038, O041-040, O041-041 and O041-042** were answered on 2026-11-20 (OD-2026-11-20-14 to -16, decision
+  D041-123), after task T041-35's fourth run:
+  - O041-041, "Accept the visible loss", option (a) as built (D041-119): a carry whose fallback refill outwaits its
+    200 ms budget drops its records as `tenant_quota_busy`, visibly, and the report always lands; the question is put
+    again above 0.1% of carries answered `mark_only:busy` in any regime task T041-9 measures (OD-2026-11-20-14).
+    Rejected: (b) failing the report for a resend (a step's outcome could change, ADR-0084 decision 7); (c) writing the
+    records after the commit (a durable spool or the worker's resend, and an exception to ADR-0027).
+  - O041-042 and O041-038, "Accept both": ADR-0097 and ADR-0095 are Accepted as written (OD-2026-11-20-15). Rejected:
+    acceptance with changes; rejection.
+  - O041-040, "Amend ADR-0027", option (a): the statement-level measurement, charged to the writer's lease as ADR-0097
+    states it, and the per-row release, as a section of ADR-0027; the deferred flush on insert replaced by ADR-0097
+    (OD-2026-11-20-16). Rejected: (b) the same moved into ADR-0097; (c) acceptance with changes.
+- **The environment question of decision D041-109** (the 1 × 16 cost on a saturated 4-core runner) was answered on
+  2026-11-20, "Accept the measured cost" (OD-2026-11-20-13): SC-041-007 records the measured figures per size and the
+  cost is documented in the runbook and the release notes.
 - **O041-036**, "Redesenhar (CompleteStep)" ("redesign (CompleteStep)"), option (d), answered 2026-11-19
   (OD-2026-11-19-1): cut what a step pays by carrying its lines on the report, then a new spike. Rejected: (a) only a
   quiet rerun (it was run and confirmed the failure); (b) restating the workload to one ingest per step (its medians,
@@ -1189,7 +1207,7 @@ its `SELECT … FOR UPDATE` to the end of the commit's WAL flush: measured on th
 p99 4.0 to 4.5 ms per lock, busy 23% to 24% of the time with one charge a step and 68% with two, so one tenant's charging
 commits passed it one at a time, about 800 a second on that machine whatever the number of replicas; at 8 × 128, 1,075
 ingest commits timed out waiting for it (run 44741773762). [ADR-0097](../adr/ADR-0097-the-step-log-quota-is-charged-to-exact-per-tenant-leases-never-to-the-usage-row-at-commit.md)
-(Proposed) replaces that charge with exact per-tenant leases; data-model.md §3b gives the table, the functions and their
+(accepted 2026-11-20, OD-2026-11-20-15) replaces that charge with exact per-tenant leases; data-model.md §3b gives the table, the functions and their
 statements.
 
 - **Leases, one a writer** (D041-117). `step_log_quota_leases (tenant_id, writer, granted, used, charged_at)`, one per
@@ -1233,7 +1251,7 @@ statements.
     that stores output also takes the row at its commit, for the content class, gap G041-024): once under no run lock for the ensure, and once
     under the run lock for the fallback, each lock acquisition at most *b*. Passing `busy` to the carry as well would
     remove the second wait at the cost of more `tenant_quota_busy` losses; that trade is the owner's, with question
-    O041-041.
+    O041-041, answered by keeping the design as built ("Accept the visible loss", OD-2026-11-20-14).
   - *The kept room*: the carry and the ensure return the backend's pid, the room left and the lease's age since its
     last charge or grant (`idle_for`, computed by the database), and the store keeps the room per (backend pid,
     tenant), aging it with its own monotonic clock. The entry is stale 9 minutes (under the idle interval) after the
@@ -1282,7 +1300,7 @@ statements.
   batch it is `RETRY_LATER`, counted `caller="ingest"`, not alerted (an ingest's ordinary backpressure). So no step-log
   refusal fails, blocks or retries a step (ADR-0084 decision 7, ADR-0095 decision 4); a loss for no quota reason is
   possible only past *b* in the fallback, visible to the reader and the operator, and an owner's choice (gap G041-026,
-  question O041-041). A script marker past *b* is counted `caller="marker"` and `skipped_quota`.
+  question O041-041, accepted as built: OD-2026-11-20-14). A script marker past *b* is counted `caller="marker"` and `skipped_quota`.
 - **Why the waits cannot deadlock.** No transaction waits for a lease it does not own: other writers' leases are taken
   `SKIP LOCKED` (a refill's or the purge's reclaim) or `NOWAIT` under the step-log fence held exclusively (a limit
   change), and the writer's own lease `NOWAIT` after the usage row (only a holder of the usage row, or a limit change
@@ -1414,7 +1432,7 @@ with accounted columns.
 
 **Grants** are those of data-model.md §4: no `UPDATE` on lines, no grant on `namespaces`, no `TRUNCATE`, and no
 `SECURITY DEFINER` function beyond the accessor `sagat_quota_step_log_allowance` of ADR-0027's Amendment, the
-statement-level quota trigger function of its proposed amendment, and ADR-0097's lease functions, one list (ADR-0097 decision 1): `sagat_quota_step_log_charge`, `sagat_quota_step_log_refill`,
+statement-level quota trigger function of its Amendment of the Amendment of 2026-11-20, and ADR-0097's lease functions, one list (ADR-0097 decision 1): `sagat_quota_step_log_charge`, `sagat_quota_step_log_refill`,
 `sagat_quota_step_log_refill_wait` and the limit-change trigger function `sagat_quota_step_log_reclaim` (executable by
 neither `PUBLIC` nor `sagat_app`, revoked explicitly), and `sagat_quota_step_log_reserve`,
 `sagat_quota_step_log_ensure`, `sagat_quota_step_log_usage`, `sagat_quota_step_log_counters`,
@@ -2024,7 +2042,7 @@ The options the ADRs weighed, with their reasons, are in ADR-0084 ("Considered o
   are budgeted as equalities.
 - **NFR-041-SEC (security)** No grant beyond those of data-model.md §4, no new `SECURITY DEFINER` function beyond the
   accessor `sagat_quota_step_log_allowance` of ADR-0027's Amendment, the statement-level quota trigger function of its
-  proposed amendment and ADR-0097's lease functions, one list (ADR-0097 decision 1): `sagat_quota_step_log_charge`, `sagat_quota_step_log_refill`,
+  Amendment of the Amendment of 2026-11-20 and ADR-0097's lease functions, one list (ADR-0097 decision 1): `sagat_quota_step_log_charge`, `sagat_quota_step_log_refill`,
   `sagat_quota_step_log_refill_wait` and the limit-change trigger function `sagat_quota_step_log_reclaim` (executable by
   neither `PUBLIC` nor `sagat_app`, revoked explicitly), and `sagat_quota_step_log_reserve`,
   `sagat_quota_step_log_ensure`, `sagat_quota_step_log_usage`, `sagat_quota_step_log_counters`,
@@ -2400,7 +2418,7 @@ Slice A, decisions, contracts and the spike:
       O041-041 to the owner with this run's record, as ADR-0097's acceptance clause and question O041-041 state. ADR-0095 (question
       O041-038) is put once task T041-35 passes (decision D041-115).
   Refs: NFR-041-PERF, SC-041-001, SC-041-007
-  Owner-gate: OD-2026-11-19-1, OD-2026-11-20-1
+  Owner-gate: OD-2026-11-19-1, OD-2026-11-20-1, OD-2026-11-20-13
   Files: modify `tests/performance/scalability-ha/{main.rs,step_log_spike.rs}`, `tests/Cargo.toml` (the opt-in feature),
   `crates/infra-postgres/{Cargo.toml,src/execution.rs,src/lib.rs}` (the report hook, behind the feature),
   `specs/041-step-logs/{validation-report.md,data-model.md,research.md}`.
@@ -2417,8 +2435,12 @@ Slice A, decisions, contracts and the spike:
     valid rounds of twelve (four void by drift), rounds 1 to 3 used; G041-025 closed; G041-026 measured at 1 carry of
     864,000. By the declared rules the 1 × 16 failures go to the owner with the environment question (decision
     D041-109); task T041-5 waits for the answer.
+    Settled (2026-11-20): the owner answered the environment question with "Accept the measured cost"
+    (OD-2026-11-20-13, decision D041-123): SC-041-007 records the fourth run's figures per size, the 1 × 16 cost is in
+    docs/runbooks/step-logs.md and docs/releases/unreleased.md, and this task is ticked on that row with run 44834024933
+    (commit 77fcb33d, validation-report.md, fourth run) as its evidence; task T041-5 no longer waits.
 - [ ] T041-3 Contracts: contracts.md §1, as revised on 2026-11-19 (D041-090), and §2.
-  Waits for O041-038 (the owner's acceptance of ADR-0095, put once T041-35 passes; D041-115).
+  No longer waits: the owner accepted ADR-0095 (O041-038, OD-2026-11-20-15).
   Built on this branch before the revision (D041-091); what changes from that build: the proto's field 13 on both
   reports and `StepLogCarry`, fields 11 and 12 of `AppendStepLogsRequest` reserved (the baseline loses `final_batch` and
   `highest_sequence`, a removal that is expected because 1.7 is unreleased), `StepLogCarry` in the three `skip_debug`
@@ -2511,8 +2533,8 @@ Slice B, the server stores:
   on lines and the guard trigger on streams; the rest of the
   ADR-0027 Amendment's accounting (data-model.md §3) except its locking accessor `sagat_quota_lock_step_log_usage`, which
   is not built, with the manifest test taught the class
-  and the kind; the quota triggers on `step_log_lines` in the shape of the proposed amendment of 2026-11-20 (O041-040,
-  OD-2026-11-20-1) as ADR-0097 (D041-108) changes it: a statement-level `AFTER INSERT` trigger over the transition table
+  and the kind; the quota triggers on `step_log_lines` in the shape of ADR-0027's Amendment of the Amendment of 2026-11-20 (O041-040,
+  OD-2026-11-20-1, OD-2026-11-20-16) as ADR-0097 (D041-108) states it: a statement-level `AFTER INSERT` trigger over the transition table
   charging each tenant once per statement to its exact leases (data-model.md §3b: `step_log_quota_leases`,
   `tenant_retained_usage.step_log_leased_bytes`, `sagat_quota_step_log_charge`, `sagat_quota_step_log_refill`,
   `sagat_quota_step_log_refill_wait`, `sagat_quota_step_log_ensure`, `sagat_quota_step_log_reserve`,
@@ -2568,8 +2590,9 @@ Slice B, the server stores:
   `tests/integration/platform-foundation/runtime_privileges.rs` and `python3 scripts/check-upgrade-boundary.py` pass, the
   suites also as the runtime role.
   Refs: FR-041-008
-  Waits for O041-040 for the charge per statement and for the owner's acceptance of ADR-0097 (D041-108, D041-115).
-  Owner-gate: OD-2026-11-13-14, OD-2026-11-13-18, OD-2026-11-15-4, OD-2026-11-15-5, OD-2026-11-15-6, OD-2026-11-15-9, OD-2026-11-15-16, OD-2026-11-16-10, OD-2026-11-19-1, OD-2026-11-20-1, OD-2026-11-20-6
+  No longer waits: the owner answered O041-040 (OD-2026-11-20-16), accepted ADR-0097 (OD-2026-11-20-15) and settled the
+  environment question of decision D041-109 (OD-2026-11-20-13).
+  Owner-gate: OD-2026-11-13-14, OD-2026-11-13-18, OD-2026-11-15-4, OD-2026-11-15-5, OD-2026-11-15-6, OD-2026-11-15-9, OD-2026-11-15-16, OD-2026-11-16-10, OD-2026-11-19-1, OD-2026-11-20-1, OD-2026-11-20-6, OD-2026-11-20-13, OD-2026-11-20-15, OD-2026-11-20-16
   Files: create the migration (`.up.sql`, `.down.sql`), `tests/integration/claim-transition-efficiency/step_log_isolation.rs`;
   modify `crates/infra-postgres/src/identity.rs` (the typed refusals of `tenant_step_log_quota_exceeded` and
   `tenant_step_log_quota_held` in `classify`, `:787-791`), `crates/infra-postgres/src/quotas.rs` (the usage of
@@ -2720,8 +2743,8 @@ Slice B, the server stores:
   `tests/integration/database-runner/proxy.rs`); modify `tests/integration/database-runner/main.rs`,
   `tests/integration/step-logs/main.rs`.
 - [ ] T041-36 The carry on a report (section 2a).
-  Waits for O041-038 (the owner's acceptance of ADR-0095) and O041-040 (the wording of the ADR-0027 amendment), both put
-  to the owner by the coordinating session (D041-115).
+  No longer waits: the owner accepted ADR-0095 and ADR-0097 (O041-038 and O041-042, OD-2026-11-20-15) and the wording of
+  the ADR-0027 amendment (O041-040, OD-2026-11-20-16).
   Builds:
   - the domain type `sagat_domain::step_logs::Carry` (records, `highest_sequence`, encoded size) and `CarryPlan`
     (`Full`, `MarkOnly`, `None`);
