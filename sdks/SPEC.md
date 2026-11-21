@@ -360,8 +360,10 @@ for good where the lapse sends it to a review (feature 037), which an operator c
 the registration accepted (§6.1), read per lease from the session that received it, never the newest the SDK offers. The server then gives the step back to `READY` without consuming the attempt when it can (decision D006-005
 of `specs/006-sdk-multilanguage/research.md`): only for a lease held by a session of protocol 1.8 or later, which reserves the
 code, with the requirement `lease-withdrawal-v1` recorded, the step still `LEASED` and at most four withdrawals of the attempt
-(decisions D006-030 and D006-031). Otherwise it retries it as an ordinary failure, which spends the attempt; a lease left to
-lapse would be an unknown outcome and, for an `Activity`, a review (feature 037). The rules (decisions D006-020 to D006-023;
+(decisions D006-030 and D006-031). On a fleet that does not withdraw (the requirement not recorded, or the engine's
+switch `SAGAT_LEASE_WITHDRAWAL=off`) it records nothing and answers `STALE_ATTEMPT`, so the lease lapses as before
+(decision D006-089). Otherwise (a step no longer `LEASED` to the lease, the cap reached, a session below 1.8) it retries
+it as an ordinary failure, which spends the attempt. The rules (decisions D006-020 to D006-023;
 from 1.8 only, decision D006-080):
 
 - *Which leases.* Every lease of a poll answer or a stream frame that the host received and does not dispatch:
@@ -727,6 +729,7 @@ where the language can express one. The shared scenario is `collection-operators
   | 1.5 | Scoped execution identity | `ExecutionInstanceIdentity` |
   | 1.6 | Managed database capabilities (`ResolveDatabase`) | feature 017, D600 |
   | 1.7 | Step logs (`AppendStepLogs`, `StepLogPolicy`) | feature 041, OD-2026-11-15-8; served from its task T041-7 |
+  | 1.8 | Reserved: delivery acknowledgement, which reserves `TASK_NOT_STARTED` for the host (§6.2); offered only after its throughput gate | ADR-0099, OD-2026-11-21-6 (pull request #264) |
   | next | Drafts 020, 021, 025 and 026 each name a minor; each takes the next free one when its contract merges | |
 
 ## 10. Observability and safety

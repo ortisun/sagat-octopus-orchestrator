@@ -830,6 +830,12 @@ async fn backend_pid(connection: &mut sqlx::PgConnection) -> i32 {
 #[tokio::test]
 async fn a_removal_that_waits_for_a_withdrawal_sees_its_event_and_is_refused() {
     let db = migrated_db().await;
+    // the order of the two is what is tested, not the bound (it has its own test): on this database only, the removal may
+    // wait long enough that the clock never decides
+    sqlx::query("ALTER FUNCTION platform_requirement_remove(text, text) SET lock_timeout = '60s'")
+        .execute(&db.pool)
+        .await
+        .expect("the bound raised on this database");
     record_lease_withdrawal(&db.pool).await;
     let mut withdrawal = db.pool.begin().await.expect("a transaction");
     let required: bool = sqlx::query_scalar("SELECT lease_withdrawal_required()")
@@ -959,6 +965,23 @@ async fn the_removal_waits_for_a_lock_at_most_one_second_and_probes_an_index() {
         "{setting:?}"
     );
     assert!(valid, "the partial index is valid");
+    // the guard's look at the journal is a probe of the partial index, not a scan
+    let mut planner = db.pool.begin().await.expect("a transaction");
+    sqlx::query("SET LOCAL enable_seqscan = off")
+        .execute(&mut *planner)
+        .await
+        .expect("no sequential scan");
+    let plan: Vec<String> = sqlx::query_scalar(
+        "EXPLAIN SELECT 1 FROM public.run_events e WHERE e.event_type = 'step.lease_withdrawn' LIMIT 1",
+    )
+    .fetch_all(&mut *planner)
+    .await
+    .expect("plan");
+    assert!(
+        plan.iter().any(|line| line.contains("run_events_lease_withdrawn_idx")),
+        "{plan:#?}"
+    );
+    planner.rollback().await.expect("rolled back");
     record_lease_withdrawal(&db.pool).await;
     let mut withdrawal = db.pool.begin().await.expect("a transaction");
     assert!(

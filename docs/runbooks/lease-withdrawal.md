@@ -4,7 +4,7 @@ A lease the execution engine committed and never handed to a host used to lapse 
 a lapsed lease of an `Activity` opens a review (`step.needs_review`) for work that never ran. With the requirement
 `lease-withdrawal-v1` recorded, the engine withdraws such a lease instead: the step goes back to `READY`, the attempt is
 not spent, and the journal records `step.lease_withdrawn` (cause `NOT_SENT`). The decisions are D006-001 to D006-018 and
-D006-030 to D006-039 and D006-080 to D006-087 of `specs/006-sdk-multilanguage/research.md`.
+D006-030 to D006-039 and D006-080 to D006-091 of `specs/006-sdk-multilanguage/research.md`.
 
 ## What changes, and what does not
 
@@ -24,6 +24,19 @@ D006-030 to D006-039 and D006-080 to D006-087 of `specs/006-sdk-multilanguage/re
   graceful shutdown waits for the claims in progress and their withdrawals, within the shutdown's grace.
 - A lease that lapses keeps its meaning: an unknown outcome, consultation or review (feature 037, FR-037-006).
 
+## Before upgrading
+
+On a large journal, build the partial index of `20270208000200_lease_withdrawal_floor` before you migrate, so the
+migration does not hold journal writes while it reads `run_events` (decision D006-085). With the owner role:
+
+```sql
+CREATE INDEX CONCURRENTLY IF NOT EXISTS run_events_lease_withdrawn_idx ON run_events (tenant_id)
+    WHERE event_type = 'step.lease_withdrawn';
+```
+
+A build that fails leaves an invalid index, which the migration refuses: drop it (`DROP INDEX CONCURRENTLY
+run_events_lease_withdrawn_idx;`) and build it again.
+
 ## Before the activation
 
 1. Every control plane and engine runs this build or a later one. A process of this build lists `lease-withdrawal-v1`
@@ -32,16 +45,6 @@ D006-030 to D006-039 and D006-080 to D006-087 of `specs/006-sdk-multilanguage/re
    replay `step.lease_withdrawn`.
 2. Count the live processes you expect (control planes and engines together).
 3. Know that the activation is one-way once a withdrawal happens (see Rollback).
-4. On a large journal, build the partial index of `20270208000200_lease_withdrawal_floor` before you migrate, so the
-   migration does not hold journal writes while it reads `run_events` (decision D006-085). With the owner role:
-
-   ```sql
-   CREATE INDEX CONCURRENTLY IF NOT EXISTS run_events_lease_withdrawn_idx ON run_events (tenant_id)
-       WHERE event_type = 'step.lease_withdrawn';
-   ```
-
-   A build that fails leaves an invalid index, which the migration refuses: drop it (`DROP INDEX CONCURRENTLY
-   run_events_lease_withdrawn_idx;`) and build it again.
 
 ## Activate
 
@@ -69,9 +72,9 @@ control-plane capability-activate lease-withdrawal-v1 --operator NAME --expect-l
 | --- | --- |
 | `worker_leases_undelivered_total{outcome="withdrawn"}` | Leases given back; the steps are `READY` with their attempt unspent |
 | `worker_leases_undelivered_total{outcome="fence_missed"}` | The step had moved on (a heartbeat started it, it was reported, the run ended, the reaper ended the lease); nothing was changed |
-| `worker_leases_undelivered_total{outcome="lapsed"}` | The requirement is not recorded (or not yet read by this engine), or the host's session is older than 1.8: the lease lapses, or the hand-back is an ordinary failure |
+| `worker_leases_undelivered_total{outcome="lapsed"}` | The requirement is not recorded (or not yet read by this engine): the lease lapses, and a hand-back of a 1.8 host is answered `STALE_ATTEMPT` and lapses too (decision D006-089); or the host's session is older than 1.8: its hand-back is an ordinary failure |
 | `worker_leases_undelivered_total{outcome="capped"}` | The attempt was withdrawn four times already: a hand-back is an ordinary failure, a lease not sent lapses |
-| `worker_leases_undelivered_total{outcome="disabled"}` | This engine runs with `SAGAT_LEASE_WITHDRAWAL=off`: a lease not sent lapses, a hand-back is an ordinary failure |
+| `worker_leases_undelivered_total{outcome="disabled"}` | This engine runs with `SAGAT_LEASE_WITHDRAWAL=off`: a lease not sent lapses, and so does a lease a 1.8 host hands back (answered `STALE_ATTEMPT`, decision D006-089) |
 | `worker_leases_undelivered_total{outcome="error"}` | The store failed or the process was stopping past its grace; the lease lapses |
 | `step.lease_withdrawn` in a run's timeline | One withdrawal, with its cause (`NOT_SENT`, `NOT_STARTED`) |
 
@@ -100,15 +103,16 @@ The requirement is a replay floor (decision D006-032). A build older than this f
 - The removal runs only under READ COMMITTED, the default (decision D006-084); a session or role whose
   `default_transaction_isolation` is stricter is refused (`is removed only under READ COMMITTED`): run it with
   `SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL READ COMMITTED` first.
-- The removal waits at most one second for a lock (decision D006-085), so registrations, which queue behind it, are never
-  held past their own lock timeout. An engine still withdrawing holds the lock it waits for: a removal that fails with
-  `canceling statement due to lock timeout` changed nothing. Set `SAGAT_LEASE_WITHDRAWAL=off` first and run it again.
+- The removal waits at most one second for each lock (decision D006-085); run it under `SET statement_timeout =
+  '1500ms';`, which bounds the whole call, so registrations, which queue behind it on a 5 s statement timeout, are never
+  held past it. An engine still withdrawing holds the lock it waits for: a removal that fails with `canceling statement
+  due to lock timeout` (or `statement timeout`) changed nothing. Set `SAGAT_LEASE_WITHDRAWAL=off` first and run it again.
 - The down migration `20270208000000_lease_withdrawal` refuses as well (`20270208000200_lease_withdrawal_floor` rolls back
   first and holds nothing an older binary cannot read).
 - A binary rollback below this feature is not possible. Roll back to a build of this feature or later.
 
 While no journal holds the event (`SELECT count(*) FROM run_events WHERE event_type = 'step.lease_withdrawn'` is 0), the
 way back is: set `SAGAT_LEASE_WITHDRAWAL=off` on every engine and wait one heartbeat interval (about ten seconds), remove
-the requirement with the owner role (`SELECT * FROM platform_requirement_remove('lease-withdrawal-v1', 'your-subject');`),
+the requirement with the owner role (`SET statement_timeout = '1500ms'; SELECT * FROM platform_requirement_remove('lease-withdrawal-v1', 'your-subject');`),
 then roll the binaries back. The down migration also refuses while the requirement or its history exists, or while a
 registered process lists the capability.

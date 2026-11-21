@@ -201,6 +201,16 @@ fn check_kinds(entry: &Activatable, live: &[InstanceKind]) -> Result<(), RunErro
     )))
 }
 
+/// Whether the second count, under the epoch lock, refuses the activation: the live count is not the one the first count
+/// agreed with, a live process lacks the capability, none is live for an entry an empty fleet may not activate, or a kind
+/// the entry requires live has none (decision D006-082).
+fn refused_under_lock(entry: &Activatable, census: &CapabilityCensus, expected: u32) -> bool {
+    census.live != expected
+        || census.lacking > 0
+        || (census.live == 0 && !entry.empty_fleet)
+        || check_kinds(entry, &census.kinds_live).is_err()
+}
+
 /// Records the requirement `args.capability` of the kinds its entry covers.
 ///
 /// # Errors
@@ -299,13 +309,9 @@ async fn run(
     let first = census.live;
     // under the epoch lock the fleet is counted again: a process that registered or went silent since the first count
     // changes nothing
-    let empty_fleet = entry.empty_fleet;
     let judge = move |census: &CapabilityCensus| {
         counted.store(census.live, std::sync::atomic::Ordering::Relaxed);
-        census.live != expect.unwrap_or(first)
-            || census.lacking > 0
-            || (census.live == 0 && !empty_fleet)
-            || check_kinds(entry, &census.kinds_live).is_err()
+        refused_under_lock(entry, census, expect.unwrap_or(first))
     };
     let activated = PgInstanceStore::new(pool.clone())
         .activate(
@@ -406,6 +412,38 @@ mod tests {
         assert!(!LEASE.each_kind_live);
         assert!(check_kinds(LEASE, &[]).is_ok());
         assert!(check_kinds(LEASE, &[InstanceKind::ExecutionEngine]).is_ok());
+    }
+
+    /// The judgement under the epoch lock (decision D006-082): every reason the first count refuses is refused again.
+    #[test]
+    fn the_count_under_the_lock_refuses_what_the_first_count_refuses() {
+        let census = |live, lacking, kinds: &[InstanceKind]| CapabilityCensus {
+            live,
+            lacking,
+            lacking_examples: Vec::new(),
+            recorded: false,
+            kinds_live: kinds.to_vec(),
+        };
+        let both = InstanceKind::ALL;
+        let each = Activatable {
+            each_kind_live: true,
+            empty_fleet: false,
+            ..*LEASE
+        };
+        assert!(!refused_under_lock(&each, &census(2, 0, &both), 2));
+        assert!(refused_under_lock(&each, &census(3, 0, &both), 2), "the count moved");
+        assert!(refused_under_lock(&each, &census(2, 1, &both), 2), "a process lacks it");
+        assert!(
+            refused_under_lock(&each, &census(2, 0, &[InstanceKind::ExecutionEngine]), 2),
+            "a kind has none live"
+        );
+        assert!(refused_under_lock(&each, &census(0, 0, &[]), 0), "an empty fleet");
+        assert!(!refused_under_lock(LEASE, &census(0, 0, &[]), 0), "the lease entry may be empty");
+        assert!(!refused_under_lock(
+            LEASE,
+            &census(1, 0, &[InstanceKind::ExecutionEngine]),
+            1
+        ));
     }
 
     #[test]

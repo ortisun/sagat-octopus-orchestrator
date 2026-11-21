@@ -225,7 +225,8 @@ All decisions below are "delegate (OD-2026-11-20-6)" unless they say otherwise.
   attempt back by one, so the next lease reuses the attempt number that never began; the generation is kept, so the next lease
   has the next generation and every fence stays monotonic. It is part of the step's history: a reset copies it like
   `step.leased`.
-- **D006-004 — It is written only when every live control plane and engine honours it.** A new capability,
+- **D006-004 — It is written only when every live control plane and engine honours it** (its command is superseded by
+  D006-034). A new capability,
   `lease-withdrawal-v1`, is listed by every control plane and engine of the build that can replay the event (unconditionally:
   it is what the binary and every configuration of it will honour). The engine withdraws only when the requirement
   `lease-withdrawal-v1` is recorded for both kinds, which it learns from the heartbeat of the instance-capability registry (the
@@ -484,7 +485,10 @@ design of delivery acknowledgement, so this list starts at 030.
   only, so whichever branch merges second takes the union of both lists in its own migration, the newest one. A fitness
   check in `scripts/check-architecture.py`, and the test `capability_lists_follow_the_code` of `crates/infra-postgres` (which
   runs on every pull request that changes that crate or the application crate), fail when the newest definition of any of the
-  three lists differs from the tokens of `Capability::ALL`. Down migrations are not checked yet.
+  three lists differs from the tokens of `Capability::ALL`. Down migrations are held to the rule too (D006-083). The branch that
+  merges second **restamps** its capability migration and its validation after the other's newest, never adds a third one
+  beside an older stamp: sqlx applies a pending older version without complaint, after newer ones (round-3 architecture
+  Minor 1).
 - **D006-034 — One operator command activates a fleet requirement** (architecture Major 5): `control-plane
   capability-activate <capability> --operator NAME [--expect-live N] [--dry-run]`. `<capability>` is the registry token
   (`lease-withdrawal-v1`). The command holds a closed list of the capabilities an operator may activate this way. Each
@@ -539,7 +543,7 @@ design of delivery acknowledgement, so this list starts at 030.
   worker protocol. **Closed on 2026-11-21 by D006-080** (delegate, OD-2026-11-20-6): the hosts hand back only on a session
   of 1.8 or later; below it a dropped lease lapses as on `develop`.
 
-### Decisions of the last round (2026-11-21, D006-080 to D006-089; G006-031 closed)
+### Decisions of the last round (2026-11-21, D006-080 to D006-091, G006-032; G006-031 closed)
 
 What the handoff of pull request #260 left open, and the coordinator's answer to gap G006-031. Each decision is "delegate
 (OD-2026-11-20-6)" unless it says otherwise. The numbers 040 to 079 are left to the design of delivery acknowledgement,
@@ -579,6 +583,15 @@ OD-2026-11-21-4 ("Accept, if the final review is clean"), applied when the round
   `platform_capability_census` returns the kinds that are live (`out_kinds_live`) beside the counts, so one statement still
   answers both questions. Weighed: a census per kind (one statement per kind, and the lock count must repeat each); a
   rule in 022's own command (two commands again, which D006-034 removed).
+  What feature 022 adopts, whichever branch merges second:
+  - its two capabilities as entries of `ACTIVATABLE`, each with `kinds: &InstanceKind::ALL`, `empty_fleet: false`,
+    `each_kind_live: true` and its own `after` sentence, and its tokens in `Capability::ALL` and the parity test;
+  - `flow-control-activate` and its own census step removed, the operator using `control-plane capability-activate <token>
+    --operator NAME [--expect-live N] [--dry-run]`;
+  - the capability lists: if 022 merges after this branch, its capability migration and its validation are restamped after
+    `20270208000200`, the up listing the union of both features' values and the down restoring this branch's list (the
+    newest up before it); if it merges first, this branch restamps instead (D006-033). The two tests of
+    `crates/infra-postgres/tests/capability_lists.rs` say which list is wrong.
 - **D006-083 — Down migrations are held to the capability lists too** (round-2 architecture "NM2", correctness 2). The
   test `capability_lists_follow_the_code` of `crates/infra-postgres` and the check of `scripts/check-architecture.py` also
   require that each down migration that redefines one of the three checks restores exactly the list of the newest up
@@ -596,18 +609,24 @@ OD-2026-11-21-4 ("Accept, if the final review is clean"), applied when the round
   snapshot).
 - **D006-085 — The removal of the requirement is bounded, and its check is an index probe** (round-2 security minor 3,
   correctness note). `platform_requirement_remove` holds the epoch lock while it waits for the withdrawals' share locks
-  and while the guard looks for the event, and every registration waits for the epoch lock (its lock timeout is 2 s).
+  and while the guard looks for the event, and every registration waits for the epoch lock (it runs on the shared pool,
+  whose statement timeout is 5 s; round-3 security Minor 2 corrected an earlier "2 s lock timeout", which is the
+  operator transactions' bound).
   - A partial index `run_events_lease_withdrawn_idx` on `run_events (tenant_id) WHERE event_type = 'step.lease_withdrawn'`
-    turns the guard's look (and the down migration's) into an index probe; it holds only the rare withdrawal rows, so a
+    turns the guard's look into an index probe (the down migrations drop it first, so their offline check scans); it holds only the rare withdrawal rows, so a
     journal write pays for it only when it is a withdrawal. It is built in the migration, as the repository's other
     indexes on large tables are, with `IF NOT EXISTS` so an operator can build it `CONCURRENTLY` first
     (`docs/runbooks/lease-withdrawal.md`); an invalid index is refused.
-  - The removal runs with `lock_timeout = 1s`. The derivation: a registration that queues behind the removal waits at
-    most the removal's lock wait plus its own work (an index probe, one delete, one update, one insert: milliseconds); that
-    must stay under the registration's 2 s, so the removal's wait is at most 1 s, which leaves a second for its work and
-    for the commit. A removal that times out changes nothing and says so (`lock_not_available`); the operator sets
-    `SAGAT_LEASE_WITHDRAWAL=off` first, which stops the share locks, and runs it again. This also ends the starvation a
-    stream of overlapping share locks could cause.
+  - The removal runs with `lock_timeout = 1s`, which bounds each of its lock waits, and the runbook runs it under
+    `statement_timeout = 1500ms`, which bounds the whole call. The derivation: a registration that queues behind the
+    removal waits at most for the whole removal; that must stay under the registration's 5 s statement timeout with a
+    margin for its own work and for a slow database, so the whole removal is held to 1.5 s, and one lock wait to 1 s of
+    it, leaving half a second for an index probe, one delete, one update, one insert and the commit. `lock_timeout`
+    alone does not bound the call: a new `FOR SHARE` of the requirement row joins the share holders without queueing
+    behind the waiting delete, so overlapping withdrawals could make the delete wait again and again (round-3 security
+    Minor 2, correctness Minor 1); the statement timeout ends that. A removal that times out changes nothing and says so;
+    the operator sets `SAGAT_LEASE_WITHDRAWAL=off` first, which stops the share locks, and runs it again. The bound holds
+    for the removal of every requirement (the function is shared); a removal by hand of `schedules-v1` waits as little.
 - **D006-086 — A handed-back token is dead for heartbeats too** (round-2 correctness minor 1, security minor 4). A
   withdrawal does not record the token as the one that reported the step, so a heartbeat with it gets `STALE_ATTEMPT`
   instead of an OK with `cancel_requested=false`. D006-031 step 1 ("its token is dead") then holds for every call.
@@ -622,3 +641,58 @@ OD-2026-11-21-4 ("Accept, if the final review is clean"), applied when the round
   withdrawal, which holds the tracker itself, before the token goes. A drain therefore waits for every lease committed and
   not yet handed to the transport, wherever its guard is. The test `a_graceful_shutdown_waits_for_a_unary_claim_in_progress_and_its_withdrawal`
   failed on the old code with the step still `LEASED` after the drain.
+- **D006-089 — From 1.8, a hand-back on a fleet that does not withdraw leaves the lease to lapse** (round-3 correctness
+  Major 1). A session of 1.8 or later reserves the code, so its `TASK_NOT_STARTED` is the host's word that nothing ran.
+  When the server will not withdraw for a reason of the fleet, not of the lease (the requirement not recorded, `Lapsed`;
+  the engine's switch off, `Disabled`), it records nothing and answers `STALE_ATTEMPT`, which every SDK ends quietly
+  (`sdks/SPEC.md` §6.2). The lease then lapses as on `develop`: an `Activity`'s goes to a review an operator can retry, and
+  the attempt of work that never ran is not spent. Without this, D006-080's regression would come back on the day 1.8
+  negotiates, on every fleet not yet activated. The ordinary failure stays for the other refusals: a step no longer
+  `LEASED` to this lease (`FenceMissed`: a handler started, or the lease moved on), the cap of four (`Capped`, D006-031:
+  a cause that repeats is a property of the task), and a session below 1.8 (`Lapsed` for the minor: the code is not
+  reserved there, so it may be a handler's). Weighed: the ordinary failure everywhere (spends the attempt of work that
+  never ran, the regression itself); withdrawing without the requirement (an older replica could meet the event: the
+  reason the requirement exists); a new answer code (the SDKs already end a hand-back on `STALE_ATTEMPT`). Tested: a
+  session of 1.8 hands back with no gate, with a gate that does not keep the requirement, and with the switch off; each
+  time the host gets `STALE_ATTEMPT`, the step stays `LEASED` and nothing is written.
+- **D006-090 — What ADR-0099 asks of this build, and when** (round-3 architecture Major 1; the requests are D006-059 of the
+  delivery acknowledgement design, on its branch). This build is not yet the rollback floor of protocol 1.8, and no build
+  of it negotiates 1.8. The status of each request:
+  - (3) the holder's minor judged at the build's own ceiling: done (`hand_back_ceiling`, tested by
+    `a_stored_minor_above_the_build_ceiling_is_judged_at_the_ceiling`).
+  - (4) "Refined by ADR-0099" pointers on ADR-0098's decisions 5 and 8: at the acceptance of ADR-0099, when its pull
+    request (#264) merges, because the ADR it points to is not on this branch.
+  - (1), (2) the cause `NOT_ACKNOWLEDGED` in the closed set and its codec, (5), (6), (7) the refusal of capability calls
+    by an engine whose registry is silent, (8) and (9): moved to the follow-up of pull request #260 that D006-059 itself
+    names, which must merge before any build negotiates 1.8. They are ADR-0099's design (its decisions and their tests);
+    building them here would implement another feature's design inside this one (AGENTS rule 2), and nothing in this build
+    depends on them, because no session reaches 1.8.
+  - The release consequence: a release that carries this build without that follow-up cannot be the floor a 1.8 build
+    rolls back to. Recorded as G006-032.
+- **D006-091 — The minors of round 3, fixed or recorded.** Fixed: the crossing test runs with the removal's lock bound
+  raised on its own database, so it cannot fail on the clock; the index test reads the plan of the guard's look; the
+  scoped half of D006-086 has a test (`bounded_worker.rs`); the under-lock judgement of `each_kind_live` is a named
+  function with a unit test; the stale sentences of D006-004 and D006-033; the decision ranges; the 1.8 rule in
+  `stream-completion.md`; the rollback text of ADR-0098 and of the down migration; the runbook's order of the index
+  build; the generic command in `docs/runbooks/instance-registry.md` section 5, the release notes, the fitness index row,
+  the 1.8 row of the register of minors (`sdks/SPEC.md` §9) and a compile-time check that this build's ceiling stays below
+  the minor that reserves the code. Recorded and left, each with its reason in G006-033: the stamp-order fitness check, the Rust SDK's test-only
+  ceiling, the four round-2 minors the architecture review lists again (the cap trusts its caller, the test seams in
+  production ports, `with_withdrawal_concurrency`'s call order, no alert on `capped`), fairness across tenants and the
+  hot requirement row, the vacuous release-0.2 assertion and the expired lease handed back.
+
+- **G006-032 — This build is not the rollback floor of protocol 1.8.** ADR-0099's requests (1), (2) and (5) to (9) are a
+  follow-up of pull request #260 (D006-090). Closed when that follow-up merges; it must merge before any build negotiates
+  1.8.
+- **G006-033 — Minors left after round 3** (D006-091). None weakens a guarantee of this build: each is unreachable before
+  1.8, an operability improvement, or a test seam.
+  - No check refuses a migration stamped below one already applied; the restamp rule (D006-033) is prose until the
+    migration runner refuses it.
+  - The Rust SDK's newest understood minor is 8 under `cfg(test)` and 6 otherwise, so its unit tests do not exercise the
+    shipped refusal of a newer minor.
+  - The domain's cap of four trusts the count its caller reads; the delivery probe and the test hooks are public types of
+    production crates (behind no feature); `with_withdrawal_concurrency` must be called before `withdrawals()`.
+  - No alert on `worker_leases_undelivered_total{outcome="capped"|"error"}`; the withdrawal semaphore is per engine, not
+    per tenant; every withdrawal takes `FOR SHARE` on one requirement row.
+  - `release_upgrade_inflight.rs`'s "no withdrawal before the activation" cannot fail on a 0.2 journal; a lease handed back
+    after its expiry has no test of its own (the fence that refuses it is tested through the reaper).

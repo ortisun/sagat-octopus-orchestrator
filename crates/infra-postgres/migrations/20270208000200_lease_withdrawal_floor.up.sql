@@ -1,16 +1,17 @@
 -- Feature 006 (lease withdrawal, ADR-0098), third: the replay floor of `lease-withdrawal-v1` made explicit about the isolation
 -- level and bounded (decisions D006-084 and D006-085 of specs/006-sdk-multilanguage/research.md).
 --
--- 1. A partial index holds only the rows of `step.lease_withdrawn`, so the floor's look at the journal (and the down
---    migration's) is an index probe, not a scan of `run_events` under the epoch lock; a journal write pays for it only when
+-- 1. A partial index holds only the rows of `step.lease_withdrawn`, so the floor's look at the journal is an index probe
+--    (the down of this migration drops it first, so the offline check of `20270208000000`'s down scans), not a scan of `run_events` under the epoch lock; a journal write pays for it only when
 --    it is a withdrawal. The build reads `run_events` once under a SHARE lock, so journal writes wait for it; `IF NOT EXISTS`
 --    lets an operator build it CONCURRENTLY first on a large database (docs/runbooks/lease-withdrawal.md, "Before the
 --    activation"); an invalid index left by a failed concurrent build is refused (the pattern of
 --    `20270119000000_batch_purge`).
 -- 2. The guard refuses the removal outside READ COMMITTED: only there does the statement that looks at the journal take a new
 --    snapshot after the row lock is granted, and so see a withdrawal that committed while the removal waited.
--- 3. The removal waits at most one second for a lock: a registration queues behind its epoch lock with a lock timeout of two
---    seconds, so the removal's wait plus its own work (an index probe and three writes) stays under it.
+-- 3. The removal waits at most one second for each lock; the runbook runs it under a statement timeout of 1.5 s, which bounds
+--    the whole call, so a registration that queues behind its epoch lock (on the shared pool's 5 s statement timeout) is
+--    never held past it (decision D006-085).
 -- 4. The census of `control-plane capability-activate` also says which of the kinds asked have a live process, for an entry
 --    that requires one of each (decision D006-082).
 CREATE INDEX IF NOT EXISTS run_events_lease_withdrawn_idx ON run_events (tenant_id)

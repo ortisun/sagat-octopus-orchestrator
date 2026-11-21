@@ -416,15 +416,51 @@ async fn a_heartbeat_with_a_handed_back_token_is_stale() {
     assert!(named(&journal(&p, &run).await, "step.started").is_empty());
 }
 
-/// The step is no longer `LEASED` (a heartbeat started its handler), or the requirement is not recorded: the hand-back is an
-/// ordinary retryable failure, never an unknown outcome. With one attempt allowed it fails the step for good.
+/// Decision D006-089 (round-3 correctness Major 1): a session of 1.8 that hands back on a fleet that does not withdraw (no
+/// gate, a gate that does not keep the requirement, or the requirement recorded with the engine's switch off) records
+/// nothing: the host is told `STALE_ATTEMPT` and the lease lapses as on `develop`, where it opens a review. It never spends
+/// the attempt of a step whose work never ran.
 #[tokio::test]
-async fn a_hand_back_of_a_started_step_or_without_the_requirement_is_an_ordinary_failure() {
-    for (gate, started) in [
-        (Some(withdrawing()), true),
-        (None, false),
-        (Some(Arc::new(ServingGate::opened())), false),
+async fn a_hand_back_on_a_fleet_that_does_not_withdraw_leaves_the_lease_to_lapse() {
+    for (case, gate, switched_off) in [
+        ("no gate", None, false),
+        ("not required", Some(Arc::new(ServingGate::opened())), false),
+        ("switched off", Some(withdrawing()), true),
     ] {
+        let mut options = Options {
+            hand_back_ceiling: 8,
+            ..Options::default()
+        };
+        options.worker.idle_retry = Duration::from_millis(50);
+        options.lease_withdrawal = gate;
+        options.new_withdrawals = !switched_off;
+        let p = platform_with(options).await;
+        if switched_off {
+            record_requirement(&p).await;
+        }
+        let workflow = p.publish("lapse", &one_attempt("lapse")).await;
+        let run = p.start(&workflow, &json!({})).await;
+        let mut worker = stream_worker(&p, "first").await;
+        as_protocol_1_8(&p, "first").await;
+        let lease = worker.one_task().await;
+        let refused = worker
+            .fail_with(&lease, "TASK_NOT_STARTED", true)
+            .await
+            .expect_err("nothing is recorded");
+        assert_eq!(machine_code(&refused), "STALE_ATTEMPT", "{case}: {refused:?}");
+        assert_eq!(step(&p, &run).await, ("LEASED".to_owned(), 1, 1), "{case}");
+        let journal = journal(&p, &run).await;
+        assert!(named(&journal, "step.failed").is_empty(), "{case}");
+        assert!(named(&journal, "step.lease_withdrawn").is_empty(), "{case}");
+        assert_eq!(p.status(&run).await, "RUNNING", "{case}");
+    }
+}
+
+/// The step is no longer `LEASED` (a heartbeat started its handler): the hand-back is an ordinary retryable failure, never
+/// an unknown outcome. With one attempt allowed it fails the step for good.
+#[tokio::test]
+async fn a_hand_back_of_a_started_step_is_an_ordinary_failure() {
+    for (gate, started) in [(Some(withdrawing()), true)] {
         let p = platform(gate, None).await;
         if started {
             record_requirement(&p).await;
