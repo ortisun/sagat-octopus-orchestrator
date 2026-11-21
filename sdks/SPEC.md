@@ -367,11 +367,13 @@ stream window is. An unflagged lease is dispatched at once. As soon as a frame o
 dial options and interceptors), with at most 4 calls in flight held by the SDK's own permit, taken per attempt (an acknowledgement
 waiting for that permit has not been sent and is not an attempt; retries take a free permit before new frames; frames waiting for
 it are merged into a new call, up to 64 leases, which is one call only for the fallback's ordering and counting, each lease keeping
-its own window, evidence and give-up); when an attempt on that connection ends with no answer (a transport failure, or the host's
-own deadline with no status received) while a call on the main connection, sent after that attempt was sent, was answered, or
+its own window, evidence and give-up); when an attempt on the current acknowledgement connection ends with no answer (a transport
+failure, or the host's own 6 s deadline with no status received) while a call on the main connection, sent after that attempt was sent, was answered, or
 after two `ACKNOWLEDGEMENT_STORE_UNREACHABLE` in a row while a call on the main connection was answered `OK` after them, the host
-dials a new acknowledgement connection for its next attempts and closes the old one once its attempts in flight have ended; an
-attempt ended by the host's own close is not an attempt, is sent again and counts for nothing; and makes no call for them but
+dials a new acknowledgement connection for its next attempts and closes the old one once its attempts in flight have ended; at
+most one old connection drains at a time (a redial while one drains closes the older), after a failed dial the host waits one step
+of the §5 backoff before dialling again, and an attempt ended by a redial's close is not an attempt, is sent again and counts for
+nothing; each acknowledgement attempt is bounded to 6 s whatever the configured call timeout, which bounds only the receive; and makes no call for them but
 the hand-back, and starts no handler or heartbeat, before the answer. It never dispatches a flagged lease without `ACKNOWLEDGED`,
 whatever it has declined: one received while it declines is handed back.
 
@@ -395,7 +397,8 @@ reason `ACKNOWLEDGEMENT_STORE_UNREACHABLE`, which the server gives when it has n
 another of its calls that reaches the database (a heartbeat, a report, a hand-back, a receive; never an `AcknowledgeTasks`) ended
 with a transport failure, `DEADLINE_EXCEEDED`, `UNAVAILABLE`, `RESOURCE_EXHAUSTED` or a retryable `INTERNAL` between the latest
 evidence before that attempt was sent and its end; a refusal the server answered (stale, not held) is not such an end, nor is a
-receive ended by the host's own bound. An attempt in flight when the evidence arrives does not decide. Attempts keep the backoff of §5 and any retry hint; only once 6 s
+stream window ended by the host's own bound. An attempt sent before the first evidence that follows the previous failed attempt does not decide,
+whatever evidence arrives while it is in flight; when it ends with no verdict, the next attempt may go early. Attempts keep the backoff of §5 and any retry hint; only once 6 s
 have passed and no attempt of the lease was shed does the evidence send its next attempt early, after a random delay of up to
 200 ms, at most once per lease in 6 s. A `RETRY` restarts the 6 s. A failover gives no evidence before its promotion; an attempt
 sent after it is answered by a working primary, and an engine whose own connections have not recovered answers

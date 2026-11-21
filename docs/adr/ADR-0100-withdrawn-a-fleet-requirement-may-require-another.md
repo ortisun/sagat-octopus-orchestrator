@@ -29,7 +29,9 @@ refusals bought nothing more. What remains is considered option 10 of Architectu
 The registry is changed by Architecture decision 0099 only by its capability, the amendment of Architecture decision 0082
 decision 5 and the floor's capability `lease-withdrawal-v2` that the build of Architecture decision 0098 carries, and the trigger of
 its decision 10, which refuses recording `delivery-acknowledgement-v1` while a registered instance lacks `lease-withdrawal-v2`: a
-guarantee of the liveness rule, not the ordering this record proposed (its considered option 10).
+guarantee of the liveness rule, not the ordering this record proposed (its considered option 10). The same trigger refuses removing
+`lease-withdrawal-v2` while `delivery-acknowledgement-v1` is recorded, because a removal and a new recording would otherwise admit a
+registered binary without the liveness rule that the census at insert never sees: the census invariant, not the order.
 
 ## Evidence
 

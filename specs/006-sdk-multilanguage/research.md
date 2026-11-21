@@ -575,7 +575,8 @@ one receive call.
   of `TaskLease` and field 10 of `WorkerCapabilities` are above every number drafts 019 and 031 name (round 3: architecture Minor 8).
 - **D006-042 — The marks are lease data bound to the lease's generation and to the database server's incarnation.**
   `lease_hand_back_generation`, `lease_claimed_at`, `lease_claim_incarnation`, `lease_offered_generation`, `lease_acknowledged_at`,
-  `lease_capability_generation` and `withdrawn_lease_token_hash` on `steps` (the attempt flag `provisional_withdrawn_attempt` is
+  `lease_capability_generation`, `withdrawn_lease_token_hash` and `withdrawn_on_hand_back` (written with the hash, in one
+  statement, from the withdrawal's cause; round 14: correctness Minor 2, security Minor 1, architecture Minor 2) on `steps` (the attempt flag `provisional_withdrawn_attempt` is
   attempt data, not a mark: Decision 006-066), written by the three lease statements (root, scoped in a
   full-run transaction, path), by the acknowledgement, by the capability paths and by the withdrawals. A mark counts while the step
   holds a lease and its generation is the step's, so a stale mark never counts (round 1: architecture Blocker 2, correctness Major 6,
@@ -652,7 +653,9 @@ one receive call.
   (round 4: architecture Minor 5) and a field `requires` of `Activatable`, refusing while `lease-withdrawal-v2` is not recorded for
   both kinds, a convenience (round 7: architecture Nit 6), and while any registered instance, live or not, lacks it, which is not
   (round 11: security Major 1); both refusals are a trigger of this design's registry migration (Task 006-046), which also refuses removing
-  `lease-withdrawal-v2` while `delivery-acknowledgement-v1` is recorded (round 13: design Minor 1), on `platform_requirements`, enabled
+  `lease-withdrawal-v2` while `delivery-acknowledgement-v1` is recorded (round 13: design Minor 1: otherwise the sequence of a removal, a registration of a build of #260 without the follow-up, its
+  registry falling silent, and a new recording would admit a binary without the liveness rule that the census at insert never sees),
+  on `platform_requirements`, enabled
   `ALWAYS`, so hand SQL cannot skip them (round 12: security Minor 2, architecture Minor 1). That trigger is not the ordering
   trigger of the fifth round, which bought nothing for the order; it exists for the second refusal, which is load-bearing. The guarantee is elsewhere: an engine marks only while it knows both are
   recorded so, and every withdrawal of a marked lease reads both under the locks their removals wait for, through a witness type
@@ -729,7 +732,7 @@ one receive call.
   3, correctness Minor 6); a heartbeat after any other withdrawal, `NOT_ACKNOWLEDGED` above all, where no host that keeps the
   protocol heartbeats, is counted under `heartbeat` and alerted, the earliest sign of a handler run without an acknowledgement
   (round 11: correctness Minor 5, security Minor 1); the stale path takes the cause from `withdrawn_on_hand_back`, written with the
-  withdrawn token's hash in one assignment, since the journal has no index that would bound a read of it and a holder of a withdrawn
+  withdrawn token's hash in one statement, since the journal has no index that would bound a read of it and a holder of a withdrawn
   token could repeat that read at will (round 12: architecture Minor 4, security Nit 2; round 13: security Minor 2, design Nit 4). "Once" is the identical-record rule of the
   audit trail (`crates/infra-postgres/src/identity.rs`, an insert guarded by `NOT EXISTS` on tenant, actor, action, resource and
   reason): the resource is the step (run and step), and the reason is built only from stored values, the row's step id and its stored
@@ -944,7 +947,12 @@ one receive call.
   server that answers read-only; a call short of time after the concurrency layer answers `ACKNOWLEDGEMENT_DEADLINE` (round 13:
   correctness Minor 3 and Nit 6, security Minor 1). The blocking tries are counted between the latest evidence before the deciding
   attempt and its end, a receive ended by the host's own bound is not one (round 13: correctness Minor 2, design Nit 2), and an
-  attempt in flight when the evidence arrives does not decide (round 13: correctness Nit 1). What is left: a
+  attempt sent before the first evidence that follows the previous failed attempt does not decide, whatever evidence arrives while
+  it is in flight (round 13: correctness Nit 1; round 14: correctness Minor 1). A statement or `COMMIT` failing with an unreachable
+  error after the transaction began answers the same reason, by one shared classification (round 14: correctness Minors 4 and 5,
+  architecture Nit 6, security Nit 2); only the current acknowledgement connection redials, one old connection drains at a time
+  and a failed dial waits one backoff step (round 14: correctness Nit 1, design Minor 1, security Nit 4); and every acknowledgement
+  attempt is bounded to 6 s whatever the configured call timeout (round 14: design Minor 2). What is left: a
   failover that begins during the deciding attempt, after the evidence, with no other call failing in that time, or during a
   hand-back, and, on a stream, a frame sent before a failure and read after a failed attempt on a host with no other call, cost the
   lease its attempt (Gap 006-047). Sheds, a busy engine, and a host with no other call and no frame wait for the ordinary
@@ -958,7 +966,7 @@ one receive call.
   hand-back and no second probe. The host sends `AcknowledgeTasks`, its probes included, on a transport connection of its own
   (a channel is not enough in grpc-js and grpcio, which share subchannels unless `grpc.use_local_subchannel_pool` is set; round 12:
   architecture Minor 3, design Minor 4) with at most 4 calls in flight, held by the SDK's own permit taken per attempt, frames waiting
-  for it merged into the next call up to 64 leases (round 12: design Minor 3), and the connection dialled again when an attempt on
+  for it merged into a new call up to 64 leases (round 12: design Minor 3), and the connection dialled again when an attempt on
   it ends with no answer while the main connection answers (round 12: correctness Minor 4), or after two
   `ACKNOWLEDGEMENT_STORE_UNREACHABLE` in a row while the main connection answers, the old connection drained and an attempt ended by
   the host's own close sent again and counted for nothing (round 13: correctness Minor 1, architecture Minor 3, design Minor 4);

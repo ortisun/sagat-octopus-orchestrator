@@ -198,10 +198,11 @@ shared conformance owner, Task 006-058; one owner per SDK, Task 006-059 to Task 
   for engines and its `required_since`, revoked from `PUBLIC` and granted to `sagat_app`); the trigger on `platform_requirements`,
   enabled `ALWAYS`, which takes the epoch row `FOR UPDATE` itself (`BEFORE INSERT`: refusing `delivery-acknowledgement-v1` while
   `lease-withdrawal-v2` is not recorded for both kinds or while any row of `serving_instances` lacks it; `BEFORE DELETE`: refusing
-  to remove `lease-withdrawal-v2` while `delivery-acknowledgement-v1` is recorded); the three closed capability checks extended
+  to remove `lease-withdrawal-v2` while `delivery-acknowledgement-v1` is recorded; its function with `search_path = pg_catalog,
+  pg_temp`, `public.` names, revoked from `PUBLIC`, raising unless the transaction is `READ COMMITTED`); the three closed capability checks extended
   `NOT VALID` and then validated with `delivery-acknowledgement-v1` and the follow-up's `lease-withdrawal-v2`, the variant entering
   `Capability::ALL` in the same task so the check of Decision 006-033 holds; a `down` that refuses while the history names the
-  capability or a live process lists it, drops the trigger, its function and the requirements read by full signature, and
+  capability or a registered process, live or not, lists it, drops the trigger, its function and the requirements read by full signature, and
   restores the closed checks to the follow-up's lists, `lease-withdrawal-v2` kept; this build keeps request (7) of Decision 006-059 as the follow-up built it and
   request (9) (`lease-withdrawal-v2` listed on both kinds, its activation entry and its replay-floor guard) as it built them (an
   engine silent for 25 s, from the start of its last successful beat, serves no capability call until a beat that reports no change
@@ -227,8 +228,8 @@ shared conformance owner, Task 006-058; one owner per SDK, Task 006-059 to Task 
   `step.lease_withdrawn` with the cause `NOT_ACKNOWLEDGED` and allowed while it holds only the causes of Architecture decision 0098;
   a barrier holding the beat between its locked read and its commit while an activation waits (the activation, in `READ
   COMMITTED` with its census after the lock, then counts the engine live and refuses with `INSTANCES_LACK_CAPABILITY` naming it),
-  and an activation holding the row during the beat (the engine reports a change in progress and keeps refusing); the runbook's forward order and its rule that a silent row is
-  removed only once its process is confirmed stopped; the capability unknown to the activation command.
+  and an activation holding the row during the beat (the engine reports a change in progress and keeps refusing); the runbook's forward order, its rule that a silent row is
+  removed only once its process is confirmed stopped, and its hand SQL taking `platform_requirement_lock()` first; the capability unknown to the activation command.
 - [ ] T006-047 The claim writes the marks, in each of the three lease statements (`upsert_step`, `upsert_scoped_instance`,
   `upsert_path_instance`): `lease_hand_back_generation`, `lease_claimed_at` and `lease_claim_incarnation` for a session at 1.8 or later; the
   provisional mark and the flag under the conditions of the contract (session at 1.8 or later not declining, both requirements known
@@ -240,14 +241,15 @@ shared conformance owner, Task 006-058; one owner per SDK, Task 006-059 to Task 
   only, or not; switch on or off; the attempt flag at the claimed attempt N, at N − 1 and null; time-to-live 17 and 18 s; `timeoutMs` 17 and 18 s; each
   statement; root and scoped); a lease written afterwards with the old column list is not marked; a row whose incarnation is other
   or null, or claimed before the requirement's current recording, does not count for a withdrawal; the static check in
-  `scripts/check-architecture.py` of every assignment to a mark, with negative tests for a bound-flag form and a read-back form, and
+  `scripts/check-architecture.py` of every assignment to a mark, with negative tests for a bound-flag form and a read-back form, for one of `withdrawn_lease_token_hash` and
+  `withdrawn_on_hand_back` assigned without the other, and
   for the attempt flag an assignment outside the three named functions, `THEN $m`, a branch that yields `NULL`, a form without the
   old-row fence and a second assignment of the column in one statement; the
   barrier test with a run transaction loaded before an acknowledgement and writing the row through each statement that can touch a
-  `LEASED` row; the parity test of the macro's two forms against the pure function; the unchanged `LEASE` line of Task 006-055; a flagged lease with a 20 s `timeoutMs` and a 60 s time-to-live carrying its attempt
+  `LEASED` row; the parity test of the macro's two forms against the pure function; the unchanged `LEASE` line of Task 006-055; a declining session's claim not marked (`declined`); a flagged lease with a 20 s `timeoutMs` and a 60 s time-to-live carrying its attempt
   deadline 20 s after the claim, and one with a 60 s `timeoutMs` carrying none.
 - [ ] T006-048 Registration: `declines_acknowledgement` stored on the session from each registration (the upsert sets it from the
-  registration, so one without it clears it) and read by the claim; the negotiation code that answers 8, written and tested with the
+  registration, so one without it clears it), which the claim of Task 006-047 reads; the negotiation code that answers 8, written and tested with the
   server's constant still at 7. Evidence: the ceiling unit tests of `crates/application/src/worker.rs` with the constant raised in the
   test only, `tests/contract/sdk-multilanguage/grpc/negotiation.rs`, a registration that declines and a later one that does not.
 - [ ] T006-049 `AcknowledgeTasks`: the application service in a module of its own (so the test selector can match it by path), with the
@@ -268,10 +270,15 @@ shared conformance owner, Task 006-058; one owner per SDK, Task 006-059 to Task 
   row share-locked by a foreign-key check not skipped, a deadlock answered as a retryable failure and a repeat answered `duplicate`, a
   slow binding lock and a slow membership lock together past the call's deadline committing nothing, a pool held full for 5 s
   answered `UNAVAILABLE` (`ACKNOWLEDGEMENT_STORE_UNREACHABLE`) within 4.5 s with no connection discarded, also when the
-  authentication's lookups find the pool full after the token verified, a read-only server (`25006`) answered the same, a deadline
+  authentication's lookups find the pool full after the token verified, with `acquire_timeout` set to 10 s, a
+  `pg_terminate_backend` on the acknowledgement's connection between `lock_matched` and `acknowledge` answered
+  `ACKNOWLEDGEMENT_STORE_UNREACHABLE`, a read-only server (`25006`) answered the same, a deadline
   passed after the transaction began answered `ACKNOWLEDGEMENT_DEADLINE`, and a call that reached the handler with too little time
   left after the concurrency layer answered `ACKNOWLEDGEMENT_DEADLINE`, the answer reporting `attempt_time_left_ms` when the attempt has
-  a deadline, a test that every `UNAVAILABLE` and `RESOURCE_EXHAUSTED` the handler or its admission returns carries the envelope, a per-connection counter in `CappedConnectInfo` for the conformance assertion of Task 006-058; a connection
+  a deadline, a test that every `UNAVAILABLE` and `RESOURCE_EXHAUSTED` the handler or its admission returns carries the envelope, a per-connection counter in `CappedConnectInfo` for the conformance assertion of Task 006-058, read only through a layer the
+  conformance platform installs and never in a metric label, log field or span attribute, and a gauge of open connections; the
+  store-unreachable classification made one shared function of `crates/infra-postgres` (the registry's rule with `25006`), with
+  its unit test; the authentication's lookups of `AcknowledgeTasks` under the call's deadline; a connection
   with more than 128 calls and one with 64 transfers in flight answered within the bound with the compiled minor raised in
   the test (tonic's per-connection limit replaced by the platform's own layer under the deadline's), and, with the minor at 7, a
   start with a release-0.2 configuration giving every class, `Acknowledge` included, 64 places per connection, a probe answered `NOT_HELD` with the reason `withdrawn`, a compensation of a cancelled run and a reconciliation under a stop answered
@@ -321,7 +328,8 @@ shared conformance owner, Task 006-058; one owner per SDK, Task 006-059 to Task 
   instance no call writes, refused at the commit; the domain property test that a stop is never planned for a compensation
   or reconciliation; a `CompleteStep` after the `NOT_STARTED` withdrawal of an acknowledged lease
   counted and audited as a call after a withdrawal; a `Heartbeat` after it counted `heartbeat_after_hand_back`, and one after a
-  `NOT_ACKNOWLEDGED` withdrawal counted `heartbeat`; an engine with the switch off withdraws a
+  `NOT_ACKNOWLEDGED` withdrawal counted `heartbeat`; the pair of `withdrawn_lease_token_hash` and `withdrawn_on_hand_back` asserted
+  after each kind of withdrawal, a hand-back of one generation followed by a `NOT_ACKNOWLEDGED` withdrawal of the next among them; an engine with the switch off withdraws a
   marked lease; a hand-back after its session registered again at 1.7 under the
   same name, still withdrawn; a hand-back of a lease claimed at 1.7 while the session row says 1.8, an ordinary failure; a stopping
   collection drains a withdrawn instance; a cancelled step's hand-back with declared secrets withdraws and cancels.
@@ -332,8 +340,10 @@ shared conformance owner, Task 006-058; one owner per SDK, Task 006-059 to Task 
   acknowledged `LEASED` lease 1 ms past its expiry with its hand-back and the pass in both orders (exactly one of `step.lease_withdrawn`
   and `expire_attempt`); a
   capability call against a hand-back, in both orders; the removal of each requirement held between the pass's read and its commit,
-  in both orders, with an empty journal, and both removals in one transaction of hand SQL (a detected deadlock at worst, no event
-  without its floor); a binding revocation queued between a withdrawal's binding checks and its re-read,
+  in both orders, with an empty journal, the cases that remove `lease-withdrawal-v2` alone run with the trigger of Task 006-046
+  disabled, and both removals in one transaction of hand SQL (with the trigger, `lease-withdrawal-v2` first refused and
+  `delivery-acknowledgement-v1` first committing; a detected deadlock at worst, no event without its floor); the trigger's refusal
+  of a removal of `lease-withdrawal-v2` while a withdrawal holds its row; a binding revocation queued between a withdrawal's binding checks and its re-read,
   and against an acknowledgement. Evidence: barrier tests watched in `pg_stat_activity`, each asserting the journal and that the
   handler would run exactly once, root and scoped.
 - [ ] T006-052 The capability refusal and record: the fence variants (root and path) called only from the capability paths, after the
@@ -356,7 +366,8 @@ shared conformance owner, Task 006-058; one owner per SDK, Task 006-059 to Task 
   histograms, the gauges (`FILTER` clauses of the operations statistics query, each defined by the macro, read on the primary), the eight alerts (`SagatLeaseAttemptCapped` and `SagatCapabilitiesRefusedRegistrySilent` owned here, the `stop` hand-backs excluded
   from `SagatAcknowledgementsFailing` through the new `mark` and `stop` labels of `worker_leases_undelivered_total`, the ratios over
   the new `worker_lease_marks_total`) with `promtool test rules` cases at the default and at an 18 s time-to-live (added to the CI step), the symptoms in
-  `docs/runbooks/sdks.md` (naming that each 1.8 host holds two connections, so the acknowledgement connection refused at
+  `docs/runbooks/sdks.md`, `docs/runbooks/security-governance.md` (its per-peer sizing) and `docs/runbooks/execution-engine.md` (its
+  connection counters) (naming that each 1.8 host holds two connections, three while one drains, so the acknowledgement connection refused at
   `max_connections_per_peer` or `max_connections` leads to the fallback, with `grpc_connections_refused_total{reason="per_peer"}`
   rising, and that a fleet behind shared addresses needs the per-peer cap doubled; naming `synchronous_commit` and `requirement_missing`, and that `SagatLeaseAttemptCapped` and
   `SagatCapabilitiesRefusedRegistrySilent` come with this build, so a fleet of the floor build alone has neither); in section 7 of
@@ -405,10 +416,12 @@ shared conformance owner, Task 006-058; one owner per SDK, Task 006-059 to Task 
   `delivery-acknowledgement-v1` recorded, and a scenario attribute that boots without them; a host setting that shortens the decline
   period and one that sets the acknowledgement's first backoff step, so a lease can be held in its backoff across a promotion; an
   assertion that the server sees the acknowledgements on another connection than the stream's, by a per-connection counter that
-  Task 006-049 adds to `CappedConnectInfo` (never an address) and a test hook of the conformance platform exposes, with the Rust
-  runner's fault proxy opening one upstream connection per downstream connection; a platform of two engines, one of whose pools can
-  be held unreachable whole (its authentication's lookups included), with a harness proxy routing the host's second connection to
-  it; the override `SAGAT_SDK_PROTOCOL_OVERRIDE=1.8`, which raises host scenarios pinned at 1.4 or 1.5, runs with step logs off,
+  Task 006-049 adds to `CappedConnectInfo` (never an address) and a test hook of the conformance platform exposes, its Rust case
+  running once Task 006-064 has changed that runner's fault proxy; a platform of two engines, one of whose pools can be held
+  unreachable whole (its authentication's lookups included), with a harness proxy routing by connection order: the host's first
+  acknowledgement connection to the unreachable engine, every later one to the healthy engine, so the case expects a redial after
+  two `ACKNOWLEDGEMENT_STORE_UNREACHABLE` and then `recovered`, and a variant routing every acknowledgement connection to the
+  unreachable engine for longer than a time-to-live, expecting the ordinary give-up and the outcome of Gap 006-047, reported; the override `SAGAT_SDK_PROTOCOL_OVERRIDE=1.8`, which raises host scenarios pinned at 1.4 or 1.5, runs with step logs off,
   compares only the negotiated `protocolVersion` against the pinned one and, for 1.4, the lease's instance identity, asserts that
   each raised scenario acknowledged a flagged lease (but `protocol-negotiation`, `worker-stream-faults` and
   `worker-transport-faults`, with their 3 s time-to-live) and that no unexpected `TASK_NOT_STARTED` was sent, and lists by name the
@@ -471,18 +484,23 @@ shared conformance owner, Task 006-058; one owner per SDK, Task 006-059 to Task 
   back, held with a barrier), a deciding attempt answered `ACKNOWLEDGEMENT_STORE_UNREACHABLE` deciding nothing, a burst of sheds
   with heartbeats answered every 100 ms keeping the backoff's count of attempts, attempts failing in 5 ms with heartbeats answered
   every 100 ms making no more attempts in the first 6 s than §5's count plus one, two flagged calls failing together while
-  heartbeats are answered both given up early, twelve single-lease frames with every attempt failing at 6 s all given up early, none by the
+  heartbeats are answered both given up early, twelve single-lease frames at a 30 s time-to-live with every attempt failing at 6 s all given up early, none by the
   ordinary give-up, the last within three attempts' time plus 1 s of the first frame, a half-open acknowledgement connection
   dialled again with no fallback, a redial with three other attempts in flight (none given up, none counted), the two connections
   on different transports (their local socket addresses compared), the acknowledgement connection against a TLS server with a
   private certificate authority that requires a client certificate (it succeeds, presents the same certificate, and the user's
-  interceptor sees the call), a 3 s call timeout on a stream host with the acknowledgement failing alone (given up early), a fifth acknowledgement waiting for the permit and not counted,
+  interceptor sees the call), a 3 s call timeout on a stream host with the acknowledgement failing alone (given up early) and an attempt answered at
+  3.5 s on that host (a verdict, not a redial), heartbeats answered every 100 ms while the deciding attempt is in flight (given up
+  at its end), two `ACKNOWLEDGEMENT_STORE_UNREACHABLE` in a row redialling and one followed by `OK` not redialling, a half-open
+  connection with three attempts in flight leading to exactly one redial, a fifth acknowledgement waiting for the permit and not counted,
   and a token canary of the request. Evidence: `npm test` and the checks of `sdks/AGENTS.md`.
 - [ ] T006-060 Go (`sdks/go`), as T006-059. Evidence: `go test ./...`, `gofmt -l`, `go vet`.
 - [ ] T006-061 Python (`sdks/python`), as T006-059. Evidence: the unit tests, `mypy`, `ruff`.
 - [ ] T006-062 C# (`sdks/dotnet`), as T006-059. Evidence: the unit tests, `dotnet format --verify-no-changes`.
 - [ ] T006-063 Java (`sdks/java`), as T006-059. Evidence: `./mvnw -q verify`.
-- [ ] T006-064 Rust (`sdks/rust`, its four lock files together), as T006-059. Evidence: its unit tests, `cargo clippy`.
+- [ ] T006-064 Rust (`sdks/rust`, its four lock files together), as T006-059, and its conformance runner's fault proxy
+  (`sdks/rust/conformance/src/faults/grpc.rs`) opening one upstream connection per downstream connection. Evidence: its unit tests,
+  `cargo clippy`.
 
 ### Integration
 
