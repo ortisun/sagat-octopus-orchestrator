@@ -779,7 +779,7 @@ async fn an_ad_hoc_workflow_and_its_private_rerun_admit_through_the_key() {
     assert_eq!(admitted(&w, rerun.info.run_id).await, Admitted::Queued);
 }
 
-async fn start_delayed(w: &World, workflow: WorkflowId, account: Option<&str>) -> RunId {
+pub(crate) async fn start_delayed(w: &World, workflow: WorkflowId, account: Option<&str>) -> RunId {
     let input = match account {
         Some(account) => json!({"accountId": account}),
         None => json!({}),
