@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Check the design docs under docs/designs (rules R1-R9 of docs/designs/constitution-4.0.0-egm.md).
+"""Check the design docs under docs/designs (Rules 1 to 9 of docs/designs/constitution-4.0.0-egm.md;
+failures print "Rule 8", never "R8": docs/constitution.md 4.7.0, Words in full).
 
 Usage: python3 scripts/check-design-docs.py [--root DIR]
 
@@ -146,7 +147,7 @@ class Doc:
 
 
 def normalized_body(doc, keep_ids):
-    """The body of a doc with the parts that may change after approval removed (R3, step 2)."""
+    """The body of a doc with the parts that may change after approval removed (Rule 3, step 2)."""
     lines, flags = doc.lines, doc.flags
     by_start = {task.start: task for task in doc.tasks}
     out, in_region, index = [], False, doc.hend + 1
@@ -222,7 +223,7 @@ class Checker:
         self.strict = event == "pull_request"
         base = os.environ.get("GITHUB_BASE_REF", "") if self.strict else ""
         if base and not SAFE_REF.fullmatch(base):
-            self.fail("R9", ".", None, "GITHUB_BASE_REF is not a plain branch name")
+            self.fail("Rule 9", ".", None, "GITHUB_BASE_REF is not a plain branch name")
             base = ""
         self.base = f"origin/{base or 'develop'}"
         self._base_ok = None
@@ -246,14 +247,14 @@ class Checker:
         except FileNotFoundError:
             return None
         except (OSError, UnicodeDecodeError):
-            self.fail("R1", rel, None, "the file cannot be read as UTF-8")
+            self.fail("Rule 1", rel, None, "the file cannot be read as UTF-8")
             return None
 
     def base_ok(self):
         if self._base_ok is None:
             self._base_ok = self.git("rev-parse", "--verify", "--quiet", f"{self.base}^{{commit}}")[0] == 0
             if not self._base_ok:
-                self.fail("R9", ".", None, f"base ref {self.base} not found: fetch it (fetch-depth 0)")
+                self.fail("Rule 9", ".", None, f"base ref {self.base} not found: fetch it (fetch-depth 0)")
         return self._base_ok
 
     def base_text(self, rel):
@@ -313,7 +314,7 @@ class Checker:
                 hidden = True
             if hidden:
                 if line.strip().startswith("| OD-"):
-                    self.fail("R5", rel, number, "hidden row (inside a fence, a comment or indented code)")
+                    self.fail("Rule 5", rel, number, "hidden row (inside a fence, a comment or indented code)")
                 continue
             if not line.startswith("|"):
                 header = None
@@ -325,10 +326,10 @@ class Checker:
             if header is False or all(re.fullmatch(r":?-+:?", cell) for cell in cells):
                 continue
             if "\\|" in line:
-                self.fail("R5", rel, number, "an escaped pipe in a row is not supported")
+                self.fail("Rule 5", rel, number, "an escaped pipe in a row is not supported")
                 continue
             if len(cells) != len(header):
-                self.fail("R5", rel, number, "the row has a different number of cells than the header")
+                self.fail("Rule 5", rel, number, "the row has a different number of cells than the header")
                 continue
             rows.append(dict(zip(header, cells)))
         return rows
@@ -353,13 +354,13 @@ class Checker:
                 continue
             text = self.read(rel)
             if text is None:
-                self.fail("R1", rel, None, "the file cannot be read as UTF-8")
+                self.fail("Rule 1", rel, None, "the file cannot be read as UTF-8")
                 continue
             docs.append(Doc(rel, text))
         self.owner_rows()
         known, problem = self.accepted_hashes()
         if known is None:
-            self.fail("R2", "docs/engineering/egm-accepted-hashes.json", None, problem)
+            self.fail("Rule 2", "docs/engineering/egm-accepted-hashes.json", None, problem)
         for doc in docs:
             self.check_sections(doc)
             self.check_status(doc)
@@ -374,31 +375,31 @@ class Checker:
         self.check_numbers(docs)
         self.check_constitution()
 
-    # R1 ---------------------------------------------------------------------------------
+    # Rule 1 ------------------------------------------------------------------------------
     def check_sections(self, doc):
         sections = doc.sections()
         for name in ("Constitution Check", "Complexity Tracking"):
             content = sections.get(name)
             if content is None or not any(line.strip() for line in content):
-                self.fail("R1", doc.rel, None, f"the section '## {name}' is missing or empty")
+                self.fail("Rule 1", doc.rel, None, f"the section '## {name}' is missing or empty")
         rows = [line for line in sections.get("Constitution Check", [])]
         for prefix in [f"| {r}." for r in ROMAN] + ["| Delivery Constraints"]:
             if not any(line.startswith(prefix) for line in rows):
-                self.fail("R1", doc.rel, None, f"the Constitution Check has no row starting '{prefix}'")
+                self.fail("Rule 1", doc.rel, None, f"the Constitution Check has no row starting '{prefix}'")
 
-    # R9 (status) ------------------------------------------------------------------------
+    # Rule 9 (status) ---------------------------------------------------------------------
     def check_status(self, doc):
         if "\r" in doc.text:
-            self.fail("R9", doc.rel, None, "carriage returns are not allowed: use LF line endings")
+            self.fail("Rule 9", doc.rel, None, "carriage returns are not allowed: use LF line endings")
             return
         if doc.hend is None:
-            self.fail("R9", doc.rel, None, "the header has no line of 20 or more hyphens")
+            self.fail("Rule 9", doc.rel, None, "the header has no line of 20 or more hyphens")
             return
         for field in doc.duplicate_fields:
-            self.fail("R9", doc.rel, None, f"the header field {field} appears more than once")
+            self.fail("Rule 9", doc.rel, None, f"the header field {field} appears more than once")
         status = doc.fields.get("Status")
         if status not in STATUSES:
-            self.fail("R9", doc.rel, None, "Status is missing or not one of Draft, Proposed, In Review, Approved")
+            self.fail("Rule 9", doc.rel, None, "Status is missing or not one of Draft, Proposed, In Review, Approved")
         ticked = [t for t in doc.tasks if t.checked]
         if ticked and status != "Approved":
             old = self.base_text(doc.rel)
@@ -408,31 +409,31 @@ class Checker:
                 previous = {t.id for t in before.tasks if t.checked}
             for task in ticked:
                 if task.id not in previous:
-                    self.fail("R9", doc.rel, task.start + 1, f"{task.id} is newly ticked but the doc is not Approved")
+                    self.fail("Rule 9", doc.rel, task.start + 1, f"{task.id} is newly ticked but the doc is not Approved")
 
-    # R4 ---------------------------------------------------------------------------------
+    # Rule 4 ------------------------------------------------------------------------------
     def check_ids(self, doc):
         if doc.number is not None:
             if "Task-prefix" in doc.fields:
-                self.fail("R4", doc.rel, None, "a numbered doc must not declare a Task-prefix")
+                self.fail("Rule 4", doc.rel, None, "a numbered doc must not declare a Task-prefix")
             pattern = re.compile(rf"T{doc.number}-[0-9]+")
         else:
             prefix = doc.fields.get("Task-prefix", "")
             if not re.fullmatch(r"[A-Z]{2,8}", prefix):
-                self.fail("R4", doc.rel, None, "an unnumbered doc needs a Task-prefix of 2 to 8 capital letters")
+                self.fail("Rule 4", doc.rel, None, "an unnumbered doc needs a Task-prefix of 2 to 8 capital letters")
                 return
             pattern = re.compile(rf"T{prefix}-[0-9]+")
         for index in doc.stray_checkboxes:
-            self.fail("R4", doc.rel, index + 1, "a checkbox line that is not a task: write '- [ ] T<id> text'")
+            self.fail("Rule 4", doc.rel, index + 1, "a checkbox line that is not a task: write '- [ ] T<id> text'")
         seen = set()
         for task in doc.tasks:
             if not pattern.fullmatch(task.id):
-                self.fail("R4", doc.rel, task.start + 1, f"{task.id} does not use this doc's number or Task-prefix")
+                self.fail("Rule 4", doc.rel, task.start + 1, f"{task.id} does not use this doc's number or Task-prefix")
             if task.id in seen:
-                self.fail("R4", doc.rel, task.start + 1, f"{task.id} is defined twice")
+                self.fail("Rule 4", doc.rel, task.start + 1, f"{task.id} is defined twice")
             seen.add(task.id)
 
-    # R7 ---------------------------------------------------------------------------------
+    # Rule 7 ------------------------------------------------------------------------------
     def check_evidence(self, doc):
         for task in doc.tasks:
             if not task.checked:
@@ -440,22 +441,22 @@ class Checker:
             at = task.start + 1
             if task.marker is None:
                 note = " (the marker is on the task line)" if INLINE_MARKER_RE.search(doc.lines[task.start]) else ""
-                self.fail("R7", doc.rel, at, f"{task.id} is ticked without an evidence block{note}")
+                self.fail("Rule 7", doc.rel, at, f"{task.id} is ticked without an evidence block{note}")
                 continue
             block = doc.lines[task.marker:task.end + 1]
             after_colon = block[0].split("):", 1)[1].strip()
             if not after_colon and not any(line.strip() for line in block[1:]):
-                self.fail("R7", doc.rel, task.marker + 1, f"{task.id} has an empty evidence block")
+                self.fail("Rule 7", doc.rel, task.marker + 1, f"{task.id} has an empty evidence block")
             if len(block) > MAX_EVIDENCE_LINES:
-                self.fail("R7", doc.rel, task.marker + 1, f"{task.id} has an evidence block of more than 40 lines")
+                self.fail("Rule 7", doc.rel, task.marker + 1, f"{task.id} has an evidence block of more than 40 lines")
             for offset, line in enumerate(block):
                 stripped = line.strip()
                 if stripped.startswith(("#", "|", "```", "~~~")):
-                    self.fail("R7", doc.rel, task.marker + offset + 1, "an evidence line starts with #, | or a fence")
+                    self.fail("Rule 7", doc.rel, task.marker + offset + 1, "an evidence line starts with #, | or a fence")
                 if PROTECTED_RE.match(line):
-                    self.fail("R7", doc.rel, task.marker + offset + 1, "a protected line sits inside an evidence block")
+                    self.fail("Rule 7", doc.rel, task.marker + offset + 1, "a protected line sits inside an evidence block")
 
-    # R5 ---------------------------------------------------------------------------------
+    # Rule 5 ------------------------------------------------------------------------------
     def check_gates(self, doc):
         for task in doc.tasks:
             if not task.checked:
@@ -469,49 +470,49 @@ class Checker:
                     row = self.citable(gate)
                     token = re.compile(rf"(?<![A-Za-z0-9-]){re.escape(task.id)}(?![0-9])")
                     if row is None or not token.search(row["Covers"]):
-                        self.fail("R5", doc.rel, index + 1,
+                        self.fail("Rule 5", doc.rel, index + 1,
                                   f"{task.id} is ticked but {shown(gate) if gate else '(empty)'} is not an owner row that covers it")
 
-    # R2 and R3 --------------------------------------------------------------------------
+    # Rules 2 and 3 -----------------------------------------------------------------------
     def check_approved(self, doc):
         fields = doc.fields
         missing = [f for f in APPROVAL_FIELDS if f not in fields]
         for field in missing:
-            self.fail("R2", doc.rel, None, f"the approval field {field} is missing")
+            self.fail("Rule 2", doc.rel, None, f"the approval field {field} is missing")
         if missing:
             return
         ok = True
         if not fields.get("Author", "").strip():
-            self.fail("R2", doc.rel, None, "Author is missing or empty")
+            self.fail("Rule 2", doc.rel, None, "Author is missing or empty")
         if not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", fields.get("Date", "")):
-            self.fail("R2", doc.rel, None, "Date is missing or not YYYY-MM-DD")
+            self.fail("Rule 2", doc.rel, None, "Date is missing or not YYYY-MM-DD")
         commit = fields["Reviewed-commit"]
         if not HEX40.fullmatch(commit):
-            self.fail("R2", doc.rel, None, "Reviewed-commit is not 40 lowercase hex characters")
+            self.fail("Rule 2", doc.rel, None, "Reviewed-commit is not 40 lowercase hex characters")
             ok = False
         egm_hash = fields["EGM-hash"]
         if not HEX64.fullmatch(egm_hash):
-            self.fail("R2", doc.rel, None, "EGM-hash is not 64 lowercase hex characters")
+            self.fail("Rule 2", doc.rel, None, "EGM-hash is not 64 lowercase hex characters")
             ok = False
         accepted, _ = self.accepted_hashes()
         if accepted is not None:
             known, minimum = accepted
             if HEX64.fullmatch(egm_hash) and egm_hash not in known:
-                self.fail("R2", doc.rel, None, "EGM-hash is not on the accepted list")
+                self.fail("Rule 2", doc.rel, None, "EGM-hash is not on the accepted list")
             version = fields["Claude-Code"]
             if not SEMVER_RE.fullmatch(version):
-                self.fail("R2", doc.rel, None, "Claude-Code is not N.N.N")
+                self.fail("Rule 2", doc.rel, None, "Claude-Code is not N.N.N")
             elif tuple(int(p) for p in version.split(".")) < minimum:
-                self.fail("R2", doc.rel, None, "Claude-Code is older than the accepted minimum")
+                self.fail("Rule 2", doc.rel, None, "Claude-Code is older than the accepted minimum")
         if fields["Open findings"] != "Blocker 0, Major 0":
-            self.fail("R2", doc.rel, None, "Open findings must read exactly 'Blocker 0, Major 0'")
+            self.fail("Rule 2", doc.rel, None, "Open findings must read exactly 'Blocker 0, Major 0'")
         count, ids = self.parse_accepted(doc)
         reports = self.parse_reports(doc)
         findings = None
         if reports is not None:
             findings = self.check_reports(doc, reports)
         if findings is not None and count is not None and findings > count:
-            self.fail("R2", doc.rel, None, f"the reports hold {findings} Blocker and Major findings, {count} accepted")
+            self.fail("Rule 2", doc.rel, None, f"the reports hold {findings} Blocker and Major findings, {count} accepted")
         if ids and reports is not None:
             self.check_acceptances(doc, ids, [path for path, _ in reports])
         if ok:
@@ -521,14 +522,14 @@ class Checker:
         value = doc.fields["Accepted"]
         match = re.fullmatch(r"([0-9]{1,4})(?:; (OD-[0-9-]+(?:, OD-[0-9-]+)*))?", value)
         if not match:
-            self.fail("R2", doc.rel, None, "Accepted must be 'N' or 'N; OD-..., OD-...'")
+            self.fail("Rule 2", doc.rel, None, "Accepted must be 'N' or 'N; OD-..., OD-...'")
             return None, []
         count = int(match.group(1))
         ids = match.group(2).split(", ") if match.group(2) else []
         if len(ids) != count:
-            self.fail("R2", doc.rel, None, "Accepted counts a different number of findings than it lists")
+            self.fail("Rule 2", doc.rel, None, "Accepted counts a different number of findings than it lists")
         if len(set(ids)) != len(ids):
-            self.fail("R2", doc.rel, None, "Accepted lists an owner-decision id twice")
+            self.fail("Rule 2", doc.rel, None, "Accepted lists an owner-decision id twice")
         return count, ids
 
     def parse_reports(self, doc):
@@ -537,33 +538,33 @@ class Checker:
         for part in parts:
             match = re.fullmatch(r"(\S+) sha256:([0-9a-f]{64})", part)
             if not match:
-                self.fail("R2", doc.rel, None, "Reports must be '<path> sha256:<64 hex>' entries separated by '; '")
+                self.fail("Rule 2", doc.rel, None, "Reports must be '<path> sha256:<64 hex>' entries separated by '; '")
                 return None
             entries.append((match.group(1), match.group(2)))
         if len(entries) != 4 or len({p for p, _ in entries}) != 4:
-            self.fail("R2", doc.rel, None, "Reports must list exactly four distinct report files")
+            self.fail("Rule 2", doc.rel, None, "Reports must list exactly four distinct report files")
             return None
         return entries
 
     def report_text(self, doc, path):
         if os.path.isabs(path) or ".." in path.split("/") or "\\" in path:
-            self.fail("R2", doc.rel, None, "a report path must be relative and free of '..'")
+            self.fail("Rule 2", doc.rel, None, "a report path must be relative and free of '..'")
             return None
         reviews = os.path.join(self.root, "docs", "designs", doc.stem + ".reviews")
         full = os.path.join(self.root, path)
         if os.path.realpath(full) != os.path.abspath(full) or os.path.islink(full):
-            self.fail("R2", doc.rel, None, f"a symbolic link is involved in the report path {shown(path)}")
+            self.fail("Rule 2", doc.rel, None, f"a symbolic link is involved in the report path {shown(path)}")
             return None
         real_reviews = os.path.realpath(reviews)
         if os.path.commonpath([real_reviews, os.path.realpath(full)]) != real_reviews:
-            self.fail("R2", doc.rel, None, f"the report {shown(path)} is not under docs/designs/{doc.stem}.reviews/")
+            self.fail("Rule 2", doc.rel, None, f"the report {shown(path)} is not under docs/designs/{doc.stem}.reviews/")
             return None
         if not os.path.isfile(full):
-            self.fail("R2", doc.rel, None, f"the report {shown(path)} is not a regular file")
+            self.fail("Rule 2", doc.rel, None, f"the report {shown(path)} is not a regular file")
             return None
         code, out = self.git("--literal-pathspecs", "ls-files", "-s", "--", path)
         if code != 0 or not out.startswith("100644 "):
-            self.fail("R2", doc.rel, None, f"the report {shown(path)} is not a tracked regular file (mode 100644)")
+            self.fail("Rule 2", doc.rel, None, f"the report {shown(path)} is not a tracked regular file (mode 100644)")
             return None
         with open(full, "rb") as handle:
             data = handle.read()
@@ -576,18 +577,18 @@ class Checker:
             if data is None:
                 continue
             if hashlib.sha256(data).hexdigest() != recorded:
-                self.fail("R2", doc.rel, None, f"the SHA-256 of {shown(path)} differs from the recorded one")
+                self.fail("Rule 2", doc.rel, None, f"the SHA-256 of {shown(path)} differs from the recorded one")
                 continue
             text = data.decode("utf-8", errors="replace")
             if LOCAL_PATH_RE.search(text):
-                self.fail("R2", doc.rel, None, f"{shown(path)} holds an absolute path of a machine")
+                self.fail("Rule 2", doc.rel, None, f"{shown(path)} holds an absolute path of a machine")
             found = self.parse_report(doc, path, text)
             if found is None:
                 continue
             reviewers.append(found[0])
             findings += found[1]
         if sorted(reviewers) != sorted(REVIEWERS):
-            self.fail("R2", doc.rel, None, "the four reports must be written by egm-review, architecture, security and correctness")
+            self.fail("Rule 2", doc.rel, None, "the four reports must be written by egm-review, architecture, security and correctness")
             return None
         return findings
 
@@ -606,22 +607,22 @@ class Checker:
                 counts.append(line)
         for key in ("Doc", "Reviewed-commit", "Reviewer"):
             if len(seen[key]) != 1:
-                self.fail("R2", doc.rel, None, f"{shown(path)} needs exactly one '{key}:' line")
+                self.fail("Rule 2", doc.rel, None, f"{shown(path)} needs exactly one '{key}:' line")
                 return None
         if len(counts) != 1 or not COUNTS_RE.fullmatch(counts[0]):
-            self.fail("R2", doc.rel, None, f"{shown(path)} needs exactly one well formed Counts line")
+            self.fail("Rule 2", doc.rel, None, f"{shown(path)} needs exactly one well formed Counts line")
             return None
         reviewer = seen["Reviewer"][0]
         if seen["Doc"][0] != doc.rel:
-            self.fail("R2", doc.rel, None, f"{shown(path)} names another doc")
+            self.fail("Rule 2", doc.rel, None, f"{shown(path)} names another doc")
         if seen["Reviewed-commit"][0] != doc.fields["Reviewed-commit"]:
-            self.fail("R2", doc.rel, None, f"{shown(path)} was written for another Reviewed-commit")
+            self.fail("Rule 2", doc.rel, None, f"{shown(path)} was written for another Reviewed-commit")
         if reviewer == "egm-review":
             if seen["EGM-hash"] != [doc.fields["EGM-hash"]]:
-                self.fail("R2", doc.rel, None, f"the EGM-hash of {shown(path)} differs from the header")
+                self.fail("Rule 2", doc.rel, None, f"the EGM-hash of {shown(path)} differs from the header")
         elif reviewer in REVIEWERS:
             if len(seen["Agent-blob"]) != 1 or not HEX40.fullmatch(seen["Agent-blob"][0]):
-                self.fail("R2", doc.rel, None, f"{shown(path)} needs exactly one Agent-blob line of 40 hex characters")
+                self.fail("Rule 2", doc.rel, None, f"{shown(path)} needs exactly one Agent-blob line of 40 hex characters")
             else:
                 self.agent_blobs[(doc.rel, reviewer)] = seen["Agent-blob"][0]
         parsed = COUNTS_RE.fullmatch(counts[0])
@@ -634,7 +635,7 @@ class Checker:
             anchored = row is not None and any(
                 re.search(re.escape(path) + r"#[0-9]+", row["Covers"]) for path in paths)
             if not anchored:
-                self.fail("R2", doc.rel, None, f"{accepted} is not an owner row that covers '<report path>#<n>'")
+                self.fail("Rule 2", doc.rel, None, f"{accepted} is not an owner row that covers '<report path>#<n>'")
 
     def check_commit_dependent(self, doc, commit):
         old = self.base_text(doc.rel)
@@ -642,36 +643,36 @@ class Checker:
             return  # unchanged: the commit may be unreachable after a squash merge
         if self.git("rev-parse", "--verify", "--quiet", f"{commit}^{{commit}}")[0] != 0:
             if self.strict:
-                self.fail("R2", doc.rel, None, "the Reviewed-commit is not a commit of this clone")
+                self.fail("Rule 2", doc.rel, None, "the Reviewed-commit is not a commit of this clone")
             else:
-                self.warnings.append(f"{doc.rel}: the Reviewed-commit is not in this clone; R3 skipped")
+                self.warnings.append(f"{doc.rel}: the Reviewed-commit is not in this clone; Rule 3 skipped")
             return
         for reviewer in REVIEWERS[1:]:
             recorded = self.agent_blobs.get((doc.rel, reviewer))
             code, out = self.git("rev-parse", "--verify", "--quiet", f"{commit}:.claude/agents/{reviewer}-reviewer.md")
             if recorded is not None and (code != 0 or out.strip() != recorded):
-                self.fail("R2", doc.rel, None, f"the Agent-blob of the {reviewer} report differs from the agent at the Reviewed-commit")
+                self.fail("Rule 2", doc.rel, None, f"the Agent-blob of the {reviewer} report differs from the agent at the Reviewed-commit")
         self.check_body(doc, commit)
 
     def check_body(self, doc, commit):
         code, text = self.git("show", f"{commit}:{doc.rel}")
         if code != 0:
-            self.fail("R3", doc.rel, None, "the doc does not exist at the Reviewed-commit")
+            self.fail("Rule 3", doc.rel, None, "the doc does not exist at the Reviewed-commit")
             return
         if "\r" in text or "\r" in doc.text:
-            self.fail("R3", doc.rel, None, "a carriage return is not allowed in an approved doc")
+            self.fail("Rule 3", doc.rel, None, "a carriage return is not allowed in an approved doc")
             return
         old = Doc(doc.rel, text)
         if old.hend is None or doc.hend is None:
-            self.fail("R3", doc.rel, None, "a header terminator is missing at the Reviewed-commit or now")
+            self.fail("Rule 3", doc.rel, None, "a header terminator is missing at the Reviewed-commit or now")
             return
         line = first_difference(header_core(old), header_core(doc), doc.hend + 1)
         if line:
-            self.fail("R3", doc.rel, line, "the header changed outside the status block fields")
+            self.fail("Rule 3", doc.rel, line, "the header changed outside the status block fields")
         old_ids = {task.id for task in old.tasks}
         line = first_difference(normalized_body(old, None), normalized_body(doc, old_ids), len(doc.lines))
         if line:
-            self.fail("R3", doc.rel, line, "the body changed beyond ticks, evidence and follow-up tasks")
+            self.fail("Rule 3", doc.rel, line, "the body changed beyond ticks, evidence and follow-up tasks")
         new_by_id = {task.id: task for task in doc.tasks}
         for task in old.tasks:
             current = new_by_id.get(task.id)
@@ -680,9 +681,9 @@ class Checker:
             before = old.lines[task.marker:task.end + 1]
             after = doc.lines[current.marker:current.end + 1] if current.marker is not None else []
             if after[:len(before)] != before:
-                self.fail("R3", doc.rel, current.start + 1, f"the existing evidence of {task.id} was changed or removed")
+                self.fail("Rule 3", doc.rel, current.start + 1, f"the existing evidence of {task.id} was changed or removed")
 
-    # R4 across docs, R6 -----------------------------------------------------------------
+    # Rule 4 across docs, Rule 6 ----------------------------------------------------------
     def check_cross_doc(self, docs):
         ids, prefixes = {}, {}
         for doc in docs:
@@ -692,10 +693,10 @@ class Checker:
                 prefixes.setdefault(doc.fields["Task-prefix"], []).append(doc.rel)
         for task_id, owners in sorted(ids.items()):
             if len(set(owners)) > 1:
-                self.fail("R4", owners[1], None, f"{task_id} is also defined in {owners[0]}")
+                self.fail("Rule 4", owners[1], None, f"{task_id} is also defined in {owners[0]}")
         for prefix, owners in sorted(prefixes.items()):
             if len(owners) > 1:
-                self.fail("R4", owners[1], None, f"Task-prefix {prefix} is also declared by {owners[0]}")
+                self.fail("Rule 4", owners[1], None, f"Task-prefix {prefix} is also declared by {owners[0]}")
 
     def check_numbers(self, docs):
         slugs = {}
@@ -704,16 +705,16 @@ class Checker:
                 slugs.setdefault(doc.number, set()).add(doc.slug)
         for doc in docs:
             if doc.number is not None and len(slugs[doc.number]) > 1:
-                self.fail("R6", doc.rel, None, f"the number {doc.number} is used with different slugs")
+                self.fail("Rule 6", doc.rel, None, f"the number {doc.number} is used with different slugs")
         specs = os.path.join(self.root, "specs")
         if os.path.isdir(specs):
             for name in sorted(os.listdir(specs)):
                 match = re.fullmatch(r"([0-9]{3})-(.+)", name)
                 if match and os.path.isdir(os.path.join(specs, name)) and match.group(1) in slugs:
                     if match.group(2) not in slugs[match.group(1)]:
-                        self.fail("R6", f"specs/{name}", None, f"the number {match.group(1)} is used by a design doc with another slug")
+                        self.fail("Rule 6", f"specs/{name}", None, f"the number {match.group(1)} is used by a design doc with another slug")
 
-    # R8 ---------------------------------------------------------------------------------
+    # Rule 8 ------------------------------------------------------------------------------
     def base_constitution(self):
         """(blob id, text) of the constitution at the base ref, wherever it lived, or (None, None)."""
         for rel in ("docs/constitution.md", ".specify/memory/constitution.md"):
@@ -731,11 +732,11 @@ class Checker:
         if base_text is None or base_text == text:
             return
         if source != blob:
-            self.fail("R8", report_rel, None, "Previous-source is not the constitution at the base ref")
+            self.fail("Rule 8", report_rel, None, "Previous-source is not the constitution at the base ref")
         now = re.search(r"\*\*Version\*\*: ([0-9]{1,6})\.([0-9]{1,6})\.([0-9]{1,6})", text)
         before = re.search(r"\*\*Version\*\*: ([0-9]{1,6})\.([0-9]{1,6})\.([0-9]{1,6})", base_text)
         if now and before and tuple(map(int, now.groups())) <= tuple(map(int, before.groups())):
-            self.fail("R8", "docs/constitution.md", None, "the constitution changed but its version did not increase")
+            self.fail("Rule 8", "docs/constitution.md", None, "the constitution changed but its version did not increase")
 
     def check_constitution(self):
         text = self.read("docs/constitution.md")
@@ -749,11 +750,11 @@ class Checker:
             if found:
                 versions.append(found.group(1))
         if not match or not versions:
-            self.fail("R8", rel, None, "the version line or the Sync Impact Report is missing")
+            self.fail("Rule 8", rel, None, "the version line or the Sync Impact Report is missing")
             return
         newest = max(versions, key=lambda v: tuple(int(p) for p in v.split(".")))
         if match.group(1) != newest:
-            self.fail("R8", rel, None, f"the version {match.group(1)} differs from the newest Sync Impact Report {newest}")
+            self.fail("Rule 8", rel, None, f"the version {match.group(1)} differs from the newest Sync Impact Report {newest}")
             return
         report_rel = f"docs/governance/constitution-{newest}-sync-impact.md"
         report = self.read(report_rel) or ""
@@ -764,22 +765,22 @@ class Checker:
             if len(cells) == 4 and cells[0] in ROMAN:
                 table[cells[0]] = cells
         if not source or set(table) != set(ROMAN):
-            self.fail("R8", report_rel, None, "the report lacks 'Previous-source:' or a row for each principle I to VIII")
+            self.fail("Rule 8", report_rel, None, "the report lacks 'Previous-source:' or a row for each principle I to VIII")
             return
         self.check_amendment(text, source.group(1), report_rel)
         code, previous = self.git("cat-file", "blob", source.group(1))
         if code != 0:
-            self.fail("R8", report_rel, None, "Previous-source is not a blob of this clone")
+            self.fail("Rule 8", report_rel, None, "Previous-source is not a blob of this clone")
             return
         current_blocks, previous_blocks = principle_blocks(text), principle_blocks(previous)
         for roman in ROMAN:
             _, disposition, was, now = table[roman]
             if current_blocks.get(roman) != now:
-                self.fail("R8", report_rel, None, f"the hash of principle {roman} differs from docs/constitution.md")
+                self.fail("Rule 8", report_rel, None, f"the hash of principle {roman} differs from docs/constitution.md")
             if previous_blocks.get(roman) != was:
-                self.fail("R8", report_rel, None, f"the previous hash of principle {roman} differs from Previous-source")
+                self.fail("Rule 8", report_rel, None, f"the previous hash of principle {roman} differs from Previous-source")
             if disposition == "KEEP" and was != now:
-                self.fail("R8", report_rel, None, f"principle {roman} is KEEP but its text changed")
+                self.fail("Rule 8", report_rel, None, f"principle {roman} is KEEP but its text changed")
 
 
 def main(argv):

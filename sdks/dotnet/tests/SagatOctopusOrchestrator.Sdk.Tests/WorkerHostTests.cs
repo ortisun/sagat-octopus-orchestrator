@@ -329,9 +329,11 @@ public sealed class WorkerHostTests : IAsyncLifetime
     public async Task AHeartbeatThatFailsWithATransportErrorIsTriedAgainOnTheNextBeatAndTheLeaseIsKept()
     {
         var host = Host(o => o.Worker.HeartbeatInterval = TimeSpan.FromMilliseconds(20));
-        host.RegisterActivity<JsonNode?, int>("slow", async (_, _, ct) =>
+        // The activity ends only once the beat after the three failed ones has been sent: a fixed delay raced the host's
+        // pace after a failure and lost on a loaded runner (fewer than four beats in 900 milliseconds).
+        host.RegisterActivity<JsonNode?, int>("slow", async (_, _, _) =>
         {
-            await Task.Delay(900, ct);
+            await Eventually.UntilAsync(() => State.Of("Heartbeat").Count >= 4, "the beat after the three failed ones");
             return 1;
         });
         State.Fail("Heartbeat", new Scripted(StatusCode.Unavailable), new Scripted(StatusCode.Unavailable), new Scripted(StatusCode.Internal));
