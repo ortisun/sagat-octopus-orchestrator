@@ -16,6 +16,7 @@ PROFILES = (
     "release_upgrade.rs",
     "release_upgrade_inflight.rs",
     "release_upgrade_callback_cutover.rs",
+    "release_upgrade_cron_trigger.rs",
 )
 
 

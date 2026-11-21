@@ -137,6 +137,7 @@ fn declined(message: impl Into<String>) -> RunError {
 fn store_failure(error: &StoreError) -> RunError {
     let text = error.to_string();
     if text.contains("permission denied") {
+        // refusal test: the_runtime_role_cannot_run_it_and_is_told_to_use_the_owner_role
         declined(
             "permission denied: the handover calls functions the runtime role may not execute. Run it with the \
              schema-owning database role (the one that runs `migrate` and `provision-tenant`), not the one the API and the \
@@ -153,10 +154,11 @@ fn lacking(missing: u32, examples: &[uuid::Uuid]) -> RunError {
         .map(ToString::to_string)
         .collect::<Vec<_>>()
         .join(", ");
+    // refusal test: the_handover_refuses_while_an_engine_lacks_the_capability_and_names_it
     declined(format!(
         "{missing} live execution engine(s) do not list schedules-v1 (instance ids: {names}). An engine lists it only when it \
-         runs the schedule pass: start it with SAGAT_SCHEDULES_ENABLED=true (or stop it), wait for it to register, and run \
-         the command again. Nothing was changed."
+         runs the schedule pass, which it does unless SAGAT_SCHEDULES_ENABLED=false: start it without that setting (or \
+         stop it), wait for it to register, and run the command again. Nothing was changed."
     ))
 }
 
@@ -164,15 +166,17 @@ fn lacking(missing: u32, examples: &[uuid::Uuid]) -> RunError {
 /// activation that finds no engine verifies nothing.
 fn check_live(live: u32, expect: Option<u32>) -> Result<(), RunError> {
     match expect {
+        // refusal test: an_expectation_that_does_not_match_refuses_and_none_live_is_never_a_vacuous_pass
         Some(expected) if live != expected => Err(declined(format!(
             "{live} execution engine(s) are live (seen within 30 seconds) and --expect-live says {expected}. If fewer are \
              live, an engine has not registered yet or is down; if more, one is not yours or is not stopped. Nothing was \
              changed."
         ))),
+        // refusal test: an_expectation_that_does_not_match_refuses_and_none_live_is_never_a_vacuous_pass
         None if live == 0 => Err(declined(
             "no execution engine is live (seen within 30 seconds), so there is nothing to verify and the handover would \
              leave the cron triggers with nothing that fires them if the engines are started without the schedule pass. \
-             Start the engines (with SAGAT_SCHEDULES_ENABLED=true) and run the command again, or pass --expect-live 0 if \
+             Start the engines (without SAGAT_SCHEDULES_ENABLED=false) and run the command again, or pass --expect-live 0 if \
              that is what you mean. Nothing was changed.",
         )),
         _ => Ok(()),
@@ -230,6 +234,7 @@ pub async fn schedule_trigger_handover(
         }
         (None, true) => None,
         (None, false) => {
+            // refusal test: an_apply_without_an_operator_is_refused_before_the_database_is_reached
             return Err(declined(
                 "--operator NAME is required: the handover is audited, and it records who made it",
             ));
@@ -248,6 +253,7 @@ fn unconverged(count: u32, examples: &[uuid::Uuid]) -> RunError {
         .map(ToString::to_string)
         .collect::<Vec<_>>()
         .join(", ");
+    // refusal test: the_handover_refuses_a_trigger_with_no_next_time_or_no_schedule_and_passes_once_they_converge
     declined(format!(
         "{count} cron trigger(s) have no schedule or no next time, or have a schedule that was paused before the handover \
          (trigger ids: {names}). The legacy cron pass stops at the \
@@ -261,6 +267,7 @@ fn unconverged(count: u32, examples: &[uuid::Uuid]) -> RunError {
 /// that there was one and rolled back.
 async fn unconverged_now(pool: &sagat_infra_postgres::PgPool) -> RunError {
     let Ok(mut conn) = pool.acquire().await else {
+        // refusal test: none — a failure to take a connection of a live pool right after the step rolled back; no seam makes one acquire fail
         return declined(
             "a cron trigger has no schedule equal to it, and the details could not be read. Nothing was changed; run the command with --dry-run.",
         );
@@ -269,6 +276,7 @@ async fn unconverged_now(pool: &sagat_infra_postgres::PgPool) -> RunError {
         Ok(census) if census.unconverged > 0 => {
             unconverged(census.unconverged, &census.unconverged_examples)
         }
+        // refusal test: none — a schedule made between the rollback under the lock and this read; no seam holds the command between the two
         Ok(_) => declined(
             "a cron trigger had no schedule equal to it when the handover counted, and has one now. Nothing was changed; run the command again.",
         ),
@@ -302,6 +310,7 @@ fn judge(
     move |census| {
         seen.store(census.live, std::sync::atomic::Ordering::Relaxed);
         let refusal = if live_changed(census.live, expect) {
+            // refusal test: an_engine_that_goes_silent_between_the_check_and_the_lock_stops_the_handover_with_nothing_recorded
             Some(Refusal::Said(declined(
                 "the number of live execution engines changed while the handover was being made. Nothing was changed; run the command again.",
             )))
@@ -354,9 +363,15 @@ async fn run(
         .await
         .map_err(|error| store_failure(&error))?;
     if state.is_handed_over() {
+        drop(conn);
+        if !request.dry_run {
+            // a command that died between the commit and the audit, or the job's handover: the recorded set is completed
+            complete_audit(pool).await?;
+        }
         return Ok(HandoverOutcome::AlreadyHandedOver { by, db_role });
     }
     if let HandoverState::Other(other) = &state {
+        // refusal test: the_function_moves_only_the_state_legacy
         return Err(declined(format!(
             "the handover state is `{other}`, which this build does not know: run the handover with the build that wrote it"
         )));
@@ -388,6 +403,7 @@ async fn run(
     }
     drop(conn);
     let Some(operator) = operator else {
+        // refusal test: none — defensive: without an operator only a dry run gets here, and a dry run returned above
         return Err(declined("--operator NAME is required"));
     };
     let why: Why = Why::default();
@@ -410,6 +426,7 @@ async fn run(
     match activated {
         Ok(Activated::Recorded { epoch }) => {
             let live = seen.load(std::sync::atomic::Ordering::Relaxed);
+            complete_audit(pool).await?;
             tracing::info!(operator = %operator, %os_user, %host, epoch, live, "the cron triggers were handed over to the schedule pass");
             Ok(HandoverOutcome::HandedOver { live, epoch })
         }
@@ -426,6 +443,7 @@ async fn run(
                 .map_err(|error| store_failure(&error))?;
             drop(conn);
             if state.is_handed_over() {
+                complete_audit(pool).await?;
                 return Ok(HandoverOutcome::AlreadyHandedOver { by, db_role });
             }
             let completed = store
@@ -437,6 +455,7 @@ async fn run(
             match completed {
                 Ok(()) => {
                     let live = seen.load(std::sync::atomic::Ordering::Relaxed);
+                    complete_audit(pool).await?;
                     tracing::info!(operator = %operator, %os_user, %host, live, "the cron triggers were handed over to the schedule pass (the requirement had been recorded before)");
                     let epoch: i64 = sqlx_epoch(pool).await?;
                     Ok(HandoverOutcome::HandedOver { live, epoch })
@@ -446,6 +465,33 @@ async fn run(
         }
         Err(error) => Err(refused(error, &why, pool).await),
     }
+}
+
+/// The tenant audit of the handover, written after its commit from the set recorded in it (ADR-0091 decision 7): the operator's
+/// handover has it too. The handover is made when this runs, so nothing here fails the command (correctness review): a record found
+/// under a drawn id that differs (`AUDIT_CONFLICT`), or a failure, is a warning; the engines export the tenants left
+/// (`trigger_schedule_handover_audit_pending`, alerted on) and the next run completes them.
+async fn complete_audit(pool: &sagat_infra_postgres::PgPool) -> Result<(), RunError> {
+    match sagat_infra_postgres::complete_handover_audit(pool).await {
+        Ok(audit) => {
+            tracing::info!(
+                mode = audit.mode.as_deref().unwrap_or("not recorded"),
+                epoch = audit.epoch.unwrap_or_default(),
+                tenants = audit.tenants,
+                written = audit.written,
+                "the tenant audit of the handover is complete"
+            );
+        }
+        Err(sagat_infra_postgres::HandoverDbError::AuditConflict) => tracing::warn!(
+            "AUDIT_CONFLICT: an audit record exists under an id drawn for a tenant of the handover and differs from the \
+             handover's. The handover itself is made; the tenant audit is not complete (docs/runbooks/schedules.md, 6.3)"
+        ),
+        Err(error) => tracing::warn!(
+            %error,
+            "the tenant audit of the handover could not be completed; the handover itself is made and the next run completes it"
+        ),
+    }
+    Ok(())
 }
 
 async fn sqlx_epoch(pool: &sagat_infra_postgres::PgPool) -> Result<i64, RunError> {
@@ -472,20 +518,24 @@ async fn refused(error: ChangeRefused, why: &Why, pool: &sagat_infra_postgres::P
     }
     match error {
         ChangeRefused::InstancesLackCapability { missing, examples } => lacking(missing, &examples),
+        // refusal test: schedules_v1_required_of_other_kinds_refuses_the_handover_in_words
         ChangeRefused::KindsDiffer => declined(
             "schedules-v1 is already required of other kinds of instance; remove that requirement first. Nothing was changed.",
         ),
+        // refusal test: none — the step returns a state conflict only after the judge kept its reason, which is told first; the registry's other one, no kinds, is never asked
         ChangeRefused::Store(StoreError::StateConflict(reason)) => declined(format!(
             "{reason}. Nothing was changed; run the command again."
         )),
         ChangeRefused::Store(error) => {
             let text = error.to_string();
             if text.contains("HANDOVER_BUSY") {
+                // refusal test: a_long_publication_makes_the_command_try_again_and_does_not_hold_the_writers_behind_it
                 declined(
                     "a publication, or a cron pass, was writing the cron triggers and the handover waited two seconds for it, \
                      which is as long as it holds them back. Nothing was changed; run the command again.",
                 )
             } else if text.contains("HANDOVER_UNCONVERGED") {
+                // refusal test: none — the census under the same lock, with the same definition, refuses first; only a change between two statements of one step gets here
                 declined(format!(
                     "{text}. The legacy cron pass stops at the handover, so nothing would fire them; wait for the reconciliation and run the command again. Nothing was changed."
                 ))
@@ -613,6 +663,29 @@ mod tests {
             HandoverOutcome::WouldHandOver { live: 1 }
                 .to_string()
                 .contains("Nothing was changed")
+        );
+    }
+
+    /// `--apply` without `--operator` (G2307): refused in words, exit 2, before the database is reached (the URL points nowhere).
+    #[tokio::test]
+    async fn an_apply_without_an_operator_is_refused_before_the_database_is_reached() {
+        let nowhere = DatabaseConfig {
+            url: "postgres://nobody@127.0.0.1:1/none".to_owned(),
+            max_connections: 1,
+            statement_timeout: std::time::Duration::from_secs(1),
+        };
+        let apply = HandoverRequest {
+            operator: None,
+            expect_live: Some(1),
+            dry_run: false,
+        };
+        let refused = schedule_trigger_handover(&nowhere, &apply)
+            .await
+            .expect_err("an apply names its operator");
+        assert_eq!(refused.exit_code(), 2, "{refused}");
+        assert!(
+            message(refused).contains("--operator NAME is required"),
+            "the refusal says what is missing"
         );
     }
 }

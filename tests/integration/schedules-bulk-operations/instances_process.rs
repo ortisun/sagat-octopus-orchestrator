@@ -334,12 +334,20 @@ async fn engine_env_for(r: &Registry, idp: &TestIdp) -> std::collections::HashMa
     )
 }
 
+/// An engine without the schedule pass, so that it lacks `schedules-v1`: since 0.3.0 the pass is on unless the setting
+/// says `false` (OD-2026-11-13-8), so these tests say it.
 async fn start_engine(
     r: &Registry,
     idp: &TestIdp,
     heartbeat_ms: u64,
 ) -> Result<RunningEngine, RunError> {
-    start_engine_with(r, idp, heartbeat_ms, &[]).await
+    start_engine_with(
+        r,
+        idp,
+        heartbeat_ms,
+        &[("SAGAT_SCHEDULES_ENABLED", "false")],
+    )
+    .await
 }
 
 /// An engine with settings of its own on top of the ones of these tests (`SAGAT_SCHEDULES_ENABLED`, for one).
@@ -366,7 +374,8 @@ async fn an_engine_registers_before_its_first_pass_with_the_capabilities_of_its_
  {
     let r = registry().await;
     let idp = TestIdp::start().await;
-    let mut engine = start_engine_with(&r, &idp, BEAT_MS, &[("SAGAT_SCHEDULES_ENABLED", "true")])
+    // no setting at all: the default of 0.3.0 runs the schedule pass (OD-2026-11-13-8)
+    let mut engine = start_engine_with(&r, &idp, BEAT_MS, &[])
         .await
         .expect("starts");
     let row = sqlx::query(
@@ -694,9 +703,11 @@ async fn the_run_input_requirement_is_refused_while_an_engine_reports_and_closes
     let (reporting_id, _, capabilities) = instance_of_kind(&r, "EXECUTION_ENGINE")
         .await
         .expect("registered");
-    assert!(
-        capabilities.is_empty(),
-        "an engine in report mode does not list it: {capabilities:?}"
+    // schedules are on by default (OD-2026-11-13-8), so the engine lists `schedules-v1` and only that
+    assert_eq!(
+        capabilities,
+        ["schedules-v1"],
+        "an engine in report mode does not list run-input-validation-v1: {capabilities:?}"
     );
     let refused = r
         .require(

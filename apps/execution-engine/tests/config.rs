@@ -47,9 +47,14 @@ fn defaults_listen_on_loopback_and_publish_nothing() {
 }
 
 #[test]
-fn schedules_are_stored_but_fire_nowhere_until_the_flag_is_set() {
+fn schedules_fire_by_default_and_an_explicit_false_stops_them() {
     let config = parse(&[]).expect("config");
-    assert!(!config.schedules_enabled, "off by default");
+    assert!(config.schedules_enabled, "on by default (OD-2026-11-13-8)");
+    let off = parse(&[("SAGAT_SCHEDULES_ENABLED", "false")]).expect("config");
+    assert!(
+        !off.schedules_enabled,
+        "an explicit false turns the pass off"
+    );
     assert_eq!(config.schedules.batch, 100);
     assert_eq!(config.schedules.round_actions, 100);
     assert_eq!(config.schedule_poll, Duration::from_secs(1));
@@ -153,7 +158,7 @@ fn resets_that_wait_for_their_source_are_stored_but_completed_nowhere_until_the_
     assert_eq!(config.resets.per_tenant, 10);
     assert_eq!(config.reset_poll, Duration::from_secs(1));
     // it is not one of the other switches, and they are not it
-    assert!(!config.batches_enabled && !config.schedules_enabled);
+    assert!(!config.batches_enabled && config.schedules_enabled);
 
     let on = parse(&[
         ("SAGAT_RESET_CANCEL_SOURCE_ENABLED", "true"),
@@ -164,7 +169,7 @@ fn resets_that_wait_for_their_source_are_stored_but_completed_nowhere_until_the_
     .expect("config");
     assert_eq!(on.resets.per_tenant, 3);
     assert!(on.reset_cancel_source_enabled);
-    assert!(!on.batches_enabled && !on.schedules_enabled);
+    assert!(!on.batches_enabled && on.schedules_enabled);
     assert_eq!(on.resets.batch, 250);
     assert_eq!(on.reset_poll, Duration::from_millis(400));
     let top = parse(&[("SAGAT_RESET_CANCEL_SOURCE_BATCH", "1000")]).expect("config");
@@ -1008,11 +1013,12 @@ fn the_pass_that_completes_resets_is_absent_unless_the_operator_turned_it_on() {
     use sagat_execution_engine::settings::{
         PASS_BATCHES, PASS_RESETS, PASS_SCHEDULES, optional_passes,
     };
-    // nothing is on by default: the engine runs none of the three
+    // by default the engine runs the schedule pass (on since 0.3.0, OD-2026-11-13-8) and neither of the other two
     assert_eq!(
         optional_passes(&parse(&[]).expect("config")),
-        Vec::<&str>::new()
+        [PASS_SCHEDULES]
     );
+    const NO_SCHEDULES: (&str, &str) = ("SAGAT_SCHEDULES_ENABLED", "false");
     // each is on by its own variable and by no other
     for (variable, pass) in [
         ("SAGAT_SCHEDULES_ENABLED", PASS_SCHEDULES),
@@ -1020,13 +1026,14 @@ fn the_pass_that_completes_resets_is_absent_unless_the_operator_turned_it_on() {
         ("SAGAT_RESET_CANCEL_SOURCE_ENABLED", PASS_RESETS),
     ] {
         assert_eq!(
-            optional_passes(&parse(&[(variable, "true")]).expect("config")),
+            optional_passes(&parse(&[NO_SCHEDULES, (variable, "true")]).expect("config")),
             [pass],
             "{variable}"
         );
         // and off said out loud is off
         assert!(
-            optional_passes(&parse(&[(variable, "false")]).expect("config")).is_empty(),
+            optional_passes(&parse(&[NO_SCHEDULES, (variable, "false")]).expect("config"))
+                .is_empty(),
             "{variable}"
         );
     }
@@ -1071,14 +1078,15 @@ fn with_the_flag_off_the_engine_runs_no_pass_that_expires_a_reset_either() {
         let config = parse(&off).expect("config");
         assert!(!config.reset_cancel_source_enabled, "{off:?}");
         assert_eq!(config.resets.expiry, Duration::from_secs(3_600), "{off:?}");
-        assert!(
-            optional_passes(&config).is_empty(),
-            "nothing runs with the flag off, so nothing expires: {off:?}"
+        assert_eq!(
+            optional_passes(&config),
+            [PASS_SCHEDULES],
+            "only the schedule pass of the default runs with the flag off, so nothing expires: {off:?}"
         );
     }
-    // the flag on: one pass, the one that completes and expires
+    // the flag on: one more pass, the one that completes and expires
     let on = parse(&[(WINDOW, "3600"), (FLAG, "true")]).expect("config");
-    assert_eq!(optional_passes(&on), [PASS_RESETS]);
+    assert_eq!(optional_passes(&on), [PASS_SCHEDULES, PASS_RESETS]);
     // there is no pass of the expiry besides it, whatever else is on
     let everything = parse(&[
         (FLAG, "true"),

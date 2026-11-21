@@ -15,10 +15,14 @@ const RELEASE: &str = "bfda342073db71e84f30bdc79ccf3fbc97a7153c";
 
 pub(super) fn verify_overlays(build: &Value) {
     let overlays = build["overlays"].as_array().expect("verified overlay list");
-    let expected: [(&str, &[u8]); 6] = [
+    let expected: [(&str, &[u8]); 7] = [
         (
             "tests/fixtures/release-upgrade/callback_cutover.rs",
             include_bytes!("../../fixtures/release-upgrade/callback_cutover.rs"),
+        ),
+        (
+            "tests/fixtures/release-upgrade/cron_trigger.rs",
+            include_bytes!("../../fixtures/release-upgrade/cron_trigger.rs"),
         ),
         (
             "tests/fixtures/release-upgrade/cutover.rs",

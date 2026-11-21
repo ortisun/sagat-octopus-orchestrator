@@ -99,11 +99,18 @@ fn fence(shard: Shard, owner: &str, generation: u64) -> ShardFence {
 
 /// Another replica takes `shard` over in a transaction that stays open until `release` is sent: the takeover waits for
 /// what holds the row in shared mode, and then holds it itself, so a fence read after it waits for its commit.
+///
+/// It returns only once the takeover's update has the row or is seen waiting for it. It used to return as soon as the
+/// backend was known, before the update was sent: under the whole suite the caller then released the binding first, the
+/// refused step read the old fence and recorded its decision, nothing ever waited for the takeover, and its open
+/// transaction held the server's horizon, and with it the selections of the other tests' batch jobs, for the 120 s of the
+/// stage (CI of PR #226, D2340).
 async fn takeover(
     f: &Fixture,
     shard: Shard,
 ) -> (i32, oneshot::Sender<()>, tokio::task::JoinHandle<()>) {
     let (pid_tx, pid_rx) = oneshot::channel();
+    let (updated_tx, mut updated) = oneshot::channel::<()>();
     let (release, released) = oneshot::channel::<()>();
     let pool = f.w.db.pool.clone();
     let task = tokio::spawn(async move {
@@ -121,10 +128,39 @@ async fn takeover(
         .execute(&mut *tx)
         .await
         .expect("take the shard over");
+        // the caller may have seen the update wait already and stopped listening
+        let _ = updated_tx.send(());
         released.await.expect("the signal to commit");
         tx.commit().await.expect("commit the takeover");
     });
-    (pid_rx.await.expect("the pid"), release, task)
+    let pid = pid_rx.await.expect("the pid");
+    within(
+        "the takeover has the row or waits for it",
+        StdDuration::from_secs(120),
+        async {
+            loop {
+                match updated.try_recv() {
+                    Ok(()) => return,
+                    Err(oneshot::error::TryRecvError::Closed) => panic!("the takeover failed"),
+                    Err(oneshot::error::TryRecvError::Empty) => {}
+                }
+                let waiting: bool = sqlx::query_scalar(
+                    "SELECT EXISTS (SELECT 1 FROM pg_stat_activity \
+                     WHERE pid = $1 AND wait_event_type = 'Lock' AND strpos(query, 'scheduler_shards') > 0)",
+                )
+                .bind(pid)
+                .fetch_one(&f.w.db.pool)
+                .await
+                .expect("look at the takeover");
+                if waiting {
+                    return;
+                }
+                tokio::task::yield_now().await;
+            }
+        },
+    )
+    .await;
+    (pid, release, task)
 }
 
 /// A run that held `id` and ended, and an open run that holds it now.
@@ -169,7 +205,7 @@ async fn a_rerun_item_that_finds_its_id_held_is_audited_once_by_the_engine_with_
         "conflict-rerun-item",
     )
     .await;
-    select(&exec, &job).await;
+    select(&f, &exec, &job).await;
     let shard = Shard::of(job.id);
     lease(&f.w.db.pool, shard, "replica-old", 11).await;
     f.clock.advance(time::Duration::seconds(1));
