@@ -127,159 +127,176 @@ actual acceptance is tracked by T034 tasks and is not supplied by this note.
 
 
 
+
 ## Phase: Delivery acknowledgement (Architecture decision 0099, protocol 1.8; Owner decision 2026-11-20-12)
 
-The contract is `stream-completion.md`, "Delivery acknowledgement (protocol 1.8)"; the decisions are Decisions 006-040 to 006-061 of
-`research.md`. Every test below is written first and seen failing for the right reason (AGENTS.md rule 18); races are held with
-a lock or a barrier, never a sleep; every task that touches a lease has a root and a scoped row in its evidence. A task is ticked
-only with the named test and its result, or the command and its output.
+The contract is `stream-completion.md`, "Delivery acknowledgement (protocol 1.8)"; the decisions are Decision 006-040 to Decision
+006-061 of `research.md`. Every test below is written first and seen failing for the right reason (AGENTS.md rule 18); races are
+held with a lock or a barrier, never a sleep; every task that touches a lease has a root and a scoped row in its evidence. A task is
+ticked only with the named test and its result, or the command and its output.
 
 **Before the first task.**
-- (a) Architecture decision 0098 is accepted and both of its builds are merged: the server (`bugfix/withdraw-undelivered-leases`, pull request #260,
-  with its scoped withdrawal, its reservation of `TASK_NOT_STARTED` for the new minor and its per-attempt cap) and the SDK
-  hand-back (`bugfix/withdraw-leases-sdks`), with the four requests of Decision 006-059 answered.
-- (b) Task 041-7 has merged (the server serves 1.7) before Task 006-048 and before the `AppendStepLogs` case of Task 006-052;
-  Tasks 041-15 to 041-20 (each SDK speaks 1.7) have merged before the matching SDK task Tasks 006-059 to 006-064.
-- (c) The owner has accepted Architecture decision 0099, with the trust assumption of its decision 12 and the reservation of 1.8.
+- (a) Architecture decision 0098 is accepted and both of its builds are merged: the server (`bugfix/withdraw-undelivered-leases`,
+  pull request #260, with its scoped withdrawal, its reservation of `TASK_NOT_STARTED`, its cap of four per attempt, its replay floor
+  and its generic `capability-activate`) and the SDK hand-back (`bugfix/withdraw-leases-sdks`, with its rewrite of a handler-raised
+  code). The server build decodes the cause `NOT_ACKNOWLEDGED` (request (2) of Decision 006-059, a hard precondition: it makes that
+  build the enforced rollback floor); requests (1), (3), (4) and (5) are answered.
+- (b) Task 041-7 has merged (the server serves 1.7) before Task 006-057 and before the `AppendStepLogs` case of Task 006-052;
+  Task 041-15 to Task 041-20 (each SDK speaks 1.7) have merged before the matching SDK task, Task 006-059 to Task 006-064.
+- (c) The owner has accepted Architecture decision 0099, with the trust assumption of its decision 12, and answered Owner question
+  006-002.
 
-**Ownership** (as "Implementation ownership and integration order" above): the server owner, Tasks 006-043 to 006-057; the
-shared conformance owner, Task 006-058; one owner per SDK, Tasks 006-059 to 006-064; the integrator, tasks Task 006-065 to
-Task 006-067. Shared files have one owner each.
+**Ownership** (as "Implementation ownership and integration order" above): the server owner, Task 006-043 to Task 006-057; the
+shared conformance owner, Task 006-058; one owner per SDK, Task 006-059 to Task 006-064; the integrator, Task 006-065 to Task
+006-067. Shared files have one owner each.
 
 ### Server
 
 - [ ] T006-043 The canonical contract in `specs/001-platform-foundation/contracts/worker.proto` ("Added in protocol 1.8"):
-  `TaskLease.acknowledge_before_start = 19`, `AcknowledgeTasks` and its messages, the verdict enum, `TASK_NOT_ACKNOWLEDGED` in the
-  error comment and `TASK_NOT_STARTED` as a code reserved for the host; the Rust descriptor baseline; the request, the response,
-  `TaskAcknowledgement` and the lease in `skip_debug` (`crates/api-grpc/build.rs`) with a `Debug` that prints counts; every
-  implementation of the generated trait answers the call (`WorkerGrpc`, the `Stub`s of
+  `TaskLease.acknowledge_before_start = 23`, `WorkerCapabilities.declines_acknowledgement = 10`, `AcknowledgeTasks` and its messages
+  with `lease_time_left_ms`, the verdict enum with `CANCELLED` and `RETRY`, `TASK_NOT_ACKNOWLEDGED` in the error comment; the Rust
+  descriptor baseline; every message with a `lease_token` in `skip_debug` (`crates/api-grpc/build.rs`) with a `Debug` that prints
+  counts; every implementation of the generated trait answers the call (`WorkerGrpc`, the `Stub`s of
   `tests/contract/durable-execution/grpc/limits.rs` and `tests/contract/security-multitenancy/grpc/stub.rs`, the `Proxy`s of
   `tests/integration/database-runner/proxy.rs` and `sdks/rust/conformance/src/faults/grpc.rs`, `Fake` in
   `apps/database-runner/src/testing.rs`, `Service` in `sdks/rust/src/worker_tests.rs`; `UNIMPLEMENTED` until Task 006-049).
-  Evidence: the descriptor test of `contract_grpc_durable_execution`, `cargo clippy --workspace --all-targets`, a token canary on
-  the request, the element and the lease.
-- [ ] T006-044 The migration (the `/migration` checklist): on `steps`, `lease_offered_generation bigint`, `lease_offered_at` and
-  `lease_acknowledged_at timestamptz`, `lease_unacknowledged_withdrawals smallint NOT NULL DEFAULT 0`, `withdrawn_lease_token_hash
-  bytea`; no backfill, no `CHECK`; the three closed capability checks of the registry extended `NOT VALID` and then validated; the
-  registry guard's new body (Task 006-046) and its restoration in `down`; the table-level grants of `sagat_app` cover the columns
-  (verified, not assumed); a `down` that refuses while a mark counts, while the history names the capability, or while a live
-  process lists it; the storage classification; the privilege audit. Evidence: the forward test, each refused `down`, the privilege
-  audit of `integration_platform_foundation`, also as the runtime role.
-- [ ] T006-045 The cause `NOT_ACKNOWLEDGED` of `step.lease_withdrawn` (event, replay, reset copy, the codec of
-  `crates/infra-postgres/src/event_codec.rs`, the events contract, the Studio's closed list of causes), or its confirmation if the
-  Architecture decision 0098 build added it (Decision 006-059 (2)). Evidence: codec round trip, a fixture holding the cause in
-  `crates/domain/tests/legacy_replay.rs`, reset copying it.
-- [ ] T006-046 The registry, dormant: the capability `delivery-acknowledgement-v1` known to the registry but listed by no process
-  yet; `control-plane delivery-acknowledgement-activate` and `-remove` (owner role, `--operator`, `--expect-live N`, `--dry-run`),
-  which take the epoch row first and refuse with a typed answer an activation without `lease-withdrawal-v1`; the guard of
-  `platform_requirements_guard` (invoker, schema-qualified, the epoch row taken first) for both orders; the command that removes
-  `lease-withdrawal-v1` refuses while a mark counts; `docs/runbooks/lease-withdrawal.md` and `docs/runbooks/instance-registry.md`
-  section 5 updated, and an amendment line for Architecture decision 0082 prepared for its acceptance. Evidence: the commands' typed refusals; the
-  trigger refuses both orders, also with the hand SQL of the runbook, with the race between an activation and a removal held open.
-- [ ] T006-047 The claim marks and flags a lease, in each of the three lease statements (`upsert_step`, `upsert_scoped_instance`,
-  the path statement), when the session was accepted at 1.8, the requirement is known, the lease's earlier deadline is at least
-  18 s after the claim, and the run of withdrawals is under 3; otherwise it counts the reason; the condition is one SQL macro and
-  the store returns the marks typed; the engine's statements keep or clear `lease_acknowledged_at`. Evidence: a matrix test in
-  `integration_durable_execution` (minors 1.4, 1.7 and 1.8; requirement recorded or not; time-to-live 17 and 18 s; `timeoutMs` 17
-  and 18 s; each statement; root and scoped), a lease written afterwards with the old column list is not provisional, the parity
-  test of the macro against the pure function, and the unchanged `LEASE` line of Task 006-055.
-- [ ] T006-048 Negotiation: `PROTOCOL_MINOR` and `DELIVERY_ACKNOWLEDGEMENT_PROTOCOL_MINOR` at 8, `protocol_ceiling` answering 8
-  when it would answer 7 and the store proves the columns; the database runner keeps 6. Evidence: the ceiling unit tests of
-  `crates/application/src/worker.rs` and `tests/contract/sdk-multilanguage/grpc/negotiation.rs`.
-- [ ] T006-049 `AcknowledgeTasks`: the application service in a module of its own (so the test selector can match it by path), with
-  the lease identity type `Heartbeat` uses; the store method (one transaction: the unlocked pre-read by primary key, the per-namespace
-  checks of `ensure_bound` under their locks, the conditional statement in primary-key order with `clock_timestamp()` and
-  `lock_timeout`); the bounded audits; the gRPC handler in the class `Acknowledge`; the request bounds; the counters. Evidence: a
-  test per verdict and path (acknowledged, duplicate, too close to a deadline, past a deadline, withdrawn, replaced, unmarked, wrong
-  attempt or generation, a forged token with no lock taken, a foreign tenant's run audited once per call, a binding revoked in one
-  namespace of a two-namespace call answered `NOT_HELD` for that namespace only and audited once, a revocation held open and waited
-  for, a cancellation requested answered `CANCELLED` with nothing written, a deadlock answered as a retryable failure and a repeat
-  answered `duplicate`); the admission test that half of the reserve stays for `Heartbeat`, `CompleteStep` and `FailStep`; the runtime
+  Evidence: the descriptor test of `contract_grpc_durable_execution`, `cargo clippy --workspace --all-targets`, token canaries.
+- [ ] T006-044 The migration (the `/migration` checklist): on `steps`, `lease_hand_back_generation`, `lease_offered_generation` and
+  `lease_capability_generation` (`bigint`), `lease_offered_at` and `lease_acknowledged_at` (`timestamptz`), `withdrawn_lease_token_hash
+  bytea`; on `worker_sessions`, `declines_acknowledgement boolean NOT NULL DEFAULT false`; the owner-only table
+  `platform_requirement_dependencies`, seeded with (`delivery-acknowledgement-v1`, `lease-withdrawal-v1`, both kinds); the new body of
+  `platform_requirements_guard` and its restoration in `down`; the three closed capability checks extended `NOT VALID` and then
+  validated, held equal to `Capability::ALL` by the check of Decision 006-033; no backfill, no `CHECK` on the marks; the table-level
+  grants of `sagat_app` cover the columns (verified, not assumed); a `down` that refuses while a mark counts, while the history names
+  the capability, or while a live process lists it; the storage classification; the privilege audit. Evidence: the forward test, each
+  refused `down`, the privilege audit of `integration_platform_foundation`, also as the runtime role.
+- [ ] T006-045 The cause `NOT_ACKNOWLEDGED` of `step.lease_withdrawn` confirmed in the event, the replay, the reset copy, the codec of
+  `crates/infra-postgres/src/event_codec.rs`, the events contract and the Studio's closed list of causes, as the server build added it.
+  Evidence: codec round trip, a fixture holding the cause in `crates/domain/tests/legacy_replay.rs`, reset copying it.
+- [ ] T006-046 The registry, dormant: the capability `delivery-acknowledgement-v1` known to the registry but listed by no process yet;
+  its entry in `control-plane capability-activate` (both kinds, requires `lease-withdrawal-v1` for both kinds, a typed refusal read from
+  the dependency table under the epoch lock); the guard for both orders; `docs/runbooks/lease-withdrawal.md` and
+  `docs/runbooks/instance-registry.md` section 5 updated; an amendment line for Architecture decision 0082 prepared. Evidence: the typed
+  refusals; the trigger refuses both orders, also with the hand SQL of the runbook and with the dependency recorded for one kind only,
+  with the race between an activation and a removal held open.
+- [ ] T006-047 The claim writes the marks, in each of the three lease statements (`upsert_step`, `upsert_scoped_instance`, the path
+  statement): `lease_hand_back_generation` for a session at 1.8 or later; the provisional mark and the flag under the conditions of the
+  contract (session at 1.8 not declining, requirement known, engine switch on, earlier deadline at least 18 s after the claim, the
+  attempt's withdrawals under four), and the skip reason otherwise; the engine's statements keep or clear the marks. Evidence: a matrix
+  test in `integration_durable_execution` (minors 1.4, 1.7 and 1.8; declining or not; requirement recorded or not; switch on or off;
+  time-to-live 17 and 18 s; `timeoutMs` 17 and 18 s; three and four withdrawals of the attempt; each statement; root and scoped); a
+  lease written afterwards with the old column list is not marked; the static check in `scripts/check-architecture.py` of every
+  assignment to a mark (and its negative test); the barrier test with a run transaction loaded before an acknowledgement and writing
+  the row through each statement that can touch a `LEASED` row; the parity test of the macro against the pure function; the unchanged
+  `LEASE` line of Task 006-055.
+- [ ] T006-048 Registration: `declines_acknowledgement` stored on the session and read by the claim; the negotiation code that answers
+  8, written and tested with the server's constant still at 7. Evidence: the ceiling unit tests of `crates/application/src/worker.rs`
+  with the constant raised in the test only, `tests/contract/sdk-multilanguage/grpc/negotiation.rs`, a registration that declines.
+- [ ] T006-049 `AcknowledgeTasks`: the application service in a module of its own (so the test selector can match it by path), with the
+  lease identity type `Heartbeat` uses; the port `AcknowledgementTx` and its PostgreSQL adapter (the timeouts, `matched`, the binding and
+  membership checks under their locks, `lock_matched` with `FOR UPDATE OF steps SKIP LOCKED` in primary-key order and the run's stop
+  reason, the decision on the locked rows, `acknowledge`); the bounded audits; the gRPC handler in the class `Acknowledge`; the request
+  bounds; the counters. Evidence: a test per verdict and reason (acknowledged, duplicate, too late before each deadline, withdrawn,
+  replaced, unmarked, wrong attempt or generation, a forged token with no lock taken, a foreign tenant's run audited once per call, a
+  revoked binding answered `unbound` and audited once, two namespaces refused, a cancellation requested and a run stopping answered
+  `CANCELLED` with nothing written, a row held by another transaction answered `RETRY` while the others are acknowledged, a deadlock
+  answered as a retryable failure and a repeat answered `duplicate`); the admission test of the formula for limits 1 to 8; the runtime
   role.
-- [ ] T006-050 The withdrawals of a lease whose mark counts: the lost-lease pass withdraws a provisional lease at the first of its
-  expiry and attempt deadline (`NOT_ACKNOWLEDGED`); every withdrawal (the pass's, the hand-back's, `NOT_SENT`) re-reads the row `FOR
-  UPDATE`, decides with the pure function and increments the run of withdrawals; `withdrawn_lease_token_hash`; a `TASK_NOT_STARTED`
-  for an acknowledged lease or a `RUNNING` step is an ordinary retryable failure; the hand-back is honoured only from a 1.8 session and
-  under the per-attempt cap, as the Architecture decision 0098 build applies it. Evidence: the unit test of the pure function over every combination of
-  status, marks and deadlines; a provisional `Activity` lease past its expiry, and one past its attempt deadline, withdrawn with no
-  review and the attempt reused, root and scoped; an acknowledged one expired as an unknown outcome; the bound of three over mixed
-  causes (two silences, one hand-back) and the unmarked fourth lease; a stopping collection drains a withdrawn instance; a cancelled
-  step's hand-back with declared secrets withdraws and cancels.
+- [ ] T006-050 The withdrawals: the lost-lease pass withdraws a provisional lease at the first of its expiry and attempt deadline
+  (`NOT_ACKNOWLEDGED`); every withdrawal of a marked lease (the pass's, the hand-back's, `NOT_SENT`) takes its binding checks, then
+  re-reads the row `FOR UPDATE` and decides with the pure function; `withdrawn_lease_token_hash`; the hand-back decided from
+  `lease_hand_back_generation` (replacing, from Task 006-057, the raised stored minor of the server build's tests); an acknowledged lease,
+  a `RUNNING` step, or a lease to which a capability was served: an ordinary failure. Evidence: the unit test of the pure function over
+  every combination of status, marks, deadlines and the attempt's withdrawals; a provisional `Activity` lease past its expiry, and one
+  past its attempt deadline, withdrawn with no review and the attempt reused, root and scoped; an acknowledged one expired as an unknown
+  outcome; four withdrawals then an unmarked lease; a hand-back after its session registered again at 1.7 under the same name, still
+  withdrawn; a hand-back of a lease claimed at 1.7 while the session row says 1.8, an ordinary failure; a stopping collection drains a
+  withdrawn instance; a cancelled step's hand-back with declared secrets withdraws and cancels.
 - [ ] T006-051 The races, in `tests/fault/sdk-multilanguage/`: the acknowledgement holds the row while the pass's withdrawal waits, and
-  the reverse; the same with the hand-back's withdrawal; the pass's candidate read taken before an acknowledgement; an acknowledgement
-  after a deadline and before the pass; a binding revocation against an acknowledgement. Evidence: barrier tests watched in
-  `pg_stat_activity`, each asserting the journal and that the handler would run exactly once, root and scoped.
-- [ ] T006-052 The capability refusal: the fence variants (root and path) called only from the capability paths, after the token and
-  the binding matched; the descriptor-driven contract test, walking nested, `oneof` and repeated fields, failing for a lease-token
-  method with no case. Evidence: that test in `contract_grpc_durable_execution` (refused before, served after the acknowledgement,
-  root and scoped; the `AppendStepLogs` case once Task 041-7 has merged); a report on a provisional lease is served; a wrong token
-  gets the ordinary stale answer.
-- [ ] T006-053 What the server sees of the trust assumption: violations, and calls after a withdrawal, counted and audited once per
-  step and generation (or withdrawn hash); hand-backs exempt and counted apart. Evidence: a test for each, including a give-up
-  hand-back before and after the withdrawal that counts nothing as a violation.
-- [ ] T006-054 Observability and operations: the counters, the two histograms, the gauges of the operations statistics query, the
-  four alerts with `promtool test rules` cases (added to the CI step), the symptoms in `docs/runbooks/sdks.md`, and a row per new rule
-  in the fitness-function table of `docs/engineering/architecture-principles.md`. Evidence: a telemetry test with bounded labels and a
-  token canary, and the `promtool` output.
-- [ ] T006-055 The budget (`tests/integration/claim-transition-efficiency/work_budget.rs`): a run of three chained activities at 1.8
-  with the requirement recorded; `LEASE` and both completion lines unchanged; new lines `ACKNOWLEDGEMENT` (one lease) and
-  `FIRST_HEARTBEAT` pinned at their measured counts, asserting no run lock, no scan of the run's steps, no journal or outbox insert,
-  and fewer statements than `FIRST_HEARTBEAT`; a call of 64 leases itemised, with the triggers it fires named. Evidence: two equal
-  passes and the itemised statements in the task.
-- [ ] T006-056 The gate, before any SDK work: the workers of `tests/performance/scalability-ha` acknowledge at 1.8; the transitions
-  scenario at 1.8 against 1.7 on the same machine and day, with a network between the workers and the services, the median of five
-  interleaved runs of each; a fan-out run acknowledged by several hosts; a burst that fills the admission reserve; the call duration
-  for 64 leases and the delivery delay. Done when 1.8 is no more than 15% below 1.7, the call is within 3 s at the 99th percentile,
-  ready to handler entry rises by no more than the call's 99th percentile, and no heartbeat is shed while acknowledgements are
-  admitted; otherwise the build stops here, the feature stays dormant, and the owner decides. Evidence: the section of
-  `tests/performance/reports/scalability-ha.md` with its raw capture, and the result recorded in Architecture decision 0099.
-- [ ] T006-057 The feature leaves dormancy: every control plane and engine of the build lists `delivery-acknowledgement-v1`.
-  Evidence: `apps/execution-engine/tests/registry.rs` and the control plane's registry test list it; an activation passes on a fleet
-  of the build.
+  the reverse; the same with the hand-back's withdrawal; a repeated acknowledgement while the first is held before its commit (the
+  second answers `RETRY`, then `ACKNOWLEDGED`); a holder that only locks the row; an acknowledgement after a deadline and before the
+  pass; a binding revocation queued between a withdrawal's binding checks and its re-read, and against an acknowledgement. Evidence:
+  barrier tests watched in `pg_stat_activity`, each asserting the journal and that the handler would run exactly once, root and scoped.
+- [ ] T006-052 The capability refusal and record: the fence variants (root and path) called only from the capability paths, after the
+  token and the binding matched; `lease_capability_generation` written by each served capability in the transaction it commits; the
+  descriptor-driven contract test, walking nested, `oneof` and repeated fields, failing for a lease-token method with no case and for a
+  message with a `lease_token` outside `skip_debug`. Evidence: that test in `contract_grpc_durable_execution` (refused before, served
+  after the acknowledgement, root and scoped; the `AppendStepLogs` case once Task 041-7 has merged); a report on a provisional lease is
+  served; a wrong token gets the ordinary stale answer.
+- [ ] T006-053 What the server sees of the trust assumption: the violations of Decision 006-053, and calls after a withdrawal, counted and
+  audited once per step and generation or withdrawn token; hand-backs and acknowledgements exempt and counted apart. Evidence: a test for
+  each, including a give-up hand-back before and after the withdrawal and an acknowledgement after it, none of which is a violation.
+- [ ] T006-054 Observability and operations: the counters, the two histograms, the gauges (`FILTER` clauses of the operations statistics
+  query), the four alerts with `promtool test rules` cases at the default and at an 18 s time-to-live (added to the CI step), the
+  symptoms in `docs/runbooks/sdks.md`, a row per new rule in the fitness-function table of `docs/engineering/architecture-principles.md`.
+  Evidence: a telemetry test with bounded labels and a token canary, and the `promtool` output.
+- [ ] T006-055 The budget (`tests/integration/claim-transition-efficiency/work_budget.rs`): a run of three chained activities at 1.8 with
+  the requirement recorded; `LEASE` and both completion lines unchanged; new lines `ACKNOWLEDGEMENT` (one lease) and `FIRST_HEARTBEAT`
+  pinned at their measured counts, asserting no run lock, no scan of the run's steps, no journal or outbox insert, and fewer statements
+  than `FIRST_HEARTBEAT`; a call of 64 leases itemised, with the triggers it fires named. Evidence: two equal passes and the itemised
+  statements in the task.
+- [ ] T006-056 The gate, before any SDK work and before 1.8 is offered: the workers of `tests/performance/scalability-ha` acknowledge with
+  the minor raised in the test; the transitions scenario at 1.8 against 1.7 on the same machine and day, with a network between the
+  workers and the services, the median of five interleaved runs of each; a fan-out run acknowledged by several hosts; a burst that fills
+  the admission reserve; the call duration for 64 leases, the heartbeat's 99th percentile in the burst, the delivery delay, the rise of
+  ready to handler entry and the share of claims unmarked as `short_deadline`. Done when 1.8 is no more than 15% below 1.7, the call is
+  within 3 s at the 99th percentile, no heartbeat is shed while acknowledgements are admitted, and the heartbeat's 99th percentile in the
+  burst is under 2 s; otherwise the build stops here, the minor stays at 7, the feature stays dormant, and the owner decides (Decision
+  006-057). Evidence: the section of `tests/performance/reports/scalability-ha.md` with its raw capture, and the result recorded in
+  Architecture decision 0099.
+- [ ] T006-057 The feature leaves dormancy: `PROTOCOL_MINOR` and `DELIVERY_ACKNOWLEDGEMENT_PROTOCOL_MINOR` at 8; every control plane and
+  engine of the build lists `delivery-acknowledgement-v1`; the tests of the hand-back use real 1.8 sessions. Evidence: the ceiling tests,
+  `apps/execution-engine/tests/registry.rs` and the control plane's registry test list the capability; an activation passes on a fleet of
+  the build; the tests of Task 006-050 pass with a real 1.8 session.
 
 ### Conformance and SDKs
 
 - [ ] T006-058 The shared harness (`tests/contract/sdk-conformance/`): the fault actions `hold` (a call kept at the transport hook until
   the scenario releases it) and `dropFrame` (one frame of a stream lost); the platform booted with `lease-withdrawal-v1` and
   `delivery-acknowledgement-v1` recorded, and a scenario attribute that boots without them; the override
-  `SAGAT_SDK_PROTOCOL_OVERRIDE=1.8`, which raises host scenarios pinned at 1.4 or 1.5, runs with step logs off, and compares only the
-  negotiated `protocolVersion` against the pinned one and, for 1.4, the lease's instance identity; the scenario
-  `delivery-acknowledgement.json`: a lost `PollTasks` answer then `expireLease` (withdrawn, run once, attempt 1 twice, no review), a
-  dropped stream frame (the same), a lost acknowledgement answer (one handler, `faultsApplied` 1), an acknowledgement that never
-  leaves twice (one handler), a held acknowledgement released after `expireLease` (`NOT_HELD`, the first lease never runs, the second
-  runs once), a held acknowledgement released after `cancel` (`CANCELLED`, handed back, the run `CANCELLED`, no handler, no review),
-  a held acknowledgement and `stopWorker` released after the stop (the task runs), `UNIMPLEMENTED` for the call (handed back, the
-  worker registers again at 1.7 and runs the task once), four give-ups in a row (the fallback after three), a host clock set 60 s ahead,
-  a frame of two runs with one held busy, secrets and an input blob read after `ACKNOWLEDGED`, a failure retried at 1.8, a handler that
-  raises `TASK_NOT_STARTED` (reported `WORKER_ERROR`, retried as a failure), a lease with a 10 s `timeoutMs` (unflagged), and a
-  collection item through the lost-answer case. Evidence: the scenario reviewed; the harness's unit tests of the actions and of the
-  override's two comparisons.
+  `SAGAT_SDK_PROTOCOL_OVERRIDE=1.8`, which raises host scenarios pinned at 1.4 or 1.5, runs with step logs off, compares only the
+  negotiated `protocolVersion` against the pinned one and, for 1.4, the lease's instance identity, asserts that each raised scenario
+  acknowledged a flagged lease (but the three with a 3 s time-to-live) and that no unexpected `TASK_NOT_STARTED` was sent, and names the
+  scenarios that hand back by design, which run without it; the scenario `delivery-acknowledgement.json`: a lost `PollTasks` answer then
+  `expireLease` (withdrawn, run once, attempt 1 twice, no review), a dropped stream frame (the same), a lost acknowledgement answer (one
+  handler, `faultsApplied` 1), an acknowledgement that never leaves twice (one handler), a held acknowledgement released after
+  `expireLease` (`NOT_HELD`, the first lease never runs, the second runs once), a held acknowledgement released after `cancel`
+  (`CANCELLED`, handed back, the run `CANCELLED`, no handler, no review), a held acknowledgement and `stopWorker` released after the stop
+  (the task runs), `UNIMPLEMENTED` for the call (handed back, the worker registers again at 1.8 declining and runs the task once,
+  unflagged), three different steps whose acknowledgements fail until they are given up (the fallback after the third), a host clock set
+  60 s ahead and one 60 s behind, a configured heartbeat interval of 10 s, a busy row (`RETRY`, then `ACKNOWLEDGED`), secrets and an input
+  blob read after `ACKNOWLEDGED`, a failure retried at 1.8, a handler that raises `TASK_NOT_STARTED` (reported `WORKER_ERROR`), a hand-back
+  held across a re-registration (still withdrawn), a lease with a 10 s `timeoutMs` (unflagged), and a collection item through the
+  lost-answer case. Evidence: the scenario reviewed; the harness's unit tests of the actions and of the override's comparisons and
+  assertions.
 - [ ] T006-059 TypeScript (`sdks/typescript`): the proto copy and stubs, the protocol constant 1.8, `AcknowledgeTasks` in the call
-  wrapper, the host procedure (the flag, the acknowledgement, the verdicts, the repeats of §5, the give-up on the monotonic clock with
-  its clamp, hand-backs, the fallback, the stop that waits for a verdict, the 6 s bound of a poll and of an attempt, the heartbeat
-  after the verdict), the rewrite of a handler-raised `TASK_NOT_STARTED` to `WORKER_ERROR`, the `hold` and `dropFrame` hooks, the
-  metrics hooks, unit tests including a skewed clock and a token canary of the request. Evidence: `npm test` and the checks of
-  `sdks/AGENTS.md`.
-- [ ] T006-060 Go (`sdks/go`), as Task 006-059. Evidence: `go test ./...`, `gofmt -l`, `go vet`.
-- [ ] T006-061 Python (`sdks/python`), as Task 006-059. Evidence: the unit tests, `mypy`, `ruff`.
-- [ ] T006-062 C# (`sdks/dotnet`), as Task 006-059. Evidence: the unit tests, `dotnet format --verify-no-changes`.
-- [ ] T006-063 Java (`sdks/java`), as Task 006-059. Evidence: `./mvnw -q verify`.
-- [ ] T006-064 Rust (`sdks/rust`, its four lock files together), as Task 006-059. Evidence: its unit tests, `cargo clippy`.
+  wrapper, the host procedure (the flag, the acknowledgement concurrent with the next receive, the verdicts with `RETRY`, the repeats of
+  §5, the give-up on the monotonic clock with its clamp and never while an attempt is in flight, hand-backs, the fallback that waits for
+  its hand-backs and registers again declining at its own minor, the stop that waits for a verdict, the 6 s bound of a poll and of an
+  attempt, the first heartbeat at a third of `lease_time_left_ms`), the `hold` and `dropFrame` hooks, the metrics hooks, unit tests
+  including clocks ahead and behind, a long configured interval, and a token canary of the request. Evidence: `npm test` and the checks
+  of `sdks/AGENTS.md`.
+- [ ] T006-060 Go (`sdks/go`), as T006-059. Evidence: `go test ./...`, `gofmt -l`, `go vet`.
+- [ ] T006-061 Python (`sdks/python`), as T006-059. Evidence: the unit tests, `mypy`, `ruff`.
+- [ ] T006-062 C# (`sdks/dotnet`), as T006-059. Evidence: the unit tests, `dotnet format --verify-no-changes`.
+- [ ] T006-063 Java (`sdks/java`), as T006-059. Evidence: `./mvnw -q verify`.
+- [ ] T006-064 Rust (`sdks/rust`, its four lock files together), as T006-059. Evidence: its unit tests, `cargo clippy`.
 
 ### Integration
 
 - [ ] T006-065 Six languages: `delivery-acknowledgement` passes in all six with a golden reviewed against what the scenario claims and
-  blessed once, deliberately; under the override the 51 host scenarios other than `protocol-negotiation` pass at 1.8 with their
-  existing goldens without `SAGAT_SDK_BLESS`; without it every scenario passes as before; `protocol-negotiation` gets its new golden
-  for the 1.8 offer. Evidence: the `sdk_conformance` runs with their counts (scenarios times languages), skips, and the diff of the
-  goldens.
-- [ ] T006-066 Released v0.2: the upgrade scenario `provisional-lease-cutover` in `scripts/test-release-upgrade-profile.py` (a v0.2
-  worker's lease in flight across the upgrade keeps its meaning; no flag before the activation; after it a current worker's leases are
-  flagged; the current build replays a journal holding the cause) and its rollback case (the removal, the marks drained, the binary
-  rolled back to the floor, which replays the journal); the archived v0.2 SDKs (`SAGAT_SDK_SOURCE_ROOT`) running `run-lifecycle` against
-  the new server with the requirement recorded, their hand-backs answered as ordinary retryable failures. Evidence: the
-  `released-upgrade` job's receipts.
+  blessed once, deliberately; under the override the host scenarios other than `protocol-negotiation` and those that hand back by design
+  pass at 1.8 with their existing goldens without `SAGAT_SDK_BLESS`, each having acknowledged a flagged lease; without it every scenario
+  passes as before; `protocol-negotiation` gets its new golden for the 1.8 offer; an informative re-run of `sdk-streaming` at 1.8 is
+  recorded. Evidence: the `sdk_conformance` runs with their counts (scenarios times languages), skips, the diff of the goldens, and the
+  report section.
+- [ ] T006-066 Released v0.2 and the older hosts: the upgrade scenario `provisional-lease-cutover` in
+  `scripts/test-release-upgrade-profile.py` (a v0.2 worker's lease in flight across the upgrade keeps its meaning; no flag before the
+  activation; after it a current worker's leases are flagged; the current build replays a journal holding the cause) and its rollback
+  case (marking stopped, the marks drained, the binary rolled back to the floor, which replays the journal, and a binary below it refused
+  by the registry); a v0.2 handler that raises `TASK_NOT_STARTED` (an ordinary failure); a host of the SDK build of Architecture decision
+  0098 at 1.5 that hands back (an ordinary failure, the attempt spent). Evidence: the `released-upgrade` job's receipts.
 - [ ] T006-067 Documents and review: the 1.8 row of `docs/sdk-compatibility.md` table 1 with its test names, the README of the
-  conformance suite, the clarification of Requirement 037-006 confirmed against the build, and the correctness, security and architecture
-  reviewers run on the merged diff with every finding answered. Evidence: the reviews saved beside this design's and the `/verify`
-  output.
+  conformance suite, the workflow-document reference on the wall time of one attempt under losses, the clarification of Requirement
+  037-006 confirmed against the build, and the correctness, security and architecture reviewers run on the merged diff with every
+  finding answered. Evidence: the reviews saved beside this design's and the `/verify` output.

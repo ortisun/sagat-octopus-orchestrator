@@ -150,8 +150,9 @@ adapter does not qualify a real provider.
   and compensation work, including shutdown/drain paths; `highRisk` MUST NOT authorize an exception.
   *Clarification (2026-11-20, D006-007 of `specs/006-sdk-multilanguage/research.md`, delegate OD-2026-11-20-6):* a lease
   the server withdrew because it never handed it to the transport, or that a host handed back with `TASK_NOT_STARTED` while
-  the step was still `LEASED` (from a session at protocol 1.8 or later, which reserves the code, within the per-attempt cap, and,
-  at 1.8, for a lease not acknowledged: the server review of pull request #260 and decision 15 of Architecture decision 0099), is not an attempt and has a known outcome (no handler ran), so Requirement 037-006 does not apply to it.
+  the step was still `LEASED` (for a lease claimed by a session at protocol 1.8 or later, which reserves the code, within the cap of
+  four withdrawals per attempt, not acknowledged and with no capability served: the server review of pull request #260 and
+  decision 9 of Architecture decision 0099), is not an attempt and has a known outcome (no handler ran), so Requirement 037-006 does not apply to it.
   A lease that lapses is unchanged: its outcome is unknown.
   *Clarification (2026-11-20, decisions Decision 006-044, Decision 006-045, Decision 006-049, Decision 006-053 and Decision 006-061 of the same research, Architecture decision 0099,
   delegate Owner decision 2026-11-20-6, the trust assumption to be accepted by the owner with Architecture decision 0099):* a lease of protocol 1.8 flagged
