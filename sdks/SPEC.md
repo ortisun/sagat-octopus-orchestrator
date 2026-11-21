@@ -279,7 +279,7 @@ jitter (`min(maxDelay, initialDelay * 2^n)` scaled by a random factor in `[0.5, 
 | worker `PollTasks`, `Heartbeat` | `UNAVAILABLE`, `RESOURCE_EXHAUSTED`, transport failures |
 | worker `AcknowledgeTasks` (1.8) | the same (the server's own deadline is `UNAVAILABLE`), and `DEADLINE_EXCEEDED`, `CANCELLED`, `UNKNOWN`, `ABORTED`, a retryable `INTERNAL`, an unusable answer; once on `UNAUTHENTICATED` with a fresh token; with no limit on attempts, each bounded to 6 s, until a verdict or the give-up of §6.2; after a failure with the server's envelope, a call of more than eight leases is split in two; the leases answered `RETRY` are asked for again together after 200 ms doubling to 1 s, outside this backoff and the user's retry options |
 | worker `CompleteStep`, `FailStep` | the same, with the **same** idempotency key and body; at most 5 times |
-| worker `ResolveSecrets`, `ResolveDatabase`, blob transfers, `AppendStepLogs` (1.8 hosts) | `UNAVAILABLE` with the reason `REGISTRY_SILENT`, after its retry hint, within the handler's deadline (its `timeoutMs`, or else the lease's expiry); otherwise as before |
+| worker `ResolveSecrets`, `ResolveDatabase`, blob transfers, `AppendStepLogs` (1.8 hosts) | `UNAVAILABLE` with the reason `REGISTRY_SILENT`, after its retry hint, within the handler's deadline (the attempt's time left from `attempt_time_left_ms`, or else the lease's expiry); otherwise as before |
 | `RegisterWorker` | the same; on `UNAUTHENTICATED` once, with a fresh token |
 
 The rule is by **code**, the same in every SDK: a call is repeated when the error's code is `TRANSPORT`,
@@ -362,7 +362,9 @@ frame carries more, it runs the first ones and hands the rest back (below). A wa
 procedure, the verdicts and the failure table are [`stream-completion.md`](../specs/006-sdk-multilanguage/stream-completion.md),
 "Delivery acknowledgement (protocol 1.8)"). A `PollTasks` call is bounded to 6 s or the shorter configured call timeout, as a
 stream window is. An unflagged lease is dispatched at once. As soon as a frame or a poll answer is read, the host sends one
-`AcknowledgeTasks` with its flagged leases that it will run, concurrently with its next receive, and makes no call for them but
+`AcknowledgeTasks` with its flagged leases that it will run, concurrently with its next receive, on a channel of its own with at
+most 4 calls in flight held by the SDK's own permit (an acknowledgement waiting for that permit has not been sent and is not an
+attempt), and makes no call for them but
 the hand-back, and starts no handler or heartbeat, before the answer. It never dispatches a flagged lease without `ACKNOWLEDGED`,
 whatever it has declined: one received while it declines is handed back.
 
@@ -374,15 +376,19 @@ whatever it has declined: one received while it declines is handed back.
 - `NOT_HELD`: drop the lease, run and report nothing, free its slot, emit `dropped` with that code.
 
 A call that fails is repeated as §5 says. The host gives a lease up when its time left at receipt (the earlier of its expiry and,
-when the lease carries its timeout, its attempt deadline, minus the host's clock at receipt) minus 6 s has passed on its monotonic
+when the lease carries it in `attempt_deadline_epoch_ms`, its attempt deadline, minus the host's clock at receipt) minus 6 s has passed on its monotonic
 clock, clamped to between 6 s and 120 s, never while an attempt is in flight
 (it waits for that attempt's outcome, at most 6 s, and runs a late `ACKNOWLEDGED`), and never compares its clock with the server's
-again; a lease given up is not run and is handed back. The host gives a lease up early when it has waited at least 6 s since its
-first attempt was sent, at least one attempt ended in that time, every attempt that ended ended with an answer other than a shed
-(`RESOURCE_EXHAUSTED` with the reason `ACKNOWLEDGEMENT_SHED`), and, after the most recent of them ended, another of its calls that
-reaches the database (a heartbeat, a report, a hand-back) was sent and answered `OK`, or a frame with leases arrived, with no failed
-call to the database since; it then starts no further attempt and waits for one in flight. A `RETRY` restarts that window. A
-failover, a busy engine and a host with no other call therefore wait for the ordinary give-up. The server flags a lease at most once
+again; a lease given up is not run and is handed back. The early give-up is decided by an attempt sent after
+the evidence. When, after an attempt of a lease ended with no verdict, another of the host's calls that reaches the database (a
+heartbeat, a report, a hand-back), sent after that attempt ended, is answered `OK`, or a frame with leases arrives after it, the host
+sends the lease's next attempt at once, outside the backoff (or waits for one in flight and then sends it); it gives the lease up at
+that attempt's end only when that attempt too ended with no verdict, no attempt of the lease ended in a shed (`RESOURCE_EXHAUSTED`
+with the reason `ACKNOWLEDGEMENT_SHED`), at least 6 s have passed since its first attempt was sent, and no try of a call to the
+database failed since the evidence (a try that ended without the database's answer; a refusal the database answered is not one);
+otherwise it goes on with the backoff. A `RETRY` restarts the 6 s. A failover gives no evidence before its promotion, and the first
+answer after it sends every waiting lease one more attempt, which is answered; a busy engine and a host with no other call and no
+frame wait for the ordinary give-up. The server flags a lease at most once
 per attempt after a hand-back, so a failing path costs a lease at most one hand-back, and a hand-back of a lease not yet `RUNNING` to
 which no capability was served is withdrawn while its mark counts, whether or not it was acknowledged.
 
@@ -390,11 +396,11 @@ The host declines acknowledgement only on `UNIMPLEMENTED`, after three calls in 
 `INVALID_ARGUMENT`, `FAILED_PRECONDITION` or `NOT_FOUND`, or after three counted calls in the run since the last `ACKNOWLEDGED`. A
 call counts when every lease of it was given up with no verdict, every attempt ended with no answer or with a status without the
 server's envelope (`x-sagat-error`, which the server's own transient answers carry and which never count), and its probe failed
-the same way (an attempt that the host's transport never started on a stream does not count): once the hand-back of one of its
+the same way: once the hand-back of one of its
 leases is answered `OK`, or refused stale with the server's envelope, the host sends one `AcknowledgeTasks` for that lease, one
 attempt and evidence only, which a working path answers `NOT_HELD`; a verdict other than `NOT_HELD` or `RETRY` means the hand-back
-did not land, and the host hands back once more, with no second probe, without counting the call. Calls are ordered by their give-ups, the split halves of
-a call are one call, and a call that does not qualify neither counts nor breaks the run. On fallback the host waits a random delay of up to 6 s, closes its receive, hands back what waits, waits
+did not land, and the host hands back once more, with no second probe, without counting the call. Calls are ordered by the give-up of the last of their leases,
+the split halves of a call are one call, and a call that does not qualify neither counts nor breaks the run. On fallback the host waits a random delay of up to 6 s, closes its receive, hands back what waits, waits
 for the answers of those hand-backs (their retries of §5), logs once, and registers again at its own minor with
 `declines_acknowledgement = true` for 10 minutes (a random factor in `[0.8, 1.2]`, doubling for each fallback in a row up to an
 hour, back to 10 minutes after an `ACKNOWLEDGED`), then registers again without declining.
@@ -782,7 +788,7 @@ where the language can express one. The shared scenario is `collection-operators
   | 1.5 | Scoped execution identity | `ExecutionInstanceIdentity` |
   | 1.6 | Managed database capabilities (`ResolveDatabase`) | feature 017, D600 |
   | 1.7 | Step logs (`AppendStepLogs`, `StepLogPolicy`) | feature 041, OD-2026-11-15-8; served from its task T041-7 |
-  | 1.8 | Delivery acknowledgement (`TaskLease.acknowledge_before_start` field 23, `WorkerCapabilities.declines_acknowledgement` field 10, `AcknowledgeTasks`; a flagged lease is provisional until acknowledged); the minor at which `TASK_NOT_STARTED` is reserved for the host | feature 006, Architecture decision 0099, Owner decision 2026-11-20-12; reserved by its design on 2026-11-20 at the coordinator's instruction, an exception to this register's rule put to the owner (Owner question 006-002); offered from Task 006-057, after its gate, and only after 1.7 is served by the server and spoken by the SDK |
+  | 1.8 | Delivery acknowledgement (`TaskLease.acknowledge_before_start` field 23 and `attempt_deadline_epoch_ms` field 24, `WorkerCapabilities.declines_acknowledgement` field 10, `AcknowledgeTasks`; a flagged lease is provisional until acknowledged); the minor at which `TASK_NOT_STARTED` is reserved for the host | feature 006, Architecture decision 0099, Owner decision 2026-11-20-12; reserved by its design on 2026-11-20 at the coordinator's instruction, an exception to this register's rule put to the owner (Owner question 006-002); offered from Task 006-057, after its gate, and only after 1.7 is served by the server and spoken by the SDK |
   | next | Drafts 019, 020, 021, 023, 024, 025, 026, 031, 032 and 035 each name a minor; each takes the next free one (1.9 or later) when its contract merges, and its SDKs carry the 1.8 host procedure first | |
 
 ## 10. Observability and safety
