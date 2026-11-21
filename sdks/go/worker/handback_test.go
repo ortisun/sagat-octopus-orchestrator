@@ -439,3 +439,56 @@ func TestASiblingIterationBeyondTheCreditIsHandedBackWithItsInstance(t *testing.
 		t.Fatalf("the hand-back of the second iteration carries its own instance: %v", r)
 	}
 }
+
+func TestAHandBackStillOnItsWayWhenTheGraceEndsIsDroppedAndItsLeaseLapses(t *testing.T) {
+	f := newFakeService(t)
+	f.set(func(f *fakeService) { f.overfill = true })
+	const total = 12
+	for i := 1; i <= total; i++ {
+		f.lease(numbered(i))
+	}
+	// The server never answers a hand-back before the stop has ended: eight are held there, the rest queued.
+	f.set(func(f *fakeService) {
+		f.failGate = func(ctx context.Context) { <-ctx.Done() }
+	})
+	var mu sync.Mutex
+	dropped := map[string]int{}
+	h := newHost(t, f, worker.WithMaxInflight(1), worker.WithEventHandler(func(e worker.Event) {
+		if e.Type == worker.EventDropped {
+			mu.Lock()
+			dropped[e.TaskID]++
+			mu.Unlock()
+		}
+	}))
+	must(t, h.RegisterActivity("charge", rawOK))
+	start(t, h)
+	until(t, "eight held and the rest queued", func() bool {
+		queued, workers := worker.HandBacks(h)
+		return len(f.of("FailStep")) == 8 && workers == 8 && queued == total-1-8
+	})
+	began := time.Now()
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	if err := h.Stop(ctx); err == nil {
+		t.Fatal("a stop whose grace ended says so")
+	}
+	if took := time.Since(began); took > 200*time.Millisecond+2*time.Second+time.Second {
+		t.Fatalf("stop took %v: the grace and its two seconds bound it", took)
+	}
+	// Every lease that was not reported ends as dropped, once, and lapses.
+	until(t, "every hand-back dropped", func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(dropped) == total-1
+	})
+	mu.Lock()
+	defer mu.Unlock()
+	for id, n := range dropped {
+		if n != 1 || id == "run-1/charge/1" {
+			t.Fatalf("dropped %v: each hand-back once, never the task that ran", dropped)
+		}
+	}
+	if len(f.of("FailStep")) != 8 {
+		t.Fatalf("%d hand-backs reached the server: the queued ones are not sent on a closed connection", len(f.of("FailStep")))
+	}
+}
