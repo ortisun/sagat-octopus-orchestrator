@@ -10,10 +10,11 @@ D006-030 to D006-039 of `specs/006-sdk-multilanguage/research.md`.
 
 - Nothing changes until the operator records the requirement. Before that, the counter
   `worker_leases_undelivered_total{cause, outcome="lapsed"}` shows what activation would recover.
-- A host that drops a lease it received hands it back with `FailStep` `TASK_NOT_STARTED`. The engine withdraws that one
-  (cause `NOT_STARTED`) only for a host of protocol 1.8 (delivery acknowledgement) or later. This build negotiates at most
-  1.6, so today every hand-back is an ordinary failure: the attempt is spent and retried with its backoff, never reviewed
-  (gap G006-030).
+- A host of protocol 1.8 (delivery acknowledgement) or later that drops a lease it received hands it back with `FailStep`
+  `TASK_NOT_STARTED`, and the engine withdraws it (cause `NOT_STARTED`). A host below 1.8 does not hand back: the lease
+  lapses as before (decision D006-080). This build negotiates at most 1.6, so today no host hands back. A raw client or an
+  older SDK that sends the code below 1.8 gets an ordinary failure: the attempt is spent and retried with its backoff,
+  never reviewed (gap G006-030).
 - One attempt is withdrawn at most four times (decision D006-031). The fifth is refused and counted `capped`: a hand-back
   becomes an ordinary failure, and a lease the engine did not send lapses as before.
 - An engine runs at most a quarter of its pool of withdrawals at once (`max(1, SAGAT_DB_MAX_CONNECTIONS / 4)`, 5 with the

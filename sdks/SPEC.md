@@ -345,16 +345,24 @@ register → loop:
 ```
 
 The host runs at most as many tasks as it asked for (`max_tasks`) and has free slots for: if a poll answer or a stream
-frame carries more, it runs the first ones and hands the rest back (below). A wait derived from the server
+frame carries more, it runs the first ones and, from protocol 1.8, hands the rest back (below); below 1.8 it logs the rest
+and leaves their leases to lapse. A wait derived from the server
 (`retry_after_ms`, `Retry-After`) is capped at 60 s, whatever it says.
 
-**A lease the host will not run is handed back.** A host that drops a lease it received reports `FailStep` for it with the
+**A lease the host will not run is handed back, from protocol 1.8.** A host whose session negotiated protocol 1.8 or later
+(the minor of delivery acknowledgement, reserved by OD-2026-11-21-6, which reserves the code) and that drops a lease it received reports `FailStep` for it with the
 code `TASK_NOT_STARTED`, retryable, with the lease's fence, before any handler of that task runs, and never for a task whose
-handler started. The server then gives the step back to `READY` without consuming the attempt when it can (decision D006-005
+handler started. **Below 1.8 the host does not hand back** (decision D006-080 of
+`specs/006-sdk-multilanguage/research.md`): it drops the same leases, logs each one (the warning below, with `lapses`
+instead of a report) and leaves it to lapse, as before this rule. The reason: a server of 1.6 or 1.7 records
+`TASK_NOT_STARTED` as an ordinary failure, which spends the attempt, so a stopping host would fail a step of one attempt
+for good where the lapse sends it to a review (feature 037), which an operator can still retry. The minor is the one
+the registration accepted (§6.1), read per lease from the session that received it, never the newest the SDK offers. The server then gives the step back to `READY` without consuming the attempt when it can (decision D006-005
 of `specs/006-sdk-multilanguage/research.md`): only for a lease held by a session of protocol 1.8 or later, which reserves the
 code, with the requirement `lease-withdrawal-v1` recorded, the step still `LEASED` and at most four withdrawals of the attempt
-(decisions D006-030 and D006-031). Otherwise it retries it as an ordinary failure, which spends the attempt (gap G006-031); a lease left to lapse would be an
-unknown outcome and, for an `Activity`, a review (feature 037). The rules (decisions D006-020 to D006-023):
+(decisions D006-030 and D006-031). Otherwise it retries it as an ordinary failure, which spends the attempt; a lease left to
+lapse would be an unknown outcome and, for an `Activity`, a review (feature 037). The rules (decisions D006-020 to D006-023;
+from 1.8 only, decision D006-080):
 
 - *Which leases.* Every lease of a poll answer or a stream frame that the host received and does not dispatch:
   1. the whole answer or frame when it arrives after `stop` began (§6.8), on either transport: a host that is stopping
@@ -378,15 +386,15 @@ unknown outcome and, for an `Activity`, a review (feature 037). The rules (decis
   error_code = "TASK_NOT_STARTED", safe_message = "the host did not start this task", retryable = true, traceparent}`, with
   the execution-instance identity under protocol 1.5 as every report (§6.1). No heartbeat, no `ResolveSecrets`, no handler,
   no "task taken" event. It is retried as a report is (§6.5); `STALE_ATTEMPT` ends it without an error (the lease is no
-  longer this host's). Every server accepts it, whatever its version: a server that cannot withdraw records an ordinary
-  retryable failure. `TASK_NOT_STARTED` is a step failure code, like `NO_HANDLER`; it is never raised to a caller and is
+  longer this host's). It is sent only on a session of 1.8 or later, whose server reserves the code. `TASK_NOT_STARTED` is a step failure code, like `NO_HANDLER`; it is never raised to a caller and is
   not in `sdks/error-catalog.json`. **The code is reserved for the host**: a handler that fails with it (an
   `ActivityFailure` whose code is `TASK_NOT_STARTED`, of a forward, compensation or reconciliation handler) is reported as
   `WORKER_ERROR`, with its own message and `retryable` (§6.5), because only the host can know that no handler ran. At most eight hand-backs are on their way at once (the
   derivation is in §6.5: seven to ten); the others wait their turn in the order they were received, so a server that floods one answer
   cannot make the host open a call per lease.
 - *What is observed.* A warning log line with the task id and the reason (`stopping`, `credit` or `malformed`, or
-  `not_started` for item 4), never the lease token; the host's failure event or counter with the code `TASK_NOT_STARTED`
+  `not_started` for item 4), never the lease token; below 1.8 the same line says the lease lapses, and nothing else is
+  emitted; the host's failure event or counter with the code `TASK_NOT_STARTED`
   (or, when the report cannot be made, its dropped event, as for any report).
 - *The connection stays open for it.* `stop` waits for the hand-backs on their way, within the same grace as the tasks
   in flight (§6.8), before it closes the connection. A hand-back that cannot be made (the connection is gone) is logged

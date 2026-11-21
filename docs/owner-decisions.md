@@ -4,6 +4,12 @@ Decisions that only the product owner could take, with what each one unblocks. E
 recorded where the open item lived (gap register, ADR, runbook or specification). "Not built"
 means the decision is taken and the implementation is still to be done; it is not evidence.
 
+## 2026-11-21 — Lease withdrawal: Architecture decision 0098
+
+| ID | Decision | Decided by | Status | Covers |
+|---|---|---|---|---|
+| OD-2026-11-21-4 | "Accept, if the final review is clean" (owner, 2026-11-21), to the question "Accept ADR-0098 (lease withdrawal, PR #260): the server withdraws leases it knows never reached a worker, without spending the attempt or creating a false review; the new event is a forward-only floor (its requirement can't be removed once a journal holds it; a local switch stops new withdrawals); it supersedes ADR-0029 decision 5 for leases never handed to the transport. Its last review round is still to run." Architecture decision 0098 becomes Accepted (2026-11-21, OD-2026-11-21-4) when the final review round of pull request #260 (`specs/006-sdk-multilanguage/reviews/2026-11-21/round-3-*.md`) closes with no Blocker and no Major; if that round raises a Blocker it stays Proposed and the question goes back to the owner | owner | Decided | docs/adr/ADR-0098-a-lease-the-server-never-handed-to-the-transport-is-withdrawn-behind-a-fleet-requirement.md, docs/adr/README.md, specs/006-sdk-multilanguage/research.md (Decision 006-039) |
+
 ## 2026-11-20 — Documentation first, words in full, identifiers as words
 
 The owner gave three instructions on 2026-11-20, one after the other. They are amended into the constitution together

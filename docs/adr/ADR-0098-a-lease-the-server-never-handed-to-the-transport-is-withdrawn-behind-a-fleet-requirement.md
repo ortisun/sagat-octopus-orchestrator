@@ -37,8 +37,9 @@ not be weakened.
    role, one bounded transaction). The same command activates every fleet requirement that has a way to be activated
    (feature 022 adds its own entries); only the one-way handover of `schedules-v1` keeps its own command. Until the
    requirement is recorded, a lease that is not sent lapses as before and is counted.
-5. A host MUST hand back a lease it will not run with `FailStep` code `TASK_NOT_STARTED`, retryable, before any handler of it
-   runs. The code is the host's: an SDK MUST rewrite a `TASK_NOT_STARTED` that a handler raises into an ordinary error. The
+5. A host whose session negotiated protocol 1.8 or later MUST hand back a lease it will not run with `FailStep` code
+   `TASK_NOT_STARTED`, retryable, before any handler of it runs; below 1.8 it MUST NOT, and the lease lapses as before
+   (decision D006-080: a server below 1.8 would spend the attempt). The code is the host's: an SDK MUST rewrite a `TASK_NOT_STARTED` that a handler raises into an ordinary error. The
    server MUST treat it as a withdrawal (cause `NOT_STARTED`) only when the session that holds the lease negotiated a
    protocol minor that reserves the code (1.8, delivery acknowledgement, ADR-0099), the requirement is recorded, the step is
    still `LEASED` and the cap of decision 7 is not reached. In every other case it is an ordinary failure with the host's
@@ -91,6 +92,6 @@ journal holds the event (the requirement removed first, then the down migration,
 
 ## Evidence
 
-`specs/006-sdk-multilanguage/research.md` D006-001 to D006-018, D006-030 to D006-039, G006-001 to G006-004, G006-030, O006-001; the reviews of 2026-11-21 (`specs/006-sdk-multilanguage/reviews/2026-11-21/`); the CI jobs 136567175914 and
+`specs/006-sdk-multilanguage/research.md` D006-001 to D006-018, D006-030 to D006-039, D006-080 to D006-089, G006-001 to G006-004, G006-030, G006-031, O006-001; the reviews of 2026-11-21 (`specs/006-sdk-multilanguage/reviews/2026-11-21/`); the CI jobs 136567175914 and
 136453650156; the C# output of `flow-rate-limit` (feature 022, PR #251); `specs/006-sdk-multilanguage/stream-completion.md`,
 "Leases that never reach a host".

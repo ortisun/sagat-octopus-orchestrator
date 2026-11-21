@@ -536,4 +536,37 @@ design of delivery acknowledgement, so this list starts at 030.
   step with one attempt, a failure for good (its `onError` route or the run's failure) where before it lapsed into a review.
   It is a known outcome either way, never a review. Who chooses between the two for one-attempt steps (hand back only from
   1.8 and let older minors lapse, or keep the ordinary failure) is the coordinator, then the owner: it is a guarantee of the
-  worker protocol. Closed by 1.8.
+  worker protocol. **Closed on 2026-11-21 by D006-080** (delegate, OD-2026-11-20-6): the hosts hand back only on a session
+  of 1.8 or later; below it a dropped lease lapses as on `develop`.
+
+### Decisions of the last round (2026-11-21, D006-080 to D006-089; G006-031 closed)
+
+What the handoff of pull request #260 left open, and the coordinator's answer to gap G006-031. Each decision is "delegate
+(OD-2026-11-20-6)" unless it says otherwise. The numbers 040 to 079 are left to the design of delivery acknowledgement,
+which uses 040 to 066 and may need more, so this list starts at 080. The acceptance of ADR-0098 is the owner's:
+OD-2026-11-21-4 ("Accept, if the final review is clean"), applied when the round-3 reviews of
+`reviews/2026-11-21/round-3-*.md` close with no Blocker and no Major.
+
+- **D006-080 — The hosts hand back only on a session of protocol 1.8 or later** (closes G006-031). Below 1.8 a host drops
+  the same leases it would hand back (`sdks/SPEC.md` §6.2, items 1 to 4), logs each one with its reason and that it lapses,
+  and leaves it to lapse, as `develop` does. From 1.8, the minor whose server reserves the code (D006-030), it hands back as
+  D006-020 to D006-023 say. The minor is the one the registration accepted, read for the session that received the lease.
+  The reason: a server below 1.8 records `TASK_NOT_STARTED` as an ordinary failure that spends the attempt, so with a
+  hand-back on every minor a stopping host would fail a one-attempt `Activity` for good where `develop` sends its lapsed
+  lease to a review, which an operator can retry. That is a regression of a guarantee the delegation does not cover; this
+  decision removes it and changes no guarantee: below 1.8 every host behaves as on `develop`, and from 1.8 the server
+  withdraws the lease without spending the attempt. Weighed: keeping the hand-back on every minor (the ordinary failure is
+  a known outcome, but it is final for one-attempt steps, a step back from `develop`); handing back only for steps with
+  attempts left (the host does not know the budget); a new minor of its own for the hand-back (1.8 is the minor that
+  reserves the code, so a second minor would mean the same thing). A handler's `TASK_NOT_STARTED` is still rewritten into
+  `WORKER_ERROR` on every minor (D006-030 (a)): that is a property of the report, not of the hand-back. Each SDK has a
+  test of both sides: a session below 1.8 sends no report for a lease it drops, a session of 1.8 sends the hand-back.
+- **D006-081 — The six-language conformance scenario of the hand-back moves to the build of protocol 1.8** (AGENTS rule
+  8; round-2 architecture Major 6, "NM4"). With D006-080 no SDK hands back before 1.8, and no server of this build
+  negotiates 1.8, so a scenario run today could observe only that nothing is reported, which each SDK's unit tests already
+  prove for its own host. The scenario that proves the hand-back across the six languages needs a server that negotiates
+  1.8 and the harness's fault actions to hold a frame (`hold` and the rest of Task 006-058 on the delivery
+  acknowledgement branch). So it is recorded as a task of that build, next to its conformance scenarios (Tasks 006-058 to
+  006-064): a stopping host of each language hands back a leased, unstarted task, and the step is `READY` with its attempt
+  unspent. Until then rule 8 holds for the server semantics this build changes: none of the six SDKs sends the code on a
+  session the server serves.
