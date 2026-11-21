@@ -219,3 +219,62 @@ G041-025 is closed, and gap G041-026 was measured at 1 carry of 864,000. The ful
    Claude-Code 2.1.329, Reports, Open findings "Blocker 0, Major 0", Accepted), the tick of task T041-35 with its
    evidence (run 44834024933, OD-2026-11-20-13), and `check-design-docs.py` passing.
 5. Step 2 of the coordinator's brief: merge the held tasks T041-3 and T041-4 and build through T041-36.
+
+## Update after the approval run's second and third rounds (2026-11-21, head after `c52b5d37`)
+
+**Done (all pushed to `feature/041-step-logs-server`):**
+- `4d6fe4cc`: every first-round Blocker and Major answered, documents first (`2026-11-20-approval/resolution.md`):
+  owner rows OD-2026-11-20-18 ("Top up after the commit") and OD-2026-11-20-19 ("Hide it without the grant"),
+  decisions D041-124 to D041-133, owner questions O041-043 and O041-044, ADR-0097 decision 3b amended, ADR-0095
+  decisions 2 to 5 restated (decision 4 holds again with a Note), new task T041-37, T041-31 withdrawn, the carry tests
+  moved to T041-36. The re-run tier of ADR-0095 decision 5 (a guard's raise re-runs with a mark-only carry, reason
+  `failed`) is kept: removing it (finding Z-3) would change an accepted ADR's decision.
+- Second round (short re-reads by the seven reviewers at `4d6fe4cc`; reports not saved, answered in resolution.md
+  "Second round"): `a9265cd5`, decisions D041-134 (replica-wide wait slots Q = floor(N/4), tenant slots
+  P = ceil(Q/2), through the per-connection setting `sagat.step_log_wait_slots`; the top-up tries the usage row
+  `NOWAIT` only and never reclaims) and D041-135 (SC-041-007 at 1 x 16 on the median of all valid rounds; gate (4) at
+  the measured cap and tickets 10; the eight valid rounds' table in validation-report.md).
+- Develop merged (`5a86aaa1`, develop `566ca492`); `docs/runbooks/README.md` indexes step-logs.md (`c52b5d37`;
+  `python3 scripts/check-docs-index.py` now runs before every push).
+
+**Third round at `c52b5d37` (architecture, security, correctness, egm-design for stages 5 to 8, egm readiness;
+reports not saved): still open, to fix before the final re-read:**
+- **Blocker (correctness B-1, design Major 1): the "median of all valid rounds" rule was written for both sizes.** At
+  8 x 128 the eight valid rounds' (2b) median is (-2.19 + 6.30) / 2 = +2.06 ms > 0, so the accepted build fails;
+  4 of 8 valid rounds are above 0, so even the fourth run's own statistic (median of the first three valid rounds) is
+  close to a coin flip for this build. Needs the coordinating session (and possibly the owner, OD-2026-11-20-1 owns the
+  allowance): keep the fourth run's statistic at 8 x 128 with its false-stop rate stated, or a floor derived as at
+  1 x 16.
+- **Connection hand-off (architecture N-2, correctness M-1, readiness M-1 and M-2):** sqlx 0.9's
+  `PoolConnection::close_on_drop()` cannot be cleared; use a wrapper with an `open` flag whose `Drop` calls
+  `close_on_drop()` only while a statement or `COMMIT`/`ROLLBACK` state is unknown; a clean drop rolls back and returns
+  the connection (no churn on contended claims and refused reports, test: same `pg_backend_pid()` across them); it
+  applies to every `PgRunTx` command (`open_run`, admission); list the files `begin_in_transaction`
+  (`primitives.rs`, `chain_progress.rs`), `breaker.rs`, `declared_operations.rs`, `execution/scoped_events.rs`,
+  `execution/database.rs`.
+- **Q behind a transaction pooler (architecture N-3, security NF-1, design Major 3, readiness M-3, correctness
+  M-4):** a custom `sagat.*` setting does not reach PgBouncer's server backends; pass Q per transaction
+  (`set_config('sagat.step_log_wait_slots', $q, true)` in the `BEGIN` the store sends) or state Q = 1 there; the
+  floor is per client pool, so add a server-pool sizing rule (server pool >= sum over replicas of floor(N/2) + Q plus
+  a reserve); run the three-tenant regime behind the pooler; record `SHOW POOLS` waits.
+- **Benchmark replicas share one `application_name` (readiness M-4):** `tests/support/engine.rs:756-765`; name each
+  replica and assert distinct names in T041-37's setup.
+- **The replica cap couples tenants through loss (correctness M-3):** state the channel in 2b and the risk row; give B
+  slot-needing carries in the three-tenant regime with B's busy <= 0.1%; exclude A1 to A3 from the counted rule.
+- **Top-up answers (correctness M-2):** test `limit` (share 0) before `room`; define or remove `held`.
+- **False-stop rate (correctness N-2 remainder):** require at least seven valid rounds (3.85% at m = 8; 5.49% at
+  m = 6); state the per-release rate (union bound 11.5% at m = 8); say what happens with too few valid rounds; define
+  the median of an even count.
+- **Stale text after D041-134 (design Major 2 and Nits):** section 2's L4 and the Overview still say the top-up waits
+  with a tenant slot; section 2a's table (top-up "reclaims"); data-model.md §3b line 247; `docs/adr/README.md:39`;
+  ADR-0097 header note should name D041-134; "default pool of 20" is the chart's (the binary's is 10: Q = 2, P = 1,
+  reserve 3); the newest revision note should list the second round.
+
+**Then:** the final short re-read at the final commit by the three repository reviewers and the egm stage agents; save
+each report verbatim in `2026-11-20-approval/` with the header lines `check-design-docs.py` reads (`Doc:`,
+`Reviewed-commit:`, `Reviewer:`, `Agent-blob:` = blob of `.claude/agents/<lens>-reviewer.md` at that commit, or
+`EGM-hash:` for the egm summary, one `Counts:` line, no absolute path); write `egm-review-final.md` (Reviewer:
+egm-review) whose Counts are the open findings after the re-read; one acceptance row per finding still open and
+recommended "accept" (expected: Z-3's kept tier and D-12), citing OD-2026-11-20-17 and anchored `<report path>#<n>`;
+the approval block; tick T041-35 with evidence (run 44834024933, OD-2026-11-20-13). The build (step 2) has not
+started.
