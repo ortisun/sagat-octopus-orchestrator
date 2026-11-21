@@ -1676,7 +1676,7 @@ export interface paths {
         };
         /**
          * List the rate-limit keys of a namespace, oldest wait first
-         * @description Feature 022 (FR-022-048, release 0.3.0 slice; T022-078). Needs `ops:read`. Every rate-limit window of the namespace (the rows the `rate_limit_live_keys` ceiling counts), each with the grants that count over its longest window, its unleased grants, its waiters, the age of its oldest wait and the instant its next slot frees, oldest wait first; keys nobody waits for come last. `queuedRuns` counts the namespace's queued runs (concurrency and rate-limit waiters together, a run once) as the `queued_runs` ceiling counts them; the `group` filter narrows the keys, not that count. A key is never shown by its value: `keyLabel` is the 12-hex label of its keyed digest, and is null unless the caller may reveal personal data in the namespace (a role that may use a reveal grant, and the namespace's `payload:reveal-pii` grant); for any other caller `oldestWaitSince` and `nextSlotAt` are truncated to their minute (toward the past, UTC; seconds and fractions zero), since whole they equal or derive from the instants of the key's runs. A page that has a next one is a 503 when the serving process lacks the digest key version in force (it cannot seal the cursor). Counts are read without the keys' locks, in one snapshot per page, at the page's instant; a key's counts and place may change between two pages. `nextCursor` is opaque, sealed for this namespace under the digest key version in force and of this listing's own kind: an altered cursor, one of another namespace, one of the concurrency-key listing, one of another group's listing, or one sealed under a version no longer in force is a 400. A namespace of another tenant is a 404, like one that does not exist.
+         * @description Feature 022 (FR-022-048, release 0.3.0 slice; T022-078). Needs `ops:read`. Every rate-limit window of the namespace (the rows the quota usage of `rate_limit_live_keys` counts; the ceiling leaves out the rows of a forcibly retired digest version, which drain on their own, D022-068 item 4), each with the grants that count over its longest window, its unleased grants, its waiters, the age of its oldest wait and the instant its next slot frees, oldest wait first; keys nobody waits for come last. `queuedRuns` counts the namespace's queued runs (concurrency and rate-limit waiters together, a run once) as the `queued_runs` ceiling counts them; the `group` filter narrows the keys, not that count. A key is never shown by its value: `keyLabel` is the 12-hex label of its keyed digest, and is null unless the caller may reveal personal data in the namespace (a role that may use a reveal grant, and the namespace's `payload:reveal-pii` grant); for any other caller `oldestWaitSince` and `nextSlotAt` are truncated to their minute (toward the past, UTC; seconds and fractions zero), since whole they equal or derive from the instants of the key's runs. A page that has a next one is a 503 when the serving process lacks the digest key version in force (it cannot seal the cursor). Counts are read without the keys' locks, in one snapshot per page, at the page's instant; a key's counts and place may change between two pages. `nextCursor` is opaque, sealed for this namespace under the digest key version in force and of this listing's own kind: an altered cursor, one of another namespace, one of the concurrency-key listing, one of another group's listing, or one sealed under a version no longer in force is a 400. A namespace of another tenant is a 404, like one that does not exist.
          */
         get: operations["listRateLimitKeys"];
         put?: never;
@@ -5708,7 +5708,7 @@ export interface components {
             oldestWaitSince: string | null;
             /**
              * Format: date-time
-             * @description When somebody waits and no grant is unleased: the first instant a counted grant stops counting for one of the waiters (each over its own window). Null when nobody waits or a grant is unleased (it frees by a lease or a return, not by time).
+             * @description When somebody waits and no grant is unleased: the first instant a counted grant stops counting for one of the first 256 waiters in the queue's order (each over its own window; 256 is the most one grant pass grants a key, D022-068 item 3). Null when nobody waits, when a grant is unleased (it frees by a lease or a return, not by time), or when no grant counts for those waiters (there is room; the next pass grants).
              */
             nextSlotAt: string | null;
         };
@@ -5721,7 +5721,7 @@ export interface components {
         /** @description Feature 022 (FR-022-048). The run-level rate-limit slot the run holds or waits for. Absent on a run that neither holds a slot that still counts nor waits; read by getRun and listRuns. A step waiting for a node-level slot is shown on its node (`waitingOn` `rate_limit`), not here. */
         RunRateLimit: {
             /**
-             * @description GRANTED while the run's slot counts (less than `per` since its grant); WAITING while it is buffered.
+             * @description GRANTED while the run's slot counts (less than `per` since its grant), also after the run has ended, since a run-level slot is never given back; WAITING while it is buffered. The field is absent once the slot no longer counts (D022-067 item 1).
              * @enum {string}
              */
             state: "GRANTED" | "WAITING";
@@ -5744,11 +5744,11 @@ export interface components {
              * @description WAITING: when the run fails RATE_LIMIT_WAIT_TIMEOUT if not granted before; null while GRANTED.
              */
             queueDeadline?: string | null;
-            /** @description WAITING, and only in getRun (null in listRuns and while GRANTED): the run's rank among the eligible waiters of the key at read time (the waiters the grant pass visits ahead of it, in its order: not past their deadline, their run live and not paused); 1 is next. */
+            /** @description WAITING, and only in getRun (null in listRuns and while GRANTED): the run's rank among the waiters the grant pass visits ahead of it at read time (in the queue's order: not past their deadline, their run running or waiting and not paused; D022-067 item 2); 1 is next. Null too when the place could not be read in time, or when the run was granted between the read of its row and of its place (D022-068 item 2). */
             position?: number | null;
             /**
              * Format: date-time
-             * @description WAITING, and only in getRun: an estimate computed at read time, never a promise: the instant enough counted grants age out for the run's position, or the read's instant when there is room now; null for a caller who may not reveal personal data in the run's namespace (it is another run's grant instant plus the window, D022-067), when the position is beyond one window, when the run also waits for a concurrency permit, in listRuns and while GRANTED.
+             * @description WAITING, and only in getRun: an estimate computed at read time, never a promise: the instant enough counted grants age out for the run's position, or the read's instant when there is room now; null for a caller who may not reveal personal data in the run's namespace (it is another run's grant instant plus the window, D022-067), when the position is beyond one window, when the run also waits for a concurrency permit, when the run is paused, when the instant is at or after its queueDeadline (it times out first, D022-068 item 1), when the place could not be read in time (D022-068 item 2), in listRuns and while GRANTED.
              */
             estimatedGrantAt?: string | null;
         };

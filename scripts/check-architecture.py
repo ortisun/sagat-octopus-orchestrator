@@ -534,7 +534,11 @@ def queued_runs_count_errors(src):
 # --- a key's value never reaches the API's flow-control bodies (feature 022, FR-022-022, D1168; keys review m4) -----------------
 # The bodies of `Run.concurrency` and the key listing are built from types that hold no key value: no JSON value (which could
 # carry one), no digest machinery, no digest read. A key is shown as its label only.
-KEY_VALUE_FREE_FILES = ("crates/api-http/src/dto_flow_control.rs", "crates/api-http/src/routes/concurrency.rs")
+KEY_VALUE_FREE_FILES = (
+    "crates/api-http/src/dto_flow_control.rs",
+    "crates/api-http/src/routes/concurrency.rs",
+    "crates/api-http/src/routes/rate_limits.rs",
+)
 KEY_VALUE_NAMES = re.compile(r"\b(serde_json|Value|KeyedDigest|FlowControlKey|KeyRing|keyed_digest|canonical)\b|\.digest\b")
 
 

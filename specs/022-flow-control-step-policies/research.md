@@ -1169,6 +1169,52 @@ taken after `git grep D022-04` on every `origin/*` branch.
      the class of gap G022-014, recorded there.
   7. *A step's wait is named in the runtime graph* (`waitingOn` `rate_limit` or `concurrency`), the gate its row records
      (rate first, FR-022-052): two values added to a response enumeration, which older clients read as unknown.
+- **D022-068 — The rate reads after their reviews (task T022-078; reviews `rate-reads-*` of 2026-11-20; plan
+  "Visibility of the rate gate").** Delegate (OD-2026-11-20-6) for every choice below.
+  1. *No estimate for a run the pass will not grant* (correctness minor 2): `estimatedGrantAt` is `null` when the
+     reading run is paused, when its own deadline is at or before the read's instant `t`, and when the computed
+     instant is at or after its deadline (the pass grants a waiter only while `deadline_at > now()`, so at the deadline
+     exactly it times out first). The position stays: it is where the run stands. Taken over showing the instant with a
+     flag (a second field no client needs) and over a `null` position (it hides an exact count the run's reader has).
+  2. *The place is read in its own read-only transaction with a statement timeout of 2 s, and a failure of that read
+     leaves `position` and `estimatedGrantAt` `null`* (architecture minor 5, security minor 3, correctness nit 3): an
+     estimate is never a promise, so it must not turn `getRun` into an error; the failure is logged as a warning with the
+     run's id and the error's kind, never a key (no new series: the read is not a gate decision). *Revised by the
+     re-review:* only an unavailable database (a statement over its timeout, a lock wait it ended, a lost connection,
+     the pool's limit) is left out this way; a corrupt row stays an error, as every other read reports it. A run granted between the run's row and its place is shown `WAITING` with no place, which the
+     contract now says. Taken over failing the read (an operator's view lost to a busy key) and over a second
+     snapshot-sharing read of the run's row (it doubles the run read for a value that is an estimate).
+  3. *`nextSlotAt` reads one index probe a period, over the periods of the first 256 waiters in the queue's order*
+     (architecture Majors 1 and 2, security minor 2): `min(leased_at) + p` over `leased_at > t - p` (the same half-open
+     window, written so `rate_limit_grants_count_idx` serves it), and the periods of at most
+     `GRANTS_PER_KEY_PER_PASS` (256) waiters through `rate_limit_waiters_order_idx`, the most one pass grants a key. A
+     page then costs at most `limit + 1` keys, each at most three grant probes (three periods exist), 256 waiter rows
+     and its counted grants, never the purge's backlog or the key's whole queue. The first 256 rows are not exactly the
+     256 the pass visits (the pass skips paused, ended and expired waiters, which the listing does not join to bound its
+     cost), so with skipped waiters among them `nextSlotAt` can name a later instant than the pass will act on; the
+     contract says "the first 256 waiters in the queue's order", which is what it reads. Taken over the earlier scan of every grant and every waiter of the key (it reaches the 2 s
+     timeout at a busy step key, the moment an operator needs the view), and over dropping `nextSlotAt` (the operator's
+     "when does this queue move" is the field's purpose). Pinned by the `EXPLAIN` twin of the concurrency listing's
+     page cost, with a step key of more waiters and aged grants than the bound.
+  4. *The listing shows every window row, as the quota usage of `rate_limit_live_keys` counts them* (correctness
+     minor 6): the gate leaves out the rows of a forcibly retired digest version, which drain on their own; the listing
+     keeps them so an operator sees the drain. The contract said "the rows the ceiling counts"; the text is corrected,
+     not the query.
+  5. *`rate_limit_windows.oldest_wait_at` is checked against its waiters at the end of every flow-control test*
+     (architecture Major 3, correctness Major 3), as D022-058 checks the semaphores' column, with a tamper test and a
+     principles row.
+  6. *Recorded, not changed in this task* (minors): one text of the pass's eligibility predicate for its five uses
+     (architecture minor 4) and a gate-neutral permit state (architecture minor 2), task T022-112 (a refactor
+     task of its own, after the re-review: the fault suite is no home for it); one handler for both listings (architecture minor 3) with task T022-111, which reshapes the
+     listings for callers without the reveal grant. Each is a refactor of code that is correct today.
+  7. *After the re-review of the fixes* (reviews `rate-reads-rereview-*`): the store returns what the statement read
+     (`PlaceReading`) and the run service decides the estimate from it, with the reveal and dual-gate rules, so one layer
+     decides the field (architecture minor 5); the reading's instant is the statement's (`statement_timestamp()`), not
+     its transaction's (correctness minor 4); the waiters' bound of `nextSlotAt` is one text (`grants_per_key_per_pass!`)
+     whose value the build checks against `GRANTS_PER_KEY_PER_PASS` (architecture minor 1); the place's count of counted
+     grants reads only `leased_at` at run scope, where it is never null (security minor 2). The pass's `NOT r.paused` is
+     kept in the place's waiters ahead although no black-box test can tell it from the status filter (a pause stores the
+     run `PAUSED` and the flag together): the text stays the pass's, so the two cannot drift apart.
 
 ## Gaps
 

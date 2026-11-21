@@ -460,3 +460,6 @@ rows it actually deleted.
   `rate_limit_windows_group_listing_idx (tenant_id, namespace_id, group_name, COALESCE(oldest_wait_at, 'infinity'),
   pool, limit_scope, key_digest)`.
 - Nothing is journaled for the visibility: `Run.rateLimit`, its position and estimate and the listing are reads.
+- *Revised 2026-11-20 (decision D022-068 item 5):* invariant 4 holds for the rate column as for the semaphores': after
+  every statement, `oldest_wait_at` is not distinct from the oldest `enqueued_at` of the window's waiters; the
+  end-of-test consistency check of feature 022 compares the two for every window of the tenant.

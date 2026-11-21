@@ -564,6 +564,7 @@ class FlowControlBodiesHoldNoKeyValue(unittest.TestCase):
             for rel, text in (
                 ("crates/api-http/src/dto_flow_control.rs", dto),
                 ("crates/api-http/src/routes/concurrency.rs", route),
+                ("crates/api-http/src/routes/rate_limits.rs", route),
             ):
                 if text is not None:
                     (root / rel).parent.mkdir(parents=True, exist_ok=True)
@@ -589,8 +590,23 @@ class FlowControlBodiesHoldNoKeyValue(unittest.TestCase):
 
     def test_a_named_file_that_is_gone_is_an_error_and_not_a_pass(self):
         errors = self.check("fn dto() {}", None)
+        self.assertEqual(len(errors), 2, errors)
+        self.assertTrue(all("does not exist" in e for e in errors), errors)
+
+    def test_the_rate_limit_route_is_checked_too(self):
+        """Task T022-078's review (architecture minor 1): the rate-limit key listing's route is named by the rule."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            for rel, text in (
+                ("crates/api-http/src/dto_flow_control.rs", "fn dto() {}"),
+                ("crates/api-http/src/routes/concurrency.rs", "fn route() {}"),
+                ("crates/api-http/src/routes/rate_limits.rs", "fn f(k: &KeyedDigest) {}"),
+            ):
+                (root / rel).parent.mkdir(parents=True, exist_ok=True)
+                (root / rel).write_text(text)
+            errors = load_checker().key_value_free_errors(str(root))
         self.assertEqual(len(errors), 1, errors)
-        self.assertIn("does not exist", errors[0])
+        self.assertIn("rate_limits.rs:1", errors[0])
 
 
 class TheRevealRuleHasOneImplementation(unittest.TestCase):

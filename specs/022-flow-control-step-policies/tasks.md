@@ -478,6 +478,14 @@ Added for the findings recorded in `reviews/2026-11-13/` (D022-019..034). The sl
   view of callers who may see labels (with T022-104, per location). Release item beside T022-104. FR-022-022,
   FR-022-057. Evidence: REST tests (a viewer reads group rows only, whole instants; a revealer reads per-key rows); a plan
   test that a page reads only its own groups; a canary that no per-key value reaches a viewer.
+  - *Amended 2026-11-20 (decision D022-068 item 6):* the two key listings' handlers share one opening, parameterised by
+    `KeyListing` (`KeyListingQuery`, `key_cursor_in_force`), when this task reshapes them (architecture minor 3 of the
+    review of task T022-078).
+- [ ] T022-112 [US7] One text of the grant pass's eligibility predicate (`deadline_at > now()`, the run running or waiting
+  and not paused) for its five uses (`execution/gate_queue.rs` twice, `maintenance.rs` twice, `RATE_PLACE_SQL`), as
+  `purgeable_grant!` is one text for the purge, and a gate-neutral run permit state (`RunPermitState` documents and
+  prints the concurrency gate's meaning for a rate slot). Decision D022-068 item 6 (architecture minors 2 and 4 of the
+  review of task T022-078). Evidence: the suites unchanged and green; the five uses expand one macro.
 - [ ] T022-105 `flow_control_counts` slot rows with `SECURITY DEFINER` triggers and `SELECT`-only grants; foreign keys `(tenant_id, namespace_id, run_id)`; column-limited `UPDATE` grants on semaphores and windows (`next_eligible_at`, `updated_at`). FR-022-058; D022-026. Evidence: runtime-privilege sweep; a direct `UPDATE` of a counter as `sagat_app` is refused; a dual-gated run counts once.
   - *Built in part 2026-11-20 (0.3.0 slice; D022-051), not ticked:* the exactness of `queued_runs` that the owner made a merge condition: proved exact under the namespace's admission lock by `run_admission::two_starts_at_the_queued_runs_ceiling_are_decided_one_after_the_other` (held lock, both starts observed waiting, exactly one queued and one refused `FLOW_CONTROL_LIMIT`), owner and `SAGAT_TEST_AS_RUNTIME_ROLE=1`; hand mutations caught: the admission lock removed, the ceiling ignored. Open: the `flow_control_counts` slot rows and their triggers, the foreign keys, the column-limited grants.
 - [ ] T022-106 A grant from the buffer does not re-authorize: a buffered run whose initiator lost `run:start` is granted, and its journal and audit keep the original initiator. FR-022-060; D022-034. Evidence: integration test.

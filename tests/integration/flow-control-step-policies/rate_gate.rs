@@ -197,6 +197,23 @@ async fn a_buffered_start_is_granted_once_the_window_of_the_slot_ahead_has_passe
         start_slot(&w, third).await
     );
     assert_eq!(w.run_status(second).await, RunStatus::Running);
+    // the window's oldest wait moved to the waiter that remains, exactly (decision D022-068 item 5; correctness Major 3
+    // of the review of task T022-078)
+    let (oldest, third_enqueued): (Option<OffsetDateTime>, OffsetDateTime) = sqlx::query_as(
+        "SELECT k.oldest_wait_at, x.enqueued_at FROM rate_limit_windows k JOIN rate_limit_waiters x \
+             ON x.tenant_id = k.tenant_id AND x.namespace_id = k.namespace_id AND x.pool = k.pool \
+            AND x.limit_scope = k.limit_scope AND x.group_name = k.group_name AND x.key_digest = k.key_digest \
+          WHERE x.run_id = $1",
+    )
+    .bind(third.as_uuid())
+    .fetch_one(&w.db.pool)
+    .await
+    .expect("the third's window");
+    assert_eq!(
+        oldest,
+        Some(third_enqueued),
+        "the remaining waiter's instant"
+    );
     for run in [first, second, third] {
         w.assert_consistent(run).await;
     }

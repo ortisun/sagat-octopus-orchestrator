@@ -2368,8 +2368,7 @@ where
                         slot.state,
                         crate::flow_control_keys::RunPermitState::Waiting { .. }
                     )
-                    && let Some(mut place) =
-                        self.store.rate_place(principal.tenant_id(), id).await?
+                    && let Some(mut place) = self.rate_place(principal, id).await?
                 {
                     // a run that also waits for its permit is granted both or neither: no estimate (D022-014); and the
                     // estimate is another run's grant instant plus the window, which would link the two runs for a
@@ -2388,6 +2387,32 @@ where
             }
             None => Err(self.missing(principal, id, ctx).await),
         }
+    }
+
+    /// Where a buffered run stands in its key's queue, or `None` when it no longer waits or the database could not give
+    /// its place: the place is an estimate, never a promise, so an unavailable database (its statement timeout at a busy
+    /// key included) is logged by its kind and the run is shown without it; a corrupt row stays an error (decision
+    /// D022-068 items 2 and 7).
+    async fn rate_place(
+        &self,
+        principal: &Principal,
+        id: RunId,
+    ) -> Result<Option<crate::flow_control_keys::RatePlace>, AppError> {
+        let kind = match self.store.rate_place(principal.tenant_id(), id).await {
+            Ok(reading) => {
+                return Ok(reading.map(|reading| reading.place()));
+            }
+            Err(StoreError::Unavailable { .. }) => "unavailable",
+            Err(StoreError::DatabaseUnavailable) => "database_unavailable",
+            Err(StoreError::DatabaseLimit) => "database_limit",
+            Err(other) => return Err(other.into()),
+        };
+        tracing::warn!(
+            run_id = %id,
+            kind,
+            "the rate-limit place of a buffered run could not be read; it is shown without one"
+        );
+        Ok(None)
     }
 
     /// Shows the key label of each run-level permit to a caller who may reveal personal data in the run's namespace;
