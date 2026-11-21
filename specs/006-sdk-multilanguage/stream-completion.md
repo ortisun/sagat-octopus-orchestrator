@@ -235,19 +235,21 @@ left to lapse; since feature 037 a lapse of an `Activity` opens a review for wor
    Until then the lease lapses as before and `worker_leases_undelivered_total{cause, outcome="lapsed"}` counts it.
 5. **A host hands back what it drops** (`sdks/SPEC.md` §6.2): `FailStep` with `TASK_NOT_STARTED`, retryable, before any
    handler of the task runs. With the requirement recorded and the step still `LEASED`, the server withdraws it (cause
-   `NOT_STARTED`); otherwise it is an ordinary retryable failure, never an unknown outcome.
+   `NOT_STARTED`), except an acknowledged lease of protocol 1.8, which is an attempt (decision D006-045); otherwise it is an
+   ordinary retryable failure, never an unknown outcome.
 6. **What is not covered.** A frame lost on the wire after it was handed to the transport, and a lost unary answer, still
    lapse (gap G006-001) for a session below 1.8; at 1.8 delivery acknowledgement closes it (next section). A process that stops between a claim and its withdrawal leaves
-   the lease to lapse (G006-002).
+   the lease to lapse (G006-002); at 1.8 that lease is provisional and is withdrawn at its expiry instead.
+
 
 
 ## Delivery acknowledgement (protocol 1.8)
 
-Decisions D006-011 to D006-024 of [`research.md`](research.md); ADR-0099; owner decision OD-2026-11-20-12. A lease of a
-session accepted at 1.8 is *provisional* until its host acknowledges it; the host runs nothing for it before the server has
-committed that acknowledgement; a provisional lease that reaches its expiry unacknowledged is withdrawn (ADR-0098's event, the
-cause `NOT_ACKNOWLEDGED`), so a frame lost on the wire and a lost `PollTasks` answer (gap G006-001) no longer become a review.
-Sessions below 1.8 are served exactly as before.
+Decisions D006-040 to D006-060 of [`research.md`](research.md); ADR-0099; owner decision OD-2026-11-20-12. A lease of a session
+accepted at 1.8 is *provisional* until its host acknowledges it; the host runs nothing and calls nothing for it before the
+server has committed that acknowledgement; a provisional lease that reaches its expiry is withdrawn (ADR-0098's event, the cause
+`NOT_ACKNOWLEDGED`), so a frame lost on the wire and a lost `PollTasks` answer (gap G006-001) no longer become a review. An
+acknowledged lease is an attempt, with today's meaning in every respect. Sessions below 1.8 are served exactly as before.
 
 ### Wire
 
@@ -255,7 +257,7 @@ Added to `specs/001-platform-foundation/contracts/worker.proto`, additively (the
 
 ```protobuf
 // Added in protocol 1.8. The host acknowledges the leases of one frame, or of one PollTasks answer,
-// before it runs any of them. Idempotent: the same lease may be acknowledged again.
+// before it runs or calls anything for them. Idempotent: the same lease may be acknowledged again.
 rpc AcknowledgeTasks(AcknowledgeTasksRequest) returns (AcknowledgeTasksResponse);
 
 message TaskAcknowledgement {
@@ -266,212 +268,282 @@ message TaskAcknowledgement {
 message AcknowledgeTasksRequest { string worker_id = 1; repeated TaskAcknowledgement tasks = 2; }
 enum AcknowledgementVerdict {
   ACKNOWLEDGEMENT_VERDICT_UNSPECIFIED = 0;
-  ACKNOWLEDGEMENT_VERDICT_ACKNOWLEDGED = 1;   // the server has committed that this host holds the lease
-  ACKNOWLEDGEMENT_VERDICT_NOT_HELD = 2;       // the lease is not this host's (withdrawn, replaced, foreign, unbound)
+  ACKNOWLEDGEMENT_VERDICT_ACKNOWLEDGED = 1;   // the server has committed that this host holds the lease: run it
+  ACKNOWLEDGEMENT_VERDICT_NOT_HELD = 2;       // not this host's lease (expired, withdrawn, replaced, foreign, unbound): drop it
+  ACKNOWLEDGEMENT_VERDICT_CANCELLED = 3;      // its run asked to stop before it started; withdrawn and cancelled: drop it
 }
 message TaskAcknowledgementResult {
   string task_id = 1;
   AcknowledgementVerdict verdict = 2;
   int64 lease_expires_at_epoch_ms = 3;        // the renewed expiry when ACKNOWLEDGED; 0 otherwise
-  bool cancel_requested = 4;                  // as on HeartbeatResponse; false when NOT_HELD
+  bool cancel_requested = 4;                  // as on HeartbeatResponse when ACKNOWLEDGED; false otherwise
 }
 message AcknowledgeTasksResponse { repeated TaskAcknowledgementResult results = 1; }
 ```
 
-- A request carries 1 to 64 tasks (the credit of one receive window) with distinct `task_id`s; anything else is
-  `INVALID_ARGUMENT` before any task is read. Each field is validated as `Heartbeat` validates it; `instance` is echoed as at
-  1.5. A response carries one result per task, in request order; a host that receives another count, an unknown `task_id`
-  or `ACKNOWLEDGEMENT_VERDICT_UNSPECIFIED` treats the whole answer as a failed call.
-- `TaskLease`, `PollTasksResponse`, `HeartbeatRequest` and every other message are unchanged. No stream identifier, frame
-  number or session token is authority: the lease token is, as for every other worker call.
-- The call is in admission class `Lease` (`crates/api-grpc/src/limits.rs`), the capacity reserved for the calls that keep
-  leased work alive, beside `Heartbeat`, `CompleteStep` and `FailStep`. Its request and response join `skip_debug`; their
-  `Debug` prints counts only.
-- `ResolveSecrets`, `ResolveDatabase`, `WriteBlob`, `ReadBlob` and `AppendStepLogs` for a lease that is provisional and
-  unacknowledged answer `FAILED_PRECONDITION` with the stable reason `TASK_NOT_ACKNOWLEDGED`.
+- A request carries 1 to 64 tasks (the credit of one receive window) with distinct `task_id`s and `attempt` of at least 1;
+  each identity field has the bounds `Heartbeat` gives it (the instance path at most 8 segments), so a request stays far below
+  the server's message limit. Anything else is `INVALID_ARGUMENT` before any task is read. `worker_id` is validated and
+  ignored, as `Heartbeat` does; no field but the lease token is authority.
+- A response carries one result per task, in request order. A host that receives another count, an unknown `task_id` or
+  `ACKNOWLEDGEMENT_VERDICT_UNSPECIFIED` treats the answer as a failed call.
+- `TaskLease`, `PollTasksResponse`, `HeartbeatRequest` and every other message are unchanged.
+- The call is in admission class `Lease` (`crates/api-grpc/src/limits.rs`), beside `Heartbeat`, `CompleteStep` and `FailStep`:
+  it is the call that makes leased work runnable. It holds one database connection at a time. Its request, its response and the
+  element `TaskAcknowledgement`, which carries a token, join `skip_debug`, with a `Debug` that prints counts only.
+- A capability call on a provisional lease answers `FAILED_PRECONDITION` with the stable reason `TASK_NOT_ACKNOWLEDGED`, listed
+  in the proto's error comment; the SDKs give it the canonical code they give `FAILED_PRECONDITION` today. A host that keeps the
+  protocol never meets it.
 
 ### Negotiation and activation
 
-- The server's minor becomes 8 (`DELIVERY_ACKNOWLEDGEMENT_PROTOCOL_MINOR = 8`). Minors are cumulative: `protocol_ceiling`
-  answers 8 for an ordinary worker only when it would answer 7 (design 041, task T041-7) **and** the store proves
-  `supports_delivery_acknowledgement()` **and** the engine knows the requirement `delivery-acknowledgement-v1` is recorded
-  **and** the engine's lease time-to-live is at least 7 s (the threshold derived below). Otherwise it answers what it answers
-  today. The database runner keeps 6.
-- Every control plane and engine of the build lists `delivery-acknowledgement-v1` (the control plane because it replays the
-  journal, the engine because it also serves the worker API and runs the lost-lease pass). The operator records it with
-  `control-plane delivery-acknowledgement-activate` (`--operator`, `--expect-live N`, `--dry-run`, owner role, one bounded
-  transaction, no step of its own), which refuses while `lease-withdrawal-v1` (ADR-0098) is not recorded. The removal of
-  `lease-withdrawal-v1` refuses while `delivery-acknowledgement-v1` is recorded.
-- A claim marks a lease provisional only when the session was accepted at 1.8 **and** the claiming engine knows the
-  requirement is recorded. An engine learns of an activation or a removal within one registry heartbeat (about 12 s,
-  ADR-0082 decision 4); during that window a 1.8 session may receive a lease that is not provisional (gap G006-008), which
-  keeps today's meaning.
+- The server's minor becomes 8 (`DELIVERY_ACKNOWLEDGEMENT_PROTOCOL_MINOR = 8`). Minors are cumulative: `protocol_ceiling` answers 8
+  for an ordinary worker only when it would answer 7 (design 041, task T041-7), the store proves
+  `supports_delivery_acknowledgement()` (a constant of the adapter, as the proofs of 1.5 and 1.6 are, true in the build whose
+  migrations add the columns) and the engine knows the requirement `delivery-acknowledgement-v1` is recorded. The database runner
+  keeps 6. `GET /version` reports the ceiling as it is gated at that moment, not the build's constant.
+- An engine lists the capability `delivery-acknowledgement-v1` only when its lease time-to-live is at least 12 s (ADR-0082
+  decision 7: a capability is what the configuration will honour); every control plane of the build lists it. So the activation
+  refuses while a live engine runs a shorter time-to-live, and an engine restarted with one after the activation is refused and
+  closes its gate.
+- `control-plane delivery-acknowledgement-activate` (owner role, one bounded transaction, `--operator`, `--expect-live N`,
+  `--dry-run`, no step of its own) records the requirement. The registry's `ENABLE ALWAYS` trigger refuses recording it while
+  `lease-withdrawal-v1` is not recorded, and refuses removing `lease-withdrawal-v1` while it is recorded (a guard in the existing
+  trigger function, `SECURITY DEFINER` with its `search_path` pinned like its siblings), so the hand SQL of
+  `docs/runbooks/instance-registry.md` section 5 cannot break the dependency either.
+- `control-plane delivery-acknowledgement-remove` removes it in one bounded transaction; then, once the registry's learning bound
+  has passed (one registry heartbeat, about 12 s, plus the call: ADR-0082 decision 4), it expires in a second bounded transaction
+  every worker session accepted at 1.8, so that their hosts are answered `UNAUTHENTICATED`, register again and are offered at most
+  7. It prints how many sessions it expired and how many provisional leases are in flight.
+- Every engine of the build serves `AcknowledgeTasks` whatever it knows of the requirement. An engine offers 1.8 and writes new
+  marks only while it knows the requirement is recorded; it learns of an activation or a removal within one registry heartbeat
+  (gap G006-044). A mark already written keeps its meaning until its lease ends, whatever the requirement says by then.
 
 ### The provisional mark
 
-Two nullable columns of `steps`, written by the statements that already write the lease (no added statement):
+Columns of `steps`, written by the statements that already write a lease (the claim's root statement and the scoped path
+statement), never by a statement of their own:
 
-| Column | Set | Cleared |
+| Column | Written | Meaning |
 |---|---|---|
-| `lease_offered_at` | by the claim, to the commit time, when the lease is provisional | whenever the lease is cleared or replaced (every write whose status is not `LEASED` or `RUNNING`, and every new lease) |
-| `lease_acknowledged_at` | by the first acknowledgement of that lease | as above |
+| `lease_offered_generation bigint` | by a claim that marks the lease: the lease's generation | the mark counts only while it equals `generation` |
+| `lease_offered_at timestamptz` | with it: the claim transaction's time (`clock_timestamp()` after the lock, before the commit) | the start of the delivery delay |
+| `lease_acknowledged_at timestamptz` | cleared by every claim that marks; set by the first acknowledgement | acknowledged when set and the mark counts |
+| `lease_unacknowledged_withdrawals smallint NOT NULL DEFAULT 0` | incremented by a `NOT_ACKNOWLEDGED` withdrawal; cleared by an acknowledgement and by any report | the bound of D006-052 |
+| `withdrawn_lease_token_hash bytea` | the token hash of a lease withdrawn as `NOT_ACKNOWLEDGED`, replaced by the next such withdrawal | evidence of D006-053, read only on the stale path of a report or heartbeat |
 
-A lease is *provisional and unacknowledged* when the step is `LEASED`, `lease_offered_at` is set and `lease_acknowledged_at`
-is empty. The lease's expiry at the claim is unchanged (commit plus the lease time-to-live). The marks are lease data, like
-the token hash and the expiry: they are not journaled, the replay does not derive them, and a reset clears them with the lease.
+and `worker_sessions.acknowledgement_kept boolean NOT NULL DEFAULT true`, cleared by a protocol violation (D006-053).
+
+- *Provisional* is: the step `LEASED`, `lease_offered_generation = generation`, `lease_acknowledged_at` empty. *Acknowledged* is:
+  `lease_offered_generation = generation`, `lease_acknowledged_at` set. A lease written later by any binary has the next
+  generation, so a mark left behind by a binary that does not know the columns never counts. No `CHECK` ties the columns to the
+  status: an older binary must still be able to write the row.
+- A claim marks a lease only when the session was accepted at 1.8, `acknowledgement_kept` holds for it, the engine knows the
+  requirement is recorded, its own time-to-live is at least 12 s, and `lease_unacknowledged_withdrawals` is under 3.
+- The condition is written once, as a SQL macro of the adapter (as `scoped_timer_metadata_valid!()` is), and the store returns
+  the marks as typed values; the application decides from them with one pure function, unit-tested over every combination.
+- The marks are lease data, like the token hash and the expiry: they are not journaled and the replay does not derive them.
+  Adding nullable columns, and a `smallint` with a constant default, changes the catalogue only.
 
 ### The server's acknowledgement
 
-For each run of the call, in the order its first task appears:
+1. Check `worker:execute` once, before anything else (`PERMISSION_DENIED`, audited as today).
+2. Read, with one statement, no lock and the unique index of the step address, the rows of the call's addresses (tenant, run,
+   node, instance path) whose `lease_token_hash` matches the request's token hash and whose status is `LEASED` or `RUNNING`.
+   Read the caller's bound patterns and authorization once. A task with no matching row answers `NOT_HELD` and costs no lock;
+   the run ids of the call that do not exist in the caller's tenant are checked with one statement for existence in another
+   tenant, and at most one `CrossTenantAccessDenied` audit record is written per call, through the bounded denial gate.
+3. For each run with a match, in request order and one after another (never two run locks at once): take the continuation-chain
+   lock and then the run row's lock, as `begin` and `begin_path` take them, without restoring any state; write each matched step
+   row with one conditional statement: the same tenant, address, token hash, `attempt` and `generation` as the request, the step
+   `LEASED` or `RUNNING`, and, when the lease is provisional, `lease_expires_at` still in the future. It sets
+   `lease_acknowledged_at = now()` if it was empty, clears `lease_unacknowledged_withdrawals`, renews the lease as a heartbeat
+   renews it (`least(now() + time-to-live, attempt_deadline_at)`), and returns the step's activity, node kind, status,
+   `cancel_requested`, whether the mark was already set, and the delay `now() - lease_offered_at`. Check the binding on the
+   returned activity (for a managed node, the executor's ownership); a refused binding rolls that run's transaction back and
+   answers `NOT_HELD`, and one bounded denial audit record per call says so.
+4. A provisional lease whose `cancel_requested` holds is not acknowledged (decision D006-051): the transaction restores that
+   run (or that path), withdraws the lease with the cause `NOT_STARTED`, and runs the settle; the answer is `CANCELLED`.
+5. Commit the run. A run that cannot be opened for a reason other than an unavailable store answers `NOT_HELD` for its tasks and
+   the call goes on; an unavailable store ends the call with its canonical status after the runs already committed, and the
+   host's repeat answers those `ACKNOWLEDGED` again.
+6. Answer. A call of 64 leases over 64 runs must be answered within 3 s (R / 2) at the 99th percentile on the measured topology;
+   task T006-064 measures it and the build stops if it is not.
 
-1. Open the run as `Heartbeat` does (`begin(tenant, run, Lock::Wait)`, which takes the continuation-chain lock too). A run
-   that does not exist in the caller's tenant answers `NOT_HELD` for its tasks; a run of another tenant is audited
-   `CrossTenantAccessDenied`, as `missing_task_error` audits it.
-2. For each task of that run: the step identity belongs to the run and instance (`verify`), the lease-token hash matches a
-   step `LEASED` or `RUNNING` (`lease_matches_instance`), and the binding still holds (`ensure_bound`). A check that fails
-   answers `NOT_HELD` and writes nothing for that task.
-3. For each task whose checks hold, write the step row: if `lease_acknowledged_at` is empty and `lease_offered_at` is set,
-   set `lease_acknowledged_at = now()` and move `attempt_deadline_at` later by `now() - lease_offered_at`; then renew the lease
-   as a heartbeat renews it (`least(now() + time-to-live, attempt_deadline_at)`). Answer `ACKNOWLEDGED` with the renewed
-   expiry and the step's `cancel_requested`.
-4. Commit. Nothing else: no run state is loaded, no transition applied, no journal event, no outbox row. A store failure ends
-   the call with its canonical status after the runs already committed; the host repeats the call and those runs answer
-   `ACKNOWLEDGED` again (a duplicate).
+Counted: `worker_task_acknowledgements_total{verdict}` with `acknowledged` (the mark set now), `duplicate` (already set),
+`renewed` (a lease with no mark that counts), `not_held` and `cancelled`.
 
-An acknowledgement of a lease that is not provisional (a session that was accepted at 1.8 before a removal, or a lease marked
-before the claiming engine learned of an activation) is answered the same way and is a renewal. Counted:
-`worker_task_acknowledgements_total{verdict}` with `acknowledged`, `duplicate` (the mark was already set) and `not_held`.
+### The withdrawal and the attempt timeout
 
-### The withdrawal
+The lost-lease pass (`crates/infra-postgres/src/maintenance.rs` `lost_leases`, `crates/scheduler/src/passes.rs` `leases`, root
+and path) keeps its candidate query; the candidates are only a hint. Under the run lock (the whole-run or the path transaction)
+it re-reads the step's status, generation, marks, expiry and attempt deadline (`lease_deadlines_instance`, extended), and the
+pure decision function answers one of:
 
-The lost-lease pass (`crates/infra-postgres/src/maintenance.rs` `lost_leases`, `crates/scheduler/src/passes.rs` `leases`):
+| Under the lock | Outcome |
+|---|---|
+| Provisional, `lease_expires_at` passed, `attempt_deadline_at` not passed | Withdrawn (ADR-0098 decision 3; root in the whole-run transaction, scoped in the path transaction, as the ADR-0098 build does): `step.lease_withdrawn` with `cause = NOT_ACKNOWLEDGED`, the lease and its marks cleared, `lease_unacknowledged_withdrawals` incremented, `withdrawn_lease_token_hash` kept, the step `READY`, the attempt set back by one, the generation kept; the settle runs, so a step of a stopping run is cancelled at once and a stopping collection or loop drains the instance as one never leased; the step's write is fenced on what was read, and a fence that fails rolls the transaction back and counts `fence_missed` |
+| Provisional, `attempt_deadline_at` passed (whether or not the expiry has) | The attempt ends as a known retryable failure, code `ATTEMPT_TIMEOUT_BEFORE_START`: consumed by the step's own timeout, retried by its policy, never consultation or review |
+| Acknowledged, or not marked, and expired or timed out | `expire_attempt`, as today: an unknown outcome, consultation or review for external-capable work |
+| Neither deadline passed (renewed since the candidate was read) | Nothing |
 
-- Its `EXPIRED` arm also returns the two marks; its `TIMED_OUT` arm skips a lease that is provisional and unacknowledged (the
-  attempt has not begun: decision D006-019).
-- Under the run lock, its condition (`Condition::LeaseLost`) is checked again; then a lease still `LEASED`, provisional,
-  unacknowledged and expired, with the requirement known to be recorded, is withdrawn as ADR-0098 decision 3 withdraws it:
-  one fenced transaction, `step.lease_withdrawn` (`node`, `attempt`, `generation`, `cause = NOT_ACKNOWLEDGED`), the lease and
-  its marks cleared, the step back to `READY`, the attempt set back by one, the generation kept. The engine's settle runs in
-  the same transaction, so a step of a stopping run is cancelled at once. Counted as
-  `worker_leases_undelivered_total{cause="not_acknowledged", outcome="withdrawn"}`; a fence that no longer holds is
-  `outcome="fence_missed"`.
-- An acknowledged lease that expires, and a provisional one that expires while the requirement is not known to be recorded
-  (`outcome="lapsed"`), go to `expire_attempt` as today: an unknown outcome, consultation or review.
-- ADR-0098's withdrawal with the cause `NOT_SENT` also requires `lease_acknowledged_at` to be empty (a host cannot have
-  acknowledged a lease it never received; the condition costs nothing and closes the case by construction).
+Counted as `worker_leases_undelivered_total{cause="NOT_ACKNOWLEDGED", outcome}` (`withdrawn`, `fence_missed`) and
+`worker_attempts_timed_out_before_start_total`. ADR-0098's own withdrawals also require the lease not to be acknowledged: a
+`TASK_NOT_STARTED` for an acknowledged lease is an ordinary retryable failure with a known outcome (decision D006-045).
 
-**Exactly one of the acknowledgement and the withdrawal commits for a lease.** Both hold the run lock; the acknowledgement
-writes only while the token hash matches a `LEASED` or `RUNNING` step; the withdrawal writes only while the step is `LEASED`
-and unacknowledged. If the acknowledgement commits first, the withdrawal finds `lease_acknowledged_at` set and withdraws
-nothing; if the withdrawal commits first, the acknowledgement finds the token cleared and answers `NOT_HELD`. The host runs a
-handler only on `ACKNOWLEDGED`. So a handler of a 1.8 lease runs only after the server committed that its host holds it, and a
-lease the server withdraws was not run by a host that keeps the protocol. No clock enters the argument: the deadline below
-decides when the reaper looks, never whether the two can both happen.
+**Exactly one of the acknowledgement and the withdrawal commits for a lease.** Both hold the run lock. The acknowledgement writes
+only while the token, attempt and generation match a `LEASED` or `RUNNING` step and a provisional lease is not past its expiry;
+the withdrawal writes only while the lease it re-read under the lock is still provisional and past its expiry. If the
+acknowledgement commits first, the withdrawal reads `lease_acknowledged_at` set, or an expiry renewed into the future, and does
+nothing; if the withdrawal commits first, the acknowledgement finds the token cleared and answers `NOT_HELD`; an acknowledgement
+that arrives after the expiry but before the pass answers `NOT_HELD` and writes nothing, so the deadline is the expiry. The host
+runs a handler only on `ACKNOWLEDGED`. So a handler of a 1.8 lease runs only after the server committed that its host holds it,
+and a lease the server withdraws was not run by a host that keeps the protocol (the trust assumption, D006-053). No clock enters
+the argument; the deadline decides when the pass looks, never whether both can happen.
 
 ### Why the deadline is the lease expiry
 
-The acknowledgement deadline is the lease's expiry at the claim: commit plus the lease time-to-live (`SAGAT_LEASE_TTL_SECS`,
-default 30 s). The derivation:
+The acknowledgement deadline is the lease's expiry at the claim: the claim's time plus the lease time-to-live
+(`SAGAT_LEASE_TTL_SECS`, default 30 s). The derivation uses specified bounds only:
 
-1. **R, the receive bound: 6 s.** A host bounds each receive call to 6 s or its shorter configured call timeout
-   (`sdks/SPEC.md` §10 for `StreamTasks`; at 1.8 the same bound applies to `PollTasks`, decision D006-018). The host starts
-   that clock before it sends the request and the server commits a lease only after it has the request, so any lease the
-   host reads, it reads within 6 s of the lease's commit in real time, with no comparison of clocks. A lease not read by then
-   is never read: the host has cancelled the call. Measured, ready to handler entry is 751 to 889 ms at the 99th percentile in
-   the ten burst rows (`tests/performance/reports/sdk-streaming.md`), which includes the commit to handler entry.
-2. **A, one acknowledgement: at most 0.103 s measured.** No acknowledgement exists to measure yet. A completion does strictly
-   more (it opens the run the same way, then loads the run's state, applies the transition, routes and appends events); its
-   99th percentile is 6 to 103 ms over the nine rows of 2026-11-12 (`tests/performance/reports/scalability-ha.md`). So A is
-   at most 0.103 s at those loads. Task T006-064 measures A itself (`worker_task_acknowledgement_delay_seconds`) and
-   re-derives the threshold of item 5 from it.
-3. **The interval of safe deadlines.** A healthy host of 1.8 has its acknowledgement committed within L = R + A = 6.103 s of
-   the commit. A deadline below L withdraws healthy deliveries; a deadline above the lease expiry is never reached, because the
-   lease is reaped at its expiry. Any deadline in [L, time-to-live] is equally safe, because safety is the run-lock argument
-   above. Inside the interval the deadline trades two things only: how long a lost lease holds its step and its session's
-   slot (longer with a later deadline) and how many healthy deliveries are withdrawn when the database is slow (more with an
-   earlier one). A withdrawn healthy delivery claims and delivers the same task again, which adds work exactly when the system
-   is slowest; a later deadline costs time only after a loss, which is rare (three observed cases since feature 037: two CI jobs and one play of feature 022).
-4. **The choice: the upper end.** The deadline is the expiry: at the default it leaves a margin of 30 − 6.103 = 23.897 s over
-   L, almost four times L; it adds no setting, no column and no scan; and it is the bound a host already has to meet today with
-   its first heartbeat, so no host that keeps its lease today loses it. A lost lease is withdrawn at commit plus the
-   time-to-live plus the period of the lost-lease pass, the time after which it lapses today.
-5. **The threshold.** The time-to-live is configured in whole seconds, so the server offers 1.8 only when it is at least
-   R + ⌈A⌉ = 6 + 1 = 7 s; below that it caps the ordinary ceiling at 7 and logs once at start which setting caused it.
+1. **R = 6 s, the receive bound.** A host bounds each receive call to 6 s or its shorter configured call timeout (`sdks/SPEC.md`
+   §10 for `StreamTasks`; at 1.8 the same bound applies to `PollTasks`, D006-048). It starts that clock before it sends the
+   request and the server claims only after it has the request, so any lease the host reads, it reads within R of the lease's
+   claim, in real time, with no comparison of clocks. A lease not read by then is never read: the host has cancelled the call.
+2. **R again, for one acknowledgement attempt.** A host of 1.8 bounds each `AcknowledgeTasks` attempt to R as well, and sends it
+   as soon as the frame is read. So one complete attempt ends within 2R = 12 s of the claim.
+3. **The threshold.** One complete attempt fits before the expiry when the time-to-live is at least 2R = 12 s; below that a host
+   that reads its frame at the end of its receive bound has no full attempt left. An engine whose time-to-live is under 12 s does
+   not list the capability (above). At the default 30 s, (30 − 6) / 6 = 4 complete attempts fit after the latest read.
+4. **The interval of safe deadlines.** Safety does not depend on the deadline (the run-lock argument above). Between the healthy
+   delivery time and the expiry the deadline trades only how long a lost lease holds its step and its session's slot (longer
+   with a later deadline) against how many healthy deliveries are withdrawn when the database is slow (more with an earlier one),
+   and each such withdrawal claims and delivers the task again, adding work when the system is slowest.
+5. **The choice: the upper end.** The expiry adds no setting, no column and no scan, and it is the bound a host already meets
+   today with its first heartbeat, so no host that keeps its lease today loses it. A lost lease is withdrawn at the claim's time
+   plus the time-to-live plus the period of the lost-lease pass, when it lapses today.
+6. **What is measured, and what must hold.** Measured on one machine with no network: ready to handler entry 751 to 889 ms at
+   the 99th percentile (the ten burst rows of `tests/performance/reports/sdk-streaming.md`), which bounds the claim to handler
+   entry from above; a completion 6 to 103 ms at the 99th percentile (`tests/performance/reports/scalability-ha.md`), which bounds
+   one acknowledgement transaction from above, since a completion restores the run and applies a transition and the
+   acknowledgement does neither. The server must answer a full call (64 leases over 64 runs) within R / 2 = 3 s at the 99th
+   percentile, measured by task T006-064 with a network between the workers and the services; R / 2 leaves the other half of an
+   attempt for the network and the host. At 103 ms per run, which overstates an acknowledgement, 64 runs one after another take
+   6.592 s, so the requirement is not met by assumption: it is the measurement's to show, and the build stops if it does not.
 
 ### The host at 1.8
 
-Additions to `sdks/SPEC.md` §6.2 to §6.4 (the normative host text is there):
+The normative host text is `sdks/SPEC.md` §6.2 to §6.4 and §6.8. In short:
 
-1. **Receive.** A `PollTasks` call is bounded to 6 s or the shorter configured call timeout, as a stream window is. The excess
-   over the credit and the leases received while stopping are handed back with `TASK_NOT_STARTED` (decision D006-005) and are
-   not acknowledged.
+1. **Receive.** A `PollTasks` call is bounded to R, as a stream window is. The excess over the credit and the leases received
+   while stopping are handed back with `TASK_NOT_STARTED` and are not acknowledged.
 2. **Acknowledge.** As soon as a frame or a poll answer is read, the host sends one `AcknowledgeTasks` with all its leases that
-   it will run, concurrently with its next receive. It starts no handler, no heartbeat and no other call of those leases
-   before the answer.
-3. **Verdicts.** `ACKNOWLEDGED`: dispatch the task (§6.3), with the result's `lease_expires_at_epoch_ms` as its deadline; the
-   heartbeat starts now, its interval a third of the time left on that expiry (500 ms to 10 s). `ACKNOWLEDGED` with
-   `cancel_requested = true`: do not start the handler; hand the lease back with `TASK_NOT_STARTED`. `NOT_HELD`: drop the task,
-   run nothing, report nothing, free its slot, emit the event `dropped` with the code `NOT_HELD`.
-4. **Failure of the call.** `UNAVAILABLE`, `RESOURCE_EXHAUSTED` (after its retry hint), `INTERNAL` that says it may be
-   repeated, transport failures, a deadline, and an answer the host cannot use: repeat the same call with the backoff of §5,
-   with no limit on attempts, each attempt bounded by the shorter of the call timeout and the time left until the latest
-   expiry among the leases still waiting (by the host's clock). `UNAUTHENTICATED`: repeat once with a fresh token (the lease
-   does not depend on the session). A lease whose expiry passes without a verdict is not run and is handed back with
-   `TASK_NOT_STARTED` (§6.5 report retries). Any other status: run nothing, log once, hand every lease of the call back.
-5. **Logs.** The happy path logs nothing new; the verdict `NOT_HELD` and a call that is given up log one line each, with
+   it will run, concurrently with its next receive. Nothing else is called for those leases before the answer.
+3. **Verdicts.** `ACKNOWLEDGED`: dispatch the task (§6.3) with the result's expiry as its deadline; the heartbeat starts now, its
+   interval a third of the time left on that expiry. `ACKNOWLEDGED` with `cancel_requested = true` (the lease was already
+   acknowledged, or carries no mark): dispatch, with the token already cancelled with the reason `run-cancelled`, as a heartbeat
+   would have done. `NOT_HELD` or `CANCELLED`: drop the task, run nothing, report nothing, free its slot, emit `dropped` with the
+   code `NOT_HELD` or `CANCELLED`.
+4. **A call that fails.** `UNAVAILABLE`, `RESOURCE_EXHAUSTED` (after its retry hint), a retryable `INTERNAL`, a transport
+   failure, a deadline or an unusable answer: repeat the same call, without the leases already decided or handed back, with the
+   backoff of §5, each attempt bounded to R. `UNAUTHENTICATED`: repeat once with a fresh token; the lease does not depend on the
+   session. The host stops trying for a lease when the lease's time left at receipt (its expiry minus the host's clock at receipt,
+   clamped to between 12 s and 120 s) has passed on its monotonic clock; that lease is not run and is handed back. A verdict that
+   arrives after the host gave a lease up is ignored.
+5. **A call that is refused.** `UNIMPLEMENTED`, `PERMISSION_DENIED`, `INVALID_ARGUMENT` or any other status not listed in item 4:
+   hand the call's leases back, log once, and register again offering 1.7 for the rest of the host's life (the precedent of
+   ADR-0029 decision 6 for `StreamTasks`).
+6. **Logs.** The happy path logs nothing new; `NOT_HELD`, `CANCELLED`, a lease given up and a refusal log one line each, with
    identifiers only.
+
+### Scoped instances
+
+A collection item or loop body leased to a 1.8 session is marked, acknowledged, refused capabilities and withdrawn by the same
+rules. The pre-read and the conditional write address the step row by its full address (the instance path columns), so they do
+not depend on the path; the lock is the run row's, which `begin_path` takes too. The withdrawal is the scoped withdrawal of the
+ADR-0098 build (its decision on the grain of the transaction: one path transaction per run and instance path, with the addressed
+event); the capability refusal is a variant of `live_path_fence`; a stopping collection or loop drains a withdrawn instance as
+one never leased. Each of these has a scoped row in the evidence of its task.
+
+### Rollback
+
+1. `control-plane delivery-acknowledgement-remove`: the requirement is removed; after the learning bound the sessions accepted at
+   1.8 are expired; from then on no engine offers 1.8 or writes a new mark.
+2. Wait until `worker_leases_provisional` is 0, at most one lease time-to-live after step 1: every mark already written ends with
+   its lease (acknowledged, withdrawn or timed out), with its meaning unchanged.
+3. Roll the binary back, no further than a build that decodes the cause `NOT_ACKNOWLEDGED`: the ADR-0098 build if it adds the
+   cause to its closed set before it merges (D006-059), otherwise this build. A journal holding the cause cannot be replayed by
+   an older binary; that is why the floor exists.
+4. The `down` migration refuses while any mark counts (a provisional or acknowledged lease of a 1.8 session); marks that no
+   longer count are dropped with the columns.
 
 ### Failure modes and their exact outcomes
 
 | Case | Outcome |
 |---|---|
-| A frame or a `PollTasks` answer lost on the wire, or the host crashes before acknowledging | No acknowledgement arrives; at the expiry the lost-lease pass withdraws the lease (`NOT_ACKNOWLEDGED`): `READY`, attempt not consumed, no review; the next lease has the same attempt number and the next generation |
-| The acknowledgement never leaves the host | Repeated (host item 4); on a verdict the task runs once; if the leases expire first, nothing runs, the leases are handed back, and the server withdraws whichever it still holds |
-| The acknowledgement's answer is lost after its commit | The host repeats; the server answers `ACKNOWLEDGED` again (`duplicate`); the handler runs once. If no answer arrives before the host's view of the expiry, nothing runs and the host hands the lease back: `TASK_NOT_STARTED` on an acknowledged `LEASED` step is withdrawn (`NOT_STARTED`). If the hand-back cannot reach the server either, the acknowledged lease lapses at its renewed expiry into a review (gap G006-005) |
-| A duplicate acknowledgement (same lease, also after the first heartbeat) | `ACKNOWLEDGED` with the current expiry; only the renewal is written |
-| A late acknowledgement after the withdrawal, or after the lease was replaced | `NOT_HELD`; the host drops the task without running or reporting; counted `not_held` |
-| Acknowledgement and withdrawal at the same moment | Exactly one commits (run lock, fences); either the task runs once or it is withdrawn and the host drops it |
-| The host stops, or crashes, after `ACKNOWLEDGED` and before the handler starts | The acknowledged lease lapses at its renewed expiry: unknown outcome, consultation or review (gap G006-004; the window is in-process, with no call in it). A stopping host instead hands the lease back (`TASK_NOT_STARTED`): withdrawn |
-| The run's cancellation is requested before the acknowledgement | `ACKNOWLEDGED` with `cancel_requested = true`; the host hands the lease back; the withdrawal's settle cancels the step; no attempt, no review, the handler never runs |
-| The run is cancelled while the lease is provisional and the host never answers | Withdrawn at the expiry; the settle cancels the step |
-| A reset of the run while the lease is provisional | The lease is replaced or cleared with its marks; the acknowledgement answers `NOT_HELD` |
-| A foreign tenant's run, a forged or old token, a binding revoked after the claim | `NOT_HELD`; the foreign run is audited; the lease is withdrawn at its expiry and leased to a bound worker |
-| The step's attempt deadline passes before the acknowledgement | Not an attempt timeout: the attempt deadline is moved by the acknowledgement; only the expiry applies until then |
-| A capability call (`ResolveSecrets`, `ResolveDatabase`, `WriteBlob`, `ReadBlob`, `AppendStepLogs`) on a provisional lease | `FAILED_PRECONDITION`, reason `TASK_NOT_ACKNOWLEDGED`; counted; nothing handed out |
-| A `Heartbeat`, `CompleteStep` or `FailStep` on a provisional lease (a host that broke the rule) | Served as today; the step leaves the reach of the withdrawal (`RUNNING` or reported) |
+| A frame or a `PollTasks` answer lost on the wire; the host crashes before acknowledging; the engine crashes between the claim and ADR-0098's withdrawal | No acknowledgement; at the expiry the lease is withdrawn (`NOT_ACKNOWLEDGED`): `READY`, attempt not consumed, no review; the next lease has the same attempt number and the next generation |
+| The acknowledgement never leaves the host | Repeated (host item 4); on a verdict the task runs once; if the host gives the lease up first, nothing runs and it hands the lease back (`TASK_NOT_STARTED` on a provisional lease: withdrawn, `NOT_STARTED`) |
+| The acknowledgement's answer is lost after its commit | The host repeats; the server answers `ACKNOWLEDGED` again (`duplicate`); the handler runs once. If the host gives up before any answer, nothing runs and the hand-back of the now acknowledged lease is an ordinary retryable failure (attempt consumed, known outcome); if the hand-back cannot reach the server either, the lease lapses into a review (gap G006-041) |
+| A duplicate acknowledgement | `ACKNOWLEDGED` with the current expiry; only the renewal is written |
+| An acknowledgement after the expiry, before the pass | `NOT_HELD`; nothing written; the pass withdraws the lease |
+| An acknowledgement after the withdrawal, or after the lease was replaced | `NOT_HELD`; the host drops the task |
+| Acknowledgement and withdrawal at the same moment | Exactly one commits; either the task runs once or it is withdrawn and the host drops it |
+| The host stops, or crashes, after `ACKNOWLEDGED` and before the handler starts | Stopping: it hands the lease back, an ordinary retryable failure. Crashing: the lease lapses into a review (gap G006-040; the window is in-process and holds no call) |
+| The run's cancellation is requested before the acknowledgement | `CANCELLED`: withdrawn (`NOT_STARTED`) and cancelled in the acknowledgement's transaction; the handler never runs; no attempt, no review. A compensation or reconciliation is never asked to stop, so this never happens to one |
+| The run is cancelled while the lease is provisional and the host never answers | Withdrawn at the expiry; the settle cancels the step, except a compensation or reconciliation, which the planner keeps and leases again |
+| The attempt deadline passes before the acknowledgement | `ATTEMPT_TIMEOUT_BEFORE_START`: a known retryable failure, the attempt consumed by the step's own timeout; a later acknowledgement is `NOT_HELD` |
+| A reset while the lease is provisional | The lease is replaced or cleared, with a new generation; the acknowledgement answers `NOT_HELD` |
+| A task whose token does not match (forged, old, another tenant's run) | `NOT_HELD`, no lock taken; at most one audit record per call; the real holder's acknowledgement is unaffected |
+| A binding revoked after the claim | `NOT_HELD`, one bounded audit record; the lease is withdrawn at its expiry and leased to a bound worker |
+| A capability call on a provisional lease | `FAILED_PRECONDITION`, `TASK_NOT_ACKNOWLEDGED`, after the token and binding matched; nothing handed out; counted |
+| A `Heartbeat`, `CompleteStep` or `FailStep` on a provisional lease | Served as today (the lease becomes `RUNNING` or reported, so it is never withdrawn); counted as a protocol violation; the session's later leases are not provisional |
+| A report or heartbeat carrying the token of a lease withdrawn as `NOT_ACKNOWLEDGED` | Refused as stale, as today; counted `worker_reports_after_withdrawal_total`, audited and alerted: a handler ran on a lease the journal says never ran (gap G006-042) |
+| Three withdrawals of one step in a row | The next lease is not provisional; a fourth loss lapses as today |
+| `AcknowledgeTasks` refused (`UNIMPLEMENTED` from a proxy, a rolled-back replica) | The host hands the leases back and registers again offering 1.7 for the rest of its life |
+| A host clock skewed by more than the time-to-live | Its give-up time is clamped to between 12 s and 120 s on its monotonic clock; it acknowledges as any other host |
+| One busy run in a frame | The call waits for that run's lock; the call's 3 s bound is measured with such a run (task T006-064) |
 | An engine restarts or fails over between the claim and the acknowledgement | The lease and its marks are in PostgreSQL; any engine of the build serves the acknowledgement |
-| The requirement is removed while provisional leases exist | Within one registry heartbeat no engine withdraws with `NOT_ACKNOWLEDGED`; such a lease that expires lapses as before (`outcome="lapsed"`) |
-| A hand-written client at 1.8 that runs a handler without acknowledging, uses no capability and dies before any call | Withdrawn and run again with the same attempt number and idempotency key (gap G006-006); external effects stay at least once |
+| The requirement is removed while provisional leases exist | Their marks keep their meaning until their leases end; no new mark after one registry heartbeat |
+| A hand-written client at 1.8 that runs a handler without acknowledging and makes no call during the lease (a slow handler, a lost report, a crash) | Withdrawn and run again with the same attempt number and idempotency key (gap G006-042); a later call with its token is counted and alerted |
 
 ### Observability
 
-- `worker_task_acknowledgements_total{verdict}` (`acknowledged`, `duplicate`, `not_held`) and the method's entry in
+- `worker_task_acknowledgements_total{verdict}` (`acknowledged`, `duplicate`, `renewed`, `not_held`, `cancelled`) and
   `grpc_requests_total{method="AcknowledgeTasks", code}`.
-- `worker_leases_undelivered_total{cause, outcome}` gains the cause `not_acknowledged` (ADR-0098's counter).
-- `worker_task_acknowledgement_delay_seconds`, a histogram on the database clock of `lease_acknowledged_at -
-  lease_offered_at`, written by the acknowledgement's own statement (`RETURNING`): the measured A of the derivation.
-- `worker_leases_provisional` and `worker_leases_provisional_expired`, gauges from the operations statistics query
-  (`crates/infra-postgres/src/operations.rs`), not from the hot path.
-- `worker_capability_calls_refused_total{method, reason="TASK_NOT_ACKNOWLEDGED"}`.
-- Alerts: `SagatLeasesNotAcknowledged` when withdrawals with the cause `not_acknowledged` happen in every 5-minute window for
-  15 minutes (frames are being lost, or a host is not acknowledging); `SagatLeaseAcknowledgementSlow` when the 99th percentile
-  of the delay over 10 minutes exceeds half of the time-to-live minus R (at the default, 12 s), the point at which the margin of
-  the derivation has halved.
-- The call's span carries a link to each lease's trace context (at most 64), never a parent; logs and metric labels carry no
-  token, payload or identifier with unbounded values.
-- SDK metrics hooks gain `acknowledgements` and `notHeld` counters.
+- `worker_leases_undelivered_total{cause, outcome}` gains the cause `NOT_ACKNOWLEDGED` (ADR-0098's counter).
+- `worker_task_delivery_delay_seconds`: the database-clock delay from the claim to the acknowledgement
+  (`lease_acknowledged_at - lease_offered_at`), returned by the acknowledgement's own statement.
+- `worker_task_acknowledgement_call_seconds`: the server-side duration of one call, by the number of runs in it (`1`, `2-8`,
+  `9-64`): the quantity of item 6 of the derivation.
+- `worker_leases_provisional` and `worker_leases_provisional_expired`: gauges without labels from the operations statistics query
+  (`crates/infra-postgres/src/operations.rs`), not the hot path; `worker_lease_ttl_seconds`, the configured time-to-live.
+- `worker_leases_expired_total{mark}` (`acknowledged`, `unmarked`) for the leases that lapse into today's meaning, since the
+  journal does not record that a lapsed lease had been acknowledged (gap G006-046).
+- `worker_attempts_timed_out_before_start_total`, `worker_capability_calls_refused_total{method, reason="TASK_NOT_ACKNOWLEDGED"}`,
+  `worker_protocol_violations_total{method}` and `worker_reports_after_withdrawal_total`.
+- Alerts, with `promtool` cases: `SagatLeasesNotAcknowledged`, withdrawals with the cause `NOT_ACKNOWLEDGED` above 1 a minute
+  over 10 minutes (frames are being lost, or hosts are not acknowledging), or with the cause `NOT_STARTED` above 1 a minute for
+  30 minutes (longer than a rolling deploy, whose stopping hosts hand leases back);
+  `SagatLeaseWithdrawalBound`, any step reaching the bound of three withdrawals; `SagatLeaseDeliverySlow`, the 99th percentile of
+  the delivery delay over 10 minutes above R, computed in the rule (a healthy host reads within R, so a higher figure means the
+  acknowledgements themselves are slow); `SagatReportsAfterWithdrawal`, any increase of that counter.
+- The call's span links to the trace context of each lease answered `ACKNOWLEDGED` (at most 64), never as a parent. No log line,
+  metric label or span attribute carries a token, a payload or an unbounded identifier.
+- SDK metrics hooks gain `acknowledgements`, `notHeld` and `acknowledgementFallbacks` counters.
 
 ### Acceptance matrix
 
 | Area | Required evidence |
 |---|---|
-| Exactness | Barrier tests in both orders (acknowledgement holds the run lock while the withdrawal waits, and the reverse): exactly one commits, a late acknowledgement is `NOT_HELD`, the handler runs once |
-| Withdrawal | A provisional lease of an `Activity` that expires: `step.lease_withdrawn` cause `NOT_ACKNOWLEDGED`, no `step.needs_review`, the attempt not consumed, the next lease reuses it; an acknowledged lease that expires is still an unknown outcome |
-| Older minors | A session at 1.7 and below gets no mark; its expiry is unchanged; the whole conformance suite passes at its pinned minors with the existing goldens |
-| Gate | No mark, no 1.8 and no `NOT_ACKNOWLEDGED` while the requirement is not recorded; the activation refuses without `lease-withdrawal-v1`; the removal of `lease-withdrawal-v1` refuses while this one is recorded; 1.8 not offered under a 6 s time-to-live |
-| Capabilities | Each of the five capability calls refused on a provisional lease and served after the acknowledgement |
-| Attempt deadline | A step whose timeout is shorter than a held delivery is not timed out before the acknowledgement and is timed out from it |
-| Cost | `LEASE`, `COMPLETION_WITH_A_NEXT_STEP` and `COMPLETION_THAT_ENDS_THE_RUN` unchanged at 1.8; `ACKNOWLEDGEMENT` and `FIRST_HEARTBEAT` pinned; `ACKNOWLEDGEMENT` has fewer statements than `FIRST_HEARTBEAT` |
-| Six SDKs | The scenario `delivery-acknowledgement` passes in six languages with a reviewed golden; every other scenario passes at 1.8 with its existing golden, unblessed |
-| Released v0.2 | The upgrade scenario `provisional-lease-cutover`: a v0.2 worker's lease across the upgrade keeps its meaning; no mark before the activation; the current build replays a journal holding `NOT_ACKNOWLEDGED` |
-| Throughput | The transitions scenario at 1.8 against 1.7, same machine and day, recorded with the delay histogram, and the threshold re-derived |
+| Exactness | Barrier tests: the acknowledgement holds the run lock while the withdrawal waits, the reverse, and the candidate read taken before an acknowledgement that renews the lease: exactly one commits, the handler would run once; an acknowledgement after the expiry and before the pass is `NOT_HELD` |
+| Withdrawal | A provisional `Activity` lease, root and scoped, that expires: `step.lease_withdrawn` cause `NOT_ACKNOWLEDGED`, no `step.needs_review`, the attempt not consumed and reused by the next lease; an acknowledged lease that expires is an unknown outcome; a `TASK_NOT_STARTED` for an acknowledged lease is a retryable failure |
+| The mark | A lease written with the old column list after a mark is not provisional and is not withdrawn; the bound of three; a session that broke the rule gets no mark |
+| Attempt timeout | `timeoutMs` counted from the claim at 1.8 and below; a provisional lease past its attempt deadline ends `ATTEMPT_TIMEOUT_BEFORE_START`, known, retried |
+| Cancellation | Cancel before the acknowledgement, with and without declared secrets: `CANCELLED`, the run ends `CANCELLED`, no handler, no review |
+| Capabilities | The descriptor-driven test: every lease-token method but the four is refused on a provisional lease, root and scoped, and served after the acknowledgement; a report on a provisional lease is served; a wrong token gets the ordinary stale answer |
+| Gate | No mark, no 1.8 and no new `NOT_ACKNOWLEDGED` while the requirement is not recorded; the trigger refuses both orders; an engine under 12 s does not list the capability; the removal expires the 1.8 sessions |
+| Older minors | A session at 1.7 and below gets no mark; the scenarios pinned at 1.4 and 1 keep their goldens |
+| Cost | `LEASE` and both completion lines unchanged at 1.8; `ACKNOWLEDGEMENT` (one task) and `FIRST_HEARTBEAT` pinned, the former with no step scan and no journal or outbox insert and fewer statements than the latter; a call of 64 runs measured |
+| Six SDKs | `delivery-acknowledgement` passes in six languages with a reviewed golden; the 26 scenarios that pin no minor and the 29 pinned at 1.5, run at 1.8 by the harness override, pass with their existing goldens unblessed; only `protocol-negotiation` and the new scenario have new goldens |
+| Released v0.2 | `provisional-lease-cutover` forward and its rollback case |
+| Throughput | The transitions scenario at 1.8 against 1.7, same machine and day, with a network between workers and services: no more than 15% lower, the call bound met, the delays recorded |

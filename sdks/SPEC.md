@@ -323,9 +323,10 @@ pools, max_inflight, protocol_version}}`:
   The server uses the echoed identity with the lease fence and tenant-bound worker session; an SDK
   never treats the identity alone as authorization.
 - Protocol `1.8` adds delivery acknowledgement (ADR-0099): the host acknowledges every lease with
-  `AcknowledgeTasks` and starts nothing for it before the server answers (§6.2). The server offers `1.8`
-  only once the operator has recorded `delivery-acknowledgement-v1` for the fleet and its lease time-to-live is
-  at least 7 s; otherwise the host runs at what it is offered, as for every minor.
+  `AcknowledgeTasks` and calls or runs nothing for it before the server answers (§6.2). `1.8` includes `1.7`.
+  The server offers it only once the operator has recorded `delivery-acknowledgement-v1` for the fleet, which
+  needs every engine to run a lease time-to-live of at least 12 s; otherwise the host runs at what it is
+  offered, as for every minor.
 - The activity context exposes a copied, typed `ExecutionInstanceIdentity` only when protocol `1.5`
   was accepted and the lease supplied it. Its ordered path contains `{scopeNodeId, iterationIndex}`
   segments and its `definitionNodeId` identifies the node activated at that path. The field is absent
@@ -349,25 +350,30 @@ register → loop:
 ```
 
 The host runs at most as many tasks as it asked for (`max_tasks`): if a poll answer carries more, it runs the
-first ones, logs the rest and leaves their leases to lapse. A wait derived from the server (`retry_after_ms`,
+first ones, logs the rest and hands their leases back (below). A wait derived from the server (`retry_after_ms`,
 `Retry-After`) is capped at 60 s, whatever it says.
 
-**At 1.8 a lease is acknowledged before anything runs for it** (ADR-0099; the full procedure, the verdicts and the
+**At 1.8 a lease is acknowledged before anything runs or is called for it** (ADR-0099; the procedure, the verdicts and the
 failure table are [`stream-completion.md`](../specs/006-sdk-multilanguage/stream-completion.md), "Delivery acknowledgement
 (protocol 1.8)"). A `PollTasks` call is bounded to 6 s or the shorter configured call timeout, as a stream window is. As soon
 as a frame or a poll answer is read, the host sends one `AcknowledgeTasks` with all the leases of it that it will run,
-concurrently with its next receive, and starts no handler, heartbeat or other call of those leases before the answer.
-`ACKNOWLEDGED`: dispatch (§6.3) with the answer's expiry as the deadline; with `cancel_requested = true`, do not dispatch and
-hand the lease back (below). `NOT_HELD`: drop it, run and report nothing, free its slot, emit `dropped` with the code
-`NOT_HELD`. The call is repeated on `UNAVAILABLE`, `RESOURCE_EXHAUSTED`, a retryable `INTERNAL`, a transport failure, a
-deadline and an unusable answer, with the backoff of §5 and no limit on attempts, until a verdict or until the leases have
-expired by the host's clock; `UNAUTHENTICATED` is repeated once with a fresh token. A lease left without a verdict is never
-run and is handed back. A host below 1.8 dispatches each lease as it arrives, as before.
+concurrently with its next receive, and makes no other call and starts no handler or heartbeat for them before the answer.
+`ACKNOWLEDGED`: dispatch (§6.3) with the answer's expiry as the deadline (with `cancel_requested = true`, the token is
+cancelled with the reason `run-cancelled` before the handler starts, as a heartbeat would have done). `NOT_HELD` or
+`CANCELLED`: drop the lease, run and report nothing, free its slot, emit `dropped` with that code. Each attempt of the call is
+bounded to 6 s; it is repeated, without the leases already decided, on `UNAVAILABLE`, `RESOURCE_EXHAUSTED`, a retryable
+`INTERNAL`, a transport failure, a deadline and an unusable answer, with the backoff of §5 and no limit on attempts, and once
+with a fresh token on `UNAUTHENTICATED`. The host gives a lease up when the lease's time left at receipt (its expiry minus the
+host's clock at receipt, clamped to between 12 s and 120 s) has passed on its monotonic clock: it never compares its clock with
+the server's again. A lease given up is not run and is handed back; a verdict that arrives for it later is ignored. Any other
+status (`UNIMPLEMENTED`, `PERMISSION_DENIED`, `INVALID_ARGUMENT` and the rest): hand the call's leases back, log once, and register again
+offering `1.7` for the rest of the host's life. A host below 1.8 dispatches each lease as it arrives, as before.
 
 **A lease the host will not run is handed back.** A host that drops a lease it received (it is stopping, a frame carries
 more than it may run, or the rest of a malformed frame is dropped) reports `FailStep` for it with the code
 `TASK_NOT_STARTED`, retryable, with the lease's fence, before any handler of that task runs, and never for a task whose
-handler started. The server then gives the step back to `READY` without consuming the attempt when it can (decision D006-005
+handler started. The server then gives the step back to `READY` without consuming the attempt when it can (at 1.8, only while
+the lease is not acknowledged: an acknowledged lease is an attempt) (decision D006-005
 of `specs/006-sdk-multilanguage/research.md`), otherwise retries it as an ordinary failure; a lease left to lapse would be an
 unknown outcome and, for an `Activity`, a review (feature 037).
 
@@ -497,8 +503,8 @@ raises `UNSUPPORTED_PROTOCOL` instead of calling.
 
 ### 6.8 Lifecycle
 
-`start()` registers and begins the loop and returns once registered; `stop(timeout)` stops polling,
-hands back every lease still waiting for its acknowledgement (§6.2, `TASK_NOT_STARTED`), cancels nothing, waits for the tasks in flight up to `timeout` (default 30 s), then cancels their tokens
+`start()` registers and begins the loop and returns once registered. `stop(timeout)` stops polling and
+hands back every lease still waiting for its acknowledgement (§6.2, `TASK_NOT_STARTED`). It cancels no handler, waits for the tasks in flight up to `timeout` (default 30 s), then cancels their tokens
 with the reason `shutdown` and returns. A task that did not finish keeps its lease until it lapses; the
 server then reconciles or holds review according to task kind and available evidence. The host is
 restartable. Metrics hooks (counters for tasks taken, completed,
@@ -681,7 +687,7 @@ where the language can express one. The shared scenario is `collection-operators
   | 1.5 | Scoped execution identity | `ExecutionInstanceIdentity` |
   | 1.6 | Managed database capabilities (`ResolveDatabase`) | feature 017, D600 |
   | 1.7 | Step logs (`AppendStepLogs`, `StepLogPolicy`) | feature 041, OD-2026-11-15-8; served from its task T041-7 |
-  | 1.8 | Delivery acknowledgement (`AcknowledgeTasks`; a lease is provisional until acknowledged) | feature 006, ADR-0099, OD-2026-11-20-12; reserved by its design on 2026-11-20, served from task T006-048, only after 1.7 is served |
+  | 1.8 | Delivery acknowledgement (`AcknowledgeTasks`; a lease is provisional until acknowledged) | feature 006, ADR-0099, OD-2026-11-20-12; reserved by its design on 2026-11-20 and released if ADR-0099 is not accepted; served from task T006-048, only after 1.7 is served by the server and spoken by the SDK |
   | next | Drafts 020, 021, 025 and 026 each name a minor; each takes the next free one (1.9 or later) when its contract merges | |
 
 ## 10. Observability and safety
