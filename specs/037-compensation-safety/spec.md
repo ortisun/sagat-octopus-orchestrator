@@ -163,8 +163,9 @@ adapter does not qualify a real provider.
   withdrawals per attempt and while the requirement `delivery-acknowledgement-v1` is recorded; otherwise the lease lapses with an
   unknown outcome and its hand-back is an ordinary failure. The server cannot verify that promise and records the violations it
   sees; a mark written on another database server (before a promotion, a recovery or a restore that started one), or ended after a
-  restore, does not count, and such a lease keeps today's meaning. An acknowledged lease is an attempt: when it lapses its outcome is unknown, as before,
-  and a hand-back of it is an ordinary retryable failure.
+  restore, does not count, and such a lease keeps today's meaning. An acknowledged lease handed back by its host while it is still
+  `LEASED`, with no capability served, is withdrawn the same way and is not an attempt either; once it runs it is an attempt: when it
+  lapses its outcome is unknown, as before, and a hand-back of it is an ordinary retryable failure.
 - **FR-037-007**: An unresolved lookup or manual decision about an unknown effect MUST survive
   cancellation/deadline unless an explicitly authorized resolution or qualified action settles it.
 - **FR-037-008**: A negative lookup MUST authorize subsequent work only when the integration's

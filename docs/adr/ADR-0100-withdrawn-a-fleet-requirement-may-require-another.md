@@ -1,6 +1,6 @@
 # ADR-0100: Withdrawn: a fleet requirement may require another
 
-**Status:** Withdrawn (2026-11-21), before acceptance; the number is retired so that no other branch takes it.
+**Status:** Superseded by Architecture decision 0099 (2026-11-21), before acceptance, folded in as its considered option 10; the number is retired so that no other branch takes it.
 **Decided by:** agent, delegate (Owner decision 2026-11-20-6), on the design reviewer's round-6 finding (Minor 5) and the architecture reviewer's round-7 confirmation (`specs/006-sdk-multilanguage/reviews/2026-11-21-delivery-ack/`).
 **Refines / supersedes:** none.
 **Enforced by:** review only: the record decides nothing.
