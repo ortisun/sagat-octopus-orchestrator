@@ -9,7 +9,7 @@ import {
   type ScheduleBackfill, type StateDefinition, type UpdateWithStartReceipt, type WorkflowBuilder,
 } from '../src/index.js';
 import { FaultPlan, type Fault } from './faults.js';
-import { actionJson, descriptionJson, iso, scheduleJson } from './observe.js';
+import { actionJson, descriptionJson, iso, journalHas, scheduleJson } from './observe.js';
 
 type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 type Obj = Record<string, any>;
@@ -851,8 +851,8 @@ async function run(scenario: Obj, config: Obj): Promise<Obj> {
           const id = runOf(step);
           const end = Date.now() + (step['timeoutMs'] ?? 20_000);
           for (;;) {
-            const page = await client.events(id, { limit: 200 });
-            if (page.items.some((e) => e.raw['eventType'] === step['eventType'] && (step['stepId'] === undefined || e.raw['stepId'] === step['stepId']))) break;
+            const read = (cursor: string | undefined) => client.events(id, cursor === undefined ? { limit: 200 } : { cursor, limit: 200 });
+            if (await journalHas(read, step['eventType'], step['stepId'])) break;
             if (Date.now() > end) throw new Error(`the journal of ${id} has no ${String(step['eventType'])}`);
             await new Promise((resolve) => setTimeout(resolve, 25));
           }
