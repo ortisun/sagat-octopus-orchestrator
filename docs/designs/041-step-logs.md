@@ -3527,6 +3527,30 @@ Slice F, measure, operate and close:
 
 None.
 
+- [ ] T041-38 SC-041-007 as amended after the approval (the owner's answer "Derive them too", OD-2026-11-21-8; the
+  accepted Majors OD-2026-11-21-200 and -205; decision D041-138). Task T041-9 judges SC-041-007 and records its report
+  with these bars, which replace the ones SC-041-007 and T041-9 state for them:
+  - at 8 × 128, gate (1) at least 88.6% (median of the rounds used 93.1%, worst valid round 88.63%, round 11,
+    tolerance 4.5 points) and gate (3) at least 83.3% (median 91.5%, worst valid round 83.39%, round 9, tolerance
+    8.2 points), derived as gate (2b)'s floor of D041-136 from the fourth run's eight valid rounds; gate (2b) at
+    +112.9 ms and gate (4) as SC-041-007 states;
+  - the false-stop bound: seven gates sit at their worst valid round (1 × 16's (1), (2b), (3) and (4); 8 × 128's (1),
+    (2b) and (3)), each failed by an unchanged build with at most C(m, r) / C(8 + m, r) = 3.85%, so the release with at
+    most 7 × 70/1,820 = 26.9% at m = 8, 17.9% at 7, 14.3% at 9, 20.6% at 10, 11.9% at 11 and 16.7% at 12 (a union
+    bound under exchangeable rounds, replacing the 34.1% and 20.1% estimates);
+  - the owner report on the tail compares like with like: the median over the valid rounds of (a)'s completion p99 in
+    percent over off-1K's is reported to the owner when it exceeds +73.8% at 1 × 16 or +29.9% at 8 × 128, the worst
+    valid round of the same figure in the fourth run (rounds 11 and 6), not the largest of the three rounds used
+    (+36.9%, +9.5%), which the accepted build's own median (+36.1%, +10.4%) exceeded at 8 × 128; an unchanged build is
+    reported with at most 3.85% per size; the report does not stop the release.
+  The judge of T041-9 encodes these bars and the report threshold as constants with a test that derives each from the
+  fourth run's valid rounds. Done when T041-9's record is judged by them and the runbook's and the release notes'
+  figures cite them.
+  Refs: SC-041-007, NFR-041-PERF
+  Owner-gate: OD-2026-11-21-8
+  Files: modify `tests/performance/scalability-ha/carry_spike_judge.py` (or the judge T041-9 uses) and its test,
+  `specs/041-step-logs/validation-report.md`, `docs/runbooks/step-logs.md`.
+
 ### Verification Plan
 
 What each pull request runs, in CI and before it, is the "Gates" rule of the plan. The feature's integration suite is a

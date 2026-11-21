@@ -32,13 +32,14 @@ The owner accepted the measured cost ("Accept the measured cost", OD-2026-11-20-
   turning capture off.
 
 The release keeps these figures only while task T041-9, on the built carry, meets the per-size criterion of
-SC-041-007 (decision D041-126): at 8 × 128 the original rate gates (at least 90%) and a p99 floor at most 112.9 ms over
-the allowance (OD-2026-11-21-1); at 1 × 16 a floor at the fourth run's figures less the spread of its eight valid rounds
+SC-041-007 (decision D041-126) as amended by task T041-38: at 8 × 128 rate floors at the fourth run's worst valid rounds
+(rate at least 88.6%, rate with output `{}` at least 83.3%, OD-2026-11-21-8) and a p99 floor at most 112.9 ms over the
+allowance (OD-2026-11-21-1); at 1 × 16 a floor at the fourth run's figures less the spread of its eight valid rounds
 (rate at least 80.4%, p99 at most 29.1 ms over the allowance, rate with output `{}` at least 83.5%), judged on the median
 of all valid rounds of a twelve-round run, at least seven (decisions D041-135 and D041-136). The p99 floors are a guard
 against gross regressions only (they admit about +94% over capture off at 1 × 16 and +33.4% at 8 × 128); task T041-9
-reports to the owner a median p99 above the +36.9% (1 × 16) or +9.5% (8 × 128) the owner accepted, and these figures
-are then restated from its record.
+reports to the owner a median p99 above +73.8% (1 × 16) or +29.9% (8 × 128), the worst valid rounds of the build the
+owner accepted (decision D041-138), and these figures are then restated from its record.
 
 ## 2. Lines not stored because the log service was busy
 

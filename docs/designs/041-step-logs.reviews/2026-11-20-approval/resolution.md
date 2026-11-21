@@ -387,3 +387,24 @@ each:
   (readiness 5, T041-36);
 - readiness 7 and 8 (the `holdAnswer` goldens; the reason a `MarkOnly` carries) are settled in T041-14 and T041-36;
 - security 3 (the timeouts behind a pooler that drops `options`): accepted, the runbook says to set them on the role.
+
+## After the approval (2026-11-21)
+
+The coordinating session put three more questions to the owner (OD-2026-11-21-8 to -10), and the build corrects one
+accepted Major rather than keep it:
+- **The owner report's threshold on the p99 (final read: stages 5 to 8 finding 1, correctness 1; accepted as
+  OD-2026-11-21-200 and -205).** Accepting a Major under the cap is no reason to keep a comparison that is wrong. The
+  report's statistic, the median over all valid rounds of (a)'s completion p99 in percent over off-1K's, was compared
+  with the largest of the three rounds used, a different statistic; on the accepted build's own eight valid rounds the
+  median is +36.1% at 1 × 16 and +10.4% at 8 × 128, so it fired at 8 × 128 on that build. Decision D041-138 derives the
+  threshold of the same statistic by the floors' method: the worst valid round, +73.8% at 1 × 16 and +29.9% at
+  8 × 128, exceeded by an unchanged build with at most 3.85% per size. It is written as follow-up task T041-38, which
+  task T041-9 applies, since the approved body cannot change.
+- **Gates (1) and (3) at 8 × 128** take derived floors, 88.6% and 83.3% ("Derive them too", OD-2026-11-21-8,
+  D041-138). The release's false-stop figure is now a union bound, at most 26.9% at eight valid rounds, with no
+  resampled gate in it, which also settles the Nit that the per-release figures were estimates (correctness 7,
+  design 10).
+- **ADR-0097's delegate amendments** D041-134 and D041-137 are confirmed by the owner (OD-2026-11-21-9), cited in the
+  ADR's header and in each amended passage.
+- **Tenants A1 to A3 of the three-tenant regime** stay out of the counted busy-loss rule, confirmed by the owner
+  (OD-2026-11-21-10; D041-137 cites it).

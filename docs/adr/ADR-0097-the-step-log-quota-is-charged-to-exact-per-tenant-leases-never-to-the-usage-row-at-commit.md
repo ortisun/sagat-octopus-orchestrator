@@ -15,7 +15,8 @@ replica's wait slots beside the tenant's; a top-up that never waits, takes no sl
 3b, 4 and 8 by D041-137 (the replica's *Q* passed per transaction, the usage row tried `SKIP LOCKED`, the pooler's
 sizing rule, the top-up's answers without `held`). Under rules 2 and 4 of `README.md` these delegate amendments take
 effect with the owner's approval of that revision on the owner's path (OD-2026-11-20-17), which the design's approval
-block records. Every passage a change touches cites its row.
+block records. The owner confirmed both on 2026-11-21 ("Confirm the amendments", OD-2026-11-21-9). Every passage a
+change touches cites its row.
 **Refines / supersedes:** supersedes:
 - for the class `step_log`, the charge half of item 3 of the Amendment of 2026-11-15 of
   [ADR-0027](ADR-0027-durable-content-rate-and-retention-quotas.md) (a charge goes to a lease, not to
@@ -103,7 +104,7 @@ ADR-0095 decision 4).
    (OD-2026-11-20-18), `sagat_quota_step_log_usage`, `sagat_quota_step_log_counters`,
    `sagat_quota_step_log_idle_tenants` and `sagat_quota_step_log_reclaim_idle`, and two invoker helpers that read or
    write nothing, `sagat_quota_step_log_top_up_mark()` (`IMMUTABLE`) and `sagat_quota_step_log_wait_slots()`
-   (`STABLE`, design 041's decision D041-134); the
+   (`STABLE`, design 041's decision D041-134, confirmed by OD-2026-11-21-9); the
    charge, the refill, its budget function and the limit-change trigger function are revoked from it; the privilege
    audit checks exactly this list (design 041, NFR-041-SEC).
 2. **Invariants**, each checked by a constraint or a test: (I1) 0 ≤ `used` ≤ `granted` on every lease (a `CHECK`); (I2) at
@@ -138,7 +139,7 @@ ADR-0095 decision 4).
    only, opening no subtransaction, taking no wait slot and never waiting (held: `busy` at once); reclaims no other
    lease; answers `limit` when the share, min(1 MiB, ⌊F / (2(*A* + 1))⌋) (decision 4), is 0; and grants only when the
    share is above the writer's current room, folding the writer's lease and granting exactly that share with no charge,
-   answering `made`, and otherwise `room` (design 041's decisions D041-134 and D041-137, so that a top-up never takes
+   answering `made`, and otherwise `room` (design 041's decisions D041-134 and D041-137, confirmed by OD-2026-11-21-9, so that a top-up never takes
    another writer's room or a wait slot; it has no `held` answer, since it reclaims nothing). It never raises for these; any other error is
    rolled back and is the store's `error`. *M* is above the reservation of any carry whose stored text is no longer than
    its 16 KiB encoding (16,384 + 65 × 128 = 24,704 bytes), so the next such carry after a top-up takes the fast path; far
@@ -158,9 +159,9 @@ ADR-0095 decision 4).
    on its replica and then one of the replica's *Q*, which all tenants share (single 64-bit advisory keys the function
    builds with `hashtextextended` from the tenant, the replica's `application_name` and the slot, tried in order and
    never waited for; with none free it raises `55P03` at once; design 041's decisions D041-125 and D041-134, under
-   OD-2026-11-20-6). *Q* = max(1, ⌊N / 4⌋), N the replica's pool, reaches SQL per transaction through the
+   OD-2026-11-20-6, confirmed by OD-2026-11-21-9). *Q* = max(1, ⌊N / 4⌋), N the replica's pool, reaches SQL per transaction through the
    transaction-local setting `sagat.step_log_wait_slots`, which the store sets in a statement it already sends
-   (D041-137), so it travels with its transaction through a pooler in transaction mode; *P* = ⌈*Q* / 2⌉: 5 and 3 at a
+   (D041-137, confirmed by OD-2026-11-21-9), so it travels with its transaction through a pooler in transaction mode; *P* = ⌈*Q* / 2⌉: 5 and 3 at a
    pool of 20. So one tenant's waits on its usage row hold at most *P* of a replica's pool connections and all tenants'
    at most *Q*, and on a replica's own pool step-log waits and Logs calls hold at most the Logs cap ⌊N / 2⌋ plus *Q* of
    them; behind a pooler in transaction mode the server backends MUST number at least the sum over the replicas of
