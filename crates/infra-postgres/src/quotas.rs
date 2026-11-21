@@ -1073,16 +1073,12 @@ impl QuotaStore for PgRunStore {
         tx.commit().await.map_err(store_error)
     }
 
-    async fn reveals_in_every_namespace(
+    async fn step_log_usage_if_revealed(
         &self,
         tenant: TenantId,
         subject: &Subject,
-    ) -> Result<bool, StoreError> {
-        let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
-        let shown =
-            crate::reveal_grants::reveals_in_every_namespace(&mut tx, tenant, subject).await?;
-        tx.commit().await.map_err(store_error)?;
-        Ok(shown)
+    ) -> Result<Option<u64>, StoreError> {
+        crate::reveal_grants::step_log_usage_if_revealed(&self.pool, tenant, subject).await
     }
 
     async fn usage(

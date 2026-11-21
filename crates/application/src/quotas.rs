@@ -184,14 +184,16 @@ pub trait QuotaStore: QuotaLookup + NamespaceDirectory {
         resource: QuotaResource,
     ) -> impl Future<Output = Result<u64, StoreError>> + Send;
 
-    /// Whether `subject` holds the PII reveal grant in every namespace of `tenant`, each read as
-    /// `has_effective_payload_reveal_grant` reads it (its current membership role may use a grant, and the grant row
-    /// exists). A tenant with no namespace answers false (fail-closed; design 041, decision D041-133).
-    fn reveals_in_every_namespace(
+    /// The retained step-log bytes of `tenant`, or `None` unless `subject` holds the PII reveal grant in every namespace
+    /// of `tenant`, each read as `has_effective_payload_reveal_grant` reads it (its current membership role may use a
+    /// grant, and the grant row exists). A tenant with no namespace, or a subject with no membership, answers `None`
+    /// (fail-closed; design 041, decision D041-133). The grant and the usage are read in one snapshot, so a read that
+    /// runs after a revoke commits never answers `Some` (decision D041-141).
+    fn step_log_usage_if_revealed(
         &self,
         tenant: TenantId,
         subject: &Subject,
-    ) -> impl Future<Output = Result<bool, StoreError>> + Send;
+    ) -> impl Future<Output = Result<Option<u64>, StoreError>> + Send;
 }
 
 /// One line of the quota view.
@@ -391,8 +393,6 @@ where
                 .map(|r| r.value)
         };
         let mut views = Vec::new();
-        // Read once per list, and only if the step-log resource is in it.
-        let mut shown = None;
         for resource in QuotaResource::ALL {
             // A namespace view shows what is counted there; a tenant view shows everything, but a
             // per-namespace resource has no single usage at that level.
@@ -406,18 +406,7 @@ where
                 setting(&tenant_level, resource),
                 ceiling,
             );
-            let usage_withheld = self.usage_withheld(principal, resource, &mut shown).await?;
-            let used = match (
-                resource.has_usage() && !usage_withheld,
-                resource.scope(),
-                namespace,
-            ) {
-                (false, _, _) => None,
-                (true, QuotaScope::Tenant, _) | (true, QuotaScope::Namespace, Some(_)) => {
-                    Some(self.store.usage(tenant, namespace, resource).await?)
-                }
-                (true, QuotaScope::Namespace, None) => None,
-            };
+            let (used, usage_withheld) = self.used(principal, namespace, resource).await?;
             views.push(QuotaView {
                 resource,
                 limit,
@@ -549,18 +538,7 @@ where
                 .map(|r| r.value),
             ceiling,
         );
-        let usage_withheld = self.usage_withheld(principal, resource, &mut None).await?;
-        let used = match (
-            resource.has_usage() && !usage_withheld,
-            resource.scope(),
-            namespace,
-        ) {
-            (false, _, _) => None,
-            (true, QuotaScope::Tenant, _) | (true, QuotaScope::Namespace, Some(_)) => {
-                Some(self.store.usage(tenant, namespace, resource).await?)
-            }
-            (true, QuotaScope::Namespace, None) => None,
-        };
+        let (used, usage_withheld) = self.used(principal, namespace, resource).await?;
         Ok(QuotaView {
             resource,
             limit,
@@ -646,34 +624,38 @@ where
         Ok(())
     }
 
-    /// Whether the view withholds the usage of `resource` from `principal`. The retained step-log bytes of a tenant
-    /// move with what its runs log, so they are shown only to a caller who holds `run:logs:read` and the PII reveal
-    /// grant in every namespace of the tenant, and `run:read` as ADR-0085 rule 6 states (decision D041-133,
-    /// OD-2026-11-20-19, replacing D041-066's permission-only rule); `shown` caches the answer across one list. A store
-    /// error fails the whole view rather than show the usage (fail-closed; decision D041-140).
-    async fn usage_withheld(
+    /// The usage a view shows for `resource`, and whether it is withheld. The retained step-log bytes of a tenant move
+    /// with what its runs log, so they are shown only to a caller who holds `run:logs:read` and the PII reveal grant in
+    /// every namespace of the tenant, and `run:read` as ADR-0085 rule 6 states (decision D041-133, OD-2026-11-20-19,
+    /// replacing D041-066's permission-only rule). The store reads the grant and the usage in one snapshot, so a view
+    /// whose read runs after a revoke commits withholds the usage (decision D041-141). A store error fails the whole
+    /// view rather than show the usage (fail-closed; decision D041-140).
+    async fn used(
         &self,
         principal: &Principal,
+        namespace: Option<NamespaceId>,
         resource: QuotaResource,
-        shown: &mut Option<bool>,
-    ) -> Result<bool, AppError> {
-        if resource != QuotaResource::TenantStepLogBytes {
-            return Ok(false);
+    ) -> Result<(Option<u64>, bool), AppError> {
+        let tenant = principal.tenant_id();
+        if resource == QuotaResource::TenantStepLogBytes {
+            let permitted = principal.authorize(Permission::RunRead).is_ok()
+                && principal.authorize(Permission::RunLogsRead).is_ok();
+            let used = if permitted {
+                self.store
+                    .step_log_usage_if_revealed(tenant, principal.subject())
+                    .await?
+            } else {
+                None
+            };
+            return Ok((used, used.is_none()));
         }
-        let shown = match *shown {
-            Some(known) => known,
-            None => {
-                let known = principal.authorize(Permission::RunRead).is_ok()
-                    && principal.authorize(Permission::RunLogsRead).is_ok()
-                    && self
-                        .store
-                        .reveals_in_every_namespace(principal.tenant_id(), principal.subject())
-                        .await?;
-                *shown = Some(known);
-                known
+        let used = match (resource.has_usage(), resource.scope(), namespace) {
+            (false, _, _) | (true, QuotaScope::Namespace, None) => None,
+            (true, QuotaScope::Tenant, _) | (true, QuotaScope::Namespace, Some(_)) => {
+                Some(self.store.usage(tenant, namespace, resource).await?)
             }
         };
-        Ok(!shown)
+        Ok((used, false))
     }
 
     /// A namespace of another tenant looks exactly like one that does not exist, and is audited.
