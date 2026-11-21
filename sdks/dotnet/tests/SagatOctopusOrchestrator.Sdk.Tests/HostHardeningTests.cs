@@ -79,6 +79,8 @@ public sealed class HostHardeningTests : IAsyncLifetime
             o.Retry.InitialDelay = TimeSpan.FromMilliseconds(400);
             o.Retry.MaxDelay = TimeSpan.FromSeconds(5);
         });
+        var clock = new RecordingClock().On(host);
+        clock.Seen = () => (State.Registrations, State.Polls);
         host.RegisterActivity<JsonNode?, int>("charge", (_, _, _) => Task.FromResult(1));
         State.Fail("PollTasks", new Scripted(StatusCode.Unauthenticated), new Scripted(StatusCode.Unauthenticated), new Scripted(StatusCode.Unauthenticated));
         await host.StartAsync();
@@ -87,12 +89,16 @@ public sealed class HostHardeningTests : IAsyncLifetime
         await Eventually.UntilAsync(() => State.Registrations == 4, "the registrations after three refused polls", 15_000);
         await Eventually.UntilAsync(() => State.Polls >= 5, "polls that succeed");
 
-        // ... a poll that succeeded resets it: the next lost session is registered again at once, not after the grown wait.
+        // ... a poll that succeeded resets it: the next lost session is registered again at once, not after the grown wait. The waits the
+        // host asked its clock for are read, not the time it took: between the refused poll and the registration it asks for no backoff
+        // (the shortest is half of 400 ms; the pause after an empty poll is at most 60 ms).
         var before = State.Registrations;
+        var polls = State.Polls;
         State.Fail("PollTasks", new Scripted(StatusCode.Unauthenticated));
-        var clock = Stopwatch.StartNew();
-        await Eventually.UntilAsync(() => State.Registrations == before + 1, "a registration at once", 2000);
-        Assert.True(clock.ElapsedMilliseconds < 1500, $"took {clock.ElapsedMilliseconds} ms");
+        await Eventually.UntilAsync(() => State.Registrations == before + 1, "the registration after the refusal", 15_000);
+        var backoffs = clock.Waits.Where(wait => wait.Registrations == before && wait.Polls > polls && wait.Due >= TimeSpan.FromMilliseconds(200)).ToList();
+        Assert.True(backoffs.Count == 0, $"the registration after a good poll waited {string.Join(", ", backoffs.Select(wait => wait.Due))}");
+        Assert.True(clock.Waits.Count(wait => wait.Due >= TimeSpan.FromMilliseconds(200)) >= 2, "the second and the third refusal in a row were backed off");
     }
 
     // --------------------------------------------------------------------------- 2. the hooks of the caller
@@ -100,30 +106,46 @@ public sealed class HostHardeningTests : IAsyncLifetime
     [Fact]
     public async Task ATokenProviderThatThrowsWhileAHeartbeatIsDueDoesNotEndTheHeartbeat()
     {
-        var throwing = false;
+        var throwing = 0;
+        var refusals = 0;
+        var beatsWhenItRecovered = 0;
         var host = Host(o =>
         {
             o.Token = null;
-            o.TokenProvider = _ => throwing ? throw new HttpRequestException("the identity provider is down") : ValueTask.FromResult("tok");
+            o.TokenProvider = _ =>
+            {
+                if (Volatile.Read(ref throwing) == 1)
+                {
+                    Interlocked.Increment(ref refusals);
+                    throw new HttpRequestException("the identity provider is down");
+                }
+
+                return ValueTask.FromResult("tok");
+            };
             o.Worker.HeartbeatInterval = TimeSpan.FromMilliseconds(30);
+
+            // A full host does not poll: every call to the provider while the task runs is for a heartbeat.
+            o.Worker.MaxInflight = 1;
         });
-        host.RegisterActivity<JsonNode?, int>("slow", async (_, _, ct) =>
+
+        // The handler holds the task on barriers, not on sleeps: the beats it waits for are what the test claims, so a loaded machine
+        // only makes it slower (AGENTS.md rule 18).
+        host.RegisterActivity<JsonNode?, int>("slow", async (_, _, _) =>
         {
-            await Task.Delay(100, ct);
-            throwing = true;
-            await Task.Delay(250, ct);
-            throwing = false;
-            await Task.Delay(500, ct);
+            await Eventually.ReachedAsync(() => State.Of("Heartbeat").Count >= 1);
+            Volatile.Write(ref throwing, 1);
+            await Eventually.ReachedAsync(() => Volatile.Read(ref refusals) >= 2);
+            Volatile.Write(ref beatsWhenItRecovered, State.Of("Heartbeat").Count);
+            Volatile.Write(ref throwing, 0);
+            await Eventually.ReachedAsync(() => State.Of("Heartbeat").Count >= Volatile.Read(ref beatsWhenItRecovered) + 3);
             return 1;
         });
         State.Lease(LeaseFor("slow"));
         await host.StartAsync();
-        await Eventually.UntilAsync(() => State.Of("CompleteStep").Count == 1, "the completion", 15_000);
-        var beats = State.Of("Heartbeat");
-        Assert.True(Stopwatch.GetElapsedTime(beats[^1].At).TotalMilliseconds < 5000);
-        var last = beats[^1].At;
-        var afterTheOutage = beats.Count(call => call.At > beats[0].At && Stopwatch.GetElapsedTime(call.At, last).TotalMilliseconds < 450);
-        Assert.True(afterTheOutage >= 3, $"{afterTheOutage} heartbeats in the last 450 ms of the handler");
+        await Eventually.UntilAsync(() => State.Of("CompleteStep").Count == 1, "the completion", 40_000);
+        Assert.True(Volatile.Read(ref refusals) >= 2, $"{refusals} beats were refused by the provider during the outage");
+        var afterTheOutage = State.Of("Heartbeat").Count - Volatile.Read(ref beatsWhenItRecovered);
+        Assert.True(afterTheOutage >= 3, $"{afterTheOutage} heartbeats after the provider recovered");
         Assert.Empty(State.Of("FailStep"));
     }
 
@@ -581,19 +603,26 @@ public sealed class HostHardeningTests : IAsyncLifetime
             o.Worker.HeartbeatInterval = TimeSpan.FromMilliseconds(100);
             o.Worker.Interceptors.Add(interceptor);
         });
-        host.RegisterActivity<JsonNode?, int>("slow", async (_, _, ct) =>
+        var clock = new RecordingClock().On(host);
+
+        // The handler holds the task until a beat after the two raised ones has reached the server (a barrier, not a sleep).
+        host.RegisterActivity<JsonNode?, int>("slow", async (_, _, _) =>
         {
-            await Task.Delay(700, ct);
+            await Eventually.ReachedAsync(() => interceptor.Calls >= 3 && State.Of("Heartbeat").Count >= 1);
             return 1;
         });
         State.Lease(LeaseFor("slow"));
         await host.StartAsync();
-        await Eventually.UntilAsync(() => State.Of("CompleteStep").Count == 1, "the completion");
+        await Eventually.UntilAsync(() => State.Of("CompleteStep").Count == 1, "the completion", 40_000);
 
-        // The two raised beats reached no server; the ones after them did (the loop did not die), and none came faster than the interval.
-        Assert.True(interceptor.Calls >= 3, $"{interceptor.Calls} beats were tried");
+        // The two raised beats reached no server; the ones after them did (the loop did not die), and none came faster than the interval:
+        // every beat tried waited the interval of 100 ms first, and each raised one also the pause of 100 ms after it. The calls are read
+        // before the waits, so a beat tried after the read only adds waits.
+        var tried = interceptor.Calls;
+        var waits = clock.Waits.Count(wait => wait.Due == TimeSpan.FromMilliseconds(100));
+        Assert.True(tried >= 3, $"{tried} beats were tried");
         Assert.True(State.Of("Heartbeat").Count >= 1, "a beat after the failed ones reached the server");
-        Assert.True(interceptor.Calls <= 12, $"{interceptor.Calls} beats in 700 ms: the loop spins");
+        Assert.True(waits >= tried + 2, $"{waits} waits of 100 ms for {tried} beats, two of them raised: the loop spins");
         Assert.Empty(State.Of("FailStep"));
     }
 
@@ -607,16 +636,21 @@ public sealed class HostHardeningTests : IAsyncLifetime
             o.Worker.HeartbeatInterval = TimeSpan.FromTicks(1);
             o.Worker.Interceptors.Add(interceptor);
         });
-        host.RegisterActivity<JsonNode?, int>("slow", async (_, _, ct) =>
+        var clock = new RecordingClock().On(host);
+        host.RegisterActivity<JsonNode?, int>("slow", async (_, _, _) =>
         {
-            await Task.Delay(700, ct);
+            await Eventually.ReachedAsync(() => interceptor.Calls >= 4);
             return 1;
         });
         State.Lease(LeaseFor("slow"));
         await host.StartAsync();
-        await Eventually.UntilAsync(() => State.Of("CompleteStep").Count == 1, "the completion");
+        await Eventually.UntilAsync(() => State.Of("CompleteStep").Count == 1, "the completion", 40_000);
 
-        Assert.InRange(interceptor.Calls, 2, 12);
+        // Every raised beat is followed by the pause of 100 ms before the next one (the newest may not have asked for its pause yet).
+        var tried = interceptor.Calls;
+        var pauses = clock.Waits.Count(wait => wait.Due == TimeSpan.FromMilliseconds(100));
+        Assert.True(tried >= 4, $"{tried} beats were tried");
+        Assert.True(pauses >= tried - 1, $"{pauses} pauses after {tried} raised beats: the loop spins");
         Assert.Empty(State.Of("FailStep"));
     }
 
@@ -624,17 +658,22 @@ public sealed class HostHardeningTests : IAsyncLifetime
     public async Task ABeatThatFailsWithASagatExceptionPausesBeforeTheNextOneEvenWhenTheIntervalIsTiny()
     {
         var host = Host(o => o.Worker.HeartbeatInterval = TimeSpan.FromTicks(1));
-        host.RegisterActivity<JsonNode?, int>("slow", async (_, _, ct) =>
+        var clock = new RecordingClock().On(host);
+        host.RegisterActivity<JsonNode?, int>("slow", async (_, _, _) =>
         {
-            await Task.Delay(700, ct);
+            await Eventually.ReachedAsync(() => State.Of("Heartbeat").Count >= 4);
             return 1;
         });
         State.FailAlways("Heartbeat", new Scripted(StatusCode.Unavailable));
         State.Lease(LeaseFor("slow"));
         await host.StartAsync();
-        await Eventually.UntilAsync(() => State.Of("CompleteStep").Count == 1, "the completion");
+        await Eventually.UntilAsync(() => State.Of("CompleteStep").Count == 1, "the completion", 40_000);
 
-        Assert.InRange(State.Of("Heartbeat").Count, 2, 12);
+        // Every refused beat is followed by the pause of 100 ms before the next one (the newest may not have asked for its pause yet).
+        var refused = State.Of("Heartbeat").Count;
+        var pauses = clock.Waits.Count(wait => wait.Due == TimeSpan.FromMilliseconds(100));
+        Assert.True(refused >= 4, $"{refused} beats reached the server");
+        Assert.True(pauses >= refused - 1, $"{pauses} pauses after {refused} refused beats: the loop spins");
         Assert.Empty(State.Of("FailStep"));
     }
 
