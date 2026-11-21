@@ -736,7 +736,14 @@ async fn shutdown_grace_does_not_add_an_unrequested_two_second_delay() {
         .await
         .expect("handler entered");
     let pending = host.running.as_ref().expect("running").tracker.clone();
+    // The clock of the runtime is paused for the stop: it moves only when every task is waiting on a timer, and then straight to the
+    // next one. A stop with zero grace waits only for its zero grace, so it ends at once on that clock however loaded the machine is;
+    // a stop that waits two seconds lets the clock jump to the 100 ms deadline first (AGENTS.md rule 18: no wall-clock margin).
+    tokio::time::pause();
+    let began = tokio::time::Instant::now();
     let result = tokio::time::timeout(Duration::from_millis(100), host.stop(Duration::ZERO)).await;
+    let waited = began.elapsed();
+    tokio::time::resume();
     release.notify_one();
     pending.close();
     tokio::time::timeout(Duration::from_secs(1), pending.wait())
@@ -745,6 +752,11 @@ async fn shutdown_grace_does_not_add_an_unrequested_two_second_delay() {
     assert!(
         result.is_ok(),
         "zero grace must not wait an additional two seconds"
+    );
+    // The timers of the runtime count whole milliseconds, so the zero grace is one tick of the paused clock.
+    assert!(
+        waited <= Duration::from_millis(1),
+        "a stop with zero grace waited {waited:?} of the paused clock"
     );
 }
 
