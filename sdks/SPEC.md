@@ -279,6 +279,7 @@ jitter (`min(maxDelay, initialDelay * 2^n)` scaled by a random factor in `[0.5, 
 | worker `PollTasks`, `Heartbeat` | `UNAVAILABLE`, `RESOURCE_EXHAUSTED`, transport failures |
 | worker `AcknowledgeTasks` (1.8) | the same (the server's own deadline is `UNAVAILABLE`), and `DEADLINE_EXCEEDED`, `CANCELLED`, `UNKNOWN`, `ABORTED`, a retryable `INTERNAL`, an unusable answer; once on `UNAUTHENTICATED` with a fresh token; with no limit on attempts, each bounded to 6 s, until a verdict or the give-up of §6.2; after a failure with the server's envelope, a call of more than eight leases is split in two; the leases answered `RETRY` are asked for again together after 200 ms doubling to 1 s, outside this backoff and the user's retry options |
 | worker `CompleteStep`, `FailStep` | the same, with the **same** idempotency key and body; at most 5 times |
+| worker `ResolveSecrets`, `ResolveDatabase`, blob transfers, `AppendStepLogs` (1.8 hosts) | `UNAVAILABLE` with the reason `REGISTRY_SILENT`, after its retry hint, within the handler's deadline; otherwise as before |
 | `RegisterWorker` | the same; on `UNAUTHENTICATED` once, with a fresh token |
 
 The rule is by **code**, the same in every SDK: a call is repeated when the error's code is `TRANSPORT`,
@@ -375,17 +376,20 @@ whatever it has declined: one received while it declines is handed back.
 A call that fails is repeated as §5 says. The host gives a lease up when its time left at receipt (its expiry minus the host's
 clock at receipt) minus 6 s has passed on its monotonic clock, clamped to between 6 s and 120 s, never while an attempt is in flight
 (it waits for that attempt's outcome, at most 6 s, and runs a late `ACKNOWLEDGED`), and never compares its clock with the server's
-again; a lease given up is not run and is handed back. A transient answer that carries the server's error envelope
-(`x-sagat-error`) is the server's own trouble: the host gives the lease up at once when every attempt for it during one 6 s
-receive bound ended so. The server flags a lease at most once per attempt after a hand-back, so a failing path costs a lease at most
-one hand-back, and a hand-back of a lease that has not run (no heartbeat, no capability) is withdrawn whether or not it was
-acknowledged.
+again; a lease given up is not run and is handed back. The host gives a lease up early when it has waited at least 6 s since its
+first attempt was sent, every attempt that ended in that time ended with an answer other than a shed, and another of its calls
+that reaches the database (a heartbeat, a report, a hand-back) was answered `OK` in that time; it then starts no further attempt and
+waits for one in flight. A `RETRY` restarts that window. A failover or a busy engine therefore waits for the ordinary give-up. The
+server flags a lease at most once per attempt after a hand-back, so a failing path costs a lease at most one hand-back, and a
+hand-back of a lease not yet `RUNNING` to which no capability was served is withdrawn whether or not it was acknowledged.
 
 The host declines acknowledgement only on `UNIMPLEMENTED`, after three calls in a row refused with `PERMISSION_DENIED`,
 `INVALID_ARGUMENT`, `FAILED_PRECONDITION` or `NOT_FOUND`, or after three counted calls in the run since the last `ACKNOWLEDGED`. A
 call counts when every lease of it was given up with no verdict, every attempt ended with no answer or with a status without the
-server's envelope, and its probe failed the same way: once the hand-back of one of its leases is answered `OK`, the host sends one
-`AcknowledgeTasks` for that lease, which a working path answers `NOT_HELD`. Calls are ordered by their give-ups, the split halves of
+server's envelope (`x-sagat-error`, which the server's own transient answers carry and which never count), and its probe failed
+the same way: once the hand-back of one of its leases is answered with the server's envelope (`OK`, or a stale refusal), the host
+sends one `AcknowledgeTasks` for that lease, one attempt and evidence only, which a working path answers `NOT_HELD`; any other
+verdict means the hand-back did not land, and the host hands back again without counting the call. Calls are ordered by their give-ups, the split halves of
 a call are one call, and a call that does not qualify neither counts nor breaks the run. On fallback the host waits a random delay of up to 6 s, closes its receive, hands back what waits, waits
 for the answers of those hand-backs (their retries of §5), logs once, and registers again at its own minor with
 `declines_acknowledgement = true` for 10 minutes (a random factor in `[0.8, 1.2]`, doubling for each fallback in a row up to an

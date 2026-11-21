@@ -139,10 +139,12 @@ ticked only with the named test and its result, or the command and its output.
 - (a) Architecture decision 0098 is accepted and both of its builds are merged: the server (`bugfix/withdraw-undelivered-leases`,
   pull request #260, with its scoped withdrawal, its reservation of `TASK_NOT_STARTED`, its cap of four per attempt, its replay floor
   and its generic `capability-activate`) and the SDK hand-back (`bugfix/withdraw-leases-sdks`, with its rewrite of a handler-raised
-  code). The server build decodes the cause `NOT_ACKNOWLEDGED` (request (2) of Decision 006-059, a hard precondition: it makes that
-  build the enforced rollback floor); requests (1) and (3) to (8) are answered, (3) (the holder's minor clamped to that build's
-  ceiling) and (7) (an engine silent past the liveness window serves no capability call until its gate is decided again) being hard
-  preconditions too. This design is rebased onto `develop` once that branch has merged.
+  code). Against its merged head (2026-11-21) only request (3) of Decision 006-059 is built; (1) for the secret fence, (2), (5),
+  (6), (7) and (8) go into a follow-up of pull request #260 before any build of it is released, (2) (the cause decoded, which makes
+  that build the rollback floor) and (7) (an engine silent past the liveness window serves no capability call) being hard. If the
+  follow-up cannot land before #260 merges into `develop`, the fallback of Decision 006-059 applies: (2) in Task 006-045, (7) in Task
+  006-046, (6) and (8) in Task 006-044's migration, this design's dormant build as the rollback floor, and the requirement recorded
+  for both kinds. This design is rebased onto `develop` once that branch has merged.
 - (b) Task 041-3 has merged (the 1.7 contract in `worker.proto` and its baseline) before Task 006-043, which edits the same file;
   Task 041-7 has merged (the server serves 1.7) before Task 006-057 and before the `AppendStepLogs` case of Task 006-052;
   Task 041-15 to Task 041-20 (each SDK speaks 1.7) have merged before the matching SDK task, Task 006-059 to Task 006-064.
@@ -202,10 +204,12 @@ shared conformance owner, Task 006-058; one owner per SDK, Task 006-059 to Task 
   18 s after the claim), and the first skip reason that holds otherwise, returned by the statement; the claim's assignment
   conditioned in SQL on a new lease; the engine's other statements keep or clear the marks. Evidence: a matrix test in
   `integration_durable_execution` (minors 1.4, 1.7 and 1.8; declining or not; each requirement recorded for both kinds, for engines
-  only, or not; switch on or off; the attempt withdrawn before or not; time-to-live 17 and 18 s; `timeoutMs` 17 and 18 s; each
+  only, or not; switch on or off; the attempt flag at the claimed attempt N, at N − 1 and null; time-to-live 17 and 18 s; `timeoutMs` 17 and 18 s; each
   statement; root and scoped); a lease written afterwards with the old column list is not marked; a row whose incarnation is other
   or null, or claimed before the requirement's current recording, does not count for a withdrawal; the static check in
-  `scripts/check-architecture.py` of every assignment to a mark, with negative tests for a bound-flag form and a read-back form; the
+  `scripts/check-architecture.py` of every assignment to a mark, with negative tests for a bound-flag form and a read-back form, and
+  for the attempt flag a `CASE` outside the three statements, `THEN $m`, a branch that yields `NULL`, a form without the old-row
+  fence and a second statement that assigns it; the
   barrier test with a run transaction loaded before an acknowledgement and writing the row through each statement that can touch a
   `LEASED` row; the parity test of the macro's two forms against the pure function; the unchanged `LEASE` line of Task 006-055.
 - [ ] T006-048 Registration: `declines_acknowledgement` stored on the session from each registration (the upsert sets it from the
@@ -231,7 +235,8 @@ shared conformance owner, Task 006-058; one owner per SDK, Task 006-059 to Task 
   slow binding lock and a slow membership lock together past the call's deadline committing nothing, a pool held full for 5 s
   answered `UNAVAILABLE` within 4.5 s with no connection discarded, the answer reporting `attempt_time_left_ms` when the attempt has
   a deadline, a test that every `UNAVAILABLE` and `RESOURCE_EXHAUSTED` the handler or its admission returns carries the envelope, a
-  saturated connection answered within the bound, a compensation of a cancelled run and a reconciliation under a stop answered
+  connection with more than 128 calls and one with 64 transfers in flight answered within the bound (tonic's per-connection limit
+  replaced by the platform's own layer under the deadline's), a probe answered `NOT_HELD` with the reason `withdrawn`, a compensation of a cancelled run and a reconciliation under a stop answered
   `ACKNOWLEDGED`, a
   repeated acknowledgement and a lease whose mark does not count each answered `ACKNOWLEDGED` with the margin and `CANCELLED`
   (`too_late`, `stop_asked`) without it or under a stop, and, with `ALTER ROLE sagat_app SET synchronous_commit = off`, the
@@ -250,9 +255,11 @@ shared conformance owner, Task 006-058; one owner per SDK, Task 006-059 to Task 
   claimed after its recording on the current incarnation; a `NOT_SENT` withdrawal of a marked lease needing only
   `lease-withdrawal-v1`; the hand-back of an acknowledged `LEASED` lease withdrawn with a stop asked or past its expiry, through the
   report fence of a step with declared secrets too;
-  `withdrawn_lease_token_hash`; the hand-back decided from `lease_hand_back_generation` (replacing, from Task 006-057, the raised
-  stored minor of the server build's tests), with the expiry condition lifted for a provisional lease; an acknowledged lease, a lease
-  claimed on another incarnation, a `RUNNING` step, or a lease to which a capability was served, handed back: an ordinary failure. Evidence: the unit
+  `withdrawn_lease_token_hash` kept by every withdrawal of a marked lease, `NOT_STARTED` included; the hand-back decided from
+  `lease_hand_back_generation` (replacing, from Task 006-057, the raised stored minor of the server build's tests), with the expiry
+  condition lifted for a `LEASED` lease whose mark counts, provisional or acknowledged; a lease claimed on another incarnation, a
+  `RUNNING` step, or a lease to which a capability was served, handed back: an ordinary failure; the attempt flag in its fenced form
+  in the three projection statements, `$flag` bound by the withdrawal command alone. Evidence: the unit
   test of the pure function over every combination of status, marks, incarnation, recording and deadlines; a provisional `Activity` lease past its
   expiry, and one past its attempt deadline, withdrawn with no review and the attempt reused, root and scoped; an acknowledged one
   expired as an unknown outcome; a lease handed back once and the next lease of its attempt unflagged, so that with every
@@ -265,15 +272,20 @@ shared conformance owner, Task 006-058; one owner per SDK, Task 006-059 to Task 
   is ended by one pass with `expire_attempt` (`capped`, `lapsed`) and not picked again by the next, and its hand-back spends the
   attempt; at the cap, the pass and the hand-back in both orders; a hand-back of an unmarked 1.8 lease before the activation, an
   ordinary failure; a removal and a re-activation, after which a lease claimed before the new recording is an ordinary failure on
-  hand-back; the hand-back after `CANCELLED` (`stop_asked`, and `too_late` 1 ms past the expiry) of an acknowledged lease with
-  declared secrets, an ordinary failure settling the step as cancelled under the stop; an engine with the switch off withdraws a
+  hand-back; the hand-back after `CANCELLED` (`stop_asked`, and `too_late` 1 ms past the expiry with the pass held) of an
+  acknowledged `LEASED` lease with declared secrets, withdrawn and the step cancelled under the stop; a recovered lease answered
+  `CANCELLED` and handed back, an ordinary failure; two leases of one run withdrawn in one transaction, the second's settle touching
+  the first's row, the flag left at the first's attempt; a `CompleteStep` after the `NOT_STARTED` withdrawal of an acknowledged lease
+  counted and audited as a call after a withdrawal; an engine with the switch off withdraws a
   marked lease; a hand-back after its session registered again at 1.7 under the
   same name, still withdrawn; a hand-back of a lease claimed at 1.7 while the session row says 1.8, an ordinary failure; a stopping
   collection drains a withdrawn instance; a cancelled step's hand-back with declared secrets withdraws and cancels.
 - [ ] T006-051 The races, in `tests/fault/sdk-multilanguage/`: the acknowledgement holds the row while the pass's withdrawal waits, and
   the reverse; the same with the hand-back's withdrawal; a repeated acknowledgement while the first is held before its commit (the
   second answers `RETRY`, then `ACKNOWLEDGED`); an acknowledgement and a hand-back of the same lease in both orders; a holder that only locks the row; an acknowledgement after a deadline and before the
-  pass; a hand-back 1 ms after the expiry with the pass held (withdrawn, attempt not spent), and the same after `CANCELLED`; a
+  pass; a hand-back 1 ms after the expiry with the pass held (withdrawn, attempt not spent), and the same after `CANCELLED`; an
+  acknowledged `LEASED` lease 1 ms past its expiry with its hand-back and the pass in both orders (exactly one of `step.lease_withdrawn`
+  and `expire_attempt`); a
   capability call against a hand-back, in both orders; the removal of each requirement held between the pass's read and its commit,
   in both orders, with an empty journal, and both removals in one transaction of hand SQL (a detected deadlock at worst, no event
   without its floor); a binding revocation queued between a withdrawal's binding checks and its re-read,
@@ -296,15 +308,16 @@ shared conformance owner, Task 006-058; one owner per SDK, Task 006-059 to Task 
   record, and 100 stale calls with one withdrawn token and 100 different request generations give one.
 - [ ] T006-054 Observability and operations: the counters (with `worker_task_acknowledgement_failures_total{reason}`), the two
   histograms, the gauges (`FILTER` clauses of the operations statistics query, each defined by the macro, read on the primary), the
-  six alerts (the capped clause folded into Architecture decision 0098's alert, the `stop` hand-backs excluded from
-  `SagatAcknowledgementsFailing`) with `promtool test rules` cases at the default and at an 18 s time-to-live (added to the CI step), the symptoms in
+  seven alerts (`SagatLeaseAttemptCapped` owned here, the `stop` hand-backs excluded from `SagatAcknowledgementsFailing` through the
+  new `mark` and `stop` labels of `worker_leases_undelivered_total`) with `promtool test rules` cases at the default and at an 18 s time-to-live (added to the CI step), the symptoms in
   `docs/runbooks/sdks.md` (naming `synchronous_commit` and `requirement_missing`); in section 7 of
   `docs/runbooks/disaster-recovery.md`, the engines stopped before and PostgreSQL restarted after a restore that does not start the
   server, checked by `pg_postmaster_start_time()`, replacing the marker "(pending Task 006-054)", with the topologies the rule is proven on and the
   assumption of one writable server; in `infra/dr/drill.sh`, the start time read before and after each disaster, after a
   snapshot-style restart and after that restart, and a provisional mark held at the kill not withdrawn after the promotion; a row
   per new rule in the fitness-function table of `docs/engineering/architecture-principles.md` (the witness type and the attempt
-  flag's allowed set among them); a rule in `scripts/check-design-docs.py` that fails on a "(pending Task NNN-xxx" marker whose task
+  flag's allowed set among them); a check in `scripts/check-agent-config.py` that the index of `docs/adr/README.md` has one row per
+  record whose status starts with the record's first clause; a rule in `scripts/check-design-docs.py` that fails on a "(pending Task NNN-xxx" marker whose task
   is ticked.
   Evidence: a telemetry test with bounded labels and a token canary, the `promtool` output, and one drill run.
 - [ ] T006-055 The budget (`tests/integration/claim-transition-efficiency/work_budget.rs`): a run of three chained activities at 1.8 with
@@ -320,7 +333,9 @@ shared conformance owner, Task 006-058; one owner per SDK, Task 006-059 to Task 
   transitions runs at 1.8 are no more than 15% below 1.7, the timed 64-lease calls are within 3 s at the 99th percentile over every call with
   fewer than 0.1% answered other than `OK`, and, in the burst run, no heartbeat is shed while acknowledgements are admitted and the
   heartbeat's 99th percentile is under 2 s; the pass's withdrawal rate in a burst of provisional expiries (a worker fleet cut off) is
-  reported; otherwise the build stops here, the minor stays at 7, the feature stays dormant, and the owner decides (Decision
+  reported; a 5-minute injection of a statement timeout on the acknowledgement alone, a 15 s database failover and a 10 s burst of
+  sheds while heartbeats run, reporting the hand-backs, the second claims, the sheds of the class `Lease`, the heartbeat's 99th
+  percentile, the throughput, the reviews (none) and the time to recover; otherwise the build stops here, the minor stays at 7, the feature stays dormant, and the owner decides (Decision
   006-057). Evidence: the section of `tests/performance/reports/scalability-ha.md` with its raw capture, and the result recorded in
   Architecture decision 0099.
 - [ ] T006-057 The feature leaves dormancy: `PROTOCOL_MINOR` and `DELIVERY_ACKNOWLEDGEMENT_PROTOCOL_MINOR` at 8; every engine of the
@@ -353,7 +368,9 @@ shared conformance owner, Task 006-058; one owner per SDK, Task 006-059 to Task 
   outage of every call ending 3 s after the give-ups at an 18 s and a 30 s time-to-live (no fallback, the probes answered), two
   minutes of a 503 without the server's envelope for this call alone (the fallback, no attempt spent), the same with `max_inflight` equal to the frame
   size so that only the hand-backs are answered and at an 18 s time-to-live (the fallback, no attempt spent), frames received faster
-  than one a second with the call swallowed (the fallback), two minutes of answers with the envelope (no fallback, each lease given up
+  than one a second with the call swallowed (the fallback), a 15 s database failover with flagged leases waiting (no early give-up, no
+  review, no attempt spent, the leases run as `recovered`), a proxy that cuts the call at 1 s (each lease given up after one receive
+  bound, no fallback), the fallback at an 18 s time-to-live with the pass running every second, two minutes of answers with the envelope (no fallback, each lease given up
   after one receive bound, handed back once and run on its next lease, no attempt spent), a compensation of a cancelled run
   (acknowledged and run), an `ACKNOWLEDGED` with under 3 s before the expiry after the attempt (the
   first heartbeat sent before the handler) and one with under 2 s before the attempt deadline (handed back), a
@@ -367,9 +384,10 @@ shared conformance owner, Task 006-058; one owner per SDK, Task 006-059 to Task 
   the acknowledgement concurrent with the next receive, the verdicts with `RETRY` asked again together on its own backoff, the repeats
   of §5 with the split after a failure carrying the server's envelope, the give-up on the monotonic clock with its clamp and never
   while an attempt is in flight, hand-backs, the bounded fallback with its triggers (a closed list of refusals; three counted calls
-  in the run since the last `ACKNOWLEDGED`, given up with no answer or without the envelope and whose probe, sent after an `OK`
-  hand-back, failed the same way; a transient answer with the envelope never counting, and a lease given up at once after one
-  receive bound of such answers), which waits a random delay, waits for
+  in the run since the last `ACKNOWLEDGED`, given up with no answer or without the envelope and whose probe, sent after a hand-back
+  answered with the envelope, failed the same way; a transient answer with the envelope never counting; a lease given up early after
+  one receive bound of answers other than sheds while another call reaching the database was answered `OK`, waiting for an attempt
+  in flight, a `RETRY` restarting the window; capability calls repeated on `REGISTRY_SILENT` within the handler's deadline), which waits a random delay, waits for
   its hand-backs, registers again declining at its own minor and again without declining after its period, the stop that waits for
   a verdict within its timeout, the 6 s bound of a poll and of an attempt, the first heartbeat at a third of `lease_time_left_ms`
   less the attempt's duration, sent before the handler under 3 s, and the lease handed back under 2 s before the attempt deadline), the `hold` and `dropFrame` hooks, the metrics hooks, unit tests
@@ -403,6 +421,6 @@ shared conformance owner, Task 006-058; one owner per SDK, Task 006-059 to Task 
   Architecture decision 0098 at 1.5 that hands back (an ordinary failure, the attempt spent). Evidence: the `released-upgrade` job's
   receipts.
 - [ ] T006-067 Documents and review: the 1.8 row of `docs/sdk-compatibility.md` table 1 with its test names, the README of the
-  conformance suite, the workflow-document reference on the wall time of one attempt under losses, the clarification of Requirement
-  037-006 confirmed against the build, and the correctness, security and architecture reviewers run on the merged diff with every
+  conformance suite, the workflow-document reference on the wall time of one attempt under losses, the clarifications of Requirement
+  037-006 confirmed against the build (the wording of Decision 006-045: not yet `RUNNING`, no capability served), and the correctness, security and architecture reviewers run on the merged diff with every
   finding answered. Evidence: the reviews saved beside this design's and the `/verify` output.

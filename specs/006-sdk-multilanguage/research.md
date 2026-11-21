@@ -575,7 +575,8 @@ one receive call.
   of `TaskLease` and field 10 of `WorkerCapabilities` are above every number drafts 019 and 031 name (round 3: architecture Minor 8).
 - **D006-042 — The marks are lease data bound to the lease's generation and to the database server's incarnation.**
   `lease_hand_back_generation`, `lease_claimed_at`, `lease_claim_incarnation`, `lease_offered_generation`, `lease_acknowledged_at`,
-  `lease_capability_generation`, `provisional_withdrawn_attempt` (Decision 006-066) and `withdrawn_lease_token_hash` on `steps`, written by the three lease statements (root, scoped in a
+  `lease_capability_generation` and `withdrawn_lease_token_hash` on `steps` (the attempt flag `provisional_withdrawn_attempt` is
+  attempt data, not a mark: Decision 006-066), written by the three lease statements (root, scoped in a
   full-run transaction, path), by the acknowledgement, by the capability paths and by the withdrawals. A mark counts while the step
   holds a lease and its generation is the step's, so a stale mark never counts (round 1: architecture Blocker 2, correctness Major 6,
   security Major 3), while `lease_claim_incarnation` is not null and equals the current server's start time (Decision 006-062), and,
@@ -613,14 +614,19 @@ one receive call.
   lease re-reads the row `FOR UPDATE` under the run lock after its binding checks (round 3: design Minor 5) and decides with the pure
   function, which extends `LeaseDeadlines` and has a parity test against the SQL macro in `integration_durable_execution` (round 3:
   architecture Minor 4). The candidate query of the pass is a hint.
-- **D006-045 — A lease that has run is an attempt; one that has not, handed back by its host, is not.** The pass never withdraws an
-  acknowledged lease, and a `TASK_NOT_STARTED` for a `RUNNING` lease, or for one to which a capability was served, is an ordinary
-  retryable failure (round 1: security Major 1). An acknowledged lease still `LEASED` (no heartbeat) with no capability served is
-  withdrawn on its hand-back, as a provisional one is: the host's word that nothing started is the same, the capability record and
-  the heartbeat are the evidence round 1 lacked, and otherwise an acknowledgement whose answer was lost, or one answered too late to
-  start, would charge an attempt for work that never ran, while an unmarked 1.8 lease's identical hand-back is withdrawn (round 8:
-  correctness Major 3, design Minor 2). This revises the first round's choice; it is the owner's to confirm with the trust
-  assumption. Capabilities are served only after the acknowledgement.
+- **D006-045 — A lease that has run is an attempt; one not yet `RUNNING`, handed back by its host, is not.** The pass never
+  withdraws an acknowledged lease, and a `TASK_NOT_STARTED` for a `RUNNING` lease, or for one to which a capability was served, is an
+  ordinary retryable failure (round 1: security Major 1). A lease whose mark counts, still `LEASED` and with no capability served, is
+  withdrawn on its hand-back whether provisional or acknowledged; one whose mark does not count is an ordinary failure, since its
+  capability record may have been lost (round 9: correctness Minor 1, security Minor 2). `LEASED` is not proof that no handler
+  started: a task shorter than its first heartbeat completes from `LEASED`, so the window from `ACKNOWLEDGED` to the first heartbeat
+  rests on the host's promise alone, and the withdrawn token's hash is kept for this withdrawal too, so that a later call with it is
+  counted and alerted (round 9: security Minor 1, design Minor 2, correctness Minor 4). Otherwise an acknowledgement whose answer was
+  lost, or one answered too late to start, would charge an attempt for work that never ran, while an unmarked 1.8 lease's identical
+  hand-back is withdrawn (round 8: correctness Major 3, design Minor 2). This revises the first round's choice; it is the owner's to
+  confirm with the trust assumption, and a first heartbeat before every flagged handler, which would make `LEASED` mean "not
+  dispatched" at one transaction per short task, is the alternative left to the owner. Capabilities are served only after the
+  acknowledgement.
 - **D006-046 — The deadline is the lease's own earlier deadline, with one receive bound of margin; a lease is marked only when that
   leaves three receive bounds (18 s).** The read within the receive bound (specified), one attempt within it (the host's bound), and a
   margin of it, with a reason for each deadline (round 3: design Minor 1): before the expiry, because the acknowledgement renews
@@ -684,8 +690,11 @@ one receive call.
   that read is ordered after the acknowledgement and reaches the host through its first heartbeat (round 4: design Nit 3, security
   Nit 2); the host hands back and the withdrawal's settle cancels. `CANCELLED` is also the answer to a repeated acknowledgement
   (`duplicate`) or a lease whose mark does not count (`recovered`) with such a stop or less than the margin left (round 5:
-  correctness Minor 4, design Minor 4); its hand-back is withdrawn while the lease is `LEASED` (Decision 006-045), through the report
-  fence of a step with declared secrets too (Decision 006-059 (1); round 6: correctness Minor 1).
+  correctness Minor 4, design Minor 4); its hand-back is withdrawn while the lease is `LEASED` and its mark counts, and is otherwise
+  an ordinary failure (Decision 006-045), through the report fence of a step with declared secrets too (Decision 006-059 (1); round 6:
+  correctness Minor 1). A `FORWARD` step of a saga whose cancel policy would let work in flight finish is cancelled too: nothing ran,
+  so nothing is lost (round 9: correctness Nit 9); a domain property test checks that a stop is never planned for a compensation or
+  reconciliation (round 9: security Nit 3).
 - **D006-052 — One bound on repeated withdrawals, in one place: the cap of four per attempt, applied by the withdrawal command.** The
   second and third rounds kept a run of three withdrawals on the step (round 3: architecture Major 2, design Major 2, correctness
   Minor 4, security Minor 6); the fourth had the claim check the cap from "the run state", which does not hold the count: the
@@ -705,7 +714,8 @@ one receive call.
 - **D006-053 — The trust assumption is the owner's, and the server records what it sees** (round 1: security Major 5). Counted and
   audited once per step and generation: a `Heartbeat`, `CompleteStep` or a `FailStep` other than the hand-back on a provisional lease;
   a capability call refused `TASK_NOT_ACKNOWLEDGED`; a hand-back after a capability was served (round 3: security Major 2); a report,
-  heartbeat or capability call with the token of a lease withdrawn as `NOT_ACKNOWLEDGED`. "Once" is the identical-record rule of the
+  heartbeat or capability call with the token of a marked lease withdrawn as `NOT_ACKNOWLEDGED` or on its hand-back (round 9:
+  security Minor 1). "Once" is the identical-record rule of the
   audit trail (`crates/infra-postgres/src/identity.rs`, an insert guarded by `NOT EXISTS` on tenant, actor, action, resource and
   reason): the resource is the step (run and step), and the reason is built only from stored values, the row's step id and its stored
   generation, never from the request, so a holder of a withdrawn token cannot vary it; the new actions are added to
@@ -766,44 +776,47 @@ one receive call.
   across a re-registration, a hand-back that lands after the expiry, and a collection item. A busy row (`RETRY`) needs a database
   session holding the step row, which the harness has no action for, so it is tested at the server (Task 006-049 and Task 006-051)
   and in each SDK's unit tests. An informative re-run of `sdk-streaming` at 1.8 is recorded (round 3: architecture Minor 14).
-- **D006-059 — What this design asks of the build of Architecture decision 0098, before it merges** (amendments of a proposed
-  decision, made on its branch; round 3: architecture Minor 10; round 4: architecture Minor 13; round 5: architecture Minor 3). (1) A
-  `TASK_NOT_STARTED` on a `LEASED` lease is accepted whatever `cancel_requested` and the stop reason say, and, for an acknowledged
-  lease, also past its expiry until the pass has ended it, through the report fence of a step with declared secrets as well; only
-  those conditions of `attempt_authority_fence` and `report_authority_fence` are relaxed for it, and it stays a withdrawal or an
-  ordinary failure as the rule decides (round 6: correctness Minor 1); the floor build relaxes the stop conditions only, and the
-  expiry for an acknowledged lease is this build's code, since the floor knows no acknowledgement (round 7: correctness Nit 9); this build also lifts the expiry for a lease whose mark counts
-  (Decision 006-052; round 5: architecture Nit 1). (2) The cause `NOT_ACKNOWLEDGED` joins the closed set of `WithdrawalCause` and its
-  codec: a hard precondition, because it makes that build the enforced rollback floor (Decision 006-055). (3) It decides the holder's
-  minor as the smaller of the stored minor and its own compiled `PROTOCOL_MINOR`, so with its ceiling at 7 or below it honours no
-  hand-back from a 1.8 row, which this build may have stored; its tests raise both (round 4: security Major 1, correctness Minor 3).
-  (4) Its decisions 5 and 8 keep describing its own build and get only a "Refined by Architecture decision 0099" pointer at
-  acceptance, so the rules of what 1.8 changes live in one record (round 5: architecture Minor 3). (5) Its derivation of the cap of
-  four says whether the causes of 1.8 (Decision 006-052) count. (6) The error text of its replay-floor guard
-  (`20270208000000_lease_withdrawal.up.sql`), which tells the operator that `SAGAT_LEASE_WITHDRAWAL=off` stops new withdrawals, says
-  "of unmarked leases" before that migration is applied anywhere, since an applied migration cannot be edited (round 5: architecture
-  Nit 2). (7) An engine whose registry has been silent for the liveness window less the beat call's bound (25 s), measured from the
-  start of its last successful beat (a fixed margin of 5 s, the processes' default statement timeout; an engine whose configured
-  bound exceeds it refuses to start), serves no capability call (every lease-token call but `Heartbeat`, `CompleteStep`, `FailStep`
-  and `AcknowledgeTasks`) until a beat that reads the epoch `FOR SHARE`, as registration does, and the gate's decision under the epoch
-  it returned have both succeeded (round 8: correctness Minor 1), the gate checked again before the first byte of the answer is sent;
-  the refusal is `UNAVAILABLE` with the envelope reason `REGISTRY_SILENT` and a retry hint, counted (round 8: architecture Minor 4,
-  design Minor 3); heartbeats, reports, hand-backs and claims keep flowing. This amends Architecture decision 0082 decision 5
-  for capability calls only, recorded in Architecture decision 0098 and in the Amendments section of Architecture decision 0082 at
-  acceptance, with section 3 of `docs/runbooks/instance-registry.md` updated; it is a hard precondition, and this build keeps it
-  (round 6: security Minor 3; round 7: architecture Major 1, design Major 3, correctness Minors 1 and 2, security Minor 4). (8)
-  `lease_withdrawal_required()` returns the requirement as recorded only for both kinds (round 7: architecture Minor 3), changed in
-  its migration before that is applied anywhere, as (6) is (round 8: security Nit 6). Section 3 of `docs/runbooks/instance-registry.md`
-  is the floor build's to update; this design's Task 006-046 checks it (round 8: architecture Nit 7). Its decision 5 also makes a hand-back below 1.8 an ordinary
-  failure that spends the attempt (Decision 006-030 there), which this design does not change: the owner weighs it with that decision
-  (round 3: correctness Major 4, design Major 3).
+- **D006-059 — What this design asks of the build of Architecture decision 0098** (amendments of a proposed decision, made on its
+  branch; round 3: architecture Minor 10; round 4: architecture Minor 13; round 5: architecture Minor 3). Against its merged head
+  (checked 2026-11-21) only (3) is present; the others go into a follow-up of pull request #260 before any build of it is released
+  (round 9: architecture Major 1, design Major 1, security Minor 4). (1) A `TASK_NOT_STARTED` on a `LEASED` lease is accepted
+  whatever `cancel_requested` and the stop reason say, through the report fence of a step with declared secrets as well (not yet
+  there: `checked_secret_report` allows a stop only for `CANCELLED`); the expiry for an acknowledged lease is this build's code,
+  since the floor knows no acknowledgement (round 6: correctness Minor 1; round 7: correctness Nit 9); this build also lifts the
+  expiry for a lease whose mark counts (round 5: architecture Nit 1). (2) The cause `NOT_ACKNOWLEDGED` joins the closed set of
+  `WithdrawalCause` and its codec, so that build replays it: missing, and a hard precondition, because it makes that build the
+  rollback floor (Decision 006-055). (3) It decides the holder's minor as the smaller of the stored minor and its own compiled
+  `PROTOCOL_MINOR`: present (`hand_back_ceiling`). (4) Its decisions 5 and 8 get only a "Refined by Architecture decision 0099"
+  pointer at acceptance (round 5: architecture Minor 3). (5) Its derivation of the cap of four says whether the causes of 1.8
+  count: missing. (6) The error text of its replay-floor guard says "of unmarked leases" (round 5: architecture Nit 2), and (8)
+  `lease_withdrawal_required()` returns the requirement as recorded only for both kinds (round 7: architecture Minor 3): both
+  missing; if migration `20270208000000` has been applied anywhere, they come as a new migration with `CREATE OR REPLACE FUNCTION`,
+  keeping `SECURITY DEFINER` and `search_path = pg_catalog, pg_temp`, with a privilege test of `prosecdef` and `proconfig` (round 9:
+  security Minor 4). (7) An engine whose registry has been silent for the liveness window less 5 s (25 s), measured from the start
+  of its last successful beat, serves no capability call (every lease-token call but `Heartbeat`, `CompleteStep`, `FailStep` and
+  `AcknowledgeTasks`) until a beat and the gate's decision under the epoch it returned have both succeeded, the gate checked again
+  before the first byte of the answer is sent; the registry's connection carries a statement timeout of at most 5 s, so no
+  configuration is refused (round 9: architecture Minor 5); the beat reads the epoch first, `FOR SHARE SKIP LOCKED`, and when the row
+  is held by an owner transaction it still commits `last_seen` and returns no epoch, which the gate reads as capability calls
+  undecided, never as a registry failure, so an activation or a removal by hand SQL left open never closes the fleet's gates (round
+  9: security Major 1, correctness Nit 7); the refusal is `UNAVAILABLE` with the envelope reason `REGISTRY_SILENT` and a retry hint,
+  counted, which the SDKs repeat within the handler's deadline (`sdks/SPEC.md` §5; round 9: design Nit 7); heartbeats, reports,
+  hand-backs and claims keep flowing. This amends Architecture decision 0082 decision 5 for capability calls only, recorded in
+  Architecture decision 0098 and in the Amendments section of Architecture decision 0082 at acceptance, with section 3 of
+  `docs/runbooks/instance-registry.md` the floor build's to update; it is missing, a hard precondition, and this build inherits it
+  (round 6: security Minor 3; round 7: architecture Major 1, design Major 3, correctness Minors 1 and 2, security Minor 4). If the
+  follow-up cannot be made before that build merges into `develop`, (2) moves into Task 006-045, (7) into Task 006-046, (6) and (8)
+  into the migration of Task 006-044; this design's dormant build then becomes the rollback floor, deployed fleet-wide before Task
+  006-057, and `delivery-acknowledgement-v1` is recorded for both kinds, so a control plane that cannot replay the cause is excluded
+  too. Its decision 5 also makes a hand-back below 1.8 an ordinary failure that spends the attempt (Decision 006-030 there), which
+  this design does not change: the owner weighs it with that decision (round 3: correctness Major 4, design Major 3).
 - **D006-060 — The frequency is unknown.** No loss of a frame on the wire or of a `PollTasks` answer has been observed; the three cases
   that started this work are Architecture decision 0098's (round 1: design Major 3). At 1.8 the withdrawals with the cause
   `NOT_ACKNOWLEDGED` measure it.
 - **D006-061 — Minor 1.8 is the minor at which `TASK_NOT_STARTED` is reserved for the host** (the server review of pull request #260,
   given by the coordinator on 2026-11-20; Decision 006-030 of the server build). The server's rule stays in Architecture decision 0098
-  decision 5 (round 3: architecture Major 3); this design adds what 1.8 changes (Decision 006-059 (3) and (4), and an acknowledged
-  lease is an attempt). The SDK rewrite of a handler-raised code is that of Decision 006-028 of the SDK build, at every minor (round 3:
+  decision 5 (round 3: architecture Major 3); this design adds what 1.8 changes (Decision 006-059, and Decision 006-045 for a lease
+  not yet `RUNNING`; round 9: architecture Major 2). The SDK rewrite of a handler-raised code is that of Decision 006-028 of the SDK build, at every minor (round 3:
   architecture Minor 7, design Major 1).
 - **D006-062 — A committed acknowledgement must survive, and a mark that might not have counts for nothing** (round 4: design Major 1;
   round 5: architecture Major 1, design Major 1, correctness Minor 3, security Minor 1, architecture Minor 6; round 6: architecture
@@ -848,33 +861,36 @@ one receive call.
   as today, which is why the rollback switches marking off and drains before it removes the requirement (Decision 006-055).
 - **D006-065 — Only the host's own path makes the host decline, and the server's envelope tells the two apart** (round 5: correctness
   Major 2; round 6: correctness Major 1, security Major 1, design Minors 1 and 2; round 7: all four reviewers; round 8: correctness
-  Major 1 and Minor 3, security Minors 2 and 3, design Major 1). The platform puts its error envelope (`x-sagat-error`) on every
-  status the worker service and its admission make, which Task 006-049 checks over the handler and admission (round 8: security Nit
-  2), so a transient answer carrying it (shed, deadline, a lock or statement timeout, a conflict, the store unavailable) is the
-  server's own trouble and never counts toward a decline; a gateway's 503 or a mesh's timeout carries none (round 7: correctness Minor
-  3, design Minor 1, security Minor 2, architecture Minor 1). The server's deadline starts in the outermost layer of the gRPC server,
-  before the per-connection concurrency limit, so a call the engine queues is answered within its bound (round 8: correctness Minor
-  3, security Minor 3). The host gives a lease up at once when every attempt for it during one receive bound ended with an answer
-  carrying the envelope: with the bound of Decision 006-066 its next lease then runs unflagged within about 6 s, which keeps the
-  throughput that the withdrawn breaker was also for (round 8: design Major 1, security Minor 2). The host declines on
-  `UNIMPLEMENTED`, three refusals of a closed list, or three counted calls in the run since the last `ACKNOWLEDGED`: given up with no
-  verdict, every attempt ended with no answer or without the envelope, and its probe failed the same way, the probe being one
-  `AcknowledgeTasks` for one of its leases, sent once that lease's hand-back is answered `OK`, which a working path answers `NOT_HELD`.
-  The round-7 evidence, another call or a hand-back answered after the give-up, also held after an outage that healed while the
-  hand-backs were retried; the probe overlaps the failure (round 8: correctness Major 1). Calls are ordered by their give-ups, the
-  halves of a split call are one call, a call that does not qualify neither counts nor breaks the run, and there is no time floor.
-  The sixth round's engine breaker is withdrawn: a flood of cheap calls could hold it closed, it starved itself of evidence once open,
-  its minimum of 20 calls left a quiet engine cycling leases, and one tenant could open it for all (round 7: correctness Major 1 and
-  Minors 4 and 5, security Major 1 and Minor 1, architecture Minors 7 and 8, design Major 2 and Nit 5). The declining registration
-  waits a random delay of up to one receive bound (round 6: architecture Nit 9).
+  Major 1 and Minor 3, security Minors 2 and 3, design Major 1; round 9: correctness Major 2 and Minors 5 and 6, design Minors 3 to 5,
+  security Minor 3). The worker service and its admission put the error envelope (`x-sagat-error`) on every status they make, which
+  Task 006-049 checks, so a transient answer carrying it is the server's own trouble and never counts toward a decline; a gateway's
+  503 or a mesh's timeout carries none. The server's deadline starts in the platform's own outermost layer, the per-connection
+  concurrency limit being the platform's layer under it, with a reserve for the class. The early give-up: a lease is given up and
+  handed back once it has waited one receive bound since its first attempt, every attempt that ended in that time ended with an
+  answer other than a shed (with the envelope or not, so a mesh's cut counts as well as a deadline), and another call of the host that
+  reaches the database was answered `OK` in that time; it waits for an attempt in flight, a `RETRY` restarts the window, and the halves
+  of a split call share it. The condition on another call keeps a database failover, which fails every call, from turning into
+  hand-backs that the promotion would then make ordinary failures or reviews; sheds, a busy engine, are waited out. With the bound of
+  Decision 006-066 a lease given up early runs unflagged on its next lease within about 6 s. The host declines on `UNIMPLEMENTED`,
+  three refusals of a closed list, or three counted calls in the run since the last `ACKNOWLEDGED`: given up with no verdict, every
+  attempt ended with no answer or without the envelope, and its probe failed the same way, the probe being one `AcknowledgeTasks` for
+  one of its leases, sent once that lease's hand-back is answered with the envelope (`OK`, or a stale refusal because the pass won),
+  evidence only, which a working path answers `NOT_HELD` with the reason `withdrawn`. Calls are ordered by their give-ups, a call that
+  does not qualify neither counts nor breaks the run, a run with no counted call for 10 minutes starts again, and there is no time
+  floor. The sixth round's engine breaker is withdrawn (round 7: correctness Major 1 and Minors 4 and 5, security Major 1 and Minor 1,
+  architecture Minors 7 and 8, design Major 2 and Nit 5). The declining registration waits a random delay of up to one receive bound
+  (round 6: architecture Nit 9).
 - **D006-066 — An attempt is flagged at most once after a hand-back, and never at the cap** (round 7: correctness Major 1, design
   Major 1; round 8: correctness Major 2, architecture Major 1 and Minor 1, security Minor 1, design Minor 1). `steps.
   provisional_withdrawn_attempt` is attempt data, not lease data: no generation binds it and nothing clears it, and a later attempt
-  number never equals it. It is written in one form, in the three statements that write a withdrawal: `CASE WHEN <the hand-back's
-  withdrawal of a lease whose mark counts, or a withdrawal that brings the attempt to the cap of four> THEN attempt ELSE
-  provisional_withdrawn_attempt END`, where `attempt` is the stored value before the same statement sets it back by one, so the
-  withdrawn lease's attempt; every other statement, the claim included, leaves it out of its `SET` list, which the static check
-  enforces with its own allowed set and negative tests. The claim reads it from the row it already writes and marks only while it
+  number never equals it. The claim, the withdrawal and every other transition write a step row through the same three projection
+  statements, so its one form is in each of them, for every caller: `CASE WHEN $flag AND status = 'LEASED' AND generation = $fence
+  THEN attempt ELSE provisional_withdrawn_attempt END`, where `$flag` is bound true only by the withdrawal command, for the hand-back's
+  withdrawal of a lease whose mark counts or for the withdrawal `withdraw_lease` reports as the last the cap allows, and false by every
+  other caller, the claim included; the old-row fence keeps a later append of the same transaction from writing a row already
+  withdrawn, and `attempt` is the stored value before the same statement sets it back by one, so the withdrawn lease's attempt (round
+  9: correctness Major 1, architecture Minor 1). No other statement names the column, which the static check enforces with its own
+  allowed set and negative tests; this is the one bound flag allowed, since a stale caller can only bind false. The claim reads it from the row it already writes and marks only while it
   differs from the attempt claimed, so it costs no statement and is not the journal read of considered option 7. So whatever fails on
   the acknowledgement's path, a lease is handed back once per attempt, its next lease runs unflagged, and no withdrawal cycling spends
   an attempt. The pass's `NOT_ACKNOWLEDGED` does not set it: silence is the loss this feature exists for, a lossy path loses
@@ -887,8 +903,10 @@ one receive call.
 
 - **G006-040 — A host that crashes between the verdict `ACKNOWLEDGED` and the start of the handler** leaves an acknowledged lease that
   lapses into a review. The window is inside the process and holds no call; a stopping host runs the task instead.
-- **G006-041 — An acknowledged lease whose host loses every answer and cannot hand it back either** lapses into a review; one it can
-  hand back is withdrawn (Decision 006-045).
+- **G006-041 — An acknowledged lease that does not get back to the server unrun:** its host cannot hand it back (the lease lapses into
+  a review), its hand-back loses to the pass past the expiry (`expire_attempt`, a review for an `Activity`), or its first heartbeat,
+  sent before the handler, commits with its answer lost (the lease is `RUNNING`, and its hand-back spends the attempt). One that its
+  host hands back in time is withdrawn (Decision 006-045).
 - **G006-042 — The trust assumption** (Decision 006-053). A client at 1.8 that runs a flagged lease without acknowledging and makes no
   call during it has its lease withdrawn and its work run again with the same attempt number and idempotency key; external effects stay
   at least once (constitution principle III); a later call with its token is counted and alerted, but only the last withdrawn token of a
@@ -900,7 +918,7 @@ one receive call.
   The registry cannot exclude a binary of release 0.2, which does not register; the runbook's rule that no such binary runs at an
   activation is what excludes it. A process that could not register into a full table (Gap 2000 of the registry) serves for one beat
   unseen. A database clock stepped backwards across a removal and a re-activation could make a lease claimed before the
-  re-activation count.
+  re-activation count. A floor engine's withdrawal at the cap, within the learning window, does not set the attempt flag.
 - **G006-045 — The throughput cost and the call bound are predictions** until Task 006-056 measures them.
 - **G006-046 — The journal does not record that a lapsed lease had been acknowledged**; `worker_leases_expired_total{mark}` does.
 - **G006-047 — A lease whose earlier deadline is under three receive bounds (18 s) is not marked, nor the next lease of an attempt
