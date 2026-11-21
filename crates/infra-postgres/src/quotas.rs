@@ -1232,15 +1232,13 @@ impl QuotaStore for PgRunStore {
             .fetch_optional(&self.pool)
             .await
             .map(|value| value.unwrap_or(0)),
-            // Feature 041: the step-log class of the ADR-0027 Amendment has its own usage column.
-            QuotaResource::TenantStepLogBytes => sqlx::query_scalar(
-                "SELECT coalesce(step_log_bytes, 0)::bigint FROM tenant_retained_usage \
-                     WHERE tenant_id = $1",
-            )
-            .bind(tenant.as_uuid())
-            .fetch_optional(&self.pool)
-            .await
-            .map(|value| value.unwrap_or(0)),
+            // Feature 041: the step-log usage is shown only with the PII reveal grant in every namespace, read with it in
+            // one snapshot (decisions D041-133 and D041-141), so this general read refuses it.
+            QuotaResource::TenantStepLogBytes => {
+                return Err(StoreError::Internal {
+                    detail: "the step-log usage is read with the grant, through step_log_usage_if_revealed".into(),
+                });
+            }
             QuotaResource::DatabaseConnections => sqlx::query_scalar(
                 "SELECT count(*) FROM database_connections WHERE tenant_id=$1 AND namespace_id=$2 AND status<>'DELETED'")
                 .bind(tenant.as_uuid()).bind(namespace).fetch_one(&self.pool).await,

@@ -74,8 +74,8 @@ pub async fn has_effective_payload_reveal_grant(
 /// The membership role, the grants and the usage are one `SELECT`, so one snapshot (decision D041-141): a statement
 /// that waited behind a lock takes its snapshot when it runs, after the wait, so a revoke that committed meanwhile is
 /// seen, and the usage is never shown with a grant from before a revoke that the usage follows. A role change deletes
-/// the subject's grants in its own transaction (`memberships_role_change_revokes_reveal_grants`), which the snapshot
-/// sees whole, so the membership row is read, not locked: nothing is disclosed after this read that a lock would keep
+/// the subject's grants in its own transaction (the trigger `memberships_role_change_revokes_reveal_grants`), and a
+/// membership's removal cascades to its grants; the snapshot sees either whole, so the membership row is read, not locked: nothing is disclosed after this read that a lock would keep
 /// stable, and no grant-set fence is taken, so a quota read and a revoke never wait for each other.
 pub(crate) async fn step_log_usage_if_revealed(
     pool: &sqlx::PgPool,

@@ -772,9 +772,9 @@ async fn the_step_log_usage_is_shown_only_with_the_grant_in_every_namespace() {
 /// Feature 041 (decision D041-141, amending D041-140 item 5; OD-2026-11-20-19 is fail-closed): the grant and the
 /// usage of `tenant_step_log_bytes` are read in one snapshot, so a view either sees the grant and the usage together or
 /// neither. A revoke transaction deletes the admin's grant, sets the usage to a figure no view may show with the grant
-/// (7,777 bytes) and holds the usage table, all uncommitted. The view a `clear` returns (which reads the grant before
-/// it first touches the usage table; a list reads that table earlier, for the content and log resources) is seen
-/// waiting in `pg_stat_activity`; no sleep decides the order. The revoke commits and the view must answer one of the
+/// (7,777 bytes) and holds the usage table, all uncommitted. The view a `clear` returns is seen waiting on that
+/// transaction in `pg_stat_activity` (a `clear` of a resource with no setting touches no usage before its view does; a
+/// list would wait first on the content and log resources' reads of the same table); no sleep decides the order. The revoke commits and the view must answer one of the
 /// two consistent pairs: the usage before the revoke with the grant, or no usage without it; never 7,777 shown.
 #[tokio::test]
 async fn a_view_that_reads_after_a_revoke_commits_never_shows_the_step_log_usage() {
@@ -810,6 +810,10 @@ async fn a_view_that_reads_after_a_revoke_commits_never_shows_the_step_log_usage
 
     let tenant = w.admin.tenant_id().as_uuid();
     let mut revoke = w.db.pool.begin().await.expect("revoke");
+    let revoke_pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&mut *revoke)
+        .await
+        .expect("the revoke's backend");
     let deleted = sqlx::query(
         "DELETE FROM payload_reveal_grants WHERE tenant_id = $1 AND namespace_id = $2 AND subject = $3",
     )
@@ -852,8 +856,9 @@ async fn a_view_that_reads_after_a_revoke_commits_never_shows_the_step_log_usage
         let waiting: bool = sqlx::query_scalar(
             "SELECT EXISTS (SELECT 1 FROM pg_stat_activity \
              WHERE datname = current_database() AND wait_event_type = 'Lock' \
-               AND query LIKE '%step_log%' AND pid <> pg_backend_pid())",
+               AND query LIKE '%step_log%' AND $1 = ANY (pg_blocking_pids(pid)))",
         )
+        .bind(revoke_pid)
         .fetch_one(&w.db.pool)
         .await
         .expect("the view waits");
@@ -878,6 +883,25 @@ async fn a_view_that_reads_after_a_revoke_commits_never_shows_the_step_log_usage
         "one snapshot: the grant and the usage together, or neither: {answer:?}"
     );
     assert_eq!(clear().await, (None, true), "the next view withholds");
+}
+
+/// Feature 041 (decision D041-141 (b)): the store's general usage read refuses `tenant_step_log_bytes`, so no caller
+/// reads that usage except through `step_log_usage_if_revealed`, which requires the grant.
+#[tokio::test]
+async fn the_store_refuses_the_step_log_usage_without_the_grant() {
+    use sagat_application::quotas::QuotaStore;
+    let w = world().await;
+    let read = w
+        .store
+        .usage(w.admin.tenant_id(), None, QuotaResource::TenantStepLogBytes)
+        .await;
+    assert!(
+        matches!(
+            read,
+            Err(sagat_application::error::StoreError::Internal { .. })
+        ),
+        "{read:?}"
+    );
 }
 
 #[tokio::test]
