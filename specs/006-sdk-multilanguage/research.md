@@ -244,7 +244,7 @@ All decisions below are "delegate (OD-2026-11-20-6)" unless they say otherwise.
   retryable failure, which is never ambiguous: it is retried while the budget allows and fails for good after. Weighed: a plain
   retryable failure always (consumes an attempt for work that never ran, and fails a step without retries for good); saying
   nothing (today: a false review).
-- **D006-006 — No cap on withdrawals of one step.** A withdrawal needs the server's own proof that the frame never left the
+- **D006-006 — No cap on withdrawals of one step.** (Superseded by D006-031 on 2026-11-21.) A withdrawal needs the server's own proof that the frame never left the
   process, or the host's own statement while it holds the lease; neither repeats without new polling, which the pace of the
   receive loop bounds. The counter `worker_leases_undelivered_total{cause, outcome="withdrawn"}` and the attempt that is not consumed make a loop
   visible. Revisit if a cause other than stopping or a window deadline shows in it.
@@ -277,7 +277,8 @@ What the code showed the decisions above do not settle. All "delegate (OD-2026-1
   withdrawal makes the step ready again, so it sends the task-ready hint `step.released` sends. A reader that looks up the
   lease of an attempt by its number takes the newest `step.leased` of that number (`ORDER BY seq DESC`), which is the lease
   that ran.
-- **D006-014 — `TASK_NOT_STARTED` is decided on the code.** The withdrawal does not depend on the `retryable` flag: the code is
+- **D006-014 — `TASK_NOT_STARTED` is decided on the code.** (Narrowed by D006-030 on 2026-11-21: on the code, the minor of
+  the session that holds the lease and the cap of D006-031.) The withdrawal does not depend on the `retryable` flag: the code is
   the host's statement that no handler ran. When the server does not withdraw, the report is an ordinary failure with the
   flag the host sent. A managed database task keeps its closed list of failure codes, so a managed runner that sends
   `TASK_NOT_STARTED` is refused as today (G006-004).
@@ -323,3 +324,112 @@ What the code showed the decisions above do not settle. All "delegate (OD-2026-1
     unchanged (their leases keep today's semantics). The acknowledgement deadline must be derived from measured delivery and
     heartbeat latency, not guessed. The variant, the minor and the deadline are decided in the ADR that follows (design first,
     the four reviewers before any code).
+
+### Decisions after the reviews (2026-11-21, D006-030 to D006-039, G006-030)
+
+The three reviews of the build (`reviews/2026-11-21/`) found three Blockers and six Majors. The coordinator chose the fixes;
+each decision below is "delegate (OD-2026-11-20-6)". Numbers 019 to 029 and 040 to 061 belong to the SDK branch and to the
+design of delivery acknowledgement, so this list starts at 030.
+
+- **D006-030 — `TASK_NOT_STARTED` belongs to the host, never to a handler** (security Blocker 1, architecture Blocker 1).
+  Three layers. (a) Every SDK rewrites a `TASK_NOT_STARTED` that a handler raises into an ordinary error (`WORKER_ERROR`), as
+  it does for a code that is not valid; only the host's own hand-back sends it (the SDK branch `bugfix/withdraw-leases-sdks`).
+  (b) The server honours it as a withdrawal only when the worker session that holds the lease (`steps.leased_by`) negotiated
+  a protocol minor that reserves the code: the minor of delivery acknowledgement, 1.8 (OD-2026-11-20-12, ADR-0099). From a
+  session of an older minor it is an ordinary failure: the attempt is spent, the backoff applies and the host's
+  `retryable` flag is honoured. SDKs already in the field and raw clients forward any code, so the reservation must be the
+  server's. (c) The cap of D006-031. This build negotiates at most 1.6, so no session reaches the withdrawal yet (G006-030);
+  the path is tested on a session whose stored minor the test raises to 8, the only way before 1.8 negotiates, and the
+  delivery acknowledgement build replaces that with a real 1.8 session. Narrows D006-005 and D006-014. Weighed: the SDK
+  rewrite alone (older SDKs and raw clients still send the code); the cap alone (a few free re-runs per attempt for any
+  handler); refusing the code outright before 1.8 (a host that follows `sdks/SPEC.md` §6.2 would get an error for an honest
+  hand-back, where an ordinary failure is a known outcome).
+- **D006-031 — At most four withdrawals for one attempt** (security Major 1; replaces D006-006). The count is derived from
+  the journal: the step's withdrawals that carry the attempt it is about to withdraw. A withdrawal gives the attempt back,
+  so every withdrawal before the attempt is spent carries the same number; the event's shape does not change. The
+  derivation of the bound:
+  1. One delivery is withdrawn at most once. After a withdrawal the step is `READY`, its token is dead, and the fence of a
+     second report with that token misses.
+  2. Four causes end a delivery of an attempt before any handler runs. The server's one: the consumer ended before the
+     frame reached the transport (a window that ended, a deadline, a client gone; for the count they are one cause, the
+     consumer's call ending). The host's three: it is stopping, a frame carries more than its credit, the rest of a
+     malformed frame is dropped. On the wire the host's three are one code.
+  3. Each cause is a fault of one delivery, not of the task. A host stops once in its life. A frame over the credit and a
+     malformed frame are faults of that frame. A cause that repeats for the same attempt is a property of the task, the
+     host or the client: a frame that never decodes, a client that always drops its call. It must spend the attempt like
+     any other failure.
+  4. So an honest attempt meets each cause at most once: four withdrawals. The cap is on the total, because the host's
+     three causes cannot be told apart.
+  The fifth withdrawal of one attempt is refused, and the outcome is counted as `capped`. Past the cap a `TASK_NOT_STARTED`
+  is the ordinary failure (the attempt spent, the backoff, the flag honoured), never a review. A lease the server did not
+  send is left to lapse, as before this feature: the server has no failure of a host to record, and a lapse keeps today's
+  meaning. A cap set too low costs one attempt, for example a rolling restart that hands the same step back a fifth time.
+  A cap set too high gives four free leases. The domain refuses the fifth in the command, not in the replay: a journal is
+  replayed whatever it holds. Tested at its edges for both causes: the fourth is withdrawn, the fifth is not.
+- **D006-032 — The requirement is a replay floor, and an engine-local switch stops new withdrawals** (architecture Blocker
+  2). `lease-withdrawal-v1` meant two things: permission to write the event, and the ability to replay it. Removing it
+  re-opened the gate for builds that cannot replay `step.lease_withdrawn`. Now:
+  - A trigger on `platform_requirements` refuses to delete `lease-withdrawal-v1` while any journal holds the event. A new
+    durable event is forward-only.
+  - Each withdrawal transaction reads the requirement under a share lock, through an owner function the runtime role may
+    run (`lease_withdrawal_required()`). The removal deletes the row, so the two cannot cross. A removal that commits first
+    leaves the withdrawal with no requirement, and it writes nothing. A withdrawal that commits first is seen by the
+    removal's check, which refuses.
+  - `SAGAT_LEASE_WITHDRAWAL=off` on an engine stops it writing new withdrawals. Its leases lapse as before, counted as
+    `disabled`. The engine still lists the capability, because it can still replay the event. This switch is the way to
+    stop withdrawing.
+  - Rolling a binary back below this feature is safe only while no journal holds the event. The down migration already
+    refuses otherwise.
+  Weighed: removing the requirement as the way to stop (lets older builds serve journals they cannot replay); a marker row
+  written by the first withdrawal (one more table and grant for the same answer the journal already gives).
+- **D006-033 — The capability lists in SQL follow the code** (architecture Blocker 3). Feature 022
+  (`20270130000200_flow_control_capabilities`) and this feature redefine the same three checks: `serving_instances_capabilities_known`,
+  `platform_requirements_capability_known` and `platform_requirement_history_capability_known`. Each lists its own values
+  only, so whichever branch merges second takes the union of both lists in its own migration, the newest one. A fitness
+  check in `scripts/check-architecture.py` fails when the newest definition of any of the three lists differs from the
+  tokens of `Capability::ALL`, so the order of the merges cannot drop a capability.
+- **D006-034 — One operator command activates a fleet requirement** (architecture Major 5): `control-plane
+  capability-activate <capability> --operator NAME [--expect-live N] [--dry-run]`. `<capability>` is the registry token
+  (`lease-withdrawal-v1`). The command holds a closed list of the capabilities an operator may activate this way. Each
+  entry gives the kinds the requirement covers, whether an empty fleet may be activated with `--expect-live 0`, and the
+  sentence that says what follows and where the runbook is. Every entry gets the same steps:
+  - the operator's name is checked (printable, a subject);
+  - the live processes of the kinds are counted, and the count must equal `--expect-live` (without it, none live is a
+    refusal);
+  - a live process that does not list the capability is refused by its instance id;
+  - a dry run checks that the database role may record the requirement, and changes nothing;
+  - the fleet is counted again under the epoch lock;
+  - a requirement already recorded exits 0.
+  Feature 022 adds its two capabilities as entries and drops `flow-control-activate`. `lease-withdrawal-activate` was never
+  released, so it goes away with no alias. The one-way handover of `schedules-v1` (`schedule-trigger-handover`, ADR-0082)
+  stays separate: it changes the platform's state in the same transaction and has no way back.
+- **D006-035 — A claim stops leasing when its consumer is gone** (correctness Major 1). Before each run's transaction the
+  claim asks whether its consumer is gone (the stream's body dropped or past its window, the unary handler dropped). If so,
+  it stops and returns what it already committed, which then goes to the withdrawal. Stopping between two run
+  transactions leaves nothing half done. A test probe runs after each run's commit, so a test can drop the consumer
+  between two runs (correctness Major 2).
+- **D006-036 — The producer and the unary claim run on the withdrawal tracker** (correctness Major 3, architecture Major 2).
+  A graceful shutdown then waits for a claim in progress and for the withdrawal it hands over, not only for the
+  withdrawals already started. The drain is bounded by the grace that is left, not by a new grace of its own.
+- **D006-037 — A unary poll keeps the tenant's concurrency slot until its claim ends** (security Major 2). The slot moves
+  into the claim's task, so a client that cancels at once cannot run more claims at the same time than the tenant's cap.
+- **D006-038 — At most a quarter of the pool withdraws at once** (security minor 3, architecture Major 3). An engine runs at
+  most `max(1, SAGAT_DB_MAX_CONNECTIONS / 4)` withdrawals at a time: 5 with the default pool of 20. The derivation:
+  - The pool's other users (the scheduler's passes, up to the pool less two; the lease keeper; the claims and reports of
+    the worker API) can each fill it on their own. The withdrawal is the one user that can wait: a lease lasts its
+    time-to-live, and the run lock it takes is the one a claim takes.
+  - With a quarter, three quarters of the connections stay for the rest at every moment.
+  - A withdrawal that waits holds no connection. The leases waiting are bounded by what claims can commit (the process's
+    stream bound times the credit of 64, plus the unary polls in flight), so the wait needs no bound of its own.
+  - A withdrawal that waits past its lease's expiry is still fenced. A lease the reaper ended misses the fence and is
+    counted `fence_missed`.
+- **D006-039 — ADR-0098 supersedes ADR-0029 decision 5 for the leases the server never handed to the transport**
+  (architecture Major 1). ADR-0029 decision 5 says never to release a committed lease because a write, stream or client
+  was cancelled, because a closed stream never proves that a handler did not start. That reason still holds for a frame
+  handed to the transport. It does not hold for a frame `poll_next` never returned: no host can have it, and the server
+  knows. ADR-0098 says so plainly and stays Proposed. Its acceptance goes to the owner, through the coordinator, because it
+  overturns part of an accepted decision about the guarantees of the worker protocol.
+
+- **G006-030 — No session honours `TASK_NOT_STARTED` before protocol 1.8 negotiates.** A host of 1.6 or 1.7 that hands a
+  lease back gets an ordinary failure: the attempt is spent and retried with its backoff. That is a known outcome, never a
+  review. Closed when the delivery acknowledgement build (ADR-0099) accepts 1.8.

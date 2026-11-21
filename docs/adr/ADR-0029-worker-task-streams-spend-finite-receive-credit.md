@@ -66,7 +66,9 @@ subsequent claim is observed before that claim; a claim already admitted may fin
 existing transactional fences. No zero-duration revocation guarantee is invented for a JWT provider
 that itself has no immediate revocation mechanism.
 
-**5. A disconnected stream leaves its committed leases to the existing recovery machinery.**
+**5. A disconnected stream leaves its committed leases to the existing recovery machinery.** (ADR-0098, Proposed, would
+supersede this decision for the leases the server never handed to the transport; it keeps it for a frame that was handed
+over.)
 Lease commitment precedes delivery. Losing the response can strand a lease until it expires;
 stream closure never proves that a handler did not start. Never release a committed lease merely
 because a write, stream or client was cancelled. An uncommitted claim rolls back. A committed,
