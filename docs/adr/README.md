@@ -49,7 +49,7 @@ Run input validation, refined in the build: [ADR-0092](ADR-0092-the-application-
 ## Every decision
 
 Each record, in number order, with the status written at its top (shortened to its first clause; the file has the
-rest). Numbers 0011, 0034, 0041 to 0049 and 0091 have no file on `develop`; numbers are shared by every branch (rule 1
+rest). Numbers 0011, 0034, 0041 to 0049, 0091 and 0095 have no file on `develop`; numbers are shared by every branch (rule 1
 above), so check the other branches before taking one. The [template](TEMPLATE.md) is the starting point for a new record.
 
 | Number | Decision | Status |
@@ -134,3 +134,6 @@ above), so check the other branches before taking one. The [template](TEMPLATE.m
 | 0089 | [A gated step waits outside READY, and one fenced grant routine, driven by key, serves every waiter whatever its gates](ADR-0089-a-gated-step-waits-outside-ready-and-one-fenced-grant-routine-serves-every-waiter-by-key.md) | Accepted |
 | 0090 | [Every run input is checked against its pinned version's schema before the run is created](ADR-0090-every-run-input-is-checked-against-its-pinned-version-schema-before-the-run-is-created.md) | Accepted |
 | 0092 | [The application names a runtime only for the blob-source parse, and the run-input rules refined in the build](ADR-0092-the-application-names-a-runtime-only-for-the-blob-source-parse-and-the-run-input-rules-refined-in-the-build.md) | Accepted |
+| 0093 | [The flow-control digest key is rotated per key, with live rows](ADR-0093-the-flow-control-digest-key-is-rotated-per-key-with-live-rows.md) | Accepted (2026-11-19, OD-2026-11-19-2) |
+| 0094 | [The readiness gate decides in an evaluation round, before `persist`](ADR-0094-the-readiness-gate-decides-in-an-evaluation-round-before-persist.md) | Accepted (2026-11-19, OD-2026-11-19-3) |
+| 0096 | [A paused run gives back what its granted, unleased steps hold, and they ask again on resume](ADR-0096-a-paused-run-gives-back-its-granted-unleased-steps-and-asks-again-on-resume.md) | Accepted (2026-11-20, OD-2026-11-20-2) |

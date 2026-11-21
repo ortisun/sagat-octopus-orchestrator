@@ -125,15 +125,7 @@ async fn a_pause_committing_ahead_of_a_prepared_control_refuses_the_stale_choice
         .run(
             &mut holder_tx,
             Effects::by(Actor::System("control-race-test"), None),
-            |_, state, _| {
-                Ok((
-                    (),
-                    sagat_domain::execution::Progress {
-                        events: vec![sagat_domain::execution::pause_run(state)?],
-                        pending: None,
-                    },
-                ))
-            },
+            |def, state, now| Ok(((), sagat_domain::execution::pause_run(def, state, now)?)),
         )
         .await
         .expect("prepare a real uncommitted pause");

@@ -381,6 +381,11 @@ async fn zero_policy_writer_and_downgrade_obey_both_relation_lock_orders() {
             .await
             .expect("zero not changed by refused down");
             assert_eq!(retained, 0);
+            // the refused down left the migrations after it undone (each down commits on its own): the schema is
+            // migrated again before the writers and the scheduler resume, as an operator would
+            migrate(&flow.api.db.pool)
+                .await
+                .expect("schema-first upgrade after the refused downgrade");
             sqlx::query(
                 "UPDATE tenant_collection_policies SET max_active_iterations=1 WHERE tenant_id=$1",
             )

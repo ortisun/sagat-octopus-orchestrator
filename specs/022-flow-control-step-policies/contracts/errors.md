@@ -21,9 +21,11 @@ key value, a cached value, a pin, a payload or a secret. Every row needs a test 
 | Same idempotency key, different body (standalone, test, invalidation, redrive) | 409 | `CONFLICT` | `IDEMPOTENCY_KEY_REUSED` | no |
 | Per-key waiter queue full (synchronous start) | 429 | `QUOTA_EXCEEDED` | `CONCURRENCY_QUEUE_FULL` | no |
 | Live semaphore keys, namespace `queued_runs`, cache entries, test runs, pins over a ceiling | 429 | `QUOTA_EXCEEDED` | `FLOW_CONTROL_LIMIT` (`details.limit`) | no |
+| A start that declares both gates is refused by the key that is full: its permit queue `CONCURRENCY_QUEUE_FULL`, its slot queue `RATE_LIMIT_QUEUE_FULL`; a full namespace `queued_runs` is `RATE_LIMIT_QUEUE_FULL` for any start that declares `rateLimit` (rate first, FR-022-052; D022-065) | 429 | `QUOTA_EXCEEDED` | as stated | no |
+| A start whose effective rate limit is zero (`rate_limit_per_second`, `_per_minute` or `_per_hour` of its window) | 429 | `QUOTA_EXCEEDED` | `FLOW_CONTROL_LIMIT` (`details.limit` names the policy) | no |
 | Per-key rate-limit buffer full, or namespace `queued_runs` full, for a start that would be buffered (synchronous start; US07) | 429 | `QUOTA_EXCEEDED` | `RATE_LIMIT_QUEUE_FULL` | no |
-| Live rate-limit keys over the namespace ceiling (US07) | 429 | `QUOTA_EXCEEDED` | `FLOW_CONTROL_LIMIT` (`details.limit`) | no |
-| Reset (018) of a run whose workflow declares a run-level `rateLimit`, with no free slot (a reset never waits; US07) | per 018 | 018 contract | `RATE_LIMIT_SLOT_UNAVAILABLE` (to be registered by 018, G1181) | no |
+| Live rate-limit keys over the namespace ceiling (US07) | 429 | `QUOTA_EXCEEDED` | `FLOW_CONTROL_LIMIT` (`details.limit`: `rate_limit_live_keys`) | no |
+| Reset (018) of a run whose workflow declares a run-level `rateLimit`, with no free slot (a reset never waits; rate first when the start also takes a permit; US07, D022-069) | 409 | `CONFLICT` (018 contract) | `RATE_LIMIT_SLOT_UNAVAILABLE` | no |
 | Publication or start using `concurrency` or `rateLimit` before the operator activated the capability through 018's instance-capability registry (review 2026-11-13) | 422 | `VALIDATION_FAILED` | `FLOW_CONTROL_ACTIVATION_PENDING` | no |
 | Any call to a process that lacks a capability the registry requires (018's code, reused) | 503 | `UNAVAILABLE` | `BINARY_CAPABILITY_MISSING` | yes |
 | Reset (018) of a permit-holding source with no free permit (a reset never queues) | per 018 | 018 contract | `CONCURRENCY_PERMIT_UNAVAILABLE` | no |

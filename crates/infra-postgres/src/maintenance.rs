@@ -9,6 +9,7 @@
 //! entries that are due and stops. The queries only *find* candidates; the authority is the
 //! run's row lock, taken by the caller, under which the domain re-checks the condition.
 
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 use sagat_application::error::StoreError;
@@ -21,10 +22,12 @@ use sagat_domain::execution::{Fence, InstancePath, RunId};
 use sagat_domain::identity::TenantId;
 use sagat_domain::workflow::{MAX_NODES, NodeId};
 use sqlx::postgres::PgRow;
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::execution::PgRunStore;
 use crate::identity::{col, corrupt, store_error, store_error_without_text};
+use crate::pool::BeginSafely as _;
 
 fn micros(duration: Duration) -> i64 {
     i64::try_from(duration.as_micros()).unwrap_or(i64::MAX)
@@ -45,6 +48,29 @@ fn step_ref(row: &PgRow) -> Result<StepRef, StoreError> {
         node: NodeId::parse_stored(&node).map_err(|_| corrupt("step node"))?,
         instance_path: InstancePath::root(),
     })
+}
+
+/// A waiter row: a step's names its node; a run's start's has `''` (T022-022).
+fn gate_waiter(row: &PgRow) -> Result<sagat_application::flow_control::GateWaiter, StoreError> {
+    let node: String = col(row, "node")?;
+    Ok(sagat_application::flow_control::GateWaiter {
+        tenant_id: TenantId::new(col::<Uuid>(row, "tenant_id")?),
+        run_id: RunId::new(col::<Uuid>(row, "run_id")?),
+        node: if node.is_empty() {
+            None
+        } else {
+            Some(NodeId::parse_stored(&node).map_err(|_| corrupt("waiter node"))?)
+        },
+    })
+}
+
+/// Whether `error` is PostgreSQL's `undefined_table` (42P01): a schema that predates the tables a pass reads (a rollback,
+/// or a rollout whose migration has not run). Such a pass has nothing to do, and must not fail every tick.
+fn absent_table(error: &sqlx::Error) -> bool {
+    error
+        .as_database_error()
+        .and_then(sqlx::error::DatabaseError::code)
+        .is_some_and(|code| code == "42P01")
 }
 
 fn addressed_step_ref(row: &PgRow) -> Result<StepRef, StoreError> {
@@ -88,6 +114,9 @@ fn outbox_messages(rows: &[sqlx::postgres::PgRow]) -> Result<Vec<OutboxMessage>,
     Ok(out)
 }
 
+/// A window row's key as read: tenant, namespace, pool, scope, group and digest.
+type WindowKey = (Uuid, Uuid, String, String, String, Vec<u8>);
+
 /// The window as the three parameters every candidate query takes: how many, the shards to look at
 /// and the tenants to leave out.
 fn window_params(window: &Window) -> (i64, Vec<i16>, Vec<Uuid>) {
@@ -99,6 +128,349 @@ fn window_params(window: &Window) -> (i64, Vec<i16>, Vec<Uuid>) {
 }
 
 impl MaintenanceStore for PgRunStore {
+    async fn due_gate_keys(
+        &self,
+        window: &Window,
+    ) -> Result<Vec<sagat_application::flow_control::GateKey>, StoreError> {
+        let (limit, shards, exclude) = window_params(window);
+        // the partial indexes `(key_shard, next_eligible_at) WHERE waiters > 0` of both key tables serve this
+        // `now()` is the selection's instant: at or after every hint it selects, at or before every count of the passes
+        // that follow (decision D022-066 item 3)
+        let rows = sqlx::query(
+            "SELECT k.tenant_id, k.namespace_id, k.kind, k.scope, k.group_name, k.key_digest, k.key_shard, \
+                    k.next_eligible_at, now() AS selected_at \
+               FROM unnest($2::smallint[]) AS sh(s) \
+               CROSS JOIN LATERAL ( \
+                 (SELECT tenant_id, namespace_id, 'CONCURRENCY' AS kind, permit_scope AS scope, group_name, key_digest, \
+                         key_shard, next_eligible_at \
+                    FROM concurrency_semaphores \
+                   WHERE key_shard = sh.s AND waiters > 0 AND next_eligible_at <= now() \
+                     AND pool = 'ORDINARY' AND tenant_id <> ALL($3::uuid[]) \
+                   ORDER BY next_eligible_at LIMIT $1) \
+                 UNION ALL \
+                 (SELECT tenant_id, namespace_id, 'RATE' AS kind, limit_scope AS scope, group_name, key_digest, \
+                         key_shard, next_eligible_at \
+                    FROM rate_limit_windows \
+                   WHERE key_shard = sh.s AND waiters > 0 AND next_eligible_at <= now() \
+                     AND pool = 'ORDINARY' AND tenant_id <> ALL($3::uuid[]) \
+                   ORDER BY next_eligible_at LIMIT $1) \
+               ) k \
+              ORDER BY k.next_eligible_at LIMIT $1",
+        )
+        .bind(limit)
+        .bind(shards)
+        .bind(exclude)
+        .fetch_all(self.pool())
+        .await;
+        // a schema that predates feature 022 has no key to serve (the scheduler goes on with the schema it finds)
+        let rows = match rows {
+            Err(error) if absent_table(&error) => return Ok(Vec::new()),
+            rows => rows.map_err(store_error)?,
+        };
+        rows.iter()
+            .map(|row| {
+                let kind: String = col(row, "kind")?;
+                let scope: String = col(row, "scope")?;
+                let group: String = col(row, "group_name")?;
+                let digest: Vec<u8> = col(row, "key_digest")?;
+                let shard: i16 = col(row, "key_shard")?;
+                Ok(sagat_application::flow_control::GateKey {
+                    tenant_id: TenantId::new(col::<Uuid>(row, "tenant_id")?),
+                    namespace_id: sagat_domain::identity::NamespaceId::new(col::<Uuid>(
+                        row,
+                        "namespace_id",
+                    )?),
+                    kind: if kind == "RATE" {
+                        sagat_domain::workflow::GateKind::RateLimit
+                    } else {
+                        sagat_domain::workflow::GateKind::Concurrency
+                    },
+                    level: match scope.as_str() {
+                        "RUN" => sagat_domain::workflow::GateLevel::Run,
+                        "STEP" => sagat_domain::workflow::GateLevel::Step,
+                        _ => return Err(corrupt("key scope")),
+                    },
+                    group: sagat_domain::workflow::ResolvedGroup::parse(&group)
+                        .map_err(|_| corrupt("key group"))?,
+                    digest: digest.try_into().map_err(|_| corrupt("key digest"))?,
+                    shard: u8::try_from(shard)
+                        .ok()
+                        .and_then(sagat_domain::sharding::Shard::new)
+                        .ok_or_else(|| corrupt("key shard"))?,
+                    hint: col(row, "next_eligible_at")?,
+                    selected_at: col(row, "selected_at")?,
+                })
+            })
+            .collect()
+    }
+
+    async fn gate_key_waiters(
+        &self,
+        key: &sagat_application::flow_control::GateKey,
+        limit: u32,
+    ) -> Result<Vec<sagat_application::flow_control::GateWaiter>, StoreError> {
+        let statement = match key.kind {
+            sagat_domain::workflow::GateKind::Concurrency => {
+                "SELECT w.tenant_id, w.run_id, w.node FROM concurrency_waiters w \
+                   JOIN runs r ON r.tenant_id = w.tenant_id AND r.id = w.run_id \
+                  WHERE w.tenant_id = $1 AND w.namespace_id = $2 AND w.pool = 'ORDINARY' AND w.permit_scope = $6 \
+                    AND w.group_name = $3 AND w.key_digest = $4 AND w.deadline_at > now() \
+                    AND r.status IN ('RUNNING', 'WAITING') AND NOT r.paused \
+                  ORDER BY w.enqueued_at, w.run_id, w.node LIMIT $5"
+            }
+            sagat_domain::workflow::GateKind::RateLimit => {
+                "SELECT w.tenant_id, w.run_id, w.node FROM rate_limit_waiters w \
+                   JOIN runs r ON r.tenant_id = w.tenant_id AND r.id = w.run_id \
+                  WHERE w.tenant_id = $1 AND w.namespace_id = $2 AND w.pool = 'ORDINARY' AND w.limit_scope = $6 \
+                    AND w.group_name = $3 AND w.key_digest = $4 AND w.deadline_at > now() \
+                    AND r.status IN ('RUNNING', 'WAITING') AND NOT r.paused \
+                  ORDER BY w.enqueued_at, w.run_id, w.node LIMIT $5"
+            }
+        };
+        sqlx::query(statement)
+            .bind(key.tenant_id.as_uuid())
+            .bind(key.namespace_id.as_uuid())
+            .bind(key.group.as_str())
+            .bind(key.digest.as_slice())
+            .bind(i64::from(limit))
+            .bind(key.level.as_str())
+            .fetch_all(self.pool())
+            .await
+            .map_err(store_error)?
+            .iter()
+            .map(gate_waiter)
+            .collect()
+    }
+
+    async fn rest_gate_key(
+        &self,
+        key: &sagat_application::flow_control::GateKey,
+        holder: Option<(&str, sagat_application::shards::Lease)>,
+    ) -> Result<(), StoreError> {
+        // only the holder of the key's home shard rests it, and only while its hint is the one the pass was selected by:
+        // a release that moved the hint since is kept (never late)
+        if key.kind == sagat_domain::workflow::GateKind::Concurrency {
+            sqlx::query(
+                "UPDATE concurrency_semaphores SET next_eligible_at = NULL, updated_at = clock_timestamp() \
+                  WHERE tenant_id = $1 AND namespace_id = $2 AND pool = 'ORDINARY' AND permit_scope = $9 \
+                    AND group_name = $3 AND key_digest = $4 AND next_eligible_at = $5 \
+                    AND ($6::text IS NULL OR EXISTS (SELECT 1 FROM scheduler_shards s WHERE s.shard = $7 \
+                         AND s.owner = $6 AND s.generation = $8 AND s.expires_at > clock_timestamp()))",
+            )
+            .bind(key.tenant_id.as_uuid())
+            .bind(key.namespace_id.as_uuid())
+            .bind(key.group.as_str())
+            .bind(key.digest.as_slice())
+            .bind(key.hint)
+            .bind(holder.map(|(owner, _)| owner))
+            .bind(holder.map(|(_, lease)| i16::from(lease.shard.index())))
+            .bind(holder.and_then(|(_, lease)| i64::try_from(lease.generation).ok()))
+            .bind(key.level.as_str())
+            .execute(self.pool())
+            .await
+            .map_err(store_error)?;
+            return Ok(());
+        }
+        // a window: locked first if its hint is still the selection's, then, while the key's home shard is held, its hint
+        // computed by a second statement (the lease row is only read, a leaf lock, ADR-0050 decision 7), whose
+        // snapshot holds every grant committed before the lock was granted (a grant is written only under its window's
+        // lock). One statement would re-check its compare-and-set on the row a grant just changed but count from the
+        // snapshot it took before that grant committed: a grant whose `least` left the hint unchanged was lost and the
+        // window rested with no hint (correctness review Major 1 of the re-review of 2026-11-20, decision D022-066 item 2)
+        let mut tx = self.pool().begin_safely().await.map_err(store_error)?;
+        let held: Option<i32> = sqlx::query_scalar(
+            "SELECT 1 FROM rate_limit_windows \
+              WHERE tenant_id = $1 AND namespace_id = $2 AND pool = 'ORDINARY' AND limit_scope = $6 \
+                AND group_name = $3 AND key_digest = $4 AND next_eligible_at = $5 \
+                FOR UPDATE",
+        )
+        .bind(key.tenant_id.as_uuid())
+        .bind(key.namespace_id.as_uuid())
+        .bind(key.group.as_str())
+        .bind(key.digest.as_slice())
+        .bind(key.hint)
+        .bind(key.level.as_str())
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(store_error)?;
+        if held.is_none() {
+            tx.rollback().await.map_err(store_error)?;
+            return Ok(());
+        }
+        // the first instant a grant that counted when the pass began may stop counting for one of the key's waiters: each
+        // waiter counts over its own window (D022-009), so the instant is taken for every window length its waiters
+        // declare; a leased grant ages out at its lease plus that length, an unleased one no earlier than the pass's start
+        // plus it (it frees by a return, which sets the hint, or by a lease, whose recording lowers the hint). The pass's
+        // start is the instant of the statement that selected the key ($5: at or after its hint, at or before every count
+        // the pass made, decision D022-066 item 3): a grant that aged out while the pass ran yields an instant already
+        // past, so the key is due again at once rather than never (correctness review Major 3 of 2026-11-20). Early,
+        // never late, and no window lock for the lease pass (D022-021, D022-064; plan "The grant pass, by key")
+        sqlx::query(
+            "UPDATE rate_limit_windows w \
+                SET next_eligible_at = ( \
+                    SELECT min(coalesce(g.leased_at, $5) + make_interval(secs => p.period_ms / 1000.0)) \
+                      FROM rate_limit_grants g \
+                     CROSS JOIN (SELECT DISTINCT wt.period_ms FROM rate_limit_waiters wt \
+                                  WHERE wt.tenant_id = w.tenant_id AND wt.namespace_id = w.namespace_id \
+                                    AND wt.pool = w.pool AND wt.limit_scope = w.limit_scope \
+                                    AND wt.group_name = w.group_name AND wt.key_digest = w.key_digest) p \
+                     WHERE g.tenant_id = w.tenant_id AND g.namespace_id = w.namespace_id \
+                       AND g.pool = w.pool AND g.limit_scope = w.limit_scope \
+                       AND g.group_name = w.group_name AND g.key_digest = w.key_digest \
+                       AND (g.leased_at IS NULL \
+                            OR g.leased_at + make_interval(secs => p.period_ms / 1000.0) > $5)), \
+                    updated_at = clock_timestamp() \
+              WHERE w.tenant_id = $1 AND w.namespace_id = $2 AND w.pool = 'ORDINARY' AND w.limit_scope = $6 \
+                AND w.group_name = $3 AND w.key_digest = $4 \
+                AND ($7::text IS NULL OR EXISTS (SELECT 1 FROM scheduler_shards s WHERE s.shard = $8 \
+                     AND s.owner = $7 AND s.generation = $9 AND s.expires_at > clock_timestamp()))",
+        )
+        .bind(key.tenant_id.as_uuid())
+        .bind(key.namespace_id.as_uuid())
+        .bind(key.group.as_str())
+        .bind(key.digest.as_slice())
+        .bind(key.selected_at)
+        .bind(key.level.as_str())
+        .bind(holder.map(|(owner, _)| owner))
+        .bind(holder.map(|(_, lease)| i16::from(lease.shard.index())))
+        .bind(holder.and_then(|(_, lease)| i64::try_from(lease.generation).ok()))
+        .execute(&mut *tx)
+        .await
+        .map_err(store_error)?;
+        tx.commit().await.map_err(store_error)?;
+        Ok(())
+    }
+
+    async fn record_rate_leases(&self, window: &Window) -> Result<u64, StoreError> {
+        let (limit, shards, exclude) = window_params(window);
+        // the root step's journal is read through its instance (`steps.step_id` is the `instance_id` of its events,
+        // `run_events_instance_idx`), and only for a step whose projection says the attempt was leased (security review
+        // Major 2 of 2026-11-20: a grant no worker leased costs no journal probe); a lease counts only when it is the
+        // granted attempt's and was journaled after the grant (D022-029); the instant is the lease's, or the grant's when
+        // the lease's transaction read its clock first (a later instant only keeps a slot longer: under-delivery, never an
+        // early grant, plan "Failure and recovery")
+        let recorded = sqlx::query(
+            "UPDATE rate_limit_grants g SET leased_at = greatest(d.leased_at, g.granted_at) \
+               FROM (SELECT c.tenant_id, c.run_id, c.node, c.attempt, c.leased_at \
+                       FROM unnest($2::smallint[]) AS sh(s) \
+                      CROSS JOIN LATERAL ( \
+                        SELECT u.tenant_id, u.run_id, u.node, u.attempt, l.occurred_at AS leased_at \
+                          FROM rate_limit_grants u \
+                          JOIN steps st ON st.tenant_id = u.tenant_id AND st.run_id = u.run_id \
+                                       AND st.instance_path_nodes = '{}' AND st.instance_path_indices = '{}' \
+                                       AND st.node = u.node AND st.attempt >= u.attempt \
+                         CROSS JOIN LATERAL ( \
+                           SELECT e.occurred_at FROM run_events e \
+                            WHERE e.tenant_id = u.tenant_id AND e.run_id = u.run_id AND e.instance_id = st.step_id \
+                              AND e.event_type = 'step.leased' AND e.attempt = u.attempt \
+                              AND e.seq > (SELECT max(gr.seq) FROM run_events gr \
+                                            WHERE gr.tenant_id = u.tenant_id AND gr.run_id = u.run_id \
+                                              AND gr.instance_id = st.step_id AND gr.event_type = 'rate_limit.granted' \
+                                              AND gr.attempt = u.attempt) \
+                            ORDER BY e.seq LIMIT 1) l \
+                         WHERE u.shard = sh.s AND u.leased_at IS NULL AND u.limit_scope = 'STEP' \
+                           AND u.tenant_id <> ALL($3::uuid[]) \
+                         ORDER BY u.granted_at LIMIT $1) c) d \
+              WHERE g.tenant_id = d.tenant_id AND g.run_id = d.run_id AND g.node = d.node AND g.attempt = d.attempt \
+                AND g.leased_at IS NULL \
+             RETURNING g.tenant_id, g.namespace_id, g.pool, g.limit_scope, g.group_name, g.key_digest, g.leased_at",
+        )
+        .bind(limit)
+        .bind(shards)
+        .bind(exclude)
+        .fetch_all(self.pool())
+        .await;
+        let recorded = match recorded {
+            // a schema that predates feature 022 has no grant to record
+            Err(error) if absent_table(&error) => return Ok(0),
+            recorded => recorded.map_err(store_error)?,
+        };
+        // the windows of the recorded slots wake no later than the first instant a slot may stop counting for one of
+        // their waiters (the lease plus the shortest window they wait over): the rest rule saw these grants unleased and
+        // waited from its own instant, which a lease journaled earlier makes late (correctness review minor 2, architecture
+        // review on D022-064 item 5). After the grants' commit, one window a statement, so no transaction holds a grant
+        // row and waits for a window, nor two windows
+        let mut earliest: BTreeMap<WindowKey, OffsetDateTime> = BTreeMap::new();
+        for row in &recorded {
+            let key = (
+                col::<Uuid>(row, "tenant_id")?,
+                col::<Uuid>(row, "namespace_id")?,
+                col::<String>(row, "pool")?,
+                col::<String>(row, "limit_scope")?,
+                col::<String>(row, "group_name")?,
+                col::<Vec<u8>>(row, "key_digest")?,
+            );
+            let leased: OffsetDateTime = col(row, "leased_at")?;
+            earliest
+                .entry(key)
+                .and_modify(|at| *at = (*at).min(leased))
+                .or_insert(leased);
+        }
+        for ((tenant, namespace, pool, scope, group, digest), leased) in earliest {
+            sqlx::query(
+                "UPDATE rate_limit_windows w \
+                    SET next_eligible_at = least(w.next_eligible_at, \
+                            $7 + make_interval(secs => (SELECT min(x.period_ms) FROM rate_limit_waiters x \
+                                                         WHERE x.tenant_id = w.tenant_id AND x.namespace_id = w.namespace_id \
+                                                           AND x.pool = w.pool AND x.limit_scope = w.limit_scope \
+                                                           AND x.group_name = w.group_name \
+                                                           AND x.key_digest = w.key_digest) / 1000.0)), \
+                        updated_at = clock_timestamp() \
+                  WHERE w.tenant_id = $1 AND w.namespace_id = $2 AND w.pool = $3 AND w.limit_scope = $4 \
+                    AND w.group_name = $5 AND w.key_digest = $6 AND w.waiters > 0",
+            )
+            .bind(tenant)
+            .bind(namespace)
+            .bind(pool)
+            .bind(scope)
+            .bind(group)
+            .bind(digest)
+            .bind(leased)
+            .execute(self.pool())
+            .await
+            .map_err(store_error)?;
+        }
+        Ok(u64::try_from(recorded.len()).unwrap_or(u64::MAX))
+    }
+
+    async fn purge_rate_grants(&self, keys: u32, limit: u32) -> Result<u64, StoreError> {
+        let now: OffsetDateTime = sqlx::query_scalar("SELECT clock_timestamp()")
+            .fetch_one(self.pool())
+            .await
+            .map_err(store_error)?;
+        self.purge_rate_grants_as_of(now, keys, limit).await
+    }
+
+    async fn due_gate_waits(
+        &self,
+        window: &Window,
+    ) -> Result<Vec<sagat_application::flow_control::GateWaiter>, StoreError> {
+        let (limit, shards, exclude) = window_params(window);
+        // a step queued for both gates has one deadline, the earlier, on both rows: `UNION` names it once
+        let rows = sqlx::query(
+            "SELECT t.tenant_id, t.run_id, t.node FROM unnest($2::smallint[]) AS sh(s) \
+             CROSS JOIN LATERAL ( \
+                 (SELECT tenant_id, run_id, node, deadline_at FROM concurrency_waiters \
+                   WHERE shard = sh.s AND deadline_at <= now() \
+                     AND tenant_id <> ALL($3::uuid[]) ORDER BY deadline_at LIMIT $1) \
+                 UNION \
+                 (SELECT tenant_id, run_id, node, deadline_at FROM rate_limit_waiters \
+                   WHERE shard = sh.s AND deadline_at <= now() \
+                     AND tenant_id <> ALL($3::uuid[]) ORDER BY deadline_at LIMIT $1) \
+             ) t ORDER BY t.deadline_at LIMIT $1",
+        )
+        .bind(limit)
+        .bind(shards)
+        .bind(exclude)
+        .fetch_all(self.pool())
+        .await;
+        // a schema that predates feature 022 has no waiter to time out
+        match rows {
+            Err(error) if absent_table(&error) => Ok(Vec::new()),
+            rows => rows.map_err(store_error)?.iter().map(gate_waiter).collect(),
+        }
+    }
+
     /// Boundaries that can be handed off now. A run that still holds open work is not a candidate: it
     /// would sit at the head of the oldest-first list and keep the others from being examined
     /// (D296). The store proves quiescence again under the chain and run locks.
@@ -425,33 +797,85 @@ impl MaintenanceStore for PgRunStore {
 
     async fn due_start_releases(&self, window: &Window) -> Result<Vec<RunRef>, StoreError> {
         let (limit, shards, exclude) = window_params(window);
-        sqlx::query(
-            "SELECT t.tenant_id, t.id FROM unnest($2::smallint[]) AS sh(s) \
+        // feature 022 (D022-054): a release a flow-control ceiling refused is held back until its retry instant
+        const DUE: &str = "SELECT t.tenant_id, t.id FROM unnest($2::smallint[]) AS sh(s) \
+             CROSS JOIN LATERAL ( \
+                 SELECT tenant_id, id, start_delayed_until FROM runs \
+                 WHERE run_shard(id) = sh.s AND start_delayed_until IS NOT NULL \
+                   AND status = 'WAITING' AND start_delayed_until <= now() \
+                   AND tenant_id <> ALL($3::uuid[]) \
+                   AND NOT EXISTS (SELECT 1 FROM start_release_deferrals d \
+                                    WHERE d.tenant_id = runs.tenant_id AND d.run_id = runs.id \
+                                      AND d.retry_at > now()) \
+                 ORDER BY start_delayed_until LIMIT $1) t \
+             ORDER BY t.start_delayed_until LIMIT $1";
+        // a schema that predates the deferrals (a rollback, or a rollout whose migration has not run) holds none back
+        const DUE_WITHOUT_DEFERRALS: &str = "SELECT t.tenant_id, t.id FROM unnest($2::smallint[]) AS sh(s) \
              CROSS JOIN LATERAL ( \
                  SELECT tenant_id, id, start_delayed_until FROM runs \
                  WHERE run_shard(id) = sh.s AND start_delayed_until IS NOT NULL \
                    AND status = 'WAITING' AND start_delayed_until <= now() \
                    AND tenant_id <> ALL($3::uuid[]) \
                  ORDER BY start_delayed_until LIMIT $1) t \
-             ORDER BY t.start_delayed_until LIMIT $1",
-        )
-        .bind(limit)
-        .bind(shards)
-        .bind(exclude)
-        .fetch_all(self.pool())
-        .await
+             ORDER BY t.start_delayed_until LIMIT $1";
+        let code = |error: &sqlx::Error| match error {
+            sqlx::Error::Database(database) => database.code().map(|code| code.into_owned()),
+            _ => None,
+        };
+        let mut rows = sqlx::query(DUE)
+            .bind(limit)
+            .bind(&shards)
+            .bind(&exclude)
+            .fetch_all(self.pool())
+            .await;
+        if let Err(error) = &rows
+            && code(error).as_deref() == Some("42P01")
+        {
+            rows = sqlx::query(DUE_WITHOUT_DEFERRALS)
+                .bind(limit)
+                .bind(&shards)
+                .bind(&exclude)
+                .fetch_all(self.pool())
+                .await;
+        }
         // A schema that predates the delay (a rollback, or a rollout whose migration has not run yet)
         // has no delayed start to release: that is not a failure of the pass.
-        .or_else(|error| match &error {
-            sqlx::Error::Database(database) if database.code().as_deref() == Some("42703") => {
-                Ok(Vec::new())
-            }
+        rows.or_else(|error| match code(&error).as_deref() {
+            Some("42703") => Ok(Vec::new()),
             _ => Err(error),
         })
         .map_err(store_error)?
         .iter()
         .map(run_ref)
         .collect()
+    }
+
+    async fn defer_start_release(
+        &self,
+        run: RunRef,
+        reason: &'static str,
+    ) -> Result<u32, StoreError> {
+        // the backoff of 018's deferred items (plan row 4): 5 s, doubling, at most 5 min
+        let deferrals: i32 = sqlx::query_scalar(
+            "INSERT INTO start_release_deferrals AS d \
+                    (tenant_id, namespace_id, run_id, deferrals, first_deferred_at, retry_at, reason) \
+             SELECT r.tenant_id, r.namespace_id, r.id, 1, now(), now() + interval '5 seconds', $3 \
+               FROM runs r WHERE r.tenant_id = $1 AND r.id = $2 \
+             ON CONFLICT (tenant_id, run_id) DO UPDATE SET \
+                 deferrals = d.deferrals + 1, \
+                 retry_at = now() + least(interval '5 seconds' * power(2, least(d.deferrals, 10)), \
+                                          interval '5 minutes'), \
+                 reason = EXCLUDED.reason \
+             RETURNING deferrals",
+        )
+        .bind(run.tenant_id.as_uuid())
+        .bind(run.run_id.as_uuid())
+        .bind(reason)
+        .fetch_optional(self.pool())
+        .await
+        .map_err(store_error)?
+        .unwrap_or(0);
+        Ok(u32::try_from(deferrals).unwrap_or(0))
     }
 
     async fn overdue_runs(&self, window: &Window) -> Result<Vec<RunRef>, StoreError> {
@@ -909,6 +1333,99 @@ impl OutboxStore for PgRunStore {
                 .await
                 .map_err(store_error)?;
         Ok(u64::try_from(n).unwrap_or(0))
+    }
+}
+
+impl PgRunStore {
+    /// [`MaintenanceStore::purge_rate_grants`] as of the database instant `now` (feature 022, transaction T25): a grant is deleted
+    /// when `leased_at + max_period_ms + 1 minute < now`, so one leased exactly that long before `now` is kept. Public so
+    /// that a test can place its rows on either side of the boundary; the pass passes the database clock.
+    ///
+    /// # Errors
+    /// A store error.
+    #[doc(hidden)]
+    pub async fn purge_rate_grants_as_of(
+        &self,
+        now: OffsetDateTime,
+        keys: u32,
+        limit: u32,
+    ) -> Result<u64, StoreError> {
+        let candidates = sqlx::query(concat!(
+            "SELECT DISTINCT g.tenant_id, g.namespace_id, g.pool, g.limit_scope, g.group_name, g.key_digest \
+               FROM rate_limit_grants g \
+               JOIN rate_limit_windows w ON w.tenant_id = g.tenant_id AND w.namespace_id = g.namespace_id \
+                AND w.pool = g.pool AND w.limit_scope = g.limit_scope AND w.group_name = g.group_name \
+                AND w.key_digest = g.key_digest \
+              WHERE ",
+            purgeable_grant!("g", "w", "$1"),
+            " LIMIT $2"
+        ))
+        .bind(now)
+        .bind(i64::from(keys))
+        .fetch_all(self.pool())
+        .await;
+        let candidates = match candidates {
+            Err(error) if absent_table(&error) => return Ok(0),
+            rows => rows.map_err(store_error)?,
+        };
+        let mut deleted = 0u64;
+        for row in &candidates {
+            let tenant: Uuid = col(row, "tenant_id")?;
+            let namespace: Uuid = col(row, "namespace_id")?;
+            let pool: String = col(row, "pool")?;
+            let scope: String = col(row, "limit_scope")?;
+            let group: String = col(row, "group_name")?;
+            let digest: Vec<u8> = col(row, "key_digest")?;
+            let mut tx = self.pool().begin_safely().await.map_err(store_error)?;
+            // the window first, as every transaction that changes a grant of the key (plan transaction T25; D022-038)
+            let window: Option<i32> = sqlx::query_scalar(
+                "SELECT max_period_ms FROM rate_limit_windows WHERE tenant_id = $1 AND namespace_id = $2 AND pool = $3 \
+                 AND limit_scope = $4 AND group_name = $5 AND key_digest = $6 FOR UPDATE SKIP LOCKED",
+            )
+            .bind(tenant)
+            .bind(namespace)
+            .bind(&pool)
+            .bind(&scope)
+            .bind(&group)
+            .bind(&digest)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(store_error)?;
+            // a key another transaction holds (a decision, another replica's purge) is left to a later call
+            let Some(_) = window else {
+                tx.rollback().await.map_err(store_error)?;
+                continue;
+            };
+            let gone = sqlx::query(concat!(
+                "DELETE FROM rate_limit_grants g USING rate_limit_windows w \
+                  WHERE w.tenant_id = $1 AND w.namespace_id = $2 AND w.pool = $3 AND w.limit_scope = $4 \
+                    AND w.group_name = $5 AND w.key_digest = $6 \
+                    AND g.tenant_id = w.tenant_id AND g.namespace_id = w.namespace_id AND g.pool = w.pool \
+                    AND g.limit_scope = w.limit_scope AND g.group_name = w.group_name AND g.key_digest = w.key_digest \
+                    AND (g.tenant_id, g.run_id, g.node, g.attempt) IN ( \
+                        SELECT o.tenant_id, o.run_id, o.node, o.attempt FROM rate_limit_grants o \
+                         WHERE o.tenant_id = w.tenant_id AND o.namespace_id = w.namespace_id AND o.pool = w.pool \
+                           AND o.limit_scope = w.limit_scope AND o.group_name = w.group_name \
+                           AND o.key_digest = w.key_digest AND ",
+                purgeable_grant!("o", "w", "$7"),
+                " LIMIT $8)"
+            ))
+            .bind(tenant)
+            .bind(namespace)
+            .bind(&pool)
+            .bind(&scope)
+            .bind(&group)
+            .bind(&digest)
+            .bind(now)
+            .bind(i64::from(limit))
+            .execute(&mut *tx)
+            .await
+            .map_err(store_error)?
+            .rows_affected();
+            tx.commit().await.map_err(store_error)?;
+            deleted += gone;
+        }
+        Ok(deleted)
     }
 }
 

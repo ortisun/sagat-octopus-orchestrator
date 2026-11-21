@@ -1,0 +1,10 @@
+{
+  "apiVersion": "sagat-octopus-orchestrator.io/v1",
+  "kind": "Workflow",
+  "metadata": {"name": "too-fast"},
+  "entrypoint": "a",
+  "rateLimit": {"limit": 101, "per": "second"},
+  "nodes": [
+    {"id": "a", "type": "activity", "activity": "act.a"}
+  ]
+}

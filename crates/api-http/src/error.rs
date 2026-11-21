@@ -46,6 +46,16 @@ impl ErrorCode {
     #[must_use]
     pub fn remediation(self, reason: Option<&str>) -> &'static str {
         match (self, reason.unwrap_or_default()) {
+            // feature 022 (018's contract, `specs/018-schedules-bulk-operations/contracts/errors.md`)
+            (Self::Conflict, "CONCURRENCY_PERMIT_UNAVAILABLE") => {
+                "Retry the reset when a holder of the key has finished."
+            }
+            (Self::Conflict, "RATE_LIMIT_SLOT_UNAVAILABLE") => {
+                "Retry the reset once a slot of the key's window has stopped counting (the source's own slot counts for one window from its grant)."
+            }
+            (Self::QuotaExceeded, "CONCURRENCY_QUEUE_FULL") => {
+                "Retry when the key's queue has room."
+            }
             (Self::Conflict, "IDEMPOTENCY_KEY_REUSED") => {
                 "Use a new Idempotency-Key for a different request, or send the same request again with its key."
             }
@@ -999,6 +1009,7 @@ impl ApiError {
                 e
             }
             AppError::Unavailable => Self::unavailable(),
+            AppError::FlowControl(refusal) => flow_control_refusal(refusal),
             AppError::PayloadTooLarge(what) => {
                 let mut e = Self::new(
                     StatusCode::PAYLOAD_TOO_LARGE,
@@ -1185,6 +1196,53 @@ fn lake_refusal_details(node: &str, refusal: &sagat_domain::database::LakeRefusa
     }
 }
 
+/// The refusals of flow control (feature 022, `contracts/errors.md`, "REST refusals"): existing codes, each with its
+/// own reason. None names a key's value; `FLOW_CONTROL_LIMIT` names the ceiling.
+fn flow_control_refusal(refusal: sagat_application::flow_control::FlowControlRefusal) -> ApiError {
+    use sagat_application::flow_control::FlowControlRefusal as R;
+    let mut e = match refusal {
+        R::ConcurrencyQueueFull | R::RateLimitQueueFull | R::Limit { .. } => {
+            // `limit` is always a literal of this codebase, so the label set is closed
+            let limit = match refusal {
+                R::Limit { limit } => limit,
+                _ => refusal.reason(),
+            };
+            metrics::counter!("quota_exceeded_total", "limit" => limit).increment(1);
+            ApiError::new(
+                StatusCode::TOO_MANY_REQUESTS,
+                ErrorCode::QuotaExceeded,
+                "a flow-control limit was reached; nothing was started",
+            )
+        }
+        R::ActivationPending { .. } => ApiError::validation(
+            "the flow-control capability this workflow uses is not activated for the fleet yet",
+        ),
+        R::CapabilityDisabled { .. } => ApiError::validation(
+            "the flow-control capability this workflow uses is disabled by this deployment",
+        ),
+        R::BinaryCapabilityMissing => ApiError::unavailable(),
+        // 018's contract (`specs/018-schedules-bulk-operations/contracts/errors.md`): a reset cannot queue
+        R::PermitUnavailable => ApiError::conflict(
+            "no permit of the run's concurrency key is free; a reset never queues",
+        ),
+        R::SlotUnavailable => ApiError::conflict(
+            "no slot of the run's rate-limit key is free in its window; a reset never waits",
+        ),
+    };
+    e.parts.details = Some(match refusal {
+        R::Limit { limit } => json!({ "reason": refusal.reason(), "limit": limit }),
+        R::ActivationPending { capability } | R::CapabilityDisabled { capability } => {
+            json!({ "reason": refusal.reason(), "capability": capability.as_str() })
+        }
+        R::ConcurrencyQueueFull
+        | R::RateLimitQueueFull
+        | R::BinaryCapabilityMissing
+        | R::PermitUnavailable
+        | R::SlotUnavailable => json!({ "reason": refusal.reason() }),
+    });
+    e
+}
+
 /// Structured detail for a rejected workflow document: paths and node ids, never document values
 /// beyond the clipped fragments the codec already limited.
 fn definition_details(error: &IrError) -> Value {
@@ -1238,6 +1296,9 @@ fn definition_details(error: &IrError) -> Value {
         IrError::LakeDisabled { node } => json!({ "reason": "LAKE_DISABLED", "node": node }),
         IrError::CollectionOperatorsDisabled { node } => {
             json!({ "reason": "COLLECTION_OPERATORS_DISABLED", "node": node })
+        }
+        IrError::FlowControlActivationPending { capability } => {
+            json!({ "reason": "FLOW_CONTROL_ACTIVATION_PENDING", "capability": capability })
         }
         IrError::Operator {
             node,

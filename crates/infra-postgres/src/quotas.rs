@@ -212,6 +212,17 @@ pub(crate) async fn activity_admitted(
 }
 
 /// A new run fits in its namespace and in its tenant.
+/// Takes the namespace's run-admission lock (the lock [`ensure_room_for_run`] takes first) for the rest of the transaction:
+/// for a transaction that queues a run outside its creation (feature 022, the release of a start delay, D022-052), so
+/// that every count of the namespace's queued runs is still taken after it (D022-051).
+pub(crate) async fn lock_run_admission(
+    conn: &mut PgConnection,
+    tenant: TenantId,
+    namespace: NamespaceId,
+) -> Result<(), StoreError> {
+    lock(conn, QuotaResource::ActiveRuns, tenant, Some(namespace)).await
+}
+
 pub(crate) async fn ensure_room_for_run(
     conn: &mut PgConnection,
     tenant: TenantId,
@@ -671,6 +682,11 @@ pub(crate) async fn effective(
             .await
             .map_err(store_error)?
         };
+    Ok(resolve_rows(resource, &rows))
+}
+
+/// The effective value of `resource` from its stored rows: (namespace, value, whether it is the tenant's ceiling).
+fn resolve_rows(resource: QuotaResource, rows: &[(Option<uuid::Uuid>, i64, bool)]) -> u64 {
     let value = |scoped: bool| {
         rows.iter()
             .find(|(ns, _, ceiling)| !ceiling && ns.is_some() == scoped)
@@ -681,7 +697,67 @@ pub(crate) async fn effective(
         .find(|(_, _, ceiling)| *ceiling)
         .map(|(_, v, _)| u64::try_from(*v).unwrap_or(0));
     let ceiling = quota::ceiling(resource, granted);
-    Ok(quota::resolve(resource, value(true), value(false), ceiling).0)
+    quota::resolve(resource, value(true), value(false), ceiling).0
+}
+
+/// The namespace ceilings a gate decision applies (feature 022, G1199, T022-077): the limits of a key (`concurrency_limit`,
+/// `rate_limit_per_second`, `rate_limit_per_minute`, `rate_limit_per_hour`), the longest wait, the live keys of each kind
+/// and the two queue ceilings, read in one statement of the caller's transaction, effective as everywhere else
+/// (namespace, tenant and deployment).
+///
+/// # Errors
+/// A store error.
+pub(crate) async fn step_gate_ceilings(
+    conn: &mut sqlx::PgConnection,
+    tenant: TenantId,
+    namespace: NamespaceId,
+) -> Result<sagat_domain::workflow::FlowControlCeilings, StoreError> {
+    // every ceiling a gate decision applies, read in one statement (the run admission of T022-022 also applies the two
+    // queue ceilings; a ceiling left out here would silently fall back to its default)
+    const READ: [QuotaResource; 9] = [
+        QuotaResource::ConcurrencyLimit,
+        QuotaResource::FlowControlQueueTimeoutMs,
+        QuotaResource::ConcurrencyLiveKeys,
+        QuotaResource::QueuedRuns,
+        QuotaResource::FlowControlKeyWaiters,
+        QuotaResource::RateLimitLiveKeys,
+        QuotaResource::RateLimitPerSecond,
+        QuotaResource::RateLimitPerMinute,
+        QuotaResource::RateLimitPerHour,
+    ];
+    let rows: Vec<(String, Option<uuid::Uuid>, i64, bool)> = sqlx::query_as(
+        "SELECT resource, namespace_id, max_value, false FROM quota_limits \
+          WHERE tenant_id = $1 AND resource = ANY($2) AND (namespace_id IS NULL OR namespace_id = $3) \
+         UNION ALL \
+         SELECT resource, NULL, max_value, true FROM quota_ceilings \
+          WHERE tenant_id = $1 AND resource = ANY($2)",
+    )
+    .bind(tenant.as_uuid())
+    .bind(READ.map(QuotaResource::as_str).to_vec())
+    .bind(namespace.as_uuid())
+    .fetch_all(&mut *conn)
+    .await
+    .map_err(store_error)?;
+    let of = |resource: QuotaResource| {
+        let mine: Vec<_> = rows
+            .iter()
+            .filter(|(name, ..)| name == resource.as_str())
+            .map(|(_, ns, value, ceiling)| (*ns, *value, *ceiling))
+            .collect();
+        resolve_rows(resource, &mine)
+    };
+    Ok(sagat_domain::workflow::FlowControlCeilings {
+        concurrency_limit: of(QuotaResource::ConcurrencyLimit),
+        queue_timeout_ms: of(QuotaResource::FlowControlQueueTimeoutMs),
+        live_keys: of(QuotaResource::ConcurrencyLiveKeys),
+        queued_runs: of(QuotaResource::QueuedRuns),
+        key_waiters: of(QuotaResource::FlowControlKeyWaiters),
+        rate_live_keys: of(QuotaResource::RateLimitLiveKeys),
+        rate_per_second: of(QuotaResource::RateLimitPerSecond),
+        rate_per_minute: of(QuotaResource::RateLimitPerMinute),
+        rate_per_hour: of(QuotaResource::RateLimitPerHour),
+        ..sagat_domain::workflow::FlowControlCeilings::DEFAULT
+    })
 }
 
 impl QuotaLookup for PgRunStore {
@@ -1275,7 +1351,54 @@ impl QuotaStore for PgRunStore {
             .bind(namespace)
             .fetch_one(&self.pool)
             .await,
+            // feature 022 (T022-013): a run waiting for both gates counts once; the waiter rows of both gates are the
+            // truth until the sharded counters of T022-105 exist
+            QuotaResource::QueuedRuns => sqlx::query_scalar(crate::flow_control::QUEUED_RUNS_SQL)
+            .bind(tenant.as_uuid())
+            .bind(namespace)
+            .fetch_one(&self.pool)
+            .await,
+                        // the semaphores; the windows have a ceiling of their own (T022-077, plan "Finite ceilings (rate limits)")
+            QuotaResource::ConcurrencyLiveKeys => sqlx::query_scalar(
+                "SELECT count(*) FROM concurrency_semaphores WHERE tenant_id = $1 AND namespace_id = $2",
+            )
+            .bind(tenant.as_uuid())
+            .bind(namespace)
+            .fetch_one(&self.pool)
+            .await,
+            // the window rows of both scopes (T022-077, decision D022-066 item 1), as the gate counts them before it creates
+            // one; like the semaphores' usage, every digest version (the gate leaves out a forcibly retired one's rows)
+            QuotaResource::RateLimitLiveKeys => sqlx::query_scalar(
+                "SELECT count(*) FROM rate_limit_windows WHERE tenant_id = $1 AND namespace_id = $2",
+            )
+            .bind(tenant.as_uuid())
+            .bind(namespace)
+            .fetch_one(&self.pool)
+            .await,
+            // the limit applies to every key; its scalar usage is the busiest key's run waiters, as for
+            // `activity_concurrency`
+            QuotaResource::FlowControlKeyWaiters => sqlx::query_scalar(
+                "SELECT coalesce(max(waiting), 0)::bigint FROM ( \
+                     SELECT count(*) AS waiting FROM concurrency_waiters \
+                      WHERE tenant_id = $1 AND namespace_id = $2 AND permit_scope = 'RUN' \
+                      GROUP BY pool, group_name, key_digest \
+                     UNION ALL \
+                     SELECT count(*) AS waiting FROM rate_limit_waiters \
+                      WHERE tenant_id = $1 AND namespace_id = $2 AND limit_scope = 'RUN' \
+                      GROUP BY pool, group_name, key_digest \
+                 ) per_key",
+            )
+            .bind(tenant.as_uuid())
+            .bind(namespace)
+            .fetch_one(&self.pool)
+            .await,
             QuotaResource::ApiRequestsPerSecond
+            | QuotaResource::ConcurrencyLimit
+            | QuotaResource::FlowControlQueueTimeoutMs
+            | QuotaResource::FlowControlNodeDeclarations
+            | QuotaResource::RateLimitPerSecond
+            | QuotaResource::RateLimitPerMinute
+            | QuotaResource::RateLimitPerHour
             | QuotaResource::EventsPerSecond
             | QuotaResource::EventRetentionSeconds
             | QuotaResource::ScriptRetentionDays

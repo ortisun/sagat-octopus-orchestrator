@@ -1,0 +1,263 @@
+//! The flow-control declarations of a document (feature 022, release 0.3.0 slice): top-level `concurrency` and
+//! `rateLimit` (run starts) and the same two fields on a root `activity` or `script` node (attempt dispatches).
+//!
+//! The codec decodes the fields on every path, `parse_stored` included; whether a deployment may publish them is the
+//! definition service's decision (the `concurrencyKeys` and `rateLimits` capabilities and their fleet activation,
+//! FR-022-031, FR-022-053), never this module's. What a key reads is checked here: a top-level key sees only `input`
+//! (a run does not exist when it is evaluated), a node-level one the run data a step sees. The key's value is never
+//! known to the codec: it is evaluated and digested at admission or readiness (D1168).
+
+use std::time::Duration;
+
+use sagat_application::definitions::IrError;
+use sagat_domain::workflow::flow_control::{self as domain, DEFAULT_QUEUE_TIMEOUT};
+use sagat_domain::workflow::{
+    ConcurrencyPolicy, Expression, FlowControl, FlowControlRule, FlowGroup, GateKind, GroupName,
+    NodeId, RateLimitPolicy, RatePeriod,
+};
+use sagat_infra_expr::Compiled;
+use serde_json::{Map, Value};
+
+/// What a top-level key may read: the run's input, nothing that exists only once the run does.
+const RUN_KEY_VARIABLES: [&str; 1] = ["input"];
+/// What a node-level key may read: the run data a step sees when it would become ready.
+const STEP_KEY_VARIABLES: [&str; 4] = ["input", "steps", "state", "run"];
+
+/// The longest expression a key may be: the bounded evaluator's source limit.
+const MAX_KEY_EXPRESSION_BYTES: usize = 1024;
+
+/// Refuses, before the schema is applied, a gate declared on a node of a body (`forEach`, `while`, `repeatUntil`): body
+/// instances are scheduled by 014's exact-path transactions, which need their own evidence (G1160, G1175), so the
+/// refusal names what is missing (`UNSUPPORTED_NODE`, dependency `SCOPED_CONCURRENCY` or `SCOPED_RATE_LIMIT`) instead
+/// of the schema's "additional property". Only a node whose id is a node id is answered here; any other shape is left
+/// to the schema, so the error never repeats other text of the document.
+pub(crate) fn check_surfaces(document: &Value) -> Result<(), IrError> {
+    let bodies = document
+        .get("bodies")
+        .and_then(Value::as_object)
+        .into_iter()
+        .flat_map(|bodies| bodies.values())
+        .filter_map(|body| body.get("nodes").and_then(Value::as_array));
+    for node in bodies.flatten() {
+        let Some(id) = node
+            .get("id")
+            .and_then(Value::as_str)
+            .filter(|id| NodeId::parse(id).is_ok())
+        else {
+            continue;
+        };
+        for (field, dependency) in [
+            ("concurrency", "SCOPED_CONCURRENCY"),
+            ("rateLimit", "SCOPED_RATE_LIMIT"),
+        ] {
+            if node.get(field).is_some() {
+                return Err(IrError::Pending {
+                    node: id.to_owned(),
+                    kind: field.to_owned(),
+                    dependency,
+                    reason: "flow control on a node inside a collection or loop body is not supported yet; declare it on a body `child` node's workflow",
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The gates of a run start, from the document's top level.
+///
+/// # Errors
+/// [`IrError::Invalid`] with the rule a declaration breaks.
+pub(crate) fn run(document: &Value) -> Result<FlowControl, IrError> {
+    level(document.as_object(), None)
+}
+
+/// The gates of a root node's steps. A node of another kind that declares one is refused by the domain
+/// (`Node::with_flow_control`), with the rule [`FlowControlRule::NodeKind`].
+///
+/// # Errors
+/// [`IrError::Invalid`] with the rule a declaration breaks.
+pub(crate) fn node(raw: &Map<String, Value>, id: &NodeId) -> Result<FlowControl, IrError> {
+    level(Some(raw), Some(id))
+}
+
+fn level(raw: Option<&Map<String, Value>>, node: Option<&NodeId>) -> Result<FlowControl, IrError> {
+    let Some(raw) = raw else {
+        return Ok(FlowControl::NONE);
+    };
+    let concurrency = raw
+        .get("concurrency")
+        .map(|value| concurrency(value, node))
+        .transpose()?;
+    let rate_limit = raw
+        .get("rateLimit")
+        .map(|value| rate_limit(value, node))
+        .transpose()?;
+    Ok(FlowControl::new(concurrency, rate_limit))
+}
+
+fn refused(kind: GateKind, node: Option<&NodeId>, rule: FlowControlRule) -> IrError {
+    IrError::Invalid(domain::invalid(kind, node, rule))
+}
+
+/// The fields of one declaration, closed: the schema says the same, and a stored document is read the same way.
+fn object<'a>(
+    value: &'a Value,
+    kind: GateKind,
+    node: Option<&NodeId>,
+    allowed: &[&str],
+) -> Result<&'a Map<String, Value>, IrError> {
+    value
+        .as_object()
+        .filter(|object| object.keys().all(|key| allowed.contains(&key.as_str())))
+        .ok_or_else(|| shape_issue(kind, node))
+}
+
+fn shape_issue(kind: GateKind, node: Option<&NodeId>) -> IrError {
+    let at = node.map_or_else(
+        || format!("/{}", kind.field()),
+        |node| format!("node '{node}'/{}", kind.field()),
+    );
+    IrError::Schema(vec![sagat_application::definitions::IrIssue {
+        path: at,
+        message: "a flow-control declaration is an object with only the fields of its schema"
+            .to_owned(),
+    }])
+}
+
+fn limit(
+    object: &Map<String, Value>,
+    kind: GateKind,
+    node: Option<&NodeId>,
+    max: u32,
+) -> Result<u32, IrError> {
+    object
+        .get("limit")
+        .and_then(Value::as_u64)
+        .and_then(|limit| u32::try_from(limit).ok())
+        .ok_or_else(|| refused(kind, node, FlowControlRule::Limit { max }))
+}
+
+fn group(
+    object: &Map<String, Value>,
+    kind: GateKind,
+    node: Option<&NodeId>,
+) -> Result<FlowGroup, IrError> {
+    match object.get("group") {
+        None => Ok(FlowGroup::Derived),
+        Some(Value::String(name)) => GroupName::parse(name)
+            .map(FlowGroup::Explicit)
+            .map_err(|rule| refused(kind, node, rule)),
+        Some(_) => Err(refused(kind, node, FlowControlRule::Group)),
+    }
+}
+
+fn queue_timeout(
+    object: &Map<String, Value>,
+    kind: GateKind,
+    node: Option<&NodeId>,
+) -> Result<Duration, IrError> {
+    match object.get("queueTimeoutMs") {
+        None => Ok(DEFAULT_QUEUE_TIMEOUT),
+        Some(value) => value
+            .as_u64()
+            .filter(|millis| *millis >= 1)
+            .map(Duration::from_millis)
+            .ok_or_else(|| refused(kind, node, FlowControlRule::QueueTimeout)),
+    }
+}
+
+/// The key expression: compiled now, so a run never meets a syntax error, and reading only what its level may.
+fn key(
+    object: &Map<String, Value>,
+    kind: GateKind,
+    node: Option<&NodeId>,
+) -> Result<Option<Expression>, IrError> {
+    let Some(raw) = object.get("key") else {
+        return Ok(None);
+    };
+    let place = node.map_or("(top level)", NodeId::as_str);
+    let field = match kind {
+        GateKind::Concurrency => "concurrency.key",
+        GateKind::RateLimit => "rateLimit.key",
+    };
+    let text = raw
+        .as_str()
+        .filter(|text| !text.is_empty() && text.len() <= MAX_KEY_EXPRESSION_BYTES)
+        .ok_or_else(|| IrError::Expression {
+            node: place.to_owned(),
+            field,
+            message: format!("expected an expression of 1 to {MAX_KEY_EXPRESSION_BYTES} bytes"),
+        })?;
+    let compiled = Compiled::compile(text).map_err(|error| IrError::Expression {
+        node: place.to_owned(),
+        field,
+        message: error.to_string(),
+    })?;
+    let allowed: &[&str] = if node.is_none() {
+        &RUN_KEY_VARIABLES
+    } else {
+        &STEP_KEY_VARIABLES
+    };
+    if compiled
+        .variables()
+        .iter()
+        .any(|variable| !allowed.contains(&variable.as_str()))
+    {
+        return Err(if node.is_none() {
+            refused(kind, node, FlowControlRule::TopLevelKey)
+        } else {
+            IrError::Expression {
+                node: place.to_owned(),
+                field,
+                message: "a step's key reads `input`, `steps`, `state` or `run`".to_owned(),
+            }
+        });
+    }
+    Expression::parse(text)
+        .map(Some)
+        .map_err(|error| IrError::Expression {
+            node: place.to_owned(),
+            field,
+            message: error.to_string(),
+        })
+}
+
+fn concurrency(value: &Value, node: Option<&NodeId>) -> Result<ConcurrencyPolicy, IrError> {
+    let kind = GateKind::Concurrency;
+    let object = object(
+        value,
+        kind,
+        node,
+        &["limit", "key", "group", "queueTimeoutMs"],
+    )?;
+    ConcurrencyPolicy::new(
+        group(object, kind, node)?,
+        key(object, kind, node)?,
+        limit(object, kind, node, domain::MAX_CONCURRENCY_LIMIT)?,
+        queue_timeout(object, kind, node)?,
+    )
+    .map_err(|rule| refused(kind, node, rule))
+}
+
+fn rate_limit(value: &Value, node: Option<&NodeId>) -> Result<RateLimitPolicy, IrError> {
+    let kind = GateKind::RateLimit;
+    let object = object(
+        value,
+        kind,
+        node,
+        &["limit", "per", "key", "group", "queueTimeoutMs"],
+    )?;
+    let per = object
+        .get("per")
+        .and_then(Value::as_str)
+        .and_then(RatePeriod::parse)
+        .ok_or_else(|| refused(kind, node, FlowControlRule::Period))?;
+    RateLimitPolicy::new(
+        group(object, kind, node)?,
+        key(object, kind, node)?,
+        limit(object, kind, node, per.max_limit())?,
+        per,
+        queue_timeout(object, kind, node)?,
+    )
+    .map_err(|rule| refused(kind, node, rule))
+}

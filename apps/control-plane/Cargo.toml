@@ -21,6 +21,8 @@ path = "src/main.rs"
 
 [dependencies]
 metrics.workspace = true
+# the flow-control digest key file is wiped from memory once parsed (D022-057)
+zeroize = { version = "1", default-features = false, features = ["alloc"] }
 serde_json.workspace = true
 axum.workspace = true
 base64 = "0.23"
@@ -42,3 +44,4 @@ uuid.workspace = true
 
 [dev-dependencies]
 rcgen = "0.13"
+tempfile = "3"

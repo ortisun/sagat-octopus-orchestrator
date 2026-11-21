@@ -5710,11 +5710,13 @@ dependencies = [
  "sagat-infra-secrets",
  "sagat-telemetry",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.21",
  "time",
  "tokio",
  "tracing",
  "uuid",
+ "zeroize",
 ]
 
 [[package]]
@@ -5800,6 +5802,7 @@ dependencies = [
  "sagat-infra-secrets",
  "sagat-scheduler",
  "sagat-telemetry",
+ "tempfile",
  "tokio",
  "tracing",
  "uuid",

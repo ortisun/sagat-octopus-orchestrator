@@ -14,6 +14,12 @@ Reads `cargo metadata` and fails when:
   * a `run.finished` body written by the PostgreSQL adapter (the message subscribers are sent when a run ends) is built after
     `add_schedule_origin`, in the same function (FR-018-046, D2143): a writer that forgets it tells the subscribers of a run a
     schedule started nothing about the schedule, and nothing else would fail;
+  * a SQL literal of the PostgreSQL adapter inserts into `runs` outside `execution.rs` (`PgRunStore::create`, the one admission
+    point every run creator passes, which refuses a gated definition its process does not run the gate for) and `chain_progress.rs` (the continuation successors, which
+    assert that their definition has no run-level gate): a new writer of runs would start runs past the gate (FR-022-059, D022-031).
+  * a domain start function (`start_run`, `start_run_delayed`, `start_run_gated`, `start_run_key_failed`) is called in production
+    code outside `Engine::start` of `crates/application/src/execution.rs`, where the gates of a run's start are decided (FR-022-059,
+    D022-049): every creator starts the run it was admitted for there;
   * the run-input validator (`crates/infra-schema/src/run_input/`, design 043) names `jsonschema` (a `use`, an `extern crate` or
     a qualified path): it is the oracle of a test only, never on the path (D043-074, ADR-0090);
   * `tokio` is a dependency of `sagat-application` with a default feature or a feature other than `rt`, or a build dependency,
@@ -318,6 +324,278 @@ def run_finished_errors(src):
     return errors
 
 
+# --- runs are inserted only where the flow-control gate runs (FR-022-059, D022-031) ---------------------------------------------
+RUN_WRITERS = ("execution.rs", "chain_progress.rs")
+# What each writer must call before it inserts, in the same function: the gate of the one admission point, and the
+# successor's refusal of a gated definition.
+RUN_WRITER_GUARDS = {"execution.rs": "declares_gates()", "chain_progress.rs": "refuse_gated_successor("}
+
+
+def run_insert_errors(src):
+    """The errors of the one-admission-point rule over the PostgreSQL adapter's source directory `src`."""
+    errors = []
+    root = pathlib.Path(src)
+    found = 0
+    for path in sorted(root.rglob("*.rs")):
+        text = path.read_text()
+        _, literals = rust_literals(text)
+        rel = path.relative_to(root).as_posix()
+        masked, _ = rust_literals(text)
+        for offset, sql in literals:
+            if not RUN_INSERT.search(sql):
+                continue
+            if rel in RUN_WRITERS:
+                found += rel == RUN_WRITERS[0]
+                guard = RUN_WRITER_GUARDS[rel]
+                inside = enclosing_function(masked, offset)
+                if inside is None or guard not in masked[inside[1]:offset]:
+                    errors.append(
+                        f"crates/infra-postgres/src/{rel}:{text.count(chr(10), 0, offset) + 1}: a statement inserts into "
+                        f"`runs` without `{guard}` before it in the same function: the run would not pass the "
+                        f"flow-control gate (FR-022-059)"
+                    )
+                continue
+            errors.append(
+                f"crates/infra-postgres/src/{rel}:{text.count(chr(10), 0, offset) + 1}: a statement inserts into `runs` outside "
+                f"{' and '.join(RUN_WRITERS)}: a run created here would not pass the one admission point, PgRunStore::create "
+                f"(FR-022-059); create runs through RunStore::create"
+            )
+    if found == 0:
+        errors.append(
+            f"no `INSERT INTO runs` was found in {RUN_WRITERS[0]} of {src}: the one-admission-point rule would check nothing "
+            f"(is the statement spelled otherwise?)"
+        )
+    return errors
+
+
+# --- a run's start passes its gates in one place (feature 022, T022-022, D022-049) ------------------------------------------------
+# Every creator starts the run it was admitted for through `Engine::start` (crates/application/src/execution.rs), which evaluates
+# the start's keys and has the adapter decide them; a creator that called a domain start function itself would start a run past
+# its gates. At run time the domain refuses a gated definition in `start_run`, and a state that knows its definition releases
+# nothing before every gate of its start holds (a delayed start and a reset decide their gates through the planner's
+# `Evaluation::StartGates`, D022-052, D022-053); this keeps it static. `Engine::start` builds its gated part in
+# `start_gated`, a function that returns it boxed (D022-070), so both are the one start point.
+DOMAIN_START = re.compile(r"\bstart_run(?:_delayed|_gated|_key_failed)?\s*\(")
+DOMAIN_START_HOME = ("crates/application/src/execution.rs", "start")
+DOMAIN_START_HOMES = {DOMAIN_START_HOME, ("crates/application/src/execution.rs", "start_gated")}
+
+
+def run_start_errors(root):
+    """The errors of the one-start-point rule over the tree at `root` (production sources outside the domain)."""
+    errors = []
+    found = 0
+    for rel, text, masked, _ in production_sources(root):
+        if rel.startswith("crates/domain/"):
+            continue
+        for m in DOMAIN_START.finditer(masked):
+            before = masked[max(0, m.start() - 8):m.start()]
+            # a method of another type (`self.start_run(`, `.start_run(&`) or a definition (`fn start_run(`) is not a call of
+            # the domain's function
+            if re.search(r"(\.|\bfn\s+)$", before):
+                continue
+            inside = enclosing_function(masked, m.start())
+            if inside is not None and (rel, inside[0]) in DOMAIN_START_HOMES:
+                found += 1
+                continue
+            errors.append(
+                f"{rel}:{text.count(chr(10), 0, m.start()) + 1}: a domain start function is called outside `Engine::start` "
+                f"({DOMAIN_START_HOME[0]}): the run would start past the gates of its start (FR-022-059, D022-049)"
+            )
+    if found == 0:
+        errors.append(
+            f"no domain start call was found in `Engine::start` of {DOMAIN_START_HOME[0]}: the one-start-point rule would "
+            f"check nothing"
+        )
+    return errors
+
+
+# --- key rows of the gates are filed only by `file_keys` (FR-022-056, D022-042) ---------------------------------------------------
+# A key row created anywhere else would skip the per-key rotation (the row under the retiring version wins) and the one lock order
+# (D022-038), and could split a key between two rows.
+KEY_ROW_INSERT = re.compile(r"\bINSERT\s+INTO\s+(concurrency_semaphores|rate_limit_windows)\b", re.IGNORECASE)
+KEY_ROW_FILER = "flow_control.rs"
+
+
+def key_row_insert_errors(src):
+    """The errors of the one-key-filer rule over the PostgreSQL adapter's source directory `src`."""
+    errors = []
+    root = pathlib.Path(src)
+    found = 0
+    for path in sorted(root.rglob("*.rs")):
+        text = path.read_text()
+        _, literals = rust_literals(text)
+        rel = path.relative_to(root).as_posix()
+        for offset, sql in literals:
+            match = KEY_ROW_INSERT.search(sql)
+            if not match:
+                continue
+            if rel == KEY_ROW_FILER:
+                found += 1
+                continue
+            errors.append(
+                f"crates/infra-postgres/src/{rel}:{text.count(chr(10), 0, offset) + 1}: a statement inserts into "
+                f"`{match.group(1)}` outside {KEY_ROW_FILER}: a key row is filed only by `file_keys`, which resolves it "
+                f"under the digest key versions in force and locks it in the one order (FR-022-056, D022-038, D022-042)"
+            )
+    if found == 0:
+        errors.append(
+            f"no key-row insert was found in {KEY_ROW_FILER} of {src}: the one-key-filer rule would check nothing "
+            f"(is the statement spelled otherwise?)"
+        )
+    return errors
+
+
+# --- the rows of a gate decision are written only by the gate (feature 022, the architecture review of 2026-11-19) --------
+# A holder, waiter or grant row is written under its key's lock, taken in the one sorted pass of the transaction (D022-038):
+# only the readiness gate and the queue's grant routine write them, so a third writer cannot skip that lock.
+GATE_ROW_WRITE = re.compile(
+    r"\b(?:INSERT\s+INTO|DELETE\s+FROM|UPDATE)\s+(concurrency_holders|concurrency_waiters|rate_limit_grants|rate_limit_waiters)\b",
+    re.IGNORECASE,
+)
+GATE_ROW_WRITERS = ("execution/readiness_gate.rs", "execution/gate_queue.rs")
+# The two writes of a grant row that are not a decision (feature 022, D022-064): the lease pass records the instant of a
+# lease (transaction T23, the grant row only, no key lock: ADR-0089, D022-021) and the purge deletes the grants no acquirer can count
+# (transaction T25, under the window's lock). Each is named by the start of its statement, in the one file that holds it.
+GATE_ROW_MAINTENANCE = (
+    ("maintenance.rs", re.compile(r"^\s*UPDATE\s+rate_limit_grants\s+g\s+SET\s+leased_at\b", re.IGNORECASE)),
+    ("maintenance.rs", re.compile(r"^\s*DELETE\s+FROM\s+rate_limit_grants\s+g\s+USING\s+rate_limit_windows\b", re.IGNORECASE)),
+)
+
+
+def gate_row_write_errors(src):
+    """The errors of the gate-row-writer rule over the PostgreSQL adapter's source directory `src`."""
+    errors = []
+    root = pathlib.Path(src)
+    found = 0
+    for path in sorted(root.rglob("*.rs")):
+        text = path.read_text()
+        _, literals = rust_literals(text)
+        rel = path.relative_to(root).as_posix()
+        for offset, sql in literals:
+            match = GATE_ROW_WRITE.search(sql)
+            if not match:
+                continue
+            if rel in GATE_ROW_WRITERS:
+                found += 1
+                continue
+            if any(rel == home and rule.search(sql) for home, rule in GATE_ROW_MAINTENANCE):
+                continue
+            errors.append(
+                f"crates/infra-postgres/src/{rel}:{text.count(chr(10), 0, offset) + 1}: a statement writes "
+                f"`{match.group(1)}` outside {' and '.join(GATE_ROW_WRITERS)}: a holder, waiter or grant row is written "
+                f"only under its key's lock, in the one sorted pass of the gate (D022-038, ADR-0089)"
+            )
+    if found == 0:
+        errors.append(
+            f"no gate-row write was found in {' or '.join(GATE_ROW_WRITERS)} of {src}: the gate-row-writer rule would "
+            f"check nothing (is the statement spelled otherwise?)"
+        )
+    return errors
+
+
+# --- one count of queued runs (feature 022, D022-055 item 3; the keys review of 2026-11-20, architecture m3) ------------------
+# The `queued_runs` ceiling's check, its quota usage and the key listing read one statement (`QUEUED_RUNS_SQL`), so they never
+# disagree about what a queued run is (a run waiting for a permit or a slot, counted once). A second statement that counts the
+# runs of both waiter tables is refused outside flow_control.rs.
+QUEUED_RUNS_COUNT = (
+    re.compile(r"\bcount\s*\(", re.IGNORECASE),
+    re.compile(r"\bselect\s+(?:distinct\s+)?(?:\w+\.)?run_id\s+from\s+concurrency_waiters\b", re.IGNORECASE),
+    re.compile(r"\bselect\s+(?:distinct\s+)?(?:\w+\.)?run_id\s+from\s+rate_limit_waiters\b", re.IGNORECASE),
+)
+QUEUED_RUNS_HOME = "flow_control.rs"
+
+
+def queued_runs_count_errors(src):
+    """The errors of the one-count-of-queued-runs rule over the PostgreSQL adapter's source directory `src`."""
+    errors = []
+    root = pathlib.Path(src)
+    found = 0
+    for path in sorted(root.rglob("*.rs")):
+        text = path.read_text()
+        _, literals = rust_literals(text)
+        rel = path.relative_to(root).as_posix()
+        for offset, sql in literals:
+            if not all(pattern.search(sql) for pattern in QUEUED_RUNS_COUNT):
+                continue
+            if rel == QUEUED_RUNS_HOME:
+                found += 1
+                continue
+            errors.append(
+                f"crates/infra-postgres/src/{rel}:{text.count(chr(10), 0, offset) + 1}: a statement counts the runs of "
+                f"both waiter tables outside {QUEUED_RUNS_HOME}: the queued runs are counted by `QUEUED_RUNS_SQL` only, "
+                f"so the ceiling, its usage and the key listing never disagree (D022-055)"
+            )
+    if found != 1:
+        errors.append(
+            f"{found} counts of queued runs were found in {QUEUED_RUNS_HOME} of {src}, where there is exactly one "
+            f"(`QUEUED_RUNS_SQL`): the one-count rule would check nothing or the statement was copied"
+        )
+    return errors
+
+
+# --- a key's value never reaches the API's flow-control bodies (feature 022, FR-022-022, D1168; keys review m4) -----------------
+# The bodies of `Run.concurrency` and the key listing are built from types that hold no key value: no JSON value (which could
+# carry one), no digest machinery, no digest read. A key is shown as its label only.
+KEY_VALUE_FREE_FILES = (
+    "crates/api-http/src/dto_flow_control.rs",
+    "crates/api-http/src/routes/concurrency.rs",
+    "crates/api-http/src/routes/rate_limits.rs",
+)
+KEY_VALUE_NAMES = re.compile(r"\b(serde_json|Value|KeyedDigest|FlowControlKey|KeyRing|keyed_digest|canonical)\b|\.digest\b")
+
+
+def key_value_free_errors(root):
+    """The errors of the key-value-free-bodies rule over the tree at `root`."""
+    errors = []
+    base = pathlib.Path(root)
+    if not (base / "crates/api-http/src").is_dir():
+        return errors  # a tree without the HTTP adapter (a fixture of another rule) has no body to check
+    for rel in KEY_VALUE_FREE_FILES:
+        path = base / rel
+        if not path.is_file():
+            errors.append(f"{rel} is named by the key-value-free rule and does not exist: the rule would check nothing")
+            continue
+        text = path.read_text()
+        masked, _ = rust_literals(text)
+        for m in KEY_VALUE_NAMES.finditer(masked):
+            errors.append(
+                f"{rel}:{text.count(chr(10), 0, m.start()) + 1}: `{m.group(0)}` in a flow-control body or route: these are "
+                f"built from types that hold no key value, and show a key by its label only (FR-022-022, D1168)"
+            )
+    return errors
+
+
+# --- feature 009's reveal rule has one implementation (feature 022's review of 2026-11-20, architecture M1) -----------------
+# Who may reveal personal data in a namespace is read from `payload_reveal_grants` by `reveal_grants.rs` only, so that a key
+# label (feature 022) and a payload disclosure never answer the question differently when the rule changes.
+REVEAL_GRANTS_TABLE = re.compile(r"\bpayload_reveal_grants\b", re.IGNORECASE)
+REVEAL_GRANTS_HOME = "reveal_grants.rs"
+
+
+def reveal_rule_errors(src):
+    """The errors of the one-reveal-rule rule over the PostgreSQL adapter's source directory `src`."""
+    errors = []
+    root = pathlib.Path(src)
+    found = 0
+    for path in sorted(root.rglob("*.rs")):
+        text = path.read_text()
+        _, literals = rust_literals(text)
+        rel = path.relative_to(root).as_posix()
+        for offset, sql in literals:
+            if not REVEAL_GRANTS_TABLE.search(sql):
+                continue
+            if rel == REVEAL_GRANTS_HOME:
+                found += 1
+                continue
+            errors.append(
+                f"crates/infra-postgres/src/{rel}:{text.count(chr(10), 0, offset) + 1}: a statement reads "
+                f"`payload_reveal_grants` outside {REVEAL_GRANTS_HOME}: feature 009's reveal rule has one implementation"
+            )
+    if found == 0 and (root / REVEAL_GRANTS_HOME).exists():
+        errors.append(f"no statement over payload_reveal_grants was found in {REVEAL_GRANTS_HOME}: the rule would check nothing")
+    return errors
+
+
 # --- the run-input validator is the platform's own (design 043, D043-074) -----------------------------------------------------
 # `jsonschema` is the oracle of the validator's property test and the compiler of the scripts' schemas; on the path of a run input it
 # would bring back what four reviews could not bound. Any mention of it in the code of the module (comments and strings aside) fails.
@@ -558,23 +836,63 @@ def gate_wiring_errors(root):
     return errors
 
 
+# The features that open a door only a test may open, each with why: `sagat-application/test-support` builds a
+# `CheckedRunInput` no gate checked (FR-043-016). (Feature 022's `rate-gates-for-tests` was removed with T022-072: this
+# build lists the rate gate.)
+TEST_ONLY_FEATURES = (
+    (APPLICATION_PACKAGE, TEST_SUPPORT_FEATURE, "it builds a `CheckedRunInput` no gate checked", "FR-043-016"),
+)
+
+
 def test_support_errors(pkgs):
-    """`sagat-application`'s `test-support` feature enabled outside `[dev-dependencies]`, as a dependency or by a feature."""
+    """A test-only feature (`TEST_ONLY_FEATURES`) enabled outside `[dev-dependencies]`, as a dependency or by a feature."""
     errors = []
-    for p in pkgs.values():
-        for d in p["dependencies"]:
-            if d["name"] == APPLICATION_PACKAGE and TEST_SUPPORT_FEATURE in d.get("features", []) and d.get("kind") != "dev":
-                errors.append(
-                    f"'{p['name']}' enables `{APPLICATION_PACKAGE}/{TEST_SUPPORT_FEATURE}` as a {d.get('kind') or 'normal'} "
-                    f"dependency: it builds a `CheckedRunInput` no gate checked, and belongs in `[dev-dependencies]` only (FR-043-016)"
-                )
-        for feature, enables in (p.get("features") or {}).items():
-            for item in enables:
-                if item.replace("?", "") == f"{APPLICATION_PACKAGE}/{TEST_SUPPORT_FEATURE}":
+    for package, feature_name, why, ref in TEST_ONLY_FEATURES:
+        for p in pkgs.values():
+            for d in p["dependencies"]:
+                if d["name"] == package and feature_name in d.get("features", []) and d.get("kind") != "dev":
                     errors.append(
-                        f"'{p['name']}' feature `{feature}` enables `{APPLICATION_PACKAGE}/{TEST_SUPPORT_FEATURE}`: it belongs in "
-                        f"`[dev-dependencies]` only (FR-043-016)"
+                        f"'{p['name']}' enables `{package}/{feature_name}` as a {d.get('kind') or 'normal'} "
+                        f"dependency: {why}, and belongs in `[dev-dependencies]` only ({ref})"
                     )
+            # the owning package may not turn it on by default, nor through another of its own features
+            if p["name"] == package:
+                for feature, enables in (p.get("features") or {}).items():
+                    if feature != feature_name and feature_name in enables:
+                        errors.append(
+                            f"'{package}' feature `{feature}` enables its test-only `{feature_name}`: every build that "
+                            f"turns `{feature}` on would carry it ({ref})"
+                        )
+            for feature, enables in (p.get("features") or {}).items():
+                for item in enables:
+                    if item.replace("?", "") == f"{package}/{feature_name}":
+                        errors.append(
+                            f"'{p['name']}' feature `{feature}` enables `{package}/{feature_name}`: it belongs in "
+                            f"`[dev-dependencies]` only ({ref})"
+                        )
+    return errors
+
+
+# The purge of feature 022's rate grants as of a chosen instant deletes grants that still count when given a future
+# one: only the tests call it, to place rows on either side of the boundary; the scheduler passes the database clock
+# (ADR-0088 decision 1, D022-064; architecture review Major 2 and security review minor 4 of 2026-11-20).
+PURGE_AS_OF_DOOR = re.compile(r"\bpurge_rate_grants_as_of\s*\(")
+PURGE_AS_OF_HOME = "crates/infra-postgres/src/maintenance.rs"
+
+
+def purge_as_of_door_errors(root):
+    """`purge_rate_grants_as_of` is called only under `tests/` and by `purge_rate_grants`, its definition aside."""
+    errors = []
+    for rel, text, masked, _ in production_sources(root):
+        for m in PURGE_AS_OF_DOOR.finditer(masked):
+            if rel == PURGE_AS_OF_HOME:
+                before = masked[max(0, m.start() - 8):m.start()]
+                if re.search(r"fn\s+$", before) or re.search(r"self\.$", before):
+                    continue
+            errors.append(
+                f"{rel}:{text.count(chr(10), 0, m.start()) + 1}: `purge_rate_grants_as_of` is called outside the "
+                f"tests: a caller-chosen instant shortens a rate grant (ADR-0088 decision 1, D022-064)"
+            )
     return errors
 
 
@@ -663,12 +981,20 @@ def main(argv):
 
     errors.extend(lease_row_errors(postgres_src))
     errors.extend(run_finished_errors(postgres_src))
+    errors.extend(run_insert_errors(postgres_src))
+    errors.extend(key_row_insert_errors(postgres_src))
+    errors.extend(gate_row_write_errors(postgres_src))
+    errors.extend(queued_runs_count_errors(postgres_src))
+    errors.extend(reveal_rule_errors(postgres_src))
     errors.extend(run_input_errors(run_input_src))
     errors.extend(application_runtime_errors(pkgs))
     errors.extend(run_creator_errors(rust_root))
+    errors.extend(run_start_errors(rust_root))
+    errors.extend(purge_as_of_door_errors(rust_root))
     errors.extend(run_input_runtime_errors(rust_root))
     errors.extend(gate_wiring_errors(rust_root))
     errors.extend(test_support_errors(pkgs))
+    errors.extend(key_value_free_errors(rust_root))
 
     # Cycle detection over workspace members (DFS, three colours).
     WHITE, GREY, BLACK = 0, 1, 2
@@ -699,7 +1025,9 @@ def main(argv):
             print(f"  - {e}")
         return 1
     print(f"architecture check passed ({len(graph)} workspace crates, layers respected, no cycles, the lease row is a leaf lock, every run.finished body says its schedule, "
-          f"no jsonschema in the run-input validator, the application's runtime confined to one file, every creator given the gate, every run created with a checked input)")
+          f"no jsonschema in the run-input validator, the application's runtime confined to one file, every creator given the gate, every run created with a checked input, "
+          f"runs are inserted only at the admission point, key rows are filed only by file_keys, gate rows are written only by the gate, a run starts only through Engine::start, "
+          f"queued runs are counted by one statement, flow-control bodies hold no key value, the reveal rule has one implementation)")
     return 0
 
 

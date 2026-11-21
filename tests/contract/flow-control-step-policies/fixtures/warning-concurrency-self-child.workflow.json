@@ -1,0 +1,10 @@
+{
+  "apiVersion": "sagat-octopus-orchestrator.io/v1",
+  "kind": "Workflow",
+  "metadata": {"name": "self-starting"},
+  "entrypoint": "again",
+  "concurrency": {"key": "input.accountId", "limit": 1},
+  "nodes": [
+    {"id": "again", "type": "child", "workflowId": "self-starting"}
+  ]
+}

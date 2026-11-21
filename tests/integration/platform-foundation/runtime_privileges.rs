@@ -99,6 +99,11 @@ const ALLOWED: &[Allowed] = &[
     },
     Allowed {
         file: INSTANCES,
+        need: "EXECUTE flow_control_kinds_without_capable_process()",
+        reason: "T022-094: the feature step of a flow-control activation, run inside the operator's activation with the schema-owning role (`control-plane flow-control-activate`); the runtime role never activates",
+    },
+    Allowed {
+        file: INSTANCES,
         need: "EXECUTE platform_requirement_remove()",
         reason: "T018-080: removing a requirement is the activation in reverse, operator only (see the entry for platform_requirement_activate)",
     },
@@ -208,13 +213,43 @@ struct Extracted {
     statement_files: BTreeSet<String>,
 }
 
+/// The fixed SQL macros of every module of `crates/infra-postgres/src`, by the path a caller
+/// names them with (`crate::flow_control::run_permit_lateral_sql`). `execution.rs` is read first:
+/// its children's macros may call its own.
+fn store_macro_prelude(root: &Path) -> BTreeMap<String, rust_source::Expansion> {
+    let src = root.join("crates/infra-postgres/src");
+    let mut files: Vec<PathBuf> = source_files()
+        .into_iter()
+        .filter(|path| path.starts_with(&src))
+        .collect();
+    files.sort_by_key(|path| (path != &src.join("execution.rs"), path.clone()));
+    // the crate root's macros (`purgeable_grant!`, declared before its modules) are in scope by name in every module
+    let lib = std::fs::read_to_string(src.join("lib.rs")).expect("read the crate root");
+    let mut inherited = rust_source::root_macros(&lib);
+    for path in files {
+        let module = path
+            .strip_prefix(&src)
+            .expect("under the store")
+            .with_extension("")
+            .to_string_lossy()
+            .replace('/', "::");
+        let module = module.strip_suffix("::mod").unwrap_or(&module).to_owned();
+        if module == "lib" {
+            continue;
+        }
+        let source = std::fs::read_to_string(&path).expect("read source");
+        let declared = rust_source::macro_prelude_of(&source, &module, &inherited);
+        inherited.extend(declared);
+    }
+    inherited
+}
+
 fn extract_all() -> Extracted {
     let root = repository();
-    // Child modules and explicitly imported predicates share execution.rs's real fixed macros.
-    // This imports declarations only, not its statements, and never grants an unresolved need.
-    let parent = std::fs::read_to_string(root.join("crates/infra-postgres/src/execution.rs"))
-        .expect("read shared SQL predicate declarations");
-    let inherited = rust_source::macro_prelude(&parent);
+    // Every module of the store declares its fixed macros under `crate::<module>::name`; a child
+    // of execution.rs also sees execution.rs's by name, and any module sees the ones it imports.
+    // This imports declarations only, not their statements, and never grants an unresolved need.
+    let inherited = store_macro_prelude(&root);
     let mut all = Extracted::default();
     for path in source_files() {
         let source = std::fs::read_to_string(&path).expect("read source");

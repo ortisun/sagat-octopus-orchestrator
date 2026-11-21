@@ -6,6 +6,7 @@ use time::OffsetDateTime;
 
 use super::approval::{ApprovalDecision, ApprovalReasonCode, ApprovalReceiptId, ApprovalRequestId};
 use super::error::ExecutionError;
+use super::flow_control::{GateChange, GateEvent};
 use super::instance::{ExecutionInstanceId, InstancePath};
 use super::state::{RunId, RunStatus};
 use crate::identity::{Subject, clip};
@@ -68,6 +69,39 @@ impl FailureCode {
     #[must_use]
     pub fn wait_timed_out() -> Self {
         Self::system("WAIT_TIMED_OUT")
+    }
+
+    /// A run or a step waited for a concurrency permit past its queue deadline (feature 022).
+    #[must_use]
+    pub fn concurrency_wait_timeout() -> Self {
+        Self::system("CONCURRENCY_WAIT_TIMEOUT")
+    }
+
+    /// A run or a step waited for a rate-limit slot past its queue deadline (feature 022).
+    #[must_use]
+    pub fn rate_limit_wait_timeout() -> Self {
+        Self::system("RATE_LIMIT_WAIT_TIMEOUT")
+    }
+
+    /// A step's flow-control key failed to evaluate or is longer than 256 bytes (feature 022, FR-022-054): the step
+    /// fails through its failure route with no attempt spent and is never granted.
+    #[must_use]
+    pub fn flow_control_key_invalid() -> Self {
+        Self::system("FLOW_CONTROL_KEY_INVALID")
+    }
+
+    /// A step's key would be a new key beyond the namespace's live-keys ceiling, or a ceiling of the namespace is zero
+    /// (feature 022, FR-022-054, FR-022-047): the step fails through its failure route with no attempt spent and is
+    /// never granted.
+    #[must_use]
+    pub fn flow_control_limit() -> Self {
+        Self::system("FLOW_CONTROL_LIMIT")
+    }
+
+    /// The two codes the readiness gate fails a step with, before any attempt (feature 022).
+    #[must_use]
+    pub fn is_readiness_refusal(&self) -> bool {
+        *self == Self::flow_control_key_invalid() || *self == Self::flow_control_limit()
     }
 
     #[must_use]
@@ -994,6 +1028,9 @@ pub enum RunEvent {
     RunFinished {
         status: RunStatus,
     },
+    /// A decision of flow control (feature 022): a run or a step waits for, is granted, gives back or gives up on a
+    /// concurrency permit or a rate-limit slot (`contracts/journal-events.md`).
+    Gate(GateEvent),
 }
 
 /// A journal event together with the scope path that addresses its logical execution instance.
@@ -1166,6 +1203,7 @@ impl RunEvent {
             Self::RunReset { .. } => "run.reset",
             Self::RunStopRequested { .. } => "run.stop_requested",
             Self::RunFinished { .. } => "run.finished",
+            Self::Gate(gate) => gate.change.name(),
         }
     }
 
@@ -1227,6 +1265,7 @@ impl RunEvent {
             | Self::StepSkipped { node }
             | Self::StepResolved { node, .. }
             | Self::ContinuationSelected { node, .. } => Some(node),
+            Self::Gate(gate) => gate.node(),
             Self::RunStarted { .. }
             | Self::ExecutionChainStarted { .. }
             | Self::ExecutionChainSuccessorLinked { .. }
@@ -1360,6 +1399,14 @@ impl RunEvent {
             } => cause("failure", FailureCode::run_timed_out().as_str()),
             Self::RunPaused => cause("request", "PAUSE"),
             Self::RunResumed => cause("request", "RESUME"),
+            Self::Gate(GateEvent {
+                change: GateChange::ConcurrencyWaitTimedOut,
+                ..
+            }) => cause("timeout", "CONCURRENCY_WAIT_TIMEOUT"),
+            Self::Gate(GateEvent {
+                change: GateChange::RateWaitTimedOut,
+                ..
+            }) => cause("timeout", "RATE_LIMIT_WAIT_TIMEOUT"),
             Self::RunFinished { status } => cause("outcome", status.as_str()),
             _ => None,
         }
@@ -1380,6 +1427,7 @@ impl RunEvent {
             | Self::StepNeedsReview {
                 fence: Some(fence), ..
             } => Some(fence.attempt),
+            Self::Gate(gate) => gate.attempt(),
             _ => None,
         }
     }

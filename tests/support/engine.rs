@@ -130,6 +130,16 @@ pub async fn world_with_breaker(
     settings: WorkerSettings,
     breaker: sagat_application::execution::BreakerPolicy,
 ) -> World {
+    world_with_store(settings, breaker, |store| store).await
+}
+
+/// A world whose run store is `configure`d before any service of the world is built over it (feature 022: the
+/// flow-control switches, the digest keys and the test-only admission of step gates).
+pub async fn world_with_store(
+    settings: WorkerSettings,
+    breaker: sagat_application::execution::BreakerPolicy,
+    configure: impl FnOnce(PgRunStore) -> PgRunStore,
+) -> World {
     // `RUST_LOG=debug cargo test ...` shows the causes the API deliberately hides from clients.
     static LOGGING: std::sync::Once = std::sync::Once::new();
     LOGGING.call_once(|| {
@@ -153,11 +163,13 @@ pub async fn world_with_breaker(
     // `SAGAT_VERIFY_SKIPPED_LOADS=1`: every command of this world's store checks that the
     // projections its definition lets it skip are empty (design 038, FR-038-005). `verify_run` makes
     // that check whatever this is set to.
-    let store = PgRunStore::new(store_pool.clone(), cache.clone())
-        .with_breaker(breaker)
-        .with_skipped_load_verification(
-            std::env::var("SAGAT_VERIFY_SKIPPED_LOADS").is_ok_and(|value| value == "1"),
-        );
+    let store = configure(
+        PgRunStore::new(store_pool.clone(), cache.clone())
+            .with_breaker(breaker)
+            .with_skipped_load_verification(
+                std::env::var("SAGAT_VERIFY_SKIPPED_LOADS").is_ok_and(|value| value == "1"),
+            ),
+    );
     let engine = Engine::new(JsonEvaluator);
     let key_k1 = sagat_infra_secrets::generate_key().expect("a key");
     let keys =
@@ -1025,12 +1037,31 @@ impl World {
             .collect()
     }
 
-    /// The projections must equal a replay of the journal.
+    /// The projections of `run` must equal a replay of its journal; and, across every run of the world's first tenant
+    /// (not only `run`), the flow-control key rows must agree with the permits the runs' journals hold and wait for, and
+    /// each run a key row names is verified the same way (feature 022, invariants 1, 2 and 12, T022-027).
     pub async fn assert_consistent(&self, run: RunId) {
         self.store
             .verify_run(self.admin.tenant_id(), run)
             .await
             .unwrap_or_else(|why| panic!("run {run} is inconsistent: {why}"));
+        self.assert_keys_consistent().await;
+    }
+
+    /// Invariants 1 and 2 of feature 022 across the runs of the first tenant, each run a key row names checked against
+    /// its journal ([`super::flow_control::key_consistency`]).
+    pub async fn assert_keys_consistent(&self) {
+        let runs = super::flow_control::key_consistency(&self.db.pool, self.admin.tenant_id())
+            .await
+            .unwrap_or_else(|why| panic!("the flow-control keys are inconsistent: {why}"));
+        for run in runs {
+            self.store
+                .verify_run(self.admin.tenant_id(), run)
+                .await
+                .unwrap_or_else(|why| {
+                    panic!("run {run}, which a key row names, is inconsistent: {why}")
+                });
+        }
     }
 
     pub async fn operate(

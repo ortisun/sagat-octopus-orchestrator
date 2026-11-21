@@ -1,0 +1,12 @@
+{
+  "apiVersion": "sagat-octopus-orchestrator.io/v1",
+  "kind": "Workflow",
+  "metadata": {"name": "provider-sync"},
+  "entrypoint": "fetch",
+  "concurrency": {"key": "input.accountId", "limit": 1},
+  "rateLimit": {"group": "provider-starts", "key": "input.providerId", "limit": 100, "per": "minute", "queueTimeoutMs": 900000},
+  "nodes": [
+    {"id": "fetch", "type": "activity", "activity": "provider.fetch", "rateLimit": {"key": "input.providerId", "limit": 10, "per": "second"}, "next": "done"},
+    {"id": "done", "type": "end"}
+  ]
+}

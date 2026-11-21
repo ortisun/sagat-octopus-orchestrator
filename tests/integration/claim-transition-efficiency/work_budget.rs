@@ -156,6 +156,20 @@ async fn itemised(
     text
 }
 
+/// The statements of one more start of `workflow`, for a failing budget's message.
+async fn itemised_start(w: &World, workflow: sagat_domain::definition::WorkflowId) -> String {
+    let before = calls(w).await;
+    w.start(workflow, &json!({})).await;
+    let mut text = String::from("\nadmission:\n");
+    for (query, count) in &calls(w).await {
+        let delta = count - before.get(query).copied().unwrap_or(0);
+        if delta > 0 {
+            text.push_str(&format!("  {delta:>3}  {query}\n"));
+        }
+    }
+    text
+}
+
 /// The cost of each of the six commands of one run of three chained activities, in order: lease
 /// and completion of `a`, of `b` and of `c` (whose completion ends the run).
 async fn one_run(
@@ -268,6 +282,256 @@ async fn a_lease_and_a_completion_cost_what_the_budget_says_once() -> Result<(),
 measured!(
     a_lease_and_a_completion_cost_what_the_budget_says,
     a_lease_and_a_completion_cost_what_the_budget_says_once
+);
+
+/// What admitting a run costs, for a definition that declares no gate (feature 022, NFR-022-007, T022-091): the line
+/// every admission change is measured against. A change to `PgRunStore::create` or to the start path that adds a
+/// statement, a transaction or a row for a definition without `concurrency` or `rateLimit` moves it.
+const PLAIN_ADMISSION: Work = cost(33, 1, 11);
+
+async fn a_plain_admission_costs_what_the_budget_says_once() -> Result<(), Evicted> {
+    let w = world().await;
+    sqlx::query("CREATE EXTENSION IF NOT EXISTS pg_stat_statements")
+        .execute(&w.db.pool)
+        .await
+        .expect("the test PostgreSQL preloads pg_stat_statements");
+    let (workflow, _) = w
+        .publish(document(
+            "budget-admission",
+            "a",
+            vec![with(activity("a"), "next", json!("b")), activity("b")],
+        ))
+        .await;
+    // The first starts pay for what is cached afterwards (the definition, prepared statements).
+    for _ in 0..2 {
+        w.start(workflow, &json!({})).await;
+    }
+    let mut costs = Vec::new();
+    for _ in 0..2 {
+        let before = reading(&w).await;
+        w.start(workflow, &json!({})).await;
+        costs.push(spent(&w, before).await?);
+    }
+    assert_eq!(
+        costs[0], costs[1],
+        "the counts of a quiet database do not vary"
+    );
+    if costs[0] != PLAIN_ADMISSION {
+        let before = calls(&w).await;
+        w.start(workflow, &json!({})).await;
+        let after = calls(&w).await;
+        let mut text = String::new();
+        for (query, count) in &after {
+            let delta = count - before.get(query).copied().unwrap_or(0);
+            if delta > 0 {
+                text.push_str(&format!("  {delta:>3}  {query}\n"));
+            }
+        }
+        panic!(
+            "the work of a plain admission left its budget (lower the budget with the change that earns it; raise it only \
+             with the reason beside it): {:?}, budget {PLAIN_ADMISSION:?}\nstatements of one more admission:\n{text}",
+            costs[0]
+        );
+    }
+    Ok(())
+}
+
+measured!(
+    a_plain_admission_costs_what_the_budget_says,
+    a_plain_admission_costs_what_the_budget_says_once
+);
+
+/// Feature 022 (T022-076, NFR-022-007, FR-038-001): the hot path of a definition whose middle step declares `rateLimit`.
+/// The claim of the rate-limited step is the plain claim (a gated step is granted before it is `READY`, ADR-0089, and its
+/// lease instant is recorded by a pass, T022-074); the completion whose next step declares the gate pays for the
+/// decision (the key versions, the window filed and locked, its count, the grant row); the other commands are the plain
+/// lines. Measured before any call site of the gate in a completion (T022-096).
+/// Measured 2026-11-19: the plain completion (50, 1, 11) and eight statements (the key versions in force, the window
+/// filed and locked, the database clock after the lock, the window's count, the grant row, its journal event and the
+/// extra quota check of the second event) and two rows (the grant and `rate_limit.granted`).
+/// Raised 2026-11-19 by one statement (58 to 59): the namespace ceilings the decision applies, read once per round
+/// (`concurrency_limit`, `flow_control_queue_timeout_ms`, `concurrency_live_keys`; G1199, FR-022-047). A rate limit
+/// alone files no semaphore, so the live-keys check costs nothing here.
+/// Raised 2026-11-20 by one statement (59 to 60): whether the step's window exists, so that a new window meets the
+/// namespace's `rate_limit_live_keys` before it is created (T022-077, G1199's rate half, D022-064); the live count itself
+/// is read only when the window would be new.
+const COMPLETION_WITH_A_RATE_LIMITED_NEXT_STEP: Work = cost(60, 1, 13);
+/// An admission whose entry step declares `rateLimit`: the plain admission and the decision of its entry.
+/// Measured 2026-11-19: the plain admission (33, 1, 11) and the same eight statements and two rows; raised to nine
+/// statements (41 to 42) the same day for the ceilings read (G1199).
+/// Raised 2026-11-20 by two statements (42 to 44): the fleet activation read of the one admission point (as the gated
+/// start's line) and the window's existence (`rate_limit_live_keys`, task T022-077, decision D022-064); plan, "Hot-path
+/// budget of a gated definition".
+const RATE_LIMITED_ENTRY_ADMISSION: Work = cost(44, 1, 13);
+
+async fn a_rate_limited_step_costs_what_the_budget_says_once() -> Result<(), Evicted> {
+    let w = crate::support::flow_control::gated_world().await;
+    sqlx::query("CREATE EXTENSION IF NOT EXISTS pg_stat_statements")
+        .execute(&w.db.pool)
+        .await
+        .expect("the test PostgreSQL preloads pg_stat_statements");
+    // no key: the single key of the group, so that every run of the measure counts on one existing row
+    let gate = json!({"limit": 10_000, "per": "hour"});
+    let workflow = crate::support::flow_control::publish(
+        &w,
+        document(
+            "budget-gated-chain",
+            "a",
+            vec![
+                with(activity("a"), "next", json!("b")),
+                with(
+                    with(activity("b"), "rateLimit", gate.clone()),
+                    "next",
+                    json!("c"),
+                ),
+                activity("c"),
+            ],
+        ),
+    )
+    .await;
+    let session = w.session(&["act.a", "act.b", "act.c"]).await;
+    one_run_measured(&w, workflow, &session).await?;
+    let first = one_run_measured(&w, workflow, &session).await?;
+    let second = one_run_measured(&w, workflow, &session).await?;
+    assert_eq!(first, second, "the counts of a quiet database do not vary");
+    let [lease_a, done_a, lease_b, done_b, lease_c, done_c] = first;
+    let entry = crate::support::flow_control::publish(
+        &w,
+        document(
+            "budget-gated-entry",
+            "a",
+            vec![
+                with(with(activity("a"), "rateLimit", gate), "next", json!("b")),
+                activity("b"),
+            ],
+        ),
+    )
+    .await;
+    for _ in 0..2 {
+        w.start(entry, &json!({})).await;
+    }
+    let mut admissions = Vec::new();
+    for _ in 0..2 {
+        let before = reading(&w).await;
+        w.start(entry, &json!({})).await;
+        admissions.push(spent(&w, before).await?);
+    }
+    assert_eq!(
+        admissions[0], admissions[1],
+        "the counts of a quiet database do not vary"
+    );
+    if (lease_a, lease_b, lease_c) != (LEASE, LEASE, LEASE)
+        || done_a != COMPLETION_WITH_A_RATE_LIMITED_NEXT_STEP
+        || done_b != COMPLETION_WITH_A_NEXT_STEP
+        || done_c != COMPLETION_THAT_ENDS_THE_RUN
+        || admissions[0] != RATE_LIMITED_ENTRY_ADMISSION
+    {
+        panic!(
+            "the work of a rate-limited path left its budget (lower the budget with the change that earns it; raise it \
+             only with the reason beside it).\n\
+             lease (a, the rate-limited b, c): {lease_a:?} {lease_b:?} {lease_c:?}, budget {LEASE:?} each\n\
+             completion whose next step is rate-limited: {done_a:?}, budget {COMPLETION_WITH_A_RATE_LIMITED_NEXT_STEP:?}\n\
+             completion of the rate-limited step: {done_b:?}, budget {COMPLETION_WITH_A_NEXT_STEP:?}\n\
+             completion that ends the run: {done_c:?}, budget {COMPLETION_THAT_ENDS_THE_RUN:?}\n\
+             admission of a rate-limited entry: {:?}, budget {RATE_LIMITED_ENTRY_ADMISSION:?}\n\
+             statements of the second and third steps of one more run:{}",
+            admissions[0],
+            itemised(&w, workflow, &session).await
+        );
+    }
+    Ok(())
+}
+
+measured!(
+    a_rate_limited_step_costs_what_the_budget_says,
+    a_rate_limited_step_costs_what_the_budget_says_once
+);
+
+/// An admission whose start declares `concurrency` and is granted at once (feature 022, T022-022; NFR-022-007: what a
+/// declaring definition adds to its own admission is a budget line of the change that adds it). Measured 2026-11-20 on a
+/// key that its last holder emptied (an empty key row is pruned, so each start files it again): the plain admission
+/// (33, 1, 11) and ten statements, itemised against a plain start: the digest key versions in force, the ceilings, the
+/// key's existence, the namespace's live keys (a key filed again), the key's insert and its lock, the decision's clock,
+/// the key's count, the holder row and the `concurrency.acquired` journal row; and four for the projection: its own
+/// `UPDATE runs` (the run's UPDATE does not name the column, so a process runs on a schema that predates it) and the
+/// three statements of the content accounting that a write of a run row runs. Four rows more: holder, key, journal row,
+/// projection.
+/// Raised 2026-11-20 by one statement (47 to 48): the fleet activation read of the one admission point (`SELECT
+/// capability FROM platform_requirements`, decision D022-057, commit 295b158b), found by diffing the statement lists of
+/// commits 64b6f2d9 (47) and 34b8be41 (48); plan, "Hot-path budget of a gated definition".
+const GATED_START_ADMISSION: Work = cost(48, 1, 15);
+/// The same admission when the key is full and the run queues: the namespace's queued runs, the key's hint and the
+/// waiter row in place of the holder row, and no entry released (no ready step, task hint or outbox row).
+/// Raised 2026-11-20 by one statement (47 to 48), the same activation read.
+const QUEUED_START_ADMISSION: Work = cost(48, 1, 12);
+/// The completion that ends a run holding a start permit: the plain one (47, 1, 9) and eleven statements: seven, among
+/// them the counter-slot lock (D022-050 item 8), the return of the permit under its key's lock (the holder's key, the
+/// lock, the delete, the key's hint) and the `concurrency.released` journal row, and the projection's four as at
+/// admission; four rows more.
+const COMPLETION_THAT_ENDS_A_GATED_START: Work = cost(58, 1, 13);
+
+async fn a_gated_start_costs_what_the_budget_says_once() -> Result<(), Evicted> {
+    let w = crate::support::flow_control::gated_world().await;
+    sqlx::query("CREATE EXTENSION IF NOT EXISTS pg_stat_statements")
+        .execute(&w.db.pool)
+        .await
+        .expect("the test PostgreSQL preloads pg_stat_statements");
+    let gated = |name: &str, limit: u32| {
+        let mut doc = document(name, "a", vec![activity("a")]);
+        // no key: the single key of the group, so that every run of the measure counts on one existing row
+        doc["concurrency"] = json!({"limit": limit});
+        doc
+    };
+    let roomy =
+        crate::support::flow_control::publish(&w, gated("budget-gated-start", 10_000)).await;
+    let session = w.session(&["act.a"]).await;
+    let mut admissions = Vec::new();
+    let mut completions = Vec::new();
+    for _ in 0..3 {
+        let before = reading(&w).await;
+        w.start(roomy, &json!({})).await;
+        admissions.push(spent(&w, before).await?);
+        let task = w.one_task(&session).await;
+        let before = reading(&w).await;
+        w.complete(&session, &task, &json!({})).await.expect("done");
+        completions.push(spent(&w, before).await?);
+    }
+    let full = crate::support::flow_control::publish(&w, gated("budget-queued-start", 1)).await;
+    w.start(full, &json!({})).await;
+    let mut queued = Vec::new();
+    for _ in 0..3 {
+        let before = reading(&w).await;
+        w.start(full, &json!({})).await;
+        queued.push(spent(&w, before).await?);
+    }
+    assert_eq!(
+        (admissions[1], completions[1], queued[1]),
+        (admissions[2], completions[2], queued[2]),
+        "the counts of a quiet database do not vary"
+    );
+    if admissions[1] != GATED_START_ADMISSION
+        || queued[1] != QUEUED_START_ADMISSION
+        || completions[1] != COMPLETION_THAT_ENDS_A_GATED_START
+    {
+        panic!(
+            "the work of a gated start left its budget (lower the budget with the change that earns it; raise it only with \
+             the reason beside it).\n\
+             granted admission: {:?}, budget {GATED_START_ADMISSION:?}\n\
+             queued admission: {:?}, budget {QUEUED_START_ADMISSION:?}\n\
+             completion that ends the run: {:?}, budget {COMPLETION_THAT_ENDS_A_GATED_START:?}\n\
+             statements of one more queued start:{}",
+            admissions[1],
+            queued[1],
+            completions[1],
+            itemised_start(&w, full).await
+        );
+    }
+    Ok(())
+}
+
+measured!(
+    a_gated_start_costs_what_the_budget_says,
+    a_gated_start_costs_what_the_budget_says_once
 );
 
 /// Sets the stored kind of the one step row of `run` at `node`, as the owner.

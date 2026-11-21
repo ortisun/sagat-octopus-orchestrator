@@ -6,5 +6,6 @@
 #[path = "../../support/mod.rs"]
 mod support;
 
+mod gated_window;
 mod window_order;
 mod work_budget;

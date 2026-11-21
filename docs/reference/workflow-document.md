@@ -11,6 +11,7 @@ Made from `specs/001-platform-foundation/contracts/workflow.schema.json`. A work
 | `apiVersion` | `"sagat-octopus-orchestrator.io/v1"` | yes |  |
 | `bodies` | object |  |  |
 | `chainPolicy` | [`chainPolicy`](#chainPolicy) |  |  |
+| `concurrency` | [`concurrencyPolicy`](#concurrencyPolicy) |  |  |
 | `entrypoint` | string (min length 1) | yes |  |
 | `inputSchema` | object |  | The schema every run input of this version is checked against before the run is created (design 043, ADR-0090). It must stay within the supported subset of JSON Schema, with one meaning under $schema absent, draft-07 and 2020-12: type, properties, required, items (one schema), additionalProperties, enum, const, minimum, maximum, exclusiveMinimum, exclusiveMaximum (numbers), multipleOf (a positive integer), minLength, maxLength, minItems, maxItems, minProperties, maxProperties, pattern (an allowlisted syntax: no \d, \w, \s, \b, Unicode or POSIX classes, flags or named groups), allOf, anyOf, oneOf, a local $ref (no cycle, no sibling keyword but annotations), $defs, definitions, the annotations title, description, default, examples, $comment and format (never asserted), $schema and $id at the root only, and x-sagat-classification. Any other keyword makes the schema unusable: from 0.3.0 publication refuses it in enforce mode and every start of a stored version with it is refused RUN_INPUT_SCHEMA_UNUSABLE. The keyword list is specs/043-run-input-validation/contracts/errors.md and Technical Plan 4 of docs/designs/043-run-input-validation.md. |
 | `kind` | `"Workflow"` | yes |  |
@@ -21,6 +22,7 @@ Made from `specs/001-platform-foundation/contracts/workflow.schema.json`. A work
 | `metadata.name` | string (pattern `^[a-z][a-z0-9-]{2,63}$`) | yes |  |
 | `nodes` | array of `node` (min items 1, max items 10000) | yes |  |
 | `outputSchema` | object |  |  |
+| `rateLimit` | [`rateLimitPolicy`](#rateLimitPolicy) |  |  |
 | `state` | [`state`](#state) |  |  |
 | `triggers` | array of object |  |  |
 | `triggers[].connector` | string |  | Required for a message trigger: the slug of the connector that consumes the messages. |
@@ -54,11 +56,13 @@ Every node has the fields below; each kind adds its own. The kinds: [`activity`]
 | `compensateWith` | string |  | The activity that undoes this one. It runs when a saga around this node compensates, or, for a step in the body of a collection or loop, when that scope stops (a failed iteration, a cancellation) with iterations that completed: inside one iteration in reverse dependency order, between collection iterations in no order, and across loop iterations last iteration first. It must be idempotent. Feature 037: it is planned only for an effect that succeeded (or that a person settled as having happened); an effect whose outcome is unknown waits for review instead of being compensated defensively. |
 | `compensationRetry` | [`retry`](#retry) |  | The retry budget of the compensation (compensateWith). Five attempts, exponential from two seconds to five minutes, with jitter when absent. |
 | `compensationTimeoutMs` | integer (min 1) |  | Longest one attempt of the compensation may take. |
+| `concurrency` | [`concurrencyPolicy`](#concurrencyPolicy) |  |  |
 | `destinations` | [`stepDestinations`](#stepDestinations) |  | Synchronous step-output destinations (feature 035). Refused inside structured bodies; at most 8 per step. |
 | `highRisk` | boolean |  | Informational since feature 037. Every activity's attempt whose outcome is unknown (lease lost, timeout, OUTCOME_UNKNOWN) is never retried or compensated blindly, whether or not it is high risk: it is reconciled when reconcileWith says how, and otherwise waits for an operator. |
 | `idempotencyTemplate` | string |  |  |
 | `irreversible` | boolean |  | The effect cannot be undone once it has happened. A saga, or the collection or loop that owns the body, that has to compensate past it ends PARTIAL. Cannot be combined with compensateWith. |
 | `outputSchema` | object |  | Classifies this activity's retained output for payload disclosure. |
+| `rateLimit` | [`rateLimitPolicy`](#rateLimitPolicy) |  |  |
 | `reconcileWith` | string |  | The activity that finds out whether this one happened, after an attempt with an unknown outcome. It answers {"effect": "applied"\|"not_applied"\|"unknown"} and, for applied, optionally {"output": ...}. Feature 037: `applied` completes the step; `not_applied` and `unknown` are not final, so the step waits for a person (`RECONCILIATION_NOT_FINAL`, `RECONCILIATION_UNKNOWN`) and is never retried automatically. |
 | `retry` | [`retry`](#retry) |  |  |
 | `secrets` | array of string (max items 16) |  | Names of the secrets of the namespace the worker may ask for while it holds a lease on this step. Names only: a value is never part of a definition. |
@@ -167,8 +171,10 @@ Every node has the fields below; each kind adds its own. The kinds: [`activity`]
 |---|---|---|---|
 | `artifactDigest` | string (pattern `^sha256:[0-9a-f]{64}$`) | yes | The artifact a build made: the digest of a ready version of a script of the same tenant. The step runs exactly this code; publishing a newer version of the script changes nothing about a workflow that names this digest. Checked when the workflow is published. |
 | `compensateWith` | string |  |  |
+| `concurrency` | [`concurrencyPolicy`](#concurrencyPolicy) |  |  |
 | `language` | one of `"typescript"`, `"python"`, `"csharp"`, `"go"`, `"java"` |  | Informational: the runner takes the language from the artifact. |
 | `outputSchema` | object |  | Classifies this script's retained output for payload disclosure. |
+| `rateLimit` | [`rateLimitPolicy`](#rateLimitPolicy) |  |  |
 | `retry` | [`retry`](#retry) |  |  |
 | `secrets` | array of string (max items 16) |  | Names of the secrets of the namespace the script may ask for with octopus.secret while it holds a lease on this step. Names only: a value is never part of a definition. A script that asks for any other name is refused and audited. |
 | `type` | `"script"` | yes |  |
@@ -450,6 +456,15 @@ any
 
 array of [`collectionOperatorStage`](#collectionOperatorStage)
 
+### concurrencyPolicy
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `group` | string (pattern `^[a-z][a-z0-9.-]{0,63}$`) |  | Default: derived from the workflow name (top level) or the workflow name and node id (node level). Definitions of one namespace that name the same group at the same level share its keys; run and step permits never share a semaphore. |
+| `key` | [`expression`](#expression) |  | Top level: over `input`. Node level: over the run data when the step becomes ready. Canonical value at most 256 bytes; digested with the keyed digest. Absent: one key for the whole group. A top-level key that cannot be evaluated ends the new run FAILED with EXPRESSION_ERROR. A key over an encoded location (feature 031 registry) is refused with ENCODING_READ_BY_CONCURRENCY_KEY. |
+| `limit` | integer (min 1, max 10000) | yes | Maximum holders of one key, compared at acquisition (the acquiring definition's value, clamped by policy). |
+| `queueTimeoutMs` | integer (min 1, max 86400000) |  | How long a run (top level) or a ready step (node level) waits for a permit before failing with CONCURRENCY_WAIT_TIMEOUT. Must not exceed the run deadline. |
+
 ### databaseLimits
 
 | Field | Type | Required | Description |
@@ -574,6 +589,16 @@ string
 | `disclosure` | `"declared-business-result-v1"` | yes |  |
 | `expression` | [`expression`](#expression) | yes |  |
 | `resultSchema` | [`resultSchema`](#resultSchema) | yes |  |
+
+### rateLimitPolicy
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `group` | string (pattern `^[a-z][a-z0-9.-]{0,63}$`) |  | Default: derived from the workflow name (top level) or the workflow name and node id (node level). Definitions of one namespace that name the same group at the same level share its window, each applying its own limit and per. A rate-limit group and a concurrency group of the same name are unrelated. |
+| `key` | [`expression`](#expression) |  | Top level: over `input`. Node level: over the run data when the step would become ready. Same bounds, keyed digest and label as concurrencyPolicy.key. Absent: one key for the whole group. A top-level key that cannot be evaluated ends the new run FAILED with EXPRESSION_ERROR. |
+| `limit` | integer (min 1, max 10000) | yes | At most this many grants of one key may count in any window of `per` on the database clock (the acquiring definition's value, clamped by policy). Ceiling by window: 100 per second, 6000 per minute, 10000 per hour. |
+| `per` | one of `"second"`, `"minute"`, `"hour"` | yes | The length of the sliding window. Top level: a grant counts from the instant the run is granted. Node level: from the instant the attempt is leased, and without end while granted and not yet leased. |
+| `queueTimeoutMs` | integer (min 1, max 86400000) |  | How long a buffered run (top level) or a step waiting for a slot (node level) waits before failing with RATE_LIMIT_WAIT_TIMEOUT. Must not exceed the run deadline. With a top-level concurrency too, the run waits once, until the earlier of the two deadlines. |
 
 ### resultSchema
 

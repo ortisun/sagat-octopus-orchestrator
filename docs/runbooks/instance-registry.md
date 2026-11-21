@@ -29,7 +29,7 @@ cleanly. It uses one database connection of its own for this, besides the pool o
 | `platform_requirement_history` | every activation and removal: who the command said, which database role did it, what, which epoch, when (append-only; the runtime role cannot read it) | only the operator functions |
 
 The capabilities are a closed list: `schedules-v1` (feature 018, the engine), `access-narrowing-v1` (029, the control plane) and
-`payload-encoding-v1` (031, both). **A process lists a capability when the process will honour it**: what its binary can do,
+`payload-encoding-v1` (031, both), `flow-control-concurrency-v1` and `flow-control-rate-v1` (022, both; no build lists them until the gate is built, D022-037). **A process lists a capability when the process will honour it**: what its binary can do,
 narrowed by the passes its configuration turns on. An engine lists `schedules-v1` only when it runs the schedule pass
 (`SAGAT_SCHEDULES_ENABLED`); an engine started without it lists nothing, because after the handover of the cron triggers it
 would fire neither.

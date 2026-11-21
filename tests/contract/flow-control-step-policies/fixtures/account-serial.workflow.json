@@ -1,0 +1,12 @@
+{
+  "apiVersion": "sagat-octopus-orchestrator.io/v1",
+  "kind": "Workflow",
+  "metadata": {"name": "account-serial"},
+  "entrypoint": "price",
+  "concurrency": {"group": "orders-by-account", "key": "input.accountId", "limit": 1, "queueTimeoutMs": 600000},
+  "nodes": [
+    {"id": "price", "type": "activity", "activity": "catalog.price", "next": "notify"},
+    {"id": "notify", "type": "activity", "activity": "crm.notify", "concurrency": {"key": "steps.price.output.region", "limit": 2}, "next": "done"},
+    {"id": "done", "type": "end"}
+  ]
+}

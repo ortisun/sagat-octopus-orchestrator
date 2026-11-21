@@ -20,6 +20,7 @@ pub mod contract;
 pub mod digests;
 pub mod dx;
 pub mod engine;
+pub mod flow_control;
 pub mod instances;
 pub mod lake;
 pub mod lake_reader;

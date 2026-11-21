@@ -209,6 +209,12 @@ FENCE = """
         sqlx::query("SELECT s.expires_at FROM scheduler_shards s");
     }
 """
+ADMISSION = """
+    async fn create(tx: &mut PgConnection) {
+        if new.definition.declares_gates() { return Err(refused); }
+        sqlx::query("INSERT INTO runs (id, tenant_id) VALUES ($1, $2)");
+    }
+"""
 CHECK_FENCE = """
     pub async fn check_fence() {
         sqlx::query("SELECT shard FROM scheduler_shards WHERE shard = $1 FOR SHARE");
@@ -222,6 +228,7 @@ def run_lease_check(files):
         src = pathlib.Path(tmp) / "src"
         src.mkdir()
         for name, source in files.items():
+            (src / name).parent.mkdir(parents=True, exist_ok=True)
             (src / name).write_text(source)
         metadata = {
             "workspace_root": "/r",
@@ -252,7 +259,18 @@ WRITER = """
 """
 
 
-def tree(keeper=KEEPER, execution=FENCE, schedules=CHECK_FENCE, **more):
+KEY_FILER = (
+    'const fn insert(self) -> &\'static str { match self { Self::Semaphores => "INSERT INTO concurrency_semaphores (k) VALUES ($1)", '
+    'Self::Windows => "INSERT INTO rate_limit_windows (k) VALUES ($1)" } }\n'
+    'const QUEUED_RUNS_SQL: &str = "SELECT count(*) FROM (SELECT run_id FROM concurrency_waiters WHERE k = $1 '
+    'UNION SELECT run_id FROM rate_limit_waiters WHERE k = $1) w";'
+)
+
+
+GATE_WRITER = 'async fn grant() { sqlx::query("INSERT INTO concurrency_holders (k) VALUES ($1)"); }'
+
+
+def tree(keeper=KEEPER, execution=FENCE + ADMISSION, schedules=CHECK_FENCE, **more):
     """A valid tree: the lease row as the rule wants it and one `run.finished` writer that says its schedule."""
     return {
         "partitioning.rs": keeper,
@@ -260,6 +278,8 @@ def tree(keeper=KEEPER, execution=FENCE, schedules=CHECK_FENCE, **more):
         "schedules.rs": schedules,
         "outbound.rs": ORIGIN,
         "writer.rs": WRITER,
+        "flow_control.rs": KEY_FILER,
+        "execution/readiness_gate.rs": GATE_WRITER,
         **more,
     }
 
@@ -383,6 +403,234 @@ class EveryRunFinishedBodySaysItsSchedule(unittest.TestCase):
         code, out = run_lease_check(tree(**{"outbound.rs": "async fn nothing() {}"}))
         self.assertEqual(code, 1, out)
         self.assertIn("`add_schedule_origin` is named by the `run.finished` rule and is not defined", out)
+
+
+class RunsAreInsertedOnlyAtTheAdmissionPoint(unittest.TestCase):
+    """FR-022-059, D022-031: `INSERT INTO runs` appears only in execution.rs (`PgRunStore::create`) and chain_progress.rs."""
+
+    def test_the_adapter_of_this_repository_passes(self):
+        result = subprocess.run([sys.executable, str(SCRIPT)], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("runs are inserted only at the admission point", result.stdout)
+
+    def test_the_admission_point_and_the_continuation_successors_pass(self):
+        successor = 'async fn continue_as_new() { refuse_gated_successor(&definition)?; sqlx::query("INSERT INTO runs (id) VALUES ($1)"); }'
+        code, out = run_lease_check(tree(**{"chain_progress.rs": successor}))
+        self.assertEqual(code, 0, out)
+
+    def test_a_new_writer_of_runs_is_refused_and_named(self):
+        bypass = 'async fn sneak() {\n    sqlx::query(\n        "insert into runs (id) values ($1)",\n    );\n}'
+        code, out = run_lease_check(tree(**{"standalone.rs": bypass}))
+        self.assertEqual(code, 1, out)
+        self.assertIn("standalone.rs:3", out)
+        self.assertIn("inserts into `runs` outside execution.rs and chain_progress.rs", out)
+
+    def test_a_module_under_execution_is_not_the_admission_point(self):
+        nested = 'async fn path() { sqlx::query("INSERT INTO runs (id) VALUES ($1)"); }'
+        code, out = run_lease_check(tree(**{"execution/path.rs": nested}))
+        self.assertEqual(code, 1, out)
+        self.assertIn("execution/path.rs:1", out)
+
+    def test_other_tables_comments_and_text_are_not_a_writer(self):
+        noise = (
+            '// INSERT INTO runs is what create does\n'
+            'async fn events() { sqlx::query("INSERT INTO run_events (run_id) VALUES ($1)"); }\n'
+            'async fn counts() { sqlx::query("INSERT INTO run_active_counts (slot) VALUES (1)"); }\n'
+        )
+        code, out = run_lease_check(tree(**{"noise.rs": noise}))
+        self.assertEqual(code, 0, out)
+
+    def test_an_admission_or_a_successor_without_its_guard_is_refused(self):
+        unguarded = ADMISSION.replace("        if new.definition.declares_gates() { return Err(refused); }\n", "")
+        self.assertNotEqual(unguarded, ADMISSION)
+        code, out = run_lease_check(tree(execution=FENCE + unguarded))
+        self.assertEqual(code, 1, out)
+        self.assertIn("without `declares_gates()` before it in the same function", out)
+        late = 'async fn continue_as_new() { sqlx::query("INSERT INTO runs (id) VALUES ($1)"); refuse_gated_successor(&d)?; }'
+        code, out = run_lease_check(tree(**{"chain_progress.rs": late}))
+        self.assertEqual(code, 1, out)
+        self.assertIn("without `refuse_gated_successor(` before it", out)
+
+    def test_a_rule_that_finds_no_admission_point_is_an_error_and_not_a_pass(self):
+        code, out = run_lease_check(tree(execution=FENCE))
+        self.assertEqual(code, 1, out)
+        self.assertIn("no `INSERT INTO runs` was found in execution.rs", out)
+
+
+
+class KeyRowsAreFiledOnlyByFileKeys(unittest.TestCase):
+    """FR-022-056, D022-042 (architecture review m2 of 2026-11-16): a semaphore or window row is inserted only in
+    flow_control.rs, by `file_keys`."""
+
+    def test_the_adapter_of_this_repository_passes(self):
+        result = subprocess.run([sys.executable, str(SCRIPT)], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("key rows are filed only by file_keys", result.stdout)
+
+    def test_another_writer_of_a_key_row_is_refused_and_named(self):
+        for table in ("concurrency_semaphores", "rate_limit_windows"):
+            bypass = f'async fn sneak() {{\n    sqlx::query(\n        "insert into {table} (k) values ($1)",\n    );\n}}'
+            code, out = run_lease_check(tree(**{"admission.rs": bypass}))
+            self.assertEqual(code, 1, out)
+            self.assertIn("admission.rs:3", out)
+            self.assertIn(f"inserts into `{table}` outside flow_control.rs", out)
+
+    def test_holders_waiters_grants_and_comments_are_not_a_key_row(self):
+        noise = (
+            '// INSERT INTO concurrency_semaphores is what file_keys does\n'
+            'async fn hold() { sqlx::query("INSERT INTO concurrency_holders (k) VALUES ($1)"); }\n'
+            'async fn grant() { sqlx::query("INSERT INTO rate_limit_grants (k) VALUES ($1)"); }\n'
+        )
+        code, out = run_lease_check(tree(**{"execution/gate_queue.rs": noise}))
+        self.assertEqual(code, 0, out)
+
+    def test_a_rule_that_finds_no_filer_is_an_error_and_not_a_pass(self):
+        code, out = run_lease_check(tree(**{"flow_control.rs": "fn nothing() {}"}))
+        self.assertEqual(code, 1, out)
+        self.assertIn("no key-row insert was found in flow_control.rs", out)
+
+
+
+class GateRowsAreWrittenOnlyByTheGate(unittest.TestCase):
+    """The architecture review of 2026-11-19 (feature 022): a holder, waiter or grant row is written only by the readiness
+    gate and the queue's grant routine, under its key's lock."""
+
+    def test_the_adapter_of_this_repository_passes(self):
+        result = subprocess.run([sys.executable, str(SCRIPT)], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("gate rows are written only by the gate", result.stdout)
+
+    def test_another_writer_of_a_gate_row_is_refused_and_named(self):
+        for statement in (
+            "insert into concurrency_waiters (k) values ($1)",
+            "DELETE FROM rate_limit_grants WHERE k = $1",
+            "UPDATE concurrency_holders SET k = $1",
+        ):
+            bypass = f'async fn sneak() {{\n    sqlx::query(\n        "{statement}",\n    );\n}}'
+            code, out = run_lease_check(tree(**{"workers.rs": bypass}))
+            self.assertEqual(code, 1, out)
+            self.assertIn("workers.rs:3", out)
+            self.assertIn("outside execution/readiness_gate.rs and execution/gate_queue.rs", out)
+
+    def test_a_read_of_a_gate_row_is_not_a_write(self):
+        read = 'async fn count() { sqlx::query("SELECT count(*) FROM concurrency_holders WHERE k = $1"); }'
+        code, out = run_lease_check(tree(**{"quotas.rs": read}))
+        self.assertEqual(code, 0, out)
+
+    def test_a_rule_that_finds_no_writer_is_an_error_and_not_a_pass(self):
+        code, out = run_lease_check(tree(**{"execution/readiness_gate.rs": "fn nothing() {}"}))
+        self.assertEqual(code, 1, out)
+        self.assertIn("no gate-row write was found", out)
+
+
+class QueuedRunsAreCountedByOneStatement(unittest.TestCase):
+    """The keys review of 2026-11-20 (feature 022, architecture m3): the queued runs of a namespace are counted by
+    `QUEUED_RUNS_SQL` only, so the ceiling, its usage and the key listing never disagree (D022-055)."""
+
+    def test_the_adapter_of_this_repository_passes(self):
+        result = subprocess.run([sys.executable, str(SCRIPT)], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("queued runs are counted by one statement", result.stdout)
+
+    def test_a_second_count_elsewhere_is_refused_and_named(self):
+        copy = (
+            'async fn usage() { sqlx::query("SELECT count(*) FROM (SELECT DISTINCT r.run_id FROM rate_limit_waiters r '
+            'WHERE k = $1 UNION SELECT run_id FROM concurrency_waiters WHERE k = $1) x"); }'
+        )
+        code, out = run_lease_check(tree(**{"quotas.rs": copy}))
+        self.assertEqual(code, 1, out)
+        self.assertIn("quotas.rs:1", out)
+        self.assertIn("counts the runs of both waiter tables outside flow_control.rs", out)
+
+    def test_a_count_of_one_table_is_not_a_count_of_queued_runs(self):
+        busiest = 'async fn busiest() { sqlx::query("SELECT count(*) FROM concurrency_waiters WHERE k = $1"); }'
+        code, out = run_lease_check(tree(**{"quotas.rs": busiest}))
+        self.assertEqual(code, 0, out)
+
+    def test_a_rule_that_finds_no_count_or_two_is_an_error_and_not_a_pass(self):
+        for home in ("fn nothing() {}", KEY_FILER + "\n" + KEY_FILER.split("\n")[1].replace("QUEUED_RUNS_SQL", "AGAIN")):
+            code, out = run_lease_check(tree(**{"flow_control.rs": home}))
+            self.assertEqual(code, 1, out)
+            self.assertIn("counts of queued runs were found in flow_control.rs", out)
+
+
+class FlowControlBodiesHoldNoKeyValue(unittest.TestCase):
+    """The keys review of 2026-11-20 (feature 022, architecture m4): the bodies and the route of the key reads are built
+    from types that hold no key value."""
+
+    def check(self, dto, route):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            for rel, text in (
+                ("crates/api-http/src/dto_flow_control.rs", dto),
+                ("crates/api-http/src/routes/concurrency.rs", route),
+                ("crates/api-http/src/routes/rate_limits.rs", route),
+            ):
+                if text is not None:
+                    (root / rel).parent.mkdir(parents=True, exist_ok=True)
+                    (root / rel).write_text(text)
+            module = load_checker()
+            return module.key_value_free_errors(str(root))
+
+    def test_the_bodies_of_this_repository_pass(self):
+        self.assertEqual(load_checker().key_value_free_errors(str(SCRIPT.parents[1])), [])
+
+    def test_a_json_value_or_digest_machinery_is_refused_and_named(self):
+        for bad in (
+            "pub struct Body { pub key: serde_json::Value }",
+            "fn f(k: &KeyedDigest) {}",
+            "fn f(p: &Position) -> [u8; 32] { p.digest }",
+        ):
+            errors = self.check(bad, "fn route() {}")
+            self.assertGreaterEqual(len(errors), 1, errors)
+            self.assertTrue(all("dto_flow_control.rs:1" in e for e in errors), errors)
+
+    def test_a_word_in_a_comment_or_a_string_is_not_a_use(self):
+        self.assertEqual(self.check('// a Value is never here\nconst S: &str = "serde_json";', "fn route() {}"), [])
+
+    def test_a_named_file_that_is_gone_is_an_error_and_not_a_pass(self):
+        errors = self.check("fn dto() {}", None)
+        self.assertEqual(len(errors), 2, errors)
+        self.assertTrue(all("does not exist" in e for e in errors), errors)
+
+    def test_the_rate_limit_route_is_checked_too(self):
+        """Task T022-078's review (architecture minor 1): the rate-limit key listing's route is named by the rule."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            for rel, text in (
+                ("crates/api-http/src/dto_flow_control.rs", "fn dto() {}"),
+                ("crates/api-http/src/routes/concurrency.rs", "fn route() {}"),
+                ("crates/api-http/src/routes/rate_limits.rs", "fn f(k: &KeyedDigest) {}"),
+            ):
+                (root / rel).parent.mkdir(parents=True, exist_ok=True)
+                (root / rel).write_text(text)
+            errors = load_checker().key_value_free_errors(str(root))
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("rate_limits.rs:1", errors[0])
+
+
+class TheRevealRuleHasOneImplementation(unittest.TestCase):
+    """Feature 022's review of 2026-11-20 (architecture M1): `payload_reveal_grants` is read by reveal_grants.rs only."""
+
+    def test_a_second_reader_is_refused_and_named(self):
+        grants = 'async fn may() { sqlx::query("SELECT EXISTS (SELECT 1 FROM payload_reveal_grants WHERE k = $1)"); }'
+        second = 'async fn labels() { sqlx::query("SELECT 1 FROM payload_reveal_grants g WHERE g.k = $1"); }'
+        code, out = run_lease_check(tree(**{"reveal_grants.rs": grants, "flow_control.rs": KEY_FILER + "\n" + second}))
+        self.assertEqual(code, 1, out)
+        self.assertIn("flow_control.rs:", out)
+        self.assertIn("outside reveal_grants.rs", out)
+        code, out = run_lease_check(tree(**{"reveal_grants.rs": grants}))
+        self.assertEqual(code, 0, out)
+
+
+def load_checker():
+    """The checker as a module, to call one rule on a tree of files."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("check_architecture", SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 if __name__ == "__main__":
@@ -556,11 +804,19 @@ CHAINS = (
 GATE = "pub struct CheckedRunInput { version: u8 }\nfn check() -> CheckedRunInput { CheckedRunInput { version: 1 } }\n"
 
 
+ENGINE_START = (
+    "impl Engine {\n    pub async fn start(&self) {\n"
+    "        let _ = sagat_domain::execution::start_run(def, run, now);\n"
+    "        let _ = sagat_domain::execution::start_run_gated(def, run, now, d);\n    }\n}\n"
+)
+
+
 def creator_tree(**extra):
     files = {
         "crates/infra-postgres/src/execution.rs": EXECUTION,
         "crates/infra-postgres/src/chain_progress.rs": CHAINS,
         "crates/application/src/run_input.rs": GATE,
+        "crates/application/src/execution.rs": ENGINE_START,
     }
     files.update(extra)
     return files
@@ -723,6 +979,57 @@ class EveryRunIsCreatedWithACheckedInput(unittest.TestCase):
         self.assertIn("feature `testing` enables", out)
 
 
+class ThePurgeAsOfAChosenInstantIsTheTestsOnly(unittest.TestCase):
+    """Feature 022 (D022-064): no production source calls the purge of rate grants with an instant of its choosing."""
+
+    HOME = (
+        "impl S { pub async fn purge_rate_grants_as_of(&self, now: T) {} "
+        "async fn purge_rate_grants(&self) { self.purge_rate_grants_as_of(now).await; } }\n"
+    )
+
+    def test_its_definition_and_the_pass_are_allowed(self):
+        code, out = creator_check(creator_tree(**{"crates/infra-postgres/src/maintenance.rs": self.HOME}))
+        self.assertEqual(code, 0, out)
+
+    def test_a_production_call_elsewhere_is_an_error(self):
+        code, out = creator_check(creator_tree(**{
+            "crates/infra-postgres/src/maintenance.rs": self.HOME,
+            "crates/scheduler/src/passes.rs": "fn f(s: S) { s.store.purge_rate_grants_as_of(later); }\n",
+        }))
+        self.assertEqual(code, 1, out)
+        self.assertIn("`purge_rate_grants_as_of` is called outside the tests", out)
+
+
 if __name__ == "__main__":
     unittest.main()
 
+
+class ARunStartsThroughItsGates(unittest.TestCase):
+    """Feature 022, D022-049: the domain's start functions are called in production only inside `Engine::start`."""
+
+    def test_engine_start_passes_and_another_caller_is_refused_and_named(self):
+        code, out = creator_check(creator_tree())
+        self.assertEqual(code, 0, out)
+        for call in (
+            "execution::start_run(def, id, now)",
+            "sagat_domain::execution::start_run_delayed(def, id, now, until)",
+            "start_run_gated (def, id, now, decisions)",
+            "execution::start_run_key_failed(def, id, now)",
+        ):
+            code, out = creator_check(creator_tree(**{
+                "crates/scheduler/src/passes.rs": f"async fn start_child() {{\n    let _ = {call};\n}}\n",
+            }))
+            self.assertEqual(code, 1, out)
+            self.assertIn("crates/scheduler/src/passes.rs:2: a domain start function is called outside", out)
+
+    def test_a_method_a_definition_and_a_test_module_are_not_calls(self):
+        code, out = creator_check(creator_tree(**{
+            "crates/application/src/schedule_firing.rs": "async fn start_run(&self) {}\nasync fn f(&self) { self.start_run().await; x.start_run(&r); }\n",
+            "crates/scheduler/src/events.rs": "#[cfg(test)]\nmod tests { fn t() { execution::start_run(d, r, n); } }\n",
+        }))
+        self.assertEqual(code, 0, out)
+
+    def test_a_start_point_with_no_call_is_an_error_and_not_a_pass(self):
+        code, out = creator_check(creator_tree(**{"crates/application/src/execution.rs": "impl Engine { pub async fn start(&self) {} }\n"}))
+        self.assertEqual(code, 1, out)
+        self.assertIn("the one-start-point rule would check nothing", out)

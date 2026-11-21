@@ -418,7 +418,12 @@ pub struct RunFilter {
 ///
 /// Every method takes the tenant explicitly; adapters MUST apply it as a filter on every statement.
 pub trait RunStore:
-    QuotaLookup + crate::telemetry::TelemetryStore + crate::authz::NamespaceDirectory + Send + Sync
+    QuotaLookup
+    + crate::telemetry::TelemetryStore
+    + crate::authz::NamespaceDirectory
+    + crate::flow_control_keys::FlowControlKeyReader
+    + Send
+    + Sync
 {
     type Tx: RunTx;
 
@@ -1809,7 +1814,9 @@ where
                     .ok_or(AppError::Internal)
             })
             .transpose()?;
-        let created = match self.store.create(new).await {
+        // boxed, as the initial reduction below: the admission of a run is a large future that every creator would
+        // otherwise carry inline (`future_sizes` pins the bound)
+        let created = match Box::pin(self.store.create(new)).await {
             Ok(created) => created,
             Err(error) => {
                 self.audit_database_denial(principal, workflow.id(), &error, ctx)
@@ -1984,6 +1991,11 @@ where
                     ctx.trace_id.clone(),
                 );
                 if let Some(reset) = reset {
+                    // feature 022: a reset of a definition that gates its start takes a fresh permit and slot right after
+                    // `run.reset`, or is refused `RATE_LIMIT_SLOT_UNAVAILABLE` then `CONCURRENCY_PERMIT_UNAVAILABLE`
+                    // (rate first), never queues (plan, Run creators; D022-069): the
+                    // planner asks for it in `record_reset`'s settle, and the restored decisions are history.
+                    //
                     // A reset that would deliver again is refused here, where a run would be created, and not
                     // before the replay of the request: a retry of a request that succeeded must be answered from
                     // the register whatever the setting is now. Nothing has been written: the transaction is dropped.
@@ -2045,17 +2057,9 @@ where
                     .await
                     .map_err(|error| store_failure(pending_completion, error))?;
                 } else {
+                    // every creator passes the run's start through its gates here (feature 022, T022-022)
                     self.engine
-                        .run(&mut tx, effects, |def, state, now| {
-                            let (started, progress) = match held_until_us {
-                                Some(until_us) => {
-                                    execution::start_run_delayed(def, run_id, now, until_us)?
-                                }
-                                None => execution::start_run(def, run_id, now)?,
-                            };
-                            *state = started;
-                            Ok(((), progress))
-                        })
+                        .start(&mut tx, effects, run_id, held_until_us)
                         .await
                         .map_err(engine_error)?;
                 }
@@ -2358,9 +2362,95 @@ where
     ) -> Result<RunRecord, AppError> {
         principal.authorize(Permission::RunRead)?;
         match self.store.get(principal.tenant_id(), id).await? {
-            Some(run) => Ok(run),
+            Some(mut run) => {
+                self.reveal_permit_labels(principal, std::slice::from_mut(&mut run))
+                    .await?;
+                // a single-run read of a buffered run says where it stands (FR-022-048; never a listing, D022-014)
+                if let Some(slot) = run.rate_limit.as_mut()
+                    && matches!(
+                        slot.state,
+                        crate::flow_control_keys::RunPermitState::Waiting { .. }
+                    )
+                    && let Some(mut place) = self.rate_place(principal, id).await?
+                {
+                    // a run that also waits for its permit is granted both or neither: no estimate (D022-014); and the
+                    // estimate is another run's grant instant plus the window, which would link the two runs for a
+                    // caller who may not see the label (D022-067 item 8)
+                    if slot.label().is_none()
+                        || matches!(
+                            run.concurrency.as_ref().map(|permit| permit.state),
+                            Some(crate::flow_control_keys::RunPermitState::Waiting { .. })
+                        )
+                    {
+                        place.estimated_grant_at = None;
+                    }
+                    slot.place(place);
+                }
+                Ok(run)
+            }
             None => Err(self.missing(principal, id, ctx).await),
         }
+    }
+
+    /// Where a buffered run stands in its key's queue, or `None` when it no longer waits or the database could not give
+    /// its place: the place is an estimate, never a promise, so an unavailable database (its statement timeout at a busy
+    /// key included) is logged by its kind and the run is shown without it; a corrupt row stays an error (decision
+    /// D022-068 items 2 and 7).
+    async fn rate_place(
+        &self,
+        principal: &Principal,
+        id: RunId,
+    ) -> Result<Option<crate::flow_control_keys::RatePlace>, AppError> {
+        let kind = match self.store.rate_place(principal.tenant_id(), id).await {
+            Ok(reading) => {
+                return Ok(reading.map(|reading| reading.place()));
+            }
+            Err(StoreError::Unavailable { .. }) => "unavailable",
+            Err(StoreError::DatabaseUnavailable) => "database_unavailable",
+            Err(StoreError::DatabaseLimit) => "database_limit",
+            Err(other) => return Err(other.into()),
+        };
+        tracing::warn!(
+            run_id = %id,
+            kind,
+            "the rate-limit place of a buffered run could not be read; it is shown without one"
+        );
+        Ok(None)
+    }
+
+    /// Shows the key label of each run-level permit to a caller who may reveal personal data in the run's namespace;
+    /// every other caller reads it hidden (FR-022-057, D022-060). One check per namespace the runs are in.
+    async fn reveal_permit_labels(
+        &self,
+        principal: &Principal,
+        runs: &mut [RunRecord],
+    ) -> Result<(), AppError> {
+        let mut decided: Vec<(sagat_domain::identity::NamespaceId, bool)> = Vec::new();
+        for run in runs {
+            if run.concurrency.is_none() && run.rate_limit.is_none() {
+                continue;
+            }
+            let namespace = run.info.namespace_id;
+            let reveal = if let Some((_, reveal)) = decided.iter().find(|(n, _)| *n == namespace) {
+                *reveal
+            } else {
+                let reveal = self
+                    .store
+                    .reveals_personal_data(principal.tenant_id(), namespace, principal.subject())
+                    .await?;
+                decided.push((namespace, reveal));
+                reveal
+            };
+            if reveal {
+                if let Some(permit) = run.concurrency.as_mut() {
+                    permit.reveal_label();
+                }
+                if let Some(slot) = run.rate_limit.as_mut() {
+                    slot.reveal_label();
+                }
+            }
+        }
+        Ok(())
     }
 
     /// # Errors
@@ -2393,6 +2483,7 @@ where
             .await?;
         let more = rows.len() > limit as usize;
         rows.truncate(limit as usize);
+        self.reveal_permit_labels(principal, &mut rows).await?;
         let next_cursor = more
             .then(|| rows.last().map(|r| r.info.run_id.to_string()))
             .flatten();
@@ -2678,10 +2769,7 @@ where
                     RunOperation::Cancel => {
                         execution::stop_run(def, state, StopReason::Cancelled, None, now)?
                     }
-                    RunOperation::Pause => Progress {
-                        events: vec![execution::pause_run(state)?],
-                        pending: None,
-                    },
+                    RunOperation::Pause => execution::pause_run(def, state, now)?,
                     RunOperation::Resume => execution::resume_run(def, state, now)?,
                 };
                 Ok(((), progress))

@@ -401,6 +401,29 @@ The hard ceilings on `limit` bound the grant rows a key can hold (at most its `l
 grants) and are design bounds to verify by T022-089, not measured capacity. The per-pass bound caps one
 key at about 512 grants a second at the default interval, above the per-second ceiling.
 
+*Added 2026-11-20 (T022-077, D022-064).* The namespace sets them through four quota resources: the count
+`rate_limit_live_keys` (window rows of both scopes; 10,000/100,000) and
+the policies `rate_limit_per_second` (20/20 until SC-022-029's floor), `rate_limit_per_minute` (6,000/6,000) and
+`rate_limit_per_hour` (10,000/10,000), each applied to the declarations of its window length. All four are of namespace
+scope, as `concurrency_live_keys` and `concurrency_limit` are: a namespace's value, else the tenant's default, else the
+deployment's; the tenant-wide view of the quotas lists them with no single usage (a count belongs to one namespace),
+and a namespace's view gives `rate_limit_live_keys` its usage (the namespace's window rows) and the three policies none. The run waiters of a key,
+`queued_runs` and the queue timeout are the concurrency gate's resources, shared. Lease recording (transaction T23) runs before the
+grants of each tick; the purge (transaction T25) runs in the housekeeping, at most 64 keys and 500 grants a key a call, skipping a
+key another transaction holds.
+
+*Revised 2026-11-20 (D022-066 items 1 and 6).* A decision counts the namespace's window rows under the digest versions in
+force before it creates one, as for the semaphores, without a namespace lock: decisions that create keys at the same
+moment can together pass the ceiling by at most the new keys the other decisions of that moment create (their number
+minus one when each creates one key; accepted by the owner, OD-2026-11-20-11). A run's start counts under the namespace's
+admission lock; a readiness round under none. When the count leaves fewer rows of room than the new keys a decision
+would create, it first reclaims, in its own transaction, windows of its own namespace that no waiter and only grants the
+purge may delete keep (FR-022-056's boundary, the purge's own predicate): at most as many as it lacks, oldest update first,
+each with at most 64 grants and none of the keys it files, locked `FOR UPDATE SKIP LOCKED` (it never waits, so the lock
+order of the decision is unchanged), their grants deleted by a second statement; the windows go at the commit. The rows
+of the versions in force are therefore bounded by the ceiling plus that overshoot, and no namespace's admission waits for
+the deployment-wide purge, except for a window of more than 64 grants (G022-018).
+
 ### Failure and recovery matrix (rate limits)
 
 | Failure | Expected state | Handling and test |
@@ -418,7 +441,7 @@ key at about 512 grants a second at the default interval, above the per-second c
 | Workers down while steps are granted | At most `limit` granted and unleased; no further grant | SC-022-021 |
 | Lease recorded late or the pass crashes before T23 | The grant keeps counting as unleased | Under-delivery only; fault test asserts no early grant |
 | Granted step cancelled before lease | Slot returned in T24 | SC-022-021 |
-| Reset of a rate-limited source | Slot or refusal | With 018 (G1181), T022-086 |
+| Reset of a rate-limited source | Slot or refusal (`RATE_LIMIT_SLOT_UNAVAILABLE`, rate first; D022-069) | T022-086 |
 | Digest key version change with live waiters or grants | Activation refused | As ADR-0056 decision 7, extended to rate rows |
 
 ### Observability (rate limits)
@@ -433,6 +456,11 @@ Spans: `workflow.rate_limit.admit`, `workflow.rate_limit.grant`. Attributes as a
 | `rate_limit_waiters` | `scope` |
 | `rate_limit_grant_lag_seconds` (histogram: from the instant a slot was free with a waiter present to the grant) | — |
 | `rate_limit_unleased_grants` | — |
+
+`refused_reset` of both families counts a refused reset in each family its start declares, not only in the gate that
+refused it (D022-069 item 4): a reset refused by its slot while its permit was free counts in `rate_limit_decisions_total`
+and in `concurrency_acquisitions_total`; the first refusing gate is the answer's `details.reason`. It counts attempts: a
+pending reset whose failing transaction is retried counts again.
 
 Alerts (engine monitor, per namespace): `rate_limit_grant_lagging` (a key has had a waiter and a free
 slot for longer than a threshold: the pass is not keeping up or the clock went back),
@@ -545,7 +573,17 @@ locks a run after either.
   `(key_shard, next_eligible_at) WHERE waiters > 0` selects due keys.
 - `next_eligible_at` is a hint that may be early and is never late: a release (T8, T14, T29) sets it to now;
   a grant that leaves the key full sets it to the instant the oldest counted grant ages out, or to now plus
-  the shortest period when an unleased grant holds a slot.
+  the shortest period when an unleased grant holds a slot. *As built (D022-064, D022-065):* a rate grant to a window
+  with waiters moves the hint no later than its instant plus the shortest window its waiters count over; a pass that
+  grants nothing rests a window until the first instant a grant that counted when the pass began may stop counting for
+  one of its waiters (each waiter's own window, D022-009; an unleased grant from the pass's start); the lease pass,
+  after its commit, lowers each recorded window's hint to the lease plus the shortest waiting window, one window a
+  statement. Every count of a decision is taken at the instant the decision journals. *Revised 2026-11-20 (D022-066
+  items 2 to 4):* a window's rest is two statements in one transaction, the row locked if its hint is still the one
+  the pass was selected by, then the hint computed by a new statement that sees every grant committed under that lock;
+  an unleased grant rests its key from the instant of the statement that selected the key (`selected_at`, at or after
+  its hint, at or before every count of the pass); a grant or a recorded lease moves the hint with `least(hint,
+  instant)`, which keeps the hint when the instant is unknown.
 - Keys are shared between tenants by `crates/scheduler/src/fairness.rs`. A pass visits at most 256 keys and
   makes at most 256 grants per key (the existing per-key bound), each grant its own transaction.
 - Reservation rule (D022-021): on each gate, a waiter at eligible position `p` is granted only when counted
@@ -567,6 +605,118 @@ Ceilings compare the sum of the 16 slots read after the transaction's own rows, 
 | `limit` per `second` until SC-022-029 meets its floor | 20 | 20 |
 | `limit` per `second` after it | declared | 100 |
 | Keys visited per grant pass | 256 | 256 |
+
+### Stack and future sizes of a run creator
+
+A debug build polls every future on the test thread's 2 MiB stack, and each frame holds the futures it creates. The
+futures a gate added to every creator's path grew that stack past its end in a batch item's rerun (CI of 2026-11-21,
+`batch_actions::the_effect_of_each_use_case_commits_with_the_record_of_its_item`; D022-070). Three futures are boxed
+where they are created, and `tests/integration/schedules-bulk-operations/future_sizes.rs` holds each below a bound; a
+bound changes here first, with its reason.
+
+| Future | Measured (bytes) | Bound (bytes) | Reason of the last change |
+|---|---|---|---|
+| `BatchExecutor::step` (an item's use case boxed) | 2,040 | 3,072 | 2026-11-21: was 23,952 with the use case inline |
+| `RunService::start` (the run's admission boxed, as its initial reduction already was) | 7,624 | 9,216 | 2026-11-21: was 11,136 |
+| `Engine::start` (the gated part boxed; the ungated start is what remains) | 5,496 | 6,144 | 2026-11-21: was 6,256 |
+
+The bounds are the measured sizes and about a fifth to a half more, and each lies below the size it had before its box,
+so a change that inlines the future again fails the test, not a CI process. The test that overflowed needs 1,418 KiB of
+stack after the boxes, against 2,080 KiB before (bisected with `RUST_MIN_STACK`, 32 KiB steps, on the arm64 debug build).
+
+### Hot-path budget of a gated definition
+
+The lines of `tests/integration/claim-transition-efficiency/work_budget.rs` that a gate adds to (statements, transactions,
+rows written). A line changes here first, with its reason; the test follows (OD-2026-11-20-8). The plain lines (an
+admission 33/1/11, a completion with a next step 50/1/11, one that ends the run 47/1/9, a lease 38/2/5) do not move.
+
+| Line | Budget | Reason of the last change |
+|---|---|---|
+| A start granted its permit at once | 48/1/15 | 2026-11-20: +1, the fleet activation read at the one admission point (`SELECT capability FROM platform_requirements`, `flow_control_admission`), added by commit 295b158b for decision D022-057 and found by the statement lists of commits 64b6f2d9 (47) and 34b8be41 (48) |
+| A start that queues for its permit | 48/1/12 | 2026-11-20: +1, the same activation read |
+| A completion that ends a run holding a start permit | 58/1/13 | unchanged since T022-022 |
+| A completion whose next step declares `rateLimit` | 60/1/13 | 2026-11-20: +1, whether the step's window exists, so that a new window meets `rate_limit_live_keys` before it is created (T022-077, D022-064); the live count is read only for a new window |
+| An admission whose entry step declares `rateLimit` | 44/1/13 | 2026-11-20: +1, the same activation read, and +1, the window's existence (task T022-077) |
+
+*2026-11-20 (D022-066 item 1):* counting window rows instead of windows that still count leaves every line unchanged
+(the same statement, without its grants probe). A decision that would be refused by `rate_limit_live_keys` adds two
+statements, the reclaim's lock and its delete, and deletes at most 64 grants a window it reclaims; that is a path at the
+ceiling, not one of these lines.
+
+*2026-11-20 (task T022-078, architecture minor 6 of its review):* the rate reads move no line, and the budget cannot
+see what they add, since it counts top-level statements and rows only: every rate waiter insert or delete runs, inside
+its count trigger, a lock of its window row and a `min()` probe of the key's waiters (`oldest_wait_at`); a window update
+writes two more index entries (`rate_limit_windows_listing_idx` and `rate_limit_windows_group_listing_idx`); and the
+run read `RUN_SELECT`, which `check_database_replay` issues on the admission path, adds two primary-key probes (the
+run's grant and waiter rows). Their cost is measured by the benchmark (task T022-089), not by these lines.
+
+The activation read could ride on a statement the admission already issues (the digest key versions it reads later in
+the same transaction); that folding is left to the benchmark's work (tasks T022-062 and T022-089), since it moves the
+admission point's order of checks.
+
+### Visibility of the rate gate (task T022-078; FR-022-048; decision D022-067)
+
+What a reader sees is read from the rows the gate decides with, without a lock, and never names a key's value.
+
+- **`Run.rateLimit`** (`getRun` and `listRuns`): one lateral probe of the run's grant row (run scope, its primary key)
+  and of its waiter row, as `Run.concurrency` reads the permit. `GRANTED` while the run's slot counts at the statement's
+  instant `t` (`leased_at > t - per`, the gate's half-open window: at `leased_at + per` exactly it counts no more and the
+  field is absent; the journal keeps the grant); `WAITING` while its waiter row exists. `since` is the grant's or the
+  queueing's database instant, `limit` the effective limit the row was decided with, `per` its window, `queueDeadline`
+  the waiter's deadline. The label follows FR-022-057 (the reveal grant, D022-060).
+- **Position and estimate** (`getRun` only, a `WAITING` run; never in a listing): read at one instant `t` by one
+  statement. With `L` the waiter's limit, `p` its window, `n` the key's grants that count over `p` at `t` and `a` the
+  waiters ahead of it that the pass visits (not past their deadline, their run running or waiting and not paused, in
+  the queue's order `(enqueued_at, run_id, node)`). The grant routine also skips a waiter ahead whose own limit is
+  below the count at the moment (`admits`); read at a full key that filter would rank every waiter first, so the
+  position leaves it out: with the one limit a key has in practice (a second one is warned `RATE_LIMIT_MISMATCH` at
+  publication) the waiters ahead are granted first, in that order:
+  - `position = a + 1` (1 is next), exact at `t` (D022-014);
+  - the routine grants the waiter when `n + a < L`; a grant to a waiter ahead moves one from `a` to `n`, so the sum
+    falls only when a counted grant ages out. With `k = n + a - L + 1`: `k <= 0` gives `t` (there is room; the next pass
+    grants it); `1 <= k <= n` gives `leased_(k) + p`, where `leased_(k)` is the `k`-th oldest lease instant of the `n`
+    counted grants (at that instant the `k`-th one counts no more); `k > n` gives `null` (beyond one window). It is
+    `null` too while the run also waits for a concurrency permit. A run-scope window holds only run grants, which count
+    from their grant, so no slot ahead is held by an unleased step (D022-014's first case cannot arise here). An
+    estimate, never a promise: the pass's lag and later waiters' deadlines move it. It is shown only to a caller with
+    the namespace's reveal grant (D022-067 item 8): it is another run's grant instant plus the window. It is `null`
+    too when the pass will not grant the run itself (D022-068 item 1): the run is paused, its deadline `d` is at or
+    before `t`, or the instant is at or after `d` (the pass grants only while `d > now()`, so at `d` exactly the run
+    times out first).
+  - Cost: one statement, the `n` counted leases read in order up to the `k`-th through `rate_limit_grants_count_idx`
+    (at most the key's limit, 10,000) and the waiters ahead through `rate_limit_waiters_order_idx` (at most the key's
+    run waiters, `flow_control_key_waiters`, 10,000 at most). It runs in its own `READ ONLY` transaction with
+    `statement_timeout = 2s`; an unavailable database (the timeout included) leaves both fields `null` and is logged
+    as a warning, never an error of `getRun`; a corrupt row stays an error (D022-068 item 2). The store returns what the
+    statement read and the run service derives the estimate (D022-068 item 7). A run granted between the read of its row and of its place is shown
+    `WAITING` with no place.
+- **A step's waiting state**: `RuntimeNode.waitingOn` is `rate_limit` for a step `WAITING` with `waiting_kind`
+  `RATE_LIMIT` and `concurrency` for `CONCURRENCY` (rate first for a step that waits for both, as its row records).
+- **`GET /namespaces/{namespaceId}/rate-limit-keys`** (`ops:read`): every window row of the namespace (the rows the
+  quota usage of `rate_limit_live_keys` counts; the gate leaves out a forcibly retired version's rows, which drain,
+  D022-068 item 4), in the order of a new index `rate_limit_windows_listing_idx (tenant_id, namespace_id,
+  COALESCE(oldest_wait_at, 'infinity'), pool, limit_scope, group_name, key_digest)` and, for one group,
+  `rate_limit_windows_group_listing_idx (tenant_id, namespace_id, group_name, COALESCE(oldest_wait_at, 'infinity'),
+  pool, limit_scope, key_digest)`: oldest wait first, keys nobody waits for last. `oldest_wait_at` is kept on the window
+  row by its count trigger, as `concurrency_semaphores.oldest_wait_at` is (D022-058). Per key, at the page's instant
+  `t`: `waiters` (the counter); `grantsInWindow`, the grants that count over the row's longest period (`unleased`, or
+  `leased_at > t - max_period_ms`); `unleasedGrants`; `nextSlotAt`, when somebody waits and no grant is unleased, the
+  first instant a counted grant stops counting for one of the first 256 waiters in the queue's order
+  (`GRANTS_PER_KEY_PER_PASS`, the most one pass grants a key; D022-068 item 3): for each window `p` among theirs, the
+  oldest lease with `leased_at > t - p` (the same half-open window as `lease + p > t`, written so the index serves it),
+  plus `p`, and the earliest of those; `null` when nobody waits, when a grant is unleased, or when no grant counts for
+  any of those windows (there is room; the next pass grants). `queuedRuns` is the one count of `QUEUED_RUNS_SQL`. The same
+  protections as the concurrency listing: labels only for a caller with the namespace's reveal grant; for any other
+  caller `oldestWaitSince` and `nextSlotAt` truncated to their minute toward the past (they equal or derive from a run's
+  own instants, D022-060, D022-061); a cursor sealed for the namespace under the digest key version in force, of its
+  own kind (`r1`: a concurrency listing's cursor is a `400` here and the reverse); a `400` for an altered, foreign,
+  other group's or retired cursor; a `422` for a group that is no group name; one `REPEATABLE READ READ ONLY` snapshot a
+  page and `statement_timeout = 2s` (a `503`). Page cost: at most `limit + 1` (201) probes of the listing index, and for
+  each key its counted grants through `rate_limit_grants_count_idx`, at most the hard ceiling of its longest window
+  (10,000), plus for `nextSlotAt` at most 256 waiter rows through `rate_limit_waiters_order_idx` and one grant probe
+  for each of at most three periods, so a page is bounded by its own keys and never by the namespace's, the purge's
+  backlog or a key's whole queue (pinned by `rate_rest::a_page_of_rate_keys_reads_only_its_own_keys`, the `EXPLAIN`
+  twin of the concurrency listing's).
 
 ### Admission port and checks
 
@@ -600,7 +750,7 @@ Ceilings compare the sum of the 16 slots read after the transaction's own rows, 
 | Waiter of a terminal run | Alert `flow_control_waiter_orphaned`, skipped | T022-097 |
 | An engine without the capability is live | Activation refused; use refused | SC-022-027, T022-094 |
 | Pause of a run with a granted, unleased step | Slot and permit returned; asked again on resume | T022-100 |
-| Database clock set back | No grant until it catches up | `libfaketime` in the test container (T022-080) |
+| Database clock set back | No grant until it catches up | the counted grant instants moved one window ahead (T022-080, D022-072) |
 
 ### Constitution Check (the revision)
 

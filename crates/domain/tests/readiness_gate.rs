@@ -1,0 +1,1000 @@
+//! The readiness gate of feature 022 in the domain (T022-096, FR-022-051, D022-020, invariant 11 of `data-model.md`):
+//! a step of a node that declares `concurrency` or `rateLimit` is never `READY` without a grant of each gate it
+//! declares, whatever made it ready; the planner asks for the decision once it has nothing else to do; the answer is
+//! checked; and the journal alone reaches the state the transactions folded.
+#![allow(clippy::expect_used)]
+
+mod common;
+
+use std::time::Duration;
+
+use common::{T0, activity, build, flaky, id, sid};
+use sagat_domain::execution::{
+    self, DeclaredGates, Evaluation, ExecutionError, Failure, FailureCode, GateChange, GateEvent,
+    GatePool, GateRef, GateRequest, GateTarget, KeyLabel, Progress, Resolution, RunEvent, RunId,
+    RunState, StepStatus, WaitingOn,
+};
+use sagat_domain::workflow::flow_control::DEFAULT_QUEUE_TIMEOUT;
+use sagat_domain::workflow::{
+    ConcurrencyPolicy, Expression, FlowControl, FlowGroup, Node, RateLimitPolicy, RatePeriod,
+    ResolvedGroup, WorkflowDefinition,
+};
+
+fn concurrency() -> ConcurrencyPolicy {
+    ConcurrencyPolicy::new(
+        FlowGroup::Derived,
+        Some(Expression::parse("input.accountId").expect("key")),
+        1,
+        DEFAULT_QUEUE_TIMEOUT,
+    )
+    .expect("a policy")
+}
+
+fn rate() -> RateLimitPolicy {
+    RateLimitPolicy::new(
+        FlowGroup::Derived,
+        None,
+        10,
+        RatePeriod::Second,
+        DEFAULT_QUEUE_TIMEOUT,
+    )
+    .expect("a policy")
+}
+
+fn gated(node: Node, concurrency_gate: bool, rate_gate: bool) -> Node {
+    node.with_flow_control(FlowControl::new(
+        concurrency_gate.then(concurrency),
+        rate_gate.then(rate),
+    ))
+    .expect("a gated node")
+}
+
+/// `a` (ungated) then `b`, gated as asked; a `b` with an error route fails over to `recover`.
+fn two_steps(concurrency_gate: bool, rate_gate: bool, b: Node) -> WorkflowDefinition {
+    let recover = b.on_error().is_some();
+    let mut nodes = vec![
+        activity("a").with_next(id("b")),
+        gated(b, concurrency_gate, rate_gate),
+    ];
+    if recover {
+        nodes.push(activity("recover"));
+    }
+    build("a", nodes)
+}
+
+fn gate(node: &str) -> GateRef {
+    GateRef {
+        pool: GatePool::Ordinary,
+        group: ResolvedGroup::parse(&format!("=demo-flow/{node}")).expect("group"),
+        key_label: KeyLabel::parse("0123456789ab").expect("label"),
+    }
+}
+
+fn decision(node: &str, attempt: u32, change: GateChange) -> GateEvent {
+    GateEvent {
+        target: GateTarget::Step {
+            node: id(node),
+            attempt,
+        },
+        gate: gate(node),
+        change,
+    }
+}
+
+const DEADLINE: i64 = 600_000_000;
+
+fn granted() -> GateChange {
+    GateChange::RateGranted {
+        limit: 10,
+        per: RatePeriod::Second,
+        granted_at_us: 1_000,
+        from_queue: false,
+    }
+}
+
+fn queued() -> GateChange {
+    GateChange::ConcurrencyQueued {
+        queue_deadline_us: DEADLINE,
+    }
+}
+
+fn rate_queued() -> GateChange {
+    GateChange::RateQueued {
+        limit: 10,
+        per: RatePeriod::Second,
+        queue_deadline_us: DEADLINE,
+    }
+}
+
+/// Starts a run of `def` and completes `a`: the readiness of `b` comes from a worker completion.
+fn after_a(def: &WorkflowDefinition) -> (RunState, Vec<RunEvent>, Progress) {
+    let (mut state, started) = execution::start_run(def, RunId::generate(), T0).expect("started");
+    let mut journal = started.events;
+    let (fence, leased) = execution::lease_step(&mut state, &sid("a")).expect("a leased");
+    journal.push(leased);
+    let done = execution::complete_step(def, &mut state, &sid("a"), fence, T0).expect("a done");
+    journal.extend(done.events.iter().cloned());
+    (state, journal, done)
+}
+
+fn resolve(
+    def: &WorkflowDefinition,
+    state: &mut RunState,
+    journal: &mut Vec<RunEvent>,
+    decisions: Vec<GateEvent>,
+    refused: Vec<(sagat_domain::workflow::NodeId, FailureCode)>,
+) -> Result<Progress, ExecutionError> {
+    let progress = execution::resolve(def, state, Resolution::Gates { decisions, refused }, T0)?;
+    journal.extend(progress.events.iter().cloned());
+    Ok(progress)
+}
+
+/// The journal alone, without the gated nodes, reaches the state the transactions folded (verify_run's check).
+fn journal_alone_agrees(def: &WorkflowDefinition, state: &RunState, journal: &[RunEvent]) {
+    let alone = RunState::replay(state.run_id(), journal)
+        .expect("the journal replays")
+        .with_gated_steps(def);
+    assert_eq!(&alone, state, "the journal alone reaches the folded state");
+    assert_eq!(state.flow_control_breach(), None, "invariant 11 holds");
+}
+
+#[test]
+fn a_gated_step_made_ready_by_a_completion_waits_and_the_planner_asks_for_its_gates() {
+    let def = two_steps(true, false, activity("b"));
+    let (state, journal, done) = after_a(&def);
+    let b = state.step(&sid("b")).expect("b");
+    assert_eq!(
+        b.status(),
+        StepStatus::Waiting,
+        "never READY before a grant"
+    );
+    assert_eq!(b.waiting_on(), Some(&WaitingOn::Gate));
+    assert!(
+        journal
+            .iter()
+            .any(|event| matches!(event, RunEvent::StepReleased { node } if node == &sid("b"))),
+        "the step was released"
+    );
+    assert_eq!(
+        done.pending,
+        Some(Evaluation::Gates {
+            steps: vec![GateRequest {
+                node: id("b"),
+                attempt: 1
+            }]
+        })
+    );
+    assert_eq!(
+        state.declared_gates(&id("b")),
+        Some(DeclaredGates {
+            concurrency: true,
+            rate: false
+        })
+    );
+    assert_eq!(state.declared_gates(&id("a")), None);
+}
+
+#[test]
+fn a_grant_of_each_declared_gate_makes_the_step_ready_and_one_alone_does_not() {
+    let def = two_steps(true, true, activity("b"));
+    let (mut state, mut journal, _) = after_a(&def);
+    // the rate slot alone leaves it waiting for its permit: the reducer knows both are declared
+    let mut partial = state.clone();
+    partial
+        .apply(&RunEvent::Gate(decision("b", 1, granted())))
+        .expect("slot");
+    assert_eq!(
+        partial.step(&sid("b")).expect("b").status(),
+        StepStatus::Waiting
+    );
+    let progress = resolve(
+        &def,
+        &mut state,
+        &mut journal,
+        vec![
+            decision("b", 1, granted()),
+            decision("b", 1, GateChange::ConcurrencyAcquired),
+        ],
+        Vec::new(),
+    )
+    .expect("granted");
+    assert_eq!(progress.pending, None);
+    assert_eq!(
+        state.step(&sid("b")).expect("b").status(),
+        StepStatus::Ready
+    );
+    let (_, leased) = execution::lease_step(&mut state, &sid("b")).expect("leased once granted");
+    journal.push(leased);
+    journal_alone_agrees(&def, &state, &journal);
+}
+
+#[test]
+fn an_answer_that_leaves_a_declared_gate_undecided_is_refused() {
+    let def = two_steps(true, true, activity("b"));
+    let (state, mut journal, _) = after_a(&def);
+    for decisions in [
+        vec![decision("b", 1, granted())],
+        vec![decision("b", 1, queued())],
+        Vec::new(),
+    ] {
+        let mut state = state.clone();
+        let refused = resolve(
+            &def,
+            &mut state,
+            &mut journal,
+            decisions.clone(),
+            Vec::new(),
+        );
+        assert!(
+            matches!(refused, Err(ExecutionError::Invariant(_))),
+            "{decisions:?}: {refused:?}"
+        );
+    }
+}
+
+#[test]
+fn a_queued_step_waits_spends_no_attempt_and_is_not_leased() {
+    let def = two_steps(true, true, activity("b"));
+    let (mut state, mut journal, _) = after_a(&def);
+    resolve(
+        &def,
+        &mut state,
+        &mut journal,
+        vec![decision("b", 1, rate_queued()), decision("b", 1, queued())],
+        Vec::new(),
+    )
+    .expect("queued");
+    let b = state.step(&sid("b")).expect("b");
+    assert_eq!(b.status(), StepStatus::Waiting);
+    assert_eq!(b.attempt(), 0, "waiting spends no attempt");
+    assert!(execution::lease_step(&mut state.clone(), &sid("b")).is_err());
+    assert_eq!(
+        execution::plan(&def, &state, T0).expect("plan"),
+        execution::Plan::Idle,
+        "decided: the planner does not ask again"
+    );
+    journal_alone_agrees(&def, &state, &journal);
+}
+
+#[test]
+fn a_key_that_does_not_evaluate_fails_the_step_through_its_route_with_no_attempt() {
+    let def = two_steps(false, true, activity("b").with_on_error(id("recover")));
+    let (mut state, mut journal, _) = after_a(&def);
+    resolve(
+        &def,
+        &mut state,
+        &mut journal,
+        Vec::new(),
+        vec![(id("b"), FailureCode::flow_control_key_invalid())],
+    )
+    .expect("failed");
+    let b = state.step(&sid("b")).expect("b");
+    assert_eq!(b.status(), StepStatus::Failed);
+    assert_eq!(b.failure(), Some(&FailureCode::flow_control_key_invalid()));
+    assert_eq!(b.attempt(), 0, "no attempt spent");
+    assert_eq!(
+        state.step(&sid("recover")).expect("routed").status(),
+        StepStatus::Ready,
+        "the failure route takes it"
+    );
+    journal_alone_agrees(&def, &state, &journal);
+}
+
+#[test]
+fn a_retry_of_a_gated_step_waits_again_for_the_next_attempt_after_its_permit_is_given_back() {
+    let def = two_steps(true, false, flaky("b", 3));
+    let (mut state, mut journal, _) = after_a(&def);
+    resolve(
+        &def,
+        &mut state,
+        &mut journal,
+        vec![decision("b", 1, GateChange::ConcurrencyAcquired)],
+        Vec::new(),
+    )
+    .expect("granted");
+    let (fence, leased) = execution::lease_step(&mut state, &sid("b")).expect("leased");
+    journal.push(leased);
+    let failed = execution::fail_step(
+        &def,
+        &mut state,
+        &sid("b"),
+        Failure {
+            fence,
+            code: FailureCode::worker_error(),
+            retryable: true,
+            jitter_sample: 0.0,
+        },
+        T0,
+    )
+    .expect("retry scheduled");
+    journal.extend(failed.events.iter().cloned());
+    assert!(
+        failed.events.iter().any(|event| matches!(
+            event,
+            RunEvent::Gate(GateEvent {
+                change: GateChange::ConcurrencyReleased,
+                ..
+            })
+        )),
+        "the attempt's permit is given back when it ends"
+    );
+    let due = execution::retry_due(&def, &mut state, &sid("b"), T0 + Duration::from_secs(1))
+        .expect("due");
+    journal.extend(due.events.iter().cloned());
+    let b = state.step(&sid("b")).expect("b");
+    assert_eq!(
+        b.status(),
+        StepStatus::Waiting,
+        "the retry pass makes it wait"
+    );
+    assert_eq!(
+        due.pending,
+        Some(Evaluation::Gates {
+            steps: vec![GateRequest {
+                node: id("b"),
+                attempt: 2
+            }]
+        })
+    );
+    resolve(
+        &def,
+        &mut state,
+        &mut journal,
+        vec![decision("b", 2, GateChange::ConcurrencyAcquired)],
+        Vec::new(),
+    )
+    .expect("granted again");
+    assert_eq!(
+        state.step(&sid("b")).expect("b").status(),
+        StepStatus::Ready
+    );
+    journal_alone_agrees(&def, &state, &journal);
+}
+
+#[test]
+fn a_paused_run_releases_nothing_and_its_resume_asks_for_the_gates() {
+    let def = two_steps(true, false, activity("b"));
+    let (mut state, started) = execution::start_run(&def, RunId::generate(), T0).expect("started");
+    let mut journal = started.events;
+    let (fence, leased) = execution::lease_step(&mut state, &sid("a")).expect("a leased");
+    journal.push(leased);
+    journal.extend(
+        execution::pause_run(&def, &mut state, T0)
+            .expect("paused")
+            .events,
+    );
+    let done = execution::complete_step(&def, &mut state, &sid("a"), fence, T0).expect("a done");
+    journal.extend(done.events.iter().cloned());
+    assert_eq!(
+        done.pending, None,
+        "a paused run releases nothing, so nothing waits"
+    );
+    assert!(
+        state.step(&sid("b")).is_none(),
+        "not even routed while paused"
+    );
+    let resumed = execution::resume_run(&def, &mut state, T0).expect("resumed");
+    journal.extend(resumed.events.iter().cloned());
+    assert!(
+        matches!(resumed.pending, Some(Evaluation::Gates { .. })),
+        "{:?}",
+        resumed.pending
+    );
+}
+
+/// The retry pass does not look at the pause: a gated step it makes ready in a paused run is decided in that commit,
+/// never left waiting undecided (invariant 11; the correctness review of 2026-11-19, finding 3).
+#[test]
+fn a_retry_due_in_a_paused_run_is_decided_in_its_commit() {
+    let def = two_steps(true, false, flaky("b", 3));
+    let (mut state, mut journal, _) = after_a(&def);
+    resolve(
+        &def,
+        &mut state,
+        &mut journal,
+        vec![decision("b", 1, GateChange::ConcurrencyAcquired)],
+        Vec::new(),
+    )
+    .expect("granted");
+    let (fence, leased) = execution::lease_step(&mut state, &sid("b")).expect("leased");
+    journal.push(leased);
+    let failed = execution::fail_step(
+        &def,
+        &mut state,
+        &sid("b"),
+        Failure {
+            fence,
+            code: FailureCode::worker_error(),
+            retryable: true,
+            jitter_sample: 0.0,
+        },
+        T0,
+    )
+    .expect("retry scheduled");
+    journal.extend(failed.events.iter().cloned());
+    journal.extend(
+        execution::pause_run(&def, &mut state, T0)
+            .expect("paused")
+            .events,
+    );
+    let due = execution::retry_due(&def, &mut state, &sid("b"), T0 + Duration::from_secs(1))
+        .expect("due");
+    journal.extend(due.events.iter().cloned());
+    assert_eq!(
+        due.pending,
+        Some(Evaluation::Gates {
+            steps: vec![GateRequest {
+                node: id("b"),
+                attempt: 2
+            }]
+        }),
+        "decided although the run is paused"
+    );
+    resolve(
+        &def,
+        &mut state,
+        &mut journal,
+        vec![decision("b", 2, queued())],
+        Vec::new(),
+    )
+    .expect("queued while paused");
+    journal_alone_agrees(&def, &state, &journal);
+}
+
+/// The answer may fail only a step it was asked about, and only for its key (the architecture review of 2026-11-19,
+/// m1): any other failure code or node is refused.
+#[test]
+fn the_gate_answer_fails_only_an_asked_step_and_only_for_its_key() {
+    let def = two_steps(false, true, activity("b").with_on_error(id("recover")));
+    let (state, mut journal, _) = after_a(&def);
+    for refused in [
+        vec![(id("b"), FailureCode::worker_error())],
+        vec![(id("recover"), FailureCode::flow_control_key_invalid())],
+    ] {
+        let mut state = state.clone();
+        let answer = resolve(&def, &mut state, &mut journal, Vec::new(), refused.clone());
+        assert!(
+            matches!(answer, Err(ExecutionError::Invariant(_))),
+            "{refused:?}: {answer:?}"
+        );
+    }
+}
+
+#[test]
+fn a_step_left_ready_without_a_grant_is_a_breach_of_invariant_11() {
+    let def = two_steps(true, false, activity("b"));
+    let (_, journal, _) = after_a(&def);
+    // the journal alone (no gated node known) leaves `b` READY: a commit that made it ready journaled no decision
+    let alone = RunState::replay(RunId::generate(), &journal)
+        .expect("replays")
+        .with_gated_steps(&def);
+    assert_eq!(
+        alone.step(&sid("b")).expect("b").status(),
+        StepStatus::Ready
+    );
+    assert!(
+        alone
+            .flow_control_breach()
+            .is_some_and(|(node, _)| node == id("b")),
+        "{:?}",
+        alone.flow_control_breach()
+    );
+    // and the folded state waits without a decision: a breach too, until the gate answers
+    let (folded, _, _) = after_a(&def);
+    assert!(folded.flow_control_breach().is_some());
+}
+
+#[test]
+fn a_gate_event_for_a_node_that_declares_none_is_refused() {
+    let def = two_steps(true, false, activity("b"));
+    let (mut state, _, _) = after_a(&def);
+    let wrong_kind = RunEvent::Gate(decision("b", 1, granted()));
+    assert!(matches!(
+        state.clone().apply(&wrong_kind),
+        Err(ExecutionError::Invariant(_))
+    ));
+    let ungated = RunEvent::Gate(decision("a", 1, GateChange::ConcurrencyAcquired));
+    assert!(matches!(
+        state.apply(&ungated),
+        Err(ExecutionError::Invariant(_))
+    ));
+}
+
+#[test]
+fn an_ungated_definition_folds_as_before() {
+    let def = build("a", vec![activity("a").with_next(id("b")), activity("b")]);
+    let (state, journal, done) = after_a(&def);
+    assert_eq!(
+        state.step(&sid("b")).expect("b").status(),
+        StepStatus::Ready
+    );
+    assert_eq!(done.pending, None);
+    assert_eq!(
+        RunState::replay(state.run_id(), &journal).expect("replays"),
+        state,
+        "an ungated state is exactly the journal's"
+    );
+}
+
+#[test]
+fn a_stopped_run_takes_its_waiting_steps_out_of_their_queues_before_it_ends() {
+    let def = two_steps(true, true, activity("b"));
+    let (mut state, mut journal, _) = after_a(&def);
+    resolve(
+        &def,
+        &mut state,
+        &mut journal,
+        vec![decision("b", 1, rate_queued()), decision("b", 1, queued())],
+        Vec::new(),
+    )
+    .expect("queued");
+    let stopped = execution::stop_run(
+        &def,
+        &mut state,
+        sagat_domain::execution::StopReason::Cancelled,
+        None,
+        T0,
+    )
+    .expect("cancelled");
+    journal.extend(stopped.events.iter().cloned());
+    let names: Vec<_> = stopped.events.iter().map(RunEvent::name).collect();
+    let position = |name: &str| {
+        names
+            .iter()
+            .position(|n| *n == name)
+            .unwrap_or_else(|| panic!("{name} in {names:?}"))
+    };
+    assert!(
+        position("rate_limit.dequeued") < position("concurrency.dequeued"),
+        "rate first: {names:?}"
+    );
+    assert!(
+        position("concurrency.dequeued") < position("step.cancelled"),
+        "{names:?}"
+    );
+    assert_eq!(names.last(), Some(&"run.finished"), "{names:?}");
+    journal_alone_agrees(&def, &state, &journal);
+}
+
+// ------------------------------------------------------------------------- grant (T022-097) and timeout (T022-098)
+
+fn from_queue() -> GateChange {
+    GateChange::RateGranted {
+        limit: 10,
+        per: RatePeriod::Second,
+        granted_at_us: 2_000,
+        from_queue: true,
+    }
+}
+
+/// `b` queued for both gates (rate and permit) after `a`'s completion.
+fn queued_for_both(def: &WorkflowDefinition) -> (RunState, Vec<RunEvent>) {
+    let (mut state, mut journal, _) = after_a(def);
+    resolve(
+        def,
+        &mut state,
+        &mut journal,
+        vec![decision("b", 1, rate_queued()), decision("b", 1, queued())],
+        Vec::new(),
+    )
+    .expect("queued");
+    (state, journal)
+}
+
+/// The instant after every queue deadline of these tests.
+fn past_the_deadline() -> time::OffsetDateTime {
+    T0 + Duration::from_secs(601)
+}
+
+#[test]
+fn a_grant_from_the_queue_makes_the_step_ready_only_with_every_gate_it_waits_for() {
+    let def = two_steps(true, true, activity("b"));
+    let (state, journal) = queued_for_both(&def);
+    // one gate alone is refused: both or neither (FR-022-044)
+    for partial in [
+        vec![decision("b", 1, from_queue())],
+        vec![decision("b", 1, GateChange::ConcurrencyAcquired)],
+    ] {
+        let refused = execution::grant_step_gates(&def, &mut state.clone(), T0, partial.clone());
+        assert!(
+            matches!(refused, Err(ExecutionError::Invariant(_))),
+            "{partial:?}: {refused:?}"
+        );
+    }
+    let mut state = state;
+    let mut journal = journal;
+    let progress = execution::grant_step_gates(
+        &def,
+        &mut state,
+        T0,
+        vec![
+            decision("b", 1, from_queue()),
+            decision("b", 1, GateChange::ConcurrencyAcquired),
+        ],
+    )
+    .expect("granted");
+    journal.extend(progress.events.iter().cloned());
+    let b = state.step(&sid("b")).expect("b");
+    assert_eq!(b.status(), StepStatus::Ready);
+    assert_eq!(b.attempt(), 0, "the grant spends no attempt");
+    let (_, leased) = execution::lease_step(&mut state, &sid("b")).expect("leased once granted");
+    journal.push(leased);
+    journal_alone_agrees(&def, &state, &journal);
+}
+
+#[test]
+fn a_grant_from_the_queue_is_refused_for_a_step_that_no_longer_waits_or_for_another_attempt() {
+    let def = two_steps(true, false, activity("b"));
+    let (mut state, mut journal, _) = after_a(&def);
+    resolve(
+        &def,
+        &mut state,
+        &mut journal,
+        vec![decision("b", 1, queued())],
+        Vec::new(),
+    )
+    .expect("queued");
+    let wrong_attempt = execution::grant_step_gates(
+        &def,
+        &mut state.clone(),
+        T0,
+        vec![decision("b", 2, GateChange::ConcurrencyAcquired)],
+    );
+    assert!(wrong_attempt.is_err(), "{wrong_attempt:?}");
+    let not_a_grant = execution::grant_step_gates(
+        &def,
+        &mut state.clone(),
+        T0,
+        vec![decision("b", 1, GateChange::ConcurrencyDequeued)],
+    );
+    assert!(not_a_grant.is_err(), "{not_a_grant:?}");
+    // the first commit wins: once granted (or timed out) the step waits for nothing, and a second grant is refused
+    let mut granted_once = state.clone();
+    execution::grant_step_gates(
+        &def,
+        &mut granted_once,
+        T0,
+        vec![decision("b", 1, GateChange::ConcurrencyAcquired)],
+    )
+    .expect("granted");
+    let twice = execution::grant_step_gates(
+        &def,
+        &mut granted_once,
+        T0,
+        vec![decision("b", 1, GateChange::ConcurrencyAcquired)],
+    );
+    assert!(twice.is_err(), "{twice:?}");
+    let mut timed_out = state.clone();
+    execution::time_out_step_gates(
+        &def,
+        &mut timed_out,
+        past_the_deadline(),
+        &id("b"),
+        sagat_domain::workflow::GateKind::Concurrency,
+    )
+    .expect("timed out");
+    let after_timeout = execution::grant_step_gates(
+        &def,
+        &mut timed_out,
+        T0,
+        vec![decision("b", 1, GateChange::ConcurrencyAcquired)],
+    );
+    assert!(after_timeout.is_err(), "{after_timeout:?}");
+}
+
+#[test]
+fn a_timed_out_wait_names_the_refusing_gate_dequeues_the_other_and_fails_the_step_through_its_route()
+ {
+    use sagat_domain::workflow::GateKind;
+    let def = two_steps(true, true, activity("b").with_on_error(id("recover")));
+    for (refusing, timed_out, dequeued, code) in [
+        (
+            GateKind::RateLimit,
+            "rate_limit.wait_timed_out",
+            "concurrency.dequeued",
+            FailureCode::rate_limit_wait_timeout(),
+        ),
+        (
+            GateKind::Concurrency,
+            "concurrency.wait_timed_out",
+            "rate_limit.dequeued",
+            FailureCode::concurrency_wait_timeout(),
+        ),
+    ] {
+        let (mut state, mut journal) = queued_for_both(&def);
+        let progress = execution::time_out_step_gates(
+            &def,
+            &mut state,
+            past_the_deadline(),
+            &id("b"),
+            refusing,
+        )
+        .expect("timed out");
+        journal.extend(progress.events.iter().cloned());
+        let names: Vec<_> = progress.events.iter().map(RunEvent::name).collect();
+        assert_eq!(
+            &names[..3],
+            [timed_out, dequeued, "step.failed"],
+            "{names:?}"
+        );
+        let b = state.step(&sid("b")).expect("b");
+        assert_eq!(b.status(), StepStatus::Failed);
+        assert_eq!(b.failure(), Some(&code));
+        assert_eq!(b.attempt(), 0, "the wait spent no attempt");
+        assert!(!b.gates().is_open(), "nothing of it is left in a queue");
+        assert_eq!(
+            state.step(&sid("recover")).expect("routed").status(),
+            StepStatus::Ready,
+            "the failure route takes it"
+        );
+        journal_alone_agrees(&def, &state, &journal);
+    }
+}
+
+#[test]
+fn a_timeout_before_the_deadline_or_of_an_undeclared_gate_is_refused() {
+    use sagat_domain::workflow::GateKind;
+    let def = two_steps(true, false, activity("b"));
+    let (mut state, mut journal, _) = after_a(&def);
+    resolve(
+        &def,
+        &mut state,
+        &mut journal,
+        vec![decision("b", 1, queued())],
+        Vec::new(),
+    )
+    .expect("queued");
+    let early = execution::time_out_step_gates(
+        &def,
+        &mut state.clone(),
+        T0,
+        &id("b"),
+        GateKind::Concurrency,
+    );
+    assert!(
+        matches!(early, Err(ExecutionError::NotYetDue(_))),
+        "{early:?}"
+    );
+    let undeclared = execution::time_out_step_gates(
+        &def,
+        &mut state.clone(),
+        past_the_deadline(),
+        &id("b"),
+        GateKind::RateLimit,
+    );
+    assert!(
+        matches!(undeclared, Err(ExecutionError::Invariant(_))),
+        "{undeclared:?}"
+    );
+    // a granted step waits for nothing: its timeout lost the race
+    let mut granted_first = state.clone();
+    execution::grant_step_gates(
+        &def,
+        &mut granted_first,
+        T0,
+        vec![decision("b", 1, GateChange::ConcurrencyAcquired)],
+    )
+    .expect("granted");
+    let lost = execution::time_out_step_gates(
+        &def,
+        &mut granted_first,
+        past_the_deadline(),
+        &id("b"),
+        GateKind::Concurrency,
+    );
+    assert!(
+        matches!(lost, Err(ExecutionError::IllegalTransition { .. })),
+        "{lost:?}"
+    );
+}
+
+// ------------------------------------------------------------------------- T022-100: a pause gives back (T29)
+
+fn names(events: &[RunEvent]) -> Vec<&'static str> {
+    events.iter().map(RunEvent::name).collect()
+}
+
+/// FR-022-046, T29 of the plan: pausing a run gives back the permit and the slot of a gated step that is granted and
+/// not leased, and makes it wait again; nothing is asked while the run is paused; resuming asks again, for the same
+/// attempt, and the journal alone reaches the same state.
+#[test]
+fn a_pause_returns_the_gates_of_a_granted_unleased_step_and_its_resume_asks_again() {
+    let def = two_steps(true, true, activity("b"));
+    let (mut state, mut journal, _) = after_a(&def);
+    resolve(
+        &def,
+        &mut state,
+        &mut journal,
+        vec![
+            decision("b", 1, granted()),
+            decision("b", 1, GateChange::ConcurrencyAcquired),
+        ],
+        Vec::new(),
+    )
+    .expect("granted");
+    assert_eq!(
+        state.step(&sid("b")).expect("b").status(),
+        StepStatus::Ready
+    );
+
+    let paused = execution::pause_run(&def, &mut state, T0).expect("paused");
+    journal.extend(paused.events.iter().cloned());
+    assert_eq!(
+        names(&paused.events),
+        ["run.paused", "concurrency.released", "rate_limit.returned"]
+    );
+    assert_eq!(paused.pending, None, "nothing is asked while paused");
+    let b = state.step(&sid("b")).expect("b");
+    assert_eq!(b.status(), StepStatus::Waiting, "it waits again");
+    assert_eq!(b.waiting_on(), Some(&WaitingOn::Gate));
+    assert_eq!(b.attempt(), 0, "no attempt spent");
+    assert!(execution::lease_step(&mut state.clone(), &sid("b")).is_err());
+    assert_eq!(
+        execution::plan(&def, &state, T0).expect("plan"),
+        execution::Plan::Idle,
+        "a paused run does not ask again"
+    );
+    journal_alone_agrees(&def, &state, &journal);
+
+    let resumed = execution::resume_run(&def, &mut state, T0).expect("resumed");
+    journal.extend(resumed.events.iter().cloned());
+    assert_eq!(
+        resumed.pending,
+        Some(Evaluation::Gates {
+            steps: vec![GateRequest {
+                node: id("b"),
+                attempt: 1
+            }]
+        }),
+        "the resume asks again, for the same attempt"
+    );
+    resolve(
+        &def,
+        &mut state,
+        &mut journal,
+        vec![decision("b", 1, rate_queued()), decision("b", 1, queued())],
+        Vec::new(),
+    )
+    .expect("queued behind whoever took the key meanwhile");
+    assert_eq!(
+        state.step(&sid("b")).expect("b").status(),
+        StepStatus::Waiting
+    );
+    journal_alone_agrees(&def, &state, &journal);
+}
+
+/// A step that the retry pass makes ready in a paused run is decided in that commit (the journal says so); if it is
+/// granted, the pause gives the grant back at once, so a paused run holds no granted, unleased step (FR-022-046).
+#[test]
+fn a_step_granted_while_its_run_is_paused_gives_its_gates_back_in_that_commit() {
+    let def = two_steps(true, false, flaky("b", 3));
+    let (mut state, mut journal, _) = after_a(&def);
+    resolve(
+        &def,
+        &mut state,
+        &mut journal,
+        vec![decision("b", 1, GateChange::ConcurrencyAcquired)],
+        Vec::new(),
+    )
+    .expect("granted");
+    let (fence, leased) = execution::lease_step(&mut state, &sid("b")).expect("leased");
+    journal.push(leased);
+    let failed = execution::fail_step(
+        &def,
+        &mut state,
+        &sid("b"),
+        Failure {
+            fence,
+            code: FailureCode::worker_error(),
+            retryable: true,
+            jitter_sample: 0.0,
+        },
+        T0,
+    )
+    .expect("retry scheduled");
+    journal.extend(failed.events.iter().cloned());
+    let paused = execution::pause_run(&def, &mut state, T0).expect("paused");
+    journal.extend(paused.events.iter().cloned());
+    let due = execution::retry_due(&def, &mut state, &sid("b"), T0 + Duration::from_secs(1))
+        .expect("due");
+    journal.extend(due.events.iter().cloned());
+    let progress = resolve(
+        &def,
+        &mut state,
+        &mut journal,
+        vec![decision("b", 2, GateChange::ConcurrencyAcquired)],
+        Vec::new(),
+    )
+    .expect("granted while paused");
+    assert_eq!(
+        names(&progress.events),
+        ["concurrency.acquired", "concurrency.released"],
+        "given back in the same commit"
+    );
+    assert_eq!(progress.pending, None, "and not asked again while paused");
+    let b = state.step(&sid("b")).expect("b");
+    assert_eq!(
+        (b.status(), b.waiting_on()),
+        (StepStatus::Waiting, Some(&WaitingOn::Gate))
+    );
+    journal_alone_agrees(&def, &state, &journal);
+    let resumed = execution::resume_run(&def, &mut state, T0).expect("resumed");
+    journal.extend(resumed.events.iter().cloned());
+    assert!(
+        matches!(resumed.pending, Some(Evaluation::Gates { .. })),
+        "{:?}",
+        resumed.pending
+    );
+    resolve(
+        &def,
+        &mut state,
+        &mut journal,
+        vec![decision("b", 2, GateChange::ConcurrencyAcquired)],
+        Vec::new(),
+    )
+    .expect("granted again on resume, for the same attempt");
+    assert_eq!(
+        state.step(&sid("b")).expect("b").status(),
+        StepStatus::Ready
+    );
+    let (_, leased) = execution::lease_step(&mut state, &sid("b")).expect("leased");
+    journal.push(leased);
+    journal_alone_agrees(&def, &state, &journal);
+}
+
+/// A hold for review takes a granted, unleased step out of `READY`: its permit and slot are given back; an operator's
+/// retry then asks again for the same attempt (the slot that attempt gave back is decided again), and the journal alone
+/// agrees (correctness review M2 of 2026-11-20).
+#[test]
+fn a_review_hold_gives_back_and_a_retry_asks_again_for_the_same_attempt() {
+    let def = two_steps(true, true, activity("b"));
+    let (mut state, mut journal, _) = after_a(&def);
+    resolve(
+        &def,
+        &mut state,
+        &mut journal,
+        vec![
+            decision("b", 1, granted()),
+            decision("b", 1, GateChange::ConcurrencyAcquired),
+        ],
+        Vec::new(),
+    )
+    .expect("granted");
+    let held = execution::mark_for_review(&def, &mut state, &id("b"), T0).expect("held");
+    journal.extend(held.events.iter().cloned());
+    assert_eq!(
+        names(&held.events)
+            .into_iter()
+            .filter(|name| name.starts_with("concurrency.") || name.starts_with("rate_limit."))
+            .collect::<Vec<_>>(),
+        ["concurrency.released", "rate_limit.returned"]
+    );
+    let retried = execution::retry_review(&def, &mut state, &id("b"), T0).expect("retried");
+    journal.extend(retried.events.iter().cloned());
+    assert_eq!(
+        retried.pending,
+        Some(Evaluation::Gates {
+            steps: vec![GateRequest {
+                node: id("b"),
+                attempt: 1
+            }]
+        }),
+        "the same attempt asks again"
+    );
+    resolve(
+        &def,
+        &mut state,
+        &mut journal,
+        vec![
+            decision("b", 1, granted()),
+            decision("b", 1, GateChange::ConcurrencyAcquired),
+        ],
+        Vec::new(),
+    )
+    .expect("granted again");
+    assert_eq!(
+        state.step(&sid("b")).expect("b").status(),
+        StepStatus::Ready
+    );
+    journal_alone_agrees(&def, &state, &journal);
+}

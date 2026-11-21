@@ -558,6 +558,11 @@ fn nodes(raw_nodes: &[Value], at: &str, structured: bool) -> Result<Vec<Node>, I
         if effect != EffectPolicy::NONE {
             built = built.with_effect(effect);
         }
+        // feature 022: a body node never reaches here with a gate (`flow_control::check_surfaces`)
+        let flow_control = crate::flow_control::node(node, built.id())?;
+        built = built
+            .with_flow_control(flow_control)
+            .map_err(IrError::Invalid)?;
         nodes.push(built);
     }
     Ok(nodes)

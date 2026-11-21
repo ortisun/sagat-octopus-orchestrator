@@ -4,11 +4,16 @@
 **Decided by:** agent proposal, accepted by the owner on 2026-11-13 (OD-2026-11-13-17) (2026-10-26; revised after architecture review 2026-10-27)
 **Refines / supersedes:** refines ADR-0020 (sharded, fenced scheduler) and ADR-0027 (lock order and
 quotas); builds on ADR-0002, ADR-0012 and ADR-0030 (chain-before-run order). Supersedes none.
-**Enforced by:** proposed checks of feature 022 — the fault suite `tests/fault/flow-control-step-policies`
-(timeout-versus-grant, crash at release and grant, duplicate grant across shards), the journal/semaphore
-consistency assertion added to `verify_run`, lock-order barrier tests per path (admission, grant, timeout,
-terminal, claim against attempt end), and a run-creator test that fails when a creator bypasses the
-permit admission port. None exists yet; until they do, this rule is review only.
+**Enforced by:** the fault suite `tests/fault/flow-control-step-policies/concurrency.rs` (grant against timeout in four
+orders over 20 rounds, a crash inside admission, grant, timeout and release, the release crash over 20 rounds, a takeover
+against a grant in flight); `support::flow_control::key_consistency`, run by `World::assert_consistent` after every test
+of the suites (counters, rows, gate projections and journals; waiters of ended runs; empty key rows; the oldest wait);
+the lock-order tests of `tests/integration/flow-control-step-policies/concurrency_locks.rs` (admission, end of a run,
+cancellation, timeout, each against a reference in slot order, and a reversed control that deadlocks); the
+architecture checks `gate_row_write_errors`, `key_row_insert_errors`, `run_creator_errors` and
+`queued_runs_count_errors` of `scripts/check-architecture.py`, and `runtime_privileges` (every statement as
+`sagat_app`). Still missing (2026-11-20): the claim-against-attempt-end barrier, the child-of-the-same-key and
+lower-limit-waiter cases at run level, and the benchmark of one key with 1, 16 and 256 contenders (T022-062, T022-089).
 
 ## Context
 
@@ -144,7 +149,8 @@ ceiling above the proposed defaults is published.
 
 ## Evidence
 
-None yet. Required before acceptance: real PostgreSQL tests for the race in decision 6 (20 rounds), crash
+Built (2026-11-20, feature 022 release 0.3.0 slice, pull request 237): the tests named under **Enforced by** above, run
+against real PostgreSQL as the schema owner and as `sagat_app`. Not yet: the benchmark below. Originally required: real PostgreSQL tests for the race in decision 6 (20 rounds), crash
 before and after each commit of admission, release, grant and timeout, duplicate grant attempts from two
 replicas across a shard takeover, cancel of a queued run, child of the same key, an older lower-limit
 waiter with a younger higher-limit waiter, a reset of a permit-holding source (with feature 018), every
@@ -160,4 +166,19 @@ Accepted by the owner on 2026-11-13 (OD-2026-11-13-17); the "Decided by" line ab
 The reviews of feature 022's release 0.3.0 slice found that decision 3's step permit at claim leaves
 permit-less steps `READY` in the claim's window and that decision 5's strict oldest-first per waiter shard
 limits throughput and starves dual-gated heads. [ADR-0089](ADR-0089-a-gated-step-waits-outside-ready-and-one-fenced-grant-routine-serves-every-waiter-by-key.md)
-(proposed) would supersede those two decisions; until the owner decides, they stand as accepted.
+(proposed at the time) would supersede those two decisions; it was accepted the same day (OD-2026-11-13-19).
+
+Note (2026-11-19, OD-2026-11-19-2): the last sentence of decision 7 (no new digest key version while any holder or waiter
+exists under the old one) is superseded by ADR-0093, accepted with the operator's force: a key version is rotated per key
+with live rows, and an emergency rotation (the operator's force, ADR-0093 decision 5) may over-admit a key by at most what
+its old row holds until it drains; meanwhile the order of decision 5 holds within each of the key's two rows, not across
+them.
+
+Note (2026-11-20, T022-064, D022-052 to D022-054; delegated by OD-2026-11-20-6): decision 3's delayed start "acquires or
+enqueues when the delay elapses" through the planner's `Evaluation::StartGates`, in the release's transaction; when a
+ceiling of decision 7 refuses it (a full key queue, `queued_runs`, the live keys), the release is an asynchronous creator
+and follows option 3's "must not lose work": nothing is written, and the run is held back from the release pass with a
+backoff (5 s doubling to 5 min, `start_release_deferrals`), bounded by the run's own deadline. The release takes the
+namespace's admission lock before it counts, so `queued_runs` stays exact. Decision 3's reset "acquires a fresh permit in
+the reset admission transaction or is refused" right after `run.reset`, under the reservation rule of ADR-0089 (a permit a
+queued run waits for is not free); the source's `concurrency.*` events restored with the prefix are history.

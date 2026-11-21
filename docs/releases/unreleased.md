@@ -3,6 +3,18 @@
 These changes are on the project completion feature branch. This is not a published release.
 Final compatibility, fault, canary, performance and workspace gates remain in the feature tasks.
 
+## Flow control: concurrency keys (feature 022, release 0.3.0 slice)
+
+Off by default. With `SAGAT_FLOW_CONTROL_CONCURRENCY_KEYS_ENABLED=true` a control plane and an engine need the
+deployment's digest keys, a file named by `SAGAT_FLOW_CONTROL_DIGEST_KEYS_FILE` (`version:hex`; Helm
+`flowControl.digestKeys.existingSecret`, compose overlay `compose.flow-control.yaml`); without it, or with a file that
+lacks a version the database has in force, the process does not start. Both then list `flow-control-concurrency-v1`, and
+the operator activates the capability (`docs/runbooks/flow-control.md`). New: `Run.concurrency` and
+`GET /namespaces/{namespaceId}/concurrency-keys` (`keyLabel` and a key's whole oldest instants only for a caller with the namespace's
+reveal grant; other readers get them truncated to the minute, D022-061). A process with the switches off that is given
+the key file drains what was admitted (D022-062); the images' group is now gid 10001. **Release gate (G022-015): do not activate in production before T022-104** (publication's refusal of keys
+over `secret` fields); this release does not close with it open. The rate gate is not served yet.
+
 ## Breaking: every run input is checked against its version's schema (design 043)
 
 From 0.3.0 the input of every run is checked against the `inputSchema` of the version the run pins, before the run is

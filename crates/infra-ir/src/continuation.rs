@@ -251,7 +251,8 @@ pub(crate) fn parse(document: &Value) -> Result<ParsedContinuation, IrError> {
     let definition = crate::input_schema::attach(
         document,
         crate::convert::continuation_definition(&graph, domain_policy)?,
-    );
+    )
+    .with_run_flow_control(crate::flow_control::run(document)?);
     crate::check_expressions(&definition)?;
     let canonical = canonical::canonical_json(document);
     let digest = canonical::digest_of(&canonical);

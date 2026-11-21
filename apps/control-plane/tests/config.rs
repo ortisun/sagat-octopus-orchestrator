@@ -1134,6 +1134,68 @@ fn redis_callback_activation_is_an_explicit_strict_operator_switch() {
     assert!(ServeConfig::from_lookup(&env(&values)).is_err());
 }
 
+/// A file of test digest keys (not a real key), for a switched configuration (D022-057).
+fn test_key_file() -> tempfile::NamedTempFile {
+    use std::io::Write as _;
+    let mut file = tempfile::NamedTempFile::new().expect("a file");
+    file.write_all(b"1:4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d\n")
+        .expect("written");
+    file
+}
+
+/// Feature 022 (T022-005, T022-069, FR-022-031, FR-022-050): the two flow-control capabilities are switched one at a
+/// time, off unless the deployment says so; anything but a boolean is refused. A switch on needs the digest key file
+/// (D022-057): without it the start fails naming the variable.
+#[test]
+fn the_flow_control_capabilities_are_off_by_default_and_switched_one_at_a_time() {
+    use sagat_application::flow_control::FlowControlSwitches;
+    let keys = test_key_file();
+    let path = keys.path().to_str().expect("a path").to_owned();
+    let read = |extra: &[(&str, &str)], with_keys: bool| {
+        let mut values = OIDC.to_vec();
+        values.extend_from_slice(extra);
+        if with_keys {
+            values.push(("SAGAT_FLOW_CONTROL_DIGEST_KEYS_FILE", &path));
+        }
+        ServeConfig::from_lookup(&env(&values)).map(|config| config.flow_control)
+    };
+    assert_eq!(
+        read(&[], false).expect("defaults"),
+        FlowControlSwitches::default()
+    );
+    assert_eq!(
+        read(
+            &[("SAGAT_FLOW_CONTROL_CONCURRENCY_KEYS_ENABLED", "true")],
+            true
+        )
+        .expect("one"),
+        FlowControlSwitches {
+            concurrency_keys: true,
+            rate_limits: false
+        }
+    );
+    assert_eq!(
+        read(&[("SAGAT_FLOW_CONTROL_RATE_LIMITS_ENABLED", "true")], true).expect("the other"),
+        FlowControlSwitches {
+            concurrency_keys: false,
+            rate_limits: true
+        }
+    );
+    for name in [
+        "SAGAT_FLOW_CONTROL_CONCURRENCY_KEYS_ENABLED",
+        "SAGAT_FLOW_CONTROL_RATE_LIMITS_ENABLED",
+    ] {
+        assert!(read(&[(name, "maybe")], true).is_err(), "{name}");
+        let missing = read(&[(name, "true")], false)
+            .expect_err("a switch on without the key file")
+            .to_string();
+        assert!(
+            missing.contains("SAGAT_FLOW_CONTROL_DIGEST_KEYS_FILE"),
+            "{name}: {missing}"
+        );
+    }
+}
+
 /// Design 043, FR-043-013 (the publication half of T043-12, D043-109): `SAGAT_RUN_INPUT_VALIDATION` is read strictly.
 /// Unset or empty is `enforce`; `enforce` and `report` are themselves; anything else stops the process naming the
 /// variable. The control plane passes the mode to publication.

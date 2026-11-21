@@ -10,13 +10,13 @@ unchecked item states why.
 
 ## Content Quality
 
-- [ ] No implementation details (languages, frameworks, APIs)
+- [ ] No implementation details (languages, frameworks, APIs) (accepted as a deliberate deviation, OD-2026-11-16-1)
   — Not satisfied by design: following the house style of features 014 and 017, requirements name the IR
   fields, REST routes, journal events and existing tables they extend (`runs.result_digest`,
   `activity_quota_limits`), because the contracts are the product surface here. Languages, crates and SQL
   appear only in plan.md and data-model.md.
 - [x] Focused on user value and business needs (each story states why and for whom)
-- [ ] Written for non-technical stakeholders
+- [ ] Written for non-technical stakeholders (accepted as a deliberate deviation, OD-2026-11-16-1)
   — Partly: user stories and "Why this priority" are plain; the functional requirements target engineers
   and reviewers of a durable-execution platform.
 - [x] All mandatory sections completed (user scenarios, edge cases, requirements, key entities, success
@@ -29,7 +29,7 @@ unchecked item states why.
 - [x] Requirements are testable and unambiguous (each FR names its observable outcome and refusal code;
   each is traced to at least one SC and one task)
 - [x] Success criteria are measurable (counts, orderings, rounds, zero-leak and bound tests)
-- [ ] Success criteria are technology-agnostic (no implementation details)
+- [ ] Success criteria are technology-agnostic (no implementation details) (accepted as a deliberate deviation, OD-2026-11-16-1)
   — Partly: several criteria are phrased in platform terms (lease, journal event, tenant battery) because
   the outcome a user observes is exactly that durable evidence.
 - [x] All acceptance scenarios are defined (Given/When/Then for US01–US06, happy and failure)
@@ -43,9 +43,9 @@ unchecked item states why.
   mapping in tasks.md)
 - [x] User scenarios cover primary flows (cache, concurrency, failure handling, early return, standalone,
   draft test)
-- [ ] Feature meets measurable outcomes defined in Success Criteria
+- [ ] Feature meets measurable outcomes defined in Success Criteria (accepted as a deliberate deviation, OD-2026-11-16-1)
   — Cannot be true for a draft: nothing is implemented; every SC is future evidence.
-- [ ] No implementation details leak into specification — see the first item.
+- [ ] No implementation details leak into specification — see the first item (accepted as a deliberate deviation, OD-2026-11-16-1).
 
 ## Traceability spot check (author)
 
@@ -83,5 +83,7 @@ not read the amendment.
 
 ## Notes
 
-- Items marked incomplete above are deliberate deviations or draft-state facts, not open spec defects.
+- Items marked incomplete above are deliberate deviations or draft-state facts, not open spec defects. The owner
+  accepted the five of them on 2026-11-16 ("Aceitar os 5", OD-2026-11-16-1 in `docs/owner-decisions.md`), so they no
+  longer block the implementation (OD-2026-11-03-33). They stay unticked: what they say is still true.
 - The plan's Constitution Check marks the design only; it is not approval of an implementation.

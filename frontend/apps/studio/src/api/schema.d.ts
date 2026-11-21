@@ -822,7 +822,7 @@ export interface paths {
         put?: never;
         /**
          * Create a new run from an eligible prefix of a run that ended
-         * @description Needs `run:operate` and `run:start`, and a justification in `reason` (8 to 2000 characters, audited with it). The new run has the version and the input of the source and re-emits its journal up to `sequence` as the source stored it (who did each thing and when are the source's), then goes on from there; the events it restored say so in their detail. The source must have ended: an open run is `409 CONFLICT` with `details.reason` `RESET_SOURCE_NOT_TERMINAL`, unless the request says `sourcePolicy: CANCEL_SOURCE`: then the source is cancelled in the ordinary way (never terminated) and the answer is `202` with `state: PENDING_SOURCE` and `newRunId: null`; the engine creates the run once the source has ended, if the point is still eligible on the journal the source ended with and the member who asked still holds what a reset needs, and the entry becomes `CREATED` with `newRunId`, or `FAILED` with a `failureReason` (see `Reset`). The entry waits for as long as the source is open, a run in manual review included; nothing expires it. A namespace holds at most 16 such entries by default (`429 QUOTA_EXCEEDED` with `details.reason` `PENDING_RESET_LIMIT`). A deployment whose operator did not enable it answers `422` `RESET_CANCEL_SOURCE_NOT_AVAILABLE` for an open source (a source that has ended is reset at once, whatever the policy says, and a retry of a request that was accepted is answered from the register whatever the setting is now). A step of the open source that is in flight when the request is made usually completes after the cancellation, and then runs again when the run is created, so the request must say `acknowledgeReexecution: true` when a step after the point has completed or is in flight (see `previewReset`), else `422` with `RESET_REEXECUTION_NOT_ACKNOWLEDGED` and the source is not cancelled; the acknowledgement is looked at again on the journal the source ended with. When steps that completed in the source run again the request must say `acknowledgeReexecution: true`, else `422` with `RESET_REEXECUTION_NOT_ACKNOWLEDGED`. With `businessId: KEEP` (the default) the new run takes over the business identifier of the source, `409 BUSINESS_ID_IN_USE` if another open run holds it; `DROP` starts it without one. With `reapply` `SIGNALS`, `UPDATES` or `ALL` the reset also needs `run:signal` and `run:update` as the policy says, and delivers again, in the transaction that creates the run and in the order of the journal, the signals the source received after the point (`via: signal`) and the Updates whose declaration kept their arguments (`reapplyOnReset`), each as a signal or an Update of its own would be; `reapplyReport` of the answer says what came of each: `REAPPLIED`, `REJECTED` (a signal nobody waits for, which ends the signals; an Update the declaration declines, or whose state is not at the revision it was applied to in the source) or `NOT_REAPPLIED` with a reason, and never holds a payload or an argument. A `reapply` other than `NONE` on a deployment whose operator did not enable it is `422` `RESET_REAPPLY_NOT_AVAILABLE` (an entry of the register answers the same request again whatever the setting is now), and more than 256 candidates `RESET_REAPPLY_TOO_MANY`. The keys the platform derives for what it delivers again start with `reset:`, which is not a prefix an `Idempotency-Key` or an update key may have. The same `Idempotency-Key` with the same request answers the entry of the first one; with another sequence it is `409 IDEMPOTENCY_KEY_REUSED`. A reset is recorded in the register (`listRunResets`, `getRunReset`) in the transaction that creates the run.
+         * @description Needs `run:operate` and `run:start`, and a justification in `reason` (8 to 2000 characters, audited with it). The new run has the version and the input of the source and re-emits its journal up to `sequence` as the source stored it (who did each thing and when are the source's), then goes on from there; the events it restored say so in their detail. The source must have ended: an open run is `409 CONFLICT` with `details.reason` `RESET_SOURCE_NOT_TERMINAL`, unless the request says `sourcePolicy: CANCEL_SOURCE`: then the source is cancelled in the ordinary way (never terminated) and the answer is `202` with `state: PENDING_SOURCE` and `newRunId: null`; the engine creates the run once the source has ended, if the point is still eligible on the journal the source ended with and the member who asked still holds what a reset needs, and the entry becomes `CREATED` with `newRunId`, or `FAILED` with a `failureReason` (see `Reset`). The entry waits for as long as the source is open, a run in manual review included; nothing expires it. When the version's start takes a permit or a slot of a flow-control key (feature 022), the run is created only if the key has room once the source has ended, else the entry fails with `CONCURRENCY_PERMIT_UNAVAILABLE` or `RATE_LIMIT_SLOT_UNAVAILABLE` and the cancelled source is not replaced; cancelling the source frees no rate-limit slot (the source's slot counts for its window from its grant), so on a rate-limited key near its limit prefer `REQUIRE_TERMINAL` (D022-069). A namespace holds at most 16 such entries by default (`429 QUOTA_EXCEEDED` with `details.reason` `PENDING_RESET_LIMIT`). A deployment whose operator did not enable it answers `422` `RESET_CANCEL_SOURCE_NOT_AVAILABLE` for an open source (a source that has ended is reset at once, whatever the policy says, and a retry of a request that was accepted is answered from the register whatever the setting is now). A step of the open source that is in flight when the request is made usually completes after the cancellation, and then runs again when the run is created, so the request must say `acknowledgeReexecution: true` when a step after the point has completed or is in flight (see `previewReset`), else `422` with `RESET_REEXECUTION_NOT_ACKNOWLEDGED` and the source is not cancelled; the acknowledgement is looked at again on the journal the source ended with. When steps that completed in the source run again the request must say `acknowledgeReexecution: true`, else `422` with `RESET_REEXECUTION_NOT_ACKNOWLEDGED`. With `businessId: KEEP` (the default) the new run takes over the business identifier of the source, `409 BUSINESS_ID_IN_USE` if another open run holds it; `DROP` starts it without one. With `reapply` `SIGNALS`, `UPDATES` or `ALL` the reset also needs `run:signal` and `run:update` as the policy says, and delivers again, in the transaction that creates the run and in the order of the journal, the signals the source received after the point (`via: signal`) and the Updates whose declaration kept their arguments (`reapplyOnReset`), each as a signal or an Update of its own would be; `reapplyReport` of the answer says what came of each: `REAPPLIED`, `REJECTED` (a signal nobody waits for, which ends the signals; an Update the declaration declines, or whose state is not at the revision it was applied to in the source) or `NOT_REAPPLIED` with a reason, and never holds a payload or an argument. A `reapply` other than `NONE` on a deployment whose operator did not enable it is `422` `RESET_REAPPLY_NOT_AVAILABLE` (an entry of the register answers the same request again whatever the setting is now), and more than 256 candidates `RESET_REAPPLY_TOO_MANY`. The keys the platform derives for what it delivers again start with `reset:`, which is not a prefix an `Idempotency-Key` or an update key may have. The same `Idempotency-Key` with the same request answers the entry of the first one; with another sequence it is `409 IDEMPOTENCY_KEY_REUSED`. A reset is recorded in the register (`listRunResets`, `getRunReset`) in the transaction that creates the run.
          *
          *     Design 043 (OD-2026-11-15-3): the input is checked against the `inputSchema` of the version the run pins before
          *     anything is created. A refusal is `422 VALIDATION_FAILED`, `retryable: false`, with `details.reason`
@@ -1639,6 +1639,46 @@ export interface paths {
          * @description Needs `ops:read`. The conditions the engine's monitor found that need a person: outbox messages that wait too long, attempts whose lease ran out and were not taken back, steps no worker takes, runs waiting for a decision, items that ran out of attempts. An alert carries counts, ages and names, never data of a run, and a `runbook` that says what to do. It toggles between `FIRING` and `RESOLVED`; `firedCount` says how many times it began to fire. The same changes are delivered to the namespace's webhook subscriptions that ask for `ops.alert.fired` and `ops.alert.resolved`.
          */
         get: operations["listAlerts"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/namespaces/{namespaceId}/concurrency-keys": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List the live concurrency keys of a namespace, oldest wait first
+         * @description Feature 022 (FR-022-022, release 0.3.0 slice). Needs `ops:read`. The concurrency keys with a holder or a waiter, each with its holders, waiters and the ages of its oldest holder and oldest wait, oldest wait first; keys nobody waits for come last. `queuedRuns` counts the namespace's queued runs (concurrency and rate-limit waiters together, a run once) as the `queued_runs` ceiling counts them; the `group` filter narrows the keys, not that count. A key is never shown by its value: `keyLabel` is the 12-hex label of its keyed digest, and is null unless the caller may reveal personal data in the namespace (a role that may use a reveal grant, and the namespace's `payload:reveal-pii` grant); for any other caller `oldestHolderSince` and `oldestWaitSince` are truncated to their minute (toward the past, UTC; seconds and fractions zero), since whole they equal the `since` of the key's runs; this narrows, and does not stop, linking a key's runs by the minute of their own `since` when its runs start in different minutes. A page that has a next one is a 503 when the serving process lacks the digest key version in force (it cannot seal the cursor). Counts are read without the keys' locks, in one snapshot per page; a key's counts and place may change between two pages, so a key can appear on two pages or on none of a later page's predecessors. `nextCursor` is opaque, sealed for this namespace under the digest key version in force: an altered cursor, one of another namespace, one of another group's listing, or one sealed under a version no longer in force (a forced retirement included) is a 400. A namespace of another tenant is a 404, like one that does not exist.
+         */
+        get: operations["listConcurrencyKeys"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/namespaces/{namespaceId}/rate-limit-keys": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List the rate-limit keys of a namespace, oldest wait first
+         * @description Feature 022 (FR-022-048, release 0.3.0 slice; T022-078). Needs `ops:read`. Every rate-limit window of the namespace (the rows the quota usage of `rate_limit_live_keys` counts; the ceiling leaves out the rows of a forcibly retired digest version, which drain on their own, D022-068 item 4), each with the grants that count over its longest window, its unleased grants, its waiters, the age of its oldest wait and the instant its next slot frees, oldest wait first; keys nobody waits for come last. `queuedRuns` counts the namespace's queued runs (concurrency and rate-limit waiters together, a run once) as the `queued_runs` ceiling counts them; the `group` filter narrows the keys, not that count. A key is never shown by its value: `keyLabel` is the 12-hex label of its keyed digest, and is null unless the caller may reveal personal data in the namespace (a role that may use a reveal grant, and the namespace's `payload:reveal-pii` grant); for any other caller `oldestWaitSince` and `nextSlotAt` are truncated to their minute (toward the past, UTC; seconds and fractions zero), since whole they equal or derive from the instants of the key's runs. A page that has a next one is a 503 when the serving process lacks the digest key version in force (it cannot seal the cursor). Counts are read without the keys' locks, in one snapshot per page, at the page's instant; a key's counts and place may change between two pages. `nextCursor` is opaque, sealed for this namespace under the digest key version in force and of this listing's own kind: an altered cursor, one of another namespace, one of the concurrency-key listing, one of another group's listing, or one sealed under a version no longer in force is a 400. A namespace of another tenant is a 404, like one that does not exist.
+         */
+        get: operations["listRateLimitKeys"];
         put?: never;
         post?: never;
         delete?: never;
@@ -3431,7 +3471,7 @@ export interface components {
             requestId?: string;
             /** @description What can be done about it, in a sentence from a closed table: the same for every error of a `code`, refined by `details.reason` when that changes what to do. It never carries a payload, a secret or another tenant's data. Absent from the errors of a platform older than feature 008. */
             remediation?: string;
-            /** @description Extra, safe context. `reason` is a stable machine-readable refinement of `code` (for example `IDEMPOTENCY_KEY_REUSED`, `STATE_CONFLICT`). A call the server does not have is `NOT_FOUND` with the reason `ROUTE_NOT_FOUND` (an unknown path) or `BAD_REQUEST` with `METHOD_NOT_ALLOWED` (a known path, another method): an SDK newer than the server tells that from a resource that does not exist, which is `NOT_FOUND` without those reasons. Structured workflow capabilities refine existing codes with `INVALID_SCOPE`, `INVALID_OPERATION_STATE`, `NOT_ELIGIBLE`, `INITIATOR_CANNOT_DECIDE`, `CHAIN_HEAD_CHANGED`, `RUN_NOT_MUTABLE`, `RUN_CONTINUED`, `INVALID_ARGUMENTS`, `INVALID_UPDATE_KEY`, `INVALID_DECISION_KEY`, `INVALID_REASON_CODE`, `REVISION_CONFLICT` and `UPDATE_REJECTED`; payload classification refines existing codes with `PII_REVEAL_NOT_GRANTED`, `CLASSIFICATION`, `UNKNOWN_SUBJECT`, `ROLE_CANNOT_REVEAL` and `GRANT_LIMIT`; compensation safety (feature 037) refines `CONFLICT` with `OUTCOME_UNRESOLVED` (another attempt was asked of a step whose last outcome is unknown); schedules, batch operations, business identifiers and start options (feature 018) refine `VALIDATION_FAILED` with `SCHEDULE_SPEC_INVALID`, `SCHEDULE_NEVER_FIRES`, `SCHEDULE_TOO_FREQUENT`, `SCHEDULE_ZONE_UNKNOWN`, `SCHEDULE_INPUT_INVALID`, `BACKFILL_RANGE_INVALID`, `BACKFILL_LIMIT`, `BUSINESS_ID_INVALID`, `START_DELAY_INVALID`, `START_DELAY_WITH_SIGNAL`, `BATCH_SELECTOR_INVALID`, `QUERY_UNSUPPORTED_OPERATOR`, `BATCH_ACTION_UNAVAILABLE`, `BATCH_LIMITS_INVALID`, `BATCH_REASON_INVALID`, `BATCH_PAYLOAD_INVALID`, `BATCH_PAYLOAD_TOO_LARGE`, `BATCH_SELECTOR_UNSUPPORTED`, `BATCH_ACTION_PARAMETERS`, `RESET_NOT_SUPPORTED_FOR_SOURCE`, `RESET_POINT_NOT_ELIGIBLE`, `RESET_PREFIX_TOO_LONG`, `RESET_REEXECUTION_NOT_ACKNOWLEDGED`, `RESET_RULE_MISSING`, `RESET_REAPPLY_NOT_AVAILABLE`, `RESET_REAPPLY_TOO_MANY` and `RESET_CANCEL_SOURCE_NOT_AVAILABLE`, `CONFLICT` with `SCHEDULE_TRIGGER_OWNED`, `SCHEDULE_TRIGGER_GONE`, `SCHEDULE_TRIGGER_HANDOVER_PENDING`, `BUSINESS_ID_IN_USE`, `BUSINESS_ID_REUSE_REJECTED`, `NOT_WAITING`, `SIGNAL_NOT_ACCEPTED_AT_START`, `BATCH_NOT_CANCELLABLE` and `RESET_SOURCE_NOT_TERMINAL`, and `QUOTA_EXCEEDED` with `SCHEDULE_LIMIT`, `BACKFILL_CONCURRENCY`, `BATCH_LIMIT` and `PENDING_RESET_LIMIT`, and `UNAVAILABLE` with `BINARY_CAPABILITY_MISSING` (the replica that answered runs a version that lacks a capability the platform now requires of it, `FR-018-052`: every call but `GET /v1/health` is refused, with `Retry-After`; another replica serves the call); run input validation (design 043) refines `VALIDATION_FAILED` (`retryable: false`) with `RUN_INPUT_INVALID` (with `details.field` and `details.rule`), `RUN_INPUT_SCHEMA_UNUSABLE` and `NOMINAL_TIME_FIELD_INVALID`; Iceberg writes and step-output destinations (feature 035) refine `VALIDATION_FAILED` with `ICEBERG_NODE_NOT_ROOT`, `DESTINATION_NOT_ROOT`, `MODE_NOT_ALLOWED`, `CLASSIFICATION_EGRESS_REFUSED`, `UNKNOWN_CONNECTION_KIND`, `BROKER_SOURCE_NOT_INLINE`, `FILTER_TOO_DEEP` (more than 8 levels or 64 comparisons), `LAKE_DISABLED` (the deployment's lake switch is off) and `CREDENTIAL_IN_URI` (a connection URI that carries user information or query credentials); collection operators (design 042) refine `VALIDATION_FAILED` with `COLLECTION_OPERATORS_DISABLED` (the deployment's collection-operators switch is off; `node`) and `INVALID_OPERATOR` (a stage of a `forEach` chain is refused; `node`, `stage`, `operator` and `refusal`, one of `UNKNOWN`, `SURFACE`, `RANGE`, `EXPRESSION` and `VARIABLE`); they do not add a new `Error.code` value. An `UNSUPPORTED_NODE` for a combination the design accepts but whose prerequisite is not built yet also carries `dependency`, a closed name of what has to exist first (`SCOPED_COMPENSATION`: an approval inside a collection or loop body), next to `node` and `kind`. */
+            /** @description Extra, safe context. `reason` is a stable machine-readable refinement of `code` (for example `IDEMPOTENCY_KEY_REUSED`, `STATE_CONFLICT`). A call the server does not have is `NOT_FOUND` with the reason `ROUTE_NOT_FOUND` (an unknown path) or `BAD_REQUEST` with `METHOD_NOT_ALLOWED` (a known path, another method): an SDK newer than the server tells that from a resource that does not exist, which is `NOT_FOUND` without those reasons. Structured workflow capabilities refine existing codes with `INVALID_SCOPE`, `INVALID_OPERATION_STATE`, `NOT_ELIGIBLE`, `INITIATOR_CANNOT_DECIDE`, `CHAIN_HEAD_CHANGED`, `RUN_NOT_MUTABLE`, `RUN_CONTINUED`, `INVALID_ARGUMENTS`, `INVALID_UPDATE_KEY`, `INVALID_DECISION_KEY`, `INVALID_REASON_CODE`, `REVISION_CONFLICT` and `UPDATE_REJECTED`; payload classification refines existing codes with `PII_REVEAL_NOT_GRANTED`, `CLASSIFICATION`, `UNKNOWN_SUBJECT`, `ROLE_CANNOT_REVEAL` and `GRANT_LIMIT`; compensation safety (feature 037) refines `CONFLICT` with `OUTCOME_UNRESOLVED` (another attempt was asked of a step whose last outcome is unknown); schedules, batch operations, business identifiers and start options (feature 018) refine `VALIDATION_FAILED` with `SCHEDULE_SPEC_INVALID`, `SCHEDULE_NEVER_FIRES`, `SCHEDULE_TOO_FREQUENT`, `SCHEDULE_ZONE_UNKNOWN`, `SCHEDULE_INPUT_INVALID`, `BACKFILL_RANGE_INVALID`, `BACKFILL_LIMIT`, `BUSINESS_ID_INVALID`, `START_DELAY_INVALID`, `START_DELAY_WITH_SIGNAL`, `BATCH_SELECTOR_INVALID`, `QUERY_UNSUPPORTED_OPERATOR`, `BATCH_ACTION_UNAVAILABLE`, `BATCH_LIMITS_INVALID`, `BATCH_REASON_INVALID`, `BATCH_PAYLOAD_INVALID`, `BATCH_PAYLOAD_TOO_LARGE`, `BATCH_SELECTOR_UNSUPPORTED`, `BATCH_ACTION_PARAMETERS`, `RESET_NOT_SUPPORTED_FOR_SOURCE`, `RESET_POINT_NOT_ELIGIBLE`, `RESET_PREFIX_TOO_LONG`, `RESET_REEXECUTION_NOT_ACKNOWLEDGED`, `RESET_RULE_MISSING`, `RESET_REAPPLY_NOT_AVAILABLE`, `RESET_REAPPLY_TOO_MANY` and `RESET_CANCEL_SOURCE_NOT_AVAILABLE`, `CONFLICT` with `SCHEDULE_TRIGGER_OWNED`, `SCHEDULE_TRIGGER_GONE`, `SCHEDULE_TRIGGER_HANDOVER_PENDING`, `BUSINESS_ID_IN_USE`, `BUSINESS_ID_REUSE_REJECTED`, `NOT_WAITING`, `SIGNAL_NOT_ACCEPTED_AT_START`, `BATCH_NOT_CANCELLABLE` and `RESET_SOURCE_NOT_TERMINAL`, and `QUOTA_EXCEEDED` with `SCHEDULE_LIMIT`, `BACKFILL_CONCURRENCY`, `BATCH_LIMIT` and `PENDING_RESET_LIMIT`, and `UNAVAILABLE` with `BINARY_CAPABILITY_MISSING` (the replica that answered runs a version that lacks a capability the platform now requires of it, `FR-018-052`: every call but `GET /v1/health` is refused, with `Retry-After`; another replica serves the call); flow control (feature 022) refines `QUOTA_EXCEEDED` (`retryable: false`) with `CONCURRENCY_QUEUE_FULL` (the start would wait beyond its key's queue) and `FLOW_CONTROL_LIMIT` (a namespace ceiling of flow control, named in `details.limit`), `VALIDATION_FAILED` with `FLOW_CONTROL_ACTIVATION_PENDING` and `CAPABILITY_DISABLED` (with `details.capability`), and `CONFLICT` with `CONCURRENCY_PERMIT_UNAVAILABLE` (a reset of a run whose start takes a permit found no free one; a reset never queues) and `RATE_LIMIT_SLOT_UNAVAILABLE` (a reset of a run whose start takes a slot of a rate-limit key found none free in its window; a reset never waits, and this reason comes first when the start takes both); run input validation (design 043) refines `VALIDATION_FAILED` (`retryable: false`) with `RUN_INPUT_INVALID` (with `details.field` and `details.rule`), `RUN_INPUT_SCHEMA_UNUSABLE` and `NOMINAL_TIME_FIELD_INVALID`; Iceberg writes and step-output destinations (feature 035) refine `VALIDATION_FAILED` with `ICEBERG_NODE_NOT_ROOT`, `DESTINATION_NOT_ROOT`, `MODE_NOT_ALLOWED`, `CLASSIFICATION_EGRESS_REFUSED`, `UNKNOWN_CONNECTION_KIND`, `BROKER_SOURCE_NOT_INLINE`, `FILTER_TOO_DEEP` (more than 8 levels or 64 comparisons), `LAKE_DISABLED` (the deployment's lake switch is off) and `CREDENTIAL_IN_URI` (a connection URI that carries user information or query credentials); collection operators (design 042) refine `VALIDATION_FAILED` with `COLLECTION_OPERATORS_DISABLED` (the deployment's collection-operators switch is off; `node`) and `INVALID_OPERATOR` (a stage of a `forEach` chain is refused; `node`, `stage`, `operator` and `refusal`, one of `UNKNOWN`, `SURFACE`, `RANGE`, `EXPRESSION` and `VARIABLE`); they do not add a new `Error.code` value. An `UNSUPPORTED_NODE` for a combination the design accepts but whose prerequisite is not built yet also carries `dependency`, a closed name of what has to exist first (`SCOPED_COMPENSATION`: an approval inside a collection or loop body), next to `node` and `kind`. */
             details?: {
                 /**
                  * @description With `reason` `RUN_INPUT_INVALID` or `SCHEDULE_INPUT_INVALID` (design 043): the keyword of the input schema that failed, from a closed set; `workLimit` is the validation's work budget and `maxDepth` the input's nesting limit, both final. Never a value of the input.
@@ -3719,7 +3759,7 @@ export interface components {
              * @enum {string}
              */
             state: "PENDING_SOURCE" | "CREATED" | "FAILED";
-            /** @description Why a reset that failed did (FAILED only). One of BOUNDARY_NO_LONGER_ELIGIBLE (the point is not one of the journal the source ended with), ADMISSION_REFUSED (a quota or the platform refused the run), BUSINESS_ID_IN_USE, AUTHORITY_REVOKED (the member who asked no longer holds what a reset needs), REEXECUTION_NOT_ACKNOWLEDGED (steps completed after the point and the request did not acknowledge them), REAPPLY_TOO_MANY, SOURCE_DID_NOT_END (the source run had not ended when the time a reset waits for it was over, a day unless the operator of the platform set another, from one hour to seven days: no run is made and the place in the namespace is free), CONCURRENCY_PERMIT_UNAVAILABLE, RUN_PURGED. The list grows only: read a name you do not know as another reason. */
+            /** @description Why a reset that failed did (FAILED only). One of BOUNDARY_NO_LONGER_ELIGIBLE (the point is not one of the journal the source ended with), ADMISSION_REFUSED (a quota or the platform refused the run), BUSINESS_ID_IN_USE, AUTHORITY_REVOKED (the member who asked no longer holds what a reset needs), REEXECUTION_NOT_ACKNOWLEDGED (steps completed after the point and the request did not acknowledge them), REAPPLY_TOO_MANY, SOURCE_DID_NOT_END (the source run had not ended when the time a reset waits for it was over, a day unless the operator of the platform set another, from one hour to seven days: no run is made and the place in the namespace is free), CONCURRENCY_PERMIT_UNAVAILABLE, RATE_LIMIT_SLOT_UNAVAILABLE (the start takes a slot of a rate-limit key and its window had none free), RUN_PURGED. The list grows only: read a name you do not know as another reason. */
             failureReason?: string | null;
             /** Format: uuid */
             newRunId?: string | null;
@@ -3921,6 +3961,8 @@ export interface components {
             };
             /** @description Design 043 (FR-043-015): the failure code the stop of the run carries, when it stopped with one: the code of the step whose failure failed the run, a ceiling (`STORAGE_QUOTA_EXCEEDED`, ...), or `CONTINUATION_INPUT_INVALID` and `RUN_INPUT_SCHEMA_UNUSABLE` for a continue-as-new refused for its input. Absent for every other run. Read by getRun and listRuns. Never holds an input value. */
             failureCode?: string;
+            concurrency?: components["schemas"]["RunConcurrency"];
+            rateLimit?: components["schemas"]["RunRateLimit"];
         };
         RunPage: {
             items: components["schemas"]["Run"][];
@@ -4162,10 +4204,10 @@ export interface components {
             /** Format: date-time */
             dueAt?: string | null;
             /**
-             * @description `saga`: a saga node while its body works, compensates or waits. `reconciliation`: the lookup `<id>~r` is finding out whether the effect happened. `operator`: a person has to decide (RETRY_STEP, RETRY_COMPENSATION, SKIP_COMPENSATION or RESOLVE_STEP). `loop` and `collection`: the owner while its iterations run. `approval`: the node while its request is open.
+             * @description `rate_limit` and `concurrency` (feature 022): a step waiting for its rate-limit slot or its concurrency permit, rate first when it waits for both. `saga`: a saga node while its body works, compensates or waits. `reconciliation`: the lookup `<id>~r` is finding out whether the effect happened. `operator`: a person has to decide (RETRY_STEP, RETRY_COMPENSATION, SKIP_COMPENSATION or RESOLVE_STEP). `loop` and `collection`: the owner while its iterations run. `approval`: the node while its request is open.
              * @enum {string|null}
              */
-            waitingOn?: "timer" | "event" | "branches" | "child" | "saga" | "reconciliation" | "operator" | "loop" | "approval" | "collection" | null;
+            waitingOn?: "timer" | "event" | "branches" | "child" | "saga" | "reconciliation" | "operator" | "loop" | "approval" | "collection" | "rate_limit" | "concurrency" | null;
             /**
              * Format: uuid
              * @description The child run a `child` node reserved.
@@ -4947,12 +4989,23 @@ export interface components {
          *     018) are batch_jobs 2/16 in a namespace and tenant_batch_jobs 8/64 in a tenant, counting
          *     the jobs that have not finished. Resets that wait for their source run to end
          *     (`CANCEL_SOURCE`, feature 018) are pending_resets 16/64 in a namespace.
+         *     Flow control (feature 022) counts, in a namespace, queued_runs 1000/10000 (runs waiting for a
+         *     concurrency permit or a rate-limit slot, also counted in active_runs), concurrency_live_keys
+         *     10000/100000 (semaphore keys), and flow_control_key_waiters 100/10000 (run waiters of one
+         *     key; its usage is the busiest key's). Its positive policies are concurrency_limit 10000/10000
+         *     (the most holders of one key, whatever a definition declares), flow_control_queue_timeout_ms
+         *     86400000/86400000 and flow_control_node_declarations 16/64 (node-level declarations of one kind
+         *     per definition, checked at publication). Rate limits (feature 022) count rate_limit_live_keys
+         *     10000/100000 (window keys of runs and steps) and have the policies rate_limit_per_second 20/20
+         *     (the deployment's ceiling until the published benchmark), rate_limit_per_minute 6000/6000 and
+         *     rate_limit_per_hour 10000/10000: the most grants one key counts in a window of that length,
+         *     whatever a definition declares.
          *     Zero disables new admission for count/rate/retention resources, never means unlimited.
          *     Lowering a limit does not erase retained content or rewrite existing expiry.
          */
         Quota: {
             /** @enum {string} */
-            resource: "active_runs" | "tenant_active_runs" | "workflows" | "worker_sessions" | "activity_concurrency" | "iteration_concurrency" | "secrets" | "event_endpoints" | "webhook_subscriptions" | "broker_subscriptions" | "event_connectors" | "scripts" | "script_jobs" | "tenant_content_bytes" | "tenant_log_bytes" | "api_requests_per_second" | "events_per_second" | "event_retention_seconds" | "script_retention_days" | "database_statement_bytes" | "database_parameters" | "database_parameter_bytes" | "database_rows" | "database_result_bytes" | "database_timeout_ms" | "database_connect_timeout_ms" | "database_pool_size" | "database_idle_timeout_ms" | "database_connections" | "database_concurrency" | "tenant_database_concurrency" | "secret_provider_operations" | "schedules" | "schedule_backfills" | "batch_jobs" | "tenant_batch_jobs" | "pending_resets";
+            resource: "active_runs" | "tenant_active_runs" | "workflows" | "worker_sessions" | "activity_concurrency" | "iteration_concurrency" | "secrets" | "event_endpoints" | "webhook_subscriptions" | "broker_subscriptions" | "event_connectors" | "scripts" | "script_jobs" | "tenant_content_bytes" | "tenant_log_bytes" | "api_requests_per_second" | "events_per_second" | "event_retention_seconds" | "script_retention_days" | "database_statement_bytes" | "database_parameters" | "database_parameter_bytes" | "database_rows" | "database_result_bytes" | "database_timeout_ms" | "database_connect_timeout_ms" | "database_pool_size" | "database_idle_timeout_ms" | "database_connections" | "database_concurrency" | "tenant_database_concurrency" | "secret_provider_operations" | "schedules" | "schedule_backfills" | "batch_jobs" | "tenant_batch_jobs" | "pending_resets" | "queued_runs" | "concurrency_live_keys" | "flow_control_key_waiters" | "concurrency_limit" | "flow_control_queue_timeout_ms" | "flow_control_node_declarations" | "rate_limit_live_keys" | "rate_limit_per_second" | "rate_limit_per_minute" | "rate_limit_per_hour";
             /** Format: int64 */
             limit: number;
             /**
@@ -5605,6 +5658,119 @@ export interface components {
             items: number;
             /** @description The age of the oldest of them. */
             oldestSeconds: number;
+        };
+        /** @description Feature 022 (FR-022-022). One live concurrency key; counts are a snapshot read without the key's lock. */
+        ConcurrencyKey: {
+            /**
+             * @description Draft test trees use their own pool and never share a key with ordinary runs.
+             * @enum {string}
+             */
+            pool: "ORDINARY" | "DRAFT_TEST";
+            /** @enum {string} */
+            scope: "RUN" | "STEP";
+            group: string;
+            /** @description The 12-hex label of the key's keyed digest; null unless the caller may reveal personal data in the namespace (FR-022-057). */
+            keyLabel: string | null;
+            holders: number;
+            waiters: number;
+            /** Format: date-time */
+            oldestWaitSince?: string | null;
+            /** Format: date-time */
+            oldestHolderSince?: string | null;
+        };
+        ConcurrencyKeyPage: {
+            queuedRuns: number;
+            items: components["schemas"]["ConcurrencyKey"][];
+            /** @description Opaque, sealed for this namespace; null after the last page. */
+            nextCursor?: string | null;
+        };
+        /** @description Feature 022 (FR-022-048). One rate-limit window row of the namespace; counts are a snapshot read without the key's lock, at the page's instant. */
+        RateLimitKey: {
+            /**
+             * @description Draft test trees use their own pool and never share a key with ordinary runs.
+             * @enum {string}
+             */
+            pool: "ORDINARY" | "DRAFT_TEST";
+            /** @enum {string} */
+            scope: "RUN" | "STEP";
+            group: string;
+            /** @description The 12-hex label of the key's keyed digest; null unless the caller may reveal personal data in the namespace (FR-022-057). */
+            keyLabel: string | null;
+            /** @description Grants that still count over the longest window the row has seen (its grants and waiters): unleased, or leased less than that window ago. */
+            grantsInWindow: number;
+            /** @description Granted steps no worker has leased yet; each holds a slot. Always 0 at RUN scope. */
+            unleasedGrants: number;
+            waiters: number;
+            /**
+             * Format: date-time
+             * @description The oldest waiter's queueing instant; null when nobody waits.
+             */
+            oldestWaitSince: string | null;
+            /**
+             * Format: date-time
+             * @description When somebody waits and no grant is unleased: the first instant a counted grant stops counting for one of the first 256 waiters in the queue's order (each over its own window; 256 is the most one grant pass grants a key, D022-068 item 3). Null when nobody waits, when a grant is unleased (it frees by a lease or a return, not by time), or when no grant counts for those waiters (there is room; the next pass grants).
+             */
+            nextSlotAt: string | null;
+        };
+        RateLimitKeyPage: {
+            queuedRuns: number;
+            items: components["schemas"]["RateLimitKey"][];
+            /** @description Opaque, sealed for this namespace and this listing; null after the last page. */
+            nextCursor?: string | null;
+        };
+        /** @description Feature 022 (FR-022-048). The run-level rate-limit slot the run holds or waits for. Absent on a run that neither holds a slot that still counts nor waits; read by getRun and listRuns. A step waiting for a node-level slot is shown on its node (`waitingOn` `rate_limit`), not here. */
+        RunRateLimit: {
+            /**
+             * @description GRANTED while the run's slot counts (less than `per` since its grant), also after the run has ended, since a run-level slot is never given back; WAITING while it is buffered. The field is absent once the slot no longer counts (D022-067 item 1).
+             * @enum {string}
+             */
+            state: "GRANTED" | "WAITING";
+            /** @enum {string} */
+            pool: "ORDINARY" | "DRAFT_TEST";
+            group: string;
+            /** @description The 12-hex label of the key's keyed digest; null unless the caller may reveal personal data in the run's namespace (FR-022-057). */
+            keyLabel: string | null;
+            /** @description The effective limit the slot was decided with: the lowest of the declaration and the namespace's ceiling of its window. */
+            limit: number;
+            /** @enum {string} */
+            per: "second" | "minute" | "hour";
+            /**
+             * Format: date-time
+             * @description When the slot was granted (GRANTED) or the run was buffered (WAITING).
+             */
+            since: string;
+            /**
+             * Format: date-time
+             * @description WAITING: when the run fails RATE_LIMIT_WAIT_TIMEOUT if not granted before; null while GRANTED.
+             */
+            queueDeadline?: string | null;
+            /** @description WAITING, and only in getRun (null in listRuns and while GRANTED): the run's rank among the waiters the grant pass visits ahead of it at read time (in the queue's order: not past their deadline, their run running or waiting and not paused; D022-067 item 2); 1 is next. Null too when the place could not be read in time, or when the run was granted between the read of its row and of its place (D022-068 item 2). */
+            position?: number | null;
+            /**
+             * Format: date-time
+             * @description WAITING, and only in getRun: an estimate computed at read time, never a promise: the instant enough counted grants age out for the run's position, or the read's instant when there is room now; null for a caller who may not reveal personal data in the run's namespace (it is another run's grant instant plus the window, D022-067), when the position is beyond one window, when the run also waits for a concurrency permit, when the run is paused, when the instant is at or after its queueDeadline (it times out first, D022-068 item 1), when the place could not be read in time or the run was granted between the read of its row and of its place (D022-068 item 2), in listRuns and while GRANTED.
+             */
+            estimatedGrantAt?: string | null;
+        };
+        /** @description Feature 022 (FR-022-022). The run-level concurrency permit the run holds or waits for. Absent on a run that neither holds nor waits; read by getRun and listRuns. */
+        RunConcurrency: {
+            /** @enum {string} */
+            state: "HOLDING" | "WAITING";
+            /** @enum {string} */
+            pool: "ORDINARY" | "DRAFT_TEST";
+            group: string;
+            /** @description The 12-hex label of the key's keyed digest; null unless the caller may reveal personal data in the run's namespace (FR-022-057). */
+            keyLabel: string | null;
+            /**
+             * Format: date-time
+             * @description When the permit was acquired (HOLDING) or the run was queued (WAITING).
+             */
+            since: string;
+            /**
+             * Format: date-time
+             * @description WAITING: when the run fails CONCURRENCY_WAIT_TIMEOUT if not granted before; null while HOLDING.
+             */
+            queueDeadline?: string | null;
         };
         AlertPage: {
             items: components["schemas"]["Alert"][];
@@ -6782,7 +6948,7 @@ export interface components {
         DeliveryId: string;
         ConnectorId: string;
         DeadLetterId: string;
-        QuotaResourceName: "active_runs" | "tenant_active_runs" | "workflows" | "worker_sessions" | "activity_concurrency" | "iteration_concurrency" | "secrets" | "event_endpoints" | "webhook_subscriptions" | "broker_subscriptions" | "event_connectors" | "scripts" | "script_jobs" | "tenant_content_bytes" | "tenant_log_bytes" | "api_requests_per_second" | "events_per_second" | "event_retention_seconds" | "script_retention_days" | "database_statement_bytes" | "database_parameters" | "database_parameter_bytes" | "database_rows" | "database_result_bytes" | "database_timeout_ms" | "database_connect_timeout_ms" | "database_pool_size" | "database_idle_timeout_ms" | "database_connections" | "database_concurrency" | "tenant_database_concurrency" | "secret_provider_operations" | "schedules" | "schedule_backfills" | "batch_jobs" | "tenant_batch_jobs" | "pending_resets";
+        QuotaResourceName: "active_runs" | "tenant_active_runs" | "workflows" | "worker_sessions" | "activity_concurrency" | "iteration_concurrency" | "secrets" | "event_endpoints" | "webhook_subscriptions" | "broker_subscriptions" | "event_connectors" | "scripts" | "script_jobs" | "tenant_content_bytes" | "tenant_log_bytes" | "api_requests_per_second" | "events_per_second" | "event_retention_seconds" | "script_retention_days" | "database_statement_bytes" | "database_parameters" | "database_parameter_bytes" | "database_rows" | "database_result_bytes" | "database_timeout_ms" | "database_connect_timeout_ms" | "database_pool_size" | "database_idle_timeout_ms" | "database_connections" | "database_concurrency" | "tenant_database_concurrency" | "secret_provider_operations" | "schedules" | "schedule_backfills" | "batch_jobs" | "tenant_batch_jobs" | "pending_resets" | "queued_runs" | "concurrency_live_keys" | "flow_control_key_waiters" | "concurrency_limit" | "flow_control_queue_timeout_ms" | "flow_control_node_declarations" | "rate_limit_live_keys" | "rate_limit_per_second" | "rate_limit_per_minute" | "rate_limit_per_hour";
         ActivityName: string;
         WorkflowId: string;
         VersionNumber: number;
@@ -10006,6 +10172,84 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AlertPage"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            422: components["responses"]["ValidationError"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    listConcurrencyKeys: {
+        parameters: {
+            query?: {
+                /** @description An explicit group or a derived one (`=<workflow>` or `=<workflow>/<node>`); 422 when it is no group name. */
+                group?: string;
+                /** @description Opaque cursor returned as `nextCursor` by the previous page. */
+                cursor?: components["parameters"]["Cursor"];
+                /** @description Page size; values outside 1..200 are clamped. */
+                limit?: components["parameters"]["Limit"];
+            };
+            header?: never;
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description A page of keys */
+            200: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConcurrencyKeyPage"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            422: components["responses"]["ValidationError"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    listRateLimitKeys: {
+        parameters: {
+            query?: {
+                /** @description An explicit group or a derived one (`=<workflow>` or `=<workflow>/<node>`); 422 when it is no group name. */
+                group?: string;
+                /** @description Opaque cursor returned as `nextCursor` by the previous page. */
+                cursor?: components["parameters"]["Cursor"];
+                /** @description Page size; values outside 1..200 are clamped. */
+                limit?: components["parameters"]["Limit"];
+            };
+            header?: never;
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description A page of keys */
+            200: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RateLimitKeyPage"];
                 };
             };
             400: components["responses"]["BadRequest"];

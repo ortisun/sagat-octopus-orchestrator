@@ -127,6 +127,12 @@
     },
     "chainPolicy": {
       "$ref": "#/$defs/chainPolicy"
+    },
+    "concurrency": {
+      "$ref": "#/$defs/concurrencyPolicy"
+    },
+    "rateLimit": {
+      "$ref": "#/$defs/rateLimitPolicy"
     }
   },
   "$defs": {
@@ -286,6 +292,12 @@
             "destinations": {
               "$ref": "#/$defs/stepDestinations",
               "description": "Synchronous step-output destinations (feature 035). Refused inside structured bodies; at most 8 per step."
+            },
+            "concurrency": {
+              "$ref": "#/$defs/concurrencyPolicy"
+            },
+            "rateLimit": {
+              "$ref": "#/$defs/rateLimitPolicy"
             }
           }
         }
@@ -593,6 +605,12 @@
                 "type": "string",
                 "pattern": "^[a-z][a-z0-9._-]{0,63}$"
               }
+            },
+            "concurrency": {
+              "$ref": "#/$defs/concurrencyPolicy"
+            },
+            "rateLimit": {
+              "$ref": "#/$defs/rateLimitPolicy"
             }
           }
         }
@@ -3140,6 +3158,79 @@
           "type": "string",
           "pattern": "^(/[^/]+)+$",
           "maxLength": 512
+        }
+      }
+    },
+    "concurrencyPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "limit"
+      ],
+      "properties": {
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10000,
+          "description": "Maximum holders of one key, compared at acquisition (the acquiring definition's value, clamped by policy)."
+        },
+        "key": {
+          "$ref": "#/$defs/expression",
+          "description": "Top level: over `input`. Node level: over the run data when the step becomes ready. Canonical value at most 256 bytes; digested with the keyed digest. Absent: one key for the whole group. A top-level key that cannot be evaluated ends the new run FAILED with EXPRESSION_ERROR. A key over an encoded location (feature 031 registry) is refused with ENCODING_READ_BY_CONCURRENCY_KEY."
+        },
+        "group": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9.-]{0,63}$",
+          "description": "Default: derived from the workflow name (top level) or the workflow name and node id (node level). Definitions of one namespace that name the same group at the same level share its keys; run and step permits never share a semaphore."
+        },
+        "queueTimeoutMs": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 86400000,
+          "default": 600000,
+          "description": "How long a run (top level) or a ready step (node level) waits for a permit before failing with CONCURRENCY_WAIT_TIMEOUT. Must not exceed the run deadline."
+        }
+      },
+      "description": "Feature 022 (US02, ADR-0056, ADR-0089): at most `limit` holders of one key at once. At the top level it limits run starts; on a root activity or script node, the attempts of that step (body nodes are refused: UNSUPPORTED_NODE, dependency SCOPED_CONCURRENCY). Publication also needs the concurrencyKeys capability and its fleet activation (FLOW_CONTROL_ACTIVATION_PENDING until then) and refuses it beside continueAsNew (FLOW_CONTROL_COMBINATION)."
+    },
+    "rateLimitPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "limit",
+        "per"
+      ],
+      "description": "Feature 022 (US07, ADR-0088, ADR-0089): at most `limit` grants of one key in any window of `per` on the database clock. At the top level it limits run starts; on a root activity or script node, the attempt leases of that step (body nodes are refused: UNSUPPORTED_NODE, dependency SCOPED_RATE_LIMIT). Publication also needs the rateLimits capability and its fleet activation (FLOW_CONTROL_ACTIVATION_PENDING until then) and refuses it beside continueAsNew (FLOW_CONTROL_COMBINATION).",
+      "properties": {
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10000,
+          "description": "At most this many grants of one key may count in any window of `per` on the database clock (the acquiring definition's value, clamped by policy). Ceiling by window: 100 per second, 6000 per minute, 10000 per hour."
+        },
+        "per": {
+          "enum": [
+            "second",
+            "minute",
+            "hour"
+          ],
+          "description": "The length of the sliding window. Top level: a grant counts from the instant the run is granted. Node level: from the instant the attempt is leased, and without end while granted and not yet leased."
+        },
+        "key": {
+          "$ref": "#/$defs/expression",
+          "description": "Top level: over `input`. Node level: over the run data when the step would become ready. Same bounds, keyed digest and label as concurrencyPolicy.key. Absent: one key for the whole group. A top-level key that cannot be evaluated ends the new run FAILED with EXPRESSION_ERROR."
+        },
+        "group": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9.-]{0,63}$",
+          "description": "Default: derived from the workflow name (top level) or the workflow name and node id (node level). Definitions of one namespace that name the same group at the same level share its window, each applying its own limit and per. A rate-limit group and a concurrency group of the same name are unrelated."
+        },
+        "queueTimeoutMs": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 86400000,
+          "default": 600000,
+          "description": "How long a buffered run (top level) or a step waiting for a slot (node level) waits before failing with RATE_LIMIT_WAIT_TIMEOUT. Must not exceed the run deadline. With a top-level concurrency too, the run waits once, until the earlier of the two deadlines."
         }
       }
     }

@@ -198,6 +198,7 @@ neither place fails 020's migration test.
 | `result_available_at` | timestamptz null | |
 | `handler_for_run_id` | uuid null | FK `(tenant_id, handler_for_run_id)` → `runs`; UNIQUE `(tenant_id, handler_for_run_id)` where not null |
 | `test_tree` | boolean | NOT NULL DEFAULT false; true for `DRAFT_TEST` and its descendants |
+| `flow_control_gates` | jsonb null | *Added 2026-11-20 (T022-022, D022-049; migrations `20270203000000`, `20270203000100`).* The gates of the run's start as the reducer left them (phase, pool, group, 12-hex key label, a wait's deadline; never a key's value), the same shape as `steps.flow_control_gates`; CHECK `runs_flow_control_gates_bounded` (an object of at most 1,024 bytes); written only by a commit with a run-scope gate event; protected |
 | `failure_handler_state` | text null | CHECK `IN ('RUNNING','SUCCEEDED','FAILED','TIMED_OUT','CANCELLED')` |
 | `pending_terminal_status` | text null | one of the five handler statuses |
 
@@ -400,3 +401,65 @@ rows it actually deleted.
     open grant for each declared gate.
 12. Every waiter row belongs to a run that is not terminal; a breach raises `flow_control_waiter_orphaned`.
 13. At no instant does a key have more granted, unleased steps than the smallest `limit` among them.
+
+### Revision of 2026-11-20 (keys review; D022-058, D022-059)
+
+- `concurrency_semaphores.oldest_wait_at timestamptz` null: the oldest `enqueued_at` of the key's waiters, kept by the
+  count trigger in the transaction that adds or removes a waiter (`LEAST` on an insert; on a delete the minimum of the
+  waiters that remain, read after the trigger locks the key's row `FOR UPDATE` by its own statement); CHECK
+  `concurrency_semaphores_oldest_wait_iff_waiters` `(waiters = 0) = (oldest_wait_at IS NULL)` (added `NOT VALID` by
+  `20270205000000`, validated by `20270205000100`). Holds after every row trigger of a statement that adds and removes
+  several waiters of one key.
+- Indexes in the order of the key listing: `concurrency_semaphores_listing_idx (tenant_id, namespace_id,
+  COALESCE(oldest_wait_at, 'infinity'), pool, permit_scope, group_name, key_digest)` and
+  `concurrency_semaphores_group_listing_idx (tenant_id, namespace_id, group_name, COALESCE(oldest_wait_at, 'infinity'),
+  pool, permit_scope, key_digest)`; `concurrency_holders_key_age_idx` (the key's columns, then `acquired_at`) replaces
+  `concurrency_holders_key_idx`.
+- Invariant 12 is also checked over `rate_limit_waiters`; an empty key row and a key whose `oldest_wait_at` is not its
+  waiters' oldest are breaches (`support::flow_control::key_consistency`).
+
+### Revision of 2026-11-20 (rate gate served; D022-064, D022-065)
+
+- A run's grant row stores `leased_at = granted_at` whichever routine grants it (the CHECK `rate_limit_grants_shape`
+  already required it); it is never given back and stops counting by time.
+- A step's lease instant is copied by the lease pass (transaction T23) from the granted attempt's `step.leased` journaled after the
+  grant: `greatest(step.leased.occurred_at, granted_at)`. Only the grant row is locked.
+- The purge (transaction T25) deletes a leased grant when `leased_at + max_period_ms + 1 minute < now` (exactly at that instant it is
+  kept), under its window row's lock; the window row goes with its last grant and waiter.
+- `rate_limit_live_keys` counts a window while it has a waiter or a grant that is unleased or leased within its
+  `max_period_ms`; a window whose grants all aged out does not count, purged or not. *Reversed by the revision below.*
+- Quota resources added: `rate_limit_live_keys` (count), `rate_limit_per_second`, `rate_limit_per_minute`,
+  `rate_limit_per_hour` (policies; the effective limit of a declaration is the lower of it and the policy of its window).
+
+### Revision of 2026-11-20 (rate re-review; D022-066)
+
+- `rate_limit_live_keys` counts the namespace's `rate_limit_windows` rows under the digest versions in force, as
+  `concurrency_live_keys` counts `concurrency_semaphores`, without a namespace lock (OD-2026-11-20-11: decisions that
+  create keys at the same moment pass it by at most the new keys the others create). The quota usage counts the same
+  rows (every version, as the semaphores' usage).
+- A decision that lacks room first reclaims windows of its own tenant and namespace with `waiters = 0`, `live_grants`
+  between 1 and 64, under a version in force, not one of its own keys, and whose every grant is one the purge may
+  delete at that instant (`leased_at IS NOT NULL AND leased_at + max_period_ms + 1 minute < clock_timestamp()`, the
+  purge's predicate): at most as many as it lacks, `ORDER BY updated_at`, `FOR UPDATE SKIP LOCKED`; then deletes their
+  grants. `rate_limit_window_prune` deletes each window at the commit. Writers of grant rows stay the gate's files
+  (`readiness_gate.rs`) and the two maintenance statements.
+- A rest of a rate key is `SELECT … FOR UPDATE` of the window where `next_eligible_at` is the selection's hint, then
+  `UPDATE … SET next_eligible_at` computed from the grants counted at the key's `selected_at`; a grant or a recorded lease
+  sets `next_eligible_at = least(next_eligible_at, instant)`.
+
+### Revision of 2026-11-20 (rate visibility; task T022-078, decision D022-067)
+
+- `rate_limit_windows.oldest_wait_at timestamptz` null: the oldest `enqueued_at` of the window's waiters, kept by the
+  count trigger `rate_limit_window_count` in the transaction that adds or removes a waiter (`LEAST` on an insert; on a
+  delete the minimum of the waiters that remain, read after the trigger locks the window row `FOR UPDATE` by its own
+  statement; `NULL` when the counter reaches 0), as `concurrency_semaphores.oldest_wait_at`. CHECK
+  `rate_limit_windows_oldest_wait_iff_waiters` `(waiters = 0) = (oldest_wait_at IS NULL)`, added `NOT VALID` by
+  `20270207000000` and validated by `20270207000100`.
+- Indexes in the order of the rate-limit key listing: `rate_limit_windows_listing_idx (tenant_id, namespace_id,
+  COALESCE(oldest_wait_at, 'infinity'), pool, limit_scope, group_name, key_digest)` and
+  `rate_limit_windows_group_listing_idx (tenant_id, namespace_id, group_name, COALESCE(oldest_wait_at, 'infinity'),
+  pool, limit_scope, key_digest)`.
+- Nothing is journaled for the visibility: `Run.rateLimit`, its position and estimate and the listing are reads.
+- *Revised 2026-11-20 (decision D022-068 item 5):* invariant 4 holds for the rate column as for the semaphores': after
+  every statement, `oldest_wait_at` is not distinct from the oldest `enqueued_at` of the window's waiters; the
+  end-of-test consistency check of feature 022 compares the two for every window of the tenant.

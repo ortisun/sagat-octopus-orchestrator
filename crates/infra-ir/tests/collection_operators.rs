@@ -193,6 +193,7 @@ const fn variant(error: &IrError) -> &'static str {
         IrError::LakeWriteRefused { .. } => "LakeWriteRefused",
         IrError::Operator { .. } => "Operator",
         IrError::CollectionOperatorsDisabled { .. } => "CollectionOperatorsDisabled",
+        IrError::FlowControlActivationPending { .. } => "FlowControlActivationPending",
         IrError::UnsupportedDeclaration { .. } => "UnsupportedDeclaration",
         IrError::Invalid(_) => "Invalid",
         IrError::EscapingBodyEdge { .. } => "EscapingBodyEdge",

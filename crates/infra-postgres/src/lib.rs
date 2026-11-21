@@ -6,6 +6,24 @@
 
 use sqlx::migrate::Migrator;
 
+/// The predicate of a rate-limit grant (alias `$g`, its window row `$w`) that the purge may delete at the instant `$now`
+/// (FR-022-056: once its window row's longest period and one minute more have passed since its lease; exactly at that
+/// instant it is kept). One text for the purge (transaction T25) and for a decision's reclaim of its namespace's windows
+/// (decision D022-066 item 1), so the purge's boundary test holds for both.
+macro_rules! purgeable_grant {
+    ($g:literal, $w:literal, $now:literal) => {
+        concat!(
+            $g,
+            ".leased_at IS NOT NULL AND ",
+            $g,
+            ".leased_at + make_interval(secs => ",
+            $w,
+            ".max_period_ms / 1000.0 + 60) < ",
+            $now
+        )
+    };
+}
+
 mod api_admission;
 mod approval_progress;
 mod approval_scheduler;
@@ -33,6 +51,7 @@ mod event_codec;
 mod event_payloads;
 mod events;
 mod execution;
+mod flow_control;
 mod identity;
 mod instances;
 mod leaf_certification;
@@ -79,8 +98,22 @@ pub use definitions::{
 #[doc(hidden)]
 pub use execution::EXPIRED_RESETS_SQL;
 pub use execution::{PgRunStore, PgRunTx};
+/// The deciding transactions of feature 022's gates file their keys through these, inside the store; exposed for the
+/// integration suite that proves the rotation (T022-095).
+#[doc(hidden)]
+pub use flow_control::{
+    FiledKey, KEY_ROW_VANISHED, KeyTable, KeyToFile, file_keys, key_versions, missing_key_versions,
+};
+/// The statements of the concurrency-key listing, exposed so a test can ask the planner about the very text they run
+/// (D022-058).
+#[doc(hidden)]
+pub use flow_control::{
+    KEY_LISTING_OF_GROUP_SQL, KEY_LISTING_SQL, RATE_KEY_LISTING_OF_GROUP_SQL, RATE_KEY_LISTING_SQL,
+};
 pub use identity::PgIdentityStore;
-pub use instances::{FeatureStep, OperatorBounds, PgInstanceStore};
+pub use instances::{
+    FeatureStep, OperatorBounds, PgInstanceStore, live_capable_step, no_feature_step,
+};
 pub use leaf_certification::PgLeafCollectionSuccessStore;
 pub use loop_progress::PgLoopProgressStore;
 pub use operations::{MONITOR_LEASE, READ_AUDIT_SQL};
