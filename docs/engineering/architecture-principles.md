@@ -25,6 +25,7 @@ An architectural rule that nothing checks is a wish. Each row is a rule and what
 | Tenant boundary: another tenant's resource is a missing one | `tests/contract/security-multitenancy/rest/battery.rs` over every operation |
 | Observability vocabulary is closed and low-cardinality | telemetry tests (`observability.rs`, `approval_telemetry.rs`), metrics enums |
 | Docs and generated references match the code | `contract_developer_experience`, `npm run check:api` |
+| Every folder of `docs/` has an index that links every page in it, and `docs/README.md` links every folder | `scripts/check-docs-index.py` (CI `architecture`), tests in `scripts/tests/test_check_docs_index.py` |
 | Agent guidance is bounded and consistent | `scripts/check-agent-config.py` |
 | Incomplete capacity coordination stays dormant; new lease producers need inventory review | `scripts/check-capacity-activation.py` and negative fixtures (source-text check, not a call-graph proof); runtime lock/race tests remain required |
 | Current-schema upgrade oracles follow the latest migration | `scripts/check-upgrade-boundary.py` and negative fixtures; runs before the released producer build; genuine released-source runtime checks remain required |

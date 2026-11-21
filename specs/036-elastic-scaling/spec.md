@@ -4,7 +4,7 @@
 
 **Created**: 2026-10-28
 
-**Status**: Draft — specification proposed; not planned, not implemented; pending owner review
+**Status**: Specification approved for implementation by the owner on 2026-11-11 (Owner decision 2026-11-11-1, "Aprovo os rascunhos 019–032 e 036, pode implementar"); not implemented
 
 **Input**: User description: "Specify horizontal and vertical scaling capabilities. Today a consumer of a queue or topic cannot be scaled by message lag, event reception and the other background roles have no scaling signal, and nothing can be sized from telemetry. The system must scale from telemetry that is configurable both by configuration and programmatically."
 

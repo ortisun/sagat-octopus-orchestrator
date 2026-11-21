@@ -4,7 +4,7 @@
 
 **Created**: 2026-10-26
 
-**Status**: Draft — specification, plan and tasks proposed; not implemented; pending owner review
+**Status**: Specification, plan and tasks approved for implementation by the owner on 2026-11-11 (Owner decision 2026-11-11-1, "Aprovo os rascunhos 019–032 e 036, pode implementar"); not implemented
 
 **Input**: Bring the developer tooling of Temporal and Windmill to the platform without a second engine. (1) A
 time-skipping test environment: an SDK test harness over the **real engine** with an injectable clock
