@@ -45,6 +45,7 @@ pub mod cli;
 pub mod config;
 pub mod handover;
 pub mod inventory;
+pub mod lease_withdrawal;
 pub mod registry;
 
 /// Parsed workflow versions kept in memory (they are immutable, so they never go stale).
