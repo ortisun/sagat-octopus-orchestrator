@@ -2,7 +2,7 @@
 
 **Feature Branch:** `005-inline-code-sandbox`  
 **Created:** 2026-10-07  
-**Status:** Draft — Ready for review  
+**Status:** Delivered: all 45 tasks of [tasks.md](tasks.md) are ticked with their evidence  
 **Input:** Durable workflow platform, Sagas, SDKs, inline scripts, messaging, webhooks, observability and Studio.
 
 ## Vision and value

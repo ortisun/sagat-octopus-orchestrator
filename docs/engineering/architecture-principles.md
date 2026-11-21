@@ -25,6 +25,7 @@ An architectural rule that nothing checks is a wish. Each row is a rule and what
 | Tenant boundary: another tenant's resource is a missing one | `tests/contract/security-multitenancy/rest/battery.rs` over every operation |
 | Observability vocabulary is closed and low-cardinality | telemetry tests (`observability.rs`, `approval_telemetry.rs`), metrics enums |
 | Docs and generated references match the code | `contract_developer_experience`, `npm run check:api` |
+| Every folder of `docs/` has an index that links every page in it, and `docs/README.md` links every folder | `scripts/check-docs-index.py` (CI `architecture`), tests in `scripts/tests/test_check_docs_index.py` |
 | Agent guidance is bounded and consistent | `scripts/check-agent-config.py` |
 | Incomplete capacity coordination stays dormant; new lease producers need inventory review | `scripts/check-capacity-activation.py` and negative fixtures (source-text check, not a call-graph proof); runtime lock/race tests remain required |
 | Current-schema upgrade oracles follow the latest migration | `scripts/check-upgrade-boundary.py` and negative fixtures; runs before the released producer build; genuine released-source runtime checks remain required |
@@ -36,7 +37,9 @@ An architectural rule that nothing checks is a wish. Each row is a rule and what
 | The unknown-outcome code set is one list | `crates/domain/tests/outcome_unknown_parity.rs` (domain, SQL in `chain_progress.rs`, Studio `ops.ts`) |
 | Review telemetry carries bounded codes only (037) | `crates/application/tests/telemetry_derive.rs` |
 | Design docs keep their sections, ids, evidence, owner gates and a consistent approval record; the constitution's principle hashes agree with its Sync Impact Report, and a changed constitution raises its version (ADR-0077) | `scripts/check-design-docs.py` (CI `architecture`), tests in `scripts/tests/test_check_design_docs.py` |
-| A review counts only if it ran with an accepted EGM plugin (ADR-0077) | `scripts/egm-tree-hash.py` against `docs/engineering/egm-accepted-hashes.json` (rule R2 of `check-design-docs.py`) |
+| A review counts only if it ran with an accepted EGM plugin (ADR-0077) | `scripts/egm-tree-hash.py` against `docs/engineering/egm-accepted-hashes.json` (Rule 2 of `check-design-docs.py`) |
+| The document leads and the code follows: a pull request that changes behaviour code changes a document, or each such commit says why not (`Docs: none, <reason>`) (constitution 4.7.0, Documentation first) | `scripts/check-docs-first.py` (CI `documentation`, every pull request), tests in `scripts/tests/test_check_docs_first.py`; it cannot see whether the right document changed, review does |
+| Documents and code comments write words in full, not abbreviations such as "rule R8" or "architecture B1" (constitution 4.7.0, Words in full) | `scripts/check-plain-words.py` over the lines a pull request adds (CI `documentation`, every pull request), tests in `scripts/tests/test_check_plain_words.py`; the list is in `docs/governance/identifier-scheme.md` |
 
 When you add a rule worth keeping, add its row and its check in the same change.
 

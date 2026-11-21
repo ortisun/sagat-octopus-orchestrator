@@ -6,7 +6,7 @@ import asyncio
 import json
 import threading
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Awaitable, Callable, Iterator
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, cast
@@ -138,6 +138,9 @@ class FakeWorkerService(pb_grpc.WorkerServiceServicer):
         self.leases: list[pb.TaskLease] = []
         self.failures: dict[str, list[Scripted]] = {}
         self.always: dict[str, Scripted] = {}
+        self.before: dict[str, Callable[[], Awaitable[None]]] = {}
+        """Runs when a call of that method arrives, once it is recorded and before it is answered: a test holds a
+        call in flight with it until what the test claims has happened (a barrier, never a sleep: AGENTS.md Rule 18)."""
         self.ignore_max_tasks = False
         self.session_token = "session-1"
         self.resolve_delay = 0.0
@@ -174,6 +177,9 @@ class FakeWorkerService(pb_grpc.WorkerServiceServicer):
     async def _enter(self, method: str, request: Any, context: grpc.aio.ServicerContext[Any, Any]) -> None:
         metadata = {key: str(value) for key, value in context.invocation_metadata() or ()}
         self.calls.append(Call(method, request, metadata, time.monotonic()))
+        hook = self.before.get(method)
+        if hook is not None:
+            await hook()
         queue = self.failures.get(method)
         scripted = queue.pop(0) if queue else self.always.get(method)
         if scripted is not None:
@@ -276,10 +282,48 @@ def lease(**overrides: Any) -> pb.TaskLease:
     return pb.TaskLease(**fields)
 
 
-async def until(condition: Callable[[], bool], what: str, seconds: float = 5.0) -> None:
-    """Waits for ``condition``; the test fails, saying what it waited for, if it does not come."""
+def record_sends(host: Any, order: list[str]) -> None:
+    """Wraps the connection of a started host so that ``order`` reads, in the order the host did it, each heartbeat it
+    sent and each report the server answered.
+
+    The side of the host: a call that was sent before the report but reaches the fake after it cannot blur what the test
+    reads. Call it right after ``start`` returns, before anything awaits, so the first lease is not taken yet.
+    """
+    rpc = host._rpc
+    assert rpc is not None
+
+    def wrap(name: str, label: str) -> None:
+        real = getattr(rpc, name)
+
+        async def call(*args: Any, **kwargs: Any) -> Any:
+            order.append(f"sent {label}")
+            answer = await real(*args, **kwargs)
+            order.append(f"answered {label}")
+            return answer
+
+        setattr(rpc, name, call)
+
+    wrap("heartbeat", "Heartbeat")
+    wrap("complete_step", "CompleteStep")
+
+
+async def reached(condition: Callable[[], bool], seconds: float = 3.0) -> bool:
+    """Waits for ``condition`` and says whether it came within ``seconds``.
+
+    The barrier of an activity under test: the handler holds its task until what the test claims has happened (three
+    heartbeats, a beat after a failure) instead of sleeping for a time it hopes is long enough (AGENTS.md Rule 18). It
+    does not fail by itself and gives up before the five seconds of ``until``, so the assertion of the test stays the
+    one that says what is missing.
+    """
     end = asyncio.get_running_loop().time() + seconds
     while not condition():
         if asyncio.get_running_loop().time() > end:
-            pytest.fail(f"timed out waiting for {what}")
+            return False
         await asyncio.sleep(0.01)
+    return True
+
+
+async def until(condition: Callable[[], bool], what: str, seconds: float = 5.0) -> None:
+    """Waits for ``condition``; the test fails, saying what it waited for, if it does not come."""
+    if not await reached(condition, seconds):
+        pytest.fail(f"timed out waiting for {what}")

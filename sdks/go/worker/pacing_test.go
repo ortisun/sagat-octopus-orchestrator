@@ -3,6 +3,7 @@ package worker_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"runtime"
 	"strings"
 	"sync/atomic"
@@ -16,12 +17,13 @@ import (
 )
 
 // startDefault starts a host with the retry policy a user gets (no fast retries for the test) and stops it
-// when the test ends.
+// when the test ends. The pauses of its loop are recorded among the calls of the fake service.
 func startDefault(t *testing.T, f *fakeService, opts ...worker.Option) *worker.Host {
 	t.Helper()
 	h, err := worker.New(f.url(), "payments", "pacing-worker", sagat.StaticToken("tok"), opts...)
 	must(t, err)
 	must(t, h.RegisterActivity("charge", rawOK))
+	f.observePauses(h)
 	must(t, h.Start(context.Background()))
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
@@ -31,18 +33,41 @@ func startDefault(t *testing.T, f *fakeService, opts ...worker.Option) *worker.H
 	return h
 }
 
+// paced checks that each two polls that follow each other are separated by exactly one pause of the loop, that
+// the pause is within [low(k), high(k)] for the k-th pair, and that the second poll came no sooner than the pause
+// asked. It reads the length the host chose from the host, and the wall clock only for a lower bound, which a
+// loaded machine cannot break (AGENTS.md Rule 18).
+func paced(t *testing.T, f *fakeService, polls int, low, high func(k int) time.Duration) {
+	t.Helper()
+	until(t, fmt.Sprintf("%d polls", polls), func() bool { return len(f.of("PollTasks")) >= polls })
+	pauses, gaps := pausesBetween(f.sequence(), "PollTasks")
+	for k := 0; k < polls-1; k++ {
+		if len(pauses[k]) != 1 {
+			t.Errorf("polls %d and %d: %d pauses between them, %v", k+1, k+2, len(pauses[k]), pauses[k])
+			continue
+		}
+		if d := pauses[k][0]; d < low(k) || d > high(k) {
+			t.Errorf("polls %d and %d: a pause of %v, outside [%v, %v]", k+1, k+2, d, low(k), high(k))
+		} else if gaps[k] < d {
+			t.Errorf("polls %d and %d came %v apart: the pause of %v was not waited out", k+1, k+2, gaps[k], d)
+		}
+	}
+}
+
+func exactly(d time.Duration) func(int) time.Duration { return func(int) time.Duration { return d } }
+
 // The host never busy-polls (SPEC section 6.2): whatever the poll answered, the next one is after a wait. Each
-// of these counts the polls in a fixed window; a loop that did not wait would make thousands.
+// of these checks the pause between polls; a loop that did not wait would make none.
 func TestAFailedPollIsFollowedByABackoffAndNotByAnotherPollAtOnce(t *testing.T) {
 	for name, code := range map[string]codes.Code{"unavailable": codes.Unavailable, "internal": codes.Internal, "deadline": codes.DeadlineExceeded} {
 		t.Run(name, func(t *testing.T) {
 			f := newFakeService(t)
 			f.set(func(f *fakeService) { f.always["PollTasks"] = failure{code: code} })
 			startDefault(t, f)
-			time.Sleep(time.Second)
-			if polls := len(f.of("PollTasks")); polls < 2 || polls > 6 {
-				t.Errorf("%d polls in a second of failures: the backoff is 100 to 200 ms, then 200 to 400, then 400 to 800", polls)
-			}
+			// The backoff is 100 to 200 ms, then 200 to 400, then 400 to 800.
+			paced(t, f, 4,
+				func(k int) time.Duration { return (100 * time.Millisecond) << k },
+				func(k int) time.Duration { return (200 * time.Millisecond) << k })
 		})
 	}
 }
@@ -53,16 +78,7 @@ func TestAPollRefusedWithARetryAfterWaitsForIt(t *testing.T) {
 		f.always["PollTasks"] = failure{code: codes.ResourceExhausted, reason: "RATE_LIMITED", retryAfter: "400"}
 	})
 	startDefault(t, f)
-	time.Sleep(1100 * time.Millisecond)
-	polls := f.of("PollTasks")
-	if len(polls) < 2 || len(polls) > 4 {
-		t.Fatalf("%d polls in 1.1 s, each refused with a retry-after of 400 ms", len(polls))
-	}
-	for i := 1; i < len(polls); i++ {
-		if gap := polls[i].at.Sub(polls[i-1].at); gap < 350*time.Millisecond {
-			t.Errorf("poll %d came %v after the one before: the retry-after of 400 ms was not waited for", i+1, gap)
-		}
-	}
+	paced(t, f, 3, exactly(400*time.Millisecond), exactly(400*time.Millisecond))
 }
 
 func TestAPollRefusedWithNoRetryAfterStillWaits(t *testing.T) {
@@ -71,27 +87,15 @@ func TestAPollRefusedWithNoRetryAfterStillWaits(t *testing.T) {
 		f.always["PollTasks"] = failure{code: codes.ResourceExhausted, reason: "RATE_LIMITED"}
 	})
 	startDefault(t, f)
-	time.Sleep(time.Second)
-	if polls := len(f.of("PollTasks")); polls < 2 || polls > 12 {
-		t.Errorf("%d polls in a second of refusals", polls)
-	}
+	paced(t, f, 4, exactly(100*time.Millisecond), exactly(100*time.Millisecond))
 }
 
 func TestAnEmptyPollWaitsForWhatItAskedAndNotLess(t *testing.T) {
 	f := newFakeService(t)
 	f.set(func(f *fakeService) { f.pollRetryAfterMs = 500 })
 	startDefault(t, f)
-	time.Sleep(1300 * time.Millisecond)
-	polls := f.of("PollTasks")
 	// 500 ms with 20 % jitter: 400 to 600.
-	if len(polls) < 2 || len(polls) > 4 {
-		t.Errorf("%d polls in 1.3 s of empty answers asking for 500 ms", len(polls))
-	}
-	for i := 1; i < len(polls); i++ {
-		if gap := polls[i].at.Sub(polls[i-1].at); gap < 380*time.Millisecond {
-			t.Errorf("poll %d came %v after the one before", i+1, gap)
-		}
-	}
+	paced(t, f, 3, exactly(400*time.Millisecond), exactly(600*time.Millisecond))
 }
 
 func TestAHostWithEverySlotBusyPollsNoMoreAndPauses(t *testing.T) {
@@ -189,7 +193,7 @@ func TestAStoppedHostClosesItsConnectionAndLeavesNoHeartbeatBehind(t *testing.T)
 	f := newFakeService(t)
 	before := settle(clientConn)
 	beforeHost := settle(func() int { return count("sdks/go/worker.(*Host)") })
-	h := newHost(t, f, worker.WithHeartbeatInterval(10*time.Millisecond))
+	h := newHost(t, f, worker.WithHeartbeatInterval(10*time.Millisecond), f.clientSide())
 	must(t, h.RegisterActivity("slow", func(ctx context.Context, _ json.RawMessage) (any, error) {
 		time.Sleep(60 * time.Millisecond)
 		return 1, nil
@@ -200,10 +204,12 @@ func TestAStoppedHostClosesItsConnectionAndLeavesNoHeartbeatBehind(t *testing.T)
 	until(t, "the report", func() bool { return len(f.of("CompleteStep")) == 1 })
 	// The heartbeat of a task ends with its report, not with the host.
 	until(t, "no heartbeat goroutine once the task is reported", func() bool { return count("(*Host).beat") == 0 })
-	beats := len(f.of("Heartbeat"))
+	// A beat on its way when the heartbeat ended may reach the service after it; the host must send none
+	// afterwards. The sleep only gives a heartbeat that went on the time to show.
+	f.note("heartbeat ended")
 	time.Sleep(100 * time.Millisecond)
-	if len(f.of("Heartbeat")) != beats {
-		t.Error("a heartbeat was made after the report")
+	if n := f.sentAfter("Heartbeat", "heartbeat ended"); n != 0 {
+		t.Errorf("%d heartbeats were sent after the report", n)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -224,7 +230,7 @@ func TestTheHeartbeatOfATaskThatWillNotEndStopsWithTheHost(t *testing.T) {
 	f := newFakeService(t)
 	release := make(chan struct{})
 	var started atomic.Bool
-	h, err := worker.New(f.url(), "payments", "stubborn-worker", sagat.StaticToken("tok"), worker.WithHeartbeatInterval(10*time.Millisecond))
+	h, err := worker.New(f.url(), "payments", "stubborn-worker", sagat.StaticToken("tok"), worker.WithHeartbeatInterval(10*time.Millisecond), f.clientSide())
 	must(t, err)
 	must(t, h.RegisterActivity("charge", func(context.Context, json.RawMessage) (any, error) {
 		started.Store(true)
@@ -249,9 +255,11 @@ func TestTheHeartbeatOfATaskThatWillNotEndStopsWithTheHost(t *testing.T) {
 		t.Errorf("stop took %v", took)
 	}
 	until(t, "no heartbeat goroutine of the stopped host", func() bool { return count("(*Host).beat") == 0 })
-	beats := len(f.of("Heartbeat"))
+	// Counted where the host sends, not where the service receives: a beat on its way when the host stopped may
+	// still land. The sleep only gives a heartbeat that went on the time to show.
+	f.note("stopped")
 	time.Sleep(150 * time.Millisecond)
-	if more := len(f.of("Heartbeat")) - beats; more != 0 {
+	if more := f.sentAfter("Heartbeat", "stopped"); more != 0 {
 		t.Errorf("%d heartbeats after the host was stopped", more)
 	}
 }

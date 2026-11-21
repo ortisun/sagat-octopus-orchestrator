@@ -18,6 +18,8 @@ Feature numbers are shared by every branch (a draft on another branch may alread
 6. **Validation report.** Measured evidence (commands, counts, environment, failures, what was skipped) goes in `validation-report.md`, dated; a later run adds a section, it does not rewrite history.
 7. **Traceability.** `docs/traceability.md` maps requirement → tests → contract → metric/log → demo. It changes in the same delivery as the code.
 8. **Same-delivery rule.** Spec, contracts, tests and documentation move together with the code (constitution, workflow).
+9. **Documentation first.** The document leads and the code follows: write the change in its document first, commit it before the code or with it, and never let the code lead. When code and document disagree, fix the wrong one; never leave them apart. `scripts/check-docs-first.py` runs on every pull request (constitution 4.7.0; AGENTS.md rule 23).
+10. **Words in full.** Write "Rule 8", "Blocker 1", "Task 022-064", not "R8", "B1", "T022-064". The old identifier forms and their new names are in `docs/governance/identifier-scheme.md`; `scripts/check-plain-words.py` runs on every pull request (AGENTS.md rule 24).
 
 ## Writing a design an agent can implement
 
@@ -36,7 +38,7 @@ Feature numbers are shared by every branch (a draft on another branch may alread
 
 ## Enforcement, not convention
 
-The usual criticism of spec-driven tooling is that the documents govern by convention. Here they are tied to checks: `scripts/check-architecture.py` (layering), the runtime-privilege audit, the storage-classification manifest, contract baselines and compatibility tests, the six-language conformance suite, the cross-tenant battery, `scripts/check-agent-config.py`, `scripts/check-design-docs.py` (design docs and the approval record), and CI gates on all of them. When you write a rule, write the check.
+The usual criticism of spec-driven tooling is that the documents govern by convention. Here they are tied to checks: `scripts/check-architecture.py` (layering), the runtime-privilege audit, the storage-classification manifest, contract baselines and compatibility tests, the six-language conformance suite, the cross-tenant battery, `scripts/check-agent-config.py`, `scripts/check-design-docs.py` (design docs and the approval record), `scripts/check-docs-first.py` (the document changes with the code) and `scripts/check-plain-words.py` (words in full), and CI gates on all of them. When you write a rule, write the check.
 
 ## Anti-patterns seen here
 

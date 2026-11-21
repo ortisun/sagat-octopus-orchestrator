@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"fmt"
 	"net"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -30,6 +31,8 @@ type call struct {
 	// peer is the common name of the client certificate of the connection, "" when it sent none.
 	peer string
 	at   time.Time
+	// pause is the length of a pause of the host's loop, for the entries named "pause" (see observePauses).
+	pause time.Duration
 }
 
 // failure is an answer scripted in place of the success: a gRPC code, with the trailers the real
@@ -68,6 +71,9 @@ type fakeService struct {
 	// overfill makes a poll answer with every queued lease, whatever max_tasks asked for: a server that
 	// does not keep to the protocol.
 	overfill bool
+	// holds keeps the successful answer to a method until its condition is true (or ten seconds have passed): a
+	// call the test holds in flight until what it claims has happened meanwhile, instead of a window of time.
+	holds map[string]func() bool
 }
 
 func newFakeService(t *testing.T) *fakeService { return newFakeServiceWith(t, nil) }
@@ -185,6 +191,7 @@ func (f *fakeService) CompleteStep(ctx context.Context, r *pb.CompleteStepReques
 	if err := f.enter(ctx, "CompleteStep", r); err != nil {
 		return nil, err
 	}
+	f.held("CompleteStep")
 	return &pb.StepCommandResponse{CommandId: "c", StepStatus: "SUCCEEDED", RunStatus: "RUNNING"}, nil
 }
 
@@ -215,6 +222,71 @@ func (f *fakeService) of(method string) []call {
 		}
 	}
 	return out
+}
+
+// held waits while the hold of the method, if there is one, is not released.
+func (f *fakeService) held(method string) {
+	f.mu.Lock()
+	release := f.holds[method]
+	f.mu.Unlock()
+	if release == nil {
+		return
+	}
+	end := time.Now().Add(10 * time.Second)
+	for !release() && time.Now().Before(end) {
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// observePauses records every pause of the loop of h among the calls, in the order the host made them: a pause
+// is begun after the answer to the call before it and before the call after it, so the record says exactly which
+// calls a pause separates.
+func (f *fakeService) observePauses(h *worker.Host) {
+	worker.ObservePauses(h, func(d time.Duration) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		f.calls = append(f.calls, call{method: "pause", at: time.Now(), pause: d})
+	})
+}
+
+// clientSide records, among the calls of the fake service, each call as the host sends it ("sent Heartbeat"). A
+// beat the host sent before its heartbeat ended may reach the service after that; what the host sends after a mark
+// is what tells whether the heartbeat went on, whatever the order of arrival.
+func (f *fakeService) clientSide() worker.Option {
+	return worker.WithDialOptions(grpc.WithChainUnaryInterceptor(func(ctx context.Context, method string, request, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
+		f.note("sent " + method[strings.LastIndex(method, "/")+1:])
+		return invoker(ctx, method, request, reply, cc, opts...)
+	}))
+}
+
+// note records a mark among the calls: something the host or the test did, at its place in the order.
+func (f *fakeService) note(what string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, call{method: what, at: time.Now()})
+}
+
+// sentAfter counts the calls of the method the host sent after the first mark named after.
+func (f *fakeService) sentAfter(method, after string) int {
+	n, seen := 0, false
+	for _, c := range f.sequence() {
+		switch c.method {
+		case after:
+			seen = true
+		case "sent " + method:
+			if seen {
+				n++
+			}
+		}
+	}
+	return n
+}
+
+// sequence returns every call and pause, in order.
+func (f *fakeService) sequence() []call {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]call(nil), f.calls...)
 }
 
 func (f *fakeService) fail(method string, failures ...failure) {
@@ -266,6 +338,36 @@ func until(t *testing.T, what string, condition func() bool) {
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
+}
+
+// reached waits for a condition for at most ten seconds and returns either way: the barrier a handler waits on in
+// place of a sleep. The test's own assertions say what did not come.
+func reached(condition func() bool) {
+	end := time.Now().Add(10 * time.Second)
+	for !condition() && time.Now().Before(end) {
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// pausesBetween returns, for each two calls of the method that follow each other, the pauses of the loop that came
+// between them and the time from the first call to the second.
+func pausesBetween(sequence []call, method string) (pauses [][]time.Duration, gaps []time.Duration) {
+	var last *call
+	var since []time.Duration
+	for i := range sequence {
+		c := &sequence[i]
+		switch c.method {
+		case "pause":
+			since = append(since, c.pause)
+		case method:
+			if last != nil {
+				pauses = append(pauses, since)
+				gaps = append(gaps, c.at.Sub(last.at))
+			}
+			last, since = c, nil
+		}
+	}
+	return pauses, gaps
 }
 
 func newHost(t *testing.T, f *fakeService, opts ...worker.Option) *worker.Host {
