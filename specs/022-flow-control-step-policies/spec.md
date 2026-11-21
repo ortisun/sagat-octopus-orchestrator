@@ -4,7 +4,7 @@
 
 **Created**: 2026-10-26
 
-**Status**: Draft — specification, plan and tasks proposed; not implemented; pending owner review
+**Status**: Specification, plan and tasks approved for implementation by the owner on 2026-11-11 (Owner decision 2026-11-11-1, "Aprovo os rascunhos 019–032 e 036, pode implementar"); not implemented
 
 **Release 0.3.0 slice (2026-11-13)**: the owner put throughput control in release 0.3.0 (OD-2026-11-13-11,
 quoted in [research.md](research.md#owner-decision-of-2026-11-13-throughput-control-in-release-030)): US02
