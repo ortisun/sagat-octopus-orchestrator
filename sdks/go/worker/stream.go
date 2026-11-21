@@ -61,7 +61,7 @@ func (h *Host) receive(ctx context.Context, l *link, sess *session, credit int) 
 			h.frameReceived(len(tasks))
 		}
 		if h.stopping.Load() {
-			// A host that is stopping starts nothing new: what it read is handed back.
+			// A host that is stopping starts nothing new: what it read is handed back (from protocol 1.8).
 			for _, lease := range tasks {
 				h.take(l, w, lease, handBackStopping)
 			}

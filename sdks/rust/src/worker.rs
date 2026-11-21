@@ -107,10 +107,22 @@ type Handler = dyn Fn(ActivityContext, Value) -> BoxFuture<'static, Result<Activ
 /// Called with the number of leases after a poll answer or a stream frame is read and before it is
 /// looked at; `None` except in the tests, which hold the receive loop there while `stop` begins.
 type FrameHook = dyn Fn(usize) + Send + Sync;
-/// The step failure code of a lease the host received and hands back without starting it
-/// (`sdks/SPEC.md` section 6.2). It is never raised to a caller and is not in the error catalog.
+/// The step failure code of a lease the host received and hands back without starting it, from
+/// protocol 1.8 (`sdks/SPEC.md` section 6.2). It is never raised to a caller and is not in the
+/// error catalog.
 const TASK_NOT_STARTED: &str = "TASK_NOT_STARTED";
-/// Why a lease the host received is handed back: it arrived after `stop` began, it is beyond the
+/// The first worker protocol minor on which the host hands a lease back: its server reserves
+/// `TASK_NOT_STARTED`, and an older one would record it as an ordinary failure that spends the
+/// attempt (decision D006-080).
+const HAND_BACK_MINOR: u32 = 8;
+/// The newest worker protocol minor this SDK understands: a newer accepted one is refused. The unit
+/// tests also run sessions of 1.8, the first minor on which the host hands a lease back, which no
+/// server of this build negotiates yet.
+#[cfg(not(test))]
+const NEWEST_MINOR: u32 = 6;
+#[cfg(test)]
+const NEWEST_MINOR: u32 = HAND_BACK_MINOR;
+/// Why a lease the host received is not run: it arrived after `stop` began, it is beyond the
 /// credit of the poll or the receive window or beyond the free slots, it is in the rest of a frame
 /// that broke the input budget of the window, or the host could not start it.
 const HAND_BACK_STOPPING: &str = "stopping";
@@ -554,7 +566,7 @@ async fn register(core: &Core, mut rpc: Rpc) -> Result<Session, SagatError> {
                     })?;
                 // The canonical 1.6 protocol is the 1.5 ordinary-worker path plus managed database
                 // RPCs restricted to database-runner identities. Unknown future versions are refused.
-                if accepted > 6 {
+                if accepted > NEWEST_MINOR {
                     return Err(SagatError::new(
                         "UNSUPPORTED_PROTOCOL",
                         "the accepted worker protocol is newer than this SDK understands",
@@ -676,7 +688,8 @@ async fn receive_loop(
                     delay = frame.retry_after_ms;
                     // A frame is looked at in the same poll that read it: `stop` drops this future
                     // only at an await, so a frame is never lost once read. One read after `stop`
-                    // began (another frame was already buffered) is handed back whole.
+                    // began (another frame was already buffered) is handed back whole (from protocol
+                    // 1.8).
                     if receive.is_cancelled() {
                         for task in frame.tasks {
                             let why = Some(HAND_BACK_STOPPING);
@@ -685,9 +698,9 @@ async fn receive_loop(
                         break;
                     }
                     // The host runs at most the credit of the window, within its input budget: the
-                    // lease that breaks either and the rest of the frame after it are handed back,
-                    // and the window ends. The window is read to its end, so that a lease the
-                    // server sends beyond the credit is handed back, never left to lapse.
+                    // lease that breaks either and the rest of the frame after it are not run, and
+                    // the window ends. The window is read to its end, so that from protocol 1.8 a
+                    // lease the server sends beyond the credit is handed back, never left to lapse.
                     let mut why = None;
                     let mut broken = None;
                     for task in frame.tasks {
@@ -726,7 +739,7 @@ async fn receive_loop(
                     hook(response.tasks.len());
                 }
                 // The host runs at most as many tasks as it asked for, and nothing once `stop`
-                // began: the rest of the answer is handed back (`sdks/SPEC.md` section 6.2).
+                // began: the rest of the answer is not run (`sdks/SPEC.md` section 6.2).
                 let stopping = receive.is_cancelled();
                 let mut answer = BTreeSet::new();
                 let mut count = 0;
@@ -863,12 +876,12 @@ fn warn_duplicate(task: &str) {
         )
     }));
 }
-/// Dispatches a lease of a poll answer or of a stream receive window, or hands it back when `why`
-/// is set, and says whether it took a slot of the credit (it was dispatched, or the host tried to
+/// Dispatches a lease of a poll answer or of a stream receive window, or drops it when `why` is set
+/// (handing it back from protocol 1.8), and says whether it took a slot of the credit (it was dispatched, or the host tried to
 /// start it). A lease whose key is in flight, or was already seen in the same answer or window, is a
 /// duplicate: it is ignored and never reported, since its fence may be the one of the running
 /// handler (`sdks/SPEC.md` section 6.2). A poisoned in-flight table is still read for this check;
-/// `dispatch` then cannot record the lease in it and hands it back.
+/// `dispatch` then cannot record the lease in it and drops it.
 fn take(
     core: &Core,
     session: &Session,
@@ -898,9 +911,9 @@ fn take(
     }
 }
 /// Reports a lease the host received and will not run: `FailStep` `TASK_NOT_STARTED`, retryable,
-/// before any handler of it runs (`sdks/SPEC.md` section 6.2). The server gives the step back
-/// without consuming the attempt when it can; a lease left to lapse would be an unknown outcome.
-/// It is the failure report of every task, with its retries, made by one of at most
+/// before any handler of it runs (`sdks/SPEC.md` section 6.2), on a session of protocol 1.8 or
+/// later. The server gives the step back without consuming the attempt when it can. Below 1.8 the
+/// lease is only logged and left to lapse. It is the failure report of every task, with its retries, made by one of at most
 /// `MAX_HAND_BACKS` workers in the order received; nothing here waits, so the receive loop never
 /// blocks on the bound. The workers run in the tracker, so `stop` waits for the queue like a task
 /// in flight while the channel is still open.
@@ -913,6 +926,16 @@ fn hand_back(
     life: &CancellationToken,
     tracker: &TaskTracker,
 ) {
+    if session.minor < HAND_BACK_MINOR {
+        let _ = std::panic::catch_unwind(AssertUnwindSafe(|| {
+            tracing::warn!(
+                task = lease.task_id.as_str(),
+                reason = why,
+                "the host drops a task it did not start; its lease lapses"
+            )
+        }));
+        return;
+    }
     let inserted = locked(&core.hand_backs.keys).insert(key.clone());
     // Only the receive loop hands back, and `take` checked the same key in this set just before:
     // a lease is handed back at most once.

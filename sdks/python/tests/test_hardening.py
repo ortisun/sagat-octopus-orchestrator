@@ -272,7 +272,9 @@ async def test_a_poll_answer_with_more_tasks_than_were_asked_for_runs_no_more_th
     fake: FakeWorkerService, make_host: MakeHost, caplog: pytest.LogCaptureFixture
 ) -> None:
     fake.ignore_max_tasks = True
-    host = make_host(max_inflight=2)
+    # The hand-back is made from protocol 1.8 (decision D006-080).
+    fake.accepted_version = "1.8"
+    host = make_host(protocol_version="1.8", transport="poll", max_inflight=2)
     running = peak = 0
 
     async def charge(_i: Any, ctx: ActivityContext) -> int:

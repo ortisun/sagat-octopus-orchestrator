@@ -216,7 +216,7 @@ server that answers with that reason on a 400, 401, 403 or 409, or in a gRPC tra
 empty poll) is honoured up to 60 s whatever it says (an HTTP date is ignored); a REST body is read up to 32 MiB and the call then fails as
 `Protocol`; a `Message` is cut to 512 characters and a `Reason` to 128; a `TraceId` that is not 32 lowercase hexadecimal characters is
 not repeated; a run id is a UUID and a name in a path is never empty, `.` or `..` (`ValidationFailed`, before anything is sent); a poll
-answer with more tasks than the host asked for runs the first ones and hands the others back; more generally, a lease the host received and will not run (it arrived while the host was stopping, beyond the tasks the host asked for or has room for, or in the rest of a frame over the input budget) is handed back at once with `FailStep` `TASK_NOT_STARTED`, retryable, so the server gives the step back instead of leaving the lease to lapse into a review (sdks/SPEC.md section 6.2).
+answer with more tasks than the host asked for runs the first ones and drops the others; more generally, a lease the host received and will not run (it arrived while the host was stopping, beyond the tasks the host asked for or has room for, or in the rest of a frame over the input budget) is handed back at once with `FailStep` `TASK_NOT_STARTED`, retryable, so the server gives the step back instead of leaving the lease to lapse into a review, from protocol 1.8; below it the lease lapses (sdks/SPEC.md section 6.2).
 
 ## Configuration (`SagatOptions`)
 

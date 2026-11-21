@@ -59,7 +59,7 @@ public final class WorkerHost implements AutoCloseable {
     private static final Pattern CODE = Pattern.compile("^[A-Z0-9_]{1,64}$");
     private static final Pattern VERSION = Pattern.compile("^1(?:\\.(\\d+))?$");
     private static final Pattern BLOB_SHA256 = Pattern.compile("^[0-9a-f]{64}$");
-    // Why a lease the host received is handed back (SPEC section 6.2).
+    // Why a lease the host received is not run (SPEC section 6.2).
     private static final String HAND_BACK_STOPPING = "stopping";
     private static final String HAND_BACK_CREDIT = "credit";
     private static final String HAND_BACK_MALFORMED = "malformed";
@@ -67,6 +67,9 @@ public final class WorkerHost implements AutoCloseable {
     // At most this many hand-backs are on their way at once; the others wait their turn in the order received (SPEC
     // section 6.2, decision D006-026): a server that answers with tens of thousands of leases does not get a thread each.
     private static final int MAX_HAND_BACKS = 8;
+    // The first protocol minor on which the host hands a lease back: its server reserves TASK_NOT_STARTED, and an older one
+    // would record it as an ordinary failure that spends the attempt (decision D006-080).
+    private static final int HAND_BACK_MINOR = 8;
 
     private enum Kind {
         ACTIVITY,
@@ -247,7 +250,7 @@ public final class WorkerHost implements AutoCloseable {
 
     /**
      * Stops polling, waits up to {@code timeout} for the tasks in flight and for the leases it hands back (the ones it
-     * received and will not run, SPEC section 6.2), then cancels the tasks left (reason {@code shutdown}) and returns. A
+     * received and will not run, from protocol 1.8, SPEC section 6.2), then cancels the tasks left (reason {@code shutdown}) and returns. A
      * task that did not finish keeps its lease until it lapses. Calling it on a host that is not running does nothing.
      */
     public void stop(Duration timeout) {
@@ -274,8 +277,9 @@ public final class WorkerHost implements AutoCloseable {
         }
         long end = System.nanoTime() + Math.max(0, timeout.toNanos());
         try {
-            // The poll in progress ends and no other starts; what it received while stopping is handed back, and the
-            // hand-backs are waited for with the tasks in flight, before the channel closes (SPEC section 6.2).
+            // The poll in progress ends and no other starts; what it received while stopping is handed back from protocol 1.8
+            // (below it the leases lapse), and the hand-backs are waited for with the tasks in flight, before the channel
+            // closes (SPEC section 6.2).
             loopThread.join(Math.max(1, TimeUnit.NANOSECONDS.toMillis(end - System.nanoTime())));
             if (loopThread.isAlive()) {
                 channel.abort();
@@ -487,7 +491,7 @@ public final class WorkerHost implements AutoCloseable {
                                 return;
                             }
                             Iterator<Worker.PollTasksResponse> frames = opened.frames();
-                            // The in-flight keys this receive window dispatched or handed back.
+                            // The in-flight keys this receive window dispatched or dropped.
                             Set<String> seen = new HashSet<>();
                             while (frames.hasNext()) {
                                 Worker.PollTasksResponse frame = frames.next();
@@ -496,7 +500,8 @@ public final class WorkerHost implements AutoCloseable {
                                     received.accept(frame.getTasksCount());
                                 }
                                 if (stopping) {
-                                    // A host that is stopping starts nothing new: what it read is handed back.
+                                    // A host that is stopping starts nothing new: what it read is handed back (from
+                                    // protocol 1.8).
                                     for (Worker.TaskLease lease : frame.getTasksList()) {
                                         take(lease, seen, HAND_BACK_STOPPING);
                                     }
@@ -505,7 +510,7 @@ public final class WorkerHost implements AutoCloseable {
                                 if (frame.getTasksCount() == 0) { hint = frame.getRetryAfterMs(); continue; }
                                 int allowed = Math.min(asked - delivered, config.maxInflight() - inflight.size());
                                 // The first lease beyond the credit or over the input budget ends the receive; it and the
-                                // rest of the frame are handed back.
+                                // rest of the frame are not run.
                                 String why = null;
                                 SagatException broken = null;
                                 int taken = 0;
@@ -562,11 +567,11 @@ public final class WorkerHost implements AutoCloseable {
                 emit(new WorkerEvent.Poll(response.getTasksCount()));
                 List<Worker.TaskLease> leases = response.getTasksList();
                 // The host runs at most as many tasks as it asked for, and nothing once it is stopping: a server that sends
-                // more is not obeyed, and the rest are handed back (SPEC section 6.2).
+                // more is not obeyed, and the rest are not run (SPEC section 6.2).
                 boolean stoppingNow = stopping;
                 if (!stoppingNow && leases.size() > asked) {
                     Hooks.log(log, System.Logger.Level.WARNING,
-                            "a poll answer carried " + leases.size() + " tasks, " + asked + " were asked for: the rest are handed back");
+                            "a poll answer carried " + leases.size() + " tasks, " + asked + " were asked for: the rest are not run");
                 }
                 Set<String> seen = new HashSet<>();
                 int taken = 0;
@@ -632,7 +637,8 @@ public final class WorkerHost implements AutoCloseable {
     // ----------------------------------------------------------------------------------------- tasks
 
     /**
-     * Dispatches a lease, or hands it back when {@code why} is not null, and tells whether it dispatched it. A lease whose
+     * Dispatches a lease, or drops it when {@code why} is not null (handing it back from protocol 1.8), and tells whether it
+     * dispatched it. A lease whose
      * in-flight key is in flight, or was already seen in this poll answer or receive window ({@code seen}), is a
      * duplicate: it is ignored and never reported, since its fence may be the one of the running handler.
      */
@@ -651,14 +657,20 @@ public final class WorkerHost implements AutoCloseable {
 
     /**
      * Reports a lease the host received and will not run: FailStep TASK_NOT_STARTED, retryable, before any handler of it
-     * runs (SPEC section 6.2). The server gives the step back without consuming the attempt when it can; a lease left to
-     * lapse would be an unknown outcome. It runs off the loop, at most eight at once, and stop waits for it like a task in
-     * flight, so the channel is still open. Until its report ends, its key counts as in flight.
+     * runs (SPEC section 6.2), on a session of protocol 1.8 or later. The server gives the step back without consuming the
+     * attempt when it can. Below 1.8 the lease is only logged and left to lapse. It runs off the loop, at most eight at
+     * once, and stop waits for it like a task in flight, so the channel is still open. Until its report ends, its key
+     * counts as in flight.
      */
     private void handBack(Worker.TaskLease lease, String key, String why) {
+        int minor = minorOf(accepted);
+        if (minor < HAND_BACK_MINOR) {
+            Hooks.log(log, System.Logger.Level.WARNING,
+                    "the host drops a task it did not start; its lease lapses task=" + lease.getTaskId() + " reason=" + why);
+            return;
+        }
         Hooks.log(log, System.Logger.Level.WARNING, "the host hands back a task it did not start task=" + lease.getTaskId() + " reason=" + why);
         WorkerRpc channel = rpc;
-        int minor = minorOf(accepted);
         CompletableFuture<Void> done = new CompletableFuture<>();
         handBacks.put(key, done);
         try {
@@ -718,7 +730,7 @@ public final class WorkerHost implements AutoCloseable {
             });
             return true;
         } catch (RejectedExecutionException e) {
-            // The task pool would not run it: no handler of it started, so it is handed back.
+            // The task pool would not run it: no handler of it started, so it is dropped (handed back from protocol 1.8).
             inflight.remove(key);
             task.done.complete(null);
             handBack(lease, key, HAND_BACK_NOT_STARTED);

@@ -445,7 +445,7 @@ func isLoopback(host string) bool {
 }
 
 // Stop stops polling, cancels nothing, and waits for the tasks in flight and the leases it hands back
-// (received while stopping, sdks/SPEC.md section 6.2) until ctx is done (30 s
+// (received while stopping, from protocol 1.8, sdks/SPEC.md section 6.2) until ctx is done (30 s
 // when ctx has no deadline); then it cancels their contexts with the cause ErrShutdown, gives the
 // handlers two seconds more to report, and closes the channel. A task that did not finish keeps its
 // lease until it lapses and the server leases it again. Stop returns ctx's error when it had to
@@ -473,8 +473,8 @@ func (h *Host) Stop(ctx context.Context) error {
 		receiveCancel()
 	}
 	h.signal()
-	// The poll in progress ends and no other starts; what it leased is handed back, and Stop waits for the
-	// hand-backs with the tasks in flight (sdks/SPEC.md section 6.2).
+	// The poll in progress ends and no other starts; what it leased is handed back from protocol 1.8 (below
+	// it the leases lapse), and Stop waits for the hand-backs with the tasks in flight (sdks/SPEC.md section 6.2).
 	l := h.current
 	select {
 	case <-l.loopDone:

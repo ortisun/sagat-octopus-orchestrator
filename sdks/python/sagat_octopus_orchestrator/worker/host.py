@@ -65,6 +65,9 @@ _SURROGATES = re.compile(r"[\ud800-\udfff]")
 SHUTDOWN_GRACE = 2.0
 HAND_BACK_CONCURRENCY = 8
 """Hand-backs on their way at once: a server that floods one answer cannot make the host open a call per lease."""
+HAND_BACK_MINOR = 8
+"""The first protocol minor on which the host hands a lease back: its server reserves ``TASK_NOT_STARTED``, and an older
+one would record it as an ordinary failure that spends the attempt (decision D006-080)."""
 """Seconds. After ``stop`` has cancelled the tokens of the tasks left, it waits this long for them to react and be
 reported before it closes the connection; it never interrupts a handler."""
 _VERSION = re.compile(r"1(?:\.([0-9]+))?")
@@ -385,7 +388,8 @@ class WorkerHost:
         grace_ends = clock() + timeout
         # The receive owns no handler: cancel it promptly while delivered handlers keep their lifecycle. A receive in
         # progress is ended by cancelling its call, never the loop: a frame the loop has already read is handed back
-        # (SPEC section 6.2), where cancelling the loop would throw it away. Anywhere else the loop holds no lease.
+        # from protocol 1.8 (SPEC section 6.2), where cancelling the loop would throw it away. Anywhere else the loop
+        # holds no lease.
         if self._receiving and self._rpc is not None:
             self._rpc.cancel_receives()
             _, late_loop = await asyncio.wait({self._loop_task}, timeout=max(0.0, grace_ends - clock()))
@@ -516,7 +520,8 @@ class WorkerHost:
                             if self._frame_received is not None:
                                 await self._frame_received(len(leases))
                             if self._stopping:
-                                # A host that is stopping starts nothing new: what it read is handed back.
+                                # A host that is stopping starts nothing new: what it read is handed back (from
+                                # protocol 1.8).
                                 for lease in leases:
                                     self._take(lease, seen, "stopping")
                                 return
@@ -574,14 +579,14 @@ class WorkerHost:
                     failures = 0
                 refusals = 0
                 if len(leases) > asked:
-                    # The host runs as many tasks as it asked for; the rest are handed back (SPEC section 6.2).
+                    # The host runs as many tasks as it asked for; the rest are not run (SPEC section 6.2).
                     log(
                         self._log,
                         logging.WARNING,
-                        "the poll answered more tasks than were asked for: the extra leases are handed back",
+                        "the poll answered more tasks than were asked for: the extra leases are not run",
                         asked=asked,
                         got=len(leases),
-                        handed_back=len(leases) - asked,
+                        not_run=len(leases) - asked,
                     )
                 seen = set()
                 taken = 0
@@ -651,9 +656,10 @@ class WorkerHost:
     # ---------------------------------------------------------------------------------------------------- tasks
 
     def _take(self, lease: pb.TaskLease, seen: set[str], why: str | None) -> bool:
-        """Dispatches a lease, or hands it back when ``why`` says why it will not run, and says whether it dispatched
-        it. A lease whose key is in flight, or was already seen in the same answer or window, is a duplicate: it is
-        ignored and never reported, since its fence may be the one of the running handler (SPEC section 6.2)."""
+        """Dispatches a lease, or drops it when ``why`` says why it will not run (handing it back from protocol 1.8),
+        and says whether it dispatched it. A lease whose key is in flight, or was already seen in the same answer or
+        window, is a duplicate: it is ignored and never reported, since its fence may be the one of the running handler
+        (SPEC section 6.2)."""
         minor = _minor_of(self._accepted)
         key = _inflight_key(lease, minor)
         in_flight = key in self._handing_back or any(
@@ -676,13 +682,24 @@ class WorkerHost:
 
     def _hand_back(self, lease: pb.TaskLease, key: str, why: str) -> None:
         """Reports a lease the host received and will not run: ``FailStep`` ``TASK_NOT_STARTED``, retryable, before any
-        handler of it runs (SPEC section 6.2). The server gives the step back without consuming the attempt when it can;
-        a lease left to lapse would be an unknown outcome. The report waits its turn behind at most
-        ``HAND_BACK_CONCURRENCY`` others; until it ends its key is in flight, and ``stop`` waits for it."""
+        handler of it runs (SPEC section 6.2), on a session of protocol 1.8 or later. The server gives the step back
+        without consuming the attempt when it can. Below 1.8 the lease is only logged and left to lapse. The report
+        waits its turn behind at most ``HAND_BACK_CONCURRENCY`` others; until it ends its key is in flight, and ``stop``
+        waits for it."""
+        minor = _minor_of(self._accepted)
+        if minor < HAND_BACK_MINOR:
+            log(
+                self._log,
+                logging.WARNING,
+                "the host drops a task it did not start; its lease lapses",
+                task=lease.task_id,
+                reason=why,
+            )
+            return
         log(self._log, logging.WARNING, "the host hands back a task it did not start", task=lease.task_id, reason=why)
         task = _Task(
             lease,
-            protocol_minor=_minor_of(self._accepted),
+            protocol_minor=minor,
             deadline_ms=lease.expires_at_epoch_ms,
             rpc=self._rpc,
             lease_token=Secret(lease.lease_token),

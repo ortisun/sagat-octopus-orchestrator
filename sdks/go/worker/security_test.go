@@ -89,7 +89,7 @@ func TestAPollAnswerWithMoreTasksThanTheHostAskedForRunsOnlyWhatItAskedForAndHan
 	f := newFakeService(t)
 	var logged bytes.Buffer
 	var mu sync.Mutex
-	h := newHost(t, f, worker.WithMaxInflight(2), worker.WithLogger(slog.New(slog.NewTextHandler(&lockedWriter{&mu, &logged}, nil))))
+	h := newHandBackHost(t, f, worker.TransportPoll, worker.WithMaxInflight(2), worker.WithLogger(slog.New(slog.NewTextHandler(&lockedWriter{&mu, &logged}, nil))))
 	var running, peak, total atomic.Int32
 	must(t, h.RegisterActivity("charge", func(context.Context, json.RawMessage) (any, error) {
 		total.Add(1)
@@ -125,8 +125,8 @@ func TestAPollAnswerWithMoreTasksThanTheHostAskedForRunsOnlyWhatItAskedForAndHan
 	mu.Lock()
 	defer mu.Unlock()
 	text := logged.String()
-	// The log says how many were handed back and which tasks, by their identifiers, and never a lease token.
-	if !strings.Contains(text, "handed_back=4") || !strings.Contains(text, "run-3/charge/1") || strings.Contains(text, "LEASE-TOKEN") {
+	// The log says how many were not run and which tasks, by their identifiers, and never a lease token.
+	if !strings.Contains(text, "not_run=4") || !strings.Contains(text, "run-3/charge/1") || strings.Contains(text, "LEASE-TOKEN") {
 		t.Errorf("the log names the count and the tasks, never a lease token: %s", text)
 	}
 }

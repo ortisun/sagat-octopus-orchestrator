@@ -735,14 +735,19 @@ public sealed class WorkerHostTests : IAsyncLifetime
     [Fact]
     public async Task AStreamCannotExceedTheAggregateEightMiBInputBudget()
     {
-        State.AcceptedVersion = "1.4";
+        // The hand-back is made from protocol 1.8 (decision D006-080).
+        State.AcceptedVersion = "1.8";
         State.StreamFrameSize = 1;
         var document = "{\"input\":\"" + new string('x', 4 * 1024 * 1024) + "\"}";
         State.Lease(
             Lease(l => { l.TaskId = "run-1/charge/1"; l.RunId = "run-1"; l.InputJson = document; }),
             Lease(l => { l.TaskId = "run-2/charge/1"; l.RunId = "run-2"; l.InputJson = document; }));
         var handled = 0;
-        var host = Host(o => o.Worker.MaxInflight = 2);
+        var host = Host(o =>
+        {
+            o.Worker.MaxInflight = 2;
+            o.Worker.ProtocolVersion = "1.8";
+        });
         host.RegisterActivity<JsonNode?, int>("charge", (_, _, _) =>
         {
             Interlocked.Increment(ref handled);

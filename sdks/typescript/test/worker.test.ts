@@ -675,14 +675,13 @@ test('explicit streaming does not call StreamTasks after re-registration negotia
 });
 
 test('a stream that exceeds capacity runs bounded work and is cancelled', async () => {
-  fake.acceptedVersion = '1.4';
   fake.holdStream = true;
   fake.streamBatches = [[
     lease({ task_id: 'run-1/charge/1' }),
     lease({ task_id: 'run-2/charge/1', run_id: 'run-2' }),
   ]];
   let handled = 0;
-  const worker = host({ maxInflight: 1 });
+  const worker = handBackHost({ maxInflight: 1 });
   worker.registerActivity('charge', async (_input, ctx) => {
     handled += 1;
     await new Promise<void>((resolve) => ctx.signal.addEventListener('abort', () => resolve(), { once: true }));
@@ -701,10 +700,9 @@ test('a stream that exceeds capacity runs bounded work and is cancelled', async 
 });
 
 test('a stream cannot make the host own more than the aggregate input budget: the lease over it is handed back', async () => {
-  fake.acceptedVersion = '1.4';
   fake.streamBatches = [[lease({ input_json: 'x'.repeat(8 * 1024 * 1024 + 1) })]];
   let handled = false;
-  const worker = host({ maxInflight: 1 });
+  const worker = handBackHost({ maxInflight: 1 });
   worker.registerActivity('charge', () => { handled = true; });
   await worker.start();
   await until(() => fake.of('failStep').length === 1, 'the lease over the budget to be handed back');
@@ -1021,8 +1019,9 @@ test('stop cancels the poll the server holds and nothing else: a report that is 
 
 // ------------------------------------------------------------------------------------------ hand-back
 
-// The hand-back of SPEC §6.2: a lease the host received and will not run is reported with FailStep TASK_NOT_STARTED,
-// before any handler of it runs, once, and never for a task whose handler started (mirrors handback_test.go of Go).
+// The hand-back of SPEC §6.2: on a session of protocol 1.8 or later, a lease the host received and will not run is
+// reported with FailStep TASK_NOT_STARTED, before any handler of it runs, once, and never for a task whose handler
+// started; below 1.8 it lapses (mirrors handback_test.go of Go).
 
 /** What the tests reach inside a host: the barrier of the receive loop and whether `stop` has begun. */
 type HandBackSeam = { frameReceived?: (leases: number) => Promise<void> | void; stopping: boolean };
@@ -1076,12 +1075,57 @@ function handedBack(): string[] {
 
 const beatsOf = (task: string): number => fake.of('heartbeat').filter((call) => call.request['task_id'] === task).length;
 
+/** A host whose session negotiates protocol 1.8, the first minor on which a host hands a lease back (decision D006-080). */
+function handBackHost(extra: Partial<WorkerConfig> = {}): WorkerHost {
+  fake.acceptedVersion = '1.8';
+  return host({ protocolVersion: '1.8', ...extra });
+}
+
+// Below protocol 1.8 the host drops the same leases and reports none of them: a server of 1.6 or 1.7 would record
+// TASK_NOT_STARTED as an ordinary failure that spends the attempt, so the lease lapses as before (decision D006-080).
+test('below protocol 1.8 a lease the host drops lapses without a hand-back', async () => {
+  fake.acceptedVersion = '1.7';
+  fake.holdStream = true;
+  fake.streamBatches = [[numbered(1), numbered(2), numbered(3)]];
+  const { lines, logger } = capturingLogger();
+  const events: WorkerEvent[] = [];
+  const h = host({
+    maxInflight: 1, protocolVersion: '1.7', logger,
+    onEvent: (event) => { if (event.type === 'task.failed' || event.type === 'task.dropped') events.push(event); },
+  });
+  h.registerActivity('charge', () => 1);
+  await h.start();
+  await until(() => fake.of('completeStep').length === 1, 'the kept task to complete');
+  // Stop waits for every hand-back on its way, so a hand-back, had one been queued, has reached the fake.
+  await h.stop(5000);
+  assert.equal(fake.of('failStep').length, 0, 'a dropped lease lapses below protocol 1.8, it is never handed back');
+  assert.deepEqual(events, [], 'a lease that lapses emits no failure event');
+  assert.deepEqual(
+    lines.filter((line) => line.level === 'warn' && line.message.includes('its lease lapses'))
+      .map((line) => `${String(line.fields['task'])}:${String(line.fields['reason'])}`).sort(),
+    ['run-2/charge/1:credit', 'run-3/charge/1:credit'],
+    'a warning names each dropped task, the reason and that its lease lapses',
+  );
+});
+
+// From protocol 1.8 the same leases are handed back (decision D006-080).
+test('from protocol 1.8 a lease the host drops is handed back', async () => {
+  fake.holdStream = true;
+  fake.streamBatches = [[numbered(1), numbered(2), numbered(3)]];
+  const h = handBackHost({ maxInflight: 1 });
+  h.registerActivity('charge', () => 1);
+  await h.start();
+  await until(() => fake.of('completeStep').length === 1, 'the kept task to complete');
+  await h.stop(5000);
+  assert.deepEqual(handedBack(), ['run-2/charge/1', 'run-3/charge/1'], 'the two leases beyond the credit');
+});
+
 test('a poll answer beyond the credit is handed back', async () => {
   fake.ignoreMax = true;
   fake.leases = [numbered(1), numbered(2), numbered(3)];
   const { lines, logger } = capturingLogger();
   const ran: string[] = [];
-  const h = host({ maxInflight: 1, transport: 'poll', logger });
+  const h = handBackHost({ maxInflight: 1, transport: 'poll', logger });
   h.registerActivity('charge', (_input, ctx) => { ran.push(ctx.taskId); return 1; });
   await h.start();
   await until(() => fake.of('completeStep').length === 1, 'the kept task to complete');
@@ -1094,11 +1138,10 @@ test('a poll answer beyond the credit is handed back', async () => {
 });
 
 test('a stream frame beyond the credit is handed back and the started task is not', async () => {
-  fake.acceptedVersion = '1.4';
   fake.holdStream = true;
   fake.streamBatches = [[numbered(1), numbered(2), numbered(3)]];
   const release = deferred();
-  const h = host({ maxInflight: 1, heartbeatIntervalMs: 20 });
+  const h = handBackHost({ maxInflight: 1, heartbeatIntervalMs: 20 });
   h.registerActivity('charge', () => release.promise.then(() => 1));
   await h.start();
   await until(() => fake.of('failStep').length === 2, 'the two hand-backs');
@@ -1112,12 +1155,11 @@ test('a stream frame beyond the credit is handed back and the started task is no
 });
 
 test('the rest of a frame over the input budget is handed back', async () => {
-  fake.acceptedVersion = '1.4';
   fake.holdStream = true;
   const heavy = { input_json: JSON.stringify({ run: { id: 'run-1' }, node: 'charge', input: 'x'.repeat(5 * 1024 * 1024) }) };
   fake.streamBatches = [[numbered(1, heavy), numbered(2, heavy), numbered(3)]];
   const { lines, logger } = capturingLogger();
-  const h = host({ maxInflight: 3, logger });
+  const h = handBackHost({ maxInflight: 3, logger });
   h.registerActivity('charge', () => 1);
   await h.start();
   await until(() => fake.of('completeStep').length === 1, 'the kept task to complete');
@@ -1128,11 +1170,10 @@ test('the rest of a frame over the input budget is handed back', async () => {
 });
 
 test('a stream frame read while stopping is handed back whole', async () => {
-  fake.acceptedVersion = '1.4';
   fake.holdStream = true;
   fake.streamBatches = [[numbered(1), numbered(2)]];
   const { lines, logger } = capturingLogger();
-  const h = host({ maxInflight: 4, logger });
+  const h = handBackHost({ maxInflight: 4, logger });
   const read = deferred();
   const proceed = deferred();
   seamOf(h).frameReceived = async () => {
@@ -1155,7 +1196,7 @@ test('a stream frame read while stopping is handed back whole', async () => {
 
 test('a poll answer that arrives while stopping is handed back and the running task is not', async () => {
   fake.leases = [numbered(1)];
-  const h = host({ maxInflight: 4, transport: 'poll' });
+  const h = handBackHost({ maxInflight: 4, transport: 'poll' });
   const started = deferred();
   const release = deferred();
   h.registerActivity('charge', async () => {
@@ -1189,13 +1230,12 @@ test('a poll answer that arrives while stopping is handed back and the running t
 });
 
 test('a duplicate lease is ignored and never handed back', async () => {
-  fake.acceptedVersion = '1.4';
   fake.holdStream = true;
   // The second is the running task's own lease again; the fourth repeats a lease handed back.
   fake.streamBatches = [[numbered(1), numbered(1), numbered(2), numbered(2)]];
   const { lines, logger } = capturingLogger();
   const release = deferred();
-  const h = host({ maxInflight: 1, logger });
+  const h = handBackHost({ maxInflight: 1, logger });
   h.registerActivity('charge', () => release.promise.then(() => 1));
   await h.start();
   await until(() => fake.of('failStep').length >= 1, 'the hand-back');
@@ -1223,11 +1263,10 @@ test('sibling iterations that share a task id are not duplicates', async () => {
 });
 
 test('a sibling iteration beyond the credit is handed back with its instance, not ignored', async () => {
-  fake.acceptedVersion = '1.5';
   fake.holdStream = true;
   fake.streamBatches = [[sibling(0), sibling(1)]];
   const release = deferred();
-  const h = host({ maxInflight: 1 });
+  const h = handBackHost({ maxInflight: 1 });
   h.registerActivity('charge', () => release.promise.then(() => 1));
   await h.start();
   await until(() => fake.of('failStep').length === 1, 'the hand-back of the second iteration');
@@ -1244,7 +1283,7 @@ test('a hand-back is retried with the same key and ends quietly when stale', asy
   fake.leases = [numbered(1), numbered(2), numbered(3)];
   fake.failures['failStep'] = [{ code: grpc.status.UNAVAILABLE }, { code: grpc.status.ABORTED, reason: 'STALE_ATTEMPT' }];
   const events: WorkerEvent[] = [];
-  const h = host({
+  const h = handBackHost({
     maxInflight: 1, transport: 'poll',
     onEvent: (event) => {
       if (event.type === 'task.failed' || event.type === 'task.stale' || event.type === 'task.dropped') events.push(event);
@@ -1274,7 +1313,7 @@ test('a flood of leases is handed back at most eight at a time', async () => {
   const gate = deferred();
   fake.failStepGate = gate.promise;
   const ran: string[] = [];
-  const h = host({ maxInflight: 1, transport: 'poll' });
+  const h = handBackHost({ maxInflight: 1, transport: 'poll' });
   h.registerActivity('charge', (_input, ctx) => { ran.push(ctx.taskId); return 1; });
   await h.start();
   try {
@@ -1302,7 +1341,7 @@ test('a lease leased again while its hand-back is on its way is ignored', async 
   fake.failStepGate = gate.promise;
   const { lines, logger } = capturingLogger();
   const ran: string[] = [];
-  const h = host({ maxInflight: 1, transport: 'poll', logger });
+  const h = handBackHost({ maxInflight: 1, transport: 'poll', logger });
   h.registerActivity('charge', (_input, ctx) => { ran.push(ctx.taskId); return 1; });
   // The number of polls when the answer that leases run-2 again is read: the next poll begins after it was looked at.
   let answers = 0;
@@ -1340,7 +1379,7 @@ test('hand-backs still on their way when the grace ends are dropped once, and st
   const rejections: unknown[] = [];
   const onRejection = (reason: unknown): void => { rejections.push(reason); };
   process.on('unhandledRejection', onRejection);
-  const h = host({
+  const h = handBackHost({
     maxInflight: 1, transport: 'poll', logger, retry: { initialDelayMs: 10_000, maxDelayMs: 10_000 },
     onEvent: (event) => events.push(event),
   });
@@ -1382,12 +1421,11 @@ test('hand-backs still on their way when the grace ends are dropped once, and st
 });
 
 test('a frame after the credit is used up is read and handed back whole', async () => {
-  fake.acceptedVersion = '1.4';
   fake.holdStream = true;
   // One receive window: the first frame uses up the credit of one, the second carries two more.
   fake.streamBatches = [[numbered(1)], [numbered(2), numbered(3)]];
   const release = deferred();
-  const h = host({ maxInflight: 1 });
+  const h = handBackHost({ maxInflight: 1 });
   h.registerActivity('charge', () => release.promise.then(() => 1));
   await h.start();
   await until(() => fake.of('failStep').length === 2, 'the two hand-backs');
@@ -1410,7 +1448,7 @@ test('a handler cannot say TASK_NOT_STARTED: only the host can', async () => {
     numbered(4, { activity_name: 'check', task_kind: 'RECONCILIATION', target_node: 'charge' }),
     numbered(5),
   ];
-  const h = host({ maxInflight: 4, transport: 'poll' });
+  const h = handBackHost({ maxInflight: 4, transport: 'poll' });
   h.registerActivity('charge', (_input, ctx) => {
     throw ctx.taskId === 'run-1/charge/1'
       ? ActivityFailure.retryable('TASK_NOT_STARTED', 'custom')

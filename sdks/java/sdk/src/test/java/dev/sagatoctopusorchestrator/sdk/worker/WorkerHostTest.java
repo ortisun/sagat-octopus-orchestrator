@@ -980,13 +980,14 @@ class WorkerHostTest {
 
     @Test
     void aStreamOverCapacityRunsOnlyTheCreditItWasGiven() {
-        fake.acceptedVersion = "1.4";
+        // The hand-back is made from protocol 1.8 (decision D006-080).
+        fake.acceptedVersion = "1.8";
         fake.ignoreMax = true;
         fake.holdStreamOpen = true;
         fake.addLeases(
                 lease(b -> b.setTaskId("run-1/charge/1").setRunId("run-1")),
                 lease(b -> b.setTaskId("run-2/charge/1").setRunId("run-2")));
-        WorkerHost h = host(b -> b.maxInflight(1));
+        WorkerHost h = host(b -> b.protocolVersion("1.8").maxInflight(1));
         h.registerActivity("charge", (in, ctx) -> 1);
 
         h.start();
@@ -1014,14 +1015,15 @@ class WorkerHostTest {
 
     @Test
     void aStreamCannotExceedTheAggregateEightMiBInputBudgetAndHandsBackTheLeaseOverIt() {
-        fake.acceptedVersion = "1.4";
+        // The hand-back is made from protocol 1.8 (decision D006-080).
+        fake.acceptedVersion = "1.8";
         fake.streamFrameSize = 1;
         String document = "{\"input\":\"" + "x".repeat(4 * 1024 * 1024) + "\"}";
         fake.addLeases(
                 lease(b -> b.setTaskId("run-1/charge/1").setRunId("run-1").setInputJson(document)),
                 lease(b -> b.setTaskId("run-2/charge/1").setRunId("run-2").setInputJson(document)));
         AtomicInteger handled = new AtomicInteger();
-        WorkerHost h = host(b -> b.maxInflight(2));
+        WorkerHost h = host(b -> b.protocolVersion("1.8").maxInflight(2));
         h.registerActivity("charge", (in, ctx) -> {
             handled.incrementAndGet();
             return 1;

@@ -114,7 +114,8 @@ a key that is the same on every retry. A handler fails on purpose with `Activity
 `ACTIVITY_ERROR` with only its type name, never its text. A lease the host received and will not run (it arrived
 while the host was stopping, beyond the tasks the host asked for or has room for, or in the rest of a frame over the
 input budget) is handed back at once with `FailStep` `TASK_NOT_STARTED`, retryable, so the server gives the step back
-instead of leaving the lease to lapse into a review; a duplicate lease is ignored (sdks/SPEC.md section 6.2).
+instead of leaving the lease to lapse into a review, from protocol 1.8; below it the lease lapses. A duplicate lease is
+ignored (sdks/SPEC.md section 6.2).
 
 When worker protocol 1.5 is accepted, `ctx.instance` is a typed copy of the lease identity: its
 `instancePath` holds ordered `{scopeNodeId, iterationIndex}` segments and `definitionNodeId` names the

@@ -1,9 +1,11 @@
 package worker_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strings"
 	"sync"
@@ -18,9 +20,9 @@ import (
 	"github.com/ortisun/sagat-octopus-orchestrator/sdks/go/worker"
 )
 
-// The hand-back of sdks/SPEC.md section 6.2: a lease the host received and will not run is reported
-// with FailStep TASK_NOT_STARTED, before any handler of it runs, once, and never for a task whose
-// handler started.
+// The hand-back of sdks/SPEC.md section 6.2: on a session of protocol 1.8 or later, a lease the host
+// received and will not run is reported with FailStep TASK_NOT_STARTED, before any handler of it runs,
+// once, and never for a task whose handler started; below 1.8 it lapses.
 
 func numbered(n int) *pb.TaskLease {
 	return lease(func(l *pb.TaskLease) {
@@ -66,6 +68,83 @@ func stop(t *testing.T, h *worker.Host) {
 	must(t, h.Stop(ctx))
 }
 
+// newHandBackHost is a host whose session negotiates protocol 1.8, the first minor on which a host hands
+// a lease back (decision D006-080), on the transport given.
+func newHandBackHost(t *testing.T, f *fakeService, transport worker.Transport, opts ...worker.Option) *worker.Host {
+	t.Helper()
+	f.set(func(f *fakeService) { f.accepted = "1.8" })
+	return newHost(t, f, append([]worker.Option{worker.WithProtocolVersion("1.8"), worker.WithTransport(transport)}, opts...)...)
+}
+
+// overfilledFrame is a fake service whose registration accepts the protocol version and whose first stream
+// frame carries three leases, more than a host of one slot asked for; the next receive waits.
+func overfilledFrame(t *testing.T, version string) *fakeService {
+	f := newFakeService(t)
+	f.accepted = version
+	f.stream = func(_ *pb.PollTasksRequest, s grpc.ServerStreamingServer[pb.PollTasksResponse]) error {
+		if len(f.of("StreamTasks")) > 1 {
+			<-s.Context().Done()
+			return s.Context().Err()
+		}
+		return s.Send(&pb.PollTasksResponse{Tasks: []*pb.TaskLease{numbered(1), numbered(2), numbered(3)}})
+	}
+	return f
+}
+
+// Below protocol 1.8 the host drops the same leases and reports none of them: a server of 1.6 or 1.7 would
+// record TASK_NOT_STARTED as an ordinary failure that spends the attempt, so the lease lapses as before
+// (decision D006-080).
+func TestBelowProtocol18ALeaseTheHostDropsLapsesWithoutAHandBack(t *testing.T) {
+	f := overfilledFrame(t, "1.7")
+	var logged bytes.Buffer
+	var mu sync.Mutex
+	var failed atomic.Int32
+	h := newHost(t, f, worker.WithProtocolVersion("1.7"), worker.WithMaxInflight(1),
+		worker.WithLogger(slog.New(slog.NewTextHandler(&lockedWriter{&mu, &logged}, nil))),
+		worker.WithEventHandler(func(e worker.Event) {
+			if e.Type == worker.EventFailed || e.Type == worker.EventDropped {
+				failed.Add(1)
+			}
+		}))
+	must(t, h.RegisterActivity("charge", rawOK))
+	start(t, h)
+	until(t, "the kept task completes", func() bool { return len(f.of("CompleteStep")) == 1 })
+	// Stop waits for every hand-back on its way, so a hand-back, had one been queued, has reached the fake.
+	stop(t, h)
+	if n := len(f.of("FailStep")); n != 0 {
+		t.Fatalf("%d failures reported below protocol 1.8: a dropped lease lapses, it is never handed back", n)
+	}
+	if failed.Load() != 0 {
+		t.Fatal("a lease that lapses emits no failure event")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	text := logged.String()
+	lapsed := 0
+	for _, line := range strings.Split(text, "\n") {
+		if strings.Contains(line, "its lease lapses") && strings.Contains(line, "reason=credit") &&
+			(strings.Contains(line, "task=run-2/charge/1") || strings.Contains(line, "task=run-3/charge/1")) {
+			lapsed++
+		}
+	}
+	if lapsed != 2 {
+		t.Errorf("the log names each dropped task, the reason and that its lease lapses: %s", text)
+	}
+}
+
+// From protocol 1.8 the same leases are handed back (decision D006-080).
+func TestFromProtocol18ALeaseTheHostDropsIsHandedBack(t *testing.T) {
+	f := overfilledFrame(t, "1.8")
+	h := newHost(t, f, worker.WithProtocolVersion("1.8"), worker.WithMaxInflight(1))
+	must(t, h.RegisterActivity("charge", rawOK))
+	start(t, h)
+	until(t, "the kept task completes", func() bool { return len(f.of("CompleteStep")) == 1 })
+	stop(t, h)
+	if got := handedBack(t, f); fmt.Sprint(got) != "[run-2/charge/1 run-3/charge/1]" {
+		t.Fatalf("handed back %v, want the two leases beyond the credit", got)
+	}
+}
+
 func TestAPollAnswerBeyondTheCreditIsHandedBack(t *testing.T) {
 	f := newFakeService(t)
 	f.set(func(f *fakeService) { f.overfill = true })
@@ -73,7 +152,7 @@ func TestAPollAnswerBeyondTheCreditIsHandedBack(t *testing.T) {
 		f.lease(numbered(i))
 	}
 	ran := make(chan string, 3)
-	h := newHost(t, f, worker.WithMaxInflight(1))
+	h := newHandBackHost(t, f, worker.TransportPoll, worker.WithMaxInflight(1))
 	must(t, h.RegisterActivity("charge", func(ctx context.Context, _ json.RawMessage) (any, error) {
 		ran <- worker.TaskFrom(ctx).TaskID
 		return 1, nil
@@ -94,7 +173,6 @@ func TestAPollAnswerBeyondTheCreditIsHandedBack(t *testing.T) {
 
 func TestAStreamFrameBeyondTheCreditIsHandedBackAndTheStartedTaskIsNot(t *testing.T) {
 	f := newFakeService(t)
-	f.accepted = "1.4"
 	f.stream = func(_ *pb.PollTasksRequest, s grpc.ServerStreamingServer[pb.PollTasksResponse]) error {
 		if len(f.of("StreamTasks")) > 1 {
 			<-s.Context().Done()
@@ -103,7 +181,7 @@ func TestAStreamFrameBeyondTheCreditIsHandedBackAndTheStartedTaskIsNot(t *testin
 		return s.Send(&pb.PollTasksResponse{Tasks: []*pb.TaskLease{numbered(1), numbered(2), numbered(3)}})
 	}
 	release := make(chan struct{})
-	h := newHost(t, f, worker.WithMaxInflight(1))
+	h := newHandBackHost(t, f, worker.TransportStream, worker.WithMaxInflight(1))
 	must(t, h.RegisterActivity("charge", func(context.Context, json.RawMessage) (any, error) { <-release; return 1, nil }))
 	start(t, h)
 	until(t, "the two hand-backs", func() bool { return len(f.of("FailStep")) == 2 })
@@ -120,7 +198,6 @@ func TestAStreamFrameBeyondTheCreditIsHandedBackAndTheStartedTaskIsNot(t *testin
 
 func TestTheRestOfAFrameOverTheInputBudgetIsHandedBack(t *testing.T) {
 	f := newFakeService(t)
-	f.accepted = "1.4"
 	big := strings.Repeat("x", 5<<20)
 	f.stream = func(_ *pb.PollTasksRequest, s grpc.ServerStreamingServer[pb.PollTasksResponse]) error {
 		if len(f.of("StreamTasks")) > 1 {
@@ -134,7 +211,7 @@ func TestTheRestOfAFrameOverTheInputBudgetIsHandedBack(t *testing.T) {
 		}
 		return s.Send(&pb.PollTasksResponse{Tasks: []*pb.TaskLease{heavy(1), heavy(2), numbered(3)}})
 	}
-	h := newHost(t, f, worker.WithMaxInflight(3))
+	h := newHandBackHost(t, f, worker.TransportStream, worker.WithMaxInflight(3))
 	must(t, h.RegisterActivity("charge", rawOK))
 	start(t, h)
 	until(t, "the kept task completes", func() bool { return len(f.of("CompleteStep")) == 1 })
@@ -147,7 +224,6 @@ func TestTheRestOfAFrameOverTheInputBudgetIsHandedBack(t *testing.T) {
 
 func TestAStreamFrameReadWhileStoppingIsHandedBackWhole(t *testing.T) {
 	f := newFakeService(t)
-	f.accepted = "1.4"
 	f.stream = func(_ *pb.PollTasksRequest, s grpc.ServerStreamingServer[pb.PollTasksResponse]) error {
 		if len(f.of("StreamTasks")) > 1 {
 			<-s.Context().Done()
@@ -155,7 +231,7 @@ func TestAStreamFrameReadWhileStoppingIsHandedBackWhole(t *testing.T) {
 		}
 		return s.Send(&pb.PollTasksResponse{Tasks: []*pb.TaskLease{numbered(1), numbered(2)}})
 	}
-	h := newHost(t, f, worker.WithMaxInflight(4))
+	h := newHandBackHost(t, f, worker.TransportStream, worker.WithMaxInflight(4))
 	read := make(chan struct{})
 	proceed := make(chan struct{})
 	var once sync.Once
@@ -185,7 +261,7 @@ func TestAStreamFrameReadWhileStoppingIsHandedBackWhole(t *testing.T) {
 func TestAPollAnswerThatArrivesWhileStoppingIsHandedBackAndTheRunningTaskIsNot(t *testing.T) {
 	f := newFakeService(t)
 	f.lease(numbered(1))
-	h := newHost(t, f, worker.WithMaxInflight(4))
+	h := newHandBackHost(t, f, worker.TransportPoll, worker.WithMaxInflight(4))
 	started := make(chan struct{})
 	release := make(chan struct{})
 	must(t, h.RegisterActivity("charge", func(ctx context.Context, _ json.RawMessage) (any, error) {
@@ -227,7 +303,6 @@ func TestAPollAnswerThatArrivesWhileStoppingIsHandedBackAndTheRunningTaskIsNot(t
 
 func TestADuplicateLeaseIsIgnoredNeverHandedBack(t *testing.T) {
 	f := newFakeService(t)
-	f.accepted = "1.4"
 	f.stream = func(_ *pb.PollTasksRequest, s grpc.ServerStreamingServer[pb.PollTasksResponse]) error {
 		if len(f.of("StreamTasks")) > 1 {
 			<-s.Context().Done()
@@ -237,7 +312,7 @@ func TestADuplicateLeaseIsIgnoredNeverHandedBack(t *testing.T) {
 		return s.Send(&pb.PollTasksResponse{Tasks: []*pb.TaskLease{numbered(1), numbered(1), numbered(2), numbered(2)}})
 	}
 	release := make(chan struct{})
-	h := newHost(t, f, worker.WithMaxInflight(1))
+	h := newHandBackHost(t, f, worker.TransportStream, worker.WithMaxInflight(1))
 	must(t, h.RegisterActivity("charge", func(context.Context, json.RawMessage) (any, error) { <-release; return 1, nil }))
 	start(t, h)
 	until(t, "the hand-back", func() bool { return len(f.of("FailStep")) >= 1 })
@@ -282,7 +357,7 @@ func TestAHandBackIsRetriedWithTheSameKeyAndEndsQuietlyWhenStale(t *testing.T) {
 	var mu sync.Mutex
 	var events []worker.Event
 	done := make(chan struct{})
-	h := newHost(t, f, worker.WithMaxInflight(1), worker.WithEventHandler(func(e worker.Event) {
+	h := newHandBackHost(t, f, worker.TransportPoll, worker.WithMaxInflight(1), worker.WithEventHandler(func(e worker.Event) {
 		mu.Lock()
 		defer mu.Unlock()
 		if e.Type == worker.EventFailed || e.Type == worker.EventStale {
@@ -338,7 +413,7 @@ func TestAFloodOfLeasesIsHandedBackEightAtATime(t *testing.T) {
 			inside.Add(-1)
 		}
 	})
-	h := newHost(t, f, worker.WithMaxInflight(1))
+	h := newHandBackHost(t, f, worker.TransportPoll, worker.WithMaxInflight(1))
 	must(t, h.RegisterActivity("charge", rawOK))
 	start(t, h)
 	// Eight hand-backs are held at the server; every other one waits its turn in the host.
@@ -369,7 +444,7 @@ func TestALeaseWhoseHandBackIsOnItsWayIsADuplicate(t *testing.T) {
 	var mu sync.Mutex
 	var ran []string
 	blocked := make(chan struct{})
-	h := newHost(t, f, worker.WithMaxInflight(2))
+	h := newHandBackHost(t, f, worker.TransportPoll, worker.WithMaxInflight(2))
 	must(t, h.RegisterActivity("charge", func(ctx context.Context, _ json.RawMessage) (any, error) {
 		id := worker.TaskFrom(ctx).TaskID
 		mu.Lock()
@@ -414,7 +489,6 @@ func TestALeaseWhoseHandBackIsOnItsWayIsADuplicate(t *testing.T) {
 
 func TestASiblingIterationBeyondTheCreditIsHandedBackWithItsInstance(t *testing.T) {
 	f := newFakeService(t)
-	f.accepted = "1.5"
 	sibling := func(index uint32) *pb.TaskLease {
 		l := numbered(1)
 		l.Instance = &pb.ExecutionInstanceIdentity{DefinitionNodeId: "charge", InstancePath: []*pb.ScopePathSegment{{ScopeNodeId: "each", IterationIndex: index}}}
@@ -427,7 +501,7 @@ func TestASiblingIterationBeyondTheCreditIsHandedBackWithItsInstance(t *testing.
 		}
 		return s.Send(&pb.PollTasksResponse{Tasks: []*pb.TaskLease{sibling(0), sibling(1)}})
 	}
-	h := newHost(t, f, worker.WithMaxInflight(1))
+	h := newHandBackHost(t, f, worker.TransportStream, worker.WithMaxInflight(1))
 	must(t, h.RegisterActivity("charge", rawOK))
 	start(t, h)
 	until(t, "the kept iteration and the hand-back", func() bool {
@@ -453,7 +527,7 @@ func TestAHandBackStillOnItsWayWhenTheGraceEndsIsDroppedAndItsLeaseLapses(t *tes
 	})
 	var mu sync.Mutex
 	dropped := map[string]int{}
-	h := newHost(t, f, worker.WithMaxInflight(1), worker.WithEventHandler(func(e worker.Event) {
+	h := newHandBackHost(t, f, worker.TransportPoll, worker.WithMaxInflight(1), worker.WithEventHandler(func(e worker.Event) {
 		if e.Type == worker.EventDropped {
 			mu.Lock()
 			dropped[e.TaskID]++
@@ -495,7 +569,6 @@ func TestAHandBackStillOnItsWayWhenTheGraceEndsIsDroppedAndItsLeaseLapses(t *tes
 
 func TestAFrameAfterTheCreditIsUsedUpIsReadAndHandedBack(t *testing.T) {
 	f := newFakeService(t)
-	f.accepted = "1.4"
 	f.stream = func(_ *pb.PollTasksRequest, s grpc.ServerStreamingServer[pb.PollTasksResponse]) error {
 		if len(f.of("StreamTasks")) > 1 {
 			<-s.Context().Done()
@@ -507,7 +580,7 @@ func TestAFrameAfterTheCreditIsUsedUpIsReadAndHandedBack(t *testing.T) {
 		return s.Send(&pb.PollTasksResponse{Tasks: []*pb.TaskLease{numbered(2), numbered(3)}})
 	}
 	release := make(chan struct{})
-	h := newHost(t, f, worker.WithMaxInflight(1))
+	h := newHandBackHost(t, f, worker.TransportStream, worker.WithMaxInflight(1))
 	must(t, h.RegisterActivity("charge", func(context.Context, json.RawMessage) (any, error) { <-release; return 1, nil }))
 	start(t, h)
 	until(t, "the two hand-backs", func() bool { return len(f.of("FailStep")) == 2 })
