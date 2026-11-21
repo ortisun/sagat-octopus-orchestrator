@@ -379,6 +379,8 @@ where
         {
             match self.path_hand_back(&mut tx, task).await? {
                 Ok(before) => {
+                    // dead for heartbeats too (decision D006-086)
+                    effects.reported = None;
                     let snapshot = tx.snapshot();
                     let progress = execution::withdraw_path_instance(
                         &snapshot.definition,

@@ -2480,6 +2480,9 @@ where
         if code.as_str() == TASK_NOT_STARTED {
             match self.root_hand_back(&mut tx, task).await? {
                 Ok(before) => {
+                    // the token handed back is dead for every call, heartbeats included (decision D006-086): it is not
+                    // recorded as the lease that reported the step
+                    effects.reported = None;
                     let node = task.instance.node().clone();
                     let fence = task.fence;
                     self.engine

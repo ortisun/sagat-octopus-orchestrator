@@ -570,3 +570,55 @@ OD-2026-11-21-4 ("Accept, if the final review is clean"), applied when the round
   006-064): a stopping host of each language hands back a leased, unstarted task, and the step is `READY` with its attempt
   unspent. Until then rule 8 holds for the server semantics this build changes: none of the six SDKs sends the code on a
   session the server serves.
+- **D006-082 — An activation entry may require a live process of each kind** (round-2 architecture Major 5, "NM3").
+  `capability-activate` gains the entry field `each_kind_live`: when it is set, the census reports which of the entry's
+  kinds have at least one live process, and the command refuses, naming the kinds with none, unless every kind has one;
+  under the epoch lock the count is made again and judged the same way. `--expect-live N` still counts the kinds
+  together. Feature 022 requires at least one live capable process of each kind, so its entries set it; the entry of
+  `lease-withdrawal-v1` does not (an empty fleet may activate it: `empty_fleet`). The census function
+  `platform_capability_census` returns the kinds that are live (`out_kinds_live`) beside the counts, so one statement still
+  answers both questions. Weighed: a census per kind (one statement per kind, and the lock count must repeat each); a
+  rule in 022's own command (two commands again, which D006-034 removed).
+- **D006-083 — Down migrations are held to the capability lists too** (round-2 architecture "NM2", correctness 2). The
+  test `capability_lists_follow_the_code` of `crates/infra-postgres` and the check of `scripts/check-architecture.py` also
+  require that each down migration that redefines one of the three checks restores exactly the list of the newest up
+  migration before its own, so a rollback of one feature can never erase another feature's values.
+- **D006-084 — The replay floor refuses a removal outside READ COMMITTED** (round-2 security minor 2, correctness minor
+  2). The guard sees a withdrawal that committed while the removal waited because, under READ COMMITTED, the statement
+  that checks the journal takes a new snapshot after the row lock is granted. Under REPEATABLE READ or SERIALIZABLE (a
+  session or a role with `default_transaction_isolation`) it keeps the transaction's first snapshot and would let the
+  removal through. So the guard refuses to remove `lease-withdrawal-v1` in any isolation level but READ COMMITTED, with a
+  message that says to run it there. The withdrawal's side needs no such check: its `FOR SHARE` of a row deleted after its
+  snapshot waits and finds no row under READ COMMITTED, and fails with a serialization error under the stricter levels;
+  in both it writes nothing. Two tests cross the withdrawal's share lock and the removal in both orders, with
+  `pg_stat_activity` as the barrier. Weighed: making the guard independent of the level (no statement can see a commit
+  newer than a REPEATABLE READ snapshot); refusing only when an event exists (the guard cannot know it under that
+  snapshot).
+- **D006-085 — The removal of the requirement is bounded, and its check is an index probe** (round-2 security minor 3,
+  correctness note). `platform_requirement_remove` holds the epoch lock while it waits for the withdrawals' share locks
+  and while the guard looks for the event, and every registration waits for the epoch lock (its lock timeout is 2 s).
+  - A partial index `run_events_lease_withdrawn_idx` on `run_events (tenant_id) WHERE event_type = 'step.lease_withdrawn'`
+    turns the guard's look (and the down migration's) into an index probe; it holds only the rare withdrawal rows, so a
+    journal write pays for it only when it is a withdrawal. It is built in the migration, as the repository's other
+    indexes on large tables are, with `IF NOT EXISTS` so an operator can build it `CONCURRENTLY` first
+    (`docs/runbooks/lease-withdrawal.md`); an invalid index is refused.
+  - The removal runs with `lock_timeout = 1s`. The derivation: a registration that queues behind the removal waits at
+    most the removal's lock wait plus its own work (an index probe, one delete, one update, one insert: milliseconds); that
+    must stay under the registration's 2 s, so the removal's wait is at most 1 s, which leaves a second for its work and
+    for the commit. A removal that times out changes nothing and says so (`lock_not_available`); the operator sets
+    `SAGAT_LEASE_WITHDRAWAL=off` first, which stops the share locks, and runs it again. This also ends the starvation a
+    stream of overlapping share locks could cause.
+- **D006-086 — A handed-back token is dead for heartbeats too** (round-2 correctness minor 1, security minor 4). A
+  withdrawal does not record the token as the one that reported the step, so a heartbeat with it gets `STALE_ATTEMPT`
+  instead of an OK with `cancel_requested=false`. D006-031 step 1 ("its token is dead") then holds for every call.
+- **D006-087 — Studio names `step.lease_withdrawn`** (round-1 architecture minor 6, AGENTS rule 10): "A lease no worker
+  started was taken back; the attempt was not spent", in the normal tone. The attempt view keeps merging the leases of one
+  attempt number, which is what a withdrawal means (the attempt is reused); it is not a second attempt.
+- **D006-088 — Every guard of leases holds the withdrawal tracker until its leases are handed on** (found by the test of
+  the unary claim on the shutdown tracker, the handoff of round 2). A unary claim's leases travel in the output of its
+  task. When the handler is gone, tokio drops that output after the task has left the tracker, so a drain that waits at
+  that moment found the tracker empty and ended before the withdrawal was spawned: on a graceful shutdown the pool could
+  close and the lease lapse. Each `PendingLeases` now holds a token of the tracker; its `drop` hands the leases to their
+  withdrawal, which holds the tracker itself, before the token goes. A drain therefore waits for every lease committed and
+  not yet handed to the transport, wherever its guard is. The test `a_graceful_shutdown_waits_for_a_unary_claim_in_progress_and_its_withdrawal`
+  failed on the old code with the step still `LEASED` after the drain.

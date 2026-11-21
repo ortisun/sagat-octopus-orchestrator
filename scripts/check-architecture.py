@@ -621,6 +621,18 @@ def code_capabilities(root):
     return tokens
 
 
+def defined_capabilities(text, check):
+    """The quoted values of the last `CONSTRAINT <check> CHECK (...)` of a migration (inline or after `ADD`), or None."""
+    listed = None
+    for found in re.finditer(rf"CONSTRAINT {check} CHECK \(", text):
+        depth, i = 1, found.end()
+        while i < len(text) and depth:
+            depth += {"(": 1, ")": -1}.get(text[i], 0)
+            i += 1
+        listed = set(re.findall(r"'([^']+)'", text[found.end():i]))
+    return listed
+
+
 def capability_list_errors(root):
     errors = []
     code = code_capabilities(root)
@@ -631,13 +643,20 @@ def capability_list_errors(root):
     for check in CAPABILITY_CHECKS:
         newest = None
         for migration in migrations:
-            text = migration.read_text(encoding="utf-8")
-            for found in re.finditer(rf"ADD CONSTRAINT {check} CHECK \(", text):
-                depth, i = 1, found.end()
-                while i < len(text) and depth:
-                    depth += {"(": 1, ")": -1}.get(text[i], 0)
-                    i += 1
-                newest = (migration.name, set(re.findall(r"'([^']+)'", text[found.end():i])))
+            listed = defined_capabilities(migration.read_text(encoding="utf-8"), check)
+            if listed is None:
+                continue
+            # decision D006-083: the down of this migration restores the list in force before it (none for the first)
+            down = migration.with_name(migration.name.replace(".up.sql", ".down.sql"))
+            restored = defined_capabilities(down.read_text(encoding="utf-8"), check) if down.is_file() else None
+            before = newest[1] if newest else None
+            if restored != before:
+                errors.append(
+                    f"{down.name} restores {sorted(restored) if restored is not None else 'no list'} of {check}, but the "
+                    f"list before {migration.name} is {sorted(before) if before is not None else 'none'}: a rollback "
+                    "must restore the list in force before its migration (decision D006-083)"
+                )
+            newest = (migration.name, listed)
         if newest is None:
             errors.append(f"no migration under {CAPABILITY_MIGRATIONS} defines {check}: the capability-list rule would check nothing")
             continue

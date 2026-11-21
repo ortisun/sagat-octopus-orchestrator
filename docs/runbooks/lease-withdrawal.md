@@ -4,7 +4,7 @@ A lease the execution engine committed and never handed to a host used to lapse 
 a lapsed lease of an `Activity` opens a review (`step.needs_review`) for work that never ran. With the requirement
 `lease-withdrawal-v1` recorded, the engine withdraws such a lease instead: the step goes back to `READY`, the attempt is
 not spent, and the journal records `step.lease_withdrawn` (cause `NOT_SENT`). The decisions are D006-001 to D006-018 and
-D006-030 to D006-039 of `specs/006-sdk-multilanguage/research.md`.
+D006-030 to D006-039 and D006-080 to D006-087 of `specs/006-sdk-multilanguage/research.md`.
 
 ## What changes, and what does not
 
@@ -32,6 +32,16 @@ D006-030 to D006-039 of `specs/006-sdk-multilanguage/research.md`.
    replay `step.lease_withdrawn`.
 2. Count the live processes you expect (control planes and engines together).
 3. Know that the activation is one-way once a withdrawal happens (see Rollback).
+4. On a large journal, build the partial index of `20270208000200_lease_withdrawal_floor` before you migrate, so the
+   migration does not hold journal writes while it reads `run_events` (decision D006-085). With the owner role:
+
+   ```sql
+   CREATE INDEX CONCURRENTLY IF NOT EXISTS run_events_lease_withdrawn_idx ON run_events (tenant_id)
+       WHERE event_type = 'step.lease_withdrawn';
+   ```
+
+   A build that fails leaves an invalid index, which the migration refuses: drop it (`DROP INDEX CONCURRENTLY
+   run_events_lease_withdrawn_idx;`) and build it again.
 
 ## Activate
 
@@ -47,6 +57,8 @@ control-plane capability-activate lease-withdrawal-v1 --operator NAME --expect-l
 
 - `--expect-live N`: the command refuses when the live count (seen within 30 seconds) differs; without it, when none is
   live. The count is taken again under the epoch lock.
+- An entry may also require at least one live process of each kind it covers (`each_kind_live`, decision D006-082);
+  `lease-withdrawal-v1` does not, and may be activated with nothing live (`--expect-live 0`).
 - A live process that does not list the capability is refused by its instance id; nothing is recorded.
 - A second run says the requirement is recorded already and exits 0.
 - Each engine reads the requirement at its next heartbeat (within about ten seconds) and withdraws from then on.
@@ -84,9 +96,15 @@ The requirement is a replay floor (decision D006-032). A build older than this f
 `step.lease_withdrawn`, so once one journal holds the event:
 
 - `platform_requirement_remove('lease-withdrawal-v1', ...)` is refused (`lease-withdrawal-v1 cannot be removed while a
-  journal holds step.lease_withdrawn`). The check scans `run_events` by event type, so on a large journal it takes as long
-  as a scan of that table.
-- The down migration `20270208000000_lease_withdrawal` refuses as well.
+  journal holds step.lease_withdrawn`). The check is a probe of the partial index `run_events_lease_withdrawn_idx`.
+- The removal runs only under READ COMMITTED, the default (decision D006-084); a session or role whose
+  `default_transaction_isolation` is stricter is refused (`is removed only under READ COMMITTED`): run it with
+  `SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL READ COMMITTED` first.
+- The removal waits at most one second for a lock (decision D006-085), so registrations, which queue behind it, are never
+  held past their own lock timeout. An engine still withdrawing holds the lock it waits for: a removal that fails with
+  `canceling statement due to lock timeout` changed nothing. Set `SAGAT_LEASE_WITHDRAWAL=off` first and run it again.
+- The down migration `20270208000000_lease_withdrawal` refuses as well (`20270208000200_lease_withdrawal_floor` rolls back
+  first and holds nothing an older binary cannot read).
 - A binary rollback below this feature is not possible. Roll back to a build of this feature or later.
 
 While no journal holds the event (`SELECT count(*) FROM run_events WHERE event_type = 'step.lease_withdrawn'` is 0), the

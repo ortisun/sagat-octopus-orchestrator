@@ -783,7 +783,7 @@ class CapabilityListsFollowTheCode(unittest.TestCase):
         code, out = run_capability_check({
             "20270101000000_a.up.sql": capability_migration(["schedules-v1"]),
             "20270102000000_b.up.sql": capability_migration(ALL_THREE),
-            # a down migration restores an older list and is not the newest definition
+            # the down of b restores the list before b, and a down is never the newest definition
             "20270102000000_b.down.sql": capability_migration(["schedules-v1"]),
         })
         self.assertEqual(code, 0, out)
@@ -805,6 +805,28 @@ class CapabilityListsFollowTheCode(unittest.TestCase):
         })
         self.assertEqual(code, 1, out)
         self.assertIn("flow-control-rate-v1", out)
+
+    def test_a_down_that_restores_another_list_than_the_one_before_its_up_fails(self):
+        # decision D006-083: the rollback of c must restore b's list, or it erases b's capability
+        code, out = run_capability_check({
+            "20270101000000_a.up.sql": capability_migration(["schedules-v1"]),
+            "20270102000000_b.up.sql": capability_migration(["schedules-v1", "run-input-validation-v1"]),
+            "20270102000000_b.down.sql": capability_migration(["schedules-v1"]),
+            "20270103000000_c.up.sql": capability_migration(ALL_THREE),
+            "20270103000000_c.down.sql": capability_migration(["schedules-v1"]),
+        })
+        self.assertEqual(code, 1, out)
+        self.assertIn("20270103000000_c.down.sql", out)
+        self.assertNotIn("20270102000000_b.down.sql", out)
+
+    def test_a_down_that_does_not_restore_the_list_at_all_fails(self):
+        code, out = run_capability_check({
+            "20270101000000_a.up.sql": capability_migration(["schedules-v1"]),
+            "20270102000000_b.up.sql": capability_migration(ALL_THREE),
+            "20270102000000_b.down.sql": "SELECT 1;\n",
+        })
+        self.assertEqual(code, 1, out)
+        self.assertIn("20270102000000_b.down.sql", out)
 
     def test_a_tree_without_the_checks_is_an_error_and_not_a_pass(self):
         code, out = run_capability_check({"20270102000000_b.up.sql": "SELECT 1;\n"})

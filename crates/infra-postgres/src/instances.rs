@@ -382,6 +382,8 @@ pub struct CapabilityCensus {
     pub lacking_examples: Vec<Uuid>,
     /// Whether the requirement is recorded already.
     pub recorded: bool,
+    /// The kinds asked that have at least one live instance (decision D006-082), in the order of [`InstanceKind::ALL`].
+    pub kinds_live: Vec<InstanceKind>,
 }
 
 /// Counts the live instances of `kinds` and those that lack `capability`, in one statement, through the owner's function
@@ -396,7 +398,8 @@ pub async fn capability_census(
 ) -> Result<CapabilityCensus, StoreError> {
     let kinds: Vec<&str> = kinds.iter().map(|kind| kind.as_str()).collect();
     let row = sqlx::query(
-        "SELECT out_live AS live, out_lacking AS lacking, out_examples AS examples, out_recorded AS recorded \
+        "SELECT out_live AS live, out_lacking AS lacking, out_examples AS examples, out_recorded AS recorded, \
+                out_kinds_live AS kinds_live \
            FROM platform_capability_census($1, $2)",
     )
     .bind(capability.as_str())
@@ -410,6 +413,17 @@ pub async fn capability_census(
             .map_err(|_| corrupt("lacking instances"))?,
         lacking_examples: col(&row, "examples")?,
         recorded: col(&row, "recorded")?,
+        kinds_live: {
+            let tokens: Vec<String> = col(&row, "kinds_live")?;
+            let mut kinds = Vec::with_capacity(tokens.len());
+            for token in &tokens {
+                kinds.push(InstanceKind::parse(token).ok_or_else(|| corrupt("instance kind"))?);
+            }
+            InstanceKind::ALL
+                .into_iter()
+                .filter(|kind| kinds.contains(kind))
+                .collect()
+        },
     })
 }
 
