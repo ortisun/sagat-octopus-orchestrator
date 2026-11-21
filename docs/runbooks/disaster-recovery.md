@@ -79,7 +79,9 @@ Quarterly, and after any change to backups, replication or the platform's major 
 1. **Point-in-time recovery.** A workload runs while a base backup is taken; a restore point is named; more work is done; the schema is destroyed (an operator's mistake); a cluster is restored from the base backup and the archive to the restore point. It checks that the **journal digest** (`infra/dr/journal_digest.sql`: counts and a sha256 of the journal and of the audit trail) is identical before and after, and that the journal of **every run replays to its projections** (`PgRunStore::verify_run`). It reports the time to restore and what the restore discarded.
 2. **Failover.** A primary with a standby is killed with `kill -9` while the platform acknowledges runs as fast as it can, the standby is promoted, and every acknowledged run is looked for. With a synchronous standby none may be missing (the script fails otherwise); with an asynchronous one the loss is reported. It reports the time to promote.
 
-To drill your own deployment, do the same by hand with your tools and keep the evidence: the digest before and after (`psql -X -At -f infra/dr/journal_digest.sql <database>`), the count and result of `verify_run` for every run (the `dr_verify` test does it for a database URL: `SAGAT_DR_URL=... cargo test -p sagat-tests --test perf_scalability_ha --release -- --ignored dr_verify`), the time from the decision to restore to the first successful `GET /v1/health` through the platform, and one secret opened with the restored key ring.
+To drill your own deployment, do the same by hand with your tools and keep the evidence: the digest before and after (`psql -X -At -f infra/dr/journal_digest.sql <database>`), the count and result of `verify_run` for every run (the `dr_verify` test does it for a database URL: `SAGAT_DR_URL=... cargo test -p sagat-tests --test perf_scalability_ha --release -- --ignored dr_verify`), the time from the decision to restore to the first successful `GET /v1/health` through the platform, and one secret opened with the restored key ring. Where delivery acknowledgement is activated, also read `SELECT
+sagat_database_timeline()` before and after your own restore and failover tools: where it does not change (a snapshot started as it
+is, a base backup without `recovery.signal`, a managed service's restore), your procedure must run step 5 of section 7.
 
 **What the drill does not cover** (G250, G251): the object store and its replication; the broker; the key ring's escrow; a standby in another zone; the time to fetch a base backup from remote storage; engines reconnecting through *your* address indirection. Add those to yours.
 
@@ -89,5 +91,10 @@ To drill your own deployment, do the same by hand with your tools and keep the e
 2. `SELECT status, count(*) FROM runs WHERE finished_at IS NULL GROUP BY 1`: the live runs are what you expect for the point.
 3. The digest and the replay of section 6, on a sample or on everything.
 4. Open one secret through the API (the key ring is the right one).
-5. Start the engines, then the control planes. Watch `scheduler_lag_seconds` fall (timers that fell due meanwhile fire at once), `leases_expired` go to zero (attempts whose workers are gone are taken back and retried), and `outbox_backlog` drain.
-6. Tell the owners of the activities the time you went back to (section 2).
+5. Only where the requirement `delivery-acknowledgement-v1` is recorded (Architecture decision 0099; not before the release that
+   builds it): after every restore of any kind, and before the engines start, run `control-plane end-lease-marks --operator NAME`.
+   It gives every lease in flight today's meaning, so an acknowledgement the restore lost can never be taken for "nothing ran"; a
+   promotion needs no step, because its new timeline does the same by itself. The rule is proven on self-managed PostgreSQL 16 by
+   `infra/dr/drill.sh`; on other topologies see "To drill your own deployment".
+6. Start the engines, then the control planes. Watch `scheduler_lag_seconds` fall (timers that fell due meanwhile fire at once), `leases_expired` go to zero (attempts whose workers are gone are taken back and retried), and `outbox_backlog` drain.
+7. Tell the owners of the activities the time you went back to (section 2).
