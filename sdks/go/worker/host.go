@@ -175,6 +175,9 @@ type running struct {
 // again after it was stopped.
 type Host struct {
 	receiveCancel context.CancelFunc // protected by mu; receive only, never a handler
+	// frameReceived is called with the number of leases after a poll answer or a stream frame is read and
+	// before it is looked at; nil except in the tests, which hold the loop there (export_test.go).
+	frameReceived func(leases int)
 	grpcURL       string
 	namespace     string
 	name          string
@@ -190,7 +193,13 @@ type Host struct {
 	handlers map[string]*registered
 	active   bool
 	tasks    map[string]*running
-	wg       sync.WaitGroup
+	// The hand-backs (sdks/SPEC.md section 6.2): the keys on their way, queued ones included, which count as
+	// in flight for the duplicate check; the queue in the order received; the workers making them, at most
+	// handBackConcurrency.
+	handingBack     map[string]bool
+	handBackQueue   []handBackItem
+	handBackWorkers int
+	wg              sync.WaitGroup
 
 	stopping atomic.Bool
 	session  atomic.Pointer[session]
@@ -247,17 +256,18 @@ func New(grpcURL, namespace, workerName string, token sagat.TokenSource, opts ..
 		cfg.timeout = 30 * time.Second
 	}
 	return &Host{
-		grpcURL:   grpcURL,
-		namespace: namespace,
-		name:      workerName,
-		token:     token,
-		cfg:       cfg,
-		log:       cfg.logger.With("worker", workerName),
-		retry:     cfg.retry.WithDefaults(),
-		timeout:   cfg.timeout,
-		handlers:  map[string]*registered{},
-		tasks:     map[string]*running{},
-		wake:      make(chan struct{}, 1),
+		grpcURL:     grpcURL,
+		namespace:   namespace,
+		name:        workerName,
+		token:       token,
+		cfg:         cfg,
+		log:         cfg.logger.With("worker", workerName),
+		retry:       cfg.retry.WithDefaults(),
+		timeout:     cfg.timeout,
+		handlers:    map[string]*registered{},
+		tasks:       map[string]*running{},
+		handingBack: map[string]bool{},
+		wake:        make(chan struct{}, 1),
 	}, nil
 }
 
@@ -439,7 +449,8 @@ func isLoopback(host string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-// Stop stops polling, cancels nothing, and waits for the tasks in flight until ctx is done (30 s
+// Stop stops polling, cancels nothing, and waits for the tasks in flight and the leases it hands back
+// (received while stopping, from protocol 1.8, sdks/SPEC.md section 6.2) until ctx is done (30 s
 // when ctx has no deadline); then it cancels their contexts with the cause ErrShutdown, gives the
 // handlers two seconds more to report, and closes the channel. A task that did not finish keeps its
 // lease until it lapses and the server leases it again. Stop returns ctx's error when it had to
@@ -467,7 +478,8 @@ func (h *Host) Stop(ctx context.Context) error {
 		receiveCancel()
 	}
 	h.signal()
-	// The poll in progress ends and no other starts; what it leased is in flight from here on.
+	// The poll in progress ends and no other starts; what it leased is handed back from protocol 1.8 (below
+	// it the leases lapse), and Stop waits for the hand-backs with the tasks in flight (sdks/SPEC.md section 6.2).
 	l := h.current
 	select {
 	case <-l.loopDone:

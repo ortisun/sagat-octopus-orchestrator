@@ -84,6 +84,7 @@ ENVIRONMENT (serve):
     SAGAT_SCHEDULER_BATCH             candidates per pass per tick (1-5000) [200]
     SAGAT_SCHEDULES_ENABLED           fire schedules from this replica [false]
     SAGAT_LAKE_ENABLED                let a run carry an Apache Iceberg write; the control plane has the same switch [false]
+    SAGAT_LEASE_WITHDRAWAL            on|off: write new lease withdrawals (docs/runbooks/lease-withdrawal.md) [on]
     SAGAT_SCHEDULES_BATCH             due schedules per round (1-5000) [100]
     SAGAT_SCHEDULES_POLL_MS           pause when a round found nothing [1000]
     SAGAT_BATCHES_ENABLED             run batch jobs from this replica [false]

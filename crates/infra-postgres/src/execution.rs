@@ -5018,6 +5018,22 @@ impl RunTx for PgRunTx {
         .map_err(store_error)
     }
 
+    async fn lease_withdrawals(&mut self, step_id: Uuid, attempt: u32) -> Result<u32, StoreError> {
+        lease_withdrawals(&mut self.tx, &self.info, step_id, attempt).await
+    }
+
+    async fn lease_holder_minor(
+        &mut self,
+        step_id: Uuid,
+        token_hash: &[u8],
+    ) -> Result<Option<u32>, StoreError> {
+        lease_holder_minor(&mut self.tx, &self.info, step_id, token_hash).await
+    }
+
+    async fn lease_withdrawal_required(&mut self) -> Result<bool, StoreError> {
+        lease_withdrawal_required(&mut self.tx).await
+    }
+
     async fn reported_by(
         &mut self,
         instance: &ExecutionInstanceId,
@@ -5246,6 +5262,7 @@ impl RunTx for PgRunTx {
                 }
                 RunEvent::StepReleased { node }
                 | RunEvent::StepRetryDue { node }
+                | RunEvent::StepLeaseWithdrawn { node, .. }
                 | RunEvent::StepRetryRequested { node } => {
                     hinted.insert(node.clone());
                     self.outbox_task_ready(node).await?;
@@ -5965,6 +5982,7 @@ impl PgRunTx {
             if !matches!(
                 addressed.event(),
                 RunEvent::StepLeased { .. }
+                    | RunEvent::StepLeaseWithdrawn { .. }
                     | RunEvent::StepStarted { .. }
                     | RunEvent::StepCompleted { .. }
                     | RunEvent::StepFailed { .. }
@@ -6110,6 +6128,7 @@ impl PgRunTx {
                     event,
                     RunEvent::StepReleased { .. }
                         | RunEvent::StepRetryDue { .. }
+                        | RunEvent::StepLeaseWithdrawn { .. }
                         | RunEvent::StepRetryRequested { .. }
                 ) {
                     hinted.insert(instance.clone());
@@ -7651,6 +7670,65 @@ impl DefinitionStore for PgRunStore {
     async fn record_denial(&self, audit: &AuditRecord) -> Result<(), StoreError> {
         DefinitionStore::record_denial(&self.definitions, audit).await
     }
+}
+
+/// The withdrawals of one step that carry one attempt (feature 006, decision D006-031), over the journal's instance index:
+/// a withdrawal gives its attempt back, so every withdrawal before the attempt is spent carries its number.
+pub(crate) async fn lease_withdrawals(
+    tx: &mut sqlx::Transaction<'static, sqlx::Postgres>,
+    info: &RunInfo,
+    step_id: Uuid,
+    attempt: u32,
+) -> Result<u32, StoreError> {
+    let n: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM run_events WHERE tenant_id = $1 AND run_id = $2 AND instance_id = $3 \
+            AND event_type = 'step.lease_withdrawn' AND attempt = $4",
+    )
+    .bind(info.tenant_id.as_uuid())
+    .bind(info.run_id.as_uuid())
+    .bind(step_id)
+    .bind(i32::try_from(attempt).map_err(|_| corrupt("attempt"))?)
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(store_error)?;
+    u32::try_from(n).map_err(|_| corrupt("withdrawal count"))
+}
+
+/// The protocol minor of the session that holds the lease (feature 006, decision D006-030): the session the step names in
+/// `leased_by`, of the same tenant, while the lease is this token's.
+pub(crate) async fn lease_holder_minor(
+    tx: &mut sqlx::Transaction<'static, sqlx::Postgres>,
+    info: &RunInfo,
+    step_id: Uuid,
+    token_hash: &[u8],
+) -> Result<Option<u32>, StoreError> {
+    let minor: Option<i32> = sqlx::query_scalar(
+        "SELECT w.accepted_protocol_minor FROM steps s \
+           JOIN worker_sessions w ON w.tenant_id = s.tenant_id AND w.id::text = s.leased_by \
+          WHERE s.tenant_id = $1 AND s.run_id = $2 AND s.step_id = $3 AND s.lease_token_hash = $4 \
+            AND s.status IN ('LEASED', 'RUNNING')",
+    )
+    .bind(info.tenant_id.as_uuid())
+    .bind(info.run_id.as_uuid())
+    .bind(step_id)
+    .bind(token_hash)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(store_error)?;
+    minor
+        .map(|minor| u32::try_from(minor).map_err(|_| corrupt("protocol minor")))
+        .transpose()
+}
+
+/// Whether `lease-withdrawal-v1` is a recorded requirement, read under the share lock of its row (feature 006, decision
+/// D006-032): a removal deletes the row, so it waits for this transaction, and its guard then sees what this one wrote.
+pub(crate) async fn lease_withdrawal_required(
+    tx: &mut sqlx::Transaction<'static, sqlx::Postgres>,
+) -> Result<bool, StoreError> {
+    sqlx::query_scalar("SELECT lease_withdrawal_required()")
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(store_error)
 }
 
 #[cfg(test)]

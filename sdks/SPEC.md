@@ -344,9 +344,63 @@ register → loop:
   UNAVAILABLE / transport → wait with the backoff of §5 (no limit on attempts, cap 30 s), reconnect
 ```
 
-The host runs at most as many tasks as it asked for (`max_tasks`): if a poll answer carries more, it runs the
-first ones, logs the rest and leaves their leases to lapse. A wait derived from the server (`retry_after_ms`,
-`Retry-After`) is capped at 60 s, whatever it says.
+The host runs at most as many tasks as it asked for (`max_tasks`) and has free slots for: if a poll answer or a stream
+frame carries more, it runs the first ones and, from protocol 1.8, hands the rest back (below); below 1.8 it logs the rest
+and leaves their leases to lapse. A wait derived from the server
+(`retry_after_ms`, `Retry-After`) is capped at 60 s, whatever it says.
+
+**A lease the host will not run is handed back, from protocol 1.8.** A host whose session negotiated protocol 1.8 or later
+(the minor of delivery acknowledgement, reserved by OD-2026-11-21-6, recorded on pull request #264, which reserves the code) and that drops a lease it received reports `FailStep` for it with the
+code `TASK_NOT_STARTED`, retryable, with the lease's fence, before any handler of that task runs, and never for a task whose
+handler started. **Below 1.8 the host does not hand back** (decision D006-080 of
+`specs/006-sdk-multilanguage/research.md`): it drops the same leases, logs each one (the warning below, with `lapses`
+instead of a report) and leaves it to lapse, as before this rule. The reason: a server of 1.6 or 1.7 records
+`TASK_NOT_STARTED` as an ordinary failure, which spends the attempt, so a stopping host would fail a step of one attempt
+for good where the lapse sends it to a review (feature 037), which an operator can still retry. The minor is the one
+the registration accepted (§6.1), read per lease from the session that received it, never the newest the SDK offers. The server then gives the step back to `READY` without consuming the attempt when it can (decision D006-005
+of `specs/006-sdk-multilanguage/research.md`): only for a lease held by a session of protocol 1.8 or later, which reserves the
+code, with the requirement `lease-withdrawal-v1` recorded, the step still `LEASED` and at most four withdrawals of the attempt
+(decisions D006-030 and D006-031). On a fleet that does not withdraw (the requirement not recorded, or the engine's
+switch `SAGAT_LEASE_WITHDRAWAL=off`) it records nothing and answers `STALE_ATTEMPT`, so the lease lapses as before
+(decision D006-089). Otherwise (a step no longer `LEASED` to the lease, the cap reached, a session below 1.8) it retries
+it as an ordinary failure, which spends the attempt. The rules (decisions D006-020 to D006-023;
+from 1.8 only, decision D006-080):
+
+- *Which leases.* Every lease of a poll answer or a stream frame that the host received and does not dispatch:
+  1. the whole answer or frame when it arrives after `stop` began (§6.8), on either transport: a host that is stopping
+     starts nothing new;
+  2. the leases beyond what the host may run: beyond the credit it asked for in this poll or receive window, or beyond
+     its free slots;
+  3. the rest of a frame the host stops reading because the frame breaks the receive contract (§10: the 8 MiB input
+     budget of the window), the lease that broke it included. A window whose credit is used up exactly is read until it
+     ends, so a frame that still comes is handed back under item 2; a frame that breaks the credit or the budget ends
+     the window: the host hands back the rest of that frame and cancels the receive, and the frames it does not read
+     are the server's (it withdraws what it did not hand to the transport; what it did is the residue G006-001, which
+     only a server that broke the credit can cause);
+  4. a lease the host could not start for a reason of its own (its runtime refused to schedule the task, its in-flight
+     table could not be updated).
+- *Never handed back.* A lease whose in-flight key (the task id and, from protocol 1.5, the instance path; never the task
+  id alone, which sibling iterations of a collection share) is already in flight on this host (a task running, or a
+  hand-back on its way), or already dispatched or handed back in the same answer or window: it is a duplicate, it is
+  ignored and logged, and it is neither run nor reported, because its fence may be the one of the running handler or
+  of the hand-back. A lease is handed back at most once.
+- *What is sent.* `FailStep{task_id, run_id, step_id, attempt, generation, lease_token, idempotency_key = "failed-<task_id>",
+  error_code = "TASK_NOT_STARTED", safe_message = "the host did not start this task", retryable = true, traceparent}`, with
+  the execution-instance identity under protocol 1.5 as every report (§6.1). No heartbeat, no `ResolveSecrets`, no handler,
+  no "task taken" event. It is retried as a report is (§6.5); `STALE_ATTEMPT` ends it without an error (the lease is no
+  longer this host's). It is sent only on a session of 1.8 or later, whose server reserves the code. `TASK_NOT_STARTED` is a step failure code, like `NO_HANDLER`; it is never raised to a caller and is
+  not in `sdks/error-catalog.json`. **The code is reserved for the host**: a handler that fails with it (an
+  `ActivityFailure` whose code is `TASK_NOT_STARTED`, of a forward, compensation or reconciliation handler) is reported as
+  `WORKER_ERROR`, with its own message and `retryable` (§6.5), because only the host can know that no handler ran. At most eight hand-backs are on their way at once (the
+  derivation is in §6.5: seven to ten); the others wait their turn in the order they were received, so a server that floods one answer
+  cannot make the host open a call per lease.
+- *What is observed.* A warning log line with the task id and the reason (`stopping`, `credit` or `malformed`, or
+  `not_started` for item 4), never the lease token; below 1.8 the same line says the lease lapses, and nothing else is
+  emitted; the host's failure event or counter with the code `TASK_NOT_STARTED`
+  (or, when the report cannot be made, its dropped event, as for any report).
+- *The connection stays open for it.* `stop` waits for the hand-backs on their way, within the same grace as the tasks
+  in flight (§6.8), before it closes the connection. A hand-back that cannot be made (the connection is gone) is logged
+  and the lease lapses.
 
 The host never busy-polls: an empty answer is always followed by a wait. It opens its connection when
 it starts, not before. A connection that was idle may be closed by the server; `UNAVAILABLE` on it is
@@ -437,10 +491,26 @@ A handler's input type that cannot be built from the document is not a crash: th
   Any other raised error is reported as `error_code = "ACTIVITY_ERROR"`, `retryable = true`, and the
   `safe_message` is only its type name — never its text, which may hold the data it was handed.
   `safe_message` is cut to 512 Unicode code points (never inside a surrogate pair, and a lone surrogate becomes
-  U+FFFD, so what is sent is always valid UTF-8); a code that is not `[A-Z0-9_]{1,64}` is replaced by
-  `WORKER_ERROR`.
+  U+FFFD, so what is sent is always valid UTF-8); a code that is not `[A-Z0-9_]{1,64}`, or that is `TASK_NOT_STARTED`
+  (reserved for the host, §6.2), is replaced by `WORKER_ERROR`.
 - The report is retried per §5. `already_applied = true` in the answer is a success. The host never
   reports one attempt twice with different content.
+- **Why at most eight hand-backs at once (§6.2).** The number has to be large enough to hand a full frame back before its
+  leases expire, and small enough that a host that is stopping opens no more calls than a busy host does. The bounds:
+  1. *The largest legitimate batch.* A host has one receive at a time, and one poll answer or stream frame carries at most
+     64 leases (`max_tasks` is 1 to 64, and the server's claim stops at 64), so one batch is at most B = 64 hand-backs.
+  2. *Fast enough.* The batch goes in ⌈B / H⌉ rounds of one report each. It must land within half the lease's
+     time-to-live, the other half being what delivery may already have used. The shortest time-to-live the platform runs
+     is 3 s (some conformance scenarios run with it; the default is 30 s). With H = 8 that is 8 rounds in 1.5 s, so one
+     report must be answered within 187 ms; at the default 30 s, within 1.87 s. A `FailStep` is one run transaction. With
+     H = 6 the budget at 3 s would be 136 ms (11 rounds); H ≥ 7 keeps at least 150 ms (10 rounds).
+  3. *Not more than a busy host.* A host reports each running task once, so a host of the default size (`max_inflight` 10)
+     has up to 10 reports open. H ≤ 10 keeps a stopping host, whose running tasks still report, within twice that. Each call
+     takes one slot of the tenant's share of the server's in-flight cap (a quarter of it: 128 with the defaults) and one
+     unit of the per-identity budget (200 a second, a burst of 400). Eight is 6% of the tenant's slots, and a full batch of
+     64 fits in the burst.
+  So 7 ≤ H ≤ 10, and the SDKs use 8. A hand-back that waits for its turn holds no connection; a slower database delays
+  the batch, and a lease whose hand-back comes too late lapses as before.
 
 ### 6.6 Compensation and reconciliation
 
@@ -473,8 +543,10 @@ raises `UNSUPPORTED_PROTOCOL` instead of calling.
 
 ### 6.8 Lifecycle
 
-`start()` registers and begins the loop and returns once registered; `stop(timeout)` stops polling,
-cancels nothing, waits for the tasks in flight up to `timeout` (default 30 s), then cancels their tokens
+`start()` registers and begins the loop and returns once registered; `stop(timeout)` stops polling (it cancels the
+receive call in progress, never the code that reads an answer or a frame already received, which is handed back, §6.2),
+cancels nothing else, waits for the tasks in flight and the hand-backs on their way up to `timeout` (default 30 s), then
+cancels their tokens
 with the reason `shutdown` and returns. A task that did not finish keeps its lease until it lapses; the
 server then reconciles or holds review according to task kind and available evidence. The host is
 restartable. Metrics hooks (counters for tasks taken, completed,
@@ -657,6 +729,7 @@ where the language can express one. The shared scenario is `collection-operators
   | 1.5 | Scoped execution identity | `ExecutionInstanceIdentity` |
   | 1.6 | Managed database capabilities (`ResolveDatabase`) | feature 017, D600 |
   | 1.7 | Step logs (`AppendStepLogs`, `StepLogPolicy`) | feature 041, OD-2026-11-15-8; served from its task T041-7 |
+  | 1.8 | Reserved: delivery acknowledgement, which reserves `TASK_NOT_STARTED` for the host (§6.2); offered only after its throughput gate | ADR-0099, OD-2026-11-21-6 (both recorded on pull request #264) |
   | next | Drafts 020, 021, 025 and 026 each name a minor; each takes the next free one when its contract merges | |
 
 ## 10. Observability and safety
@@ -700,6 +773,10 @@ cancel pending receiving promptly on stop while preserving its existing handler 
 The stream has a five-second server lifetime; clients additionally bound receiving to six
 seconds or their shorter configured call timeout. A normal underfilled window ends with a
 positive empty retry hint. An unexpected underfilled EOF MUST wait before reconnecting.
+A lease the server committed and did not hand to the transport is withdrawn by the server, once the fleet honours it; a
+lease the host drops is handed back with `TASK_NOT_STARTED` (§6.2). A frame lost on the wire still lapses until delivery
+acknowledgement (OD-2026-11-20-12) is designed and built
+([`stream-completion.md`](../specs/006-sdk-multilanguage/stream-completion.md), "Leases that never reach a host").
 Protocol version changes do not themselves change package SemVer.
 
 
@@ -714,7 +791,9 @@ workspaces and contains its own checked canonical protocol/catalog for clean con
 ## Feature 037 delivery 1 — implementation in verification
 
 The delivery uses the existing wire shapes and treats every leased `Activity` as external-capable,
-regardless of `highRisk`. Unknown outcomes take precedence over retry, cancellation and explicit
+regardless of `highRisk`. A lease that never reached a handler is not an attempt: a lease the server withdrew, or one a host
+handed back with `TASK_NOT_STARTED` while it was still `LEASED`, has a known outcome (nothing ran) and is never reviewed; a
+lease that lapses keeps its unknown outcome (D006-007). Unknown outcomes take precedence over retry, cancellation and explicit
 failure. The server will not directly retry an unknown original or compensation, even for a caller
 with `SagaOverride`; an authorized outcome-bearing resolution must atomically retain actor and
 reason first, and no new in-place attempt after resolution is promised. Refused conflicts create no

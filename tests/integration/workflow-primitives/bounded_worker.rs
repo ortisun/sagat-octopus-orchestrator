@@ -685,3 +685,214 @@ async fn a_root_heartbeat_waiting_for_the_run_lock_rechecks_current_membership()
     .expect("refused heartbeat changes no execution state");
     assert_eq!(started, 0);
 }
+
+/// Architecture Major 4 of the 2026-11-21 review (feature 006, decisions D006-012 and D006-030): a scoped lease is withdrawn
+/// in its path transaction on the real store, for either cause. A lease the server did not send goes through the
+/// withdrawal; one a 1.8 host hands back goes through the scoped report. The iteration is `READY` again with its attempt
+/// given back, the next lease reuses the attempt with the next generation, the run succeeds with the handler run once,
+/// and the journal replays.
+#[tokio::test]
+async fn a_scoped_lease_is_withdrawn_in_its_path_for_either_cause() {
+    use sagat_application::instances::{Requirement, Requirements, ServingGate};
+    use sagat_application::worker::{UndeliveredLease, WithdrawalOutcome};
+    use sagat_domain::execution::WithdrawalCause;
+
+    for cause in [WithdrawalCause::NotSent, WithdrawalCause::NotStarted] {
+        let world = world().await;
+        crate::limits::allow_iterations(&world, 1).await;
+        let recorded: String = sqlx::query_scalar(
+            "SELECT out_outcome FROM platform_requirement_activate('lease-withdrawal-v1', \
+             ARRAY['CONTROL_PLANE', 'EXECUTION_ENGINE'], 'test')",
+        )
+        .fetch_one(&world.db.pool)
+        .await
+        .expect("activate");
+        assert_eq!(recorded, "RECORDED");
+        let gate = ServingGate::opened();
+        gate.keep(&Requirements {
+            epoch: 1,
+            required: vec![Requirement {
+                capability: "lease-withdrawal-v1".to_owned(),
+                kinds: vec!["CONTROL_PLANE".to_owned(), "EXECUTION_ENGINE".to_owned()],
+            }],
+        });
+        let store = PgRunStore::new(world.db.runtime_pool_with(8).await, world.cache.clone())
+            .with_scoped_worker_protocol();
+        let workers = WorkerService::new(
+            store.clone(),
+            SystemClock,
+            Engine::new(JsonEvaluator),
+            SystemEntropy,
+            WorkerSettings::default(),
+        )
+        .with_lease_withdrawal(Arc::new(gate))
+        .with_hand_back_ceiling(8);
+        let placement = Placement::new("scoped-withdrawal");
+        Keeper::new(
+            store.clone(),
+            placement.clone(),
+            KeeperSettings {
+                ttl: std::time::Duration::from_secs(3600),
+            },
+        )
+        .round()
+        .await
+        .expect("acquire the collection scheduler's shard fences");
+        let scheduler = Scheduler::new(
+            store.clone(),
+            Engine::new(JsonEvaluator),
+            SystemEntropy,
+            SchedulerSettings::default(),
+        )
+        .with_placement(placement);
+        let (workflow, _) = world
+            .publish(json!({
+                "apiVersion":"sagat-octopus-orchestrator.io/v1", "kind":"Workflow",
+                "metadata":{"name":"scoped-withdrawal"}, "entrypoint":"items",
+                "limits":{"maxInstances":8,"maxDepth":1},
+                "bodies":{"line":{"entrypoint":"work","nodes":[
+                    {"id":"work","type":"activity","activity":"scoped.work",
+                     "retry":{"maxAttempts":1,"strategy":"fixed","initialDelayMs":1,"maxDelayMs":1,"jitter":false},
+                     "next":"returned"},
+                    {"id":"returned","type":"return","result":"steps.work.output"}
+                ]}},
+                "nodes":[
+                    {"id":"items","type":"forEach","items":"input.items","body":"line",
+                     "result":"bodyResult","maxItems":1,"maxConcurrency":1,"next":"done"},
+                    {"id":"done","type":"end"}
+                ]
+            }))
+            .await;
+        let session = workers
+            .register(
+                &world.worker,
+                "payments",
+                "scoped-withdrawal",
+                &Capabilities {
+                    activities: vec!["scoped.work".into()],
+                    languages: vec![],
+                    pools: vec![],
+                    max_inflight: 1,
+                    protocol_version: "1.5".into(),
+                },
+            )
+            .await
+            .expect("scoped worker");
+        let run = world.start(workflow, &json!({"items":[1]})).await;
+        let poll = || async {
+            let mut task = None;
+            for _ in 0..8 {
+                let report = scheduler.tick().await;
+                assert_eq!(report.failed, 0, "{report:?}");
+                task = workers
+                    .poll(
+                        &world.worker,
+                        session.worker_id,
+                        session.session_token.expose(),
+                        1,
+                        None,
+                    )
+                    .await
+                    .expect("scoped poll")
+                    .pop();
+                if task.is_some() {
+                    break;
+                }
+            }
+            task.expect("one scoped lease")
+        };
+        let first = poll().await;
+        assert!(!first.instance.path().is_root());
+        assert_eq!((first.fence.attempt, first.fence.generation), (1, 1));
+        match cause {
+            WithdrawalCause::NotSent => {
+                let outcomes = workers
+                    .withdraw_undelivered(
+                        vec![UndeliveredLease::of(world.admin.tenant_id(), &first)],
+                        WithdrawalCause::NotSent,
+                    )
+                    .await;
+                assert_eq!(outcomes, [WithdrawalOutcome::Withdrawn]);
+            }
+            WithdrawalCause::NotStarted => {
+                // the minor of delivery acknowledgement, which this build does not negotiate yet (gap G006-030)
+                sqlx::query("UPDATE worker_sessions SET accepted_protocol_minor = 8 WHERE id = $1")
+                    .bind(session.worker_id)
+                    .execute(&world.db.pool)
+                    .await
+                    .expect("raise the minor");
+                workers
+                    .fail(
+                        &world.worker,
+                        &task_ref(&first),
+                        "TASK_NOT_STARTED",
+                        true,
+                        "scoped-hand-back",
+                    )
+                    .await
+                    .expect("the hand-back");
+                // the token handed back is dead for heartbeats too (decision D006-086, the scoped path)
+                let stale = workers
+                    .heartbeat(&world.worker, &task_ref(&first))
+                    .await
+                    .expect_err("the handed-back token is dead");
+                assert!(matches!(stale, AppError::StaleAttempt), "{stale:?}");
+            }
+        }
+        let withdrawn: Vec<(Option<String>, Option<i32>)> = sqlx::query_as(
+            "SELECT detail->>'cause', attempt FROM run_events WHERE run_id = $1 \
+             AND event_type = 'step.lease_withdrawn' AND instance_path_nodes = ARRAY['items']::text[]",
+        )
+        .bind(run.as_uuid())
+        .fetch_all(&world.db.pool)
+        .await
+        .expect("withdrawals");
+        assert_eq!(
+            withdrawn,
+            [(Some(cause.as_str().to_owned()), Some(1))],
+            "{cause:?}"
+        );
+        let second = poll().await;
+        assert_eq!(
+            (second.fence.attempt, second.fence.generation),
+            (1, 2),
+            "{cause:?}: the attempt is reused with the next generation"
+        );
+        workers
+            .heartbeat(&world.worker, &task_ref(&second))
+            .await
+            .expect("started");
+        workers
+            .complete(
+                &world.worker,
+                &task_ref(&second),
+                b"{}",
+                "scoped-withdrawal-done",
+            )
+            .await
+            .expect("complete the member");
+        for _ in 0..8 {
+            scheduler.tick().await;
+            if world.run_status(run).await.as_str() == "SUCCEEDED" {
+                break;
+            }
+        }
+        assert_eq!(
+            world.run_status(run).await.as_str(),
+            "SUCCEEDED",
+            "{cause:?}"
+        );
+        let started: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM run_events WHERE run_id = $1 AND event_type = 'step.started'",
+        )
+        .bind(run.as_uuid())
+        .fetch_one(&world.db.pool)
+        .await
+        .expect("starts");
+        assert_eq!(started, 1, "{cause:?}: the handler ran once");
+        store
+            .verify_run(world.admin.tenant_id(), run)
+            .await
+            .expect("the journal replays the withdrawal");
+    }
+}

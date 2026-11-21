@@ -25,6 +25,7 @@ first, see the [quickstarts](../quickstarts/README.md).
 | [business-ids.md](business-ids.md) | Business identifiers, start delay and the with-start calls (feature 018) |
 | [run-reset.md](run-reset.md) | Resetting a run to a point (feature 018) |
 | [instance-registry.md](instance-registry.md) | The instance-capability registry (feature 018, shared with features 029 and 031) |
+| [lease-withdrawal.md](lease-withdrawal.md) | Withdrawing the leases no worker received, its activation, its switch and its counters (feature 006, ADR-0098) |
 | [run-input-validation.md](run-input-validation.md) | Checking every run input against its version's schema (design 043) |
 
 ## Data, secrets and databases
