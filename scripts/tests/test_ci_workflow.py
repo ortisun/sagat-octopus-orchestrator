@@ -221,6 +221,19 @@ class CiRule(unittest.TestCase):
         self.assertNotIn("develop", pushed.group(1), "a push to develop starts the CI")
         self.assertRegex(triggers, r"(?m)^  pull_request:")
 
+    def test_the_documentation_checks_run_on_every_pull_request_and_nothing_else(self):
+        """Documentation first and words in full (constitution 4.7.0): a pull request runs both checks whatever it
+        changes, so the job waits for no selection and has no step gate; a push, a tag or a manual run starts the same
+        jobs as before, so the job runs only for a pull request. The checks compare the pull request's own commits:
+        HEAD^1 is the tip of the base branch in the merge commit a pull request checks out, HEAD^2 its head."""
+        block = job_block(self.text, "documentation")
+        self.assertRegex(block, r"(?m)^    if: github\.event_name == 'pull_request'\s*$")
+        self.assertNotIn("needs:", block)
+        self.assertIn("fetch-depth: 0", block)
+        for script in ("scripts/check-docs-first.py", "scripts/check-plain-words.py"):
+            step = next(s for s in steps(block) if script in s)
+            self.assertNotRegex(step, r"(?m)^        if:", f"{script} runs on every pull request")
+            self.assertIn('--base "$(git rev-parse HEAD^1)" --head "$(git rev-parse HEAD^2)"', step)
 
 if __name__ == "__main__":
     unittest.main()

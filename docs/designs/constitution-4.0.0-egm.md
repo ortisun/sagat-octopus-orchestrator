@@ -128,11 +128,11 @@ check does not accept as an owner decision until the owner changes it to `owner`
     2026-11-03), because replacing the specification toolchain is hard to reverse (`AGENTS.md` rule 21).
 *   **Q. Task prefix per unnumbered doc.** An unnumbered doc declares `Task-prefix` in its header and its tasks are
     `T<prefix>-<n>`; this design uses `EGM`. *Reason:* a shared prefix makes the planned conversion design collide with
-    this one under R4.
+    this one under Rule 4.
 *   **R. Bootstrap.** This doc is approved by hand under the rule it introduces, and its tasks are ticked in a closing
     commit after approval; PR 1 merges without that approval (section 9). *Reason:* the checks cannot approve the doc that
     creates them.
-*   **S. The body rule compares text, not diff hunks.** R3 normalizes the old text (read from the reviewed commit) and the
+*   **S. The body rule compares text, not diff hunks.** Rule 3 normalizes the old text (read from the reviewed commit) and the
     new text and compares them. *Reason:* the owner's choice (ticks are checked against the reviewed commit) is kept, and
     hunk parsing was broken by attributes, marker placement and header line numbers.
 *   **T. The plugin is enabled in PR 2, not PR 1.** *Reason:* contributors must not be offered the plugin before the hook
@@ -193,7 +193,7 @@ Each goal can be checked.
     that uses MUST or MUST NOT. The Sync Impact Report gives every unit one disposition from KEEP, MOVE, REWRITE, DROP or
     ADD, and rows may group units with the same disposition. All eight principles are KEEP and byte-identical: the report
     records the SHA-256 of each principle block in 3.0.0 and in 4.0.0, which the check recomputes from the new file and from
-    the 3.0.0 blob in git and requires to be equal (rule R8). A REWRITE or DROP appears only in Development Workflow,
+    the 3.0.0 blob in git and requires to be equal (Rule 8). A REWRITE or DROP appears only in Development Workflow,
     Governance and the footer, and each one says where its obligation went. At review time, a throwaway comparison lists the
     sentences with MUST or MUST NOT in 3.0.0 and shows each in 4.0.0 or in the report (Verification Plan).
 2.  **Approval is one rule, and the check verifies its record.** A design doc is approved when `egm-review` and the three
@@ -442,13 +442,13 @@ strict) and `GITHUB_BASE_REF`. The **base ref** is `origin/$GITHUB_BASE_REF` on 
 otherwise.
 
 A doc is **changed** when it is new or its text differs from its text at the base ref. The checks that need the reviewed
-commit (the existence of the commit, the `Agent-blob` comparison and R3) run only for changed docs, because a squash or
+commit (the existence of the commit, the `Agent-blob` comparison and Rule 3) run only for changed docs, because a squash or
 rebase merge of an earlier pull request can make that commit unreachable for everyone else. When the commit is missing, a
 strict run fails and a run that is not strict prints a warning and skips those checks. The rules:
 
-*   **R1 sections.** Every doc has non-empty `## Constitution Check` and `## Complexity Tracking` sections. The first has
+*   **Rule 1 sections.** Every doc has non-empty `## Constitution Check` and `## Complexity Tracking` sections. The first has
     a table row beginning `| I.` through `| VIII.` and one beginning `| Delivery Constraints`.
-*   **R2 record** (when `Status` is `Approved`). Every field above is present and well formed (`Reviewed-commit` is checked
+*   **Rule 2 record** (when `Status` is `Approved`). Every field above is present and well formed (`Reviewed-commit` is checked
     with a full match of `[0-9a-f]{40}` before any git call). `EGM-hash` is on the accepted list; `Claude-Code` is at least
     the list's minimum version. `Reports` lists exactly four entries whose `Reviewer` values are the four required ones and
     whose paths are distinct. Every report path is relative, has no `..`, resolves (`realpath`) to a regular non-symlink
@@ -459,16 +459,16 @@ strict run fails and a run that is not strict prints a warning and skips those c
     The sum of Blocker plus Major over the four reports is at most `n`, the `Accepted` number; `n` equals the number of ids
     listed; the ids are distinct; and each id is an acceptance row (section 5) whose `Covers` cell contains
     `<report path>#<digits>` for one of the four report paths.
-*   **R3 body.** Section 4.
-*   **R4 ids.** In a numbered doc, every task id is `T<NNN>-<digits>` with the doc's own number; in an unnumbered doc it is
+*   **Rule 3 body.** Section 4.
+*   **Rule 4 ids.** In a numbered doc, every task id is `T<NNN>-<digits>` with the doc's own number; in an unnumbered doc it is
     `T<prefix>-<digits>` with its `Task-prefix`. Ids are unique in the doc, and no other design doc defines the same id or
     declares the same `Task-prefix`.
-*   **R5 owner gates.** A ticked task whose `Owner-gate:` line lists ids needs each id to be a citable owner-decision row
+*   **Rule 5 owner gates.** A ticked task whose `Owner-gate:` line lists ids needs each id to be a citable owner-decision row
     (section 5) whose `Covers` cell contains the task id as a whole token.
-*   **R6 numbers.** Two numbered docs with the same number and different slugs fail. A directory `specs/NNN-*` with the
+*   **Rule 6 numbers.** Two numbered docs with the same number and different slugs fail. A directory `specs/NNN-*` with the
     same number as a doc and a different slug fails.
-*   **R7 evidence.** Every ticked task has a non-empty evidence block that follows the grammar (section 4).
-*   **R8 constitution** (when `docs/constitution.md` exists). The version line equals the version of the newest
+*   **Rule 7 evidence.** Every ticked task has a non-empty evidence block that follows the grammar (section 4).
+*   **Rule 8 constitution** (when `docs/constitution.md` exists). The version line equals the version of the newest
     `docs/governance/constitution-<semver>-sync-impact.md` (newest by semantic version). That report has the line
     `Previous-source: <40 hex blob id>` and a table `| Principle | Disposition | sha256 (previous) | sha256 (this version) |`
     with one row for each Roman numeral I to VIII. A **principle block** is the text from the `### ` heading line through
@@ -476,7 +476,7 @@ strict run fails and a run that is not strict prints a warning and skips those c
     UTF-8, hashed as the SHA-256 of its lines joined by LF with no trailing newline. The check recomputes the block of the new constitution and of the blob named by `Previous-source`
     (`git cat-file blob`), and requires both to equal the table, and the two columns to be equal on every row whose
     disposition is `KEEP`.
-*   **R9 status.** `Status` is exactly one of `Draft`, `Proposed`, `In Review` or `Approved`; any other value fails. A task
+*   **Rule 9 status.** `Status` is exactly one of `Draft`, `Proposed`, `In Review` or `Approved`; any other value fails. A task
     that is ticked in the working tree and was not ticked at the base ref (or whose doc is new) requires `Approved`.
 
 The check does not prove that a review ran in a fresh context, that the counts are true, or that the evidence is true.
@@ -508,7 +508,7 @@ Example (inside a fence, so the scanners ignore it):
   3 passed, 0 failed.
 ```
 
-**The body rule (R3).** The script reads the text of the doc at the `Reviewed-commit` (`git show <commit>:<path>`, a list
+**The body rule (Rule 3).** The script reads the text of the doc at the `Reviewed-commit` (`git show <commit>:<path>`, a list
 form subprocess with the commit already validated) and the text in the working tree, and fails on a carriage return in
 either. It compares them in three steps and reports the first difference with its line number in the working-tree file.
 
@@ -524,7 +524,7 @@ either. It compares them in three steps and reports the first difference with it
     line, a task that moved, or an evidence marker inserted above a task's own description (which would make the
     description part of the evidence block and so change the item) all fail. Added or deleted blank lines do not.
 3.  **Evidence.** For a task that has an evidence block at the Reviewed-commit, the new evidence block must begin with
-    exactly the old evidence lines; the rest of R7 applies to the new block.
+    exactly the old evidence lines; the rest of Rule 7 applies to the new block.
 
 If the doc is changed but its `Reviewed-commit` is not a commit in the clone, see the check above. Until the differences
 are reviewed again, the doc counts as `Draft`.
@@ -537,7 +537,7 @@ the full history. A rebased branch needs a new review run; a doc that a pull req
 earlier squash. The tests for these rules run in temporary git repositories created with `git init` and committed with
 `-c user.name=t -c user.email=t@t -c commit.gpgsign=false`; the remote ref `origin/develop` is created with `git update-ref`.
 
-**Amending an approved doc.** Any change that R3 does not allow, including a typo, makes the doc `Draft`. The re-review
+**Amending an approved doc.** Any change that Rule 3 does not allow, including a typo, makes the doc `Draft`. The re-review
 covers the changed line range (`egm-review` accepts a range) and the three repository reviewers on the diff, and the
 status block records the new reviewed commit.
 
@@ -559,7 +559,7 @@ whole token (not followed by a digit or preceded by a letter, digit or hyphen). 
 wrote under delegation has `Decided by: delegate` and is not citable until the owner changes the cell.
 
 The gate is on the task. A task that depends on such a decision carries a protected line `Owner-gate: OD-YYYY-MM-DD-N`
-(several ids separated by commas). R5 enforces gates for ticked tasks only. The check cannot tell that a task was
+(several ids separated by commas). Rule 5 enforces gates for ticked tasks only. The check cannot tell that a task was
 started, cannot tell who wrote a row (the assistant commits under the owner's git identity), and cannot tell that a task
 needed a gate and has none. The owner's review of the pull request is the control, and it is a convention (decision D).
 The three repository reviewers are asked to look for tasks that need a gate and have none.
@@ -658,7 +658,7 @@ decisions of 2026-11-02 (rows OD-2026-11-03-1 to -8), which direct the replaceme
 of section 3 applied by hand, with the three repository reviewers as they are today (their high, medium and low findings
 are mapped to Blocker, Major and Nit; TEGM-20 makes the mapping permanent), and with the owner accepting in writing the
 findings that stay open. PR 1 does not need that approval: CI checks the record only of an `Approved` doc and only newly
-ticked tasks. Until the doc is `Approved`, its tasks stay unticked (R9), and the evidence for each is in the commit that
+ticked tasks. Until the doc is `Approved`, its tasks stay unticked (Rule 9), and the evidence for each is in the commit that
 closes it and in the pull request description. Once it is `Approved`, one closing commit ticks the tasks with evidence
 blocks that cite those commits.
 
@@ -667,21 +667,21 @@ only before PR 2 merges, because `AGENTS.md`, the constitution and the `verify` 
 
 | Rule or capability today | Carrier after the change | Checked by |
 |---|---|---|
-| Constitution Check, Complexity Tracking | Required sections of a design doc; approval by the three repository reviewers. For unconverted features, the transitional clause on `plan.md` | R1 for design docs; **none** for unconverted features |
-| Task state with evidence; ids | Tasks and evidence blocks in the doc | R4, R7, R9 for design docs; **none** for unconverted features |
+| Constitution Check, Complexity Tracking | Required sections of a design doc; approval by the three repository reviewers. For unconverted features, the transitional clause on `plan.md` | Rule 1 for design docs; **none** for unconverted features |
+| Task state with evidence; ids | Tasks and evidence blocks in the doc | Rule 4, Rule 7, Rule 9 for design docs; **none** for unconverted features |
 | Append-only D, G, O registers | `research.md` stays in `specs/NNN-slug/`; a written rule | **None.** A check is deferred to the conversion design |
 | Contracts that tests and CI read | Unchanged in place | CI contract jobs |
 | Pointers | Backticked-path check and a wider scan | `check-agent-config.py` |
 | Duplicate-work warning | The hook, reading the number from the branch name | A test that runs the hook as a subprocess |
-| Feature numbers | `next-feature-id.py` | R6 |
-| Pinned toolchain | Settings entry and accepted hashes | R2; the settings guard of `check-agent-config.py`; the hook warning |
-| `/speckit-constitution` | An amendment by pull request with a version bump and a Sync Impact Report | R8 |
-| `/speckit-specify`, `/speckit-plan` | `egm-draft` | R1 |
+| Feature numbers | `next-feature-id.py` | Rule 6 |
+| Pinned toolchain | Settings entry and accepted hashes | Rule 2; the settings guard of `check-agent-config.py`; the hook warning |
+| `/speckit-constitution` | An amendment by pull request with a version bump and a Sync Impact Report | Rule 8 |
+| `/speckit-specify`, `/speckit-plan` | `egm-draft` | Rule 1 |
 | `/speckit-clarify` | `egm-brainstorm` questions and the Open Questions section | None |
 | `/speckit-checklist` | Existing `checklists/` stay in `specs/`; the transitional clause makes their unticked items (feature 036's security checklist has 34, reported) block implementation until the owner accepts them | **None.** Review only |
-| `/speckit-tasks` | The author writes the tasks | R4 |
+| `/speckit-tasks` | The author writes the tasks | Rule 4 |
 | `/speckit-analyze` | The approval review. The requirement-to-task coverage check is **deferred** to the conversion design | None for coverage |
-| `/speckit-implement` | No skill; the agent builds from the doc and ticks with evidence | R7 |
+| `/speckit-implement` | No skill; the agent builds from the doc and ticks with evidence | Rule 7 |
 | `/speckit-converge` | `egm-drift-report` (assessment); appending unbuilt work as follow-up tasks is done by the author | None for the appending |
 | `/speckit-taskstoissues` | **None.** No replacement exists | None |
 
@@ -702,7 +702,7 @@ only before PR 2 merges, because `AGENTS.md`, the constitution and the `verify` 
 | The id allocator sees only what the last `git fetch` brought, and branch names are untrusted input | A warning when the fetch is old; names are matched against `^[A-Za-z0-9._/-]{1,80}$` before they are printed; numbers of 1000 or more are ignored | Numbers on branches never pushed are invisible |
 | Removing the tooling breaks other sessions that rebase | The transitional clause; the pull request is not merged by the assistant | A session that rebases after the merge loses the skills |
 | Unconverted features have no check for evidence, ticks or the Check | The transitional clause names the rule; a test greps its seven dependents; the conversion design closes the gap | Hand-edited files |
-| Design docs and committed reports could hold a secret or a local path | R2 rejects absolute machine paths in reports; reports are reviewed in the pull request | No secret scanner covers `docs/designs/` |
+| Design docs and committed reports could hold a secret or a local path | Rule 2 rejects absolute machine paths in reports; reports are reviewed in the pull request | No secret scanner covers `docs/designs/` |
 | Rollback | A forward amendment | A revert restores stale task state |
 
 ## Constitution Check
@@ -785,7 +785,7 @@ The owner chose the option stated in each alternative; the accepted trade-off is
 
 *   **Pros**: A normalized hash needs no git history; a ledger leaves the approved doc untouched.
 *   **Cons**: The normalizer can hide text in evidence blocks, as the chosen design can; a ledger splits tasks from the plan.
-*   **Reason for Rejection**: The owner chose a comparison against the reviewed commit. R3 compares the normalized text read from that commit with the working text (decision S), so it stores no hash. Its weakness (a rebase hides the commit) is handled by the rebase convention of section 4. A normalized-hash fallback was dropped (decision F).
+*   **Reason for Rejection**: The owner chose a comparison against the reviewed commit. Rule 3 compares the normalized text read from that commit with the working text (decision S), so it stores no hash. Its weakness (a rebase hides the commit) is handled by the rebase convention of section 4. A normalized-hash fallback was dropped (decision F).
 
 #### Alternative I: Other ways to pin EGM
 
@@ -837,10 +837,10 @@ The owner chose the option stated in each alternative; the accepted trade-off is
     reports instead of taking a synthesizer's total. The design adds no secret, no `permissions.allow` entry and no
     `permissions.deny` entry (decision O); the exposure is documented here and the owner can move the enabling to user
     scope (Alternative I). Design docs must hold no secret, and committed reports must not carry absolute machine paths
-    (R2).
+    (Rule 2).
 *   **Input handling.** The check and the allocator treat doc content, report paths, branch names and plugin files as
     untrusted: git is called with a list of arguments, `--` before paths and full ref names; a commit id is validated with
-    a full match of `[0-9a-f]{40}` before use and checked as `<id>^{commit}`; report paths are confined as in R2; regular
+    a full match of `[0-9a-f]{40}` before use and checked as `<id>^{commit}`; report paths are confined as in Rule 2; regular
     expressions use full matches, `[0-9]` and bounded digit counts, and are applied per line; branch names are matched
     against `^[A-Za-z0-9._/-]{1,80}$` before they are printed by the hook or the allocator, and the hook prints only names
     of the form `feature/<NNN>-<slug>`; JSON and version parse errors fail closed; failure lines never echo file content.
@@ -869,7 +869,7 @@ The owner chose the option stated in each alternative; the accepted trade-off is
     check on `research.md`, a table of reserved `D`, `G`, `O` and ADR ranges, and the end of the transitional clause.
 *   **One generated index** from the status blocks, in place of `SPECIFICATION-INDEX.md`, `docs/roadmap.md` and
     `docs/traceability.md`, which have drifted.
-*   **A secret scan** over `docs/designs/` (R2 already rejects absolute machine paths in reports).
+*   **A secret scan** over `docs/designs/` (Rule 2 already rejects absolute machine paths in reports).
 *   **A review in CI**, if EGM adds a way to run reviewers headless.
 *   **Hardening the owner control**, if the owner decides to: a `CODEOWNERS` entry for `docs/owner-decisions.md`, `scripts/`
     and `docs/engineering/egm-accepted-hashes.json`; CI running the base branch's copy of the checker; accepting a row only
@@ -891,11 +891,11 @@ below is a task of section 4 with the prefix `TEGM`; it is ticked only with an e
 #### PR 1. The tooling (additive, no normative text)
 
 - [ ] TEGM-1 Create `scripts/check-design-docs.py` and `scripts/tests/test_check_design_docs.py`.
-  *   **Type / Scope**: Script with the rules R1 to R9 of section 3, run as `python3 scripts/check-design-docs.py [--root DIR]`.
-  *   **Proposed Changes**: Implement R1 to R9 exactly as written in sections 3 to 5, with the input handling of the
+  *   **Type / Scope**: Script with the Rules 1 to 9 of section 3, run as `python3 scripts/check-design-docs.py [--root DIR]`.
+  *   **Proposed Changes**: Implement Rules 1 to 9 exactly as written in sections 3 to 5, with the input handling of the
       Non-Functional Requirements and the failure-line format `<rule> <path>[:<line>]: <message>`. Skip
       `docs/designs/README.md` and `TEMPLATE.md`. Tests, one passing and one failing case per rule, including these.
-      Fences: a task, a status line or an owner-decision row inside a code fence is ignored. R3: a three-field `Draft`
+      Fences: a task, a status line or an owner-decision row inside a code fence is ignored. Rule 3: a three-field `Draft`
       becoming a ten-field `Approved` passes; a changed sentence, a reformatted paragraph, a changed `Author`, a deleted
       first hyphen line, a stripped `Owner-gate:` line, a moved task, a new task outside the follow-up region and a
       carriage return each fail; a checkbox-only change, a blank-line-only change, evidence appended to a task and a new
@@ -903,14 +903,14 @@ below is a task of section 4 with the prefix `TEGM`; it is ticked only with an e
       description fails; changed or deleted evidence of a task that was ticked at the Reviewed-commit fails; a
       `.gitattributes` with `-diff` makes no difference. Commit-dependent checks: an unchanged doc whose Reviewed-commit
       is missing passes; a changed doc whose commit is missing fails when `GITHUB_EVENT_NAME` is `pull_request` and warns
-      otherwise; a missing base ref fails. R2: a record with fewer or more than four reports, one file listed four times,
+      otherwise; a missing base ref fails. Rule 2: a record with fewer or more than four reports, one file listed four times,
       a wrong `Reviewer`, an `Agent-blob` that differs from the blob at the commit, `/Users/` in a report, a report path
       `../../.git/config`, a report directory that is a symlink, a sum above `n`, duplicate ids, an acceptance row without a
-      `<report>#<n>` anchor, and a `Reviewed-commit` of `--output=x` (which fails before any git call) each fail. R4: two
-      docs with one `Task-prefix`, and a numbered doc with another doc's number, fail. R5 and the row parser: a row with
+      `<report>#<n>` anchor, and a `Reviewed-commit` of `--output=x` (which fails before any git call) each fail. Rule 4: two
+      docs with one `Task-prefix`, and a numbered doc with another doc's number, fail. Rule 5 and the row parser: a row with
       `Decided by: delegate`, a status `Decided against`, `T018-1` against `Covers` `T018-12`, a row hidden in an HTML
-      comment or a fence, an escaped pipe and a cell-count mismatch each fail. R8: an edited principle block with a KEEP
-      disposition, and a wrong `Previous-source`, fail. R9: `Status: approved` fails, and a ticked task in a `Draft` doc
+      comment or a fence, an escaped pipe and a cell-count mismatch each fail. Rule 8: an edited principle block with a KEEP
+      disposition, and a wrong `Previous-source`, fail. Rule 9: `Status: approved` fails, and a ticked task in a `Draft` doc
       that was unticked at the base ref fails.
 
 - [ ] TEGM-2 Complete `scripts/egm-tree-hash.py` and `scripts/tests/test_egm_tree_hash.py` (first version built).
@@ -984,7 +984,7 @@ below is a task of section 4 with the prefix `TEGM`; it is ticked only with an e
   *   **Type / Scope**: Sync Impact Report in the format of the 3.0.0 report.
   *   **Proposed Changes**: The disposition table of section 1; the added units; the line `Previous-source: <blob id of
       .specify/memory/constitution.md at df59eb0e>` and the table `Principle | Disposition | sha256 (previous) | sha256
-      (this version)` with the rows I to VIII (for R8); the dependents (the files of this plan); the risks of Risks and
+      (this version)` with the rows I to VIII (for Rule 8); the dependents (the files of this plan); the risks of Risks and
       Mitigations; the rollback. Written after TEGM-8's final text.
 
 - [ ] TEGM-10 Move `.specify/memory/sync-impact-rust-sdk-2026-10-27.md` to `docs/governance/sync-impact-rust-sdk-2026-10-27.md`.
@@ -1165,7 +1165,7 @@ None yet.
 *   **Quickstart test**: `cargo test -p sagat-tests --test e2e_payload_classification` for the edited 016 quickstart, with
     a private `CARGO_TARGET_DIR`.
 *   **Journeys**, on a temporary repository with fixture docs and four fixture reports (live reviewers are not needed):
-    CUJ 1 passes the check, and changing one byte of a report then fails it (R2). CUJ 2: ticking a task with an evidence
+    CUJ 1 passes the check, and changing one byte of a report then fails it (Rule 2). CUJ 2: ticking a task with an evidence
     block passes, and editing a sentence of the approved doc fails. CUJ 3: ticking a gated task fails with no `owner` row
     and passes with one. CUJ 4: a record with an unlisted hash fails.
 *   **Obligations**: a throwaway comparison lists the sentences with MUST or MUST NOT in 3.0.0 and shows each present in
