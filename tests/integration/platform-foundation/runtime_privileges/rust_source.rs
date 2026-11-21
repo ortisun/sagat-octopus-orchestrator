@@ -20,6 +20,16 @@ pub enum Tok {
 pub struct Expansion {
     text: String,
     unresolved: Vec<String>,
+    /// A macro of literal parameters whose one rule is a `concat!` of literals and those parameters
+    /// (`($g:literal, $now:literal) => { concat!($g, ".leased_at < ", $now) }`): its parts, a parameter by its
+    /// index. Expanded only where it is called with one string literal per parameter.
+    template: Option<Vec<Part>>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum Part {
+    Text(Expansion),
+    Param(usize),
 }
 
 impl Expansion {
@@ -28,10 +38,35 @@ impl Expansion {
         self.unresolved.extend(other.unresolved.iter().cloned());
     }
 
+    /// The text of a template called with `args`; `None` when the call does not give one literal per parameter.
+    fn instantiate(&self, args: &[String]) -> Option<Self> {
+        let parts = self.template.as_ref()?;
+        let wanted = parts
+            .iter()
+            .filter_map(|part| match part {
+                Part::Param(index) => Some(index + 1),
+                Part::Text(_) => None,
+            })
+            .max()
+            .unwrap_or(0);
+        if args.len() < wanted {
+            return None;
+        }
+        let mut out = Self::default();
+        for part in parts {
+            match part {
+                Part::Text(text) => out.append(text),
+                Part::Param(index) => out.text.push_str(&args[*index]),
+            }
+        }
+        Some(out)
+    }
+
     fn unknown(name: &str) -> Self {
         Self {
             text: format!("{{macro {name}!()}}"),
             unresolved: vec![name.to_owned()],
+            template: None,
         }
     }
 }
@@ -229,8 +264,17 @@ fn take_macros(
         ) && a == "macro_rules"
         {
             let end = matching(&tokens, i + 3, '{', '}');
-            let mut prefix = Expansion::default();
             let body = &tokens[i + 3..end];
+            if let Some(template) = literal_template(body, &macros) {
+                if let Some(module) = module {
+                    macros.insert(format!("crate::{module}::{name}"), template.clone());
+                    macros.insert(format!("$crate::{module}::{name}"), template.clone());
+                }
+                macros.insert(name.clone(), template);
+                i = end + 1;
+                continue;
+            }
+            let mut prefix = Expansion::default();
             let from = body
                 .iter()
                 .position(|t| matches!(t, Tok::Ident(word, _) if word == "concat"))
@@ -266,6 +310,101 @@ fn take_macros(
         }
     }
     (macros, kept)
+}
+
+/// The template of a macro body `{ ($a:literal, ...) => { concat!(...) }; }` whose `concat!` holds only literals, its
+/// parameters and fixed calls; `None` for any other shape (it is then read as a prefix, as before).
+fn literal_template(body: &[Tok], macros: &BTreeMap<String, Expansion>) -> Option<Expansion> {
+    // body[0] is `{`; the rule's matcher follows
+    if body.get(1) != Some(&Tok::Punct('(')) {
+        return None;
+    }
+    let close = matching(body, 1, '(', ')');
+    let mut params = Vec::new();
+    for item in body[2..close].split(|t| *t == Tok::Punct(',')) {
+        match item {
+            [] => {}
+            [
+                Tok::Punct('$'),
+                Tok::Ident(name, _),
+                Tok::Punct(':'),
+                Tok::Ident(kind, _),
+            ] if kind == "literal" => params.push(name.clone()),
+            _ => return None,
+        }
+    }
+    if params.is_empty() {
+        return None;
+    }
+    let concat = body[close..]
+        .iter()
+        .position(|t| matches!(t, Tok::Ident(word, _) if word == "concat"))?
+        + close;
+    if body.get(concat + 1..concat + 3) != Some(&[Tok::Punct('!'), Tok::Punct('(')]) {
+        return None;
+    }
+    let inner_close = matching(body, concat + 2, '(', ')');
+    let inner = &body[concat + 3..inner_close];
+    let mut parts = Vec::new();
+    let mut at = 0;
+    while at < inner.len() {
+        if let Some((name, next, _)) = fixed_call(inner, at) {
+            parts.push(Part::Text(
+                fixed_text(macros, &name)
+                    .cloned()
+                    .unwrap_or_else(|| Expansion::unknown(&name)),
+            ));
+            at = next;
+            continue;
+        }
+        match (&inner[at], inner.get(at + 1)) {
+            (Tok::Str(text, _), _) => parts.push(Part::Text(Expansion {
+                text: text.clone(),
+                ..Expansion::default()
+            })),
+            (Tok::Punct('$'), Some(Tok::Ident(name, _))) => {
+                parts.push(Part::Param(params.iter().position(|p| p == name)?));
+                at += 1;
+            }
+            (Tok::Punct(','), _) => {}
+            _ => return None,
+        }
+        at += 1;
+    }
+    Some(Expansion {
+        template: Some(parts),
+        ..Expansion::default()
+    })
+}
+
+/// A call `name!("a", "b")` of a template at `at`: its expansion and the index after the call's `)`. A call that does
+/// not give one literal per parameter is unresolved (its text is not guessed).
+fn template_call(
+    tokens: &[Tok],
+    at: usize,
+    macros: &BTreeMap<String, Expansion>,
+) -> Option<(Expansion, usize)> {
+    let (Tok::Ident(name, _), Some(Tok::Punct('!')), Some(Tok::Punct('('))) =
+        (tokens.get(at)?, tokens.get(at + 1), tokens.get(at + 2))
+    else {
+        return None;
+    };
+    let template = macros.get(name).filter(|m| m.template.is_some())?;
+    let close = matching(tokens, at + 2, '(', ')');
+    let mut args = Vec::new();
+    for item in tokens[at + 3..close].split(|t| *t == Tok::Punct(',')) {
+        match item {
+            [] => {}
+            [Tok::Str(text, _)] => args.push(text.clone()),
+            _ => return Some((Expansion::unknown(name), close + 1)),
+        }
+    }
+    Some((
+        template
+            .instantiate(&args)
+            .unwrap_or_else(|| Expansion::unknown(name)),
+        close + 1,
+    ))
 }
 
 /// Only the fixed no-argument calls this repository uses, preserving any unknown path in full.
@@ -390,6 +529,18 @@ fn expand(
             i = next;
             continue;
         }
+        if let Some((expansion, next)) = template_call(tokens, i, macros) {
+            let line = tokens[i..next]
+                .iter()
+                .find_map(|t| match t {
+                    Tok::Str(_, line) | Tok::Ident(_, line) => Some(*line),
+                    _ => None,
+                })
+                .unwrap_or(0);
+            out.push(Tok::Expanded(expansion, line, sql_context));
+            i = next;
+            continue;
+        }
         if let (Tok::Ident(name, _), Some(Tok::Punct('!')), Some(Tok::Punct('('))) =
             (&tokens[i], tokens.get(i + 1), tokens.get(i + 2))
         {
@@ -407,6 +558,11 @@ fn expand(
                 let mut line = 0;
                 let mut at = 0;
                 while at < inner.len() {
+                    if let Some((expansion, next)) = template_call(inner, at, macros) {
+                        text.append(&expansion);
+                        at = next;
+                        continue;
+                    }
                     if let Some((name, next, _)) = fixed_call(inner, at) {
                         text.append(
                             &fixed_text(macros, &name)
@@ -575,6 +731,11 @@ pub fn macro_prelude_of(
                 || name.starts_with(&format!("$crate::{module}::"))
         })
         .collect()
+}
+
+/// The macros the crate root declares, by name: textually before its modules, so every module calls them unqualified.
+pub fn root_macros(source: &str) -> BTreeMap<String, Expansion> {
+    take_macros(lex(source), BTreeMap::new(), None).0
 }
 
 fn macro_scope(
@@ -763,6 +924,30 @@ mod tests {
             "SELECT id FROM steps WHERE true AND EXISTS (SELECT 1 FROM secret_pools) ORDER BY id LIMIT $1"
         );
         assert!(found.fragments.is_empty());
+    }
+
+    #[test]
+    fn a_macro_of_literal_parameters_is_expanded_with_its_arguments() {
+        // the form of `purgeable_grant!` (feature 022): parameters substituted, never glued into the text
+        let found = extract(
+            r#"macro_rules! aged { ($g:literal, $now:literal) => { concat!($g, ".leased_at < ", $now) }; }
+               fn f() { q(concat!("DELETE FROM grants g WHERE ", aged!("g", "clock_timestamp()"), " AND true")); }"#,
+        );
+        assert_eq!(found.statements.len(), 1, "{found:?}");
+        assert_eq!(
+            found.statements[0].text,
+            "DELETE FROM grants g WHERE g.leased_at < clock_timestamp() AND true"
+        );
+        assert!(found.unresolved.is_empty(), "{found:?}");
+    }
+
+    #[test]
+    fn a_template_called_without_literals_is_unresolved_instead_of_guessed() {
+        let found = extract(
+            r#"macro_rules! aged { ($g:literal) => { concat!($g, ".leased_at < now()") }; }
+               fn f(alias: &str) { q(concat!("DELETE FROM grants g WHERE ", aged!(alias))); }"#,
+        );
+        assert_eq!(found.unresolved.len(), 1, "{found:?}");
     }
 
     #[test]

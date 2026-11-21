@@ -223,7 +223,9 @@ fn store_macro_prelude(root: &Path) -> BTreeMap<String, rust_source::Expansion> 
         .filter(|path| path.starts_with(&src))
         .collect();
     files.sort_by_key(|path| (path != &src.join("execution.rs"), path.clone()));
-    let mut inherited = BTreeMap::new();
+    // the crate root's macros (`purgeable_grant!`, declared before its modules) are in scope by name in every module
+    let lib = std::fs::read_to_string(src.join("lib.rs")).expect("read the crate root");
+    let mut inherited = rust_source::root_macros(&lib);
     for path in files {
         let module = path
             .strip_prefix(&src)
