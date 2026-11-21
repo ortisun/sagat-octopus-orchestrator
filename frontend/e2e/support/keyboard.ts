@@ -72,6 +72,8 @@ export async function choose(page: Page, select: Locator, label: string): Promis
   expect(node?.name.trim(), `the selector ${String(select)} has no accessible name`).not.toBe('');
   if ((await select.getAttribute('aria-expanded')) !== 'true') await page.keyboard.press('Enter');
   await expect(select).toHaveAttribute('aria-expanded', 'true');
+  // The list opens on the option already chosen, which may be below the one wanted: Home goes to the first.
+  await page.keyboard.press('Home');
   const highlighted = () => page.evaluate(() => {
     const id = document.activeElement?.getAttribute('aria-activedescendant');
     return id ? (document.getElementById(id)?.textContent ?? '').trim() : '';

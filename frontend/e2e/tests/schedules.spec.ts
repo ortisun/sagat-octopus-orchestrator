@@ -36,7 +36,7 @@ test('SCHEDULES a person creates a schedule, finds it, pauses, resumes, runs it 
   // Empty state: a name filter nothing matches (the keyboard types into the field, the list asks once typing rests).
   const filter = page.getByLabel('Name starts with');
   await typeInto(page, filter, name);
-  await expect(page.getByText('No schedule matches these filters.')).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'No schedule matches these filters.' })).toBeVisible();
   await expectAccessible(page, 'the schedules list, nothing matches');
   await typeInto(page, filter, '');
 
@@ -164,7 +164,7 @@ test('SCHEDULES a person creates a schedule, finds it, pauses, resumes, runs it 
   await expect(page.getByRole('heading', { level: 1, name: 'Schedules' })).toBeVisible();
   expect((await api.call('GET', `/namespaces/${namespaceId}/schedules/${scheduleId}`)).status).toBe(404);
   await typeInto(page, page.getByLabel('Name starts with'), name);
-  await expect(page.getByText('No schedule matches these filters.')).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'No schedule matches these filters.' })).toBeVisible();
   expect(problems).toEqual([]);
 });
 
@@ -183,7 +183,7 @@ test('SCHEDULES a refusal of the platform is read in words: a name in use, a quo
   // A namespace nobody has made a schedule in: the empty state of the list, in words.
   await signInByKeyboard(page, env.tokens.admin, own.slug);
   await openFromMenu(page, 'Schedules', 'Schedules');
-  await expect(page.getByText('No schedule yet.')).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'No schedule yet.' })).toBeVisible();
   await expectAccessible(page, 'the schedules list, empty');
 
   // This one repeats by cron expressions in a time zone (the other journey's by an interval).
@@ -309,7 +309,7 @@ test('SCHEDULES a backfill acts on the times of a past range: asked for in a dia
   await activate(page, page.getByRole('row').filter({ hasText: name }).getByRole('link', { name }));
   await expect(page.getByRole('heading', { level: 1, name: new RegExp(`^${name}`) })).toBeVisible();
   const backfills = page.getByRole('region', { name: 'Backfills' });
-  await expect(backfills.getByText('No backfill yet.')).toBeVisible();
+  await expect(backfills.getByRole('heading', { name: 'No backfill yet.' })).toBeVisible();
   await expectAccessible(page, 'the schedule, no backfill yet');
 
   // The dialog: what is wrong with a range is said in words, before anything is sent.

@@ -45,7 +45,7 @@ test('drains and resumes an isolated worker identity through Operations', async 
     await choose(page.getByRole('combobox', { name: 'Namespace', exact: true }), namespaceSlug);
     await page.getByRole('link', { name: 'Operations', exact: true }).click();
     await expect(page.getByRole('heading', { name: 'Operations', exact: true })).toBeVisible();
-    await expect(page.getByText('No alerts are recorded for this namespace.')).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'No alerts are recorded for this namespace.' })).toBeVisible();
     const identity = page.getByRole('group', { name: `Worker identity ${subject}` });
     await expect(identity).toContainText(workerName);
 

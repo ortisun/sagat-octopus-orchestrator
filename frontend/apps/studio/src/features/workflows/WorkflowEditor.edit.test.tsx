@@ -75,8 +75,8 @@ describe('adding nodes', () => {
     await user.keyboard('{Alt>}n{/Alt}');
     const dialog = await screen.findByRole('dialog', { name: 'Add a node' });
     // The thirteen kinds of node, and the dialog's own close button.
-    expect(within(dialog).getAllByRole('button').filter((button) => button.getAttribute('aria-label') !== 'Close Add a node' && button.textContent !== '✕')).toHaveLength(13);
-    expect(within(dialog).getByRole('button', { name: 'Close Add a node' })).toBeInTheDocument();
+    expect(within(dialog).getAllByRole('button').filter((button) => button.getAttribute('aria-label') !== 'Close dialog' && button.textContent !== '✕')).toHaveLength(13);
+    expect(within(dialog).getByRole('button', { name: 'Close dialog' })).toBeInTheDocument();
     await user.click(within(dialog).getByRole('button', { name: 'Timer' }));
     await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Add a node' })).not.toBeInTheDocument());
     expect(row('timer_1')).toBeInTheDocument();

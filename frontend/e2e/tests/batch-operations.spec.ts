@@ -37,7 +37,7 @@ test.afterEach(cancelLeftovers);
 async function runsOf(page: Page, workflow: string, rows: number): Promise<void> {
   await openFromMenu(page, 'Runs', 'Runs');
   await choose(page, page.getByRole('combobox', { name: 'Workflow', exact: true }), workflow);
-  if (rows === 0) await expect(page.getByText('No run matches these filters.')).toBeVisible();
+  if (rows === 0) await expect(page.getByRole('heading', { name: 'No run matches these filters.' })).toBeVisible();
   else await expect(page.getByRole('table', { name: 'Runs, newest first' }).locator('tbody tr[data-index]')).toHaveCount(rows);
 }
 
@@ -114,7 +114,7 @@ test('BATCH a person selects runs by the filters of the list, counts them, start
 
   // The outcome filter: a state nothing is in is an empty state, in words.
   await choose(page, selector(page, 'Outcome'), 'Failed');
-  await expect(page.getByText('No run with this outcome.')).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'No run with this outcome.' })).toBeVisible();
   await expectAccessible(page, 'the batch job, no run with the outcome');
   await choose(page, selector(page, 'Outcome'), 'All outcomes');
   await expect(items.locator('tbody tr')).toHaveCount(3);
@@ -250,7 +250,7 @@ test('BATCH an action that does not apply to a run skips it with the reason in w
 
   await signInByKeyboard(page, env.tokens.admin, own.slug);
   await openFromMenu(page, 'Batches', 'Batch operations');
-  await expect(page.getByText('No batch job yet.')).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'No batch job yet.' })).toBeVisible();
   await expectAccessible(page, 'the batch jobs, none yet');
 
   // No run matches: counted as zero, and the job is not started.
@@ -385,7 +385,7 @@ test('BATCH runs whose step has an outcome nobody knows are not retried blindly:
     await choose(page, selector(page, 'Outcome'), 'Failed');
     await expect(items.locator('tbody tr')).toHaveCount(2);
     await choose(page, selector(page, 'Outcome'), 'Succeeded');
-    await expect(page.getByText('No run with this outcome.')).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'No run with this outcome.' })).toBeVisible();
     expect(problems).toEqual([]);
   } finally {
     await host.stop();

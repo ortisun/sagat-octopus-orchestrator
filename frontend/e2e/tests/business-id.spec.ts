@@ -129,7 +129,7 @@ test('BUSINESS ID a run is started with its own identifier: a bad one is refused
   await typeInto(page, filter, rememberedId);
   await expect(rows).toHaveCount(2);
   await typeInto(page, filter, `${holderId}-nothing-has-this`);
-  await expect(page.getByText('No run matches these filters.')).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'No run matches these filters.' })).toBeVisible();
   await expectAccessible(page, 'the run list, no run has the identifier');
   expect(withoutRefusals(problems, refusals, [409])).toEqual([]);
 });

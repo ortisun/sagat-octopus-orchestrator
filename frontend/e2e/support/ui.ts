@@ -70,3 +70,14 @@ export function factValue(scope: Page | Locator, term: string): Locator {
   const whole = new RegExp(`^\\s*${term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*$`);
   return scope.locator('dt').filter({ hasText: whole }).locator('xpath=following-sibling::dd[1]');
 }
+
+/**
+ * Waits until no transition or animation that ends is still running: a dialog of the design system fades in and the navigation
+ * drawer slides in, and a check made meanwhile measures a frame a person sees for a moment (colours half faded, a control half
+ * way across). An animation that never ends (a spinner) does not count.
+ */
+export async function settled(page: Page): Promise<void> {
+  await page.waitForFunction(() =>
+    document.getAnimations().every((animation) => animation.playState !== 'running' || animation.effect?.getComputedTiming().iterations === Infinity),
+  );
+}

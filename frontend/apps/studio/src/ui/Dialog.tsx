@@ -41,10 +41,10 @@ export function Dialog({ open, title, onClose, children, width }: { open: boolea
     >
       <DialogHeader
         title={title}
-        // A way out that does not depend on the body: some bodies offer no button of their own. It is
-        // named after the dialog so that it is not mistaken for a "Close" button of the body.
+        // A way out that does not depend on the body: some bodies offer no button of their own. Its name
+        // says what it closes and does not repeat the title, which a button of the body may also say.
         endContent={
-          <AstryxButton variant="ghost" size="sm" label={`Close ${title}`} onClick={onClose}>
+          <AstryxButton variant="ghost" size="sm" label="Close dialog" onClick={onClose}>
             <span aria-hidden="true">✕</span>
           </AstryxButton>
         }

@@ -5,13 +5,23 @@ import { Text as AstryxText } from '@astryxdesign/core/Text';
 import { VisuallyHidden as AstryxVisuallyHidden } from '@astryxdesign/core/VisuallyHidden';
 import type { ReactNode } from 'react';
 
-/** A heading of the page's outline. `level` is its place in the outline; `look` lets a deep heading read larger or smaller. */
+/**
+ * A heading of the page's outline. `level` is its place in the outline and the element it is (`h1` to
+ * `h4`), so every tool reads the same level from it; `look` lets a heading read larger or smaller than its
+ * level, through a class of the Studio's stylesheet that takes the design system's type tokens.
+ */
 export function Heading({ level, children, id, look, className }: { level: 1 | 2 | 3 | 4; children: ReactNode; id?: string; look?: 1 | 2 | 3 | 4 | 5 | 6; className?: string }) {
   return (
-    <AstryxHeading level={look ?? level} {...(look !== undefined && look !== level ? { accessibilityLevel: level } : {})} {...(id ? { id } : {})} {...(className ? { className } : {})}>
+    <AstryxHeading level={level} {...(id ? { id } : {})} {...lookClass(level, look, className)}>
       {children}
     </AstryxHeading>
   );
+}
+
+/** The class that gives a heading the look of another level, beside any class of its own. */
+export function lookClass(level: number, look: number | undefined, className: string | undefined): { className?: string } {
+  const classes = [look !== undefined && look !== level ? `ui-heading-look-${look}` : '', className ?? ''].filter(Boolean).join(' ');
+  return classes ? { className: classes } : {};
 }
 
 /** A paragraph of ordinary text. */

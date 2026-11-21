@@ -36,8 +36,9 @@ test('US01 an author builds a workflow without programming: the platform checks 
 
   const id = await newWorkflow(page, 'invoice-flow');
   // Empty: the platform's own check says so, and publishing is blocked with the reason.
-  await expect(page.getByText(/Publishing is blocked: the platform found \d+ problems? in this workflow/)).toBeVisible();
+  // The reason is the description of the unavailable button (its hint, which its tooltip repeats).
   await expectUnavailable(page.getByRole('button', { name: 'Publish…' }));
+  await expect(page.getByRole('button', { name: 'Publish…' })).toHaveAccessibleDescription(/Publishing is blocked: the platform found \d+ problems? in this workflow/);
 
   // Two steps and an end, added from the keyboard-reachable menu; each is linked to the one it was added after.
   await addNode(page, 'Step');

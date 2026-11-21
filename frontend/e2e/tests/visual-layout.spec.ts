@@ -3,7 +3,7 @@ import type { Locator, Page } from '@playwright/test';
 import { env } from '../support/env';
 import { Api, IR_BASE } from '../support/platform';
 import { failOnBrowserErrors, goTo, signIn } from '../support/studio';
-import { expectValue } from '../support/ui';
+import { expectValue, settled } from '../support/ui';
 
 const DESKTOP_HEIGHT = 812;
 /** Below this width the application shell folds the sidebar into a drawer behind "Open navigation" (the theme's `md` breakpoint). */
@@ -35,6 +35,8 @@ async function expectNoPageHorizontalOverflow(page: Page, where: string): Promis
 }
 
 async function expectHorizontallyInside(container: Locator, items: Locator, where: string): Promise<void> {
+  // Geometry of the page at rest: a drawer sliding in or a dialog growing in would put its controls anywhere.
+  await settled(container.page());
   const outer = await container.boundingBox();
   expect(outer, `${where}: container has bounds`).not.toBeNull();
   const count = await items.count();

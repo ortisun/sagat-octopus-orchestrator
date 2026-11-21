@@ -278,7 +278,7 @@ describe('Dialog: the close button', () => {
         <p>Probing…</p>
       </Dialog>,
     );
-    await user.click(within(screen.getByRole('dialog', { name: 'Connection probe' })).getByRole('button', { name: 'Close Connection probe' }));
+    await user.click(within(screen.getByRole('dialog', { name: 'Connection probe' })).getByRole('button', { name: 'Close dialog' }));
     expect(closed).toHaveBeenCalledTimes(1);
   });
 });
@@ -383,7 +383,10 @@ describe('Table, text and links', () => {
       </>,
     );
     expect(screen.getByRole('heading', { level: 1, name: 'Runs' })).toBeInTheDocument();
-    expect(screen.getByRole('heading', { level: 3, name: 'Attempts' })).toBeInTheDocument();
+    // The element is the outline level, so every tool reads the same level from it; only the look changes.
+    const attempts = screen.getByRole('heading', { level: 3, name: 'Attempts' });
+    expect(attempts.tagName).toBe('H3');
+    expect(attempts).toHaveClass('ui-heading-look-5');
     expect(screen.getByText('Newest first.')).toBeInTheDocument();
     expect(screen.getByText('No runs yet.')).toBeInTheDocument();
     expect(screen.getByText('Loading runs…').closest('[role="status"]')).not.toBeNull();
