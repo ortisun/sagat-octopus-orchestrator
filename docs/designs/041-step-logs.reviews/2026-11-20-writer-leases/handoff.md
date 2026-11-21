@@ -188,3 +188,34 @@ G041-025 is closed, and gap G041-026 was measured at 1 carry of 864,000. The ful
 - questions O041-040, O041-041 and O041-042 (ADR-0097);
 - question O041-038 (ADR-0095), which waits for a pass.
 
+
+## Update after the owner's answers and the approval run's first round (2026-11-20)
+
+**Done:**
+- The owner's answers are recorded (commit `ac55c32b`): OD-2026-11-20-13 to -16 in `docs/owner-decisions.md`, decision
+  D041-123, O041-038 / -040 / -041 / -042 answered, ADR-0095 and ADR-0097 Accepted, ADR-0027's Amendment of the
+  Amendment written, ADR-0084 and ADR-0027 marked partly superseded, `docs/runbooks/step-logs.md` created with the
+  1 × 16 cost, `docs/releases/unreleased.md` entry. The design is still `Draft`.
+- The approval path is OD-2026-11-20-17, "Full review, capped" (commit `ff8033cd`): the egm-review on the changed text
+  and the three repository reviewers at the final commit; if Majors remain after the first round, fix the "fix" items,
+  re-read them briefly, accept the rest as recommended with one owner row each citing OD-2026-11-20-17 (written like
+  OD-2026-11-16-200 and following); a Blocker is only fixed.
+- The first round ran on `ff8033cd`: all five egm-review stages in order (EGM hash
+  `003679ce…83f9`, on the accepted list) and the three repository reviewers. Reports and the triage are in
+  `docs/designs/041-step-logs.reviews/2026-11-20-approval/` (`consolidated_review_report.md` lists every Blocker and Major
+  with its class: text, delegate or owner). Totals: 3 Blockers (A-1, D-1, R-1), 68 Majors, 86 Nits.
+
+**Left, in order:**
+1. The coordinating session settles the owner and delegate rows of `consolidated_review_report.md` (A-1 with Z-1 and
+   I-3, C-6 and A-2 / D-4 need the owner; D-1, D-2, S-1, C-3, C-4, I-5, I-7 are delegate decisions).
+2. Answer every Blocker and Major, documents first, each in a new `resolution.md` of the approval folder; commit.
+3. Short re-reads of the fixes at the final commit by the three repository reviewers and one egm-review summary for the
+   approval block, each with the header lines `check-design-docs.py` reads (`Doc:`, `Reviewed-commit:` the final commit,
+   `Reviewer:` `egm-review` / `architecture` / `security` / `correctness`, `EGM-hash:` for egm-review, `Agent-blob:` the
+   blob of `.claude/agents/<lens>-reviewer.md` at that commit, one `Counts:` line, no absolute machine path). The blobs at
+   `ff8033cd`: architecture `c6fbfd6f…`, security `c02123dd…`, correctness `d1de651d…`.
+4. Owner rows for each finding accepted as recommended (Z-2, D-12 and any Major still open), anchored
+   `<report path>#<n>` as the 2026-11-16 rows are; then the approval block (Status Approved, Reviewed-commit, EGM-hash,
+   Claude-Code 2.1.329, Reports, Open findings "Blocker 0, Major 0", Accepted), the tick of task T041-35 with its
+   evidence (run 44834024933, OD-2026-11-20-13), and `check-design-docs.py` passing.
+5. Step 2 of the coordinator's brief: merge the held tasks T041-3 and T041-4 and build through T041-36.
