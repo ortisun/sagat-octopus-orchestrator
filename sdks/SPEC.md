@@ -277,7 +277,7 @@ jitter (`min(maxDelay, initialDelay * 2^n)` scaled by a random factor in `[0.5, 
 | declared query, and declared update with its body `updateKey` | the same, with the exact same body |
 | `uploadRunInput` | never: its one-pass body is not replayable |
 | worker `PollTasks`, `Heartbeat` | `UNAVAILABLE`, `RESOURCE_EXHAUSTED`, transport failures |
-| worker `AcknowledgeTasks` (1.8) | the same (the server's own deadline is `UNAVAILABLE`), and `DEADLINE_EXCEEDED`, `CANCELLED`, `UNKNOWN`, `ABORTED`, a retryable `INTERNAL`, an unusable answer; once on `UNAUTHENTICATED` with a fresh token; with no limit on attempts, each bounded to 6 s, until a verdict or the give-up of §6.2; the leases answered `RETRY` are asked for again together after 200 ms doubling to 1 s, outside this backoff and the user's retry options |
+| worker `AcknowledgeTasks` (1.8) | the same (the server's own deadline is `UNAVAILABLE`), and `DEADLINE_EXCEEDED`, `CANCELLED`, `UNKNOWN`, `ABORTED`, a retryable `INTERNAL`, an unusable answer; once on `UNAUTHENTICATED` with a fresh token; with no limit on attempts, each bounded to 6 s, until a verdict or the give-up of §6.2; after a failure with the server's envelope, a call of more than eight leases is split in two; the leases answered `RETRY` are asked for again together after 200 ms doubling to 1 s, outside this backoff and the user's retry options |
 | worker `CompleteStep`, `FailStep` | the same, with the **same** idempotency key and body; at most 5 times |
 | `RegisterWorker` | the same; on `UNAUTHENTICATED` once, with a fresh token |
 
@@ -363,22 +363,29 @@ procedure, the verdicts and the failure table are [`stream-completion.md`](../sp
 stream window is. An unflagged lease is dispatched at once. As soon as a frame or a poll answer is read, the host sends one
 `AcknowledgeTasks` with its flagged leases that it will run, concurrently with its next receive, and makes no call for them but
 the hand-back, and starts no handler or heartbeat, before the answer. It never dispatches a flagged lease without `ACKNOWLEDGED`,
-whatever it has declined: one received while it declines is handed back. `ACKNOWLEDGED`: dispatch (§6.3) with the lease's own
-expiry as the deadline. `RETRY`: ask again for those leases (§5), which is not a failed call. `CANCELLED`: run nothing and hand the
-lease back, which is also the answer when the lease is too close to its end to start. `NOT_HELD`: drop the lease, run and report
-nothing, free its slot, emit `dropped` with that code. A call that fails is
-repeated as §5 says. The host gives a lease up when its time left at receipt (its expiry minus the host's clock at receipt) minus 6 s
-has passed on its monotonic clock, clamped to between 6 s and 120 s, never while an attempt is in flight (it waits for that
-attempt's outcome, at most 6 s, and runs a late `ACKNOWLEDGED`), and never compares its clock with the server's again; a lease given
-up is not run and is handed back. An answer that carries the server's reason (`ACKNOWLEDGEMENT_SHED`,
-`ACKNOWLEDGEMENT_DEADLINE`) is the server's trouble and is waited out; the server stops flagging by itself while it lasts. The host
-declines acknowledgement only on `UNIMPLEMENTED`, after three calls in a row refused with `PERMISSION_DENIED`, `INVALID_ARGUMENT`,
-`FAILED_PRECONDITION` or `NOT_FOUND`, or after three calls given up in a row (in the order of their give-ups, at least 60 s from the
-first to the third) whose attempts ended with no answer or a status without the server's reason, while during each another call to
-the same server was answered (an `OK` unary answer, a stream message, a normally ended poll, or an `OK` answer to one of its own
-hand-backs); an `ACKNOWLEDGED` resets the count. When `lease_time_left_ms` less the attempt's duration is under 2 s, the host treats
-`ACKNOWLEDGED` as `CANCELLED`. It then waits a random delay of up to 6 s, closes its receive, hands back what waits, waits for the
-answers of those hand-backs (their retries of §5), logs once, and registers again at its own minor with
+whatever it has declined: one received while it declines is handed back.
+
+- `ACKNOWLEDGED`: dispatch (§6.3) with the lease's own expiry as the deadline. When `lease_time_left_ms` less the attempt's
+  duration is under 2 s, the host sends the first heartbeat before it starts the handler and hands the lease back if that
+  heartbeat fails; when `attempt_time_left_ms` less the attempt's duration is under 2 s, it treats the answer as `CANCELLED`.
+- `RETRY`: ask again for those leases (§5), which is not a failed call.
+- `CANCELLED`: run nothing and hand the lease back, which is also the answer when the lease is too close to its end to start.
+- `NOT_HELD`: drop the lease, run and report nothing, free its slot, emit `dropped` with that code.
+
+A call that fails is repeated as §5 says. The host gives a lease up when its time left at receipt (its expiry minus the host's
+clock at receipt) minus 6 s has passed on its monotonic clock, clamped to between 6 s and 120 s, never while an attempt is in flight
+(it waits for that attempt's outcome, at most 6 s, and runs a late `ACKNOWLEDGED`), and never compares its clock with the server's
+again; a lease given up is not run and is handed back. The server flags a lease at most once per attempt, so a failing path costs a
+lease at most one give-up. A transient answer that carries the server's error envelope (`x-sagat-error`) is the server's own
+trouble and is waited out.
+
+The host declines acknowledgement only on `UNIMPLEMENTED`, after three calls in a row refused with `PERMISSION_DENIED`,
+`INVALID_ARGUMENT`, `FAILED_PRECONDITION` or `NOT_FOUND`, or after three counted calls in the run since the last `ACKNOWLEDGED`. A
+call counts when every lease of it was given up with no verdict, every attempt ended with no answer or with a status without the
+server's envelope, and another call to the same server was answered during it or one of its own hand-backs was answered after its
+give-up (an `OK` unary answer, a stream message, a normally ended poll, an `OK` hand-back). A call that does not qualify neither
+counts nor breaks the run. On fallback the host waits a random delay of up to 6 s, closes its receive, hands back what waits, waits
+for the answers of those hand-backs (their retries of §5), logs once, and registers again at its own minor with
 `declines_acknowledgement = true` for 10 minutes (a random factor in `[0.8, 1.2]`, doubling for each fallback in a row up to an
 hour, back to 10 minutes after an `ACKNOWLEDGED`), then registers again without declining.
 
@@ -466,7 +473,7 @@ A handler's input type that cannot be built from the document is not a crash: th
   why it is clamped; a host whose clock is not synchronized sets `heartbeatIntervalMs` explicitly. The
   interval is then counted on the SDK's monotonic clock. At 1.8 the heartbeat of a flagged lease starts when it is
   answered `ACKNOWLEDGED`, and its first beat comes at the earlier of the interval and a third of the answer's
-  `lease_time_left_ms` less the duration of its acknowledgement attempt, at once when that is under 1.5 s, whatever interval
+  `lease_time_left_ms` less the duration of its acknowledgement attempt (before the handler starts when that time is under 2 s, §6.2), whatever interval
   is configured (the acknowledgement renews nothing).
 - `Heartbeat` carries `task_id, worker_id, generation, lease_token, run_id, step_id, attempt` (the last
   three only from protocol 1.1). The answer's `lease_expires_at_epoch_ms` becomes the context's new deadline.
