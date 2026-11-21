@@ -3584,7 +3584,7 @@ None.
   Owner-gate: OD-2026-11-21-8
   Files: modify `tests/performance/scalability-ha/carry_spike_judge.py` (or the judge T041-9 uses) and its test,
   `specs/041-step-logs/validation-report.md`, `docs/runbooks/step-logs.md`.
-- [ ] T041-39 The quota view reads the grant and the step-log usage in one snapshot (decision D041-141, amending
+- [x] T041-39 The quota view reads the grant and the step-log usage in one snapshot (decision D041-141, amending
   D041-140 item 5; fail-closed as OD-2026-11-20-19 is). `QuotaStore::reveals_in_every_namespace` and the separate usage
   read of `tenant_step_log_bytes` are replaced by `QuotaStore::step_log_usage_if_revealed(tenant, subject)`, one
   `SELECT` of the membership role, the grant in every namespace and the usage; the application shows the usage only
@@ -3592,12 +3592,25 @@ None.
   snapshot, or no usage. `QuotaStore::usage` refuses `tenant_step_log_bytes`. For task T041-5: the usage subquery of that
   `SELECT` (`crates/infra-postgres/src/reveal_grants.rs`, not `quotas.rs:1228-1235`) becomes a call of
   `sagat_quota_step_log_usage(m.tenant_id)` in the same statement, the function `STABLE` (checked by the privilege
-  audit, and a hand mutation to `VOLATILE` fails the test below). Tests in `integration_security_multitenancy`:
+  audit, and a hand mutation to `VOLATILE` fails the test below). This replaces T041-5's "the quota readers of
+  `crates/infra-postgres/src/quotas.rs` (`:1228-1235` read S today)", whose approved text cannot change: the general
+  read's refusal stays, T041-5's files gain `crates/infra-postgres/src/reveal_grants.rs`, and its privilege audit
+  checks `provolatile = 's'` of `sagat_quota_step_log_usage`. Tests in `integration_security_multitenancy`:
   `quotas::a_view_that_reads_after_a_revoke_commits_never_shows_the_step_log_usage` (a revoke transaction deletes the
   grant, sets the usage to 7,777 bytes and holds `tenant_retained_usage`; the view a `clear` returns is seen waiting on
   it in `pg_stat_activity`; the revoke commits; 7,777 is never shown with the grant, and the next view withholds) and
   `quotas::the_store_refuses_the_step_log_usage_without_the_grant`. Done when they are seen failing (the first on the
   two-transaction read) and pass, with the quota tests, as the owner role and as the runtime role.
+  Evidence (2026-11-21): the race test, written first, failed on the two-transaction read (`c07372fd`'s parent code)
+    with `left: (Some(7777), false)`; `the_store_refuses_the_step_log_usage_without_the_grant` failed before the
+    refusal; both pass. Hand mutations, each failing and restored with a fresh build: the grant flag ignored (2 tests
+    fail), the membership role ignored (1), the read split back into two statements (the race test, `(Some(7777),
+    false)`). `cargo test -p sagat-tests --test integration_security_multitenancy --locked --no-fail-fast` at the code
+    of `7d34e23b`: 130 passed, 0 failed as the owner role, and 130 passed, 0 failed with `SAGAT_TEST_AS_RUNTIME_ROLE=1`;
+    `cargo test -p sagat-application --lib`: 192 passed; `cargo clippy -p sagat-application -p sagat-infra-postgres -p
+    sagat-tests --all-targets --locked -- -D warnings`: clean. Review: `docs/designs/041-step-logs.reviews/
+    2026-11-21-quota-view-snapshot/` (security and correctness, Blocker 0, Major 1 answered; the correctness re-read
+    at `7d34e23b`: Blocker 0, Major 0).
   Refs: FR-041-013
   Owner-gate: OD-2026-11-20-19
   Files: modify `crates/application/src/quotas.rs`, `crates/infra-postgres/src/{quotas.rs,reveal_grants.rs}`,

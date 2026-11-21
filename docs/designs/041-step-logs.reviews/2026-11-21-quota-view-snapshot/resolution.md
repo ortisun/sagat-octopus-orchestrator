@@ -17,3 +17,8 @@ D041-141 of `specs/041-step-logs/research.md`, documents first:
 Hand mutations, each failing and restored with a fresh build: the grant flag ignored (the grant-in-every-namespace
 test and the race test fail); the membership role ignored (the grant-in-every-namespace test fails); the read split
 back into two statements (the race test fails with `(Some(7777), false)`, under the tightened predicate).
+
+The correctness reviewer re-read the fixes at `7d34e23b` (`correctness-rereview.md`): the Major and the Nits resolved,
+no new Blocker or Major. Its one new Nit (task T041-5's approved text still names `quotas.rs:1228-1235`, has no
+volatility check and no `reveal_grants.rs` in its files) is answered in T041-39, since an approved task's text cannot
+change: T041-39 states that it replaces that sentence, adds the file and adds the `provolatile = 's'` check to T041-5.

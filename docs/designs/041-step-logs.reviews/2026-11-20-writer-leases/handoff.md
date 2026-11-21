@@ -321,3 +321,24 @@ the pool, the per-replica names, the isolation tests), then T041-6, T041-32, T04
 T041-3, T041-36, T041-7 and every task that touches `crates/api-grpc/src/service.rs`, `crates/application/src/worker.rs`
 or the SDKs' worker hosts until the coordinator says #260 merged; then merge origin/develop (never rebase).
 For T041-6: raise `step_log_lines_dropped_total{reason}` by the saturated change of the stream's counts (D041-140 (7)).
+
+## Update after decision D041-141 (2026-11-21)
+
+**Done:** the coordinating session's decision that the quota view reads the grant and the step-log usage in one
+snapshot (fail-closed, OD-2026-11-20-19), recorded as D041-141 (delegate, OD-2026-11-20-6), amending D041-140 item 5;
+follow-up task T041-39 in design 041; `QuotaStore::step_log_usage_if_revealed` (one `SELECT` in
+`crates/infra-postgres/src/reveal_grants.rs`); `QuotaStore::usage` refuses `tenant_step_log_bytes`. The slice's review
+is in `docs/designs/041-step-logs.reviews/2026-11-21-quota-view-snapshot/` (no Blocker; one Major answered and
+re-read).
+
+**For T041-5 (read T041-39 with it):** the view's usage subquery in `reveal_grants.rs` becomes a call of
+`sagat_quota_step_log_usage(m.tenant_id)` inside the same `SELECT`; that function must be `STABLE` (a `VOLATILE` one
+brings the race back); the privilege audit checks `provolatile = 's'`; a hand mutation to `VOLATILE` must fail
+`quotas::a_view_that_reads_after_a_revoke_commits_never_shows_the_step_log_usage`. Keep the refusal of the general
+read.
+
+**Held for PR #260 (it changes `crates/api-grpc/src/service.rs` and `crates/application/src/worker.rs`):** T041-6 also
+modifies both files (`report_fence_allows` called by `attempt_authority_fence` in `worker.rs`, and the wiring into
+`WorkerGrpc` in `service.rs`), so only its parts outside them can start before #260 merges.
+
+**Next:** T041-5, then T041-32 and T041-10 (T041-10 depends on T041-5's functions).
