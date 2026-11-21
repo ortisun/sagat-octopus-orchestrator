@@ -370,11 +370,14 @@ nothing, free its slot, emit `dropped` with that code. A call that fails is
 repeated as §5 says. The host gives a lease up when its time left at receipt (its expiry minus the host's clock at receipt) minus 6 s
 has passed on its monotonic clock, clamped to between 6 s and 120 s, never while an attempt is in flight (it waits for that
 attempt's outcome, at most 6 s, and runs a late `ACKNOWLEDGED`), and never compares its clock with the server's again; a lease given
-up is not run and is handed back. The host declines acknowledgement only on `UNIMPLEMENTED`, after three calls in a row refused with
-`PERMISSION_DENIED`, `INVALID_ARGUMENT`, `FAILED_PRECONDITION` or `NOT_FOUND`, or after three calls in a row given up (every lease
-given up with no verdict; `RETRY` is a verdict) while another call to the same server was answered during each, whatever status
-their attempts ended with; a call given up while the other calls failed too (an outage) never counts, and an `ACKNOWLEDGED` resets
-the count. It then closes its receive, hands back what waits, waits for the
+up is not run and is handed back. An answer that carries the server's reason (`ACKNOWLEDGEMENT_SHED`,
+`ACKNOWLEDGEMENT_DEADLINE`) is the server's trouble and is waited out; the server stops flagging by itself while it lasts. The host
+declines acknowledgement only on `UNIMPLEMENTED`, after three calls in a row refused with `PERMISSION_DENIED`, `INVALID_ARGUMENT`,
+`FAILED_PRECONDITION` or `NOT_FOUND`, or after three calls given up in a row (in the order of their give-ups, at least 60 s from the
+first to the third) whose attempts ended with no answer or a status without the server's reason, while during each another call to
+the same server was answered (an `OK` unary answer, a stream message, a normally ended poll, or an `OK` answer to one of its own
+hand-backs); an `ACKNOWLEDGED` resets the count. When `lease_time_left_ms` less the attempt's duration is under 2 s, the host treats
+`ACKNOWLEDGED` as `CANCELLED`. It then waits a random delay of up to 6 s, closes its receive, hands back what waits, waits for the
 answers of those hand-backs (their retries of §5), logs once, and registers again at its own minor with
 `declines_acknowledgement = true` for 10 minutes (a random factor in `[0.8, 1.2]`, doubling for each fallback in a row up to an
 hour, back to 10 minutes after an `ACKNOWLEDGED`), then registers again without declining.
@@ -386,8 +389,8 @@ handler started. The server's rule is decision 5 of Architecture decision 0098: 
 session), while the step is `LEASED` with the lease's fence, the lease is not acknowledged, no capability was served to it, and the
 attempt has been withdrawn fewer than four times so far, whatever the causes (decisions 5, 7 and 8 of Architecture decision 0098); a
 provisional lease's hand-back is withdrawn even after its expiry, until the server's pass has withdrawn it; otherwise, and always for
-a lease claimed below `1.8`, before the operator's activation of `delivery-acknowledgement-v1` or after its removal, or handled by a
-server of the build of Architecture decision 0098, it is an ordinary failure that spends the attempt (Architecture decision 0099
+a lease claimed below `1.8`, before the operator's activation of `delivery-acknowledgement-v1` or after its removal (or before its
+latest recording, or on another database server), or handled by a server of the build of Architecture decision 0098, it is an ordinary failure that spends the attempt (Architecture decision 0099
 decision 9). A lease left to lapse would be an
 unknown outcome and, for an `Activity`, a review (feature 037). The rules (decisions D006-020 to D006-023):
 

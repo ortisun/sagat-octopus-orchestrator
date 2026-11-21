@@ -162,8 +162,8 @@ adapter does not qualify a real provider.
   handed back after the verdict `CANCELLED`, before it was acknowledged, also after its expiry. Both hold within the cap of four
   withdrawals per attempt and while the requirement `delivery-acknowledgement-v1` is recorded; otherwise the lease lapses with an
   unknown outcome and its hand-back is an ordinary failure. The server cannot verify that promise and records the violations it
-  sees; a mark written before a promotion or a point-in-time recovery of the database, or ended after a restore, does not count, and
-  such a lease keeps today's meaning. An acknowledged lease is an attempt: when it lapses its outcome is unknown, as before,
+  sees; a mark written on another database server (before a promotion, a recovery or a restore that started one), or ended after a
+  restore, does not count, and such a lease keeps today's meaning. An acknowledged lease is an attempt: when it lapses its outcome is unknown, as before,
   and a hand-back of it is an ordinary retryable failure.
 - **FR-037-007**: An unresolved lookup or manual decision about an unknown effect MUST survive
   cancellation/deadline unless an explicitly authorized resolution or qualified action settles it.
