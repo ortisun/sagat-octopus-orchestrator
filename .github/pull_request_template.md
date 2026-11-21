@@ -1,8 +1,8 @@
 ## What and why
 
-<!-- One coherent increment. Link the design doc docs/designs/NNN-slug.md (or specs/NNN-slug for a feature not yet converted) and the task ids. -->
+<!-- One coherent increment. Link the design doc docs/designs/NNN-slug.md (or specs/NNN-slug for a feature not yet converted) and the tasks. Name the document that changed first (AGENTS.md rule 23). -->
 
-Refs: <!-- T0NN-xxx, FR-0NN-xxx -->
+Refs: <!-- Task 0NN-xxx, Requirement 0NN-xxx (docs/governance/identifier-scheme.md) -->
 
 ## Evidence
 

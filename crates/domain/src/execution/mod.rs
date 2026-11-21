@@ -48,7 +48,8 @@ pub use command::{
     resolve_review_path_instance, resume_run, retry_due, retry_due_instance,
     retry_due_path_instance, retry_review, retry_review_instance, retry_review_path_instance,
     satisfy_wait, skip_review, skip_review_instance, skip_review_path_instance, start_run,
-    start_run_delayed, stop_for_storage_quota, stop_run, time_out_wait,
+    start_run_delayed, stop_for_storage_quota, stop_run, time_out_wait, withdraw_instance,
+    withdraw_lease, withdraw_path_instance,
 };
 pub use continuation::{
     CancelResolution, ChainError, ChainFinalOutcome, ChainHandoff, ChainPolicy, ChainScope,
@@ -62,6 +63,7 @@ pub use event::{
     CorrelationKey, EventAddressError, FailureCode, Fence, JoinOutcome, LoopContinuation,
     LoopDrainReason, LoopKind, LoopOutcome, PlannedEntry, ReconcileResult, ResetReapply,
     ReviewOutcome, RunEvent, ScopedPlannedEntry, StopReason, SwitchSelection, WaitVia,
+    WithdrawalCause,
 };
 pub use instance::{
     ExecutionInstanceId, InstanceIdentityError, InstancePath, MAX_ITERATION_INDEX, MAX_SCOPE_DEPTH,

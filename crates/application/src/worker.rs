@@ -24,10 +24,13 @@ mod scoped_output_refusal;
 mod scoped_reports;
 mod secret_resolution;
 mod secrets;
+mod withdrawal;
+
 use claim_counters::{ClaimProgress, count_claim};
 pub use output::BlobOutput;
 use poll_order::{PollsInFlight, start_past};
 use secrets::SecretReport;
+pub use withdrawal::{TASK_NOT_STARTED, UndeliveredLease, WithdrawalOutcome};
 
 use std::future::Future;
 use std::sync::Arc;
@@ -591,6 +594,9 @@ pub struct WorkerService<S, C, E, R> {
     lake_probes: Option<Arc<dyn crate::database::LakeProbeCodec>>,
     /// The polls of each namespace in flight in this process, shared by every clone (design 038).
     polls_in_flight: Arc<PollsInFlight>,
+    /// The gate whose recorded requirements say whether undelivered leases are withdrawn (feature 006, decision
+    /// D006-004); `None`: never.
+    lease_withdrawal: Option<Arc<crate::instances::ServingGate>>,
 }
 
 impl<S, C, E, R> std::fmt::Debug for WorkerService<S, C, E, R> {
@@ -626,6 +632,7 @@ where
             lake_receipts: None,
             lake_probes: None,
             polls_in_flight: Arc::default(),
+            lease_withdrawal: None,
         }
     }
 
@@ -2415,6 +2422,45 @@ where
                 Some(self.leak_audit(principal, tx.info(), task, &name, "failure code"));
             code = FailureCode::secret_in_output();
             retryable = false;
+        }
+        // A host hands back a lease it never ran (decision D006-005): with the requirement recorded and the step still
+        // `LEASED` to this very lease it is withdrawn, the attempt given back; otherwise it is the ordinary failure below,
+        // with the flag the host sent (decision D006-014). Never an unknown outcome. A report that leaked a secret carries
+        // `SECRET_IN_OUTPUT` by now, so it never reaches the withdrawal.
+        if code.as_str() == TASK_NOT_STARTED
+            && self.withdraws_leases()
+            && tx.parts().1.instance(task.instance).is_some_and(|step| {
+                step.status() == StepStatus::Leased
+                    && step.attempt() == task.fence.attempt
+                    && step.generation() == task.fence.generation
+            })
+        {
+            let node = task.instance.node().clone();
+            let fence = task.fence;
+            self.engine
+                .run(&mut tx, effects, move |def, state, now| {
+                    Ok((
+                        (),
+                        execution::withdraw_lease(
+                            def,
+                            state,
+                            &node,
+                            fence,
+                            execution::WithdrawalCause::NotStarted,
+                            now,
+                        )?,
+                    ))
+                })
+                .await
+                .map_err(engine_error)?;
+            let ack = self.finish(tx, task, idempotency).await?;
+            metrics::counter!(
+                "worker_leases_undelivered_total",
+                "cause" => "NOT_STARTED",
+                "outcome" => "withdrawn"
+            )
+            .increment(1);
+            return Ok(ack);
         }
         let jitter = self.entropy.unit();
         let fallback_code = code.clone();

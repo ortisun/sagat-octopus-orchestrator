@@ -103,6 +103,11 @@ const ALLOWED: &[Allowed] = &[
         reason: "T018-080: removing a requirement is the activation in reverse, operator only (see the entry for platform_requirement_activate)",
     },
     Allowed {
+        file: INSTANCES,
+        need: "EXECUTE platform_capability_census()",
+        reason: "feature 006 (decision D006-004): what control-plane lease-withdrawal-activate tells the operator about the live processes is read by the owner's function, operator only like the activation it precedes (see the entry for platform_requirement_activate); lease_withdrawal_activation::the_runtime_role_cannot_run_it_and_is_told_to_use_the_owner_role proves the role is refused",
+    },
+    Allowed {
         file: TRIGGER_SCHEDULES,
         need: "EXECUTE schedule_trigger_handover_complete()",
         reason: "T018-061: the handover of the cron triggers is an audited operator act, run with the schema-owning role in the transaction that records the schedules-v1 requirement; the runtime role may only read the handover row. trigger_handover::only_the_owner_can_write_the_handover_row_and_nothing_can_move_it_back proves it is refused",

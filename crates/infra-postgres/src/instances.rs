@@ -26,8 +26,8 @@ use std::time::Duration;
 
 use sagat_application::error::StoreError;
 use sagat_application::instances::{
-    Activated, Activation, Capability, ChangeRefused, Heartbeat, InstanceStore, InstanceToken,
-    Registered, Registration, Removed, Requirement, Requirements,
+    Activated, Activation, Capability, ChangeRefused, Heartbeat, InstanceKind, InstanceStore,
+    InstanceToken, Registered, Registration, Removed, Requirement, Requirements,
 };
 use sagat_domain::identity::Subject;
 use sqlx::{PgPool, Row};
@@ -368,6 +368,84 @@ impl InstanceStore for PgInstanceStore {
             }
         }
         Ok(Requirements { epoch, required })
+    }
+}
+
+/// The live instances (seen within 30 seconds, as the activation counts them) of the kinds asked, and those of them that do
+/// not list a capability, for an operator command that records a requirement of it (feature 006,
+/// `control-plane lease-withdrawal-activate`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CapabilityCensus {
+    pub live: u32,
+    pub lacking: u32,
+    /// Up to sixteen of the instances that lack it.
+    pub lacking_examples: Vec<Uuid>,
+    /// Whether the requirement is recorded already.
+    pub recorded: bool,
+}
+
+/// Counts the live instances of `kinds` and those that lack `capability`, in one statement, through the owner's function
+/// `platform_capability_census`: the runtime role may not run it.
+///
+/// # Errors
+/// The store's.
+pub async fn capability_census(
+    conn: &mut sqlx::PgConnection,
+    capability: Capability,
+    kinds: &[InstanceKind],
+) -> Result<CapabilityCensus, StoreError> {
+    let kinds: Vec<&str> = kinds.iter().map(|kind| kind.as_str()).collect();
+    let row = sqlx::query(
+        "SELECT out_live AS live, out_lacking AS lacking, out_examples AS examples, out_recorded AS recorded \
+           FROM platform_capability_census($1, $2)",
+    )
+    .bind(capability.as_str())
+    .bind(&kinds)
+    .fetch_one(conn)
+    .await
+    .map_err(store_error)?;
+    Ok(CapabilityCensus {
+        live: u32::try_from(col::<i32>(&row, "live")?).map_err(|_| corrupt("live instances"))?,
+        lacking: u32::try_from(col::<i32>(&row, "lacking")?)
+            .map_err(|_| corrupt("lacking instances"))?,
+        lacking_examples: col(&row, "examples")?,
+        recorded: col(&row, "recorded")?,
+    })
+}
+
+/// Whether the role of this session may record a requirement (execute the activation function): the runtime role may not.
+///
+/// # Errors
+/// The store's.
+pub async fn may_activate(conn: &mut sqlx::PgConnection) -> Result<bool, StoreError> {
+    sqlx::query_scalar(
+        "SELECT has_function_privilege('platform_requirement_activate(text, text[], text)', 'EXECUTE')",
+    )
+    .fetch_one(conn)
+    .await
+    .map_err(store_error)
+}
+
+/// The feature step of an activation that only checks the fleet again under the epoch lock: `judge` is handed the census and
+/// says whether to refuse (keeping its own reasons).
+pub fn census_step<J>(
+    capability: Capability,
+    kinds: &'static [InstanceKind],
+    judge: J,
+) -> impl for<'c> FnOnce(&'c mut sqlx::PgConnection) -> FeatureStep<'c> + Send
+where
+    J: FnOnce(&CapabilityCensus) -> bool + Send + 'static,
+{
+    move |conn| {
+        Box::pin(async move {
+            let census = capability_census(conn, capability, kinds).await?;
+            if judge(&census) {
+                return Err(StoreError::StateConflict(
+                    "the activation was refused under the lock",
+                ));
+            }
+            Ok(())
+        })
     }
 }
 

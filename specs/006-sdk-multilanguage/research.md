@@ -183,7 +183,7 @@ how to operate it is `docs/runbooks/sdks.md`; the behaviour of the SDKs is `sdks
   **Decided 2026-10-16 (owner): option (b), built the same day.** The step keeps the hash of the lease that reported its attempt (`steps.reported_lease_token_hash`, migration `20261108000000`, cleared on every new lease); a heartbeat whose token is that lease gets OK with `lease_expires_at_epoch_ms = 0` and `cancel_requested = false`, counted in `worker_heartbeats_after_report_total`. The protocol has no new field and the five SDKs do not change (they only take a positive deadline; SPEC §6.4). A lost or forged lease stays `STALE_ATTEMPT`: `contract_grpc_durable_execution` covers both, and the reporting-lease case failed before the change.
 
 
-## Leases that never reach a host (2026-11-20, D006-001 to D006-010, G006-001 to G006-003, O006-001)
+## Leases that never reach a host (2026-11-20, D006-001 to D006-018, G006-001 to G006-004, O006-001)
 
 The finding. The engine commits a lease before it knows the task reached a host, and nothing takes the lease back: it lapses
 after the lease time-to-live. Since feature 037 a lapsed lease of a declared `Activity` is an unknown outcome
@@ -259,6 +259,40 @@ All decisions below are "delegate (OD-2026-11-20-6)" unless they say otherwise.
   `sdks/SPEC.md` §6.2 and §10, the clarification of feature 037 is in `specs/037-compensation-safety/spec.md` after FR-037-006,
   and the hard-to-reverse choice (a new journal event behind a fleet requirement) is ADR-0098.
 
+### Decisions of the build (2026-11-20)
+
+What the code showed the decisions above do not settle. All "delegate (OD-2026-11-20-6)".
+
+- **D006-011 — A withdrawal on a step whose cancellation was asked for ends in a cancellation.** The withdrawal clears
+  `cancel_requested`, as a new lease does, and the planner settles the run in the same transaction: a step of a run that is
+  stopping, or of a branch that lost, goes from `READY` to `CANCELLED` there. Nothing ran, so the cancellation needs no
+  acknowledgement from a host. Weighed: keeping the flag on a `READY` step (no reader expects it there, and the step would wait
+  for a host that will never come).
+- **D006-012 — The grain of the transaction.** The root leases of one run are withdrawn in one transaction under the run lock;
+  scoped leases in one transaction per run and instance path (the store's path transaction, which takes the same run lock).
+  Each lease is fenced on its own: one whose fence does not hold is skipped and counted, the others are withdrawn.
+- **D006-013 — What the readers make of it.** The attempts reader drops a withdrawn lease (it is not an attempt, D006-007): it
+  has no span, and the next lease of the step keeps the ready time of the first for its scheduling latency. The journal and
+  the timeline show `step.lease_withdrawn` with the cause kind `withdrawal` and the code `NOT_SENT` or `NOT_STARTED`. A
+  withdrawal makes the step ready again, so it sends the task-ready hint `step.released` sends. A reader that looks up the
+  lease of an attempt by its number takes the newest `step.leased` of that number (`ORDER BY seq DESC`), which is the lease
+  that ran.
+- **D006-014 — `TASK_NOT_STARTED` is decided on the code.** The withdrawal does not depend on the `retryable` flag: the code is
+  the host's statement that no handler ran. When the server does not withdraw, the report is an ordinary failure with the
+  flag the host sent. A managed database task keeps its closed list of failure codes, so a managed runner that sends
+  `TASK_NOT_STARTED` is refused as today (G006-004).
+- **D006-015 — The gate learns the recorded requirements** right after the process registers and whenever the requirement
+  epoch moves, from the same read that decides whether it serves. Until it has read them it withdraws nothing (the lease
+  lapses and is counted). The withdrawal runs in the execution engine, which serves the worker gRPC API.
+- **D006-016 — A graceful shutdown waits for the withdrawals.** They run on a tracker that the worker gRPC server waits for
+  after it stops serving, bounded by the grace of the shutdown; a crash still loses them (G006-002).
+- **D006-017 — A unary poll claims in a task of its own.** A client that goes away in the middle of a claim drops the handler,
+  and with it, before, the leases already committed for the runs claimed so far. The claim now runs to its end in its own
+  task: its leases come back to the handler, or, when the handler is gone, go to the withdrawal.
+- **D006-018 — The counter.** `worker_leases_undelivered_total{cause, outcome}`: `cause` is `NOT_SENT` or `NOT_STARTED`;
+  `outcome` is `withdrawn`, `fence_missed` (the step moved on), `lapsed` (the requirement is not recorded) or `error` (the
+  store failed; the lease lapses).
+
 ### Gaps
 
 - **G006-001 — A lease handed to the transport and lost still lapses into a review** (a frame lost on the wire after
@@ -267,6 +301,8 @@ All decisions below are "delegate (OD-2026-11-20-6)" unless they say otherwise.
   is spawned when the body ends and runs to its own bound; a graceful shutdown waits for it, a crash does not.
 - **G006-003 — Before the operator records `lease-withdrawal-v1`, nothing changes** but the counter: an upgraded fleet keeps
   today's behaviour until the activation.
+- **G006-004 — The managed database runners do not hand leases back.** Their failure codes are a closed list
+  (`DatabaseFailure`); a lease such a runner drops lapses as before. Their own design decides whether to add the code.
 
 ### Owner question
 

@@ -5246,6 +5246,7 @@ impl RunTx for PgRunTx {
                 }
                 RunEvent::StepReleased { node }
                 | RunEvent::StepRetryDue { node }
+                | RunEvent::StepLeaseWithdrawn { node, .. }
                 | RunEvent::StepRetryRequested { node } => {
                     hinted.insert(node.clone());
                     self.outbox_task_ready(node).await?;
@@ -5965,6 +5966,7 @@ impl PgRunTx {
             if !matches!(
                 addressed.event(),
                 RunEvent::StepLeased { .. }
+                    | RunEvent::StepLeaseWithdrawn { .. }
                     | RunEvent::StepStarted { .. }
                     | RunEvent::StepCompleted { .. }
                     | RunEvent::StepFailed { .. }
@@ -6110,6 +6112,7 @@ impl PgRunTx {
                     event,
                     RunEvent::StepReleased { .. }
                         | RunEvent::StepRetryDue { .. }
+                        | RunEvent::StepLeaseWithdrawn { .. }
                         | RunEvent::StepRetryRequested { .. }
                 ) {
                     hinted.insert(instance.clone());

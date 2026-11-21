@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 
 use sagat_domain::execution::{
     self, ChildOutcome, Evaluation, ExecutionError, Expiry, Failure, FailureCode, Fence, Heartbeat,
-    Progress, Resolution, RunEvent, RunId, RunState, StepStatus, StopReason,
+    Progress, Resolution, RunEvent, RunId, RunState, StepStatus, StopReason, WithdrawalCause,
 };
 use sagat_domain::identity::Slug;
 use sagat_domain::saga::{EffectPolicy, OnCompensationFailure, ReconcileVerdict, SagaCancelPolicy};
@@ -308,6 +308,25 @@ impl Harness {
             fence,
             cause,
             0.0,
+            self.now,
+        )?;
+        self.absorb(progress);
+        Ok(())
+    }
+
+    /// Withdraws a lease that never reached a handler (decision D006-001 of feature 006).
+    pub fn withdraw(
+        &mut self,
+        node: &str,
+        fence: Fence,
+        cause: WithdrawalCause,
+    ) -> Result<(), ExecutionError> {
+        let progress = execution::withdraw_lease(
+            &self.def,
+            &mut self.state,
+            &sid(node),
+            fence,
+            cause,
             self.now,
         )?;
         self.absorb(progress);
