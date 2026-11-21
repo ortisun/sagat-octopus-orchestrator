@@ -44,7 +44,7 @@ describe('trace links', () => {
   it('opens explicitly in a separated tab without making a request itself', () => {
     const fetcher = vi.spyOn(globalThis, 'fetch');
     render(<TraceLink template="https://traces.example.test/trace/{traceId}" traceId={TRACE_ID} />);
-    const link = screen.getByRole('link', { name: 'Open trace' });
+    const link = screen.getByRole('link', { name: /^Open trace/ });
     expect(link).toHaveAttribute('href', `https://traces.example.test/trace/${TRACE_ID}`);
     expect(link).toHaveAttribute('target', '_blank');
     expect(link).toHaveAttribute('rel', expect.stringContaining('noopener'));
@@ -76,6 +76,6 @@ describe('trace links', () => {
       { appOptions: { settings: { oidc: null, traceUrl: 'https://traces.example.test/trace/{traceId}' } } },
     );
     expect(screen.getByRole('button', { name: 'Copy trace id' })).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Open trace' })).toHaveAttribute('href', `https://traces.example.test/trace/${TRACE_ID}`);
+    expect(screen.getByRole('link', { name: /^Open trace/ })).toHaveAttribute('href', `https://traces.example.test/trace/${TRACE_ID}`);
   });
 });

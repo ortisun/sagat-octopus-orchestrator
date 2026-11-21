@@ -1,12 +1,8 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
-import { Link, useParams } from 'react-router';
+import { useParams } from 'react-router';
 import { useCan } from '../../app/context';
-import { Banner } from '../../ui/Banner';
-import { Button } from '../../ui/Button';
-import { ErrorState } from '../../ui/ErrorState';
-import { Tabs } from '../../ui/Tabs';
-import { useAnnounce } from '../../ui/Announcer';
+import { Badge, Banner, Button, Code, ErrorState, Heading, Hint, Link, Loading, Page, Panel, Row, Stack, Tabs, Text, useAnnounce } from '../../ui';
 import '../../styles/scripts.css';
 import type { Script, ScriptsApi } from './api';
 import { CodeEditor } from './CodeEditor';
@@ -39,38 +35,50 @@ export function ScriptEditorPage() {
   const canRead = useCan('script:read');
   return (
     <section className="script-editor" aria-labelledby="script-title">
+      <Page>
       {!canRead ? (
         <>
-          <h1 id="script-title">Script</h1>
+          <Heading level={1} id="script-title">
+            Script
+          </Heading>
           <Banner tone="warn" title="Your role cannot see scripts.">
-            Reading scripts needs the permission <code>script:read</code>.
+            Reading scripts needs the permission <Code>script:read</Code>.
           </Banner>
         </>
       ) : !isUuid(scriptId) ? (
         <>
-          <h1 id="script-title">Script not found</h1>
-          <p>
+          <Heading level={1} id="script-title">
+            Script not found
+          </Heading>
+          <Text>
             There is no such script. <Link to="/scripts">Back to the scripts</Link>.
-          </p>
+          </Text>
         </>
       ) : context.state === 'loading' ? (
         <>
-          <h1 id="script-title">Script</h1>
-          <p role="status">Loading…</p>
+          <Heading level={1} id="script-title">
+            Script
+          </Heading>
+          <Loading>Loading…</Loading>
         </>
       ) : context.state === 'failed' ? (
         <>
-          <h1 id="script-title">Script</h1>
+          <Heading level={1} id="script-title">
+            Script
+          </Heading>
           <ErrorState error={context.error} what="Reading your namespaces" onRetry={context.retry} />
         </>
       ) : context.state === 'none' ? (
         <>
-          <h1 id="script-title">Script</h1>
+          <Heading level={1} id="script-title">
+            Script
+          </Heading>
           <Banner tone="info">There is no namespace to hold scripts yet.</Banner>
         </>
       ) : (
         <Loader api={context.api} scriptId={scriptId} />
       )}
+      </Page>
     </section>
   );
 }
@@ -90,11 +98,13 @@ function Loader({ api, scriptId }: { api: ScriptsApi; scriptId: string }) {
     const missing = isApiError(query.error) && query.error.status === 404;
     return (
       <>
-        <h1 id="script-title">{missing ? 'Script not found' : 'Script'}</h1>
+        <Heading level={1} id="script-title">
+            {missing ? 'Script not found' : 'Script'}
+          </Heading>
         {missing ? (
-          <p>
+          <Text>
             There is no such script in this namespace, or it is not yours to see. <Link to="/scripts">Back to the scripts</Link>.
-          </p>
+          </Text>
         ) : (
           <ErrorState error={query.error} what="Reading the script" onRetry={() => void query.refetch()} />
         )}
@@ -104,8 +114,10 @@ function Loader({ api, scriptId }: { api: ScriptsApi; scriptId: string }) {
   if (query.data === undefined) {
     return (
       <>
-        <h1 id="script-title">Script</h1>
-        <p role="status">Loading the script…</p>
+        <Heading level={1} id="script-title">
+            Script
+          </Heading>
+        <Loading>Loading the script…</Loading>
       </>
     );
   }
@@ -177,17 +189,21 @@ function Editor({ api, script }: { api: ScriptsApi; script: Script }) {
 
   return (
     <>
-      <p className="crumbs">
-        <Link to="/scripts">All scripts</Link>
-      </p>
-      <h1 id="script-title">{clipLabel(script.name)}</h1>
-      <p className="meta">
-        {language.label} · draft revision {draft.revision} · {latest === undefined ? 'not published yet' : `latest version ${latest}`}
-      </p>
+      <Stack gap={1}>
+        <Text>
+          <Link to="/scripts">All scripts</Link>
+        </Text>
+        <Heading level={1} id="script-title">
+          {clipLabel(script.name)}
+        </Heading>
+        <Hint>
+          {language.label} · draft revision {draft.revision} · {latest === undefined ? 'not published yet' : `latest version ${latest}`}
+        </Hint>
+      </Stack>
 
       {!canWrite ? (
         <Banner tone="info" title="Read only.">
-          Your role can read this script but not change it: changing and trying a script needs <code>script:write</code>.
+          Your role can read this script but not change it: changing and trying a script needs <Code>script:write</Code>.
         </Banner>
       ) : (
         <SaveStatus draft={draft} onSave={saveNow} />
@@ -198,7 +214,7 @@ function Editor({ api, script }: { api: ScriptsApi; script: Script }) {
         <VersionView api={api} scriptId={script.id} number={viewing} onBack={() => setViewing(undefined)} />
       ) : (
         <>
-          <div className="toolbar">
+          <Row>
             {canWrite ? (
               <Button onClick={saveNow} disabled={!draft.unsaved && draft.state.kind === 'saved'}>
                 Save now
@@ -209,13 +225,12 @@ function Editor({ api, script }: { api: ScriptsApi; script: Script }) {
                 Publish version…
               </Button>
             ) : (
-              <span className="hint">Publishing needs the permission script:publish.</span>
+              <Hint>Publishing needs the permission script:publish.</Hint>
             )}
-            {tested && canPublish ? <span className="hint">{tested.kind === 'passed' ? 'Tested: the last test run of this draft succeeded.' : 'Not tested since the last change.'}</span> : null}
-          </div>
+            {tested && canPublish ? <Hint>{tested.kind === 'passed' ? 'Tested: the last test run of this draft succeeded.' : 'Not tested since the last change.'}</Hint> : null}
+          </Row>
 
-          <section aria-labelledby="source-title" className="source-section">
-            <h2 id="source-title">Source</h2>
+          <Panel title="Source" labelledBy="source-title">
             <CodeEditor
               label={`Source of ${clipLabel(script.name)} (${language.label})`}
               describedBy="source-size source-checks"
@@ -228,13 +243,17 @@ function Editor({ api, script }: { api: ScriptsApi; script: Script }) {
               controlsRef={controls}
               height="26rem"
             />
-            <p id="source-size" className={overLimit ? 'error' : 'hint'}>
+            {/* Over the limit is told by a badge with a word, not by the colour of the sentence. */}
+            <Hint id="source-size">
+              {overLimit ? (
+                <>
+                  <Badge tone="bad">Error</Badge>{' '}
+                </>
+              ) : null}
               {formatBytes(sourceBytes)} of {formatBytes(LIMITS.sourceBytes)}
               {overLimit ? ` — ${formatBytes(sourceBytes - LIMITS.sourceBytes)} over the limit; the platform would refuse it, so it is not saved` : ' available'}.
-            </p>
-            <p id="source-checks" className="hint">
-              {language.checks}
-            </p>
+            </Hint>
+            <Hint id="source-checks">{language.checks}</Hint>
             {language.lint ? <ProblemsList problems={problems} controlsRef={controls} label="source" /> : null}
             {draft.problems.length > 0 ? (
               <Banner tone="warn" title="Not saved:">
@@ -245,7 +264,7 @@ function Editor({ api, script }: { api: ScriptsApi; script: Script }) {
                 </ul>
               </Banner>
             ) : null}
-          </section>
+          </Panel>
 
           <Tabs
             label="Script tools"
@@ -270,7 +289,7 @@ function Editor({ api, script }: { api: ScriptsApi; script: Script }) {
                     draftUpdatedAt={draft.updatedAt}
                   />
                 ) : (
-                  <p>Trying a script in the sandbox needs the permission script:write.</p>
+                  <Text>Trying a script in the sandbox needs the permission script:write.</Text>
                 ),
               },
               {
@@ -315,12 +334,17 @@ function SaveStatus({ draft, onSave }: { draft: DraftSnapshot; onSave: () => voi
       break;
   }
   return (
-    <div className="save-status">
+    <Stack gap={2}>
+      {/* A plain paragraph: the tests find the state of the draft by this test id, which the interface module's Text does not carry. */}
       <p data-testid="save-status">{text}</p>
       {state.kind === 'error' || state.kind === 'rejected' ? (
         <ErrorState error={state.error} what="Saving the draft" {...(state.kind === 'error' ? { onRetry: onSave } : {})} />
       ) : null}
-      {state.kind === 'error' && !(isApiError(state.error) && state.error.retryable) ? <Button onClick={onSave}>Try again</Button> : null}
-    </div>
+      {state.kind === 'error' && !(isApiError(state.error) && state.error.retryable) ? (
+        <Row>
+          <Button onClick={onSave}>Try again</Button>
+        </Row>
+      ) : null}
+    </Stack>
   );
 }

@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { describe, expect, it } from 'vitest';
 import { AUTH_CONTEXT, TOKEN, fakePlatform, renderApp } from '../../../test/render';
 import { createApp } from '../../app/context';
+import { choose, expectUnavailable } from '../../../test/ui';
 import { ConnectionsPage } from './ConnectionsPage';
 
 const canary = 'postgres-password-private';
@@ -35,7 +36,7 @@ async function enter(user: ReturnType<typeof userEvent.setup>) {
   await user.type(screen.getByLabelText('Database'), 'orders');
 }
 async function credentials(user: ReturnType<typeof userEvent.setup>) {
-  await user.selectOptions(screen.getByLabelText('Credentials'), 'new');
+  await choose(user, 'Credentials', 'Create a secret');
   await user.type(screen.getByLabelText('Username'), 'orders-reader');
   await user.type(screen.getByLabelText('Password'), canary);
 }
@@ -79,8 +80,9 @@ describe('Database connections', () => {
   });
   it('uses existing OpenBao references and keeps legacy values unavailable until migration', async () => {
     const { user, platform } = await mount(); await enter(user);
-    await user.selectOptions(screen.getByLabelText('Secret reference'), 'existing-access');
-    expect(screen.getByRole('option', { name: /legacy-access/ })).toBeDisabled();
+    await user.click(screen.getByRole('combobox', { name: 'Secret reference' }));
+    expectUnavailable(await screen.findByRole('option', { name: /legacy-access/ }));
+    await user.click(screen.getByRole('option', { name: 'existing-access' }));
     await user.click(screen.getByRole('button', { name: 'Save connection' }));
     await screen.findByRole('button', { name: 'Edit connection orders-db' });
     expect(platform.calls.filter(c => c.method === 'PUT')).toHaveLength(1);
@@ -94,7 +96,7 @@ describe('Database connections', () => {
   });
   it('requires an explicit delete action with the observed revision and a stable request', async () => {
     const { user, platform } = await mount(); await enter(user);
-    await user.selectOptions(screen.getByLabelText('Secret reference'), 'existing-access');
+    await choose(user, 'Secret reference', 'existing-access');
     await user.click(screen.getByRole('button', { name: 'Save connection' }));
     await user.click(await screen.findByRole('button', { name: 'Delete connection orders-db' }));
     expect(platform.calls.some(c => c.method === 'DELETE')).toBe(false);

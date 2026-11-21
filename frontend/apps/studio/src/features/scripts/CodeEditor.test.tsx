@@ -65,7 +65,7 @@ describe('CodeEditor without Monaco', () => {
   it('says it is loading while it loads, and a plain box can be chosen at once', async () => {
     loader.load.mockReturnValue(new Promise(() => undefined));
     render(<Harness />);
-    expect(screen.getByRole('status')).toHaveTextContent('Loading the code editor…');
+    expect(screen.getByText('Loading the code editor…')).toHaveAttribute('role', 'status');
     await userEvent.setup().click(screen.getByRole('button', { name: 'Use a plain text box' }));
     expect(screen.getByRole('textbox', { name: 'Source' })).toHaveValue('start');
   });

@@ -1,8 +1,5 @@
 import { useMemo } from 'react';
-import { Banner } from '../../ui/Banner';
-import { Button } from '../../ui/Button';
-import { ErrorState } from '../../ui/ErrorState';
-import { StatusBadge } from '../../ui/StatusBadge';
+import { Banner, Button, Code, ColumnHeader, Empty, ErrorState, Heading, Hint, Loading, Row, Stack, StatusBadge, Table, TableBody, TableCell, TableHead, TableRow, Text, VisuallyHidden } from '../../ui';
 import type { Script, ScriptTestRunSummary } from './api';
 import { CodeEditor } from './CodeEditor';
 import { checkInputText, checkSchemaText, valueToText } from './jsonText';
@@ -56,37 +53,35 @@ export function TryPanel({ script, inputSchemaText, inputText, onInputText, test
     void test.start(input.kind === 'empty' ? undefined : input.value);
   };
   return (
-    <div className="try-panel">
-      <p>
-        Runs the draft in the sandbox without publishing it. The Studio saves your changes first, because the sandbox runs the draft as the platform has it. A test run has no secrets of the namespace (<code>octopus.secret</code> is always refused), and reaches the network only if the script&apos;s policy
+    <Stack gap={3}>
+      <Text>
+        Runs the draft in the sandbox without publishing it. The Studio saves your changes first, because the sandbox runs the draft as the platform has it. A test run has no secrets of the namespace (<Code>octopus.secret</Code> is always refused), and reaches the network only if the script&apos;s policy
         and the namespace&apos;s policy both allow it.
-      </p>
-      <div className="field">
-        <span className="label">Test input (JSON)</span>
-        <p className="hint" id="test-input-hint">
+      </Text>
+      <Stack gap={1}>
+        <Text>
+          <strong>Test input (JSON)</strong>
+        </Text>
+        <Hint id="test-input-hint">
           {schema ? 'Checked against the input schema of the draft as you type. ' : 'No input schema yet, so only the JSON is checked. '}
           Sent as the input of the run (at most 240 KiB). Empty: the script receives null.
-        </p>
+        </Hint>
         <CodeEditor label="Test input (JSON)" describedBy="test-input-hint" model="testInput" language="json" value={inputText} onChange={onInputText} jsonSchema={schema} height="10rem" />
-        {input.kind === 'invalid' ? (
-          <span className="error" role="alert">
-            {input.message}
-          </span>
-        ) : null}
-      </div>
-      <div className="toolbar">
+        {input.kind === 'invalid' ? <Banner tone="error">{input.message}</Banner> : null}
+      </Stack>
+      <Row>
         <Button variant="primary" onClick={run} disabled={busy || input.kind === 'invalid'}>
           {test.state.phase === 'starting' ? 'Starting…' : 'Run in the sandbox'}
         </Button>
-        {tested ? <span className="hint">{testednessText(tested)}</span> : null}
-      </div>
+        {tested ? <Hint>{testednessText(tested)}</Hint> : null}
+      </Row>
 
       {test.state.phase === 'blocked' ? (
         <Banner tone="warn" title="Not run.">
           The draft could not be saved first, so the sandbox would have run an older copy. See the messages about the draft above.
         </Banner>
       ) : null}
-      {test.state.phase === 'loading' ? <p role="status">Loading the test run…</p> : null}
+      {test.state.phase === 'loading' ? <Loading>Loading the test run…</Loading> : null}
       {test.state.phase === 'failed' ? <ErrorState error={test.state.error} what="The test run" /> : null}
       {test.state.run ? (
         <TestRunResult
@@ -102,56 +97,55 @@ export function TryPanel({ script, inputSchemaText, inputText, onInputText, test
         />
       ) : null}
 
-      <h3>Earlier test runs</h3>
+      <Heading level={3}>Earlier test runs</Heading>
       {runsError !== undefined && runsError !== null ? (
         <ErrorState error={runsError} what="Reading the test runs" onRetry={onRetryRuns} />
       ) : runs === undefined ? (
-        <p role="status">Loading the test runs…</p>
+        <Loading>Loading the test runs…</Loading>
       ) : runs.length === 0 ? (
-        <p className="empty">No test runs yet.</p>
+        <Empty title="No test runs yet." headingLevel={4} />
       ) : (
-        <table className="data">
-          <caption className="visually-hidden">Test runs of this script, newest first</caption>
-          <thead>
-            <tr>
-              <th scope="col">Asked</th>
-              <th scope="col">Result</th>
-              <th scope="col">Time</th>
-              <th scope="col">By</th>
-              <th scope="col">
-                <span className="visually-hidden">Actions</span>
-              </th>
-            </tr>
-          </thead>
-          <tbody>
+        <Table label="Test runs of this script, newest first">
+          <TableHead>
+            <TableRow>
+              <ColumnHeader scope="col">Asked</ColumnHeader>
+              <ColumnHeader scope="col">Result</ColumnHeader>
+              <ColumnHeader scope="col">Time</ColumnHeader>
+              <ColumnHeader scope="col">By</ColumnHeader>
+              <ColumnHeader scope="col">
+                <VisuallyHidden>Actions</VisuallyHidden>
+              </ColumnHeader>
+            </TableRow>
+          </TableHead>
+          <TableBody>
             {runs.map((item) => (
-              <tr key={item.id}>
-                <th scope="row">
+              <TableRow key={item.id}>
+                <ColumnHeader scope="row">
                   <time dateTime={item.createdAt}>{formatTime(item.createdAt)}</time>
-                </th>
-                <td>
+                </ColumnHeader>
+                <TableCell>
                   <StatusBadge view={testRunStatus(item.status)} />
                   {item.failure ? (
                     <>
                       {' '}
                       <span title={failureHelp(item.failure)}>
-                        <code>{clipLabel(item.failure, 40)}</code>
+                        <Code>{clipLabel(item.failure, 40)}</Code>
                       </span>
                     </>
                   ) : null}
-                </td>
-                <td>{formatDuration(item.wallMs)}</td>
-                <td>{clipLabel(item.createdBy)}</td>
-                <td>
+                </TableCell>
+                <TableCell>{formatDuration(item.wallMs)}</TableCell>
+                <TableCell>{clipLabel(item.createdBy)}</TableCell>
+                <TableCell>
                   <Button onClick={() => void test.open(item.id)} aria-label={`Open the test run of ${formatTime(item.createdAt)}`}>
                     Open
                   </Button>
-                </td>
-              </tr>
+                </TableCell>
+              </TableRow>
             ))}
-          </tbody>
-        </table>
+          </TableBody>
+        </Table>
       )}
-    </div>
+    </Stack>
   );
 }

@@ -1,6 +1,7 @@
 import { expect, test } from '@playwright/test';
 import { env } from '../support/env';
 import { signIn } from '../support/studio';
+import { choose, expectAvailable, expectValue } from '../support/ui';
 
 test('manages broker settings and write-only credentials through Integrations', async ({ page }) => {
   const errors: string[] = [];
@@ -10,10 +11,10 @@ test('manages broker settings and write-only credentials through Integrations', 
   await signIn(page, env.tokens.admin);
   await page.getByRole('link', { name: 'Namespaces', exact: true }).click();
   await page.getByRole('button', { name: 'New namespace', exact: true }).click();
-  await expect(page.getByLabel('Workspace')).toBeEnabled();
+  await expectAvailable(page.getByRole('combobox', { name: 'Workspace', exact: true }));
   await page.getByLabel('Namespace name').fill(name);
   await page.getByRole('button', { name: 'Create namespace', exact: true }).click();
-  await expect(page.getByLabel('Namespace', { exact: true })).toHaveValue(name);
+  await expectValue(page.getByRole('combobox', { name: 'Namespace', exact: true }), name);
   await page.getByRole('link', { name: 'Integrations', exact: true }).click();
   await page.getByText('Network access', { exact: true }).click();
   await expect(page.getByLabel('Allowed hosts or networks')).toBeVisible();
@@ -25,21 +26,21 @@ test('manages broker settings and write-only credentials through Integrations', 
   await page.getByLabel('Name', { exact: true }).fill('orders-kafka');
   await page.getByLabel('Servers').fill('tls://broker.example.com:9093');
   await page.getByLabel('Topic', { exact: true }).fill('orders');
-  await page.getByLabel('Authentication', { exact: true }).selectOption('sasl');
+  await choose(page.getByRole('combobox', { name: 'Authentication', exact: true }), 'sasl');
   await page.getByLabel('Username', { exact: true }).fill('synthetic-user');
   await page.getByLabel('Password', { exact: true }).fill(canary);
   await page.getByRole('button', { name: 'Save integration', exact: true }).click();
   await expect(page.getByRole('dialog')).toHaveCount(0);
   await expect(page.getByRole('row', { name: /orders-kafka/ })).toContainText('Configured');
   await page.getByRole('button', { name: 'Edit integration orders-kafka', exact: true }).click();
-  await expect(page.getByLabel('Authentication', { exact: true })).toHaveValue('existing');
+  await expectValue(page.getByRole('combobox', { name: 'Authentication', exact: true }), 'existing');
   await expect(page.getByLabel('Password', { exact: true })).toHaveCount(0);
   await page.getByLabel('Topic', { exact: true }).fill('orders-updated');
   await page.getByRole('button', { name: 'Save integration', exact: true }).click();
   await expect(page.getByRole('dialog')).toHaveCount(0);
   await page.getByRole('button', { name: 'New integration', exact: true }).click();
   await page.getByLabel('Name', { exact: true }).fill('orders-nats');
-  await page.getByLabel('Type', { exact: true }).selectOption('NATS');
+  await choose(page.getByRole('combobox', { name: 'Type', exact: true }), 'NATS');
   await page.getByLabel('Servers').fill('tls://broker.example.com:4222');
   await page.getByLabel('Stream', { exact: true }).fill('ORDERS');
   await page.getByLabel('Durable consumer').fill('sagat');
@@ -48,7 +49,7 @@ test('manages broker settings and write-only credentials through Integrations', 
   await expect(page.getByRole('row', { name: /orders-nats/ })).toContainText('Paused');
   await page.getByRole('button', { name: 'Sign out', exact: true }).click();
   await signIn(page, env.tokens.admin);
-  await page.getByLabel('Namespace', { exact: true }).selectOption(name);
+  await choose(page.getByRole('combobox', { name: 'Namespace', exact: true }), name);
   await page.getByRole('link', { name: 'Integrations', exact: true }).click();
   await page.getByRole('button', { name: 'Edit integration orders-kafka', exact: true }).click();
   await expect(page.getByLabel('Topic', { exact: true })).toHaveValue('orders-updated');

@@ -1,4 +1,5 @@
 import type { DefinitionDiff, DiffFinding } from '../../api/types';
+import { Code, Heading, Stack, Text } from '../../ui';
 import { clip } from './canvasModel';
 
 export type DiffLike = Pick<DefinitionDiff, 'identical' | 'nodes' | 'edges' | 'changes'> & Partial<Pick<DefinitionDiff, 'breaking' | 'attention' | 'from' | 'to' | 'changesOmitted'>>;
@@ -8,7 +9,7 @@ const SHOWN = 200;
 
 function More({ total, of = SHOWN }: { total: number; of?: number }) {
   return total > of ? (
-    <li className="hint">
+    <li className="wf-quiet">
       and {total - of} more, not shown here
     </li>
   ) : null;
@@ -23,15 +24,15 @@ function side(s: DefinitionDiff['from'] | undefined): string {
 
 function Findings({ items }: { items: readonly DiffFinding[] }) {
   return (
-    <ul>
+    <ul className="wf-plain-list">
       {items.slice(0, SHOWN).map((f, i) => (
         <li key={`${f.code}-${i}`}>
           {f.nodeId ? (
             <>
-              <code>{clip(f.nodeId, 64)}</code>:{' '}
+              <Code>{clip(f.nodeId, 64)}</Code>:{' '}
             </>
           ) : null}
-          {clip(f.message, 300)} <span className="hint">({f.code})</span>
+          {clip(f.message, 300)} <span className="wf-quiet">({f.code})</span>
         </li>
       ))}
       <More total={items.length} />
@@ -45,10 +46,10 @@ function Ids({ ids }: { ids: readonly string[] }) {
       {ids.slice(0, SHOWN).map((id, i) => (
         <span key={id}>
           {i > 0 ? ', ' : ''}
-          <code>{clip(id, 64)}</code>
+          <Code>{clip(id, 64)}</Code>
         </span>
       ))}
-      {ids.length > SHOWN ? <span className="hint"> and {ids.length - SHOWN} more</span> : null}
+      {ids.length > SHOWN ? <span className="wf-quiet"> and {ids.length - SHOWN} more</span> : null}
     </>
   );
 }
@@ -65,40 +66,40 @@ export function DiffView({ diff, classified, labels }: { diff: DiffLike; classif
   const links = diff.edges.added.length + diff.edges.removed.length;
   const nodes = diff.nodes.added.length + diff.nodes.removed.length + diff.nodes.changed.length;
   return (
-    <div className="wf-diff">
-      <p>
+    <Stack gap={3} className="wf-diff">
+      <Text>
         Comparing <strong>{labels?.from ?? side(diff.from)}</strong> with <strong>{labels?.to ?? side(diff.to)}</strong>.
-      </p>
-      {diff.identical ? <p>There are no differences.</p> : null}
+      </Text>
+      {diff.identical ? <Text>There are no differences.</Text> : null}
 
       {classified && breaking.length > 0 ? (
         <section className="wf-breaking" aria-labelledby="wf-diff-breaking">
-          <h3 id="wf-diff-breaking">
+          <Heading level={3} look={4} id="wf-diff-breaking">
             <span aria-hidden="true">⚠</span> Breaking changes ({breaking.length})
-          </h3>
-          <p>These changes can make callers or event publishers fail. Runs already started keep the version they started on.</p>
+          </Heading>
+          <Text>These changes can make callers or event publishers fail. Runs already started keep the version they started on.</Text>
           <Findings items={breaking} />
         </section>
       ) : null}
       {classified && attention.length > 0 ? (
         <section className="wf-attention" aria-labelledby="wf-diff-attention">
-          <h3 id="wf-diff-attention">
+          <Heading level={3} look={4} id="wf-diff-attention">
             <span aria-hidden="true">!</span> Needs preparation ({attention.length})
-          </h3>
-          <p>These do not break the contract, but somebody has to act before new runs can use them.</p>
+          </Heading>
+          <Text>These do not break the contract, but somebody has to act before new runs can use them.</Text>
           <Findings items={attention} />
         </section>
       ) : null}
-      {classified && breaking.length === 0 && !diff.identical ? <p>
+      {classified && breaking.length === 0 && !diff.identical ? <Text>
           The platform found no breaking changes of the kinds it checks: a trigger gone or changed, an input property gone, retyped or newly required, an output property gone or retyped, an event type nobody awaits any more. It does not judge
           other changes to the schemas (a narrower set of values, a new limit).
-        </p> : null}
-      {!classified ? <p className="hint">This comparison lists what differs. Whether a change breaks callers is judged by the platform when the draft is published.</p> : null}
+        </Text> : null}
+      {!classified ? <Text muted>This comparison lists what differs. Whether a change breaks callers is judged by the platform when the draft is published.</Text> : null}
 
       {nodes > 0 ? (
         <section aria-label="Node changes">
-          <h3>Nodes</h3>
-          <ul>
+          <Heading level={3} look={4}>Nodes</Heading>
+          <ul className="wf-plain-list">
             {diff.nodes.added.length > 0 ? (
               <li>
                 Added ({diff.nodes.added.length}): <Ids ids={diff.nodes.added} />
@@ -111,7 +112,7 @@ export function DiffView({ diff, classified, labels }: { diff: DiffLike; classif
             ) : null}
             {diff.nodes.changed.slice(0, SHOWN).map((c) => (
               <li key={c.id}>
-                Changed: <code>{clip(c.id, 64)}</code> (<span>{c.fields.map((f) => clip(f, 40)).join(', ')}</span>)
+                Changed: <Code>{clip(c.id, 64)}</Code> (<span>{c.fields.map((f) => clip(f, 40)).join(', ')}</span>)
               </li>
             ))}
             <More total={diff.nodes.changed.length} />
@@ -120,17 +121,17 @@ export function DiffView({ diff, classified, labels }: { diff: DiffLike; classif
       ) : null}
       {links > 0 ? (
         <section aria-label="Link changes">
-          <h3>Links</h3>
-          <ul>
+          <Heading level={3} look={4}>Links</Heading>
+          <ul className="wf-plain-list">
             {diff.edges.added.slice(0, SHOWN).map((e) => (
               <li key={`a-${e.from}-${e.kind}-${e.to}`}>
-                Added: <code>{clip(e.from, 64)}</code> → <code>{clip(e.to, 64)}</code> ({clip(e.kind, 20)})
+                Added: <Code>{clip(e.from, 64)}</Code> → <Code>{clip(e.to, 64)}</Code> ({clip(e.kind, 20)})
               </li>
             ))}
             <More total={diff.edges.added.length} />
             {diff.edges.removed.slice(0, SHOWN).map((e) => (
               <li key={`r-${e.from}-${e.kind}-${e.to}`}>
-                Removed: <code>{clip(e.from, 64)}</code> → <code>{clip(e.to, 64)}</code> ({clip(e.kind, 20)})
+                Removed: <Code>{clip(e.from, 64)}</Code> → <Code>{clip(e.to, 64)}</Code> ({clip(e.kind, 20)})
               </li>
             ))}
             <More total={diff.edges.removed.length} />
@@ -139,18 +140,18 @@ export function DiffView({ diff, classified, labels }: { diff: DiffLike; classif
       ) : null}
       {diff.changes.length > 0 ? (
         <section aria-label="Other changes">
-          <h3>Other changes</h3>
-          <ul>
+          <Heading level={3} look={4}>Other changes</Heading>
+          <ul className="wf-plain-list">
             {diff.changes.slice(0, SHOWN).map((c) => (
               <li key={c.path}>
-                <code>{clip(c.path, 80)}</code> {c.change}
+                <Code>{clip(c.path, 80)}</Code> {c.change}
               </li>
             ))}
             <More total={diff.changes.length} />
-            {(diff.changesOmitted ?? 0) > 0 ? <li className="hint">and {diff.changesOmitted} more differences the platform did not list</li> : null}
+            {(diff.changesOmitted ?? 0) > 0 ? <li className="wf-quiet">and {diff.changesOmitted} more differences the platform did not list</li> : null}
           </ul>
         </section>
       ) : null}
-    </div>
+    </Stack>
   );
 }

@@ -1,11 +1,8 @@
 import { useEffect, useMemo, useRef, useSyncExternalStore } from 'react';
-import { Link } from 'react-router';
 import type { RuntimeEdge, RuntimeNode } from '../../api/types';
 import type { RunModel } from '../../model/runGraph';
 import { nodeStatus } from '../../model/status';
-import { Banner } from '../../ui/Banner';
-import { ErrorState } from '../../ui/ErrorState';
-import { StatusBadge } from '../../ui/StatusBadge';
+import { Banner, Button, Code, ColumnHeader, ErrorState, Facts, Heading, Hint, Link, Loading, Row, Stack, StatusBadge, Table, TableBody, TableCell, TableHead, TableRow, Text } from '../../ui';
 import { openDuration, outcomeWords, stepHistory } from './attempts';
 import type { Attempt, StepHistory } from './attempts';
 import { neighbours, stateWords } from './canvas';
@@ -33,26 +30,25 @@ function detailedKind(node: RuntimeNode): string {
 function AttemptsTable({ history, running }: { history: StepHistory; running: boolean }) {
   const now = useNow();
   if (history.attempts.length === 0) {
-    return <p className="hint">No attempt of this step is in the journal events read so far.</p>;
+    return <Hint>No attempt of this step is in the journal events read so far.</Hint>;
   }
   return (
-    <table className="data rn-attempts">
-      <caption className="visually-hidden">Attempts of this step, from the journal</caption>
-      <thead>
-        <tr>
-          <th scope="col">Attempt</th>
-          <th scope="col">Outcome</th>
-          <th scope="col">Started</th>
-          <th scope="col">Ended</th>
-          <th scope="col">Duration</th>
-        </tr>
-      </thead>
-      <tbody>
+    <Table label="Attempts of this step, from the journal">
+      <TableHead>
+        <TableRow>
+          <ColumnHeader scope="col">Attempt</ColumnHeader>
+          <ColumnHeader scope="col">Outcome</ColumnHeader>
+          <ColumnHeader scope="col">Started</ColumnHeader>
+          <ColumnHeader scope="col">Ended</ColumnHeader>
+          <ColumnHeader scope="col">Duration</ColumnHeader>
+        </TableRow>
+      </TableHead>
+      <TableBody>
         {history.attempts.map((attempt) => (
           <AttemptRow key={attempt.number} attempt={attempt} now={now} running={running} />
         ))}
-      </tbody>
-    </table>
+      </TableBody>
+    </Table>
   );
 }
 
@@ -60,78 +56,78 @@ function AttemptRow({ attempt, now, running }: { attempt: Attempt; now: number; 
   const started = attempt.startedAt ?? attempt.leasedAt;
   const open = attempt.endedAt === undefined && running ? openDuration(attempt, now) : attempt.durationMs;
   return (
-    <tr>
-      <td>{attempt.number}</td>
-      <td>{outcomeWords(attempt.outcome)}</td>
-      <td>{started ? <Moment at={started} /> : '—'}</td>
-      <td>{attempt.endedAt ? <Moment at={attempt.endedAt} /> : '—'}</td>
-      <td>{open === undefined ? '—' : `${formatDuration(open)}${attempt.endedAt === undefined ? ' so far' : ''}`}</td>
-    </tr>
+    <TableRow>
+      <TableCell>{attempt.number}</TableCell>
+      <TableCell>{outcomeWords(attempt.outcome)}</TableCell>
+      <TableCell>{started ? <Moment at={started} /> : '—'}</TableCell>
+      <TableCell>{attempt.endedAt ? <Moment at={attempt.endedAt} /> : '—'}</TableCell>
+      <TableCell>{open === undefined ? '—' : `${formatDuration(open)}${attempt.endedAt === undefined ? ' so far' : ''}`}</TableCell>
+    </TableRow>
   );
 }
 
-function Facts({ node }: { node: RuntimeNode }) {
+/** What the platform says of the step beyond its state: when it is tried next, when it is due, its saga, its child run. */
+function StepFacts({ node }: { node: RuntimeNode }) {
   const saga = sagaWords(node);
-  return (
-    <dl className="rn-facts">
-      {node.nextAttemptAt ? (
-        <>
-          <dt>Next attempt</dt>
-          <dd>
-            <Relative at={node.nextAttemptAt} /> (<Moment at={node.nextAttemptAt} />)
-          </dd>
-        </>
-      ) : null}
-      {node.dueAt ? (
-        <>
-          <dt>Due</dt>
-          <dd>
-            <Relative at={node.dueAt} /> (<Moment at={node.dueAt} />)
-          </dd>
-        </>
-      ) : null}
-      {node.cancelRequested ? (
-        <>
-          <dt>Stop</dt>
-          <dd>The step was asked to stop.</dd>
-        </>
-      ) : null}
-      {saga ? (
-        <>
-          <dt>Saga</dt>
-          <dd>
-            {saga}
-            {node.saga?.cause ? <> (cause: {clip(node.saga.cause, 60)})</> : null}
-          </dd>
-        </>
-      ) : null}
-      {node.childRunId ? (
-        <>
-          <dt>Child run</dt>
-          <dd>
-            <Link to={childPath(node.childRunId)}>{node.childRunId}</Link>
-          </dd>
-        </>
-      ) : null}
-    </dl>
-  );
+  const items = [
+    ...(node.nextAttemptAt
+      ? [
+          {
+            term: 'Next attempt',
+            value: (
+              <>
+                <Relative at={node.nextAttemptAt} /> (<Moment at={node.nextAttemptAt} />)
+              </>
+            ),
+          },
+        ]
+      : []),
+    ...(node.dueAt
+      ? [
+          {
+            term: 'Due',
+            value: (
+              <>
+                <Relative at={node.dueAt} /> (<Moment at={node.dueAt} />)
+              </>
+            ),
+          },
+        ]
+      : []),
+    ...(node.cancelRequested ? [{ term: 'Stop', value: 'The step was asked to stop.' }] : []),
+    ...(saga
+      ? [
+          {
+            term: 'Saga',
+            value: (
+              <>
+                {saga}
+                {node.saga?.cause ? <> (cause: {clip(node.saga.cause, 60)})</> : null}
+              </>
+            ),
+          },
+        ]
+      : []),
+    ...(node.childRunId ? [{ term: 'Child run', value: <Link to={childPath(node.childRunId)}>{node.childRunId}</Link> }] : []),
+  ];
+  return items.length === 0 ? null : <Facts items={items} />;
 }
 
 function Links({ edges, model, id, onSelect }: { edges: readonly RuntimeEdge[]; model: RunModel; id: string; onSelect: (id: string) => void }) {
   const { from, to } = useMemo(() => neighbours(edges, model.nodes, id), [edges, model.nodes, id]);
   const list = (items: typeof from, label: string) => (
     <div>
-      <h4>{label}</h4>
+      <Heading level={4}>{label}</Heading>
       {items.length === 0 ? (
-        <p className="hint">None.</p>
+        <Hint>None.</Hint>
       ) : (
-        <ul>
+        <ul className="rn-plain-list">
           {items.map((item, i) => (
             <li key={`${item.id}-${i}`}>
-              <button type="button" className="link" onClick={() => onSelect(item.id)}>
+              <Button variant="ghost" size="sm" onClick={() => onSelect(item.id)}>
                 {item.id}
-              </button>{' '}
-              <span className="hint">
+              </Button>{' '}
+              <span className="rn-quiet">
                 {item.kind}, {stateWords(item.state)}
               </span>
             </li>
@@ -197,144 +193,128 @@ export function NodePanel({
   const waiting = node === undefined ? undefined : waitingWords(node);
   return (
     <aside ref={panel} className="rn-panel" aria-label={`Details of ${selectedId}`} data-testid="node-panel">
-      <div className="rn-panel-head">
-        <h2>{selectedId}</h2>
-        <button type="button" className="btn" onClick={onClose}>
-          Close details
-        </button>
-      </div>
-      {node === undefined || kind === undefined ? (
-        <Banner tone="warn">This step is not in the graph any more. It may have been removed when the graph was read again.</Banner>
-      ) : (
-        <>
-          <div className="rn-selected-step" role="group" aria-label="Selected step">
-            <div className="rn-selected-step-name">
-              <span className="rn-micro-label">Selected step</span>
-              <strong>{selectedId}</strong>
-              <StatusBadge view={nodeStatus(node.status)} />
+      <Stack gap={3}>
+        <Row justify="between" align="start" wrap={false}>
+          <Heading level={2} look={3} className="rn-id">
+            {selectedId}
+          </Heading>
+          <Button onClick={onClose}>Close details</Button>
+        </Row>
+        {node === undefined || kind === undefined ? (
+          <Banner tone="warn">This step is not in the graph any more. It may have been removed when the graph was read again.</Banner>
+        ) : (
+          <>
+            <div className="rn-selected-step" role="group" aria-label="Selected step">
+              <div className="rn-selected-step-name">
+                <span className="rn-micro-label">Selected step</span>
+                <strong>{selectedId}</strong>
+                <StatusBadge view={nodeStatus(node.status)} />
+              </div>
+              <Facts
+                columns="multi"
+                items={[
+                  { term: 'Kind', value: kind },
+                  { term: 'Attempts', value: node.attempt && node.attempt > 0 ? (attemptWords(node) ?? 'attempt 1') : 'not started' },
+                  ...(node.failureCode ? [{ term: 'Failure code', value: node.failureCode }] : []),
+                  ...(waiting ? [{ term: 'Waiting', value: waiting }] : []),
+                ]}
+              />
             </div>
-            <dl>
-              <div>
-                <dt>Kind</dt>
-                <dd>{kind}</dd>
-              </div>
-              <div>
-                <dt>Attempts</dt>
-                <dd>{node.attempt && node.attempt > 0 ? (attemptWords(node) ?? 'attempt 1') : 'not started'}</dd>
-              </div>
-              {node.failureCode ? (
-                <div>
-                  <dt>Failure code</dt>
-                  <dd>{node.failureCode}</dd>
-                </div>
-              ) : null}
-              {waiting ? (
-                <div>
-                  <dt>Waiting</dt>
-                  <dd>{waiting}</dd>
-                </div>
-              ) : null}
-            </dl>
-          </div>
-          <Facts node={node} />
+            <StepFacts node={node} />
 
-          <h3>Actions</h3>
-          <OperationList operations={operations} label={`Actions for ${selectedId}`} onChoose={onChoose} />
+            <Heading level={3}>Actions</Heading>
+            <OperationList operations={operations} label={`Actions for ${selectedId}`} onChoose={onChoose} />
 
-          <h3>Attempts</h3>
-          {snapshot.error !== undefined ? <ErrorState error={snapshot.error} what="Reading the journal" onRetry={() => void journal.loadMore()} /> : null}
-          {!snapshot.started || (snapshot.loading && snapshot.entries.length === 0) ? <p role="status">Reading the journal…</p> : null}
-          {snapshot.started ? <AttemptsTable history={history} running={runActive} /> : null}
-          {snapshot.started && !snapshot.complete && !snapshot.loading ? (
-            <p className="hint">
-              Attempts are told from the {snapshot.entries.length} journal events read so far; the journal has more.{' '}
-              <button type="button" className="btn" onClick={() => void journal.loadAll()}>
-                Read more of the journal
-              </button>
-            </p>
-          ) : null}
-          {history.marks.length > 0 ? (
-            <>
-              <h3>Decisions and notes</h3>
-              <ul className="rn-marks">
-                {history.marks.map((mark) => (
-                  <li key={mark.seq}>
-                    <Moment at={mark.at} /> {eventLabel(mark.eventType)}
-                    {mark.actor ? <span className="hint"> by {clip(mark.actor, 60)}</span> : null}
+            <Heading level={3}>Attempts</Heading>
+            {snapshot.error !== undefined ? <ErrorState error={snapshot.error} what="Reading the journal" onRetry={() => void journal.loadMore()} /> : null}
+            {!snapshot.started || (snapshot.loading && snapshot.entries.length === 0) ? <Loading>Reading the journal…</Loading> : null}
+            {snapshot.started ? <AttemptsTable history={history} running={runActive} /> : null}
+            {snapshot.started && !snapshot.complete && !snapshot.loading ? (
+              <Row>
+                <Hint>Attempts are told from the {snapshot.entries.length} journal events read so far; the journal has more.</Hint>
+                <Button onClick={() => void journal.loadAll()}>Read more of the journal</Button>
+              </Row>
+            ) : null}
+            {history.marks.length > 0 ? (
+              <>
+                <Heading level={3}>Decisions and notes</Heading>
+                <ul className="rn-plain-list">
+                  {history.marks.map((mark) => (
+                    <li key={mark.seq}>
+                      <Moment at={mark.at} /> {eventLabel(mark.eventType)}
+                      {mark.actor ? <span className="rn-quiet"> by {clip(mark.actor, 60)}</span> : null}
+                    </li>
+                  ))}
+                </ul>
+              </>
+            ) : null}
+
+            <Heading level={3}>Trace</Heading>
+            {traces.length > 0 ? (
+              <ul className="rn-plain-list">
+                {traces.slice(0, 5).map((trace) => (
+                  <li key={trace}>
+                    <Code>{clip(trace, 64)}</Code> <CopyButton text={trace} what="trace id" />
                   </li>
                 ))}
               </ul>
-            </>
-          ) : null}
+            ) : knowsTraces ? (
+              <Text>no trace (the worker did not send one for this step).</Text>
+            ) : (
+              <Hint>Trace ids come with the journal events, which are not read yet.</Hint>
+            )}
+            <Hint>The journal event holds only a payload digest. Retained values are read separately under the workflow&apos;s classification policy.</Hint>
+            {retainedPayloads.length > 0 ? (
+              <Stack gap={2}>
+                <Heading level={3}>Retained payloads</Heading>
+                {retainedPayloads.map((entry) => (
+                  <Stack gap={1} key={entry.seq}>
+                    <PayloadDisclosureView
+                      runId={runId}
+                      selector={{ source: 'journal', sequence: entry.seq }}
+                      label={`View permitted values from event ${entry.seq}`}
+                      compact
+                    />
+                    <PayloadInspector
+                      runId={runId}
+                      selector={{ source: 'journal', sequence: entry.seq }}
+                      label={`Inspect redacted payload from event ${entry.seq}`}
+                      compact
+                    />
+                  </Stack>
+                ))}
+              </Stack>
+            ) : null}
 
-          <h3>Trace</h3>
-          {traces.length > 0 ? (
-            <ul className="rn-traces">
-              {traces.slice(0, 5).map((trace) => (
-                <li key={trace}>
-                  <code>{clip(trace, 64)}</code> <CopyButton text={trace} what="trace id" />
-                </li>
-              ))}
-            </ul>
-          ) : knowsTraces ? (
-            <p>no trace (the worker did not send one for this step).</p>
-          ) : (
-            <p className="hint">Trace ids come with the journal events, which are not read yet.</p>
-          )}
-          <p className="hint">The journal event holds only a payload digest. Retained values are read separately under the workflow&apos;s classification policy.</p>
-          {retainedPayloads.length > 0 ? (
-            <div className="rn-payload-events">
-              <h3>Retained payloads</h3>
-              {retainedPayloads.map((entry) => (
-                <div key={entry.seq}>
-                  <PayloadDisclosureView
-                    runId={runId}
-                    selector={{ source: 'journal', sequence: entry.seq }}
-                    label={`View permitted values from event ${entry.seq}`}
-                    compact
-                  />
-                  <PayloadInspector
-                    runId={runId}
-                    selector={{ source: 'journal', sequence: entry.seq }}
-                    label={`Inspect redacted payload from event ${entry.seq}`}
-                    compact
-                  />
-                </div>
-              ))}
+            {node.type === 'database' && node.status === 'SUCCEEDED' ? <DatabaseResultViewer runId={runId} nodeId={selectedId} /> : null}
+
+            <Heading level={3}>Structure</Heading>
+            <Links edges={model.edges} model={model} id={selectedId} onSelect={onSelect} />
+            {node.forward ? (
+              <Row gap={1}>
+                <Text as="span">About step</Text>
+                <Button variant="ghost" size="sm" onClick={() => onSelect(node.forward as string)}>
+                  {node.forward}
+                </Button>
+              </Row>
+            ) : null}
+            {node.saga && node.saga.irreversible.length > 0 ? (
+              <Row gap={1}>
+                <Text as="span">Cannot be undone:</Text>
+                {node.saga.irreversible.slice(0, 20).map((id) => (
+                  <Button key={id} variant="ghost" size="sm" onClick={() => onSelect(id)}>
+                    {id}
+                  </Button>
+                ))}
+              </Row>
+            ) : null}
+
+            <div>
+              <Button onClick={() => onShowInTimeline(selectedId)}>Show only this step in the timeline</Button>
             </div>
-          ) : null}
-
-          {node.type === 'database' && node.status === 'SUCCEEDED' ? <DatabaseResultViewer runId={runId} nodeId={selectedId} /> : null}
-
-          <h3>Structure</h3>
-          <Links edges={model.edges} model={model} id={selectedId} onSelect={onSelect} />
-          {node.forward ? (
-            <p>
-              About step{' '}
-              <button type="button" className="link" onClick={() => onSelect(node.forward as string)}>
-                {node.forward}
-              </button>
-              .
-            </p>
-          ) : null}
-          {node.saga && node.saga.irreversible.length > 0 ? (
-            <p>
-              Cannot be undone:{' '}
-              {node.saga.irreversible.slice(0, 20).map((id) => (
-                <button key={id} type="button" className="link" onClick={() => onSelect(id)}>
-                  {id}
-                </button>
-              ))}
-            </p>
-          ) : null}
-
-          <p>
-            <button type="button" className="btn" onClick={() => onShowInTimeline(selectedId)}>
-              Show only this step in the timeline
-            </button>
-          </p>
-        </>
-      )}
+          </>
+        )}
+      </Stack>
     </aside>
   );
 }

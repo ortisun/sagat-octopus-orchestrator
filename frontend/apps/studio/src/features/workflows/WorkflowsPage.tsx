@@ -1,15 +1,11 @@
 import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useId, useState } from 'react';
-import { Link, useNavigate, useSearchParams } from 'react-router';
+import { useNavigate, useSearchParams } from 'react-router';
 import { path } from '../../api/client';
 import { isApiError } from '../../api/errors';
 import { useApp, useCan, useNamespace } from '../../app/context';
 import { emptyDocument } from '../../model/ir';
-import { useAnnounce } from '../../ui/Announcer';
-import { Banner } from '../../ui/Banner';
-import { Button } from '../../ui/Button';
-import { ErrorState } from '../../ui/ErrorState';
-import { Field } from '../../ui/Field';
+import { Actions, Banner, Button, ColumnHeader, Empty, ErrorState, Hint, Link, Loading, Page, PageHeader, Row, Stack, Table, TableBody, TableCell, TableHead, TableRow, Text, TextInput, VisuallyHidden, useAnnounce } from '../../ui';
 import { clip } from './canvasModel';
 import { Moment } from '../runs/Now';
 import { StartRun } from '../runs/StartRun';
@@ -65,17 +61,26 @@ function CreateForm({ onClose }: { onClose: () => void }) {
         void submit();
       }}
     >
-      <p>A workflow starts as an empty draft with a manual trigger. You add its steps in the editor.</p>
-      <Field label="Name" hint="Lowercase letters, digits and dashes; starts with a letter; 3 to 64 characters. For example order-fulfilment." error={fieldError}>
-        <input type="text" value={name} autoComplete="off" spellCheck={false} aria-required="true" onChange={(event) => setName(event.target.value)} />
-      </Field>
-      {error ? <ErrorState error={error} what="Creating the workflow" /> : null}
-      <div className="dialog-actions">
-        <Button onClick={onClose}>Cancel</Button>
-        <Button type="submit" variant="primary" disabled={!WORKFLOW_NAME.test(name) || busy || taken === name}>
-          {busy ? 'Creating…' : 'Create workflow'}
-        </Button>
-      </div>
+      <Stack gap={3}>
+        <Text>A workflow starts as an empty draft with a manual trigger. You add its steps in the editor.</Text>
+        <TextInput
+          label="Name"
+          hint="Lowercase letters, digits and dashes; starts with a letter; 3 to 64 characters. For example order-fulfilment."
+          error={fieldError}
+          value={name}
+          autoComplete="off"
+          spellCheck={false}
+          required
+          onChange={setName}
+        />
+        {error ? <ErrorState error={error} what="Creating the workflow" /> : null}
+        <Actions>
+          <Button onClick={onClose}>Cancel</Button>
+          <Button type="submit" variant="primary" disabled={!WORKFLOW_NAME.test(name) || busy || taken === name}>
+            {busy ? 'Creating…' : 'Create workflow'}
+          </Button>
+        </Actions>
+      </Stack>
     </form>
   );
 }
@@ -106,105 +111,91 @@ export function WorkflowsPage() {
   const shown = needle === '' ? workflows : workflows.filter((w) => w.name.toLowerCase().includes(needle));
 
   return (
-    <section>
-      <div className="wf-page-head">
-        <h1>Workflows</h1>
-        <Button
-          variant="primary"
-          onClick={() => (canWrite ? setCreating(true) : undefined)}
-          aria-disabled={canWrite ? undefined : true}
-          aria-describedby={canWrite ? undefined : reasonId}
-        >
-          New workflow
-        </Button>
-      </div>
-      {!canWrite ? (
-        <p id={reasonId} className="wf-reason">
-          Creating a workflow needs the definition:write permission, which your role does not have.
-        </p>
-      ) : null}
+    <Page>
+      <PageHeader
+        title="Workflows"
+        actions={
+          <Button variant="primary" onClick={() => (canWrite ? setCreating(true) : undefined)} aria-disabled={canWrite ? undefined : true} aria-describedby={canWrite ? undefined : reasonId}>
+            New workflow
+          </Button>
+        }
+      />
+      {!canWrite ? <Hint id={reasonId}>Creating a workflow needs the definition:write permission, which your role does not have.</Hint> : null}
 
       {!canRead ? <Banner tone="info">You are not allowed to see workflows: it needs the definition:read permission.</Banner> : null}
       {canRead && namespace === undefined && namespaces.isSuccess && namespaces.data.items.length === 0 ? <Banner tone="info">There is no namespace to work in yet.</Banner> : null}
       {canRead && namespaces.isError ? <ErrorState error={namespaces.error} what="Loading the namespaces" onRetry={() => void namespaces.refetch()} /> : null}
       {canRead && list.isError ? <ErrorState error={list.error} what="Loading the workflows" onRetry={() => void list.refetch()} /> : null}
-      {canRead && namespace !== undefined && list.isPending && !list.isError ? <p role="status">Loading the workflows…</p> : null}
-      {list.isSuccess && workflows.length === 0 ? (
-        <p className="empty">
-          No workflows in <code>{namespace}</code> yet.{canWrite ? ' Create the first one with New workflow.' : ''}
-        </p>
-      ) : null}
+      {canRead && namespace !== undefined && list.isPending && !list.isError ? <Loading>Loading the workflows…</Loading> : null}
+      {list.isSuccess && workflows.length === 0 ? <Empty title={`No workflows in ${namespace ?? ''} yet.${canWrite ? ' Create the first one with New workflow.' : ''}`} /> : null}
 
       {workflows.length > 0 ? (
-        <div className="toolbar wf-find">
-          <Field label="Find a workflow" hint={list.hasNextPage && needle !== '' ? `Searching the ${workflows.length} workflows loaded so far; load more to search further.` : undefined}>
-            <input
-              type="search"
-              className="input"
-              value={search}
-              maxLength={64}
-              autoComplete="off"
-              spellCheck={false}
-              onChange={(event) =>
-                setParams((current) => {
-                  const next = new URLSearchParams(current);
-                  if (event.target.value === '') next.delete('q');
-                  else next.set('q', event.target.value);
-                  return next;
-                }, { replace: true })
-              }
-            />
-          </Field>
-          <span className="hint" role="status">
-            {needle === '' ? `${workflows.length} workflows` : `${shown.length} of ${workflows.length} workflows`}
-          </span>
-        </div>
+        <Row align="end" gap={3}>
+          <TextInput
+            label="Find a workflow"
+            hint={list.hasNextPage && needle !== '' ? `Searching the ${workflows.length} workflows loaded so far; load more to search further.` : undefined}
+            type="search"
+            width="min(100%, 24rem)"
+            value={search}
+            maxLength={64}
+            autoComplete="off"
+            spellCheck={false}
+            onChange={(value) =>
+              setParams((current) => {
+                const next = new URLSearchParams(current);
+                if (value === '') next.delete('q');
+                else next.set('q', value);
+                return next;
+              }, { replace: true })
+            }
+          />
+          <Hint role="status">{needle === '' ? `${workflows.length} workflows` : `${shown.length} of ${workflows.length} workflows`}</Hint>
+        </Row>
       ) : null}
-      {workflows.length > 0 && shown.length === 0 ? <p className="empty">No loaded workflow has "{clip(search.trim(), 40)}" in its name.</p> : null}
+      {workflows.length > 0 && shown.length === 0 ? <Empty title={`No loaded workflow has "${clip(search.trim(), 40)}" in its name.`} /> : null}
       {shown.length > 0 ? (
-        <table className="data wf-list">
-          <caption className="visually-hidden">Workflows of the namespace {namespace}</caption>
-          <thead>
-            <tr>
-              <th scope="col">Name</th>
-              <th scope="col">Active version</th>
-              <th scope="col">Draft revision</th>
-              <th scope="col">Last updated</th>
+        <Table label={`Workflows of the namespace ${namespace ?? ''}`} className="wf-list">
+          <TableHead>
+            <TableRow>
+              <ColumnHeader>Name</ColumnHeader>
+              <ColumnHeader>Active version</ColumnHeader>
+              <ColumnHeader>Draft revision</ColumnHeader>
+              <ColumnHeader>Last updated</ColumnHeader>
               {canStart ? (
-                <th scope="col">
-                  <span className="visually-hidden">Actions</span>
-                </th>
+                <ColumnHeader>
+                  <VisuallyHidden>Actions</VisuallyHidden>
+                </ColumnHeader>
               ) : null}
-            </tr>
-          </thead>
-          <tbody>
+            </TableRow>
+          </TableHead>
+          <TableBody>
             {shown.map((w) => (
-              <tr key={w.id}>
-                <th scope="row">
+              <TableRow key={w.id}>
+                <ColumnHeader scope="row">
                   <Link to={path`/workflows/${w.id}`}>{clip(w.name, 64)}</Link>
-                </th>
-                <td>{w.activeVersion ? `Version ${w.activeVersion.versionNumber}` : 'None (not published)'}</td>
-                <td>{w.draftRevision}</td>
-                <td>
+                </ColumnHeader>
+                <TableCell>{w.activeVersion ? `Version ${w.activeVersion.versionNumber}` : 'None (not published)'}</TableCell>
+                <TableCell>{w.draftRevision}</TableCell>
+                <TableCell>
                   <Moment at={w.updatedAt} empty="—" />
-                </td>
-                {canStart ? <td>{w.activeVersion ? <StartRun choices={[{ id: w.id, name: w.name }]} initialId={w.id} /> : null}</td> : null}
-              </tr>
+                </TableCell>
+                {canStart ? <TableCell>{w.activeVersion ? <StartRun choices={[{ id: w.id, name: w.name }]} initialId={w.id} /> : null}</TableCell> : null}
+              </TableRow>
             ))}
-          </tbody>
-        </table>
+          </TableBody>
+        </Table>
       ) : null}
       {list.hasNextPage ? (
-        <p>
+        <div>
           <Button onClick={() => void list.fetchNextPage()} disabled={list.isFetchingNextPage}>
             {list.isFetchingNextPage ? 'Loading…' : 'Load more'}
           </Button>
-        </p>
+        </div>
       ) : null}
 
       <Modal open={creating} title="New workflow" onClose={() => setCreating(false)}>
         <CreateForm onClose={() => setCreating(false)} />
       </Modal>
-    </section>
+    </Page>
   );
 }

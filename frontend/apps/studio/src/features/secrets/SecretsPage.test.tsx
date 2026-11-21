@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { describe, expect, it } from 'vitest';
 import { AUTH_CONTEXT, TOKEN, fakePlatform, renderApp } from '../../../test/render';
 import { createApp } from '../../app/context';
+import { choose } from '../../../test/ui';
 import { SecretsPage } from './SecretsPage';
 const canary = 'private-postgres-password-017';
 async function mount(fail = false) {
@@ -52,7 +53,7 @@ describe('Secrets', () => {
     const { user, platform } = await mount(true);
     await user.click(await screen.findByRole('button', { name: 'New secret' }));
     await user.type(screen.getByLabelText('Secret name'), 'new-access');
-    await user.selectOptions(screen.getByLabelText('Credential format'), 'opaque');
+    await choose(user, 'Credential format', 'Secret value');
     await user.type(screen.getByLabelText('Secret value'), canary);
     await user.click(screen.getByRole('button', { name: 'Save secret' })); await screen.findByRole('alert');
     await user.click(screen.getByRole('button', { name: 'Save secret' })); await screen.findByRole('alert');

@@ -10,10 +10,7 @@ import { canonical } from '../../model/ir';
 import type { IrDocument } from '../../model/ir';
 import { kindOf } from '../../model/registry';
 import type { Direction, Point } from '../../model/layout';
-import { Banner } from '../../ui/Banner';
-import { useAnnounce } from '../../ui/Announcer';
-import { Button } from '../../ui/Button';
-import { Tabs } from '../../ui/Tabs';
+import { Badge, Banner, Button, FocusHeading, Heading, Hint, Page, Tabs, useAnnounce } from '../../ui';
 import { AddNodeDialog, Palette } from './AddNode';
 import { canvasMode } from './canvasModel';
 import { ConflictDialog } from './ConflictDialog';
@@ -46,7 +43,8 @@ import '../../styles/workflows.css';
 function isTextTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false;
   if (target.isContentEditable) return true;
-  if (target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement) return true;
+  // A selector of the interface module is a button with the `combobox` role: typing on it picks an option, as it did in a native select.
+  if (target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement || target.getAttribute('role') === 'combobox') return true;
   return target instanceof HTMLInputElement && !['checkbox', 'radio', 'button', 'submit'].includes(target.type);
 }
 
@@ -474,18 +472,16 @@ export function WorkflowEditor({ workflow }: { workflow: Workflow }) {
         : 'The new node goes to the middle of the visible canvas.';
 
   return (
+    <Page>
     <div className="wf-editor" onBlur={onBlur} data-testid="editor">
       <div className="wf-head">
-        <h1>{doc.metadata.name || workflow.name}</h1>
+        <Heading level={1}>{doc.metadata.name || workflow.name}</Heading>
         {active !== undefined ? (
-          <span className="badge" data-tone="ok">
-            <span aria-hidden="true">✓</span>
-            <span>Active version {active}</span>
-          </span>
+          <Badge tone="ok">
+            <span aria-hidden="true">✓</span> <span>Active version {active}</span>
+          </Badge>
         ) : (
-          <span className="badge" data-tone="idle">
-            <span>Not published</span>
-          </span>
+          <Badge tone="idle">Not published</Badge>
         )}
       </div>
 
@@ -509,10 +505,10 @@ export function WorkflowEditor({ workflow }: { workflow: Workflow }) {
       <div className="wf-toolbar" role="group" aria-label="Editor tools">
         <div className="wf-tools">
           <div role="group" aria-label="View" className="wf-toggle">
-            <Button aria-pressed={!showList} onClick={() => chooseView('canvas')}>
+            <Button variant={showList ? 'default' : 'primary'} aria-pressed={!showList} onClick={() => chooseView('canvas')}>
               Canvas
             </Button>
-            <Button aria-pressed={showList} onClick={() => chooseView('list')}>
+            <Button variant={showList ? 'primary' : 'default'} aria-pressed={showList} onClick={() => chooseView('list')}>
               List
             </Button>
           </div>
@@ -568,9 +564,10 @@ export function WorkflowEditor({ workflow }: { workflow: Workflow }) {
         </div>
       </div>
       {canPublish && blockedReason !== undefined ? (
-        <p id="wf-publish-reason" className="wf-publish-reason">
-          {blockedReason} {problems > 0 ? <Button onClick={showProblems}>Show the problems</Button> : null}
-        </p>
+        <div className="wf-publish-reason">
+          <Hint id="wf-publish-reason">{blockedReason}</Hint>
+          {problems > 0 ? <Button onClick={showProblems}>Show the problems</Button> : null}
+        </div>
       ) : null}
 
       <div className="wf-notice" role="status" data-testid="edit-notice">
@@ -582,9 +579,9 @@ export function WorkflowEditor({ workflow }: { workflow: Workflow }) {
         <div className="wf-main">
           {showList ? (
             <section aria-labelledby="wf-nodes-heading">
-              <h2 id="wf-nodes-heading" className="wf-panel-title" ref={tableHeading} tabIndex={-1}>
+              <FocusHeading level={2} look={4} id="wf-nodes-heading" ref={tableHeading}>
                 Nodes
-              </h2>
+              </FocusHeading>
               {mode === 'list' && !showAnyway ? (
                 <Banner tone="warn" title="A large workflow.">
                   This workflow has {doc.nodes.length.toLocaleString()} nodes, more than a canvas draws comfortably, so it opens as a list.{' '}
@@ -616,7 +613,7 @@ export function WorkflowEditor({ workflow }: { workflow: Workflow }) {
               {mode === 'simplified' || mode === 'list' ? (
                 <Banner tone="info">With {doc.nodes.length.toLocaleString()} nodes the cards are simplified (id and type only). The list view shows everything.</Banner>
               ) : null}
-              {doc.nodes.length === 0 ? <p className="wf-empty-hint">This workflow is empty. Use Add node (Alt+N), or drag a kind from the palette onto the canvas.</p> : null}
+              {doc.nodes.length === 0 ? <Hint>This workflow is empty. Use Add node (Alt+N), or drag a kind from the palette onto the canvas.</Hint> : null}
               <WorkflowCanvas
                 doc={doc}
                 mode={mode === 'full' ? 'full' : 'simplified'}
@@ -665,7 +662,7 @@ export function WorkflowEditor({ workflow }: { workflow: Workflow }) {
           <Button aria-expanded={dockOpen} aria-controls="wf-dock-body" onClick={() => setDockOpen((open) => !open)}>
             Validation and versions
           </Button>
-          <span className="hint">
+          <span className="wf-quiet">
             {validation.phase === 'checking'
               ? validation.view
                 ? 'Checking again…'
@@ -738,5 +735,6 @@ export function WorkflowEditor({ workflow }: { workflow: Workflow }) {
       />
       <LeaveGuard active={unsaved} onSave={async () => (await draft.save()) === 'saved'} />
     </div>
+    </Page>
   );
 }

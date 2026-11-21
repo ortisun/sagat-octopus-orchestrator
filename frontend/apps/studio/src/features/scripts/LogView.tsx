@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { Button } from '../../ui/Button';
+import { Button, Hint, Row, Stack } from '../../ui';
 import { clipText, sanitizeLog } from './text';
 import type { ClipLimits } from './text';
 
@@ -17,23 +17,25 @@ export function LogView({ text, label, platformCut, empty }: { text: string; lab
   const safe = useMemo(() => sanitizeLog(text), [text]);
   const shown = useMemo(() => clipText(safe, whole ? WHOLE : FIRST), [safe, whole]);
   return (
-    <div className="log-view">
+    <Stack gap={1}>
       {/* A region that scrolls must be reachable by keyboard, or its end cannot be read without a mouse. */}
       {/* eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex */}
       <pre className="log" role="region" aria-label={label} tabIndex={0}>
         {shown.text === '' ? empty : shown.text}
       </pre>
       {shown.clipped ? (
-        <p className="hint">
-          Showing the start of {shown.totalChars.toLocaleString()} characters ({shown.totalLines.toLocaleString()} lines).{' '}
-          {whole ? (
-            'This is the most the Studio draws.'
-          ) : (
-            <Button onClick={() => setWhole(true)}>Show more</Button>
+        <Row>
+          <Hint>
+            Showing the start of {shown.totalChars.toLocaleString()} characters ({shown.totalLines.toLocaleString()} lines).{whole ? ' This is the most the Studio draws.' : ''}
+          </Hint>
+          {whole ? null : (
+            <Button size="sm" onClick={() => setWhole(true)}>
+              Show more
+            </Button>
           )}
-        </p>
+        </Row>
       ) : null}
-      {platformCut ? <p className="hint">The platform cut this at the output limit of the script; what follows was not kept.</p> : null}
-    </div>
+      {platformCut ? <Hint>The platform cut this at the output limit of the script; what follows was not kept.</Hint> : null}
+    </Stack>
   );
 }

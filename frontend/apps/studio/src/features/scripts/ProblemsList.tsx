@@ -1,5 +1,5 @@
 import type { RefObject } from 'react';
-import { StatusBadge } from '../../ui/StatusBadge';
+import { Button, Heading, Stack, StatusBadge } from '../../ui';
 import type { StatusView } from '../../model/status';
 import type { EditorControls } from './CodeEditor';
 import type { Problem, ProblemSeverity } from './monacoSetup';
@@ -17,26 +17,26 @@ const SEVERITY: Record<ProblemSeverity, StatusView> = {
 export function ProblemsList({ problems, controlsRef, label }: { problems: readonly Problem[]; controlsRef: RefObject<EditorControls | null>; label: string }) {
   const errors = problems.filter((problem) => problem.severity === 'error').length;
   return (
-    <div className="problems">
-      <h3 id={`${label}-problems`}>
+    <Stack gap={1}>
+      <Heading level={3} look={5} id={`${label}-problems`}>
         Problems{' '}
-        <span className="count" aria-live="polite">
+        <span className="problems-count" aria-live="polite">
           {problems.length === 0 ? 'none reported' : `${errors} ${errors === 1 ? 'error' : 'errors'}, ${problems.length - errors} other`}
         </span>
-      </h3>
+      </Heading>
       {problems.length > 0 ? (
-        <ul aria-labelledby={`${label}-problems`}>
+        <ul className="problems-list" aria-labelledby={`${label}-problems`}>
           {problems.map((problem, index) => (
             <li key={`${problem.line}:${problem.column}:${index}`}>
               <StatusBadge view={SEVERITY[problem.severity]} />{' '}
-              <button type="button" className="link-button" onClick={() => controlsRef.current?.reveal(problem.line, problem.column)}>
+              <Button variant="ghost" size="sm" onClick={() => controlsRef.current?.reveal(problem.line, problem.column)}>
                 Line {problem.line}, column {problem.column}
-              </button>{' '}
+              </Button>{' '}
               <span>{problem.message}</span>
             </li>
           ))}
         </ul>
       ) : null}
-    </div>
+    </Stack>
   );
 }

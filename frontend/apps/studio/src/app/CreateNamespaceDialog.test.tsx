@@ -2,6 +2,7 @@ import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it } from 'vitest';
 import { AUTH_CONTEXT, TOKEN, fakePlatform, renderApp } from '../../test/render';
+import { choose, chosen, expectUnavailable } from '../../test/ui';
 import { createApp } from './context';
 import { Shell } from './Shell';
 import { NamespacesPage } from './NamespacesPage';
@@ -26,12 +27,12 @@ describe('namespace creation', () => {
   it('creates from an empty namespace list and immediately selects the result', async () => {
     const { app, platform, user } = await mount();
     await user.click(screen.getByRole('button', { name: 'New namespace' }));
-    await screen.findByRole('option', { name: 'development' });
-    await user.type(screen.getByLabelText('Namespace name'), 'testing');
-    await user.selectOptions(screen.getByLabelText('Environment'), 'staging');
+    await waitFor(() => expect(chosen('Workspace')).toBe('development'));
+    await user.type(screen.getByRole('textbox', { name: /^Namespace name/ }), 'testing');
+    await choose(user, 'Environment', 'Staging');
     await user.click(screen.getByRole('button', { name: 'Create namespace' }));
     await waitFor(() => expect(app.namespace.current()).toBe('testing'));
-    expect(screen.getByLabelText('Namespace')).toHaveValue('testing');
+    expect(chosen('Namespace')).toBe('testing');
     const call = platform.calls.find((item) => item.method === 'POST');
     expect(JSON.parse(call?.init.body as string)).toEqual({ slug: 'testing', environment: 'staging' });
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
@@ -44,31 +45,31 @@ describe('namespace creation', () => {
   it('prevents invalid names and resets the form after cancellation', async () => {
     const { user, platform } = await mount();
     await user.click(screen.getByRole('button', { name: 'New namespace' }));
-    await screen.findByRole('option', { name: 'development' });
+    await waitFor(() => expect(chosen('Workspace')).toBe('development'));
     for (const name of ['ab', 'Bad-name', 'bad--name', 'bad-']) {
-      await user.clear(screen.getByLabelText('Namespace name'));
-      await user.type(screen.getByLabelText('Namespace name'), name);
-      expect(screen.getByRole('button', { name: 'Create namespace' })).toBeDisabled();
+      await user.clear(screen.getByRole('textbox', { name: /^Namespace name/ }));
+      await user.type(screen.getByRole('textbox', { name: /^Namespace name/ }), name);
+      expectUnavailable(screen.getByRole('button', { name: 'Create namespace' }));
     }
     await user.click(screen.getByRole('button', { name: 'Cancel' }));
     await user.click(screen.getByRole('button', { name: 'New namespace' }));
-    expect(screen.getByLabelText('Namespace name')).toHaveValue('');
+    expect(screen.getByRole('textbox', { name: /^Namespace name/ })).toHaveValue('');
     expect(platform.calls.some((call) => call.method === 'POST')).toBe(false);
   });
   it.each([409, 403])('keeps the form and selection when the API refuses with %s', async (failure) => {
     const { user, app } = await mount({ failure });
     await user.click(screen.getByRole('button', { name: 'New namespace' }));
-    await screen.findByRole('option', { name: 'development' });
-    await user.type(screen.getByLabelText('Namespace name'), 'testing');
+    await waitFor(() => expect(chosen('Workspace')).toBe('development'));
+    await user.type(screen.getByRole('textbox', { name: /^Namespace name/ }), 'testing');
     await user.click(screen.getByRole('button', { name: 'Create namespace' }));
     expect(await screen.findByRole('alert')).toHaveTextContent(failure === 409 ? 'already exists' : 'Request refused');
-    expect(screen.getByLabelText('Namespace name')).toHaveValue('testing');
+    expect(screen.getByRole('textbox', { name: /^Namespace name/ })).toHaveValue('testing');
     expect(app.namespace.current()).toBeUndefined();
   });
   it('explains when no workspace is available', async () => {
     const { user } = await mount({ empty: true });
     await user.click(screen.getByRole('button', { name: 'New namespace' }));
     expect(await screen.findByText(/Create a workspace through/)).toBeVisible();
-    expect(screen.getByRole('button', { name: 'Create namespace' })).toBeDisabled();
+    expectUnavailable(screen.getByRole('button', { name: 'Create namespace' }));
   });
 });

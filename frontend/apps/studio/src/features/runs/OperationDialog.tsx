@@ -5,12 +5,7 @@ import type { FormEvent } from 'react';
 import { ApiError, isApiError } from '../../api/errors';
 import type { OperationRequest, RuntimeNode } from '../../api/types';
 import { useApp } from '../../app/context';
-import { Banner } from '../../ui/Banner';
-import { Button } from '../../ui/Button';
-import { Dialog } from '../../ui/Dialog';
-import { ErrorState } from '../../ui/ErrorState';
-import { Field } from '../../ui/Field';
-import { useAnnounce } from '../../ui/Announcer';
+import { Actions, Banner, Button, Dialog, ErrorState, Hint, RadioGroup, Stack, Text, TextArea, TextInput, useAnnounce } from '../../ui';
 import type { LiveRunStore } from './liveRun';
 import { ERROR_CODE, MAX_REASON, actionLabel, asksForStepId, checkReason, consequence, runOperations, stepOperations } from './ops';
 import type { Action, Operation, RunFacts } from './ops';
@@ -174,9 +169,10 @@ function DecisionForm({ decision, run, live, runId, onDone }: { decision: Decisi
   const conflict = isApiError(error) && error.code === 'CONFLICT';
 
   return (
-    <form onSubmit={submit} noValidate className="rn-decision">
-      <p>{consequence(action, stepId === undefined ? undefined : clip(stepId, 60), node)}</p>
-      <p className="rn-audit">This decision is recorded with your name and reason.</p>
+    <form onSubmit={submit} noValidate>
+      <Stack gap={3}>
+      <Text>{consequence(action, stepId === undefined ? undefined : clip(stepId, 60), node)}</Text>
+      <Hint>This decision is recorded with your name and reason.</Hint>
 
       {moved ? (
         <Banner tone="warn" title="The run changed while you were deciding.">
@@ -198,54 +194,45 @@ function DecisionForm({ decision, run, live, runId, onDone }: { decision: Decisi
       ) : null}
 
       {action === 'RESOLVE_STEP' ? (
-        <fieldset className="rn-outcome" aria-describedby={outcomeProblem ? 'rn-outcome-error' : undefined}>
-          <legend>What happened to the step?</legend>
-          <label>
-            <input type="radio" name="outcome" value="SUCCEEDED" checked={outcome === 'SUCCEEDED'} onChange={() => setOutcome('SUCCEEDED')} /> It happened: declare the step succeeded
-          </label>
-          <label>
-            <input type="radio" name="outcome" value="FAILED" checked={outcome === 'FAILED'} onChange={() => setOutcome('FAILED')} /> It did not happen: declare the step failed
-          </label>
-          {outcomeProblem ? (
-            <span id="rn-outcome-error" className="error" role="alert">
-              {outcomeProblem}
-            </span>
-          ) : null}
-        </fieldset>
+        <RadioGroup
+          label="What happened to the step?"
+          error={outcomeProblem}
+          value={outcome}
+          onChange={setOutcome}
+          options={[
+            { value: 'SUCCEEDED', label: 'It happened: declare the step succeeded' },
+            { value: 'FAILED', label: 'It did not happen: declare the step failed' },
+          ]}
+        />
       ) : null}
       {action === 'RESOLVE_STEP' && outcome === 'FAILED' ? (
-        <Field label="Error code (optional)" hint="Letters, digits and _ . : - only. Left empty it is recorded as DECLARED_FAILED_BY_OPERATOR." error={codeProblem}>
-          <input type="text" value={errorCode} maxLength={64} autoComplete="off" spellCheck={false} onChange={(event) => setErrorCode(event.target.value)} />
-        </Field>
+        <TextInput label="Error code (optional)" hint="Letters, digits and _ . : - only. Left empty it is recorded as DECLARED_FAILED_BY_OPERATOR." error={codeProblem} value={errorCode} maxLength={64} autoComplete="off" spellCheck={false} mono onChange={setErrorCode} />
       ) : null}
 
-      <Field label="Reason" hint={`8 to ${MAX_REASON} characters, kept with the decision. ${reasonCheck.length} / ${MAX_REASON}`} error={reasonProblem}>
-        <textarea ref={reasonRef} value={reason} rows={4} onChange={(event) => setReason(event.target.value)} />
-      </Field>
+      <TextArea label="Reason" hint={`8 to ${MAX_REASON} characters, kept with the decision. ${reasonCheck.length} / ${MAX_REASON}`} error={reasonProblem} ref={reasonRef} value={reason} rows={4} onChange={setReason} />
 
       {asksForStepId(action, node) && stepId !== undefined ? (
-        <Field label="Type the step id to confirm" hint={`The step is ${clip(stepId, 60)}.`} error={idProblem}>
-          <input type="text" value={typed} autoComplete="off" spellCheck={false} onChange={(event) => setTyped(event.target.value)} />
-        </Field>
+        <TextInput label="Type the step id to confirm" hint={`The step is ${clip(stepId, 60)}.`} error={idProblem} value={typed} autoComplete="off" spellCheck={false} mono onChange={setTyped} />
       ) : null}
 
       {error !== undefined ? (
-        <div>
+        <Stack gap={2}>
           <ErrorState error={refusal(error)} what={actionLabel(action)} {...(isApiError(error) && error.retryable && !conflict ? { onRetry: () => void send() } : {})} />
           {conflict ? (
             <Button onClick={() => void refresh()} disabled={refreshing}>
               {refreshing ? 'Refreshing…' : 'Refresh and decide again'}
             </Button>
           ) : null}
-        </div>
+        </Stack>
       ) : null}
 
-      <div className="dialog-actions">
+      <Actions>
         <Button onClick={onDone}>Cancel</Button>
         <Button type="submit" variant={action === 'CANCEL' || action === 'SKIP_COMPENSATION' || action === 'RESOLVE_STEP' ? 'danger' : 'primary'} disabled={sending} aria-disabled={available ? undefined : true}>
           {sending ? 'Sending…' : `Confirm: ${actionLabel(action)}`}
         </Button>
-      </div>
+      </Actions>
+      </Stack>
     </form>
   );
 }

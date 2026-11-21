@@ -469,3 +469,28 @@ passed 3/3 and isolated foreign access passed 1/1. Root then reran the full real
 suite: **35 passed, zero failed, two opt-in performance skips**, 96.98 s including harness, with
 local US02 explicitly excluded. E2E types passed; fresh review found no C1/C2 issue. This final
 rerun used the already-built journey binary because Rust application/test sources were unchanged.
+
+## Astryx design system — 2026-11-21 (T007-059 to T007-066)
+
+What was run on the branch `feature/007-astryx-design-system`, on macOS, and what was not.
+
+Run, from `frontend/`, in the order the continuous integration uses:
+
+| Command | Result |
+|---|---|
+| `npm audit --audit-level=moderate` | Fails on the `minimatch` advisory of `typescript-eslint` 8.70.1, the same finding as on `develop` before this change (fixed on the 0.2 line by hotfix 0.2.1); nothing from the ten packages this change adds |
+| `npm run lint` | clean, with the two new rules (no Astryx import and no raw control outside `src/ui`) |
+| `npm run typecheck`, `npm run typecheck --workspace @sagat/e2e` | clean |
+| `npm test` | 89 files, 1,166 tests passed |
+| `npm run build` | built; sizes in ADR-0101 |
+| `npm run check:api` | `src/api/schema.d.ts` matches the contract |
+| `python3 scripts/check-architecture.py`, `python3 scripts/check-agent-config.py` (repository root) | both pass |
+
+Tests removed on purpose, each replaced: the ten token tests of `src/styles/tokens.test.ts` (the token system they measured is gone) became 109 tests of `src/ui/theme/theme.test.ts` over the theme's roles and four stylesheet tests; one stylesheet test of the hand-written shell on a phone (`src/features/runs/styles.test.ts`) was removed because the shell is now the design system's, which moves the navigation into a menu below 768 pixels; the browser journey `visual-layout.spec.ts` is what measures it. No other test was deleted or skipped; `src/ui/ui.test.tsx` adds 20 tests of the interface module's contract.
+
+Looked at in a browser (Chromium through Playwright, 1440 by 900, dark and light, and 375 pixels wide for the shell), over a mock of the REST API with sample data because no platform runs on this machine: sign-in, namespaces, workflows, the workflow editor, scripts, the script editor, runs, a failed and a running run, operations, ad hoc database, connections, secrets, integrations. Four defects were found this way and fixed, none of which a unit test showed: the code editor read a stylesheet token that no longer exists and its pages failed to open; pages without the `Page` wrapper had lost the padding of the page area; a table in a card was pulled over the card's padding and hid its header row; a scroll region inside a stack was squeezed. The captures are in `frontend/docs/screens/` and in `frontend/README.md`.
+
+Independent reviews (read-only agents, 2026-11-21): a correctness review and a security review of the whole change. Fixed from them: dialogs had no close button (the connection probe could be left only with Escape); the length limit of a text area had become a counter only; the port of a connection accepted text such as `0x1bb`; the test helpers could take an option from another selector's list; the Astryx command line tool was removed from the dependencies (78 development packages, 16 younger than two weeks, and an unscoped `npx astryx` that resolves to another publisher). Reported and not changed, because they were so before this change: Escape closes a dialog while its request is in flight; a decision whose dialog was closed during the request can close the next dialog; announcements and the remembered namespace outlive a sign-out; a runbook link accepts credentials in its address; one assertion of `security.spec.ts` cannot fail.
+
+**Not run, so not proven:** the browser journeys (`cargo test -p sagat-tests --test e2e_workflow_studio -- --ignored journeys`). Docker is not usable on this machine. Their selectors were rewritten for the new markup by reading the components, and the journeys type-check; whether they pass, including the geometry checks of the graph cards, the 320 pixel reflow, the axe-core run and forced colours, is unknown until the continuous integration runs them. The forced-colour mode was not looked at. Nobody has used the new controls with a screen reader. The owner has not reviewed the screens (G2401).
+

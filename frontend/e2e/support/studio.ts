@@ -1,5 +1,6 @@
 import { expect } from '@playwright/test';
 import type { Page } from '@playwright/test';
+import { choose } from './ui';
 
 /**
  * Signs in with a token, the way a user pastes one, and then chooses the namespace the journey works in: the
@@ -13,13 +14,16 @@ export async function signIn(page: Page, token: string, { namespace }: { namespa
   await page.getByRole('button', { name: 'Sign in' }).click();
   await expect(page.getByRole('navigation', { name: 'Main' })).toBeVisible();
   if (namespace === null) return;
-  const select = page.getByLabel('Namespace', { exact: true });
-  const listed = select.locator('option:not([value=""])');
+  const main = page.getByRole('navigation', { name: 'Main' });
+  const select = main.getByRole('combobox', { name: 'Namespace', exact: true });
+  // The selector lists the tenant's namespaces as options that carry their slug (`data-option-value`).
+  const listed = main.locator('[data-option-value]');
   // A tenant with no namespace has nothing to choose from, and the journey goes on without one.
   if (!(await listed.first().waitFor({ state: 'attached', timeout: 5_000 }).then(() => true, () => false))) return;
-  if ((await select.inputValue()) !== '') return;
-  await select.selectOption(namespace ?? (await listed.first().getAttribute('value'))!);
-  await expect(page.getByRole('list', { name: /^In / })).toBeVisible();
+  if (((await select.getAttribute('data-value')) ?? '') !== '') return;
+  await choose(select, namespace ?? (await listed.first().getAttribute('data-option-value'))!);
+  // The menu of the chosen namespace: its heading, then what lives in it.
+  await expect(main.getByText(/^In /)).toBeVisible();
 }
 
 /** Fails the journey on a script error or a policy violation: a Studio that logs errors is not working. */

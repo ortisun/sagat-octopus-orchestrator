@@ -10,6 +10,7 @@ import type { RunModel } from '../../model/runGraph';
 import { flowEdges, flowNodes, layoutNodes } from './canvas';
 import type { CardNode, ViewPolicy } from './canvas';
 import { NODE_TYPES } from './RunNodeCard';
+import { Button, Hint, Row, Text } from '../../ui';
 
 const ARIA = {
   'node.a11yDescription.default': 'Press Enter or Space to open the details of this step. The table view lists the same steps.',
@@ -40,10 +41,10 @@ export function initialRunViewport(
 /** The colour of a step in the overview: only a hint, the cards say it in words. */
 function overviewColor(node: { data?: unknown }): string {
   const status = (node.data as { node?: { status?: string } } | undefined)?.node?.status;
-  if (status === 'FAILED') return 'var(--status-bad)';
-  if (status === 'SUCCEEDED') return 'var(--status-ok)';
-  if (status === 'RUNNING' || status === 'LEASED') return 'var(--status-running)';
-  return 'var(--border)';
+  if (status === 'FAILED') return 'var(--sagat-status-bad)';
+  if (status === 'SUCCEEDED') return 'var(--sagat-status-ok)';
+  if (status === 'RUNNING' || status === 'LEASED') return 'var(--sagat-status-running)';
+  return 'var(--color-border-emphasized)';
 }
 
 /**
@@ -87,23 +88,19 @@ export function GraphView({
 
   return (
     <div className="rn-graph">
-      <div className="toolbar">
-        <span>
+      <Row>
+        <Text as="span">
           {model.nodes.size} steps, {model.edges.length} links.
           {policy.detail === 'simple' ? ' Large graph: simplified cards.' : ''}
-        </span>
-        <button type="button" className="btn" onClick={onShowTable}>
-          Open the table view
-        </button>
+        </Text>
+        <Button onClick={onShowTable}>Open the table view</Button>
         {policy.minimap ? (
-          <button type="button" className="btn" aria-pressed={overview} onClick={() => setOverview((value) => !value)}>
+          <Button aria-pressed={overview} onClick={() => setOverview((value) => !value)}>
             Overview map
-          </button>
+          </Button>
         ) : null}
-        <button type="button" className="btn" onClick={() => after.current?.focus()}>
-          Skip the graph
-        </button>
-      </div>
+        <Button onClick={() => after.current?.focus()}>Skip the graph</Button>
+      </Row>
       <ul className="rn-legend" aria-label="How links are drawn">
         <li>
           <span className="rn-swatch taken" aria-hidden="true" /> Solid: the run went this way
@@ -142,7 +139,7 @@ export function GraphView({
         </ReactFlow>
       </div>
       <div ref={after} tabIndex={-1} className="rn-after" aria-label="After the graph" role="group">
-        {policy.minimap ? null : <span className="hint">The overview map is left out of large graphs.</span>}
+        {policy.minimap ? null : <Hint>The overview map is left out of large graphs.</Hint>}
       </div>
     </div>
   );

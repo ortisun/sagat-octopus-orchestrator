@@ -18,9 +18,96 @@ apps/studio/        the app (Vite, React 19, React Flow, Monaco, TanStack Query)
   src/auth/         sign-in with a pasted token or an OIDC provider (code flow with PKCE); the token lives in memory only
   src/model/        the workflow document and what is done to it (registry of node kinds, edits, layout, advice), the run graph
   src/features/     workflows (editor), runs (graph, table, timeline, decisions), scripts (code editor, test runs)
-  src/ui/           the small set of accessible components everything is made of
+  src/ui/           the Studio's interface module: its own components, built on the Astryx design system (ADR-0101); the only directory that imports Astryx
+  src/ui/theme/     the `sagat` Astryx theme: its colours (`roles.ts`, the only file with a literal colour) and how they map to the design system (`sagatTheme.ts`)
+  src/styles/       stylesheets for the surfaces Astryx has no component for (canvas, graph, timeline, code editor), on the theme's tokens
 e2e/                Playwright journeys against a real platform, and the benchmark
 ```
+
+## Screens
+
+The interface is built on the Astryx design system with the Studio's own theme, `sagat`
+([ADR-0101](../docs/adr/ADR-0101-the-studio-builds-its-interface-on-the-astryx-design-system.md)). It follows the
+colour scheme of the operating system: dark and light are the same theme.
+
+These captures were taken on 2026-11-21 from the development server at 1440 by 900 pixels, over a mock of the REST
+API with sample data (a payments tenant), because no platform was running on the machine that took them. They show
+the screens, not a real deployment: no run, worker or secret in them exists.
+
+| | |
+|---|---|
+| **Sign in**: a pasted token, or single sign-on when it is configured<br>![Sign in](docs/screens/dark-sign-in.png) | **Namespaces**: the tenant's namespaces; one is chosen to open its menu<br>![Namespaces](docs/screens/dark-namespaces.png) |
+| **Workflows**: the workflows of the namespace, with their active version<br>![Workflows](docs/screens/dark-workflows.png) | **Workflow editor**: the palette, the canvas, the inspector, validation and versions<br>![Workflow editor](docs/screens/dark-workflow-editor.png) |
+| **Scripts**: the scripts of the namespace and their languages<br>![Scripts](docs/screens/dark-scripts.png) | **Script editor**: the source, the sandbox test, schemas, versions and limits<br>![Script editor](docs/screens/dark-script-editor.png) |
+| **Runs**: the list, with filters by status, origin and workflow<br>![Runs](docs/screens/dark-runs.png) | **A failed run**: the list beside the detail, with the graph, the table and the timeline<br>![A failed run](docs/screens/dark-run-failed.png) |
+| **A running run**: followed live<br>![A running run](docs/screens/dark-run-running.png) | **Operations**: alerts and worker identities, with drain and resume<br>![Operations](docs/screens/dark-operations.png) |
+| **Ad hoc database**: one statement against a managed connection<br>![Ad hoc database](docs/screens/dark-database.png) | **Connections**: managed database connections and their probe<br>![Connections](docs/screens/dark-connections.png) |
+| **Secrets**: metadata only, never a value<br>![Secrets](docs/screens/dark-secrets.png) | **Integrations**: connectors and network access<br>![Integrations](docs/screens/dark-integrations.png) |
+
+The light theme, on three of the same screens:
+
+| | | |
+|---|---|---|
+| ![Runs, light](docs/screens/light-runs.png) | ![A failed run, light](docs/screens/light-run-failed.png) | ![Workflow editor, light](docs/screens/light-workflow-editor.png) |
+
+## Configuration
+
+The Studio has no configuration file of its own: it is a directory of files that the control plane serves, and
+what it needs to know at page load it reads from `/studio/config.json`, which the control plane answers from its
+environment. Everything is set on the control plane.
+
+| Variable (control plane) | Meaning | Default |
+|---|---|---|
+| `SAGAT_STUDIO_DIR` | The directory of the build (`frontend/apps/studio/dist`); it must hold `index.html`. | Unset: the Studio is not served and `/studio/` answers `404`. |
+| `SAGAT_STUDIO_OIDC_ISSUER`, `SAGAT_STUDIO_OIDC_CLIENT_ID` | Sign-in with an identity provider (authorization code with proof key, a public client: an identifier and no secret). Both or neither. The issuer is an `https` address (plain `http` only on a loopback address). | Unset: the sign-in is a token the person pastes. |
+| `SAGAT_STUDIO_OIDC_SCOPE` | The scope asked of the identity provider. | `openid profile` |
+| `SAGAT_STUDIO_TRACE_URL` | A public address template with exactly one `{traceId}` (for example `http://127.0.0.1:16686/trace/{traceId}` for a local Jaeger). Run details then offer *Open trace*. `https` outside a loopback address; no credentials in it. Restart the control plane after changing it; the Studio is not rebuilt. | Unset: only *Copy trace id* is offered. |
+| `SAGAT_STREAMS_MAX`, `SAGAT_STREAMS_PER_TENANT`, `SAGAT_STREAMS_PER_SUBJECT` | How many live run streams may be open in the process, per tenant and per person. A person over the limit is served by polling instead. | the lesser of 2,000 and half of `SAGAT_MAX_CONNECTIONS`; 200; 20 |
+| `SAGAT_WRITE_STALL_TIMEOUT_SECS` | How long the server waits for a client that stopped reading before it closes the connection. | 30 |
+
+For development only, the Vite server reads one variable of its own:
+
+| Variable (development server) | Meaning | Default |
+|---|---|---|
+| `SAGAT_API_URL` | Where `npm run dev` forwards `/v1`. | `http://127.0.0.1:8080` |
+
+What a person chooses is kept in their browser and nowhere else: the chosen namespace (its slug, under the key
+`studio.namespace`) and nothing about the session. The access token lives in the page's memory only: it ends at
+its expiry and is gone when the page is reloaded.
+
+The look is configured in source, not at run time: the colours, typefaces and radii are the `sagat` theme
+(`apps/studio/src/ui/theme/roles.ts` for the colours, `sagatTheme.ts` for how they map to the design system). After a
+change nothing is rebuilt: the theme is applied from its source when the application starts. `npm test` fails when
+a colour pair falls under its contrast floor or a role is left unmapped. To force a colour scheme for a
+page whatever the system says, set `data-theme="light"` or `data-theme="dark"` on the `html` element.
+
+## Operation
+
+1. **Build.** In `frontend/`: `npm ci` (exact versions, no install scripts), then `npm run build`. The result is
+   `apps/studio/dist`.
+2. **Serve.** Start the control plane with `SAGAT_STUDIO_DIR` pointing at that directory. The Studio is then at
+   `/studio/` on the API's own host; it is not supported on another origin (the API has no cross-origin access).
+   Behind a reverse proxy, pass the security headers through and do not buffer `text/event-stream`.
+3. **Sign in.** Paste a token issued for you, or use *Sign in with your organisation* when single sign-on is
+   configured. The top bar shows who you are and your role.
+4. **Choose a namespace.** On a first visit nothing is chosen and the Studio opens the namespace list: pick one in
+   the selector of the sidebar or with *Use namespace*. Workflows, Scripts, Runs, Operations, Ad hoc database,
+   Connections, Secrets and Integrations then appear under it.
+5. **Work.** Build and publish a workflow in the editor (canvas or list); edit, test and publish a script; follow a
+   run in its graph, table or timeline and, with the permission, retry, compensate, cancel or resolve a step, each
+   with a reason that is recorded; drain or resume a worker identity; manage connections, secret references and
+   connectors. An action you may not take is shown unavailable with the permission it needs, not hidden.
+6. **Deploy a new build.** Build in a separate directory, publish the new hashed files under `assets/` first, then
+   replace `index.html` atomically, and keep the previous hashed files while tabs opened before the change are
+   still in use. New page requests see the new build without restarting the control plane.
+
+Three things work differently from a plain web form, because the design system draws the controls: a selector opens
+a list of options instead of the operating system's picker (type to move, Enter to choose, Escape to close); in a
+strip of tabs the arrow keys move the focus and Enter or Space selects; and below 768 pixels of width the sidebar
+becomes a menu behind the *Open navigation* button.
+
+What to watch, the limits of live streams, the audit of decisions and the accessibility statement are in
+[`docs/runbooks/studio.md`](../docs/runbooks/studio.md), sections 4 and 5.
 
 ## Commands
 

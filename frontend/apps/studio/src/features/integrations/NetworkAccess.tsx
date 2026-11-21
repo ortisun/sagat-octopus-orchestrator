@@ -1,9 +1,7 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useApp } from '../../app/context';
-import { Field } from '../../ui/Field';
-import { Button } from '../../ui/Button';
-import { ErrorState } from '../../ui/ErrorState';
+import { Banner, Button, Checkbox, Disclosure, ErrorState, Loading, Stack, Text, TextArea, TextInput } from '../../ui';
 import { integrationsApi } from './api';
 
 export function NetworkAccess({ namespace }: { namespace: string }) {
@@ -17,23 +15,29 @@ export function NetworkAccess({ namespace }: { namespace: string }) {
   const current = draft ?? { rules: policy.data?.rules.join('\n') ?? '', ports: policy.data?.ports.join(', ') ?? '', allowHttp: policy.data?.allowHttp ?? false };
   const ports = current.ports.split(/[,\s]+/).filter(Boolean).map(Number);
   const valid = ports.every((port) => Number.isInteger(port) && port > 0 && port <= 65535);
-  return <details><summary>Network access</summary>
-    <p>Allow the broker hosts and ports before saving an integration. This policy applies to all outbound connections in this namespace. Private networks require an explicit CIDR rule.</p>
-    {policy.error ? <ErrorState error={policy.error} what="Loading network access" onRetry={() => { void policy.refetch(); }} /> : null}
-    {policy.isPending ? <p role="status">Loading network access…</p> : null}
-    {policy.data ? <form onSubmit={(event) => {
-      event.preventDefault(); if (busy || !valid) return;
-      setBusy(true); setError(undefined); setSaved(false);
-      void service.saveNetwork({ rules: current.rules.split('\n').map((rule) => rule.trim()).filter(Boolean), ports, allowHttp: current.allowHttp }).then(async () => { await policy.refetch(); setDraft(undefined); setSaved(true); }, (problem: unknown) => setError(problem)).finally(() => setBusy(false));
-    }}>
-      <fieldset disabled={busy}>
-        <Field label="Allowed hosts or networks" hint="One exact host, *.domain or CIDR network per line."><textarea value={current.rules} onChange={(event) => { setSaved(false); setDraft({ ...current, rules: event.target.value }); }} rows={3} spellCheck={false} /></Field>
-        <Field label="Allowed ports" hint="Comma-separated ports. Empty uses the platform defaults." error={!valid ? 'Use port numbers between 1 and 65535.' : undefined}><input value={current.ports} onChange={(event) => { setSaved(false); setDraft({ ...current, ports: event.target.value }); }} /></Field>
-        <label><input type="checkbox" checked={current.allowHttp} onChange={(event) => { setSaved(false); setDraft({ ...current, allowHttp: event.target.checked }); }} /> Allow unencrypted connections</label>
-      </fieldset>
-      <Button type="submit" disabled={busy || !valid}>{busy ? 'Saving…' : 'Save network access'}</Button>
-      {error ? <ErrorState error={error} what="Saving network access" /> : null}
-      {saved ? <p role="status">Network access saved.</p> : null}
-    </form> : null}
-  </details>;
+  return (
+    <Disclosure summary="Network access">
+      <Stack gap={3}>
+        <Text>Allow the broker hosts and ports before saving an integration. This policy applies to all outbound connections in this namespace. Private networks require an explicit CIDR rule.</Text>
+        {policy.error ? <ErrorState error={policy.error} what="Loading network access" onRetry={() => { void policy.refetch(); }} /> : null}
+        {policy.isPending ? <Loading>Loading network access…</Loading> : null}
+        {policy.data ? (
+          <form onSubmit={(event) => {
+            event.preventDefault(); if (busy || !valid) return;
+            setBusy(true); setError(undefined); setSaved(false);
+            void service.saveNetwork({ rules: current.rules.split('\n').map((rule) => rule.trim()).filter(Boolean), ports, allowHttp: current.allowHttp }).then(async () => { await policy.refetch(); setDraft(undefined); setSaved(true); }, (problem: unknown) => setError(problem)).finally(() => setBusy(false));
+          }}>
+            <Stack gap={3}>
+              <TextArea label="Allowed hosts or networks" hint="One exact host, *.domain or CIDR network per line." value={current.rules} onChange={(rules) => { setSaved(false); setDraft({ ...current, rules }); }} rows={3} spellCheck={false} mono disabled={busy} />
+              <TextInput label="Allowed ports" hint="Comma-separated ports. Empty uses the platform defaults." error={!valid ? 'Use port numbers between 1 and 65535.' : undefined} value={current.ports} onChange={(next) => { setSaved(false); setDraft({ ...current, ports: next }); }} disabled={busy} />
+              <Checkbox label="Allow unencrypted connections" checked={current.allowHttp} onChange={(allowHttp) => { setSaved(false); setDraft({ ...current, allowHttp }); }} disabled={busy} />
+              <div><Button type="submit" disabled={busy || !valid}>{busy ? 'Saving…' : 'Save network access'}</Button></div>
+              {error ? <ErrorState error={error} what="Saving network access" /> : null}
+              {saved ? <Banner tone="ok">Network access saved.</Banner> : null}
+            </Stack>
+          </form>
+        ) : null}
+      </Stack>
+    </Disclosure>
+  );
 }

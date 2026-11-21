@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { Route, Routes } from 'react-router';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { renderApp } from '../../../test/render';
+import { choose, expectAvailable, expectUnavailable, isUnavailable, optionsOf } from '../../../test/ui';
 import { ScriptsPage } from './ScriptsPage';
 import { DEVELOPER, NAMESPACE_ID, OTHER_SCRIPT_ID, SCRIPT_ID, VIEWER, aSummary, json, problem, scriptsServer, signedIn, stubStorage } from './testing';
 
@@ -107,9 +108,8 @@ describe('ScriptsPage: making a script', () => {
     await user.click(await screen.findByRole('button', { name: 'New script' }));
     const dialog = screen.getByRole('dialog', { name: 'New script' });
     const select = within(dialog).getByRole('combobox', { name: 'Language' });
-    const options = within(select).getAllByRole('option');
-    expect(options.map((o) => o.textContent)).toEqual(['TypeScript', 'Python', 'C#', 'Go (not built by this platform yet)', 'Java (not built by this platform yet)']);
-    expect(options.map((o) => (o as HTMLOptionElement).disabled)).toEqual([false, false, false, true, true]);
+    expect(await optionsOf(user, select)).toEqual(['TypeScript', 'Python', 'C#', 'Go (not built by this platform yet)', 'Java (not built by this platform yet)']);
+    expect(screen.getAllByRole('option').map((o) => isUnavailable(o))).toEqual([false, false, false, true, true]);
   });
 
   it('makes a script from the sample of the language and opens its editor', async () => {
@@ -117,13 +117,13 @@ describe('ScriptsPage: making a script', () => {
     await user.click(await screen.findByRole('button', { name: 'New script' }));
     const dialog = screen.getByRole('dialog', { name: 'New script' });
     const create = within(dialog).getByRole('button', { name: 'Create script' });
-    expect(create).toBeDisabled();
-    await user.type(within(dialog).getByRole('textbox', { name: 'Name' }), 'Bad Name');
+    expectUnavailable(create);
+    await user.type(within(dialog).getByRole('textbox', { name: /^Name/ }), 'Bad Name');
     expect(within(dialog).getByText(/Use lower-case letters, digits and hyphens/)).toBeInTheDocument();
-    expect(create).toBeDisabled();
-    await user.clear(within(dialog).getByRole('textbox', { name: 'Name' }));
-    await user.type(within(dialog).getByRole('textbox', { name: 'Name' }), 'send-mail');
-    await user.selectOptions(within(dialog).getByRole('combobox', { name: 'Language' }), 'python');
+    expectUnavailable(create);
+    await user.clear(within(dialog).getByRole('textbox', { name: /^Name/ }));
+    await user.type(within(dialog).getByRole('textbox', { name: /^Name/ }), 'send-mail');
+    await choose(user, within(dialog).getByRole('combobox', { name: 'Language' }), 'Python');
     await user.click(create);
     expect(await screen.findByText('the editor of a script')).toBeInTheDocument();
     const posted = server.callsTo('POST', server.paths.base)[0];
@@ -137,8 +137,8 @@ describe('ScriptsPage: making a script', () => {
     const { server, user } = await open();
     await user.click(await screen.findByRole('button', { name: 'New script' }));
     const dialog = screen.getByRole('dialog', { name: 'New script' });
-    await user.type(within(dialog).getByRole('textbox', { name: 'Name' }), 'csharp-double');
-    await user.selectOptions(within(dialog).getByRole('combobox', { name: 'Language' }), 'csharp');
+    await user.type(within(dialog).getByRole('textbox', { name: /^Name/ }), 'csharp-double');
+    await choose(user, within(dialog).getByRole('combobox', { name: 'Language' }), 'C#');
     await user.click(within(dialog).getByRole('button', { name: 'Create script' }));
     expect(await screen.findByText('the editor of a script')).toBeInTheDocument();
     const posted = server.callsTo('POST', server.paths.base)[0];
@@ -153,12 +153,12 @@ describe('ScriptsPage: making a script', () => {
     const { user } = await open();
     await user.click(await screen.findByRole('button', { name: 'New script' }));
     const dialog = screen.getByRole('dialog', { name: 'New script' });
-    await user.type(within(dialog).getByRole('textbox', { name: 'Name' }), 'double-it');
+    await user.type(within(dialog).getByRole('textbox', { name: /^Name/ }), 'double-it');
     await user.click(within(dialog).getByRole('button', { name: 'Create script' }));
     expect(await within(dialog).findByText('A script with this name already exists in this namespace.')).toBeInTheDocument();
-    expect(within(dialog).getByRole('textbox', { name: 'Name' })).toBeInvalid();
+    expect(within(dialog).getByRole('textbox', { name: /^Name/ })).toBeInvalid();
     // The dialog stays open and can be tried again.
-    expect(within(dialog).getByRole('button', { name: 'Create script' })).toBeEnabled();
+    expectAvailable(within(dialog).getByRole('button', { name: 'Create script' }));
   });
 
   it('puts the refusal of a language that is not built on the language, if the platform says so', async () => {
@@ -166,7 +166,7 @@ describe('ScriptsPage: making a script', () => {
     server.override(`POST ${server.paths.base}`, () => problem(422, 'VALIDATION_FAILED', 'the language is not built yet: typescript and python are', { reason: 'LANGUAGE_NOT_BUILT' }));
     await user.click(await screen.findByRole('button', { name: 'New script' }));
     const dialog = screen.getByRole('dialog', { name: 'New script' });
-    await user.type(within(dialog).getByRole('textbox', { name: 'Name' }), 'later');
+    await user.type(within(dialog).getByRole('textbox', { name: /^Name/ }), 'later');
     await user.click(within(dialog).getByRole('button', { name: 'Create script' }));
     expect(await within(dialog).findByText(/This language is not built by this platform yet/)).toBeInTheDocument();
   });
@@ -176,7 +176,7 @@ describe('ScriptsPage: making a script', () => {
     server.override(`POST ${server.paths.base}`, () => problem(429, 'QUOTA_EXCEEDED', 'a limit was reached; release something and retry', { limit: 'scripts' }));
     await user.click(await screen.findByRole('button', { name: 'New script' }));
     const dialog = screen.getByRole('dialog', { name: 'New script' });
-    await user.type(within(dialog).getByRole('textbox', { name: 'Name' }), 'one-more');
+    await user.type(within(dialog).getByRole('textbox', { name: /^Name/ }), 'one-more');
     await user.click(within(dialog).getByRole('button', { name: 'Create script' }));
     expect(await within(dialog).findByRole('alert')).toHaveTextContent('a limit was reached');
     expect(within(dialog).getByRole('alert')).toHaveTextContent('a'.repeat(32));
@@ -187,11 +187,13 @@ describe('ScriptsPage: deleting', () => {
   const published = aSummary({ id: OTHER_SCRIPT_ID, name: 'already-used', latestVersion: 2 });
 
   it('allows it only for a script that has no version, and says why not for the others', async () => {
-    await open(DEVELOPER, { scripts: [aSummary(), published] });
-    expect(await screen.findByRole('button', { name: 'Delete double-it' })).toBeEnabled();
+    const { user } = await open(DEVELOPER, { scripts: [aSummary(), published] });
+    expectAvailable(await screen.findByRole('button', { name: 'Delete double-it' }));
     const blocked = screen.getByRole('button', { name: /Delete already-used: it has versions/ });
-    expect(blocked).toBeDisabled();
-    expect(blocked).toHaveAttribute('title', expect.stringMatching(/a workflow may pin its artifact/));
+    expectUnavailable(blocked);
+    // The reason is the button's description, shown as a tooltip to a pointer as well.
+    await user.hover(blocked);
+    await waitFor(() => expect(blocked).toHaveAccessibleDescription(expect.stringMatching(/a workflow may pin its artifact/)));
   });
 
   it('asks first, deletes, and the script is gone from the list', async () => {

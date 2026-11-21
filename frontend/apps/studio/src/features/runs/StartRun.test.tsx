@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { Route, Routes, useLocation } from 'react-router';
 import { describe, expect, it } from 'vitest';
 import { AUTH_CONTEXT, TOKEN, fakePlatform, renderApp } from '../../../test/render';
+import { choose, optionsOf, selector } from '../../../test/ui';
 import { createApp } from '../../app/context';
 import { StartRun, parseInput } from './StartRun';
 
@@ -101,14 +102,14 @@ describe('Start run', () => {
     await user.click(screen.getByRole('button', { name: 'Start run…' }));
     const dialog = await screen.findByRole('dialog', { name: 'Start a run' });
     expect(within(dialog).getByText(/recorded with your name/)).toBeInTheDocument();
-    expect(within(dialog).getAllByRole('option').map((o) => o.textContent)).toEqual(['order-saga', 'refund']);
+    expect(await optionsOf(user, selector('Workflow', dialog))).toEqual(['order-saga', 'refund']);
     expect(platform.calls).toHaveLength(0);
   });
 
   it('starts the chosen workflow with the typed input and a key, and opens the run that was started', async () => {
     const { user, platform } = await mount();
     await user.click(screen.getByRole('button', { name: 'Start run…' }));
-    await user.selectOptions(await screen.findByLabelText('Workflow'), 'refund');
+    await choose(user, await screen.findByRole('combobox', { name: 'Workflow' }), 'refund');
     const field = screen.getByLabelText('Input (JSON object)');
     await user.clear(field);
     await user.click(field);

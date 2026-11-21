@@ -1,7 +1,6 @@
 import { useState } from 'react';
 import { useInfiniteQuery } from '@tanstack/react-query';
-import { Button } from '../../ui/Button';
-import { ErrorState } from '../../ui/ErrorState';
+import { Badge, Button, Code, Empty, ErrorState, Facts, Link, Loading, Panel, Select, Stack, Text } from '../../ui';
 import type { AlertState, OperationsApi } from './api';
 import { Moment } from '../runs/Now';
 import { alertKind, safeRunbookHref } from './model';
@@ -19,56 +18,63 @@ export function AlertsPanel({ api, namespaceId, sessionKey }: { api: OperationsA
   const alerts = list.data?.pages.flatMap((page) => page.items) ?? [];
 
   return (
-    <section className="operations-panel" aria-labelledby="operations-alerts-title">
-      <div className="operations-panel-heading">
-        <div>
-          <h2 id="operations-alerts-title">Alerts</h2>
-          <p>Conditions recorded by the platform monitor for this namespace.</p>
-        </div>
-        <label className="operations-filter">
-          <span>Alert state</span>
-          <select value={filter} onChange={(event) => setFilter(event.target.value as Filter)}>
-            <option value="ALL">All</option>
-            <option value="FIRING">Firing</option>
-            <option value="RESOLVED">Resolved</option>
-          </select>
-        </label>
-      </div>
-
-      {list.isPending ? <p role="status">Loading alerts…</p> : null}
+    <Panel
+      title="Alerts"
+      labelledBy="operations-alerts-title"
+      hint="Conditions recorded by the platform monitor for this namespace."
+      actions={
+        <Select
+          label="Alert state"
+          value={filter}
+          onChange={setFilter}
+          width="10rem"
+          options={[{ value: 'ALL' as const, label: 'All' }, { value: 'FIRING' as const, label: 'Firing' }, { value: 'RESOLVED' as const, label: 'Resolved' }]}
+        />
+      }
+    >
+      {list.isPending ? <Loading>Loading alerts…</Loading> : null}
       {list.isError ? <ErrorState error={list.error} what="Loading alerts" onRetry={() => void list.refetch()} /> : null}
-      {list.isSuccess && alerts.length === 0 ? <p className="empty">No {filter === 'ALL' ? '' : `${filter.toLowerCase()} `}alerts are recorded for this namespace.</p> : null}
+      {list.isSuccess && alerts.length === 0 ? <Empty title={`No ${filter === 'ALL' ? '' : `${filter.toLowerCase()} `}alerts are recorded for this namespace.`} /> : null}
       {alerts.length > 0 ? (
-        <div className="operations-alert-list">
+        <Stack gap={3}>
           {alerts.map((item) => {
             const kind = alertKind(item.kind);
             const href = safeRunbookHref(item.runbook);
             return (
-              <article className="operations-alert" key={item.id}>
-                <header>
-                  <h3>{kind}</h3>
-                  <span className="badge" data-tone={item.state === 'FIRING' ? item.severity === 'critical' ? 'bad' : 'waiting' : 'ok'}>{item.state === 'FIRING' ? 'Firing' : 'Resolved'}</span>
-                  <span className="badge" data-tone={item.severity === 'critical' ? 'bad' : 'waiting'}>{item.severity}</span>
-                </header>
-                <p>{item.summary}</p>
-                <dl className="operations-facts">
-                  {item.subject ? <><dt>Subject</dt><dd><code>{item.subject}</code></dd></> : null}
-                  <dt>Items</dt><dd>{item.items}</dd>
-                  <dt>Oldest</dt><dd>{item.oldestSeconds} seconds</dd>
-                  <dt>Last seen</dt><dd><Moment at={item.lastSeenAt} empty="Not recorded" /></dd>
-                  <dt>Firings</dt><dd>{item.firedCount}</dd>
-                </dl>
-                <p className="operations-runbook">
-                  Runbook:{' '}
-                  {href ? <a href={href} target={new URL(href).origin === window.location.origin ? undefined : '_blank'} rel="noreferrer" aria-label={`Open runbook for ${kind}`}>{item.runbook}</a> : <code>{item.runbook}</code>}
-                </p>
+              <article className="operations-item" key={item.id}>
+                <Panel
+                  title={kind}
+                  level={3}
+                  actions={
+                    <>
+                      <Badge tone={item.state === 'FIRING' ? item.severity === 'critical' ? 'bad' : 'waiting' : 'ok'}>{item.state === 'FIRING' ? 'Firing' : 'Resolved'}</Badge>
+                      <Badge tone={item.severity === 'critical' ? 'bad' : 'waiting'}>{item.severity}</Badge>
+                    </>
+                  }
+                >
+                  <Text>{item.summary}</Text>
+                  <Facts
+                    items={[
+                      ...(item.subject ? [{ term: 'Subject', value: <Code>{item.subject}</Code> }] : []),
+                      { term: 'Items', value: item.items },
+                      { term: 'Oldest', value: `${item.oldestSeconds} seconds` },
+                      { term: 'Last seen', value: <Moment at={item.lastSeenAt} empty="Not recorded" /> },
+                      { term: 'Firings', value: item.firedCount },
+                    ]}
+                  />
+                  <Text>
+                    Runbook:{' '}
+                    {/* A runbook on another site opens in a new tab; one of this deployment opens here. Anything else stays text. */}
+                    {href ? <Link to={href} external={new URL(href).origin !== window.location.origin} aria-label={`Open runbook for ${kind}`}>{item.runbook}</Link> : <Code>{item.runbook}</Code>}
+                  </Text>
+                </Panel>
               </article>
             );
           })}
-        </div>
+        </Stack>
       ) : null}
       {list.isFetchNextPageError ? <ErrorState error={list.error} what="Loading more alerts" onRetry={() => void list.fetchNextPage()} /> : null}
-      {list.hasNextPage ? <Button onClick={() => void list.fetchNextPage()} disabled={list.isFetchingNextPage}>{list.isFetchingNextPage ? 'Loading…' : 'Load more alerts'}</Button> : null}
-    </section>
+      {list.hasNextPage ? <div><Button onClick={() => void list.fetchNextPage()} disabled={list.isFetchingNextPage}>{list.isFetchingNextPage ? 'Loading…' : 'Load more alerts'}</Button></div> : null}
+    </Panel>
   );
 }

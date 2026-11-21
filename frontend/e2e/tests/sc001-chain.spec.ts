@@ -4,6 +4,7 @@ import { env } from '../support/env';
 import { Api } from '../support/platform';
 import { failOnBrowserErrors, goTo, signIn } from '../support/studio';
 import { ActivityFailure, startWorker } from '../support/worker';
+import { choose } from '../support/ui';
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
@@ -31,14 +32,14 @@ test('SC-007-001 create, validate, publish, trigger, fail, compensate and inspec
 
   await addNode(page, 'Saga');
   await addNode(page, 'Step');
-  await inspector(page).getByRole('textbox', { name: 'Activity', exact: true }).fill('stock.reserve');
+  await inspector(page).getByRole('textbox', { name: /^Activity/ }).fill('stock.reserve');
   await inspector(page).getByRole('textbox', { name: 'Timeout amount' }).fill('5');
-  await inspector(page).getByRole('combobox', { name: 'Timeout unit' }).selectOption('s');
+  await choose(inspector(page).getByRole('combobox', { name: 'Timeout unit' }), 's');
   await inspector(page).getByRole('textbox', { name: 'Compensation activity' }).fill('stock.release');
   await addNode(page, 'Step');
-  await inspector(page).getByRole('textbox', { name: 'Activity', exact: true }).fill('order.charge');
+  await inspector(page).getByRole('textbox', { name: /^Activity/ }).fill('order.charge');
   await inspector(page).getByRole('textbox', { name: 'Timeout amount' }).fill('5');
-  await inspector(page).getByRole('combobox', { name: 'Timeout unit' }).selectOption('s');
+  await choose(inspector(page).getByRole('combobox', { name: 'Timeout unit' }), 's');
   await page.getByRole('button', { name: 'List' }).click();
   await page.getByRole('button', { name: /^Edit saga_1$/ }).click();
   await addNode(page, 'End');

@@ -3,10 +3,7 @@ import type { Endpoints } from '../../api/endpoints';
 import { isApiError } from '../../api/errors';
 import type { DefinitionDiff, Workflow, WorkflowVersion } from '../../api/types';
 import { canonical } from '../../model/ir';
-import { Banner } from '../../ui/Banner';
-import { Button } from '../../ui/Button';
-import { ErrorState } from '../../ui/ErrorState';
-import { Field } from '../../ui/Field';
+import { Actions, Banner, Button, Checkbox, ErrorState, Hint, Loading, Stack, Text, TextArea } from '../../ui';
 import { DiffView } from './DiffView';
 import type { DraftSession } from './draftSession';
 import { Modal } from './Modal';
@@ -111,14 +108,14 @@ function PublishBody({ ep, workflowId, session, currentKey, onClose, onPublished
 
   const busy = stage.kind === 'preparing' || stage.kind === 'publishing';
   return (
-    <div className="wf-publish">
-      <p>Publishing creates a new version that never changes. New runs use it; runs already started keep the version they started on.</p>
-      {stage.kind === 'preparing' ? <p role="status">{stage.note ? `${stage.note} ` : ''}Saving the draft and comparing it with the active version…</p> : null}
+    <Stack gap={3}>
+      <Text>Publishing creates a new version that never changes. New runs use it; runs already started keep the version they started on.</Text>
+      {stage.kind === 'preparing' ? <Loading>{`${stage.note ? `${stage.note} ` : ''}Saving the draft and comparing it with the active version…`}</Loading> : null}
       {stage.kind === 'failed' ? (
         <>
           <ErrorState error={stage.error} what={stage.what} />
           {isApiError(stage.error) && stage.error.code === 'VALIDATION_FAILED' ? (
-            <p className="hint">The platform checked the draft again and refused it. The validation panel lists what it found when the editor next checks.</p>
+            <Hint>The platform checked the draft again and refused it. The validation panel lists what it found when the editor next checks.</Hint>
           ) : null}
         </>
       ) : null}
@@ -132,21 +129,13 @@ function PublishBody({ ep, workflowId, session, currentKey, onClose, onPublished
 
       {diff ? (
         <>
-          <Field label="Release notes" hint={`Optional. ${notes.length} of ${MAX_RELEASE_NOTES} characters.`}>
-            <textarea value={notes} maxLength={MAX_RELEASE_NOTES} rows={3} disabled={stage.kind === 'publishing'} onChange={(event) => setNotes(event.target.value)} />
-          </Field>
-          {breaking ? (
-            <div className="field wf-check">
-              <label>
-                <input type="checkbox" checked={ack} disabled={stage.kind === 'publishing'} onChange={(event) => setAck(event.target.checked)} /> I understand these changes break
-                the contract
-              </label>
-            </div>
-          ) : null}
+          {/* The text area of the design system counts towards its limit but lets the text run over it; the notes are cut here, so what is sent never exceeds what the platform accepts. */}
+          <TextArea label="Release notes" hint={`Optional. ${notes.length} of ${MAX_RELEASE_NOTES} characters.`} value={notes} maxLength={MAX_RELEASE_NOTES} rows={3} disabled={stage.kind === 'publishing'} onChange={(value) => setNotes(value.slice(0, MAX_RELEASE_NOTES))} />
+          {breaking ? <Checkbox label="I understand these changes break the contract" checked={ack} disabled={stage.kind === 'publishing'} onChange={setAck} /> : null}
         </>
       ) : null}
 
-      <div className="dialog-actions">
+      <Actions>
         <Button onClick={onClose} disabled={stage.kind === 'publishing'}>
           Cancel
         </Button>
@@ -168,13 +157,9 @@ function PublishBody({ ep, workflowId, session, currentKey, onClose, onPublished
         >
           {stage.kind === 'publishing' ? 'Publishing…' : 'Publish'}
         </Button>
-      </div>
-      {breaking && !ack ? (
-        <p id="wf-publish-ack" className="hint">
-          Tick the box above to publish: these changes break the contract.
-        </p>
-      ) : null}
-    </div>
+      </Actions>
+      {breaking && !ack ? <Hint id="wf-publish-ack">Tick the box above to publish: these changes break the contract.</Hint> : null}
+    </Stack>
   );
 }
 

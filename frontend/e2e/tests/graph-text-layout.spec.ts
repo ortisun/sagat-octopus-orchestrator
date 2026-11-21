@@ -373,8 +373,8 @@ test('TEXT rich run cards keep long ids, statuses and compensation notes readabl
     ['failed activity', failed],
     ['compensation', compensation],
   ] as const;
-  const cardSelectors = ['.rn-card-label', '.rn-id', '.rn-kind', '.rn-card-status .badge', '.rn-attention'];
-  const cardGroups = ['.rn-id', '.rn-kind', '.rn-card-status .badge', '.rn-attention'];
+  const cardSelectors = ['.rn-card-label', '.rn-id', '.rn-kind', '.rn-card-status [data-tone] > *', '.rn-attention'];
+  const cardGroups = ['.rn-id', '.rn-kind', '.rn-card-status [data-tone] > *', '.rn-attention'];
   const layoutFailures = await measureCards(cards, cardSelectors, cardGroups, 'light fallback-font');
   await page.screenshot({ path: test.info().outputPath('text-run-overview-light.png'), fullPage: true });
 
@@ -387,7 +387,7 @@ test('TEXT rich run cards keep long ids, statuses and compensation notes readabl
   panel = await selectRunNode(page, compensationId);
   await expect(panel.locator('dt').filter({ hasText: /^Kind$/ })).toBeVisible();
   await expect(panel).toContainText(`Undo of ${RESERVE}`);
-  layoutFailures.push(...(await glyphContainmentFailures(panel, ['.rn-selected-step strong', '.rn-selected-step dt', '.rn-selected-step dd', '.rn-facts dt', '.rn-facts dd'], 'selected compensation details')));
+  layoutFailures.push(...(await glyphContainmentFailures(panel, ['.rn-selected-step strong', 'dt', 'dd'], 'selected compensation details')));
   await page.screenshot({ path: test.info().outputPath('text-run-panel-light.png'), fullPage: true });
 
   await page.emulateMedia({ colorScheme: 'dark', forcedColors: 'none' });

@@ -1,6 +1,7 @@
 import { expect, test } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
 import { signIn } from '../support/studio';
+import { choose, expectAvailable, expectUnavailable, expectValue } from '../support/ui';
 
 test('database catalog and OpenBao secrets survive a lost connection-save response', async ({ page }) => {
   const token = process.env['STUDIO_TOKEN_ADMIN'];
@@ -22,7 +23,7 @@ test('database catalog and OpenBao secrets survive a lost connection-save respon
   await page.getByLabel('Name', { exact: true }).fill('orders-db');
   await page.getByLabel('Host', { exact: true }).fill('db.example.com');
   await page.getByLabel('Database', { exact: true }).fill('orders');
-  await page.getByLabel('Credentials', { exact: true }).selectOption('new');
+  await choose(page.getByRole('combobox', { name: 'Credentials', exact: true }), 'new');
   await page.getByLabel('Username', { exact: true }).fill('orders-reader');
   await page.getByLabel('Password', { exact: true }).fill('browser-credential-canary-017');
   for (const width of [320,768,1024,1440]) {
@@ -42,7 +43,7 @@ test('database catalog and OpenBao secrets survive a lost connection-save respon
   }, { times:1 });
   await page.getByRole('button', { name:'Save connection',exact:true }).click();
   await expect(page.getByText(/Credentials saved as/)).toBeVisible();
-  await expect(page.getByRole('alert')).toBeVisible();
+  await expect(page.getByRole('dialog').getByRole('alert').filter({ hasText: 'Saving the connection failed.' })).toBeVisible();
   await expect(page.getByLabel('Password', { exact:true })).toHaveCount(0);
   await page.getByRole('button', { name:'Save connection',exact:true }).click();
   await expect(page.getByRole('button', { name:'Edit connection orders-db' })).toBeVisible();
@@ -60,7 +61,7 @@ test('database catalog and OpenBao secrets survive a lost connection-save respon
   await page.getByRole('link', { name:'Connections',exact:true }).click();
   await page.getByRole('button', { name:'Edit connection orders-db' }).click();
   await expect(page.getByLabel('Host', { exact:true })).toHaveValue('db.example.com');
-  await expect(page.getByLabel('Credentials', { exact:true })).toHaveValue('existing');
+  await expectValue(page.getByRole('combobox', { name: 'Credentials', exact: true }), 'existing');
   await expect(page.getByLabel('Password', { exact:true })).toHaveCount(0);
   await page.screenshot({ path:test.info().outputPath('connection-reloaded.png'),fullPage:true });
   expect(errors).toEqual([]);
@@ -92,11 +93,11 @@ test('managed probes and ad hoc work preserve identity and exact results across 
   await page.getByLabel('Host', { exact: true }).fill('127.0.0.1');
   await page.getByLabel('Port', { exact: true }).fill(process.env['STUDIO_TARGET_PORT']!);
   await page.getByLabel('Database', { exact: true }).fill('postgres');
-  await page.getByLabel('TLS', { exact: true }).selectOption('development-plaintext');
-  await page.getByLabel('Credentials', { exact: true }).selectOption('new');
+  await choose(page.getByRole('combobox', { name: 'TLS', exact: true }), 'development-plaintext');
+  await choose(page.getByRole('combobox', { name: 'Credentials', exact: true }), 'new');
   await page.getByLabel('Username', { exact: true }).fill('browser_reader');
   await page.getByLabel('Password', { exact: true }).fill('browser-target-password');
-  await page.getByLabel('Status', { exact: true }).selectOption('ACTIVE');
+  await choose(page.getByRole('combobox', { name: 'Status', exact: true }), 'ACTIVE');
   await page.getByRole('button', { name: 'Save connection', exact: true }).click();
   await page.getByRole('button', { name: 'Probe connection browser-target' }).click();
   await page.getByRole('button', { name: 'Start probe', exact: true }).click();
@@ -105,8 +106,8 @@ test('managed probes and ad hoc work preserve identity and exact results across 
   await expect(await nodeResult(page, 'probe')).toContainText('1');
 
   await page.getByRole('link', { name: 'Ad hoc database', exact: true }).click();
-  await page.getByLabel('Connection', { exact: true }).selectOption('browser-target');
-  await page.getByLabel('Operation', { exact: true }).selectOption('execute');
+  await choose(page.getByRole('combobox', { name: 'Connection', exact: true }), 'browser-target');
+  await choose(page.getByRole('combobox', { name: 'Operation', exact: true }), 'execute');
   await page.getByLabel('SQL statement', { exact: true }).fill('INSERT INTO browser_effects(id) VALUES ($1)');
   await page.getByLabel('Typed parameters (JSON)', { exact: true }).fill('[{"literal":{"type":"integer","value":"9007199254740993"}}]');
   const requests: { key: string | undefined; body: string | null }[] = [];
@@ -122,7 +123,7 @@ test('managed probes and ad hoc work preserve identity and exact results across 
   await page.getByRole('link', { name: 'Connections', exact: true }).click();
   await page.getByRole('link', { name: 'Ad hoc database', exact: true }).click();
   await expect(page.getByLabel('SQL statement', { exact: true })).toHaveValue('INSERT INTO browser_effects(id) VALUES ($1)');
-  await expect(page.getByLabel('SQL statement', { exact: true })).toBeDisabled();
+  await expectUnavailable(page.getByLabel('SQL statement', { exact: true }));
   await page.getByRole('button', { name: 'Retry same execution' }).click();
   await expect(page.getByRole('link', { name: 'Open run', exact: true })).toHaveAttribute('href', `/studio/runs/${accepted}`);
   expect(requests).toHaveLength(2); expect(requests[0]).toEqual(requests[1]);
@@ -131,20 +132,20 @@ test('managed probes and ad hoc work preserve identity and exact results across 
   const privateCalls: string[] = []; page.on('request', r => { if (/\/workflows\/[0-9a-f-]{36}/.test(r.url())) privateCalls.push(r.url()); });
   await page.reload(); await signIn(page, token);
   await page.getByRole('link', { name: 'Runs', exact: true }).click();
-  await page.getByLabel('Origin', { exact: true }).selectOption('AD_HOC_STEP');
+  await choose(page.getByRole('combobox', { name: 'Origin', exact: true }), 'AD_HOC_STEP');
   await page.getByRole('link', { name: accepted, exact: true }).click();
   await expect(page.getByRole('heading', { level: 1 })).toContainText('Ad hoc database step');
   await nodeResult(page, 'database_1'); expect(privateCalls).toEqual([]);
 
   await page.getByRole('link', { name: 'Ad hoc database', exact: true }).click();
-  await page.getByLabel('Execution mode').selectOption('workflow');
-  await page.getByLabel('Connection', { exact: true }).selectOption('browser-target');
+  await choose(page.getByRole('combobox', { name: 'Execution mode', exact: true }), 'workflow');
+  await choose(page.getByRole('combobox', { name: 'Connection', exact: true }), 'browser-target');
   await page.getByLabel('SQL statement', { exact: true }).fill('SELECT $1::bigint AS value');
   await page.getByLabel('Typed parameters (JSON)', { exact: true }).fill('[{"type":"integer","expression":"input.number"}]');
   await page.getByLabel('Run input (JSON)').fill('{"number":"9223372036854775807"}');
   await page.getByRole('button', { name: 'Add node', exact: true }).click();
   await page.getByRole('dialog').getByRole('button', { name: 'Database', exact: true }).click();
-  await page.getByLabel('Connection', { exact: true }).selectOption('browser-target');
+  await choose(page.getByRole('combobox', { name: 'Connection', exact: true }), 'browser-target');
   await page.getByLabel('SQL statement', { exact: true }).fill(`SELECT $1::bigint AS value, 12345678901234567890.123::numeric AS amount, '{"id":9007199254740993}'::json AS detail`);
   await page.getByLabel('Typed parameters (JSON)', { exact: true }).fill('[{"type":"integer","expression":"steps.database_1.output.rows[0][0].value"}]');
   await page.getByText('Result and timeout limits', { exact: true }).click();
@@ -171,15 +172,15 @@ test('published visual database node and role-scoped result access use the same 
   await signIn(page, process.env['STUDIO_TOKEN_ADMIN']!);
   await page.getByRole('link', { name: 'Workflows', exact: true }).click();
   await page.getByRole('button', { name: 'New workflow', exact: true }).click();
-  await page.getByRole('dialog').getByLabel('Name', { exact: true }).fill('visual-database');
+  await page.getByRole('dialog').getByLabel(/^Name/).fill('visual-database');
   await page.getByRole('button', { name: 'Create workflow', exact: true }).click();
   await page.waitForURL(/\/workflows\/[0-9a-f-]{36}$/); const workflow = page.url().split('/').pop()!;
   await page.getByRole('button', { name: 'Add node', exact: true }).click();
   await page.getByRole('dialog').getByRole('button', { name: 'Database', exact: true }).click();
-  await page.getByLabel('Connection', { exact: true }).selectOption('browser-target');
+  await choose(page.getByRole('combobox', { name: 'Connection', exact: true }), 'browser-target');
   await page.getByLabel('SQL statement', { exact: true }).fill('SELECT $1::bigint AS value');
   await page.getByLabel('Typed parameters (JSON)', { exact: true }).fill('[{"literal":{"type":"integer","value":"9223372036854775807"}}]');
-  await expect(page.getByRole('button', { name: 'Publish…' })).toBeEnabled();
+  await expectAvailable(page.getByRole('button', { name: 'Publish…' }));
   await page.getByRole('button', { name: 'Publish…' }).click();
   await page.getByRole('dialog', { name: 'Publish workflow' }).getByRole('button', { name: 'Publish', exact: true }).click();
   await expect(page.getByText('Published version 1.').first()).toBeVisible();
@@ -199,8 +200,11 @@ test('published visual database node and role-scoped result access use the same 
   const connection = await rest(page, 'GET', `/namespaces/${ns}/connections/browser-target`);
   await rest(page, 'PUT', `/namespaces/${ns}/secrets/${connection.config.secretName}/access/browser-developer`, undefined, 204);
   await page.getByRole('link', { name: 'Ad hoc database', exact: true }).click();
-  await page.getByLabel('Connection', { exact: true }).selectOption('browser-target');
-  await expect(page.getByRole('option', { name: /Execute ·/ })).toBeDisabled();
+  await choose(page.getByRole('combobox', { name: 'Connection', exact: true }), 'browser-target');
+  // An option is on the page only while its list is open.
+  await page.getByRole('combobox', { name: 'Operation', exact: true }).click();
+  await expectUnavailable(page.getByRole('option', { name: /Execute ·/ }));
+  await page.keyboard.press('Escape');
   await page.getByRole('button', { name: 'Run execution', exact: true }).click();
   await page.getByRole('link', { name: 'Open run', exact: true }).click();
   await page.getByRole('tab', { name: 'Table', exact: true }).click(); await page.getByRole('button', { name: 'database_1', exact: true }).click();
@@ -214,11 +218,11 @@ test('paused connections refuse probes and unsupported SQL has a durable safe fa
   await signIn(page, process.env['STUDIO_TOKEN_ADMIN']!);
   await page.getByRole('link', { name: 'Connections', exact: true }).click();
   await page.getByRole('button', { name: 'Probe connection orders-db' }).click();
-  await expect(page.getByRole('button', { name: 'Start probe', exact: true })).toBeDisabled();
+  await expectUnavailable(page.getByRole('button', { name: 'Start probe', exact: true }));
   await expect(page.getByText('Activate the connection before starting a probe.')).toBeVisible();
   await page.keyboard.press('Escape');
   await page.getByRole('link', { name: 'Ad hoc database', exact: true }).click();
-  await page.getByLabel('Connection', { exact: true }).selectOption('browser-target');
+  await choose(page.getByRole('combobox', { name: 'Connection', exact: true }), 'browser-target');
   await page.getByLabel('SQL statement', { exact: true }).fill('DROP TABLE browser_effects');
   await page.getByRole('button', { name: 'Run execution', exact: true }).click();
   await page.getByRole('link', { name: 'Open run', exact: true }).click();

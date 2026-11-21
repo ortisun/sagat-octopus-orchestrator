@@ -3,6 +3,7 @@ import { expect, test } from '@playwright/test';
 import { env } from '../support/env';
 import { Api } from '../support/platform';
 import { failOnBrowserErrors, signIn } from '../support/studio';
+import { choose } from '../support/ui';
 
 test.use({ trace: 'off' });
 
@@ -41,7 +42,7 @@ test('drains and resumes an isolated worker identity through Operations', async 
     }).toBeTruthy();
 
     await signIn(page, env.tokens.admin);
-    await page.getByLabel('Namespace', { exact: true }).selectOption(namespaceSlug);
+    await choose(page.getByRole('combobox', { name: 'Namespace', exact: true }), namespaceSlug);
     await page.getByRole('link', { name: 'Operations', exact: true }).click();
     await expect(page.getByRole('heading', { name: 'Operations', exact: true })).toBeVisible();
     await expect(page.getByText('No alerts are recorded for this namespace.')).toBeVisible();

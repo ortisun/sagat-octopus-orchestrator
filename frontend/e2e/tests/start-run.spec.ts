@@ -2,6 +2,7 @@ import { expect, test } from '@playwright/test';
 import { env } from '../support/env';
 import { Api, IR_BASE } from '../support/platform';
 import { failOnBrowserErrors, goTo, signIn } from '../support/studio';
+import { choose } from '../support/ui';
 
 test('Start run validates input and opens the durable run created by the real API', async ({ page }) => {
   const problems = failOnBrowserErrors(page);
@@ -14,7 +15,7 @@ test('Start run validates input and opens the durable run created by the real AP
   await goTo(page, '/runs');
   await page.getByRole('button', { name: 'Start run…', exact: true }).click();
   const dialog = page.getByRole('dialog', { name: 'Start a run' });
-  await dialog.getByLabel('Workflow', { exact: true }).selectOption(workflow.id);
+  await choose(dialog.getByRole('combobox', { name: 'Workflow', exact: true }), workflow.id);
   await dialog.getByLabel('Input (JSON object)').fill('{');
   await dialog.getByRole('button', { name: 'Start run', exact: true }).click();
   await expect(dialog.getByRole('alert')).toContainText('Enter a valid JSON object.');

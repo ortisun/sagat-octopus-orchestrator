@@ -21,6 +21,7 @@ import { ModuleKind, ModuleResolutionKind, ScriptTarget, typescriptDefaults } fr
 import EditorWorker from 'monaco-editor/editor/editor.worker?worker';
 import JsonWorker from 'monaco-editor/language/json/json.worker?worker';
 import TypeScriptWorker from 'monaco-editor/language/typescript/ts.worker?worker';
+import { themeColor } from '../../ui';
 import { JSON_SCHEMA_META, META_SCHEMA_URI } from './jsonSchemaMeta';
 import { OCTOPUS_DTS, OCTOPUS_DTS_PATH } from './octopusTypes';
 import { installMonacoEnvironment, modelAddress, resolveTheme, severityOf, studioThemeData, studioThemeName, tidyProblems } from './monacoSetup';
@@ -95,7 +96,9 @@ export interface EditorHandle {
 const FONT_FALLBACK = 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
 
 function pageToken(name: string): string {
-  return globalThis.getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  // The theme's tokens are declared on the element the theme is applied to, which may not be the root.
+  const themed = document.querySelector('[data-astryx-theme]') ?? document.documentElement;
+  return globalThis.getComputedStyle(themed).getPropertyValue(name).trim();
 }
 
 function currentTheme() {
@@ -105,7 +108,7 @@ function currentTheme() {
     globalThis.matchMedia('(forced-colors: active)').matches,
   );
   const name = studioThemeName(base);
-  if (base === 'vs' || base === 'vs-dark') monaco.editor.defineTheme(name, studioThemeData(base, pageToken('--fg-muted')));
+  if (base === 'vs' || base === 'vs-dark') monaco.editor.defineTheme(name, studioThemeData(base, themeColor('textMuted', base === 'vs-dark' ? 'dark' : 'light')));
   return name;
 }
 
@@ -159,7 +162,7 @@ export function createEditor(host: HTMLElement, init: EditorInit): EditorHandle 
     automaticLayout: true,
     minimap: { enabled: false },
     scrollBeyondLastLine: false,
-    fontFamily: pageToken('--font-mono') || FONT_FALLBACK,
+    fontFamily: pageToken('--font-family-code') || FONT_FALLBACK,
     fontSize: 14,
     lineNumbers: 'on',
     renderWhitespace: 'selection',

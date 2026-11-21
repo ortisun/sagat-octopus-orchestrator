@@ -14,4 +14,16 @@ if (typeof HTMLDialogElement !== 'undefined') {
   };
 }
 
+// The design system announces through two live regions that it appends to <body> once and keeps for
+// the life of the page (a polite `status` and an assertive `alert`). They are its own channel, not
+// part of any screen: left visible to role queries, every `getByRole('alert')` of every test would
+// also match them, with whatever an earlier test announced. They are hidden from role queries here;
+// `announcedAssertively()` and `announcedPolitely()` of `test/ui.ts` read them when a test is about them.
+if (typeof document !== 'undefined' && typeof MutationObserver !== 'undefined') {
+  const hide = () => {
+    for (const region of document.querySelectorAll('[data-astryx-live-region]:not([aria-hidden])')) region.setAttribute('aria-hidden', 'true');
+  };
+  new MutationObserver(hide).observe(document.body, { childList: true });
+}
+
 afterEach(() => cleanup());

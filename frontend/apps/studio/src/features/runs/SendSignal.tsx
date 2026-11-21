@@ -4,11 +4,7 @@ import { path } from '../../api/client';
 import { isTerminal } from '../../api/follow';
 import type { components } from '../../api/schema';
 import { useApp, useCan, useNamespace, useSession } from '../../app/context';
-import { Button } from '../../ui/Button';
-import { Dialog } from '../../ui/Dialog';
-import { ErrorState } from '../../ui/ErrorState';
-import { Field } from '../../ui/Field';
-import { useAnnounce } from '../../ui/Announcer';
+import { Actions, Banner, Button, Dialog, ErrorState, Stack, Text, TextArea, TextInput, useAnnounce } from '../../ui';
 
 /** The form belongs to one authenticated run context and never persists its payload. */
 export function SendSignal({ runId, status, onSent }: { runId: string; status: string; onSent: () => void }) {
@@ -76,13 +72,15 @@ function SignalForm({ runId, onClose, onSent }: { runId: string; onClose: () => 
     }
   };
 
-  return <form onSubmit={(event) => { void submit(event); }}>
-    <p>This sends the payload to every waiting step in this run that expects the signal. Those steps may resume workflow execution.</p>
-    <p>Signals are not buffered. If no step is waiting for this name, the platform refuses the signal. Your identity and the delivery are audited.</p>
-    <Field label="Signal name"><input autoComplete="off" spellCheck={false} value={name} maxLength={128} disabled={sending} onChange={(event) => setName(event.target.value)} /></Field>
-    <Field label="Payload (JSON object)" hint="At most 256 KiB. Do not include credentials or secrets."><textarea rows={6} autoComplete="off" spellCheck={false} value={payload} disabled={sending} onChange={(event) => setPayload(event.target.value)} /></Field>
-    {problem ? <p role="alert" className="error">{problem}</p> : null}
-    {error ? <ErrorState error={error} what="Sending signal" /> : null}
-    <div className="toolbar"><Button type="submit" disabled={sending}>{sending ? 'Sending…' : 'Confirm signal'}</Button><Button onClick={onClose}>Close</Button></div>
+  return <form onSubmit={(event) => { void submit(event); }} noValidate>
+    <Stack gap={3}>
+      <Text>This sends the payload to every waiting step in this run that expects the signal. Those steps may resume workflow execution.</Text>
+      <Text>Signals are not buffered. If no step is waiting for this name, the platform refuses the signal. Your identity and the delivery are audited.</Text>
+      <TextInput label="Signal name" autoComplete="off" spellCheck={false} mono value={name} maxLength={128} disabled={sending} onChange={setName} />
+      <TextArea label="Payload (JSON object)" hint="At most 256 KiB. Do not include credentials or secrets." rows={6} spellCheck={false} mono value={payload} disabled={sending} onChange={setPayload} />
+      {problem ? <Banner tone="error">{problem}</Banner> : null}
+      {error ? <ErrorState error={error} what="Sending signal" /> : null}
+      <Actions><Button onClick={onClose}>Close</Button><Button type="submit" variant="primary" disabled={sending}>{sending ? 'Sending…' : 'Confirm signal'}</Button></Actions>
+    </Stack>
   </form>;
 }

@@ -3,8 +3,7 @@ import { path } from '../../api/client';
 import type { components } from '../../api/schema';
 import { useApp, useCan, useNamespace, useSession } from '../../app/context';
 import type { SessionSnapshot } from '../../auth/session';
-import { Button } from '../../ui/Button';
-import { ErrorState } from '../../ui/ErrorState';
+import { Badge, Button, Code, ErrorState, Facts, Hint, Loading, Row, Stack, Text } from '../../ui';
 
 export type PayloadSelector = components['schemas']['PayloadInspectionSelector'];
 type Structure = components['schemas']['PayloadStructure'];
@@ -64,19 +63,19 @@ export function PayloadInspector({ runId, selector, label = 'Inspect redacted pa
   };
 
   return (
-    <section className={compact ? 'rn-payload compact' : 'rn-payload'} aria-label={label}>
-      <div className="rn-payload-action">
-        <Button className={compact ? 'small' : undefined} onClick={() => void inspect()} disabled={state.phase === 'loading'} aria-controls={regionId}>
+    <section className="rn-payload" aria-label={label}>
+      <Row gap={1.5}>
+        <Button {...(compact ? { size: 'sm' as const } : {})} onClick={() => void inspect()} disabled={state.phase === 'loading'} aria-controls={regionId}>
           {state.phase === 'loading' ? 'Inspecting…' : label}
         </Button>
         {state.phase === 'loaded' ? (
-          <Button className="small" onClick={() => setStored({ scope: scopeKey, session, state: { phase: 'idle' } })}>
+          <Button size="sm" onClick={() => setStored({ scope: scopeKey, session, state: { phase: 'idle' } })}>
             Close inspection
           </Button>
         ) : null}
-      </div>
+      </Row>
       <div id={regionId} aria-live="polite">
-        {state.phase === 'loading' ? <p role="status">Reading the redacted structure…</p> : null}
+        {state.phase === 'loading' ? <Loading>Reading the redacted structure…</Loading> : null}
         {state.phase === 'error' ? <ErrorState error={state.error} what="Inspecting the redacted payload" onRetry={() => void inspect()} /> : null}
         {state.phase === 'loaded' ? <InspectionView inspection={state.inspection} /> : null}
       </div>
@@ -87,47 +86,34 @@ export function PayloadInspector({ runId, selector, label = 'Inspect redacted pa
 function InspectionView({ inspection }: { inspection: PayloadInspection }) {
   return (
     <div className="rn-payload-result">
-      <p className="rn-payload-policy">
-        <strong>Redacted structure only.</strong> Policy <code>{inspection.policy}</code> hides every field name and scalar value.
-      </p>
-      <dl className="rn-facts">
-        <dt>Source</dt>
-        <dd>{inspection.selection.source === 'input' ? 'Run input' : `Journal event ${inspection.selection.sequence}`}</dd>
-        <dt>Run version</dt>
-        <dd>{inspection.runVersion}</dd>
-        {inspection.nodeId !== undefined ? (
-          <>
-            <dt>Step</dt>
-            <dd>{inspection.nodeId}</dd>
-          </>
-        ) : null}
-        {inspection.attempt !== undefined ? (
-          <>
-            <dt>Attempt</dt>
-            <dd>{inspection.attempt}</dd>
-          </>
-        ) : null}
-        {inspection.sizeBytes !== undefined ? (
-          <>
-            <dt>Encoded size</dt>
-            <dd>{inspection.sizeBytes.toLocaleString()} bytes</dd>
-          </>
-        ) : null}
-      </dl>
+      <Stack gap={2}>
+      <Text>
+        <strong>Redacted structure only.</strong> Policy <Code>{inspection.policy}</Code> hides every field name and scalar value.
+      </Text>
+      <Facts
+        items={[
+          { term: 'Source', value: inspection.selection.source === 'input' ? 'Run input' : `Journal event ${inspection.selection.sequence}` },
+          { term: 'Run version', value: inspection.runVersion },
+          ...(inspection.nodeId !== undefined ? [{ term: 'Step', value: inspection.nodeId }] : []),
+          ...(inspection.attempt !== undefined ? [{ term: 'Attempt', value: inspection.attempt }] : []),
+          ...(inspection.sizeBytes !== undefined ? [{ term: 'Encoded size', value: `${inspection.sizeBytes.toLocaleString()} bytes` }] : []),
+        ]}
+      />
       {inspection.kind === 'inline-json' ? (
         <>
-          {inspection.truncated ? <p className="hint">The structure reached an inspection limit. Omitted children are marked below.</p> : null}
+          {inspection.truncated ? <Hint>The structure reached an inspection limit. Omitted children are marked below.</Hint> : null}
           <StructureTree root={inspection.tree} />
         </>
       ) : inspection.kind === 'external' ? (
-        <p className="hint">This is external {inspection.contentKind} content. Its metadata is shown, but the content itself was not inspected.</p>
+        <Hint>This is external {inspection.contentKind} content. Its metadata is shown, but the content itself was not inspected.</Hint>
       ) : (
-        <p className="hint">
+        <Hint>
           {inspection.reason === 'NO_RETAINED_PAYLOAD'
             ? 'This event has no retained payload.'
             : 'The retained payload is not supported by the structural JSON inspector.'}
-        </p>
+        </Hint>
       )}
+      </Stack>
     </div>
   );
 }
@@ -146,13 +132,13 @@ function StructureNode({ node, label }: { node: Structure; label: string }) {
   if (node.type !== 'object' && node.type !== 'array') {
     return (
       <li role="treeitem" aria-selected="false">
-        <span>{label}</span> <span className="rn-chip">{node.type}</span> <span className="hint">value hidden</span>
+        <span>{label}</span> <Badge>{node.type}</Badge> <span className="rn-quiet">value hidden</span>
       </li>
     );
   }
   return (
     <li role="treeitem" aria-expanded="true" aria-selected="false">
-      <span>{label}</span> <span className="rn-chip">{node.type}</span> <span className="hint">{node.childCount.toLocaleString()} children</span>
+      <span>{label}</span> <Badge>{node.type}</Badge> <span className="rn-quiet">{node.childCount.toLocaleString()} children</span>
       {node.children.length > 0 ? (
         <ul role="group">
           {node.children.map((child, index) => (
@@ -160,7 +146,7 @@ function StructureNode({ node, label }: { node: Structure; label: string }) {
           ))}
         </ul>
       ) : null}
-      {node.omittedChildren > 0 ? <p className="hint">{node.omittedChildren.toLocaleString()} children omitted by the inspection limits.</p> : null}
+      {node.omittedChildren > 0 ? <Hint>{node.omittedChildren.toLocaleString()} children omitted by the inspection limits.</Hint> : null}
     </li>
   );
 }

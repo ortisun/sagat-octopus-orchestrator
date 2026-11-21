@@ -241,3 +241,17 @@ checks and 35 real Chromium scenarios passed; two opt-in benchmarks were skipped
 US02 was explicitly excluded. The new Start run API journey passed. Exact commands, the two
 initial browser failures and their fixes are recorded in quickstart.md; complete Linux CI is
 still required before merge.
+
+## Astryx design system (FR-007-009, ADR-0101, D2400 to D2404)
+
+Asked for by the owner on 2026-11-21 as a full migration of the existing Studio. A task is ticked only with the test or command that closes it.
+
+- [x] T007-059 Record the decision before the code: ADR-0101, the amendment of FR-007-009 and SC-007-005, research entries D2400 to D2404 and gaps G2400 to G2402, the owner's two answers. — Done 2026-11-21: `docs/adr/ADR-0101-…md` (proposed), the spec and research entries, `docs/owner-decisions.md`; `python3 scripts/check-agent-config.py` passes.
+- [x] T007-060 Add the pinned Astryx packages, the `sagat` theme (colour roles, mapping, contrast test) and the providers; load the prebuilt stylesheets in their layer order. — Done 2026-11-21: `@astryxdesign/core` 0.7.11 and `@stylexjs/stylex` 0.19.0 pinned; `src/ui/theme/roles.ts`, `sagatTheme.ts`, `src/ui/provider.tsx`; `npx vitest run src/ui/theme` 109 passed. The theme is applied from its source: no generated stylesheet and no command line tool (see ADR-0101, option 2).
+- [x] T007-061 Rebuild the interface module `src/ui` on Astryx (button, dialog, field controls, selector, banner, tabs, table, status, headings, layout) with its own tests, and the test helpers for the two behaviours of D2403. — Done 2026-11-21: `src/ui/**`, `test/ui.ts`; `npx vitest run src/ui` passes (the contract is `ui.test.tsx`).
+- [x] T007-062 Add the fitness checks: the linter refuses an Astryx import and a raw control outside `src/ui`; the stylesheet test refuses a literal colour and an undefined custom property. — Done 2026-11-21: `eslint.config.js`, `src/styles/tokens.test.ts`; `npm run lint` clean and the rule was seen refusing 249 raw controls in 62 files before the screens were moved.
+- [x] T007-063 Move the shell (navigation, namespace selector, top bar, sign-in, namespaces) onto Astryx. — Done 2026-11-21: `src/app/**`; `npx vitest run src/app` passes; looked at in a browser at 1440 and 375 pixels.
+- [x] T007-064 Move every feature screen onto the interface module (workflows, scripts, runs, operations, ad hoc database, connections, secrets, integrations) and delete the stylesheets they no longer need. — Done 2026-11-21: every directory of `src/features`; `npm test` 1,166 passed; stylesheets from 3,199 to 1,869 lines; two exceptions to the raw-control rule remain, each with its reason on its line (the code editor's fallback text area and the palette tile that is a drag source).
+- [ ] T007-065 Update the browser journeys for the new markup (selectors, disabled buttons) without weakening what they assert, and run them. — Selectors rewritten and `npm run typecheck --workspace @sagat/e2e` clean on 2026-11-21; **not run** (no Docker on this machine): left open until the continuous integration plays them.
+- [ ] T007-066 Run the frontend gate (`npm run lint`, both type checks, `npm test`, `npm run build`, `npm run check:api`), record the bundle size before and after, and review the screens in light, dark and forced colours. — Gate, bundle size and the review in dark and light are recorded in `quickstart.md` (2026-11-21); **forced colours not reviewed** and `npm audit` fails on a finding that `develop` already has: left open.
+

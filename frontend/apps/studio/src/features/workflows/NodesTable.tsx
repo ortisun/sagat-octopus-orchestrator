@@ -1,8 +1,8 @@
 import { useVirtualizer } from '@tanstack/react-virtual';
-import { useId, useRef, useState } from 'react';
+import { useRef, useState } from 'react';
 import type { IrDocument, IrNode } from '../../model/ir';
 import { kindOf, linksOf } from '../../model/registry';
-import { Button } from '../../ui/Button';
+import { Badge, Button, Code, ColumnHeader, Empty, TableBody, TableCell, TableHead, TableRow, TextInput, WindowedTable } from '../../ui';
 import { clip, keyField } from './canvasModel';
 
 /** Above this many rows only the rows in view are in the page (D147). */
@@ -60,7 +60,7 @@ function Row({
   const first = doc.entrypoint === node.id;
   const id = clip(node.id, 64);
   return (
-    <tr
+    <TableRow
       ref={measure}
       data-index={index}
       aria-current={selected ? 'true' : undefined}
@@ -68,59 +68,62 @@ function Row({
       data-selected={selected ? 'true' : undefined}
       data-testid={`row-${node.id}`}
     >
-      <th scope="row" className="wf-cell-id">
-        <code>{id}</code>
-        {first ? (
-          <span className="wf-badge" data-tone="info">
-            {' '}
-            <span aria-hidden="true">▶</span> First step
-          </span>
-        ) : null}
-      </th>
-      <td>{spec?.label ?? clip(node.type, 24)}</td>
-      <td className="wf-cell-key">{keyField(node)}</td>
-      <td className="wf-cell-links">{leadsTo(node)}</td>
-      <td>
-        {problems > 0 ? (
-          <span className="wf-badge" data-tone="bad">
-            <span aria-hidden="true">✕</span> {problems} {problems === 1 ? 'problem' : 'problems'}
-          </span>
-        ) : null}
-        {advice > 0 ? (
-          <span className="wf-badge" data-tone="warn">
-            <span aria-hidden="true">!</span> {advice} advice
-          </span>
-        ) : null}
-        {spec && !spec.runs ? (
-          <span className="wf-badge" data-tone="warn">
-            <span aria-hidden="true">⊘</span> Not run yet
-          </span>
-        ) : null}
-        {problems === 0 && advice === 0 && (spec?.runs ?? true) ? <span className="hint">None</span> : null}
-      </td>
-      <td>
+      <ColumnHeader scope="row">
+        <span className="wf-cell-id">
+          <Code>{id}</Code>{' '}
+          {first ? (
+            <Badge tone="running">
+              <span aria-hidden="true">▶</span> First step
+            </Badge>
+          ) : null}
+        </span>
+      </ColumnHeader>
+      <TableCell>{spec?.label ?? clip(node.type, 24)}</TableCell>
+      <TableCell>{keyField(node)}</TableCell>
+      <TableCell>{leadsTo(node)}</TableCell>
+      <TableCell>
+        <span className="wf-cell-checks">
+          {problems > 0 ? (
+            <Badge tone="bad">
+              <span aria-hidden="true">✕</span> {problems} {problems === 1 ? 'problem' : 'problems'}
+            </Badge>
+          ) : null}
+          {advice > 0 ? (
+            <Badge tone="waiting">
+              <span aria-hidden="true">!</span> {advice} advice
+            </Badge>
+          ) : null}
+          {spec && !spec.runs ? (
+            <Badge tone="waiting">
+              <span aria-hidden="true">⊘</span> Not run yet
+            </Badge>
+          ) : null}
+          {problems === 0 && advice === 0 && (spec?.runs ?? true) ? <span className="wf-quiet">None</span> : null}
+        </span>
+      </TableCell>
+      <TableCell>
         <div className="wf-cell-actions">
           {props.inspectable !== false ? (
-            <Button aria-label={`${props.editable ? 'Edit' : 'Open'} ${id}`} onClick={() => props.onEdit(node.id)}>
+            <Button size="sm" aria-label={`${props.editable ? 'Edit' : 'Open'} ${id}`} onClick={() => props.onEdit(node.id)}>
               {props.editable ? 'Edit' : 'Open'}
             </Button>
           ) : null}
           {props.editable ? (
             <>
-              <Button aria-label={`Connect ${id}…`} onClick={() => props.onConnect(node.id)} disabled={(spec?.handles ?? []).length === 0}>
+              <Button size="sm" aria-label={`Connect ${id}…`} onClick={() => props.onConnect(node.id)} disabled={(spec?.handles ?? []).length === 0}>
                 Connect…
               </Button>
-              <Button aria-label={`Set ${id} as first step`} onClick={() => props.onSetFirst(node.id)} disabled={first}>
+              <Button size="sm" aria-label={`Set ${id} as first step`} onClick={() => props.onSetFirst(node.id)} disabled={first}>
                 Set as first step
               </Button>
-              <Button variant="danger" aria-label={`Delete ${id}`} onClick={() => props.onDelete(node.id)}>
+              <Button size="sm" variant="danger" aria-label={`Delete ${id}`} onClick={() => props.onDelete(node.id)}>
                 Delete
               </Button>
             </>
           ) : null}
         </div>
-      </td>
-    </tr>
+      </TableCell>
+    </TableRow>
   );
 }
 
@@ -131,7 +134,6 @@ function Row({
 export function NodesTable(props: NodesTableProps) {
   const { doc, selectedId, problems, advice } = props;
   const [filter, setFilter] = useState('');
-  const filterId = useId();
   const scroller = useRef<HTMLDivElement>(null);
   const needle = filter.trim().toLowerCase();
   const rows =
@@ -147,16 +149,15 @@ export function NodesTable(props: NodesTableProps) {
   const padBottom = virtual ? virtualizer.getTotalSize() - (items[items.length - 1]?.end ?? 0) : 0;
 
   return (
-    <div className="wf-table-wrap">
+    <div>
       <div className="wf-table-tools">
-        <label htmlFor={filterId}>Filter nodes</label>
-        <input id={filterId} type="search" value={filter} placeholder="Id or type" autoComplete="off" onChange={(event) => setFilter(event.target.value)} />
-        <span className="hint" data-testid="row-count">
+        <TextInput label="Filter nodes" type="search" value={filter} placeholder="Id or type" autoComplete="off" width="16rem" onChange={setFilter} />
+        <span className="wf-quiet" data-testid="row-count">
           {rows.length === doc.nodes.length ? `${doc.nodes.length} ${doc.nodes.length === 1 ? 'node' : 'nodes'}` : `${rows.length} of ${doc.nodes.length} nodes`}
         </span>
       </div>
       {doc.nodes.length === 0 ? (
-        <p className="empty">This workflow has no nodes yet. Use Add node to start.</p>
+        <Empty title="This workflow has no nodes yet. Use Add node to start." />
       ) : (
         <div
           ref={scroller}
@@ -166,23 +167,22 @@ export function NodesTable(props: NodesTableProps) {
           role={virtual ? 'region' : undefined}
           aria-label={virtual ? 'Nodes (scrolls)' : undefined}
         >
-          <table className="data wf-table" aria-rowcount={virtual ? rows.length + 1 : undefined}>
-            <caption className="visually-hidden">{props.caption}</caption>
-            <thead>
-              <tr aria-rowindex={virtual ? 1 : undefined}>
-                <th scope="col">Id</th>
-                <th scope="col">Type</th>
-                <th scope="col">Key field</th>
-                <th scope="col">Leads to</th>
-                <th scope="col">Checks</th>
-                <th scope="col">Actions</th>
-              </tr>
-            </thead>
-            <tbody>
+          <WindowedTable label={props.caption} className="wf-table" rowCount={virtual ? rows.length + 1 : undefined}>
+            <TableHead>
+              <TableRow aria-rowindex={virtual ? 1 : undefined}>
+                <ColumnHeader>Id</ColumnHeader>
+                <ColumnHeader>Type</ColumnHeader>
+                <ColumnHeader>Key field</ColumnHeader>
+                <ColumnHeader>Leads to</ColumnHeader>
+                <ColumnHeader>Checks</ColumnHeader>
+                <ColumnHeader>Actions</ColumnHeader>
+              </TableRow>
+            </TableHead>
+            <TableBody>
               {virtual && padTop > 0 ? (
-                <tr aria-hidden="true" style={{ height: padTop }}>
-                  <td colSpan={6} />
-                </tr>
+                <TableRow aria-hidden="true" style={{ height: padTop }}>
+                  <TableCell colSpan={6} />
+                </TableRow>
               ) : null}
               {virtual
                 ? items.map((item) => {
@@ -214,13 +214,13 @@ export function NodesTable(props: NodesTableProps) {
                     />
                   ))}
               {virtual && padBottom > 0 ? (
-                <tr aria-hidden="true" style={{ height: padBottom }}>
-                  <td colSpan={6} />
-                </tr>
+                <TableRow aria-hidden="true" style={{ height: padBottom }}>
+                  <TableCell colSpan={6} />
+                </TableRow>
               ) : null}
-            </tbody>
-          </table>
-          {rows.length === 0 ? <p className="empty">No node matches &quot;{clip(filter, 40)}&quot;.</p> : null}
+            </TableBody>
+          </WindowedTable>
+          {rows.length === 0 ? <Empty title={`No node matches "${clip(filter, 40)}".`} /> : null}
         </div>
       )}
     </div>

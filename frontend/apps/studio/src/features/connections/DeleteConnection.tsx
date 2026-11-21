@@ -1,8 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useApp } from '../../app/context';
-import { Button } from '../../ui/Button';
-import { ErrorState } from '../../ui/ErrorState';
-import { useAnnounce } from '../../ui/Announcer';
+import { Actions, Button, ErrorState, Text, useAnnounce } from '../../ui';
 import { connectionsApi } from './api';
 import type { Connection } from './api';
 
@@ -24,8 +22,8 @@ export function DeleteConnection({ namespace, connection, onClose }: { namespace
     finally { if (live()) setBusy(false); }
   }
   return <>
-    <p>Delete {connection.name} at revision {connection.revision}? This prevents subsequent use. Existing database effects are not undone. Its history is retained.</p>
+    <Text>Delete {connection.name} at revision {connection.revision}? This prevents subsequent use. Existing database effects are not undone. Its history is retained.</Text>
     {error ? <ErrorState error={error} what="Deleting the connection" /> : null}
-    <div className="dialog-actions"><Button disabled={busy} onClick={onClose}>Cancel</Button><Button variant="danger" disabled={busy} onClick={() => { void remove(); }}>{busy ? 'Deleting…' : 'Delete connection'}</Button></div>
+    <Actions><Button disabled={busy} onClick={onClose}>Cancel</Button><Button variant="danger" disabled={busy} onClick={() => { void remove(); }}>{busy ? 'Deleting…' : 'Delete connection'}</Button></Actions>
   </>;
 }

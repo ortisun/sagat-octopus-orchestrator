@@ -2,6 +2,7 @@ import { screen, waitFor, within } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import { apiError, bodyOf, emptyDiff, keyOf, mountEditor, putsOf, sampleIr, settle, urlOf } from '../../../test/workflowsHarness';
 import type { Behaviour, MountOptions } from '../../../test/workflowsHarness';
+import { choose, expectAvailable, expectUnavailable } from '../../../test/ui';
 
 async function opened(options: Parameters<typeof mountEditor>[0] = {}) {
   const mounted = await mountEditor({ view: 'list', ...options });
@@ -57,7 +58,7 @@ describe('publishing', () => {
     expect(dialog).toHaveTextContent('/metadata changed');
     expect(dialog).toHaveTextContent('The platform found no breaking changes of the kinds it checks');
     expect(within(dialog).queryByRole('checkbox')).not.toBeInTheDocument();
-    expect(within(dialog).getByRole('button', { name: 'Publish' })).toBeEnabled();
+    expectAvailable(within(dialog).getByRole('button', { name: 'Publish' }));
     // The diff asks for the active version against the draft.
     const asked = platform.calls.find((c) => c.url.includes('/diff'));
     expect([...urlOf(asked!).searchParams.keys()]).toEqual([]);
@@ -74,7 +75,7 @@ describe('publishing', () => {
     const [call] = posts(platform);
     expect(sentBody(call)).toEqual({ draftRevision: 1, releaseNotes: 'Adds the audit step' });
     expect(keyOf(call)).toMatch(/^[0-9a-f-]{36}$/);
-    expect(await screen.findByText('Published version 1.', { selector: '.banner' })).toBeInTheDocument();
+    expect(await screen.findByText('Published version 1.', { selector: '[role="status"]:not([aria-live]) *' })).toBeInTheDocument();
     expect(await screen.findByText('Published version 1.', { selector: '[aria-live="polite"] p' })).toBeInTheDocument();
     expect(screen.getByText('Active version 1')).toBeInTheDocument();
   });
@@ -94,10 +95,13 @@ describe('publishing', () => {
     await user.click(screen.getByRole('button', { name: 'Publish…' }));
     const dialog = await screen.findByRole('dialog', { name: 'Publish workflow' });
     const notes = await within(dialog).findByRole('textbox', { name: 'Release notes' });
-    expect(notes).toHaveAttribute('maxlength', '2048');
     await user.click(notes);
     await user.paste('x'.repeat(10));
     expect(within(dialog).getByText(/10 of 2048 characters/)).toBeInTheDocument();
+    // The limit holds for what is kept, however much is pasted.
+    await user.paste('y'.repeat(2_100));
+    expect((notes as HTMLTextAreaElement).value).toHaveLength(2_048);
+    expect(within(dialog).getByText(/2048 of 2048 characters/)).toBeInTheDocument();
   });
 
   it('sets breaking changes apart, with words and a shape, and needs the box ticked before it publishes', async () => {
@@ -114,12 +118,12 @@ describe('publishing', () => {
 
     const publish = within(dialog).getByRole('button', { name: 'Publish' });
     const ack = within(dialog).getByRole('checkbox', { name: 'I understand these changes break the contract' });
-    expect(publish).toBeDisabled();
+    expectUnavailable(publish);
     expect(publish).toHaveAccessibleDescription(/Tick the box above/);
     await user.click(ack);
-    expect(publish).toBeEnabled();
+    expectAvailable(publish);
     await user.click(ack);
-    expect(publish).toBeDisabled();
+    expectUnavailable(publish);
     expect(posts(platform)).toHaveLength(0);
     await user.click(ack);
     await user.click(publish);
@@ -189,11 +193,11 @@ describe('publishing', () => {
     await user.click(screen.getByRole('button', { name: 'Publish…' }));
     const dialog = await screen.findByRole('dialog', { name: 'Publish workflow' });
     expect(await within(dialog).findByRole('alert')).toHaveTextContent('diff failed');
-    expect(within(dialog).getByRole('button', { name: 'Publish' })).toBeDisabled();
+    expectUnavailable(within(dialog).getByRole('button', { name: 'Publish' }));
     await user.click(within(dialog).getByRole('button', { name: 'Try again' }));
     await within(dialog).findByText(/Comparing/);
     expect(posts(platform)).toHaveLength(0);
-    expect(within(dialog).getByRole('button', { name: 'Publish' })).toBeEnabled();
+    expectAvailable(within(dialog).getByRole('button', { name: 'Publish' }));
   });
 
   it('shows a failure to save before publishing, and does not compare or publish', async () => {
@@ -336,7 +340,7 @@ describe('the versions', () => {
     const mounted = await mountEditor({ view: 'list' });
     await screen.findByRole('heading', { level: 1, name: 'order-flow' });
     await mounted.user.click(screen.getByRole('tab', { name: 'Versions' }));
-    expect(await screen.findByText(/Nothing is published yet/)).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: /Nothing is published yet/ })).toBeInTheDocument();
   });
 
   it('shows one version read only: its nodes and its release notes, with nothing to edit', async () => {
@@ -366,8 +370,8 @@ describe('the versions', () => {
   it('compares two versions chosen from the lists', async () => {
     const asked: string[] = [];
     const { user } = await openVersions({ diff: (url) => (asked.push(url), richDiff) });
-    await user.selectOptions(screen.getByRole('combobox', { name: 'Compare' }), 'version 1');
-    await user.selectOptions(screen.getByRole('combobox', { name: 'with' }), 'version 2');
+    await choose(user, 'Compare', 'version 1');
+    await choose(user, 'with', 'version 2');
     await user.click(screen.getByRole('button', { name: 'Show differences' }));
     await within(await screen.findByRole('region', { name: 'Comparison' })).findByText(/Added \(1\)/);
     const search = new URL(asked[0]!, 'http://x').searchParams;

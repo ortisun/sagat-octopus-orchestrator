@@ -31,6 +31,36 @@ export default tseslint.config(
     },
   },
   {
+    // ADR-0101: the Astryx design system is reached only through the Studio's interface module, and
+    // a screen composes that module's components instead of hand-writing a control.
+    files: ['src/**/*.{ts,tsx}'],
+    ignores: ['src/ui/**'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            { group: ['@astryxdesign/*', '@stylexjs/*'], message: 'Import the Studio interface module (src/ui) instead: only src/ui may depend on Astryx (ADR-0101).' },
+          ],
+        },
+      ],
+    },
+  },
+  {
+    files: ['src/**/*.tsx'],
+    ignores: ['src/ui/**', 'src/**/*.test.tsx'],
+    rules: {
+      'no-restricted-syntax': [
+        'error',
+        { selector: "JSXAttribute[name.name='dangerouslySetInnerHTML']", message: 'Never render server data as HTML.' },
+        {
+          selector: 'JSXOpeningElement[name.name=/^(button|input|select|textarea|dialog|table|h[1-6])$/]',
+          message: 'Use the component of the Studio interface module (src/ui) instead of a raw control, table or heading (ADR-0101). A surface a library owns may disable this rule on its line, with the reason.',
+        },
+      ],
+    },
+  },
+  {
     files: ['**/*.{js,mjs}', 'vite.config.ts', 'vitest.config.ts'],
     languageOptions: { globals: { ...globals.node } },
   },

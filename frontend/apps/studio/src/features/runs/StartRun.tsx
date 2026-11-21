@@ -5,11 +5,7 @@ import { path } from '../../api/client';
 import type { Run } from '../../api/types';
 import { useApp, useCan, useNamespace, useSession } from '../../app/context';
 import { parseAuthoringJson, UnsafeJsonNumber } from '../../model/safeJson';
-import { useAnnounce } from '../../ui/Announcer';
-import { Button } from '../../ui/Button';
-import { Dialog } from '../../ui/Dialog';
-import { ErrorState } from '../../ui/ErrorState';
-import { Field } from '../../ui/Field';
+import { Actions, Banner, Button, Dialog, ErrorState, Select, Stack, Text, TextArea, useAnnounce } from '../../ui';
 import { clip } from './time';
 
 /** What a person may start: a workflow that has a published version. */
@@ -55,14 +51,8 @@ function ScopedStart({ choices, initialId, label }: { choices: readonly Startabl
   const only = initialId !== undefined && choices.length === 1 ? choices[0] : undefined;
   return (
     <>
-      <Button onClick={() => setOpen(true)}>
+      <Button onClick={() => setOpen(true)} {...(only ? { 'aria-label': `${label} of ${clip(only.name, 64)}` } : {})}>
         {label}
-        {only ? (
-          <>
-            {' '}
-            <span className="visually-hidden">of {clip(only.name, 64)}</span>
-          </>
-        ) : null}
       </Button>
       <Dialog open={open} title="Start a run" onClose={() => setOpen(false)}>
         {open ? <StartForm choices={choices} initialId={initialId} onClose={() => setOpen(false)} /> : null}
@@ -120,31 +110,19 @@ function StartForm({ choices, initialId, onClose }: { choices: readonly Startabl
         void submit(event);
       }}
     >
-      <p>This starts a new run of the workflow's active version. It runs at once and is recorded with your name; steps with effects outside the platform will run.</p>
-      <Field label="Workflow">
-        <select value={workflowId} disabled={starting || choices.length === 1} onChange={(event) => setWorkflowId(event.target.value)}>
-          {choices.map((choice) => (
-            <option key={choice.id} value={choice.id}>
-              {clip(choice.name, 80)}
-            </option>
-          ))}
-        </select>
-      </Field>
-      <Field label="Input (JSON object)" hint="At most 256 KiB. Do not include credentials or secrets: the input is kept with the run.">
-        <textarea rows={6} autoComplete="off" spellCheck={false} value={text} disabled={starting} onChange={(event) => setText(event.target.value)} />
-      </Field>
-      {problem ? (
-        <p role="alert" className="error">
-          {problem}
-        </p>
-      ) : null}
-      {error ? <ErrorState error={error} what="Starting the run" /> : null}
-      <div className="dialog-actions">
-        <Button onClick={onClose}>Cancel</Button>
-        <Button type="submit" variant="primary" disabled={starting}>
-          {starting ? 'Starting…' : 'Start run'}
-        </Button>
-      </div>
+      <Stack gap={3}>
+        <Text>This starts a new run of the workflow's active version. It runs at once and is recorded with your name; steps with effects outside the platform will run.</Text>
+        <Select label="Workflow" value={workflowId} disabled={starting || choices.length === 1} onChange={setWorkflowId} options={choices.map((choice) => ({ value: choice.id, label: clip(choice.name, 80) }))} />
+        <TextArea label="Input (JSON object)" hint="At most 256 KiB. Do not include credentials or secrets: the input is kept with the run." rows={6} spellCheck={false} mono value={text} disabled={starting} onChange={setText} />
+        {problem ? <Banner tone="error">{problem}</Banner> : null}
+        {error ? <ErrorState error={error} what="Starting the run" /> : null}
+        <Actions>
+          <Button onClick={onClose}>Cancel</Button>
+          <Button type="submit" variant="primary" disabled={starting}>
+            {starting ? 'Starting…' : 'Start run'}
+          </Button>
+        </Actions>
+      </Stack>
     </form>
   );
 }

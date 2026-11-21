@@ -1,15 +1,11 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
-import { Link, useParams } from 'react-router';
+import { useParams } from 'react-router';
 import { followRun, isTerminal } from '../../api/follow';
 import type { RuntimeNode } from '../../api/types';
 import { useApp, useCan, useNamespace, useSession } from '../../app/context';
 import '../../styles/runs.css';
-import { useAnnounce } from '../../ui/Announcer';
-import { Banner } from '../../ui/Banner';
-import { Button } from '../../ui/Button';
-import { ErrorState } from '../../ui/ErrorState';
-import { Tabs } from '../../ui/Tabs';
+import { Banner, Button, Code, ErrorState, Heading, Hint, Link, Loading, Row, Stack, Tabs, useAnnounce } from '../../ui';
 import { viewPolicy } from './canvas';
 import { followWords, LiveRunStore } from './liveRun';
 import { JournalStore, NO_FILTER } from './journal';
@@ -185,25 +181,27 @@ function RunDetail({ runId }: { runId: string }) {
 
   if (run.isError && run.data === undefined) {
     return (
-      <section>
-        <h1>Run</h1>
+      <Stack as="section" gap={3}>
+        <Heading level={1}>Run</Heading>
         <ErrorState error={run.error} what="Loading the run" onRetry={() => void run.refetch()} />
-      </section>
+      </Stack>
     );
   }
   if (run.data === undefined || facts === undefined || status === undefined) {
     if (snapshot.phase === 'error') {
       return (
-        <section>
-          <h1>Run</h1>
+        <Stack as="section" gap={3}>
+          <Heading level={1}>Run</Heading>
           <ErrorState error={snapshot.error} what="Loading the run" onRetry={() => void live.refresh()} />
-        </section>
+        </Stack>
       );
     }
     return (
       <section aria-busy="true">
-        <h1>Run</h1>
-        <p role="status">Loading the run…</p>
+        <Stack gap={3}>
+          <Heading level={1}>Run</Heading>
+          <Loading>Loading the run…</Loading>
+        </Stack>
       </section>
     );
   }
@@ -218,19 +216,21 @@ function RunDetail({ runId }: { runId: string }) {
     snapshot.phase === 'error' ? (
       <ErrorState error={snapshot.error} what="Loading the graph" onRetry={() => void live.refresh()} />
     ) : (
-      <p role="status">Loading the graph…</p>
+      <Loading>Loading the graph…</Loading>
     );
   const graphPanel =
     model === undefined ? (
       waiting
     ) : policy.start === 'table' && !drawAnyway ? (
-      <div className="rn-big">
+      <Stack gap={3}>
         <Banner tone="info" title={`This run has ${model.nodes.size.toLocaleString()} steps.`}>
           Drawing a graph this large would be slow, so the table is the way to read it. You can still draw it: expect it to take a while.
         </Banner>
-        <Button onClick={() => setDrawAnyway(true)}>Draw the graph anyway</Button>
-        <Button onClick={() => setTab('table')}>Open the table view</Button>
-      </div>
+        <Row>
+          <Button onClick={() => setDrawAnyway(true)}>Draw the graph anyway</Button>
+          <Button onClick={() => setTab('table')}>Open the table view</Button>
+        </Row>
+      </Stack>
     ) : (
       <GraphView model={model} order={snapshot.order} flash={snapshot.flash} policy={policy} selectedId={selectedId} onSelect={select} onShowTable={() => setTab('table')} />
     );
@@ -263,24 +263,24 @@ function RunDetail({ runId }: { runId: string }) {
 
         {model?.chain ? (
           <Banner tone="info" title={`Execution chain · segment ${model.chain.segmentIndex + 1} of ${model.chain.segmentCount}`}>
-            <span>Chain <code>{model.chain.chainId}</code>.</span>{' '}
+            <span>Chain <Code>{model.chain.chainId}</Code>.</span>{' '}
             {model.chain.predecessorRunId ? <Link to={`/runs/${model.chain.predecessorRunId}`}>Previous run</Link> : null}{' '}
             {model.chain.successorRunId ? <Link to={`/runs/${model.chain.successorRunId}`}>Next run</Link> : null}{' '}
             {model.chain.currentRunId !== runId ? <Link to={`/runs/${model.chain.currentRunId}`}>Current run</Link> : null}
           </Banner>
         ) : null}
 
-        <div className="rn-run-context">
+        <Row gap={3}>
           <SendSignal runId={runId} status={status} onSent={refresh} />
           <PayloadDisclosureView runId={runId} selector={{ source: 'input' }} label="View permitted run input values" />
           <PayloadInspector runId={runId} selector={{ source: 'input' }} label="Inspect redacted run input" />
           {finished ? <PayloadDisclosureView runId={runId} selector={{ source: 'result' }} label="View permitted run result values" /> : null}
           {finished ? (
-            <p className="hint">
+            <Hint>
               {run.data.finishedAt ? <>The run finished <Relative at={run.data.finishedAt} past />.</> : 'The run is over.'} Its graph and journal stay as they were.
-            </p>
+            </Hint>
           ) : null}
-        </div>
+        </Row>
 
         {snapshot.lagMs > 0 ? (
           <Banner tone="info" title="The graph may be behind the journal.">

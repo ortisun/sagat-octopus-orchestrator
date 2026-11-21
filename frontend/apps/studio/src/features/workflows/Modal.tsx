@@ -1,6 +1,6 @@
 import { useLayoutEffect, useRef } from 'react';
 import type { ReactNode } from 'react';
-import { Dialog } from '../../ui/Dialog';
+import { Dialog } from '../../ui';
 
 /**
  * The shared dialog, plus the one thing the editor needs from it everywhere: when it closes, focus

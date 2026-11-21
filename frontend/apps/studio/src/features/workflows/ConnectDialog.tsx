@@ -1,8 +1,7 @@
 import { useState } from 'react';
 import type { IrDocument } from '../../model/ir';
 import { kindOf } from '../../model/registry';
-import { Button } from '../../ui/Button';
-import { Field } from '../../ui/Field';
+import { Actions, Button, Code, Select, Stack, Text } from '../../ui';
 import { clip } from './canvasModel';
 import { Modal } from './Modal';
 
@@ -21,36 +20,26 @@ function ConnectBody({ doc, from, onClose, onConnect }: { doc: IrDocument; from:
         if (reason === undefined) onClose();
       }}
     >
-      <p>
-        Make <code>{clip(from, 64)}</code> lead to another node. A link that was there is replaced; a list such as branches gets one more.
-      </p>
-      <Field label="Link">
-        <select value={field} onChange={(event) => setField(event.target.value)}>
-          {handles.map((h) => (
-            <option key={h.field} value={h.field}>
-              {h.label}
-            </option>
-          ))}
-        </select>
-      </Field>
-      <Field label="Leads to" error={error}>
-        <select value={to} onChange={(event) => setTo(event.target.value)}>
-          <option value="">(choose a node)</option>
-          {doc.nodes
-            .filter((n) => n.id !== from)
-            .map((n) => (
-              <option key={n.id} value={n.id}>
-                {clip(n.id, 64)} ({kindOf(n.type)?.label ?? n.type})
-              </option>
-            ))}
-        </select>
-      </Field>
-      <div className="dialog-actions">
-        <Button onClick={onClose}>Cancel</Button>
-        <Button type="submit" variant="primary" disabled={to === '' || field === ''}>
-          Connect
-        </Button>
-      </div>
+      <Stack gap={3}>
+        <Text>
+          Make <Code>{clip(from, 64)}</Code> lead to another node. A link that was there is replaced; a list such as branches gets one more.
+        </Text>
+        <Select label="Link" value={field} options={handles.map((h) => ({ value: h.field, label: h.label }))} onChange={setField} />
+        <Select
+          label="Leads to"
+          error={error}
+          value={to}
+          placeholder="(choose a node)"
+          options={doc.nodes.filter((n) => n.id !== from).map((n) => ({ value: n.id, label: `${clip(n.id, 64)} (${kindOf(n.type)?.label ?? n.type})` }))}
+          onChange={setTo}
+        />
+        <Actions>
+          <Button onClick={onClose}>Cancel</Button>
+          <Button type="submit" variant="primary" disabled={to === '' || field === ''}>
+            Connect
+          </Button>
+        </Actions>
+      </Stack>
     </form>
   );
 }

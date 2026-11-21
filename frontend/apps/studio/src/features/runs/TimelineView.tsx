@@ -1,9 +1,9 @@
 import { useQuery } from '@tanstack/react-query';
 import { useEffect, useMemo, useRef, useSyncExternalStore } from 'react';
 import { useApp } from '../../app/context';
-import { Banner } from '../../ui/Banner';
+import { Badge, Banner, Button, Checkbox, Code, ColumnHeader, Empty, ErrorState, Hint, Loading, WindowedTable, Row, Stack, TableBody, TableCell, TableHead, TableRow, TextInput } from '../../ui';
+import type { Tone } from '../../ui';
 import { eventLabel, eventTone } from '../../model/events';
-import { ErrorState } from '../../ui/ErrorState';
 import { CopyButton } from './CopyButton';
 import { digestView } from './display';
 import { filterEntries } from './journal';
@@ -37,7 +37,7 @@ const CAUSE_WORDS: Record<string, string> = {
   outcome: 'how the run ended',
 };
 
-const TONES: Record<string, { word: string; symbol: string; tone: string } | undefined> = {
+const TONES: Record<string, { word: string; symbol: string; tone: Tone } | undefined> = {
   problem: { word: 'Problem', symbol: '⚠', tone: 'bad' },
   decision: { word: 'Decision', symbol: '✎', tone: 'waiting' },
 };
@@ -69,92 +69,85 @@ export function TimelineView({ runId, journal, filter, onFilter, onSelect, selec
   const filtered = filter.problems || filter.decisions || filter.stepId.trim() !== '';
 
   return (
-    <div className="rn-timeline">
-      <div className="toolbar">
-        <label className="rn-check">
-          <input type="checkbox" checked={filter.problems} onChange={(event) => onFilter({ ...filter, problems: event.target.checked })} /> Only problems
-        </label>
-        <label className="rn-check">
-          <input type="checkbox" checked={filter.decisions} onChange={(event) => onFilter({ ...filter, decisions: event.target.checked })} /> Only decisions
-        </label>
-        <label className="rn-find">
-          <span>Step</span>
-          <input type="search" className="input" value={filter.stepId} placeholder="a step id" autoComplete="off" spellCheck={false} onChange={(event) => onFilter({ ...filter, stepId: event.target.value })} />
-        </label>
-        {selectedId !== undefined && filter.stepId !== selectedId ? (
-          <button type="button" className="btn" onClick={() => onFilter({ ...filter, stepId: selectedId })}>
-            Only {clip(selectedId, 30)}
-          </button>
-        ) : null}
-        <span className="spacer" />
-        <button type="button" className="btn" disabled={shown.length === 0} onClick={() => virtualizer.scrollToIndex(shown.length - 1)}>
-          Go to the latest event
-        </button>
-        <button type="button" className="btn" onClick={() => journal.reload()} title="Reads the journal again from the start">
-          Read the journal again
-        </button>
-      </div>
+    <Stack gap={3}>
+      <Row gap={3} align="end" justify="between">
+        <Row gap={3} align="end">
+          <TextInput type="search" label="Step" width="16rem" value={filter.stepId} placeholder="a step id" autoComplete="off" spellCheck={false} onChange={(stepId) => onFilter({ ...filter, stepId })} />
+          <Checkbox label="Only problems" checked={filter.problems} onChange={(problems) => onFilter({ ...filter, problems })} />
+          <Checkbox label="Only decisions" checked={filter.decisions} onChange={(decisions) => onFilter({ ...filter, decisions })} />
+          {selectedId !== undefined && filter.stepId !== selectedId ? <Button onClick={() => onFilter({ ...filter, stepId: selectedId })}>Only {clip(selectedId, 30)}</Button> : null}
+        </Row>
+        <Row>
+          <Button disabled={shown.length === 0} onClick={() => virtualizer.scrollToIndex(shown.length - 1)}>
+            Go to the latest event
+          </Button>
+          <Button onClick={() => journal.reload()} title="Reads the journal again from the start">
+            Read the journal again
+          </Button>
+        </Row>
+      </Row>
 
       <TelemetryNote runId={runId} />
 
-      <p className="hint">
+      <Hint>
         {snapshot.complete ? `All ${total} journal events are read.` : `${total} journal events read so far.`}
         {filtered ? ` ${shown.length} match the filters.` : ''}
         {snapshot.hidden > 0 ? ` ${snapshot.hidden} newer events arrived: read the rest of the journal to see them.` : ''}
         {snapshot.droppedLive ? ' Some live events were let go to save memory: read the journal again to see them.' : ''}
         {hasLive ? ' Events marked live show who did them and the trace when the journal is read again.' : ''}
-      </p>
+      </Hint>
       {snapshot.error !== undefined ? <ErrorState error={snapshot.error} what="Reading the journal" onRetry={() => void journal.loadMore()} /> : null}
 
       {shown.length === 0 ? (
-        <p className="empty" role={snapshot.loading ? 'status' : undefined}>
-          {snapshot.loading ? 'Reading the journal…' : !snapshot.started ? 'The journal is not read yet.' : filtered ? 'No event matches the filters.' : 'The journal has no events yet.'}
-        </p>
+        snapshot.loading ? (
+          <Loading>Reading the journal…</Loading>
+        ) : (
+          <Empty title={!snapshot.started ? 'The journal is not read yet.' : filtered ? 'No event matches the filters.' : 'The journal has no events yet.'} />
+        )
       ) : (
         <ScrollRegion label="Journal events" scroller={scroller}>
-          <table className="data rn-fixed rn-journal" aria-rowcount={shown.length + 1}>
-            <caption className="visually-hidden">Journal events, oldest first</caption>
-            <thead>
-              <tr aria-rowindex={1}>
-                <th scope="col">Seq</th>
-                <th scope="col">Time</th>
-                <th scope="col">Event</th>
-                <th scope="col">Cause</th>
-                <th scope="col">Step</th>
-                <th scope="col">Attempt</th>
-                <th scope="col">Actor</th>
-                <th scope="col">Trace</th>
-                <th scope="col">Payload</th>
-              </tr>
-            </thead>
-            <tbody>
+          <WindowedTable className="rn-fixed rn-journal" label="Journal events, oldest first" rowCount={shown.length + 1}>
+            <TableHead>
+              <TableRow aria-rowindex={1}>
+                <ColumnHeader scope="col">Seq</ColumnHeader>
+                <ColumnHeader scope="col">Time</ColumnHeader>
+                <ColumnHeader scope="col">Event</ColumnHeader>
+                <ColumnHeader scope="col">Cause</ColumnHeader>
+                <ColumnHeader scope="col">Step</ColumnHeader>
+                <ColumnHeader scope="col">Attempt</ColumnHeader>
+                <ColumnHeader scope="col">Actor</ColumnHeader>
+                <ColumnHeader scope="col">Trace</ColumnHeader>
+                <ColumnHeader scope="col">Payload</ColumnHeader>
+              </TableRow>
+            </TableHead>
+            <TableBody>
               {padTop > 0 ? (
-                <tr aria-hidden="true" className="rn-pad">
-                  <td colSpan={COLUMNS} style={{ height: padTop }} />
-                </tr>
+                <TableRow aria-hidden="true" className="rn-pad">
+                  <TableCell colSpan={COLUMNS} style={{ height: padTop }} />
+                </TableRow>
               ) : null}
               {items.map((item) => {
                 const entry = shown[item.index];
                 return entry === undefined ? null : <EntryRow key={entry.seq} runId={runId} entry={entry} index={item.index} measure={measure} selected={entry.stepId !== null && entry.stepId === selectedId} onSelect={onSelect} />;
               })}
               {padBottom > 0 ? (
-                <tr aria-hidden="true" className="rn-pad">
-                  <td colSpan={COLUMNS} style={{ height: padBottom }} />
-                </tr>
+                <TableRow aria-hidden="true" className="rn-pad">
+                  <TableCell colSpan={COLUMNS} style={{ height: padBottom }} />
+                </TableRow>
               ) : null}
-            </tbody>
-          </table>
+            </TableBody>
+          </WindowedTable>
         </ScrollRegion>
       )}
 
       {!snapshot.complete ? (
-        <p>
-          <button type="button" className="btn" disabled={snapshot.loading} onClick={() => void journal.loadMore()}>
+        <div>
+          <Button disabled={snapshot.loading} onClick={() => void journal.loadMore()}>
             {snapshot.loading ? 'Reading…' : 'Load more events'}
-          </button>
-        </p>
+          </Button>
+        </div>
       ) : null}
-    </div>
+    </Stack>
   );
 }
 
@@ -163,67 +156,69 @@ function EntryRow({ runId, entry, index, measure, selected, onSelect }: { runId:
   const digest = digestView(entry.payloadRef);
   const live = entry.detail === 'live';
   return (
-    <tr ref={measure} data-index={index} aria-rowindex={index + 2} data-tone={tone?.tone} data-selected={selected ? 'true' : undefined}>
-      <td>{entry.seq}</td>
-      <td>
+    <TableRow ref={measure} data-index={index} aria-rowindex={index + 2} data-tone={tone?.tone} data-selected={selected ? 'true' : undefined}>
+      <TableCell>{entry.seq}</TableCell>
+      <TableCell>
         <Moment at={entry.occurredAt} />
-      </td>
-      <td>
+      </TableCell>
+      <TableCell>
         {eventLabel(entry.eventType)}
         {tone ? (
           <>
             {' '}
-            <span className="badge" data-tone={tone.tone}>
+            <Badge tone={tone.tone}>
               <span aria-hidden="true">{tone.symbol}</span> {tone.word}
-            </span>
+            </Badge>
           </>
         ) : null}
         <br />
-        <code className="hint">{clip(entry.eventType, 40)}</code>
-        {live ? <span className="hint"> (live)</span> : null}
-      </td>
-      <td>
+        <span className="rn-quiet">
+          <Code>{clip(entry.eventType, 40)}</Code>
+          {live ? ' (live)' : null}
+        </span>
+      </TableCell>
+      <TableCell>
         {entry.cause !== null ? (
           <>
-            <code>{clip(entry.cause.code, 40)}</code>
+            <Code>{clip(entry.cause.code, 40)}</Code>
             <br />
-            <span className="hint">{CAUSE_WORDS[entry.cause.kind] ?? entry.cause.kind}</span>
+            <span className="rn-quiet">{CAUSE_WORDS[entry.cause.kind] ?? entry.cause.kind}</span>
           </>
         ) : live ? (
           '—'
         ) : (
-          <span className="hint">—</span>
+          <span className="rn-quiet">—</span>
         )}
-      </td>
-      <td>
+      </TableCell>
+      <TableCell>
         {entry.stepId !== null ? (
-          <button type="button" className="link rn-id" title={entry.stepId} onClick={() => onSelect(entry.stepId as string)}>
+          <Button variant="ghost" size="sm" className="rn-id" {...(entry.stepId.length > 40 ? { title: entry.stepId } : {})} onClick={() => onSelect(entry.stepId as string)}>
             {clip(entry.stepId, 40)}
-          </button>
+          </Button>
         ) : (
           '—'
         )}
-      </td>
-      <td>{entry.attempt ?? '—'}</td>
-      <td>{live ? '—' : entry.actor ? clip(entry.actor, 40) : '—'}</td>
-      <td>
+      </TableCell>
+      <TableCell>{entry.attempt ?? '—'}</TableCell>
+      <TableCell>{live ? '—' : entry.actor ? clip(entry.actor, 40) : '—'}</TableCell>
+      <TableCell>
         {live ? (
           '—'
         ) : entry.traceId ? (
           <>
-            <code>{clip(entry.traceId, 64)}</code> <CopyButton text={entry.traceId} what="trace id" />
+            <Code>{clip(entry.traceId, 64)}</Code> <CopyButton text={entry.traceId} what="trace id" />
             {entry.spanId !== null ? (
               <>
                 <br />
-                <span className="hint">attempt span</span> <code>{entry.spanId}</code> <CopyButton text={entry.spanId} what="span id" />
+                <span className="rn-quiet">attempt span</span> <Code>{entry.spanId}</Code> <CopyButton text={entry.spanId} what="span id" />
               </>
             ) : null}
           </>
         ) : (
           'no trace'
         )}
-      </td>
-      <td>
+      </TableCell>
+      <TableCell>
         {live ? (
           '—'
         ) : digest ? (
@@ -232,10 +227,10 @@ function EntryRow({ runId, entry, index, measure, selected, onSelect }: { runId:
             <PayloadInspector runId={runId} selector={{ source: 'journal', sequence: entry.seq }} compact />
           </>
         ) : (
-          <span className="hint">no payload</span>
+          <span className="rn-quiet">no payload</span>
         )}
-      </td>
-    </tr>
+      </TableCell>
+    </TableRow>
   );
 }
 
@@ -263,10 +258,10 @@ function TelemetryNote({ runId }: { runId: string }) {
     );
   }
   if (data.state === 'CATCHING_UP') {
-    return <p className="hint">The trace is catching up with the journal ({behind} seconds behind).</p>;
+    return <Hint>The trace is catching up with the journal ({behind} seconds behind).</Hint>;
   }
   if (data.state === 'NO_TRACE') {
-    return <p className="hint">This run belongs to no trace: nothing is exported for it.</p>;
+    return <Hint>This run belongs to no trace: nothing is exported for it.</Hint>;
   }
   return null;
 }

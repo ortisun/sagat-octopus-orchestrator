@@ -1,4 +1,4 @@
-import { useAnnounce } from '../../ui/Announcer';
+import { Button, useAnnounce } from '../../ui';
 
 /**
  * Copies `text` to the clipboard and says so. Only ids and digests go through here, never a
@@ -19,8 +19,8 @@ export function CopyButton({ text, what }: { text: string; what: string }) {
     );
   };
   return (
-    <button type="button" className="btn small" onClick={copy} aria-label={`Copy ${what}`}>
+    <Button size="sm" onClick={copy} aria-label={`Copy ${what}`}>
       Copy
-    </button>
+    </Button>
   );
 }

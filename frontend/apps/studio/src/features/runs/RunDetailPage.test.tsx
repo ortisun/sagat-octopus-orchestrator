@@ -5,6 +5,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest
 import { renderApp } from '../../../test/render';
 import { openRunPage, openStream } from '../../../test/runPage';
 import { installRunsDom } from '../../../test/runsDom';
+import { chooseValue, valueOf } from '../../../test/ui';
 import { ADMIN, OPERATOR, RUN_ID, TRACE, VIEWER, at, changesOf, failure, graphEvent, graphOf, journalEvent, node, runOf, runPlatform, sagaRun, signedInApp } from '../../../test/runs';
 import type { Pipe, RunPlatformInit } from '../../../test/runs';
 import { RunDetailPage } from './RunDetailPage';
@@ -43,13 +44,15 @@ describe('the run page: header', () => {
   it('keeps technical metadata available in a disclosure without crowding the graph', async () => {
     const user = userEvent.setup();
     await open();
-    const summary = await screen.findByText('Run details');
-    const details = summary.closest('details');
-    expect(details).not.toHaveAttribute('open');
+    // The disclosure is the interface module's: a button that says whether it is open and names the region it opens.
+    const summary = await screen.findByRole('button', { name: 'Run details' });
+    const details = document.getElementById(summary.getAttribute('aria-controls') ?? '') as HTMLElement;
+    expect(summary).toHaveAttribute('aria-expanded', 'false');
     expect(screen.getByRole('button', { name: 'Copy run id' })).toBeVisible();
-    expect(screen.getByRole('button', { name: 'Copy trace id' })).not.toBeVisible();
+    expect(details).not.toContainElement(screen.getByRole('button', { name: 'Copy run id' }));
+    expect(details).toContainElement(screen.getByRole('button', { name: 'Copy trace id' }));
     await user.click(summary);
-    expect(details).toHaveAttribute('open');
+    expect(summary).toHaveAttribute('aria-expanded', 'true');
     expect(screen.getByRole('button', { name: 'Copy trace id' })).toBeVisible();
     expect(screen.getByText(/acme \/ dev/)).toBeVisible();
   });
@@ -279,14 +282,14 @@ describe('the run page: responsive master and detail', () => {
     });
     const master = await screen.findByRole('complementary', { name: 'Runs list' });
     const status = within(master).getByRole('combobox', { name: 'Status' });
-    await user.selectOptions(status, 'FAILED');
+    await chooseValue(user, status, 'FAILED');
     const next = await within(master).findByRole('link', { name: new RegExp(secondId.slice(-8)) });
     expect(within(next).getByText('—')).toBeInTheDocument();
     await user.click(next);
     expect(await screen.findByRole('heading', { level: 1, name: new RegExp(secondId) })).toBeInTheDocument();
     expect(screen.getByRole('complementary', { name: 'Runs list' })).toBe(master);
     expect(within(master).getByRole('combobox', { name: 'Status' })).toBe(status);
-    expect(status).toHaveValue('FAILED');
+    expect(valueOf(status)).toBe('FAILED');
     expect(within(master).getByRole('link', { name: new RegExp(secondId.slice(-8)) })).toHaveAttribute('aria-current', 'page');
   });
 });
@@ -487,7 +490,7 @@ describe('the run page: the table', () => {
     expect(ids(screen.getByRole('table', { name: 'Steps of the run' }))).toEqual(['pay', 'pay~r']);
     await user.clear(screen.getByRole('searchbox', { name: 'Find a step' }));
     await user.type(screen.getByRole('searchbox', { name: 'Find a step' }), 'zzz');
-    expect(screen.getByText('No step matches.')).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'No step matches.' })).toBeInTheDocument();
   });
 
   it('sorts by id, up and down, and says which way in the header', async () => {
@@ -718,7 +721,7 @@ describe('the run page: the timeline', () => {
   it('says the journal is empty when it is', async () => {
     const view = await open({ journal: [] });
     await view.user.click(screen.getByRole('tab', { name: 'Timeline' }));
-    expect(await screen.findByText('The journal has no events yet.')).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'The journal has no events yet.' })).toBeInTheDocument();
   });
 
   it('shows an error when the journal cannot be read, with a way to try again', async () => {
@@ -901,9 +904,11 @@ describe('the run page: what the platform sends is only ever text', () => {
     expect(screen.getByText('<i>eve</i>')).toBeInTheDocument();
     // Nothing the platform sent became markup.
     for (const tag of ['img', 'script', 'svg', 'b', 'i', 'u']) {
-      const found = Array.from(document.querySelectorAll(tag)).filter((el) => !el.closest('.react-flow__controls, .react-flow__minimap, .react-flow__edges, .react-flow__attribution'));
+      // The design system draws its own icons as `svg`s inside a decorative (`aria-hidden`) element; nothing else may be one.
+      const found = Array.from(document.querySelectorAll(tag)).filter((el) => !el.closest('.react-flow__controls, .react-flow__minimap, .react-flow__edges, .react-flow__attribution, [aria-hidden="true"]'));
       expect(found).toHaveLength(0);
     }
+    expect(document.querySelector('[onload], [onerror]')).toBeNull();
   });
 
   it('clips an id of a thousand characters instead of laying it out', async () => {

@@ -1,4 +1,4 @@
-import { Button } from '../../ui/Button';
+import { Actions, Button, ColumnHeader, Table, TableBody, TableCell, TableHead, TableRow, Text } from '../../ui';
 import { Modal } from './Modal';
 
 const SHORTCUTS: readonly { keys: string; does: string }[] = [
@@ -16,31 +16,30 @@ const SHORTCUTS: readonly { keys: string; does: string }[] = [
 export function KeyboardHelp({ open, onClose }: { open: boolean; onClose: () => void }) {
   return (
     <Modal open={open} title="Keyboard help" onClose={onClose}>
-      <p>Everything the canvas does can also be done in the list view, from the inspector and from the toolbar.</p>
-      <table className="data">
-        <caption className="visually-hidden">Keyboard shortcuts of the workflow editor</caption>
-        <thead>
-          <tr>
-            <th scope="col">Keys</th>
-            <th scope="col">What they do</th>
-          </tr>
-        </thead>
-        <tbody>
+      <Text>Everything the canvas does can also be done in the list view, from the inspector and from the toolbar.</Text>
+      <Table label="Keyboard shortcuts of the workflow editor">
+        <TableHead>
+          <TableRow>
+            <ColumnHeader>Keys</ColumnHeader>
+            <ColumnHeader>What they do</ColumnHeader>
+          </TableRow>
+        </TableHead>
+        <TableBody>
           {SHORTCUTS.map((s) => (
-            <tr key={s.keys}>
-              <th scope="row">
+            <TableRow key={s.keys}>
+              <ColumnHeader scope="row">
                 <kbd>{s.keys}</kbd>
-              </th>
-              <td>{s.does}</td>
-            </tr>
+              </ColumnHeader>
+              <TableCell>{s.does}</TableCell>
+            </TableRow>
           ))}
-        </tbody>
-      </table>
-      <div className="dialog-actions">
+        </TableBody>
+      </Table>
+      <Actions>
         <Button onClick={onClose} variant="primary">
           Close
         </Button>
-      </div>
+      </Actions>
     </Modal>
   );
 }

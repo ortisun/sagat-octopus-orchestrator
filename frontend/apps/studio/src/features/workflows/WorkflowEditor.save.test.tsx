@@ -2,6 +2,7 @@ import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { apiError, bodyOf, gate, json, keyOf, mountEditor, mountEditorInDataRouter, putsOf, sampleIr, settle } from '../../../test/workflowsHarness';
 import type { Platform } from '../../../test/workflowsHarness';
+import { expectAvailable, expectUnavailable } from '../../../test/ui';
 
 const state = () => screen.getByTestId('save-state');
 
@@ -116,7 +117,7 @@ describe('autosave (D146)', () => {
     const { user, platform } = await opened({ timings: { validateMs: 15, autosaveMs: 60_000 } });
     await user.click(screen.getByRole('button', { name: 'Delete done' }));
     await user.click(screen.getByRole('button', { name: 'Edit pay' }));
-    await user.click(screen.getByRole('textbox', { name: 'Activity' }));
+    await user.click(screen.getByRole('textbox', { name: /^Activity/ }));
     await settle(100);
     expect(putsOf(platform)).toHaveLength(0);
   });
@@ -288,7 +289,7 @@ describe('two people editing the same draft (D146)', () => {
     // The classification is the platform's; the Studio does not claim nothing breaks.
     expect(dialog).not.toHaveTextContent('no breaking changes');
     expect(dialog).toHaveTextContent('judged by the platform when the draft is published');
-    for (const name of ['Take theirs', 'Keep mine and save over theirs', 'Save mine as a copy']) expect(within(dialog).getByRole('button', { name })).toBeEnabled();
+    for (const name of ['Take theirs', 'Keep mine and save over theirs', 'Save mine as a copy']) expectAvailable(within(dialog).getByRole('button', { name }));
     // Nothing was overwritten: the only save that went out was refused.
     expect(platform.state.revision).toBe(5);
     expect(platform.state.ir).toEqual(theirs());
@@ -313,7 +314,7 @@ describe('two people editing the same draft (D146)', () => {
     expect(screen.queryByTestId('row-pay')).not.toBeInTheDocument();
     await settle(150);
     expect(platform.calls.filter((c) => c.method === 'PUT')).toHaveLength(1);
-    expect(screen.getByRole('button', { name: 'Undo' })).toBeDisabled();
+    expectUnavailable(screen.getByRole('button', { name: 'Undo' }));
   });
 
   it('Keep mine saves over theirs, on top of their revision, with a key of its own', async () => {
@@ -399,7 +400,7 @@ describe('two people editing the same draft (D146)', () => {
     expect(await within(dialog).findByRole('alert')).toHaveTextContent('You may not create workflows.');
     expect(screen.queryByTestId('row-done')).not.toBeInTheDocument();
     expect(screen.getByTestId('row-pay')).toBeInTheDocument();
-    expect(within(dialog).getByRole('button', { name: 'Take theirs' })).toBeEnabled();
+    expectAvailable(within(dialog).getByRole('button', { name: 'Take theirs' }));
   });
 
   it('can be put off: the author copy stays, saving stays off, and the conflict can be reopened', async () => {

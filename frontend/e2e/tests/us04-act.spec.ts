@@ -4,6 +4,7 @@ import { env } from '../support/env';
 import { Api, paymentSaga } from '../support/platform';
 import { failOnBrowserErrors, goTo, signIn } from '../support/studio';
 import { ActivityFailure, startWorker } from '../support/worker';
+import { expectAvailable, expectFieldError, expectUnavailable } from '../support/ui';
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
@@ -51,8 +52,8 @@ test('US04 an operator finds the step that waits for a decision, decides with a 
 
     // Only what the role and the state allow is offered, and what is not is explained.
     await openStepActions(page, 'reserve~c');
-    await expect(page.getByRole('button', { name: 'Retry compensation' })).toBeEnabled();
-    await expect(page.getByRole('button', { name: 'Skip compensation' })).toBeDisabled();
+    await expectAvailable(page.getByRole('button', { name: 'Retry compensation' }));
+    await expectUnavailable(page.getByRole('button', { name: 'Skip compensation' }));
     await expect(page.locator('[data-action="SKIP_COMPENSATION"]')).toContainText('You need the saga:override permission to do this.');
     await page.getByRole('button', { name: 'Retry compensation' }).click();
 
@@ -63,7 +64,7 @@ test('US04 an operator finds the step that waits for a decision, decides with a 
     const confirm = dialog.getByRole('button', { name: 'Confirm: Retry compensation' });
     await dialog.getByRole('textbox', { name: 'Reason' }).fill('no');
     await confirm.click();
-    await expect(dialog.getByText(/Write at least 8 characters/)).toBeVisible();
+    await expectFieldError(dialog.getByRole('textbox', { name: 'Reason' }), /Write at least 8 characters/);
     expect(await api.journal(run)).toHaveLength(before.length); // nothing was sent
     await dialog.getByRole('textbox', { name: 'Reason' }).fill('The limit service is back (ticket INC-4411).');
     await confirm.click();
@@ -91,12 +92,12 @@ test('US04 a viewer watches but is not offered a decision, and giving up on an u
     // A viewer: the actions exist as information, disabled, with the reason.
     await openRun(page, env.tokens.viewer, run);
     await page.getByRole('button', { name: 'Run actions' }).click();
-    await expect(page.getByRole('button', { name: 'Pause run' })).toBeDisabled();
-    await expect(page.getByRole('button', { name: 'Cancel run' })).toBeDisabled();
+    await expectUnavailable(page.getByRole('button', { name: 'Pause run' }));
+    await expectUnavailable(page.getByRole('button', { name: 'Cancel run' }));
     await expect(page.getByText('You need the run:operate permission to do this.').first()).toBeVisible();
     await page.keyboard.press('Escape');
     await openStepActions(page, 'reserve~c');
-    await expect(page.getByRole('button', { name: 'Retry compensation' })).toBeDisabled();
+    await expectUnavailable(page.getByRole('button', { name: 'Retry compensation' }));
     await expect(page.getByText('You need the run:operate permission to do this.').first()).toBeVisible();
 
     // The administrator may give up on the undo, after typing the step id back.
@@ -111,7 +112,7 @@ test('US04 a viewer watches but is not offered a decision, and giving up on an u
     const confirm = dialog.getByRole('button', { name: 'Confirm: Skip compensation' });
     await dialog.getByRole('textbox', { name: 'Type the step id to confirm' }).fill('reserve');
     await confirm.click();
-    await expect(dialog.getByText('Type the step id exactly as shown to confirm.')).toBeVisible();
+    await expectFieldError(dialog.getByRole('textbox', { name: 'Type the step id to confirm' }), 'Type the step id exactly as shown to confirm.');
     expect(await api.until(run, 'MANUAL_REVIEW', 5_000)).toBe('MANUAL_REVIEW'); // still waiting: nothing was sent
     await dialog.getByRole('textbox', { name: 'Type the step id to confirm' }).fill('reserve~c');
     await confirm.click();

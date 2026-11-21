@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { Route, Routes } from 'react-router';
 import { describe, expect, it } from 'vitest';
 import { AUTH_CONTEXT, TOKEN, fakePlatform, renderApp } from '../../test/render';
+import { choose, chosen, expectUnavailable, optionsOf, selector } from '../../test/ui';
 import { createApp } from './context';
 import { Shell } from './Shell';
 
@@ -27,24 +28,27 @@ async function mount(path = '/workflows', { chosen = 'production', items = [name
     </Routes>,
     { app, path },
   );
-  await screen.findByRole('option', { name: 'production' });
+  // The list of namespaces has arrived (the selector's choices are in the page only while it is open).
+  await waitFor(() => expect(app.queries.getQueryData(['namespaces'])).toBeDefined());
   return { ...result, app, platform };
 }
 
-const sidebar = () => screen.getByRole('complementary', { name: 'Studio navigation' });
-const links = () => within(within(sidebar()).getByRole('navigation', { name: 'Main' })).getAllByRole('link').map((link) => link.textContent);
+/** The sidebar is the application shell's navigation landmark, `Main`: the brand, the namespace selector and the menu. */
+const sidebar = () => screen.getByRole('navigation', { name: 'Main' });
+const links = () => within(sidebar()).getAllByRole('link').map((link) => link.textContent);
+const namespaceSelector = () => selector('Namespace', sidebar());
 
 describe('Shell', () => {
   it('keeps the brand and, in order, the tenant, the chosen namespace and what lives in it', async () => {
     await mount('/runs');
     expect(within(sidebar()).getByText('sagat-octopus')).toBeInTheDocument();
-    const navigation = within(sidebar()).getByRole('navigation', { name: 'Main' });
-    expect(within(sidebar()).getByLabelText('Namespace')).toHaveValue('production');
+    const navigation = sidebar();
+    expect(chosen(namespaceSelector())).toBe('production');
     expect(links()).toEqual(['Namespaces', 'Workflows', 'Scripts', 'Runs', 'Operations', 'Ad hoc database', 'Connections', 'Secrets', 'Integrations']);
-    // What lives in the namespace is under it, in a list that says whose it is.
-    const inside = within(navigation).getByRole('list', { name: 'In production' });
+    // What lives in the namespace is under it, in a group that says whose it is.
+    const inside = within(navigation).getByRole('group', { name: 'In production' });
     expect(within(inside).getAllByRole('link').map((link) => link.textContent)).toEqual(['Workflows', 'Scripts', 'Runs', 'Operations', 'Ad hoc database', 'Connections', 'Secrets', 'Integrations']);
-    expect(within(navigation).getByRole('link', { name: 'Namespaces' }).closest('ul')).not.toBe(inside);
+    expect(inside).not.toContainElement(within(navigation).getByRole('link', { name: 'Namespaces' }));
     expect(within(navigation).getByRole('link', { name: 'Runs' })).toHaveAttribute('aria-current', 'page');
   });
 
@@ -54,17 +58,19 @@ describe('Shell', () => {
     // One namespace only: it is still the person's to choose.
     expect(app.namespace.current()).toBeUndefined();
     expect(links()).toEqual(['Namespaces']);
-    const select = within(sidebar()).getByLabelText('Namespace');
-    expect(select).toHaveValue('');
-    expect(within(select).getByRole('option', { name: 'Choose a namespace' })).toBeDisabled();
+    const select = namespaceSelector();
+    // Nothing is chosen: the selector shows its prompt, which is not one of the choices.
+    expect(chosen(select)).toBe('Choose a namespace');
+    expect(screen.queryByRole('option', { name: 'Choose a namespace' })).not.toBeInTheDocument();
     expect(within(sidebar()).getByText(/Choose a namespace to open its workflows/)).toBeInTheDocument();
     expect(within(sidebar()).queryByRole('link', { name: 'Workflows' })).not.toBeInTheDocument();
 
-    await user.selectOptions(select, 'production');
+    await choose(user, select, 'production');
     expect(app.namespace.current()).toBe('production');
     expect(links()).toEqual(['Namespaces', 'Workflows', 'Scripts', 'Runs', 'Operations', 'Ad hoc database', 'Connections', 'Secrets', 'Integrations']);
     expect(within(sidebar()).queryByText(/Choose a namespace to open/)).not.toBeInTheDocument();
-    expect(within(select).queryByRole('option', { name: 'Choose a namespace' })).not.toBeInTheDocument();
+    expect(chosen(select)).toBe('production');
+    expect(await optionsOf(user, select)).toEqual(['production']);
   });
 
   it('says so when the tenant has no namespace yet, and offers only the namespaces', async () => {
@@ -73,8 +79,9 @@ describe('Shell', () => {
     app.namespace.set(undefined);
     await app.session.signIn(TOKEN, () => Promise.resolve(AUTH_CONTEXT as never));
     renderApp(<Routes><Route element={<Shell />}><Route path="namespaces" element={<h1>Namespace list</h1>} /></Route></Routes>, { app, path: '/namespaces' });
-    expect(await screen.findByRole('option', { name: 'No namespaces yet' })).toBeInTheDocument();
-    expect(within(sidebar()).getByLabelText('Namespace')).toBeDisabled();
+    await waitFor(() => expect(chosen(namespaceSelector())).toBe('No namespaces yet'));
+    expectUnavailable(namespaceSelector());
+    expect(screen.queryByRole('option')).not.toBeInTheDocument();
     expect(links()).toEqual(['Namespaces']);
   });
 
@@ -82,14 +89,14 @@ describe('Shell', () => {
     const { app } = await mount('/namespaces', { chosen: 'retired' });
     await waitFor(() => expect(app.namespace.current()).toBeUndefined());
     expect(links()).toEqual(['Namespaces']);
-    expect(within(sidebar()).getByLabelText('Namespace')).toHaveValue('');
+    expect(chosen(namespaceSelector())).toBe('Choose a namespace');
   });
 
   it('keeps a remembered namespace the tenant lists', async () => {
     const { app } = await mount('/workflows', { chosen: 'staging' });
     expect(app.namespace.current()).toBe('staging');
-    expect(within(sidebar()).getByLabelText('Namespace')).toHaveValue('staging');
-    expect(within(sidebar()).getByRole('list', { name: 'In staging' })).toBeInTheDocument();
+    expect(chosen(namespaceSelector())).toBe('staging');
+    expect(within(sidebar()).getByRole('group', { name: 'In staging' })).toBeInTheDocument();
   });
 
   it('keeps the top bar grounded in the current page and real session', async () => {
@@ -110,7 +117,9 @@ describe('Shell', () => {
   it('keeps the skip link and moves focus to the page after navigation', async () => {
     const user = userEvent.setup();
     await mount();
-    expect(screen.getByRole('link', { name: 'Skip to the content' })).toHaveAttribute('href', '#main');
+    // The application shell brings the skip link; it leads to the page's landmark.
+    expect(screen.getByRole('link', { name: 'Skip to content' })).toHaveAttribute('href', `#${screen.getByRole('main').id}`);
+    expect(screen.getByRole('main').id).not.toBe('');
     await user.click(screen.getByRole('link', { name: 'Runs' }));
     await screen.findByRole('heading', { name: 'Run history' });
     await waitFor(() => expect(screen.getByRole('main')).toHaveFocus());

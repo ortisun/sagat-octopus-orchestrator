@@ -2,6 +2,7 @@ import { expect, test } from '@playwright/test';
 import { env } from '../support/env';
 import { Api, IR_BASE } from '../support/platform';
 import { failOnBrowserErrors, goTo, signIn } from '../support/studio';
+import { choose } from '../support/ui';
 
 test.use({ trace: 'off' });
 test('sends an explicit signal to a real waiting run and keeps the journal', async ({ page }) => {
@@ -15,7 +16,7 @@ test('sends an explicit signal to a real waiting run and keeps the journal', asy
   const run = await api.start(workflow.id);
   await api.until(run, 'WAITING');
   await signIn(page, env.tokens.admin);
-  await page.getByLabel('Namespace', { exact: true }).selectOption(env.namespace);
+  await choose(page.getByRole('combobox', { name: 'Namespace', exact: true }), env.namespace);
   await goTo(page, `/runs/${run}`);
   await page.getByRole('button', { name: 'Send signal', exact: true }).click();
   await page.getByLabel('Signal name', { exact: true }).fill('approval.decided');

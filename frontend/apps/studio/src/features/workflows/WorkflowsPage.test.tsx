@@ -9,6 +9,7 @@ import { createApp } from '../../app/context';
 import type { Routes as FakeRoutes } from '../../../test/render';
 import { formatLocal } from '../runs/time';
 import { WorkflowsPage } from './WorkflowsPage';
+import { expectAvailable, expectUnavailable } from '../../../test/ui';
 
 const draft = (n: number, extra: Record<string, unknown> = {}) => ({
   id: `00000000-0000-4000-8000-00000000000${n}`,
@@ -65,7 +66,7 @@ describe('WorkflowsPage', () => {
 
   it('says so when there are no workflows yet, and points at the way to make one', async () => {
     await mount({ 'GET /workflows': () => ({ items: [], nextCursor: null }) });
-    expect(await screen.findByText(/No workflows in/)).toHaveTextContent('Create the first one');
+    expect(await screen.findByRole('heading', { name: /No workflows in/ })).toHaveTextContent('Create the first one');
     expect(screen.queryByRole('table')).not.toBeInTheDocument();
   });
 
@@ -117,39 +118,39 @@ describe('creating a workflow', () => {
     const { user } = await mount(list);
     await user.click(await screen.findByRole('button', { name: 'New workflow' }));
     const dialog = await screen.findByRole('dialog', { name: 'New workflow' });
-    const name = within(dialog).getByRole('textbox', { name: 'Name' });
+    const name = within(dialog).getByRole('textbox', { name: /^Name/ });
     const create = within(dialog).getByRole('button', { name: 'Create workflow' });
-    expect(create).toBeDisabled();
+    expectUnavailable(create);
     await user.type(name, 'Order');
-    expect(within(dialog).getByRole('alert')).toHaveTextContent('lowercase letter');
+    expect(within(dialog).getByRole('textbox', { name: /^Name/ })).toHaveAccessibleDescription(expect.stringContaining('lowercase letter'));
     expect(name).toHaveAttribute('aria-invalid', 'true');
-    expect(create).toBeDisabled();
+    expectUnavailable(create);
     await user.clear(name);
     await user.type(name, 'ab');
-    expect(within(dialog).getByRole('alert')).toHaveTextContent('at least 3');
+    expect(within(dialog).getByRole('textbox', { name: /^Name/ })).toHaveAccessibleDescription(expect.stringContaining('at least 3'));
     await user.clear(name);
     await user.type(name, 'order_flow');
-    expect(within(dialog).getByRole('alert')).toHaveTextContent('lowercase letters, digits and dashes');
+    expect(within(dialog).getByRole('textbox', { name: /^Name/ })).toHaveAccessibleDescription(expect.stringContaining('lowercase letters, digits and dashes'));
     await user.clear(name);
     await user.type(name, 'order-flow');
-    expect(within(dialog).queryByRole('alert')).not.toBeInTheDocument();
-    expect(create).toBeEnabled();
+    expect(name).not.toHaveAttribute('aria-invalid', 'true');
+    expectAvailable(create);
   });
 
   it('refuses a name longer than the platform allows', async () => {
     const { user } = await mount(list);
     await user.click(await screen.findByRole('button', { name: 'New workflow' }));
     const dialog = await screen.findByRole('dialog');
-    await user.type(within(dialog).getByRole('textbox', { name: 'Name' }), 'a'.repeat(65));
-    expect(within(dialog).getByRole('alert')).toHaveTextContent('at most 64');
-    expect(within(dialog).getByRole('button', { name: 'Create workflow' })).toBeDisabled();
+    await user.type(within(dialog).getByRole('textbox', { name: /^Name/ }), 'a'.repeat(65));
+    expect(within(dialog).getByRole('textbox', { name: /^Name/ })).toHaveAccessibleDescription(expect.stringContaining('at most 64'));
+    expectUnavailable(within(dialog).getByRole('button', { name: 'Create workflow' }));
   });
 
   it('creates an empty draft named like the workflow and opens it in the editor', async () => {
     const created = draft(5, { name: 'order-flow' });
     const { user, platform } = await mount({ ...list, 'POST /workflows': () => json(created, 201) });
     await user.click(await screen.findByRole('button', { name: 'New workflow' }));
-    await user.type(await screen.findByRole('textbox', { name: 'Name' }), 'order-flow');
+    await user.type(await screen.findByRole('textbox', { name: /^Name/ }), 'order-flow');
     await user.click(screen.getByRole('button', { name: 'Create workflow' }));
     expect(await screen.findByText('the editor of a workflow')).toBeInTheDocument();
     const post = platform.calls.find((c) => c.method === 'POST');
@@ -164,17 +165,17 @@ describe('creating a workflow', () => {
   it('says the name is taken when the platform says so, and keeps the dialog open', async () => {
     const { user } = await mount({ ...list, 'POST /workflows': () => apiError(409, 'CONFLICT', 'exists') });
     await user.click(await screen.findByRole('button', { name: 'New workflow' }));
-    await user.type(await screen.findByRole('textbox', { name: 'Name' }), 'order-flow');
+    await user.type(await screen.findByRole('textbox', { name: /^Name/ }), 'order-flow');
     await user.click(screen.getByRole('button', { name: 'Create workflow' }));
-    expect(await screen.findByRole('alert')).toHaveTextContent('"order-flow" already exists');
+    await waitFor(() => expect(screen.getByRole('textbox', { name: /^Name/ })).toHaveAccessibleDescription(expect.stringContaining('"order-flow" already exists')));
     expect(screen.getByRole('dialog')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Create workflow' })).toBeDisabled();
+    expectUnavailable(screen.getByRole('button', { name: 'Create workflow' }));
   });
 
   it('shows the reason the platform gives for refusing, with its trace id', async () => {
     const { user } = await mount({ ...list, 'POST /workflows': () => apiError(403, 'FORBIDDEN', 'You are not allowed to create workflows here.', 'e'.repeat(32)) });
     await user.click(await screen.findByRole('button', { name: 'New workflow' }));
-    await user.type(await screen.findByRole('textbox', { name: 'Name' }), 'order-flow');
+    await user.type(await screen.findByRole('textbox', { name: /^Name/ }), 'order-flow');
     await user.click(screen.getByRole('button', { name: 'Create workflow' }));
     const alert = await screen.findByRole('alert');
     expect(alert).toHaveTextContent('You are not allowed to create workflows here.');
@@ -186,7 +187,7 @@ describe('creating a workflow', () => {
     const button = await screen.findByRole('button', { name: 'New workflow' });
     await user.click(button);
     await user.click(await screen.findByRole('button', { name: 'Cancel' }));
-    await waitFor(() => expect(screen.queryByRole('textbox', { name: 'Name' })).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByRole('textbox', { name: /^Name/ })).not.toBeInTheDocument());
     expect(button).toHaveFocus();
   });
 });
@@ -211,7 +212,7 @@ describe('WorkflowsPage: finding and reading times', () => {
     const field = screen.getByRole('searchbox', { name: 'Find a workflow' });
     await user.type(field, 'zzz');
     expect(screen.queryByRole('table')).not.toBeInTheDocument();
-    expect(screen.getByText(/No loaded workflow has "zzz" in its name/)).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: /No loaded workflow has "zzz" in its name/ })).toBeInTheDocument();
     await user.clear(field);
     expect(await screen.findByRole('table')).toBeInTheDocument();
   });

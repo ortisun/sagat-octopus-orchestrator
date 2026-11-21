@@ -1,11 +1,11 @@
 import { useId, useRef, useState } from 'react';
 import type { KeyboardEvent } from 'react';
+import { Button, Hint } from '../../ui';
 import type { Operation } from './ops';
 
 /**
  * The operations on something, one button each. One that cannot be asked for now stays on the
- * page and in the tab order (`aria-disabled`, not `disabled`) with the reason next to it in
- * text, so nobody has to guess why it is not there.
+ * page and in the tab order (`aria-disabled`, not `disabled`) with the reason next to it in text, so nobody has to guess why it is not there.
  */
 export function OperationList({ operations, onChoose, label }: { operations: readonly Operation[]; onChoose: (operation: Operation, opener: HTMLElement | null) => void; label: string }) {
   const base = useId();
@@ -20,17 +20,15 @@ export function OperationList({ operations, onChoose, label }: { operations: rea
           const reasonId = shared === undefined ? `${base}-${operation.action}` : sharedId;
           return (
             <li key={operation.action} data-action={operation.action}>
-              <button
-                type="button"
-                className="btn"
+              <Button
                 aria-disabled={operation.enabled ? undefined : true}
                 aria-describedby={operation.enabled ? undefined : reasonId}
                 onClick={(event) => {
-                  if (operation.enabled) onChoose(operation, event.currentTarget);
+                  if (operation.enabled) onChoose(operation, event.currentTarget as HTMLElement);
                 }}
               >
                 {operation.label}
-              </button>
+              </Button>
               {operation.enabled || shared !== undefined ? null : (
                 <span id={reasonId} className="rn-reason">
                   {operation.reason}
@@ -41,9 +39,7 @@ export function OperationList({ operations, onChoose, label }: { operations: rea
         })}
       </ul>
       {shared === undefined ? null : (
-        <p id={sharedId} className="rn-reason">
-          {shared}
-        </p>
+        <Hint id={sharedId}>{shared}</Hint>
       )}
     </>
   );
@@ -87,9 +83,9 @@ export function ActionsMenu({
         if (!event.currentTarget.contains(event.relatedTarget)) setOpen(false);
       }}
     >
-      <button ref={trigger} type="button" className="btn" aria-expanded={open} aria-controls={open ? listId : undefined} aria-label={label} onClick={() => setOpen((value) => !value)}>
+      <Button ref={trigger} aria-expanded={open} aria-controls={open ? listId : undefined} aria-label={label} onClick={() => setOpen((value) => !value)}>
         {buttonText} <span aria-hidden="true">{open ? '▴' : '▾'}</span>
-      </button>
+      </Button>
       {open ? (
         // Safari does not focus a button when it is pressed: without this the menu would close on the press and lose the click.
         <div id={listId} role="presentation" className="rn-menu-list" onMouseDown={(event) => event.preventDefault()}>

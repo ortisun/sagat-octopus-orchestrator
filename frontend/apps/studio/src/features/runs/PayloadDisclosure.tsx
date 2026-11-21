@@ -4,9 +4,7 @@ import { ApiError } from '../../api/errors';
 import type { components } from '../../api/schema';
 import { useApp, useCan, useNamespace, useSession } from '../../app/context';
 import type { SessionSnapshot } from '../../auth/session';
-import { Button } from '../../ui/Button';
-import { Dialog } from '../../ui/Dialog';
-import { ErrorState } from '../../ui/ErrorState';
+import { Actions, Badge, Button, Code, Dialog, ErrorState, Facts, Hint, Loading, Row, Stack, Text } from '../../ui';
 
 export type PayloadDisclosureSelector = components['schemas']['PayloadDisclosureSelector'];
 export type PayloadDisclosure = components['schemas']['PayloadDisclosure'];
@@ -29,8 +27,10 @@ const LEVEL_SHAPES = { public: '○', internal: '□', pii: '△', secret: '◇'
 /** Text and shape both identify a classification level, including in forced-colour mode. */
 function Level({ level }: { level: keyof typeof LEVEL_SHAPES }) {
   return (
-    <span className={`rn-chip rn-level ${level}`} aria-label={`${level} classification`}>
-      <span aria-hidden="true">{LEVEL_SHAPES[level]}</span> {level}
+    <span aria-label={`${level} classification`}>
+      <Badge>
+        <span aria-hidden="true">{LEVEL_SHAPES[level]}</span> {level}
+      </Badge>
     </span>
   );
 }
@@ -53,24 +53,24 @@ function DisclosureTreeNode({ node, label }: { node: DisclosureNode; label: stri
   if (node.kind === 'withheld') {
     return (
       <li role="treeitem" aria-selected="false">
-        <span>{label}</span> <Level level={node.level} /> <span className="rn-chip">{node.type}</span>{' '}
-        <span className="hint">[withheld: {node.level}]</span>
+        <span>{label}</span> <Level level={node.level} /> <Badge>{node.type}</Badge>{' '}
+        <span className="rn-quiet">[withheld: {node.level}]</span>
       </li>
     );
   }
   if (node.kind === 'value') {
     return (
       <li role="treeitem" aria-selected="false">
-        <span>{label}</span> <Level level={node.level} /> <span className="rn-chip">{node.type}</span>{' '}
-        <code>{scalar(node.value)}</code>
-        {node.valueTruncated ? <span className="hint"> value shortened from {node.length?.toLocaleString() ?? 'an unknown number of'} bytes</span> : null}
+        <span>{label}</span> <Level level={node.level} /> <Badge>{node.type}</Badge>{' '}
+        <Code>{scalar(node.value)}</Code>
+        {node.valueTruncated ? <span className="rn-quiet"> value shortened from {node.length?.toLocaleString() ?? 'an unknown number of'} bytes</span> : null}
       </li>
     );
   }
   return (
     <li role="treeitem" aria-expanded="true" aria-selected="false">
-      <span>{label}</span> <Level level={node.level} /> <span className="rn-chip">{node.type}</span>{' '}
-      <span className="hint">{node.childCount.toLocaleString()} children</span>
+      <span>{label}</span> <Level level={node.level} /> <Badge>{node.type}</Badge>{' '}
+      <span className="rn-quiet">{node.childCount.toLocaleString()} children</span>
       {node.children.length > 0 ? (
         <ul role="group">
           {node.children.map((child) => (
@@ -82,7 +82,7 @@ function DisclosureTreeNode({ node, label }: { node: DisclosureNode; label: stri
           ))}
         </ul>
       ) : null}
-      {node.omittedChildren > 0 ? <p className="hint">{node.omittedChildren.toLocaleString()} children omitted by the disclosure limits.</p> : null}
+      {node.omittedChildren > 0 ? <Hint>{node.omittedChildren.toLocaleString()} children omitted by the disclosure limits.</Hint> : null}
     </li>
   );
 }
@@ -90,53 +90,41 @@ function DisclosureTreeNode({ node, label }: { node: DisclosureNode; label: stri
 function DisclosureView({ disclosure }: { disclosure: PayloadDisclosure }) {
   return (
     <div className="rn-payload-result">
-      <p className="rn-payload-policy">
-        <strong>Classified values.</strong> Policy <code>{disclosure.policy}</code> returned only the levels listed by the platform.
-      </p>
-      <dl className="rn-facts">
-        <dt>Source</dt>
-        <dd>
-          {disclosure.selection.source === 'input'
-            ? 'Run input'
-            : disclosure.selection.source === 'result'
-              ? 'Run result'
-              : `Journal event ${disclosure.selection.sequence}`}
-        </dd>
-        <dt>Run version</dt>
-        <dd>{disclosure.runVersion}</dd>
-        <dt>Levels returned</dt>
-        <dd>{disclosure.caller.disclosedLevels.length > 0 ? disclosure.caller.disclosedLevels.map((level) => <Level key={level} level={level} />) : 'None'}</dd>
-        {disclosure.nodeId !== undefined ? (
-          <>
-            <dt>Step</dt>
-            <dd>{disclosure.nodeId}</dd>
-          </>
-        ) : null}
-        {disclosure.attempt !== undefined ? (
-          <>
-            <dt>Attempt</dt>
-            <dd>{disclosure.attempt}</dd>
-          </>
-        ) : null}
-      </dl>
+      <Stack gap={2}>
+      <Text>
+        <strong>Classified values.</strong> Policy <Code>{disclosure.policy}</Code> returned only the levels listed by the platform.
+      </Text>
+      <Facts
+        items={[
+          {
+            term: 'Source',
+            value: disclosure.selection.source === 'input' ? 'Run input' : disclosure.selection.source === 'result' ? 'Run result' : `Journal event ${disclosure.selection.sequence}`,
+          },
+          { term: 'Run version', value: disclosure.runVersion },
+          { term: 'Levels returned', value: disclosure.caller.disclosedLevels.length > 0 ? disclosure.caller.disclosedLevels.map((level) => <Level key={level} level={level} />) : 'None' },
+          ...(disclosure.nodeId !== undefined ? [{ term: 'Step', value: disclosure.nodeId }] : []),
+          ...(disclosure.attempt !== undefined ? [{ term: 'Attempt', value: disclosure.attempt }] : []),
+        ]}
+      />
       {disclosure.kind === 'disclosed' ? (
         <>
-          {disclosure.truncated ? <p className="hint">The answer reached a disclosure limit. Omitted children and shortened values are marked below.</p> : null}
+          {disclosure.truncated ? <Hint>The answer reached a disclosure limit. Omitted children and shortened values are marked below.</Hint> : null}
           <DisclosureTree root={disclosure.tree} />
         </>
       ) : disclosure.kind === 'structure-only' ? (
-        <p className="hint">Only redacted structure is available ({disclosure.reason}). No payload value was returned.</p>
+        <Hint>Only redacted structure is available ({disclosure.reason}). No payload value was returned.</Hint>
       ) : disclosure.kind === 'external' ? (
-        <p className="hint">This is external {disclosure.contentKind} content. The content itself was not read or returned.</p>
+        <Hint>This is external {disclosure.contentKind} content. The content itself was not read or returned.</Hint>
       ) : (
-        <p className="hint">
+        <Hint>
           {disclosure.reason === 'NO_RETAINED_PAYLOAD'
             ? 'No retained payload is available for this source.'
             : disclosure.reason === 'NOT_DISCLOSABLE'
               ? 'This payload is not disclosable. No value or validation detail was returned.'
               : 'The retained payload format cannot be disclosed.'}
-        </p>
+        </Hint>
       )}
+      </Stack>
     </div>
   );
 }
@@ -207,25 +195,25 @@ export function PayloadDisclosureView({
   const canReveal = state.phase === 'loaded' && state.disclosure.caller.revealPii === 'granted' && !state.disclosure.caller.revealed;
 
   return (
-    <section className={compact ? 'rn-payload compact' : 'rn-payload'} aria-label={label}>
-      <div className="rn-payload-action">
-        <Button className={compact ? 'small' : undefined} onClick={() => void disclose(false)} disabled={state.phase === 'loading'} aria-controls={regionId}>
+    <section className="rn-payload" aria-label={label}>
+      <Row gap={1.5}>
+        <Button {...(compact ? { size: 'sm' as const } : {})} onClick={() => void disclose(false)} disabled={state.phase === 'loading'} aria-controls={regionId}>
           {state.phase === 'loading' ? 'Reading values…' : label}
         </Button>
-        {canReveal ? <Button className="small" onClick={() => setConfirmScope(scopeKey)}>Reveal personal data</Button> : null}
-        {state.phase === 'loaded' ? <Button className="small" onClick={clear}>Close values</Button> : null}
-      </div>
+        {canReveal ? <Button size="sm" onClick={() => setConfirmScope(scopeKey)}>Reveal personal data</Button> : null}
+        {state.phase === 'loaded' ? <Button size="sm" onClick={clear}>Close values</Button> : null}
+      </Row>
       <div id={regionId} aria-live="polite">
-        {state.phase === 'loading' ? <p role="status">Reading the classified projection…</p> : null}
+        {state.phase === 'loading' ? <Loading>Reading the classified projection…</Loading> : null}
         {state.phase === 'error' ? <ErrorState error={state.error} what="Reading permitted payload values" onRetry={() => void disclose(false)} /> : null}
         {state.phase === 'loaded' ? <DisclosureView disclosure={state.disclosure} /> : null}
       </div>
       <Dialog open={confirmationOpen} title="Reveal personal data?" onClose={() => setConfirmScope(undefined)}>
-        <p>This audited request may return personal data. Use it only for the current diagnostic task.</p>
-        <div className="dialog-actions">
-          <Button variant="primary" onClick={() => void disclose(true)}>Reveal personal data</Button>
+        <Text>This audited request may return personal data. Use it only for the current diagnostic task.</Text>
+        <Actions>
           <Button onClick={() => setConfirmScope(undefined)}>Cancel</Button>
-        </div>
+          <Button variant="primary" onClick={() => void disclose(true)}>Reveal personal data</Button>
+        </Actions>
       </Dialog>
     </section>
   );

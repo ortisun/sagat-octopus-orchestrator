@@ -7,6 +7,7 @@ import { DEVELOPER, RUN_ID, SCRIPT_ID, aRun, aRunSummary, aScript, json, problem
 import type { ScriptTestRun } from './api';
 import { alerts, openEditor, patchesOf } from './testingEditor';
 import { eventually, jump, manualTime, restoreTime } from './testingTime';
+import { expectAvailable, expectUnavailable } from '../../../test/ui';
 
 vi.mock('./editorModule', () => ({ loadEditor: () => Promise.reject(new Error('no Monaco in jsdom')) }));
 
@@ -155,7 +156,7 @@ describe('Try it in the sandbox: the input', () => {
     await user.click(input);
     await user.paste('{n: ');
     expect(await eventually(() => screen.getByText(/^Not valid JSON/))).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Run in the sandbox' })).toBeDisabled();
+    expectUnavailable(screen.getByRole('button', { name: 'Run in the sandbox' }));
     expect(server.calls.filter((c) => c.url.includes('/test-runs') && c.method === 'POST')).toHaveLength(0);
   });
 
@@ -218,7 +219,7 @@ describe('Try it in the sandbox: when it does not end', () => {
     expect(screen.getByRole('heading', { name: 'Result' })).toHaveFocus();
     expect(screen.queryByRole('button', { name: 'Check again' })).not.toBeInTheDocument();
     expect(within(region).getByRole('button', { name: 'Stop watching' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Run in the sandbox' })).toBeDisabled();
+    expectUnavailable(screen.getByRole('button', { name: 'Run in the sandbox' }));
     release();
     expect(await eventually(() => within(resultRegion()).getByText('Failed'))).toBeInTheDocument();
     expect(alerts()).toContain('SCRIPT_SANDBOX_UNAVAILABLE');
@@ -257,7 +258,7 @@ describe('Try it in the sandbox: when it does not end', () => {
     expect(await eventually(() => screen.getByText('The test run failed.'))).toBeInTheDocument();
     expect(alerts()).toContain('a limit was reached');
     expect(alerts()).toContain('a'.repeat(32));
-    expect(screen.getByRole('button', { name: 'Run in the sandbox' })).toBeEnabled();
+    expectAvailable(screen.getByRole('button', { name: 'Run in the sandbox' }));
   });
 
   it('puts up with one failed look and goes on', async () => {
@@ -312,7 +313,7 @@ describe('Try it in the sandbox: earlier runs', () => {
     await user.click(within(within(table).getAllByRole('row')[1]!).getByRole('button', { name: /Open the test run of/ }));
     expect(screen.getByText('Loading the test run…')).toBeInTheDocument();
     expect(screen.queryByTestId('test-result')).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Run in the sandbox' })).toBeDisabled();
+    expectUnavailable(screen.getByRole('button', { name: 'Run in the sandbox' }));
     release();
     expect(await eventually(() => screen.getByText('Failed: SCRIPT_TIMEOUT.'))).toBeInTheDocument();
     expect(screen.queryByText('Loading the test run…')).not.toBeInTheDocument();

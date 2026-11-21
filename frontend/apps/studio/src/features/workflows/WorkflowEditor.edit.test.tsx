@@ -1,6 +1,7 @@
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import { mountEditor, putsOf, settle } from '../../../test/workflowsHarness';
+import { choose, chooseValue, expectUnavailable, valueOf } from '../../../test/ui';
 
 const row = (id: string) => screen.getByTestId(`row-${id}`);
 const leadsTo = (id: string) => within(row(id)).getAllByRole('cell')[2]!.textContent;
@@ -73,7 +74,9 @@ describe('adding nodes', () => {
     const { user } = await opened();
     await user.keyboard('{Alt>}n{/Alt}');
     const dialog = await screen.findByRole('dialog', { name: 'Add a node' });
-    expect(within(dialog).getAllByRole('button')).toHaveLength(13);
+    // The thirteen kinds of node, and the dialog's own close button.
+    expect(within(dialog).getAllByRole('button').filter((button) => button.getAttribute('aria-label') !== 'Close Add a node' && button.textContent !== '✕')).toHaveLength(13);
+    expect(within(dialog).getByRole('button', { name: 'Close Add a node' })).toBeInTheDocument();
     await user.click(within(dialog).getByRole('button', { name: 'Timer' }));
     await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Add a node' })).not.toBeInTheDocument());
     expect(row('timer_1')).toBeInTheDocument();
@@ -109,7 +112,7 @@ describe('adding nodes', () => {
         ir: { apiVersion: 'sagat-octopus-orchestrator.io/v1', kind: 'Workflow', metadata: { name: 'order-flow' }, entrypoint: '', triggers: [{ kind: 'manual' }], nodes: [] },
       },
     });
-    expect(screen.getByText(/has no nodes yet/)).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: /has no nodes yet/ })).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Add node' }));
     await user.click(await screen.findByRole('button', { name: 'Step' }));
     expect(row('activity_1')).toHaveTextContent('First step');
@@ -131,14 +134,14 @@ describe('connecting', () => {
   it('connects with the inspector: Next: choose a node', async () => {
     const { user } = await opened();
     await user.click(screen.getByRole('button', { name: 'Edit pay' }));
-    await user.selectOptions(screen.getByRole('combobox', { name: 'On error' }), 'done');
+    await chooseValue(user, screen.getByRole('combobox', { name: 'On error' }), 'done');
     expect(leadsTo('pay')).toBe('Next → done; On error → done');
   });
 
   it('removes a link by choosing the dash', async () => {
     const { user } = await opened();
     await user.click(screen.getByRole('button', { name: 'Edit pay' }));
-    await user.selectOptions(screen.getByRole('combobox', { name: 'Next' }), '—');
+    await choose(user, screen.getByRole('combobox', { name: 'Next' }), '—');
     expect(leadsTo('pay')).toBe('—');
   });
 
@@ -146,11 +149,11 @@ describe('connecting', () => {
     const { user, platform } = await opened();
     await user.click(screen.getByRole('button', { name: 'Edit pay' }));
     const onError = screen.getByRole('combobox', { name: 'On error' });
-    await user.selectOptions(onError, 'check');
+    await chooseValue(user, onError, 'check');
     const notice = screen.getByTestId('edit-notice');
     expect(notice.closest('[role="status"]')).not.toBeNull();
     expect(notice).toHaveTextContent('Not changed. That link would make a cycle');
-    expect(onError).toHaveValue('');
+    expect(valueOf(onError)).toBe('');
     expect(leadsTo('pay')).toBe('Next → done');
     await settle();
     expect(putsOf(platform)).toHaveLength(0);
@@ -161,9 +164,9 @@ describe('connecting', () => {
     const { user } = await opened();
     await user.click(screen.getByRole('button', { name: 'Edit pay' }));
     const onError = screen.getByRole('combobox', { name: 'On error' });
-    await user.selectOptions(onError, 'check');
+    await chooseValue(user, onError, 'check');
     const first = screen.getByTestId('edit-notice').firstElementChild;
-    await user.selectOptions(onError, 'check');
+    await chooseValue(user, onError, 'check');
     // The message is a new element each time, which is what makes a live region speak it again.
     expect(screen.getByTestId('edit-notice').firstElementChild).not.toBe(first);
   });
@@ -172,8 +175,8 @@ describe('connecting', () => {
     const { user } = await opened();
     await user.click(screen.getByRole('button', { name: 'Connect pay…' }));
     const dialog = await screen.findByRole('dialog', { name: 'Connect…' });
-    await user.selectOptions(within(dialog).getByRole('combobox', { name: 'Link' }), 'On error');
-    await user.selectOptions(within(dialog).getByRole('combobox', { name: 'Leads to' }), 'done');
+    await choose(user, within(dialog).getByRole('combobox', { name: 'Link' }), 'On error');
+    await chooseValue(user, within(dialog).getByRole('combobox', { name: 'Leads to' }), 'done');
     await user.click(within(dialog).getByRole('button', { name: 'Connect' }));
     expect(leadsTo('pay')).toBe('Next → done; On error → done');
     expect(screen.getByTestId('edit-notice')).toHaveTextContent('Connected "pay" to "done" (On error)');
@@ -183,10 +186,10 @@ describe('connecting', () => {
     const { user } = await opened();
     await user.click(screen.getByRole('button', { name: 'Connect pay…' }));
     const dialog = await screen.findByRole('dialog', { name: 'Connect…' });
-    await user.selectOptions(within(dialog).getByRole('combobox', { name: 'Link' }), 'On error');
-    await user.selectOptions(within(dialog).getByRole('combobox', { name: 'Leads to' }), 'check');
+    await choose(user, within(dialog).getByRole('combobox', { name: 'Link' }), 'On error');
+    await chooseValue(user, within(dialog).getByRole('combobox', { name: 'Leads to' }), 'check');
     await user.click(within(dialog).getByRole('button', { name: 'Connect' }));
-    expect(within(dialog).getByRole('alert')).toHaveTextContent('would make a cycle');
+    expect(within(dialog).getByRole('combobox', { name: 'Leads to' })).toHaveAccessibleDescription(expect.stringContaining('would make a cycle'));
     expect(leadsTo('pay')).toBe('Next → done');
   });
 
@@ -196,9 +199,9 @@ describe('connecting', () => {
     await user.click(await screen.findByRole('button', { name: 'Parallel' }));
     expect(screen.getByRole('heading', { level: 2, name: 'Parallel: parallel_1' })).toBeInTheDocument();
     const add = () => screen.getByRole('combobox', { name: 'Add a branch' });
-    await user.selectOptions(add(), 'pay');
+    await chooseValue(user, add(), 'pay');
     await user.click(screen.getByRole('button', { name: 'Add branch' }));
-    await user.selectOptions(add(), 'done');
+    await chooseValue(user, add(), 'done');
     await user.click(screen.getByRole('button', { name: 'Add branch' }));
     expect(leadsTo('parallel_1')).toBe('Branch 1 → pay; Branch 2 → done');
     await user.click(screen.getByRole('button', { name: 'Remove branch 1, pay' }));
@@ -225,11 +228,11 @@ describe('renaming and deleting', () => {
     const id = screen.getByRole('textbox', { name: 'Id' });
     await user.clear(id);
     await user.type(id, 'done{Enter}');
-    expect(screen.getByRole('alert')).toHaveTextContent('There is already a node "done"');
+    expect(id).toHaveAccessibleDescription(expect.stringContaining('There is already a node "done"'));
     expect(screen.getByRole('heading', { level: 2, name: 'Step: pay' })).toBeInTheDocument();
     await user.clear(id);
     await user.type(id, 'bad id{Enter}');
-    expect(screen.getByRole('alert')).toHaveTextContent('1 to 64 letters, digits');
+    expect(id).toHaveAccessibleDescription(expect.stringContaining('1 to 64 letters, digits'));
     expect(leadsTo('check')).toBe('If true → pay; If false → done');
   });
 
@@ -264,14 +267,14 @@ describe('renaming and deleting', () => {
     await user.click(screen.getByRole('button', { name: 'Set pay as first step' }));
     expect(row('pay')).toHaveTextContent('First step');
     expect(row('check')).not.toHaveTextContent('First step');
-    expect(screen.getByRole('button', { name: 'Set pay as first step' })).toBeDisabled();
+    expectUnavailable(screen.getByRole('button', { name: 'Set pay as first step' }));
   });
 });
 
 describe('undo and redo', () => {
   it('undoes and redoes with the buttons and with Ctrl+Z, Ctrl+Shift+Z and Ctrl+Y', async () => {
     const { user } = await opened();
-    expect(screen.getByRole('button', { name: 'Undo' })).toBeDisabled();
+    expectUnavailable(screen.getByRole('button', { name: 'Undo' }));
     await user.click(screen.getByRole('button', { name: 'Delete pay' }));
     await user.click(screen.getByRole('button', { name: 'Delete done' }));
     expect(screen.getAllByRole('row')).toHaveLength(2);
@@ -282,31 +285,31 @@ describe('undo and redo', () => {
     expect(screen.getAllByRole('row')).toHaveLength(2);
     await user.keyboard('{Control>}z{/Control}{Control>}z{/Control}');
     expect(screen.getAllByRole('row')).toHaveLength(4);
-    expect(screen.getByRole('button', { name: 'Undo' })).toBeDisabled();
+    expectUnavailable(screen.getByRole('button', { name: 'Undo' }));
     await user.keyboard('{Control>}y{/Control}');
     expect(screen.getAllByRole('row')).toHaveLength(3);
     await user.click(screen.getByRole('button', { name: 'Redo' }));
     expect(screen.getAllByRole('row')).toHaveLength(2);
-    expect(screen.getByRole('button', { name: 'Redo' })).toBeDisabled();
+    expectUnavailable(screen.getByRole('button', { name: 'Redo' }));
   });
 
   it('folds typing in one field into one step to undo', async () => {
     const { user } = await opened();
     await user.click(screen.getByRole('button', { name: 'Edit pay' }));
-    const activity = screen.getByRole('textbox', { name: 'Activity' });
+    const activity = screen.getByRole('textbox', { name: /^Activity/ });
     await user.clear(activity);
     await user.type(activity, 'payment.capture');
     expect(row('pay')).toHaveTextContent('payment.capture');
     await user.click(screen.getByRole('button', { name: 'Undo' }));
     expect(row('pay')).toHaveTextContent('payment.submit');
-    expect(screen.getByRole('button', { name: 'Undo' })).toBeDisabled();
+    expectUnavailable(screen.getByRole('button', { name: 'Undo' }));
   });
 
   it('does not undo the document while the person is typing in a field', async () => {
     const { user } = await opened();
     await user.click(screen.getByRole('button', { name: 'Delete done' }));
     await user.click(screen.getByRole('button', { name: 'Edit pay' }));
-    const activity = screen.getByRole('textbox', { name: 'Activity' });
+    const activity = screen.getByRole('textbox', { name: /^Activity/ });
     await user.click(activity);
     await user.keyboard('{Control>}z{/Control}');
     expect(screen.queryByTestId('row-done')).not.toBeInTheDocument();

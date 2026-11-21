@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { Route, Routes } from 'react-router';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { renderApp } from '../../../test/render';
+import { expectAvailable, expectUnavailable } from '../../../test/ui';
 import { alerts, openEditor, patchesOf, sourceBox } from './testingEditor';
 import { scriptsConfig } from './config';
 import { ScriptEditorPage } from './ScriptEditorPage';
@@ -146,10 +147,10 @@ describe('ScriptEditorPage: autosave', () => {
     const box = await sourceBox();
     await user.type(box, 'x');
     const save = screen.getByRole('button', { name: 'Save now' });
-    expect(save).toBeEnabled();
+    expectAvailable(save);
     await user.click(save);
     await waitFor(() => expect(patchesOf(server)).toHaveLength(1));
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Save now' })).toBeDisabled());
+    await waitFor(() => expectUnavailable(screen.getByRole('button', { name: 'Save now' })));
     expect(await screen.findByText('Draft saved.')).toBeInTheDocument();
   });
 
@@ -283,7 +284,7 @@ describe('ScriptEditorPage: two people editing', () => {
     const { user, server } = await conflicted();
     await user.click(await screen.findByRole('button', { name: 'Save mine as a new script…' }));
     const dialog = screen.getByRole('dialog', { name: 'Save my version as a new script' });
-    expect(within(dialog).getByRole('textbox', { name: 'Name' })).toHaveValue('double-it-copy');
+    expect(within(dialog).getByRole('textbox', { name: /^Name/ })).toHaveValue('double-it-copy');
     await user.click(within(dialog).getByRole('button', { name: 'Save as a new script' }));
     expect(await screen.findByText(/Saved as/)).toHaveTextContent('This draft still has the conflict');
     const created = server.callsTo('POST', server.paths.base)[0];
@@ -294,7 +295,7 @@ describe('ScriptEditorPage: two people editing', () => {
   it('does not run a test, or publish, while the two copies are undecided', async () => {
     const { user, server } = await conflicted();
     await screen.findByRole('heading', { name: 'Someone else changed this draft' });
-    expect(screen.getByRole('button', { name: 'Publish version…' })).toBeDisabled();
+    expectUnavailable(screen.getByRole('button', { name: 'Publish version…' }));
     await user.click(screen.getByRole('button', { name: 'Run in the sandbox' }));
     expect(await screen.findByText('Not run.')).toBeInTheDocument();
     expect(server.calls.filter((c) => c.method === 'POST' && c.url.includes('/test-runs'))).toHaveLength(0);

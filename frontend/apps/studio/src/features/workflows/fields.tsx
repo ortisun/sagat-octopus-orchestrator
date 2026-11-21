@@ -3,8 +3,7 @@ import type { ReactNode } from 'react';
 import { setField } from '../../model/edit';
 import type { IrDocument, IrNode } from '../../model/ir';
 import type { FieldSpec } from '../../model/registry';
-import { Button } from '../../ui/Button';
-import { Field } from '../../ui/Field';
+import { Button, Checkbox, Code, Hint, Select, Stack, TextArea, TextInput } from '../../ui';
 import { DURATION_UNITS, splitDuration, toMs } from './duration';
 import type { DurationUnit } from './duration';
 import { setRetryField } from './operations';
@@ -22,6 +21,20 @@ interface FieldProps {
 const stringOf = (value: unknown): string => (typeof value === 'string' ? value : '');
 
 /**
+ * Several controls that are one setting (a duration, the retry policy, one trigger): a named group, so
+ * assistive technology says which setting a control belongs to. The interface module has no component
+ * for a `fieldset`; the controls inside it are the module's.
+ */
+export function Group({ label, describedBy, className, children }: { label: string; describedBy?: string | undefined; className?: string; children: ReactNode }) {
+  return (
+    <fieldset className={className ? `wf-group ${className}` : 'wf-group'} aria-describedby={describedBy}>
+      <legend className="wf-group-title">{label}</legend>
+      <Stack gap={2}>{children}</Stack>
+    </fieldset>
+  );
+}
+
+/**
  * Text being typed that is not (yet) a value: a number field that holds "12x" shows it and says why,
  * and the document keeps the last good value. The text is tied to the value it was typed over, so an
  * undo (which changes the value) shows the value, not the old typing.
@@ -37,31 +50,31 @@ function useTyping(committed: string) {
 
 export function TextField({ spec, node, disabled, change }: FieldProps) {
   return (
-    <Field label={spec.label} {...(spec.hint ? { hint: spec.hint } : {})}>
-      <input
-        type="text"
-        value={stringOf(node[spec.name])}
-        disabled={disabled}
-        aria-required={spec.required === true ? true : undefined}
-        autoComplete="off"
-        onChange={(event) => change((doc) => setField(doc, node.id, spec.name, event.target.value), `field:${node.id}:${spec.name}`)}
-      />
-    </Field>
+    <TextInput
+      label={spec.label}
+      hint={spec.hint}
+      value={stringOf(node[spec.name])}
+      disabled={disabled}
+      required={spec.required === true}
+      autoComplete="off"
+      onChange={(value) => change((doc) => setField(doc, node.id, spec.name, value), `field:${node.id}:${spec.name}`)}
+    />
   );
 }
 
 export function ExpressionField({ spec, node, disabled, change }: FieldProps) {
   return (
-    <Field label={spec.label} {...(spec.hint ? { hint: spec.hint } : {})}>
-      <textarea
-        value={stringOf(node[spec.name])}
-        rows={3}
-        spellCheck={false}
-        disabled={disabled}
-        aria-required={spec.required === true ? true : undefined}
-        onChange={(event) => change((doc) => setField(doc, node.id, spec.name, event.target.value), `field:${node.id}:${spec.name}`)}
-      />
-    </Field>
+    <TextArea
+      label={spec.label}
+      hint={spec.hint}
+      value={stringOf(node[spec.name])}
+      rows={3}
+      spellCheck={false}
+      mono
+      disabled={disabled}
+      required={spec.required === true}
+      onChange={(value) => change((doc) => setField(doc, node.id, spec.name, value), `field:${node.id}:${spec.name}`)}
+    />
   );
 }
 
@@ -97,30 +110,30 @@ export function NumberInput({
   const parsed = typing.shown === '' ? undefined : parseWhole(typing.shown, min, max);
   const error = parsed !== undefined && 'error' in parsed ? parsed.error : undefined;
   return (
-    <Field label={label} {...(hint ? { hint } : {})} error={error}>
-      <input
-        type="text"
-        inputMode="numeric"
-        autoComplete="off"
-        value={typing.shown}
-        disabled={disabled}
-        aria-required={required === true ? true : undefined}
-        onBlur={typing.stop}
-        onChange={(event) => {
-          const text = event.target.value.trim();
-          const result = text === '' ? undefined : parseWhole(text, min, max);
-          if (result === undefined) {
-            typing.type('', committed);
-            onCommit(undefined);
-          } else if ('value' in result) {
-            typing.type(text, String(result.value));
-            onCommit(result.value);
-          } else {
-            typing.type(text, committed);
-          }
-        }}
-      />
-    </Field>
+    <TextInput
+      label={label}
+      hint={hint}
+      error={error}
+      numeric
+      autoComplete="off"
+      value={typing.shown}
+      disabled={disabled}
+      required={required === true}
+      onBlur={typing.stop}
+      onChange={(typed) => {
+        const text = typed.trim();
+        const result = text === '' ? undefined : parseWhole(text, min, max);
+        if (result === undefined) {
+          typing.type('', committed);
+          onCommit(undefined);
+        } else if ('value' in result) {
+          typing.type(text, String(result.value));
+          onCommit(result.value);
+        } else {
+          typing.type(text, committed);
+        }
+      }}
+    />
   );
 }
 
@@ -139,6 +152,8 @@ export function IntegerField({ spec, node, disabled, change }: FieldProps) {
     />
   );
 }
+
+const UNIT_OPTIONS = DURATION_UNITS.map((u) => ({ value: u.unit, label: u.unit }));
 
 /** An amount and a unit; what is stored is milliseconds. */
 export function DurationInput({
@@ -183,40 +198,24 @@ export function DurationInput({
   };
 
   return (
-    <fieldset className="field wf-duration" aria-describedby={hint ? `${id}-hint` : undefined}>
-      <legend>{label}</legend>
+    <Group label={label} className="wf-duration" describedBy={hint ? `${id}-hint` : undefined}>
       <div className="wf-duration-row">
-        <input
-          type="text"
-          inputMode="numeric"
+        <TextInput
+          label={`${label} amount`}
+          hideLabel
+          numeric
           autoComplete="off"
-          aria-label={`${label} amount`}
-          aria-invalid={bad ? true : undefined}
-          aria-required={required === true ? true : undefined}
+          error={bad ? `Enter a whole number of ${unit}.` : undefined}
+          required={required === true}
           value={text}
           disabled={disabled}
           onBlur={() => setPending(undefined)}
-          onChange={(event) => commit(event.target.value.trim(), unit)}
+          onChange={(typed) => commit(typed.trim(), unit)}
         />
-        <select aria-label={`${label} unit`} value={unit} disabled={disabled} onChange={(event) => commit(text, event.target.value as DurationUnit)}>
-          {DURATION_UNITS.map((u) => (
-            <option key={u.unit} value={u.unit}>
-              {u.unit}
-            </option>
-          ))}
-        </select>
+        <Select label={`${label} unit`} hideLabel value={unit} disabled={disabled} options={UNIT_OPTIONS} onChange={(next) => commit(text, next)} />
       </div>
-      {hint ? (
-        <span id={`${id}-hint`} className="hint">
-          {hint}
-        </span>
-      ) : null}
-      {bad ? (
-        <span className="error" role="alert">
-          Enter a whole number of {unit}.
-        </span>
-      ) : null}
-    </fieldset>
+      {hint ? <Hint id={`${id}-hint`}>{hint}</Hint> : null}
+    </Group>
   );
 }
 
@@ -235,22 +234,18 @@ export function DurationField({ spec, node, disabled, change }: FieldProps) {
 }
 
 export function SelectField({ spec, node, disabled, change }: FieldProps) {
+  const options = [...(spec.required === true ? [] : [{ value: '', label: '(not set)' }]), ...(spec.options ?? []).map((option) => ({ value: option, label: option }))];
   return (
-    <Field label={spec.label} {...(spec.hint ? { hint: spec.hint } : {})}>
-      <select
-        value={stringOf(node[spec.name])}
-        disabled={disabled}
-        aria-required={spec.required === true ? true : undefined}
-        onChange={(event) => change((doc) => setField(doc, node.id, spec.name, event.target.value), `field:${node.id}:${spec.name}`)}
-      >
-        {spec.required === true ? null : <option value="">(not set)</option>}
-        {(spec.options ?? []).map((option) => (
-          <option key={option} value={option}>
-            {option}
-          </option>
-        ))}
-      </select>
-    </Field>
+    <Select
+      label={spec.label}
+      hint={spec.hint}
+      value={stringOf(node[spec.name])}
+      placeholder="(not set)"
+      disabled={disabled}
+      required={spec.required === true}
+      options={options}
+      onChange={(value) => change((doc) => setField(doc, node.id, spec.name, value), `field:${node.id}:${spec.name}`)}
+    />
   );
 }
 
@@ -267,20 +262,7 @@ export function CheckField({
   disabled: boolean;
   onChange: (checked: boolean) => void;
 }) {
-  const id = useId();
-  return (
-    <div className="field wf-check">
-      <label>
-        <input type="checkbox" checked={checked} disabled={disabled} aria-describedby={hint ? `${id}-hint` : undefined} onChange={(event) => onChange(event.target.checked)} />{' '}
-        {label}
-      </label>
-      {hint ? (
-        <span id={`${id}-hint`} className="hint">
-          {hint}
-        </span>
-      ) : null}
-    </div>
-  );
+  return <Checkbox label={label} hint={hint} checked={checked} disabled={disabled} onChange={onChange} />;
 }
 
 export function BooleanField({ spec, node, disabled, change }: FieldProps) {
@@ -316,57 +298,48 @@ export function TagsField({ spec, node, disabled, change }: FieldProps) {
     set([...tags, value]);
   };
   return (
-    <fieldset className="field wf-tags" aria-describedby={spec.hint ? `${id}-hint` : undefined}>
-      <legend>{spec.label}</legend>
+    <Group label={spec.label} describedBy={spec.hint ? `${id}-hint` : undefined}>
       {tags.length > 0 ? (
         <ul className="wf-chips" aria-label={`${spec.label} in use`}>
           {tags.map((tag) => (
             <li key={tag}>
-              <code>{tag}</code>
+              <Code>{tag}</Code>
               {disabled ? null : (
-                <button type="button" className="wf-chip-remove" aria-label={`Remove ${spec.label.toLowerCase()} ${tag}`} onClick={() => set(tags.filter((t) => t !== tag))}>
+                <Button variant="ghost" size="sm" aria-label={`Remove ${spec.label.toLowerCase()} ${tag}`} onClick={() => set(tags.filter((t) => t !== tag))}>
                   <span aria-hidden="true">×</span>
-                </button>
+                </Button>
               )}
             </li>
           ))}
         </ul>
       ) : null}
       {disabled ? null : (
-        <div className="wf-duration-row">
-          <input
-            type="text"
+        <div className="wf-add-row">
+          <TextInput
+            label={`Add to ${spec.label.toLowerCase()}`}
+            hideLabel
             autoComplete="off"
-            aria-label={`Add to ${spec.label.toLowerCase()}`}
-            aria-invalid={error ? true : undefined}
+            error={error}
             value={text}
-            onChange={(event) => {
-              setText(event.target.value);
+            onChange={(value) => {
+              setText(value);
               setError(undefined);
             }}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter') {
-                event.preventDefault();
-                add();
-              }
-            }}
+            onEnter={add}
           />
           <Button onClick={add}>Add</Button>
         </div>
       )}
-      {spec.hint ? (
-        <span id={`${id}-hint`} className="hint">
-          {spec.hint}
-        </span>
-      ) : null}
-      {error ? (
-        <span className="error" role="alert">
-          {error}
-        </span>
-      ) : null}
-    </fieldset>
+      {spec.hint ? <Hint id={`${id}-hint`}>{spec.hint}</Hint> : null}
+    </Group>
   );
 }
+
+const STRATEGY_OPTIONS = [
+  { value: '', label: '(default)' },
+  { value: 'fixed', label: 'fixed' },
+  { value: 'exponential', label: 'exponential' },
+];
 
 export function RetryFields({ spec, node, disabled, change }: FieldProps) {
   const raw = node[spec.name];
@@ -374,8 +347,7 @@ export function RetryFields({ spec, node, disabled, change }: FieldProps) {
   const set = (field: string, value: unknown) => change((doc) => setRetryField(doc, node.id, field, value), `retry:${node.id}:${field}`);
   const num = (field: string): number | undefined => (typeof retry[field] === 'number' ? retry[field] : undefined);
   return (
-    <fieldset className="field wf-retry">
-      <legend>{spec.label}</legend>
+    <Group label={spec.label}>
       <NumberInput
         label="Most attempts"
         hint="1 to 100. Empty: the platform's default."
@@ -385,13 +357,14 @@ export function RetryFields({ spec, node, disabled, change }: FieldProps) {
         disabled={disabled}
         onCommit={(v) => set('maxAttempts', v)}
       />
-      <Field label="Delay between attempts">
-        <select value={stringOf(retry['strategy'])} disabled={disabled} onChange={(event) => set('strategy', event.target.value === '' ? undefined : event.target.value)}>
-          <option value="">(default)</option>
-          <option value="fixed">fixed</option>
-          <option value="exponential">exponential</option>
-        </select>
-      </Field>
+      <Select
+        label="Delay between attempts"
+        value={stringOf(retry['strategy'])}
+        placeholder="(default)"
+        disabled={disabled}
+        options={STRATEGY_OPTIONS}
+        onChange={(value) => set('strategy', value === '' ? undefined : value)}
+      />
       <DurationInput label="First delay" value={num('initialDelayMs')} disabled={disabled} onCommit={(ms) => set('initialDelayMs', ms)} />
       <DurationInput label="Longest delay" value={num('maxDelayMs')} disabled={disabled} onCommit={(ms) => set('maxDelayMs', ms)} />
       <CheckField
@@ -401,7 +374,7 @@ export function RetryFields({ spec, node, disabled, change }: FieldProps) {
         disabled={disabled}
         onChange={(checked) => set('jitter', checked ? true : undefined)}
       />
-    </fieldset>
+    </Group>
   );
 }
 

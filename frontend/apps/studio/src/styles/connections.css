@@ -1,22 +1,10 @@
-.connection-form fieldset {
-  border: 0;
-  padding: 0;
-  margin: 0;
-  min-width: 0;
-}
-.connection-form details {
-  margin-block: var(--space-4);
-}
-.connection-form details > summary {
-  cursor: pointer;
-  font-weight: var(--weight-medium);
-  padding-block: var(--space-2);
-}
+/* Two fields of one thing sit side by side when there is room: the port beside the database, the user beside the password. */
 .connection-target,
 .connection-credentials {
   display: grid;
-  gap: var(--space-4);
+  gap: var(--spacing-3);
   min-width: 0;
+  align-items: start;
 }
 @media (min-width: 640px) {
   .connection-target { grid-template-columns: 1fr 2fr; }

@@ -1,7 +1,6 @@
 import { forwardRef, useImperativeHandle, useRef } from 'react';
 import type { Advice } from '../../model/advice';
-import { Button } from '../../ui/Button';
-import { ErrorState } from '../../ui/ErrorState';
+import { Button, Code, ErrorState, Heading, Hint, Row, Text } from '../../ui';
 import { clip } from './canvasModel';
 import type { ValidationState } from './useValidation';
 import type { ProblemView } from './validationModel';
@@ -15,11 +14,11 @@ export interface ValidationPanelHandle {
 
 function NodeChip({ id, exists, onSelect }: { id: string | undefined; exists: boolean; onSelect: (id: string) => void }) {
   if (id === undefined || id === '') return <span className="wf-chip-plain">Workflow</span>;
-  if (!exists) return <code>{clip(id, 64)}</code>;
+  if (!exists) return <Code>{clip(id, 64)}</Code>;
   return (
-    <button type="button" className="wf-chip" aria-label={`Select node ${clip(id, 64)}`} onClick={() => onSelect(id)}>
+    <Button size="sm" aria-label={`Select node ${clip(id, 64)}`} onClick={() => onSelect(id)}>
       {clip(id, 64)}
-    </button>
+    </Button>
   );
 }
 
@@ -41,13 +40,13 @@ function Findings({
           <span aria-hidden="true">{kind === 'problem' ? '✕' : '!'}</span>{' '}
           <NodeChip id={item.nodeId} exists={item.nodeId !== undefined && exists(item.nodeId)} onSelect={onSelect} />{' '}
           <span className="wf-finding-text">{clip(item.message, 400)}</span>{' '}
-          <span className="hint">
+          <span className="wf-quiet">
             ({clip(item.code, 40)}
             {item.path ? ` ${clip(item.path, 80)}` : ''})
           </span>
         </li>
       ))}
-      {items.length > SHOWN ? <li className="hint">and {items.length - SHOWN} more.</li> : null}
+      {items.length > SHOWN ? <li className="wf-quiet">and {items.length - SHOWN} more.</li> : null}
     </ul>
   );
 }
@@ -66,34 +65,36 @@ export const ValidationPanel = forwardRef<
   const view = state.view;
   return (
     <section ref={root} tabIndex={-1} className="wf-validation" aria-label="Validation">
-      <h2 className="wf-panel-title">Validation</h2>
-      <p className="hint">{checkedSummary}</p>
+      <Heading level={2} look={4}>
+        Validation
+      </Heading>
+      <Hint>{checkedSummary}</Hint>
       {state.phase === 'off' ? null : (
-        <p>
+        <Row>
           <Button onClick={state.recheck} disabled={state.phase === 'checking'}>
             Check again
-          </Button>{' '}
-          <span className="hint">The platform's answer also depends on what exists: a script built or a secret created since it answered is not in it.</span>
-        </p>
+          </Button>
+          <Hint>The platform's answer also depends on what exists: a script built or a secret created since it answered is not in it.</Hint>
+        </Row>
       )}
       {state.phase === 'failed' ? <ErrorState error={state.error} what="Checking the workflow" /> : null}
-      {view === undefined && state.phase === 'checking' ? <p>Checking with the platform…</p> : null}
+      {view === undefined && state.phase === 'checking' ? <Text>Checking with the platform…</Text> : null}
       {view ? (
         <>
-          <h3>Problems ({view.problems.length})</h3>
+          <Heading level={3} look={5}>Problems ({view.problems.length})</Heading>
           {view.problems.length === 0 ? (
-            <p>{state.current ? 'The platform found no problems.' : 'No problems in the last answer.'}</p>
+            <Text>{state.current ? 'The platform found no problems.' : 'No problems in the last answer.'}</Text>
           ) : (
             <Findings items={view.problems} kind="problem" exists={exists} onSelect={onSelectNode} />
           )}
-          <h3>Warnings ({view.warnings.length})</h3>
-          {view.warnings.length === 0 ? <p>None.</p> : <Findings items={view.warnings} kind="warning" exists={exists} onSelect={onSelectNode} />}
+          <Heading level={3} look={5}>Warnings ({view.warnings.length})</Heading>
+          {view.warnings.length === 0 ? <Text>None.</Text> : <Findings items={view.warnings} kind="warning" exists={exists} onSelect={onSelectNode} />}
         </>
       ) : null}
-      <h3>Advice (not checked by the platform) ({advice.length})</h3>
-      <p className="hint">The Studio works these out from the shape of the workflow. They never stop a save or a publish.</p>
+      <Heading level={3} look={5}>Advice (not checked by the platform) ({advice.length})</Heading>
+      <Hint>The Studio works these out from the shape of the workflow. They never stop a save or a publish.</Hint>
       {advice.length === 0 ? (
-        <p>None.</p>
+        <Text>None.</Text>
       ) : (
         <ul className="wf-findings" data-kind="advice">
           {advice.slice(0, SHOWN).map((item, index) => (
@@ -102,7 +103,7 @@ export const ValidationPanel = forwardRef<
               <span className="wf-finding-text">{clip(item.message, 400)}</span>
             </li>
           ))}
-          {advice.length > SHOWN ? <li className="hint">and {advice.length - SHOWN} more.</li> : null}
+          {advice.length > SHOWN ? <li className="wf-quiet">and {advice.length - SHOWN} more.</li> : null}
         </ul>
       )}
     </section>

@@ -5,9 +5,7 @@ import { isApiError } from '../api/errors';
 import { startLogin } from '../auth/oidc';
 import type { OidcSettings } from '../auth/oidc';
 import { SessionStore } from '../auth/session';
-import { Banner } from '../ui/Banner';
-import { Button } from '../ui/Button';
-import { Field } from '../ui/Field';
+import { Banner, Button, Heading, Stack, TextArea } from '../ui';
 import { useApp, useSession } from './context';
 
 const REASONS = {
@@ -40,38 +38,45 @@ export function SignIn() {
 
   return (
     <main className="signin" id="main">
-      <h1>Sagat Studio</h1>
-      {ended !== undefined && REASONS[ended] !== '' ? <Banner tone="warn">{REASONS[ended]}</Banner> : null}
-      <form onSubmit={(event) => void submit(event)}>
-        <Field label="Access token" hint="A token issued for you by your identity provider. It stays in this page's memory and is gone when you close or reload it." {...(error ? { error } : {})}>
-          <textarea
-            value={token}
-            onChange={(event) => setToken(event.target.value)}
-            rows={4}
-            spellCheck={false}
-            autoComplete="off"
-            autoCapitalize="off"
-            required
-            aria-required="true"
-          />
-        </Field>
-        <Button type="submit" variant="primary" disabled={busy || !SessionStore.looksLikeToken(token.trim())}>
-          {busy ? 'Signing in…' : 'Sign in'}
-        </Button>
-      </form>
-      {settings.oidc ? (
-        <section aria-labelledby="sso">
-          <h2 id="sso">Or sign in with your organisation</h2>
-          <Button
-            onClick={() => {
-              setError(undefined);
-              void startLogin(settings.oidc as OidcSettings).catch((cause: unknown) => setError(cause instanceof Error ? cause.message : 'Sign-in failed.'));
-            }}
-          >
-            Sign in with your organisation
-          </Button>
-        </section>
-      ) : null}
+      <Stack gap={4}>
+        <Heading level={1}>Sagat Studio</Heading>
+        {ended !== undefined && REASONS[ended] !== '' ? <Banner tone="warn">{REASONS[ended]}</Banner> : null}
+        <form onSubmit={(event) => void submit(event)}>
+          <Stack gap={3}>
+            <TextArea
+              label="Access token"
+              hint="A token issued for you by your identity provider. It stays in this page's memory and is gone when you close or reload it."
+              error={error}
+              value={token}
+              onChange={setToken}
+              rows={4}
+              spellCheck={false}
+              mono
+              required
+            />
+            <div>
+              <Button type="submit" variant="primary" disabled={busy || !SessionStore.looksLikeToken(token.trim())}>
+                {busy ? 'Signing in…' : 'Sign in'}
+              </Button>
+            </div>
+          </Stack>
+        </form>
+        {settings.oidc ? (
+          <Stack as="section" gap={2} aria-labelledby="sso">
+            <Heading level={2} id="sso">Or sign in with your organisation</Heading>
+            <div>
+              <Button
+                onClick={() => {
+                  setError(undefined);
+                  void startLogin(settings.oidc as OidcSettings).catch((cause: unknown) => setError(cause instanceof Error ? cause.message : 'Sign-in failed.'));
+                }}
+              >
+                Sign in with your organisation
+              </Button>
+            </div>
+          </Stack>
+        ) : null}
+      </Stack>
     </main>
   );
 }

@@ -1,8 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { endpoints } from '../api/endpoints';
 import { finishLogin } from '../auth/oidc';
-import { Banner } from '../ui/Banner';
-import { Button } from '../ui/Button';
+import { Banner, Button, Heading, Loading, Stack } from '../ui';
 import { useApp } from './context';
 
 /** The page the identity provider sends the browser back to: it finishes the sign-in or says why not. */
@@ -22,17 +21,21 @@ export function OidcCallback({ search = window.location.search }: { search?: str
 
   return (
     <main className="signin" id="main">
-      <h1>Sagat Studio</h1>
-      {error === undefined ? (
-        <p role="status">Signing you in…</p>
-      ) : (
-        <>
-          <Banner tone="error">{error}</Banner>
-          <Button variant="primary" onClick={() => window.location.assign('/studio/')}>
-            Back to sign-in
-          </Button>
-        </>
-      )}
+      <Stack gap={4}>
+        <Heading level={1}>Sagat Studio</Heading>
+        {error === undefined ? (
+          <Loading>Signing you in…</Loading>
+        ) : (
+          <>
+            <Banner tone="error">{error}</Banner>
+            <div>
+              <Button variant="primary" onClick={() => window.location.assign('/studio/')}>
+                Back to sign-in
+              </Button>
+            </div>
+          </>
+        )}
+      </Stack>
     </main>
   );
 }

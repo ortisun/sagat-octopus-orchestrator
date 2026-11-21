@@ -1,9 +1,8 @@
 import { useQuery } from '@tanstack/react-query';
-import { Link, useParams } from 'react-router';
+import { useParams } from 'react-router';
 import { isApiError } from '../../api/errors';
 import { useApp, useCan, useNamespace } from '../../app/context';
-import { Banner } from '../../ui/Banner';
-import { ErrorState } from '../../ui/ErrorState';
+import { Banner, ErrorState, Link, Loading, Page, PageHeader, Text } from '../../ui';
 import { WorkflowEditor } from './WorkflowEditor';
 import '../../styles/workflows.css';
 
@@ -28,30 +27,30 @@ export function WorkflowEditorPage() {
 
   if (!canRead) {
     return (
-      <section>
-        <h1>Workflow</h1>
+      <Page>
+        <PageHeader title="Workflow" />
         <Banner tone="info">You are not allowed to see workflows: it needs the definition:read permission.</Banner>
-      </section>
+      </Page>
     );
   }
   if (query.isError) {
     const gone = isApiError(query.error) && query.error.code === 'NOT_FOUND';
     return (
-      <section>
-        <h1>Workflow</h1>
+      <Page>
+        <PageHeader title="Workflow" />
         <ErrorState error={query.error} what="Opening the workflow" onRetry={gone ? undefined : () => void query.refetch()} />
-        <p>
+        <Text>
           <Link to="/workflows">Back to the workflows</Link>
-        </p>
-      </section>
+        </Text>
+      </Page>
     );
   }
   if (!query.data) {
     return (
-      <section>
-        <h1>Workflow</h1>
-        <p role="status">Loading the workflow…</p>
-      </section>
+      <Page>
+        <PageHeader title="Workflow" />
+        <Loading>Loading the workflow…</Loading>
+      </Page>
     );
   }
   return <WorkflowEditor key={query.data.id} workflow={query.data} />;

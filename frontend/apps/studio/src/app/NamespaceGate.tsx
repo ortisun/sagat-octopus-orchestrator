@@ -1,4 +1,5 @@
-import { Link, Navigate, Outlet } from 'react-router';
+import { Navigate, Outlet } from 'react-router';
+import { Heading, Link, Page, Stack, Text } from '../ui';
 import { useCan, useNamespace } from './context';
 
 /**
@@ -11,13 +12,15 @@ export function NamespaceGate() {
   const canCreate = useCan('namespace:create');
   if (current !== undefined) return <Outlet />;
   return (
-    <section aria-labelledby="choose-namespace-title">
-      <h1 id="choose-namespace-title">Choose a namespace</h1>
-      <p>
-        Workflows, runs, operations, scripts and integrations belong to a namespace. Choose one in the menu.{' '}
-        <Link to="/namespaces">Open the namespace list</Link> to see them all{canCreate ? ' or to create a new one' : ''}.
-      </p>
-    </section>
+    <Page>
+      <Stack as="section" aria-labelledby="choose-namespace-title">
+        <Heading level={1} id="choose-namespace-title">Choose a namespace</Heading>
+        <Text>
+          Workflows, runs, operations, scripts and integrations belong to a namespace. Choose one in the menu.{' '}
+          <Link to="/namespaces">Open the namespace list</Link> to see them all{canCreate ? ' or to create a new one' : ''}.
+        </Text>
+      </Stack>
+    </Page>
   );
 }
 
