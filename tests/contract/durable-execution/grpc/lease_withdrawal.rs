@@ -99,6 +99,50 @@ async fn platform(gate: Option<Arc<ServingGate>>, probe: Option<DeliveryProbe>) 
     platform_with(options).await
 }
 
+/// Records `lease-withdrawal-v1` of both kinds in the registry, as the operator's activation does: the withdrawal reads it
+/// again, under its lock, in every transaction (decision D006-032).
+async fn record_requirement(p: &Platform) {
+    let outcome: String = sqlx::query_scalar(
+        "SELECT out_outcome FROM platform_requirement_activate('lease-withdrawal-v1', \
+         ARRAY['CONTROL_PLANE', 'EXECUTION_ENGINE'], 'test')",
+    )
+    .fetch_one(&p.api.db.pool)
+    .await
+    .expect("activate");
+    assert_eq!(outcome, "RECORDED");
+}
+
+/// A platform whose gate keeps the requirement and whose registry records it.
+async fn withdrawing_platform(probe: Option<DeliveryProbe>) -> Platform {
+    let p = platform(Some(withdrawing()), probe).await;
+    record_requirement(&p).await;
+    p
+}
+
+/// Raises the protocol minor the sessions of `subject` negotiated to 8, the minor of delivery acknowledgement that reserves
+/// `TASK_NOT_STARTED` (decision D006-030). This build negotiates at most 1.6, so a test of the honoured hand-back has no
+/// other way to hold a 1.8 session; the delivery acknowledgement build replaces it with a real one.
+async fn as_protocol_1_8(p: &Platform, subject: &str) {
+    let done = sqlx::query(
+        "UPDATE worker_sessions SET accepted_protocol_minor = 8 WHERE tenant_id = $1 AND subject = $2",
+    )
+    .bind(p.tenant.as_uuid())
+    .bind(subject)
+    .execute(&p.api.db.pool)
+    .await
+    .expect("raise the minor");
+    assert!(done.rows_affected() >= 1, "no session of {subject}");
+}
+
+/// The journal reproduces the projection of the run (constitution: replay equals projection).
+async fn replays(p: &Platform, run: &str) {
+    p.api
+        .executions
+        .verify_run(p.tenant, run.parse().expect("run id"))
+        .await
+        .expect("the journal reproduces the projections");
+}
+
 fn one_attempt(name: &str) -> Value {
     single_ir(
         name,
@@ -180,6 +224,7 @@ async fn runs_once_afterwards(p: &Platform, run: &str, withdrawn_generation: i64
     assert_eq!(named(&journal, "step.completed").len(), 1);
     assert!(named(&journal, "step.needs_review").is_empty());
     assert!(named(&journal, "reconciliation.requested").is_empty());
+    replays(p, run).await;
 }
 
 fn assert_withdrawn(journal: &[(String, Value)], cause: &str) -> i64 {
@@ -194,7 +239,7 @@ fn assert_withdrawn(journal: &[(String, Value)], cause: &str) -> i64 {
 #[tokio::test]
 async fn a_stream_its_client_dropped_while_its_claim_committed_withdraws_the_lease() {
     let barrier = barrier();
-    let p = platform(Some(withdrawing()), Some(barrier.probe)).await;
+    let p = withdrawing_platform(Some(barrier.probe)).await;
     let workflow = p
         .publish("withdraw-stream", &one_attempt("withdraw-stream"))
         .await;
@@ -230,7 +275,7 @@ async fn a_stream_its_client_dropped_while_its_claim_committed_withdraws_the_lea
 #[tokio::test]
 async fn a_claim_that_ends_after_the_window_withdraws_its_lease() {
     let gate = held_past_the_window();
-    let p = platform(Some(withdrawing()), Some(gate.probe)).await;
+    let p = withdrawing_platform(Some(gate.probe)).await;
     let workflow = p
         .publish("withdraw-window", &one_attempt("withdraw-window"))
         .await;
@@ -268,7 +313,7 @@ async fn a_claim_that_ends_after_the_window_withdraws_its_lease() {
 #[tokio::test]
 async fn a_unary_poll_dropped_in_the_middle_of_its_claim_withdraws_the_lease() {
     let barrier = barrier();
-    let p = platform(Some(withdrawing()), Some(barrier.probe)).await;
+    let p = withdrawing_platform(Some(barrier.probe)).await;
     let workflow = p
         .publish("withdraw-unary", &one_attempt("withdraw-unary"))
         .await;
@@ -318,14 +363,15 @@ async fn without_the_recorded_requirement_an_undelivered_lease_lapses_as_before(
     }
 }
 
-/// A host hands back a lease it will not run (decision D006-005): while the step is still `LEASED` it is withdrawn, the
-/// report is idempotent, and the next lease reuses the attempt.
+/// A host of protocol 1.8 hands back a lease it will not run (decisions D006-005 and D006-030): while the step is still
+/// `LEASED` it is withdrawn, the report is idempotent, and the next lease reuses the attempt.
 #[tokio::test]
 async fn a_lease_handed_back_with_task_not_started_is_withdrawn_while_it_is_still_leased() {
-    let p = platform(Some(withdrawing()), None).await;
+    let p = withdrawing_platform(None).await;
     let workflow = p.publish("hand-back", &one_attempt("hand-back")).await;
     let run = p.start(&workflow, &json!({})).await;
     let mut worker = stream_worker(&p, "first").await;
+    as_protocol_1_8(&p, "first").await;
     let lease = worker.one_task().await;
     for repeat in [false, true] {
         let ack = worker
@@ -350,11 +396,15 @@ async fn a_hand_back_of_a_started_step_or_without_the_requirement_is_an_ordinary
         (Some(Arc::new(ServingGate::opened())), false),
     ] {
         let p = platform(gate, None).await;
+        if started {
+            record_requirement(&p).await;
+        }
         let workflow = p
             .publish("hand-back-late", &one_attempt("hand-back-late"))
             .await;
         let run = p.start(&workflow, &json!({})).await;
         let mut worker = stream_worker(&p, "first").await;
+        as_protocol_1_8(&p, "first").await;
         let lease = worker.one_task().await;
         if started {
             worker
@@ -380,4 +430,372 @@ async fn a_hand_back_of_a_started_step_or_without_the_requirement_is_an_ordinary
             "TASK_NOT_STARTED"
         );
     }
+}
+
+fn three_attempts(name: &str) -> Value {
+    single_ir(
+        name,
+        Some(
+            json!({"maxAttempts": 3, "strategy": "fixed", "initialDelayMs": 60000, "maxDelayMs": 60000, "jitter": false}),
+        ),
+    )
+}
+
+/// Holds every claim that commits leases until its consumer is gone, and says each time it arrived.
+fn barrier_every() -> Barrier {
+    let arrived = Arc::new(Notify::new());
+    let signal = Arc::clone(&arrived);
+    let probe: DeliveryProbe = Arc::new(move |abandoned: Abandonment| {
+        let signal = Arc::clone(&signal);
+        Box::pin(async move {
+            signal.notify_one();
+            abandoned.wait().await;
+        })
+    });
+    Barrier { arrived, probe }
+}
+
+/// Holds every claim that commits leases until the test adds a permit, whatever the consumer does.
+fn held_until_released() -> Gate {
+    let arrived = Arc::new(Notify::new());
+    let release = Arc::new(Semaphore::new(0));
+    let (signal, permit) = (Arc::clone(&arrived), Arc::clone(&release));
+    let probe: DeliveryProbe = Arc::new(move |_abandoned: Abandonment| {
+        let (signal, permit) = (Arc::clone(&signal), Arc::clone(&permit));
+        Box::pin(async move {
+            signal.notify_one();
+            let _ = permit
+                .acquire()
+                .await
+                .map(tokio::sync::SemaphorePermit::forget);
+        })
+    });
+    Gate {
+        arrived,
+        release,
+        probe,
+    }
+}
+
+async fn open_stream(
+    worker: &mut Worker<'_>,
+    credit: i32,
+) -> tonic::Streaming<sagat_api_grpc::pb::PollTasksResponse> {
+    worker
+        .client
+        .stream_tasks(worker.req(worker.poll_message(credit)))
+        .await
+        .expect("open the stream")
+        .into_inner()
+}
+
+/// Security Blocker 1 of the 2026-11-21 review (decision D006-030): from a session older than 1.8 a `TASK_NOT_STARTED` is
+/// an ordinary failure. A handler that raises it on every lease, with no heartbeat and `retryable=false`, fails its step
+/// for good at once; with `retryable=true` it spends the attempt and waits out the backoff. Nothing is withdrawn.
+#[tokio::test]
+async fn a_hand_back_from_a_session_older_than_1_8_is_an_ordinary_failure_with_its_flag() {
+    let p = withdrawing_platform(None).await;
+    let workflow = p.publish("old-minor", &three_attempts("old-minor")).await;
+    for retryable in [false, true] {
+        let run = p.start(&workflow, &json!({})).await;
+        let mut worker = stream_worker(&p, &format!("first-{retryable}")).await;
+        let lease = worker.one_task().await;
+        let ack = worker
+            .fail_with(&lease, "TASK_NOT_STARTED", retryable)
+            .await
+            .expect("reported");
+        let journal = journal(&p, &run).await;
+        assert!(
+            named(&journal, "step.lease_withdrawn").is_empty(),
+            "retryable={retryable}"
+        );
+        assert!(named(&journal, "step.needs_review").is_empty());
+        if retryable {
+            assert_eq!(named(&journal, "step.retry_scheduled").len(), 1);
+            let (status, attempt, _) = step(&p, &run).await;
+            assert_eq!(
+                (status.as_str(), attempt),
+                ("RETRY_WAIT", 1),
+                "the attempt is spent"
+            );
+            assert!(
+                worker.poll(1).await.is_empty(),
+                "the backoff holds the step"
+            );
+        } else {
+            assert_eq!(ack.step_status, "FAILED", "the flag is honoured");
+            assert_eq!(p.status(&run).await, "FAILED");
+        }
+        replays(&p, &run).await;
+    }
+}
+
+/// Decision D006-031 at its edge for a host's hand-back: four hand-backs of one attempt are withdrawn, the fifth is the
+/// ordinary failure (one attempt allowed: the step fails for good, never a review).
+#[tokio::test]
+async fn one_attempt_is_handed_back_at_most_four_times() {
+    let p = withdrawing_platform(None).await;
+    let workflow = p
+        .publish("hand-back-cap", &one_attempt("hand-back-cap"))
+        .await;
+    let run = p.start(&workflow, &json!({})).await;
+    let mut worker = stream_worker(&p, "first").await;
+    as_protocol_1_8(&p, "first").await;
+    for generation in 1..=4 {
+        let lease = worker.one_task().await;
+        assert_eq!((lease.attempt, lease.generation), (1, generation));
+        let ack = worker
+            .fail_with(&lease, "TASK_NOT_STARTED", true)
+            .await
+            .expect("hand-back");
+        assert_eq!(ack.step_status, "READY", "hand-back {generation}");
+    }
+    let fifth = worker.one_task().await;
+    assert_eq!((fifth.attempt, fifth.generation), (1, 5));
+    let ack = worker
+        .fail_with(&fifth, "TASK_NOT_STARTED", true)
+        .await
+        .expect("hand-back");
+    assert_eq!(
+        ack.step_status, "FAILED",
+        "the fifth spends the only attempt"
+    );
+    let journal = journal(&p, &run).await;
+    let withdrawn = named(&journal, "step.lease_withdrawn");
+    assert_eq!(withdrawn.len(), 4);
+    assert!(
+        withdrawn
+            .iter()
+            .all(|w| w["attempt"] == 1 && w["cause"] == "NOT_STARTED")
+    );
+    assert_eq!(
+        named(&journal, "step.failed")[0]["code"],
+        "TASK_NOT_STARTED"
+    );
+    assert!(named(&journal, "step.needs_review").is_empty());
+    replays(&p, &run).await;
+}
+
+/// Decision D006-031 at its edge for a lease the server did not send: four dropped streams withdraw, the fifth lease is
+/// left to lapse as before this feature.
+#[tokio::test]
+async fn a_lease_not_sent_is_withdrawn_at_most_four_times_for_one_attempt() {
+    let barrier = barrier_every();
+    let p = withdrawing_platform(Some(barrier.probe)).await;
+    let workflow = p
+        .publish("not-sent-cap", &one_attempt("not-sent-cap"))
+        .await;
+    let run = p.start(&workflow, &json!({})).await;
+    let mut worker = stream_worker(&p, "first").await;
+    for dropped in 1..=5u64 {
+        let stream = open_stream(&mut worker, 1).await;
+        barrier.arrived.notified().await;
+        assert_eq!(step(&p, &run).await.0, "LEASED");
+        drop(stream);
+        until_withdrawal_ran(&p, dropped).await;
+    }
+    assert_eq!(
+        step(&p, &run).await,
+        ("LEASED".to_owned(), 1, 5),
+        "the fifth is not withdrawn"
+    );
+    let journal = journal(&p, &run).await;
+    assert_eq!(named(&journal, "step.lease_withdrawn").len(), 4);
+    replays(&p, &run).await;
+}
+
+/// Correctness Majors 1 and 2 of the review (decision D006-035): two ready runs, one claim; the consumer goes away after
+/// the first run's transaction committed. The first run's lease is withdrawn and the second run is never leased. A claim
+/// cut off at the barrier would lose the first lease (no guard holds it yet); a claim that ignores its consumer would lease
+/// the second.
+#[tokio::test]
+async fn a_claim_whose_consumer_is_gone_leases_no_further_run() {
+    for unary in [false, true] {
+        let barrier = barrier();
+        let p = withdrawing_platform(Some(barrier.probe)).await;
+        let workflow = p.publish("two-runs", &one_attempt("two-runs")).await;
+        let first = p.start(&workflow, &json!({})).await;
+        let second = p.start(&workflow, &json!({})).await;
+        let mut worker = stream_worker(&p, "first").await;
+        if unary {
+            let request = worker.req(worker.poll_message(2));
+            let mut client = worker.client.clone();
+            let call = tokio::spawn(async move { client.poll_tasks(request).await });
+            barrier.arrived.notified().await;
+            call.abort();
+            let _ = call.await;
+        } else {
+            let stream = open_stream(&mut worker, 2).await;
+            barrier.arrived.notified().await;
+            drop(stream);
+        }
+        until_withdrawal_ran(&p, 1).await;
+        let (claimed, untouched) = if step(&p, &first).await.2 == 1 {
+            (first, second)
+        } else {
+            (second, first)
+        };
+        assert_eq!(
+            step(&p, &claimed).await,
+            ("READY".to_owned(), 0, 1),
+            "unary={unary}"
+        );
+        assert_withdrawn(&journal(&p, &claimed).await, "NOT_SENT");
+        assert_eq!(
+            step(&p, &untouched).await,
+            ("READY".to_owned(), 0, 0),
+            "unary={unary}: the second run was never leased"
+        );
+        assert!(named(&journal(&p, &untouched).await, "step.leased").is_empty());
+        replays(&p, &claimed).await;
+    }
+}
+
+/// Architecture Blocker 2 (decision D006-032): once a journal holds `step.lease_withdrawn`, the requirement is a replay
+/// floor and cannot be removed; it is still recorded afterwards.
+#[tokio::test]
+async fn the_requirement_cannot_be_removed_once_a_journal_holds_a_withdrawal() {
+    let barrier = barrier();
+    let p = withdrawing_platform(Some(barrier.probe)).await;
+    let workflow = p.publish("floor", &one_attempt("floor")).await;
+    let run = p.start(&workflow, &json!({})).await;
+    let mut worker = stream_worker(&p, "first").await;
+    let stream = open_stream(&mut worker, 1).await;
+    barrier.arrived.notified().await;
+    drop(stream);
+    until_withdrawal_ran(&p, 1).await;
+    assert_withdrawn(&journal(&p, &run).await, "NOT_SENT");
+    let refused =
+        sqlx::query("SELECT * FROM platform_requirement_remove('lease-withdrawal-v1', 'ops')")
+            .execute(&p.api.db.pool)
+            .await
+            .expect_err("the removal is refused");
+    assert!(
+        refused
+            .to_string()
+            .contains("cannot be removed while a journal holds step.lease_withdrawn"),
+        "{refused}"
+    );
+    let still: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM platform_requirements WHERE capability = 'lease-withdrawal-v1')",
+    )
+    .fetch_one(&p.api.db.pool)
+    .await
+    .expect("requirement");
+    assert!(still);
+}
+
+/// The withdrawal reads the requirement again in its transaction (decision D006-032): a gate that still keeps it while the
+/// registry no longer records it (a removal the engine has not learned yet) withdraws nothing. And an engine with
+/// `SAGAT_LEASE_WITHDRAWAL=off` withdraws nothing either. In both the lease lapses as before.
+#[tokio::test]
+async fn a_requirement_the_registry_does_not_record_or_the_switch_off_withdraws_nothing() {
+    for switched_off in [false, true] {
+        let barrier = barrier();
+        let mut options = Options::default();
+        options.worker.idle_retry = Duration::from_millis(50);
+        options.lease_withdrawal = Some(withdrawing());
+        options.delivery_probe = Some(barrier.probe);
+        options.new_withdrawals = !switched_off;
+        let p = platform_with(options).await;
+        if switched_off {
+            record_requirement(&p).await;
+        }
+        let workflow = p
+            .publish("not-recorded", &one_attempt("not-recorded"))
+            .await;
+        let run = p.start(&workflow, &json!({})).await;
+        let mut worker = stream_worker(&p, "first").await;
+        let stream = open_stream(&mut worker, 1).await;
+        barrier.arrived.notified().await;
+        drop(stream);
+        until_withdrawal_ran(&p, 1).await;
+        assert_eq!(
+            step(&p, &run).await,
+            ("LEASED".to_owned(), 1, 1),
+            "switched_off={switched_off}"
+        );
+        assert!(named(&journal(&p, &run).await, "step.lease_withdrawn").is_empty());
+    }
+}
+
+/// Correctness Major 3 and architecture Major 2 (decision D006-036): the stream's producer runs on the tracker a graceful
+/// shutdown drains, so the drain waits for a claim in progress and then for its withdrawal. A producer outside the tracker
+/// would let the drain end at once while the claim is still held.
+#[tokio::test]
+async fn a_graceful_shutdown_waits_for_a_claim_in_progress_and_its_withdrawal() {
+    // held until the server knows the consumer is gone and the test releases it, so the frame is never handed over
+    let gate = held_past_the_window();
+    let p = withdrawing_platform(Some(gate.probe)).await;
+    let workflow = p.publish("shutdown", &one_attempt("shutdown")).await;
+    let run = p.start(&workflow, &json!({})).await;
+    let mut worker = stream_worker(&p, "first").await;
+    let stream = open_stream(&mut worker, 1).await;
+    gate.arrived.notified().await;
+    assert!(
+        !p.api
+            .worker_withdrawals
+            .drain(Duration::from_millis(200))
+            .await,
+        "the drain waits while the claim is held"
+    );
+    drop(stream);
+    gate.release.add_permits(1);
+    assert!(
+        p.api.worker_withdrawals.drain(WAIT).await,
+        "the claim and its withdrawal ended"
+    );
+    assert_eq!(p.api.worker_withdrawals.handed_over(), 1);
+    assert_eq!(step(&p, &run).await, ("READY".to_owned(), 0, 1));
+    assert_withdrawn(&journal(&p, &run).await, "NOT_SENT");
+}
+
+/// Security Major 2 (decision D006-037): a unary poll that its client cancels keeps the tenant's concurrency slot until
+/// its claim ends, so cancelled polls cannot run more claims at once than the tenant's cap.
+#[tokio::test]
+async fn a_cancelled_unary_poll_keeps_its_tenant_slot_until_its_claim_ends() {
+    let gate = held_until_released();
+    let mut options = Options::default();
+    options.worker.idle_retry = Duration::from_millis(50);
+    options.lease_withdrawal = Some(withdrawing());
+    options.delivery_probe = Some(gate.probe);
+    options.limits.max_in_flight_per_tenant = 2;
+    let p = platform_with(options).await;
+    record_requirement(&p).await;
+    let workflow = p.publish("slots", &one_attempt("slots")).await;
+    for _ in 0..2 {
+        p.start(&workflow, &json!({})).await;
+    }
+    let worker = stream_worker(&p, "first").await;
+    let mut calls = Vec::new();
+    for _ in 0..2 {
+        let request = worker.req(worker.poll_message(1));
+        let mut client = worker.client.clone();
+        calls.push(tokio::spawn(
+            async move { client.poll_tasks(request).await },
+        ));
+        gate.arrived.notified().await;
+    }
+    for call in calls {
+        call.abort();
+        let _ = call.await;
+    }
+    let mut client = worker.client.clone();
+    let refused = client
+        .poll_tasks(worker.req(worker.poll_message(1)))
+        .await
+        .expect_err("both slots are still held by the claims");
+    assert_eq!(
+        refused.code(),
+        tonic::Code::ResourceExhausted,
+        "{refused:?}"
+    );
+    gate.release.add_permits(2);
+    until_withdrawal_ran(&p, 2).await;
+    // the poll below claims a withdrawn run again: let its claim through the probe
+    gate.release.add_permits(16);
+    client
+        .poll_tasks(worker.req(worker.poll_message(1)))
+        .await
+        .expect("the slots came back with the claims");
 }

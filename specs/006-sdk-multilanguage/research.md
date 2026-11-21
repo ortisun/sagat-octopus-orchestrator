@@ -234,8 +234,10 @@ All decisions below are "delegate (OD-2026-11-20-6)" unless they say otherwise.
   the operator's act (ADR-0082 decision 1): a command `control-plane lease-withdrawal-activate` with `--operator`,
   `--expect-live N` and `--dry-run`, run with the owner role, in one bounded transaction, with no step of its own. A binary of
   release 0.2 does not register, so an activation cannot see it: the runbook's rule stands (the whole fleet on a build that
-  registers before any activation, `docs/runbooks/instance-registry.md` section 7), and the released-v0.2 upgrade path proves
-  that no `step.lease_withdrawn` is written before the activation and that the current build replays a journal that holds one.
+  registers before any activation, `docs/runbooks/instance-registry.md` section 7). The released-v0.2 upgrade path
+  (`release_upgrade_inflight.rs`) proves that no `step.lease_withdrawn` is written and no requirement recorded before the
+  activation; that the current build replays a journal that holds one is proved by `verify_run` after every withdrawal of
+  `tests/contract/durable-execution/grpc/lease_withdrawal.rs` (corrected 2026-11-21: the upgrade path holds no withdrawal).
 - **D006-005 — A host that drops a lease it received hands it back** through `FailStep` with the code `TASK_NOT_STARTED`,
   retryable, before any handler of it runs, with the lease's fence: when it is stopping, when a frame carries more than it may
   run, and when the rest of a malformed frame is dropped. Never for a task whose handler started. All six SDKs. A server that

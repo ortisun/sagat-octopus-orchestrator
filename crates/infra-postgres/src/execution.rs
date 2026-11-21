@@ -7742,7 +7742,7 @@ pub(crate) async fn lease_holder_minor(
 ) -> Result<Option<u32>, StoreError> {
     let minor: Option<i32> = sqlx::query_scalar(
         "SELECT w.accepted_protocol_minor FROM steps s \
-           JOIN worker_sessions w ON w.tenant_id = s.tenant_id AND w.id = s.leased_by \
+           JOIN worker_sessions w ON w.tenant_id = s.tenant_id AND w.id::text = s.leased_by \
           WHERE s.tenant_id = $1 AND s.run_id = $2 AND s.step_id = $3 AND s.lease_token_hash = $4 \
             AND s.status IN ('LEASED', 'RUNNING')",
     )
