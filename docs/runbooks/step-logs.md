@@ -121,7 +121,8 @@ has headroom: two of the fourth run's eight valid rounds needed 10 tickets for a
 The quota route shows `used` of `tenant_step_log_bytes` only to a caller who holds `run:logs:read` and the PII reveal
 grant in every namespace of the tenant. Anyone else sees the resource, its limit and `usageWithheld: true`, never the
 live figure, which moves with what other runs log (decision D041-133, "Hide it without the grant", OD-2026-11-20-19).
-To let an administrator see it, give them the grant in every namespace.
+To let an administrator see it, give them the grant in every namespace. The grant and the usage are read together, in
+one snapshot, so a view that reads after a revoke commits withholds the figure at once (decision D041-141).
 
 ## 6. PostgreSQL logging for the runtime role
 

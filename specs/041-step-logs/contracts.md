@@ -286,7 +286,9 @@ The `used` description gains one absence: `tenant_step_log_bytes` has no `used` 
 (D041-066) and the PII reveal grant in every namespace of the tenant (D041-133, "Hide it without the grant",
 OD-2026-11-20-19, which closes gap G041-018). Without both, the item keeps its resource, limit, source and ceiling and
 gains `usageWithheld: true`, so the caller sees that the quota exists, not its live usage (fail-closed: one namespace
-without the grant withholds it). `usageWithheld` is absent for every other resource and when `used` is shown.
+without the grant withholds it). The grant and the usage are read in one snapshot, so a view whose read runs after a
+revoke commits never shows `used` (D041-141). `usageWithheld` is absent for every other resource and when `used` is
+shown.
 
 ### Error table
 
