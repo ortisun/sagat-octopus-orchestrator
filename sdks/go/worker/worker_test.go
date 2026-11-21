@@ -298,16 +298,19 @@ func TestAnOutputOf256KiBIsSentAndNoResultIsNoValue(t *testing.T) {
 
 func TestTheHeartbeatStartsBeforeTheHandlerEndsCarriesTheStepIdentityAndMovesTheDeadline(t *testing.T) {
 	f := newFakeService(t)
-	h := newHost(t, f, worker.WithHeartbeatInterval(20*time.Millisecond))
+	h := newHost(t, f, worker.WithHeartbeatInterval(20*time.Millisecond), f.clientSide())
 	var deadlines []time.Time
+	later := time.Now().Add(2 * time.Minute).UnixMilli()
 	must(t, h.RegisterActivity("slow", func(ctx context.Context, _ json.RawMessage) (any, error) {
 		task := worker.TaskFrom(ctx)
 		deadlines = append(deadlines, task.Deadline())
-		time.Sleep(150 * time.Millisecond)
+		// The handler ends only once three beats have reached the server and one has moved the deadline: a
+		// barrier, not a sleep that the beats may or may not fill on a loaded machine (AGENTS.md Rule 18).
+		// A heartbeat that did not start before the handler ends would never let it end.
+		reached(func() bool { return len(f.of("Heartbeat")) >= 3 && task.Deadline().UnixMilli() == later })
 		deadlines = append(deadlines, task.Deadline())
 		return map[string]bool{"ok": true}, nil
 	}))
-	later := time.Now().Add(2 * time.Minute).UnixMilli()
 	f.set(func(f *fakeService) { f.heartbeatExpires = later })
 	f.lease(lease(forActivity("slow", "1")))
 	start(t, h)
@@ -326,10 +329,14 @@ func TestTheHeartbeatStartsBeforeTheHandlerEndsCarriesTheStepIdentityAndMovesThe
 	if !deadlines[1].After(deadlines[0]) || deadlines[1].UnixMilli() != later {
 		t.Errorf("the lease was extended: %v", deadlines)
 	}
-	count := len(f.of("Heartbeat"))
+	// The heartbeat ends with the report: its goroutine goes. A beat already on its way may still reach the service
+	// after that, so what is counted is what the host sends afterwards; the sleep only gives a heartbeat that went
+	// on the time to show.
+	until(t, "no heartbeat goroutine once the task is reported", func() bool { return count("(*Host).beat") == 0 })
+	f.note("heartbeat ended")
 	time.Sleep(100 * time.Millisecond)
-	if len(f.of("Heartbeat")) != count {
-		t.Error("the heartbeat stops with the task")
+	if n := f.sentAfter("Heartbeat", "heartbeat ended"); n != 0 {
+		t.Errorf("the heartbeat stops with the task: %d sent after it ended", n)
 	}
 }
 
@@ -475,7 +482,8 @@ func TestTheHostRunsAtTheVersionTheServerAgreedToAgainst10ItSendsNoStepIdentityA
 	var secretError error
 	var kind worker.TaskKind
 	must(t, h.RegisterActivity("slow", func(ctx context.Context, _ json.RawMessage) (any, error) {
-		time.Sleep(80 * time.Millisecond)
+		// A beat is made while the handler runs: it waits for one instead of sleeping (AGENTS.md Rule 18).
+		reached(func() bool { return len(f.of("Heartbeat")) >= 1 })
 		kind = worker.TaskFrom(ctx).Kind
 		_, secretError = worker.TaskFrom(ctx).Secrets(ctx)
 		return 1, nil
@@ -601,11 +609,10 @@ func TestAnEmptyPollIsFollowedByAWaitNeverByAnotherPollAtOnce(t *testing.T) {
 	f := newFakeService(t)
 	h := newHost(t, f)
 	must(t, h.RegisterActivity("charge", rawOK))
+	f.observePauses(h)
 	start(t, h)
-	time.Sleep(400 * time.Millisecond)
-	if polls := len(f.of("PollTasks")); polls < 2 || polls > 10 {
-		t.Errorf("%d polls in 400 ms", polls)
-	}
+	// The empty answer asks for 50 ms; with 20 % jitter the pause is 40 to 60 ms.
+	paced(t, f, 5, exactly(40*time.Millisecond), exactly(60*time.Millisecond))
 }
 
 func TestNoMoreTasksAreTakenThanTheHostHasRoomForAndStopWaitsForTheOnesInFlight(t *testing.T) {
@@ -762,22 +769,43 @@ func TestAHandlerThatRaisesItsCancellationAfterShutdownIsNotReportedAndOtherEnds
 
 func TestTheHeartbeatKeepsRunningUntilTheReportIsMadeNotOnlyUntilTheHandlerEnds(t *testing.T) {
 	f := newFakeService(t)
-	h := newHost(t, f, worker.WithHeartbeatInterval(15*time.Millisecond))
+	h := newHost(t, f, worker.WithHeartbeatInterval(15*time.Millisecond), f.clientSide())
 	must(t, h.RegisterActivity("quick", rawOK))
-	// The report is refused three times and each repetition waits 80 ms: it takes a quarter of a second.
-	f.fail("CompleteStep", failure{code: codes.Unavailable, retryAfter: "80"}, failure{code: codes.Unavailable, retryAfter: "80"}, failure{code: codes.Unavailable, retryAfter: "80"})
+	// The report is refused three times, then the fourth attempt is held in flight by the server until three beats
+	// have come after the first attempt: the beats are what releases the report, so the test waits for them instead
+	// of counting what fits in a window of time (AGENTS.md Rule 18). A heartbeat that ended with the handler would
+	// leave the report held for ten seconds and the count below at zero.
+	f.fail("CompleteStep", failure{code: codes.Unavailable, retryAfter: "20"}, failure{code: codes.Unavailable, retryAfter: "20"}, failure{code: codes.Unavailable, retryAfter: "20"})
+	beatsAfterTheFirstReport := func() int {
+		reports := f.of("CompleteStep")
+		if len(reports) == 0 {
+			return 0
+		}
+		n := 0
+		for _, beat := range f.of("Heartbeat") {
+			if beat.at.After(reports[0].at) {
+				n++
+			}
+		}
+		return n
+	}
+	f.set(func(f *fakeService) {
+		f.holds = map[string]func() bool{"CompleteStep": func() bool { return beatsAfterTheFirstReport() >= 3 }}
+	})
 	f.lease(lease(forActivity("quick", "1")))
 	start(t, h)
 	until(t, "the report", func() bool { return len(f.of("CompleteStep")) == 4 })
-	time.Sleep(30 * time.Millisecond)
-	beats := f.of("Heartbeat")
-	if len(beats) < 8 {
-		t.Errorf("%d heartbeats during a report that took 240 ms at 15 ms", len(beats))
+	// The report returns once the beats released it; the heartbeat then ends with the task: its goroutine goes.
+	until(t, "no heartbeat goroutine once the report is made", func() bool { return count("(*Host).beat") == 0 })
+	f.note("heartbeat ended")
+	if n := beatsAfterTheFirstReport(); n < 3 {
+		t.Errorf("%d heartbeats while the report was being made", n)
 	}
-	count := len(beats)
+	// What counts is what the host sends afterwards, not what reaches the service (a beat on its way may). The
+	// sleep only gives a heartbeat that went on the time to show.
 	time.Sleep(100 * time.Millisecond)
-	if len(f.of("Heartbeat")) != count {
-		t.Error("the heartbeat stops once the report is made")
+	if n := f.sentAfter("Heartbeat", "heartbeat ended"); n != 0 {
+		t.Errorf("the heartbeat stops once the report is made: %d sent after it ended", n)
 	}
 }
 
@@ -968,7 +996,9 @@ func TestAHeartbeatThatFailsIsTriedAgainOnTheNextBeatAndTheLeaseIsKept(t *testin
 	h := newHost(t, f, worker.WithHeartbeatInterval(20*time.Millisecond))
 	var cancelled bool
 	must(t, h.RegisterActivity("slow", func(ctx context.Context, _ json.RawMessage) (any, error) {
-		time.Sleep(200 * time.Millisecond)
+		// Three beats fail; the handler runs until a fourth has reached the server, so the beats that come after the
+		// failures are waited for, not hoped for within a sleep (AGENTS.md Rule 18).
+		reached(func() bool { return len(f.of("Heartbeat")) >= 4 })
 		cancelled = ctx.Err() != nil
 		return 1, nil
 	}))
@@ -1128,19 +1158,38 @@ func TestTheHostCanBeStartedAgainAfterItWasStopped(t *testing.T) {
 func TestTheTraceOfTheRunIsCarriedByEveryCallOfATaskButNotByTheRegistrationOrThePoll(t *testing.T) {
 	f := newFakeService(t)
 	h := newHost(t, f, worker.WithHeartbeatInterval(10*time.Millisecond))
+	// The calls of the task whose lease carries a good traceparent. The task with the malformed one may beat too
+	// before it fails, without a traceparent, as it should: its calls are checked below.
+	of := func(method, task string) []call {
+		var out []call
+		for _, c := range f.of(method) {
+			if r, ok := c.request.(interface{ GetTaskId() string }); ok && r.GetTaskId() == task {
+				out = append(out, c)
+			}
+		}
+		return out
+	}
 	must(t, h.RegisterActivity("slow", func(ctx context.Context, _ json.RawMessage) (any, error) {
-		time.Sleep(40 * time.Millisecond)
+		reached(func() bool { return len(of("Heartbeat", "run-1/slow/1")) > 0 }) // the beat checked below, not a sleep
 		return 1, nil
 	}))
 	must(t, h.RegisterActivity("bad", func(context.Context, json.RawMessage) (any, error) { return nil, worker.Permanent("X", "x") }))
 	f.lease(lease(forActivity("slow", "1")), lease(forActivity("bad", "1"), func(l *pb.TaskLease) { l.Traceparent = "garbage" }))
 	start(t, h)
 	until(t, "both reports", func() bool { return len(f.of("CompleteStep")) == 1 && len(f.of("FailStep")) == 1 })
+	if len(of("Heartbeat", "run-1/slow/1")) == 0 {
+		t.Error("no heartbeat of the task to check")
+	}
 	for _, method := range []string{"Heartbeat", "CompleteStep"} {
-		for _, c := range f.of(method) {
+		for _, c := range of(method, "run-1/slow/1") {
 			if got := c.md.Get("traceparent"); len(got) != 1 || got[0] != traceparent {
 				t.Errorf("%s: %v", method, got)
 			}
+		}
+	}
+	for _, c := range of("Heartbeat", "run-1/bad/1") {
+		if got := c.md.Get("traceparent"); len(got) != 0 {
+			t.Errorf("a heartbeat of the task with a malformed traceparent carries one: %v", got)
 		}
 	}
 	for _, method := range []string{"RegisterWorker", "PollTasks"} {
