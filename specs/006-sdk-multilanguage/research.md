@@ -651,7 +651,9 @@ one receive call.
   `control-plane capability-activate` (Decision 006-034 of the server build) is added in the same task with `empty_fleet: false`
   (round 4: architecture Minor 5) and a field `requires` of `Activatable`, refusing while `lease-withdrawal-v2` is not recorded for
   both kinds, a convenience (round 7: architecture Nit 6), and while any registered instance, live or not, lacks it, which is not
-  (round 11: security Major 1). The guarantee is elsewhere: an engine marks only while it knows both are
+  (round 11: security Major 1); both refusals are a trigger of this design's migration on `platform_requirements`, enabled
+  `ALWAYS`, so hand SQL cannot skip them (round 12: security Minor 2, architecture Minor 1). That trigger is not the ordering
+  trigger of the fifth round, which bought nothing for the order; it exists for the second refusal, which is load-bearing. The guarantee is elsewhere: an engine marks only while it knows both are
   recorded so, and every withdrawal of a marked lease reads both under the locks their removals wait for, through a witness type
   that the decision requires, so no path can decide without the read (round 7: architecture Minor 4); the wrong order writes no event
   and costs only marks that are never honoured, counted `requirement_missing` and alerted (round 6: design Minor 5; round 7:
@@ -725,7 +727,9 @@ one receive call.
   audited and not alerted, since a heartbeat sent before the handler can be overtaken by its own hand-back (round 10: security Minor
   3, correctness Minor 6); a heartbeat after any other withdrawal, `NOT_ACKNOWLEDGED` above all, where no host that keeps the
   protocol heartbeats, is counted under `heartbeat` and alerted, the earliest sign of a handler run without an acknowledgement
-  (round 11: correctness Minor 5, security Minor 1). "Once" is the identical-record rule of the
+  (round 11: correctness Minor 5, security Minor 1); the stale path takes the cause from the step's latest `step.lease_withdrawn`
+  for that generation, one indexed read of the run's journal, so no column is added (round 12: architecture Minor 4, security Nit
+  2). "Once" is the identical-record rule of the
   audit trail (`crates/infra-postgres/src/identity.rs`, an insert guarded by `NOT EXISTS` on tenant, actor, action, resource and
   reason): the resource is the step (run and step), and the reason is built only from stored values, the row's step id and its stored
   generation, never from the request, so a holder of a withdrawn token cannot vary it; the new actions are added to
@@ -745,8 +749,8 @@ one receive call.
   of Architecture decision 0098 must decode `NOT_ACKNOWLEDGED` in a released build before Task 006-057 (precondition (a) of the task
   phase; round 10: architecture Minor 1), every writer of
   the cause reads `lease-withdrawal-v2`, the floor's own capability (request (9) of Decision 006-059), under the lock its removal
-  waits for (round 4: architecture Major 2), and that requirement cannot be removed once a journal holds the event, as Architecture
-  decision 0098 decision 8 has it for `lease-withdrawal-v1`, so no binary below the floor is admitted once any withdrawal exists,
+  waits for (round 4: architecture Major 2), and that requirement cannot be removed once a journal holds the event with that cause, as
+  Architecture decision 0098 decision 8 has it for `lease-withdrawal-v1` and any withdrawal, so no binary below the floor is admitted once any withdrawal exists,
   whatever was released before it: a release of pull request #260 without the follow-up lists only `lease-withdrawal-v1` (round 11:
   correctness Major 2, security Major 1, architecture Major 1, design Major 1). On the floor a 1.8 session's hand-back is an ordinary failure, because that build clamps the holder's minor to
   its own ceiling (Decision 006-059 (3); round 4: security Major 1, correctness Minor 3, architecture Minor 10). The `down` migration
@@ -822,7 +826,9 @@ one receive call.
   `docs/runbooks/instance-registry.md` the floor build's to update; it is missing, a hard precondition, and this build inherits it
   (round 6: security Minor 3; round 7: architecture Major 1, design Major 3, correctness Minors 1 and 2, security Minor 4). The beat
   of (7) is a new function, `instance_heartbeat_reporting_change(p_instance uuid, p_token bytea)`, which returns what
-  `instance_heartbeat` returns and `out_change_in_progress` (true when `FOR SHARE SKIP LOCKED` finds the epoch row held), under the
+  `instance_heartbeat` returns and `out_change_in_progress`: it first tries the epoch row `FOR SHARE SKIP LOCKED` and returns that
+  locked read's epoch with false, and only when the row is held reads the committed epoch plainly and returns true, so an
+  activation committing during the beat is never seen as the old epoch with no change in progress (round 12: security Minor 1); under the
   same privilege constraints as (6) and (8), with `EXECUTE` revoked from `PUBLIC` and tested so, and called by both kinds, whose gate
   member is shared; a function of its own name, not an overload, leaves the two-argument function's contract for older binaries and
   no call ambiguous (round 11: security Nit 2, architecture Nit 8, design Nit 7); it raises when the epoch row is missing. A process
@@ -840,8 +846,13 @@ one receive call.
   Major 2, correctness Minor 1, design Nit 2). (9) The follow-up lists a capability of its own on both kinds, `lease-withdrawal-v2`,
   meaning that the binary replays the causes of 1.8 and applies (7); it joins the closed lists of known capabilities, gains an entry
   of the generic `capability-activate` for both kinds that refuses while `lease-withdrawal-v1` is not recorded for both kinds, and
-  the replay-floor guard refuses its removal while a journal holds `step.lease_withdrawn`, as it refuses that of
-  `lease-withdrawal-v1`. Every withdrawal of a marked lease reads `lease-withdrawal-v2` where it read `lease-withdrawal-v1`, so the
+  the replay-floor guard refuses its removal while a journal holds `step.lease_withdrawn` with the cause `NOT_ACKNOWLEDGED`,
+  the one cause a build without it cannot replay, so recording it stays reversible until the first withdrawal of 1.8 (round 12:
+  architecture Minor 2, correctness Nit 4, design Nit 3); the merged head's tests that assert it is not activatable
+  (`apps/control-plane/src/capability_activation.rs`, `tests/integration/schedules-bulk-operations/lease_withdrawal_activation.rs`)
+  are the follow-up's to invert (round 12: design Nit 4); and the forward order is: the follow-up's build, `lease-withdrawal-v2`
+  activated, the build of Task 006-057, `delivery-acknowledgement-v1` activated. The release rule of round 11 was the alternative,
+  rejected because it rests on what was released rather than on what the registry admits. Every withdrawal of a marked lease reads `lease-withdrawal-v2` where it read `lease-withdrawal-v1`, so the
   floor is the registry's whatever the order of releases: a release of #260 without the follow-up lists only `lease-withdrawal-v1`
   and is refused registration once `lease-withdrawal-v2` is recorded, which it stays once any withdrawal exists; and the entry of
   `delivery-acknowledgement-v1` also refuses while any registered instance, live or not (the registry deletes a row silent for a
@@ -906,28 +917,40 @@ one receive call.
   503 or a mesh's timeout carries none. The server's deadline starts in the platform's own outermost layer, the per-connection
   concurrency limit being the platform's layer under it, with a reserve of 4 places for the class while the compiled minor is at
   least 8, so the other classes have 60 of the default 64 from Task 006-057 and the dormant build changes none (round 11: design
-  Minor 4, architecture Minor 4). The early give-up is decided by an attempt sent after the evidence: when, after an attempt of
-  a lease ended with no verdict, another call of the host that reaches the database, sent after that attempt ended, is answered `OK`,
-  or a frame with leases arrives after it, the host sends the lease's next attempt at once, outside the backoff (or waits for one in
-  flight and then sends it); it gives the lease up at that attempt's end only when that attempt too ends with no verdict, no attempt
-  of the lease ended in a shed (`RESOURCE_EXHAUSTED` with `ACKNOWLEDGEMENT_SHED`; with the envelope or not, any other status counts,
-  so a mesh's cut counts as well as a deadline), one receive bound has passed since its first attempt, and no try of a call to the
-  database failed since the evidence (a try that ended without the database's answer; a refusal the database answered is not one);
-  otherwise it goes on with the backoff. A `RETRY` restarts the window, and the halves of a split call share it. Evidence must
+  Minor 4, architecture Minor 4). The early give-up is decided by an attempt sent after the evidence: the evidence is, after
+  an attempt of a lease ended with no verdict, another call of the host that reaches the database, sent after that attempt ended,
+  answered `OK`, or a frame with leases arriving after it; the host gives the lease up at the end of an attempt sent after the
+  evidence only when that attempt ends with no verdict and neither a shed (`RESOURCE_EXHAUSTED` with `ACKNOWLEDGEMENT_SHED`) nor an
+  unreachable store (`UNAVAILABLE` with `ACKNOWLEDGEMENT_STORE_UNREACHABLE`, the server's reason when its deadline passed before it
+  held a connection or its connection failed: an engine that has not reached the database decides nothing, round 12: correctness
+  Major 1); with the envelope or not, any other status counts, so a mesh's cut counts as well as a deadline; no attempt of the lease
+  was shed; one receive bound has passed since its first attempt; and no try of another call of the host that reaches the database
+  (a heartbeat, a report, a hand-back, a receive; never an `AcknowledgeTasks`) ended with a transport failure, `DEADLINE_EXCEEDED`,
+  `UNAVAILABLE`, `RESOURCE_EXHAUSTED` or a retryable `INTERNAL` since the evidence, a list a host can observe (round 12: correctness
+  Minor 2, design Minor 1). Attempts keep the backoff of §5 and any retry hint; only once one receive bound has passed and no attempt
+  was shed does the evidence send the next attempt early, after a random delay of up to 200 ms, at most once per lease per receive
+  bound, so dense evidence is no retry loop and a promotion no herd (round 12: correctness Minor 1, security Minor 3, design Minor 2,
+  architecture Nit 7). A `RETRY` restarts the window, and the halves of a split call share it. Evidence must
   follow a failure, so an `OK` from before a failover counts for nothing (round 10: correctness Major 1, design Minor 2), and a
   failure must follow the evidence, so the first answer after a promotion leads to one more attempt, which is answered, and never
   to a hand-back of a lease that was waiting in its backoff (round 11: correctness Major 1, design Minor 1). What is left: a
-  failover that begins during that one attempt, after the evidence, with no other call failing in that time, or during a hand-back,
-  costs the lease its attempt (Gap 006-047). Sheds, a busy engine, and a host with no other call and no frame wait for the ordinary
+  failover that begins during the deciding attempt, after the evidence, with no other call failing in that time, or during a
+  hand-back, and, on a stream, a frame sent before a failure and read after a failed attempt on a host with no other call, cost the
+  lease its attempt (Gap 006-047). Sheds, a busy engine, and a host with no other call and no frame wait for the ordinary
   give-up. With the bound of
-  Decision 006-066 a lease given up early runs unflagged on its next lease within about 6 s. The host declines on `UNIMPLEMENTED`,
+  Decision 006-066 a lease given up early runs unflagged on its next lease after one receive bound and its deciding attempt, more
+  when heartbeats are the only evidence. The host declines on `UNIMPLEMENTED`,
   three refusals of a closed list, or three counted calls in the run since the last `ACKNOWLEDGED`: given up with no verdict, every
   attempt ended with no answer or without the envelope, and its probe failed the same way, the probe being one `AcknowledgeTasks` for
   one of its leases, sent once that lease's hand-back is answered `OK` or refused stale with the envelope (the pass won), evidence
   only, which a working path answers `NOT_HELD` with the reason `withdrawn`; a verdict other than `NOT_HELD` or `RETRY` leads to one more
-  hand-back and no second probe. The host sends `AcknowledgeTasks`, its probes included, on a channel of its own with at most 4
-  calls in flight, held by the SDK's own permit; an acknowledgement waiting for that permit has not been sent, is not an attempt and
-  counts toward nothing, a rule every SDK can build, unlike whether a transport gave a call a stream (round 10: architecture Minor
+  hand-back and no second probe. The host sends `AcknowledgeTasks`, its probes included, on a transport connection of its own
+  (a channel is not enough in grpc-js and grpcio, which share subchannels unless `grpc.use_local_subchannel_pool` is set; round 12:
+  architecture Minor 3, design Minor 4) with at most 4 calls in flight, held by the SDK's own permit taken per attempt, frames waiting
+  for it merged into the next call up to 64 leases (round 12: design Minor 3), and the connection dialled again when an attempt on
+  it ends with no answer while the main connection answers (round 12: correctness Minor 4); an acknowledgement waiting for that
+  permit has not been sent, is not an attempt and counts toward nothing, a rule every SDK can build, unlike whether a transport gave
+  a call a stream; behind a proxy that pools connections upstream only the server's reserve holds, which is why it stays (round 10: architecture Minor
   6, design Minor 6; round 11: correctness Minor 7, architecture Minor 5, design Minor 3). Calls are ordered by the give-up of the last of their leases, a call that does not qualify
   neither counts nor breaks the run, a run with no counted call for 10 minutes starts again, and there is no time
   floor. The sixth round's engine breaker is withdrawn (round 7: correctness Major 1 and Minors 4 and 5, security Major 1 and Minor 1,
@@ -976,7 +999,11 @@ one receive call.
 - **G006-044 — For one registry heartbeat after an activation or a removal**, an engine may still claim without marks, or with them.
   The registry cannot exclude a binary of release 0.2, which does not register; the runbook's rule that no such binary runs at an
   activation is what excludes it. A process that could not register into a full table (Gap 2000 of the registry) serves for one beat
-  unseen. A database clock stepped backwards across a removal and a re-activation could make a lease claimed before the
+  unseen. The trigger that refuses `delivery-acknowledgement-v1` while a registered instance lacks `lease-withdrawal-v2` cannot see
+  a process whose row is gone (deleted after a day of silence, pushed out of a full table, never written): such a process of a
+  build without the liveness rule can serve capability calls until its first successful beat after the activation; the runbook
+  allows removing a silent row only once its process is confirmed stopped (round 12: security Minor 2, architecture Minor 1, design
+  Minor 6, correctness Nit 6). A database clock stepped backwards across a removal and a re-activation could make a lease claimed before the
   re-activation count. A floor engine's withdrawal at the cap, within the learning window, does not set the attempt flag.
 - **G006-045 — The throughput cost and the call bound are predictions** until Task 006-056 measures them.
 - **G006-046 — The journal does not record that a lapsed lease had been acknowledged**; `worker_leases_expired_total{mark}` does.
@@ -986,7 +1013,8 @@ one receive call.
   into a review. A failover that outlasts a lease's give-up, or begins during its hand-back or during the one attempt that follows
   the evidence of an early give-up, spends the attempt: the hand-back is an ordinary failure once the promotion has come, and when
   its tries of §5 end before the promotion the lease lapses into `recovered` at the pass and, for an `Activity`, a review (round 11:
-  correctness Minor 2, design Minors 1 and 2, architecture Nit 9). Task 006-056 reports the share of claims left unmarked; `flagged_before`, `capped` and `recovered` count the
+  correctness Minor 2, design Minors 1 and 2, architecture Nit 9). So does, on a stream, a frame sent before a failure and read
+  after a failed attempt on a host with no other call, which counts as evidence (round 12: correctness Nit 2, design Nit 2). Task 006-056 reports the share of claims left unmarked; `flagged_before`, `capped` and `recovered` count the
   others.
 - **G006-048 — The database's durability.** What the incarnation and the durable commit do not cover: a restore that does not start
   the server (a logical restore into the same running server, a virtual machine reverted with its memory, a storage snapshot rolled

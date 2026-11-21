@@ -20,14 +20,16 @@ refusals bought nothing more. What remains is considered option 10 of Architectu
 
 ## Considered options
 
-1. **Withdraw it (chosen).** Nothing is left for it to enforce.
+1. **Withdraw it (chosen).** Nothing is left for it to enforce about the order.
 2. **Keep it.** A trigger, a function body rewritten in every migration that adds a dependency, a check that parses it, and race
    tests, for an ordering the withdrawals already make safe.
 
 ## Consequences
 
-The registry is unchanged by Architecture decision 0099 apart from its capability and the amendment of Architecture decision 0082
-decision 5 that the build of Architecture decision 0098 carries.
+The registry is changed by Architecture decision 0099 only by its capability, the amendment of Architecture decision 0082
+decision 5 and the floor's capability `lease-withdrawal-v2` that the build of Architecture decision 0098 carries, and the trigger of
+its decision 10, which refuses recording `delivery-acknowledgement-v1` while a registered instance lacks `lease-withdrawal-v2`: a
+guarantee of the liveness rule, not the ordering this record proposed (its considered option 10).
 
 ## Evidence
 

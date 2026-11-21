@@ -1,8 +1,8 @@
 # ADR-0099: A lease of worker protocol 1.8 is provisional until its host acknowledges it, and a provisional lease that expires is withdrawn
 
 **Status:** Proposed
-**Decided by:** agent, delegate (Owner decision 2026-11-20-6), on the owner's answer "Yes, in 0.3.0" to delivery acknowledgement (Owner decision 2026-11-20-12, which left the variant, the protocol minor and the deadline to this design). Reviewed on 2026-11-20 and 2026-11-21 by the correctness, security, architecture and design reviewers: round 1 found 5 Blockers and 32 Majors, round 2 found 2 Blockers and 21 Majors, round 3 found 1 Blocker and 16 Majors, round 4 found no Blocker and 11 Majors, round 5 found no Blocker and 5 Majors, round 6 found no Blocker and 5 Majors, round 7 found no Blocker and 6 Majors, round 8 found no Blocker and 6 Majors, round 9 found no Blocker and 6 Majors, round 10 found no Blocker and 5 Majors, round 11 found no Blocker and 6 Majors, each answered in this text; round 12 is recorded beside them (`specs/006-sdk-multilanguage/reviews/2026-11-21-delivery-ack/`). Acceptance is the owner's, and with it the two assumptions of decision 12 and the reservation of minor 1.8 (Owner question 006-002). It follows Architecture decision 0098 as amended by its build review (decisions 5, 7 and 8; Decision 006-030 to Decision 006-039), merged into this branch, and relies, once they are built, on the requests Decision 006-059 makes of that build (the cause, the liveness amendment of Architecture decision 0082 decision 5, the floor's own capability `lease-withdrawal-v2` and the others), which its merged head does not have yet: they go into a follow-up of pull request #260, and a released build with them is a hard precondition of the task that takes this design out of dormancy (Task 006-057; Decision 006-059).
-**Refines / supersedes:** refines Architecture decision 0029 (decision 2 said a task stream introduces no durable delivery acknowledgement; decision 6 dispatched a received lease at once), Architecture decision 0098 (adds the cause `NOT_ACKNOWLEDGED` to `step.lease_withdrawn`; supplies the minor its decision 5 reserves `TASK_NOT_STARTED` for and adds what 1.8 changes in that rule; its decision 8's switch does not reach a marked lease; "Refined by" pointers go into its decisions 5 and 8 at acceptance, which otherwise keep describing their own build; it relies, once built, on that build's amendment of Architecture decision 0082 decision 5, an engine silent past the liveness window serving no capability call until its gate is decided again, Decision 006-059 (7)) and Architecture decision 0015 (adds minor 1.8 under its rule). Supersedes none.
+**Decided by:** agent, delegate (Owner decision 2026-11-20-6), on the owner's answer "Yes, in 0.3.0" to delivery acknowledgement (Owner decision 2026-11-20-12, which left the variant, the protocol minor and the deadline to this design). Reviewed on 2026-11-20 and 2026-11-21 by the correctness, security, architecture and design reviewers: round 1 found 5 Blockers and 32 Majors, round 2 found 2 Blockers and 21 Majors, round 3 found 1 Blocker and 16 Majors, round 4 found no Blocker and 11 Majors, round 5 found no Blocker and 5 Majors, round 6 found no Blocker and 5 Majors, round 7 found no Blocker and 6 Majors, round 8 found no Blocker and 6 Majors, round 9 found no Blocker and 6 Majors, round 10 found no Blocker and 5 Majors, round 11 found no Blocker and 6 Majors, round 12 found no Blocker and 2 Majors, each answered in this text; round 13 is recorded beside them (`specs/006-sdk-multilanguage/reviews/2026-11-21-delivery-ack/`). Acceptance is the owner's, and with it the two assumptions of decision 12 and the reservation of minor 1.8 (Owner question 006-002). It follows Architecture decision 0098 as amended by its build review (decisions 5, 7 and 8; Decision 006-030 to Decision 006-039), merged into this branch, and relies, once they are built, on the requests Decision 006-059 makes of that build (the cause, the liveness amendment of Architecture decision 0082 decision 5, the floor's own capability `lease-withdrawal-v2` and the others), which its merged head does not have yet: they go into a follow-up of pull request #260, and a released build with them is a hard precondition of the task that takes this design out of dormancy (Task 006-057; Decision 006-059).
+**Refines / supersedes:** refines Architecture decision 0029 (decision 2 said a task stream introduces no durable delivery acknowledgement; decision 6 dispatched a received lease at once), Architecture decision 0098 (adds the cause `NOT_ACKNOWLEDGED` to `step.lease_withdrawn`; supplies the minor its decision 5 reserves `TASK_NOT_STARTED` for and adds what 1.8 changes in that rule; its decision 8's switch does not reach a marked lease, and its replay floor moves, for the causes of 1.8, to the floor's own capability `lease-withdrawal-v2` (Decision 006-059 (9)); "Refined by" pointers go into its decisions 5 and 8 at acceptance, which otherwise keep describing their own build; it relies, once built, on that build's amendment of Architecture decision 0082 decision 5, an engine silent past the liveness window serving no capability call until its gate is decided again, Decision 006-059 (7)) and Architecture decision 0015 (adds minor 1.8 under its rule). Supersedes none.
 **Enforced by:** to be built with the decision (`specs/006-sdk-multilanguage/tasks.md`, phase "Delivery acknowledgement"): the barrier tests of the acknowledgement against each withdrawal, against another acknowledgement, against a revocation and against a run transaction that loaded the run before it, of a hand-back after a deadline against the pass, of a capability call against a hand-back, and of a requirement's removal against the pass's withdrawal (`tests/fault/sdk-multilanguage/`, `integration_durable_execution`); a pass test that every outcome other than a withdrawal ends the attempt; a static check in `scripts/check-architecture.py` that every SQL assignment to a column of the marks, and to the attempt flag, has an allowed form; the unit test of the decision function and its parity test against the SQL condition (`integration_durable_execution`); the matrix of the marks over the three statements that write a lease, including a lease written by a binary that does not know the columns and a mark of another server incarnation or none; a test that the acknowledgement and the capability record commit with `synchronous_commit` at least `local`; the matrix of the attempt flag (no withdrawal cycling spends an attempt); the budget lines `ACKNOWLEDGEMENT` and `FIRST_HEARTBEAT` and the unchanged `LEASE` line (`integration_claim_transition_efficiency`); the descriptor-driven test of the capability refusal and record (`contract_grpc_durable_execution`); the `promtool` cases of the alerts; the host's unit tests; the conformance scenario `delivery-acknowledgement` and the override pass in six languages; the released-v0.2 scenario `provisional-lease-cutover` and its rollback and mixed-fleet cases, a build of pull request #260 without its follow-up refused by the registry among them; the failover drill of `infra/dr/drill.sh`; a witness type that a withdrawal cannot be decided without the requirements read.
 
 ## Context
@@ -85,8 +85,10 @@ What constrains the choice:
    never waits for a row, never takes the run lock, renews nothing, applies no transition, writes no journal event and no outbox row.
    The deadline starts in the platform's own outermost layer of the gRPC server, whose per-connection concurrency layer replaces
    tonic's under the same key and default (64) and, while the compiled minor is at least 8, keeps 4 of those places for the class
-   `Acknowledge`; the host sends the call on a channel of its own with at most 4 calls in flight, and one waiting for that permit is
-   not an attempt.
+   `Acknowledge`; the host sends the call on a transport connection of its own with at most 4 calls in flight, and one waiting for
+   that permit is not an attempt; behind a proxy that pools connections upstream only the reserve holds, which is why it stays. A
+   deadline that passed before the call held a connection, or a failed connection, answers `ACKNOWLEDGEMENT_STORE_UNREACHABLE`, so
+   an engine that has not reached the database decides no host's early give-up.
 4. **Exactly one of the acknowledgement and the pass's withdrawal commits; a hand-back rests on the host's word.** Every withdrawal
    of a lease whose mark counts re-reads the step row `FOR UPDATE` under the run lock, after the report path's binding checks (the
    lost-lease pass, a system actor, has none) and after reading both requirements under the locks their removals wait for, and
@@ -154,8 +156,9 @@ What constrains the choice:
     006-059), which a released build must have before this design leaves dormancy. It is activated by
     `control-plane capability-activate delivery-acknowledgement-v1`, an entry of the generic command of Architecture decision 0098,
     which refuses while `lease-withdrawal-v2` (the floor's own capability: the binary replays the causes of 1.8 and applies the
-    liveness rule) is not recorded for both kinds, and while any registered instance, live or not, lacks it, so no binary without the
-    liveness rule holds an open gate when the first provisional lease is claimed; once it is recorded, a binary that does not list it,
+    liveness rule) is not recorded for both kinds, and while any registered instance, live or not, lacks it, so no registered binary without
+    the liveness rule holds an open gate when the first provisional lease is claimed (both refusals are a trigger on
+    `platform_requirements` enabled `ALWAYS`, so hand SQL cannot skip them; a process whose row is gone is Gap 006-044); once it is recorded, a binary that does not list it,
     a release of pull request #260 without its follow-up among them, is refused registration. An engine MUST mark only while it knows both are
     recorded so, and every withdrawal MUST read both through one function whose result the decision requires as a type, so no order
     of activations and removals, by the command or by hand, can write an event without its replay floor; a wrong order by hand is
@@ -164,8 +167,8 @@ What constrains the choice:
     Removing the requirement ends the protection of the provisional leases in flight, because engines of the older build may join;
     so a rollback switches marking off and drains the provisional leases before it removes the requirement. An engine of the floor
     build silent at an activation's census serves no capability call until its gate is decided again (Decision 006-059 (7)), so it
-    cannot serve one unrecorded; its beat returns the committed epoch by a plain read and reports whether an owner transaction holds the epoch row, so an open
-    owner transaction never blocks it and a change already committed still closes the gate of a process that lacks it; the
+    cannot serve one unrecorded; its beat takes the epoch row `FOR SHARE SKIP LOCKED` first and reads it plainly only when an owner transaction holds it,
+    reporting a change in progress, so an open owner transaction never blocks it and a change already committed still closes the gate of a process that lacks it; the
     refusal is `UNAVAILABLE` with the envelope reason `REGISTRY_SILENT` and a retry hint, which the SDKs repeat within the handler's
     deadline; and this build inherits the rule with the floor build's code, for engines of either build.
 11. **Older minors, declining sessions and internal runners are served exactly as today.** A lease of a session below 1.8, or of a
@@ -235,10 +238,17 @@ What constrains the choice:
    function and a census that refused in the one case it existed for. The server's start time changes for all of them, every role can
    read it, and it never fails on a standby, and a restart of PostgreSQL does what the command did; its cost is that a planned restart
    ends the protection of the leases in flight.
-10. **A trigger that refuses recording a requirement before the one it depends on** (the fifth round, as its own decision). Once
-    every withdrawal reads both requirements and the engine marks only while both are recorded, the wrong order writes no event and
-    costs only marks that are never honoured; the command's refusal is a convenience and the trigger bought nothing more.
+10. **A trigger that refuses recording a requirement before the one it depends on, for the order alone** (the fifth round, as its
+    own decision). Once every withdrawal reads both requirements and the engine marks only while both are recorded, the wrong order
+    writes no event and costs only marks that are never honoured, so for the order a trigger bought nothing more. The second refusal
+    of decision 10 (no registered instance lacking `lease-withdrawal-v2`) is load-bearing for the liveness rule, so it is a trigger
+    after all, enabled `ALWAYS`, which carries the first refusal too at no further cost.
 11. **Do nothing beyond Architecture decision 0098.** Leaves Gap 006-001. Rejected by the owner (Owner decision 2026-11-20-12).
+12. **A release rule instead of the floor's own capability** (round 11): no build of pull request #260 is released without its
+    follow-up, checked against the release tags. Rejected: it rests on what was released, not on what the registry admits, and a
+    build released before the rule held would be admitted after a rollback. `lease-withdrawal-v2` makes the floor the registry's;
+    its removal is refused only while a journal holds the cause `NOT_ACKNOWLEDGED`, so recording it is reversible until the first
+    withdrawal of 1.8.
 
 ## Consequences
 
@@ -257,9 +267,10 @@ round trips with `BEGIN` and `COMMIT`), which the round-trip model of feature 03
 second, plus the trigger work the update fires, which the gate measures; the pass's withdrawal of a marked lease reads both
 requirements and the attempt's withdrawals with two statements; a task with an input blob reads it only after the acknowledgement;
 the first capability call of a lease writes one column with a local flush. Eight columns on `steps`, one on `worker_sessions`, one
-function (the requirements read). Every other class of call has 60 places of a connection's 64 from the activation, and each 1.8 host keeps one more channel. The
+function (the requirements read). Every other class of call has 60 places of a connection's 64 from the build of Task 006-057, and each 1.8 host keeps one more
+connection. The
 activation waits until no registered instance, live or lapsed, lacks `lease-withdrawal-v2`, which can take the day the registry keeps
-a silent row, unless the operator removes it. 1.8 waits for 1.7 in the
+a silent row, unless the operator removes it once its process is confirmed stopped. 1.8 waits for 1.7 in the
 server and in each SDK. Before the activation a 1.8 hand-back spends the attempt, as below 1.8. A planned restart of PostgreSQL ends
 the protection of the leases in flight. A lease whose earlier deadline is under 18 s is not protected, nor is an attempt past the
 cap, nor the next delivery of an attempt after a hand-back, a planned one (a host's stop, a decline, `CANCELLED`) included (Gap
@@ -287,8 +298,8 @@ is left, remove the requirement, and roll the binary back with the switch set ba
 once it is built: the build of the follow-up of pull request #260, which decodes the cause `NOT_ACKNOWLEDGED`, clamps the holder's
 minor and lists `lease-withdrawal-v2` (requests (2), (3), (7) and (9) of Decision 006-059; the merged head has the clamp only, and
 the released follow-up is a hard precondition of Task 006-057). Every writer of the cause reads `lease-withdrawal-v2` under the lock
-its removal waits for, which cannot be removed once a journal holds `step.lease_withdrawn`, as Architecture decision 0098 decision 8
-has it for `lease-withdrawal-v1`, so the registry never admits a binary below that build once any withdrawal exists, whatever was
+its removal waits for, which cannot be removed once a journal holds `step.lease_withdrawn` with that cause, as Architecture decision 0098
+decision 8 has it for `lease-withdrawal-v1` and any withdrawal, so the registry never admits a binary below that build once any withdrawal exists, whatever was
 released before it.
 
 ## Evidence

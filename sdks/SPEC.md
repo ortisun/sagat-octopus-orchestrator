@@ -362,9 +362,12 @@ frame carries more, it runs the first ones and hands the rest back (below). A wa
 procedure, the verdicts and the failure table are [`stream-completion.md`](../specs/006-sdk-multilanguage/stream-completion.md),
 "Delivery acknowledgement (protocol 1.8)"). A `PollTasks` call is bounded to 6 s or the shorter configured call timeout, as a
 stream window is. An unflagged lease is dispatched at once. As soon as a frame or a poll answer is read, the host sends one
-`AcknowledgeTasks` with its flagged leases that it will run, concurrently with its next receive, on a channel of its own with at
-most 4 calls in flight held by the SDK's own permit (an acknowledgement waiting for that permit has not been sent and is not an
-attempt), and makes no call for them but
+`AcknowledgeTasks` with its flagged leases that it will run, concurrently with its next receive, on a transport connection of its own
+(grpc-js and grpcio with `grpc.use_local_subchannel_pool = 1`, Go with a `ClientConn` of its own, Java with a `ManagedChannel` of its own, .NET with a `GrpcChannel` on a handler of its own, Rust with an `Endpoint` connected apart) with at most 4 calls in flight held by the SDK's own permit, taken per attempt (an acknowledgement waiting for
+that permit has not been sent and is not an attempt; frames waiting for it are merged into the next call sent, up to 64 leases, and
+a merged call is one call for the ordering and counting rules below); when an attempt on that connection ends with no answer while
+a call on the main connection, sent after that attempt was sent, was answered, the host closes the acknowledgement connection and
+dials it again before its next attempt; and makes no call for them but
 the hand-back, and starts no handler or heartbeat, before the answer. It never dispatches a flagged lease without `ACKNOWLEDGED`,
 whatever it has declined: one received while it declines is handed back.
 
@@ -380,15 +383,20 @@ when the lease carries it in `attempt_deadline_epoch_ms`, its attempt deadline, 
 clock, clamped to between 6 s and 120 s, never while an attempt is in flight
 (it waits for that attempt's outcome, at most 6 s, and runs a late `ACKNOWLEDGED`), and never compares its clock with the server's
 again; a lease given up is not run and is handed back. The early give-up is decided by an attempt sent after
-the evidence. When, after an attempt of a lease ended with no verdict, another of the host's calls that reaches the database (a
-heartbeat, a report, a hand-back), sent after that attempt ended, is answered `OK`, or a frame with leases arrives after it, the host
-sends the lease's next attempt at once, outside the backoff (or waits for one in flight and then sends it); it gives the lease up at
-that attempt's end only when that attempt too ended with no verdict, no attempt of the lease ended in a shed (`RESOURCE_EXHAUSTED`
-with the reason `ACKNOWLEDGEMENT_SHED`), at least 6 s have passed since its first attempt was sent, and no try of a call to the
-database failed since the evidence (a try that ended without the database's answer; a refusal the database answered is not one);
-otherwise it goes on with the backoff. A `RETRY` restarts the 6 s. A failover gives no evidence before its promotion, and the first
-answer after it sends every waiting lease one more attempt, which is answered; a busy engine and a host with no other call and no
-frame wait for the ordinary give-up. The server flags a lease at most once
+the evidence. The evidence: after an attempt of a lease ended with no verdict, another of the host's calls that reaches the database
+(a heartbeat, a report, a hand-back), sent after that attempt ended, is answered `OK`, or a frame with leases arrives after it. The
+host gives the lease up at the end of an attempt sent after the evidence only when that attempt ended with no verdict and with
+neither a shed (`RESOURCE_EXHAUSTED` with the reason `ACKNOWLEDGEMENT_SHED`) nor an unreachable store (`UNAVAILABLE` with the
+reason `ACKNOWLEDGEMENT_STORE_UNREACHABLE`, which the server gives when its deadline passed before it held a connection, or its
+connection failed), no attempt of the lease was shed, at least 6 s have passed since its first attempt was sent, and no try of
+another of its calls that reaches the database (a heartbeat, a report, a hand-back, a receive; never an `AcknowledgeTasks`) ended
+with a transport failure, `DEADLINE_EXCEEDED`, `UNAVAILABLE`, `RESOURCE_EXHAUSTED` or a retryable `INTERNAL` since the evidence; a
+refusal the server answered (stale, not held) is not such an end. Attempts keep the backoff of §5 and any retry hint; only once 6 s
+have passed and no attempt of the lease was shed does the evidence send its next attempt early, after a random delay of up to
+200 ms, at most once per lease in 6 s. A `RETRY` restarts the 6 s. A failover gives no evidence before its promotion; an attempt
+sent after it is answered by a working primary, and an engine whose own connections have not recovered answers
+`ACKNOWLEDGEMENT_STORE_UNREACHABLE`, which decides nothing; a busy engine and a host with no other call and no frame wait for the
+ordinary give-up. The server flags a lease at most once
 per attempt after a hand-back, so a failing path costs a lease at most one hand-back, and a hand-back of a lease not yet `RUNNING` to
 which no capability was served is withdrawn while its mark counts, whether or not it was acknowledged.
 
@@ -411,7 +419,8 @@ handler started. The server then gives the step back to `READY` without consumin
 of `specs/006-sdk-multilanguage/research.md`): only for a lease held by a session of protocol 1.8 or later, which reserves the
 code, with the requirement `lease-withdrawal-v1` recorded, the step still `LEASED` and at most four withdrawals of the attempt
 (decisions D006-030 and D006-031). At `1.8` (Architecture decision 0099 decision 9) the reservation is read from the lease, not
-from the session, and honoured only while the operator has activated `delivery-acknowledgement-v1`, for a lease claimed after that
+from the session, and honoured only while the operator has activated `delivery-acknowledgement-v1` (and, before it,
+`lease-withdrawal-v2`), for a lease claimed after that
 activation on the current database server; a lease not yet `RUNNING` (no heartbeat) to which no capability was served is then
 withdrawn on its hand-back, whether or not it was acknowledged, also after its expiry until the server's pass has ended it. Otherwise it retries it as an ordinary
 failure, which spends the attempt (gap G006-031); a lease left to lapse would be an
