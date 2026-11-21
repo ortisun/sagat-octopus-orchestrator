@@ -366,3 +366,35 @@ async def test_stop_cancels_a_receive_whose_call_begins_after_stop_did(
     began = asyncio.get_running_loop().time()
     await stopping
     assert asyncio.get_running_loop().time() - began < 2, "the poll made after the stop began was cancelled"
+
+
+async def test_a_hand_back_still_on_its_way_when_the_grace_ends_is_dropped_and_its_lease_lapses(
+    fake: FakeWorkerService, make_host: MakeHost
+) -> None:
+    total = 12
+    fake.ignore_max_tasks = True
+    fake.leases = [numbered(i) for i in range(1, total + 1)]
+    never = asyncio.Event()
+
+    async def gate() -> None:
+        # The server never answers a hand-back before the stop has ended: eight are held, the rest queued.
+        await never.wait()
+
+    fake.fail_gate = gate
+    events: list[WorkerEvent] = []
+    host = make_host(max_inflight=1, on_event=events.append)
+    host.register_activity("charge", lambda _i, _c: 1, blocking=False)
+    await host.start()
+    await until(
+        lambda: len(fake.of("FailStep")) == 8 and len(host._hand_back_queue) == total - 1 - 8,
+        "eight held and the rest queued",
+    )
+    began = asyncio.get_running_loop().time()
+    await host.stop(0.2)
+    assert asyncio.get_running_loop().time() - began < 0.2 + 2.0 + 1.0, "the grace and its two seconds bound the stop"
+    # Every lease that was not reported ends as dropped, once, and lapses.
+    await until(lambda: len([e for e in events if e.type == "task.dropped"]) == total - 1, "every hand-back dropped")
+    dropped = sorted(e.task_id or "" for e in events if e.type == "task.dropped")
+    assert dropped == sorted(f"run-{i}/charge/1" for i in range(2, total + 1))
+    assert [e for e in events if e.type in ("task.failed", "task.stale")] == []
+    assert len(fake.of("FailStep")) == 8, "the queued hand-backs are not sent on a closed connection"

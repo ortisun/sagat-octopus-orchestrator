@@ -701,6 +701,13 @@ class WorkerHost:
             task, key = self._hand_back_queue.popleft()
             try:
                 await self._fail(task, "TASK_NOT_STARTED", "the host did not start this task", True, time.monotonic())
+            except asyncio.CancelledError:
+                # ``stop`` closed the connection under the report when its grace ended (``grpc.aio`` cancels the call):
+                # the report cannot be made and the lease lapses. The rest of the queue fails at once on the closed
+                # connection and is dropped the same way, so nothing is left waiting.
+                self._emit(WorkerEvent("task.dropped", task_id=task.lease.task_id, reason="CANCELLED"))
+                log(self._log, logging.ERROR, "the hand-back could not be reported", task=task.lease.task_id,
+                    code="CANCELLED")  # fmt: skip
             finally:
                 self._handing_back.discard(key)
 
