@@ -20,6 +20,7 @@ sagat-api-grpc.workspace = true
 sagat-application.workspace = true
 sagat-domain.workspace = true
 sagat-infra-database.workspace = true
+sagat-infra-lake.workspace = true
 sagat-infra-secrets.workspace = true
 sagat-telemetry.workspace = true
 serde.workspace = true
@@ -38,6 +39,7 @@ zeroize = { version = "1", default-features = false, features = ["alloc"] }
 
 [dev-dependencies]
 tempfile = "3"
+tokio = { workspace = true, features = ["net"] }
 
 [[bin]]
 name = "database-runner"

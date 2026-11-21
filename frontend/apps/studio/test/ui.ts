@@ -3,7 +3,7 @@ import type { UserEvent } from '@testing-library/user-event';
 import { expect } from 'vitest';
 
 /**
- * How a test operates the controls the interface module draws (ADR-0101, D2403). Kept in one place so
+ * How a test operates the controls the interface module draws (Architecture decision 0101, Decision 2403). Kept in one place so
  * that a change of the design system's markup is one edit here, not one per test.
  */
 

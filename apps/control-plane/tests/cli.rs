@@ -52,6 +52,7 @@ fn help_documents_every_serve_setting() {
         "SAGAT_SUBJECT_RATE_LIMIT_BURST",
         "SAGAT_MAX_IN_FLIGHT_PER_TENANT",
         "SAGAT_BODY_IDLE_TIMEOUT_SECS",
+        "SAGAT_RESET_CANCEL_SOURCE_ENABLED",
     ] {
         assert!(
             help.contains(variable),
@@ -352,4 +353,29 @@ fn granting_a_quota_ceiling_needs_explicit_values_and_says_which_one_is_wrong() 
 fn the_usage_lists_the_quota_ceiling_command() {
     let output = control_plane(&["help"], &[]);
     assert!(text(&output.stdout).contains("quota-ceiling"));
+}
+
+/// Design 043, D043-072: `input-schema-inventory` exits 2 when the command itself fails (here, the database cannot be
+/// reached), never 1, which says that a version would be refused; and the connection URL is never printed.
+#[test]
+fn the_input_schema_inventory_exits_2_when_it_cannot_run_and_never_shows_the_url() {
+    let output = control_plane(&["input-schema-inventory"], &[("DATABASE_URL", SECRET_URL)]);
+    assert_eq!(output.status.code(), Some(2), "{}", text(&output.stderr));
+    let err = text(&output.stderr);
+    assert!(err.contains("database error"), "{err}");
+    assert!(!err.contains("hunter2"), "{err}");
+    let missing = control_plane(&["input-schema-inventory"], &[]);
+    assert_eq!(missing.status.code(), Some(2));
+    let usage = control_plane(&["help"], &[]);
+    assert!(text(&usage.stdout).contains("input-schema-inventory"));
+    let extra = control_plane(&["input-schema-inventory", "--apply"], &[]);
+    assert_eq!(extra.status.code(), Some(2), "it takes no other argument");
+    // OD-2026-11-16-5: `--all` is the one flag, and it reaches the database like the plain command
+    let all = control_plane(
+        &["input-schema-inventory", "--all"],
+        &[("DATABASE_URL", SECRET_URL)],
+    );
+    assert_eq!(all.status.code(), Some(2), "{}", text(&all.stderr));
+    assert!(text(&all.stderr).contains("database error"));
+    assert!(text(&usage.stdout).contains("--all"));
 }

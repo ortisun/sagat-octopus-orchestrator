@@ -36,6 +36,33 @@ const (
 	CodeCancelled       Code = "CANCELLED"
 	CodeProtocol        Code = "PROTOCOL"
 	CodePayloadTooLarge Code = "PAYLOAD_TOO_LARGE"
+
+	// Failures of the steps that write to a lake or to a destination (feature 035), reported by the database runner.
+	CodeIcebergTableNotFound                 Code = "ICEBERG_TABLE_NOT_FOUND"
+	CodeIcebergUnsupportedTable              Code = "ICEBERG_UNSUPPORTED_TABLE"
+	CodeIcebergLocationNotAllowed            Code = "ICEBERG_LOCATION_NOT_ALLOWED"
+	CodeIcebergSchemaMismatch                Code = "ICEBERG_SCHEMA_MISMATCH"
+	CodeIcebergDuplicateKey                  Code = "ICEBERG_DUPLICATE_KEY"
+	CodeIcebergScopeViolation                Code = "ICEBERG_SCOPE_VIOLATION"
+	CodeIcebergCommitConflict                Code = "ICEBERG_COMMIT_CONFLICT"
+	CodeIcebergRevertBlocked                 Code = "ICEBERG_REVERT_BLOCKED"
+	CodeIcebergLimitExceeded                 Code = "ICEBERG_LIMIT_EXCEEDED"
+	CodeCatalogUnavailable                   Code = "CATALOG_UNAVAILABLE"
+	CodeStorageUnavailable                   Code = "STORAGE_UNAVAILABLE"
+	CodeDestinationKeyConstraintMissing      Code = "DESTINATION_KEY_CONSTRAINT_MISSING"
+	CodeDestinationSchemaMismatch            Code = "DESTINATION_SCHEMA_MISMATCH"
+	CodeDestinationDeduplicationNotConfirmed Code = "DESTINATION_DEDUPLICATION_NOT_CONFIRMED"
+	CodeDestinationObjectConflict            Code = "DESTINATION_OBJECT_CONFLICT"
+	CodeDestinationDeliveryBoundExceeded     Code = "DESTINATION_DELIVERY_BOUND_EXCEEDED"
+	CodeDestinationSubscriptionShared        Code = "DESTINATION_SUBSCRIPTION_SHARED"
+	CodeDestinationAuthFailed                Code = "DESTINATION_AUTH_FAILED"
+	CodeDestinationUnavailable               Code = "DESTINATION_UNAVAILABLE"
+	CodeDestinationSubscriptionUnusable      Code = "DESTINATION_SUBSCRIPTION_UNUSABLE"
+	CodeDestinationFailed                    Code = "DESTINATION_FAILED"
+	CodeLakeHostProtocol                     Code = "LAKE_HOST_PROTOCOL"
+	CodeLakeSandboxUnavailable               Code = "LAKE_SANDBOX_UNAVAILABLE"
+	CodeClassificationEgressRefused          Code = "CLASSIFICATION_EGRESS_REFUSED"
+	CodeOutcomeUnknown                       Code = "OUTCOME_UNKNOWN"
 )
 
 // Error is the one error the SDK returns for a failure. Use errors.As to reach it:
@@ -67,6 +94,12 @@ type Error struct {
 	RetryAfter *time.Duration
 	// Remediation is the fixed sentence of the catalog for Code.
 	Remediation string
+	// Field is the server's details.field (design 043): a JSON pointer whose segments are names the version's
+	// inputSchema declares and array indices, never a value; empty when there is none.
+	Field string
+	// Rule is the server's details.rule (design 043): the closed keyword of the input schema that failed; empty when
+	// there is none.
+	Rule string
 
 	cause error
 }

@@ -20,6 +20,11 @@ pub enum ExecutionError {
         status: StepStatus,
         event: &'static str,
     },
+    /// An operator asked for another attempt of a step that waits for a decision because its
+    /// last outcome is unknown. Nobody may repeat it, whatever their role; a person settles it
+    /// first (feature 037). Committed v0.1/v0.2 retries still replay: this is a command refusal.
+    #[error("execution instance '{0:?}': its last outcome is unknown and must be settled first")]
+    OutcomeUnresolved(ExecutionInstanceId),
     #[error("execution instance '{instance:?}' is {status}, which does not allow '{event}'")]
     IllegalInstanceTransition {
         instance: ExecutionInstanceId,

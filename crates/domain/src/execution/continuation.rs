@@ -166,7 +166,7 @@ impl QuiescenceBlocker {
 
     /// The obligation one step still holds, or `None` when it is finished and routed.
     #[must_use]
-    pub const fn of_step(step: &StepState) -> Option<Self> {
+    pub fn of_step(step: &StepState) -> Option<Self> {
         if matches!(step.status(), StepStatus::Succeeded) && step.routed() {
             return None;
         }
@@ -177,6 +177,13 @@ impl QuiescenceBlocker {
             (StepStatus::Waiting, Some(WaitingOn::Approval { .. })) => Self::Approval,
             (StepStatus::Waiting, Some(WaitingOn::Child { .. })) => Self::Child,
             (StepStatus::Waiting, Some(WaitingOn::Reconciliation)) => Self::UnknownEffect,
+            (StepStatus::Waiting, Some(WaitingOn::Operator { .. }))
+                if step
+                    .failure()
+                    .is_some_and(|code| code.leaves_outcome_unknown()) =>
+            {
+                Self::UnknownEffect
+            }
             _ => Self::SiblingWork,
         })
     }
@@ -213,7 +220,16 @@ impl Quiescence {
         let open = state
             .instances()
             .filter(|(instance, _)| !(instance.path().is_root() && instance.node() == boundary))
-            .filter_map(|(_, step)| QuiescenceBlocker::of_step(step))
+            .filter_map(|(instance, step)| {
+                let blocker = QuiescenceBlocker::of_step(step)?;
+                Some(
+                    if instance.node().is_compensation() && !step.status().is_terminal() {
+                        QuiescenceBlocker::Compensation
+                    } else {
+                        blocker
+                    },
+                )
+            })
             .chain(
                 state
                     .sagas()

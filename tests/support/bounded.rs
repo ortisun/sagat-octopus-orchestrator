@@ -15,7 +15,9 @@ use std::{
 };
 use testcontainers_modules::{
     postgres::Postgres,
-    testcontainers::{ContainerAsync, GenericImage, ImageExt, core::WaitFor, runners::AsyncRunner},
+    testcontainers::{
+        ContainerAsync, GenericImage, Image, ImageExt, core::WaitFor, runners::AsyncRunner,
+    },
 };
 
 /// Image pull plus container start-up (including the wait for its ready message).
@@ -38,6 +40,28 @@ pub async fn within<T>(stage: impl Display, limit: Duration, work: impl Future<O
     }
 }
 
+/// The host port Docker published for `internal` of `container`, waiting up to a minute for it to be published.
+///
+/// Right after a container starts, Docker Desktop can answer that the port is not exposed (`PortNotExposed`) and publish it a
+/// moment later. The shared PostgreSQL server of every suite took that answer as final: the first test panicked holding the
+/// lock of the server and the other 308 of the run failed with `PoisonError` (2026-11-11, the runtime-role run of the schedules
+/// suite; the 129 tests that failed at once on 2026-11-10 were probably the same). A port that never appears still ends in a
+/// panic that names the port and the last answer.
+pub async fn mapped_port<I: Image>(container: &ContainerAsync<I>, internal: u16) -> u16 {
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    loop {
+        match container.get_host_port_ipv4(internal).await {
+            Ok(port) => return port,
+            Err(_) if std::time::Instant::now() < deadline => {
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+            Err(error) => panic!(
+                "the host port of container port {internal} was not published within 60 s: {error}"
+            ),
+        }
+    }
+}
+
 /// Starts a development-mode OpenBao with `root_token` and waits for it to listen.
 pub async fn start_openbao(root_token: &str) -> ContainerAsync<GenericImage> {
     let (name, tag) = OPENBAO_IMAGE;
@@ -53,11 +77,32 @@ pub async fn start_openbao(root_token: &str) -> ContainerAsync<GenericImage> {
 }
 
 /// Starts the PostgreSQL 16 a managed connection points at.
+///
+/// The container is returned once a query works on its published port. On Docker Desktop for macOS that port can share
+/// its number with a listener this process already holds on 127.0.0.1, which then answers instead of PostgreSQL
+/// (`unexpected response from SSLRequest: 0x48`, D043-171); such a container is replaced by one on another port, at most
+/// three times.
 pub async fn start_postgres_target() -> ContainerAsync<Postgres> {
-    let started = Postgres::default().with_tag("16-alpine").start();
-    within("pull and start postgres:16-alpine", START_LIMIT, started)
-        .await
-        .unwrap_or_else(|error| panic!("start postgres:16-alpine: {error}"))
+    for attempt in 1..=3 {
+        let started = Postgres::default().with_tag("16-alpine").start();
+        let container = within("pull and start postgres:16-alpine", START_LIMIT, started)
+            .await
+            .unwrap_or_else(|error| panic!("start postgres:16-alpine: {error}"));
+        let port = mapped_port(&container, 5432).await;
+        let url = format!("postgres://postgres:postgres@127.0.0.1:{port}/postgres");
+        match super::wait_until_queryable(&url).await {
+            Ok(()) => return container,
+            Err(super::AnotherServer) => {
+                eprintln!(
+                    "the host port {port} of the target PostgreSQL is answered by another server; starting another container ({attempt} of 3)"
+                );
+                drop(container);
+            }
+        }
+    }
+    panic!(
+        "three target PostgreSQL containers in a row were published on a port another server answers"
+    )
 }
 
 /// Runs a child process to its end, killing it (the command must set `kill_on_drop`) at `limit`.

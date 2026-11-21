@@ -150,7 +150,14 @@ pub async fn world_with_breaker(
     } else {
         db.pool.clone()
     };
-    let store = PgRunStore::new(store_pool.clone(), cache.clone()).with_breaker(breaker);
+    // `SAGAT_VERIFY_SKIPPED_LOADS=1`: every command of this world's store checks that the
+    // projections its definition lets it skip are empty (design 038, FR-038-005). `verify_run` makes
+    // that check whatever this is set to.
+    let store = PgRunStore::new(store_pool.clone(), cache.clone())
+        .with_breaker(breaker)
+        .with_skipped_load_verification(
+            std::env::var("SAGAT_VERIFY_SKIPPED_LOADS").is_ok_and(|value| value == "1"),
+        );
     let engine = Engine::new(JsonEvaluator);
     let key_k1 = sagat_infra_secrets::generate_key().expect("a key");
     let keys =
@@ -162,7 +169,18 @@ pub async fn world_with_breaker(
         execution_pool: store_pool,
         defs: DefinitionService::new(store.clone(), SystemClock, JsonIrCodec),
         publishing: Publishing::new(store.clone(), SystemClock, JsonIrCodec),
-        runs: RunService::new(store.clone(), SystemClock, engine.clone(), cache.clone()),
+        // The reapply of a reset is ON here, unlike in production (off unless the operator sets
+        // `SAGAT_RESET_REAPPLY_ENABLED`), so that the suites can exercise it. The production default is proved by
+        // `reapply::the_service_the_control_plane_builds_refuses_the_reapply_unless_the_operator_set_it`.
+        runs: RunService::new(store.clone(), SystemClock, engine.clone(), cache.clone())
+            .with_run_inputs(sagat_infra_schema::run_input::RunInputValidator::gate(
+                sagat_application::run_input::InputValidationMode::Enforce,
+            ))
+            .with_declared_updates(Arc::new(sagat_infra_ir::JsonDeclaredOperationEvaluator))
+            .with_reset_reapply(true)
+            // ON here, like the reapply, so that the suites can exercise it; the production default is proved by
+            // `cancel_source::the_service_the_control_plane_builds_refuses_the_cancel_of_a_source_unless_the_operator_set_it`.
+            .with_reset_cancel_source(true),
         quotas: QuotaService::new(store.clone(), SystemClock),
         bindings: BindingService::new(store.clone(), SystemClock),
         secrets: SecretService::new(store.clone(), SystemClock, keys.cipher()),
@@ -223,6 +241,9 @@ pub async fn world_with_breaker(
             SystemEntropy,
             SchedulerSettings::default(),
         )
+        .with_run_inputs(sagat_infra_schema::run_input::RunInputValidator::gate(
+            sagat_application::run_input::InputValidationMode::Enforce,
+        ))
         .with_children(cache.clone()),
         dispatcher: EventDispatcher::new(
             store.clone(),
@@ -231,6 +252,9 @@ pub async fn world_with_breaker(
             cache.clone(),
             EventDispatchSettings::default(),
         )
+        .with_run_inputs(sagat_infra_schema::run_input::RunInputValidator::gate(
+            sagat_application::run_input::InputValidationMode::Enforce,
+        ))
         .with_cron(Arc::new(sagat_infra_ir::cron::CronCalendar)),
         cache,
         worker: Principal::new(t.admin_a.tenant_id(), subject("worker-1"), Role::Worker),
@@ -375,6 +399,59 @@ pub fn parallel_node(id: &str, branches: &[&str], join: &str) -> Value {
     json!({ "id": id, "type": "parallel", "branches": branches, "join": join })
 }
 
+/// The name of the one Update [`declared_waiter`] declares.
+pub const DECLARED_OPERATION: &str = "balance.replace";
+
+/// A workflow that declares a state and one Update, and whose entry waits for a signal, so that a run
+/// of it stays open and admits the Update.
+pub fn declared_waiter(name: &str) -> Value {
+    let mut definition = document(
+        name,
+        "w",
+        vec![
+            with(
+                wait_node("w", "payment.confirmed", "input.k", 300_000, None),
+                "next",
+                json!("notify"),
+            ),
+            activity("notify"),
+        ],
+    );
+    definition["state"] = json!({
+        "schema": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {"balance": {"type": "integer"}},
+            "required": ["balance"]
+        },
+        "initial": "input.account",
+        "updates": {
+            DECLARED_OPERATION: {
+                "argsSchema": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "allowed": {"type": "boolean"},
+                        "nextState": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {"balance": {"type": "integer"}},
+                            "required": ["balance"]
+                        }
+                    },
+                    "required": ["allowed", "nextState"]
+                },
+                "validate": "args.allowed",
+                "state": "args.nextState",
+                "result": "newState.balance",
+                "resultSchema": {"type": "integer"},
+                "disclosure": "declared-business-result-v1"
+            }
+        }
+    });
+    definition
+}
+
 pub fn end_node(id: &str) -> Value {
     json!({ "id": id, "type": "end" })
 }
@@ -499,6 +576,9 @@ impl World {
             self.cache.clone(),
             settings,
         )
+        .with_run_inputs(sagat_infra_schema::run_input::RunInputValidator::gate(
+            sagat_application::run_input::InputValidationMode::Enforce,
+        ))
         .with_cron(Arc::new(sagat_infra_ir::cron::CronCalendar))
     }
 
@@ -692,7 +772,10 @@ impl World {
                 SystemClock,
                 Engine::new(JsonEvaluator),
                 cache,
-            ),
+            )
+            .with_run_inputs(sagat_infra_schema::run_input::RunInputValidator::gate(
+                sagat_application::run_input::InputValidationMode::Enforce,
+            )),
             workers: WorkerService::new(
                 store.clone(),
                 SystemClock,
@@ -1130,4 +1213,19 @@ fn unique_worker_name() -> String {
     use std::sync::atomic::{AtomicU64, Ordering};
     static NEXT: AtomicU64 = AtomicU64::new(0);
     format!("test-worker-{}", NEXT.fetch_add(1, Ordering::Relaxed))
+}
+
+/// A scheduler of `w` whose children and continuations are checked in `report` mode: an engine that admits what an
+/// `enforce` one refuses, as a peer during the upgrade may (design 043).
+pub fn scheduler_in_report(w: &World) -> Sched {
+    Scheduler::new(
+        w.store.clone(),
+        Engine::new(JsonEvaluator),
+        SystemEntropy,
+        SchedulerSettings::default(),
+    )
+    .with_run_inputs(sagat_infra_schema::run_input::RunInputValidator::gate(
+        sagat_application::run_input::InputValidationMode::Report,
+    ))
+    .with_children(w.cache.clone())
 }

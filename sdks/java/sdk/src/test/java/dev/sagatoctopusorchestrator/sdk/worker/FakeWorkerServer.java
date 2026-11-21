@@ -59,6 +59,8 @@ final class FakeWorkerServer extends WorkerServiceGrpc.WorkerServiceImplBase imp
     volatile List<Worker.ResolvedSecret> secrets = List.of();
     /** How long a poll takes to answer, and the wait the answer asks for when it brings no task. */
     volatile long pollDelayMs;
+    /** How long a CompleteStep takes to answer once it is recorded: the host heartbeats until the report returns (SPEC 6.3). */
+    volatile long completeDelayMs;
     volatile int pollRetryAfterMs = 50;
     /** Number of leases in each nonempty stream frame. */
     volatile int streamFrameSize = Integer.MAX_VALUE;
@@ -69,6 +71,11 @@ final class FakeWorkerServer extends WorkerServiceGrpc.WorkerServiceImplBase imp
     volatile boolean streamCancelled;
     /** A misbehaving service: answers a poll with every task it has, whatever {@code max_tasks} says. */
     volatile boolean ignoreMax;
+    /**
+     * Runs when a call of that method arrives, once it is recorded and before it is answered: a test holds a call in
+     * flight with it until what the test claims has happened (a barrier, never a sleep: AGENTS.md Rule 18).
+     */
+    final Map<String, Runnable> before = new ConcurrentHashMap<>();
     private final Server server;
 
     FakeWorkerServer() throws IOException {
@@ -129,16 +136,22 @@ final class FakeWorkerServer extends WorkerServiceGrpc.WorkerServiceImplBase imp
         heartbeatExpiresMs = System.currentTimeMillis() + 60_000;
         secrets = List.of();
         pollDelayMs = 0;
+        completeDelayMs = 0;
         pollRetryAfterMs = 50;
         streamFrameSize = Integer.MAX_VALUE;
         holdStreamOpen = false;
         streamFailureAfterFirst = null;
         streamCancelled = false;
         ignoreMax = false;
+        before.clear();
     }
 
     private <R> void answer(String method, Object request, StreamObserver<R> out, Function<Object, R> make) {
         calls.add(new Call(method, request, HEADERS.get(), System.nanoTime()));
+        Runnable hook = before.get(method);
+        if (hook != null) {
+            hook.run();
+        }
         Deque<Failure> queue = failures.get(method);
         Failure failure = queue == null ? null : queue.poll();
         if (failure != null) {
@@ -155,6 +168,13 @@ final class FakeWorkerServer extends WorkerServiceGrpc.WorkerServiceImplBase imp
         if (method.equals("PollTasks") && pollDelayMs > 0) {
             try {
                 TimeUnit.MILLISECONDS.sleep(pollDelayMs);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }
+        if (method.equals("CompleteStep") && completeDelayMs > 0) {
+            try {
+                TimeUnit.MILLISECONDS.sleep(completeDelayMs);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
             }

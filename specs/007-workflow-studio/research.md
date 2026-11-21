@@ -160,19 +160,19 @@ Offer intuitive authoring and operation of complex processes with a faithful dep
   origin as files of the build; the packages that carry them follow D138 (pinned by `package-lock.json`, at least two weeks old,
   `npm ci --ignore-scripts`) and are added only with the licence read. The system stacks of `base.css` stay as the fallback
   (G166).
-- **D2400 — The Studio's interface is built on the Astryx design system** ([ADR-0101](../../docs/adr/ADR-0101-the-studio-builds-its-interface-on-the-astryx-design-system.md)).
+- **D2400 — The Studio's interface is built on the Astryx design system** ([Architecture decision 0101](../../docs/adr/ADR-0101-the-studio-builds-its-interface-on-the-astryx-design-system.md)).
   Asked for by the owner on 2026-11-21, for the existing Studio and as a full migration (`docs/owner-decisions.md`). Astryx is
-  `@astryxdesign/core` 0.7.11 (Meta Open Source, MIT; the newest release that was two weeks old on that day, as D138 asks), on
-  its prebuilt stylesheets: no compiler is added to the build. This replaces the clause of D138 that excluded a UI kit with its
-  own theming; the rest of D138 holds.
+  `@astryxdesign/core` 0.7.11 (Meta Open Source, MIT; the newest release that was two weeks old on that day, as Decision 138 asks), on
+  its prebuilt stylesheets: no compiler is added to the build. This replaces the clause of Decision 138 that excluded a UI kit with its
+  own theming; the rest of Decision 138 holds.
 - **D2401 — Only `src/ui` imports Astryx.** The interface module keeps the Studio's vocabulary and maps it to Astryx, so a library
   that is before version 1.0 is held behind one directory. The linter refuses an Astryx import, and a raw `button`, `input`, `select`,
   `textarea`, `dialog`, `table` or heading element, anywhere else. Rejected: importing Astryx in feature code (about seventy
   modules would follow its interface), chosen against the simpler option on the owner's rule of 2026-11-20 (the architecturally
   stronger option wins).
-- **D2402 — The recorded direction becomes the Studio's own Astryx theme, `sagat`.** D154, D155, D157 and D159 are unchanged in what
+- **D2402 — The recorded direction becomes the Studio's own Astryx theme, `sagat`.** Decision 154, Decision 155, Decision 157 and Decision 159 are unchanged in what
   they require: the dark roles of the owner's export, the accessible light derivation, the system colour scheme by default, bundled
-  Geist faces. They are now values of `src/ui/theme/roles.ts`, mapped by `sagatTheme.ts` and applied from that source when the application starts (no generated stylesheet and no Astryx command line tool in the dependencies: ADR-0101), whose mapping and contrast
+  Geist faces. They are now values of `src/ui/theme/roles.ts`, mapped by `sagatTheme.ts` and applied from that source when the application starts (no generated stylesheet and no Astryx command line tool in the dependencies: Architecture decision 0101), whose mapping and contrast
   pairs a test checks. A stock Astryx theme is not shipped. The Studio's layout sizes that Astryx has no token for (sidebar width,
   graph card sizes) stay Studio tokens in `base.css`.
 - **D2403 — Astryx's behaviour is adopted where it differs from the hand-written controls.** A selector is a `combobox` with a
@@ -181,7 +181,7 @@ Offer intuitive authoring and operation of complex processes with a faithful dep
   linked to its control and announced through Astryx's live region, not drawn as an `alert` element. In a strip of tabs an arrow
   moves the focus and Enter or Space selects. The tests and the browser journeys assert these through helpers (`test/ui.ts`) that
   do not depend on which attribute a release uses.
-- **D2404 — The accessibility floor still wins (D155).** Where an Astryx component lacks something FR-007-008 needs, the interface
+- **D2404 — The accessibility floor still wins (Decision 155).** Where an Astryx component lacks something Requirement 007-008 needs, the interface
   module adds it: an error or warning banner is announced (`role="alert"`), a status is a word and a shape as well as a colour.
   Each such addition is listed in `design/README.md`.
 
@@ -289,11 +289,11 @@ Offer intuitive authoring and operation of complex processes with a faithful dep
   `409`), so it is a feature of the Studio with its own confirmation, permission and tests, not a restyle. Not built here; the
   owner decides whether it is part of 007.
 - **G2400 — Astryx is before version 1.0.** A minor version may change a component's interface. Bounded by the exact pin, the
-  import boundary (D2401) and the upgrade rule of ADR-0101; not removed.
+  import boundary (Decision 2401) and the upgrade rule of Architecture decision 0101; not removed.
 - **G2401 — The owner has not reviewed the Studio as Astryx draws it.** The approval of 2026-10-11 was of the hand-written
   interface. The `sagat` theme keeps the recorded colours and typefaces, but the shape, spacing and motion of the controls are now
   Astryx's. A person's review of the screens is owed; no tool judges intent.
-- **G2402 — ADR-0101 is proposed, not accepted.** The owner gave the direction; the rules of the record (boundary, theme, no
+- **G2402 — Architecture decision 0101 is proposed, not accepted.** The owner gave the direction; the rules of the record (boundary, theme, no
   compiler) are an agent's proposal.
 - **G168 — The prototype's *Timeline* (a bar per step over elapsed time) has no counterpart.** The Studio's *Timeline* tab is the
   journal, which is what the prototype calls *Event history*. A bar view is a new view over the step times of the graph (and, for a

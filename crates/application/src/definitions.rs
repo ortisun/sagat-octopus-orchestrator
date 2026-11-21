@@ -89,6 +89,36 @@ pub struct IrIssue {
     pub message: String,
 }
 
+/// Why publication refuses one stage of an operator chain (design 042, FR-042-001/002/005). Closed; the API words it as
+/// `details.refusal`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OperatorRefusal {
+    /// The name is not an operator at all.
+    Unknown,
+    /// The operator exists, but on another surface (`debounce` and `ignoreElements` are a trigger's).
+    Surface,
+    /// A parameter outside its range (`window {count: 0}`, `skip {count: 1001}`).
+    Range,
+    /// An expression is over its limits or does not compile in the bounded language.
+    Expression,
+    /// An expression reads a variable a stage does not see (`item`, `index`, `iteration`, `carry`, `bodyResult`, or a name
+    /// outside `element`, `position`, `input`, `steps`, `run`, `state`).
+    Variable,
+}
+
+impl OperatorRefusal {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Unknown => "UNKNOWN",
+            Self::Surface => "SURFACE",
+            Self::Range => "RANGE",
+            Self::Expression => "EXPRESSION",
+            Self::Variable => "VARIABLE",
+        }
+    }
+}
+
 /// Why a workflow document cannot be published.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum IrError {
@@ -119,6 +149,36 @@ pub enum IrError {
         dependency: &'static str,
         reason: &'static str,
     },
+    /// The definition holds an Apache Iceberg write and this deployment has not turned the lake on
+    /// (`lake.enabled`, off by default; the contract code is `LAKE_DISABLED`).
+    #[error(
+        "node '{node}' is an Apache Iceberg write, and this deployment has not enabled the lake"
+    )]
+    LakeDisabled { node: String },
+    /// The settings of the connection of an Apache Iceberg write refuse it: a mode it does not allow, or fields above its
+    /// ceiling (`MODE_NOT_ALLOWED`, `CLASSIFICATION_EGRESS_REFUSED`). The paths and classes are in the details.
+    #[error("{}", lake_refusal_message(node, refusal))]
+    LakeWriteRefused {
+        node: String,
+        refusal: sagat_domain::database::LakeRefusal,
+    },
+    /// A stage of a `forEach` operator chain that publication refuses (design 042). It names the node, the stage index and
+    /// the operator, never a value of a run; `operator` is the name the document wrote, clipped.
+    #[error("node '{node}', operators[{stage}] ('{operator}'): {message}")]
+    Operator {
+        node: String,
+        stage: usize,
+        operator: String,
+        refusal: OperatorRefusal,
+        message: String,
+    },
+    /// The definition holds a `forEach` with `operators` and this deployment has not turned collection operators on
+    /// (`collection-operators`, off by default; the contract code is `COLLECTION_OPERATORS_DISABLED`). Checked at
+    /// publication only: a stored definition stays readable (FR-042-003).
+    #[error(
+        "node '{node}' is a collection with operators, and this deployment has not enabled collection operators"
+    )]
+    CollectionOperatorsDisabled { node: String },
     #[error("declaration '{field}' is not supported yet: {reason}")]
     UnsupportedDeclaration {
         field: &'static str,
@@ -144,6 +204,59 @@ pub enum IrError {
     /// A `script` node pins an artifact that no ready version of the tenant built.
     #[error("a script node pins the artifact {digest}, which was not built for this tenant")]
     UnknownScript { digest: String },
+    /// The `inputSchema` is outside the supported subset of design 043 and publication runs in `enforce` mode
+    /// (FR-043-012): `issue` is the closed code, `keyword` the keyword refused and `path` its JSON pointer in the
+    /// document (`/inputSchema/...`). Both are the author's vocabulary, never a value of an input.
+    #[error("{}", input_schema_message(*issue, keyword))]
+    InputSchema {
+        issue: sagat_domain::workflow::InputSchemaIssue,
+        keyword: String,
+        path: String,
+    },
+    /// The pre-check of the `inputSchema` found no permit of the run-input validator within its wait, or the validator
+    /// panicked (design 043, D043-177, D043-186): transient, the document is not judged; the caller sends it again (`503`).
+    #[error("the run-input validator is busy; send the document again")]
+    ValidatorBusy,
+}
+
+fn input_schema_message(issue: sagat_domain::workflow::InputSchemaIssue, keyword: &str) -> String {
+    if keyword.is_empty() {
+        issue.message().to_owned()
+    } else {
+        format!("{} (keyword '{keyword}')", issue.message())
+    }
+}
+
+/// What publication does with an `inputSchema` outside the supported subset (design 043, D043-051, D043-073). The
+/// control plane passes the mode of its process and `sagat validate` its `--input-validation` flag; `enforce` unless
+/// one of them says `report`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum InputValidationMode {
+    /// A schema outside the subset refuses the publication, naming the keyword and its pointer.
+    #[default]
+    Enforce,
+    /// The same finding is a warning, and the version is published (its starts are refused in `enforce` mode).
+    Report,
+}
+
+impl InputValidationMode {
+    /// The mode named `enforce` or `report`; `None` for anything else.
+    #[must_use]
+    pub fn parse(text: &str) -> Option<Self> {
+        match text {
+            "enforce" => Some(Self::Enforce),
+            "report" => Some(Self::Report),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Enforce => "enforce",
+            Self::Report => "report",
+        }
+    }
 }
 
 /// How serious something a dry-run validation found is.
@@ -218,6 +331,24 @@ impl Validation {
     }
 }
 
+/// The most problems one refused step reports, so the answer stays short however many fields it maps.
+const MAX_LAKE_REFUSAL_PROBLEMS: usize = 20;
+
+/// The message of a refused step. It names the node and the mode and never a field: the paths and classes travel in the
+/// details and in the problems.
+fn lake_refusal_message(node: &str, refusal: &sagat_domain::database::LakeRefusal) -> String {
+    use sagat_domain::database::LakeRefusal;
+    match refusal {
+        LakeRefusal::ModeNotAllowed(mode) => format!(
+            "node '{node}' writes in mode '{}', which its connection does not allow",
+            mode.as_str()
+        ),
+        LakeRefusal::Egress(_) => {
+            format!("node '{node}' writes fields its connection does not accept")
+        }
+    }
+}
+
 /// The problems that make `error` unpublishable, one per thing wrong that the codec found.
 #[must_use]
 pub fn problems_of(error: &IrError) -> Vec<Problem> {
@@ -252,6 +383,19 @@ pub fn problems_of(error: &IrError) -> Vec<Problem> {
         IrError::Unsupported { node, .. } | IrError::Pending { node, .. } => {
             vec![Problem::error("UNSUPPORTED_NODE", error.to_string()).at_node(node.clone())]
         }
+        IrError::LakeDisabled { node } => {
+            vec![Problem::error("LAKE_DISABLED", error.to_string()).at_node(node.clone())]
+        }
+        IrError::LakeWriteRefused { node, refusal } => lake_refusal_problems(node, refusal),
+        // As for an expression, the message names the stage: `path` is a pointer into the document, and the codec knows
+        // the node by its id.
+        IrError::Operator { node, .. } => {
+            vec![Problem::error("INVALID_OPERATOR", error.to_string()).at_node(node.clone())]
+        }
+        IrError::CollectionOperatorsDisabled { node } => vec![
+            Problem::error("COLLECTION_OPERATORS_DISABLED", error.to_string())
+                .at_node(node.clone()),
+        ],
         IrError::UnsupportedDeclaration { field, .. } => {
             vec![Problem::error("UNSUPPORTED_NODE", error.to_string()).at_path(format!("/{field}"))]
         }
@@ -262,6 +406,10 @@ pub fn problems_of(error: &IrError) -> Vec<Problem> {
         }
         IrError::NameMismatch { .. } => vec![Problem::error("NAME_MISMATCH", error.to_string())],
         IrError::UnknownScript { .. } => vec![Problem::error("UNKNOWN_SCRIPT", error.to_string())],
+        IrError::InputSchema { issue, path, .. } => {
+            vec![Problem::error(issue.as_str(), error.to_string()).at_path(path.clone())]
+        }
+        IrError::ValidatorBusy => vec![Problem::error("VALIDATOR_BUSY", error.to_string())],
         IrError::Invalid(rule) => {
             let (code, node) = graph_rule(rule);
             let problem = Problem::error(code, rule.to_string());
@@ -283,6 +431,8 @@ fn graph_rule(error: &WorkflowError) -> (&'static str, Option<String>) {
     use WorkflowError as E;
     match error {
         E::InvalidDatabaseNode => ("INVALID_DATABASE_NODE", None),
+        E::InvalidIcebergNode => ("INVALID_ICEBERG_NODE", None),
+        E::IcebergNodeNotRoot => ("ICEBERG_NODE_NOT_ROOT", None),
         E::InvalidNodeId(id) => ("INVALID_NODE_ID", Some(id.clone())),
         E::InvalidActivityName(_) => ("INVALID_ACTIVITY_NAME", None),
         E::InvalidEventType(_) => ("INVALID_EVENT_TYPE", None),
@@ -325,19 +475,62 @@ fn graph_rule(error: &WorkflowError) -> (&'static str, Option<String>) {
     }
 }
 
-fn warning_problem(warning: &DefinitionWarning) -> Problem {
-    let (code, node) = match warning {
+/// The problem a warning is reported as: its code and where it is, a node or a pointer into the document.
+#[must_use]
+pub fn warning_problem(warning: &DefinitionWarning) -> Problem {
+    let (code, node, path) = match warning {
         DefinitionWarning::CompensationOutsideSaga { node } => {
-            ("COMPENSATION_OUTSIDE_SAGA", node.to_string())
+            ("COMPENSATION_OUTSIDE_SAGA", Some(node.to_string()), None)
         }
-        DefinitionWarning::RecursiveChild { node } => ("RECURSIVE_CHILD", node.to_string()),
+        DefinitionWarning::RecursiveChild { node } => {
+            ("RECURSIVE_CHILD", Some(node.to_string()), None)
+        }
+        DefinitionWarning::InputSchemaOutsideSubset { issue, at, .. } => {
+            (issue.as_str(), None, Some(format!("/inputSchema{at}")))
+        }
+        DefinitionWarning::InputSchemaAppliesToTriggers => (
+            "INPUT_SCHEMA_APPLIES_TO_TRIGGERS",
+            None,
+            Some("/inputSchema".to_owned()),
+        ),
     };
     Problem {
         severity: Severity::Warning,
         code,
         message: warning.to_string(),
-        node: Some(node),
-        path: None,
+        node,
+        path,
+    }
+}
+
+/// The problems of a refused Apache Iceberg write: one for a mode, one for each field above the ceiling (bounded).
+fn lake_refusal_problems(
+    node: &str,
+    refusal: &sagat_domain::database::LakeRefusal,
+) -> Vec<Problem> {
+    use sagat_domain::database::{EgressRefusal, LakeRefusal};
+    match refusal {
+        LakeRefusal::ModeNotAllowed(_) => vec![
+            Problem::error("MODE_NOT_ALLOWED", lake_refusal_message(node, refusal))
+                .at_node(node.to_owned()),
+        ],
+        LakeRefusal::Egress(refusals) => refusals
+            .iter()
+            .take(MAX_LAKE_REFUSAL_PROBLEMS)
+            .map(|each| {
+                let message = match each {
+                    EgressRefusal::Field { path, level } => format!(
+                        "field '{path}' is {} and its connection does not accept that",
+                        level.as_str()
+                    ),
+                    EgressRefusal::NotComputed => {
+                        "the fields of this step were never classified, so its connection cannot vouch for them"
+                            .to_owned()
+                    }
+                };
+                Problem::error("CLASSIFICATION_EGRESS_REFUSED", message).at_node(node.to_owned())
+            })
+            .collect(),
     }
 }
 
@@ -358,6 +551,13 @@ pub struct ParsedDefinition {
     pub warnings: Vec<DefinitionWarning>,
 }
 
+fn no_private_documents() -> IrError {
+    IrError::Schema(vec![IrIssue {
+        path: String::new(),
+        message: "this codec has no private documents".to_owned(),
+    }])
+}
+
 /// Parses, validates and canonicalises a workflow document (implemented by `sagat-infra-ir`).
 pub trait IrCodec: Send + Sync {
     /// Cheap check that a draft is storable: well-formed JSON, an object, within
@@ -371,6 +571,21 @@ pub trait IrCodec: Send + Sync {
     /// An [`IrError`] describing why the document cannot be published.
     fn parse(&self, document: &[u8]) -> Result<ParsedDefinition, IrError>;
 
+    /// [`Self::parse`] with the mode of the `inputSchema` pre-check given (design 043, D043-073): in
+    /// [`InputValidationMode::Enforce`] a schema outside the supported subset refuses the document
+    /// ([`IrError::InputSchema`]); in [`InputValidationMode::Report`] it is a warning. [`Self::parse`] is the enforce
+    /// mode. A codec that does not pre-check schemas keeps the default, which ignores the mode.
+    ///
+    /// # Errors
+    /// As [`Self::parse`].
+    fn parse_with(
+        &self,
+        document: &[u8],
+        _mode: InputValidationMode,
+    ) -> Result<ParsedDefinition, IrError> {
+        self.parse(document)
+    }
+
     /// Restores the executable IR of an already persisted immutable version. Publication-time
     /// metadata checks must not reinterpret an older version's business execution. Syntax,
     /// structural limits, expressions and supported execution capabilities still fail closed.
@@ -380,6 +595,25 @@ pub trait IrCodec: Send + Sync {
     /// An [`IrError`] for an unreadable/unsupported execution definition.
     fn parse_stored(&self, document: &[u8]) -> Result<ParsedDefinition, IrError> {
         self.parse(document)
+    }
+
+    /// The authoring parse of a **private** document (ADR-0080): a definition the platform writes for itself, with node types no author may
+    /// write. Only the entry that builds such a document calls it. A codec with no private grammar refuses every document here, so a
+    /// private document fails closed.
+    ///
+    /// # Errors
+    /// An [`IrError`]; always, for a codec with no private grammar.
+    fn parse_private(&self, _document: &[u8]) -> Result<ParsedDefinition, IrError> {
+        Err(no_private_documents())
+    }
+
+    /// The restore of a stored **private** definition (ADR-0080), chosen by the loader from the workflow's `internal` flag and never from
+    /// the document. A codec with no private grammar refuses it.
+    ///
+    /// # Errors
+    /// An [`IrError`]; always, for a codec with no private grammar.
+    fn parse_stored_private(&self, _document: &[u8]) -> Result<ParsedDefinition, IrError> {
+        Err(no_private_documents())
     }
 
     /// Bounded authoring report, independent of tenant data and persistence.
@@ -400,6 +634,19 @@ pub trait IrCodec: Send + Sync {
         _document: &[u8],
     ) -> Result<Option<crate::declared_operations::PublishedDeclaredState>, IrError> {
         Ok(None)
+    }
+
+    /// The same for the stored document of a **private** version (ADR-0080), which run creation reads as it reads any version: through the
+    /// private entry, because the workflow is private, and never because of what the document says. A codec with no private grammar
+    /// refuses it.
+    ///
+    /// # Errors
+    /// An [`IrError`]; always, for a codec with no private grammar.
+    fn declared_state_publication_private(
+        &self,
+        _document: &[u8],
+    ) -> Result<Option<crate::declared_operations::PublishedDeclaredState>, IrError> {
+        Err(no_private_documents())
     }
 
     /// Evaluates a schema-checked initial state from the exact input of a new run.
@@ -534,16 +781,23 @@ pub trait DefinitionStore: QuotaLookup + SecretAccessLookup + ScriptLookup + Sen
         definition: &WorkflowDefinition,
     ) -> impl Future<Output = Result<(), StoreError>> + Send {
         async move {
-            if definition
-                .nodes()
-                .any(|node| node.database_operation().is_some())
-            {
+            // An Iceberg write has no admission yet (T035-054): an adapter without lake support refuses it too.
+            if definition.nodes().any(|node| node.managed_kind().is_some()) {
                 Err(StoreError::DatabaseUnavailable)
             } else {
                 Ok(())
             }
         }
     }
+    /// Reads the committed result of a publication with the same key and fingerprint. Never
+    /// validates the current draft, moves the active pointer or writes another audit record.
+    fn replay_publication(
+        &self,
+        tenant: TenantId,
+        workflow: WorkflowId,
+        idempotency: &Idempotency,
+    ) -> impl Future<Output = Result<Option<VersionRecord>, StoreError>> + Send;
+
     /// Resolves a namespace by slug inside `tenant`.
     fn find_namespace_by_slug(
         &self,
@@ -685,6 +939,13 @@ pub struct DefinitionService<S, C, X> {
     store: S,
     clock: C,
     codec: X,
+    /// `lake.enabled`: whether a definition may hold an Apache Iceberg write. Off unless the deployment says so.
+    lake_enabled: bool,
+    /// What publication does with an `inputSchema` outside the supported subset (design 043): the process's mode.
+    input_validation: InputValidationMode,
+    /// `collection-operators` (design 042): whether a `forEach` may declare `operators`. Off unless the deployment says
+    /// so. Checked at publication only; a stored definition stays readable whatever it is (FR-042-003).
+    collection_operators_enabled: bool,
 }
 
 impl<S: DefinitionStore, C: Clock, X: IrCodec> DefinitionService<S, C, X> {
@@ -693,7 +954,68 @@ impl<S: DefinitionStore, C: Clock, X: IrCodec> DefinitionService<S, C, X> {
             store,
             clock,
             codec,
+            lake_enabled: false,
+            input_validation: InputValidationMode::Enforce,
+            collection_operators_enabled: false,
         }
+    }
+
+    /// Publication and its dry run apply `mode` to an `inputSchema` outside the supported subset (D043-073):
+    /// `enforce` (the default) refuses it, `report` warns.
+    #[must_use]
+    pub const fn with_input_validation(mut self, mode: InputValidationMode) -> Self {
+        self.input_validation = mode;
+        self
+    }
+
+    /// Lets a definition hold an Apache Iceberg write (the deployment's `lake.enabled`). The store still decides
+    /// whether this one may be published.
+    #[must_use]
+    pub const fn with_lake_enabled(mut self, enabled: bool) -> Self {
+        self.lake_enabled = enabled;
+        self
+    }
+
+    /// Lets a `forEach` declare `operators` (the deployment's `collection-operators`, design 042).
+    #[must_use]
+    pub const fn with_collection_operators_enabled(mut self, enabled: bool) -> Self {
+        self.collection_operators_enabled = enabled;
+        self
+    }
+
+    /// The first collection with a chain that this deployment may not publish, if there is one: in the root graph or in a
+    /// body.
+    fn refused_collection_operator_node<'a>(
+        &self,
+        definition: &'a WorkflowDefinition,
+    ) -> Option<&'a NodeId> {
+        if self.collection_operators_enabled {
+            return None;
+        }
+        definition
+            .nodes()
+            .chain(definition.bodies().flat_map(|body| body.nodes()))
+            .find(|node| {
+                matches!(
+                    node.kind(),
+                    sagat_domain::workflow::NodeKind::ForEach {
+                        operators: Some(_),
+                        ..
+                    }
+                )
+            })
+            .map(sagat_domain::workflow::Node::id)
+    }
+
+    /// The first Iceberg write of a definition that this deployment may not publish, if there is one.
+    fn refused_lake_node<'a>(&self, definition: &'a WorkflowDefinition) -> Option<&'a NodeId> {
+        if self.lake_enabled {
+            return None;
+        }
+        definition
+            .nodes()
+            .find(|node| node.iceberg_write().is_some())
+            .map(sagat_domain::workflow::Node::id)
     }
 
     /// A draft is any JSON object up to [`MAX_IR_BYTES`]; full validation happens at publish.
@@ -921,13 +1243,27 @@ impl<S: DefinitionStore, C: Clock, X: IrCodec> DefinitionService<S, C, X> {
         }
         let parsed = self
             .codec
-            .parse(&record.draft)
+            .parse_with(&record.draft, self.input_validation)
             .map_err(|e| AppError::InvalidDefinition(Box::new(e)))?;
         if parsed.definition.name() != record.workflow.name() {
             return Err(AppError::InvalidDefinition(Box::new(
                 IrError::NameMismatch {
                     document: parsed.definition.name().as_str().to_owned(),
                     workflow: record.workflow.name().as_str().to_owned(),
+                },
+            )));
+        }
+        if let Some(node) = self.refused_lake_node(&parsed.definition) {
+            return Err(AppError::InvalidDefinition(Box::new(
+                IrError::LakeDisabled {
+                    node: node.as_str().to_owned(),
+                },
+            )));
+        }
+        if let Some(node) = self.refused_collection_operator_node(&parsed.definition) {
+            return Err(AppError::InvalidDefinition(Box::new(
+                IrError::CollectionOperatorsDisabled {
+                    node: node.as_str().to_owned(),
                 },
             )));
         }
@@ -968,7 +1304,27 @@ impl<S: DefinitionStore, C: Clock, X: IrCodec> DefinitionService<S, C, X> {
     ) -> Result<Published, AppError> {
         principal.authorize(Permission::DefinitionPublish)?;
         check_release_notes(release_notes)?;
-        let (_, parsed) = self.prepare(principal, id, draft_revision, ctx).await?;
+        let (_, parsed) = match self.prepare(principal, id, draft_revision, ctx).await {
+            Ok(prepared) => prepared,
+            // D042-105: a publication asked again with its own key after the switch was turned off is answered by
+            // the store's replay, as it would have been with the switch on; only a new publication reads the switch.
+            Err(AppError::InvalidDefinition(error))
+                if matches!(*error, IrError::CollectionOperatorsDisabled { .. }) =>
+            {
+                return self
+                    .replay_refused(
+                        principal,
+                        id,
+                        draft_revision,
+                        release_notes,
+                        key,
+                        ctx,
+                        error,
+                    )
+                    .await;
+            }
+            Err(error) => return Err(error),
+        };
         let declared_state = self
             .codec
             .declared_state_publication(&parsed.canonical)
@@ -1043,6 +1399,40 @@ impl<S: DefinitionStore, C: Clock, X: IrCodec> DefinitionService<S, C, X> {
         }
     }
 
+    /// The answer to a publication the switch refused: the version an earlier publication with the same key and
+    /// fingerprint committed, or the refusal itself when there is none (D042-105).
+    #[allow(clippy::too_many_arguments)]
+    async fn replay_refused(
+        &self,
+        principal: &Principal,
+        id: WorkflowId,
+        draft_revision: u64,
+        release_notes: Option<&str>,
+        key: &str,
+        ctx: &RequestContext,
+        refusal: Box<IrError>,
+    ) -> Result<Published, AppError> {
+        let record = self.get_workflow(principal, id, ctx).await?;
+        let parsed = self
+            .codec
+            .parse(&record.draft)
+            .map_err(|e| AppError::InvalidDefinition(Box::new(e)))?;
+        let idempotency =
+            publication_idempotency(id, draft_revision, parsed.digest, release_notes, key);
+        match self
+            .store
+            .replay_publication(principal.tenant_id(), id, &idempotency)
+            .await?
+        {
+            Some(stored) => Ok(Published {
+                version: stored.version,
+                created: false,
+                warnings: parsed.warnings,
+            }),
+            None => Err(AppError::InvalidDefinition(refusal)),
+        }
+    }
+
     /// A dry run of what [`Self::publish`] checks: the document given (or, with none, the stored
     /// draft) against the schema, the graph rules, the expressions, the secrets the caller may use
     /// and the scripts that were built. Nothing is stored, nothing is audited, and a document that
@@ -1050,7 +1440,9 @@ impl<S: DefinitionStore, C: Clock, X: IrCodec> DefinitionService<S, C, X> {
     ///
     /// # Errors
     /// [`AppError::Forbidden`] without `definition:write`; [`AppError::NotFound`] for an unknown
-    /// workflow (another tenant's is also not found, and audited).
+    /// workflow (another tenant's is also not found, and audited); [`AppError::InvalidDefinition`] with
+    /// [`IrError::ValidatorBusy`] when the `inputSchema` could not be pre-checked now (no permit, or a panic of the
+    /// validator): the document was not judged (design 043, D043-183).
     pub async fn validate(
         &self,
         principal: &Principal,
@@ -1078,8 +1470,15 @@ impl<S: DefinitionStore, C: Clock, X: IrCodec> DefinitionService<S, C, X> {
                 })
                 .collect::<Vec<_>>()
         });
-        let parsed = match self.codec.parse(bytes) {
+        let parsed = match self.codec.parse_with(bytes, self.input_validation) {
             Ok(parsed) => parsed,
+            // the pre-check found no permit: the document was not judged, so the dry run is unavailable, never a
+            // problem of the document (design 043, D043-183)
+            Err(IrError::ValidatorBusy) => {
+                return Err(AppError::InvalidDefinition(Box::new(
+                    IrError::ValidatorBusy,
+                )));
+            }
             Err(error) => {
                 return Ok(Validation {
                     problems: problems_of(&error),
@@ -1101,6 +1500,16 @@ impl<S: DefinitionStore, C: Clock, X: IrCodec> DefinitionService<S, C, X> {
                 .await?,
         );
         problems.extend(self.unknown_scripts(principal, &parsed.definition).await?);
+        if let Some(node) = self.refused_lake_node(&parsed.definition) {
+            problems.extend(problems_of(&IrError::LakeDisabled {
+                node: node.as_str().to_owned(),
+            }));
+        }
+        if let Some(node) = self.refused_collection_operator_node(&parsed.definition) {
+            problems.extend(problems_of(&IrError::CollectionOperatorsDisabled {
+                node: node.as_str().to_owned(),
+            }));
+        }
         match self
             .store
             .check_database_access(
@@ -1119,6 +1528,9 @@ impl<S: DefinitionStore, C: Clock, X: IrCodec> DefinitionService<S, C, X> {
                 "DATABASE_LIMIT_EXCEEDED",
                 "a database operation exceeds connection limits",
             )),
+            Err(StoreError::LakeRefused { node, refusal }) => {
+                problems.extend(lake_refusal_problems(&node, &refusal));
+            }
             Err(error) => return Err(error.into()),
         }
         let valid = problems.is_empty();

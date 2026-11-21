@@ -124,6 +124,94 @@ fn prohibited(ip: IpAddr, development: bool) -> bool {
             !((s[0] & 0xe000 == 0x2000) || (s[0] & 0xfe00 == 0xfc00))
                 || s[0] == 0x2002
                 || (s[0] == 0x2001 && s[1] == 0)
+                || s == AWS_IPV6_METADATA
+                || s == GCE_IPV6_METADATA
         }
+    }
+}
+
+/// The cloud metadata services reached over IPv6 (D035-061). They are inside `fc00::/7`, which is allowed above, so
+/// they are named: `fd00:ec2::254` (AWS) and `fd20:ce::254` (Google Compute Engine).
+const AWS_IPV6_METADATA: [u16; 8] = [0xfd00, 0x0ec2, 0, 0, 0, 0, 0, 0x0254];
+const GCE_IPV6_METADATA: [u16; 8] = [0xfd20, 0x00ce, 0, 0, 0, 0, 0, 0x0254];
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    fn address(text: &str) -> IpAddr {
+        text.parse().expect("an IP address")
+    }
+
+    /// D035-061: the cloud metadata services reached over IPv6 lie inside the ULA range `fc00::/7`, which is otherwise
+    /// allowed, so they are named. They are refused in development too, as the IPv4 link-local range is.
+    #[test]
+    fn the_ipv6_metadata_addresses_are_prohibited_even_in_development() {
+        for text in ["fd00:ec2::254", "fd20:ce::254"] {
+            for development in [false, true] {
+                assert!(
+                    prohibited(address(text), development),
+                    "{text} development={development}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_prohibition_is_the_two_addresses_and_not_their_neighbourhood() {
+        for text in [
+            "fd00:ec2::253",
+            "fd00:ec2::255",
+            "fd00:ec2::1:254",
+            "fd20:ce::253",
+            "fd20:ce::1",
+            "fd00:ec3::254",
+        ] {
+            assert!(!prohibited(address(text), false), "{text}");
+        }
+    }
+
+    #[test]
+    fn an_ipv4_mapped_form_of_a_metadata_address_is_still_refused() {
+        // `validate_addresses` canonicalizes an address before it asks `prohibited`, as this does.
+        for text in ["::ffff:169.254.169.254", "::ffff:100.100.100.200"] {
+            assert!(prohibited(address(text).to_canonical(), false), "{text}");
+        }
+    }
+
+    /// A policy that allows the whole of `fd00::/8` and `fd20::/16` still refuses them.
+    #[test]
+    fn a_policy_that_allows_the_ula_range_refuses_the_metadata_addresses() {
+        let scope = DestinationScope::new(
+            vec!["fd00::/8".parse().unwrap(), "fd20::/16".parse().unwrap()],
+            vec![443],
+        )
+        .expect("a scope");
+        let policy = NetworkPolicy::new(scope.clone(), Vec::new(), false).expect("a policy");
+
+        for text in ["fd00:ec2::254", "fd20:ce::254"] {
+            assert!(
+                matches!(
+                    policy.validate_destination(&[address(text)], 443, &scope),
+                    Err(ExecutionError::DestinationDenied)
+                ),
+                "{text}"
+            );
+        }
+        // an answer that mixes a safe address with a metadata one is refused as a whole
+        assert!(matches!(
+            policy.validate_destination(
+                &[address("fd00:1::5"), address("fd00:ec2::254")],
+                443,
+                &scope
+            ),
+            Err(ExecutionError::DestinationDenied)
+        ));
+        assert!(
+            policy
+                .validate_destination(&[address("fd00:1::5")], 443, &scope)
+                .is_ok()
+        );
     }
 }

@@ -65,6 +65,13 @@ and validation errors without publishing or executing a collection. The fixture 
 named bodies that reuse local node IDs and covers `forEach`, its `map` alias and bounded options.
 It does not count as collection runtime conformance.
 
+`collection-operators.json` checks the operators of a `forEach` and of its `map` alias in the six SDKs (design 042,
+FR-042-028). It is build-only: each runner translates the scenario's stages into its SDK's operator factory, and the
+reviewed golden holds one collection with a chain of every operator (`distinct` with and without `by`, eight stages),
+one `map` with a short chain and one collection without operators. The server's canonical encoding is the reference:
+`contract_workflow_primitives` decodes the golden on publication and compares its canonical text and its chain. The
+runtime behaviour is `collection-operators-runtime` and `collection-operators-limits`, not written yet.
+
 `loop-builders.json` checks additive v1 `while` and `repeatUntil` authoring in the five SDKs.
 It is build-only while durable loop execution remains disabled. The reviewed fixture covers pre-test
 and post-test shapes, the maximum iteration and duration bounds, optional durable delay/error routing,
@@ -290,6 +297,17 @@ SAGAT_SDK_SCENARIO=chain-query-handoff cargo test -p sagat-tests --test sdk_conf
 SAGAT_SDK_SCENARIO=chain-final-success cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
 SAGAT_SDK_SCENARIO=chain-state-final-success cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
 SAGAT_SDK_SCENARIO=chain-commands cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
+
+# feature 018 (specs/018-schedules-bulk-operations/contracts/sdk-conformance.md)
+SAGAT_SDK_SCENARIO=schedules-crud cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
+SAGAT_SDK_SCENARIO=schedules-operate cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
+SAGAT_SDK_SCENARIO=schedules-overlap cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
+SAGAT_SDK_SCENARIO=business-ids cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
+SAGAT_SDK_SCENARIO=start-delay cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
+SAGAT_SDK_SCENARIO=signal-with-start cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
+SAGAT_SDK_SCENARIO=update-with-start cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
+SAGAT_SDK_SCENARIO=batch-operations cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
+SAGAT_SDK_SCENARIO=reset cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
 ```
 
 ## Pending scenarios
@@ -409,6 +427,7 @@ the server without an SDK API: `expireLease {run, node}`, `elapseRetryDelay {run
 |---|---|---|
 | `step` | `id`, `activity`, `options?` | `step` (options named as in `workflow.schema.json`: `retry`, `timeoutMs`, `compensateWith`, `reconcileWith`, `idempotencyTemplate`, `secrets`, `compensationRetry`, `compensationTimeoutMs`, `irreversible`, `highRisk`, `onError`) |
 | `database` | `id`, `options` (`connectionRef`, `operation`, `statement`, `parameters?`, `limits?`, `timeoutMs?`, `onError?`) | `database`; [typed values and expression bindings](../../../docs/guides/managed-database-sdk.md) |
+| `icebergWrite` | `id`, `options` (`connectionRef`, `table`, `records`, `ref?`, `mapping?`, `ignoreUnknownFields?`, `limits?`, `compensation?`, `onError?`) | `icebergWrite` (`iceberg_write` in Python and Rust); append only, the mode is always `append`; the `iceberg-write-builders` scenario is build-only |
 | `sleep` | `id`, `durationMs` | `sleep` |
 | `waitForEvent` | `id`, `options` (`eventType`, `correlationExpr`, `timeoutMs`, `onTimeout?`, `lookbackMs?`) | `waitForEvent` |
 | `invokeChild` | `id`, `workflow`, `options?` | `invokeChild` |
@@ -499,10 +518,40 @@ stop the scenario.
 | `awaitWorkerLog` | `worker`, `count`, `timeoutMs` | waits until the worker's log has `count` entries | none |
 | `workflowByName` | `name`, `input` | `start` with the workflow **name** | the Run |
 
+**Feature 018 steps** (schedules, business identifiers, batch jobs, with-start, reset; `sdks/SPEC.md` §3.1). Each is one
+client call and its observation is the JSON the TypeScript runner writes (`sdks/typescript/conformance/runner.ts`:
+`scheduleJson`, `actionJson`, `descriptionJson`, `backfillJson`, `jobJson`, `resetJson`, `receiptJson`), which is the
+reference for the field names:
+
+| `op` | Fields | Calls |
+|---|---|---|
+| `start` (extended) | `businessId?`, `businessIdConflictPolicy?`, `businessIdReusePolicy?`, `startDelayMs?` | `start`; the Run gains `businessId` and `startDelayedUntil` when present, and `started` when the step has a `businessId` |
+| `scheduleCreate` / `scheduleUpdate` | `write` (a schedule; its `action.workflowId` is `{{workflow:<key>}}`), `schedule` and `expectedRevision` for an update, `idempotencyKey?` | `schedules.create` / `update` |
+| `scheduleGet`, `scheduleDelete`, `schedulePause`, `scheduleResume` | `schedule` (the id of the step that created it), `nextCount?`/`recentCount?`, `expectedRevision`, `note` | `schedules.get` / `delete` / `pause` / `resume` |
+| `scheduleList` | `filter?`, `limit?`, `all?` | `schedules.list` / `listAll`; the items are `{name, state, origin, revision}` and a next page is the literal `<cursor>` |
+| `scheduleTrigger`, `scheduleBackfill`, `scheduleCancelBackfill`, `scheduleBackfills`, `scheduleActions` | `schedule`, `overlap?`, `start`/`end`, `backfill` (a step id), `outcome?`, `limit?` | `schedules.trigger` / `backfill` / `cancelBackfill` / `listBackfills` / `listActions` |
+| `awaitSchedule`, `awaitBackfill`, `awaitBatch` | `schedule` + `counter` + `atLeast`; `schedule` + `backfill` + `state`; `batch` + `state`; `timeoutMs?` | polls `schedules.get` / `listBackfills` / `batch.get` until it holds, else the step fails: a wait for a decision of the engine is never a sleep |
+| `businessIdGet` | `businessId` | `businessIds.get` |
+| `signalWithStart`, `updateWithStart` | `workflow`, `businessId`, `input`, `signal` or `update` (`name`, `updateKey`, `args`, `expectedStateRevision?`), `businessIdConflictPolicy?`, `businessIdReusePolicy?`, `startDelayMs?`, `idempotencyKey?` | `signalWithStart` / `updateWithStart` |
+| `batchPreview`, `batchCreate`, `batchGet`, `batchList`, `batchCancel`, `batchItems` | `selector`/`maxItems?`, `request`, `batch` (a step id), `reason`, `state?`, `limit?` | `batch.*`; a run is named in an observation by the id of the step that started it (`sampleSteps`, `runStep`, sorted), because the order the server lists them in is not part of the contract; `batchCreate` observes only what does not change while the job runs |
+| `resetPoints`, `resetPreview`, `reset`, `resets`, `getReset` | `run`, `limit?`, `sequence`, `reapply?`, `reason`, `acknowledgeReexecution?`, `businessId?` (`KEEP`\|`DROP`), `sourcePolicy?`, `reset` (a step id), `idempotencyKey?` | `resetPoints` / `previewReset` / `reset` / `listResets` / `getReset` |
+
+Every string of a step that is exactly `{{step:<id>:<field>}}` (a field of the result of an earlier step),
+`{{workflow:<key>}}`, `{{namespaceId}}`, `{{now:<offsetMs>}}` (an instant) or `{{hour:<offsetHours>}}` (the start of a
+UTC hour, so a backfill over two whole hours holds the same number of nominal times whenever it runs) is replaced by
+its value before the step runs. Instants that depend on when a scenario ran are written as instants (the harness
+compares them as `<time>`); the ones a fixed spec determines are epoch milliseconds, so that an SDK that parses an
+instant wrongly shows.
+
+A scenario that needs the engine's schedule or batch passes says so in `"server": {"schedules": true, "batches": true}`
+(they are off in an engine until told to run). `target/sdk-conformance/` inside the repository holds the harness's
+work files whatever `CARGO_TARGET_DIR` is.
+
 A result is a plain JSON object with the fields named here. A **Run** is exactly
 `{runId, workflowId, versionId, status, version, paused, startedBy, createdAt, updatedAt, finishedAt,
 deadline, traceId, correlationId, depth, parent}`, plus `chain` for a run in a continuation chain and `rerunOf` for a
-run started again from an ended one (both only when present).
+run started again from an ended one, `businessId` for a run started under one and `startDelayedUntil` for a run whose
+entry is held (each only when present).
 
 ### Faults
 
@@ -539,7 +588,8 @@ the wrong unit shows). It sorts nothing: **order is part of the result**. Where 
 run, a wait that nothing wakes, `control` to move time).
 
 **Audit evidence and values that must not appear.** `"auditEvidence": true` adds the approval rows of the audit
-trail (action, actor, resource type, reason and trace), read from the table. `"mustNotLeak"` lists texts that no
+trail (action, actor, resource type, reason and trace), read from the table. `"reviewEvidence": true` adds
+committed saga step decisions as `{action, actor, reason}`; a refused retry does not create one. `"mustNotLeak"` lists texts that no
 error may repeat; `"mustNotAppear"` lists texts (a secret-shaped value a scenario puts into a run's input) that
 no observation, server state or evidence may contain. The worker's log is not searched: a handler is meant to
 see its input.

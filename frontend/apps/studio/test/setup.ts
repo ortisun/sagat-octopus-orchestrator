@@ -26,4 +26,8 @@ if (typeof document !== 'undefined' && typeof MutationObserver !== 'undefined') 
   new MutationObserver(hide).observe(document.body, { childList: true });
 }
 
-afterEach(() => cleanup());
+afterEach(() => {
+  cleanup();
+  // The live regions outlive a test, and what one test announced must not be read by the next.
+  for (const region of document.querySelectorAll('[data-astryx-live-region]')) region.textContent = '';
+});

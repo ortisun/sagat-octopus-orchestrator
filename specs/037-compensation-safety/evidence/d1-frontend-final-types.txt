@@ -1,0 +1,9 @@
+npm run typecheck
+
+> typecheck
+> npm run typecheck --workspace @sagat/studio
+
+
+> @sagat/studio@0.2.0 typecheck
+> tsc --noEmit
+

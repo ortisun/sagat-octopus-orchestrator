@@ -18,7 +18,7 @@ apps/studio/        the app (Vite, React 19, React Flow, Monaco, TanStack Query)
   src/auth/         sign-in with a pasted token or an OIDC provider (code flow with PKCE); the token lives in memory only
   src/model/        the workflow document and what is done to it (registry of node kinds, edits, layout, advice), the run graph
   src/features/     workflows (editor), runs (graph, table, timeline, decisions), scripts (code editor, test runs)
-  src/ui/           the Studio's interface module: its own components, built on the Astryx design system (ADR-0101); the only directory that imports Astryx
+  src/ui/           the Studio's interface module: its own components, built on the Astryx design system (Architecture decision 0101); the only directory that imports Astryx
   src/ui/theme/     the `sagat` Astryx theme: its colours (`roles.ts`, the only file with a literal colour) and how they map to the design system (`sagatTheme.ts`)
   src/styles/       stylesheets for the surfaces Astryx has no component for (canvas, graph, timeline, code editor), on the theme's tokens
 e2e/                Playwright journeys against a real platform, and the benchmark
@@ -27,12 +27,12 @@ e2e/                Playwright journeys against a real platform, and the benchma
 ## Screens
 
 The interface is built on the Astryx design system with the Studio's own theme, `sagat`
-([ADR-0101](../docs/adr/ADR-0101-the-studio-builds-its-interface-on-the-astryx-design-system.md)). It follows the
+([Architecture decision 0101](../docs/adr/ADR-0101-the-studio-builds-its-interface-on-the-astryx-design-system.md)). It follows the
 colour scheme of the operating system: dark and light are the same theme.
 
 These captures were taken on 2026-11-21 from the development server at 1440 by 900 pixels, over a mock of the REST
 API with sample data (a payments tenant), because no platform was running on the machine that took them. They show
-the screens, not a real deployment: no run, worker or secret in them exists.
+the screens, not a real deployment: no run, schedule, worker or secret in them exists.
 
 | | |
 |---|---|
@@ -41,14 +41,18 @@ the screens, not a real deployment: no run, worker or secret in them exists.
 | **Scripts**: the scripts of the namespace and their languages<br>![Scripts](docs/screens/dark-scripts.png) | **Script editor**: the source, the sandbox test, schemas, versions and limits<br>![Script editor](docs/screens/dark-script-editor.png) |
 | **Runs**: the list, with filters by status, origin and workflow<br>![Runs](docs/screens/dark-runs.png) | **A failed run**: the list beside the detail, with the graph, the table and the timeline<br>![A failed run](docs/screens/dark-run-failed.png) |
 | **A running run**: followed live<br>![A running run](docs/screens/dark-run-running.png) | **Operations**: alerts and worker identities, with drain and resume<br>![Operations](docs/screens/dark-operations.png) |
-| **Ad hoc database**: one statement against a managed connection<br>![Ad hoc database](docs/screens/dark-database.png) | **Connections**: managed database connections and their probe<br>![Connections](docs/screens/dark-connections.png) |
+| **A run started by a schedule**: its business identifier and the schedule it came from<br>![A run started by a schedule](docs/screens/dark-run-scheduled.png) | **Schedules**: interval and cron schedules, paused or active, and the ones a cron trigger owns<br>![Schedules](docs/screens/dark-schedules.png) |
+| **One schedule**: its next times, its decisions, backfills, and pause, resume and run now<br>![One schedule](docs/screens/dark-schedule.png) | **Editing a schedule**: what to start, when, and the business identifier of its runs<br>![Editing a schedule](docs/screens/dark-schedule-form.png) |
+| **Batches**: batch operations over runs and their progress<br>![Batches](docs/screens/dark-batches.png) | **One batch**: its counters and the outcome of each run<br>![One batch](docs/screens/dark-batch.png) |
+| **Ad hoc database**: one statement against a managed connection<br>![Ad hoc database](docs/screens/dark-database.png) | **Connections**: PostgreSQL and Iceberg connections and their probe<br>![Connections](docs/screens/dark-connections.png) |
 | **Secrets**: metadata only, never a value<br>![Secrets](docs/screens/dark-secrets.png) | **Integrations**: connectors and network access<br>![Integrations](docs/screens/dark-integrations.png) |
 
-The light theme, on three of the same screens:
+The light theme, on four of the same screens:
 
-| | | |
-|---|---|---|
-| ![Runs, light](docs/screens/light-runs.png) | ![A failed run, light](docs/screens/light-run-failed.png) | ![Workflow editor, light](docs/screens/light-workflow-editor.png) |
+| | |
+|---|---|
+| ![Runs, light](docs/screens/light-runs.png) | ![A failed run, light](docs/screens/light-run-failed.png) |
+| ![Workflow editor, light](docs/screens/light-workflow-editor.png) | ![One schedule, light](docs/screens/light-schedule.png) |
 
 ## Configuration
 
@@ -91,11 +95,12 @@ page whatever the system says, set `data-theme="light"` or `data-theme="dark"` o
 3. **Sign in.** Paste a token issued for you, or use *Sign in with your organisation* when single sign-on is
    configured. The top bar shows who you are and your role.
 4. **Choose a namespace.** On a first visit nothing is chosen and the Studio opens the namespace list: pick one in
-   the selector of the sidebar or with *Use namespace*. Workflows, Scripts, Runs, Operations, Ad hoc database,
-   Connections, Secrets and Integrations then appear under it.
+   the selector of the sidebar or with *Use namespace*. Workflows, Scripts, Runs, Schedules, Batches, Operations, Ad hoc
+   database, Connections, Secrets and Integrations then appear under it.
 5. **Work.** Build and publish a workflow in the editor (canvas or list); edit, test and publish a script; follow a
-   run in its graph, table or timeline and, with the permission, retry, compensate, cancel or resolve a step, each
-   with a reason that is recorded; drain or resume a worker identity; manage connections, secret references and
+   run in its graph, table or timeline and, with the permission, retry, compensate, cancel, resolve a step or reset the
+   run to an earlier point, each with a reason that is recorded; start runs on a schedule and fill past times with a
+   backfill; act on many runs at once with a batch operation; drain or resume a worker identity; manage connections, secret references and
    connectors. An action you may not take is shown unavailable with the permission it needs, not hidden.
 6. **Deploy a new build.** Build in a separate directory, publish the new hashed files under `assets/` first, then
    replace `index.html` atomically, and keep the previous hashed files while tabs opened before the change are
@@ -171,3 +176,31 @@ The workflow editor, Scripts, sign-in and light theme are derived proposals. The
   correlation id, a failure code) is rendered as text and clipped; there is no `dangerouslySetInnerHTML`.
 - What a person cannot do is shown, disabled, with the reason and the permission it needs.
 - Everything the canvas does the list view does, from the keyboard.
+
+## Interface
+
+- [apps](apps/README.md) — Browser applications in the frontend npm workspace.
+
+## Invariants
+
+- Studio dependency/tool versions are pinned. API types come from specs/001-platform-foundation/contracts/openapi.yaml, and build/typecheck use tsc --noEmit. [frontend/apps/studio/package.json:dependencies] [frontend/apps/studio/package.json:devDependencies] [frontend/apps/studio/package.json:scripts.api] [frontend/apps/studio/package.json:scripts.build] [frontend/package.json:engines.node]
+- Frontend TypeScript uses ES2023, bundler resolution, strict/unchecked-index protection, isolated modules, and unused-declaration checks; Studio emits no TypeScript output. [frontend/tsconfig.base.json:compilerOptions] [frontend/apps/studio/tsconfig.json:compilerOptions]
+- Production uses /studio/ as asset base, dist output, no source maps, and content-hashed filenames. Development listens on 5173 and proxies /v1 to SAGAT_API_URL or http://127.0.0.1:8080 without changing origin. [frontend/apps/studio/vite.config.ts:base] [frontend/apps/studio/vite.config.ts:build] [frontend/apps/studio/vite.config.ts:server]
+- Lint excludes generated schema/build output and forbids explicit any, floating promises, dangerouslySetInnerHTML, eval, and implied eval. Vitest uses jsdom, a setup module, CSS disabled, and at most four workers. [frontend/apps/studio/eslint.config.js:ignores] [frontend/apps/studio/eslint.config.js:rules] [frontend/apps/studio/vitest.config.ts:test]
+
+## Side Effects
+
+- Package commands can generate schema.d.ts, build hashed dist assets, start development serving/proxying, and execute checking tools. [frontend/apps/studio/package.json:scripts] [frontend/apps/studio/vite.config.ts:server]
+
+## Verification
+
+From the repository root, after installing the locked frontend dependencies with `npm --prefix frontend ci`:
+
+```sh
+npm --prefix frontend run lint
+npm --prefix frontend run typecheck
+npm --prefix frontend test
+npm --prefix frontend run check:api
+```
+
+The scripts delegate to the `@sagat/studio` workspace. [frontend/package.json:scripts] [frontend/apps/studio/package.json:scripts]

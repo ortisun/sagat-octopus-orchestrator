@@ -14,10 +14,12 @@ use sagat_application::chain_progress::{
     ChainProgressStore, ChainRunTx, ContinuationPreparationError, ContinuationSelection,
     LockedChainHead,
 };
+use sagat_application::collection_chain::{ChainAnswer, ChainCeilings, MAX_CHAIN_INPUT};
 use sagat_application::collection_source::{
-    CollectionItemSource, CollectionSource, CollectionSourceError, CollectionSourceRequest,
+    ChainedSourceManifest, CollectionItemSource, CollectionSource, CollectionSourceError,
+    CollectionSourceRequest, items_digest,
 };
-use sagat_application::definitions::{Applied, DefinitionStore, Idempotency};
+use sagat_application::definitions::{DefinitionStore, Idempotency};
 use sagat_application::entropy::Entropy;
 use sagat_application::error::StoreError;
 use sagat_application::execution::{
@@ -31,8 +33,8 @@ use sagat_application::loop_progress::{
     LoopNextActivity, LoopProgressError, LoopProgressStore, LoopTransition,
 };
 use sagat_application::maintenance::{
-    EndedChild, LeaseLoss, MaintenanceStore, PendingChild, PendingContinuation, RunRef, StepRef,
-    Window,
+    BatchPurged, EndedChild, LeaseLoss, MaintenanceStore, PendingChild, PendingContinuation,
+    RunRef, StepRef, Window,
 };
 use sagat_application::primitives::{
     CollectionAdmission, CollectionCheckpoint, CollectionDataLimitEvidence, CollectionDrain,
@@ -41,7 +43,8 @@ use sagat_application::primitives::{
     PrimitiveInputError, PrimitiveStoreError, SchedulerAuthority,
 };
 use sagat_application::quotas::RunLimits;
-use sagat_application::runs::{Lock, NewRun, RunStore};
+use sagat_application::run_input::{Creator, FieldPolicy, InputRefusal, RunInputGate};
+use sagat_application::runs::{Admitted, Lock, NewRun, RunStore};
 use sagat_application::scope_frontier::{
     CollectionFrontier, LoopFrontier, ScopeFrontierStore, ScopeMember,
 };
@@ -64,6 +67,7 @@ use tracing::Instrument;
 
 use crate::fairness::{self, Weights};
 
+mod collection_chain;
 mod collection_controls;
 mod collection_event_waits;
 mod collection_timers;
@@ -71,8 +75,76 @@ use crate::shards::{Placement, Snapshot};
 
 /// Delivered outbox messages deleted per housekeeping round.
 const PURGE_BATCH: u32 = 5_000;
+/// How many schedules one call of the purge of schedule actions looks at.
+const SCHEDULE_PURGE_SCHEDULES: u32 = 50;
+/// How many jobs of batch operations one call of their purge removes at most. Each job costs a row lock held to the end of the call.
+pub const BATCH_PURGE_JOBS: u32 = 100;
+/// How many rows (items and jobs together) one call of the purge of batch jobs removes at most. A call of this size took 4 to 6 ms
+/// for the items of one job and 43 to 47 ms for 100 jobs of the heaviest rows (4,900 items among them) on the machine of the
+/// measurement (D2330), far inside the engine's statement timeout.
+pub const BATCH_PURGE_ROWS: u32 = 5_000;
+/// The most calls one pass makes of the purge of batch jobs, whatever they did: 500,000 rows.
+const BATCH_PURGE_CALLS: u32 = 100;
+/// The longest one pass spends on the purge of batch jobs, so that a backlog does not hold the rest of the housekeeping back.
+const BATCH_PURGE_TIME: Duration = Duration::from_secs(20);
 /// Batches one housekeeping call may purge (about 100 000 messages).
 const PURGE_ROUNDS: u32 = 20;
+
+/// The code and the `reason` label of a blob source that cannot be used (T014-016).
+fn source_failure(error: CollectionSourceError) -> (FailureCode, &'static str) {
+    match error {
+        CollectionSourceError::NotFound | CollectionSourceError::Lost => {
+            (FailureCode::blob_unavailable(), "unavailable")
+        }
+        CollectionSourceError::Corrupt => (FailureCode::blob_corrupt(), "corrupt"),
+        CollectionSourceError::NotAnArray => (FailureCode::expression_error(), "not_an_array"),
+        CollectionSourceError::TooManyItems => (FailureCode::iteration_limit(), "too_many_items"),
+        CollectionSourceError::TooLarge | CollectionSourceError::Unavailable => {
+            (FailureCode::run_data_limit(), "too_large")
+        }
+    }
+}
+
+/// The compact JSON array of `items`, each already compact JSON: the bytes `serde_json::to_vec` writes for the array of
+/// their values, without parsing them again.
+fn joined_items(items: &[Vec<u8>]) -> Vec<u8> {
+    let mut snapshot =
+        Vec::with_capacity(items.iter().map(|item| item.len() + 1).sum::<usize>() + 1);
+    snapshot.push(b'[');
+    for (index, item) in items.iter().enumerate() {
+        if index > 0 {
+            snapshot.push(b',');
+        }
+        snapshot.extend_from_slice(item);
+    }
+    snapshot.push(b']');
+    snapshot
+}
+
+/// The most collections with operators one tick of a replica enters (review of S1): the rest wait for the next tick,
+/// so the evaluations a tick waits for are bounded whatever the backlog. Each is bounded by the chain's ceilings.
+pub const MAX_CHAINED_ENTRIES_PER_TICK: usize = 4;
+
+/// The most chains one replica evaluates at the same time, each in a blocking task of its own.
+pub const MAX_CONCURRENT_CHAINS: usize = 2;
+
+/// The chained entries a tick may still take, open for the length of the collection pass: dropping it closes the
+/// budget again, whichever way the pass ends.
+struct ChainedBudget<'a>(&'a std::sync::atomic::AtomicUsize);
+
+impl<'a> ChainedBudget<'a> {
+    fn open(budget: &'a std::sync::atomic::AtomicUsize, entries: usize) -> Self {
+        budget.store(entries, std::sync::atomic::Ordering::SeqCst);
+        Self(budget)
+    }
+}
+
+impl Drop for ChainedBudget<'_> {
+    fn drop(&mut self) {
+        self.0
+            .store(usize::MAX, std::sync::atomic::Ordering::SeqCst);
+    }
+}
 
 /// Tunable limits of the passes.
 #[derive(Debug, Clone, Copy)]
@@ -134,6 +206,8 @@ pub struct Report {
     pub retries_released: u32,
     pub leases_expired: u32,
     pub deadlines_enforced: u32,
+    /// Delayed starts whose entry was released (feature 018).
+    pub starts_released: u32,
     pub hints_renewed: u32,
     pub children_started: u32,
     pub children_finished: u32,
@@ -204,6 +278,10 @@ pub enum CollectionAdvanceError {
     /// the store or catalog is unavailable). The run is left alone and the next pass tries again.
     #[error("the collection item source is not available")]
     SourceUnavailable,
+    /// The blocking task that applies a collection's operator chain did not run (the runtime is shutting down).
+    /// Nothing was decided; the next pass evaluates the chain again.
+    #[error("the collection's operator chain was interrupted")]
+    ChainInterrupted,
 }
 
 /// One durable sequential-loop transition committed by the scheduler.
@@ -275,6 +353,13 @@ pub enum ContinuationAdvanceError {
     Expression,
     #[error("the continuation expression failed and finalized the chain")]
     ExpressionFinalized,
+    /// The evaluated input was refused by the schema of the run's version and the run ended `FAILED` (design 043,
+    /// `FR-043-009`).
+    #[error("the continuation input was refused and finalized the chain")]
+    InputFinalized,
+    /// The evaluated input could not be checked now (no room in the validator): the boundary is tried again.
+    #[error("the continuation input could not be checked now")]
+    InputUnavailable,
     #[error("the continuation boundary exhausted its segment limit and finalized the chain")]
     ChainLimitFinalized,
     #[error(transparent)]
@@ -285,6 +370,41 @@ pub enum ContinuationAdvanceError {
     Store(#[from] StoreError),
     #[error(transparent)]
     Engine(#[from] EngineError),
+}
+
+/// Why a continuation cannot go on: the failure code the predecessor ends with, its audit reason and its metric.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ContinuationFailure {
+    Expression,
+    InputInvalid,
+    SchemaUnusable,
+}
+
+impl ContinuationFailure {
+    fn code(self) -> FailureCode {
+        match self {
+            Self::Expression => FailureCode::expression_error(),
+            Self::InputInvalid => FailureCode::continuation_input_invalid(),
+            Self::SchemaUnusable => FailureCode::run_input_schema_unusable(),
+        }
+    }
+
+    const fn reason(self) -> &'static str {
+        match self {
+            Self::Expression => "continuation expression failed",
+            Self::InputInvalid => "continuation input refused: CONTINUATION_INPUT_INVALID",
+            Self::SchemaUnusable => "continuation input refused: RUN_INPUT_SCHEMA_UNUSABLE",
+        }
+    }
+
+    const fn metric(self) -> &'static str {
+        match self {
+            Self::Expression => "scheduler_continuation_expression_failures_total",
+            Self::InputInvalid | Self::SchemaUnusable => {
+                "scheduler_continuation_input_refusals_total"
+            }
+        }
+    }
 }
 
 impl Report {
@@ -303,6 +423,7 @@ impl Report {
             + self.retries_released
             + self.leases_expired
             + self.deadlines_enforced
+            + self.starts_released
             + self.hints_renewed
             + self.children_started
             + self.children_finished
@@ -327,6 +448,14 @@ enum Condition<'a> {
     RetainedFits {
         bytes: usize,
     },
+    /// The run's entry is still held by a start delay that has ended *now*, by the database clock,
+    /// and nothing has stopped or paused the run meanwhile.
+    StartDue,
+    /// The child `child` of the step `node` was not created, read under the step's row lock (design 043, D043-164).
+    ChildNotStarted {
+        node: &'a sagat_domain::workflow::NodeId,
+        child: RunId,
+    },
 }
 
 impl Condition<'_> {
@@ -334,7 +463,10 @@ impl Condition<'_> {
     const fn refused(&self) -> Outcome {
         match self {
             Self::RetainedFits { .. } => Outcome::DoesNotFit,
-            Self::Always | Self::LeaseLost { .. } => Outcome::Skipped,
+            Self::Always
+            | Self::LeaseLost { .. }
+            | Self::StartDue
+            | Self::ChildNotStarted { .. } => Outcome::Skipped,
         }
     }
 
@@ -355,6 +487,21 @@ impl Condition<'_> {
                 let retained = tx.logical_output_bytes().await?;
                 Ok(!output_increment_exceeds_limit(retained, *bytes))
             }
+            Self::StartDue => {
+                let now_us =
+                    i64::try_from(tx.now().unix_timestamp_nanos() / 1_000).map_err(|_| {
+                        StoreError::Internal {
+                            detail: "an instant out of range".to_owned(),
+                        }
+                    })?;
+                let (_, state) = tx.parts();
+                Ok(state
+                    .start_delayed_until_us()
+                    .is_some_and(|until| until <= now_us)
+                    && state.stop_reason().is_none()
+                    && !state.is_paused())
+            }
+            Self::ChildNotStarted { node, child } => Ok(!tx.child_started(node, *child).await?),
         }
     }
 }
@@ -515,6 +662,113 @@ impl View {
     }
 }
 
+/// What a test runs right before a reserved child's input is checked: given the child's id, it may create the child, as a
+/// peer would (design 043, D043-038).
+pub type BeforeChildCheck = Arc<
+    dyn Fn(RunId) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync,
+>;
+
+/// Puts the series of the purge of batch jobs on the page at zero as soon as a scheduler exists. Prometheus's `increase`
+/// does not count the first sample of a series, so a counter that appears with the value 1 has increased by nothing
+/// (G2102, D2212): an engine that has purged nothing shows zeros, and the first purge, or the first failure of one, counts.
+fn register_batch_purge_series() {
+    for kind in ["job", "item"] {
+        metrics::counter!("batch_purged_total", "kind" => kind).absolute(0);
+    }
+    metrics::counter!("batch_purge_failures_total").absolute(0);
+}
+
+/// Counts what a call of the purge of batch jobs removed, once the call has committed (`batch_purged_total`). The label
+/// is one of two closed words; none is a tenant, a job, a selector or a run.
+fn count_batch_purged(gone: BatchPurged) {
+    if gone.jobs > 0 {
+        metrics::counter!("batch_purged_total", "kind" => "job").increment(gone.jobs);
+    }
+    if gone.items > 0 {
+        metrics::counter!("batch_purged_total", "kind" => "item").increment(gone.items);
+    }
+}
+
+/// Whether the pass calls the purge of batch jobs again after a call that removed `gone`: when the call used the whole of a
+/// bound it gave (its rows, or its jobs) it may be in the middle of a job or have more to do. So a job that a call began is finished
+/// by the next, in the same pass, and a person does not read a job with fewer items than its counts say for a whole interval of the
+/// housekeeping. It ends after `BATCH_PURGE_CALLS` calls or `BATCH_PURGE_TIME`, whatever they did.
+fn batch_purge_goes_on(gone: BatchPurged, calls: u32, elapsed: Duration) -> bool {
+    let used_a_bound =
+        gone.jobs >= u64::from(BATCH_PURGE_JOBS) || gone.rows() >= u64::from(BATCH_PURGE_ROWS);
+    used_a_bound && calls < BATCH_PURGE_CALLS && elapsed < BATCH_PURGE_TIME
+}
+
+#[cfg(test)]
+mod batch_purge_pass {
+    use super::*;
+
+    const QUICK: Duration = Duration::from_secs(1);
+
+    fn gone(jobs: u64, items: u64) -> BatchPurged {
+        BatchPurged { jobs, items }
+    }
+
+    /// A call that removed its whole row budget is in the middle of a job or has more; the pass calls again.
+    #[test]
+    fn a_call_that_used_its_row_budget_goes_on() {
+        assert!(batch_purge_goes_on(gone(0, 5_000), 1, QUICK));
+        assert!(batch_purge_goes_on(gone(40, 4_960), 1, QUICK));
+    }
+
+    /// A call that removed its whole job budget has more to do: the jobs have no items, so the rows are few.
+    #[test]
+    fn a_call_that_used_its_job_budget_goes_on() {
+        assert!(batch_purge_goes_on(gone(100, 0), 1, QUICK));
+    }
+
+    /// A call that used neither bound found nothing more to purge: the pass ends.
+    #[test]
+    fn a_call_that_used_neither_bound_ends_the_pass() {
+        assert!(!batch_purge_goes_on(gone(99, 4_800), 1, QUICK));
+        assert!(!batch_purge_goes_on(gone(0, 0), 1, QUICK));
+    }
+
+    /// Whatever the calls did, a pass ends at its time and at its number of calls: a backlog is drained by many passes and
+    /// does not hold the rest of the housekeeping for longer than the limit.
+    #[test]
+    fn the_time_and_the_number_of_calls_end_the_pass_whatever_they_did() {
+        assert!(!batch_purge_goes_on(gone(0, 5_000), 1, BATCH_PURGE_TIME));
+        assert!(batch_purge_goes_on(
+            gone(0, 5_000),
+            1,
+            BATCH_PURGE_TIME - Duration::from_millis(1)
+        ));
+        assert!(!batch_purge_goes_on(
+            gone(0, 5_000),
+            BATCH_PURGE_CALLS,
+            QUICK
+        ));
+        assert!(batch_purge_goes_on(
+            gone(0, 5_000),
+            BATCH_PURGE_CALLS - 1,
+            QUICK
+        ));
+    }
+
+    /// The key of the request that made a batch job is remembered for `idempotency_retention` and a job is kept for at least
+    /// `MIN_RETENTION` after it ended (`batch_jobs_purge`), so the key goes first and a replay never meets a job that was purged
+    /// (D2329). This test runs on every pull request that touches this crate, which the integration suites do not: a longer memory of
+    /// the key, or a shorter retention of the job, fails here (G2322, D2326).
+    #[test]
+    fn the_memory_of_a_key_is_shorter_than_the_least_a_job_is_kept() {
+        let memory = SchedulerSettings::default().idempotency_retention;
+        let least = Duration::from_secs(
+            u64::try_from(sagat_application::batch::MIN_RETENTION.whole_seconds())
+                .expect("seconds"),
+        );
+        assert!(
+            memory < least,
+            "a key is remembered for {memory:?} and a job kept for at least {least:?}"
+        );
+    }
+}
+
 /// The scheduler over a store, an evaluator and a source of jitter.
 pub struct Scheduler<S, E, R> {
     store: S,
@@ -531,6 +785,21 @@ pub struct Scheduler<S, E, R> {
     item_source: Option<Arc<dyn CollectionItemSource>>,
     /// Until when each pass rests its search for other tenants (see [`SchedulerSettings::discovery_rest`]).
     rests: std::sync::Mutex<std::collections::BTreeMap<&'static str, Instant>>,
+    /// Checks the input of every child and every continuation against its version's schema (design 043, rows 11, 12).
+    run_inputs: Arc<RunInputGate>,
+    /// Called with the reserved child's id right before its input is checked: what a test does there is what a peer did
+    /// between this replica's read of the reservation and its check (design 043, D043-038, G043-043).
+    before_child_check: Option<BeforeChildCheck>,
+    /// How often the passes run: the first rest of a chained collection that waits for storage quota.
+    pass_interval: Duration,
+    /// The running ceilings of a collection's operator chain (design 042).
+    chain_ceilings: ChainCeilings,
+    /// Chained entries of this replica that did not commit (design 042, FR-042-009).
+    reentries: collection_chain::Reentries,
+    /// Chains of this replica evaluated at the same time (review of S1).
+    chain_permits: tokio::sync::Semaphore,
+    /// Chained entries the running tick may still take; `usize::MAX` outside a tick (review of S1).
+    chained_budget: std::sync::atomic::AtomicUsize,
 }
 
 impl<S, E, R> std::fmt::Debug for Scheduler<S, E, R> {
@@ -548,10 +817,11 @@ where
         + LoopProgressStore
         + ScopeFrontierStore
         + ApprovalSchedulerStore,
-    E: ExpressionEvaluator,
+    E: ExpressionEvaluator + 'static,
     R: Entropy,
 {
-    pub const fn new(store: S, engine: Engine<E>, entropy: R, settings: SchedulerSettings) -> Self {
+    pub fn new(store: S, engine: Engine<E>, entropy: R, settings: SchedulerSettings) -> Self {
+        register_batch_purge_series();
         Self {
             store,
             engine,
@@ -561,7 +831,47 @@ where
             placement: None,
             item_source: None,
             rests: std::sync::Mutex::new(std::collections::BTreeMap::new()),
+            run_inputs: RunInputGate::unwired(),
+            before_child_check: None,
+            pass_interval: Duration::from_millis(500),
+            chain_ceilings: ChainCeilings::COLLECTION,
+            reentries: collection_chain::Reentries::new(),
+            chain_permits: tokio::sync::Semaphore::const_new(MAX_CONCURRENT_CHAINS),
+            chained_budget: std::sync::atomic::AtomicUsize::new(usize::MAX),
         }
+    }
+
+    /// How often this replica's passes run (`SAGAT_SCHEDULER_INTERVAL_MS`): the first rest of a chained collection
+    /// that waits for storage quota, which then doubles up to 30 seconds.
+    #[must_use]
+    pub const fn with_pass_interval(mut self, interval: Duration) -> Self {
+        self.pass_interval = interval;
+        self
+    }
+
+    /// Other running ceilings for collection chains than the published ones: for tests that must cross one, such as
+    /// the wall time, without a slow machine.
+    #[must_use]
+    pub const fn with_chain_ceilings(mut self, ceilings: ChainCeilings) -> Self {
+        self.chain_ceilings = ceilings;
+        self
+    }
+
+    /// Runs `hook` with the reserved child's id right before its input is checked (design 043, G043-043): the place where a
+    /// peer may create the child first. For the tests of that race.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn with_before_child_check(mut self, hook: BeforeChildCheck) -> Self {
+        self.before_child_check = Some(hook);
+        self
+    }
+
+    /// The gate the input of every child and continuation goes through (design 043). Without it a child or a
+    /// continuation of a version with an `inputSchema` is left for the next pass, never created unchecked.
+    #[must_use]
+    pub fn with_run_inputs(mut self, gate: Arc<RunInputGate>) -> Self {
+        self.run_inputs = gate;
+        self
     }
 
     /// Lets the scheduler materialize collection items from blob references (T014-016).
@@ -618,6 +928,9 @@ where
             // database) has nothing to look at; the keeper is what changes that.
             return report;
         }
+        // How long a tick of a replica that holds shards takes: a tick longer than the interval
+        // means the passes fall behind (OD-2026-11-04-6).
+        let started = std::time::Instant::now();
         // A view for each pass, read when the pass begins: a tick that runs long must go on with the
         // leases the keeper has renewed since, not keep acting on the snapshot it began with until
         // that runs out (every later action would be counted as fenced and the later passes starved).
@@ -632,11 +945,13 @@ where
         self.retries(&self.view(), &mut report).await;
         self.leases(&self.view(), &mut report).await;
         self.deadlines(&self.view(), &mut report).await;
+        self.start_releases(&self.view(), &mut report).await;
         self.stopped_runs(&self.view(), &mut report).await;
         self.hints(&self.view(), &mut report).await;
         self.children_start(&self.view(), &mut report).await;
         self.children_finish(&self.view(), &mut report).await;
         self.children_cancel(&self.view(), &mut report).await;
+        metrics::histogram!("scheduler_tick_seconds").record(started.elapsed().as_secs_f64());
         report
     }
 
@@ -771,7 +1086,7 @@ where
         let info = tx.info().clone();
         let occurred_at = tx.now();
         let data = tx.data().await?.clone();
-        let (input_expression, state_expression, entry_correlation, expected_run_version) = {
+        let (input_expression, state_expression, entry_correlation, expected_run_version, schema) = {
             let (definition, state) = tx.parts();
             let step = state
                 .step(boundary)
@@ -800,6 +1115,8 @@ where
                 next.clone(),
                 entry_correlation,
                 state.version(),
+                // the successor runs this version: its schema is read here, under the run's lock, with no statement
+                definition.input_schema().cloned(),
             )
         };
         tx.commit().await?;
@@ -846,11 +1163,46 @@ where
                     lease,
                     expected_run_version,
                     &info,
+                    ContinuationFailure::Expression,
                 )
                 .await?;
                 return Err(ContinuationAdvanceError::ExpressionFinalized);
             }
             Err(error) => return Err(error),
+        };
+        // Design 043, row 12: the evaluated input is checked against the schema of the version the successor runs, after
+        // the lock is released and before the hand-off is written. A refusal ends the predecessor `FAILED`.
+        let input = match self
+            .run_inputs
+            .check_schema(
+                tenant,
+                info.version_id,
+                schema.as_ref(),
+                input,
+                Creator::Continuation,
+                FieldPolicy::Show,
+            )
+            .await
+        {
+            Ok(input) => input,
+            Err(InputRefusal::Unavailable) => {
+                return Err(ContinuationAdvanceError::InputUnavailable);
+            }
+            Err(refusal) => {
+                self.finalize_continuation_expression(
+                    view,
+                    chain,
+                    lease,
+                    expected_run_version,
+                    &info,
+                    match refusal {
+                        InputRefusal::SchemaUnusable => ContinuationFailure::SchemaUnusable,
+                        _ => ContinuationFailure::InputInvalid,
+                    },
+                )
+                .await?;
+                return Err(ContinuationAdvanceError::InputFinalized);
+            }
         };
         if state.is_some() != data.state_revision.is_some() {
             return Err(ContinuationAdvanceError::NotContinuation);
@@ -952,6 +1304,7 @@ where
         }
     }
 
+    /// Ends the predecessor `FAILED` with `failure`'s code, through the fenced path of a continuation that cannot go on.
     async fn finalize_continuation_expression(
         &self,
         view: &View,
@@ -959,6 +1312,7 @@ where
         lease: Lease,
         expected_run_version: u64,
         info: &RunInfo,
+        failure: ContinuationFailure,
     ) -> Result<(), ContinuationAdvanceError>
     where
         S: ChainCommandStore + ChainProgressStore,
@@ -987,7 +1341,7 @@ where
             AuditAction::RunFinished,
             ResourceType::Run,
             observed.head().to_string(),
-            "continuation expression failed",
+            failure.reason(),
             info.trace_id.clone(),
             tx.now(),
         ));
@@ -999,14 +1353,14 @@ where
                         definition,
                         state,
                         StopReason::Failed,
-                        Some(FailureCode::expression_error()),
+                        Some(failure.code()),
                         now,
                     )?,
                 ))
             })
             .await?;
         tx.commit().await?;
-        metrics::counter!("scheduler_continuation_expression_failures_total").increment(1);
+        metrics::counter!(failure.metric()).increment(1);
         Ok(())
     }
 
@@ -1045,6 +1399,7 @@ where
             result,
             max_items,
             max_concurrency,
+            operators,
         } = collection_node.kind()
         else {
             return Err(CollectionAdvanceError::NotCollection);
@@ -1070,6 +1425,15 @@ where
         let transition = |expected_run_version| audited(expected_run_version, None);
 
         let Some(collection) = state.collection(owner) else {
+            // A chained collection whose entry waited for storage quota rests before it is evaluated again
+            // (FR-042-009); every other try is admitted, and counted as a re-entry when an earlier one did not commit.
+            if operators.is_some()
+                && self.reentries.admit(tenant, run, owner, Instant::now())
+                    == collection_chain::Admission::Rest
+            {
+                drop(tx);
+                return Ok(CollectionAdvance::Waiting);
+            }
             let effective_output_bytes = tx.logical_output_bytes().await?;
             if retained_outputs_exceed_limit(effective_output_bytes) {
                 let version = state.version();
@@ -1093,129 +1457,341 @@ where
                 definition.limits().max_instances(),
                 definition.limits().max_depth(),
             )?;
-            let source = match self.engine.evaluator().collection_source(items, &data) {
-                Ok(source) => source,
-                // The expression is deterministic over immutable run data: it will fail the same
-                // way again, so the run fails with a typed code instead of retrying for ever.
-                Err(_) => {
-                    return self
-                        .stop_collection_for_source(
+            let mut committed_stages = None;
+            // A tick takes at most `MAX_CHAINED_ENTRIES_PER_TICK` chained entries; the others wait for the next one.
+            if operators.is_some() && !self.take_chained_entry() {
+                return Ok(CollectionAdvance::Waiting);
+            }
+            let built = if let Some(chain) = operators {
+                // Design 042: the chain is applied once here, by one evaluator call in a blocking task, and its output
+                // is what the entry records. Every ceiling is checked before `enter_collection`, so the store never
+                // answers a chained entry with `InvalidTransition` (T042-46).
+                let iteration_charge = u32::try_from(body.all_nodes().count())
+                    .map_err(|_| CollectionAdvanceError::InvalidProgress)?;
+                let input_blob = data.input_blob;
+                let Some((answer, data)) = collection_chain::apply(
+                    &self.chain_permits,
+                    self.engine.shared_evaluator(),
+                    collection_chain::OwnedInput::Items(items.clone()),
+                    chain.clone(),
+                    data,
+                    self.chain_ceilings,
+                )
+                .await
+                else {
+                    return Err(CollectionAdvanceError::ChainInterrupted);
+                };
+                let (output, read) = match answer {
+                    Ok(ChainAnswer::Output(output)) => (output, None),
+                    Ok(ChainAnswer::Blob(descriptor)) => {
+                        let Some(reader) = &self.item_source else {
+                            return Err(CollectionAdvanceError::SourceUnavailable);
+                        };
+                        // With a chain, the blob is bounded by the chain's input ceiling, not by `maxItems`.
+                        let request = CollectionSourceRequest {
+                            access: BlobAccess {
+                                tenant_id: tenant,
+                                namespace_id: info.namespace_id,
+                            },
+                            run_id: run,
+                            run_input: input_blob,
+                            descriptor,
+                            max_items: u32::try_from(MAX_CHAIN_INPUT).unwrap_or(u32::MAX),
+                        };
+                        let materialized = match reader.materialize(&request).await {
+                            Ok(materialized) => materialized,
+                            Err(CollectionSourceError::Unavailable) => {
+                                self.reentries.note(
+                                    tenant,
+                                    run,
+                                    owner,
+                                    collection_chain::Uncommitted::SourceUnavailable,
+                                    self.pass_interval,
+                                    Instant::now(),
+                                );
+                                return Err(CollectionAdvanceError::SourceUnavailable);
+                            }
+                            Err(error) => {
+                                let (code, reason) = match error {
+                                    CollectionSourceError::TooManyItems => (
+                                        FailureCode::collection_operator_budget(),
+                                        "operator_input",
+                                    ),
+                                    other => source_failure(other),
+                                };
+                                return self.settle_chained(
+                                    tenant,
+                                    run,
+                                    owner,
+                                    self.stop_collection_for_source(
+                                        view,
+                                        &hold,
+                                        tenant,
+                                        run,
+                                        state.version(),
+                                        code,
+                                        reason,
+                                    )
+                                    .await,
+                                );
+                            }
+                        };
+                        let Some((answer, _)) = collection_chain::apply(
+                            &self.chain_permits,
+                            self.engine.shared_evaluator(),
+                            collection_chain::OwnedInput::Elements(materialized.items),
+                            chain.clone(),
+                            data,
+                            self.chain_ceilings,
+                        )
+                        .await
+                        else {
+                            return Err(CollectionAdvanceError::ChainInterrupted);
+                        };
+                        match answer {
+                            Ok(ChainAnswer::Output(output)) => {
+                                (output, Some((materialized.manifest, request.descriptor)))
+                            }
+                            Ok(ChainAnswer::Blob(_)) => {
+                                return self.settle_chained(
+                                    tenant,
+                                    run,
+                                    owner,
+                                    self.stop_collection_for_source(
+                                        view,
+                                        &hold,
+                                        tenant,
+                                        run,
+                                        state.version(),
+                                        FailureCode::expression_error(),
+                                        "expression",
+                                    )
+                                    .await,
+                                );
+                            }
+                            Err(failure) => {
+                                return self.settle_chained(
+                                    tenant,
+                                    run,
+                                    owner,
+                                    self.stop_collection_for_chain(
+                                        view,
+                                        &hold,
+                                        RunRef {
+                                            tenant_id: tenant,
+                                            run_id: run,
+                                        },
+                                        state.version(),
+                                        failure,
+                                    )
+                                    .await,
+                                );
+                            }
+                        }
+                    }
+                    // A chain that fails at entry fails the run with its code; `onError` is not taken (G042-008).
+                    Err(failure) => {
+                        return self.settle_chained(
+                            tenant,
+                            run,
+                            owner,
+                            self.stop_collection_for_chain(
+                                view,
+                                &hold,
+                                RunRef {
+                                    tenant_id: tenant,
+                                    run_id: run,
+                                },
+                                state.version(),
+                                failure,
+                            )
+                            .await,
+                        );
+                    }
+                };
+                // The output ceilings of today's entry, checked here rather than by the store.
+                if output.items.len() > usize::try_from(*max_items).unwrap_or(usize::MAX) {
+                    return self.settle_chained(
+                        tenant,
+                        run,
+                        owner,
+                        self.stop_collection_for_limit(
                             view,
                             &hold,
                             tenant,
                             run,
                             state.version(),
-                            FailureCode::expression_error(),
-                            "expression",
+                            FailureCode::iteration_limit(),
                         )
-                        .await;
+                        .await,
+                    );
                 }
-            };
-            let iteration_charge = u32::try_from(body.all_nodes().count())
-                .map_err(|_| CollectionAdvanceError::InvalidProgress)?;
-            let built = match source {
-                CollectionSource::Items(item_values) => {
-                    let json_items = item_values
-                        .iter()
-                        .map(|item| serde_json::from_slice::<serde_json::Value>(item))
-                        .collect::<Result<Vec<_>, _>>()
-                        .map_err(|_| CollectionAdvanceError::Expression)?;
-                    let snapshot = serde_json::to_vec(&json_items)
-                        .map_err(|_| CollectionAdvanceError::Expression)?;
-                    // The captured membership is one value: over the ceiling nothing of it is
-                    // retained.
-                    if snapshot.len() > MAX_PAYLOAD_BYTES {
-                        return self
-                            .stop_collection_for_limit(
-                                view,
-                                &hold,
+                let count = u32::try_from(output.items.len())
+                    .map_err(|_| CollectionAdvanceError::InvalidProgress)?;
+                committed_stages = Some(output.stages.clone());
+                let built = match read {
+                    None => {
+                        // Today's snapshot array, written from the bytes each element was measured by.
+                        let snapshot = joined_items(&output.items);
+                        if snapshot.len() > MAX_PAYLOAD_BYTES {
+                            return self.settle_chained(
                                 tenant,
                                 run,
-                                state.version(),
-                                FailureCode::run_data_limit(),
-                            )
-                            .await;
-                    }
-                    CollectionEntry::from_snapshot(
-                        transition(state.version()),
-                        CollectionScopeId::generate(),
-                        u32::try_from(item_values.len())
-                            .map_err(|_| CollectionAdvanceError::InvalidProgress)?,
-                        snapshot,
-                        limits,
-                    )
-                }
-                CollectionSource::Blob(descriptor) => {
-                    let Some(reader) = &self.item_source else {
-                        return Err(CollectionAdvanceError::SourceUnavailable);
-                    };
-                    let request = CollectionSourceRequest {
-                        access: BlobAccess {
-                            tenant_id: tenant,
-                            namespace_id: info.namespace_id,
-                        },
-                        run_id: run,
-                        run_input: data.input_blob,
-                        descriptor,
-                        max_items: *max_items,
-                    };
-                    match reader.materialize(&request).await {
-                        Ok(materialized) => {
-                            let audit = AuditRecord::engine(
-                                tenant,
-                                AuditAction::BlobRead,
-                                ResourceType::Blob,
-                                request.descriptor.id().to_string(),
-                                "collection items materialized",
-                                info.trace_id.clone(),
-                                occurred_at,
-                            );
-                            CollectionEntry::from_blob_source(
-                                audited(state.version(), Some(audit)),
-                                CollectionScopeId::generate(),
-                                materialized,
-                                limits,
-                            )
-                        }
-                        Err(CollectionSourceError::Unavailable) => {
-                            return Err(CollectionAdvanceError::SourceUnavailable);
-                        }
-                        Err(error) => {
-                            let (code, reason) = match error {
-                                CollectionSourceError::NotFound | CollectionSourceError::Lost => {
-                                    (FailureCode::blob_unavailable(), "unavailable")
-                                }
-                                CollectionSourceError::Corrupt => {
-                                    (FailureCode::blob_corrupt(), "corrupt")
-                                }
-                                CollectionSourceError::NotAnArray => {
-                                    (FailureCode::expression_error(), "not_an_array")
-                                }
-                                CollectionSourceError::TooManyItems => {
-                                    (FailureCode::iteration_limit(), "too_many_items")
-                                }
-                                CollectionSourceError::TooLarge
-                                | CollectionSourceError::Unavailable => {
-                                    (FailureCode::run_data_limit(), "too_large")
-                                }
-                            };
-                            return self
-                                .stop_collection_for_source(
+                                owner,
+                                self.stop_collection_for_limit(
                                     view,
                                     &hold,
                                     tenant,
                                     run,
                                     state.version(),
-                                    code,
-                                    reason,
+                                    FailureCode::run_data_limit(),
+                                )
+                                .await,
+                            );
+                        }
+                        CollectionEntry::from_snapshot(
+                            transition(state.version()),
+                            CollectionScopeId::generate(),
+                            count,
+                            snapshot,
+                            limits,
+                        )
+                    }
+                    Some((source, descriptor)) => {
+                        let audit = AuditRecord::engine(
+                            tenant,
+                            AuditAction::BlobRead,
+                            ResourceType::Blob,
+                            descriptor.id().to_string(),
+                            "collection items materialized",
+                            info.trace_id.clone(),
+                            occurred_at,
+                        );
+                        let manifest = ChainedSourceManifest::new(
+                            &source,
+                            output.chain_digest,
+                            count,
+                            items_digest(&output.items),
+                        );
+                        CollectionEntry::from_chained_blob_source(
+                            audited(state.version(), Some(audit)),
+                            CollectionScopeId::generate(),
+                            &manifest,
+                            output.items,
+                            limits,
+                        )
+                    }
+                };
+                built.map(|entry| entry.with_iteration_charge(iteration_charge))
+            } else {
+                let source = match self.engine.evaluator().collection_source(items, &data) {
+                    Ok(source) => source,
+                    // The expression is deterministic over immutable run data: it will fail the same
+                    // way again, so the run fails with a typed code instead of retrying for ever.
+                    Err(_) => {
+                        return self
+                            .stop_collection_for_source(
+                                view,
+                                &hold,
+                                tenant,
+                                run,
+                                state.version(),
+                                FailureCode::expression_error(),
+                                "expression",
+                            )
+                            .await;
+                    }
+                };
+                let iteration_charge = u32::try_from(body.all_nodes().count())
+                    .map_err(|_| CollectionAdvanceError::InvalidProgress)?;
+                let built = match source {
+                    CollectionSource::Items(item_values) => {
+                        let json_items = item_values
+                            .iter()
+                            .map(|item| serde_json::from_slice::<serde_json::Value>(item))
+                            .collect::<Result<Vec<_>, _>>()
+                            .map_err(|_| CollectionAdvanceError::Expression)?;
+                        let snapshot = serde_json::to_vec(&json_items)
+                            .map_err(|_| CollectionAdvanceError::Expression)?;
+                        // The captured membership is one value: over the ceiling nothing of it is
+                        // retained.
+                        if snapshot.len() > MAX_PAYLOAD_BYTES {
+                            return self
+                                .stop_collection_for_limit(
+                                    view,
+                                    &hold,
+                                    tenant,
+                                    run,
+                                    state.version(),
+                                    FailureCode::run_data_limit(),
                                 )
                                 .await;
                         }
+                        CollectionEntry::from_snapshot(
+                            transition(state.version()),
+                            CollectionScopeId::generate(),
+                            u32::try_from(item_values.len())
+                                .map_err(|_| CollectionAdvanceError::InvalidProgress)?,
+                            snapshot,
+                            limits,
+                        )
                     }
-                }
+                    CollectionSource::Blob(descriptor) => {
+                        let Some(reader) = &self.item_source else {
+                            return Err(CollectionAdvanceError::SourceUnavailable);
+                        };
+                        let request = CollectionSourceRequest {
+                            access: BlobAccess {
+                                tenant_id: tenant,
+                                namespace_id: info.namespace_id,
+                            },
+                            run_id: run,
+                            run_input: data.input_blob,
+                            descriptor,
+                            max_items: *max_items,
+                        };
+                        match reader.materialize(&request).await {
+                            Ok(materialized) => {
+                                let audit = AuditRecord::engine(
+                                    tenant,
+                                    AuditAction::BlobRead,
+                                    ResourceType::Blob,
+                                    request.descriptor.id().to_string(),
+                                    "collection items materialized",
+                                    info.trace_id.clone(),
+                                    occurred_at,
+                                );
+                                CollectionEntry::from_blob_source(
+                                    audited(state.version(), Some(audit)),
+                                    CollectionScopeId::generate(),
+                                    materialized,
+                                    limits,
+                                )
+                            }
+                            Err(CollectionSourceError::Unavailable) => {
+                                return Err(CollectionAdvanceError::SourceUnavailable);
+                            }
+                            Err(error) => {
+                                let (code, reason) = source_failure(error);
+                                return self
+                                    .stop_collection_for_source(
+                                        view,
+                                        &hold,
+                                        tenant,
+                                        run,
+                                        state.version(),
+                                        code,
+                                        reason,
+                                    )
+                                    .await;
+                            }
+                        }
+                    }
+                };
+                built.map(|entry| entry.with_iteration_charge(iteration_charge))
             };
             let entry = match built {
-                Ok(entry) => entry.with_iteration_charge(iteration_charge),
+                Ok(entry) => entry,
                 // More items than the node declared it would iterate over: a hard budget, so the
                 // run fails with a durable typed code instead of retrying an entry that cannot
                 // succeed.
@@ -1263,7 +1839,19 @@ where
                         .await?
                     {
                         Outcome::QuotaStopped => Ok(CollectionAdvance::QuotaStopped),
-                        Outcome::Skipped | Outcome::DoesNotFit => Ok(CollectionAdvance::Waiting),
+                        Outcome::Skipped | Outcome::DoesNotFit => {
+                            if operators.is_some() {
+                                self.reentries.note(
+                                    tenant,
+                                    run,
+                                    owner,
+                                    collection_chain::Uncommitted::StorageQuota,
+                                    self.pass_interval,
+                                    Instant::now(),
+                                );
+                            }
+                            Ok(CollectionAdvance::Waiting)
+                        }
                         Outcome::Fenced => Err(CollectionAdvanceError::FenceUnavailable),
                         Outcome::Done | Outcome::Failed => Err(CollectionAdvanceError::Engine(
                             EngineError::Store(StoreError::Internal {
@@ -1272,7 +1860,32 @@ where
                         )),
                     };
                 }
-                Err(error) => return Err(error.into()),
+                Err(error) => {
+                    let uncommitted = match &error {
+                        PrimitiveStoreError::SchedulerFenceLost => {
+                            Some(collection_chain::Uncommitted::Fence)
+                        }
+                        PrimitiveStoreError::RevisionConflict { .. } => {
+                            Some(collection_chain::Uncommitted::Revision)
+                        }
+                        _ => None,
+                    };
+                    if let (Some(_), Some(reason)) = (operators, uncommitted) {
+                        self.reentries.note(
+                            tenant,
+                            run,
+                            owner,
+                            reason,
+                            self.pass_interval,
+                            Instant::now(),
+                        );
+                    }
+                    return Err(error.into());
+                }
+            }
+            if let Some(stages) = committed_stages {
+                self.reentries.forget(tenant, run, owner);
+                collection_chain::count_elements(&stages);
             }
             return Ok(CollectionAdvance::Entered);
         };
@@ -1376,6 +1989,25 @@ where
                 .as_ref()
                 .filter(|(_, code)| state.stop_code() == Some(code))
             else {
+                // A scoped report refused at the content quota stops the run with
+                // `STORAGE_QUOTA_EXCEEDED` and records its own outcome (feature 037); no member
+                // failed with that code, so the collection drains for the storage stop.
+                if state
+                    .stop_code()
+                    .is_some_and(|code| code == &FailureCode::storage_quota_exceeded())
+                {
+                    let version = state.version();
+                    drop(tx);
+                    let scope_id = self
+                        .store
+                        .collection_scope(tenant, run, owner)
+                        .await?
+                        .ok_or(CollectionAdvanceError::InvalidProgress)?
+                        .scope_id;
+                    return self
+                        .drain_collection_for_storage_quota(transition(version), scope_id)
+                        .await;
+                }
                 drop(tx);
                 return Err(CollectionAdvanceError::InvalidProgress);
             };
@@ -1789,9 +2421,14 @@ where
                 .filter(|(instance, _)| instance.path() == path)
                 .all(|(instance, step)| {
                     let settled_derived = instance.node().is_derived()
-                        && matches!(
+                        && execution::derived_settles_drain(
+                            instance,
                             step.status(),
-                            execution::StepStatus::Succeeded | execution::StepStatus::Skipped
+                            instance.node().forward().and_then(|forward| {
+                                state
+                                    .instance(&ExecutionInstanceId::in_path(path.clone(), forward))
+                                    .map(execution::StepState::status)
+                            }),
                         );
                     // Nothing is in flight: a step that has not started, or that waits to retry (or
                     // is ready to) in a run that is stopping and cannot lease it.
@@ -1819,9 +2456,10 @@ where
                                     .map(sagat_domain::workflow::Node::kind),
                                 Some(NodeKind::WaitEvent { .. })
                             ));
-                    step.status().is_terminal() && !instance.node().is_derived()
+                    (step.status().is_terminal() && !instance.node().is_derived()
                         || settled_derived
-                        || safe_unstarted
+                        || safe_unstarted)
+                        && !execution::retry_wait_holds_drain(step.status(), step.failure())
                 });
             if !safe {
                 return Ok(CollectionAdvance::Waiting);
@@ -2015,6 +2653,19 @@ where
                     let Some((index, code)) = active_failure
                         .filter(|(_, code)| frontier.run.stop_code.as_ref() == Some(*code))
                     else {
+                        // As in the whole-run path: a content-refused scoped report stopped the
+                        // run for storage without failing a member.
+                        if frontier
+                            .run
+                            .stop_code
+                            .as_ref()
+                            .is_some_and(|code| code == &FailureCode::storage_quota_exceeded())
+                        {
+                            return self
+                                .drain_collection_for_storage_quota(transition(), scope_id)
+                                .await
+                                .map(Some);
+                        }
                         return Err(CollectionAdvanceError::InvalidProgress);
                     };
                     return self
@@ -2497,6 +3148,94 @@ where
         }
     }
 
+    /// Fails the run whose collection chain failed at entry (design 042, FR-042-008) through the path of a failing
+    /// `items`, and counts the refusal under `workflow_primitive_rejections_total{kind="collection",code}` when its code
+    /// is one of that closed set.
+    async fn stop_collection_for_chain(
+        &self,
+        view: &View,
+        hold: &Hold,
+        run: RunRef,
+        version: u64,
+        failure: sagat_application::collection_chain::ChainFailure,
+    ) -> Result<CollectionAdvance, CollectionAdvanceError> {
+        let code = failure.code();
+        let reason = failure.reason();
+        let rejection = WorkflowPrimitiveRejectionCode::from_reason(code.as_str());
+        // The failure's description names the stage, the operator and the position, never a value (D042-024): it is the
+        // run's failure detail, recorded in the stop's transaction, and the warning's fields.
+        let detail = failure.to_string();
+        let (stage, operator, position) = failure.location();
+        tracing::warn!(
+            run = %run.run_id,
+            code = code.as_str(),
+            reason,
+            stage,
+            operator = operator.map(sagat_domain::operators::OperatorName::as_str),
+            position,
+            "a collection source was refused"
+        );
+        let advance = match self
+            .stop_with_code_routing(view, hold, run, version, code, None, Some(&detail))
+            .await?
+        {
+            Outcome::Done => {
+                metrics::counter!("scheduler_collection_source_failures_total", "reason" => reason)
+                    .increment(1);
+                CollectionAdvance::LimitStopped
+            }
+            Outcome::Skipped | Outcome::DoesNotFit => CollectionAdvance::Waiting,
+            Outcome::Fenced => return Err(CollectionAdvanceError::FenceUnavailable),
+            Outcome::Failed | Outcome::QuotaStopped => {
+                return Err(CollectionAdvanceError::Engine(EngineError::Store(
+                    StoreError::Internal {
+                        detail: "unexpected collection chain recovery outcome".to_owned(),
+                    },
+                )));
+            }
+        };
+        if advance == CollectionAdvance::LimitStopped
+            && let Some(rejection) = rejection
+        {
+            metrics::counter!(
+                WorkflowPrimitiveMetric::Rejections.as_str(),
+                "kind" => WorkflowPrimitiveKind::Collection.as_str(),
+                "code" => rejection.as_str(),
+            )
+            .increment(1);
+        }
+        Ok(advance)
+    }
+
+    /// One chained entry of the running tick's budget; always granted outside a tick (a direct call).
+    fn take_chained_entry(&self) -> bool {
+        self.chained_budget
+            .try_update(
+                std::sync::atomic::Ordering::SeqCst,
+                std::sync::atomic::Ordering::SeqCst,
+                |left| match left {
+                    usize::MAX => Some(usize::MAX),
+                    0 => None,
+                    left => Some(left - 1),
+                },
+            )
+            .is_ok()
+    }
+
+    /// Forgets a chained collection's re-entry note once its run has been stopped.
+    fn settle_chained(
+        &self,
+        tenant: TenantId,
+        run: RunId,
+        owner: &ExecutionInstanceId,
+        advance: Result<CollectionAdvance, CollectionAdvanceError>,
+    ) -> Result<CollectionAdvance, CollectionAdvanceError> {
+        if matches!(advance, Ok(CollectionAdvance::LimitStopped)) {
+            self.reentries.forget(tenant, run, owner);
+        }
+        advance
+    }
+
     async fn drain_collection_for_storage_quota(
         &self,
         transition: CollectionTransition,
@@ -2716,9 +3455,17 @@ where
                     .filter(|(instance, _)| instance.path() == &path)
                     .all(|(instance, step)| {
                         let settled_derived = instance.node().is_derived()
-                            && matches!(
+                            && execution::derived_settles_drain(
+                                instance,
                                 step.status(),
-                                execution::StepStatus::Succeeded | execution::StepStatus::Skipped
+                                instance.node().forward().and_then(|forward| {
+                                    state
+                                        .instance(&ExecutionInstanceId::in_path(
+                                            path.clone(),
+                                            forward,
+                                        ))
+                                        .map(execution::StepState::status)
+                                }),
                             );
                         // Nothing is in flight: a step that has not started, or one that waits
                         // to retry.
@@ -2728,9 +3475,10 @@ where
                                 execution::StepStatus::Pending | execution::StepStatus::Ready
                             ))
                             || step.status() == execution::StepStatus::RetryWait;
-                        step.status().is_terminal() && !instance.node().is_derived()
+                        (step.status().is_terminal() && !instance.node().is_derived()
                             || settled_derived
-                            || safe_unstarted
+                            || safe_unstarted)
+                            && !execution::retry_wait_holds_drain(step.status(), step.failure())
                     });
                 if !safe {
                     return Ok(LoopAdvance::Waiting);
@@ -2799,6 +3547,26 @@ where
                 .start_drain(&LoopDrainCommand::new(
                     transition(state.version()),
                     execution::LoopDrainReason::Cancelled,
+                    uuid::Uuid::now_v7(),
+                )?)
+                .await?;
+            return Ok(LoopAdvance::DrainStarted);
+        }
+        // A scoped report refused at the content quota stopped the run for storage (feature 037).
+        // No member failed with that code, so the active iteration drains for the storage stop.
+        if state.stop_reason() == Some(StopReason::Failed)
+            && state
+                .stop_code()
+                .is_some_and(|code| code == &FailureCode::storage_quota_exceeded())
+            && let Some(iteration) = loop_state.active_iteration()
+        {
+            self.store
+                .start_drain(&LoopDrainCommand::new(
+                    transition(state.version()),
+                    execution::LoopDrainReason::Failed {
+                        iteration,
+                        code: FailureCode::storage_quota_exceeded(),
+                    },
                     uuid::Uuid::now_v7(),
                 )?)
                 .await?;
@@ -3030,6 +3798,28 @@ where
                 .start_drain(&LoopDrainCommand::new(
                     ctx.transition(version),
                     execution::LoopDrainReason::Cancelled,
+                    uuid::Uuid::now_v7(),
+                )?)
+                .await?;
+            return Ok(Some(LoopAdvance::DrainStarted));
+        }
+        // As in the whole-run path: a content-refused scoped report stopped the run for storage.
+        if frontier.run.stop_reason == Some(StopReason::Failed)
+            && frontier
+                .run
+                .stop_code
+                .as_ref()
+                .is_some_and(|code| code == &FailureCode::storage_quota_exceeded())
+            && frontier.phase == LoopPhase::Running
+            && let Some(member) = &frontier.member
+        {
+            self.store
+                .start_drain(&LoopDrainCommand::new(
+                    ctx.transition(version),
+                    execution::LoopDrainReason::Failed {
+                        iteration: member.index,
+                        code: FailureCode::storage_quota_exceeded(),
+                    },
                     uuid::Uuid::now_v7(),
                 )?)
                 .await?;
@@ -3395,6 +4185,95 @@ where
             tracing::info!(
                 removed = scripts,
                 "purged script records past their retention"
+            );
+        }
+        // The actions schedules keep end with their retention: the last 1,000 of a schedule, or 30 days
+        // (a waiting action never). Schedules are visited in turn, a few at a time.
+        let mut actions = 0u64;
+        for _ in 0..PURGE_ROUNDS {
+            match self
+                .store
+                .purge_schedule_actions(SCHEDULE_PURGE_SCHEDULES, PURGE_BATCH)
+                .await
+            {
+                Ok(n) => {
+                    actions += n;
+                    if n < u64::from(PURGE_BATCH) {
+                        break;
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "could not purge schedule actions");
+                    break;
+                }
+            }
+        }
+        if actions > 0 {
+            tracing::info!(
+                removed = actions,
+                "purged schedule actions past their retention"
+            );
+        }
+        // The jobs of batch operations and their items end with their retention (FR-018-033): the items
+        // first, in bounded chunks, and the job last, so a call that is cut short leaves a job with fewer
+        // items and the next one finishes it, in this pass while the calls use their bounds, up to a time
+        // and a number of calls. A failure is counted and logged by its SQLSTATE and the kind of the error and
+        // nothing else (the error of a statement over a job can quote its selector), and the round goes on.
+        let mut purged = BatchPurged::default();
+        let (started, mut calls) = (Instant::now(), 0_u32);
+        loop {
+            calls += 1;
+            match self
+                .store
+                .purge_batch_jobs(BATCH_PURGE_JOBS, BATCH_PURGE_ROWS)
+                .await
+            {
+                Ok(gone) => {
+                    count_batch_purged(gone);
+                    purged.jobs += gone.jobs;
+                    purged.items += gone.items;
+                    if !batch_purge_goes_on(gone, calls, started.elapsed()) {
+                        break;
+                    }
+                }
+                Err(error) => {
+                    metrics::counter!("batch_purge_failures_total").increment(1);
+                    tracing::warn!(
+                        sqlstate = error.sqlstate().unwrap_or("none"),
+                        kind = error.kind(),
+                        "could not purge batch jobs"
+                    );
+                    break;
+                }
+            }
+        }
+        if purged.rows() > 0 {
+            tracing::info!(
+                jobs = purged.jobs,
+                items = purged.items,
+                "purged batch jobs and their items past their retention"
+            );
+        }
+        // The bindings of business identifiers that are free again hold nothing but a row.
+        let mut bindings = 0u64;
+        for _ in 0..PURGE_ROUNDS {
+            match self.store.purge_business_ids(PURGE_BATCH).await {
+                Ok(n) => {
+                    bindings += n;
+                    if n < u64::from(PURGE_BATCH) {
+                        break;
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "could not purge business identifier bindings");
+                    break;
+                }
+            }
+        }
+        if bindings > 0 {
+            tracing::info!(
+                removed = bindings,
+                "purged business identifier bindings that are free again"
             );
         }
         // One bounded statement at a time, so a backlog never holds a long one, repeated until the
@@ -3847,6 +4726,7 @@ where
             version,
             FailureCode::expression_error(),
             Some(owner),
+            None,
         )
         .await
     }
@@ -3885,13 +4765,14 @@ where
         version: u64,
         code: FailureCode,
     ) -> Result<Outcome, EngineError> {
-        self.stop_with_code_routing(view, hold, run, version, code, None)
+        self.stop_with_code_routing(view, hold, run, version, code, None, None)
             .await
     }
 
     /// Stops the run with `code`, unless `unentered_loop` names a loop that declares `onError`: its
     /// pending owner then fails with `code` and the edge is taken, since no scope or iteration
     /// exists to drain (G341). The run is only stopped when nothing handles the failure.
+    #[allow(clippy::too_many_arguments)]
     async fn stop_with_code_routing(
         &self,
         view: &View,
@@ -3903,6 +4784,7 @@ where
         version: u64,
         code: FailureCode,
         unentered_loop: Option<&NodeId>,
+        chain_detail: Option<&str>,
     ) -> Result<Outcome, EngineError> {
         let Some(mut tx) = self
             .store
@@ -3919,8 +4801,20 @@ where
         if let Err(outcome) = recovery_guard(shard_held, version, tx.parts().1.version()) {
             return Ok(outcome);
         }
+        let mut effects = self.effects();
+        if let Some(detail) = chain_detail {
+            effects.audit = Some(AuditRecord::engine(
+                tenant,
+                AuditAction::RunCollectionChainFailed,
+                ResourceType::Run,
+                run.to_string(),
+                detail,
+                tx.info().trace_id.clone(),
+                tx.now(),
+            ));
+        }
         self.engine
-            .run(&mut tx, self.effects(), |definition, state, now| {
+            .run(&mut tx, effects, |definition, state, now| {
                 let routed = unentered_loop.filter(|owner| {
                     definition
                         .node(owner)
@@ -4121,6 +5015,7 @@ where
         if view.snapshot.is_none() {
             return;
         }
+        let _budget = ChainedBudget::open(&self.chained_budget, MAX_CHAINED_ENTRIES_PER_TICK);
         let candidates = self
             .pick(
                 view,
@@ -4158,7 +5053,7 @@ where
                     Ok(CollectionAdvance::QuotaStopped) => Outcome::QuotaStopped,
                     Ok(CollectionAdvance::LimitStopped) => Outcome::Done,
                     Ok(CollectionAdvance::Waiting | CollectionAdvance::AlreadyFinished)
-                    | Err(CollectionAdvanceError::NotCollection)
+                    | Err(CollectionAdvanceError::NotCollection | CollectionAdvanceError::ChainInterrupted)
                     | Err(CollectionAdvanceError::Primitive(
                         PrimitiveStoreError::AtCapacity
                         | PrimitiveStoreError::RevisionConflict { .. },
@@ -4300,8 +5195,19 @@ where
                     Ok(_)
                     | Err(
                         ContinuationAdvanceError::ChainLimitFinalized
-                        | ContinuationAdvanceError::ExpressionFinalized,
+                        | ContinuationAdvanceError::ExpressionFinalized
+                        | ContinuationAdvanceError::InputFinalized,
                     ) => Outcome::Done,
+                    // no room in the validator: not a failure, the boundary is examined again
+                    Err(ContinuationAdvanceError::InputUnavailable) => {
+                        metrics::counter!(
+                            "scheduler_continuation_waits_total",
+                            "blocker" => "input_check"
+                        )
+                        .increment(1);
+                        waiting = true;
+                        Outcome::Skipped
+                    }
                     Err(ContinuationAdvanceError::Waiting(blocker)) => {
                         metrics::counter!(
                             "scheduler_continuation_waits_total",
@@ -4808,6 +5714,37 @@ where
         }
     }
 
+    /// Releases the entry of every run whose start delay has ended, once (feature 018, `FR-018-023`):
+    /// the run's own shard lease fences it, and the condition is read again under the run's lock, so a
+    /// run cancelled, stopped or paused since the candidate query is left alone.
+    async fn start_releases(&self, view: &View, report: &mut Report) {
+        let due = self
+            .pick(
+                view,
+                "start_releases",
+                report,
+                |r: &RunRef| r.tenant_id,
+                |r| r.run_id,
+                |store, window| async move { store.due_start_releases(&window).await },
+            )
+            .await;
+        let outcomes = self
+            .each(due, |run| {
+                self.apply_if(
+                    view,
+                    run,
+                    "start_release",
+                    Condition::StartDue,
+                    self.effects(),
+                    |def, state, now| Ok(((), execution::release_start(def, state, now)?)),
+                )
+            })
+            .await;
+        for outcome in outcomes {
+            Self::tally(report, outcome, |r| r.starts_released += 1);
+        }
+    }
+
     /// Ends the runs that a transaction of their own stopped (a loop at its iteration limit): the
     /// planner drains what is left and finishes them, which no worker report or timer would do.
     async fn stopped_runs(&self, view: &View, report: &mut Report) {
@@ -5046,6 +5983,64 @@ where
             .into_iter()
             .flatten()
             .min();
+        if let Some(hook) = &self.before_child_check {
+            hook(pending.child).await;
+        }
+        // Design 043, row 11: the input the parent's node evaluated is checked against the child's version. A refusal fails
+        // the parent step, unless the child already exists (created by a peer, a 0.2.x engine or one in `report`, D043-038).
+        let input = match self
+            .run_inputs
+            .check(
+                tenant,
+                version_record.version.id(),
+                &definition,
+                pending.input.clone(),
+                Creator::Child,
+                FieldPolicy::Show,
+            )
+            .await
+        {
+            Ok(input) => input,
+            // no room to check it now: the reservation stays and the next pass tries again
+            Err(InputRefusal::Unavailable) => return Ok((Outcome::Skipped, false)),
+            Err(refusal) => {
+                let code = match refusal {
+                    InputRefusal::SchemaUnusable => FailureCode::run_input_schema_unusable(),
+                    _ => FailureCode::child_input_invalid(),
+                };
+                // A child that a peer, a 0.2.x engine or an engine in `report` already created is not failed: the
+                // step is failed only if, under its row lock, its child was not started (D043-038, D043-164; the
+                // lookup before the failure of D043-132 left a window, correctness review of 2026-11-16, Major 3).
+                let target = node.clone();
+                let child = pending.child;
+                let outcome = self
+                    .apply_if(
+                        view,
+                        RunRef {
+                            tenant_id: tenant,
+                            run_id: parent_id,
+                        },
+                        "child_finish",
+                        Condition::ChildNotStarted { node, child },
+                        self.effects(),
+                        move |def, state, now| {
+                            Ok((
+                                (),
+                                execution::finish_child(
+                                    def,
+                                    state,
+                                    &target,
+                                    child,
+                                    ChildOutcome::Failed(code),
+                                    now,
+                                )?,
+                            ))
+                        },
+                    )
+                    .await;
+                return Ok((outcome, outcome != Outcome::Skipped));
+            }
+        };
         let child_id = pending.child;
         let info = RunInfo {
             origin: None,
@@ -5070,6 +6065,7 @@ where
             }),
             depth: parent.info.depth.saturating_add(1),
             root: parent.info.root,
+            business_id: None,
         };
         let audit = AuditRecord::engine(
             tenant,
@@ -5082,11 +6078,13 @@ where
         );
         let limits = RunLimits::of(&self.store, tenant, parent.info.namespace_id).await?;
         let new = NewRun {
+            schedule: None,
+            business: None,
             retained: None,
             limits,
             info,
             definition: std::sync::Arc::clone(&definition),
-            input: pending.input.clone(),
+            input,
             input_blob: Some(sagat_application::blobs::RunInputBinding::Inherit(
                 parent_id,
             )),
@@ -5097,9 +6095,12 @@ where
                 key: format!("child-start:{node}"),
                 fingerprint: child_id.as_uuid().as_bytes().to_vec(),
             },
+            reset_sequence: None,
+            pending_reset: None,
         };
         match self.store.create(new).await {
-            Ok(Applied::Replayed(_)) => Ok((Outcome::Skipped, false)),
+            // (a child run never carries a business identifier, so a holder is never returned)
+            Ok(Admitted::Replayed(_) | Admitted::Existing(_)) => Ok((Outcome::Skipped, false)),
             // The parent step no longer waits for this run (cancelled, or created by a peer).
             Err(StoreError::MissingReference) => Ok((Outcome::Skipped, false)),
             Err(StoreError::DatabaseUnavailable | StoreError::DatabaseLimit) => {
@@ -5152,7 +6153,7 @@ where
                 true,
             )),
             Err(other) => Err(other.into()),
-            Ok(Applied::Done(mut tx)) => {
+            Ok(Admitted::Created(mut tx)) => {
                 // The fence, before anything is committed: a replica that lost the parent's shard
                 // while it was reading must not leave a child run behind (dropping rolls it back).
                 if !view.holds_child_start(&mut tx, &hold).await? {
@@ -5470,9 +6471,18 @@ fn member_is_safe_to_drain(
 ) -> bool {
     member.steps.iter().all(|(instance, step)| {
         let settled_derived = instance.node().is_derived()
-            && matches!(
+            && execution::derived_settles_drain(
+                instance,
                 step.status(),
-                execution::StepStatus::Succeeded | execution::StepStatus::Skipped
+                instance.node().forward().and_then(|forward| {
+                    member
+                        .steps
+                        .get(&ExecutionInstanceId::in_path(
+                            instance.path().clone(),
+                            forward,
+                        ))
+                        .map(execution::StepState::status)
+                }),
             );
         // Nothing is in flight: a step that has not started, or that waits to retry.
         let safe_unstarted = (step.attempt() == 0
@@ -5499,9 +6509,10 @@ fn member_is_safe_to_drain(
                         .map(sagat_domain::workflow::Node::kind),
                     Some(NodeKind::WaitEvent { .. })
                 ));
-        step.status().is_terminal() && !instance.node().is_derived()
+        (step.status().is_terminal() && !instance.node().is_derived()
             || settled_derived
-            || safe_unstarted
+            || safe_unstarted)
+            && !execution::retry_wait_holds_drain(step.status(), step.failure())
     })
 }
 

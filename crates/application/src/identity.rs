@@ -31,6 +31,22 @@ pub struct RequestContext {
 }
 
 impl RequestContext {
+    /// This context, with a trace of its own when it has none: for work the engine starts without a request to take a
+    /// trace from (a run the clock starts, the run a pending reset makes, the runs of a batch rerun). A trace the context
+    /// has is kept, so a request's own trace (trigger-now) is never replaced. The id is a fresh random one: it names
+    /// nothing of the customer's.
+    #[must_use]
+    pub fn traced(&self) -> Self {
+        if self.trace_id.is_some() {
+            self.clone()
+        } else {
+            Self {
+                trace_id: Some(sagat_telemetry::TraceId::generate().to_string()),
+                ..self.clone()
+            }
+        }
+    }
+
     /// Where the work this request starts belongs in a trace, when the request has one.
     #[must_use]
     pub fn link(&self) -> Option<TraceLink> {

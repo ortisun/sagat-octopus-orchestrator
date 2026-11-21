@@ -7,7 +7,7 @@
 #   docker build -f infra/docker/Dockerfile --target dev-idp          -t sagat-octopus-orchestrator/dev-idp:dev .
 # Without --target the last stage (the control plane) is built.
 
-ARG RUST_VERSION=1.98.0
+ARG RUST_VERSION=1.100.0
 
 FROM rust:${RUST_VERSION}-slim-bookworm AS builder
 # Keep the five-process release build usable on the documented local Docker memory budget.
@@ -46,7 +46,10 @@ WORKDIR /src/frontend
 COPY frontend/package.json frontend/package-lock.json frontend/tsconfig.base.json frontend/.npmrc ./
 COPY frontend/apps/studio/package.json apps/studio/package.json
 COPY frontend/e2e/package.json e2e/package.json
+COPY frontend/tools/minimatch-compat tools/minimatch-compat
+COPY frontend/tools/minimatch.test.mjs tools/minimatch.test.mjs
 RUN npm ci --ignore-scripts --no-audit --no-fund --workspace @sagat/studio
+RUN npm run test:tooling
 COPY frontend/apps/studio apps/studio
 # The generated API types are committed; the build only needs the contract to have been read once.
 COPY specs/001-platform-foundation/contracts specs/001-platform-foundation/contracts

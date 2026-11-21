@@ -1,6 +1,7 @@
 {
   "canonical": {
-    "decimal-and-utc": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"entrypoint\":\"waiting\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"declared-account-state\"},\"nodes\":[{\"id\":\"waiting\",\"type\":\"end\"}],\"state\":{\"initial\":\"input.initialState\",\"queries\":{\"account.balance\":{\"argsSchema\":{\"additionalProperties\":false,\"properties\":{\"taxRate\":{\"type\":\"number\"}},\"required\":[\"taxRate\"],\"type\":\"object\"},\"disclosure\":\"declared-business-result-v1\",\"expression\":\"state.balance * 1.075 + args.taxRate\",\"resultSchema\":{\"minimum\":0,\"type\":\"number\"}},\"account.cutoff\":{\"argsSchema\":{\"additionalProperties\":false,\"type\":\"object\"},\"disclosure\":\"declared-business-result-v1\",\"expression\":\"'2026-10-15T18:00:00.000Z'\",\"resultSchema\":{\"maxLength\":24,\"type\":\"string\"}},\"account.updated-at\":{\"argsSchema\":{\"additionalProperties\":false,\"type\":\"object\"},\"disclosure\":\"declared-business-result-v1\",\"expression\":\"state.updatedAt\",\"resultSchema\":{\"maxLength\":32,\"type\":\"string\"}}},\"schema\":{\"additionalProperties\":false,\"properties\":{\"balance\":{\"minimum\":0,\"type\":\"number\"},\"status\":{\"maxLength\":16,\"type\":\"string\"},\"updatedAt\":{\"maxLength\":32,\"type\":\"string\"}},\"required\":[\"balance\",\"status\",\"updatedAt\"],\"type\":\"object\"},\"updates\":{\"account.replace\":{\"argsSchema\":{\"additionalProperties\":false,\"properties\":{\"nextState\":{\"additionalProperties\":false,\"properties\":{\"balance\":{\"minimum\":0,\"type\":\"number\"},\"status\":{\"maxLength\":16,\"type\":\"string\"},\"updatedAt\":{\"maxLength\":32,\"type\":\"string\"}},\"required\":[\"balance\",\"status\",\"updatedAt\"],\"type\":\"object\"}},\"required\":[\"nextState\"],\"type\":\"object\"},\"disclosure\":\"declared-business-result-v1\",\"result\":\"newState\",\"resultSchema\":{\"additionalProperties\":false,\"properties\":{\"balance\":{\"minimum\":0,\"type\":\"number\"},\"status\":{\"maxLength\":16,\"type\":\"string\"},\"updatedAt\":{\"maxLength\":32,\"type\":\"string\"}},\"required\":[\"balance\",\"status\",\"updatedAt\"],\"type\":\"object\"},\"state\":\"args.nextState\",\"validate\":\"args.nextState.balance >= 0\"}}}}"
+    "decimal-and-utc": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"entrypoint\":\"waiting\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"declared-account-state\"},\"nodes\":[{\"id\":\"waiting\",\"type\":\"end\"}],\"state\":{\"initial\":\"input.initialState\",\"queries\":{\"account.balance\":{\"argsSchema\":{\"additionalProperties\":false,\"properties\":{\"taxRate\":{\"type\":\"number\"}},\"required\":[\"taxRate\"],\"type\":\"object\"},\"disclosure\":\"declared-business-result-v1\",\"expression\":\"state.balance * 1.075 + args.taxRate\",\"resultSchema\":{\"minimum\":0,\"type\":\"number\"}},\"account.cutoff\":{\"argsSchema\":{\"additionalProperties\":false,\"type\":\"object\"},\"disclosure\":\"declared-business-result-v1\",\"expression\":\"'2026-10-15T18:00:00.000Z'\",\"resultSchema\":{\"maxLength\":24,\"type\":\"string\"}},\"account.updated-at\":{\"argsSchema\":{\"additionalProperties\":false,\"type\":\"object\"},\"disclosure\":\"declared-business-result-v1\",\"expression\":\"state.updatedAt\",\"resultSchema\":{\"maxLength\":32,\"type\":\"string\"}}},\"schema\":{\"additionalProperties\":false,\"properties\":{\"balance\":{\"minimum\":0,\"type\":\"number\"},\"status\":{\"maxLength\":16,\"type\":\"string\"},\"updatedAt\":{\"maxLength\":32,\"type\":\"string\"}},\"required\":[\"balance\",\"status\",\"updatedAt\"],\"type\":\"object\"},\"updates\":{\"account.replace\":{\"argsSchema\":{\"additionalProperties\":false,\"properties\":{\"nextState\":{\"additionalProperties\":false,\"properties\":{\"balance\":{\"minimum\":0,\"type\":\"number\"},\"status\":{\"maxLength\":16,\"type\":\"string\"},\"updatedAt\":{\"maxLength\":32,\"type\":\"string\"}},\"required\":[\"balance\",\"status\",\"updatedAt\"],\"type\":\"object\"}},\"required\":[\"nextState\"],\"type\":\"object\"},\"disclosure\":\"declared-business-result-v1\",\"result\":\"newState\",\"resultSchema\":{\"additionalProperties\":false,\"properties\":{\"balance\":{\"minimum\":0,\"type\":\"number\"},\"status\":{\"maxLength\":16,\"type\":\"string\"},\"updatedAt\":{\"maxLength\":32,\"type\":\"string\"}},\"required\":[\"balance\",\"status\",\"updatedAt\"],\"type\":\"object\"},\"state\":\"args.nextState\",\"validate\":\"args.nextState.balance >= 0\"}}}}",
+    "retained-update": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"entrypoint\":\"done\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"retained-update-state\"},\"nodes\":[{\"id\":\"done\",\"type\":\"end\"}],\"state\":{\"initial\":\"input.account\",\"schema\":{\"additionalProperties\":false,\"properties\":{\"balance\":{\"type\":\"integer\"}},\"required\":[\"balance\"],\"type\":\"object\"},\"updates\":{\"balance.credit\":{\"argsSchema\":{\"type\":\"integer\"},\"disclosure\":\"declared-business-result-v1\",\"reapplyOnReset\":true,\"result\":\"newState.balance\",\"resultSchema\":{\"type\":\"integer\"},\"state\":\"state\",\"validate\":\"args > 0\"},\"balance.note\":{\"argsSchema\":{\"type\":\"integer\"},\"disclosure\":\"declared-business-result-v1\",\"result\":\"newState.balance\",\"resultSchema\":{\"type\":\"integer\"},\"state\":\"state\"}}}}"
   },
   "errors": {
     "missing-query-disclosure": {
@@ -205,6 +206,61 @@
               "additionalProperties": false
             },
             "disclosure": "declared-business-result-v1"
+          }
+        }
+      }
+    },
+    "retained-update": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "entrypoint": "done",
+      "kind": "Workflow",
+      "metadata": {
+        "name": "retained-update-state"
+      },
+      "nodes": [
+        {
+          "id": "done",
+          "type": "end"
+        }
+      ],
+      "state": {
+        "initial": "input.account",
+        "schema": {
+          "additionalProperties": false,
+          "properties": {
+            "balance": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "balance"
+          ],
+          "type": "object"
+        },
+        "updates": {
+          "balance.credit": {
+            "argsSchema": {
+              "type": "integer"
+            },
+            "disclosure": "declared-business-result-v1",
+            "reapplyOnReset": true,
+            "result": "newState.balance",
+            "resultSchema": {
+              "type": "integer"
+            },
+            "state": "state",
+            "validate": "args > 0"
+          },
+          "balance.note": {
+            "argsSchema": {
+              "type": "integer"
+            },
+            "disclosure": "declared-business-result-v1",
+            "result": "newState.balance",
+            "resultSchema": {
+              "type": "integer"
+            },
+            "state": "state"
           }
         }
       }

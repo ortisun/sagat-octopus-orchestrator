@@ -509,6 +509,28 @@ pub trait ExpressionEvaluator: Send + Sync {
             .map(crate::collection_source::CollectionSource::Items)
     }
 
+    /// Applies a collection's operator chain once, at scope entry (design 042, FR-042-006): builds the run's environment
+    /// once, evaluates `input` in it when it is the `items` expression, then each stage over the whole output of the one
+    /// before, with `element` and `position` bound per element, under the running `ceilings`. Synchronous and bounded:
+    /// the scheduler runs it in a blocking task, and it checks its wall time between elements.
+    ///
+    /// The default, for an adapter that predates chains, refuses every chain with
+    /// [`crate::collection_chain::ChainFailure::Unsupported`].
+    ///
+    /// # Errors
+    /// [`crate::collection_chain::ChainFailure`], naming the first failing stage and position, never a value.
+    fn collection_chain(
+        &self,
+        input: crate::collection_chain::ChainInput<'_>,
+        chain: &sagat_domain::operators::OperatorChain,
+        data: &RunData,
+        ceilings: &crate::collection_chain::ChainCeilings,
+    ) -> Result<crate::collection_chain::ChainAnswer, crate::collection_chain::ChainFailure> {
+        // An adapter that predates chains fails them closed rather than run a body over an unshaped list.
+        let _ = (input, chain, data, ceilings);
+        Err(crate::collection_chain::ChainFailure::Unsupported)
+    }
+
     /// Evaluates a body return in the exact iteration context.
     fn collection_return(
         &self,
@@ -632,6 +654,9 @@ pub struct RunInfo {
     pub depth: u8,
     /// The run at the top of the tree this run belongs to (itself for a run started through the API).
     pub root: RunId,
+    /// The business identifier the run was started under (feature 018). Read by `get` and `list`
+    /// only; the rows a command transaction reads do not carry it. Its `Debug` hides it.
+    pub business_id: Option<sagat_domain::business_ids::BusinessId>,
 }
 
 /// Where a run sits in its continuation chain, when it belongs to one. A segment that ended into
@@ -655,9 +680,43 @@ pub struct RunRecord {
     pub paused: bool,
     pub updated_at: OffsetDateTime,
     pub finished_at: Option<OffsetDateTime>,
+    /// The instant the entry of the run is held until, for a run created with a start delay that has
+    /// not been released (feature 018, `FR-018-023`); `None` otherwise.
+    pub start_delayed_until: Option<OffsetDateTime>,
     /// Set by the reads that serve the API (`get`, `list`); `None` for a run outside any chain and
     /// for a record loaded inside a command transaction.
     pub chain: Option<RunSegment>,
+    /// The schedule action that started the run (feature 018, `FR-018-016`). Read by `get` and `list`
+    /// from the columns the run was created with; `None` for a run no schedule started and for a record
+    /// loaded inside a command transaction.
+    pub schedule: Option<ScheduleProvenance>,
+    /// The run a reset made this one from, and the journal sequence it keeps (feature 018, `FR-018-037`).
+    /// Read by `get` and `list`; `None` for every run a reset did not make.
+    pub reset_from: Option<ResetProvenance>,
+    /// The failure code the run's stop carries (`runs.stop_code`): what failed the run (a step's own code, a ceiling, a
+    /// continuation refused for its input, design 043), for a run stopped with one. Read by `get` and `list`; `None`
+    /// for every other run and for a record loaded inside a command transaction.
+    pub failure_code: Option<FailureCode>,
+}
+
+/// Which schedule started a run, for which nominal time, by which kind of action and under which
+/// revision (`FR-018-016`). Fixed when the run is created: the columns refuse a change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScheduleProvenance {
+    pub schedule: sagat_domain::schedules::ScheduleId,
+    /// The nominal time of the action, to the microsecond.
+    pub nominal_at: OffsetDateTime,
+    pub kind: sagat_domain::schedules::ActionKind,
+    /// The revision of the schedule the action was taken under.
+    pub revision: u32,
+}
+
+/// The run a reset made a run from, and the last journal sequence of that run the new one holds as
+/// its own (`runs.rerun_of` and `runs.reset_sequence`). A rerun as new has the first and not the second.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResetProvenance {
+    pub source: RunId,
+    pub sequence: u64,
 }
 
 /// One consistent bounded read used to plan progress in an exact scoped path.
@@ -885,6 +944,9 @@ pub struct Effects {
     pub renewal: Option<LeaseRenewal>,
     /// The audit record of an operator action, committed with the change it describes.
     pub audit: Option<AuditRecord>,
+    /// Further audit records of the same command, committed with it and after `audit`: a command that discloses several
+    /// secrets audits each on its own (feature 035, contracts/worker-protocol.md).
+    pub further_audits: Vec<AuditRecord>,
     /// The idempotency record of the command, with the result a replay should return.
     pub idempotency: Option<(Idempotency, String)>,
     /// `READY` steps to write a fresh wake-up notification for (their notification was lost).
@@ -898,6 +960,10 @@ pub struct Effects {
     /// The lease whose holder reports its attempt in this transaction (G141): kept so that a
     /// heartbeat of that same lease arriving after the report can be told apart from a lost lease.
     pub reported: Option<ReportedLease>,
+    /// Set when the events of this write are the prefix of a source run that a reset re-emits (feature 018,
+    /// `FR-018-037`): their rows keep who did them, when and which payload they name, say `restored`, and
+    /// have none of the effects of the first time (no task is announced, no child settled, no breaker told).
+    pub restored: Option<std::sync::Arc<crate::runs::RestoredPrefix>>,
 }
 
 impl Effects {
@@ -910,12 +976,14 @@ impl Effects {
             lease: None,
             renewal: None,
             audit: None,
+            further_audits: Vec::new(),
             idempotency: None,
             rehint: Vec::new(),
             rehint_instances: Vec::new(),
             children: Vec::new(),
             blobs: Vec::new(),
             reported: None,
+            restored: None,
         }
     }
 }
@@ -977,6 +1045,136 @@ pub trait RunTx: Send {
         _event: &crate::dispatch::ClaimedEvent,
     ) -> impl Future<Output = Result<Option<Vec<u8>>, StoreError>> + Send {
         async { Err(scoped_execution_adapter_required()) }
+    }
+
+    /// Whether the child `child` of this run's step `node` was created, read under the step's row lock (design 043,
+    /// D043-164): a creation that committed first is seen, and one that comes later waits for this transaction and
+    /// then finds the step moved on, so a refusal of the child's input never fails a step whose child exists. A step
+    /// that no longer waits for that child is reported started (there is nothing to fail). An adapter that cannot
+    /// refuses.
+    fn child_started<'a>(
+        &'a mut self,
+        _node: &'a NodeId,
+        _child: RunId,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send + 'a {
+        async {
+            Err(StoreError::Internal {
+                detail: "this adapter cannot read whether a child was started".into(),
+            })
+        }
+    }
+
+    /// Keeps, in this transaction, the receipts of a start that an existing holder served instead of
+    /// a new run (Signal-with-Start and Update-with-Start, feature 018): `start` under the key of the
+    /// request, so that a retry is answered from it even after the holder has closed and the identifier
+    /// is free, and `marker`, which says that the holder, not a new run, was the answer. Both name
+    /// `holder`, the run the effect reached. `reported`, the audit of a start input refused in `report` mode
+    /// (design 043), is written with them when the receipt of `start` is new, so a retry does not audit it again.
+    /// An adapter that cannot refuses.
+    fn remember_start_served<'a>(
+        &'a mut self,
+        _start: &'a Idempotency,
+        _marker: &'a Idempotency,
+        _holder: RunId,
+        _reported: Option<&'a AuditRecord>,
+    ) -> impl Future<Output = Result<(), StoreError>> + Send + 'a {
+        async {
+            Err(StoreError::Internal {
+                detail: "this adapter cannot keep the receipt of a start served by a holder".into(),
+            })
+        }
+    }
+
+    /// Writes, in this transaction, the events `1..=N` of a source run under this run (a run a reset
+    /// creates, feature 018, `FR-018-037`): they are applied to the state, written to the journal as they
+    /// were with the mark `restored`, and projected like any other, without the effects of the first time.
+    /// The run must be empty. An adapter that cannot refuses; the failure is the wiring's.
+    fn restore_prefix<'a>(
+        &'a mut self,
+        _prefix: &'a crate::runs::RestoredPrefix,
+    ) -> impl Future<Output = Result<(), StoreError>> + Send + 'a {
+        async {
+            Err(StoreError::Internal {
+                detail: "this adapter cannot restore the prefix of a source run".into(),
+            })
+        }
+    }
+
+    /// Writes, in this transaction, the entry of the register of resets for the run it creates (feature 018):
+    /// which run and point it was made from, by whom and why. It commits with the run or not at all. An
+    /// adapter that cannot refuses; the failure is the wiring's.
+    fn register_reset<'a>(
+        &'a mut self,
+        _registration: &'a crate::runs::ResetRegistration<'a>,
+    ) -> impl Future<Output = Result<(), StoreError>> + Send + 'a {
+        async {
+            Err(StoreError::Internal {
+                detail: "this adapter cannot keep the register of resets".into(),
+            })
+        }
+    }
+
+    /// Writes, in this transaction, the entry of the register of a reset that waits for this run to end
+    /// (`CANCEL_SOURCE`, feature 018): the entry `PENDING_SOURCE`, the audit record of the request and the receipt
+    /// of its key, after judging the namespace's quota of pending resets. The caller holds the run's row: the
+    /// request cancels it next, in the same transaction. An adapter that cannot refuses; the failure is the wiring's.
+    fn register_pending_reset<'a>(
+        &'a mut self,
+        _registration: &'a crate::runs::PendingRegistration<'a>,
+    ) -> impl Future<Output = Result<(), StoreError>> + Send + 'a {
+        async {
+            Err(StoreError::Internal {
+                detail: "this adapter cannot keep the register of resets".into(),
+            })
+        }
+    }
+
+    /// Records, in this transaction and after its effect, the outcome of the batch item that drives it (O1951, ADR-0050
+    /// decision 2, `FR-018-030`): the fence of the shard is checked (`FOR SHARE`, a leaf lock), the job and then the item
+    /// are locked after the run (slot 3R, then 8a), the job must still run and the item must not have ended, and the
+    /// outcome, the counters and the next slot of the job are written, with the audit record of the end of the job when
+    /// the item is the last. A refusal is [`StoreError::StateConflict`] and the caller drops the transaction, its effect
+    /// with it. `replay` is set when the transaction found the effect of the item's key already committed (an engine
+    /// older than D2219 applied it and did not record the item): the record then takes a job that is cancelling too,
+    /// because the cancel came after the effect. An adapter that cannot refuses; the failure is the wiring's.
+    fn settle_batch_item<'a>(
+        &'a mut self,
+        _item: &'a crate::batch::ItemSettlement,
+        _outcome: &'a crate::batch::ItemOutcome,
+        _replay: bool,
+    ) -> impl Future<Output = Result<(), StoreError>> + Send + 'a {
+        async {
+            Err(StoreError::Internal {
+                detail: "this adapter cannot record a batch item with its run".into(),
+            })
+        }
+    }
+
+    /// Applies a declared Update to this run inside this transaction, which the caller then commits
+    /// (a business rejection leaves its receipt with the run) or drops (nothing of it persists):
+    /// Update-with-Start, feature 018. Whatever the Update needs to read it reads here, so the
+    /// initial reduction of a run just created is visible to it. An adapter that cannot do this
+    /// refuses; the failure is the wiring's, not the caller's.
+    fn apply_declared_update<'a>(
+        &'a mut self,
+        _update: &'a crate::declared_operations::DeclaredUpdate,
+        _evaluator: &'a dyn crate::declared_operations::DeclaredOperationEvaluator,
+    ) -> impl Future<
+        Output = Result<
+            crate::declared_operations::AppliedInTx,
+            crate::declared_operations::DeclaredOperationStoreError,
+        >,
+    > + Send
+    + 'a {
+        async {
+            Err(
+                crate::declared_operations::DeclaredOperationStoreError::Storage(
+                    StoreError::Internal {
+                        detail: "this adapter cannot apply a declared Update inside a start".into(),
+                    },
+                ),
+            )
+        }
     }
 
     /// The database clock sampled after the required run lock is acquired: deadlines must not be
@@ -1175,6 +1373,61 @@ pub trait RunTx: Send {
         async { Ok(false) }
     }
 
+    /// What the lease of an Iceberg write needs: the limits of the connection it was admitted with, the number of the
+    /// workflow version, and when its first attempt was leased. Unsupported stores fail closed.
+    fn lake_lease_facts(
+        &mut self,
+        _node: &NodeId,
+    ) -> impl Future<Output = Result<crate::database::LakeLeaseFacts, StoreError>> + Send {
+        async { Err(StoreError::DatabaseUnavailable) }
+    }
+
+    /// What the lease of an Iceberg probe needs: the connection it was admitted with, by name and revision (D035-150). Unsupported stores
+    /// fail closed.
+    fn lake_probe_facts(
+        &mut self,
+        _node: &NodeId,
+    ) -> impl Future<Output = Result<crate::database::ProbeLeaseFacts, StoreError>> + Send {
+        async { Err(StoreError::DatabaseUnavailable) }
+    }
+
+    /// What the catalog says, inside this transaction, about the blobs of a record source (feature 035, R2). Only a blob this run's
+    /// own steps committed as an output is returned, with the descriptor the catalog holds; every other case (another run, another
+    /// namespace, another tenant, a run input, an upload not committed, a deleted blob, an id that does not exist) returns nothing,
+    /// all the same, so a descriptor in a JSON value proves nothing. A plain read: the lease holds the tenant's lock and does no
+    /// object I/O. Unsupported stores fail closed.
+    fn lake_record_blobs(
+        &mut self,
+        _ids: &[sagat_domain::blobs::BlobId],
+    ) -> impl Future<Output = Result<Vec<sagat_domain::blobs::BlobDescriptor>, StoreError>> + Send
+    {
+        async { Err(StoreError::DatabaseUnavailable) }
+    }
+
+    /// Records, for the attempt the lease just granted (`fence`), the blobs its document names: the allow-list of the `ReadBlob` of
+    /// that attempt. The store takes the rows from the catalog's own word, as [`Self::lake_record_blobs`] does, and not from the
+    /// caller's: a blob that is not a committed output of this run is not pinned, and then none is (a partial list is an error).
+    /// Immutable once written, and written again as a no-op. Unsupported stores fail closed.
+    fn pin_lake_blobs(
+        &mut self,
+        _node: &NodeId,
+        _fence: sagat_domain::execution::Fence,
+        _ids: &[sagat_domain::blobs::BlobId],
+    ) -> impl Future<Output = Result<(), StoreError>> + Send {
+        async { Err(StoreError::DatabaseUnavailable) }
+    }
+
+    /// Whether the lease of exactly this attempt and generation named the blob. Another attempt, another generation, another node and
+    /// a blob the lease did not name are all `false`, the same. Unsupported stores fail closed.
+    fn lake_blob_pinned(
+        &mut self,
+        _node: &NodeId,
+        _fence: sagat_domain::execution::Fence,
+        _id: sagat_domain::blobs::BlobId,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send {
+        async { Ok(false) }
+    }
+
     /// Selected immutable connection and credential metadata; no provider I/O occurs here.
     fn database_input(
         &mut self,
@@ -1184,13 +1437,22 @@ pub trait RunTx: Send {
         async { Err(StoreError::DatabaseUnavailable) }
     }
 
-    /// Records the credential before returning its value. The pin is immutable for this attempt.
-    fn pin_database_credential(
+    /// Records the credentials before returning their values, each under its role. Every pin is immutable for this attempt.
+    fn pin_database_credentials(
         &mut self,
         _node: &NodeId,
-        _secret: &StoredSecret,
+        _secrets: &[crate::database::SelectedSecret],
     ) -> impl Future<Output = Result<(), StoreError>> + Send {
         async { Err(StoreError::DatabaseUnavailable) }
+    }
+
+    /// Whether the current attempt of a lake step holds a pin for every secret its connection names: whether it resolved
+    /// its credentials. A step that did not cannot have written, and is not completed.
+    fn lake_attempt_resolved(
+        &mut self,
+        _node: &NodeId,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send {
+        async { Ok(false) }
     }
 
     /// Frozen connection/operation ceilings for retained output. Pause/revocation blocks new
@@ -1433,19 +1695,38 @@ pub enum EngineError {
 }
 
 /// Runs domain commands against a locked run.
-#[derive(Debug, Clone)]
+///
+/// The evaluator is shared, so that a bounded evaluation that may take long (a collection's operator chain) can run in
+/// a blocking task of its own ([`Self::shared_evaluator`]).
+#[derive(Debug)]
 pub struct Engine<E> {
-    evaluator: E,
+    evaluator: Arc<E>,
+}
+
+impl<E> Clone for Engine<E> {
+    fn clone(&self) -> Self {
+        Self {
+            evaluator: Arc::clone(&self.evaluator),
+        }
+    }
 }
 
 impl<E: ExpressionEvaluator> Engine<E> {
-    pub const fn new(evaluator: E) -> Self {
-        Self { evaluator }
+    pub fn new(evaluator: E) -> Self {
+        Self {
+            evaluator: Arc::new(evaluator),
+        }
     }
 
     #[must_use]
-    pub const fn evaluator(&self) -> &E {
+    pub fn evaluator(&self) -> &E {
         &self.evaluator
+    }
+
+    /// The evaluator, to move into a blocking task.
+    #[must_use]
+    pub fn shared_evaluator(&self) -> Arc<E> {
+        Arc::clone(&self.evaluator)
     }
 
     /// Evaluates one End output request with the same failure redaction and retained-output limits
@@ -1760,6 +2041,24 @@ impl DefinitionCache {
         self.codec.parse(document)
     }
 
+    /// As [`Self::parse_document`], with its `inputSchema` checked in `mode`, as a publication in that mode checks it
+    /// (design 043): a schema outside the subset is refused in `enforce` and a warning in `report`.
+    pub fn parse_document_in(
+        &self,
+        document: &[u8],
+        mode: crate::definitions::InputValidationMode,
+    ) -> Result<crate::definitions::ParsedDefinition, IrError> {
+        self.codec.parse_with(document, mode)
+    }
+
+    /// The same for a **private** document (ADR-0080), which only the platform writes. Only the entry that builds one calls it.
+    pub fn parse_private_document(
+        &self,
+        document: &[u8],
+    ) -> Result<crate::definitions::ParsedDefinition, IrError> {
+        self.codec.parse_private(document)
+    }
+
     /// The parsed definition of `version` if it is cached.
     #[must_use]
     pub fn get(&self, version: WorkflowVersionId) -> Option<Arc<WorkflowDefinition>> {
@@ -1784,6 +2083,36 @@ impl DefinitionCache {
         version: WorkflowVersionId,
         document: &[u8],
     ) -> Result<Arc<WorkflowDefinition>, IrError> {
+        self.restore(version, || {
+            self.codec
+                .parse_stored(document)
+                .map(|parsed| parsed.definition)
+        })
+    }
+
+    /// The same for a version of a **private** workflow (ADR-0080). The caller decides it from the workflow's `internal` flag, which is a
+    /// row of the store, and never from the document: a version that is not private never reaches this entry. A version is private or
+    /// public for its whole life, so the cache cannot hold one under the other's rules.
+    ///
+    /// # Errors
+    /// [`IrError`] when the stored document no longer parses, or the codec has no private documents.
+    pub fn get_or_parse_private(
+        &self,
+        version: WorkflowVersionId,
+        document: &[u8],
+    ) -> Result<Arc<WorkflowDefinition>, IrError> {
+        self.restore(version, || {
+            self.codec
+                .parse_stored_private(document)
+                .map(|parsed| parsed.definition)
+        })
+    }
+
+    fn restore(
+        &self,
+        version: WorkflowVersionId,
+        parse: impl FnOnce() -> Result<WorkflowDefinition, IrError>,
+    ) -> Result<Arc<WorkflowDefinition>, IrError> {
         {
             let mut guard = self
                 .entries
@@ -1797,7 +2126,7 @@ impl DefinitionCache {
             }
         }
         // Parse outside the lock: it can take milliseconds and other versions must not wait.
-        let parsed = Arc::new(self.codec.parse_stored(document)?.definition);
+        let parsed = Arc::new(parse()?);
         let mut guard = self
             .entries
             .lock()
@@ -1853,5 +2182,16 @@ impl DefinitionCache {
         document: &[u8],
     ) -> Result<Option<crate::declared_operations::PublishedDeclaredState>, IrError> {
         self.codec.declared_state_publication(document)
+    }
+
+    /// The same for the stored document of a **private** version (ADR-0080): the caller decides it from the workflow, never from the document.
+    ///
+    /// # Errors
+    /// Returns an IR error when a stored declaration no longer validates, or the codec has no private documents.
+    pub fn declared_state_publication_private(
+        &self,
+        document: &[u8],
+    ) -> Result<Option<crate::declared_operations::PublishedDeclaredState>, IrError> {
+        self.codec.declared_state_publication_private(document)
     }
 }

@@ -3,7 +3,7 @@ import type { TokenValue } from '@astryxdesign/core/theme';
 import { roles } from './roles';
 
 /**
- * The Studio's Astryx theme (ADR-0101, D2402). It carries the visual direction recorded in
+ * The Studio's Astryx theme (Architecture decision 0101, Decision 2402). It carries the visual direction recorded in
  * `specs/007-workflow-studio/design/README.md`: the dark roles are the owner's export, the light
  * roles are the accessible derivation of Feature 007. Every value is `[light, dark]`.
  *

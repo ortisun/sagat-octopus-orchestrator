@@ -122,6 +122,6 @@ describe('runs.css', () => {
 });
 
 // The shell on a phone was a rule of base.css until 2026-11-21. The application shell is now the design
-// system's (ADR-0101): below its medium breakpoint it moves the navigation into a drawer behind a
+// system's (Architecture decision 0101): below its medium breakpoint it moves the navigation into a drawer behind a
 // toggle, so nothing pins part of a small screen. A stylesheet test cannot see that; the browser
 // journey `visual-layout.spec.ts` measures the page at 320 pixels.

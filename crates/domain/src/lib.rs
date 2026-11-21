@@ -8,7 +8,9 @@
 mod macros;
 
 pub mod audit;
+pub mod batch;
 pub mod binding;
+pub mod business_ids;
 pub mod classification;
 pub mod connectors;
 pub mod database;
@@ -18,9 +20,11 @@ pub mod events;
 pub mod execution;
 pub mod identity;
 pub mod operations;
+pub mod operators;
 pub mod outbound;
 pub mod quota;
 pub mod saga;
+pub mod schedules;
 pub mod scripts;
 pub mod secrets;
 pub mod sharding;

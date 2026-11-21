@@ -22,7 +22,7 @@ use sagat_domain::{
     database::{
         ConnectionConfig, ConnectionStatus, DatabaseLimits, MANAGED_DATABASE_ACTIVITY, TlsPolicy,
     },
-    execution::{ReviewOutcome, RunId},
+    execution::{FailureCode, ReviewOutcome, RunId},
     identity::{Role, Slug},
     quota::QuotaResource,
     secrets::{SecretName, SecretValue},
@@ -229,6 +229,25 @@ pub async fn run(provider: Arc<dyn SecretProvider>) {
     // Cancellation waits for the leased executor to drain/expire; until then its pin remains live.
     w.age_lease(live, "db").await;
     w.scheduler.tick().await;
+    assert_eq!(w.run_status(live).await.as_str(), "MANUAL_REVIEW");
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM step_database_credentials")
+            .fetch_one(&w.db.pool)
+            .await
+            .unwrap(),
+        2,
+        "lease uncertainty retains the live credential pin until an outcome is recorded"
+    );
+    w.review(
+        live,
+        "db",
+        ReviewAction::Resolve(ReviewOutcome::Failed(
+            FailureCode::parse("OPERATOR_CONFIRMED_NOT_APPLIED").unwrap(),
+        )),
+        "the database confirmed the cancelled statement did not apply",
+    )
+    .await
+    .unwrap();
     assert_eq!(w.run_status(live).await.as_str(), "CANCELLED");
     w.review(
         review,
@@ -298,10 +317,15 @@ async fn rerun_source_and_cleanup_barrier(
     info.root = info.run_id;
     info.rerun_of = Some(RunId::generate());
     let new = NewRun {
+        business: None,
+        schedule: None,
         retained: None,
         limits: RunLimits::of(store, tenant, namespace).await.unwrap(),
         definition: w.cache.get(info.version_id).unwrap(),
-        input: b"{}".to_vec(),
+        input: sagat_application::run_input::CheckedRunInput::unchecked(
+            info.version_id,
+            b"{}".to_vec(),
+        ),
         input_blob: None,
         audit: AuditRecord::by(
             &w.admin,
@@ -317,6 +341,8 @@ async fn rerun_source_and_cleanup_barrier(
             fingerprint: vec![1],
         },
         info,
+        reset_sequence: None,
+        pending_reset: None,
     };
     assert!(matches!(
         store.create(new).await,
@@ -333,7 +359,10 @@ async fn rerun_source_and_cleanup_barrier(
         SystemClock,
         Engine::new(JsonEvaluator),
         w.cache.clone(),
-    );
+    )
+    .with_run_inputs(sagat_infra_schema::run_input::RunInputValidator::gate(
+        sagat_application::run_input::InputValidationMode::Enforce,
+    ));
     let context = ctx();
     let reason = "repeat retained managed query";
     let key = "retention-rerun-lock-order";

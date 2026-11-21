@@ -86,6 +86,60 @@ Use a namespace connection with an OpenBao credential and positional SQL paramet
 Integer and decimal literal values are strings; expression bindings must declare their type.
 See [managed database SDK examples](../guides/managed-database-sdk.md) for the canonical shape.
 
+### LAKE_DISABLED
+
+This deployment has not enabled the lake, so a workflow cannot hold an Apache Iceberg write. Ask the operator to turn on SAGAT_LAKE_ENABLED, or publish the workflow to a deployment that has it.
+
+The lake is off by default. An operator turns it on with `SAGAT_LAKE_ENABLED=true` on the control plane; publishing an
+Apache Iceberg write is then judged by the checks of access, allowed modes and data classification. A run that carries one is
+admitted, and its step leased, only by a process that has the same setting: set it on every execution-engine replica too
+(`SAGAT_LAKE_ENABLED`), or the run is refused where it is not set; so is the process that serves the worker gRPC, which hands
+the credentials of the step to the lake runner. A lake runner is handed the step and its credentials, but the runner that carries out
+the attempt is not built yet, so a deployment should not turn the lake on to write to a table.
+
+### COLLECTION_OPERATORS_DISABLED
+
+This deployment has not enabled collection operators, so a forEach cannot declare operators. Ask the operator to turn on SAGAT_COLLECTION_OPERATORS_ENABLED once every replica runs 0.3.0, or shape the list in an activity before the collection.
+
+The switch is read by publication only (design 042): with it off, a version published while it was on stays readable,
+can be activated, rolled back and promoted where it already runs, and its runs apply their chain at scope entry. The
+fleet rule and the ceilings of a chain are in `docs/runbooks/workflow-primitives.md` ("Collection operators").
+
+At run time, a chained collection that crosses one of its running ceilings at scope entry fails the run with the
+failure code `COLLECTION_OPERATOR_BUDGET`, before any iteration starts and without truncating anything: 1,000 elements
+in the chain's input and in each stage's output, 256 KiB per element, 4 MiB per stage, 1 second of wall time. The reason
+label of `scheduler_collection_source_failures_total` names which. A stage expression that fails, a `filter` that is not
+boolean and a `flatMap` that is not a list fail the run with `EXPRESSION_ERROR` instead.
+
+### INVALID_OPERATOR
+
+A stage of a forEach's operators is refused at the index shown. A collection has filter, map, flatMap, skip, take, distinct and window (debounce and ignoreElements are a trigger's); a stage expression reads element, position, input, steps, run and state, never item, index, iteration, carry or bodyResult.
+
+The details say which stage (`stage`, from 0), which `operator`, and why (`refusal`: `UNKNOWN`, `SURFACE`, `RANGE`,
+`EXPRESSION` or `VARIABLE`). The body still sees `item` and `index`, the element's position in the chain's output.
+
+### INVALID_ICEBERG_NODE
+
+Check the connection reference, the table, the record source (exactly one of inline, blobs or a database result), the mapping and the limits. A database result must name a database step that runs before the write. An Apache Iceberg write cannot declare its own retries or effect, impersonate an ordinary activity, or name a field and a column twice.
+
+### MODE_NOT_ALLOWED
+
+The connection of this Apache Iceberg write does not allow the mode it writes in. Write in a mode the connection allows, or ask the owner of the connection to allow this one in a new revision.
+
+A new connection has `append` only. The refusal names the node and the mode; the owner of the connection changes the allowed
+modes in a new revision.
+
+### CLASSIFICATION_EGRESS_REFUSED
+
+The connection of this Apache Iceberg write does not accept the classification of a field it would send, or the fields were never classified. Map fewer fields, classify the source with x-sagat-classification and refer to it directly (input.a.b or steps.<id>.output.a.b), or use a connection whose ceiling accepts them. A secret field never leaves.
+
+The refusal lists each field by its path and class and never by its value. A field built by an expression, taken from a list of
+blobs or from a database result counts as `pii`, because the platform cannot follow its classification there.
+
+### ICEBERG_NODE_NOT_ROOT
+
+An Apache Iceberg write belongs to the root graph of a definition without loops, collections or a continuation policy, and never inside a body. Move the write out of the loop, or into a child workflow.
+
 ### SECRET_UNAVAILABLE
 
 A node names a secret that does not exist in the namespace, or that you may not use. Create it there, or ask an administrator for access to it.
@@ -306,3 +360,46 @@ Keep the classification carrier within the fixed schema size, depth and referenc
 ### CLASSIFICATION_INHERITED_OPEN
 
 A declared child inherits public or internal access. Declare a stricter level when that child should not stay open.
+
+### INPUT_SCHEMA_KEYWORD_UNSUPPORTED
+
+The inputSchema uses a keyword outside the supported subset, or one of the subset in a form it does not support (a tuple items, a boolean exclusive bound, a fractional multipleOf, a nested $id). Rewrite that keyword with the subset's keywords: see the subset in docs/designs/043-run-input-validation.md.
+
+### INPUT_SCHEMA_REFERENCE_INVALID
+
+A $ref of the inputSchema is not a local JSON pointer (#/...) to a schema of the document, has sibling keywords other than annotations, or closes a cycle. Point it at a $defs entry and move its siblings into that entry or an allOf.
+
+### INPUT_SCHEMA_PATTERN_UNSUPPORTED
+
+A pattern of the inputSchema is outside the supported syntax (no \d, \w, \s, \b, Unicode or POSIX classes, flags or named groups), past 512 NFA states or 16 KiB of program, or one of more than 32. Write classes such as [0-9] and pair the pattern with a maxLength.
+
+### INPUT_SCHEMA_TOO_LARGE
+
+The inputSchema is larger than 64 KiB. Move what repeats into $defs and refer to it, or check less of the input here.
+
+At publication a schema over 64 KiB, or nested deeper than 32, is answered `CLASSIFICATION_TOO_COMPLEX` instead: the
+classification bound of feature 016 reads every carrier first (G043-020, D043-112). The schema is refused either way;
+`INPUT_SCHEMA_TOO_LARGE` and `INPUT_SCHEMA_TOO_DEEP` are what the start gate and `control-plane input-schema-inventory`
+answer for a version already stored.
+
+### INPUT_SCHEMA_NAME_TOO_LONG
+
+A name under properties or required of the inputSchema is longer than 1 KiB. Use a shorter property name; a lookup compares names, and a long one costs every input that has it.
+
+### INPUT_SCHEMA_TOO_DEEP
+
+The inputSchema nests deeper than 32 or applies schemas through more than 128 levels of $ref and combinators. Flatten it: refer to $defs instead of nesting, and shorten chains of references.
+
+### INPUT_SCHEMA_TOO_COSTLY
+
+Every input this inputSchema accepts would cost more than the validation work budget (for example a wide allOf tree of references over a large enum). Reduce the fan-out of the references or the size of the enum.
+
+### INPUT_SCHEMA_APPLIES_TO_TRIGGERS
+
+This version has an inputSchema and a trigger: the schema is applied to the input a trigger builds, the event envelope {event, data}. Make sure the schema accepts the envelope, or the triggered runs are refused.
+
+### VALIDATOR_BUSY
+
+The platform could not pre-check the inputSchema now: the run-input validator had no permit free within 5 s, or it failed with a defect of its own. Nothing was judged; send the document again after a pause, and report it if it keeps happening.
+
+Through the API the same case is a retryable `503 UNAVAILABLE` (design 043, D043-177, D043-183).

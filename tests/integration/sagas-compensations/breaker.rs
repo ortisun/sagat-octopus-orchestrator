@@ -735,6 +735,7 @@ async fn the_claim_does_not_walk_the_compensations_an_open_breaker_holds_back() 
             .replace("$4", "8")
             .replace("$5", "3")
             .replace("$6", "'some-worker'")
+            .replace("$7", "0") // capacity window: every run, as before the possession guard
     );
     let plan: Vec<String> = sqlx::query_scalar(sqlx::AssertSqlSafe(sql))
         .fetch_all(&w.db.pool)
@@ -751,4 +752,67 @@ async fn the_claim_does_not_walk_the_compensations_an_open_breaker_holds_back() 
         .expect("the gated branch");
     assert!(gated.contains("never executed"), "{plan}");
     assert!(!gated.contains("actual rows=60"), "{plan}");
+}
+
+/// A failure of a compensation is recorded although a success elsewhere removes the breaker's row
+/// while the failure waits for it: the report neither fails nor loses its count.
+#[tokio::test]
+async fn a_failure_that_waits_for_a_row_a_success_removes_is_still_recorded() {
+    let w = breaker_world(POLICY).await;
+    let (workflow, _) = w.publish(settlement()).await;
+    let p = pair(&w).await;
+    needing_an_undo(&w, &p, workflow).await;
+    needing_an_undo(&w, &p, workflow).await;
+    fail_one_undo(&w, &p).await;
+    assert_eq!(
+        breaker_row(&w).await,
+        Some((1, false)),
+        "one failure counted"
+    );
+    let mut tasks = w.poll(&p.undo, 1).await;
+    assert_eq!(tasks.len(), 1, "another compensation is ready");
+    let undo = tasks.remove(0);
+    // What a success of the same activity does in its own transaction: it holds the row, then
+    // removes it. Held first, so the failure below is seen waiting for it.
+    let mut success = w.db.pool.begin().await.expect("success elsewhere");
+    sqlx::query("SELECT 1 FROM compensation_breakers WHERE tenant_id = $1 AND activity = 'undo.reserve' FOR UPDATE")
+        .bind(w.admin.tenant_id().as_uuid())
+        .fetch_one(&mut *success)
+        .await
+        .expect("hold the breaker row");
+    let holder: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&mut *success)
+        .await
+        .expect("holder");
+    let report = w.fail_with(&p.undo, &undo, "PROVIDER_DOWN", true);
+    tokio::pin!(report);
+    let waits = crate::support::eventually("the failure waits for the breaker row", || async {
+        let waiting: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname = current_database() \
+               AND $1 = ANY(pg_blocking_pids(pid)))",
+        )
+        .bind(holder)
+        .fetch_one(&w.db.pool)
+        .await
+        .expect("observe the waiter");
+        waiting.then_some(())
+    });
+    tokio::select! {
+        result = &mut report => panic!("the failure passed a held breaker row: {result:?}"),
+        () = waits => {}
+    }
+    sqlx::query(
+        "DELETE FROM compensation_breakers WHERE tenant_id = $1 AND activity = 'undo.reserve'",
+    )
+    .bind(w.admin.tenant_id().as_uuid())
+    .execute(&mut *success)
+    .await
+    .expect("the success closes the breaker");
+    success.commit().await.expect("success committed");
+    report.await.expect("the failure is recorded, not refused");
+    assert_eq!(
+        breaker_row(&w).await,
+        Some((1, false)),
+        "the failure counts from the closed breaker the success left"
+    );
 }

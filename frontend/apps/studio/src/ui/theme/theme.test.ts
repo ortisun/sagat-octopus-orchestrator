@@ -32,7 +32,7 @@ const TEXT: Role[] = ['text', 'textMuted', 'accent', 'error', 'warning', 'succes
 const FILLS: Role[] = ['errorFill', 'warningFill', 'successFill', 'infoFill'];
 const STRONG: Role[] = ['error', 'warning', 'success', 'info'];
 
-describe('the sagat theme (FR-007-009, ADR-0101, D2402)', () => {
+describe('the sagat theme (Requirement 007-009, Architecture decision 0101, Decision 2402)', () => {
   it('keeps the dark surfaces and the accent of the recorded direction', () => {
     expect(roles.page[1]).toBe('#0a0b0e');
     expect(roles.sidebar[1]).toBe('#06070a');
@@ -89,14 +89,14 @@ describe('the sagat theme (FR-007-009, ADR-0101, D2402)', () => {
     expect(components).toBeGreaterThan(reset);
   });
 
-  it('pins the design system to one exact version (ADR-0101, rule 7)', () => {
+  it('pins the design system to one exact version (Architecture decision 0101, rule 7)', () => {
     const core = manifest.dependencies['@astryxdesign/core'];
     expect(core).toMatch(/^\d+\.\d+\.\d+$/);
     expect(manifest.dependencies['@stylexjs/stylex']).toMatch(/^\d+\.\d+\.\d+$/);
     expect(Object.keys(manifest.dependencies).filter((name) => name.startsWith('@astryxdesign/theme-'))).toEqual([]);
   });
 
-  it('pins and loads the approved Geist faces from the application bundle (D159)', () => {
+  it('pins and loads the approved Geist faces from the application bundle (Decision 159)', () => {
     expect(manifest.dependencies).toMatchObject({ '@fontsource/geist': '5.3.0', '@fontsource/geist-mono': '5.3.0' });
     for (const stylesheet of ['@fontsource/geist/latin-400.css', '@fontsource/geist/latin-500.css', '@fontsource/geist/latin-600.css', '@fontsource/geist-mono/latin-400.css', '@fontsource/geist-mono/latin-500.css']) {
       expect(entrypoint).toContain(`import '${stylesheet}';`);

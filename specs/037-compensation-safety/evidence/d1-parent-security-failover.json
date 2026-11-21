@@ -1,0 +1,1 @@
+{"command": ["cargo", "test", "--workspace", "--locked", "--offline", "--no-fail-fast", "--test", "fault_failover", "--test", "fault_security_multitenancy"], "exit_code": 0}

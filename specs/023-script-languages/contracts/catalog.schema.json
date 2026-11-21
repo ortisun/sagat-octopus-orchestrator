@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sagat-octopus-orchestrator.io/drafts/023/catalog.schema.json",
+  "title": "Closed offline package catalog (runners/rust/catalog/catalog.json, runners/php/catalog/catalog.json, and the python-data catalog that feature 024 supplies)",
+  "description": "Feature 023 draft. A catalog is reviewed source in the repository, copied into the builder image and embedded in crates/infra-schema; the SHA-256 of its canonical bytes is the catalog digest of the toolchain identity. Adding, removing or changing an entry requires review and a new image digest. Audit evidence is a statement about the image build, not a permanent claim (G1205). For rust and php the catalog is copied into the builder image and the packages travel in the artifact; for the image-catalog runtime python-data (FR-023-027) the packages are installed in the runtime image and artifacts bind this digest in runtimeCatalog; feature 024 owns that file's location and content, this schema owns its shape.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["v", "language", "entries"],
+  "properties": {
+    "v": {"const": 1},
+    "language": {"enum": ["rust", "php", "python-data"]},
+    "rustc": {"type": "string", "maxLength": 64, "description": "Rust only: the compiler the prebuilt libraries were built with; must equal the builder's."},
+    "targets": {"type": "array", "items": {"enum": ["linux-amd64", "linux-arm64"]}, "uniqueItems": true},
+    "python": {"type": "string", "maxLength": 32, "description": "python-data only: the interpreter version of the runtime image."},
+    "phpExtensions": {"type": "array", "maxItems": 64, "items": {"type": "string", "pattern": "^[a-z0-9_]{1,32}$"}, "description": "PHP only: the closed extension set of the runtime image."},
+    "entries": {
+      "type": "array",
+      "maxItems": 512,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "version", "upstream", "archiveSha256", "licence", "dependencies", "review"],
+        "properties": {
+          "name": {"type": "string", "maxLength": 214, "description": "Crate name, or Composer vendor/package."},
+          "version": {"type": "string", "maxLength": 64},
+          "upstream": {
+            "oneOf": [
+              {
+                "type": "object", "additionalProperties": false,
+                "required": ["kind", "source", "checksum"],
+                "properties": {
+                  "kind": {"const": "crates-io"},
+                  "source": {"const": "registry+https://github.com/rust-lang/crates.io-index"},
+                  "checksum": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+                }
+              },
+              {
+                "type": "object", "additionalProperties": false,
+                "required": ["kind", "wheels"],
+                "properties": {
+                  "kind": {"const": "pypi"},
+                  "wheels": {
+                    "type": "object",
+                    "minProperties": 1,
+                    "propertyNames": {"enum": ["linux-amd64", "linux-arm64"]},
+                    "additionalProperties": {"type": "string", "pattern": "^[0-9a-f]{64}$", "description": "SHA-256 of the wheel for that target, as written in the hash-pinned requirements lock."}
+                  }
+                }
+              },
+              {
+                "type": "object", "additionalProperties": false,
+                "required": ["kind", "distType", "distReference"],
+                "properties": {
+                  "kind": {"const": "composer"},
+                  "distType": {"enum": ["zip", "tar"]},
+                  "distReference": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+                  "packageType": {"enum": ["library"], "description": "composer-plugin and metapackage are not admitted."}
+                }
+              }
+            ]
+          },
+          "archiveSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$", "description": "Independently computed at image build over the downloaded archive."},
+          "licence": {"type": "string", "maxLength": 128},
+          "dependencies": {"type": "array", "maxItems": 64, "items": {"type": "string", "maxLength": 214}, "description": "Exact names of catalog entries this entry needs; the closure is computed from these."},
+          "buildScript": {"type": "boolean", "default": false, "description": "Rust: has build.rs, run only when the image is built, never in a customer build."},
+          "procMacro": {"type": "boolean", "default": false, "description": "Rust: proc-macro library. Review evidence only: rustc loads it from the read-only image and runs its reviewed code inside the sandboxed builder container on every customer build that uses it (D1228)."},
+          "autoloadFiles": {"type": "boolean", "default": false, "description": "PHP: declares autoload.files, which run when the autoloader loads (G1214)."},
+          "requiresExtensions": {"type": "array", "items": {"type": "string"}, "description": "PHP: must be a subset of phpExtensions."},
+          "review": {
+            "type": "object", "additionalProperties": false,
+            "required": ["by", "on", "advisoryAudit"],
+            "properties": {
+              "by": {"type": "string", "maxLength": 128},
+              "on": {"type": "string", "format": "date"},
+              "advisoryAudit": {"type": "string", "maxLength": 256, "description": "Tool and database snapshot used at image build, e.g. cargo-audit with a RustSec snapshot date or composer audit."}
+            }
+          }
+        }
+      }
+    }
+  }
+}

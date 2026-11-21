@@ -803,7 +803,7 @@ async fn a_heartbeat_after_its_own_report_is_answered_without_an_error() {
 }
 
 #[tokio::test]
-async fn a_heartbeat_of_a_lost_lease_stays_a_stale_attempt_after_another_worker_reports() {
+async fn a_heartbeat_of_a_lost_lease_stays_stale_after_human_resolution_without_another_lease() {
     let p = platform().await;
     let retry = json!({"maxAttempts": 2, "strategy": "fixed", "initialDelayMs": 1, "maxDelayMs": 1, "jitter": false});
     let wf = p
@@ -815,16 +815,33 @@ async fn a_heartbeat_of_a_lost_lease_stays_a_stale_attempt_after_another_worker_
     let first = lost.one_task().await;
     p.expire_lease(&run, "a").await;
     p.tick().await;
-    p.elapse_retry_delay(&run, "a").await;
     p.tick().await;
     let mut rescuer = p.worker("rhea").await;
     rescuer.register(&["act.a"]).await;
-    let second = rescuer.one_task().await;
-    assert!(second.generation > first.generation);
-    rescuer
-        .complete(&second, &json!({}))
+    assert_eq!(p.status(&run).await, "MANUAL_REVIEW");
+    assert!(
+        rescuer.poll(8).await.is_empty(),
+        "lease loss never grants a repeat"
+    );
+    let refused = lost
+        .client
+        .heartbeat(lost.req(lost.heartbeat_message(&first)))
         .await
-        .expect("rescuer completes");
+        .expect_err("review does not revive the lost lease");
+    assert_eq!(machine_code(&refused), "STALE_ATTEMPT");
+
+    let (status, body) = p
+        .rest(
+            Method::POST,
+            &format!("/runs/{run}/operations"),
+            Some(
+                &json!({"action": "RESOLVE_STEP", "stepId": "a", "outcome": "SUCCEEDED",
+                         "reason": "provider evidence confirms the original effect completed"}),
+            ),
+        )
+        .await;
+    assert_eq!(status, 202, "{body}");
+    assert_eq!(p.status(&run).await, "SUCCEEDED");
 
     let refused = lost
         .client
@@ -832,6 +849,21 @@ async fn a_heartbeat_of_a_lost_lease_stays_a_stale_attempt_after_another_worker_
         .await
         .expect_err("the lost lease never reported");
     assert_eq!(machine_code(&refused), "STALE_ATTEMPT");
+    assert!(rescuer.poll(8).await.is_empty());
+    let events: (i64, i64) = sqlx::query_as(
+        "SELECT count(*) FILTER (WHERE event_type='step.leased'), \
+         count(*) FILTER (WHERE event_type='step.resolved') \
+         FROM run_events WHERE run_id=$1 AND node='a'",
+    )
+    .bind(uuid::Uuid::parse_str(&run).expect("run UUID"))
+    .fetch_one(&p.api.db.pool)
+    .await
+    .expect("lease and human decision history");
+    assert_eq!(
+        events,
+        (1, 1),
+        "one original lease and one human resolution"
+    );
 }
 
 #[tokio::test]

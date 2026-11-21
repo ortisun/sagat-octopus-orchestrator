@@ -2878,6 +2878,100 @@ async fn member_outputs_that_pass_four_mib_in_all_fail_the_run_with_run_data_lim
 }
 
 #[tokio::test]
+async fn loop_successful_output_over_run_limit_preserves_review() {
+    let world = world().await;
+    allow_iterations(&world, 4).await;
+    let mut document = looping_until(
+        "loop-output-review",
+        "repeatUntil",
+        "0",
+        "1",
+        "iteration >= 16",
+        20,
+    );
+    document["bodies"]["iteration"]["nodes"][0]["compensateWith"] = json!("limits.undo");
+    document["bodies"]["iteration"]["nodes"][1]["result"] = json!("1");
+    document["nodes"][0]["onError"] = json!("error-route");
+    document["nodes"].as_array_mut().expect("root nodes").push(
+        json!({"id":"error-route", "type":"activity", "activity":"limits.error", "next":"done"}),
+    );
+    let run = start_collection(&world, document, &json!({})).await;
+    let scheduler = scheduler(&world, "successful-output-review").await;
+    let workers = WorkerService::new(
+        PgRunStore::new(world.execution_pool.clone(), world.cache.clone())
+            .with_scoped_worker_protocol(),
+        SystemClock,
+        sagat_application::execution::Engine::new(JsonEvaluator),
+        SystemEntropy,
+        sagat_application::worker::WorkerSettings {
+            lease_ttl: Duration::from_secs(120),
+            ..Default::default()
+        },
+    );
+    let session = register_scoped(&world, &workers).await;
+    let output = text_of(250_000);
+
+    for index in 0..17 {
+        let mut tasks = Vec::new();
+        for _ in 0..8 {
+            let report = scheduler.tick().await;
+            assert_eq!(report.failed, 0, "scheduler must make progress: {report:?}");
+            tasks = workers
+                .poll(&world.worker, session.0, &session.1, 1, None)
+                .await
+                .expect("poll admitted work");
+            if !tasks.is_empty() {
+                break;
+            }
+        }
+        assert_eq!(tasks.len(), 1, "iteration {index} must be offered");
+        let task = &tasks[0];
+        assert_eq!(task.instance.path().depth(), 1);
+        let key = format!("successful-output-{index}");
+        let ack = workers
+            .complete(&world.worker, &task_ref(task), output.as_bytes(), &key)
+            .await
+            .expect("record successful external report");
+        if index < 16 {
+            assert_eq!(ack.step_status, StepStatus::Succeeded);
+            continue;
+        }
+        assert_eq!(ack.step_status, StepStatus::Waiting);
+        assert_eq!(
+            ack.run_status,
+            sagat_domain::execution::RunStatus::ManualReview
+        );
+        let replay = workers
+            .complete(&world.worker, &task_ref(task), output.as_bytes(), &key)
+            .await
+            .expect("replay original refusal receipt");
+        assert!(replay.already_applied);
+        assert_eq!(replay.step_status, StepStatus::Waiting);
+        let retained: (i64, i64, i64, i64) = sqlx::query_as(
+            "SELECT \
+              (SELECT count(*) FROM steps WHERE tenant_id=$1 AND run_id=$2 \
+                 AND status='WAITING' AND waiting_kind='OPERATOR' AND failure_code='STORAGE_QUOTA_EXCEEDED'), \
+              (SELECT count(*) FROM steps WHERE tenant_id=$1 AND run_id=$2 \
+                 AND (node='error-route' OR kind='COMPENSATION')), \
+              (SELECT count(*) FROM run_events WHERE tenant_id=$1 AND run_id=$2 \
+                 AND event_type='step.leased'), \
+              (SELECT logical_output_bytes FROM run_instance_usage WHERE tenant_id=$1 AND run_id=$2)",
+        ).bind(world.admin.tenant_id().as_uuid()).bind(run.as_uuid())
+            .fetch_one(&world.db.pool).await.expect("retained recovery obligation");
+        assert_eq!(retained, (1, 0, 17, 4_000_000));
+        scheduler.tick().await;
+        assert!(
+            workers
+                .poll(&world.worker, session.0, &session.1, 1, None)
+                .await
+                .expect("poll held review")
+                .is_empty()
+        );
+        world.assert_consistent(run).await;
+    }
+}
+
+#[tokio::test]
 async fn an_aggregate_over_the_value_ceiling_fails_the_scope_instead_of_storing_it() {
     let world = world().await;
     allow_iterations(&world, 4).await;

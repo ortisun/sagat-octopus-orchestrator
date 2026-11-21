@@ -1,0 +1,53 @@
+cargo build --locked --offline -p sagat-cli -p sagat-database-runner
+   Compiling serde v1.0.229
+   Compiling serde_json v1.0.151
+   Compiling h2 v0.4.20
+   Compiling num-integer v0.1.47
+   Compiling tower v0.5.3
+   Compiling num-iter v0.1.46
+   Compiling tower-http v0.6.11
+   Compiling tracing-serde v0.2.0
+   Compiling tracing-subscriber v0.3.23
+   Compiling hyper v1.12.0
+   Compiling metrics-exporter-prometheus v0.18.3
+   Compiling hyper-util v0.1.21
+   Compiling sagat-domain v0.2.0 (/Users/marcelo/Documents/Projects/sagat-octopus-compensation-safety/crates/domain)
+   Compiling hyper-rustls v0.27.10
+   Compiling reqwest v0.13.5
+   Compiling sagat-telemetry v0.2.0 (/Users/marcelo/Documents/Projects/sagat-octopus-compensation-safety/crates/telemetry)
+   Compiling sagat-application v0.2.0 (/Users/marcelo/Documents/Projects/sagat-octopus-compensation-safety/crates/application)
+   Compiling serde_urlencoded v0.7.1
+   Compiling num-bigint v0.4.8
+   Compiling axum v0.8.9
+   Compiling num-rational v0.4.2
+   Compiling num-bigint-dig v0.8.6
+   Compiling num v0.4.3
+   Compiling rsa v0.9.10
+   Compiling ahash v0.8.12
+   Compiling hyper-timeout v0.5.2
+   Compiling fluent-uri v0.4.1
+   Compiling tonic v0.14.6
+   Compiling jsonwebtoken v11.1.0
+   Compiling fraction v0.17.0
+   Compiling jsonschema-value v0.58.6
+   Compiling referencing v0.58.6
+   Compiling sagat-api-http v0.2.0 (/Users/marcelo/Documents/Projects/sagat-octopus-compensation-safety/crates/api-http)
+   Compiling tonic-prost v0.14.6
+   Compiling email_address v0.2.9
+   Compiling chrono v0.4.45
+   Compiling jsonschema v0.58.6
+   Compiling sagat-api-grpc v0.2.0 (/Users/marcelo/Documents/Projects/sagat-octopus-compensation-safety/crates/api-grpc)
+   Compiling postgres-types v0.2.14
+   Compiling granit-parser v1.3.0
+   Compiling tokio-postgres v0.7.18
+   Compiling croner v4.0.1
+   Compiling sagat-infra-schema v0.2.0 (/Users/marcelo/Documents/Projects/sagat-octopus-compensation-safety/crates/infra-schema)
+   Compiling chrono-tz v0.10.4
+   Compiling sagat-infra-expr v0.2.0 (/Users/marcelo/Documents/Projects/sagat-octopus-compensation-safety/crates/infra-expr)
+   Compiling serde-saphyr v1.3.0
+   Compiling sagat-infra-database v0.2.0 (/Users/marcelo/Documents/Projects/sagat-octopus-compensation-safety/crates/infra-database)
+   Compiling sagat-infra-ir v0.2.0 (/Users/marcelo/Documents/Projects/sagat-octopus-compensation-safety/crates/infra-ir)
+   Compiling sagat-infra-secrets v0.2.0 (/Users/marcelo/Documents/Projects/sagat-octopus-compensation-safety/crates/infra-secrets)
+   Compiling sagat-database-runner v0.2.0 (/Users/marcelo/Documents/Projects/sagat-octopus-compensation-safety/apps/database-runner)
+   Compiling sagat-cli v0.2.0 (/Users/marcelo/Documents/Projects/sagat-octopus-compensation-safety/apps/cli)
+    Finished `dev` profile [unoptimized] target(s) in 25.84s

@@ -1,0 +1,146 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sagat-octopus-orchestrator.example/schemas/workflow/v1/service-call.fragment.json",
+  "title": "DRAFT fragment of feature 030: the serviceCall node of the workflow IR v1",
+  "description": "Not canonical. T030-006 adds $defs.serviceCall to specs/001-platform-foundation/contracts/workflow.schema.json and a {\"$ref\": \"#/$defs/serviceCall\"} branch to $defs.node.oneOf, additively inside apiVersion sagat-octopus-orchestrator.io/v1 (ADR-0032). The node is not added to $defs.bodyNode: in the first increment it is allowed only in the root graph (D1496). Publication additionally resolves and pins the endpoint and contract (FR-030-008), refuses the node with UNSUPPORTED_NODE while the server capability is disabled, and enforces the sync and saga rules (FR-030-019, FR-030-036), the input classification rule (FR-030-021) and 031's refusal of encoded values (FR-030-039). The node has no authored outputSchema: its output schema is the pinned operation's.",
+  "$defs": {
+    "serviceCall": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "type",
+        "endpoint",
+        "service",
+        "operation",
+        "input",
+        "inputDisclosure"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "const": "serviceCall"
+        },
+        "next": {
+          "type": "string"
+        },
+        "onError": {
+          "type": "string"
+        },
+        "endpoint": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{2,63}$",
+          "description": "Tenant-unique name of the service endpoint. Resolved in the publisher's tenant at publication; the endpoint identity is pinned with the version."
+        },
+        "service": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{2,63}$",
+          "description": "Must equal the service the endpoint exposes."
+        },
+        "operation": {
+          "type": "string",
+          "pattern": "^[a-z][a-zA-Z0-9-]{0,63}$"
+        },
+        "contractRevision": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Contract revision to pin; the newest revision the endpoint serves at publication when absent."
+        },
+        "input": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024,
+          "description": "Bounded expression over the caller run's data that must evaluate to a JSON object of at most 256 KiB, validated against the pinned operation inputSchema. Required: a call never forwards the caller's input implicitly. Registered in feature 031's encoded-field registry: publication refuses an input whose source holds an encoded location (ENCODING_CARRIAGE_MISMATCH), because encoded values do not cross namespaces in v1 (D1661, 031 D1667); admission refuses an envelope found at runtime. For a direct path into a carrier of the caller, each operation input field's classification must be no looser than its source field's (INPUT_CLASSIFICATION_LOOSENED); a computed expression is not compared (G1496)."
+        },
+        "inputDisclosure": {
+          "const": "declared-service-input-v1",
+          "description": "Required. The caller publisher declares that the input values leave the caller namespace for the handler namespace of the pinned endpoint. Never inferred."
+        },
+        "timeoutMs": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 5184000000,
+          "description": "Schedule-to-close deadline; the pinned operation's defaultMs when absent. The effective deadline is the minimum of this value, the operation's maxMs, the caller run's remaining deadline and the deployment ceiling. At most 60000 for a sync operation."
+        },
+        "startTimeoutMs": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 5184000000,
+          "description": "Schedule-to-start deadline, at most timeoutMs. A start that is still pending when it passes is withdrawn and the step fails OPERATION_START_TIMED_OUT."
+        },
+        "cancelPolicy": {
+          "enum": [
+            "abandon",
+            "request_cancel",
+            "wait_cancelled"
+          ],
+          "description": "What happens to the operation when this step is cancelled. A start that has not been admitted is always withdrawn. abandon: the step is cancelled and nothing is sent to the handler. request_cancel (default): the step is cancelled and the handler run is asked to stop. wait_cancelled: the handler run is asked to stop and the step stays open until its outcome arrives, recorded as it is. A sync operation allows only request_cancel; a call inside a saga requires wait_cancelled."
+        },
+        "irreversible": {
+          "type": "boolean",
+          "description": "Inside a saga: the operation's effect cannot be undone; compensating past it ends the saga PARTIAL. Cannot be combined with compensateWith."
+        },
+        "compensateWith": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "operation",
+            "input"
+          ],
+          "description": "Inside a saga (P3, FR-030-036): an operation of the same pinned contract that undoes this one, called as a derived service call when the saga compensates. Its input expression may read this node's input and output. Its input is refused, like input, when its source holds an encoded location (031 registry).",
+          "properties": {
+            "operation": {
+              "type": "string",
+              "pattern": "^[a-z][a-zA-Z0-9-]{0,63}$"
+            },
+            "input": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1024
+            },
+            "timeoutMs": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 5184000000
+            }
+          }
+        }
+      },
+      "allOf": [
+        {
+          "not": {
+            "required": [
+              "irreversible",
+              "compensateWith"
+            ],
+            "properties": {
+              "irreversible": {
+                "const": true
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  "examples": [
+    {
+      "id": "charge",
+      "type": "serviceCall",
+      "endpoint": "payments",
+      "service": "payments",
+      "operation": "charge",
+      "contractRevision": 1,
+      "input": "input.payment",
+      "timeoutMs": 3600000,
+      "startTimeoutMs": 300000,
+      "cancelPolicy": "request_cancel",
+      "next": "confirm",
+      "onError": "notify-failure",
+      "inputDisclosure": "declared-service-input-v1"
+    }
+  ]
+}

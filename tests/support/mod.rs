@@ -17,30 +17,63 @@ pub mod bounded;
 pub mod brokers;
 pub mod collector;
 pub mod contract;
+pub mod digests;
 pub mod dx;
 pub mod engine;
+pub mod instances;
+pub mod lake;
+pub mod lake_reader;
+pub mod lock_order;
 pub mod logs;
 pub mod nats;
 pub mod oidc;
 pub mod receiver;
+pub mod run_input;
 pub mod scale;
+pub mod schedules;
 pub mod scope_flow;
 pub mod scripts;
 pub mod signed;
+pub mod trigger_schedules;
 pub mod worker;
 
 /// A sibling Cargo binary from the same target and profile as the running integration test.
 /// This also works with an external CARGO_TARGET_DIR or a target triple directory.
 pub fn built_binary(name: &str) -> std::path::PathBuf {
-    std::env::current_exe()
-        .expect("test executable")
-        .parent()
-        .and_then(std::path::Path::parent)
-        .expect("Cargo test profile directory")
-        .join(format!("{name}{}", std::env::consts::EXE_SUFFIX))
+    target_profile_dir().join(format!("{name}{}", std::env::consts::EXE_SUFFIX))
 }
 
-use std::sync::{Arc, LazyLock, Mutex, Weak};
+/// The profile directory of the Cargo target this test was built in (`<target>/debug`), where `cargo build` puts the
+/// binaries. Found as the ancestor of the test executable whose parent is the target directory (the one Cargo marks with
+/// `CACHEDIR.TAG`), not by a fixed number of levels: Cargo 1.100 builds a test executable in
+/// `<target>/debug/build/<package>/<hash>/out/`, where Cargo before it used `<target>/debug/deps/`.
+pub fn target_profile_dir() -> std::path::PathBuf {
+    let executable = std::env::current_exe().expect("test executable");
+    executable
+        .ancestors()
+        .skip(1)
+        .find(|dir| {
+            dir.parent()
+                .is_some_and(|target| target.join("CACHEDIR.TAG").is_file())
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "no Cargo target directory (one with CACHEDIR.TAG) above {}",
+                executable.display()
+            )
+        })
+        .to_owned()
+}
+
+/// The Cargo target directory this test was built in: the parent of [`target_profile_dir`].
+pub fn target_dir() -> std::path::PathBuf {
+    target_profile_dir()
+        .parent()
+        .expect("the profile directory is inside the target directory")
+        .to_owned()
+}
+
+use std::sync::{Arc, LazyLock, Mutex, PoisonError, Weak};
 
 use sagat_domain::identity::{Membership, Principal, Slug, Subject, Tenant, TenantId};
 use sagat_infra_postgres::{PgIdentityStore, PgPool, migrate};
@@ -81,7 +114,10 @@ pub fn hold_server() -> HeldServer {
 
 /// Returns the running server, starting one if no test currently holds it.
 fn server() -> Arc<Server> {
-    let mut slot = SERVER.lock().expect("server lock");
+    // A start that panicked while holding the lock poisoned it for every test after it (308 tests failed with `PoisonError`
+    // for the one that met a port Docker had not published yet). The slot is written only after a start succeeded, so what
+    // a poisoned lock holds is still right: the next test starts the server itself and a failure costs one test, not the run.
+    let mut slot = SERVER.lock().unwrap_or_else(PoisonError::into_inner);
     if let Some(running) = slot.upgrade() {
         return running;
     }
@@ -106,41 +142,54 @@ async fn start_server() -> Server {
             admin_url,
         };
     }
-    // `pg_stat_statements` is preloaded so that a test can count the rows and buffers a statement
-    // touched (the work-per-transition assertions of the performance target, G461). It records
-    // nothing until a database creates the extension.
-    let started = Postgres::default()
-        .with_tag("16-alpine")
-        // Docker's 64 MiB default cannot hold concurrent parallel-query shared memory. Keep the
-        // query settings intact and budget the test database explicitly, as the Compose profile does.
-        .with_shm_size(1024 * 1024 * 1024)
-        .with_cmd([
-            "-c",
-            "shared_preload_libraries=pg_stat_statements",
-            "-c",
-            "pg_stat_statements.track=all",
-            "-c",
-            "pg_stat_statements.max=10000",
-        ])
-        .start();
-    let container = bounded::within(
-        "pull and start postgres:16-alpine",
-        bounded::START_LIMIT,
-        started,
-    )
-    .await
-    .expect("start PostgreSQL (is Docker running? or set SAGAT_TEST_DATABASE_URL)");
-    let port = container
-        .get_host_port_ipv4(5432)
+    // On Docker Desktop for macOS the published port can share its number with a listener a test of this process
+    // already holds on 127.0.0.1 (the proxy binds every address with SO_REUSEADDR), and 127.0.0.1 then reaches the
+    // test's listener: such a container is replaced by one on another port (the canary failure of design 043's
+    // phase 3, `unexpected response from SSLRequest: 0x48`).
+    for attempt in 1..=3 {
+        // `pg_stat_statements` is preloaded so that a test can count the rows and buffers a statement
+        // touched (the work-per-transition assertions of the performance target, G461). It records
+        // nothing until a database creates the extension.
+        let started = Postgres::default()
+            .with_tag("16-alpine")
+            // Docker's 64 MiB default cannot hold concurrent parallel-query shared memory. Keep the
+            // query settings intact and budget the test database explicitly, as the Compose profile does.
+            .with_shm_size(1024 * 1024 * 1024)
+            .with_cmd([
+                "-c",
+                "shared_preload_libraries=pg_stat_statements",
+                "-c",
+                "pg_stat_statements.track=all",
+                "-c",
+                "pg_stat_statements.max=100000",
+            ])
+            .start();
+        let container = bounded::within(
+            "pull and start postgres:16-alpine",
+            bounded::START_LIMIT,
+            started,
+        )
         .await
-        .expect("mapped port");
-    let admin_url = format!("postgres://postgres:postgres@127.0.0.1:{port}/postgres");
-    wait_until_queryable(&admin_url).await;
-    ensure_runtime_role(&admin_url).await;
-    Server {
-        admin_url,
-        _container: Some(container),
+        .expect("start PostgreSQL (is Docker running? or set SAGAT_TEST_DATABASE_URL)");
+        let port = bounded::mapped_port(&container, 5432).await;
+        let admin_url = format!("postgres://postgres:postgres@127.0.0.1:{port}/postgres");
+        match wait_until_queryable(&admin_url).await {
+            Ok(()) => {
+                ensure_runtime_role(&admin_url).await;
+                return Server {
+                    admin_url,
+                    _container: Some(container),
+                };
+            }
+            Err(AnotherServer) => {
+                eprintln!(
+                    "the host port {port} of the test PostgreSQL is answered by another server; starting another container ({attempt} of 3)"
+                );
+                drop(container);
+            }
+        }
     }
+    panic!("three PostgreSQL containers in a row were published on a port another server answers")
 }
 
 /// Blocks until a real PostgreSQL session works.
@@ -150,7 +199,7 @@ async fn start_server() -> Server {
 /// host port is already open through Docker's proxy. Tests that start in that window got
 /// `unexpected response from SSLRequest` (about 1 cold start in 8). Only an actual query proves
 /// the real server is up.
-async fn wait_until_queryable(url: &str) {
+pub(crate) async fn wait_until_queryable(url: &str) -> Result<(), AnotherServer> {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
     loop {
         // One attempt is bounded too: a proxy that accepts the connection and never answers would
@@ -162,7 +211,16 @@ async fn wait_until_queryable(url: &str) {
         };
         let outcome = tokio::time::timeout(std::time::Duration::from_secs(10), attempt).await;
         match outcome {
-            Ok(Ok(())) => return,
+            Ok(Ok(())) => return Ok(()),
+            // An HTTP server answered (`H`): the port belongs to another listener of this machine, and waiting will
+            // not change that.
+            Ok(Err(error))
+                if error
+                    .to_string()
+                    .contains("unexpected response from SSLRequest: 0x48") =>
+            {
+                return Err(AnotherServer);
+            }
             Ok(Err(_)) | Err(_) if std::time::Instant::now() < deadline => {
                 // not ready yet; keep polling
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -172,6 +230,10 @@ async fn wait_until_queryable(url: &str) {
         }
     }
 }
+
+/// The host port of the container is answered by a server that is not PostgreSQL.
+#[derive(Debug, PartialEq, Eq)]
+pub struct AnotherServer;
 
 /// A database created just for one test.
 pub struct TestDb {

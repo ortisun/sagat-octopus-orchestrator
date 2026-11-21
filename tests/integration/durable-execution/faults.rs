@@ -6,8 +6,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use sagat_application::execution::{Actor, Effects, RunTx};
-use sagat_application::runs::{Lock, RunStore};
-use sagat_domain::execution::{self, RunStatus, StepStatus};
+use sagat_application::runs::{Lock, ReviewAction, RunStore};
+use sagat_domain::execution::{self, FailureCode, ReviewOutcome, RunStatus, StepStatus};
 use serde_json::json;
 
 use sagat_application::worker::WorkerSettings;
@@ -20,15 +20,32 @@ use crate::support::engine::{
 #[derive(Default, Clone)]
 struct ExternalSystem {
     performed: Arc<Mutex<BTreeMap<String, u32>>>,
+    /// Keys an operator has closed at the provider after confirming no call arrived. A real
+    /// provider voids the idempotency key, so a worker whose lease was lost cannot apply it later.
+    voided: Arc<Mutex<std::collections::BTreeSet<String>>>,
 }
 
 impl ExternalSystem {
     /// Performs the side effect unless this key already did; returns whether it ran.
     fn charge(&self, key: &str) -> bool {
         let mut performed = self.performed.lock().expect("lock");
+        if self.voided.lock().expect("lock").contains(key) {
+            return false;
+        }
         let count = performed.entry(key.to_owned()).or_insert(0);
         *count += 1;
         *count == 1
+    }
+
+    /// Voids `key` at the provider if no call has used it, atomically with the check; returns
+    /// whether the effect is now known not to be applied.
+    fn void_if_unused(&self, key: &str) -> bool {
+        let performed = self.performed.lock().expect("lock");
+        if performed.get(key).copied().unwrap_or(0) > 0 {
+            return false;
+        }
+        self.voided.lock().expect("lock").insert(key.to_owned());
+        true
     }
 
     fn total_effects(&self) -> usize {
@@ -42,6 +59,19 @@ impl ExternalSystem {
             .get(key)
             .copied()
             .unwrap_or(0)
+    }
+
+    fn duplicate_calls(&self) -> usize {
+        self.performed
+            .lock()
+            .expect("lock")
+            .values()
+            .filter(|calls| **calls > 1)
+            .count()
+    }
+
+    fn snapshot(&self) -> BTreeMap<String, u32> {
+        self.performed.lock().expect("lock").clone()
     }
 }
 
@@ -64,37 +94,43 @@ async fn a_crash_after_the_external_effect_and_before_the_checkpoint_does_not_ch
 
     w.age_lease(run, "charge").await;
     w.scheduler.tick().await;
-    w.age_retry(run, "charge").await;
-    w.scheduler.tick().await;
-
-    // Worker 2 gets the same task again, with the SAME idempotency key, so the bank recognises it.
-    let second = w.session(&["act.charge"]).await;
-    let attempt_two = w.one_task(&second).await;
-    assert_eq!(attempt_two.fence.attempt, 2);
-    assert_eq!(attempt_two.idempotency_key, attempt_one.idempotency_key);
+    assert_eq!(w.run_status(run).await, RunStatus::ManualReview);
     assert!(
-        !bank.charge(&attempt_two.idempotency_key),
-        "the retry was recognised as a duplicate"
+        w.poll(&first, 8).await.is_empty(),
+        "the unknown charge is not leased a second time"
     );
-    w.complete(&second, &attempt_two, &json!({"charged": true}))
-        .await
-        .expect("complete");
+    assert_eq!(
+        w.complete(&first, &attempt_one, &json!({"charged": true}))
+            .await
+            .map(|_| ()),
+        Err(sagat_application::error::AppError::StaleAttempt)
+    );
+
+    // The synthetic provider is authoritative for this fixture: it confirms the charge happened.
+    w.review(
+        run,
+        "charge",
+        ReviewAction::Resolve(ReviewOutcome::Succeeded),
+        "the bank ledger confirms the charge completed",
+    )
+    .await
+    .expect("resolve the uncertain charge");
 
     assert_eq!(w.run_status(run).await, RunStatus::Succeeded);
     assert_eq!(bank.total_effects(), 1, "exactly one charge in the world");
     assert_eq!(
         bank.calls(&attempt_one.idempotency_key),
-        2,
-        "the platform tried twice (at-least-once)"
+        1,
+        "the platform did not repeat the unknown effect"
     );
     assert_eq!(
         w.journal(run)
             .await
             .iter()
-            .filter(|e| *e == "step.completed")
+            .filter(|e| *e == "step.resolved")
             .count(),
         1,
-        "and journaled one completion"
+        "and journaled one outcome-bearing resolution"
     );
     w.assert_consistent(run).await;
 }
@@ -288,48 +324,198 @@ async fn killing_database_connections_while_workers_run_loses_nothing_and_duplic
         sessions.push(register_with_retry(&w, i).await);
     }
     let deadline = std::time::Instant::now() + Duration::from_secs(90);
-    let done = futures_util::future::join_all(
+    let workers = futures_util::future::join_all(
         sessions.iter().map(|s| worker_loop(&w, s, &bank, deadline)),
-    )
-    .await;
+    );
+    let operator = resolve_unknown_effects(&w, &runs, &bank, deadline);
+    let (done, operator_done) = tokio::join!(workers, operator);
     storm.await.expect("storm");
     assert!(
         done.iter().all(|d| *d),
         "a worker gave up before the work was done"
     );
+    assert!(
+        operator_done,
+        "the operator gave up before the work was done"
+    );
+    // Every worker future has returned, so this is the final externally observable ledger. The
+    // state/journal oracle below must agree with it exactly; no provider call can still arrive.
+    let final_ledger = bank.snapshot();
 
     let mut unfinished = 0;
     for run in &runs {
-        if w.run_status(*run).await != RunStatus::Succeeded {
+        if !matches!(
+            w.run_status(*run).await,
+            RunStatus::Succeeded | RunStatus::Failed
+        ) {
             unfinished += 1;
         }
     }
-    assert_eq!(unfinished, 0, "every run finished");
+    assert_eq!(
+        unfinished, 0,
+        "every run reached a truthful terminal outcome"
+    );
 
+    let mut known_successes = 0usize;
     for run in &runs {
-        // The journal is complete and contiguous, the projections equal it, and each node
-        // completed exactly once, whatever the storm did to individual attempts.
+        // The journal is complete and contiguous, the projections equal it, and every retained
+        // step outcome agrees with both its one settlement event and the provider's final ledger.
         w.assert_consistent(*run).await;
         let journal = w.journal(*run).await;
-        assert_eq!(
-            journal.iter().filter(|e| *e == "step.completed").count(),
-            3,
-            "{run}"
-        );
         assert_eq!(
             journal.iter().filter(|e| *e == "run.finished").count(),
             1,
             "{run}"
         );
+        let mut failed_steps = 0usize;
+        for node in ["a", "b", "c"] {
+            let key = format!("{run}:{node}");
+            let provider_calls = final_ledger.get(&key).copied().unwrap_or(0);
+            let settlements: Vec<(String, serde_json::Value)> = sqlx::query_as(
+                "SELECT event_type, detail FROM run_events WHERE run_id = $1 AND node = $2 \
+                 AND event_type IN ('step.completed', 'step.resolved') ORDER BY seq",
+            )
+            .bind(run.as_uuid())
+            .bind(node)
+            .fetch_all(&w.db.pool)
+            .await
+            .expect("settlement events");
+
+            // A step row exists once its node is activated. A run that ended at an earlier step
+            // the operator resolved as not applied never reached the following nodes: they must
+            // leave no row, no provider call and no settlement. A missing row after only
+            // successful steps is still a lost step.
+            let Some(status) = w.step_status(*run, node).await else {
+                assert!(
+                    failed_steps > 0,
+                    "run {run} retained no {node} step although no earlier step failed"
+                );
+                assert_eq!(provider_calls, 0, "run {run} node {node} was never reached");
+                assert!(
+                    settlements.is_empty(),
+                    "run {run} node {node} settled without being reached"
+                );
+                continue;
+            };
+
+            match status {
+                StepStatus::Succeeded => {
+                    known_successes += 1;
+                    assert_eq!(provider_calls, 1, "run {run} node {node} succeeded");
+                    assert_eq!(settlements.len(), 1, "run {run} node {node}");
+                    let (event_type, detail) = &settlements[0];
+                    assert!(
+                        event_type == "step.completed"
+                            || (event_type == "step.resolved" && detail["outcome"] == "succeeded"),
+                        "run {run} node {node} has invalid success settlement {settlements:?}"
+                    );
+                }
+                StepStatus::Failed => {
+                    failed_steps += 1;
+                    assert_eq!(provider_calls, 0, "run {run} node {node} failed");
+                    assert_eq!(settlements.len(), 1, "run {run} node {node}");
+                    let (event_type, detail) = &settlements[0];
+                    assert_eq!(event_type, "step.resolved", "run {run} node {node}");
+                    assert_eq!(detail["outcome"], "failed", "run {run} node {node}");
+                    assert_eq!(
+                        detail["code"], "OPERATOR_CONFIRMED_NOT_APPLIED",
+                        "run {run} node {node}"
+                    );
+                }
+                StepStatus::Cancelled | StepStatus::Pending => {
+                    assert_eq!(provider_calls, 0, "run {run} node {node} did not run");
+                    assert!(
+                        settlements.is_empty(),
+                        "run {run} node {node} settled despite status {status}"
+                    );
+                }
+                other => panic!("run {run} node {node} retained non-terminal status {other}"),
+            }
+        }
+        match w.run_status(*run).await {
+            RunStatus::Succeeded => assert_eq!(failed_steps, 0, "successful run {run}"),
+            RunStatus::Failed => assert_eq!(
+                failed_steps, 1,
+                "failed run {run} needs one explicit negative resolution"
+            ),
+            other => panic!("run {run} retained non-terminal status {other}"),
+        }
     }
-    // At-least-once: attempts may have repeated, but every effect is keyed, so none was duplicated.
     assert_eq!(
+        known_successes,
         bank.total_effects(),
-        runs_total * 3,
-        "one effect per (run, node)"
+        "successful retained steps and provider effects agree exactly"
+    );
+    assert_eq!(bank.duplicate_calls(), 0, "no provider effect was repeated");
+    assert_eq!(
+        bank.snapshot(),
+        final_ledger,
+        "the provider ledger changed after all worker loops finished"
     );
     let ids: BTreeSet<_> = runs.iter().collect();
     assert_eq!(ids.len(), runs_total);
+}
+
+/// Resolves only the outcomes this fixture's synthetic provider can answer. A lease committed but
+/// never delivered has no provider call and is resolved failed; a call observed by the provider is
+/// resolved succeeded. Database faults may abort a decision, so it is retried with fresh identity.
+async fn resolve_unknown_effects(
+    w: &World,
+    runs: &[sagat_domain::execution::RunId],
+    bank: &ExternalSystem,
+    deadline: std::time::Instant,
+) -> bool {
+    // The database is being killed under this loop, so a review can fail transiently; the last
+    // refusal is kept and printed when the deadline passes, instead of being discarded.
+    let mut last_refusal: Option<String> = None;
+    loop {
+        if std::time::Instant::now() > deadline {
+            eprintln!("unknown effects still open at the deadline; last refusal: {last_refusal:?}");
+            return false;
+        }
+        for run in runs {
+            let waiting: Result<Option<String>, _> = sqlx::query_scalar(
+                "SELECT node FROM steps WHERE run_id = $1 AND status = 'WAITING' \
+                 AND waiting_kind = 'OPERATOR' LIMIT 1",
+            )
+            .bind(run.as_uuid())
+            .fetch_optional(&w.db.pool)
+            .await;
+            let Ok(Some(node)) = waiting else {
+                continue;
+            };
+            let key = format!("{run}:{node}");
+            // A worker whose lease expired may still hold the task. Reading the ledger alone
+            // races with its late call, so the operator voids the key at the provider first.
+            let outcome = if !bank.void_if_unused(&key) {
+                ReviewOutcome::Succeeded
+            } else {
+                ReviewOutcome::Failed(
+                    FailureCode::parse("OPERATOR_CONFIRMED_NOT_APPLIED")
+                        .expect("valid review failure code"),
+                )
+            };
+            if let Err(error) = w
+                .review(
+                    *run,
+                    &node,
+                    ReviewAction::Resolve(outcome),
+                    "the synthetic provider ledger supplies the final outcome",
+                )
+                .await
+            {
+                last_refusal = Some(format!("{run}/{node}: {error:?}"));
+            }
+        }
+        let open: Result<i64, _> =
+            sqlx::query_scalar("SELECT count(*) FROM runs WHERE finished_at IS NULL")
+                .fetch_one(&w.db.pool)
+                .await;
+        if matches!(open, Ok(0)) {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(30)).await;
+    }
 }
 
 /// Performs the work for `session` until no ready step remains anywhere, retrying every call that

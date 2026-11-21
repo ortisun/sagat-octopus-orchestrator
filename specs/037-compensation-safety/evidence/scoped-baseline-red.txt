@@ -1,0 +1,35 @@
+   Compiling sagat-domain v0.2.0 (/Users/marcelo/Documents/Projects/sagat-octopus-compensation-safety/crates/domain)
+    Finished `test` profile [unoptimized] target(s) in 2.36s
+     Running tests/scoped_compensation.rs (/var/folders/60/bf6rmfzx6zq67nrbzb3m0p480000gn/T/sagat-037-target-q0fwz2gu/debug/deps/scoped_compensation-4f80fc76b1e15da2)
+
+running 3 tests
+
+thread 'absent_or_false_high_risk_unknown_original_waits_for_review_in_exact_scope_path' (781426125) panicked at crates/domain/tests/scoped_compensation.rs:1115:9:
+assertion `left == right` failed: absent highRisk on collection: attempts remaining must not authorize a repeat
+  left: RetryWait
+ right: Waiting
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'not_applied_always_reviews_in_collection_and_loop_exact_paths' (781426126) panicked at crates/domain/tests/scoped_compensation.rs:1391:9:
+assertion `left == right` failed: collection with attempts remaining
+  left: RetryWait
+ right: Waiting
+test absent_or_false_high_risk_unknown_original_waits_for_review_in_exact_scope_path ... FAILED
+test not_applied_always_reviews_in_collection_and_loop_exact_paths ... FAILED
+
+thread 'unknown_compensation_reviews_before_retry_or_failure_in_exact_scope_path' (781426127) panicked at crates/domain/tests/scoped_compensation.rs:1570:9:
+assertion `left == right` failed
+  left: Compensating
+ right: ManualReview
+test unknown_compensation_reviews_before_retry_or_failure_in_exact_scope_path ... FAILED
+
+failures:
+
+failures:
+    absent_or_false_high_risk_unknown_original_waits_for_review_in_exact_scope_path
+    not_applied_always_reviews_in_collection_and_loop_exact_paths
+    unknown_compensation_reviews_before_retry_or_failure_in_exact_scope_path
+
+test result: FAILED. 0 passed; 3 failed; 0 ignored; 0 measured; 34 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p sagat-domain --test scoped_compensation`

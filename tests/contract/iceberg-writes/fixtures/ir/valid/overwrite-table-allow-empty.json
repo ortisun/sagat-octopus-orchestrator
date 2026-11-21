@@ -1,0 +1,43 @@
+{
+  "apiVersion": "sagat-octopus-orchestrator.io/v1",
+  "kind": "Workflow",
+  "metadata": {
+    "name": "lake-overwrite-table"
+  },
+  "entrypoint": "extract",
+  "nodes": [
+    {
+      "id": "extract",
+      "type": "activity",
+      "activity": "orders.extract",
+      "next": "load"
+    },
+    {
+      "id": "load",
+      "type": "icebergWrite",
+      "connectionRef": {
+        "name": "lake-main",
+        "revision": 3
+      },
+      "table": {
+        "namespace": [
+          "sales"
+        ],
+        "name": "orders"
+      },
+      "next": "done",
+      "mode": "overwrite",
+      "overwrite": {
+        "scope": "table",
+        "allowEmpty": true
+      },
+      "records": {
+        "inline": "steps.extract.output.rows"
+      }
+    },
+    {
+      "id": "done",
+      "type": "end"
+    }
+  ]
+}

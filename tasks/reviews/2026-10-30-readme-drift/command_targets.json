@@ -1,0 +1,1170 @@
+{
+  "method": "Static Cargo manifest membership; does not execute the documented commands.",
+  "checked": [
+    {
+      "doc": "README.md",
+      "line": 372,
+      "kind": "package",
+      "target": "sagat-control-plane"
+    },
+    {
+      "doc": "README.md",
+      "line": 372,
+      "kind": "package",
+      "target": "sagat-execution-engine"
+    },
+    {
+      "doc": "README.md",
+      "line": 372,
+      "kind": "package",
+      "target": "sagat-sandbox-runner"
+    },
+    {
+      "doc": "README.md",
+      "line": 372,
+      "kind": "package",
+      "target": "sagat-dev-idp"
+    },
+    {
+      "doc": "README.md",
+      "line": 372,
+      "kind": "package",
+      "target": "sagat-cli"
+    },
+    {
+      "doc": "README.md",
+      "line": 596,
+      "kind": "package",
+      "target": "sagat-tests"
+    },
+    {
+      "doc": "README.md",
+      "line": 596,
+      "kind": "test",
+      "target": "e2e_workflow_studio"
+    },
+    {
+      "doc": "apps/cli/README.md",
+      "line": 25,
+      "kind": "package",
+      "target": "sagat-cli"
+    },
+    {
+      "doc": "apps/cli/src/README.md",
+      "line": 36,
+      "kind": "package",
+      "target": "sagat-cli"
+    },
+    {
+      "doc": "apps/control-plane/README.md",
+      "line": 25,
+      "kind": "package",
+      "target": "sagat-control-plane"
+    },
+    {
+      "doc": "apps/control-plane/src/README.md",
+      "line": 32,
+      "kind": "package",
+      "target": "sagat-control-plane"
+    },
+    {
+      "doc": "apps/database-runner/README.md",
+      "line": 25,
+      "kind": "package",
+      "target": "sagat-database-runner"
+    },
+    {
+      "doc": "apps/database-runner/src/README.md",
+      "line": 31,
+      "kind": "package",
+      "target": "sagat-database-runner"
+    },
+    {
+      "doc": "apps/dev-idp/README.md",
+      "line": 25,
+      "kind": "package",
+      "target": "sagat-dev-idp"
+    },
+    {
+      "doc": "apps/dev-idp/src/README.md",
+      "line": 28,
+      "kind": "package",
+      "target": "sagat-dev-idp"
+    },
+    {
+      "doc": "apps/execution-engine/README.md",
+      "line": 25,
+      "kind": "package",
+      "target": "sagat-execution-engine"
+    },
+    {
+      "doc": "apps/execution-engine/src/README.md",
+      "line": 32,
+      "kind": "package",
+      "target": "sagat-execution-engine"
+    },
+    {
+      "doc": "apps/sandbox-runner/README.md",
+      "line": 25,
+      "kind": "package",
+      "target": "sagat-sandbox-runner"
+    },
+    {
+      "doc": "apps/sandbox-runner/src/README.md",
+      "line": 30,
+      "kind": "package",
+      "target": "sagat-sandbox-runner"
+    },
+    {
+      "doc": "crates/api-grpc/README.md",
+      "line": 26,
+      "kind": "package",
+      "target": "sagat-api-grpc"
+    },
+    {
+      "doc": "crates/api-grpc/src/README.md",
+      "line": 41,
+      "kind": "package",
+      "target": "sagat-api-grpc"
+    },
+    {
+      "doc": "crates/api-http/README.md",
+      "line": 26,
+      "kind": "package",
+      "target": "sagat-api-http"
+    },
+    {
+      "doc": "crates/api-http/src/README.md",
+      "line": 48,
+      "kind": "package",
+      "target": "sagat-api-http"
+    },
+    {
+      "doc": "crates/api-http/src/auth/README.md",
+      "line": 33,
+      "kind": "package",
+      "target": "sagat-api-http"
+    },
+    {
+      "doc": "crates/api-http/src/routes/README.md",
+      "line": 48,
+      "kind": "package",
+      "target": "sagat-api-http"
+    },
+    {
+      "doc": "crates/application/README.md",
+      "line": 26,
+      "kind": "package",
+      "target": "sagat-application"
+    },
+    {
+      "doc": "crates/application/src/README.md",
+      "line": 111,
+      "kind": "package",
+      "target": "sagat-application"
+    },
+    {
+      "doc": "crates/application/src/execution/README.md",
+      "line": 28,
+      "kind": "package",
+      "target": "sagat-application"
+    },
+    {
+      "doc": "crates/application/src/runs/README.md",
+      "line": 31,
+      "kind": "package",
+      "target": "sagat-application"
+    },
+    {
+      "doc": "crates/application/src/scripts/README.md",
+      "line": 27,
+      "kind": "package",
+      "target": "sagat-application"
+    },
+    {
+      "doc": "crates/application/src/worker/README.md",
+      "line": 36,
+      "kind": "package",
+      "target": "sagat-application"
+    },
+    {
+      "doc": "crates/domain/README.md",
+      "line": 26,
+      "kind": "package",
+      "target": "sagat-domain"
+    },
+    {
+      "doc": "crates/domain/src/README.md",
+      "line": 46,
+      "kind": "package",
+      "target": "sagat-domain"
+    },
+    {
+      "doc": "crates/domain/src/database/README.md",
+      "line": 25,
+      "kind": "package",
+      "target": "sagat-domain"
+    },
+    {
+      "doc": "crates/domain/src/execution/README.md",
+      "line": 57,
+      "kind": "package",
+      "target": "sagat-domain"
+    },
+    {
+      "doc": "crates/domain/src/workflow/README.md",
+      "line": 30,
+      "kind": "package",
+      "target": "sagat-domain"
+    },
+    {
+      "doc": "crates/infra-blobstore/README.md",
+      "line": 26,
+      "kind": "package",
+      "target": "sagat-infra-blobstore"
+    },
+    {
+      "doc": "crates/infra-blobstore/src/README.md",
+      "line": 27,
+      "kind": "package",
+      "target": "sagat-infra-blobstore"
+    },
+    {
+      "doc": "crates/infra-connectors/README.md",
+      "line": 26,
+      "kind": "package",
+      "target": "sagat-infra-connectors"
+    },
+    {
+      "doc": "crates/infra-connectors/src/README.md",
+      "line": 32,
+      "kind": "package",
+      "target": "sagat-infra-connectors"
+    },
+    {
+      "doc": "crates/infra-database/README.md",
+      "line": 26,
+      "kind": "package",
+      "target": "sagat-infra-database"
+    },
+    {
+      "doc": "crates/infra-database/src/README.md",
+      "line": 29,
+      "kind": "package",
+      "target": "sagat-infra-database"
+    },
+    {
+      "doc": "crates/infra-egress/README.md",
+      "line": 26,
+      "kind": "package",
+      "target": "sagat-infra-egress"
+    },
+    {
+      "doc": "crates/infra-egress/src/README.md",
+      "line": 26,
+      "kind": "package",
+      "target": "sagat-infra-egress"
+    },
+    {
+      "doc": "crates/infra-expr/README.md",
+      "line": 26,
+      "kind": "package",
+      "target": "sagat-infra-expr"
+    },
+    {
+      "doc": "crates/infra-expr/src/README.md",
+      "line": 26,
+      "kind": "package",
+      "target": "sagat-infra-expr"
+    },
+    {
+      "doc": "crates/infra-ir/README.md",
+      "line": 26,
+      "kind": "package",
+      "target": "sagat-infra-ir"
+    },
+    {
+      "doc": "crates/infra-ir/src/README.md",
+      "line": 35,
+      "kind": "package",
+      "target": "sagat-infra-ir"
+    },
+    {
+      "doc": "crates/infra-nats/README.md",
+      "line": 26,
+      "kind": "package",
+      "target": "sagat-infra-nats"
+    },
+    {
+      "doc": "crates/infra-nats/src/README.md",
+      "line": 26,
+      "kind": "package",
+      "target": "sagat-infra-nats"
+    },
+    {
+      "doc": "crates/infra-postgres/README.md",
+      "line": 29,
+      "kind": "package",
+      "target": "sagat-infra-postgres"
+    },
+    {
+      "doc": "crates/infra-postgres/migrations/README.md",
+      "line": 65,
+      "kind": "package",
+      "target": "sagat-infra-postgres"
+    },
+    {
+      "doc": "crates/infra-postgres/src/README.md",
+      "line": 96,
+      "kind": "package",
+      "target": "sagat-infra-postgres"
+    },
+    {
+      "doc": "crates/infra-postgres/src/database/README.md",
+      "line": 30,
+      "kind": "package",
+      "target": "sagat-infra-postgres"
+    },
+    {
+      "doc": "crates/infra-postgres/src/execution/README.md",
+      "line": 38,
+      "kind": "package",
+      "target": "sagat-infra-postgres"
+    },
+    {
+      "doc": "crates/infra-postgres/src/scripts/README.md",
+      "line": 29,
+      "kind": "package",
+      "target": "sagat-infra-postgres"
+    },
+    {
+      "doc": "crates/infra-sandbox/README.md",
+      "line": 27,
+      "kind": "package",
+      "target": "sagat-infra-sandbox"
+    },
+    {
+      "doc": "crates/infra-sandbox/shims/README.md",
+      "line": 27,
+      "kind": "package",
+      "target": "sagat-infra-sandbox"
+    },
+    {
+      "doc": "crates/infra-sandbox/src/README.md",
+      "line": 29,
+      "kind": "package",
+      "target": "sagat-infra-sandbox"
+    },
+    {
+      "doc": "crates/infra-schema/README.md",
+      "line": 26,
+      "kind": "package",
+      "target": "sagat-infra-schema"
+    },
+    {
+      "doc": "crates/infra-schema/src/README.md",
+      "line": 30,
+      "kind": "package",
+      "target": "sagat-infra-schema"
+    },
+    {
+      "doc": "crates/infra-schema/src/classification/README.md",
+      "line": 34,
+      "kind": "package",
+      "target": "sagat-infra-schema"
+    },
+    {
+      "doc": "crates/infra-secrets/README.md",
+      "line": 26,
+      "kind": "package",
+      "target": "sagat-infra-secrets"
+    },
+    {
+      "doc": "crates/infra-secrets/src/README.md",
+      "line": 29,
+      "kind": "package",
+      "target": "sagat-infra-secrets"
+    },
+    {
+      "doc": "crates/scheduler/README.md",
+      "line": 26,
+      "kind": "package",
+      "target": "sagat-scheduler"
+    },
+    {
+      "doc": "crates/scheduler/src/README.md",
+      "line": 44,
+      "kind": "package",
+      "target": "sagat-scheduler"
+    },
+    {
+      "doc": "crates/scheduler/src/passes/README.md",
+      "line": 31,
+      "kind": "package",
+      "target": "sagat-scheduler"
+    },
+    {
+      "doc": "crates/telemetry/README.md",
+      "line": 26,
+      "kind": "package",
+      "target": "sagat-telemetry"
+    },
+    {
+      "doc": "crates/telemetry/src/README.md",
+      "line": 38,
+      "kind": "package",
+      "target": "sagat-telemetry"
+    },
+    {
+      "doc": "examples/README.md",
+      "line": 28,
+      "kind": "package",
+      "target": "sagat-tests"
+    },
+    {
+      "doc": "examples/README.md",
+      "line": 28,
+      "kind": "test",
+      "target": "e2e_developer_experience"
+    },
+    {
+      "doc": "examples/hello-world/README.md",
+      "line": 29,
+      "kind": "package",
+      "target": "sagat-tests"
+    },
+    {
+      "doc": "examples/hello-world/README.md",
+      "line": 29,
+      "kind": "test",
+      "target": "e2e_developer_experience"
+    },
+    {
+      "doc": "examples/hello-world/dotnet/README.md",
+      "line": 67,
+      "kind": "package",
+      "target": "sagat-tests"
+    },
+    {
+      "doc": "examples/hello-world/dotnet/README.md",
+      "line": 67,
+      "kind": "test",
+      "target": "e2e_developer_experience"
+    },
+    {
+      "doc": "examples/hello-world/go/README.md",
+      "line": 66,
+      "kind": "package",
+      "target": "sagat-tests"
+    },
+    {
+      "doc": "examples/hello-world/go/README.md",
+      "line": 66,
+      "kind": "test",
+      "target": "e2e_developer_experience"
+    },
+    {
+      "doc": "examples/hello-world/java/README.md",
+      "line": 75,
+      "kind": "package",
+      "target": "sagat-tests"
+    },
+    {
+      "doc": "examples/hello-world/java/README.md",
+      "line": 75,
+      "kind": "test",
+      "target": "e2e_developer_experience"
+    },
+    {
+      "doc": "examples/hello-world/java/src/README.md",
+      "line": 26,
+      "kind": "package",
+      "target": "sagat-tests"
+    },
+    {
+      "doc": "examples/hello-world/java/src/README.md",
+      "line": 26,
+      "kind": "test",
+      "target": "e2e_developer_experience"
+    },
+    {
+      "doc": "examples/hello-world/java/src/main/README.md",
+      "line": 26,
+      "kind": "package",
+      "target": "sagat-tests"
+    },
+    {
+      "doc": "examples/hello-world/java/src/main/README.md",
+      "line": 26,
+      "kind": "test",
+      "target": "e2e_developer_experience"
+    },
+    {
+      "doc": "examples/hello-world/java/src/main/java/README.md",
+      "line": 26,
+      "kind": "package",
+      "target": "sagat-tests"
+    },
+    {
+      "doc": "examples/hello-world/java/src/main/java/README.md",
+      "line": 26,
+      "kind": "test",
+      "target": "e2e_developer_experience"
+    },
+    {
+      "doc": "examples/hello-world/python/README.md",
+      "line": 66,
+      "kind": "package",
+      "target": "sagat-tests"
+    },
+    {
+      "doc": "examples/hello-world/python/README.md",
+      "line": 66,
+      "kind": "test",
+      "target": "e2e_developer_experience"
+    },
+    {
+      "doc": "examples/hello-world/typescript/README.md",
+      "line": 68,
+      "kind": "package",
+      "target": "sagat-tests"
+    },
+    {
+      "doc": "examples/hello-world/typescript/README.md",
+      "line": 68,
+      "kind": "test",
+      "target": "e2e_developer_experience"
+    },
+    {
+      "doc": "examples/hello-world/typescript/src/README.md",
+      "line": 25,
+      "kind": "package",
+      "target": "sagat-tests"
+    },
+    {
+      "doc": "examples/hello-world/typescript/src/README.md",
+      "line": 25,
+      "kind": "test",
+      "target": "e2e_developer_experience"
+    },
+    {
+      "doc": "examples/order-processing/README.md",
+      "line": 94,
+      "kind": "package",
+      "target": "sagat-tests"
+    },
+    {
+      "doc": "examples/order-processing/README.md",
+      "line": 94,
+      "kind": "test",
+      "target": "e2e_developer_experience"
+    },
+    {
+      "doc": "examples/order-processing/README.md",
+      "line": 125,
+      "kind": "package",
+      "target": "sagat-tests"
+    },
+    {
+      "doc": "examples/order-processing/README.md",
+      "line": 125,
+      "kind": "test",
+      "target": "e2e_developer_experience"
+    },
+    {
+      "doc": "examples/order-processing/dotnet/README.md",
+      "line": 75,
+      "kind": "package",
+      "target": "sagat-tests"
+    },
+    {
+      "doc": "examples/order-processing/dotnet/README.md",
+      "line": 75,
+      "kind": "test",
+      "target": "e2e_developer_experience"
+    },
+    {
+      "doc": "examples/order-processing/go/README.md",
+      "line": 77,
+      "kind": "package",
+      "target": "sagat-tests"
+    },
+    {
+      "doc": "examples/order-processing/go/README.md",
+      "line": 77,
+      "kind": "test",
+      "target": "e2e_developer_experience"
+    },
+    {
+      "doc": "examples/order-processing/java/README.md",
+      "line": 75,
+      "kind": "package",
+      "target": "sagat-tests"
+    },
+    {
+      "doc": "examples/order-processing/java/README.md",
+      "line": 75,
+      "kind": "test",
+      "target": "e2e_developer_experience"
+    },
+    {
+      "doc": "examples/order-processing/java/src/README.md",
+      "line": 26,
+      "kind": "package",
+      "target": "sagat-tests"
+    },
+    {
+      "doc": "examples/order-processing/java/src/README.md",
+      "line": 26,
+      "kind": "test",
+      "target": "e2e_developer_experience"
+    },
+    {
+      "doc": "examples/order-processing/java/src/main/README.md",
+      "line": 26,
+      "kind": "package",
+      "target": "sagat-tests"
+    },
+    {
+      "doc": "examples/order-processing/java/src/main/README.md",
+      "line": 26,
+      "kind": "test",
+      "target": "e2e_developer_experience"
+    },
+    {
+      "doc": "examples/order-processing/java/src/main/java/README.md",
+      "line": 26,
+      "kind": "package",
+      "target": "sagat-tests"
+    },
+    {
+      "doc": "examples/order-processing/java/src/main/java/README.md",
+      "line": 26,
+      "kind": "test",
+      "target": "e2e_developer_experience"
+    },
+    {
+      "doc": "examples/order-processing/python/README.md",
+      "line": 91,
+      "kind": "package",
+      "target": "sagat-tests"
+    },
+    {
+      "doc": "examples/order-processing/python/README.md",
+      "line": 91,
+      "kind": "test",
+      "target": "e2e_developer_experience"
+    },
+    {
+      "doc": "examples/order-processing/typescript/README.md",
+      "line": 91,
+      "kind": "package",
+      "target": "sagat-tests"
+    },
+    {
+      "doc": "examples/order-processing/typescript/README.md",
+      "line": 91,
+      "kind": "test",
+      "target": "e2e_developer_experience"
+    },
+    {
+      "doc": "examples/order-processing/typescript/src/README.md",
+      "line": 26,
+      "kind": "package",
+      "target": "sagat-tests"
+    },
+    {
+      "doc": "examples/order-processing/typescript/src/README.md",
+      "line": 26,
+      "kind": "test",
+      "target": "e2e_developer_experience"
+    },
+    {
+      "doc": "examples/payment-saga/README.md",
+      "line": 25,
+      "kind": "package",
+      "target": "sagat-tests"
+    },
+    {
+      "doc": "examples/payment-saga/README.md",
+      "line": 25,
+      "kind": "test",
+      "target": "e2e_developer_experience"
+    },
+    {
+      "doc": "examples/payment-saga/typescript/README.md",
+      "line": 83,
+      "kind": "package",
+      "target": "sagat-tests"
+    },
+    {
+      "doc": "examples/payment-saga/typescript/README.md",
+      "line": 83,
+      "kind": "test",
+      "target": "e2e_developer_experience"
+    },
+    {
+      "doc": "examples/payment-saga/typescript/src/README.md",
+      "line": 29,
+      "kind": "package",
+      "target": "sagat-tests"
+    },
+    {
+      "doc": "examples/payment-saga/typescript/src/README.md",
+      "line": 29,
+      "kind": "test",
+      "target": "e2e_developer_experience"
+    },
+    {
+      "doc": "frontend/README.md",
+      "line": 41,
+      "kind": "package",
+      "target": "sagat-tests"
+    },
+    {
+      "doc": "frontend/README.md",
+      "line": 41,
+      "kind": "test",
+      "target": "e2e_workflow_studio"
+    },
+    {
+      "doc": "frontend/README.md",
+      "line": 50,
+      "kind": "package",
+      "target": "sagat-tests"
+    },
+    {
+      "doc": "frontend/README.md",
+      "line": 50,
+      "kind": "test",
+      "target": "e2e_workflow_studio"
+    },
+    {
+      "doc": "infra/openbao/README.md",
+      "line": 31,
+      "kind": "package",
+      "target": "sagat-tests"
+    },
+    {
+      "doc": "infra/openbao/README.md",
+      "line": 31,
+      "kind": "test",
+      "target": "integration_database_connections"
+    },
+    {
+      "doc": "infra/openbao/policies/README.md",
+      "line": 25,
+      "kind": "package",
+      "target": "sagat-tests"
+    },
+    {
+      "doc": "infra/openbao/policies/README.md",
+      "line": 25,
+      "kind": "test",
+      "target": "integration_database_connections"
+    },
+    {
+      "doc": "runners/README.md",
+      "line": 29,
+      "kind": "package",
+      "target": "sagat-infra-sandbox"
+    },
+    {
+      "doc": "runners/README.md",
+      "line": 30,
+      "kind": "package",
+      "target": "sagat-tests"
+    },
+    {
+      "doc": "runners/README.md",
+      "line": 30,
+      "kind": "test",
+      "target": "integration_inline_code_sandbox_containers"
+    },
+    {
+      "doc": "runners/dotnet/README.md",
+      "line": 54,
+      "kind": "package",
+      "target": "sagat-infra-sandbox"
+    },
+    {
+      "doc": "runners/dotnet/README.md",
+      "line": 55,
+      "kind": "package",
+      "target": "sagat-tests"
+    },
+    {
+      "doc": "runners/dotnet/README.md",
+      "line": 55,
+      "kind": "test",
+      "target": "integration_inline_code_sandbox_containers"
+    },
+    {
+      "doc": "runners/dotnet/Sagat.DotnetBuild/README.md",
+      "line": 27,
+      "kind": "package",
+      "target": "sagat-infra-sandbox"
+    },
+    {
+      "doc": "runners/dotnet/Sagat.DotnetBuild/README.md",
+      "line": 28,
+      "kind": "package",
+      "target": "sagat-tests"
+    },
+    {
+      "doc": "runners/dotnet/Sagat.DotnetBuild/README.md",
+      "line": 28,
+      "kind": "test",
+      "target": "integration_inline_code_sandbox_containers"
+    },
+    {
+      "doc": "runners/dotnet/Sagat.DotnetRuntime/README.md",
+      "line": 27,
+      "kind": "package",
+      "target": "sagat-infra-sandbox"
+    },
+    {
+      "doc": "runners/dotnet/Sagat.DotnetRuntime/README.md",
+      "line": 28,
+      "kind": "package",
+      "target": "sagat-tests"
+    },
+    {
+      "doc": "runners/dotnet/Sagat.DotnetRuntime/README.md",
+      "line": 28,
+      "kind": "test",
+      "target": "integration_inline_code_sandbox_containers"
+    },
+    {
+      "doc": "runners/dotnet/Sagat.ScriptContract/README.md",
+      "line": 25,
+      "kind": "package",
+      "target": "sagat-infra-sandbox"
+    },
+    {
+      "doc": "runners/dotnet/Sagat.ScriptContract/README.md",
+      "line": 26,
+      "kind": "package",
+      "target": "sagat-tests"
+    },
+    {
+      "doc": "runners/dotnet/Sagat.ScriptContract/README.md",
+      "line": 26,
+      "kind": "test",
+      "target": "integration_inline_code_sandbox_containers"
+    },
+    {
+      "doc": "runners/go/README.md",
+      "line": 49,
+      "kind": "package",
+      "target": "sagat-infra-sandbox"
+    },
+    {
+      "doc": "runners/go/README.md",
+      "line": 50,
+      "kind": "package",
+      "target": "sagat-tests"
+    },
+    {
+      "doc": "runners/go/README.md",
+      "line": 50,
+      "kind": "test",
+      "target": "integration_inline_code_sandbox_containers"
+    },
+    {
+      "doc": "runners/java/README.md",
+      "line": 35,
+      "kind": "package",
+      "target": "sagat-infra-sandbox"
+    },
+    {
+      "doc": "runners/java/README.md",
+      "line": 36,
+      "kind": "package",
+      "target": "sagat-tests"
+    },
+    {
+      "doc": "runners/java/README.md",
+      "line": 36,
+      "kind": "test",
+      "target": "integration_inline_code_sandbox_containers"
+    },
+    {
+      "doc": "runners/java/api/README.md",
+      "line": 24,
+      "kind": "package",
+      "target": "sagat-infra-sandbox"
+    },
+    {
+      "doc": "runners/java/api/README.md",
+      "line": 25,
+      "kind": "package",
+      "target": "sagat-tests"
+    },
+    {
+      "doc": "runners/java/api/README.md",
+      "line": 25,
+      "kind": "test",
+      "target": "integration_inline_code_sandbox_containers"
+    },
+    {
+      "doc": "runners/java/api/sagat/README.md",
+      "line": 24,
+      "kind": "package",
+      "target": "sagat-infra-sandbox"
+    },
+    {
+      "doc": "runners/java/api/sagat/README.md",
+      "line": 25,
+      "kind": "package",
+      "target": "sagat-tests"
+    },
+    {
+      "doc": "runners/java/api/sagat/README.md",
+      "line": 25,
+      "kind": "test",
+      "target": "integration_inline_code_sandbox_containers"
+    },
+    {
+      "doc": "runners/java/api/sagat/inline/README.md",
+      "line": 26,
+      "kind": "package",
+      "target": "sagat-infra-sandbox"
+    },
+    {
+      "doc": "runners/java/api/sagat/inline/README.md",
+      "line": 27,
+      "kind": "package",
+      "target": "sagat-tests"
+    },
+    {
+      "doc": "runners/java/api/sagat/inline/README.md",
+      "line": 27,
+      "kind": "test",
+      "target": "integration_inline_code_sandbox_containers"
+    },
+    {
+      "doc": "runners/java/host/README.md",
+      "line": 29,
+      "kind": "package",
+      "target": "sagat-infra-sandbox"
+    },
+    {
+      "doc": "runners/java/host/README.md",
+      "line": 30,
+      "kind": "package",
+      "target": "sagat-tests"
+    },
+    {
+      "doc": "runners/java/host/README.md",
+      "line": 30,
+      "kind": "test",
+      "target": "integration_inline_code_sandbox_containers"
+    },
+    {
+      "doc": "runners/java/host/sagat/README.md",
+      "line": 29,
+      "kind": "package",
+      "target": "sagat-infra-sandbox"
+    },
+    {
+      "doc": "runners/java/host/sagat/README.md",
+      "line": 30,
+      "kind": "package",
+      "target": "sagat-tests"
+    },
+    {
+      "doc": "runners/java/host/sagat/README.md",
+      "line": 30,
+      "kind": "test",
+      "target": "integration_inline_code_sandbox_containers"
+    },
+    {
+      "doc": "runners/java/host/sagat/host/README.md",
+      "line": 30,
+      "kind": "package",
+      "target": "sagat-infra-sandbox"
+    },
+    {
+      "doc": "runners/java/host/sagat/host/README.md",
+      "line": 31,
+      "kind": "package",
+      "target": "sagat-tests"
+    },
+    {
+      "doc": "runners/java/host/sagat/host/README.md",
+      "line": 31,
+      "kind": "test",
+      "target": "integration_inline_code_sandbox_containers"
+    },
+    {
+      "doc": "sdks/README.md",
+      "line": 44,
+      "kind": "package",
+      "target": "sagat-tests"
+    },
+    {
+      "doc": "sdks/README.md",
+      "line": 44,
+      "kind": "test",
+      "target": "sdk_conformance"
+    },
+    {
+      "doc": "sdks/README.md",
+      "line": 45,
+      "kind": "package",
+      "target": "sagat-tests"
+    },
+    {
+      "doc": "sdks/README.md",
+      "line": 45,
+      "kind": "test",
+      "target": "e2e_sdk_multilanguage"
+    },
+    {
+      "doc": "sdks/README.md",
+      "line": 45,
+      "kind": "test",
+      "target": "fault_sdk_multilanguage"
+    },
+    {
+      "doc": "sdks/README.md",
+      "line": 46,
+      "kind": "package",
+      "target": "sagat-tests"
+    },
+    {
+      "doc": "sdks/README.md",
+      "line": 46,
+      "kind": "test",
+      "target": "perf_sdk_multilanguage"
+    },
+    {
+      "doc": "sdks/README.md",
+      "line": 98,
+      "kind": "package",
+      "target": "sagat-tests"
+    },
+    {
+      "doc": "sdks/README.md",
+      "line": 98,
+      "kind": "test",
+      "target": "sdk_conformance"
+    },
+    {
+      "doc": "sdks/go/README.md",
+      "line": 286,
+      "kind": "package",
+      "target": "sagat-tests"
+    },
+    {
+      "doc": "sdks/go/README.md",
+      "line": 286,
+      "kind": "test",
+      "target": "sdk_conformance"
+    },
+    {
+      "doc": "sdks/java/README.md",
+      "line": 315,
+      "kind": "package",
+      "target": "sagat-tests"
+    },
+    {
+      "doc": "sdks/java/README.md",
+      "line": 315,
+      "kind": "test",
+      "target": "sdk_conformance"
+    },
+    {
+      "doc": "sdks/python/README.md",
+      "line": 300,
+      "kind": "package",
+      "target": "sagat-tests"
+    },
+    {
+      "doc": "sdks/python/README.md",
+      "line": 300,
+      "kind": "test",
+      "target": "sdk_conformance"
+    },
+    {
+      "doc": "sdks/typescript/README.md",
+      "line": 156,
+      "kind": "package",
+      "target": "sagat-tests"
+    },
+    {
+      "doc": "sdks/typescript/README.md",
+      "line": 156,
+      "kind": "test",
+      "target": "sdk_conformance"
+    },
+    {
+      "doc": "specs/001-platform-foundation/README.md",
+      "line": 28,
+      "kind": "package",
+      "target": "sagat-tests"
+    },
+    {
+      "doc": "specs/001-platform-foundation/README.md",
+      "line": 28,
+      "kind": "test",
+      "target": "contract_platform_foundation"
+    },
+    {
+      "doc": "specs/001-platform-foundation/contracts/README.md",
+      "line": 42,
+      "kind": "package",
+      "target": "sagat-tests"
+    },
+    {
+      "doc": "specs/001-platform-foundation/contracts/README.md",
+      "line": 42,
+      "kind": "test",
+      "target": "contract_platform_foundation"
+    },
+    {
+      "doc": "specs/001-platform-foundation/contracts/README.md",
+      "line": 43,
+      "kind": "package",
+      "target": "sagat-tests"
+    },
+    {
+      "doc": "specs/001-platform-foundation/contracts/README.md",
+      "line": 43,
+      "kind": "test",
+      "target": "contract_grpc_durable_execution"
+    },
+    {
+      "doc": "specs/README.md",
+      "line": 28,
+      "kind": "package",
+      "target": "sagat-tests"
+    },
+    {
+      "doc": "specs/README.md",
+      "line": 28,
+      "kind": "test",
+      "target": "contract_platform_foundation"
+    },
+    {
+      "doc": "templates/README.md",
+      "line": 28,
+      "kind": "package",
+      "target": "sagat-cli"
+    },
+    {
+      "doc": "templates/inline-script/README.md",
+      "line": 40,
+      "kind": "package",
+      "target": "sagat-tests"
+    },
+    {
+      "doc": "templates/inline-script/README.md",
+      "line": 40,
+      "kind": "test",
+      "target": "integration_inline_code_sandbox"
+    }
+  ],
+  "errors": []
+}

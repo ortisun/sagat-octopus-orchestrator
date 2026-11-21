@@ -1,0 +1,31 @@
+name: lake-audit
+
+# The lock of the lake runtime (runners/lake/requirements.lock) is the whole supply chain of the Python host of the
+# Iceberg write steps (G035-023). The CI audits it with every change under runners/lake; this audits it every week
+# even when nothing changed, because an advisory can appear against a version that is already pinned.
+on:
+  schedule:
+    - cron: "17 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    name: known vulnerabilities in the lake runtime lock
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: tools from the lock
+        working-directory: runners/lake
+        run: |
+          python3 -m venv .venv
+          .venv/bin/pip install --require-hashes --no-deps -r requirements-dev.lock
+      - name: audit
+        working-directory: runners/lake
+        run: .venv/bin/pip-audit -r requirements.lock --require-hashes --disable-pip

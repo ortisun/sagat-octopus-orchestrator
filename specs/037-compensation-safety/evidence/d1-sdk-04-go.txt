@@ -1,0 +1,15 @@
+go test -race ./...
+ok  	github.com/ortisun/sagat-octopus-orchestrator/sdks/go	1.340s
+ok  	github.com/ortisun/sagat-octopus-orchestrator/sdks/go/client	(cached)
+ok  	github.com/ortisun/sagat-octopus-orchestrator/sdks/go/conformance	(cached)
+ok  	github.com/ortisun/sagat-octopus-orchestrator/sdks/go/internal/backoff	(cached)
+ok  	github.com/ortisun/sagat-octopus-orchestrator/sdks/go/internal/bound	(cached)
+ok  	github.com/ortisun/sagat-octopus-orchestrator/sdks/go/internal/ids	(cached)
+ok  	github.com/ortisun/sagat-octopus-orchestrator/sdks/go/internal/jsonx	(cached)
+?   	github.com/ortisun/sagat-octopus-orchestrator/sdks/go/internal/safelog	[no test files]
+?   	github.com/ortisun/sagat-octopus-orchestrator/sdks/go/internal/testpki	[no test files]
+?   	github.com/ortisun/sagat-octopus-orchestrator/sdks/go/internal/tokenfail	[no test files]
+?   	github.com/ortisun/sagat-octopus-orchestrator/sdks/go/internal/workerpb	[no test files]
+ok  	github.com/ortisun/sagat-octopus-orchestrator/sdks/go/otelbridge	(cached)
+ok  	github.com/ortisun/sagat-octopus-orchestrator/sdks/go/worker	(cached)
+ok  	github.com/ortisun/sagat-octopus-orchestrator/sdks/go/workflow	(cached)

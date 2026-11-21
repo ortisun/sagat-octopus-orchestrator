@@ -10,7 +10,7 @@ use std::future::Future;
 use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
 use sagat_domain::execution::{
     self, ChainError, ChainFinalOutcome, ChainPolicy, ChainScope, ContinuationTransfer,
-    CorrelationKey, Progress, RunId, RunStatus, StepStatus, StopReason, WaitingOn,
+    CorrelationKey, Progress, RunId, RunStatus, StepStatus, StopReason, WaitVia, WaitingOn,
 };
 use sagat_domain::identity::{NamespaceId, Permission, Principal, Subject, TenantId};
 use sagat_domain::workflow::{Digest, NodeId, NodeKind};
@@ -247,7 +247,8 @@ pub struct ChainHandoffWrite {
 pub struct EvaluatedChainHandoffCommand {
     handoff: ChainHandoffCommand,
     boundary: NodeId,
-    input: Vec<u8>,
+    /// Checked by the gate against the schema of the predecessor's version (design 043, FR-043-017).
+    input: crate::run_input::CheckedRunInput,
     state: Option<Vec<u8>>,
     expected_state_revision: Option<u64>,
     correlation: Option<CorrelationKey>,
@@ -257,7 +258,7 @@ pub struct EvaluatedChainHandoffCommand {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContinuationSelection {
     boundary: NodeId,
-    input: Vec<u8>,
+    input: crate::run_input::CheckedRunInput,
     state: Option<Vec<u8>>,
     expected_state_revision: Option<u64>,
     correlation: Option<CorrelationKey>,
@@ -269,11 +270,11 @@ impl ContinuationSelection {
     /// or state presence is not pinned to a revision.
     pub fn new(
         boundary: NodeId,
-        input: Vec<u8>,
+        input: crate::run_input::CheckedRunInput,
         state: Option<Vec<u8>>,
         expected_state_revision: Option<u64>,
     ) -> Result<Self, ContinuationPreparationError> {
-        if input.len() > MAX_PAYLOAD_BYTES
+        if input.bytes().len() > MAX_PAYLOAD_BYTES
             || state
                 .as_ref()
                 .is_some_and(|value| value.len() > MAX_PAYLOAD_BYTES)
@@ -310,7 +311,10 @@ impl ContinuationSelection {
 
     #[must_use]
     pub fn transfer(&self) -> ContinuationTransfer {
-        ContinuationTransfer::new(digest(&self.input), self.state.as_deref().map(digest))
+        ContinuationTransfer::new(
+            digest(self.input.bytes()),
+            self.state.as_deref().map(digest),
+        )
     }
 
     /// Binds this selection to the command whose CAS guards describe the same snapshot.
@@ -345,7 +349,7 @@ impl EvaluatedChainHandoffCommand {
     pub fn new(
         handoff: ChainHandoffCommand,
         boundary: NodeId,
-        input: Vec<u8>,
+        input: crate::run_input::CheckedRunInput,
         state: Option<Vec<u8>>,
         expected_state_revision: Option<u64>,
     ) -> Result<Self, ContinuationPreparationError> {
@@ -365,6 +369,13 @@ impl EvaluatedChainHandoffCommand {
 
     #[must_use]
     pub fn input(&self) -> &[u8] {
+        self.input.bytes()
+    }
+
+    /// The input as the gate checked it: the write refuses it when its version is not the predecessor's
+    /// (FR-043-017).
+    #[must_use]
+    pub const fn checked_input(&self) -> &crate::run_input::CheckedRunInput {
         &self.input
     }
 
@@ -920,7 +931,13 @@ where
                 let mut events = Vec::new();
                 let mut pending = None;
                 for node in &targets {
-                    let mut progress = execution::satisfy_wait(definition, state, node, now)?;
+                    let mut progress = execution::satisfy_wait(
+                        definition,
+                        state,
+                        node,
+                        now,
+                        Some(WaitVia::Signal),
+                    )?;
                     events.append(&mut progress.events);
                     pending = pending.or(progress.pending);
                 }

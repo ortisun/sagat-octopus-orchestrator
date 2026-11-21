@@ -352,6 +352,10 @@ fn operations_outside_the_approved_additions_and_event_extensions_are_byte_stabl
                 // Feature 017 is merged independently with this branch. Its additive operations
                 // were not part of the T016-007 baseline and must not create a false regression.
                 || operation["x-implemented"] == "017"
+                // Feature 018 adds its operations after the T016-007 baseline, the same way.
+                || operation["x-implemented"] == "018"
+                // Feature 035 merges its contract before its routes: the catalog-browse operations are planned.
+                || operation["x-planned"] == "035"
             {
                 continue;
             }
@@ -365,8 +369,23 @@ fn operations_outside_the_approved_additions_and_event_extensions_are_byte_stabl
     // Approved 014 dependency 112f1e1d appends the pagination guidance to getChain
     // (the only operation diff from bc6b74c0 to 5f4f1c6b). Keep every operation in
     // this digest; the baseline update does not exclude the changed operation.
+    // Approved feature 037 (owner decision of 2026-11-01) changes only operateRun: the
+    // OUTCOME_UNRESOLVED refusal and the MARK_MANUAL_REVIEW wording. No other operation changed.
+    // EGM drift report DRIFT-001 rewrites only the createScript availability text (all five
+    // languages are accepted for authoring; the old text said only TypeScript and Python were
+    // built). The digest was recomputed from the reviewed one-operation text diff.
+    // The digest below covers both reviewed text changes together; it was recomputed on the merged
+    // document (the two operations differ, so neither earlier value remains valid).
+    // Approved feature 018 (owner decision of 2026-10-29) changes three existing operations, and
+    // only their request and query options and the text that says so: startRun takes the business
+    // identifier options and the start delay (and may answer 200 with the holder), listRuns takes
+    // the businessId, businessIdPrefix and scheduleId filters, and operateRun takes the businessId
+    // choice of RERUN_AS_NEW. The digest was recomputed from those three reviewed text diffs.
+    // Owner decision OD-2026-11-15-3 (design 043, G043-045) adds to the text of six existing operations, startRun,
+    // signalWithStart, updateWithStart, operateRun, resetRun and startDatabaseExecution, the paragraph on their 422
+    // RUN_INPUT_INVALID; nothing else of them changed. The digest was recomputed from those reviewed text diffs, this once.
     assert_eq!(
-        digest, "60c58b37add3b597a3d94a25e000f25b04d6dd3505e076ed283eaf192a8ed614",
+        digest, "6416c84cc04b82f82103e450ad0bb6837fe6de1d840c843ea2c1a94cf366cffa",
         "an existing operation outside feature 016 changed"
     );
 }

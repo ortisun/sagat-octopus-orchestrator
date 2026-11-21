@@ -1,12 +1,12 @@
 //! Database connections killed under load while runs succeed and compensate: whatever is cut off,
-//! every run ends in the state its history demands, every effect has happened once, and every
+//! every run settles or retains an explicit review obligation, no effect repeats, and every
 //! journal is complete (NFR-003-DUR).
 
 use std::time::Duration;
 
 use sagat_application::error::AppError;
 use sagat_application::worker::WorkerSettings;
-use sagat_domain::execution::RunStatus;
+use sagat_domain::execution::{FailureCode, RunStatus};
 use serde_json::{Value, json};
 
 use crate::common::{ExternalSystem, quick, settlement};
@@ -57,17 +57,37 @@ async fn connection_kills_while_sagas_succeed_and_compensate_lose_nothing_and_du
     )
     .await;
     storm.await.expect("storm");
+    let gave_up: Vec<&String> = done.iter().flatten().collect();
     assert!(
-        done.iter().all(|d| *d),
-        "a worker gave up before the work was done"
+        gave_up.is_empty(),
+        "a worker gave up before the work was done: {gave_up:?}\n{}",
+        describe_unfinished_work(&w).await
     );
 
-    // Even runs paid; odd runs were declined and released the limit.
+    // Settled even runs paid; settled odd runs compensated. Lost effect outcomes may
+    // legitimately wait for a human: a connection storm is not provider qualification.
     let mut paid = 0;
     let mut released = 0;
+    let mut reviewed = 0;
     for (i, run) in runs.iter().enumerate() {
         let status = w.run_status(*run).await;
-        if i % 2 == 0 {
+        if status == RunStatus::ManualReview {
+            reviewed += 1;
+            let codes: Vec<String> = sqlx::query_scalar(
+                "SELECT failure_code FROM steps WHERE run_id=$1 \
+                 AND status='WAITING' AND waiting_kind='OPERATOR'",
+            )
+            .bind(run.as_uuid())
+            .fetch_all(&w.db.pool)
+            .await
+            .expect("retained review");
+            assert!(!codes.is_empty(), "run {i} retains an operator obligation");
+            assert!(codes.iter().all(|code| {
+                FailureCode::parse(code)
+                    .expect("stored failure code")
+                    .leaves_outcome_unknown()
+            }));
+        } else if i % 2 == 0 {
             assert_eq!(status, RunStatus::Succeeded, "run {i}");
             paid += 1;
         } else {
@@ -78,50 +98,45 @@ async fn connection_kills_while_sagas_succeed_and_compensate_lose_nothing_and_du
         let journal = w.journal(*run).await;
         assert_eq!(
             journal.iter().filter(|e| *e == "run.finished").count(),
-            1,
-            "run {i}"
+            usize::from(status != RunStatus::ManualReview),
+            "run {i}: review is never reported as finished"
         );
         let compensations = journal
             .iter()
             .filter(|e| *e == "compensation.planned")
             .count();
-        assert_eq!(
-            compensations,
-            usize::from(i % 2 == 1),
-            "a saga is planned once, only when it failed"
+        assert!(
+            compensations <= usize::from(i % 2 == 1),
+            "plan at most once, only for declined runs"
         );
+        if status == RunStatus::Compensated {
+            assert_eq!(compensations, 1, "settled compensation has its plan");
+        }
     }
-    assert_eq!((paid, released), (total / 2, total / 2));
-
-    // At-least-once delivery, exactly-once effects: every effect is keyed, so none was duplicated.
-    assert_eq!(
-        provider.effects_with_prefix("pay:"),
-        total / 2,
-        "one payment per paying run"
-    );
-    assert_eq!(
-        provider.effects_with_prefix("reserve:"),
-        total,
-        "one reservation per run"
-    );
-    assert_eq!(
-        provider.effects_with_prefix("compensation:"),
-        total / 2,
-        "one release per declined run"
-    );
+    assert_eq!(paid + released + reviewed, total);
+    // The synthetic provider has no qualified-repeat exception. Completed runs have their
+    // effects; reviewed runs may have applied an effect whose acknowledgement was lost.
+    assert!((paid..=total / 2).contains(&provider.effects_with_prefix("pay:")));
+    assert!((paid + released..=total).contains(&provider.effects_with_prefix("reserve:")));
+    assert!((released..=total / 2).contains(&provider.effects_with_prefix("compensation:")));
 }
 
-/// Works for `session` until every run is over, retrying every call that fails because the
-/// database was killed under it. Returns false if the deadline passes first.
+/// Works for `session` until every run is over or awaiting operator review, retrying every call that fails because the
+/// database was killed under it. Returns `None` when the work is over and, if the deadline passes
+/// first, why it gave up (the last error of its poll), so a stalled run can be diagnosed.
 async fn worker_loop(
     w: &World,
     session: &Session,
     provider: &ExternalSystem,
     deadline: std::time::Instant,
-) -> bool {
+) -> Option<String> {
+    let mut last_poll_error: Option<String> = None;
     loop {
         if std::time::Instant::now() > deadline {
-            return false;
+            return Some(format!(
+                "worker {} passed the deadline; last poll error: {last_poll_error:?}",
+                session.worker_id
+            ));
         }
         w.scheduler.tick().await;
         let tasks = match w
@@ -136,18 +151,20 @@ async fn worker_loop(
             .await
         {
             Ok(tasks) => tasks,
-            Err(_) => {
+            Err(error) => {
+                last_poll_error = Some(format!("{error:?}"));
                 tokio::time::sleep(Duration::from_millis(20)).await;
                 continue;
             }
         };
         if tasks.is_empty() {
-            let open: Result<i64, _> =
-                sqlx::query_scalar("SELECT count(*) FROM runs WHERE finished_at IS NULL")
-                    .fetch_one(&w.db.pool)
-                    .await;
+            let open: Result<i64, _> = sqlx::query_scalar(
+                "SELECT count(*) FROM runs WHERE finished_at IS NULL AND status<>'MANUAL_REVIEW'",
+            )
+            .fetch_one(&w.db.pool)
+            .await;
             if matches!(open, Ok(0)) {
-                return true;
+                return None;
             }
             tokio::time::sleep(Duration::from_millis(30)).await;
             continue;
@@ -159,13 +176,19 @@ async fn worker_loop(
             let key = task.idempotency_key.clone();
             match activity.as_str() {
                 "act.reserve" => {
-                    provider.perform(&format!("reserve:{key}"));
+                    assert!(
+                        provider.perform(&format!("reserve:{key}")),
+                        "no blind reserve repeat"
+                    );
                 }
                 "act.submit" if !declined => {
-                    provider.perform(&format!("pay:{key}"));
+                    assert!(
+                        provider.perform(&format!("pay:{key}")),
+                        "no blind payment repeat"
+                    );
                 }
                 "undo.reserve" => {
-                    provider.perform(&key);
+                    assert!(provider.perform(&key), "no blind compensation repeat");
                 }
                 _ => {}
             }
@@ -184,6 +207,29 @@ async fn worker_loop(
             }
         }
     }
+}
+
+/// What is still open when the deadline passes: the runs that never finished and the steps of
+/// those runs that are not succeeded, so a stalled run names the state it stalled in.
+async fn describe_unfinished_work(w: &World) -> String {
+    let runs: Vec<(String, String)> = sqlx::query_as(
+        "SELECT id::text, status FROM runs WHERE finished_at IS NULL ORDER BY id LIMIT 20",
+    )
+    .fetch_all(&w.db.pool)
+    .await
+    .unwrap_or_default();
+    let steps: Vec<(String, String, String, String)> = sqlx::query_as(
+        "SELECT run_id::text, node, status, COALESCE(waiting_kind, '') FROM steps \
+         WHERE status <> 'SUCCEEDED' \
+           AND run_id IN (SELECT id FROM runs WHERE finished_at IS NULL) \
+         ORDER BY run_id, node LIMIT 40",
+    )
+    .fetch_all(&w.db.pool)
+    .await
+    .unwrap_or_default();
+    format!(
+        "unfinished runs (id, status): {runs:?}\nopen steps (run, node, status, waiting kind): {steps:?}"
+    )
 }
 
 async fn register_with_retry(w: &World, index: u32) -> Session {

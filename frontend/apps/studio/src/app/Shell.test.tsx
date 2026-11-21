@@ -44,10 +44,10 @@ describe('Shell', () => {
     expect(within(sidebar()).getByText('sagat-octopus')).toBeInTheDocument();
     const navigation = sidebar();
     expect(chosen(namespaceSelector())).toBe('production');
-    expect(links()).toEqual(['Namespaces', 'Workflows', 'Scripts', 'Runs', 'Operations', 'Ad hoc database', 'Connections', 'Secrets', 'Integrations']);
+    expect(links()).toEqual(['Namespaces', 'Workflows', 'Scripts', 'Runs', 'Schedules', 'Batches', 'Operations', 'Ad hoc database', 'Connections', 'Secrets', 'Integrations']);
     // What lives in the namespace is under it, in a group that says whose it is.
     const inside = within(navigation).getByRole('group', { name: 'In production' });
-    expect(within(inside).getAllByRole('link').map((link) => link.textContent)).toEqual(['Workflows', 'Scripts', 'Runs', 'Operations', 'Ad hoc database', 'Connections', 'Secrets', 'Integrations']);
+    expect(within(inside).getAllByRole('link').map((link) => link.textContent)).toEqual(['Workflows', 'Scripts', 'Runs', 'Schedules', 'Batches', 'Operations', 'Ad hoc database', 'Connections', 'Secrets', 'Integrations']);
     expect(inside).not.toContainElement(within(navigation).getByRole('link', { name: 'Namespaces' }));
     expect(within(navigation).getByRole('link', { name: 'Runs' })).toHaveAttribute('aria-current', 'page');
   });
@@ -67,7 +67,7 @@ describe('Shell', () => {
 
     await choose(user, select, 'production');
     expect(app.namespace.current()).toBe('production');
-    expect(links()).toEqual(['Namespaces', 'Workflows', 'Scripts', 'Runs', 'Operations', 'Ad hoc database', 'Connections', 'Secrets', 'Integrations']);
+    expect(links()).toEqual(['Namespaces', 'Workflows', 'Scripts', 'Runs', 'Schedules', 'Batches', 'Operations', 'Ad hoc database', 'Connections', 'Secrets', 'Integrations']);
     expect(within(sidebar()).queryByText(/Choose a namespace to open/)).not.toBeInTheDocument();
     expect(chosen(select)).toBe('production');
     expect(await optionsOf(user, select)).toEqual(['production']);

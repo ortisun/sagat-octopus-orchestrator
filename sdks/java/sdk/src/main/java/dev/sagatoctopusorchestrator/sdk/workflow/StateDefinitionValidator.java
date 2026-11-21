@@ -65,6 +65,10 @@ final class StateDefinitionValidator {
                 entry.put("result", expression(update.result(), "update " + name + ".result"));
                 entry.set("resultSchema", resultSchema(update.resultSchema(), "update " + name + ".resultSchema"));
                 entry.put("disclosure", update.disclosure());
+                if (update.reapplyOnReset()) {
+                    // the default is not written, so a document that does not opt in is the one made before
+                    entry.put("reapplyOnReset", true);
+                }
             });
         }
         return state;

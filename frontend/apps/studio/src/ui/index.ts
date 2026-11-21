@@ -1,11 +1,12 @@
 /**
- * The Studio's interface module (ADR-0101, D2401). Every screen builds from what this file exports;
+ * The Studio's interface module (Architecture decision 0101, Decision 2401). Every screen builds from what this file exports;
  * nothing outside `src/ui` imports the Astryx design system, so a change of its interface is absorbed
  * here. The names are the Studio's own vocabulary.
  */
 export { AnnouncerProvider, useAnnounce } from './Announcer';
 export { Banner } from './Banner';
 export { Button } from './Button';
+export { CheckboxGroup } from './CheckboxGroup';
 export type { ButtonProps } from './Button';
 export { Actions, Dialog } from './Dialog';
 export { ErrorState } from './ErrorState';
@@ -15,6 +16,7 @@ export { Checkbox, RadioGroup, Select, TextArea, TextInput } from './inputs';
 export type { SelectOption } from './inputs';
 export { Disclosure, Divider, Facts, Loading, Page, PageHeader, Panel, Row, Stack } from './layout';
 export { Link } from './Link';
+export { Progress } from './Progress';
 export { UiProvider } from './provider';
 export { themeColor } from './theme/roles';
 export type { ColorRole } from './theme/roles';

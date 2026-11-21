@@ -512,3 +512,72 @@ async fn collection_finish_is_atomic_after_persistence_and_retry_commits_once() 
     );
     flow.verify().await;
 }
+
+/// `FR-018-046`: the run a collection finish ends is told to its subscribers with the schedule that started it
+/// (`scheduleId`, `nominalTime`), like every other run a schedule started, and a run no schedule started is told with neither.
+/// The run is stamped by hand with the columns a run a schedule started has (`mark_as_scheduled`): this flow starts its run
+/// over HTTP, not through a firing, so this proves the writer of the collection finish, not the firing.
+#[tokio::test]
+async fn a_collection_that_ends_a_run_a_schedule_started_says_the_schedule_in_the_webhook_and_a_plain_run_does_not()
+ {
+    for scheduled in [true, false] {
+        let name = "collection-finish-scheduled";
+        let mut document = collection_document(
+            name,
+            vec![
+                json!({"id":"work","type":"activity","activity":"line.reserve","next":"returned"}),
+                json!({"id":"returned","type":"return","result":"steps.work.output"}),
+            ],
+            1,
+        );
+        document["nodes"][1]["outputExpr"] = json!("steps.lines.output[0].amount");
+        let flow = Flow::start(name, document, json!([{"id":1}])).await;
+        let schedule = Uuid::now_v7();
+        let nominal = OffsetDateTime::from_unix_timestamp(1_793_192_400).expect("an instant");
+        if scheduled {
+            crate::support::schedules::mark_as_scheduled(
+                &flow.api.db.pool,
+                flow.run.as_uuid(),
+                schedule,
+                nominal,
+            )
+            .await;
+        }
+        let subscription = Uuid::now_v7();
+        sqlx::query(
+            "INSERT INTO webhook_subscriptions \
+             (id,tenant_id,namespace_id,name,destination_kind,destination_settings,url,secret_name, \
+              kinds,rate_per_second,timeout_ms,status,created_by) \
+             SELECT $1,tenant_id,namespace_id,'collection-scheduled','WEBHOOK','{}', \
+                    'https://example.invalid/collection','collection-key',ARRAY['run.finished'], \
+                    100,1000,'ACTIVE','test' FROM runs WHERE id=$2",
+        )
+        .bind(subscription)
+        .bind(flow.run.as_uuid())
+        .execute(&flow.api.db.pool)
+        .await
+        .expect("run finished subscription");
+        flow.drive().await;
+        let tasks = flow.poll().await;
+        assert_eq!(tasks.len(), 1, "one genuine public member lease");
+        flow.complete(&tasks[0], json!({"amount":17})).await;
+        drive_to_real_checkpoint(&flow).await;
+        let finish = flow.scheduler.tick().await;
+        assert_eq!(finish.failed, 0, "{finish:?}");
+        assert_eq!(finish.collections_advanced, 1, "{finish:?}");
+        assert_success(&flow).await;
+
+        let body = crate::support::schedules::delivered_body(&flow.api.db.pool, subscription).await;
+        assert_eq!(body["data"]["runId"], flow.run.to_string());
+        if scheduled {
+            assert_eq!(body["data"]["scheduleId"], schedule.to_string(), "{body}");
+            assert_eq!(
+                body["data"]["nominalTime"], "2026-10-28T13:00:00Z",
+                "{body}"
+            );
+        } else {
+            assert!(body["data"].get("scheduleId").is_none(), "{body}");
+            assert!(body["data"].get("nominalTime").is_none(), "{body}");
+        }
+    }
+}

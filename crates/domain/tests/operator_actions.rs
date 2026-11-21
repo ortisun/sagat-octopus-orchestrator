@@ -7,7 +7,7 @@ mod common;
 
 use std::time::Duration;
 
-use common::{Harness, build, effect, effect_with, flaky, id, ms, saga};
+use common::{Harness, activity, build, effect, effect_with, flaky, id, ms, saga};
 use sagat_domain::execution::{
     ExecutionError, Expiry, FailureCode, ReviewOutcome, RunStatus, StepStatus, StopReason,
 };
@@ -246,15 +246,15 @@ fn a_lookup_cannot_be_held_only_the_step_it_is_for() {
 }
 
 #[test]
-fn holding_a_step_does_not_forget_that_its_last_attempt_may_have_had_an_effect() {
-    // The lease of the first attempt ran out: nobody knows whether the effect happened, and the
-    // step waits for its retry. An operator holds it meanwhile.
+fn unknown_original_retry_requires_resolution() {
+    // The lease of the first attempt ran out: nobody knows whether the effect happened, so the
+    // engine itself holds it for an outcome-bearing decision instead of scheduling a repeat.
     let mut run = Harness::start(build("a", vec![flaky("a", 3)]));
     let first = run.lease("a");
     run.expire("a", first, Expiry::LeaseExpired)
         .expect("the lease is lost");
-    assert_eq!(run.status("a"), StepStatus::RetryWait);
-    run.operator_hold("a").expect("held while it waits");
+    assert_eq!(run.status("a"), StepStatus::Waiting);
+    assert_eq!(run.state.status(), RunStatus::ManualReview);
 
     let step = run.state.step(&id("a")).expect("step");
     assert_eq!(
@@ -266,11 +266,19 @@ fn holding_a_step_does_not_forget_that_its_last_attempt_may_have_had_an_effect()
         step.failure()
             .is_some_and(FailureCode::leaves_outcome_unknown)
     );
+    let before = run.state.clone();
+    assert!(
+        run.operator_retry("a").is_err(),
+        "SagaOverride cannot establish whether the original effect happened"
+    );
+    assert_eq!(run.state, before, "a refused repeat changes no state");
+    run.operator_resolve("a", ReviewOutcome::Succeeded)
+        .expect("an authorized outcome-bearing resolution remains available");
     run.assert_replays();
 }
 
 #[test]
-fn a_held_step_whose_attempt_may_have_had_an_effect_is_still_undone_when_the_saga_is_stopped() {
+fn a_stopped_saga_preserves_unknown_review_and_compensates_only_succeeded_effects() {
     let mut run = Harness::start(build(
         "settlement",
         vec![
@@ -288,17 +296,68 @@ fn a_held_step_whose_attempt_may_have_had_an_effect_is_still_undone_when_the_sag
     run.complete("reserve", f).expect("reserve");
     let f = run.lease("submit");
     run.expire("submit", f, Expiry::LeaseExpired).expect("lost");
-    assert_eq!(run.status("submit"), StepStatus::RetryWait);
-    run.operator_hold("submit").expect("held");
+    assert_eq!(run.status("submit"), StepStatus::Waiting);
     run.stop(StopReason::Cancelled)
         .expect("the run is cancelled");
 
-    // `submit` may have happened, so it is undone before `reserve`, as if it had never been held.
-    assert_eq!(
-        run.status("submit~c"),
-        StepStatus::Ready,
-        "the effect may have happened, so it is undone first"
+    assert_eq!(run.status("submit"), StepStatus::Waiting);
+    assert!(
+        matches!(
+            run.state.step(&id("submit")).and_then(|step| step.waiting_on()),
+            Some(sagat_domain::execution::WaitingOn::Operator { code })
+                if code.leaves_outcome_unknown()
+        ),
+        "stopping is not evidence about the original effect"
     );
-    assert_eq!(run.status("reserve~c"), StepStatus::Pending);
+    assert!(
+        !run.has_step("submit~c"),
+        "an unknown original effect is not a defensive-compensation candidate"
+    );
+    assert!(
+        !run.has_step("reserve~c"),
+        "the saga cannot plan around the unresolved forward effect"
+    );
+
+    run.operator_resolve(
+        "submit",
+        ReviewOutcome::Failed(FailureCode::parse("MANUALLY_NOT_APPLIED").expect("code")),
+    )
+    .expect("the operator settles the unknown outcome");
+    assert_eq!(run.status("reserve~c"), StepStatus::Ready);
+    assert!(
+        !run.has_step("submit~c"),
+        "only the succeeded reserve effect belongs to the compensation plan"
+    );
+    run.assert_replays();
+}
+
+#[test]
+fn unknown_compensation_retry_requires_resolution() {
+    let mut run = Harness::start(build(
+        "settlement",
+        vec![
+            saga("settlement", "reserve"),
+            effect("reserve", false).with_next(id("decline")),
+            activity("decline"),
+        ],
+    ));
+    let reserve = run.lease("reserve");
+    run.complete("reserve", reserve).expect("reserve succeeds");
+    let decline = run.lease("decline");
+    run.fail("decline", decline, false)
+        .expect("forward work fails");
+
+    let compensation = run.lease("reserve~c");
+    run.fail_with("reserve~c", compensation, "OUTCOME_UNKNOWN", false)
+        .expect("the compensation response is lost");
+    assert_eq!(run.status("reserve~c"), StepStatus::Waiting);
+    let before = run.state.clone();
+    assert!(
+        run.operator_retry("reserve~c").is_err(),
+        "unknown compensation cannot be repeated directly"
+    );
+    assert_eq!(run.state, before, "a refused repeat changes no state");
+    run.operator_resolve("reserve~c", ReviewOutcome::Succeeded)
+        .expect("a human may record an outcome with provenance");
     run.assert_replays();
 }

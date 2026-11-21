@@ -1,0 +1,13 @@
+
+running 8 tests
+test scoped_blob_completion::a_racing_blob_preparation_replays_a_report_committed_after_its_first_lookup ... ok
+test scoped_blob_completion::a_scoped_blob_cannot_be_committed_by_another_iteration ... ok
+test scoped_blob_completion::a_scoped_blob_commit_rolls_back_with_its_failed_journal_write ... ok
+test scoped_blob_completion::a_scoped_blob_commits_and_replays_without_unrelated_history ... ok
+test scoped_blob_completion::a_scoped_blob_report_rejects_a_non_holder_before_catalog_lookup ... ok
+test scoped_blob_completion::an_uploaded_scoped_result_can_be_reported_after_cancellation ... ok
+test scoped_blob_completion::path_storage_rejects_a_blob_without_its_matching_output_descriptor ... ok
+test scoped_blob_completion::a_scoped_blob_quota_recovery_rechecks_lease_expiry ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 764 filtered out; finished in 16.44s
+

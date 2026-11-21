@@ -1,0 +1,51 @@
+[
+  {
+    "command": [
+      "cargo",
+      "fmt",
+      "--check"
+    ],
+    "exit": 0,
+    "log": "d1-fmt-final.txt"
+  },
+  {
+    "command": [
+      "cargo",
+      "clippy",
+      "--workspace",
+      "--all-targets",
+      "--locked",
+      "--offline",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "exit": 0,
+    "log": "d1-clippy-composed.txt"
+  },
+  {
+    "command": [
+      "python3",
+      "scripts/check-architecture.py"
+    ],
+    "exit": 0,
+    "log": "d1-architecture-final.txt"
+  },
+  {
+    "command": [
+      "python3",
+      "scripts/check-agent-config.py"
+    ],
+    "exit": 0,
+    "log": "d1-agent-config-final.txt"
+  },
+  {
+    "command": [
+      "git",
+      "diff",
+      "--check"
+    ],
+    "exit": 0,
+    "log": "d1-diff-final.txt"
+  }
+]

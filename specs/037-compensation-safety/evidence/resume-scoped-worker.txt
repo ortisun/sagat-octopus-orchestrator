@@ -1,0 +1,237 @@
+    Blocking waiting for file lock on build directory
+warning: field `tagged_fields` is never read
+   --> vendor/rskafka/src/protocol/messages/create_topics.rs:291:9
+    |
+278 | pub struct CreateTopicsResponse {
+    |            -------------------- field in this struct
+...
+291 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `CreateTopicsResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: fields `name`, `value`, `read_only`, `config_source`, `is_sensitive`, and `tagged_fields` are never read
+   --> vendor/rskafka/src/protocol/messages/create_topics.rs:321:9
+    |
+319 | pub struct CreateTopicResponseConfig {
+    |            ------------------------- fields in this struct
+320 |     /// The configuration name.
+321 |     pub name: CompactString,
+    |         ^^^^
+...
+324 |     pub value: CompactNullableString,
+    |         ^^^^^
+...
+327 |     pub read_only: Boolean,
+    |         ^^^^^^^^^
+...
+330 |     pub config_source: Int8,
+    |         ^^^^^^^^^^^^^
+...
+333 |     pub is_sensitive: Boolean,
+    |         ^^^^^^^^^^^^
+...
+336 |     pub tagged_fields: TaggedFields,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `CreateTopicResponseConfig` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: fields `num_partitions`, `replication_factor`, `configs`, and `tagged_fields` are never read
+   --> vendor/rskafka/src/protocol/messages/create_topics.rs:374:9
+    |
+359 | pub struct CreateTopicResponse {
+    |            ------------------- fields in this struct
+...
+374 |     pub num_partitions: Option<Int32>,
+    |         ^^^^^^^^^^^^^^
+...
+379 |     pub replication_factor: Option<Int16>,
+    |         ^^^^^^^^^^^^^^^^^^
+...
+384 |     pub configs: Vec<CreateTopicResponseConfig>,
+    |         ^^^^^^^
+...
+389 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `CreateTopicResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: fields `low_watermark` and `tagged_fields` are never read
+   --> vendor/rskafka/src/protocol/messages/delete_records.rs:182:9
+    |
+177 | pub struct DeleteResponsePartition {
+    |            ----------------------- fields in this struct
+...
+182 |     pub low_watermark: Int64,
+    |         ^^^^^^^^^^^^^
+...
+190 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `DeleteResponsePartition` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `tagged_fields` is never read
+   --> vendor/rskafka/src/protocol/messages/delete_records.rs:226:9
+    |
+216 | pub struct DeleteResponseTopic {
+    |            ------------------- field in this struct
+...
+226 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `DeleteResponseTopic` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `tagged_fields` is never read
+   --> vendor/rskafka/src/protocol/messages/delete_records.rs:269:9
+    |
+258 | pub struct DeleteRecordsResponse {
+    |            --------------------- field in this struct
+...
+269 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `DeleteRecordsResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `tagged_fields` is never read
+   --> vendor/rskafka/src/protocol/messages/delete_topics.rs:101:9
+    |
+ 88 | pub struct DeleteTopicsResponse {
+    |            -------------------- field in this struct
+...
+101 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `DeleteTopicsResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `tagged_fields` is never read
+   --> vendor/rskafka/src/protocol/messages/delete_topics.rs:144:9
+    |
+129 | pub struct DeleteTopicsResponseTopic {
+    |            ------------------------- field in this struct
+...
+144 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `DeleteTopicsResponseTopic` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: fields `producer_id` and `first_offset` are never read
+   --> vendor/rskafka/src/protocol/messages/fetch.rs:170:9
+    |
+168 | pub struct FetchResponseAbortedTransaction {
+    |            ------------------------------- fields in this struct
+169 |     /// The producer id associated with the aborted transaction.
+170 |     pub producer_id: Int64,
+    |         ^^^^^^^^^^^
+...
+173 |     pub first_offset: Int64,
+    |         ^^^^^^^^^^^^
+    |
+    = note: `FetchResponseAbortedTransaction` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `aborted_transactions` is never read
+   --> vendor/rskafka/src/protocol/messages/fetch.rs:213:9
+    |
+192 | pub struct FetchResponsePartition {
+    |            ---------------------- field in this struct
+...
+213 |     pub aborted_transactions: Vec<FetchResponseAbortedTransaction>,
+    |         ^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `FetchResponsePartition` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `timestamp` is never read
+   --> vendor/rskafka/src/protocol/messages/list_offsets.rs:184:9
+    |
+169 | pub struct ListOffsetsResponsePartition {
+    |            ---------------------------- field in this struct
+...
+184 |     pub timestamp: Option<Int64>,
+    |         ^^^^^^^^^
+    |
+    = note: `ListOffsetsResponsePartition` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: fields `log_append_time_ms` and `log_start_offset` are never read
+   --> vendor/rskafka/src/protocol/messages/produce.rs:148:9
+    |
+132 | pub struct ProduceResponsePartitionResponse {
+    |            -------------------------------- fields in this struct
+...
+148 |     pub log_append_time_ms: Option<Int64>,
+    |         ^^^^^^^^^^^^^^^^^^
+...
+153 |     pub log_start_offset: Option<Int64>,
+    |         ^^^^^^^^^^^^^^^^
+    |
+    = note: `ProduceResponsePartitionResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: fields `session_lifetime_ms` and `tagged_fields` are never read
+   --> vendor/rskafka/src/protocol/messages/sasl_msg.rs:198:9
+    |
+181 | pub struct SaslAuthenticateResponse {
+    |            ------------------------ fields in this struct
+...
+198 |     pub session_lifetime_ms: Option<Int64>,
+    |         ^^^^^^^^^^^^^^^^^^^
+...
+203 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `SaslAuthenticateResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: struct `CompactArray` is never constructed
+   --> vendor/rskafka/src/protocol/primitives.rs:725:12
+    |
+725 | pub struct CompactArray<T>(pub Option<Vec<T>>);
+    |            ^^^^^^^^^^^^
+
+warning: `rskafka` (lib) generated 14 warnings
+    Finished `test` profile [unoptimized] target(s) in 20.06s
+     Running integration/workflow-primitives/main.rs (/var/folders/60/bf6rmfzx6zq67nrbzb3m0p480000gn/T/sagat-037-target-q0fwz2gu/debug/deps/integration_workflow_primitives-bec365aba8b73d01)
+
+running 20 tests
+2026-11-01T14:55:46.12812Z ERROR sagat_infra_postgres::identity: storage failure detail=error returned from database: injected scoped route failure at line 3897 service=sagat
+test scoped_worker::a_late_journal_failure_rolls_back_the_whole_scoped_report ... ok
+test scoped_worker::a_scoped_failure_retries_after_restart_and_rejects_the_old_fence ... ok
+test scoped_worker::a_scoped_lease_observes_cancellation_and_acknowledges_it_before_restart ... ok
+2026-11-01T14:55:48.152426Z ERROR sagat_infra_postgres::identity: storage failure detail=error returned from database: injected scoped review failure at line 3897 service=sagat
+2026-11-01T14:55:48.152538Z ERROR sagat_scheduler::passes: a scheduler action failed error=storage failure: error returned from database: injected scoped review failure at line 3897 kind=lease run=01a1979c-0804-7685-be35-eabf36ead502 service=sagat
+test scoped_worker::a_scoped_lost_lease_rolls_back_then_reviews_after_restart ... ok
+2026-11-01T14:55:49.903514Z ERROR sagat_infra_postgres::identity: storage failure detail=error returned from database: injected scoped review failure at line 3897 service=sagat
+test scoped_worker::an_uncertain_scoped_report_is_atomic_idempotent_and_keeps_its_path_after_restart ... ok
+2026-11-01T14:55:50.156062Z  WARN sqlx::postgres::notice: there is no transaction in progress service=sagat
+2026-11-01T14:55:50.167951Z ERROR sagat_infra_postgres::identity: storage failure detail=error returned from database: injected quota drain telemetry failure at line 3897 service=sagat
+2026-11-01T14:55:50.168064Z ERROR sagat_scheduler::passes: a collection scheduler action failed error=storage failure: error returned from database: injected quota drain telemetry failure at line 3897 instance=ExecutionInstanceId { path: InstancePath([]), node: NodeId("items") } run=01a1979c-0f14-762f-9ae1-782f2a43e6bc service=sagat
+2026-11-01T14:55:50.233874Z  WARN sqlx::postgres::notice: there is no transaction in progress service=sagat
+test scoped_worker::aggregate_retention_quota_atomically_drains_and_replays_the_open_scope ... ok
+test scoped_worker::automatic_collection_progress_rechecks_the_tenant_capacity ... ok
+2026-11-01T14:55:51.582251Z ERROR sagat_infra_postgres::identity: storage failure detail=error returned from database: duplicate key value violates unique constraint "event_outbox_pkey" at line 666 service=sagat
+2026-11-01T14:55:51.705274Z ERROR sagat_infra_postgres::identity: storage failure detail=error returned from database: injected drain failure at line 3897 service=sagat
+2026-11-01T14:55:51.705369Z ERROR sagat_scheduler::passes: a collection scheduler action failed error=storage failure: error returned from database: injected drain failure at line 3897 instance=ExecutionInstanceId { path: InstancePath([]), node: NodeId("items") } run=01a1979c-1649-7198-bada-afdd6fc3469d service=sagat
+2026-11-01T14:55:51.847452Z ERROR sagat_infra_postgres::identity: storage failure detail=error returned from database: injected terminal delivery failure at line 3897 service=sagat
+2026-11-01T14:55:51.847531Z ERROR sagat_scheduler::passes: a collection scheduler action failed error=storage failure: error returned from database: injected terminal delivery failure at line 3897 instance=ExecutionInstanceId { path: InstancePath([]), node: NodeId("items") } run=01a1979c-1649-7198-bada-afdd6fc3469d service=sagat
+test scoped_worker::cancellation_drains_members_atomically_and_finishes_after_restart ... ok
+test scoped_worker::collection_discovery_filters_unrelated_pending_roots_before_pagination ... ok
+test scoped_worker::exhausted_member_failure_starts_fail_fast_drain_and_survives_restart ... ok
+2026-11-01T14:55:55.543948Z ERROR sagat_infra_postgres::identity: storage failure detail=error returned from database: injected checkpoint failure at line 3897 service=sagat
+2026-11-01T14:55:55.544048Z ERROR sagat_scheduler::passes: a collection scheduler action failed error=storage failure: error returned from database: injected checkpoint failure at line 3897 instance=ExecutionInstanceId { path: InstancePath([]), node: NodeId("items") } run=01a1979c-243a-72e4-af6b-0ecbd0aa88fc service=sagat
+test scoped_worker::failed_derived_obligations_keep_member_capacity_reserved ... ok
+2026-11-01T14:55:55.710704Z ERROR sagat_scheduler::passes: a collection scheduler action failed error=storage failure: stored effective output byte total violates a domain invariant instance=ExecutionInstanceId { path: InstancePath([]), node: NodeId("items") } run=01a1979c-243a-72e4-af6b-0ecbd0aa88fc service=sagat
+2026-11-01T14:55:55.861748Z ERROR sagat_infra_postgres::identity: storage failure detail=error returned from database: injected successor hint failure at line 3897 service=sagat
+2026-11-01T14:55:55.862219Z ERROR sagat_scheduler::passes: a collection scheduler action failed error=storage failure: error returned from database: injected successor hint failure at line 3897 instance=ExecutionInstanceId { path: InstancePath([]), node: NodeId("items") } run=01a1979c-243a-72e4-af6b-0ecbd0aa88fc service=sagat
+test scoped_worker::scheduler_resumes_collection_through_checkpoint_and_finish ... ok
+test scoped_worker::scope_chain_prefix_collection_drain_precedes_own_run_and_replays ... ok
+test scoped_worker::scope_chain_prefix_collection_entry_precedes_own_run_and_replays ... ok
+2026-11-01T14:55:58.932648Z  WARN sqlx::postgres::notice: there is no transaction in progress service=sagat
+test scoped_worker::scoped_lease_capabilities_reject_a_foreign_tenant_without_leaking_the_attempt ... ok
+2026-11-01T14:56:00.50072Z  WARN sqlx::postgres::notice: there is no transaction in progress service=sagat
+2026-11-01T14:56:00.636264Z ERROR sagat_infra_postgres::identity: storage failure detail=error returned from database: permission denied for table iteration_checkpoints at line 2812 service=sagat
+test scoped_worker::scoped_maintenance_reviews_ambiguity_without_whole_run_iteration_history ... ok
+2026-11-01T14:56:01.989074Z  WARN sqlx::postgres::notice: there is no transaction in progress service=sagat
+test scoped_worker::snapshot_retention_quota_stops_the_pending_owner_without_creating_a_scope ... ok
+test scoped_worker::scoped_content_quota_fallback_preserves_success_or_unknown_before_any_error_route ... ok
+test scoped_worker::stale_hints_are_renewed_for_each_scoped_instance ... ok
+test scoped_worker::two_equal_nodes_keep_distinct_leases_outputs_routes_and_replays ... ok
+
+test result: ok. 20 passed; 0 failed; 0 ignored; 0 measured; 751 filtered out; finished in 22.04s
+

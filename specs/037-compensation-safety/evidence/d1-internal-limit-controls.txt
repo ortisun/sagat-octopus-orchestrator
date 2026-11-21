@@ -1,0 +1,7 @@
+
+running 2 tests
+test capacity_finish::worker_leases::preflight::internal_input_limit_failure_commits_even_with_vacant_and_busy_group ... ok
+test capacity_finish::worker_leases::preflight::scoped_internal_input_limit_failure_also_ignores_vacant_and_busy_group ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 770 filtered out; finished in 2.55s
+

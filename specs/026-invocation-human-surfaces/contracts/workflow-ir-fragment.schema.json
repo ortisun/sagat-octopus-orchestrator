@@ -1,0 +1,230 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sagat-octopus-orchestrator.example/schemas/workflow/v1/feature-026-draft.json",
+  "title": "Feature 026 draft additions to the workflow IR v1 (additive, ADR-0032)",
+  "description": "DRAFT, not implemented. Merged into specs/001-platform-foundation/contracts/workflow.schema.json by T026-006. apiVersion stays sagat-octopus-orchestrator.io/v1. New root property: streams. New optional node properties: emits (activity, script, database), and notify, summary, form (approval). New schema annotation: x-sagat-form on carrier schema nodes of inputSchema and approval form.schema. Each is refused at publication until its server capability is enabled. The example is an excerpt: the nodes refund and notify-rejected are omitted.",
+  "$defs": {
+    "rootAdditions": {
+      "type": "object",
+      "properties": {
+        "streams": { "$ref": "#/$defs/streams" }
+      }
+    },
+    "streamChannelName": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_.-]{0,62}$",
+      "description": "Names starting with sagat. are reserved for platform-defined channels (for example feature 025 token streams); an author cannot declare them."
+    },
+    "streams": {
+      "type": "object",
+      "propertyNames": { "$ref": "#/$defs/streamChannelName" },
+      "maxProperties": 32,
+      "additionalProperties": { "$ref": "#/$defs/streamChannel" }
+    },
+    "streamChannel": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema"],
+      "properties": {
+        "schema": {
+          "type": "object",
+          "description": "A closed, bounded carrier (feature 016): every object declares its properties and additionalProperties false; strings, arrays and depth bounded; at most 16 KiB by default and 64 KiB hard. Classified with x-sagat-classification; unmarked is pii."
+        },
+        "display": { "enum": ["list", "progress"], "default": "list" },
+        "budget": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Per-run budget of this author channel (defaults 5,000 events / 2 MiB; hard 100,000 / 32 MiB). The author channels of a version together must fit the author pool (default 10,000 / 4 MiB; hard 100,000 / 64 MiB). Reserved sagat. channels take the budget their owning feature fixes, in the reserved pool.",
+          "properties": {
+            "maxEvents": { "type": "integer", "minimum": 1, "maximum": 100000 },
+            "maxBytes": { "type": "integer", "minimum": 1024, "maximum": 33554432 }
+          }
+        },
+        "description": { "type": "string", "maxLength": 500 }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "display": { "const": "progress" } }, "required": ["display"] },
+          "then": {
+            "properties": {
+              "schema": {
+                "required": ["properties"],
+                "properties": {
+                  "properties": {
+                    "required": ["fraction"],
+                    "properties": {
+                      "fraction": {
+                        "properties": { "type": { "const": "number" } }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "emits": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/streamChannelName" },
+      "minItems": 1,
+      "maxItems": 8,
+      "uniqueItems": true,
+      "description": "Channels this node's attempts may append to. Every name must be declared in streams."
+    },
+    "approvalAdditions": {
+      "type": "object",
+      "properties": {
+        "notify": { "$ref": "#/$defs/approvalNotify" },
+        "summary": { "$ref": "#/$defs/approvalSummary" },
+        "form": { "$ref": "#/$defs/approvalForm" }
+      }
+    },
+    "approvalNotify": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 4,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["channel"],
+        "properties": {
+          "channel": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9-]{1,61}[a-z0-9]$",
+            "description": "Name of a notification channel of the run's namespace, resolved when the approval opens (not at publication)."
+          }
+        }
+      }
+    },
+    "approvalSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fields", "schema", "disclosure"],
+      "properties": {
+        "fields": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["key", "label", "value"],
+            "properties": {
+              "key": { "type": "string", "pattern": "^[a-zA-Z][a-zA-Z0-9_]{0,63}$" },
+              "label": { "type": "string", "minLength": 1, "maxLength": 80 },
+              "value": { "type": "string", "minLength": 1, "maxLength": 1024, "description": "An expression of the existing bounded subset over the committed run snapshot." }
+            }
+          }
+        },
+        "schema": {
+          "type": "object",
+          "description": "Closed result schema of the object {key: value}; a feature-016 carrier; at most 16 KiB."
+        },
+        "disclosure": { "const": "declared-approval-summary-v1" }
+      }
+    },
+    "approvalForm": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema"],
+      "properties": {
+        "schema": {
+          "type": "object",
+          "description": "Closed, bounded object schema of the decision input; a feature-016 carrier; may carry x-sagat-form hints; at most 16 KiB by default, 64 KiB hard."
+        },
+        "requiredFor": {
+          "type": "array",
+          "items": { "enum": ["APPROVE", "REJECT"] },
+          "minItems": 1,
+          "maxItems": 2,
+          "uniqueItems": true,
+          "default": ["APPROVE", "REJECT"]
+        }
+      }
+    },
+    "formHint": {
+      "description": "Value of the x-sagat-form annotation on a schema node of inputSchema or approval form.schema.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "widget": { "enum": ["text", "textarea", "select", "radio", "checkbox", "password", "date"] },
+        "order": { "type": "integer", "minimum": 0, "maximum": 10000 },
+        "placeholder": { "type": "string", "maxLength": 120 }
+      }
+    }
+  },
+  "examples": [
+    {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "kind": "Workflow",
+      "metadata": { "name": "refund-request" },
+      "entrypoint": "assess",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["orderId", "amount", "reason"],
+        "properties": {
+          "orderId": { "type": "string", "maxLength": 32, "x-sagat-classification": "internal", "title": "Order" },
+          "amount": { "type": "number", "minimum": 0, "maximum": 10000, "x-sagat-classification": "internal" },
+          "reason": { "type": "string", "maxLength": 2000, "x-sagat-form": { "widget": "textarea" } },
+          "contactEmail": { "type": "string", "format": "email", "x-sagat-classification": "pii" }
+        }
+      },
+      "streams": {
+        "progress": {
+          "display": "progress",
+          "schema": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["fraction"],
+            "properties": {
+              "fraction": { "type": "number", "minimum": 0, "maximum": 1, "x-sagat-classification": "public" },
+              "stage": { "type": "string", "maxLength": 64, "x-sagat-classification": "internal" }
+            }
+          }
+        }
+      },
+      "nodes": [
+        { "id": "assess", "type": "activity", "activity": "refunds.assess", "emits": ["progress"], "next": "approve" },
+        {
+          "id": "approve",
+          "type": "approval",
+          "policy": { "roles": ["operator"] },
+          "timeoutMs": 86400000,
+          "notify": [{ "channel": "finance-approvals" }],
+          "summary": {
+            "disclosure": "declared-approval-summary-v1",
+            "fields": [
+              { "key": "order", "label": "Order", "value": "args.orderId" },
+              { "key": "amount", "label": "Amount", "value": "args.amount" }
+            ],
+            "schema": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "order": { "type": "string", "maxLength": 32, "x-sagat-classification": "internal" },
+                "amount": { "type": "number", "x-sagat-classification": "internal" }
+              }
+            }
+          },
+          "form": {
+            "requiredFor": ["REJECT"],
+            "schema": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["comment"],
+              "properties": {
+                "comment": { "type": "string", "minLength": 1, "maxLength": 500, "x-sagat-classification": "internal", "x-sagat-form": { "widget": "textarea" } }
+              }
+            }
+          },
+          "onApprove": "refund",
+          "onReject": "notify-rejected",
+          "onExpire": "notify-rejected"
+        }
+      ]
+    }
+  ]
+}

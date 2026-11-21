@@ -691,3 +691,11 @@ when the head status is movable. Possession alone does not prove runnable work o
 lease. Reconciliation returns the original immutable receipt after later transfers, continuation
 or Finish, while requiring current scheduler authority. The bounded contract, explicit exclusions
 and actual validation status are in [capacity-acquire.md](./capacity-acquire.md).
+
+## Approved recovery direction — 2026-11-01
+
+[Feature 037](../037-compensation-safety/spec.md) records owner-approved S1-B/S2-B and the
+coordinated Constitution/ADR proposal. It changes cancellation/review and uncertain-effect recovery;
+existing acceptance claims above remain historical and do not prove the new target. This notice did
+not itself activate implementation. Delivery 1 is now implementation in verification; ADR adoption,
+validation and US04 remain open.

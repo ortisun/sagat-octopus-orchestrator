@@ -9,10 +9,13 @@ use std::{
 };
 mod primitives;
 pub use primitives::*;
+pub mod ops;
 mod state;
 pub use state::*;
 mod database;
 pub use database::*;
+mod iceberg;
+pub use iceberg::*;
 
 fn invalid(message: &str) -> SagatError {
     SagatError::new("VALIDATION_FAILED", message)

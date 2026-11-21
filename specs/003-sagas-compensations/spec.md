@@ -2,7 +2,7 @@
 
 **Feature Branch:** `003-sagas-compensations`  
 **Created:** 2026-10-07  
-**Status:** Draft — Ready for review  
+**Status:** Delivered: all 35 tasks of [tasks.md](tasks.md) are ticked with their evidence  
 **Input:** Durable workflow platform, Sagas, SDKs, inline scripts, messaging, webhooks, observability and Studio.
 
 ## Vision and value
@@ -133,3 +133,11 @@ feature-014 release gates; existing feature behavior stays supported.
 ## Approved dependent delivery: database connections
 
 Feature [017](../017-database-connections/spec.md) and [ADR-0035](../../docs/adr/ADR-0035-database-connections-and-managed-execution.md) were approved on 2026-10-16. Its [plan](../017-database-connections/plan.md) defines the bounded extension to shared contracts, admission/leases, effects, SDKs, Studio, telemetry, secret-provider/security and immutable revisions. Existing transactional, tenant and general payload-inspection guarantees remain binding. Track implementation and new runtime evidence in feature 017; this dependency note does not mark its requirements complete.
+
+## Approved recovery direction — 2026-11-01
+
+[Feature 037](../037-compensation-safety/spec.md) records owner-approved S1-B/S2-B and the
+coordinated Constitution/ADR proposal. It changes cancellation/review and uncertain-effect recovery;
+existing acceptance claims above remain historical and do not prove the new target. This notice did
+not itself activate implementation. Delivery 1 is now implementation in verification; ADR adoption,
+validation and US04 remain open.

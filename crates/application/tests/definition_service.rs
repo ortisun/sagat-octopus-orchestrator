@@ -139,6 +139,24 @@ impl SecretAccessLookup for FakeStore {
 }
 
 impl DefinitionStore for FakeStore {
+    async fn replay_publication(
+        &self,
+        tenant: TenantId,
+        workflow: WorkflowId,
+        idempotency: &Idempotency,
+    ) -> Result<Option<VersionRecord>, StoreError> {
+        let number = self.with(|s| {
+            s.idempotency
+                .get(&(idempotency.scope.clone(), idempotency.key.clone()))
+                .filter(|(fingerprint, _)| *fingerprint == idempotency.fingerprint)
+                .and_then(|(_, number)| number.parse::<u32>().ok())
+        });
+        match number {
+            Some(number) => self.get_version(tenant, workflow, number).await,
+            None => Ok(None),
+        }
+    }
+
     async fn find_namespace_by_slug(
         &self,
         tenant: TenantId,
@@ -512,6 +530,96 @@ struct FakeCodec {
     saga: bool,
 }
 
+impl FakeCodec {
+    /// A definition whose only node is an Iceberg write (a draft that carries `"icebergWrite"`).
+    fn lake_definition(&self, document: &[u8]) -> ParsedDefinition {
+        use sagat_domain::database::{
+            ColumnMapping, ConnectionRef, IcebergWrite, IcebergWriteParts, LakeLimits,
+            RecordSource, TableIdentifier, WriteIntent,
+        };
+        let write = IcebergWrite::new(IcebergWriteParts {
+            connection: ConnectionRef::new(Slug::parse("lake-main").expect("slug"), None)
+                .expect("ref"),
+            table: TableIdentifier::new(vec!["sales".to_owned()], "orders").expect("table"),
+            reference: "main".to_owned(),
+            intent: WriteIntent::Append,
+            records: RecordSource::Inline(
+                sagat_domain::workflow::Expression::parse("input.rows").expect("expression"),
+            ),
+            mapping: vec![ColumnMapping::new("/id", "id").expect("mapping")],
+            ignore_unknown_fields: false,
+            limits: LakeLimits::default(),
+            revert: false,
+        })
+        .expect("a write");
+        let definition = WorkflowDefinition::new(
+            Slug::parse(self.name).expect("slug"),
+            NodeId::parse("a").expect("id"),
+            vec![Node::iceberg(NodeId::parse("a").expect("id"), write)],
+        )
+        .expect("valid");
+        let mut digest = [0u8; 32];
+        digest[0] = u8::try_from(document.len() % 251).expect("small");
+        ParsedDefinition {
+            definition,
+            canonical: document.to_vec(),
+            digest: Digest::new(digest),
+            warnings: Vec::new(),
+        }
+    }
+}
+
+impl FakeCodec {
+    /// A collection whose `forEach` declares a chain (a draft that carries `"operators"`; design 042).
+    fn chained_definition(&self, document: &[u8]) -> ParsedDefinition {
+        use sagat_domain::operators::{Operator, OperatorChain};
+        use sagat_domain::workflow::{BodyDefinition, Expression, WorkflowLimits};
+        let id = |value: &str| NodeId::parse(value).expect("id");
+        let expr = |value: &str| Expression::parse(value).expect("expression");
+        let owner = Node::new(
+            id("lines"),
+            NodeKind::ForEach {
+                items: expr("input.lines"),
+                operators: Some(
+                    OperatorChain::collection(vec![Operator::Take { count: 2 }]).expect("chain"),
+                ),
+                body: id("line"),
+                result: expr("bodyResult"),
+                max_items: 10,
+                max_concurrency: 2,
+            },
+        )
+        .with_next(id("done"));
+        let body = BodyDefinition::new(
+            id("line"),
+            id("return"),
+            vec![Node::new(
+                id("return"),
+                NodeKind::Return {
+                    result: expr("item"),
+                },
+            )],
+        )
+        .expect("closed body");
+        let definition = WorkflowDefinition::new_structured(
+            Slug::parse(self.name).expect("slug"),
+            id("lines"),
+            vec![owner, Node::new(id("done"), NodeKind::End { output: None })],
+            vec![body],
+            WorkflowLimits::default(),
+        )
+        .expect("valid");
+        let mut digest = [0u8; 32];
+        digest[0] = u8::try_from(document.len() % 251).expect("small");
+        ParsedDefinition {
+            definition,
+            canonical: document.to_vec(),
+            digest: Digest::new(digest),
+            warnings: Vec::new(),
+        }
+    }
+}
+
 impl IrCodec for FakeCodec {
     fn check_draft(&self, document: &[u8]) -> Result<(), IrError> {
         if document.len() > sagat_application::definitions::MAX_IR_BYTES {
@@ -540,6 +648,12 @@ impl IrCodec for FakeCodec {
 
     fn parse(&self, document: &[u8]) -> Result<ParsedDefinition, IrError> {
         self.outcome.clone()?;
+        if String::from_utf8_lossy(document).contains("\"icebergWrite\"") {
+            return Ok(self.lake_definition(document));
+        }
+        if String::from_utf8_lossy(document).contains("\"operators\"") {
+            return Ok(self.chained_definition(document));
+        }
         let node = Node::new(
             NodeId::parse("a").expect("id"),
             NodeKind::Activity {
@@ -1930,4 +2044,292 @@ fn eight_thousand_unknown_artifacts_are_found_in_one_pass() {
     );
     // What was built is not reported.
     assert!(unknown_script_problems(&definition, &digests[..10]).len() == 10);
+}
+
+/// An adapter that has no lake support must not let an Iceberg write through unchecked, as it must not for a managed SQL
+/// step (T035-054 replaces this refusal with the real checks: access, allowed modes, ceiling, `lake.enabled`).
+#[tokio::test]
+async fn an_adapter_without_lake_support_refuses_a_definition_with_an_iceberg_write() {
+    use sagat_domain::database::{
+        ColumnMapping, ConnectionRef, IcebergWrite, IcebergWriteParts, LakeLimits, RecordSource,
+        TableIdentifier, WriteIntent,
+    };
+    let f = fixture();
+    let who = principal(f.tenant, Role::Admin);
+    let write = IcebergWrite::new(IcebergWriteParts {
+        connection: ConnectionRef::new(Slug::parse("lake-main").expect("slug"), None).expect("ref"),
+        table: TableIdentifier::new(vec!["sales".to_owned()], "orders").expect("table"),
+        reference: "main".to_owned(),
+        intent: WriteIntent::Append,
+        records: RecordSource::Inline(
+            sagat_domain::workflow::Expression::parse("input.rows").expect("expression"),
+        ),
+        mapping: vec![ColumnMapping::new("/id", "id").expect("mapping")],
+        ignore_unknown_fields: false,
+        limits: LakeLimits::default(),
+        revert: false,
+    })
+    .expect("a write");
+    let lake = WorkflowDefinition::new(
+        Slug::parse("lake-flow").expect("slug"),
+        NodeId::parse("save").expect("id"),
+        vec![Node::iceberg(NodeId::parse("save").expect("id"), write)],
+    )
+    .expect("a definition");
+    assert!(matches!(
+        f.store
+            .check_database_access(&who, f.namespace.id(), &lake)
+            .await,
+        Err(StoreError::DatabaseUnavailable)
+    ));
+    let plain = WorkflowDefinition::new(
+        Slug::parse("plain-flow").expect("slug"),
+        NodeId::parse("only").expect("id"),
+        vec![Node::new(
+            NodeId::parse("only").expect("id"),
+            NodeKind::End { output: None },
+        )],
+    )
+    .expect("a definition");
+    assert!(
+        f.store
+            .check_database_access(&who, f.namespace.id(), &plain)
+            .await
+            .is_ok()
+    );
+}
+
+// ------------------------------------------------------------------ the lake switch (T035-036)
+
+const LAKE_DRAFT: &[u8] = br#"{"kind":"Workflow","icebergWrite":true}"#;
+
+async fn create_lake_workflow(f: &Fixture) -> WorkflowRecord {
+    f.service
+        .create_workflow(
+            &principal(f.tenant, Role::Developer),
+            "payments",
+            "invoice-flow",
+            LAKE_DRAFT,
+            "key-0000001",
+            &ctx(),
+        )
+        .await
+        .expect("created")
+}
+
+#[tokio::test]
+async fn an_iceberg_write_is_refused_at_publication_while_the_lake_is_off() {
+    let f = fixture();
+    let p = principal(f.tenant, Role::Developer);
+    let w = create_lake_workflow(&f).await;
+    let result = f
+        .service
+        .publish(&p, w.workflow.id(), 1, None, "pub-0000001", &ctx())
+        .await;
+    match result {
+        Err(AppError::InvalidDefinition(error)) => {
+            assert!(
+                matches!(*error, IrError::LakeDisabled { ref node } if node == "a"),
+                "{error:?}"
+            );
+        }
+        other => panic!("expected LAKE_DISABLED, got {other:?}"),
+    }
+    assert!(
+        f.store.with(|s| s.versions.is_empty()),
+        "nothing was published"
+    );
+}
+
+#[tokio::test]
+async fn validation_names_the_lake_that_is_off_and_the_node_that_needs_it() {
+    let f = fixture();
+    let p = principal(f.tenant, Role::Developer);
+    let w = create_lake_workflow(&f).await;
+    let validation = f
+        .service
+        .validate(&p, w.workflow.id(), None, &ctx())
+        .await
+        .expect("a validation");
+    assert!(!validation.is_valid());
+    let lake: Vec<_> = validation
+        .problems
+        .iter()
+        .filter(|problem| problem.code == "LAKE_DISABLED")
+        .collect();
+    assert_eq!(lake.len(), 1, "{:?}", validation.problems);
+    assert_eq!(lake[0].node.as_deref(), Some("a"));
+}
+
+#[tokio::test]
+async fn with_the_lake_on_the_store_still_decides_until_its_admission_exists() {
+    let f = fixture();
+    let p = principal(f.tenant, Role::Developer);
+    let w = create_lake_workflow(&f).await;
+    let lake_on = f.service.clone().with_lake_enabled(true);
+    let result = lake_on
+        .publish(&p, w.workflow.id(), 1, None, "pub-0000001", &ctx())
+        .await;
+    assert!(matches!(result, Err(AppError::NotFound)), "{result:?}");
+}
+
+#[tokio::test]
+async fn a_definition_without_an_iceberg_write_does_not_care_whether_the_lake_is_on() {
+    let f = fixture();
+    let p = principal(f.tenant, Role::Developer);
+    let w = create(&f, Role::Developer, "key-0000001")
+        .await
+        .expect("created");
+    let lake_on = f.service.clone().with_lake_enabled(true);
+    lake_on
+        .publish(&p, w.workflow.id(), 1, None, "pub-0000001", &ctx())
+        .await
+        .expect("published");
+}
+
+// ------------------------------------------------------------------ the collection-operators switch (T042-47)
+
+const CHAINED_DRAFT: &[u8] = br#"{"kind":"Workflow","operators":true}"#;
+
+async fn create_chained_workflow(f: &Fixture) -> WorkflowRecord {
+    f.service
+        .create_workflow(
+            &principal(f.tenant, Role::Developer),
+            "payments",
+            "invoice-flow",
+            CHAINED_DRAFT,
+            "key-0000001",
+            &ctx(),
+        )
+        .await
+        .expect("created")
+}
+
+/// Off unless the deployment says so: a service built without the switch refuses a chain, names the node, and publishes
+/// nothing (FR-042-003).
+#[tokio::test]
+async fn a_collection_chain_is_refused_at_publication_while_collection_operators_are_off() {
+    let f = fixture();
+    let p = principal(f.tenant, Role::Developer);
+    let w = create_chained_workflow(&f).await;
+    for service in [
+        f.service.clone(),
+        f.service.clone().with_collection_operators_enabled(false),
+    ] {
+        let result = service
+            .publish(&p, w.workflow.id(), 1, None, "pub-0000001", &ctx())
+            .await;
+        match result {
+            Err(AppError::InvalidDefinition(error)) => assert!(
+                matches!(*error, IrError::CollectionOperatorsDisabled { ref node } if node == "lines"),
+                "{error:?}"
+            ),
+            other => panic!("expected COLLECTION_OPERATORS_DISABLED, got {other:?}"),
+        }
+    }
+    assert!(
+        f.store.with(|s| s.versions.is_empty()),
+        "nothing was published"
+    );
+}
+
+#[tokio::test]
+async fn validation_names_the_switched_off_chain_and_its_node() {
+    let f = fixture();
+    let p = principal(f.tenant, Role::Developer);
+    let w = create_chained_workflow(&f).await;
+    let validation = f
+        .service
+        .validate(&p, w.workflow.id(), None, &ctx())
+        .await
+        .expect("a validation");
+    assert!(!validation.is_valid());
+    let refused: Vec<_> = validation
+        .problems
+        .iter()
+        .filter(|problem| problem.code == "COLLECTION_OPERATORS_DISABLED")
+        .collect();
+    assert_eq!(refused.len(), 1, "{:?}", validation.problems);
+    assert_eq!(refused[0].node.as_deref(), Some("lines"));
+}
+
+#[tokio::test]
+async fn with_collection_operators_on_a_chain_is_published() {
+    let f = fixture();
+    let p = principal(f.tenant, Role::Developer);
+    let w = create_chained_workflow(&f).await;
+    f.service
+        .clone()
+        .with_collection_operators_enabled(true)
+        .publish(&p, w.workflow.id(), 1, None, "pub-0000001", &ctx())
+        .await
+        .expect("published");
+    assert_eq!(f.store.with(|s| s.versions.len()), 1);
+}
+
+#[tokio::test]
+async fn a_definition_without_a_chain_does_not_care_whether_collection_operators_are_on() {
+    let f = fixture();
+    let p = principal(f.tenant, Role::Developer);
+    let w = create(&f, Role::Developer, "key-0000001")
+        .await
+        .expect("created");
+    f.service
+        .publish(&p, w.workflow.id(), 1, None, "pub-0000001", &ctx())
+        .await
+        .expect("published with the switch off");
+}
+
+/// D042-105: a publication asked again with its key after the switch was turned off is answered by the store's replay,
+/// before the switch is read.
+#[tokio::test]
+async fn a_publication_retried_with_its_key_after_collection_operators_are_off_is_replayed() {
+    let f = fixture();
+    let p = principal(f.tenant, Role::Developer);
+    let w = create_chained_workflow(&f).await;
+    let first = f
+        .service
+        .clone()
+        .with_collection_operators_enabled(true)
+        .publish(&p, w.workflow.id(), 1, None, "pub-0000001", &ctx())
+        .await
+        .expect("published");
+    let again = f
+        .service
+        .publish(&p, w.workflow.id(), 1, None, "pub-0000001", &ctx())
+        .await
+        .expect("replayed with the switch off");
+    assert!(!again.created);
+    assert_eq!(again.version.id(), first.version.id());
+    let other = f
+        .service
+        .publish(&p, w.workflow.id(), 1, None, "pub-0000002", &ctx())
+        .await;
+    assert!(
+        matches!(&other, Err(AppError::InvalidDefinition(error)) if matches!(**error, IrError::CollectionOperatorsDisabled { .. })),
+        "{other:?}"
+    );
+    assert_eq!(f.store.with(|s| s.versions.len()), 1);
+}
+
+/// Re-read of design 043 after round 2 (correctness 1, architecture 1): a dry run whose `inputSchema` pre-check found no
+/// permit of the validator is not judged. It is answered as unavailable (`503`), never as a valid `200` that lists a
+/// problem a CI job would read as "the document is wrong".
+#[tokio::test]
+async fn a_dry_run_whose_pre_check_found_no_permit_is_unavailable_not_a_problem() {
+    let f = fixture_with(FakeCodec {
+        name: "invoice-flow",
+        outcome: Err(IrError::ValidatorBusy),
+        secrets: &[],
+        saga: false,
+    });
+    let p = principal(f.tenant, Role::Developer);
+    let w = create(&f, Role::Developer, "key-0000001")
+        .await
+        .expect("created");
+    let answer = f.service.validate(&p, w.workflow.id(), None, &ctx()).await;
+    assert!(
+        matches!(&answer, Err(AppError::InvalidDefinition(e)) if **e == IrError::ValidatorBusy),
+        "{answer:?}"
+    );
 }

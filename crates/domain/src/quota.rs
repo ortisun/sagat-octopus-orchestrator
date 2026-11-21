@@ -95,6 +95,16 @@ pub enum QuotaResource {
     TenantDatabaseConcurrency,
     /// Pending secret provider operations in the namespace (feature 017).
     SecretProviderOperations,
+    /// Schedules in the namespace, active and paused (feature 018).
+    Schedules,
+    /// Backfills of the namespace that have not finished (feature 018).
+    ScheduleBackfills,
+    /// Batch jobs of the namespace that have not finished (feature 018).
+    BatchJobs,
+    /// Batch jobs of the tenant that have not finished (feature 018).
+    TenantBatchJobs,
+    /// Resets of the namespace that wait for their source run to end (`CANCEL_SOURCE`, feature 018).
+    PendingResets,
 }
 
 /// At which level a resource is counted.
@@ -129,7 +139,7 @@ pub enum QuotaUnit {
 }
 
 impl QuotaResource {
-    pub const ALL: [Self; 32] = [
+    pub const ALL: [Self; 37] = [
         Self::ActiveRuns,
         Self::TenantActiveRuns,
         Self::Workflows,
@@ -162,6 +172,11 @@ impl QuotaResource {
         Self::DatabaseConcurrency,
         Self::TenantDatabaseConcurrency,
         Self::SecretProviderOperations,
+        Self::Schedules,
+        Self::ScheduleBackfills,
+        Self::BatchJobs,
+        Self::TenantBatchJobs,
+        Self::PendingResets,
     ];
 
     #[must_use]
@@ -199,6 +214,11 @@ impl QuotaResource {
             Self::DatabaseConcurrency => "database_concurrency",
             Self::TenantDatabaseConcurrency => "tenant_database_concurrency",
             Self::SecretProviderOperations => "secret_provider_operations",
+            Self::Schedules => "schedules",
+            Self::ScheduleBackfills => "schedule_backfills",
+            Self::BatchJobs => "batch_jobs",
+            Self::TenantBatchJobs => "tenant_batch_jobs",
+            Self::PendingResets => "pending_resets",
         }
     }
 
@@ -230,13 +250,18 @@ impl QuotaResource {
             | Self::DatabaseIdleTimeoutMs
             | Self::DatabaseConnections
             | Self::DatabaseConcurrency
-            | Self::SecretProviderOperations => QuotaScope::Namespace,
+            | Self::SecretProviderOperations
+            | Self::Schedules
+            | Self::ScheduleBackfills
+            | Self::BatchJobs
+            | Self::PendingResets => QuotaScope::Namespace,
             Self::TenantActiveRuns
             | Self::WorkerSessions
             | Self::IterationConcurrency
             | Self::TenantContentBytes
             | Self::TenantLogBytes
-            | Self::TenantDatabaseConcurrency => QuotaScope::Tenant,
+            | Self::TenantDatabaseConcurrency
+            | Self::TenantBatchJobs => QuotaScope::Tenant,
         }
     }
 
@@ -327,6 +352,10 @@ impl QuotaResource {
             Self::DatabaseConcurrency => 64,
             Self::TenantDatabaseConcurrency => 256,
             Self::SecretProviderOperations => 128,
+            Self::Schedules => 10_000,
+            Self::ScheduleBackfills => 16,
+            Self::BatchJobs => 16,
+            Self::TenantBatchJobs | Self::PendingResets => 64,
             _ => MAX_LIMIT,
         }
     }
@@ -370,6 +399,11 @@ impl QuotaResource {
             Self::DatabaseConcurrency => 16,
             Self::TenantDatabaseConcurrency => 64,
             Self::SecretProviderOperations => 32,
+            Self::Schedules => 200,
+            Self::ScheduleBackfills => 4,
+            Self::BatchJobs => 2,
+            Self::TenantBatchJobs => 8,
+            Self::PendingResets => 16,
         }
     }
 
@@ -409,6 +443,11 @@ impl QuotaResource {
             Self::DatabaseConcurrency => "concurrent database operations in the namespace",
             Self::TenantDatabaseConcurrency => "concurrent database operations of the tenant",
             Self::SecretProviderOperations => "pending secret provider operations in the namespace",
+            Self::Schedules => "schedules in the namespace",
+            Self::ScheduleBackfills => "schedule backfills in progress in the namespace",
+            Self::BatchJobs => "batch jobs in progress in the namespace",
+            Self::TenantBatchJobs => "batch jobs in progress of the tenant",
+            Self::PendingResets => "resets waiting for their source run to end in the namespace",
         }
     }
 
@@ -739,7 +778,7 @@ mod tests {
 
     #[test]
     fn durable_resources_have_explicit_scope_kind_unit_range_and_usage_semantics() {
-        assert_eq!(QuotaResource::ALL.len(), 32);
+        assert_eq!(QuotaResource::ALL.len(), 37);
         for (resource, scope, kind, unit, maximum, default, has_usage) in [
             (
                 QuotaResource::TenantContentBytes,

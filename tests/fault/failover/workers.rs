@@ -1,5 +1,5 @@
-//! Workers lost with their leases: BL05, a share of the workers dies and the platform takes their
-//! work back and finishes it.
+//! Workers lost with their leases: BL05 retains uncertain effects for review while the
+//! surviving workers finish independent work. No lost original is silently repeated (037).
 
 use std::time::Duration;
 
@@ -12,8 +12,7 @@ use crate::support::engine::{chain, world};
 use crate::support::scale::{TTL, keeper, scheduler};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-async fn when_three_workers_in_ten_die_their_work_is_taken_back_and_nothing_is_lost_or_done_twice()
-{
+async fn when_three_workers_in_ten_die_their_unknown_work_is_retained_without_a_second_attempt() {
     let w = world().await;
     let (wf, _) = w.publish(chain("chaos-workers")).await;
     let mut runs = Vec::new();
@@ -56,6 +55,12 @@ async fn when_three_workers_in_ten_die_their_work_is_taken_back_and_nothing_is_l
         "the dead workers held nothing: nothing was tested"
     );
 
+    let lost_runs: std::collections::BTreeSet<_> = dead
+        .iter()
+        .flat_map(|i| held[*i].iter().map(|task| task.run_id))
+        .collect();
+    assert_eq!(lost_runs.len(), lost, "one original lease per affected run");
+
     // The survivors finish what they hold; the dead ones never answer.
     for (i, session) in sessions.iter().enumerate() {
         if dead.contains(&i) {
@@ -67,7 +72,7 @@ async fn when_three_workers_in_ten_die_their_work_is_taken_back_and_nothing_is_l
                 .expect("complete");
         }
     }
-    // Their leases run out and the replicas take the attempts back.
+    // Their leases run out; replicas fence them and retain the unknown effects.
     for i in &dead {
         for task in &held[*i] {
             w.age_lease(task.run_id, task.instance.node().as_str())
@@ -81,19 +86,13 @@ async fn when_three_workers_in_ten_die_their_work_is_taken_back_and_nothing_is_l
     assert_eq!(
         usize::try_from(expired).expect("fits"),
         lost,
-        "every lost attempt was taken back, once"
+        "every lost attempt was fenced once"
     );
-    for i in &dead {
-        for task in &held[*i] {
-            w.age_retry(task.run_id, task.instance.node().as_str())
-                .await;
-        }
-    }
     for scheduler in &schedulers {
         scheduler.tick().await;
     }
 
-    // The survivors do the rest: the retried attempts and every next step.
+    // The survivors finish only independent runs; held reviews release no new tasks.
     let survivors: Vec<_> = sessions
         .iter()
         .enumerate()
@@ -105,6 +104,10 @@ async fn when_three_workers_in_ten_die_their_work_is_taken_back_and_nothing_is_l
         let mut worked = false;
         for session in &survivors {
             for task in w.poll(session, 16).await {
+                assert!(
+                    !lost_runs.contains(&task.run_id),
+                    "an uncertain run dispatched work"
+                );
                 w.complete(session, &task, &json!({}))
                     .await
                     .expect("complete");
@@ -123,11 +126,33 @@ async fn when_three_workers_in_ten_die_their_work_is_taken_back_and_nothing_is_l
         );
     }
     for run in &runs {
-        assert_eq!(w.run_status(*run).await, RunStatus::Succeeded, "run {run}");
+        let expected = if lost_runs.contains(run) {
+            RunStatus::ManualReview
+        } else {
+            RunStatus::Succeeded
+        };
+        assert_eq!(w.run_status(*run).await, expected, "run {run}");
+        if lost_runs.contains(run) {
+            let (reviews, leases, retries, held): (i64, i64, i64, i64) = sqlx::query_as(
+                "SELECT \
+                 (SELECT count(*) FROM steps WHERE run_id=$1 AND status='WAITING' \
+                    AND waiting_kind='OPERATOR' AND failure_code='LEASE_EXPIRED'), \
+                 (SELECT count(*) FROM run_events WHERE run_id=$1 AND event_type='step.leased'), \
+                 (SELECT count(*) FROM run_events WHERE run_id=$1 \
+                    AND event_type IN ('step.retry_scheduled','step.retry_due','step.retry_requested')), \
+                 (SELECT count(*) FROM steps WHERE run_id=$1 \
+                    AND (status IN ('READY','LEASED','RUNNING','RETRY_WAIT') OR lease_token_hash IS NOT NULL))",
+            )
+            .bind(run.as_uuid())
+            .fetch_one(&w.db.pool)
+            .await
+            .expect("review retains evidence without worker capacity or repeated work");
+            assert_eq!((reviews, leases, retries, held), (1, 1, 0, 0));
+        }
         w.assert_consistent(*run).await;
     }
 
-    // A dead worker that comes back with its old lease is refused: the attempt is somebody else's.
+    // A late report cannot overwrite the retained review.
     for i in &dead {
         for task in &held[*i] {
             assert_eq!(

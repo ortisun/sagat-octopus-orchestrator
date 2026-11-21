@@ -1,0 +1,61 @@
+docker build -f runners/dotnet/Dockerfile.runtime -t sagat/dotnet-runtime:10.0.12 .
+#0 building with "desktop-linux" instance using docker driver
+
+#1 [internal] load build definition from Dockerfile.runtime
+#1 transferring dockerfile: 723B done
+#1 DONE 0.0s
+
+#2 [internal] load metadata for mcr.microsoft.com/dotnet/runtime:10.0.12@sha256:b89586dc17781f25531909993658aa8161205ae38b8cec8847df4a8221a403d5
+#2 DONE 0.0s
+
+#3 [internal] load metadata for mcr.microsoft.com/dotnet/sdk:10.0.401@sha256:e70cdb7f80b0348f5cb85f19a8f670fca061f033d57eed12fa003d58b0e06317
+#3 DONE 0.0s
+
+#4 [internal] load .dockerignore
+#4 transferring context: 411B done
+#4 DONE 0.0s
+
+#5 [publish 1/4] FROM mcr.microsoft.com/dotnet/sdk:10.0.401@sha256:e70cdb7f80b0348f5cb85f19a8f670fca061f033d57eed12fa003d58b0e06317
+#5 resolve mcr.microsoft.com/dotnet/sdk:10.0.401@sha256:e70cdb7f80b0348f5cb85f19a8f670fca061f033d57eed12fa003d58b0e06317 0.0s done
+#5 DONE 0.0s
+
+#6 [stage-1 1/3] FROM mcr.microsoft.com/dotnet/runtime:10.0.12@sha256:b89586dc17781f25531909993658aa8161205ae38b8cec8847df4a8221a403d5
+#6 resolve mcr.microsoft.com/dotnet/runtime:10.0.12@sha256:b89586dc17781f25531909993658aa8161205ae38b8cec8847df4a8221a403d5 0.0s done
+#6 DONE 0.0s
+
+#7 [internal] load build context
+#7 transferring context: 1.13kB done
+#7 DONE 0.0s
+
+#8 [stage-1 2/3] WORKDIR /opt/sagat
+#8 CACHED
+
+#9 [publish 2/4] WORKDIR /src/runners/dotnet
+#9 CACHED
+
+#10 [publish 3/4] COPY runners/dotnet/ ./
+#10 CACHED
+
+#11 [publish 4/4] RUN dotnet restore Sagat.DotnetRuntime/Sagat.DotnetRuntime.csproj     && dotnet publish Sagat.DotnetRuntime/Sagat.DotnetRuntime.csproj --no-restore -c Release -o /out/runtime
+#11 0.500   Determining projects to restore...
+#11 0.803   Restored /src/runners/dotnet/Sagat.ScriptContract/Sagat.ScriptContract.csproj (in 51 ms).
+#11 0.803   Restored /src/runners/dotnet/Sagat.DotnetRuntime/Sagat.DotnetRuntime.csproj (in 56 ms).
+#11 2.358   Sagat.ScriptContract -> /src/runners/dotnet/Sagat.ScriptContract/bin/Release/net10.0/Sagat.ScriptContract.dll
+#11 2.647   Sagat.DotnetRuntime -> /src/runners/dotnet/Sagat.DotnetRuntime/bin/Release/net10.0/Sagat.DotnetRuntime.dll
+#11 2.673   Sagat.DotnetRuntime -> /out/runtime/
+#11 DONE 2.7s
+
+#12 [stage-1 3/3] COPY --from=publish /out/runtime/ ./runtime/
+#12 DONE 0.0s
+
+#13 exporting to image
+#13 exporting layers 0.0s done
+#13 exporting manifest sha256:ae61101864fb85e77c4d7ddd4221aa4cf58334ee3d07e4e59a1b78bfbe003838 done
+#13 exporting config sha256:96d655037da12d10b16c19df9aba2f257582d9deb5e4d8397ff919124aa7ff32 done
+#13 exporting attestation manifest sha256:09b1c0db4dd1aa5f3412dac4830ff0406a437bf289261ee50ade702467e41982 done
+#13 exporting manifest list sha256:8f2d2c532098dd5fcc1a2b1244c73b7740c120531d909bb2a0840af939181eb8 done
+#13 naming to docker.io/sagat/dotnet-runtime:10.0.12 done
+#13 unpacking to docker.io/sagat/dotnet-runtime:10.0.12 0.0s done
+#13 DONE 0.1s
+
+View build details: docker-desktop://dashboard/build/desktop-linux/desktop-linux/rn6mjblp8uxrqtnwmmd0vgun9

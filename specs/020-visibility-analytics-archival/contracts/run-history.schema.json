@@ -1,0 +1,440 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sagat-octopus-orchestrator.example/schemas/run-history/sagat-run-history-v1.json",
+  "title": "Run history export document, sagat-run-history-v1 (draft)",
+  "description": "Returned by POST /runs/{runId}/history-exports (FR-020-036) and stored, line by line, inside an archive (run-archive.schema.json). Bounded: a history over the export ceilings is refused, never truncated. Values appear only in DISCLOSED mode and only within the caller's audiences (FR-016-007) or, inside an archive, within the policy's archiveValues; everything else is a `withheld` or `external` marker. `complete` is true only when no value was withheld, which is what a 028 replay test requires. The fields 028 needs for replay (specs/028-developer-tooling/contracts/history-replay.md) are part of the format: format version, producer and event-schema version, tenant-free run identity, the pinned version document (with includeDefinition), every event with its codec-level detail, the recorded projection and per-attempt output digests.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "format",
+    "formatVersion",
+    "producer",
+    "exportedAt",
+    "mode",
+    "complete",
+    "source",
+    "run",
+    "definition",
+    "events",
+    "projection",
+    "digest"
+  ],
+  "properties": {
+    "format": {
+      "const": "sagat-run-history-v1"
+    },
+    "formatVersion": {
+      "const": 1
+    },
+    "producer": {
+      "type": "object",
+      "required": [
+        "build",
+        "eventSchemaVersion"
+      ],
+      "properties": {
+        "build": {
+          "type": "string",
+          "description": "control-plane version of the exporter"
+        },
+        "eventSchemaVersion": {
+          "type": "integer",
+          "description": "version of the journal event codec the events were written with"
+        }
+      }
+    },
+    "exportedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "mode": {
+      "enum": [
+        "STRUCTURE",
+        "DISCLOSED"
+      ]
+    },
+    "complete": {
+      "type": "boolean"
+    },
+    "source": {
+      "enum": [
+        "HOT",
+        "ARCHIVE"
+      ]
+    },
+    "run": {
+      "type": "object",
+      "required": [
+        "runId",
+        "workflowId",
+        "workflowName",
+        "versionId",
+        "versionNumber",
+        "status",
+        "createdAt"
+      ],
+      "properties": {
+        "runId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "namespaceId": {
+          "type": "string",
+          "format": "uuid",
+          "description": "Informative; replay does not require tenant or namespace."
+        },
+        "workflowId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "workflowName": {
+          "type": "string"
+        },
+        "versionId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "versionNumber": {
+          "type": "integer"
+        },
+        "status": {
+          "type": "string"
+        },
+        "stopCode": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "finishedAt": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "parent": {
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "chain": {
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "rerunOf": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "traceId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "input": {
+          "$ref": "#/$defs/payloadRef"
+        }
+      }
+    },
+    "definition": {
+      "type": "object",
+      "required": [
+        "digest",
+        "classificationRules"
+      ],
+      "properties": {
+        "digest": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "classificationRules": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "document": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "description": "The immutable published IR, included only for a caller holding definition:read (inside an archive: always)."
+        }
+      }
+    },
+    "events": {
+      "type": "array",
+      "maxItems": 100000,
+      "items": {
+        "type": "object",
+        "required": [
+          "seq",
+          "eventType",
+          "occurredAt",
+          "actor"
+        ],
+        "properties": {
+          "seq": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "eventType": {
+            "type": "string"
+          },
+          "occurredAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "node": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "attempt": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "instancePath": {
+            "type": "array"
+          },
+          "actor": {
+            "type": "string",
+            "description": "Exactly as listRunJournalEvents shows it to run:read holders today (user:<sub>, worker:<id>, system:<component>); an erased run shows system:erased."
+          },
+          "detail": {
+            "type": "object",
+            "description": "The event's payload-free fields (codes, times, targets), as stored."
+          },
+          "payload": {
+            "$ref": "#/$defs/payloadRef"
+          }
+        }
+      }
+    },
+    "projection": {
+      "type": "object",
+      "description": "The run as the server projected it at export time, for the 028 comparison (no values).",
+      "required": [
+        "status",
+        "steps",
+        "attempts"
+      ],
+      "properties": {
+        "status": {
+          "type": "string"
+        },
+        "stopReason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "stopCode": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "steps": {
+          "type": "array",
+          "maxItems": 100000,
+          "items": {
+            "type": "object",
+            "required": [
+              "node",
+              "instancePath",
+              "status",
+              "attempts"
+            ],
+            "properties": {
+              "node": {
+                "type": "string"
+              },
+              "instancePath": {
+                "type": "array"
+              },
+              "status": {
+                "type": "string"
+              },
+              "attempts": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "route": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "chosen branch/case for condition and switch nodes"
+              },
+              "outputSha256": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              "failureCode": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            }
+          }
+        },
+        "chain": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "properties": {
+            "chainId": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "segmentIndex": {
+              "type": "integer"
+            },
+            "predecessorRunId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "successorRunId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        },
+        "attempts": {
+          "type": "array",
+          "maxItems": 100000,
+          "description": "One entry per attempt (028 needs per-attempt output digests for OUTPUT_DIGEST divergence). Digests are present in both modes; values are never here (they appear only in DISCLOSED mode, in the payload references of the events, where 028's `answers` reads them).",
+          "items": {
+            "type": "object",
+            "required": [
+              "node",
+              "instancePath",
+              "attempt",
+              "generation",
+              "outcome"
+            ],
+            "properties": {
+              "node": {
+                "type": "string"
+              },
+              "instancePath": {
+                "type": "array"
+              },
+              "attempt": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "generation": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "outcome": {
+                "enum": [
+                  "succeeded",
+                  "failed",
+                  "retry",
+                  "review",
+                  "unknown_outcome",
+                  "cancelled",
+                  "open"
+                ]
+              },
+              "outputSha256": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              "failureCode": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "retryable": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "endedByLeaseExpiry": {
+                "type": "boolean"
+              }
+            }
+          }
+        }
+      }
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "SHA-256 of the canonical JSON of `events` in STRUCTURE form (values excluded), so documents of different modes and callers of one run can be compared."
+    }
+  },
+  "$defs": {
+    "payloadRef": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "required": [
+        "sha256",
+        "size",
+        "level"
+      ],
+      "properties": {
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "level": {
+          "enum": [
+            "public",
+            "internal",
+            "pii",
+            "secret",
+            "mixed",
+            "undeclared"
+          ]
+        },
+        "value": {
+          "description": "Present only in DISCLOSED mode; nodes the caller may not read are `{\"withheld\": {\"level\": ..., \"reason\": ...}}` as FR-016-009 projects them."
+        },
+        "external": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "description": "A $blob descriptor {id,size,sha256,contentType}; bytes are never included."
+        }
+      }
+    }
+  }
+}

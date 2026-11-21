@@ -30,6 +30,46 @@ pub const MAX_POOLS: usize = 16;
 /// Longest pool name.
 pub const MAX_POOL_NAME: usize = 64;
 
+/// The profile of a dedicated runner's binding (feature 035, D035-057): which kind of managed work the identity may
+/// register for. A `database` runner serves SQL steps, a `lake` runner serves Iceberg writes; an identity is of one
+/// profile whatever its patterns say, so a binding to `*` still registers only as its own profile, and a stolen lake
+/// token cannot ask for PostgreSQL credentials. It means nothing to an ordinary worker, and existing bindings read as
+/// `database`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum BindingProfile {
+    /// SQL steps on `sagat.database.postgresql`.
+    #[default]
+    Database,
+    /// Iceberg writes on `sagat.database.iceberg.write`.
+    Lake,
+}
+
+impl BindingProfile {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Database => "database",
+            Self::Lake => "lake",
+        }
+    }
+
+    /// `None` for anything but the two exact names.
+    #[must_use]
+    pub fn parse(text: &str) -> Option<Self> {
+        match text {
+            "database" => Some(Self::Database),
+            "lake" => Some(Self::Lake),
+            _ => None,
+        }
+    }
+}
+
+impl fmt::Display for BindingProfile {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// A pool name or a list of pool names that cannot be used.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum PoolError {
@@ -193,6 +233,26 @@ pub fn first_uncovered<'a>(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_binding_profile_is_one_of_two_closed_names_and_nothing_else() {
+        use super::BindingProfile;
+        assert_eq!(
+            BindingProfile::parse("database"),
+            Some(BindingProfile::Database)
+        );
+        assert_eq!(BindingProfile::parse("lake"), Some(BindingProfile::Lake));
+        for refused in [
+            "", "Lake", "DATABASE", "lake ", " lake", "sql", "iceberg", "lake\0", "*",
+        ] {
+            assert_eq!(BindingProfile::parse(refused), None, "{refused:?}");
+        }
+        for profile in [BindingProfile::Database, BindingProfile::Lake] {
+            assert_eq!(BindingProfile::parse(profile.as_str()), Some(profile));
+            assert_eq!(profile.to_string(), profile.as_str());
+        }
+        assert_eq!(BindingProfile::default(), BindingProfile::Database);
+    }
+
     use super::*;
 
     fn p(text: &str) -> ActivityPattern {

@@ -14,13 +14,46 @@ fn decode<T: DeserializeOwned>(value: Value) -> Result<T, SagatError> {
 fn options(value: &Value) -> Value {
     value.get("options").cloned().unwrap_or_else(|| json!({}))
 }
+/// A scenario's chain, built through the public operator factory.
+fn operators(stages: &Value) -> Result<Vec<ops::Operator>, SagatError> {
+    let invalid = || SagatError::validation("a stage has exactly one known operator");
+    let mut chain = Vec::new();
+    for stage in stages.as_array().ok_or_else(invalid)? {
+        let object = stage
+            .as_object()
+            .filter(|o| o.len() == 1)
+            .ok_or_else(invalid)?;
+        let (name, p) = object.iter().next().ok_or_else(invalid)?;
+        let count = || {
+            p.get("count")
+                .and_then(Value::as_u64)
+                .and_then(|n| u32::try_from(n).ok())
+                .ok_or_else(invalid)
+        };
+        chain.push(match name.as_str() {
+            "filter" => ops::filter(text(p, "where")),
+            "map" => ops::map(text(p, "select")),
+            "flatMap" => ops::flat_map(text(p, "select")),
+            "skip" => ops::skip(count()?),
+            "take" => ops::take(count()?),
+            "distinct" => match p.get("by").and_then(Value::as_str) {
+                Some(by) => ops::distinct_by(by),
+                None => ops::distinct(),
+            },
+            "window" => ops::window(count()?),
+            _ => return Err(invalid()),
+        });
+    }
+    Ok(chain)
+}
 fn apply(builder: &Builder, program: &Value) -> Result<(), SagatError> {
     for op in program
         .as_array()
         .ok_or_else(|| SagatError::validation("a program needs an array"))?
     {
         let id = text(op, "id");
-        match text(op, "op") {
+        let kind = text(op, "op");
+        match kind {
             "step" => {
                 builder.step(id, text(op, "activity"), decode(options(op))?);
             }
@@ -30,6 +63,13 @@ fn apply(builder: &Builder, program: &Value) -> Result<(), SagatError> {
                     decode(options(op)).map_err(|_| {
                         SagatError::validation("invalid managed database operation")
                     })?,
+                );
+            }
+            "icebergWrite" => {
+                builder.iceberg_write(
+                    id,
+                    decode(options(op))
+                        .map_err(|_| SagatError::validation("invalid iceberg write"))?,
                 );
             }
             "sleep" => {
@@ -72,9 +112,17 @@ fn apply(builder: &Builder, program: &Value) -> Result<(), SagatError> {
             "switch" => {
                 builder.switch(id, decode(op["cases"].clone())?, text(op, "default"));
             }
-            "forEach" | "map" => {
-                builder.for_each(id, decode(op.clone())?);
-            }
+            "forEach" | "map" => match op.get("operators") {
+                None => {
+                    builder.for_each(id, decode(op.clone())?);
+                }
+                Some(stages) if kind == "map" => {
+                    builder.map_with_operators(id, decode(op.clone())?, operators(stages)?);
+                }
+                Some(stages) => {
+                    builder.for_each_with_operators(id, decode(op.clone())?, operators(stages)?);
+                }
+            },
             "while" => {
                 builder.while_loop(id, decode(op.clone())?);
             }

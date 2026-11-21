@@ -36,7 +36,23 @@ fn body_of(operation: &str) -> Option<Value> {
         // Feature 007: a dry run of the victim's draft with a document of the attacker's.
         "validateWorkflowDraft" => json!({"ir": flow("attacker-flow")}),
         "startRun" => json!({"workflowId": "{workflowId}", "input": {}}),
+        // Feature 018: the attacker signals-or-starts under the victim's workflow.
+        "signalWithStart" => json!({
+            "workflowId": "{workflowId}", "businessId": "battery-probe", "input": {},
+            "signal": {"name": "battery.probe", "payload": {}}
+        }),
+        // Feature 018: the attacker asks for the values of the input of the victim's schedule.
+        "discloseScheduleInput" => json!({}),
+        "updateWithStart" => json!({
+            "workflowId": "{workflowId}", "businessId": "battery-probe", "input": {},
+            "update": {"name": "battery.probe", "updateKey": "battery-probe-0001", "args": {}}
+        }),
         "operateRun" => json!({"action": "CANCEL", "reason": "cross-tenant battery probe"}),
+        // Feature 018: the attacker asks what a reset of the victim's run would do, and resets it.
+        "previewReset" => json!({"sequence": 1}),
+        "resetRun" => json!({
+            "sequence": 1, "reason": "cross-tenant battery probe", "acknowledgeReexecution": true
+        }),
         "inspectRunPayload" | "discloseRunPayload" => json!({"source": "input"}),
         "signalRun" => json!({"paid": true}),
         // Feature 014: a chain is addressed by its id; the head the attacker claims to have seen
@@ -152,6 +168,29 @@ fn body_of(operation: &str) -> Option<Value> {
         "promoteWorkflowVersion" => {
             json!({"namespaceId": "{namespaceId}", "reason": "cross-tenant battery probe", "acceptBreaking": true})
         }
+        // Feature 018: an administrator of another tenant writing or pausing the victim's schedules.
+        "createSchedule" => json!({
+            "name": "attacker-schedule", "spec": {"intervals": [{"everyMs": 3_600_000}]},
+            "action": {"workflowId": "{workflowId}", "input": {"attacker": true}}
+        }),
+        "updateSchedule" => json!({
+            "name": "victim-schedule", "spec": {"intervals": [{"everyMs": 3_600_000}]},
+            "action": {"workflowId": "{workflowId}", "input": {"attacker": true}},
+            "expectedRevision": 1
+        }),
+        "pauseSchedule" | "resumeSchedule" => json!({"note": "cross-tenant battery probe"}),
+        "triggerSchedule" => json!({"overlap": "ALLOW_ALL"}),
+        "createScheduleBackfill" => {
+            json!({"start": "2026-10-01T00:00:00Z", "end": "2026-10-02T00:00:00Z"})
+        }
+        // Feature 018: an administrator of another tenant batching, previewing or cancelling over
+        // the victim's runs.
+        "createBatchOperation" => json!({
+            "selector": {"filter": {}}, "action": "CANCEL",
+            "reason": "cross-tenant battery probe"
+        }),
+        "previewBatchOperation" => json!({"selector": {"filter": {}}}),
+        "cancelBatchOperation" => json!({"reason": "cross-tenant battery probe"}),
         // Feature 008: an administrator of another tenant draining the victim's worker.
         "drainWorker" | "undrainWorker" => {
             json!({"reason": "cross-tenant battery probe"})
@@ -208,6 +247,10 @@ fn is_resource_id(name: &str) -> bool {
             | "namespaceId"
             | "workflowId"
             | "runId"
+            | "scheduleId"
+            | "businessId"
+            | "batchId"
+            | "resetId"
             | "scriptId"
             | "executionId"
             | "requestId"
@@ -263,6 +306,16 @@ async fn snapshot(api: &TestApi, victim: &Victim) -> Value {
         format!("/namespaces/{ns}/secrets/stripe-key/pools"),
         format!("/namespaces/{ns}/egress-policy"),
         format!("/namespaces/{ns}/scripts"),
+        format!("/namespaces/{ns}/schedules"),
+        format!("/namespaces/{ns}/batch-operations"),
+        format!(
+            "/namespaces/{ns}/batch-operations/{}",
+            victim.ids["batchId"]
+        ),
+        format!(
+            "/namespaces/{ns}/batch-operations/{}/items",
+            victim.ids["batchId"]
+        ),
         format!(
             "/namespaces/{ns}/scripts/{}/versions",
             victim.ids["scriptId"]
@@ -343,7 +396,10 @@ async fn every_implemented_operation_resists_an_administrator_of_another_tenant(
         "POST",
         "/runs",
         alice,
-        Some(&json!({"workflowId": wf, "input": {"victim": true}})),
+        Some(&json!({
+            "workflowId": wf, "input": {"victim": true},
+            "businessId": "victim-order-4471"
+        })),
     )
     .await;
     assert_eq!(status, 202, "{run}");
@@ -439,8 +495,67 @@ async fn every_implemented_operation_resists_an_administrator_of_another_tenant(
     assert_eq!(status, 202, "{test_run}");
     let test_run = test_run["id"].as_str().expect("test run id").to_owned();
 
+    let (status, schedule) = send(
+        &api,
+        "POST",
+        &format!("/namespaces/{ns}/schedules"),
+        alice,
+        Some(&json!({
+            "name": "victim-schedule", "spec": {"intervals": [{"everyMs": 3_600_000}]},
+            "action": {"workflowId": wf, "input": {"victim": true}}
+        })),
+    )
+    .await;
+    assert_eq!(status, 201, "{schedule}");
+    let schedule = schedule["scheduleId"]
+        .as_str()
+        .expect("schedule id")
+        .to_owned();
+
+    let (status, batch) = send(
+        &api,
+        "POST",
+        &format!("/namespaces/{ns}/batch-operations"),
+        alice,
+        Some(&json!({
+            "selector": {"filter": {}}, "action": "CANCEL", "reason": "the victim's own batch"
+        })),
+    )
+    .await;
+    assert_eq!(status, 202, "{batch}");
+    let batch = batch["batchId"].as_str().expect("batch id").to_owned();
+
+    // Feature 018: a reset the victim made from a run of their own that ended, so the register has an
+    // entry to be asked for.
+    let (status, ended) = send(
+        &api,
+        "POST",
+        &format!("/runs/{run}/operations"),
+        alice,
+        Some(&json!({"action": "CANCEL", "reason": "the victim ends its own run"})),
+    )
+    .await;
+    assert!(status == 200 || status == 202, "{status} {ended}");
+    let (status, reset) = send(
+        &api,
+        "POST",
+        &format!("/runs/{run}/resets"),
+        alice,
+        Some(&json!({
+            "sequence": 1, "reason": "the victim resets its own run", "acknowledgeReexecution": true
+        })),
+    )
+    .await;
+    assert_eq!(status, 202, "{reset}");
+    let reset = reset["resetId"].as_str().expect("reset id").to_owned();
+
     let victim = Victim {
         ids: BTreeMap::from([
+            ("resetId", reset.clone()),
+            ("scheduleId", schedule.clone()),
+            ("businessId", "victim-order-4471".to_owned()),
+            ("batchId", batch.clone()),
+            ("backfillId", Uuid::now_v7().to_string()),
             ("scriptId", script.clone()),
             ("testRunId", test_run.clone()),
             ("executionId", Uuid::now_v7().to_string()),
@@ -462,12 +577,20 @@ async fn every_implemented_operation_resists_an_administrator_of_another_tenant(
         ]),
     };
     let before = snapshot(&api, &victim).await;
-    let victim_ids: Vec<&String> = vec![&ws, &ns, &wf, &run, &script, &test_run, &request];
+    let victim_ids: Vec<&String> =
+        vec![&ws, &ns, &wf, &run, &script, &test_run, &request, &schedule];
 
     // Operations nobody has built yet are listed by name, so they cannot be forgotten later.
-    let not_built: BTreeSet<&str> = ["publishEvent", "receiveSignedWebhook"]
-        .into_iter()
-        .collect();
+    let not_built: BTreeSet<&str> = [
+        "publishEvent",
+        "receiveSignedWebhook",
+        // Feature 035 merged its contract before its routes (`x-planned: '035'`); each leaves this list when its route
+        // lands, and the battery then attacks it like any other (so it also needs its `body_of` entry).
+        "startCatalogBrowse",
+        "getCatalogBrowse",
+    ]
+    .into_iter()
+    .collect();
     let bob = ("bob", "globex");
     let mut attacked = BTreeSet::new();
     let mut addressed = 0;
@@ -490,7 +613,7 @@ async fn every_implemented_operation_resists_an_administrator_of_another_tenant(
             .any(is_resource_id)
             || matches!(
                 operation.as_str(),
-                "startRun" | "recordScriptRunnerIncident"
+                "startRun" | "signalWithStart" | "updateWithStart" | "recordScriptRunnerIncident"
             );
         let body = body_of(&operation).map(|b| {
             // A body that names the victim's workflow (startRun) or namespace (a report from a
@@ -504,7 +627,13 @@ async fn every_implemented_operation_resists_an_administrator_of_another_tenant(
             .expect("json")
         });
 
-        let real = victim.fill(&template, true);
+        // Deleting a schedule names the revision it expects, in the query.
+        let query = if operation == "deleteSchedule" {
+            "?expectedRevision=1"
+        } else {
+            ""
+        };
+        let real = format!("{}{query}", victim.fill(&template, true));
         let attacker = if incident {
             ("runner-bob", "globex")
         } else {
@@ -520,7 +649,7 @@ async fn every_implemented_operation_resists_an_administrator_of_another_tenant(
                 "{operation} {method} {template}: {answer}"
             );
             // The same call against ids that exist nowhere gets the same answer.
-            let fake = victim.fill(&template, false);
+            let fake = format!("{}{query}", victim.fill(&template, false));
             let fake_body = body.as_ref().map(|b| {
                 serde_json::from_str(
                     &b.to_string()
@@ -560,6 +689,7 @@ async fn every_implemented_operation_resists_an_administrator_of_another_tenant(
                 "victim-pool",
                 "victim-script",
                 "victim-source",
+                "victim-order-4471",
             ] {
                 assert!(
                     !text.contains(needle),

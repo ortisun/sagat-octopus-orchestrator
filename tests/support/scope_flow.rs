@@ -151,8 +151,25 @@ pub async fn publish(api: &TestApi, name: &str, document: Value) -> Result<Strin
 
 impl Flow {
     pub async fn start(name: &str, document: Value, lines: Value) -> Self {
+        Self::start_with_statement_timeout(
+            name,
+            document,
+            lines,
+            super::api::Options::default().statement_timeout,
+        )
+        .await
+    }
+
+    /// Lock-order proofs can explicitly budget SQL longer than their bounded contention stage.
+    pub async fn start_with_statement_timeout(
+        name: &str,
+        document: Value,
+        lines: Value,
+        statement_timeout: StdDuration,
+    ) -> Self {
         let api = super::api::start_with(super::api::Options {
             runtime_role: true,
+            statement_timeout,
             ..super::api::Options::default()
         })
         .await;

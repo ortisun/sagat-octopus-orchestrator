@@ -1,0 +1,26 @@
+.venv/bin/python -m pytest
+============================= test session starts ==============================
+platform darwin -- Python 3.15.0, pytest-9.1.1, pluggy-1.6.0
+rootdir: /Users/marcelo/Documents/Projects/sagat-octopus-compensation-safety/sdks/python
+configfile: pyproject.toml
+testpaths: tests
+plugins: asyncio-1.4.0, anyio-4.15.1
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=function, asyncio_default_test_loop_scope=function
+collected 264 items
+
+tests/test_client.py .....................................               [ 14%]
+tests/test_database.py ..                                                [ 14%]
+tests/test_faults.py .......                                             [ 17%]
+tests/test_hardening.py .........................                        [ 26%]
+tests/test_opentelemetry.py ..                                           [ 27%]
+tests/test_round3.py ................................................... [ 46%]
+                                                                         [ 46%]
+tests/test_round4.py .......................                             [ 55%]
+tests/test_round5.py ...............................                     [ 67%]
+tests/test_shared.py ..................                                  [ 74%]
+tests/test_sync.py ......                                                [ 76%]
+tests/test_tls.py .......                                                [ 79%]
+tests/test_worker.py .........................................           [ 94%]
+tests/test_workflow.py ..............                                    [100%]
+
+============================= 264 passed in 23.12s =============================

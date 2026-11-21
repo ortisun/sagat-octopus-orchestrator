@@ -6,19 +6,23 @@ import type { Run } from '../../api/types';
 import { useApp, useCan, useNamespace } from '../../app/context';
 import { runStatus } from '../../model/status';
 import '../../styles/runs.css';
-import { Badge, Banner, Button, ColumnHeader, Empty, ErrorState, Heading, Hint, Link as PageLink, Loading, Row, Select, StatusBadge, TableBody, TableCell, TableHead, TableRow, TextInput, WindowedTable, useAnnounce, useMediaQuery } from '../../ui';
-import { RUN_STATUSES } from './display';
+import { Badge, Banner, Button, ColumnHeader, Empty, ErrorState, Heading, Hint, Link as PageLink, Loading, Row, Select, StatusBadge, TableBody, TableCell, TableHead, TableRow, TextInput, VisuallyHidden, WindowedTable, useAnnounce, useMediaQuery } from '../../ui';
+import { readBusinessPrefix } from './businessId';
+import { RUN_STATUSES, shortId } from './display';
 import { Elapsed, Moment, NowProvider } from './Now';
 import { NotAllowed } from './NotAllowed';
 import { originLabel, useVersions, useWorkflowIndex, versionLabel } from './queries';
 import type { WorkflowIndex } from './queries';
 import { RunListStore } from './runList';
+import { BatchFromRuns } from '../batch/BatchFromRuns';
 import { StartRun } from './StartRun';
 import { ScrollRegion } from './ScrollRegion';
 import { clip } from './time';
 import { useWindowedRows } from './useWindow';
 
 const PAGE_SIZE = 50;
+/** How long the identifier being typed has to rest before the list asks for it. */
+const TYPING_MS = 300;
 const ROW_ESTIMATE = 56;
 const COLUMNS = 6;
 /** Below this width the table of six columns does not fit beside the navigation: the runs are shown as cards. */
@@ -26,10 +30,14 @@ const CARD_LIST = '(max-width: 74rem)';
 const RUN_ID = /^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
 
 /** What the address says of the filters: only values the page could have put there count. */
-export function readFilters(params: URLSearchParams): { status: string; workflowId: string } {
+export function readFilters(params: URLSearchParams): { status: string; workflowId: string; business: string } {
   const status = params.get('status') ?? '';
   const workflowId = params.get('workflow') ?? '';
-  return { status: (RUN_STATUSES as readonly string[]).includes(status) ? status : '', workflowId: RUN_ID.test(workflowId) ? workflowId : '' };
+  return {
+    status: (RUN_STATUSES as readonly string[]).includes(status) ? status : '',
+    workflowId: RUN_ID.test(workflowId) ? workflowId : '',
+    business: readBusinessPrefix(params.get('business')),
+  };
 }
 
 /** Takes a run id the way people paste it (spaces around it, a path in front of it) and tells whether it is one. */
@@ -58,8 +66,8 @@ export function RunsPage({ variant = 'page', selectedRunId }: RunsPageProps = {}
   const namespace = useNamespace();
   // The filters are the address's: a link carries them, the back button and a reload keep them.
   const [params, setParams] = useSearchParams();
-  const { status, workflowId } = readFilters(params);
-  const setFilter = (key: 'status' | 'workflow', value: string) =>
+  const { status, workflowId, business } = readFilters(params);
+  const setFilter = (key: 'status' | 'workflow' | 'business', value: string) =>
     setParams((current) => {
       const next = new URLSearchParams(current);
       if (value === '') next.delete(key);
@@ -68,6 +76,26 @@ export function RunsPage({ variant = 'page', selectedRunId }: RunsPageProps = {}
     });
   const [origin, setOrigin] = useState('');
   const workflows = useWorkflowIndex();
+  // What is typed reaches the address once typing rests; an address that changes by itself (the back button, a link,
+  // "Clear filters") is what the field then shows, instead of the field writing its old text over it.
+  const [typed, setTyped] = useState(business);
+  const written = useRef(business);
+  useEffect(() => {
+    if (business === written.current) return;
+    written.current = business;
+    setTyped(business);
+  }, [business]);
+  useEffect(() => {
+    const wanted = readBusinessPrefix(typed.trim());
+    if (wanted === business) return undefined;
+    const timer = setTimeout(() => {
+      written.current = wanted;
+      setFilter('business', wanted);
+    }, TYPING_MS);
+    return () => clearTimeout(timer);
+    // `setFilter` is made anew each render and only reads the current address
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [typed, business]);
   if (!allowed) return <NotAllowed what="Runs" permission="run:read" />;
   // Beside a run the filters share a narrow column, two to a line; on the page each has a width of its own.
   const filterWidth = variant === 'master' ? '100%' : '13rem';
@@ -96,22 +124,35 @@ export function RunsPage({ variant = 'page', selectedRunId }: RunsPageProps = {}
           disabled={workflows.data === undefined}
           options={[{ value: '', label: 'All workflows' }, ...(workflows.data?.list ?? []).map((workflow) => ({ value: workflow.id, label: clip(workflow.name, 80) }))]}
         />
-        {status !== '' || workflowId !== '' || origin !== '' ? (
-          <Button onClick={() => { setOrigin(''); setParams((current) => { const next = new URLSearchParams(current); next.delete('status'); next.delete('workflow'); return next; }); }}>Clear filters</Button>
+        <TextInput
+          label="Business id starts with"
+          width={filterWidth}
+          hint="Your own identifier for a run, such as an order number."
+          type="search"
+          autoComplete="off"
+          spellCheck={false}
+          maxLength={200}
+          value={typed}
+          onChange={setTyped}
+        />
+        {status !== '' || workflowId !== '' || origin !== '' || business !== '' ? (
+          <Button onClick={() => { setOrigin(''); setTyped(''); setParams((current) => { const next = new URLSearchParams(current); next.delete('status'); next.delete('workflow'); next.delete('business'); return next; }); }}>Clear filters</Button>
         ) : null}
         {variant === 'page' ? <OpenRun /> : null}
         {variant === 'page' ? <StartRun choices={(workflows.data?.list ?? []).filter((workflow) => workflow.activeVersion)} /> : null}
+        {variant === 'page' ? <BatchFromRuns filters={{ status, workflowId, origin, businessIdPrefix: business }}{...(workflowId ? { workflowName: workflows.data?.list.find((workflow) => workflow.id === workflowId)?.name } : {})} /> : null}
       </Row>
       {namespace === undefined ? (
         <Loading>Waiting for a namespace…</Loading>
       ) : (
         // A different namespace or filter is a different list: nothing of the last one carries over.
         <RunList
-          key={`${namespace}|${status}|${workflowId}|${origin}`}
+          key={`${namespace}|${status}|${workflowId}|${origin}|${business}`}
           namespace={namespace}
           origin={origin}
           status={status}
           workflowId={workflowId}
+          business={business}
           workflows={workflows.data}
           compact={variant === 'master'}
           selectedRunId={selectedRunId}
@@ -126,6 +167,7 @@ function RunList({
   namespace,
   status,
   workflowId,
+  business,
   workflows,
   compact,
   selectedRunId,
@@ -134,6 +176,7 @@ function RunList({
   namespace: string;
   status: string;
   workflowId: string;
+  business: string;
   workflows: WorkflowIndex | undefined;
   compact: boolean;
   selectedRunId: string | undefined;
@@ -143,7 +186,7 @@ function RunList({
   const [store] = useState(
     () =>
       new RunListStore({
-        fetchPage: (cursor, signal) => ep.listRuns({ limit: PAGE_SIZE, ...(cursor ? { cursor } : {}), ...(status ? { status } : {}), ...(origin ? { origin } : {}), ...(workflowId ? { workflowId } : {}) }, signal),
+        fetchPage: (cursor, signal) => ep.listRuns({ limit: PAGE_SIZE, ...(cursor ? { cursor } : {}), ...(status ? { status } : {}), ...(origin ? { origin } : {}), ...(workflowId ? { workflowId } : {}), ...(business ? { businessIdPrefix: business } : {}) }, signal),
         onLoaded: ({ kind, count, total, hasMore }) => {
           if (kind === 'more') announce(`${count} more runs loaded, ${total} in all${hasMore ? '' : '; that is all of them'}.`);
           else announce(`${total} runs${hasMore ? ', more can be loaded' : ''}.`);
@@ -158,7 +201,7 @@ function RunList({
   const scroller = useRef<HTMLDivElement>(null);
   const { items: windowItems, padTop, padBottom, measure } = useWindowedRows({ count: snapshot.items.length, estimate: ROW_ESTIMATE, scroller });
   const running = useMemo(() => snapshot.items.some((run) => !isTerminal(run.status)), [snapshot.items]);
-  const filtered = status !== '' || workflowId !== '' || origin !== '';
+  const filtered = status !== '' || workflowId !== '' || origin !== '' || business !== '';
   const cards = useMediaQuery(CARD_LIST);
   const asCards = compact || cards;
 
@@ -260,10 +303,10 @@ function RunMasterRow({
       {/* The whole card is the link, and it says which run is open (`aria-current`): the router's own link, since the interface module's link is a line of text. */}
       <Link to={{ pathname: path`/runs/${run.runId}`, search }} aria-current={selected ? 'page' : undefined}>
         <span className="rn-master-name" title={workflow?.name}>
-          {originLabel(run.origin) ?? (workflow ? clip(workflow.name, 80) : `workflow ${run.workflowId.slice(0, 8)}`)}
+          {originLabel(run.origin) ?? (workflow ? clip(workflow.name, 80) : `workflow ${shortId(run.workflowId)}`)}
         </span>
         <StatusBadge view={runStatus(run.status)} />
-        <code title={run.runId}>{run.runId.slice(-8)}</code>
+        <code title={run.runId}>{shortId(run.runId)}</code>
         <span className="rn-master-duration">
           {finished ? (run.finishedAt ? <Elapsed from={run.createdAt} to={run.finishedAt} /> : '—') : <Elapsed from={run.createdAt} />}
         </span>
@@ -286,6 +329,12 @@ function RunRow({ run, index, measure, workflows }: { run: Run; index: number; m
         <PageLink className="rn-id" to={`${path`/runs/${run.runId}`}${search}`}>
           {run.runId}
         </PageLink>
+        {run.businessId ? (
+          <div className="rn-quiet">
+            <VisuallyHidden>Business id </VisuallyHidden>
+            {clip(run.businessId, 80)}
+          </div>
+        ) : null}
         {run.status === 'MANUAL_REVIEW' ? (
           <div>
             <Badge tone="bad">
@@ -293,9 +342,14 @@ function RunRow({ run, index, measure, workflows }: { run: Run; index: number; m
             </Badge>
           </div>
         ) : null}
+        {run.startDelayedUntil && run.status === 'WAITING' ? (
+          <div className="rn-quiet">
+            Starts <Moment at={run.startDelayedUntil} />
+          </div>
+        ) : null}
       </TableCell>
       <TableCell>
-        {originLabel(run.origin) ?? (workflow ? clip(workflow.name, 80) : `workflow ${run.workflowId.slice(0, 8)}`)}
+        {originLabel(run.origin) ?? (workflow ? clip(workflow.name, 80) : `workflow ${shortId(run.workflowId)}`)}
         <div className="rn-quiet">{versionLabel(versions.data, run.versionId, workflow?.activeVersion)}</div>
       </TableCell>
       <TableCell>

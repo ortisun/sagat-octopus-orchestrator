@@ -1,0 +1,392 @@
+RED: d1-final-workspace.txt:7342-7354 (over-budget successful report expected FAILED instead of retained review).
+Delivery-1 validation amendment: T037-027/T037-031; output ceiling retained, OUTCOME_UNKNOWN review and report replay asserted.
+Command: env -u RUST_LOG cargo test --workspace --test integration_durable_execution --locked --offline -- --nocapture
+CARGO_TARGET_DIR=/var/folders/60/bf6rmfzx6zq67nrbzb3m0p480000gn/T/sagat-037-target-q0fwz2gu
+CARGO_BUILD_JOBS=2
+CARGO_PROFILE_DEV_DEBUG=0
+CARGO_PROFILE_TEST_DEBUG=0
+RUST_TEST_THREADS=2
+SAGAT_TEST_AS_RUNTIME_ROLE=1
+DOCKER_HOST=unix:///Users/marcelo/.docker/run/docker.sock
+warning: field `tagged_fields` is never read
+   --> vendor/rskafka/src/protocol/messages/create_topics.rs:291:9
+    |
+278 | pub struct CreateTopicsResponse {
+    |            -------------------- field in this struct
+...
+291 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `CreateTopicsResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: fields `name`, `value`, `read_only`, `config_source`, `is_sensitive`, and `tagged_fields` are never read
+   --> vendor/rskafka/src/protocol/messages/create_topics.rs:321:9
+    |
+319 | pub struct CreateTopicResponseConfig {
+    |            ------------------------- fields in this struct
+320 |     /// The configuration name.
+321 |     pub name: CompactString,
+    |         ^^^^
+...
+324 |     pub value: CompactNullableString,
+    |         ^^^^^
+...
+327 |     pub read_only: Boolean,
+    |         ^^^^^^^^^
+...
+330 |     pub config_source: Int8,
+    |         ^^^^^^^^^^^^^
+...
+333 |     pub is_sensitive: Boolean,
+    |         ^^^^^^^^^^^^
+...
+336 |     pub tagged_fields: TaggedFields,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `CreateTopicResponseConfig` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: fields `num_partitions`, `replication_factor`, `configs`, and `tagged_fields` are never read
+   --> vendor/rskafka/src/protocol/messages/create_topics.rs:374:9
+    |
+359 | pub struct CreateTopicResponse {
+    |            ------------------- fields in this struct
+...
+374 |     pub num_partitions: Option<Int32>,
+    |         ^^^^^^^^^^^^^^
+...
+379 |     pub replication_factor: Option<Int16>,
+    |         ^^^^^^^^^^^^^^^^^^
+...
+384 |     pub configs: Vec<CreateTopicResponseConfig>,
+    |         ^^^^^^^
+...
+389 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `CreateTopicResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: fields `low_watermark` and `tagged_fields` are never read
+   --> vendor/rskafka/src/protocol/messages/delete_records.rs:182:9
+    |
+177 | pub struct DeleteResponsePartition {
+    |            ----------------------- fields in this struct
+...
+182 |     pub low_watermark: Int64,
+    |         ^^^^^^^^^^^^^
+...
+190 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `DeleteResponsePartition` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `tagged_fields` is never read
+   --> vendor/rskafka/src/protocol/messages/delete_records.rs:226:9
+    |
+216 | pub struct DeleteResponseTopic {
+    |            ------------------- field in this struct
+...
+226 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `DeleteResponseTopic` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `tagged_fields` is never read
+   --> vendor/rskafka/src/protocol/messages/delete_records.rs:269:9
+    |
+258 | pub struct DeleteRecordsResponse {
+    |            --------------------- field in this struct
+...
+269 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `DeleteRecordsResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `tagged_fields` is never read
+   --> vendor/rskafka/src/protocol/messages/delete_topics.rs:101:9
+    |
+ 88 | pub struct DeleteTopicsResponse {
+    |            -------------------- field in this struct
+...
+101 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `DeleteTopicsResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `tagged_fields` is never read
+   --> vendor/rskafka/src/protocol/messages/delete_topics.rs:144:9
+    |
+129 | pub struct DeleteTopicsResponseTopic {
+    |            ------------------------- field in this struct
+...
+144 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `DeleteTopicsResponseTopic` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: fields `producer_id` and `first_offset` are never read
+   --> vendor/rskafka/src/protocol/messages/fetch.rs:170:9
+    |
+168 | pub struct FetchResponseAbortedTransaction {
+    |            ------------------------------- fields in this struct
+169 |     /// The producer id associated with the aborted transaction.
+170 |     pub producer_id: Int64,
+    |         ^^^^^^^^^^^
+...
+173 |     pub first_offset: Int64,
+    |         ^^^^^^^^^^^^
+    |
+    = note: `FetchResponseAbortedTransaction` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `aborted_transactions` is never read
+   --> vendor/rskafka/src/protocol/messages/fetch.rs:213:9
+    |
+192 | pub struct FetchResponsePartition {
+    |            ---------------------- field in this struct
+...
+213 |     pub aborted_transactions: Vec<FetchResponseAbortedTransaction>,
+    |         ^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `FetchResponsePartition` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `timestamp` is never read
+   --> vendor/rskafka/src/protocol/messages/list_offsets.rs:184:9
+    |
+169 | pub struct ListOffsetsResponsePartition {
+    |            ---------------------------- field in this struct
+...
+184 |     pub timestamp: Option<Int64>,
+    |         ^^^^^^^^^
+    |
+    = note: `ListOffsetsResponsePartition` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: fields `log_append_time_ms` and `log_start_offset` are never read
+   --> vendor/rskafka/src/protocol/messages/produce.rs:148:9
+    |
+132 | pub struct ProduceResponsePartitionResponse {
+    |            -------------------------------- fields in this struct
+...
+148 |     pub log_append_time_ms: Option<Int64>,
+    |         ^^^^^^^^^^^^^^^^^^
+...
+153 |     pub log_start_offset: Option<Int64>,
+    |         ^^^^^^^^^^^^^^^^
+    |
+    = note: `ProduceResponsePartitionResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: fields `session_lifetime_ms` and `tagged_fields` are never read
+   --> vendor/rskafka/src/protocol/messages/sasl_msg.rs:198:9
+    |
+181 | pub struct SaslAuthenticateResponse {
+    |            ------------------------ fields in this struct
+...
+198 |     pub session_lifetime_ms: Option<Int64>,
+    |         ^^^^^^^^^^^^^^^^^^^
+...
+203 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `SaslAuthenticateResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: struct `CompactArray` is never constructed
+   --> vendor/rskafka/src/protocol/primitives.rs:725:12
+    |
+725 | pub struct CompactArray<T>(pub Option<Vec<T>>);
+    |            ^^^^^^^^^^^^
+
+warning: `rskafka` (lib) generated 14 warnings
+   Compiling sagat-tests v0.2.0 (/Users/marcelo/Documents/Projects/sagat-octopus-compensation-safety/tests)
+    Finished `test` profile [unoptimized] target(s) in 36.94s
+     Running integration/durable-execution/main.rs (/var/folders/60/bf6rmfzx6zq67nrbzb3m0p480000gn/T/sagat-037-target-q0fwz2gu/debug/deps/integration_durable_execution-537b359f051d0104)
+
+running 179 tests
+test activity_locking::an_override_waiting_behind_a_ceiling_change_reports_the_current_effective_limit ... ok
+test activity_locking::a_ceiling_change_waits_for_admission_then_governs_the_next_decision ... ok
+test activity_locking::different_activities_keep_concurrent_admission_with_shared_policy_fences ... ok
+test activity_locking::namespace_and_tenant_defaults_fence_admission_and_take_effect_after_commit ... ok
+test activity_locking::opposite_node_activity_orders_do_not_abort_a_concurrent_claim ... ok
+test blobs::a_blob_being_committed_is_skipped_by_the_sweep_and_never_lost ... ok
+test blobs::a_blob_is_reserved_then_confirmed_with_its_size_and_digest ... ok
+test blobs::a_tenant_may_hold_only_so_many_blobs_nothing_uses_yet ... ok
+test blobs::a_failed_external_delete_has_durable_attempt_and_retry_evidence ... ok
+test blobs::a_used_blob_stops_counting_against_the_budget ... ok
+test blobs::acknowledged_late_put_stays_deleting_and_a_fresh_delete_releases_it ... ok
+test blobs::an_unfinished_upload_expires_sooner_than_an_uploaded_blob ... ok
+test blobs::an_upload_state_change_rolls_back_when_its_audit_cannot_be_appended ... ok
+test blobs::another_tenant_sees_nothing_and_changes_nothing ... ok
+test blobs::cleanup_claims_an_unused_blob_but_never_a_used_one ... ok
+test blobs::confirmed_cleanup_of_an_unknown_upload_retains_a_retryable_tombstone ... ok
+test blobs::confirmed_cleanup_releases_acknowledged_rejected_put_measurements ... ok
+test blobs::confirming_twice_or_something_never_reserved_is_refused ... ok
+test blobs::failed_cleanup_audit_keeps_the_tombstone_unconfirmed_and_the_slot_reserved ... ok
+test blobs::late_put_logically_retires_the_delete_claim_even_when_database_time_moves_backward ... ok
+test blobs::racing_uploads_cannot_overshoot_the_budget ... ok
+test blobs::reservations_admit_the_last_byte_and_conversion_survives_a_policy_decrease ... ok
+test blobs::stale_delete_acknowledgement_cannot_finalize_a_newer_attempt ... ok
+test blobs::the_schema_refuses_states_that_cannot_exist ... ok
+test blobs::the_sweep_claims_only_old_unused_blobs_and_retains_rows_until_confirmation ... ok
+test blobs::the_sweep_respects_its_batch_size ... ok
+test blobs::uploaded_retention_starts_when_the_upload_finishes ... ok
+test children::a_child_cannot_be_created_for_a_step_that_stopped_waiting_after_the_candidate_was_read ... ok
+test children::a_child_cancelled_on_its_own_fails_the_parent_step_as_cancelled ... ok
+test children::a_child_is_reserved_created_run_and_awaited_without_a_worker ... ok
+test children::a_child_is_created_once_when_schedulers_race ... ok
+test children::a_child_never_outlives_its_parents_deadline ... ok
+test children::a_detached_child_outlives_a_cancelled_parent_and_nobody_is_told ... ok
+test children::a_failed_child_takes_the_error_route_or_fails_the_parent_with_its_code ... ok
+test children::a_pinned_version_is_used_and_a_missing_workflow_or_version_fails_the_step ... ok
+test children::a_recursive_workflow_ends_at_the_depth_limit_with_a_failure_that_unwinds ... ok
+test children::a_workflow_of_another_tenant_is_never_a_child ... ok
+test children::an_input_that_is_not_an_object_fails_the_step_before_any_child_exists ... ok
+test children::cancelling_the_parent_cancels_a_propagating_child_and_the_parent_does_not_wait ... ok
+test children::no_child_is_created_for_a_step_that_was_cancelled_before_the_scheduler_got_to_it ... ok
+test children::request_cancel_makes_the_parent_wait_until_the_child_has_settled ... ok
+test children::runs_without_child_nodes_cause_no_child_work ... ok
+test children::the_child_starts_with_the_input_the_node_evaluates ... ok
+test concurrency::a_capped_backlog_cannot_hide_another_activity_past_the_candidate_limit ... ok
+test concurrency::a_completion_racing_a_lease_expiry_has_exactly_one_winner ... ok
+test concurrency::a_full_activity_is_skipped_and_an_expired_lease_returns_its_place ... ok
+test concurrency::a_lowered_platform_ceiling_applies_to_an_existing_activity_override ... ok
+test children::a_fan_out_bomb_stops_at_the_tree_budget_and_fails_instead_of_exhausting_the_platform ... ok
+test concurrency::a_poll_never_waits_for_a_run_that_another_transaction_holds ... ok
+test concurrency::a_worker_never_holds_more_tasks_than_it_declared ... ok
+test concurrency::a_worker_only_receives_the_activities_it_advertised ... ok
+test concurrency::concurrent_claims_on_one_session_are_exact_across_service_instances ... ok
+test concurrency::concurrent_pollers_never_overshoot_an_activity_quota ... ok
+test concurrency::eight_simultaneous_reports_of_one_completion_apply_it_once ... ok
+test concurrency::heartbeats_from_a_worker_that_lost_its_lease_do_not_resurrect_it ... ok
+test concurrency::many_workers_and_many_tasks_never_assign_a_step_twice ... ok
+test concurrency::session_replacement_revalidates_the_token_and_lowered_limit_at_the_claim_fence ... ok
+test definitions::a_draft_must_be_a_json_object_in_the_database_too ... ok
+test concurrency::sixteen_workers_racing_for_one_task_produce_exactly_one_lease ... ok
+test definitions::a_name_is_unique_per_namespace_and_free_in_other_namespaces_and_tenants ... ok
+test definitions::a_namespace_is_found_by_slug_inside_the_tenant_only ... ok
+test definitions::a_published_version_cannot_be_changed_even_by_the_owner_in_replica_mode ... ok
+test definitions::a_repeated_create_with_the_same_key_replays_and_changes_nothing ... ok
+test definitions::a_retried_publish_replays_and_a_different_one_under_the_same_key_is_refused ... ok
+test definitions::a_stale_draft_revision_cannot_be_published ... ok
+test definitions::a_workflow_is_stored_with_its_draft_and_its_audit_record_together ... ok
+test definitions::an_edit_bumps_the_revision_and_audits_atomically ... ok
+test definitions::editing_an_unknown_or_foreign_workflow_finds_nothing ... ok
+test definitions::eight_editors_racing_on_one_revision_have_exactly_one_winner ... ok
+test definitions::listing_pages_in_id_order_without_gaps_or_repeats ... ok
+test definitions::publishing_a_foreign_or_unknown_workflow_finds_nothing ... ok
+test definitions::publishing_numbers_versions_and_activates_the_latest ... ok
+test definitions::publishing_the_same_digest_again_reactivates_that_version_without_a_new_number ... ok
+test definitions::reads_are_scoped_to_the_tenant_and_the_namespace ... ok
+test definitions::sixteen_simultaneous_creates_with_one_key_produce_one_workflow ... ok
+test definitions::the_database_itself_refuses_a_workflow_in_another_tenants_namespace ... ok
+test definitions::ten_simultaneous_publishers_get_gapless_distinct_numbers ... ok
+test definitions::the_runtime_role_can_edit_definitions_but_not_rewrite_history ... ok
+test definitions::the_same_key_for_a_different_request_is_refused ... ok
+test definitions::the_same_key_in_another_tenant_or_scope_is_independent ... ok
+test definitions::the_worker_role_is_a_valid_membership_and_unknown_roles_are_not ... ok
+test faults::a_crash_after_the_external_effect_and_before_the_checkpoint_does_not_charge_twice ... ok
+test faults::a_connection_killed_in_the_middle_of_a_command_rolls_everything_back ... ok
+test faults::a_transaction_that_never_commits_leaves_no_trace ... ok
+test faults::a_scheduler_interrupted_at_any_moment_never_applies_a_transition_twice ... ok
+test flows::a_completion_with_the_wrong_token_or_generation_changes_nothing ... ok
+test flows::a_two_step_workflow_runs_to_success_and_the_journal_tells_the_story ... ok
+test faults::killing_database_connections_while_workers_run_loses_nothing_and_duplicates_nothing ... ok
+test flows::reporting_the_same_completion_twice_returns_the_original_outcome ... ok
+test hardening::a_key_is_no_oracle_for_a_worker_that_does_not_hold_the_lease ... ok
+test hardening::a_lease_renewed_after_the_candidate_was_read_is_not_reclaimed ... ok
+test hardening::a_lease_token_is_never_printed ... ok
+test hardening::a_poll_is_bounded_in_bytes_and_the_rest_waits_for_the_next_one ... ok
+test hardening::a_run_cannot_retain_more_output_than_its_budget_and_the_unknown_effect_waits_for_review ... ok
+test hardening::a_run_that_cannot_be_leased_does_not_keep_the_others_from_a_worker ... ok
+test hardening::a_serialized_task_over_the_poll_budget_fails_instead_of_staying_ready ... ok
+test hardening::a_signal_that_would_exceed_the_budget_of_the_run_is_refused_and_changes_nothing ... ok
+test hardening::a_task_leased_before_another_run_failed_is_still_delivered ... ok
+test hardening::a_task_nobody_takes_is_announced_a_bounded_number_of_times ... ok
+test hardening::a_worker_of_another_tenant_is_refused_and_the_attempt_is_audited ... ok
+test hardening::an_identity_holds_a_bounded_number_of_sessions_and_the_same_name_replaces_its_session ... ok
+test hardening::housekeeping_purges_a_backlog_larger_than_one_batch ... ok
+test hardening::large_sibling_tasks_are_budgeted_before_their_leases_commit ... ok
+test hardening::the_claim_query_walks_the_ready_index_and_never_aggregates_the_backlog ... ok
+test hardening::what_a_worker_advertises_is_validated_and_bounded ... ok
+test isolation::a_run_that_does_not_exist_anywhere_is_indistinguishable_and_leaves_no_trace ... ok
+test isolation::a_worker_of_another_tenant_cannot_report_on_my_attempt_even_with_its_token ... ok
+test isolation::a_workflow_is_never_found_by_name_through_another_tenants_namespace ... ok
+test isolation::an_activity_quota_never_crosses_the_tenant_boundary ... ok
+test isolation::another_tenant_cannot_read_operate_or_signal_a_run_and_the_attempt_is_audited ... ok
+test isolation::listings_never_include_another_tenants_runs ... ok
+test isolation::roles_gate_every_run_operation ... ok
+test isolation::the_database_refuses_cross_tenant_references_in_the_execution_tables ... ok
+test nats::a_message_published_twice_with_the_same_id_is_stored_once ... ok
+test nats::an_unreachable_broker_does_not_stop_the_process_and_reads_as_unavailable ... ok
+test isolation::workers_of_another_tenant_never_receive_tasks_and_cannot_use_foreign_sessions ... ok
+test nats::subjects_outside_the_platform_prefix_are_rejected_not_published ... ok
+test outbox::a_claimed_message_reappears_after_the_visibility_timeout_until_it_is_confirmed ... ok
+test nats::hints_flow_from_the_outbox_to_jetstream_and_survive_a_broker_outage ... ok
+test outbox::concurrent_dispatchers_claim_disjoint_messages ... ok
+test outbox::dispatching::a_broker_outage_loses_nothing_and_publishing_resumes_with_backoff ... ok
+test outbox::dispatching::a_crash_between_publishing_and_confirming_republishes_with_the_same_id ... ok
+test outbox::dispatching::a_hint_reaches_the_broker_once_on_its_tenant_subject_with_a_stable_id ... ok
+test outbox::dispatching::a_message_that_can_never_be_published_stays_visible_instead_of_vanishing ... ok
+test outbox::dispatching::only_delivered_messages_are_purged_and_the_runtime_role_may_do_it ... ok
+test outbox::every_ready_step_and_every_finished_run_is_announced_in_the_same_transaction ... ok
+test outbox::failures_are_recorded_and_retried_later ... ok
+test outbox::messages_come_out_in_the_order_they_were_written ... ok
+test routing::a_condition_over_a_previous_steps_output_waits_for_that_step ... ok
+test routing::a_condition_routes_by_the_run_input ... ok
+test routing::a_correlation_expression_that_fails_routes_through_on_error ... ok
+test routing::a_retried_signal_with_the_same_key_is_answered_not_applied_twice ... ok
+test routing::a_signal_nobody_is_waiting_for_is_refused_never_buffered_or_dropped_silently ... ok
+test routing::a_signal_wakes_a_waiting_run_and_its_payload_reaches_the_next_step ... ok
+test routing::an_all_join_fails_fast_and_tells_the_running_sibling_to_stop ... ok
+test routing::an_all_join_waits_for_both_branches_which_run_on_different_workers ... ok
+test routing::an_any_join_continues_with_the_first_branch_and_cancels_the_other ... ok
+test routing::an_end_node_closes_the_run ... ok
+test routing::an_expression_that_cannot_be_evaluated_fails_the_run_without_retrying ... ok
+test routing::cancelling_a_run_with_work_ready_ends_it_at_once ... ok
+test routing::cancelling_a_running_attempt_waits_for_its_acknowledgement ... ok
+test routing::operator_actions_are_idempotent_audited_and_refused_when_the_state_forbids_them ... ok
+test routing::pausing_holds_back_new_work_and_resuming_releases_it ... ok
+test routing::the_first_commit_wins_the_race_between_a_signal_and_the_timeout ... ok
+test runtime_quotas::applied_reconciliation_at_full_storage_fails_durably_under_original_report_identity ... ok
+test runtime_quotas::child_creation_content_refusal_is_reported_to_parent_without_an_orphan_run ... ok
+test runtime_quotas::completion_reusing_an_existing_payload_digest_succeeds_at_full_storage ... ok
+test runtime_quotas::expired_lease_at_full_storage_retains_review_without_allocating_a_child_error_route ... ok
+test runtime_quotas::failed_report_at_full_storage_stops_before_child_error_route_and_replays_original ... ok
+test runtime_quotas::lease_pins_script_obligations_and_zero_withholds_only_new_forward_work ... ok
+test runtime_quotas::reconciliation_script_retention_inherits_after_the_policy_closes ... ok
+test runtime_quotas::run_output_limit_alone_preserves_review_of_a_successful_external_effect ... ok
+test runtime_quotas::run_output_limit_with_full_storage_preserves_review_without_error_routing ... ok
+test runtime_quotas::secret_output_quota_fallback_preserves_redacted_audit_and_success_effect_evidence ... ok
+test runtime_quotas::successful_report_at_full_storage_retains_review_without_defensive_compensation ... ok
+test scheduler::a_lease_is_never_extended_beyond_the_attempt_deadline ... ok
+test scheduler::a_lost_worker_waits_for_resolution_and_the_stale_generation_is_never_reused ... ok
+test scheduler::a_non_retryable_failure_takes_the_error_route_and_the_run_still_succeeds ... ok
+test scheduler::a_one_hour_timer_holds_no_worker_and_resumes_when_due ... ok
+test scheduler::a_retryable_failure_backs_off_and_is_retried_with_the_same_idempotency_key ... ok
+test scheduler::a_ready_step_whose_notification_was_lost_gets_a_new_one ... ok
+test scheduler::a_run_past_its_deadline_is_timed_out_and_its_worker_is_told_to_stop ... ok
+test scheduler::a_worker_that_vanishes_during_cancellation_does_not_keep_the_run_open ... ok
+test scheduler::an_attempt_that_exceeds_its_timeout_fails_even_while_heartbeats_continue ... ok
+test scheduler::an_event_wait_that_times_out_takes_the_timeout_route ... ok
+test scheduler::heartbeats_keep_a_lease_alive_and_the_scheduler_leaves_it_alone ... ok
+test scheduler::running_out_of_attempts_fails_the_run_with_the_workers_code ... ok
+test scheduler::several_schedulers_at_once_apply_each_transition_exactly_once ... ok
+test starting::a_run_stays_bound_to_the_version_it_started_on ... ok
+test scheduler::two_hundred_suspended_runs_are_two_hundred_rows_and_wake_in_one_pass_each ... ok
+test starting::a_started_run_records_who_started_it_and_how_to_correlate_it ... ok
+test starting::a_step_output_larger_than_the_limit_is_refused ... ok
+test starting::a_workflow_with_no_published_version_cannot_be_started ... ok
+test starting::bad_requests_are_refused_before_anything_is_created ... ok
+test starting::payloads_are_stored_once_by_content ... ok
+test starting::runs_are_listed_newest_first_with_filters_and_stable_pages ... ok
+test starting::sixteen_simultaneous_starts_with_one_key_create_one_run ... ok
+test starting::starting_twice_with_one_key_creates_one_run ... ok
+test starting::the_journal_and_the_runtime_graph_show_what_happened ... ok
+
+test result: ok. 179 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 325.58s
+
+
+EXIT_STATUS=0
+
+Command: rustfmt --edition 2024 --check tests/integration/durable-execution/hardening.rs
+EXIT_STATUS=0
+
+Command: git diff --check -- tests/integration/durable-execution/hardening.rs
+EXIT_STATUS=0

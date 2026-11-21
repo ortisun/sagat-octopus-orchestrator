@@ -6,6 +6,97 @@ use serde_json::json;
 
 use crate::harness::{self, Selection, journal, node, observation, worker_log};
 
+fn assert_human_resolution_precedes_successor(
+    doc: &serde_json::Value,
+    language: &str,
+    activity: &str,
+) {
+    let review = &observation(doc, "review-state")["result"];
+    assert_eq!(review["status"], "MANUAL_REVIEW", "{language}");
+    assert!(review["finishedAt"].is_null(), "{language}");
+    let refused = &observation(doc, "retry-refused")["error"];
+    assert_eq!(refused["code"], "CONFLICT", "{language}");
+    assert_eq!(refused["reason"], "OUTCOME_UNRESOLVED", "{language}");
+    assert_eq!(refused["retryable"], false, "{language}");
+    let waiting = journal(doc, "review-journal");
+    assert!(
+        waiting.contains(&"step.needs_review".to_owned()),
+        "{language}"
+    );
+    for forbidden in [
+        "step.completed",
+        "step.resolved",
+        "step.retry_scheduled",
+        "run.finished",
+    ] {
+        assert!(
+            !waiting.iter().any(|event| event == forbidden),
+            "{language}: {waiting:?}"
+        );
+    }
+
+    let second = worker_log(doc, "w2");
+    assert_eq!(second.len(), 1, "{language}: {second:?}");
+    assert_eq!(second[0]["activity"], activity, "{language}");
+    assert_eq!(second[0]["node"], "after", "{language}");
+    assert_eq!(second[0]["attempt"], json!(1), "{language}");
+    assert_eq!(node(doc, "work")["attempt"], json!(1), "{language}");
+    assert_eq!(node(doc, "work")["status"], "SUCCEEDED", "{language}");
+    assert_eq!(node(doc, "after")["status"], "SUCCEEDED", "{language}");
+    assert_eq!(
+        observation(doc, "done")["result"]["status"],
+        "SUCCEEDED",
+        "{language}"
+    );
+
+    let events = journal(doc, "journal");
+    for forbidden in ["step.failed", "step.retry_scheduled", "step.retry_due"] {
+        assert!(
+            !events.iter().any(|event| event == forbidden),
+            "{language}: {events:?}"
+        );
+    }
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| *event == "step.completed")
+            .count(),
+        1
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| *event == "step.resolved")
+            .count(),
+        1
+    );
+    let needed = events
+        .iter()
+        .position(|event| event == "step.needs_review")
+        .expect("review");
+    let resolved = events
+        .iter()
+        .position(|event| event == "step.resolved")
+        .expect("human resolution");
+    let completed = events
+        .iter()
+        .position(|event| event == "step.completed")
+        .expect("successor completion");
+    assert!(
+        needed < resolved && resolved < completed,
+        "{language}: {events:?}"
+    );
+    assert_eq!(
+        doc["reviewEvidence"],
+        json!([{
+            "action": "saga.step_resolved",
+            "actor": "alice",
+            "reason": "declared SUCCEEDED: simulated human assertion of final success; no provider verification is claimed"
+        }]),
+        "{language}: the simulated human decision does not claim provider verification"
+    );
+}
+
 #[test]
 #[ignore = "needs Node, Python, Go, .NET and a JDK: the sdks job of CI runs it with --ignored"]
 fn a_worker_that_goes_silent_loses_its_lease_and_its_result_is_never_reported() {
@@ -18,22 +109,7 @@ fn a_worker_that_goes_silent_loses_its_lease_and_its_result_is_never_reported() 
             assert_eq!(first.len(), 1, "{language}: {first:?}");
             assert_eq!(first[0]["abortedReason"], "lease-lost", "{language}");
             assert_eq!(first[0]["outcome"], "cancelled", "{language}");
-            let second = worker_log(doc, "w2");
-            assert_eq!(second.len(), 1, "{language}: {second:?}");
-            assert_eq!(second[0]["attempt"], json!(2), "{language}");
-            // The step was completed once, by the second attempt.
-            let events = journal(doc, "journal");
-            assert_eq!(
-                events.iter().filter(|e| *e == "step.completed").count(),
-                1,
-                "{language}: {events:?}"
-            );
-            assert_eq!(node(doc, "work")["attempt"], json!(2), "{language}");
-            assert_eq!(
-                observation(doc, "done")["result"]["status"],
-                "SUCCEEDED",
-                "{language}"
-            );
+            assert_human_resolution_precedes_successor(doc, language, "lease.after");
         }
     });
 }
@@ -120,28 +196,13 @@ fn a_worker_that_is_stopped_while_it_works_does_not_fail_the_step_for_good() {
         suite.assert_conforms();
         for language in suite.languages_of("worker-shutdown") {
             let doc = suite.doc("worker-shutdown", language);
-            // The host cancelled the handler's token because it was stopping, the handler raised its cancellation
-            // and nothing was reported: the lease lapsed and the step went to the second worker.
+            // The host cancelled the handler's token because it was stopping; its cancellation
+            // was not reported as a known failure. The expired lease requires human resolution.
             let first = worker_log(doc, "w1");
             assert_eq!(first.len(), 1, "{language}: {first:?}");
             assert_eq!(first[0]["abortedReason"], "shutdown", "{language}");
             assert_eq!(first[0]["outcome"], "cancelled", "{language}");
-            assert_eq!(worker_log(doc, "w2")[0]["attempt"], json!(2), "{language}");
-            let events = journal(doc, "journal");
-            assert!(
-                !events.contains(&"step.failed".to_owned()),
-                "{language}: {events:?}"
-            );
-            assert_eq!(
-                events.iter().filter(|e| *e == "step.completed").count(),
-                1,
-                "{language}: {events:?}"
-            );
-            assert_eq!(
-                observation(doc, "done")["result"]["status"],
-                "SUCCEEDED",
-                "{language}"
-            );
+            assert_human_resolution_precedes_successor(doc, language, "shutdown.after");
         }
     });
 }

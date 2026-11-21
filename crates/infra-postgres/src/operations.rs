@@ -460,7 +460,10 @@ impl MonitorStore for PgRunStore {
             "SELECT (SELECT count(*) FROM inbox_events WHERE status = 'DEAD') AS events, \
                     (SELECT count(*) FROM webhook_deliveries WHERE status = 'DEAD') AS deliveries, \
                     (SELECT count(*) FROM connector_dead_letters) AS letters, \
-                    (SELECT count(*) FROM worker_sessions WHERE expires_at > now()) AS workers",
+                    (SELECT count(*) FROM worker_sessions WHERE expires_at > now()) AS workers, \
+                    (SELECT count(*) FROM steps WHERE status = 'WAITING' \
+                       AND waiting_kind IN ('TIMER', 'EVENT', 'APPROVAL')) AS pending_waits, \
+                    (SELECT count(*) FROM scheduler_members WHERE expires_at > now()) AS scheduler_replicas",
         )
         .fetch_one(pool)
         .await
@@ -476,7 +479,28 @@ impl MonitorStore for PgRunStore {
                (SELECT coalesce(extract(epoch FROM clock_timestamp() - min(lease_expires_at)), 0)::float8 FROM steps \
                  WHERE status IN ('LEASED', 'RUNNING') AND lease_expires_at <= now()) AS leases, \
                (SELECT coalesce(extract(epoch FROM clock_timestamp() - min(deadline_at)), 0)::float8 FROM runs \
-                 WHERE finished_at IS NULL AND stop_reason IS NULL AND deadline_at <= now()) AS deadlines",
+                 WHERE finished_at IS NULL AND stop_reason IS NULL AND deadline_at <= now()) AS deadlines, \
+               (SELECT coalesce(extract(epoch FROM clock_timestamp() - min(next_wake_at)), 0)::float8 FROM schedules \
+                 WHERE state = 'ACTIVE' AND next_wake_at <= now()) AS schedules, \
+               (SELECT coalesce(extract(epoch FROM clock_timestamp() - min(j.next_slot_at)), 0)::float8 FROM batch_jobs j \
+                 WHERE j.state IN ('SELECTING', 'RUNNING', 'CANCELLING') AND j.next_slot_at <= now() \
+                   AND ( \
+                     j.state = 'CANCELLING' \
+                     OR (j.state = 'SELECTING' AND pg_snapshot_xmin(pg_current_snapshot()) > j.selection_horizon) \
+                     OR (j.state = 'RUNNING' AND ( \
+                         NOT EXISTS (SELECT 1 FROM batch_items w \
+                                      WHERE w.tenant_id = j.tenant_id AND w.job_id = j.id \
+                                        AND w.state = 'DEFERRED' AND w.next_attempt_at > now()) \
+                         OR EXISTS (SELECT 1 FROM batch_items r \
+                                     WHERE r.tenant_id = j.tenant_id AND r.job_id = j.id \
+                                       AND (r.state = 'PENDING' \
+                                            OR (r.state = 'DEFERRED' AND r.next_attempt_at <= now())))))) \
+               ) AS batches, \
+               (SELECT coalesce(extract(epoch FROM clock_timestamp() - min(s.finished_at)), 0)::float8 \
+                 FROM run_resets r JOIN runs s ON s.tenant_id = r.tenant_id AND s.id = r.source_run_id \
+                 WHERE r.state = 'PENDING_SOURCE' AND s.finished_at IS NOT NULL) AS resets, \
+               (SELECT count(*) FROM batch_jobs WHERE state IN ('SELECTING', 'RUNNING', 'CANCELLING')) AS batch_active, \
+               (SELECT count(*) FROM run_resets WHERE state = 'PENDING_SOURCE') AS resets_pending",
         )
         .fetch_one(pool)
         .await
@@ -521,13 +545,20 @@ impl MonitorStore for PgRunStore {
             runs_by_status,
             compensating_runs,
             workers: to_u64(&dead, "workers")?,
+            pending_waits: to_u64(&dead, "pending_waits")?,
+            scheduler_replicas: to_u64(&dead, "scheduler_replicas")?,
             overdue: sagat_application::operations::Overdue {
                 timers: late("timers")?,
                 wait_deadlines: late("waits")?,
                 retries: late("retries")?,
                 leases: late("leases")?,
                 deadlines: late("deadlines")?,
+                schedules: late("schedules")?,
+                batches: late("batches")?,
+                resets: late("resets")?,
             },
+            batch_jobs_active: to_u64(&overdue, "batch_active")?,
+            resets_pending: to_u64(&overdue, "resets_pending")?,
         })
     }
 

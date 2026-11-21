@@ -1,11 +1,13 @@
 # @sagat-octopus-orchestrator/sdk — TypeScript
 
+> Documentation status: the contract sections below describe the inspected source. Existing runtime, test-count and advisory records are historical developer notes; this documentation update did not rerun or revalidate those records.
+
 The TypeScript SDK of the Sagat Octopus Orchestrator: a **client** for runs and events, a **worker host**
 for activities, compensations and reconciliations, and **builders** of the workflow document. One package.
 
 The SDK keeps no journal of its own. The platform owns every state, every retry decision and every
 timer; the SDK speaks its REST API and its worker protocol (gRPC) and reports faithfully. It behaves like
-the Go, Python, C# and Java SDKs because all five are held to the same conformance suite
+the Go, Python, C#, Java and Rust SDKs through the shared conformance suite
 (`tests/contract/sdk-conformance/`); the behaviour is written down in [`../SPEC.md`](../SPEC.md).
 
 ## Install
@@ -36,12 +38,47 @@ const done = await client.waitForCompletion(run.runId, { timeoutMs: 60_000 });
 
 `start` takes a workflow name or id. The SDK propagates the W3C `traceparent` (the ambient context, or one
 you pass), the correlation id and the deadline, and retries **only when that is safe** (a `GET`, or a `POST`
-that carries an idempotency key or an event id; never a `4xx` other than `429`).
+that carries an idempotency key or an event id; HTTP 408 maps to `UNAVAILABLE`; other non-rate-limit 4xx failures do not become retriable merely because a body says so).
 
 For a large run input, call `uploadRunInput(onePassAsyncIterable, options)` and pass its verified
 `BlobDescriptor` to `startWithBlob(workflow, descriptor, options)`. The upload is streamed once and is
 never retried; the SDK accepts its descriptor only after the source reaches EOF and the measured size and
 SHA-256 match. `startWithBlob` retains the normal run-start idempotency, correlation, deadline and trace options.
+
+### Schedules, business identifiers, batches and reset
+
+```ts
+const created = await client.schedules.create(namespaceId, {
+  name: 'nightly-report',
+  spec: { cron: ['0 2 * * *'], timezone: 'Europe/Lisbon' },
+  policies: { overlap: 'SKIP' },
+  action: { workflowId, input: { report: 'daily' } },
+});
+await client.schedules.pause(namespaceId, created.scheduleId, 'maintenance window');
+const action = await client.schedules.trigger(namespaceId, created.scheduleId); // action.outcome: 'STARTED', 'SKIPPED_OVERLAP', 'BUSINESS_ID_CONFLICT', ...
+
+// Every run of a schedule can start under the business id `<prefix>-<nominal time>`; the prefix is sent as given.
+const keyed = await client.schedules.create(namespaceId, {
+  name: 'hourly-order-sync',
+  spec: { cron: ['0 * * * *'] },
+  action: { workflowId, input: {}, businessIdPrefix: 'order-sync', businessIdConflictPolicy: 'USE_EXISTING', businessIdReusePolicy: 'ALLOW_DUPLICATE_FAILED_ONLY' },
+});
+console.log(keyed.action.businessIdPrefix, keyed.action.businessIdConflictPolicy); // null when the schedule has no prefix
+
+// One open run per business identifier; a second start answers the run that holds it.
+const order = await client.start('charge-card', { orderId: 'o-1' }, {
+  businessId: 'order-o-1', businessIdConflictPolicy: 'USE_EXISTING', startDelayMs: 5_000,
+});
+if (!order.started) console.log('an open run already held order-o-1:', order.runId);
+
+await client.signalWithStart('charge-card', 'order-o-1', { orderId: 'o-1' }, 'payment.confirmed', { paid: '19.90' });
+const job = await client.batch.create(namespaceId, { selector: { runIds }, action: 'CANCEL', reason: 'clean up the day' });
+const plan = await client.previewReset(runId, sequence); // plan.requiresAcknowledgement tells whether steps run again
+```
+
+A write carries one idempotency key for all its retries; an instant you send is written in UTC; a value of an
+enumeration the SDK does not know (an action outcome, a batch item state) is the string the server sent. The
+operations are specified in [`sdks/SPEC.md`](../SPEC.md) §3.1.
 
 Every failure is a `SagatError` with `code`, `status`, `retryable`, `traceId`, `reason`, `retryAfterMs`
 and a `remediation` sentence. It never repeats a payload, a token or a secret.
@@ -88,7 +125,7 @@ reconciliation hook, it cannot make a provider exactly-once.
 
 ## TLS
 
-`https://` and `grpcs`-style (`https://`) URLs use the system trust roots and verify the server certificate;
+The worker accepts `http://` and `https://` URLs; `https://` URLs use the system trust roots and verify the server certificate;
 nothing in the library turns that off (a test fails if the source contains the code that would). Pass `tls`
 to the client or to the worker host for your own trust roots and for mTLS:
 
@@ -124,9 +161,8 @@ const document = workflow('order-fulfilment')
   .build();
 ```
 
-The builders (`step`, `sleep`, `waitForEvent`, `invokeChild`, `condition`, `parallel`, `saga`, `end`) have no
-side effects and refuse what the server would refuse and they can see (a duplicate id, a dangling reference,
-a saga without a body). `build()` returns the document; `toJson()` its canonical JSON (keys sorted, no whitespace).
+The builders (`step`, `sleep`, `waitForEvent`, `invokeChild`, `condition`, `parallel`, `saga`, `end`) perform no platform I/O and validate locally visible constraints (such as a duplicate id, a dangling reference,
+or a saga without a body). These checks do not establish server acceptance. `build()` returns the document; `toJson()` its canonical JSON (keys sorted, no whitespace).
 
 ## Versions
 
@@ -150,7 +186,7 @@ Dependencies: `@grpc/grpc-js`, `@grpc/proto-loader`. The package is ESM only. Th
 ## Develop
 
 ```text
-npm test                 # builds, then 108 unit tests against fakes and the in-memory OpenTelemetry SDK
+npm test                 # builds, then runs the configured Node test suite
 npm run sync             # copies worker.proto and the error catalog from the repository; npm test fails when behind
 cargo test -p sagat-tests --test sdk_conformance -- --ignored   # the conformance suite (needs Docker), from the repository root
 ```
@@ -163,3 +199,33 @@ Use the database builder with a logical connection created in Sagat. See the
 [five-language guide](../../docs/guides/managed-database-sdk.md) for typed parameters,
 result consumption, permissions and the shared real-service scenario. Credentials
 are resolved by the separate managed executor.
+
+<!-- EGM directory contract -->
+
+## Interface
+
+- Published entry points are @sagat-octopus-orchestrator/sdk and its opentelemetry subpath; published files include dist/src, proto, README.md and LICENSE. [package.json:exports] [package.json:files]
+- Manifest commands provide sync, build, test and conformance. Runtime dependencies are grpc-js/proto-loader; OpenTelemetry API is an optional peer. [package.json:scripts] [package.json:dependencies] [package.json:peerDependenciesMeta]
+
+- [examples](./examples/README.md) — component contract.
+- [proto](./proto/README.md) — component contract.
+- [scripts](./scripts/README.md) — component contract.
+- [src](./src/README.md) — component contract.
+
+## Invariants
+
+- The package declares ESM and Node >=20 and uses strict TypeScript compilation with declaration output. [package.json:type] [package.json:engines] [tsconfig.json:strict] [tsconfig.json:declaration]
+
+## Side Effects
+
+- Invoked build/test scripts compile TypeScript and run Node tests; sync overwrites shared generated copies. Runtime I/O is described in the source and worker contracts. [package.json:scripts] [scripts/sync-shared.mjs:writeFileSync] [src/client.ts:SagatClient] [src/worker/host.ts:WorkerHost]
+
+## Verification
+
+Run from the repository root:
+
+```sh
+cd sdks/typescript && npm test
+```
+
+These commands are documented from the existing build configuration; they were not executed during this documentation update.

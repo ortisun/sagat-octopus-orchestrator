@@ -276,6 +276,9 @@ pub(super) async fn operate(
         sagat_application::execution::Engine::new(JsonEvaluator),
         cache,
     )
+    .with_run_inputs(sagat_infra_schema::run_input::RunInputValidator::gate(
+        sagat_application::run_input::InputValidationMode::Enforce,
+    ))
     .operate(
         &fixture.world.admin,
         fixture.run,

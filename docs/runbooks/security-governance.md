@@ -349,8 +349,9 @@ For an existing disposable kind cluster, export its kubeconfig to a separate fil
 ### Activity concurrency policy changes
 
 Activity limits apply to unexpired `LEASED`/`RUNNING` tasks in one tenant and namespace.
-Admission holds shared tenant and namespace policy locks, then the exact activity lock, through the
-lease transaction. Multi-activity claims acquire activities by activity name and node id, so two
+Admission holds shared tenant and namespace policy locks, then the activity's fence (shared), through the
+lease transaction; when the effective limit is between 1 and the maximum it also holds the activity's count lock
+(exclusive) from before the count. An override change takes the activity's fence exclusively. Multi-activity claims acquire activities by activity name and node id, so two
 workflows with opposite node orders cannot deadlock each other. Distinct activities retain concurrent
 admission. Namespace defaults exclusively fence that namespace; tenant defaults and operator ceilings
 exclusively fence the tenant. An edit waits for earlier admissions to finish before acknowledging.

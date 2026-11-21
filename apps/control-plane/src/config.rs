@@ -123,6 +123,35 @@ pub fn flag(get: Lookup<'_>, name: &'static str) -> Result<bool, ConfigError> {
     }
 }
 
+/// `SAGAT_RUN_INPUT_VALIDATION`, strictly (the ADR-0081 pattern, D043-109): unset or empty is `enforce`, `enforce` and
+/// `report` are themselves, and anything else, a different case or a space included, stops the process naming it.
+///
+/// # Errors
+/// [`ConfigError::Invalid`] naming the variable.
+pub fn run_input_validation(
+    get: Lookup<'_>,
+) -> Result<sagat_application::definitions::InputValidationMode, ConfigError> {
+    const NAME: &str = "SAGAT_RUN_INPUT_VALIDATION";
+    match get(NAME).as_deref() {
+        None | Some("") => Ok(sagat_application::definitions::InputValidationMode::Enforce),
+        Some(text) => {
+            sagat_application::definitions::InputValidationMode::parse(text).ok_or_else(|| {
+                ConfigError::Invalid {
+                    name: NAME,
+                    reason: "must be enforce or report".to_owned(),
+                }
+            })
+        }
+    }
+}
+
+/// `SAGAT_COLLECTION_OPERATORS_ENABLED` (design 042): whether a `forEach` may be published with `operators`. Off unless
+/// the deployment says so; before turning it on, every scheduler and control-plane replica must run this release
+/// (`docs/runbooks/workflow-primitives.md`, the fleet rule).
+fn collection_operators(get: Lookup<'_>) -> Result<bool, ConfigError> {
+    flag(get, "SAGAT_COLLECTION_OPERATORS_ENABLED")
+}
+
 /// Variables of the per-tenant request budget: (requests per second, burst).
 pub const TENANT_RATE_VARS: (&str, &str) = ("SAGAT_RATE_LIMIT_RPS", "SAGAT_RATE_LIMIT_BURST");
 /// Variables of the per-subject request budget: (requests per second, burst).
@@ -368,6 +397,33 @@ pub fn read_auth(get: Lookup<'_>) -> Result<AuthConfig, ConfigError> {
 pub struct ServeConfig {
     /// Opt in after every outbound process has been upgraded or stopped.
     pub redis_callbacks: bool,
+    /// Whether the schedule routes exist (`SAGAT_SCHEDULES_ENABLED`, off by default until the
+    /// feature is released). The engine fires schedules under the same flag.
+    pub schedules_enabled: bool,
+    /// Whether the batch operation routes exist (`SAGAT_BATCHES_ENABLED`, off by default until the
+    /// feature is released); the engine runs the jobs under the same flag.
+    pub batches_enabled: bool,
+    /// Whether a reset may deliver again the signals and the Updates of its source, and a workflow may declare
+    /// an Update with `reapplyOnReset` (`SAGAT_RESET_REAPPLY_ENABLED`, off by default until the feature is
+    /// released). The engine has no such setting: it reads the versions it was given (D1990).
+    pub reset_reapply_enabled: bool,
+    /// Whether a reset may cancel a run that has not ended and wait for it (`sourcePolicy` `CANCEL_SOURCE`,
+    /// `SAGAT_RESET_CANCEL_SOURCE_ENABLED`, off by default until the feature is released); the engine completes the
+    /// resets that wait under the same flag. With it off, a request for an open source is refused
+    /// `RESET_CANCEL_SOURCE_NOT_AVAILABLE`; a retry of one that was accepted is still answered.
+    pub reset_cancel_source_enabled: bool,
+    /// Whether a workflow may hold an Apache Iceberg write (`SAGAT_LAKE_ENABLED`, feature 035, off by default).
+    /// With it off, publishing such a workflow is refused with `LAKE_DISABLED`. With it on, publication still
+    /// waits for the checks of access, allowed modes and data classification.
+    pub lake_enabled: bool,
+    /// What publication does with an `inputSchema` outside the supported subset (`SAGAT_RUN_INPUT_VALIDATION`, design
+    /// 043, FR-043-013): `enforce` unless the operator says `report`. The instance-registry capability that keeps
+    /// replicas from answering differently comes with the start gate (T043-12).
+    pub run_input_validation: sagat_application::definitions::InputValidationMode,
+    /// Whether a `forEach` may declare `operators` (`SAGAT_COLLECTION_OPERATORS_ENABLED`, design 042). Off by default.
+    /// With it off, publishing such a workflow is refused with `COLLECTION_OPERATORS_DISABLED`; a stored one stays
+    /// readable and its runs apply their chain.
+    pub collection_operators_enabled: bool,
     /// Native TLS identity is required for the mTLS webhook profile; no forwarded headers are trusted.
     pub tls: Option<sagat_api_http::HttpTlsConfig>,
     pub webhook_oidc: Vec<sagat_api_http::auth::WebhookOidcConfig>,
@@ -407,6 +463,9 @@ pub struct ServeConfig {
     pub telemetry_lag_budget: Duration,
     pub blobs: Option<sagat_infra_blobstore::BlobSettings>,
     pub blob_transfer: sagat_api_http::HttpBlobTransfer,
+    /// How the process keeps its place in the instance-capability registry (`FR-018-052`). Not read from the
+    /// environment: a test sets it.
+    pub registry: sagat_application::instances::RegistrySettings,
 }
 
 impl ServeConfig {
@@ -563,6 +622,13 @@ impl ServeConfig {
         }
         Ok(Self {
             redis_callbacks: flag(get, "SAGAT_REDIS_CALLBACKS_ENABLED")?,
+            schedules_enabled: flag(get, "SAGAT_SCHEDULES_ENABLED")?,
+            batches_enabled: flag(get, "SAGAT_BATCHES_ENABLED")?,
+            reset_reapply_enabled: flag(get, "SAGAT_RESET_REAPPLY_ENABLED")?,
+            reset_cancel_source_enabled: flag(get, "SAGAT_RESET_CANCEL_SOURCE_ENABLED")?,
+            lake_enabled: flag(get, "SAGAT_LAKE_ENABLED")?,
+            run_input_validation: run_input_validation(get)?,
+            collection_operators_enabled: collection_operators(get)?,
             tls,
             webhook_oidc,
             webhook_oidc_development: environment == Environment::Dev,
@@ -602,6 +668,7 @@ impl ServeConfig {
             telemetry_lag_budget: Duration::from_secs(
                 optional(get, "SAGAT_TELEMETRY_LAG_BUDGET_SECS", 30u64)?.max(1),
             ),
+            registry: sagat_application::instances::RegistrySettings::default(),
             runbook_base: get("SAGAT_RUNBOOK_BASE_URL")
                 .map(|v| v.trim().to_owned())
                 .filter(|v| !v.is_empty())

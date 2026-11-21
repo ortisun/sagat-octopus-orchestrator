@@ -5,9 +5,9 @@ use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
 
 use sagat_application::error::AppError;
-use sagat_application::runs::{Lock, RunStore};
+use sagat_application::runs::{Lock, ReviewAction, RunStore};
 use sagat_application::worker::Capabilities;
-use sagat_domain::execution::{RunStatus, StepStatus};
+use sagat_domain::execution::{FailureCode, ReviewOutcome, RunStatus, StepStatus};
 use sagat_domain::quota::QuotaResource;
 use serde_json::json;
 
@@ -378,13 +378,18 @@ async fn a_poll_never_waits_for_a_run_that_another_transaction_holds() {
         "polling blocked for {:?}",
         started.elapsed()
     );
-    drop(held); // rolls back
-
-    assert_eq!(
-        w.poll(&session, 4).await.len(),
-        1,
-        "and picked up as soon as it is free"
-    );
+    // Dropping the transaction only starts its rollback: the connection sends it on its own time, and
+    // until the server has read it the row is still locked and a poll skips the run (it did, on a busy
+    // runner, and the test saw 0 where it expected 1). The run is picked up once the lock is gone, so
+    // the poll is repeated until then, with a bound.
+    drop(held);
+    let give_up = Instant::now() + Duration::from_secs(60);
+    let mut picked = w.poll(&session, 4).await.len();
+    while picked == 0 && Instant::now() < give_up {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        picked = w.poll(&session, 4).await.len();
+    }
+    assert_eq!(picked, 1, "and picked up once it is free");
 }
 
 #[tokio::test]
@@ -450,7 +455,17 @@ async fn a_completion_racing_a_lease_expiry_has_exactly_one_winner() {
             assert_eq!(w.step_status(run, "a").await, Some(StepStatus::Succeeded));
         } else {
             assert_eq!(completion.map(|_| ()), Err(AppError::StaleAttempt));
-            assert_eq!(w.step_status(run, "a").await, Some(StepStatus::RetryWait));
+            assert_eq!(w.step_status(run, "a").await, Some(StepStatus::Waiting));
+            assert_eq!(w.run_status(run).await, RunStatus::ManualReview);
+            assert!(w.poll(&session, 8).await.is_empty(), "no automatic retry");
+            w.review(
+                run,
+                "a",
+                ReviewAction::Resolve(ReviewOutcome::Succeeded),
+                "provider confirms the raced completion was applied",
+            )
+            .await
+            .expect("resolve the uncertain winner");
         }
         w.assert_consistent(run).await;
         // Leave nothing ready behind for the next round to trip over.
@@ -518,9 +533,22 @@ async fn heartbeats_from_a_worker_that_lost_its_lease_do_not_resurrect_it() {
     );
     assert_eq!(
         w.step_status(run, "a").await,
-        Some(StepStatus::RetryWait),
+        Some(StepStatus::Waiting),
         "a late heartbeat changed nothing"
     );
+    assert_eq!(w.run_status(run).await, RunStatus::ManualReview);
+    assert!(w.poll(&zombie, 8).await.is_empty(), "no replacement lease");
+    w.review(
+        run,
+        "a",
+        ReviewAction::Resolve(ReviewOutcome::Failed(
+            FailureCode::parse("OPERATOR_CONFIRMED_NOT_APPLIED").unwrap(),
+        )),
+        "provider confirms the lost attempt did not apply",
+    )
+    .await
+    .expect("resolve the uncertain attempt");
+    assert_eq!(w.run_status(run).await, RunStatus::Failed);
     w.assert_consistent(run).await;
 }
 

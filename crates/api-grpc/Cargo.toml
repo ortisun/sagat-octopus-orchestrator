@@ -20,6 +20,7 @@ sagat-api-http.workspace = true
 sagat-application.workspace = true
 sagat-domain.workspace = true
 sagat-telemetry.workspace = true
+rustls.workspace = true
 sha2 = "0.11"
 time = { workspace = true, features = ["formatting", "macros"] }
 tokio = { workspace = true, features = ["net", "time"] }

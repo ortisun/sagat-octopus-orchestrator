@@ -5,7 +5,7 @@
 //! finish additionally require an immutable definition cache. Runtime orchestration stays gated
 //! until the planner owns scoped routing and supplies semantic audit evidence for every transition.
 
-use sagat_application::collection_source::{SourceManifest, items_digest as source_items_digest};
+use sagat_application::collection_source::{BlobManifest, items_digest as source_items_digest};
 use sagat_application::error::StoreError;
 use sagat_application::execution::{
     Actor, DefinitionCache, Effects, EndOutputAnswer, MAX_PAYLOAD_BYTES, MAX_RUN_OUTPUT_BYTES,
@@ -22,7 +22,7 @@ use sagat_domain::audit::{AuditAction, ResourceType};
 use sagat_domain::definition::WorkflowVersionId;
 use sagat_domain::execution::{
     CollectionDrainReason, CollectionOutcome, Evaluation, ExecutionInstanceId, FailureCode,
-    InstancePath, Resolution, RunEvent,
+    InstancePath, Resolution, RunEvent, StepStatus,
 };
 use sagat_domain::identity::{NamespaceId, Subject, TenantId};
 use sagat_domain::outbound::OutboundKind;
@@ -1158,6 +1158,22 @@ async fn outbox_run_finished(
     .execute(&mut *conn)
     .await
     .map_err(store_error)?;
+    let mut data = json!({
+        "tenantId": transition.tenant_id().to_string(),
+        "namespaceId": transition.namespace_id().to_string(),
+        "runId": transition.run_id().to_string(),
+        "workflow": definition.name().as_str(),
+        "status": status,
+        "traceId": transition.trace_id(),
+    });
+    // The schedule that started the run, when one did (`FR-018-046`).
+    crate::outbound::add_schedule_origin(
+        &mut *conn,
+        transition.tenant_id(),
+        transition.run_id().as_uuid(),
+        &mut data,
+    )
+    .await?;
     let body = json!({
         "id": message.to_string(),
         "type": "run.finished",
@@ -1165,14 +1181,7 @@ async fn outbox_run_finished(
             .occurred_at()
             .format(&time::format_description::well_known::Rfc3339)
             .unwrap_or_default(),
-        "data": {
-            "tenantId": transition.tenant_id().to_string(),
-            "namespaceId": transition.namespace_id().to_string(),
-            "runId": transition.run_id().to_string(),
-            "workflow": definition.name().as_str(),
-            "status": status,
-            "traceId": transition.trace_id(),
-        },
+        "data": data,
     });
     crate::outbound::fan_out(
         conn,
@@ -1427,7 +1436,9 @@ impl CollectionStore for PgCollectionStore {
                 content,
             ));
         }
-        if let Some(manifest) = SourceManifest::parse(&snapshot) {
+        // A blob-sourced scope stores a manifest, of a plain read or of a chained one (design 042, FR-042-010): either
+        // way the stored items are checked against the count and digest it records; the blob is never read again.
+        if let Some(manifest) = BlobManifest::parse(&snapshot) {
             if usize::try_from(manifest.count()).ok() != Some(items.len())
                 || source_items_digest(&items) != *manifest.items_digest()
             {
@@ -1566,9 +1577,9 @@ impl CollectionStore for PgCollectionStore {
         )
         .await?;
         let item_payloads = if let Some(source) = entry.blob_source() {
-            // The snapshot payload is the manifest of a blob read: it must describe exactly the
-            // items the entry carries, so the digest the scope pins is the membership.
-            let manifest = SourceManifest::parse(&snapshot_content)
+            // The snapshot payload is the manifest of a blob read (or of a chain applied to one, design 042): it must
+            // describe exactly the items the entry carries, so the digest the scope pins is the membership.
+            let manifest = BlobManifest::parse(&snapshot_content)
                 .ok_or(PrimitiveStoreError::InvalidTransition)?;
             if manifest.blob().id() != source.blob
                 || usize::try_from(manifest.count()).ok() != Some(source.items.len())
@@ -3032,6 +3043,15 @@ impl CollectionStore for PgCollectionStore {
             "collection drain path",
         )
         .map_err(PrimitiveStoreError::Storage)?;
+        let member_status: std::collections::HashMap<String, String> = member_steps
+            .iter()
+            .map(|step| {
+                (
+                    step.get::<String, _>("node"),
+                    step.get::<String, _>("status"),
+                )
+            })
+            .collect();
         let mut event_waits = Vec::new();
         for step in &member_steps {
             let node = NodeId::parse_stored(&step.get::<String, _>("node"))
@@ -3041,12 +3061,30 @@ impl CollectionStore for PgCollectionStore {
                 status.as_str(),
                 "SUCCEEDED" | "FAILED" | "CANCELLED" | "SKIPPED"
             );
+            let derived_settled = status.parse::<StepStatus>().is_ok_and(|parsed| {
+                sagat_domain::execution::derived_settles_drain(
+                    &ExecutionInstanceId::in_path(member_path.clone(), node.clone()),
+                    parsed,
+                    node.forward()
+                        .and_then(|forward| member_status.get(forward.as_str()))
+                        .and_then(|original| original.parse::<StepStatus>().ok()),
+                )
+            });
             // Nothing is in flight: a step that has not started, or that waits to retry or is
-            // ready to retry in a run that is stopping (it can no longer be leased). One whose last
-            // attempt was lost keeps saying so when it is cancelled, and is compensated.
+            // ready to retry in a run that is stopping (it can no longer be leased). A v0.1/v0.2 retry
+            // of an unknown outcome is not safe: it holds the drain until its due retry turns it
+            // into a review (feature 037, `retry_wait_holds_drain`).
             let safe_unstarted = (matches!(status.as_str(), "PENDING" | "READY")
                 && step.get::<i32, _>("attempt") == 0)
-                || matches!(status.as_str(), "READY" | "RETRY_WAIT");
+                || (matches!(status.as_str(), "READY" | "RETRY_WAIT")
+                    && !status.parse::<StepStatus>().is_ok_and(|parsed| {
+                        sagat_domain::execution::retry_wait_holds_drain(
+                            parsed,
+                            step.get::<Option<String>, _>("failure_code")
+                                .and_then(|code| FailureCode::parse(&code).ok())
+                                .as_ref(),
+                        )
+                    }));
             let instance = ExecutionInstanceId::in_path(member_path.clone(), node.clone());
             let waiting_suspension = if matches!(
                 definition.node_for_instance(&instance).map(Node::kind),
@@ -3079,7 +3117,7 @@ impl CollectionStore for PgCollectionStore {
             } else {
                 false
             };
-            if (node.is_derived() && !matches!(status.as_str(), "SUCCEEDED" | "SKIPPED"))
+            if (node.is_derived() && !derived_settled)
                 || (!terminal && !safe_unstarted && !waiting_suspension)
             {
                 return Err(PrimitiveStoreError::InvalidTransition);

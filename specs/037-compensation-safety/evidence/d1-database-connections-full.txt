@@ -1,0 +1,211 @@
+warning: field `tagged_fields` is never read
+   --> vendor/rskafka/src/protocol/messages/create_topics.rs:291:9
+    |
+278 | pub struct CreateTopicsResponse {
+    |            -------------------- field in this struct
+...
+291 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `CreateTopicsResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: fields `name`, `value`, `read_only`, `config_source`, `is_sensitive`, and `tagged_fields` are never read
+   --> vendor/rskafka/src/protocol/messages/create_topics.rs:321:9
+    |
+319 | pub struct CreateTopicResponseConfig {
+    |            ------------------------- fields in this struct
+320 |     /// The configuration name.
+321 |     pub name: CompactString,
+    |         ^^^^
+...
+324 |     pub value: CompactNullableString,
+    |         ^^^^^
+...
+327 |     pub read_only: Boolean,
+    |         ^^^^^^^^^
+...
+330 |     pub config_source: Int8,
+    |         ^^^^^^^^^^^^^
+...
+333 |     pub is_sensitive: Boolean,
+    |         ^^^^^^^^^^^^
+...
+336 |     pub tagged_fields: TaggedFields,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `CreateTopicResponseConfig` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: fields `num_partitions`, `replication_factor`, `configs`, and `tagged_fields` are never read
+   --> vendor/rskafka/src/protocol/messages/create_topics.rs:374:9
+    |
+359 | pub struct CreateTopicResponse {
+    |            ------------------- fields in this struct
+...
+374 |     pub num_partitions: Option<Int32>,
+    |         ^^^^^^^^^^^^^^
+...
+379 |     pub replication_factor: Option<Int16>,
+    |         ^^^^^^^^^^^^^^^^^^
+...
+384 |     pub configs: Vec<CreateTopicResponseConfig>,
+    |         ^^^^^^^
+...
+389 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `CreateTopicResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: fields `low_watermark` and `tagged_fields` are never read
+   --> vendor/rskafka/src/protocol/messages/delete_records.rs:182:9
+    |
+177 | pub struct DeleteResponsePartition {
+    |            ----------------------- fields in this struct
+...
+182 |     pub low_watermark: Int64,
+    |         ^^^^^^^^^^^^^
+...
+190 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `DeleteResponsePartition` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `tagged_fields` is never read
+   --> vendor/rskafka/src/protocol/messages/delete_records.rs:226:9
+    |
+216 | pub struct DeleteResponseTopic {
+    |            ------------------- field in this struct
+...
+226 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `DeleteResponseTopic` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `tagged_fields` is never read
+   --> vendor/rskafka/src/protocol/messages/delete_records.rs:269:9
+    |
+258 | pub struct DeleteRecordsResponse {
+    |            --------------------- field in this struct
+...
+269 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `DeleteRecordsResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `tagged_fields` is never read
+   --> vendor/rskafka/src/protocol/messages/delete_topics.rs:101:9
+    |
+ 88 | pub struct DeleteTopicsResponse {
+    |            -------------------- field in this struct
+...
+101 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `DeleteTopicsResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `tagged_fields` is never read
+   --> vendor/rskafka/src/protocol/messages/delete_topics.rs:144:9
+    |
+129 | pub struct DeleteTopicsResponseTopic {
+    |            ------------------------- field in this struct
+...
+144 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `DeleteTopicsResponseTopic` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: fields `producer_id` and `first_offset` are never read
+   --> vendor/rskafka/src/protocol/messages/fetch.rs:170:9
+    |
+168 | pub struct FetchResponseAbortedTransaction {
+    |            ------------------------------- fields in this struct
+169 |     /// The producer id associated with the aborted transaction.
+170 |     pub producer_id: Int64,
+    |         ^^^^^^^^^^^
+...
+173 |     pub first_offset: Int64,
+    |         ^^^^^^^^^^^^
+    |
+    = note: `FetchResponseAbortedTransaction` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `aborted_transactions` is never read
+   --> vendor/rskafka/src/protocol/messages/fetch.rs:213:9
+    |
+192 | pub struct FetchResponsePartition {
+    |            ---------------------- field in this struct
+...
+213 |     pub aborted_transactions: Vec<FetchResponseAbortedTransaction>,
+    |         ^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `FetchResponsePartition` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `timestamp` is never read
+   --> vendor/rskafka/src/protocol/messages/list_offsets.rs:184:9
+    |
+169 | pub struct ListOffsetsResponsePartition {
+    |            ---------------------------- field in this struct
+...
+184 |     pub timestamp: Option<Int64>,
+    |         ^^^^^^^^^
+    |
+    = note: `ListOffsetsResponsePartition` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: fields `log_append_time_ms` and `log_start_offset` are never read
+   --> vendor/rskafka/src/protocol/messages/produce.rs:148:9
+    |
+132 | pub struct ProduceResponsePartitionResponse {
+    |            -------------------------------- fields in this struct
+...
+148 |     pub log_append_time_ms: Option<Int64>,
+    |         ^^^^^^^^^^^^^^^^^^
+...
+153 |     pub log_start_offset: Option<Int64>,
+    |         ^^^^^^^^^^^^^^^^
+    |
+    = note: `ProduceResponsePartitionResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: fields `session_lifetime_ms` and `tagged_fields` are never read
+   --> vendor/rskafka/src/protocol/messages/sasl_msg.rs:198:9
+    |
+181 | pub struct SaslAuthenticateResponse {
+    |            ------------------------ fields in this struct
+...
+198 |     pub session_lifetime_ms: Option<Int64>,
+    |         ^^^^^^^^^^^^^^^^^^^
+...
+203 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `SaslAuthenticateResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: struct `CompactArray` is never constructed
+   --> vendor/rskafka/src/protocol/primitives.rs:725:12
+    |
+725 | pub struct CompactArray<T>(pub Option<Vec<T>>);
+    |            ^^^^^^^^^^^^
+
+warning: `rskafka` (lib) generated 14 warnings
+    Finished `test` profile [unoptimized] target(s) in 1.32s
+     Running integration/database-connections/main.rs (/var/folders/60/bf6rmfzx6zq67nrbzb3m0p480000gn/T/sagat-037-target-q0fwz2gu/debug/deps/integration_database_connections-46c2df7422044c61)
+
+running 7 tests
+test bounded_stages::a_scenario_that_finishes_returns_its_value ... ok
+test bounded_stages::a_scenario_that_stalls_names_the_stage_it_was_in - should panic ... ok
+test bounded_stages::a_stage_that_does_not_finish_is_named_with_its_limit - should panic ... ok
+test bounded_stages::a_lease_that_expired_before_the_provider_read_fails_instead_of_waiting_for_a_read - should panic ... ok
+test requiring_openbao_never_silently_creates_a_local_secret ... ok
+test results::openapi_and_retained_database_result_contracts_are_identical ... ok
+2026-11-01T16:51:07.770571Z ERROR sagat_infra_postgres::identity: storage failure detail=error returned from database: injected before commit at line 3897 service=sagat
+2026-11-01T16:51:07.772627Z  WARN sqlx::postgres::notice: there is no transaction in progress service=sagat
+2026-11-01T16:51:42.814436Z  WARN sqlx::query: slow statement: execution time exceeded alert threshold db.statement=\n\n-- Feature 004, events in: endpoints that receive signed webhooks, the inbox every event is admitted\n-- to, the deliveries that say what an event woke or started, and the triggers of the active\n-- versions (FR-004-001..004, FR-004-008).\n\n-- Where a provider posts signed events. The id is what the provider's URL carries, so it is random\n-- (never time-ordered); the slug is what a workflow's trigger names.\nCREATE TABLE event_endpoints (\n    id                 uuid        PRIMARY KEY,\n    tenant_id          uuid        NOT NULL REFERENCES tenants (id),\n    namespace_id       uuid        NOT NULL,\n    slug               text        NOT NULL,\n    -- The authentication profile: HMAC today; the others are decisions recorded in the research.\n    profile            text        NOT NULL DEFAULT 'HMAC',\n    -- The secret of the namespace that signs the requests. Names only: a value never lives here.\n    secret_name        text        NOT NULL,\n    default_event_type text,\n    dedupe_ttl_seconds integer     NOT NULL,\n    skew_seconds       integer     NOT NULL,\n    max_body_bytes     integer     NOT NULL,\n    rate_per_second    integer     NOT NULL,\n    status             text        NOT NULL DEFAULT 'ACTIVE',\n    created_by         text        NOT NULL,\n    created_at         timestamptz NOT NULL DEFAULT clock_timestamp(),\n    updated_at         timestamptz NOT NULL DEFAULT clock_timestamp(),\n    CONSTRAINT event_endpoints_tenant_id_uniq UNIQUE (tenant_id, id),\n    CONSTRAINT event_endpoints_slug_uniq UNIQUE (tenant_id, namespace_id, slug),\n    CONSTRAINT event_endpoints_namespace_fk FOREIGN KEY (tenant_id, namespace_id)\n        REFERENCES namespaces (tenant_id, id),\n    CONSTRAINT event_endpoints_profile_valid CHECK (profile IN ('HMAC')),\n    CONSTRAINT event_endpoints_status_valid CHECK (status IN ('ACTIVE', 'PAUSED')),\n    CONSTRAINT event_endpoints_secret_format CHECK (secret_name ~ '^[a-z][a-z0-9._-]{0,63}$'),\n    CONSTRAINT event_endpoints_ttl_range CHECK (dedupe_ttl_seconds BETWEEN 60 AND 2592000),\n    CONSTRAINT e…[17617 characters cut] elapsed=1.021610458s elapsed_secs=1.021610458 rows_affected=0 rows_returned=0 service=sagat slow_threshold=1s summary=-- Feature 004, events …
+test durable_provider_intents_reconcile_without_plaintext_or_duplicate_rotation has been running for over 60 seconds
+2026-11-01T16:52:24.211539Z  WARN sqlx::query: slow statement: execution time exceeded alert threshold db.statement=\n\nSELECT w.expires_at FROM steps s JOIN worker_sessions w ON w.tenant_id=s.tenant_id AND w.id::text=s.leased_by\n             WHERE s.tenant_id=$1 AND s.run_id=$2 AND s.node=$3 AND cardinality(s.instance_path_nodes)=0 AND cardinality(s.instance_path_indices)=0 AND w.namespace_id=$4\n               AND w.subject=$5 AND w.accepted_protocol_minor>=6\n             FOR SHARE OF w\n elapsed=2.980078875s elapsed_secs=2.9800788750000002 rows_affected=1 rows_returned=1 service=sagat slow_threshold=1s summary=SELECT w.expires_at FROM steps …
+2026-11-01T16:52:25.01346Z ERROR sagat_infra_postgres::identity: storage failure detail=error returned from database: audit unavailable at line 3897 service=sagat
+2026-11-01T16:52:49.713527Z  WARN sqlx::postgres::notice: there is no transaction in progress service=sagat
+2026-11-01T16:53:00.144111Z ERROR sagat_infra_postgres::identity: storage failure detail=error returned from database: injected disclosure audit failure at line 3897 service=sagat
+2026-11-01T16:53:03.416432Z ERROR sagat_infra_postgres::identity: storage failure detail=error returned from database: injected audit failure at line 3897 service=sagat
+2026-11-01T16:53:03.421841Z ERROR sagat_api_grpc::service: worker call failed internally method=WriteBlob service=sagat
+test durable_provider_intents_reconcile_without_plaintext_or_duplicate_rotation ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 144.88s
+

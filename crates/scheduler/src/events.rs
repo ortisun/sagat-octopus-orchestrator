@@ -8,10 +8,11 @@
 //! one finishes the job without doing anything twice. A failure that is not a crash is retried with
 //! backoff until the event is set aside as dead, where an operator can see it and why.
 
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 use sagat_application::clock::{Clock, SystemClock};
-use sagat_application::definitions::{Applied, DefinitionStore, Idempotency};
+use sagat_application::definitions::{DefinitionStore, Idempotency};
 use sagat_application::dispatch::{
     CLAIM_LEASE, ClaimedEvent, CronSchedule, DeliveryRef, EventDispatchStore, EventView,
     StoredTrigger, WaitingStep, start_key,
@@ -23,12 +24,16 @@ use sagat_application::execution::{
     MAX_RUN_OUTPUT_BYTES, PathExecutionStore, PathExecutionTx, RunInfo, RunTx,
 };
 use sagat_application::quotas::RunLimits;
-use sagat_application::runs::{Lock, NewRun, RunStore};
+use sagat_application::run_input::{Creator, FieldPolicy, InputRefusal, RunInputGate};
+use sagat_application::runs::{Admitted, Lock, NewRun, RunStore};
+use sagat_application::schedule_triggers::{
+    HandoverCache, cron_document, tick_identity, tick_reason,
+};
 use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
 use sagat_domain::events::{
     GIVE_UP_AFTER, MAX_DISPATCH_ATTEMPTS, capacity_backoff, dispatch_backoff,
 };
-use sagat_domain::execution::{self, ExecutionError, RunId, StepStatus, WaitingOn};
+use sagat_domain::execution::{self, ExecutionError, RunId, StepStatus, WaitVia, WaitingOn};
 use sagat_domain::workflow::{Node, NodeKind, WorkflowDefinition};
 use time::OffsetDateTime;
 
@@ -98,6 +103,17 @@ struct Firing<'a> {
     reason: String,
     /// The event that fired it, when it was one.
     event: Option<&'a ClaimedEvent>,
+    /// The cron tick that fired it, when it was one: the trigger, the time it fires for and the time it moves to.
+    tick: Option<CronTick>,
+}
+
+/// A cron tick: the trigger, the time it fires for and the next time, so that a refusal moves the trigger in the
+/// transaction of its audit (D043-156).
+#[derive(Debug, Clone, Copy)]
+struct CronTick {
+    trigger: uuid::Uuid,
+    scheduled: OffsetDateTime,
+    next: OffsetDateTime,
 }
 
 /// How starting a run for a trigger ended.
@@ -122,6 +138,13 @@ pub struct EventDispatcher<S, E, R> {
     clock: Arc<dyn Clock>,
     /// Only fairness position. Every pending scan remains durable in PostgreSQL after restart.
     scan_cursor: Mutex<Option<WaitingStep>>,
+    /// Whether the cron triggers were handed over to the schedule pass, remembered between rounds.
+    handover: HandoverCache,
+    /// Checks the input of every run a trigger starts against its version's schema (design 043, rows 9 and 10).
+    run_inputs: Arc<RunInputGate>,
+    /// How many reads of the handover state failed in a row: a pass that cannot read it goes on firing (a tick fired twice
+    /// starts once; one not fired is lost), so the run of failures is what an operator is told (D2075).
+    handover_failures: AtomicU32,
 }
 
 impl<S, E, R> std::fmt::Debug for EventDispatcher<S, E, R> {
@@ -152,13 +175,32 @@ where
             cron: None,
             clock: Arc::new(SystemClock),
             scan_cursor: Mutex::new(None),
+            handover: HandoverCache::new(HandoverCache::LEGACY_BOUND),
+            handover_failures: AtomicU32::new(0),
+            run_inputs: RunInputGate::unwired(),
         }
+    }
+
+    /// The gate the input of every run a trigger starts goes through (design 043). Without it a trigger of a version with
+    /// an `inputSchema` is retried as transient, never started unchecked.
+    #[must_use]
+    pub fn with_run_inputs(mut self, gate: Arc<RunInputGate>) -> Self {
+        self.run_inputs = gate;
+        self
     }
 
     /// Measures lag and age against another clock (a test's).
     #[must_use]
     pub fn with_clock(mut self, clock: Arc<dyn Clock>) -> Self {
         self.clock = clock;
+        self
+    }
+
+    /// How long the dispatcher believes the cron triggers have not been handed over to the schedule pass before it reads
+    /// the state again (two seconds by default; a test that moves the state by hand reads it at every round with zero).
+    #[must_use]
+    pub fn with_handover_bound(mut self, bound: std::time::Duration) -> Self {
+        self.handover = HandoverCache::new(bound);
         self
     }
 
@@ -379,6 +421,7 @@ where
                 event.envelope.key.source, event.envelope.key.event_id, trigger.registration.id
             ),
             event: Some(event),
+            tick: None,
         };
         self.start(trigger, &firing, document).await
     }
@@ -406,6 +449,29 @@ where
             .map_err(|_| StoreError::Internal {
                 detail: "a stored version no longer parses".into(),
             })?;
+        // Design 043, rows 9 and 10: the envelope is checked against the schema of the version the trigger names before
+        // anything is written. A refusal starts nothing and is recorded once; a transient one retries the event.
+        let input = match self
+            .run_inputs
+            .check(
+                tenant,
+                trigger.version_id,
+                &definition,
+                document.to_vec(),
+                Creator::Trigger,
+                FieldPolicy::Show,
+            )
+            .await
+        {
+            Ok(input) => input,
+            Err(InputRefusal::Unavailable) => {
+                return Err(StoreError::Unavailable {
+                    detail: INPUT_NOT_CHECKED.into(),
+                }
+                .into());
+            }
+            Err(refusal) => return self.refuse(trigger, firing, &refusal).await,
+        };
         let run_id = RunId::generate();
         let now = OffsetDateTime::now_utc();
         // The run continues the trace of the event that started it when its publisher sent one
@@ -434,6 +500,7 @@ where
             parent: None,
             depth: 0,
             root: run_id,
+            business_id: None,
         };
         let audit = AuditRecord::engine(
             tenant,
@@ -446,11 +513,13 @@ where
         );
         let limits = RunLimits::of(&self.store, tenant, trigger.namespace_id).await?;
         let new = NewRun {
+            schedule: None,
+            business: None,
             retained: None,
             limits,
             info,
             definition: Arc::clone(&definition),
-            input: document.to_vec(),
+            input,
             input_blob: None,
             audit,
             idempotency: Idempotency {
@@ -458,11 +527,14 @@ where
                 key: firing.key.clone(),
                 fingerprint: firing.fingerprint.clone(),
             },
+            reset_sequence: None,
+            pending_reset: None,
         };
         match self.store.create(new).await {
             // An earlier dispatch of this event already started it.
-            Ok(Applied::Replayed(_)) => Ok(Started::No),
-            Ok(Applied::Done(mut tx)) => {
+            // (an event never carries a business identifier, so a holder is never returned)
+            Ok(Admitted::Replayed(_) | Admitted::Existing(_)) => Ok(Started::No),
+            Ok(Admitted::Created(mut tx)) => {
                 // An event leaves the evidence of its delivery with the run it starts.
                 if let Some(event) = firing.event {
                     let delivery = DeliveryRef::to_trigger(event, trigger.registration.id, run_id);
@@ -504,6 +576,87 @@ where
             }
             Err(other) => Err(other.into()),
         }
+    }
+
+    /// Records that `trigger` started nothing for `firing` because its version refused the input (`FR-043-007`): for an
+    /// event, its delivery to the trigger with no run and, only when that delivery is new, one value-free audit record,
+    /// in one transaction, so a redelivery repeats neither; for a cron tick, which has no inbox event, the audit names the
+    /// tick's key and is written in the transaction that moves the trigger, by the one dispatcher that moves it
+    /// (G043-002, D043-156). Then the metric, and the other consumers of the event are still served.
+    async fn refuse(
+        &self,
+        trigger: &StoredTrigger,
+        firing: &Firing<'_>,
+        refusal: &InputRefusal,
+    ) -> Result<Started, EngineError> {
+        let audit = AuditRecord::engine(
+            trigger.tenant_id,
+            AuditAction::RunInputRefused,
+            ResourceType::WorkflowVersion,
+            trigger.version_id.to_string(),
+            match firing.event {
+                Some(_) => format!(
+                    "{} via trigger {}",
+                    refusal.summary(),
+                    trigger.registration.id
+                ),
+                None => format!(
+                    "{} via trigger {} at tick {}",
+                    refusal.summary(),
+                    trigger.registration.id,
+                    firing.key
+                ),
+            },
+            None,
+            OffsetDateTime::now_utc(),
+        );
+        match firing.event {
+            Some(event) => {
+                let delivery = DeliveryRef::refused_at_trigger(event, trigger.registration.id);
+                self.store
+                    .record_refused_delivery(trigger.tenant_id, &delivery, &audit)
+                    .await?;
+            }
+            None => match firing.tick {
+                // one transaction with the move of the trigger, written only by the dispatcher that moved it
+                Some(tick) => {
+                    // A peer that admitted the tick (in `report` mode, or a 0.2.x engine) and stopped before it moved
+                    // the trigger left a run under the tick's key: the tick has a run and is not a refusal; the round
+                    // moves the trigger on as for any tick already started (correctness review of 2026-11-16, Nit 9).
+                    let key = Idempotency {
+                        scope: format!("trigger:{}", trigger.registration.id),
+                        key: firing.key.clone(),
+                        fingerprint: firing.fingerprint.clone(),
+                    };
+                    if self
+                        .store
+                        .replay_start(
+                            trigger.tenant_id,
+                            sagat_domain::identity::Subject::engine().as_str(),
+                            &key,
+                        )
+                        .await?
+                        .is_some()
+                    {
+                        return Ok(Started::No);
+                    }
+                    self.store
+                        .refuse_cron_tick(tick.trigger, tick.scheduled, tick.next, &audit)
+                        .await?;
+                }
+                None => RunStore::record_refusal(&self.store, &audit).await?,
+            },
+        }
+        // once per dispatch (CUJ 3): a redelivery counts again and records nothing again
+        metrics::counter!(
+            "trigger_events_total",
+            "outcome" => match refusal {
+                InputRefusal::SchemaUnusable => "input_schema_unusable",
+                _ => "input_invalid",
+            }
+        )
+        .increment(1);
+        Ok(Started::No)
     }
 
     /// Wakes `step` with `event`, once.
@@ -580,7 +733,8 @@ where
         match self
             .engine
             .run(&mut tx, effects, move |def, state, now| {
-                let progress = execution::satisfy_wait(def, state, &node, now)?;
+                let progress =
+                    execution::satisfy_wait(def, state, &node, now, Some(WaitVia::Event))?;
                 Ok(((), progress))
             })
             .await
@@ -675,6 +829,42 @@ where
         Ok(Woken::Yes)
     }
 
+    /// Whether the cron triggers were handed over to the schedule pass. A state that cannot be read, or that this build does
+    /// not know, is not a handover: firing a tick twice starts it once (the key), and not firing it would lose it.
+    async fn cron_handed_over(&self) -> bool {
+        let now = std::time::Instant::now();
+        if let Some(known) = self.handover.recall(now) {
+            return known;
+        }
+        match self.store.trigger_handover().await {
+            Ok(state) => {
+                self.handover_failures.store(0, Ordering::Relaxed);
+                metrics::gauge!("cron_handover_read_consecutive_failures").set(0.0);
+                let handed = state.is_handed_over();
+                self.handover.remember(now, handed);
+                if handed {
+                    tracing::info!(
+                        "the cron triggers were handed over to the schedule pass: this replica's legacy cron pass has stopped"
+                    );
+                }
+                handed
+            }
+            Err(error) => {
+                // Failing closed would lose ticks on a fleet whose engines do not run the schedule pass (the census guarantees
+                // `schedules-v1` at the handover, not before it), and this process cannot tell which fleet it is in: the pass goes
+                // on, a tick it fires twice starts once (the key), and the run of failures is counted and alerted on (D2075).
+                let failed = self
+                    .handover_failures
+                    .fetch_add(1, Ordering::Relaxed)
+                    .saturating_add(1);
+                metrics::counter!("cron_handover_read_failures_total").increment(1);
+                metrics::gauge!("cron_handover_read_consecutive_failures").set(f64::from(failed));
+                tracing::warn!(%error, failed, "could not read whether the cron triggers were handed over; the legacy cron pass goes on");
+                false
+            }
+        }
+    }
+
     /// Fires the cron triggers whose time has come.
     ///
     /// A firing is made first, under an idempotency key that names the scheduled instant, and the
@@ -687,6 +877,11 @@ where
         let Some(calendar) = &self.cron else {
             return;
         };
+        // After the operator's handover the schedule pass fires the cron triggers and this pass starts nothing (D1034):
+        // the state is read at most every two seconds, and a handover is never read again.
+        if self.cron_handed_over().await {
+            return;
+        }
         let due = match self.store.due_cron_triggers(self.settings.batch).await {
             Ok(due) => due,
             Err(error) => {
@@ -695,6 +890,11 @@ where
             }
         };
         for trigger in due {
+            // The state is read (cached, at most two seconds old) before each trigger and not once for the round: a start can
+            // take as long as the database lets it, and a round that began before the handover must not fire after it (D2072).
+            if self.cron_handed_over().await {
+                return;
+            }
             let Some(schedule) = &trigger.registration.schedule else {
                 continue;
             };
@@ -724,26 +924,20 @@ where
             };
             let lag = (now - scheduled).as_seconds_f64().max(0.0);
             metrics::histogram!("cron_fire_lag_seconds").record(lag);
-            let epoch = scheduled.unix_timestamp();
-            let at = ClaimedEvent::rfc3339(scheduled);
-            let fired = ClaimedEvent::rfc3339(now);
-            let data = format!(r#"{{"scheduledAt":"{at}","firedAt":"{fired}"}}"#);
-            let event_id = format!("cron:{id}:{epoch}");
-            let document = self.engine.evaluator().event_document(&EventView {
-                id: &event_id,
-                source: "cron",
-                event_type: "cron.fired",
-                subject: None,
-                correlation_key: None,
-                occurred_at: Some(&at),
-                received_at: &fired,
-                data: data.as_bytes(),
-            });
+            // the identity, the reason and the document of a tick are the ones the schedule pass uses (one implementation:
+            // `application::schedule_triggers`), so that whichever pass reaches the tick starts the same run
+            let identity = tick_identity(id, scheduled);
+            let document = cron_document(id, scheduled, now);
             let firing = Firing {
-                key: format!("cron-{epoch}"),
-                fingerprint: epoch.to_be_bytes().to_vec(),
-                reason: format!("cron trigger {id} scheduled for {at}"),
+                key: identity.key,
+                fingerprint: identity.fingerprint,
+                reason: tick_reason(id, scheduled),
                 event: None,
+                tick: Some(CronTick {
+                    trigger: id,
+                    scheduled,
+                    next,
+                }),
             };
             match self.start(&trigger, &firing, &document).await {
                 Ok(started) => {
@@ -855,10 +1049,18 @@ const fn is_waiting_for_room(error: &EngineError) -> bool {
     )
 }
 
+/// The detail of a dispatch that waits for room in the run-input validator (design 043): no permit within the wait, the
+/// backstop, an interrupted compile. Transient, like a store that cannot be reached, and said as itself.
+const INPUT_NOT_CHECKED: &str = "the run input could not be checked now";
+
 /// What the event records about a failed dispatch: a class, never a detail (details can carry
 /// identifiers and are only in the logs).
 fn describe(error: &EngineError) -> &'static str {
     match error {
+        // architecture review of 2026-11-15, Nit 12: not a storage fault
+        EngineError::Store(StoreError::Unavailable { detail }) if detail == INPUT_NOT_CHECKED => {
+            "the run input could not be checked now; will retry"
+        }
         EngineError::Store(StoreError::Unavailable { .. }) => "storage unavailable; will retry",
         EngineError::Store(StoreError::QuotaExceeded { .. }) => {
             "a quota of the namespace or tenant was reached; will retry"
@@ -866,5 +1068,26 @@ fn describe(error: &EngineError) -> &'static str {
         EngineError::Store(StoreError::MissingReference) => "a referenced resource is gone",
         EngineError::Store(_) => "storage error; see the logs",
         EngineError::Execution(_) => "the run refused the command; see the logs",
+    }
+}
+
+#[cfg(test)]
+mod input_not_checked_tests {
+    use super::*;
+
+    /// A trigger start that waits for room in the run-input validator is recorded as that, not as storage.
+    #[test]
+    fn a_start_waiting_for_the_validator_is_not_described_as_storage() {
+        let waiting: EngineError = StoreError::Unavailable {
+            detail: INPUT_NOT_CHECKED.into(),
+        }
+        .into();
+        assert!(is_waiting_for_room(&waiting));
+        assert_eq!(
+            describe(&waiting),
+            "the run input could not be checked now; will retry"
+        );
+        let storage: EngineError = StoreError::Unavailable { detail: "x".into() }.into();
+        assert_eq!(describe(&storage), "storage unavailable; will retry");
     }
 }

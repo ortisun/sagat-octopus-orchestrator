@@ -383,26 +383,54 @@ class WorkerHostTest {
 
     @Test
     void theHeartbeatKeepsRunningUntilTheReportIsMadeNotJustUntilTheHandlerEnds() {
-        WorkerHost h = host(b -> b.heartbeatInterval(Duration.ofMillis(20)));
+        SendLog sends = new SendLog();
+        WorkerHost h = host(b -> b.heartbeatInterval(Duration.ofMillis(20)).interceptor(sends));
+        h.pacing = stopsInto(sends);
         AtomicReference<Long> handlerEnded = new AtomicReference<>();
         h.registerActivity("quick", (in, ctx) -> {
             handlerEnded.set(System.nanoTime());
             return Map.of("ok", true);
         });
-        // The report is refused twice and asked to wait 300 ms each time: it is not made for about 600 ms.
+        // The report is refused twice and asked to wait 300 ms each time. The second attempt is held until five beats
+        // have come after the handler ended: what the test claims, made to happen instead of hoped for in 600 ms. A
+        // heartbeat that ended with the handler never brings them, and the count below says so.
         fake.failNext("CompleteStep",
                 new FakeWorkerServer.Failure(Status.Code.UNAVAILABLE, "UNAVAILABLE", 300L),
                 new FakeWorkerServer.Failure(Status.Code.UNAVAILABLE, "UNAVAILABLE", 300L));
+        fake.before.put("CompleteStep", () -> {
+            if (fake.of("CompleteStep").size() == 2) {
+                Barrier.reached(() -> fake.of("Heartbeat").stream().filter(c -> c.nanos() > handlerEnded.get() + 100_000_000L).count() >= 5);
+            }
+        });
         fake.addLeases(lease(b -> b.setActivityName("quick").setStepId("quick").setTaskId("run-1/quick/1")));
         h.start();
         until(() -> fake.of("CompleteStep").size() == 3, "the third attempt to report");
         long reportMade = fake.of("CompleteStep").get(2).nanos();
         long during = fake.of("Heartbeat").stream().filter(c -> c.nanos() > handlerEnded.get() + 100_000_000L && c.nanos() < reportMade).count();
         assertTrue(during >= 5, during + " heartbeats between the end of the handler and the report");
-        sleep(100);
-        int settled = fake.of("Heartbeat").size();
-        sleep(200);
-        assertEquals(settled, fake.of("Heartbeat").size(), "the heartbeat stops once the report is made");
+        assertNoBeatBegunAfterTheStop(sends);
+    }
+
+    /** A pacing that writes "stopped" into {@code sends} when the heartbeat of a task is stopped. */
+    private static WorkerHost.Pacing stopsInto(SendLog sends) {
+        return new WorkerHost.Pacing() {
+            @Override
+            public void beatStopped(String taskId) {
+                sends.entries.add("stopped");
+            }
+        };
+    }
+
+    /**
+     * The heartbeat ends with the task: after it is stopped, at most the one beat that had already begun is sent. Read on
+     * the side of the host, not by counting what reaches the fake, where a beat sent in time can land late. The wait is
+     * there to let a heartbeat that was left running show itself; it can only hide a defect, never fail a good host.
+     */
+    private static void assertNoBeatBegunAfterTheStop(SendLog sends) {
+        until(() -> sends.entries.contains("stopped"), "the heartbeat to be stopped");
+        sleep(150);
+        long late = sends.after("stopped", "sent Heartbeat");
+        assertTrue(late <= 1, late + " heartbeats sent after the heartbeat was stopped");
     }
 
     @Test
@@ -530,20 +558,33 @@ class WorkerHostTest {
 
     @Test
     void theHeartbeatStartsBeforeTheHandlerEndsCarriesTheStepIdentityAndMovesTheDeadline() {
-        WorkerHost h = host(b -> b.heartbeatInterval(Duration.ofMillis(20)));
+        SendLog sends = new SendLog();
+        WorkerHost h = host(b -> b.heartbeatInterval(Duration.ofMillis(20)).interceptor(sends));
+        h.pacing = stopsInto(sends);
         List<Instant> deadlines = new CopyOnWriteArrayList<>();
         h.registerActivity("slow", (in, ctx) -> {
             deadlines.add(ctx.deadline());
-            Thread.sleep(300);
+            // A barrier, not a sleep: the handler ends once three beats have reached the server and the lease they
+            // moved is the one it sees. A heartbeat that waited for the handler to end would never come in time.
+            Barrier.reached(() -> fake.of("Heartbeat").size() >= 3 && ctx.deadline().isAfter(deadlines.get(0)));
             deadlines.add(ctx.deadline());
             return Map.of("ok", true);
         });
         fake.heartbeatExpiresMs = System.currentTimeMillis() + 120_000;
+        // The host heartbeats until the report returns (SPEC 6.3): the report is held until a beat has come after the
+        // server recorded it.
+        AtomicInteger atTheCall = new AtomicInteger(-1);
+        fake.before.put("CompleteStep", () -> {
+            int beatsSoFar = fake.of("Heartbeat").size();
+            atTheCall.set(beatsSoFar);
+            Barrier.reached(() -> fake.of("Heartbeat").size() > beatsSoFar);
+        });
         fake.addLeases(lease(b -> b.setActivityName("slow").setStepId("slow").setTaskId("run-1/slow/1")));
         h.start();
         until(() -> fake.of("CompleteStep").size() == 1, "the completion");
+        until(() -> sends.entries.contains("answered CompleteStep"), "the answer to the report");
         List<FakeWorkerServer.Call> beats = fake.of("Heartbeat");
-        assertTrue(beats.size() >= 3, beats.size() + " beats");
+        assertTrue(atTheCall.get() >= 3, atTheCall.get() + " beats");
         Worker.HeartbeatRequest first = (Worker.HeartbeatRequest) beats.get(0).request();
         assertEquals("run-1", first.getRunId());
         assertEquals("slow", first.getStepId());
@@ -554,9 +595,8 @@ class WorkerHostTest {
         assertEquals(1, first.getGeneration());
         assertEquals(TRACE, beats.get(0).header("traceparent"));
         assertTrue(deadlines.get(1).isAfter(deadlines.get(0)), "the lease was extended");
-        int afterwards = fake.of("Heartbeat").size();
-        sleep(150);
-        assertEquals(afterwards, fake.of("Heartbeat").size(), "the heartbeat stops with the task");
+        assertTrue(beats.size() > atTheCall.get(), "the heartbeat runs until the report returns");
+        assertNoBeatBegunAfterTheStop(sends);
     }
 
     @Test
@@ -575,18 +615,34 @@ class WorkerHostTest {
     @Test
     void theFirstBeatComesAThirdOfTheLeaseAfterTheTaskIsTaken() {
         WorkerHost h = host();
+        // The time of day is pinned, so the time left on the lease is exactly 3 s when the task is taken, however long
+        // the machine took to get there; the delay the host gives the scheduler is read, not measured.
+        long now = 1_800_000_000_000L;
+        List<Long> delays = new CopyOnWriteArrayList<>();
+        h.pacing = new WorkerHost.Pacing() {
+            @Override
+            public long nowEpochMillis() {
+                return now;
+            }
+
+            @Override
+            public void beatScheduled(String taskId, long millis) {
+                delays.add(millis);
+            }
+        };
         h.registerActivity("slow", (in, ctx) -> {
-            Thread.sleep(1500);
+            Barrier.reached(() -> !fake.of("Heartbeat").isEmpty());
             return Map.of("ok", true);
         });
-        // A lease that runs out in 3 s: the first beat is due after about a second (and later ones after the answer's expiry).
-        fake.addLeases(lease(b -> b.setActivityName("slow").setStepId("slow").setExpiresAtEpochMs(System.currentTimeMillis() + 3_000)));
+        fake.addLeases(lease(b -> b.setActivityName("slow").setStepId("slow").setExpiresAtEpochMs(now + 3_000)));
         h.start();
         until(() -> !fake.of("Heartbeat").isEmpty(), "the first heartbeat");
+        assertEquals(1_000L, delays.get(0), "the first heartbeat is due a third of the 3 s lease after the task is taken");
+        // And it is not sent before it is due: a lower bound, which a loaded machine can only lengthen.
         long taken = fake.of("PollTasks").get(0).nanos();
         long firstBeat = fake.of("Heartbeat").get(0).nanos();
         long millis = Duration.ofNanos(firstBeat - taken).toMillis();
-        assertTrue(millis >= 850 && millis <= 1400, "the first heartbeat came " + millis + " ms after the lease was taken");
+        assertTrue(millis >= 1_000, "the first heartbeat came " + millis + " ms after the lease was taken");
     }
 
     private static void sleep(long millis) {
@@ -713,7 +769,7 @@ class WorkerHostTest {
     void aHeartbeatThatFailsWithATransportErrorIsTriedAgainOnTheNextBeatAndTheLeaseIsKept() {
         WorkerHost h = host(b -> b.heartbeatInterval(Duration.ofMillis(20)));
         h.registerActivity("slow", (in, ctx) -> {
-            Thread.sleep(300);
+            Barrier.reached(() -> fake.of("Heartbeat").size() >= 4); // the two that failed and two after them, not a sleep
             return Map.of("done", true);
         });
         fake.failNext("Heartbeat", FakeWorkerServer.Failure.of(Status.Code.UNAVAILABLE), FakeWorkerServer.Failure.of(Status.Code.UNAVAILABLE));
@@ -767,7 +823,7 @@ class WorkerHostTest {
         WorkerHost h = host(b -> b.heartbeatInterval(Duration.ofMillis(20)).protocolVersion("1.9"));
         AtomicReference<Throwable> secretError = new AtomicReference<>();
         h.registerActivity("slow", (in, ctx) -> {
-            Thread.sleep(80);
+            Barrier.reached(() -> !fake.of("Heartbeat").isEmpty()); // the beat read below, not a sleep that hopes for one
             try {
                 ctx.secrets();
             } catch (SagatException e) {
@@ -859,7 +915,8 @@ class WorkerHostTest {
         long began = System.nanoTime();
         h.stop(Duration.ofSeconds(1));
         assertTrue(Duration.ofNanos(System.nanoTime() - began).toMillis() < 2000, "stop cancels the idle receive promptly");
-        assertTrue(fake.streamCancelled);
+        // The server learns of the cancellation on its own thread, after the client's stop has returned.
+        until(() -> fake.streamCancelled, "the server to see the stream cancelled");
     }
 
     @Test

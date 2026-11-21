@@ -155,6 +155,206 @@ export const CATALOG: readonly CatalogEntry[] = [
     "remediation": "The server does not speak this major version of the worker protocol: upgrade or downgrade the SDK."
   },
   {
+    "code": "ICEBERG_TABLE_NOT_FOUND",
+    "origin": "worker",
+    "http": [],
+    "grpc": "NOT_FOUND",
+    "retryable": false,
+    "remediation": "The table or the target ref does not exist: create it in the catalog first; the platform never creates tables."
+  },
+  {
+    "code": "ICEBERG_UNSUPPORTED_TABLE",
+    "origin": "worker",
+    "http": [],
+    "grpc": "FAILED_PRECONDITION",
+    "retryable": false,
+    "remediation": "The step cannot write this table (format version, file format, partition transform or key): see the reason and use a table the step supports."
+  },
+  {
+    "code": "ICEBERG_LOCATION_NOT_ALLOWED",
+    "origin": "worker",
+    "http": [],
+    "grpc": "PERMISSION_DENIED",
+    "retryable": false,
+    "remediation": "A table, data or metadata location is outside the connection's warehouse locations: fix the table location or add the prefix to the connection."
+  },
+  {
+    "code": "ICEBERG_SCHEMA_MISMATCH",
+    "origin": "worker",
+    "http": [],
+    "grpc": "INVALID_ARGUMENT",
+    "retryable": false,
+    "remediation": "A record does not map losslessly to the table schema: check the mapping, the column types and the required columns named in the failure."
+  },
+  {
+    "code": "ICEBERG_DUPLICATE_KEY",
+    "origin": "worker",
+    "http": [],
+    "grpc": "INVALID_ARGUMENT",
+    "retryable": false,
+    "remediation": "The batch holds the same key twice: remove the duplicates before the write."
+  },
+  {
+    "code": "ICEBERG_SCOPE_VIOLATION",
+    "origin": "worker",
+    "http": [],
+    "grpc": "INVALID_ARGUMENT",
+    "retryable": false,
+    "remediation": "A row is outside the overwrite filter, or the batch is empty without allowEmpty: check the filter and the records."
+  },
+  {
+    "code": "ICEBERG_COMMIT_CONFLICT",
+    "origin": "worker",
+    "http": [],
+    "grpc": "ABORTED",
+    "retryable": true,
+    "remediation": "Concurrent commits kept the write from landing: it is retried; reduce the writers to the table if it persists."
+  },
+  {
+    "code": "ICEBERG_REVERT_BLOCKED",
+    "origin": "worker",
+    "http": [],
+    "grpc": "FAILED_PRECONDITION",
+    "retryable": false,
+    "remediation": "A later commit changed what this step wrote, so it cannot be reverted automatically: review the table and resolve the step by hand."
+  },
+  {
+    "code": "ICEBERG_LIMIT_EXCEEDED",
+    "origin": "worker",
+    "http": [],
+    "grpc": "RESOURCE_EXHAUSTED",
+    "retryable": false,
+    "remediation": "The write is over a records, bytes, files or columns limit: split the batch or raise the limit within the platform ceiling."
+  },
+  {
+    "code": "CATALOG_UNAVAILABLE",
+    "origin": "worker",
+    "http": [],
+    "grpc": "UNAVAILABLE",
+    "retryable": true,
+    "remediation": "The catalog could not be reached: check its address, credentials and availability; the step is retried."
+  },
+  {
+    "code": "STORAGE_UNAVAILABLE",
+    "origin": "worker",
+    "http": [],
+    "grpc": "UNAVAILABLE",
+    "retryable": true,
+    "remediation": "The object storage could not be reached or is throttling: check it; the step is retried."
+  },
+  {
+    "code": "DESTINATION_KEY_CONSTRAINT_MISSING",
+    "origin": "worker",
+    "http": [],
+    "grpc": "FAILED_PRECONDITION",
+    "retryable": false,
+    "remediation": "The destination key has no primary key or unique constraint: add the constraint or choose a key it covers."
+  },
+  {
+    "code": "DESTINATION_SCHEMA_MISMATCH",
+    "origin": "worker",
+    "http": [],
+    "grpc": "INVALID_ARGUMENT",
+    "retryable": false,
+    "remediation": "A destination column is missing or cannot hold a value: check the mapping and the column types."
+  },
+  {
+    "code": "DESTINATION_DEDUPLICATION_NOT_CONFIRMED",
+    "origin": "worker",
+    "http": [],
+    "grpc": "FAILED_PRECONDITION",
+    "retryable": false,
+    "remediation": "The retry is outside the destination's deduplication window, so a duplicate cannot be ruled out: resolve the step by hand."
+  },
+  {
+    "code": "DESTINATION_OBJECT_CONFLICT",
+    "origin": "worker",
+    "http": [],
+    "grpc": "ALREADY_EXISTS",
+    "retryable": false,
+    "remediation": "An object with this name and different content already exists: check the destination prefix; the platform never overwrites it."
+  },
+  {
+    "code": "DESTINATION_DELIVERY_BOUND_EXCEEDED",
+    "origin": "worker",
+    "http": [],
+    "grpc": "RESOURCE_EXHAUSTED",
+    "retryable": false,
+    "remediation": "The delivery is over a message size, count or bytes limit: send fewer or smaller records."
+  },
+  {
+    "code": "DESTINATION_SUBSCRIPTION_SHARED",
+    "origin": "worker",
+    "http": [],
+    "grpc": "FAILED_PRECONDITION",
+    "retryable": false,
+    "remediation": "The subscription also carries run events: use a subscription whose purpose is STEP_OUTPUT."
+  },
+  {
+    "code": "DESTINATION_AUTH_FAILED",
+    "origin": "worker",
+    "http": [],
+    "grpc": "PERMISSION_DENIED",
+    "retryable": false,
+    "remediation": "The destination refused the credentials: check the secret the connection names and the access it grants."
+  },
+  {
+    "code": "DESTINATION_UNAVAILABLE",
+    "origin": "worker",
+    "http": [],
+    "grpc": "UNAVAILABLE",
+    "retryable": true,
+    "remediation": "The destination could not be reached or is overloaded: check it; the step is retried."
+  },
+  {
+    "code": "DESTINATION_SUBSCRIPTION_UNUSABLE",
+    "origin": "worker",
+    "http": [],
+    "grpc": "FAILED_PRECONDITION",
+    "retryable": false,
+    "remediation": "The subscription is disabled, deleted or below a field's classification level: fix the subscription and retry the step."
+  },
+  {
+    "code": "DESTINATION_FAILED",
+    "origin": "worker",
+    "http": [],
+    "grpc": "ABORTED",
+    "retryable": false,
+    "remediation": "A destination whose policy is fail did not complete: see the destination's own code in the failure detail."
+  },
+  {
+    "code": "LAKE_HOST_PROTOCOL",
+    "origin": "worker",
+    "http": [],
+    "grpc": "INTERNAL",
+    "retryable": true,
+    "remediation": "The sandboxed lake host broke its protocol: the step is retried; report the trace id if it persists."
+  },
+  {
+    "code": "LAKE_SANDBOX_UNAVAILABLE",
+    "origin": "worker",
+    "http": [],
+    "grpc": "UNAVAILABLE",
+    "retryable": true,
+    "remediation": "The sandbox for the attempt could not be started: check the sandbox runner and its capacity; the step is retried."
+  },
+  {
+    "code": "CLASSIFICATION_EGRESS_REFUSED",
+    "origin": "worker",
+    "http": [],
+    "grpc": "PERMISSION_DENIED",
+    "retryable": false,
+    "remediation": "A field is above the connection's classification ceiling, or is a secret: lower the field's level or raise the ceiling with the reveal grant."
+  },
+  {
+    "code": "OUTCOME_UNKNOWN",
+    "origin": "worker",
+    "http": [],
+    "grpc": "UNKNOWN",
+    "retryable": false,
+    "remediation": "Whether the write happened is unknown: do not repeat it blindly; check the destination and resolve the step."
+  },
+  {
     "code": "TRANSPORT",
     "origin": "sdk",
     "http": [],

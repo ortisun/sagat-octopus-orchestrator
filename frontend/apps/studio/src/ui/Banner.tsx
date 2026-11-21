@@ -5,8 +5,8 @@ type Tone = 'error' | 'warn' | 'info' | 'ok';
 const STATUS = { error: 'error', warn: 'warning', info: 'info', ok: 'success' } as const;
 
 /**
- * A message in the page. Errors and warnings are announced; information is not (D2404: Astryx draws
- * the banner, the Studio adds the live-region role that FR-007-008 needs).
+ * A message in the page. Errors and warnings are announced; information is not (Decision 2404: Astryx draws
+ * the banner, the Studio adds the live-region role that Requirement 007-008 needs).
  */
 export function Banner({ tone, children, title }: { tone: Tone; children?: ReactNode; title?: string }) {
   return (

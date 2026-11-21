@@ -86,8 +86,9 @@ export function Panel({ title, level = 2, hint, actions, children, labelledBy, c
 export function Facts({ items, columns = 'single', label }: { items: readonly { term: string; value: ReactNode }[]; columns?: 'single' | 'multi'; label?: string }) {
   return (
     <MetadataList columns={columns} {...(label ? { 'aria-label': label } : {})}>
-      {items.map((item) => (
-        <MetadataListItem key={item.term} label={item.term}>
+      {items.map((item, index) => (
+        // two facts may share a label (an outcome the Studio does not know by name): the position tells them apart
+        <MetadataListItem key={`${index}:${item.term}`} label={item.term}>
           {item.value}
         </MetadataListItem>
       ))}

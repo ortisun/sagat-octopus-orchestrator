@@ -1,18 +1,20 @@
 # Sagat Octopus Orchestrator: Go SDK
 
-The Go SDK of the Sagat Octopus Orchestrator, a durable workflow platform. It is three things in one
-module and nothing else:
+> Documentation status: the contract sections below describe the inspected source. Existing runtime, test-count and advisory records are historical developer notes; this documentation update did not rerun or revalidate those records.
+
+The Go SDK of the Sagat Octopus Orchestrator, a durable workflow platform. Its three core surfaces share one
+module, alongside the optional `otelbridge` adapter:
 
 | Package | What it is |
 |---|---|
-| `client` | The REST client: start, read, list, operate, cancel and signal runs, publish events, wait for a run to finish. |
+| `client` | The REST client: start, read, list, operate, cancel and signal runs, publish events, wait for a run to finish; schedules, business identifiers, batch jobs and the reset of a run. |
 | `worker` | The worker host (gRPC): registers activities, compensations and reconcilers, takes leases, heartbeats, reports. |
 | `workflow` | Typed, side-effect-free builders of the workflow IR (`step`, `sleep`, `waitForEvent`, `invokeChild`, `parallel`, `saga`...). |
 | `sagat` (the module root) | What they share: `*sagat.Error`, the error catalog, token sources, the retry policy, W3C `traceparent` helpers. |
 
 The SDK is not a workflow runtime. It does not execute workflow code, replay anything or decide a
 transition: the server owns every state and every retry decision. The behaviour every SDK shares is in
-[`sdks/SPEC.md`](../SPEC.md); the five SDKs (TypeScript, Go, Python, C#, Java) are held to it by one
+[`sdks/SPEC.md`](../SPEC.md); the six SDKs (TypeScript, Go, Python, C#, Java, Rust) are held to it by one
 conformance suite ([`tests/contract/sdk-conformance`](../../tests/contract/sdk-conformance/README.md)).
 
 Package metadata: module `github.com/ortisun/sagat-octopus-orchestrator/sdks/go`, version `0.2.0`,
@@ -63,13 +65,79 @@ done, err := c.WaitForCompletion(ctx, run.RunID, client.WaitTimeout(30*time.Seco
 ```
 
 `Start` takes a workflow id or the name of a workflow of the namespace. With no key the SDK generates a
-random `Idempotency-Key` per call and reuses it for every retry of that call, so a lost answer never
-starts two runs. `List` returns a page; `ListAll` is a Go iterator (`for run, err := range c.ListAll(...)`).
+random `Idempotency-Key` per call and reuses it for every retry of that call, so a retry of that call sends the same key; server acceptance follows the platform contract. `List` returns a page; `ListAll` is a Go iterator (`for run, err := range c.ListAll(...)`).
 
 For a large run input, call `UploadRunInput(ctx, onePassReader, options)`, then pass its verified
 `client.BlobDescriptor` to `StartWithBlob`. The upload is streamed once and never retried; the descriptor
 is accepted only after source EOF and matching local size/SHA-256. `StartWithBlob` uses the same call options
 and idempotency behavior as `Start`.
+
+### Business identifiers and a delayed start
+
+`Start` answers a `*client.StartedRun`: the run (every field of `*client.Run` is reachable through it) and `Started`,
+which is true when this call created the run.
+
+```go
+started, err := c.Start(ctx, "order-flow", input,
+	client.WithBusinessID("order-o-1"),                                    // sent as given: no trimming, no case folding
+	client.WithBusinessIDConflictPolicy(client.BusinessIDUseExisting),     // an open holder: its run, started == false
+	client.WithBusinessIDReusePolicy(client.BusinessIDRejectDuplicate),    // a closed holder that is still remembered
+	client.WithStartDelay(10*time.Minute))                                 // whole milliseconds, truncated toward zero, once
+```
+
+Without these options a `Start` sends exactly what it always sent. `Run.BusinessID` and `Run.StartDelayedUntil`
+(the zero time once the run is released) say how a run was started, and `Run.Schedule` (a `*client.RunSchedule`:
+`ScheduleID`, `NominalTime`, `Kind`, `Revision`) and `Run.ResetFrom` (a `*client.RunResetFrom`: `RunID`, `Sequence`)
+say where it came from: both are nil for a run no schedule started and no reset made (a rerun has `Run.RerunOf` and
+not `ResetFrom`), a `Kind` this SDK does not know is kept as the server sent it, and a member that is present but
+not what the contract says is a `PROTOCOL` error. `c.SignalWithStart` and `c.UpdateWithStart`
+signal, or apply a declared Update to, the open run of a business identifier and start it first when none is open;
+a rejection of the Update's validator is an answer (`Update.Outcome == "REJECTED"`), not an error. The Update's
+`UpdateKey` is the caller's and is checked before anything is sent. `c.BusinessIDs.Get(ctx, namespaceID, id)`
+reads who holds an identifier (percent-encoded in the path; only a value that is not 1 to 200 visible ASCII
+characters, or is exactly `.` or `..`, is refused locally, with nothing sent).
+
+### Schedules, batch jobs and reset
+
+The groups `c.Schedules`, `c.Batch` and `c.BusinessIDs` take the namespace by its id (a UUID, as all the ids that
+become path segments: a schedule, a backfill, a batch job, a reset, a run). Every call that changes something
+carries one `Idempotency-Key`, given with `client.WithIdempotencyKey` or generated once per call and reused by its
+retries.
+
+```go
+schedule, err := c.Schedules.Create(ctx, nsID, client.ScheduleWrite{
+	Name:   "nightly",
+	Spec:   client.ScheduleSpec{Cron: []string{"0 9 * * *"}, Timezone: "UTC", StartAt: from}, // instants are sent in UTC
+	Action: client.ScheduleAction{WorkflowID: wf, Input: map[string]any{"kind": "nightly"}},
+})
+record, err := c.Schedules.Trigger(ctx, nsID, schedule.ScheduleID, client.WithOverlap(client.OverlapSkip))
+for s, err := range c.Schedules.ListAll(ctx, nsID, client.ScheduleListFilter{State: "ACTIVE"}) { ... }
+
+job, err := c.Batch.Create(ctx, nsID, client.BatchRequest{
+	Selector: client.BatchSelector{RunIDs: ids}, Action: "CANCEL", Reason: "clean up the day",
+})
+points, err := c.ResetPoints(ctx, runID, client.ResetPointsOptions{})
+plan, err := c.PreviewReset(ctx, runID, points.Items[1].Sequence, "")
+reset, err := c.Reset(ctx, runID, client.ResetRequest{Sequence: plan.Sequence, Reason: "run it again", AcknowledgeReexecution: true})
+```
+
+An enumerated value in an answer (`Outcome`, `State`, `Kind`, an item `Reason`...) is the string the server sent; one
+this SDK does not know is never an error. Every typed answer keeps the JSON object it was read from in `Raw`. An
+instant or a string the server sent as null is the zero value; a number that can be null is a pointer.
+
+A schedule's action may name a business-id prefix: every run it starts gets the business id `<prefix>-<nominal time>`.
+The prefix is customer text and is sent as given (a `*string`: nil sends none of the three fields, a pointer to the
+empty string sends the empty string, and the server judges it); the two policies are optional and use the types of
+`WithBusinessIDConflictPolicy` and `WithBusinessIDReusePolicy`. On a read the three are strings, empty when the
+action has none.
+
+```go
+prefix := "order"
+s, err := c.Schedules.Create(ctx, nsID, client.ScheduleWrite{Name: "nightly", Spec: spec, Action: client.ScheduleAction{
+	WorkflowID: wf, BusinessIDPrefix: &prefix, BusinessIDConflictPolicy: client.BusinessIDUseExisting,
+}})
+fmt.Println(s.Action.BusinessIDPrefix, s.Action.BusinessIDConflictPolicy, s.Action.BusinessIDReusePolicy) // order USE_EXISTING ALLOW_DUPLICATE
+```
 
 A token is a `sagat.TokenSource`: `sagat.StaticToken(s)`, or `sagat.TokenFunc(func(ctx) (string, error))`,
 asked before every request so a rotated token is used at once. The tenant is never configured: it is the
@@ -82,7 +150,7 @@ host, err := worker.New("https://workers.example.com:443", "payments", "payments
 
 host.RegisterActivity("payments.charge", worker.Typed(func(ctx context.Context, in ChargeInput) (Receipt, error) {
 	task := worker.TaskFrom(ctx)           // run, node, attempt, idempotency key, trace, steps, deadline...
-	// send task.IdempotencyKey to the provider: the effect happens once however often this is repeated
+	// send task.IdempotencyKey to a provider that supports deduplication; reconcile uncertain outcomes
 	if in.Amount == "" {
 		return Receipt{}, worker.Permanent("INVALID_AMOUNT", "the order has no amount")
 	}
@@ -305,3 +373,37 @@ Use the database builder with a logical connection created in Sagat. See the
 [five-language guide](../../docs/guides/managed-database-sdk.md) for typed parameters,
 result consumption, permissions and the shared real-service scenario. Credentials
 are resolved by the separate managed executor.
+
+<!-- EGM directory contract -->
+
+## Interface
+
+- Error/catalog APIs: Code, Error, NewError, Errorf, IsCode, Invalid, Remediation, RetryableByDefault and CodeOfHTTPStatus. [error.go:Code] [error.go:Error] [error.go:NewError] [error.go:Errorf] [error.go:IsCode] [error.go:Invalid] [catalog.go:Remediation] [catalog.go:RetryableByDefault] [catalog.go:CodeOfHTTPStatus]
+- TokenSource, TokenFunc, StaticToken, BearerToken and CanRefresh provide token acquisition; RetryPolicy, DefaultRetry and WithDefaults configure retries; ValidTraceparent, CheckTraceparent, TraceIDOf and NewTraceparent support trace context. Version, ProtocolVersion and Language identify the SDK. [token.go:TokenSource] [token.go:TokenFunc] [token.go:StaticToken] [token.go:BearerToken] [token.go:CanRefresh] [retry.go:RetryPolicy] [retry.go:DefaultRetry] [retry.go:WithDefaults] [traceparent.go:ValidTraceparent] [traceparent.go:CheckTraceparent] [traceparent.go:TraceIDOf] [traceparent.go:NewTraceparent] [version.go:Version]
+
+- [client](./client/README.md) — component contract.
+- [internal](./internal/README.md) — component contract.
+- [otelbridge](./otelbridge/README.md) — component contract.
+- [proto](./proto/README.md) — component contract.
+- [scripts](./scripts/README.md) — component contract.
+- [worker](./worker/README.md) — component contract.
+- [workflow](./workflow/README.md) — component contract.
+
+## Invariants
+
+- Token failures are privately marked before-I/O UNAUTHENTICATED failures; provider panic payloads are dropped. Error text excludes causes while Unwrap preserves inspectable causes. [token.go:BearerToken] [token.go:ask] [error.go:Unwrap]
+- The host advertises protocol 1.5; the copied schema also declares additive 1.6 database-runner messages. [version.go:ProtocolVersion] [proto/sagat_octopus_orchestrator/v1/worker.proto:ResolveDatabase]
+
+## Side Effects
+
+- Loads the embedded catalog lazily, invokes token providers per request and reads cryptographic randomness for new trace contexts. [catalog.go:loadCatalog] [token.go:BearerToken] [traceparent.go:NewTraceparent]
+
+## Verification
+
+Run from the repository root:
+
+```sh
+cd sdks/go && go test -race ./... && go vet ./...
+```
+
+These commands are documented from the existing build configuration; they were not executed during this documentation update.

@@ -448,7 +448,12 @@ where
         let started = Instant::now();
         let audits = disclosure_audits(&prepared, &self.clock);
         let evaluator = ServiceEvaluator {
-            prepared: &prepared,
+            subject: DisclosureSubject {
+                reveal_pii: prepared.reveal_pii,
+                run_id: prepared.run_id,
+                selector: prepared.selector,
+                read: Permission::RunRead,
+            },
             interpreter: &self.interpreter,
             structure_projector: &self.structure_projector,
         };
@@ -515,10 +520,23 @@ where
     }
 }
 
-struct ServiceEvaluator<'a, I, P> {
-    prepared: &'a PreparedDisclosure,
-    interpreter: &'a I,
-    structure_projector: &'a P,
+/// What the policy needs to know about whose payload it projects and for whom: whether a PII reveal was
+/// asked for, the permission that reads the owner of the payload, and the labels the answer carries.
+/// A run's payload is read with `run:read`; the input of a schedule (feature 018) with `schedule:read`,
+/// under the same audiences, and `run_id` then only labels the answer: the caller takes the parts of
+/// it that do not name a run.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct DisclosureSubject {
+    pub(crate) reveal_pii: bool,
+    pub(crate) run_id: RunId,
+    pub(crate) selector: DisclosureSelector,
+    pub(crate) read: Permission,
+}
+
+pub(crate) struct ServiceEvaluator<'a, I, P> {
+    pub(crate) subject: DisclosureSubject,
+    pub(crate) interpreter: &'a I,
+    pub(crate) structure_projector: &'a P,
 }
 
 impl<I, P> ServiceEvaluator<'_, I, P>
@@ -560,9 +578,9 @@ where
     ) -> DisclosureDecision {
         DisclosureDecision {
             disclosure: PayloadDisclosure {
-                run_id: self.prepared.run_id,
+                run_id: self.subject.run_id,
                 run_version,
-                selection: self.prepared.selector,
+                selection: self.subject.selector,
                 node_id,
                 attempt,
                 caller,
@@ -604,17 +622,17 @@ where
         current_role: Role,
         reveal_granted: bool,
     ) -> Result<DisclosureDecision, DisclosureFailure> {
-        if !current_role.grants(Permission::RunRead) {
+        if !current_role.grants(self.subject.read) {
             return Err(DisclosureFailure::RunReadNotGranted);
         }
         let internal = current_role.grants(Permission::PayloadReadInternal);
         let reveal_granted = reveal_granted && internal;
-        if self.prepared.reveal_pii && !reveal_granted {
+        if self.subject.reveal_pii && !reveal_granted {
             return Err(DisclosureFailure::PiiRevealNotGranted);
         }
 
         let inspect = current_role.grants(Permission::RunPayloadInspect);
-        let revealed = self.prepared.reveal_pii && reveal_granted;
+        let revealed = self.subject.reveal_pii && reveal_granted;
         let mut disclosed_levels = DisclosedLevels::PUBLIC;
         if internal {
             disclosed_levels = disclosed_levels.union(DisclosedLevels::INTERNAL);
@@ -673,7 +691,7 @@ where
                     audience: Audience::new(internal, revealed, inspect),
                     reveal: PiiRevealFacts {
                         granted: reveal_granted,
-                        requested: self.prepared.reveal_pii,
+                        requested: self.subject.reveal_pii,
                     },
                 };
                 match self.interpreter.project(request) {
@@ -744,9 +762,9 @@ where
         };
         Ok(DisclosureDecision {
             disclosure: PayloadDisclosure {
-                run_id: self.prepared.run_id,
+                run_id: self.subject.run_id,
                 run_version,
-                selection: self.prepared.selector,
+                selection: self.subject.selector,
                 node_id,
                 attempt,
                 caller,

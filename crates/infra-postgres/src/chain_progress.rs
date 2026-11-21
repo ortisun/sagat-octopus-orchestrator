@@ -783,10 +783,17 @@ async fn typed_segment_blocker(
              AND lease_token_hash IS NULL), \
            CASE \
              WHEN EXISTS (SELECT 1 FROM run_sagas WHERE tenant_id=$1 AND run_id=$2 \
-               AND phase<>'DONE') THEN 'compensation' \
+               AND phase<>'DONE') \
+               OR EXISTS (SELECT 1 FROM steps WHERE tenant_id=$1 AND run_id=$2 \
+               AND kind='COMPENSATION' AND status NOT IN ('SUCCEEDED','FAILED','CANCELLED','SKIPPED')) \
+               THEN 'compensation' \
              WHEN EXISTS (SELECT 1 FROM steps WHERE tenant_id=$1 AND run_id=$2 \
                AND (node<>$3 OR instance_path_nodes<>'{}' OR instance_path_indices<>'{}') \
-               AND status='WAITING' AND waiting_kind='RECONCILIATION') THEN 'unknown_effect' \
+               AND status='WAITING' AND (waiting_kind='RECONCILIATION' \
+                 OR (waiting_kind='OPERATOR' AND failure_code IN \
+                   ('LEASE_EXPIRED','ATTEMPT_TIMEOUT','OUTCOME_UNKNOWN','STORAGE_QUOTA_EXCEEDED', \
+                    'RECONCILIATION_FAILED','RECONCILIATION_UNKNOWN','RECONCILIATION_NOT_FINAL')))) \
+               THEN 'unknown_effect' \
              WHEN EXISTS (SELECT 1 FROM approval_requests WHERE tenant_id=$1 AND run_id=$2 \
                AND status='PENDING') \
                OR EXISTS (SELECT 1 FROM steps WHERE tenant_id=$1 AND run_id=$2 \
@@ -1260,8 +1267,9 @@ impl ChainProgressStore for PgChainProgressStore {
             "INSERT INTO runs \
              (id, tenant_id, namespace_id, workflow_id, workflow_version_id, status, run_version, \
               paused, input_digest, started_by, trace_id, deadline_at, created_at, updated_at, \
-              root_run_id, depth) \
-             VALUES ($1,$2,$3,$4,$5,'RUNNING',3,false,$6,$7,$8,$9,$10,$10,$1,0)",
+              root_run_id, depth, business_id) \
+             VALUES ($1,$2,$3,$4,$5,'RUNNING',3,false,$6,$7,$8,$9,$10,$10,$1,0, \
+                     (SELECT business_id FROM runs WHERE tenant_id = $2 AND id = $11))",
         )
         .bind(command.successor().as_uuid())
         .bind(command.scope().tenant_id().as_uuid())
@@ -1273,6 +1281,8 @@ impl ChainProgressStore for PgChainProgressStore {
         .bind(command.trace_id())
         .bind(chain.original_deadline)
         .bind(command.occurred_at())
+        // the segment carries the identifier of the one it continues
+        .bind(command.expected_head().as_uuid())
         .execute(&mut *tx)
         .await
         .map_err(store_error)?;
@@ -1490,6 +1500,19 @@ impl ChainProgressStore for PgChainProgressStore {
         let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
         let chain = lock_chain(&mut tx, command).await?;
         let run = lock_run(&mut tx, command).await?;
+        // The successor runs the predecessor's version: an input checked against another would be an input nobody
+        // checked for it (design 043, FR-043-017). Logged without the value.
+        if prepared.checked_input().version() != run.version_id {
+            tracing::error!(
+                chain = %command.chain_id(),
+                version = %run.version_id,
+                checked_against = %prepared.checked_input().version(),
+                "a continuation input checked against another version was refused"
+            );
+            return Err(ChainProgressError::Storage(StoreError::Internal {
+                detail: "the continuation input was checked against another version".into(),
+            }));
+        }
         check_scheduler_fence(&mut tx, command).await?;
         if chain.current_run_id != command.expected_head() {
             let result = replay_handoff(&mut tx, command, &chain).await?;
@@ -1741,9 +1764,10 @@ impl ChainProgressStore for PgChainProgressStore {
              (id, tenant_id, namespace_id, workflow_id, workflow_version_id, status, run_version, \
               paused, input_digest, started_by, trace_id, deadline_at, created_at, updated_at, \
               root_run_id, depth, parent_run_id, parent_node, cancel_policy, trace_parent_span, \
-              parent_settled) \
+              parent_settled, business_id) \
              VALUES ($1,$2,$3,$4,$5,$17,3,false,$6,$7,$8,$9,$10,$10,$11,$12,$13,$14,$15,$16, \
-                     $13 IS NOT NULL)",
+                     $13 IS NOT NULL, \
+                     (SELECT business_id FROM runs WHERE tenant_id = $2 AND id = $18))",
         )
         .bind(command.successor().as_uuid())
         .bind(command.scope().tenant_id().as_uuid())
@@ -1762,6 +1786,8 @@ impl ChainProgressStore for PgChainProgressStore {
         .bind(run.cancel_policy.as_deref())
         .bind(run.trace_parent_span.as_deref())
         .bind(entry.run_status())
+        // the segment carries the identifier of the one it continues
+        .bind(command.expected_head().as_uuid())
         .execute(&mut *tx)
         .await
         .map_err(store_error)?;
@@ -1981,6 +2007,13 @@ impl ChainProgressStore for PgChainProgressStore {
             .map_err(store_error)?;
         }
         insert_audit(&mut tx, command.audit()).await?;
+        // `report` mode: a refusal is audited with the hand-off that admitted it, once (D043-039, D043-143)
+        if let Some(reported) = prepared
+            .checked_input()
+            .reported_audit(command.audit(), command.successor())
+        {
+            insert_audit(&mut tx, &reported).await?;
+        }
         mark_telemetry(
             &mut tx,
             command.scope().tenant_id(),
@@ -2221,6 +2254,23 @@ impl ChainProgressStore for PgChainProgressStore {
         let definition = self
             .definition(&mut tx, command.scope().tenant_id(), chain.version_id)
             .await?;
+        let mut data = json!({
+            "tenantId": command.scope().tenant_id().to_string(),
+            "namespaceId": command.scope().namespace_id().to_string(),
+            "runId": command.expected_head().to_string(),
+            "workflow": definition.name().as_str(),
+            "status": command.status().as_str(),
+            "traceId": run.trace_id,
+        });
+        // The schedule that started the head of the chain, when one did (`FR-018-046`).
+        crate::outbound::add_schedule_origin(
+            &mut tx,
+            command.scope().tenant_id(),
+            command.expected_head().as_uuid(),
+            &mut data,
+        )
+        .await
+        .map_err(ChainProgressError::Storage)?;
         let body = json!({
             "id": command.run_outbox_id().to_string(),
             "type": "run.finished",
@@ -2228,14 +2278,7 @@ impl ChainProgressStore for PgChainProgressStore {
                 .occurred_at()
                 .format(&time::format_description::well_known::Rfc3339)
                 .unwrap_or_default(),
-            "data": {
-                "tenantId": command.scope().tenant_id().to_string(),
-                "namespaceId": command.scope().namespace_id().to_string(),
-                "runId": command.expected_head().to_string(),
-                "workflow": definition.name().as_str(),
-                "status": command.status().as_str(),
-                "traceId": run.trace_id,
-            },
+            "data": data,
         });
         crate::outbound::fan_out(
             &mut tx,

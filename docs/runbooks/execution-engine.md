@@ -1,9 +1,10 @@
 # Runbook: execution engine (feature 002)
 
 Operational procedures for the `execution-engine` process: the worker gRPC API, the scheduler loop,
-the housekeeping and the NATS outbox dispatcher, over the same PostgreSQL database as the control
-plane. Everything here was run against the code in this repository; what is **not** covered is
-listed at the end so nobody assumes it. Read `control-plane.md` first: the database roles, the
+the housekeeping and the selected NATS/Redis outbox dispatcher, over the same PostgreSQL database
+as the control plane. The original feature-002 execution evidence and limitations are retained
+below. The transport inventory also reflects the feature-033 configuration; this documentation
+update is not a new runtime validation. Read `control-plane.md` first: the database roles, the
 OIDC settings and the backup procedure are the same.
 
 ## 1. What runs
@@ -13,13 +14,13 @@ OIDC settings and the backup procedure are the same.
 | Worker API | `execution-engine serve`, `SAGAT_GRPC_ADDR`, default `127.0.0.1:9000` | gRPC over HTTP/2. TLS (and mTLS) can be terminated by the engine itself with `SAGAT_GRPC_TLS_*`, or by the ingress or mesh in front (then say so with `SAGAT_GRPC_ALLOW_PLAINTEXT_SECRETS=true` if secrets are configured). Authenticated like the REST API: bearer JWT, member of a tenant, role `worker` (or `admin`), **and bound** to the namespace and activities it serves (`docs/runbooks/security-governance.md`) |
 | Scheduler loop | same process | Fires timers, wait deadlines and retries, reclaims lost leases, enforces run deadlines, renews lost wake-up hints, creates child runs, reports ended children to their parents, cancels children of stopped parents. **Each replica works only on the shards of the work it holds a lease on** (64 shards, divided between the replicas alive), shares each pass between the tenants by weight, and fences every action against its lease: [`scaling.md`](scaling.md) |
 | Shard keeper | same process, every `SAGAT_SHARD_LEASE_SECS / 5` (3 s) | Announces the replica, renews its leases, gives back the shards beyond its share and takes the free ones; gives them back on `SIGTERM`. Sets `scheduler_shards_owned`, `scheduler_replicas` |
-| Housekeeping | same process, every `SAGAT_HOUSEKEEPING_INTERVAL_SECS` (300) | Purges idempotency records (7 d), expired worker sessions (1 h after expiry) and delivered outbox messages (24 h, 5000 per round) |
-| Outbox dispatcher | same process, only when `SAGAT_NATS_URL` is set | Publishes `task.ready` hints (`sagat.v1.task.ready.<tenant>.<activity>`) and `run.finished` events (`sagat.v1.run.finished.<tenant>`) to JetStream, at-least-once |
+| Housekeeping | same process, every `SAGAT_HOUSEKEEPING_INTERVAL_SECS` (300) | Purges idempotency records (7 d), expired worker sessions (1 h after expiry), delivered outbox messages (24 h, 5000 per round) and, bounded (100 jobs and 5,000 rows a call, calls repeated while a call used its bounds, up to 100 calls or 20 seconds a pass), the batch jobs and items past their retention ([batch runbook](batch-operations.md#6-how-long-a-job-is-kept-and-how-it-goes)) |
+| Outbox dispatcher | same process, selected by `SAGAT_EVENT_TRANSPORT` (absent: legacy optional NATS) | Publishes `task.ready` and `run.finished` hints through the selected NATS or Redis adapter, at-least-once. Explicit `none` leaves notifications pending in PostgreSQL; it is not delivery success. See [transport selection and cutover](events.md#redis-streams-v03). |
 | Telemetry projector | same process, one at a time (a lease row in `engine_leases`) | Turns what is new in the journal of each run into spans and measurements and hands the spans to the OTLP collector; settings `SAGAT_TELEMETRY_*`, see [`observability.md`](observability.md) |
 | Monitor | same process, one at a time, every `SAGAT_MONITOR_INTERVAL_SECS` (30) | Finds the conditions that need a person (outbox stuck, leases not taken back, steps nobody serves, reviews waiting, dead items), keeps the alerts in step and sets the gauges; see [`alerts.md`](alerts.md) |
 | Admin listener | `SAGAT_ADMIN_ADDR`, default `127.0.0.1:9091` | `/metrics`, `/livez`, `/readyz`, **without authentication**: keep it on loopback or restrict it with a `NetworkPolicy`; the container health check uses it from inside |
 | PostgreSQL 16 | `DATABASE_URL` | Source of truth. TLS required outside `SAGAT_ENV=dev`. The runtime role `sagat_app` (the engine refuses to start as a role that could rewrite the audit trail, exit code 2) |
-| NATS JetStream | `SAGAT_NATS_URL`, stream `SAGAT` (subjects `sagat.v1.>`) | **Hints only.** Losing it, or never configuring it, costs latency, never correctness: workers poll, and the outbox keeps what is owed |
+| Selected internal broker | NATS: `SAGAT_NATS_URL`; Redis: explicit selector and `SAGAT_REDIS_URL` with bounded stream settings | **Hints only.** Workers still claim over gRPC and PostgreSQL retains obligations. Broker outage or disabled publishing can accumulate pending outbox work. Configure the selected broker, credentials, TLS and explicit egress; see [Redis/NATS selection](events.md#redis-streams-v03). |
 
 ```sh
 execution-engine serve         # runtime role; environment variables listed by `execution-engine help`
@@ -59,6 +60,7 @@ runs it next to PostgreSQL and NATS, and `scripts/smoke-compose.sh` checks it.
 |---|---|---|
 | Exit code 1 with a named critical task | A critical loop or server exited, panicked or failed to drain | Follow [Critical task failure](#critical-task-failure); restart and inspect the structured task name |
 | Exit code 2 at start, message names a role | The database role can rewrite the audit trail | Use the runtime role `sagat_app` (the owner role is for `migrate`) |
+| `/readyz` is `503` with `details.reason` `BINARY_CAPABILITY_MISSING` while `/livez` is `200`, no pass runs and workers are answered `UNAVAILABLE`, at start or after an activation | The platform records a requirement (a feature that every engine has to honour was activated) that this build lacks; the replica gave its shards to the others | Upgrade or stop the replica. [`instance-registry.md`](instance-registry.md) |
 | Exit code 2: `SAGAT_ALLOW_INSECURE_JWKS_HTTP is only allowed when SAGAT_ENV=dev` | Plain-http key URL outside dev | Use an `https://` JWKS URL |
 | Workers get `UNAUTHENTICATED` | Token invalid/expired, tenant claim unknown, subject not a member of the tenant, or the worker session expired (idle `SAGAT_SESSION_TTL_SECS`) | Check the token; re-register after a session expiry (`PollTasks` answers `UNAUTHENTICATED`) |
 | Workers get `PERMISSION_DENIED` (`x-sagat-error: FORBIDDEN`) | The identity's role in the tenant is not `worker`/`admin` | Grant the `worker` role to the worker identity |
@@ -68,10 +70,11 @@ runs it next to PostgreSQL and NATS, and `scripts/smoke-compose.sh` checks it.
 | Workers get `ABORTED` with `x-sagat-error: STALE_ATTEMPT` | The lease was reclaimed, the run was cancelled or finished, or the report is a duplicate with a new key | Stop working on that task; this is not an error to retry |
 | Tasks sit `READY` and nobody claims them | No worker advertises that activity in that namespace, or workers are at `max_inflight` | `SELECT activity, count(*) FROM steps WHERE status = 'READY' GROUP BY 1`; check `grpc_requests_total{method="PollTasks"}` |
 | Runs stay `WAITING` past their timer | The scheduler is not running, is stuck, or the database clock is wrong | `/livez`; `scheduler_actions_total`; compare `steps.due_at` with `clock_timestamp()` |
-| `outbox_backlog` grows | NATS is down or unreachable, or `SAGAT_NATS_URL` is unset | Nothing is lost: the backlog drains after recovery. Check `outbox_publish_failed_total{code}` and the `last_error_code` column |
-| `QUOTA_EXCEEDED` (REST 429) on a signal, or a step failed with `RUN_DATA_LIMIT` | The run would retain more than 4 MiB of outputs/signals, or its serialized worker context exceeds 8 MiB (compact numbers can expand during serialization; `worker_task_input_rejected_total`) | Return less from the activities (references, not documents); this is a limit of the run, retrying will not help |
+| `outbox_backlog` grows | The selected NATS/Redis publisher is unavailable or misconfigured, or publishing is disabled | Check `SAGAT_EVENT_TRANSPORT`, the selected backend's URL/credentials/TLS/egress, `outbox_publish_failed_total{code}` and `last_error_code`. Durable obligations remain in PostgreSQL; diagnose capacity before assuming the backlog will drain. Follow [transport cutover](events.md#redis-streams-v03) before changing selection. |
+| `QUOTA_EXCEEDED` (REST 429) on a signal, a step failed with `RUN_DATA_LIMIT`, or an activity waits for review with `STORAGE_QUOTA_EXCEEDED` | The run would retain more than 4 MiB of outputs/signals, or its serialized worker context exceeds 8 MiB (compact numbers can expand during serialization; `worker_task_input_rejected_total`). Since feature 037, an activity that **reported success** but whose output cannot be retained is not failed: its effect may have happened, so it waits for review with `STORAGE_QUOTA_EXCEEDED` | Return less from the activities (references, not documents); this is a limit of the run, retrying will not help. Settle the reviewed step with `RESOLVE_STEP` |
 | A run failed with `INSTANCE_LIMIT` or `ITERATION_LIMIT` | The next instance would pass the run's lifetime budget (`maxInstances`: the platform's 100000 or what the workflow author or tenant policy lowered it to; every activated node counts, the `end` node too, and a loop or collection iteration is charged its body's nodes), or a loop needed more bodies than `maxIterations`, or a collection was given more items than `maxItems`. The run records it as the stop code, with the completed iterations kept | Raise the workflow's `limits.maxInstances` / the node's `maxIterations` / `maxItems` in a new version, or send fewer items; `SELECT max_instances, admitted_instances, reserved_instances FROM run_instance_usage WHERE run_id = '...'` shows the budget. A tenant policy that lowers the budget below a running collection pauses its admission (`scheduler_admission_paused_total`) and never kills accepted work |
 | A run failed with `BLOB_UNAVAILABLE` or `BLOB_CORRUPT` before its collection started | The `items` expression of a `forEach`/`map` is a blob reference (`{"$blob": …}`) and the blob cannot be used: it is missing, belongs to another tenant, namespace or run, was never committed, or its descriptor does not match the catalog (`BLOB_UNAVAILABLE`); or the stored bytes no longer match the recorded size or SHA-256 (`BLOB_CORRUPT`). Content that is not a JSON array fails with `EXPRESSION_ERROR`, one over a byte ceiling (blob 8 MiB, element 256 KiB, elements 4 MiB together) with `RUN_DATA_LIMIT`, more elements than `maxItems` with `ITERATION_LIMIT` | `SELECT stop_code FROM runs WHERE id = '...'`; check that the run's input was uploaded to its own namespace and bound at start, and that the object store still holds the bytes (`blob_lost_total`). A store outage is not a failure: the run waits and `scheduler_actions_total{kind="collection",outcome="failed"}` counts the retries. The failure counter is `scheduler_collection_source_failures_total{reason}` |
+| A run failed with `COLLECTION_OPERATOR_BUDGET` before its collection started | Its `forEach` declares `operators` (design 042) and the chain crossed a running ceiling at entry: more than 1,000 input or stage elements, an element over 256 KiB, a stage over 4 MiB, or the 1-second wall time. A stage expression that fails is `EXPRESSION_ERROR` instead | `SELECT stop_code FROM runs WHERE id = '...'`; the `reason` of `scheduler_collection_source_failures_total` names the ceiling. See "Collection operators" in `workflow-primitives.md` |
 | A step failed with `CHILD_LIMIT_EXCEEDED` | The tree of child runs reached 1024 runs, usually a workflow that starts itself without a base case | Fix the recursion; the tree has already stopped growing |
 | `RegisterWorker` answers `RESOURCE_EXHAUSTED` | The identity already holds 32 sessions under other names, or its worker names change on every start | Use a stable worker name (a restart then replaces its own session), or one identity per fleet |
 | A worker's token stops working right after another worker registered | Two workers use the same identity and the same worker name, so the second replaced the first's session | Give every process its own `worker_name` |
@@ -117,7 +120,7 @@ that increment, so use restart monitoring and logs as well.
 | `grpc_requests_total` | `method`, `code` | Worker API calls by outcome (closed sets) |
 | `grpc_request_duration_seconds` | `method` | Latency of each call |
 | `grpc_in_flight` | | Calls running now, all connections (limit `SAGAT_GRPC_MAX_IN_FLIGHT`) |
-| `grpc_shed_total` | `class` | Calls refused because the engine was full: `discovery` (`RegisterWorker`, `PollTasks`, shed above 3/4 of the limit) or `lease` (`Heartbeat`, `CompleteStep`, `FailStep`, shed only when it is completely full) |
+| `grpc_shed_total` | `class` | Calls refused because the engine was full: `discovery` (`RegisterWorker`, `PollTasks`, shed above 3/4 of the limit) or `lease` (`Heartbeat`, `CompleteStep`, `FailStep`, shed only when it is completely full), or `not_serving`, which is **not load shedding**: the replica may not serve because of the instance registry (a gate closed for want of a capability or of a registration), so it answers every call `UNAVAILABLE` before it authenticates; read the reason in [`instance-registry.md`](instance-registry.md) |
 | `grpc_connections_total` | | Connections accepted (at most `SAGAT_GRPC_MAX_CONNECTIONS` are open at once) |
 | `grpc_connections_refused_total` | `reason` | Connections turned away because the address already holds `SAGAT_GRPC_MAX_CONNECTIONS_PER_PEER` |
 | `grpc_connections_closed_total` | `reason` | Connections closed because the peer was silent (`silent`: never sent a byte; `idle`: silent for `SAGAT_GRPC_IDLE_TIMEOUT_SECS`) |
@@ -125,17 +128,30 @@ that increment, so use restart monitoring and logs as well.
 | `child_runs_started_total` | | Child runs created |
 | `scheduler_actions_total{outcome="fenced"}`, `scheduler_fenced_total` | `kind` | Actions refused because the replica no longer holds the run's shard at the generation it believed (feature 010) |
 | `scheduler_shards_owned`, `scheduler_replicas` | | Shards this replica holds (their sum over the replicas is 64), and replicas alive |
+| `serving_instances_live` | `kind` (`CONTROL_PLANE`, `EXECUTION_ENGINE`) | The processes seen in the last 30 seconds in the instance registry, as this replica's last beat saw them: every process reports the fleet's value, so read it with `max`, never `sum` ([`instance-registry.md`](instance-registry.md)) |
+| `instance_registry_refusals_total` | `reason` (`BINARY_CAPABILITY_MISSING`, `REGISTRY_FULL`, `REGISTRY_UNREACHABLE`) | This replica was refused or could not be counted, at start, when it learned of a requirement it lacks, or when it failed closed (once per event) |
+| `instance_registry_gate_open` | | `1` while this replica serves, `0` while its gate is closed (alert `SagatInstanceGateClosed`) |
+| `instance_registry_last_beat_age_seconds` | | Seconds since the instance registry last answered this replica (alert `SagatInstanceRegistrySilent` above 30) |
 | `scheduler_shards_acquired_total`, `scheduler_shards_released_total`, `scheduler_shards_lost_total`, `scheduler_keeper_failures_total` | | Handovers, leases lost while away, rounds of the keeper that failed |
-| `scheduler_lag_seconds` | `pass` | Set by the monitor: how long the oldest overdue item of each pass (`timers`, `wait_deadlines`, `retries`, `leases`, `deadlines`) has been overdue |
-| `scheduler_fairness_limited_total`, `scheduler_fairness_exhausted_total` | `pass` | Tenants given less than they showed in a pass; passes that ran out of pages looking for tenants |
+| `scheduler_lag_seconds` | `pass` | Set by the monitor: how long the oldest overdue item of each pass (`timers`, `wait_deadlines`, `retries`, `leases`, `deadlines`, `schedules`, `batches`) has been overdue. An item the pass would not take yet is not overdue: a batch job held back by an older open transaction is not |
+| `schedule_actions_total` | `kind` (`scheduled`, `triggered`, `backfill`), `outcome` (the closed set of decisions: `started`, `buffered`, `skipped_overlap`, `dropped_buffer_full`, `dropped_deleted`, `coalesced`, `missed_catchup_window`, `already_acted`, `authority_revoked`, `business_id_conflict`, plus `admission_retry` for a time the admission refused and left owed) | What the schedule pass and trigger-now decided, counted once the decision is committed (feature 018) |
+| `schedule_action_lag_seconds` | `kind` | How long after its intended time a schedule's action was decided (histogram) |
+| `batch_items_total` | `action` (the closed batch actions), `outcome` (`succeeded`, `skipped`, `failed`, `cancelled`, `deferred`) | What became of each run of a batch job, counted once the outcome is committed (feature 018) |
+| `batch_item_duration_seconds` | `action` | How long applying the action to one run took (histogram) |
+| `batch_selection_failures_total` | `outcome` (`retry`, `failed`) | Selection rounds of a batch job that failed, counted once the record is committed: `retry` (the job waits its backoff and tries again), `failed` (the eleventh in a row ended the job `SELECTION_FAILED`); no tenant, job or selector label ([batch runbook](batch-operations.md#51-a-selection-that-keeps-failing-selection_failed-g2093), feature 018) |
+| `batch_jobs_active` | | Set by the monitor: batch jobs that are `SELECTING`, `RUNNING` or `CANCELLING` |
+| `batch_purged_total` | `kind` (`job`, `item`) | Rows the housekeeping's purge of finished batch jobs removed, counted once each call has committed; both series at zero from the start of the engine ([batch runbook](batch-operations.md#6-how-long-a-job-is-kept-and-how-it-goes), feature 018) |
+| `batch_purge_failures_total` | | Calls of that purge that failed (a warning with the SQLSTATE and the kind of the error and nothing else; the alert `SagatBatchPurgeFailing`, [batch runbook](batch-operations.md#61-when-the-purge-fails-g2323)); at zero from the start of the engine |
+| `scheduler_fairness_limited_total`, `scheduler_fairness_exhausted_total` | `pass` | Tenants given less than they showed in a pass; passes that ran out of pages looking for tenants. The schedule pass (`pass="schedules"`) shares its batch (`SAGAT_SCHEDULES_BATCH`) between the tenants that have schedules due the same way as the passes of the runs, resting its search for others as `SAGAT_SCHEDULER_DISCOVERY_REST_MS` says |
 | `pool_ready_steps`, `pool_queue_lag_seconds` | `pool` | Set by the monitor for the pools of workers the operator names in `SAGAT_WORKER_POOLS`: steps ready for their activities, across tenants, and how long the oldest has waited |
 | `saga_transitions_total`, `saga_outcomes_total`, `compensation_attempts_total`, `reconciliations_total`, `operator_decisions_total`, `compensation_breaker_opened_total` | closed sets | Sagas (feature 003); meaning in [`sagas.md`](sagas.md) |
 | `ready_steps`, `queue_lag_seconds`, `leases_active`, `leases_expired`, `outbox_backlog`, `outbox_oldest_age_seconds`, `inbox_pending_events`, `inbox_oldest_age_seconds`, `dead_items{kind}`, `runs_active{status}`, `compensating_runs`, `workers_registered`, `alerts_firing{kind}` | | Gauges set by the monitor (feature 008) |
 | `step_attempts_total{outcome}`, `step_attempt_duration_seconds`, `step_schedule_latency_seconds`, `runs_terminal_total{status}`, `run_duration_seconds` | | Made by the projector from the journal; they lag the transitions by `telemetry_projection_lag_seconds` |
 | `telemetry_projection_pending_runs`, `telemetry_projection_lag_seconds`, `telemetry_projector_active`, `telemetry_spans_exported_total{outcome}`, `telemetry_projection_errors_total{reason}` | | The projection and its collector |
 | `worker_polls_drained_total` | | Polls answered with nothing because the identity is being drained |
+| `worker_scoped_output_refused_total` | `reason` (`run_data_limit`, `content_quota`) | Scoped reports kept without their output: over the run's output budget, or refused by the tenant content quota (the run is then stopped for storage and its outcome kept; feature 037) |
 | `worker_claim_skipped_total` | `reason` | Runs a poll skipped without failing: `definition_unreadable` is a run pinned to a workflow version this build cannot read (a rolled-back build meeting a newer run). The run is untouched; update the build, or expect the same skip on every poll until then (G460) |
-| `outbox_published_total` | `event` | Messages sent to NATS (`task.ready`, `run.finished`, `other`) |
+| `outbox_published_total` | `event` | Messages accepted by the selected NATS/Redis publisher (`task.ready`, `run.finished`, `other`) |
 | `outbox_publish_failed_total` | `code` | `BROKER_UNAVAILABLE`, `REJECTED` |
 | `outbox_backlog` | | Messages owed |
 | `db_pool_connections`, `auth_failures_total`, `jwks_refresh_total`, `http_rate_limited_total{scope}` | | As in the control plane |
@@ -145,27 +161,30 @@ No label ever carries a tenant, run, node, subject or user-supplied text.
 ## 5. Logs and secrets
 
 Logs are JSON (`SAGAT_LOG_FORMAT=text` for people), carry `trace_id` and `span_id` and, inside a span that has them, `run_id`; values are redacted on the way out by the name they are logged under and by the shape of a credential (a token, `Bearer …`, the password of a URL, a key with a well-known prefix), and a line is cut at 2048 characters. They never contain lease tokens, session tokens, bearer tokens, payloads, outputs
-or the database/NATS URLs. Validation messages name the field, never its value. A worker's free-text
+or the database/NATS/Redis URLs. Validation messages name the field, never its value. A worker's free-text
 error message is dropped (decision D31); the journal holds a bounded failure code.
 
 ## 6. Failure behaviour (what to expect)
 
 | Failure | Behaviour |
 |---|---|
-| Worker dies mid-step | Its lease expires (`SAGAT_LEASE_TTL_SECS`, 30 s without a heartbeat); the scheduler records `LEASE_EXPIRED`, backs off and releases a retry with a higher generation; the dead worker's late report is refused as stale |
+| Worker dies mid-step | Its lease expires (`SAGAT_LEASE_TTL_SECS`, 30 s without a heartbeat) and records `LEASE_EXPIRED`; the old report is stale. The uncertain Activity enters reconciliation/review and is not automatically released as a higher-generation retry |
 | Engine dies mid-transaction | The transaction rolls back; nothing half-applied exists. The candidate is found again by the next tick of any replica |
-| Engine dies between publishing and confirming an outbox message | The message becomes visible again after 30 s and is republished with the same id; NATS drops the duplicate inside its window |
-| NATS down | Publishing fails and backs off (1 s doubling to 60 s with jitter); the outbox grows; workers that poll are unaffected |
+| Engine dies between publishing and confirming an outbox message | The message becomes visible again after 30 s and is republished with the same application id. NATS can suppress duplicates inside its window; Redis may append another physical entry. Consumers must deduplicate using application identity, not Redis entry ids |
+| Selected NATS/Redis backend down | Publishing fails and backs off; the outbox grows while workers can still claim by polling. Check backend-specific timeout/TLS/credentials/egress and pending-obligation capacity; no physical delivery is inferred from a failed acknowledgement. |
 | PostgreSQL down | Calls fail with `UNAVAILABLE` and `retry-after-ms`; the loops log and retry; `/readyz` fails; nothing is acknowledged that was not committed |
 | Timer, cancellation and signal race | The first commit wins under the run's lock; the loser is a benign no-op |
 | An engine replica dies | Its shards have no owner until its lease runs out (`SAGAT_SHARD_LEASE_SECS`, 15 s) and another replica takes them; the timers, retries and deadlines of those runs fire late and once. A clean stop (`SIGTERM`) gives the shards back and costs one keeper round |
 | An engine replica is paused or cut off past its lease | It stops selecting work by itself when its own clock says the lease ran out, and anything it had already chosen is refused by the fence (`scheduler_fenced_total`); it takes shards again with a new generation when it can |
+| An engine replica is older than a requirement the platform recorded | At start, or if it was silent when the requirement was recorded and comes back: `/readyz` fails with `BINARY_CAPABILITY_MISSING`, every loop pauses, it holds no shard and its worker API answers `UNAVAILABLE`. It stays alive and serves by itself once the requirement is removed. [`instance-registry.md`](instance-registry.md) |
 | The database fails over | The pools replace their connections; replicas whose leases are not the new primary's take them again (the fence names the owner as well as the generation, so a generation that repeats is harmless); [`disaster-recovery.md`](disaster-recovery.md) |
 
 ## 7. Not covered (read before relying on this)
 
 - **Fairness between tenants is of the scheduler's passes and the outbox (feature 010, ADR-0020).** The
-  worker claim path is still oldest-first across the tenant's own steps (a worker belongs to one tenant),
+  worker claim path reads the oldest ready steps of the tenant's own (a worker belongs to one tenant); a
+  poll alone tries them oldest first, and polls of a namespace in flight together in one process start at
+  different points of the same candidates, none of which is left out (design 038, OD-2026-11-12-3),
   and the database pool is shared by everything in a process. Quotas per queue (per activity) do not
   exist (G245).
 - Certificate-bound tokens, that is, tying a client certificate to the worker identity in the token (G44 of feature 009).
@@ -173,9 +192,9 @@ error message is dropped (decision D31); the journal holds a bounded failure cod
 - Partitioning and retention of `run_events` (G28) are not built: the journal grows with the runs
   (feature 010 measured the cost of a wait and of a transition, `tests/performance/reports/scalability-ha.md`,
   and left the partitioning for evidence, G241).
-- Outgoing broker producers (NATS/Kafka/SQS) remain pending. Sagas, compensation, inbound event dispatch and outbound HTTP webhook delivery are implemented; consult their feature runbooks for retry and recovery semantics.
+- Outgoing NATS/Kafka/SQS/Redis producer paths exist in the current code; they were outside the original feature-002 validation scope. Consult the events runbook and feature-specific evidence for retry, recovery and rollout guarantees. A static inventory is not a new runtime validation.
 - OTLP span export is OTLP/HTTP with JSON only (G169); a backend that takes only protobuf needs a Collector in front. One projector and one monitor cap their own throughput (G177): sharding is feature 010. The audit trail has no retention (G182, G28).
-- Failover of PostgreSQL itself, backups of the NATS stream (it holds hints only) and capacity
+- Failover of PostgreSQL itself, backup/retention of the selected internal NATS/Redis hint stream (customer callback streams have their own operator-owned retention) and capacity
   planning per tier (spec open question).
 
 ## 8. Large inputs and worker outputs (protocol 1.3)

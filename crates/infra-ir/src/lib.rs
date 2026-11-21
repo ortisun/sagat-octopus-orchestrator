@@ -8,6 +8,10 @@
 mod payload_projection;
 pub use payload_projection::JsonPayloadProjector;
 mod canonical;
+mod capabilities;
+mod collection_chain;
+pub use capabilities::{reset_reapply_enabled, set_reset_reapply};
+pub use collection_chain::distinct_form;
 mod carrier_schema_check;
 mod classification_check;
 mod continuation;
@@ -16,11 +20,23 @@ pub mod cron;
 mod database;
 mod database_result;
 mod declared_state;
+pub mod schedule_calendar;
 pub use database_result::JsonDatabaseResultValidator;
 mod diff;
 mod evaluator;
+mod input_schema;
+pub use input_schema::{StoredInputSchema, stored_input_schema};
+mod lake;
+mod lake_egress;
+pub mod lake_probe_result;
+pub mod lake_receipt;
+pub use lake_probe_result::JsonLakeProbeCodec;
+pub use lake_receipt::JsonLakeReceiptCodec;
 mod operation_evaluator;
+mod operators;
 mod schema;
+
+pub use operators::{canonical_chain, chain_digest};
 
 pub use continuation::{ChainPolicyDefinition, ContinueAsNewDefinition, ParsedContinuation};
 pub use declared_state::{
@@ -32,8 +48,11 @@ pub use operation_evaluator::{
     EvaluatedOperationValue, JsonDeclaredOperationEvaluator, QueryEvaluation, UpdateEvaluationPlan,
 };
 
-use sagat_application::definitions::{IrCodec, IrError, MAX_IR_BYTES, ParsedDefinition};
+use sagat_application::definitions::{
+    InputValidationMode, IrCodec, IrError, MAX_IR_BYTES, ParsedDefinition,
+};
 use sagat_application::operation_evaluation::OperationEvaluationError;
+use sagat_domain::database::RecordSource;
 use sagat_domain::workflow::{NodeKind, WorkflowDefinition};
 use sagat_infra_expr::{Compiled, Template};
 use serde_json::Value;
@@ -134,11 +153,43 @@ impl IrCodec for JsonIrCodec {
     }
 
     fn parse(&self, document: &[u8]) -> Result<ParsedDefinition, IrError> {
-        published_definition(validated_document(document)?)
+        self.parse_with(document, InputValidationMode::Enforce)
+    }
+
+    fn parse_with(
+        &self,
+        document: &[u8],
+        mode: InputValidationMode,
+    ) -> Result<ParsedDefinition, IrError> {
+        let value = validated_document(document)?;
+        // a new publication needs every capability its document uses to be on; `parse_stored` below
+        // restores what was published while one was
+        capabilities::check_publication(&value)?;
+        // and its `inputSchema` within the supported subset (design 043); `parse_stored` does not ask
+        input_schema::precheck(published_definition(value)?, mode)
     }
 
     fn parse_stored(&self, document: &[u8]) -> Result<ParsedDefinition, IrError> {
         published_definition(validated_stored_document(document)?)
+    }
+
+    /// The authoring parse of a **private** document (ADR-0080): the platform's own definition of something no author may write (today the
+    /// probe of an Iceberg connection). It validates against the public grammar plus the private node types and is otherwise
+    /// [`IrCodec::parse`]. Only the entry that builds such a document calls it; no publication path does.
+    fn parse_private(&self, document: &[u8]) -> Result<ParsedDefinition, IrError> {
+        input_schema::precheck(
+            published_definition(validated_document_in(document, schema::Mode::Private)?)?,
+            InputValidationMode::Enforce,
+        )
+    }
+
+    /// The restore of a stored **private** definition (ADR-0080), chosen by the loader from the workflow's `internal` flag and never from
+    /// the document. Otherwise [`IrCodec::parse_stored`].
+    fn parse_stored_private(&self, document: &[u8]) -> Result<ParsedDefinition, IrError> {
+        published_definition(validated_stored_document_in(
+            document,
+            schema::Mode::Private,
+        )?)
     }
 
     fn declared_state_publication(
@@ -147,6 +198,20 @@ impl IrCodec for JsonIrCodec {
     ) -> Result<Option<sagat_application::declared_operations::PublishedDeclaredState>, IrError>
     {
         let value = validated_document(document)?;
+        // what a publication stores is held to the same capabilities as the parse that precedes it
+        capabilities::check_publication(&value)?;
+        value
+            .get("state")
+            .map(|_| declared_state::parse(&value)?.publication())
+            .transpose()
+    }
+
+    fn declared_state_publication_private(
+        &self,
+        document: &[u8],
+    ) -> Result<Option<sagat_application::declared_operations::PublishedDeclaredState>, IrError>
+    {
+        let value = validated_document_in(document, schema::Mode::Private)?;
         value
             .get("state")
             .map(|_| declared_state::parse(&value)?.publication())
@@ -267,8 +332,9 @@ fn read_document(document: &[u8]) -> Result<Value, IrError> {
     serde_json::from_slice(document).map_err(|_| IrError::Malformed)
 }
 
-fn check_ir_structure(value: &Value) -> Result<(), IrError> {
-    let issues = schema::issues(value);
+fn check_ir_structure(value: &Value, mode: schema::Mode) -> Result<(), IrError> {
+    operators::check_surfaces(value)?;
+    let issues = schema::issues(value, mode);
     if !issues.is_empty() {
         return Err(IrError::Schema(issues));
     }
@@ -276,12 +342,16 @@ fn check_ir_structure(value: &Value) -> Result<(), IrError> {
 }
 
 fn validated_document(document: &[u8]) -> Result<Value, IrError> {
+    validated_document_in(document, schema::Mode::Public)
+}
+
+fn validated_document_in(document: &[u8], mode: schema::Mode) -> Result<Value, IrError> {
     let value = read_document(document)?;
     let classification = classification_check::check(&value);
     if !classification.is_publishable() {
         return Err(IrError::Classification(classification.findings));
     }
-    check_ir_structure(&value)?;
+    check_ir_structure(&value, mode)?;
     let issues = carrier_schema_check::issues(&value);
     if !issues.is_empty() {
         return Err(IrError::Schema(issues));
@@ -290,8 +360,12 @@ fn validated_document(document: &[u8]) -> Result<Value, IrError> {
 }
 
 fn validated_stored_document(document: &[u8]) -> Result<Value, IrError> {
+    validated_stored_document_in(document, schema::Mode::Public)
+}
+
+fn validated_stored_document_in(document: &[u8], mode: schema::Mode) -> Result<Value, IrError> {
     let value = read_document(document)?;
-    check_ir_structure(&value)?;
+    check_ir_structure(&value, mode)?;
     Ok(value)
 }
 
@@ -299,7 +373,9 @@ fn converted_document(
     value: &Value,
     convert: fn(&Value) -> Result<WorkflowDefinition, IrError>,
 ) -> Result<ParsedDefinition, IrError> {
-    let definition = convert(value)?;
+    // The levels of what an Iceberg write sends out are read from the schemas of this document, once, for publication and
+    // for the restore that admission relies on; they are derived, so they never reach the canonical bytes.
+    let definition = input_schema::attach(value, lake_egress::attach(value, convert(value)?));
     check_expressions(&definition)?;
     let canonical = canonical::canonical_json(value);
     let digest = canonical::digest_of(&canonical);
@@ -367,6 +443,13 @@ fn check_node_expressions<'a>(
                 }
             }
         }
+        if let Some(write) = node.iceberg_write()
+            && let RecordSource::Inline(expression) | RecordSource::Blobs(expression) =
+                write.records()
+        {
+            Compiled::compile(expression.as_str())
+                .map_err(|_| expression_error(id, "records", "invalid record expression"))?;
+        }
         match node.kind() {
             NodeKind::Condition { expression, .. } => {
                 Compiled::compile(expression.as_str())
@@ -400,8 +483,16 @@ fn check_node_expressions<'a>(
                 Template::compile(template.as_str())
                     .map_err(|e| expression_error(id, "idempotencyTemplate", e))?;
             }
-            NodeKind::ForEach { items, result, .. } => {
+            NodeKind::ForEach {
+                items,
+                operators,
+                result,
+                ..
+            } => {
                 Compiled::compile(items.as_str()).map_err(|e| expression_error(id, "items", e))?;
+                if let Some(chain) = operators {
+                    operators::check_expressions(node.id(), chain)?;
+                }
                 Compiled::compile(result.as_str())
                     .map_err(|e| expression_error(id, "result", e))?;
             }

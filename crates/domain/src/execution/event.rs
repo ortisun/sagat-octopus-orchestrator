@@ -94,11 +94,20 @@ impl FailureCode {
     }
 
     /// Whether a step that ended with this code may have had its effect: the attempt was lost, timed
-    /// out, said it did not know, its successful report could not be retained, or its lookup could
-    /// not say. (A worker that answered with an ordinary failure knows the effect did not happen; a
-    /// lookup that said so is `RECONCILED_NOT_APPLIED`.)
+    /// out, said it did not know, its successful report could not be retained, its lookup failed or
+    /// could not say, or its lookup said `not_applied` (an observation, not proof: feature 037). A
+    /// worker that answered with an ordinary failure knows the effect did not happen.
+    /// `RECONCILED_NOT_APPLIED` is only found in journals written by v0.1/v0.2.
     #[must_use]
     pub fn leaves_outcome_unknown(&self) -> bool {
+        Self::outcome_unknown_codes().contains(self)
+    }
+
+    /// Every code for which [`Self::leaves_outcome_unknown`] holds. Other layers keep their own
+    /// copy of this list (a SQL literal in the chain-progress store, the Studio's operation
+    /// guards); `crates/domain/tests/outcome_unknown_parity.rs` fails when they drift.
+    #[must_use]
+    pub fn outcome_unknown_codes() -> [Self; 7] {
         [
             Self::lease_expired(),
             Self::attempt_timeout(),
@@ -106,8 +115,8 @@ impl FailureCode {
             Self::storage_quota_exceeded(),
             Self::reconciliation_failed(),
             Self::reconciliation_unknown(),
+            Self::reconciliation_not_final(),
         ]
-        .contains(self)
     }
 
     /// The child run failed and its saga undid what it had done (feature 003).
@@ -132,6 +141,25 @@ impl FailureCode {
     #[must_use]
     pub fn child_not_found() -> Self {
         Self::system("CHILD_NOT_FOUND")
+    }
+
+    /// The child's version refused the input the parent's node evaluated (design 043, `FR-043-008`).
+    #[must_use]
+    pub fn child_input_invalid() -> Self {
+        Self::system("CHILD_INPUT_INVALID")
+    }
+
+    /// The `inputSchema` of the version a new run would pin is outside the supported subset (design 043): a child
+    /// step or a continuation fails with it.
+    #[must_use]
+    pub fn run_input_schema_unusable() -> Self {
+        Self::system("RUN_INPUT_SCHEMA_UNUSABLE")
+    }
+
+    /// The continuation's evaluated input was refused by the schema of the run's version (design 043, `FR-043-009`).
+    #[must_use]
+    pub fn continuation_input_invalid() -> Self {
+        Self::system("CONTINUATION_INPUT_INVALID")
     }
 
     /// Starting the child would nest runs deeper than the limit.
@@ -167,14 +195,22 @@ impl FailureCode {
         Self::system("RECONCILIATION_FAILED")
     }
 
+    /// The lookup said the effect did not happen. A negative lookup is an observation, not proof
+    /// that a late effect cannot happen, so the step waits for a person (feature 037).
+    #[must_use]
+    pub fn reconciliation_not_final() -> Self {
+        Self::system("RECONCILIATION_NOT_FINAL")
+    }
+
     /// The provider cannot say whether the effect happened.
     #[must_use]
     pub fn reconciliation_unknown() -> Self {
         Self::system("RECONCILIATION_UNKNOWN")
     }
 
-    /// The reconciliation found that the effect did not happen, and the step has no attempt left.
-    /// Unlike the code of the lost attempt it is *not* an unknown outcome: nothing is compensated.
+    /// v0.1/v0.2 only: the reconciliation found that the effect did not happen and the step had no
+    /// attempt left. Current engines answer a negative lookup with `RECONCILIATION_NOT_FINAL`; this
+    /// code remains so that committed journals replay (D1810).
     #[must_use]
     pub fn reconciled_not_applied() -> Self {
         Self::system("RECONCILED_NOT_APPLIED")
@@ -246,6 +282,13 @@ impl FailureCode {
     #[must_use]
     pub fn blob_unavailable() -> Self {
         Self::system("BLOB_UNAVAILABLE")
+    }
+
+    /// A collection's operator chain crossed one of its running ceilings at scope entry (design 042, FR-042-007): more
+    /// than 1,000 input or stage elements, an element over 256 KiB, a stage over 4 MiB, or the 1-second wall time.
+    #[must_use]
+    pub fn collection_operator_budget() -> Self {
+        Self::system("COLLECTION_OPERATOR_BUDGET")
     }
 
     /// The bytes of a blob are not the bytes that were stored (size or digest differ).
@@ -395,6 +438,89 @@ pub enum ReconcileResult {
 pub enum ReviewOutcome {
     Succeeded,
     Failed(FailureCode),
+}
+
+/// What satisfied a wait (feature 018, `FR-018-039`): the journal keeps it so a reset can tell the waits a
+/// caller satisfied by a signal, which it may deliver again, from those an event satisfied, which it may not.
+/// A row written before this existed has none.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WaitVia {
+    /// A signal sent to the run, or to its chain.
+    Signal,
+    /// A published event that matched the wait's correlation.
+    Event,
+    /// The signal of a Signal-with-Start, delivered in the transaction that created the run.
+    SignalWithStart,
+}
+
+impl WaitVia {
+    /// The closed name written to the journal.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Signal => "signal",
+            Self::Event => "event",
+            Self::SignalWithStart => "signal_with_start",
+        }
+    }
+
+    /// The value a journal row names, if this version knows it.
+    #[must_use]
+    pub fn parse(name: &str) -> Option<Self> {
+        match name {
+            "signal" => Some(Self::Signal),
+            "event" => Some(Self::Event),
+            "signal_with_start" => Some(Self::SignalWithStart),
+            _ => None,
+        }
+    }
+}
+
+/// What a reset delivers again after the point (feature 018, `FR-018-039`): the signals recorded `via:
+/// signal` after it, the Updates whose declaration kept their arguments (`reapplyOnReset`), both, or nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ResetReapply {
+    #[default]
+    None,
+    Signals,
+    Updates,
+    All,
+}
+
+impl ResetReapply {
+    /// The closed name written to the journal and the API.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "NONE",
+            Self::Signals => "SIGNALS",
+            Self::Updates => "UPDATES",
+            Self::All => "ALL",
+        }
+    }
+
+    #[must_use]
+    pub fn parse(name: &str) -> Option<Self> {
+        match name {
+            "NONE" => Some(Self::None),
+            "SIGNALS" => Some(Self::Signals),
+            "UPDATES" => Some(Self::Updates),
+            "ALL" => Some(Self::All),
+            _ => Option::None,
+        }
+    }
+
+    /// Whether signals are delivered again.
+    #[must_use]
+    pub const fn signals(self) -> bool {
+        matches!(self, Self::Signals | Self::All)
+    }
+
+    /// Whether Updates are applied again.
+    #[must_use]
+    pub const fn updates(self) -> bool {
+        matches!(self, Self::Updates | Self::All)
+    }
 }
 
 /// How a `parallel` node ended.
@@ -589,6 +715,8 @@ pub enum RunEvent {
     },
     WaitSatisfied {
         node: NodeId,
+        /// What satisfied it; `None` for a row written before the journal said so.
+        via: Option<WaitVia>,
     },
     /// The wait's deadline passed. `handled` means the node defines an `onTimeout` route.
     WaitTimedOut {
@@ -819,6 +947,10 @@ pub enum RunEvent {
         before_revision: u64,
         after_revision: u64,
         state_digest: Digest,
+        /// Whether the arguments of the Update were kept for a reset (`reapplyOnReset`, feature 018): `Some`
+        /// in a row written once the journal said so, `None` in an older one, which a reset reports as a
+        /// legacy event and not as an Update that did not opt in.
+        arguments_retained: Option<bool>,
     },
     /// Closes this segment while transferring explicit input and optional state to its successor.
     RunContinued {
@@ -835,6 +967,26 @@ pub enum RunEvent {
     },
     RunPaused,
     RunResumed,
+    /// A run created with a start delay holds its entry until `until_us` (microseconds since the
+    /// epoch): journaled right after `run.started`, nothing is released and the run waits
+    /// (feature 018, `FR-018-023`).
+    StartDelayed {
+        until_us: i64,
+    },
+    /// The entry of a delayed run is released, once, as `start_run` would have released it.
+    StartReleased {
+        until_us: i64,
+    },
+    /// The events `1..source_sequence` of the source run were re-emitted under this run and the work
+    /// goes on from there: the reset run's own journal starts here (feature 018, `FR-018-037`).
+    /// `prefix_sha256` is the digest of the canonical encoding of the source rows `1..source_sequence`, so
+    /// a reader can verify the copy against a retained source.
+    RunReset {
+        source_run_id: RunId,
+        source_sequence: u64,
+        prefix_digest: Digest,
+        reapply: ResetReapply,
+    },
     RunStopRequested {
         reason: StopReason,
         code: Option<FailureCode>,
@@ -1009,6 +1161,9 @@ impl RunEvent {
             Self::ContinuationSelected { .. } => "continuation.selected",
             Self::RunPaused => "run.paused",
             Self::RunResumed => "run.resumed",
+            Self::StartDelayed { .. } => "run.start_delayed",
+            Self::StartReleased { .. } => "run.start_released",
+            Self::RunReset { .. } => "run.reset",
             Self::RunStopRequested { .. } => "run.stop_requested",
             Self::RunFinished { .. } => "run.finished",
         }
@@ -1031,7 +1186,7 @@ impl RunEvent {
             | Self::TimerStarted { node, .. }
             | Self::TimerFired { node }
             | Self::WaitStarted { node, .. }
-            | Self::WaitSatisfied { node }
+            | Self::WaitSatisfied { node, .. }
             | Self::WaitTimedOut { node, .. }
             | Self::ApprovalOpened { node, .. }
             | Self::ApprovalDecided { node, .. }
@@ -1079,6 +1234,9 @@ impl RunEvent {
             | Self::RunContinued { .. }
             | Self::RunPaused
             | Self::RunResumed
+            | Self::StartDelayed { .. }
+            | Self::StartReleased { .. }
+            | Self::RunReset { .. }
             | Self::RunStopRequested { .. }
             | Self::RunFinished { .. } => None,
         }

@@ -1,0 +1,305 @@
+warning: field `tagged_fields` is never read
+   --> vendor/rskafka/src/protocol/messages/create_topics.rs:291:9
+    |
+278 | pub struct CreateTopicsResponse {
+    |            -------------------- field in this struct
+...
+291 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `CreateTopicsResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: fields `name`, `value`, `read_only`, `config_source`, `is_sensitive`, and `tagged_fields` are never read
+   --> vendor/rskafka/src/protocol/messages/create_topics.rs:321:9
+    |
+319 | pub struct CreateTopicResponseConfig {
+    |            ------------------------- fields in this struct
+320 |     /// The configuration name.
+321 |     pub name: CompactString,
+    |         ^^^^
+...
+324 |     pub value: CompactNullableString,
+    |         ^^^^^
+...
+327 |     pub read_only: Boolean,
+    |         ^^^^^^^^^
+...
+330 |     pub config_source: Int8,
+    |         ^^^^^^^^^^^^^
+...
+333 |     pub is_sensitive: Boolean,
+    |         ^^^^^^^^^^^^
+...
+336 |     pub tagged_fields: TaggedFields,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `CreateTopicResponseConfig` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: fields `num_partitions`, `replication_factor`, `configs`, and `tagged_fields` are never read
+   --> vendor/rskafka/src/protocol/messages/create_topics.rs:374:9
+    |
+359 | pub struct CreateTopicResponse {
+    |            ------------------- fields in this struct
+...
+374 |     pub num_partitions: Option<Int32>,
+    |         ^^^^^^^^^^^^^^
+...
+379 |     pub replication_factor: Option<Int16>,
+    |         ^^^^^^^^^^^^^^^^^^
+...
+384 |     pub configs: Vec<CreateTopicResponseConfig>,
+    |         ^^^^^^^
+...
+389 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `CreateTopicResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: fields `low_watermark` and `tagged_fields` are never read
+   --> vendor/rskafka/src/protocol/messages/delete_records.rs:182:9
+    |
+177 | pub struct DeleteResponsePartition {
+    |            ----------------------- fields in this struct
+...
+182 |     pub low_watermark: Int64,
+    |         ^^^^^^^^^^^^^
+...
+190 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `DeleteResponsePartition` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `tagged_fields` is never read
+   --> vendor/rskafka/src/protocol/messages/delete_records.rs:226:9
+    |
+216 | pub struct DeleteResponseTopic {
+    |            ------------------- field in this struct
+...
+226 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `DeleteResponseTopic` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `tagged_fields` is never read
+   --> vendor/rskafka/src/protocol/messages/delete_records.rs:269:9
+    |
+258 | pub struct DeleteRecordsResponse {
+    |            --------------------- field in this struct
+...
+269 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `DeleteRecordsResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `tagged_fields` is never read
+   --> vendor/rskafka/src/protocol/messages/delete_topics.rs:101:9
+    |
+ 88 | pub struct DeleteTopicsResponse {
+    |            -------------------- field in this struct
+...
+101 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `DeleteTopicsResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `tagged_fields` is never read
+   --> vendor/rskafka/src/protocol/messages/delete_topics.rs:144:9
+    |
+129 | pub struct DeleteTopicsResponseTopic {
+    |            ------------------------- field in this struct
+...
+144 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `DeleteTopicsResponseTopic` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: fields `producer_id` and `first_offset` are never read
+   --> vendor/rskafka/src/protocol/messages/fetch.rs:170:9
+    |
+168 | pub struct FetchResponseAbortedTransaction {
+    |            ------------------------------- fields in this struct
+169 |     /// The producer id associated with the aborted transaction.
+170 |     pub producer_id: Int64,
+    |         ^^^^^^^^^^^
+...
+173 |     pub first_offset: Int64,
+    |         ^^^^^^^^^^^^
+    |
+    = note: `FetchResponseAbortedTransaction` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `aborted_transactions` is never read
+   --> vendor/rskafka/src/protocol/messages/fetch.rs:213:9
+    |
+192 | pub struct FetchResponsePartition {
+    |            ---------------------- field in this struct
+...
+213 |     pub aborted_transactions: Vec<FetchResponseAbortedTransaction>,
+    |         ^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `FetchResponsePartition` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `timestamp` is never read
+   --> vendor/rskafka/src/protocol/messages/list_offsets.rs:184:9
+    |
+169 | pub struct ListOffsetsResponsePartition {
+    |            ---------------------------- field in this struct
+...
+184 |     pub timestamp: Option<Int64>,
+    |         ^^^^^^^^^
+    |
+    = note: `ListOffsetsResponsePartition` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: fields `log_append_time_ms` and `log_start_offset` are never read
+   --> vendor/rskafka/src/protocol/messages/produce.rs:148:9
+    |
+132 | pub struct ProduceResponsePartitionResponse {
+    |            -------------------------------- fields in this struct
+...
+148 |     pub log_append_time_ms: Option<Int64>,
+    |         ^^^^^^^^^^^^^^^^^^
+...
+153 |     pub log_start_offset: Option<Int64>,
+    |         ^^^^^^^^^^^^^^^^
+    |
+    = note: `ProduceResponsePartitionResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: fields `session_lifetime_ms` and `tagged_fields` are never read
+   --> vendor/rskafka/src/protocol/messages/sasl_msg.rs:198:9
+    |
+181 | pub struct SaslAuthenticateResponse {
+    |            ------------------------ fields in this struct
+...
+198 |     pub session_lifetime_ms: Option<Int64>,
+    |         ^^^^^^^^^^^^^^^^^^^
+...
+203 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `SaslAuthenticateResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: struct `CompactArray` is never constructed
+   --> vendor/rskafka/src/protocol/primitives.rs:725:12
+    |
+725 | pub struct CompactArray<T>(pub Option<Vec<T>>);
+    |            ^^^^^^^^^^^^
+
+warning: `rskafka` (lib) generated 14 warnings
+   Compiling sagat-tests v0.2.0 (/Users/marcelo/Documents/Projects/sagat-octopus-compensation-safety/tests)
+    Finished `test` profile [unoptimized] target(s) in 25.97s
+     Running fault/inline-code-sandbox/main.rs (/var/folders/60/bf6rmfzx6zq67nrbzb3m0p480000gn/T/sagat-037-target-q0fwz2gu/debug/deps/fault_inline_code_sandbox-884edb76bdf57562)
+
+running 12 tests
+test engine::a_build_the_engine_cannot_do_is_tried_three_times_and_then_says_it_was_the_sandbox ... ok
+test engine::a_control_plane_that_cannot_be_reached_is_an_error_to_report_and_not_a_crash ... ok
+test engine::a_step_the_engine_cannot_run_is_retried_and_ends_as_the_sandbox_unavailable ... ok
+test engine::a_test_run_on_a_broken_engine_is_a_retryable_failure_of_the_platform_not_of_the_script ... ok
+test engine::a_wrong_credential_is_refused_and_does_nothing ... ok
+test loss::a_build_whose_runner_dies_is_taken_over_and_what_the_dead_one_says_late_changes_nothing ... ok
+test loss::a_runner_that_restarts_preserves_unknown_work_and_serves_new_work ... ok
+test loss::a_step_whose_runner_dies_waits_for_review_and_the_late_attempt_is_dropped ... ok
+test loss::a_test_run_whose_runner_dies_is_run_again_by_another ... ok
+test races::a_runner_takes_no_more_steps_than_it_has_room_to_run ... ok
+test races::cancelling_a_run_stops_its_script_and_leaves_no_container ... ok
+test races::scripts_that_become_ready_at_different_times_are_all_served_by_the_one_session ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 37.72s
+
+     Running fault/workflow-primitives/main.rs (/var/folders/60/bf6rmfzx6zq67nrbzb3m0p480000gn/T/sagat-037-target-q0fwz2gu/debug/deps/fault_workflow_primitives-abc3cca57c7d0ee6)
+
+running 92 tests
+test approval_combinations::a_decision_and_a_run_cancel_racing_leave_one_consistent_outcome ... ok
+test approval_combinations::a_decision_and_a_declared_update_racing_both_commit_in_one_journal ... ok
+test approval_combinations::a_decision_and_the_chain_cancel_latch_racing_never_leave_a_successor ... ok
+test approval_combinations::a_decision_racing_the_approvals_own_expiry_routes_exactly_one_branch ... ok
+test approval_combinations::a_decision_racing_the_scheduler_hand_off_creates_exactly_one_successor ... ok
+test approval_combinations::the_same_decision_sent_twice_at_once_commits_once_and_replays_the_receipt ... ok
+test approval_combinations::two_deciders_at_once_leave_one_outcome_and_one_receipt ... ok
+test approvals::a_raw_signal_never_settles_an_approval_before_during_or_after_its_outcome ... ok
+test approval_combinations::a_decision_racing_the_chains_original_deadline_has_one_outcome_and_no_open_request ... ok
+test approvals::a_revoked_approver_cannot_replay_a_receipt_it_committed ... ok
+test approvals::a_used_decision_key_with_another_body_is_refused_after_restart_and_changes_nothing ... ok
+test approvals::an_audit_failure_rolls_back_a_decision_and_the_retry_commits_it_once ... ok
+test approvals::an_audit_failure_rolls_back_an_expiry_and_the_retry_expires_it_once ... ok
+test approvals::an_audit_failure_rolls_back_opening_and_the_retry_opens_one_request ... ok
+test approvals::current_membership_and_tenant_boundary_are_checked_before_receipt_replay ... ok
+test approvals::decision_and_expiry_race_has_one_first_commit_winner ... ok
+test approvals::outbox_failure_rolls_back_request_timer_journal_projection_and_audit ... ok
+test approvals::expiry_then_decision_and_decision_then_expiry_keep_the_first_outcome ... ok
+test approvals::restart_and_identical_replay_return_the_original_authorized_receipt ... ok
+test approvals::stale_scheduler_fence_cannot_open_or_expire_an_approval ... ok
+test approvals::settlement_outbox_failures_roll_back_decision_and_expiry ... ok
+test chains::a_chain_signal_is_never_held_for_the_successor_in_either_order ... ok
+test chains::a_chain_update_and_a_hand_off_commit_in_either_order_without_losing_or_repeating_the_update ... ok
+test chains::a_dropped_connection_before_commit_leaves_nothing_and_one_retry_commits_once ... ok
+test chains::a_failed_hand_off_of_a_wait_chain_leaves_no_subscription_and_the_retry_writes_one ... ok
+test chains::a_lost_wake_of_the_parent_after_a_child_chain_ends_is_found_again_and_runs_the_next_step_once ... ok
+test chains::a_quota_lowered_while_the_hand_off_waits_is_honoured_by_the_write ... ok
+test chains::a_restart_between_the_hand_off_and_the_event_still_wakes_the_successor_once ... ok
+test chains::a_signal_and_the_hand_off_of_a_wait_chain_commit_in_either_order_and_the_next_signal_is_not_lost ... ok
+test chains::cancel_and_hand_off_commit_in_either_order_without_a_stray_successor ... ok
+test chains::chain_limit_outbox_failure_rolls_back_and_retry_finalizes_once ... ok
+test chains::chain_parent_final_settlement_never_updates_the_childs_legacy_flags ... ok
+test chains::chain_parent_propagated_cancellation_never_updates_the_childs_legacy_flags ... ok
+test chains::chain_parent_requested_cancellation_never_updates_the_childs_legacy_flags ... ok
+test chains::continuation_expression_failure_rolls_back_and_retry_finalizes_once ... ok
+test chains::duplicate_hand_offs_of_one_boundary_commit_one_successor ... ok
+test chains::grandchild_handoff_and_root_child_admission_do_not_deadlock_on_the_root_foreign_key ... ok
+test chains::handoff_and_cancel_race_commit_exactly_one_chain_transition ... ok
+test chains::handoff_and_new_root_admission_do_not_invert_quota_and_payload_locks ... ok
+test chains::handoff_keeps_the_started_definition_version_after_a_new_publish ... ok
+test chains::restart_recovers_the_successor_when_the_handoff_hint_is_lost ... ok
+test chains::parent_cancellation_and_a_child_hand_off_commit_in_either_order_and_the_latch_never_gets_lost ... ok
+test chains::signalled_wait_handoff_rolls_back_with_outbox_and_retries_once ... ok
+test chains::the_final_outcome_of_a_child_chain_reaches_the_parent_once_despite_a_failed_write_and_a_duplicate ... ok
+test collection_sources::a_failure_after_the_read_and_before_the_commit_leaves_nothing_and_the_retry_enters_once ... ok
+test collection_sources::a_replica_without_a_current_lease_does_not_even_read_the_blob ... ok
+test collection_sources::a_run_cancelled_before_entry_never_reads_the_blob ... ok
+test collection_sources::a_scheduler_that_loses_its_shard_after_reading_commits_nothing ... ok
+test collection_sources::two_attempts_to_enter_the_same_collection_leave_one_membership ... ok
+test collections::bounded_public_collection_finishes_in_input_order_after_restart_and_lost_hints ... ok
+test collections::a_result_expression_reads_the_item_and_index_of_every_iteration ... ok
+test loops::a_cancel_that_commits_before_the_timeout_is_noticed_ends_the_run_cancelled ... ok
+test loops::a_cancel_that_lands_after_the_timeout_started_draining_still_wins ... ok
+test loops::a_completing_body_that_commits_first_beats_the_timeout ... ok
+test loops::a_replica_that_lost_its_shards_cannot_fire_the_timer ... ok
+test loops::a_scheduler_restarted_during_the_delay_wakes_the_loop_exactly_once ... ok
+test loops::a_timeout_that_commits_first_beats_a_completing_body ... ok
+test loops::a_signal_during_or_racing_the_delay_is_refused_and_leaves_the_loop_alone ... ok
+test loops::audit_failure_while_taking_the_error_edge_rolls_the_whole_finish_back ... ok
+test loops::concurrent_replicas_finishing_one_drain_take_the_error_edge_once ... ok
+test loops::delay_checkpoint_restart_and_duplicate_timer_fire_are_atomic ... ok
+test loops::outbox_and_audit_failures_roll_back_the_whole_checkpoint ... ok
+test loops::scheduler_takeover_mid_drain_fences_the_old_replica_and_the_new_one_finishes ... ok
+test loops::stale_fence_capacity_and_instance_budget_fail_without_timer_side_effects ... ok
+test loops::terminal_routing_replays_and_destructive_down_migration_fails_closed ... ok
+test loops::two_replicas_delivering_the_same_due_timer_admit_one_iteration ... ok
+test loops::timer_delivery_fails_closed_after_cancel_signal_or_update_commit ... ok
+test operations::crash::a_connection_killed_after_the_decision_leaves_nothing_and_replays_once ... ok
+test operations::crash::a_connection_killed_while_queued_for_the_run_lock_leaves_nothing_and_replays_once ... ok
+test operations::lost_update_response_replays_the_committed_receipt_without_a_second_mutation ... ok
+test operations::crash::an_update_cut_off_at_every_await_point_commits_whole_or_not_at_all ... ok
+test operations::mutability::every_status_but_running_and_waiting_refuses_an_update_and_still_serves_the_query ... ok
+test operations::query_invariance::the_detectors_see_a_touched_timestamp_and_an_extra_event ... ok
+test operations::query_invariance::queries_racing_the_writers_of_a_run_change_nothing_but_their_own_audit ... ok
+test operations::races::an_update_and_a_firing_timer_both_commit_in_either_order ... ok
+test operations::races::an_update_and_a_wait_timeout_both_commit_in_either_order ... ok
+test operations::races::an_update_and_a_worker_completion_both_commit_in_either_order ... ok
+test operations::races::two_deliveries_of_one_update_key_apply_once_and_replay_once ... ok
+test operations::undeclared_input_canary_never_crosses_the_operation_response_or_evidence_boundary ... ok
+test operations::redaction::a_resolved_secret_and_secret_shaped_text_never_leave_the_operation_boundary ... ok
+test operations::update_and_signal_race_serialize_without_losing_either_transition ... ok
+test scope_compensation::a_compensation_reported_twice_is_applied_once_and_a_stale_report_is_refused ... ok
+test scope_compensation::a_compensation_whose_hint_never_arrived_is_leased_from_the_database ... ok
+test scope_compensation::a_connection_that_dies_inside_each_transaction_of_the_compensation_loses_nothing ... ok
+test scope_compensation::a_cancellation_racing_the_scheduler_that_stops_the_scope_for_a_failure_ends_consistently ... ok
+test scope_compensation::a_planning_transaction_that_cannot_write_its_hint_rolls_back_the_whole_plan ... ok
+test scope_compensation::a_scheduler_replica_that_takes_over_mid_compensation_finishes_it ... ok
+test scope_compensation::an_operator_decision_that_cannot_be_audited_changes_nothing_and_can_be_repeated ... ok
+test scope_compensation::the_scheduler_cut_at_every_await_point_of_the_compensation_resumes_to_the_same_end ... ok
+test switch::lost_start_response_and_duplicate_retry_commit_one_switch_route ... ok
+test switch::successor_outbox_failure_rolls_back_the_choice_and_retry_commits_once ... ok
+test switch::restart_recovers_the_recorded_choice_when_the_broker_hint_is_lost ... ok
+
+test result: ok. 92 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 205.07s
+

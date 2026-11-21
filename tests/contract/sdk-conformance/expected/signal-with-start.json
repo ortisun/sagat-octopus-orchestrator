@@ -1,0 +1,442 @@
+{
+  "faultsApplied": [],
+  "observations": [
+    {
+      "id": "absent",
+      "ok": true,
+      "op": "signalWithStart",
+      "result": {
+        "deliveredTo": [
+          "paid"
+        ],
+        "runId": "<uuid:1>",
+        "started": true
+      }
+    },
+    {
+      "id": "absent-done",
+      "ok": true,
+      "op": "waitForCompletion",
+      "result": {
+        "businessId": "sws-{{unique}}-1",
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": "<time>",
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:1>",
+        "startedBy": "alice",
+        "status": "SUCCEEDED",
+        "traceId": "<trace:1>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "absent-events",
+      "ok": true,
+      "op": "events",
+      "result": {
+        "events": [
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "run.started"
+          },
+          {
+            "attempt": null,
+            "stepId": "paid",
+            "type": "wait.started"
+          },
+          {
+            "attempt": null,
+            "stepId": "paid",
+            "type": "wait.satisfied"
+          },
+          {
+            "attempt": null,
+            "stepId": "paid",
+            "type": "step.routed"
+          },
+          {
+            "attempt": null,
+            "stepId": "fulfil",
+            "type": "step.released"
+          },
+          {
+            "attempt": 1,
+            "stepId": "fulfil",
+            "type": "step.leased"
+          },
+          {
+            "attempt": 1,
+            "stepId": "fulfil",
+            "type": "step.completed"
+          },
+          {
+            "attempt": null,
+            "stepId": "fulfil",
+            "type": "step.routed"
+          },
+          {
+            "attempt": null,
+            "stepId": "fulfilled",
+            "type": "end.reached"
+          },
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "run.finished"
+          }
+        ]
+      }
+    },
+    {
+      "id": "replay",
+      "ok": true,
+      "op": "signalWithStart",
+      "result": {
+        "deliveredTo": [
+          "paid"
+        ],
+        "runId": "<uuid:1>",
+        "started": true
+      }
+    },
+    {
+      "error": {
+        "code": "CONFLICT",
+        "message": "<text>",
+        "reason": "IDEMPOTENCY_KEY_REUSED",
+        "remediation": "The request conflicts with the current state: read the resource again and decide; do not repeat it unchanged.",
+        "retryAfterMs": null,
+        "retryable": false,
+        "status": 409,
+        "traceId": "<trace:2>"
+      },
+      "id": "replay-other-body",
+      "ok": false,
+      "op": "signalWithStart"
+    },
+    {
+      "id": "open",
+      "ok": true,
+      "op": "start",
+      "result": {
+        "businessId": "sws-{{unique}}-2",
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": null,
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:4>",
+        "started": true,
+        "startedBy": "alice",
+        "status": "WAITING",
+        "traceId": "<trace:3>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "open-waits",
+      "ok": true,
+      "op": "awaitJournal"
+    },
+    {
+      "error": {
+        "code": "CONFLICT",
+        "message": "<text>",
+        "reason": "NOT_WAITING",
+        "remediation": "The request conflicts with the current state: read the resource again and decide; do not repeat it unchanged.",
+        "retryAfterMs": null,
+        "retryable": false,
+        "status": 409,
+        "traceId": "<trace:4>"
+      },
+      "id": "wrong-name",
+      "ok": false,
+      "op": "signalWithStart"
+    },
+    {
+      "id": "still-waiting",
+      "ok": true,
+      "op": "get",
+      "result": {
+        "businessId": "sws-{{unique}}-2",
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": null,
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:4>",
+        "startedBy": "alice",
+        "status": "WAITING",
+        "traceId": "<trace:3>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "to-open-holder",
+      "ok": true,
+      "op": "signalWithStart",
+      "result": {
+        "deliveredTo": [
+          "paid"
+        ],
+        "runId": "<uuid:4>",
+        "started": false
+      }
+    },
+    {
+      "id": "open-done",
+      "ok": true,
+      "op": "waitForCompletion",
+      "result": {
+        "businessId": "sws-{{unique}}-2",
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": "<time>",
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:4>",
+        "startedBy": "alice",
+        "status": "SUCCEEDED",
+        "traceId": "<trace:3>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "error": {
+        "code": "CONFLICT",
+        "message": "<text>",
+        "reason": "SIGNAL_NOT_ACCEPTED_AT_START",
+        "remediation": "The request conflicts with the current state: read the resource again and decide; do not repeat it unchanged.",
+        "retryAfterMs": null,
+        "retryable": false,
+        "status": 409,
+        "traceId": "<trace:5>"
+      },
+      "id": "entry-not-waiting",
+      "ok": false,
+      "op": "signalWithStart"
+    },
+    {
+      "error": {
+        "code": "NOT_FOUND",
+        "message": "<text>",
+        "reason": null,
+        "remediation": "The resource does not exist in this tenant and namespace: check the id and the namespace.",
+        "retryAfterMs": null,
+        "retryable": false,
+        "status": 404,
+        "traceId": "<trace:6>"
+      },
+      "id": "nothing-created",
+      "ok": false,
+      "op": "businessIdGet"
+    },
+    {
+      "error": {
+        "code": "VALIDATION_FAILED",
+        "message": "<text>",
+        "reason": "BUSINESS_ID_INVALID",
+        "remediation": "A field is invalid: the reason names it. Fix the input; repeating it fails the same way.",
+        "retryAfterMs": null,
+        "retryable": false,
+        "status": 422,
+        "traceId": "<trace:7>"
+      },
+      "id": "invalid-id",
+      "ok": false,
+      "op": "signalWithStart"
+    },
+    {
+      "error": {
+        "code": "CONFLICT",
+        "message": "<text>",
+        "reason": "BUSINESS_ID_REUSE_REJECTED",
+        "remediation": "The request conflicts with the current state: read the resource again and decide; do not repeat it unchanged.",
+        "retryAfterMs": null,
+        "retryable": false,
+        "status": 409,
+        "traceId": "<trace:8>"
+      },
+      "id": "reuse-rejected",
+      "ok": false,
+      "op": "signalWithStart"
+    }
+  ],
+  "serverState": [
+    {
+      "nodes": [
+        {
+          "attempt": 1,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "fulfil",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "activity",
+          "waitingOn": null
+        },
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "fulfilled",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "end",
+          "waitingOn": null
+        },
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "gave-up",
+          "kind": "FORWARD",
+          "status": "NOT_STARTED",
+          "type": "activity",
+          "waitingOn": null
+        },
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "paid",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "waitEvent",
+          "waitingOn": null
+        }
+      ],
+      "paused": false,
+      "runId": "<uuid:4>",
+      "status": "SUCCEEDED"
+    },
+    {
+      "nodes": [
+        {
+          "attempt": 1,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "fulfil",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "activity",
+          "waitingOn": null
+        },
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "fulfilled",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "end",
+          "waitingOn": null
+        },
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "gave-up",
+          "kind": "FORWARD",
+          "status": "NOT_STARTED",
+          "type": "activity",
+          "waitingOn": null
+        },
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "paid",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "waitEvent",
+          "waitingOn": null
+        }
+      ],
+      "paused": false,
+      "runId": "<uuid:1>",
+      "status": "SUCCEEDED"
+    }
+  ],
+  "workerLog": {
+    "w1": [
+      {
+        "abortedReason": null,
+        "activity": "sws.fulfil",
+        "attempt": 1,
+        "deadlineAhead": true,
+        "idempotencyKey": "<uuid:1>:fulfil",
+        "input": {
+          "orderId": "o-1-{{unique}}"
+        },
+        "kind": "activity",
+        "node": "fulfil",
+        "outcome": "returned",
+        "steps": {
+          "paid": {
+            "paid": "12.50"
+          }
+        },
+        "targetIdempotencyKey": "",
+        "targetNode": "",
+        "taskKind": "FORWARD",
+        "traceId": "<trace:1>",
+        "traceparentPresent": true
+      },
+      {
+        "abortedReason": null,
+        "activity": "sws.fulfil",
+        "attempt": 1,
+        "deadlineAhead": true,
+        "idempotencyKey": "<uuid:4>:fulfil",
+        "input": {
+          "orderId": "o-2-{{unique}}"
+        },
+        "kind": "activity",
+        "node": "fulfil",
+        "outcome": "returned",
+        "steps": {
+          "paid": {
+            "paid": "1.00"
+          }
+        },
+        "targetIdempotencyKey": "",
+        "targetNode": "",
+        "taskKind": "FORWARD",
+        "traceId": "<trace:3>",
+        "traceparentPresent": true
+      }
+    ]
+  }
+}

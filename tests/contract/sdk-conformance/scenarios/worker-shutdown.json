@@ -1,8 +1,8 @@
 {
   "name": "worker-shutdown",
-  "description": "SPEC §6.4/§6.8: a host that is stopped while its handler runs cancels the handler's token with the reason `shutdown`; a handler that then raises its cancellation error is NOT reported (a deploy must not fail a step for good): the lease lapses and a second worker is given the step, which completes on its second attempt.",
+  "description": "A worker that stops during a deployment cancels its handler without reporting a known failure. The expired original activity remains under review at attempt one, and direct retry is refused. A simulated human assertion of final success releases a distinct successor to the second worker; it is not provider verification and never authorizes an automatic repeat of the unknown activity. The lease is explicitly aged by control.expireLease; the 120-second TTL protects unrelated work on a slow host.",
   "server": {
-    "leaseTtlSeconds": 3
+    "leaseTtlSeconds": 120
   },
   "workflows": {
     "work": {
@@ -21,6 +21,11 @@
               "jitter": false
             }
           }
+        },
+        {
+          "op": "step",
+          "id": "after",
+          "activity": "shutdown.after"
         }
       ]
     }
@@ -47,12 +52,19 @@
       "protocolVersion": "1.4",
       "maxInflight": 1,
       "autostart": false,
-      "heartbeatIntervalMs": 150,
+      "heartbeatIntervalMs": 60000,
       "activities": {
         "shutdown.work": {
           "behavior": {
             "returns": {
               "second": true
+            }
+          }
+        },
+        "shutdown.after": {
+          "behavior": {
+            "returns": {
+              "continued": true
             }
           }
         }
@@ -102,6 +114,41 @@
       "worker": "w2"
     },
     {
+      "id": "review-ready",
+      "op": "awaitJournal",
+      "run": "start",
+      "eventType": "step.needs_review",
+      "stepId": "work",
+      "timeoutMs": 20000
+    },
+    {
+      "id": "review-state",
+      "op": "get",
+      "run": "start"
+    },
+    {
+      "id": "retry-refused",
+      "op": "operate",
+      "run": "start",
+      "action": "RETRY_STEP",
+      "stepId": "work",
+      "reason": "an expired lease does not establish the original outcome"
+    },
+    {
+      "id": "review-journal",
+      "op": "events",
+      "run": "start"
+    },
+    {
+      "id": "human-resolution",
+      "op": "operate",
+      "run": "start",
+      "action": "RESOLVE_STEP",
+      "stepId": "work",
+      "outcome": "SUCCEEDED",
+      "reason": "simulated human assertion of final success; no provider verification is claimed"
+    },
+    {
       "id": "done",
       "op": "waitForCompletion",
       "run": "start",
@@ -112,5 +159,6 @@
       "op": "events",
       "run": "start"
     }
-  ]
+  ],
+  "reviewEvidence": true
 }

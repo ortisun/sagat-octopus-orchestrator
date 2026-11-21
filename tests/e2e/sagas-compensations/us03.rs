@@ -135,7 +135,7 @@ async fn us03_after_an_engine_restart_the_lost_payment_is_looked_up_before_it_is
 }
 
 #[tokio::test]
-async fn us03_when_the_provider_says_it_did_not_happen_the_payment_is_retried_with_the_same_key() {
+async fn us03_a_negative_lookup_preserves_review_until_a_human_resolves_without_a_second_attempt() {
     let p = platform().await;
     let wf = p.publish("corporate-payment", &payment_saga()).await;
     let run = p.start(&wf, &input()).await;
@@ -147,22 +147,56 @@ async fn us03_when_the_provider_says_it_did_not_happen_the_payment_is_retried_wi
 
     let lookup = w.one_task().await;
     assert_eq!(lookup.task_kind, "RECONCILIATION");
+    assert_eq!(lookup.target_idempotency_key, lost.idempotency_key);
     w.complete(&lookup, &json!({"effect": "not_applied"}))
         .await
         .expect("answer");
-    p.elapse_retry_delay(&run, "submit").await;
     p.tick().await;
-    let again = w.one_task().await;
-    assert_eq!(again.activity_name, "payment.submit");
-    assert_eq!(again.attempt, 2);
+    assert_eq!(p.status(&run).await, "MANUAL_REVIEW");
+    assert!(w.poll(8).await.is_empty(), "no automatic original repeat");
+    let reviewed = graph(&p, &run).await;
+    assert_eq!(node(&reviewed, "submit")["status"], "WAITING");
+    assert_eq!(node(&reviewed, "submit")["waitingOn"], "operator");
     assert_eq!(
-        again.idempotency_key, lost.idempotency_key,
-        "the provider can still recognise the request"
+        node(&reviewed, "submit")["failureCode"],
+        "RECONCILIATION_NOT_FINAL"
     );
-    w.complete(&again, &json!({"paymentRef": "pay-2"}))
-        .await
-        .expect("submitted");
+    let before = journal(&p, &run).await;
+    let (status, body) = decide(
+        &p,
+        None,
+        &run,
+        &json!({"action": "RETRY_STEP", "stepId": "submit",
+                "reason": "negative observation cannot establish final absence"}),
+    )
+    .await;
+    assert_eq!(status, 409, "{body}");
+    assert_eq!(journal(&p, &run).await, before);
+    let (status, body) = decide(
+        &p,
+        None,
+        &run,
+        &json!({"action": "RESOLVE_STEP", "stepId": "submit", "outcome": "SUCCEEDED",
+                "reason": "provider operator confirms the payment settled after lookup"}),
+    )
+    .await;
+    assert_eq!(status, 202, "{body}");
     assert_eq!(p.status(&run).await, "WAITING");
+    let events = journal(&p, &run).await;
+    assert_eq!(
+        events
+            .iter()
+            .filter(|(kind, step)| kind == "step.leased" && step.as_deref() == Some("submit"))
+            .count(),
+        1,
+        "no second original attempt: {events:?}"
+    );
+    assert!(
+        events
+            .iter()
+            .any(|(kind, step)| { kind == "step.resolved" && step.as_deref() == Some("submit") })
+    );
+    assert!(w.poll(8).await.is_empty());
 }
 
 #[tokio::test]

@@ -136,6 +136,7 @@ internal static class BuildMode
                 Result = (string?)update["result"],
                 ResultSchema = update["resultSchema"] as JsonObject,
                 Disclosure = (string?)update["disclosure"],
+                ReapplyOnReset = (bool?)update["reapplyOnReset"] ?? false,
             };
         }
 
@@ -163,6 +164,9 @@ internal static class BuildMode
                     break;
                 case "database":
                     target.Database(id, DatabaseOptionsOf(options!));
+                    break;
+                case "icebergWrite":
+                    target.IcebergWrite(id, IcebergOptionsOf(options!));
                     break;
                 case "script":
                     target.Script(id, (string)op["artifactDigest"]!, new ScriptOptions
@@ -222,6 +226,7 @@ internal static class BuildMode
                     {
                         MaxItems = (int)op["maxItems"]!,
                         MaxConcurrency = (int)op["maxConcurrency"]!,
+                        Operators = OperatorsOf(op["operators"]),
                     });
                     break;
                 case "map":
@@ -229,6 +234,7 @@ internal static class BuildMode
                     {
                         MaxItems = (int)op["maxItems"]!,
                         MaxConcurrency = (int)op["maxConcurrency"]!,
+                        Operators = OperatorsOf(op["operators"]),
                     });
                     break;
                 case "while":
@@ -331,9 +337,88 @@ internal static class BuildMode
         OnError = (string?)options["onError"],
     };
 
+    private static IcebergWriteOptions IcebergOptionsOf(JsonObject options)
+    {
+        try { return ParseIcebergOptions(options); }
+        catch (Exception error) when (error is InvalidOperationException or FormatException or OverflowException or NullReferenceException or ArgumentException)
+        {
+            throw new SagatException(SagatErrorCode.ValidationFailed, "invalid iceberg write");
+        }
+    }
+
+    private static IcebergWriteOptions ParseIcebergOptions(JsonObject options)
+    {
+        var records = options["records"]!.AsObject();
+        if (records.Count != 1)
+        {
+            throw new InvalidOperationException();
+        }
+
+        var table = options["table"]!.AsObject();
+        return new IcebergWriteOptions
+        {
+            ConnectionRef = new ConnectionRef((string)options["connectionRef"]!["name"]!, (int?)options["connectionRef"]!["revision"]),
+            Table = new IcebergTable([.. table["namespace"]!.AsArray().Select(level => (string)level!)], (string)table["name"]!),
+            Records = records["inline"] is { } inline ? IcebergRecords.Inline((string)inline!)
+                : records["blobs"] is { } blobs ? IcebergRecords.Blobs((string)blobs!)
+                : records["databaseResult"] is { } source ? IcebergRecords.DatabaseResult((string)source!)
+                : throw new InvalidOperationException(),
+            Ref = (string?)options["ref"],
+            Mapping = options["mapping"]?.AsArray().Select(row => new IcebergMapping((string)row!["field"]!, (string)row["column"]!)).ToArray(),
+            IgnoreUnknownFields = (bool?)options["ignoreUnknownFields"],
+            Limits = options["limits"] is JsonObject limits
+                ? new IcebergLimits
+                {
+                    MaxRecordBytes = (long?)limits["maxRecordBytes"],
+                    MaxRecords = (int?)limits["maxRecords"],
+                    Timeout = limits["timeoutMs"] is { } timeout ? Ms(timeout) : null,
+                }
+                : options["limits"] is null ? null : throw new InvalidOperationException(),
+            Compensation = options["compensation"] is { } compensation
+                ? (string)compensation! == "revert" ? IcebergCompensation.Revert : throw new InvalidOperationException()
+                : null,
+            OnError = (string?)options["onError"],
+        };
+    }
+
     private static DatabaseType DatabaseTypeOf(JsonNode? node) => Enum.TryParse<DatabaseType>((string?)node, true, out var type) ? type : (DatabaseType)(-1);
 
     private static TimeSpan Ms(JsonNode? value) => TimeSpan.FromMilliseconds((long)value!);
+
+    /// <summary>A scenario's chain, built through the public operator factory; absent, there is none.</summary>
+    private static List<OperatorStage>? OperatorsOf(JsonNode? stages)
+    {
+        if (stages is not JsonArray list)
+        {
+            return null;
+        }
+
+        var chain = new List<OperatorStage>();
+        foreach (var item in list)
+        {
+            var stage = (JsonObject)item!;
+            if (stage.Count != 1)
+            {
+                throw new InvalidOperationException($"a stage has exactly one operator: {stage.ToJsonString()}");
+            }
+
+            var (name, value) = stage.First();
+            var p = (JsonObject)value!;
+            chain.Add(name switch
+            {
+                "filter" => Ops.Filter((string)p["where"]!),
+                "map" => Ops.Map((string)p["select"]!),
+                "flatMap" => Ops.FlatMap((string)p["select"]!),
+                "skip" => Ops.Skip((int)p["count"]!),
+                "take" => Ops.Take((int)p["count"]!),
+                "distinct" => Ops.Distinct((string?)p["by"]),
+                "window" => Ops.Window((int)p["count"]!),
+                _ => throw new InvalidOperationException($"unknown operator {name}"),
+            });
+        }
+
+        return chain;
+    }
 
     private static LoopOptions LoopOptionsOf(JsonObject op) => new()
     {

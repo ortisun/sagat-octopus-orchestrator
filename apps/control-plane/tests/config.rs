@@ -940,6 +940,182 @@ fn openbao_alone_requires_secret_transport_protection() {
 }
 
 #[test]
+fn schedules_are_an_explicit_strict_operator_switch() {
+    assert!(
+        !ServeConfig::from_lookup(&env(&OIDC))
+            .expect("defaults")
+            .schedules_enabled,
+        "off by default"
+    );
+    let mut values = OIDC.to_vec();
+    values.push(("SAGAT_SCHEDULES_ENABLED", "true"));
+    assert!(
+        ServeConfig::from_lookup(&env(&values))
+            .expect("activated")
+            .schedules_enabled
+    );
+    values.pop();
+    values.push(("SAGAT_SCHEDULES_ENABLED", "maybe"));
+    assert!(ServeConfig::from_lookup(&env(&values)).is_err());
+}
+
+#[test]
+fn batch_operations_are_an_explicit_strict_operator_switch() {
+    assert!(
+        !ServeConfig::from_lookup(&env(&OIDC))
+            .expect("defaults")
+            .batches_enabled,
+        "off by default"
+    );
+    let mut values = OIDC.to_vec();
+    values.push(("SAGAT_BATCHES_ENABLED", "true"));
+    assert!(
+        ServeConfig::from_lookup(&env(&values))
+            .expect("activated")
+            .batches_enabled
+    );
+    values.pop();
+    values.push(("SAGAT_BATCHES_ENABLED", "maybe"));
+    assert!(ServeConfig::from_lookup(&env(&values)).is_err());
+}
+
+#[test]
+fn delivering_signals_and_updates_again_after_a_reset_is_an_explicit_strict_operator_switch() {
+    assert!(
+        !ServeConfig::from_lookup(&env(&OIDC))
+            .expect("defaults")
+            .reset_reapply_enabled,
+        "off by default"
+    );
+    let mut values = OIDC.to_vec();
+    values.push(("SAGAT_RESET_REAPPLY_ENABLED", "true"));
+    assert!(
+        ServeConfig::from_lookup(&env(&values))
+            .expect("activated")
+            .reset_reapply_enabled
+    );
+    // it is not one of the other switches
+    assert!(
+        !ServeConfig::from_lookup(&env(&values))
+            .expect("activated")
+            .batches_enabled
+    );
+    values.pop();
+    values.push(("SAGAT_RESET_REAPPLY_ENABLED", "maybe"));
+    let error = ServeConfig::from_lookup(&env(&values)).expect_err("refused");
+    assert!(error.to_string().contains("SAGAT_RESET_REAPPLY_ENABLED"));
+}
+
+#[test]
+fn cancelling_a_source_for_a_reset_is_an_explicit_strict_operator_switch() {
+    assert!(
+        !ServeConfig::from_lookup(&env(&OIDC))
+            .expect("defaults")
+            .reset_cancel_source_enabled,
+        "off by default"
+    );
+    let mut values = OIDC.to_vec();
+    values.push(("SAGAT_RESET_CANCEL_SOURCE_ENABLED", "true"));
+    let on = ServeConfig::from_lookup(&env(&values)).expect("activated");
+    assert!(on.reset_cancel_source_enabled);
+    // it is not one of the other switches
+    assert!(!on.batches_enabled && !on.reset_reapply_enabled && !on.schedules_enabled);
+    values.pop();
+    values.push(("SAGAT_RESET_CANCEL_SOURCE_ENABLED", "maybe"));
+    let error = ServeConfig::from_lookup(&env(&values)).expect_err("refused");
+    assert!(
+        error
+            .to_string()
+            .contains("SAGAT_RESET_CANCEL_SOURCE_ENABLED")
+    );
+}
+
+/// The expiry of a reset that waits is the engine's alone (D2059): the control plane accepts the request and expires
+/// nothing, so it has no window to read, does not refuse a deployment that sets one for both processes, and its `--help`
+/// says where the setting lives.
+#[test]
+fn the_window_of_the_expiry_of_a_reset_that_waits_is_not_a_setting_of_the_control_plane() {
+    let reference = ServeConfig::from_lookup(&env(&OIDC)).expect("defaults");
+    for value in ["7200", "0", "soon", "24h", "99999999999999999999999"] {
+        let mut values = OIDC.to_vec();
+        values.push(("SAGAT_RESET_CANCEL_SOURCE_ENABLED", "true"));
+        values.push(("SAGAT_RESET_CANCEL_SOURCE_EXPIRY_SECS", value));
+        let config = ServeConfig::from_lookup(&env(&values))
+            .unwrap_or_else(|error| panic!("{value}: the control plane read it: {error}"));
+        // what it does read is as before
+        assert!(config.reset_cancel_source_enabled, "{value}");
+        assert_eq!(config.batches_enabled, reference.batches_enabled, "{value}");
+    }
+    let help = cli::USAGE;
+    assert!(
+        help.contains("SAGAT_RESET_CANCEL_SOURCE_EXPIRY_SECS") && help.contains("engine only"),
+        "the help of the control plane says that the window is the engine's"
+    );
+}
+
+#[test]
+fn the_lake_is_an_explicit_strict_operator_switch_and_off_by_default() {
+    assert!(
+        !ServeConfig::from_lookup(&env(&OIDC))
+            .expect("defaults")
+            .lake_enabled,
+        "a deployment without the lake publishes no Apache Iceberg write"
+    );
+    let mut values = OIDC.to_vec();
+    values.push(("SAGAT_LAKE_ENABLED", "true"));
+    assert!(
+        ServeConfig::from_lookup(&env(&values))
+            .expect("activated")
+            .lake_enabled
+    );
+    values.pop();
+    values.push(("SAGAT_LAKE_ENABLED", "false"));
+    assert!(
+        !ServeConfig::from_lookup(&env(&values))
+            .expect("stated off")
+            .lake_enabled
+    );
+    values.pop();
+    values.push(("SAGAT_LAKE_ENABLED", "maybe"));
+    assert!(
+        ServeConfig::from_lookup(&env(&values)).is_err(),
+        "anything but true or false is refused"
+    );
+}
+
+/// Design 042, T042-47 and T042-8: off unless the deployment says so. Now that the scheduler applies a chain at scope
+/// entry, `true` is accepted; `false` and an absent value keep it off, anything else is refused.
+#[test]
+fn collection_operators_are_off_by_default_and_on_when_the_deployment_says_so() {
+    assert!(
+        !ServeConfig::from_lookup(&env(&OIDC))
+            .expect("defaults")
+            .collection_operators_enabled,
+        "a deployment that does not say so publishes no collection chain"
+    );
+    let mut values = OIDC.to_vec();
+    values.push(("SAGAT_COLLECTION_OPERATORS_ENABLED", "false"));
+    assert!(
+        !ServeConfig::from_lookup(&env(&values))
+            .expect("stated off")
+            .collection_operators_enabled
+    );
+    values.pop();
+    values.push(("SAGAT_COLLECTION_OPERATORS_ENABLED", "true"));
+    assert!(
+        ServeConfig::from_lookup(&env(&values))
+            .expect("on: the scheduler of this build applies a chain")
+            .collection_operators_enabled
+    );
+    values.pop();
+    values.push(("SAGAT_COLLECTION_OPERATORS_ENABLED", "maybe"));
+    assert!(
+        ServeConfig::from_lookup(&env(&values)).is_err(),
+        "anything but true or false is refused"
+    );
+}
+
+#[test]
 fn redis_callback_activation_is_an_explicit_strict_operator_switch() {
     assert!(
         !ServeConfig::from_lookup(&env(&OIDC))
@@ -956,4 +1132,117 @@ fn redis_callback_activation_is_an_explicit_strict_operator_switch() {
     values.pop();
     values.push(("SAGAT_REDIS_CALLBACKS_ENABLED", "maybe"));
     assert!(ServeConfig::from_lookup(&env(&values)).is_err());
+}
+
+/// Design 043, FR-043-013 (the publication half of T043-12, D043-109): `SAGAT_RUN_INPUT_VALIDATION` is read strictly.
+/// Unset or empty is `enforce`; `enforce` and `report` are themselves; anything else stops the process naming the
+/// variable. The control plane passes the mode to publication.
+#[test]
+fn the_run_input_validation_mode_is_read_strictly_and_enforce_by_default() {
+    use sagat_application::definitions::InputValidationMode;
+    let mode = |value: Option<&str>| {
+        let mut values = OIDC.to_vec();
+        if let Some(value) = value {
+            values.push(("SAGAT_RUN_INPUT_VALIDATION", value));
+        }
+        ServeConfig::from_lookup(&env(&values)).map(|serve| serve.run_input_validation)
+    };
+    assert_eq!(mode(None).expect("unset"), InputValidationMode::Enforce);
+    assert_eq!(mode(Some("")).expect("empty"), InputValidationMode::Enforce);
+    assert_eq!(
+        mode(Some("enforce")).expect("enforce"),
+        InputValidationMode::Enforce
+    );
+    assert_eq!(
+        mode(Some("report")).expect("report"),
+        InputValidationMode::Report
+    );
+    for refused in ["Report", "off", "true", " report", "enforce "] {
+        let error = mode(Some(refused)).expect_err(refused);
+        assert!(
+            error.to_string().contains("SAGAT_RUN_INPUT_VALIDATION"),
+            "{refused}: {error}"
+        );
+    }
+}
+
+fn files_under(dir: &std::path::Path, found: &mut Vec<std::path::PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            files_under(&path, found);
+        } else {
+            found.push(path);
+        }
+    }
+}
+
+/// The value a line gives `name`, when it gives one (`NAME=value`, `NAME: value`), the default of `${NAME:-default}`.
+fn value_given(line: &str, name: &str) -> Option<String> {
+    let after = line.split_once(name)?.1.trim_start();
+    let value = after
+        .strip_prefix('=')
+        .or_else(|| after.strip_prefix(':'))?;
+    let value = value.trim().trim_matches(|c| c == '"' || c == '\'');
+    let value = match value.strip_prefix("${").and_then(|v| v.strip_suffix('}')) {
+        Some(interpolation) => interpolation
+            .split_once(":-")
+            .or_else(|| interpolation.split_once('-'))
+            .map_or("", |(_, default)| default),
+        None => value,
+    };
+    Some(
+        value
+            .trim_matches(|c| c == '"' || c == '\'')
+            .to_ascii_lowercase(),
+    )
+}
+
+/// The lines under `root` that set `SAGAT_RUN_INPUT_VALIDATION` to anything but `enforce` (or nothing).
+fn lines_that_set_report(root: &std::path::Path) -> (usize, Vec<String>) {
+    let mut files = Vec::new();
+    files_under(root, &mut files);
+    let scanned = files.len();
+    let mut report = Vec::new();
+    for path in files {
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        for (number, line) in text.lines().enumerate() {
+            if let Some(value) = value_given(line, "SAGAT_RUN_INPUT_VALIDATION")
+                && !["", "enforce"].contains(&value.as_str())
+            {
+                report.push(format!("{}:{}: {line}", path.display(), number + 1));
+            }
+        }
+    }
+    (scanned, report)
+}
+
+/// FR-043-013: no compose file, chart or example this repository ships sets `report`.
+#[test]
+fn no_shipped_manifest_sets_run_input_validation_to_report() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let mut scanned = 0;
+    for dir in ["infra", "examples"] {
+        let (count, report) = lines_that_set_report(&root.join(dir));
+        scanned += count;
+        assert!(report.is_empty(), "a manifest sets report: {report:#?}");
+    }
+    assert!(scanned > 10, "the manifests were not found under {root:?}");
+    // and the scan finds one that does, interpolated or not
+    let dir = std::env::temp_dir().join(format!("sagat-run-input-scan-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("a scratch directory");
+    std::fs::write(
+        dir.join("compose.yaml"),
+        "      SAGAT_RUN_INPUT_VALIDATION: ${SAGAT_RUN_INPUT_VALIDATION:-report}\n      SAGAT_RUN_INPUT_VALIDATION: enforce\n",
+    )
+    .expect("a manifest");
+    std::fs::write(dir.join(".env"), "SAGAT_RUN_INPUT_VALIDATION=report\n").expect("an env file");
+    let (count, report) = lines_that_set_report(&dir);
+    std::fs::remove_dir_all(&dir).expect("remove the scratch directory");
+    assert_eq!((count, report.len()), (2, 2), "{report:#?}");
 }

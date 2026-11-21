@@ -4,10 +4,10 @@
 
 Studio/API browser → API auth gateway → privileged engine → queue/task descriptors → untrusted user code (sandbox) → egress broker → external systems.
 
-- Tenant is a mandatory dimension in credentials, SQL, messages, metrics and audit log. Namespace defines environment and RBAC.
+- Tenant and namespace scope authorization, persistence, messages and audit. Identifiers may appear in authorized logs/spans; metrics use bounded labels and do not carry tenant/namespace IDs. Constitution V scopes tenant diagnosis to authorized records/logs/spans and excludes tenant/namespace identifiers from metric labels, consistently with Constitution VI. Namespace also defines environment and RBAC.
 - OIDC/JWT tokens with JWKS verification; machine auth via OAuth2 client credentials, optional mTLS.
-- Minimum RBAC: `viewer`, `author`, `publisher`, `operator`, `security_admin`, `tenant_admin`; additional permission to reprocess, compensate and reveal payload.
-- Secrets: references, rotated in a secret store (AWS Secrets Manager/Vault), resolved only at execution and authorized by capability; forbid secrets in the journal.
+- Built-in role names come from [Role](../../crates/domain/src/identity.rs): `admin`, `developer`, `operator`, `viewer`, `worker`, `runner` and `database-runner`. Human and machine roles have different permissions; PII reveal uses a separate namespace grant, not a custom role.
+- Secret values are referenced by name and resolved under capability. Current implementations include the sealed application vault and optional OpenBao integration; the generic AWS Secrets Manager/Vault design target is not evidence of adapters for those services. See [secret provider](../../crates/infra-secrets/src/openbao.rs) and [deployment selection](../../infra/helm/values.yaml).
 - Immutable audit of publish, trigger, webhook config, secrets access, rerun, cancel, manual override.
 
 ## Sandbox
@@ -22,7 +22,7 @@ Studio/API browser → API auth gateway → privileged engine → queue/task des
 
 ## Inline C#
 
-> **Not built** (feature 005, G96). The design below is the target; C# is refused with `LANGUAGE_NOT_BUILT` and nothing in the sandbox's path depends on it.
+> **Implemented paths:** TypeScript, Python, C#, Go and Java have builder/runtime selection in the sandbox adapter. C# uses separate build/runtime images; Go additionally requires an available configured build target. `Language::is_built` includes all five. The design bullets below do not establish that every supply-chain control is delivered; use the actual runner configuration and CI for its supported toolchain. This static inventory is not a fresh sandbox test result.
 
 - .NET/Roslyn compilation in a **build container** with NuGet lockfile and package allowlist; immutable assembly and metadata, executed by a sandboxed .NET host.
 - Do not offer `Assembly.Load` in the privileged process nor treat `AssemblyLoadContext` as a security barrier.
@@ -38,23 +38,43 @@ Cross-tenant read/write, sandbox escape, unauthorized script execution, secret e
 
 ## What exists today (feature 009)
 
-The sections above are the target. What is built, and tested, is the part of it that does not need
-untrusted code to run yet:
+The sections above include security targets. The inventory below describes paths present in the code; it is not a fresh runtime or release certification.
 
 | Target | State |
 |---|---|
-| Tenant is a mandatory dimension in credentials, SQL, messages, metrics and audit | Built (features 001, 002). Every table carries `tenant_id` and every foreign key is composite; another tenant's resource is a `404` indistinguishable from a missing one, and the probe is audited. The cross-tenant battery attacks every implemented REST operation, driven by the OpenAPI document |
+| Tenant isolation and telemetry attribution | Tenant/namespace checks and composite persistence boundaries protect access; resource reads enforce isolation. Trace/log context can identify the tenant, but [metric labels](../../crates/telemetry/src/metrics.rs) exclude high-cardinality identifiers. This is not a claim that every table or metric carries tenant_id. Constitution V and VI now use the same metric-cardinality boundary. |
 | OIDC/JWT, machine auth, optional mTLS | OIDC built (001). The worker API serves TLS and mutual TLS itself (009, D49); tying a client certificate to a token subject is open (G44) |
-| Minimum RBAC, extra permissions to reveal payload | Five built-in roles plus resource-level control: worker bindings, a secret's access list (009). Custom roles and `reveal payload` are not built (G39) |
-| Secrets: references, rotated in a store, resolved only at execution, authorized by capability, never in the journal | Built with an application-level store sealed by a rotatable key ring (009, D45-D47); the lease is the capability; no value reaches the journal, a log, an audit record or an API response. A KMS/Vault envelope is open (G43) |
-| Immutable audit of publish, trigger, webhook config, secrets access, rerun, cancel, manual override | Publish, start, cancel, pause, resume, signal (001, 002), secret, quota, binding and egress changes and refusals (009), and endpoint, subscription and connector changes, publishing of events, refusals at the webhook ingress and the platform's own switch-offs of a subscription (004) are audited; rerun does not exist yet |
+| Minimum RBAC, extra permissions to reveal payload | The role enum includes the six roles used by feature 016 plus feature 017’s dedicated `database-runner` machine role. Resource controls include worker bindings, secret access lists and namespace PII-reveal grants. Custom roles are not implied by reveal grants. The feature 016 text saying six roles is its feature-scoped baseline, not the complete current enum. |
+| Secrets: references, rotated in a store, resolved only at execution, authorized by capability, never in the journal | Built with an application-level store sealed by a rotatable key ring (009, D45-D47); the lease is the capability; credential values must not reach the journal, logs, audit records or ordinary management responses; `ResolveSecrets` intentionally returns values to the authorized current executor under lease, binding and secret-access checks. Optional OpenBao provider integration is implemented and deployed with an OpenBao Agent sidecar; bootstrap/unseal and provider custody remain operator responsibilities. This does not imply generic KMS/Vault compatibility |
+| Immutable audit of publish, trigger, webhook config, secrets access, rerun, cancel, manual override | Publish, start, cancel, pause, resume, signal (001, 002), secret, quota, binding and egress changes and refusals (009), and endpoint, subscription and connector changes, publishing of events, refusals at the webhook ingress and the platform's own switch-offs of a subscription (004) are audited; `RERUN_AS_NEW` has an implemented route and application path; it starts a new run without editing the original journal |
 | Quotas: CPU, memory, time, processes, concurrent builds, network and egress allowlist | Concurrent runs, workflows, worker sessions and secrets are exact hard limits (009, D42), and a tenant's administrators can set them only up to a ceiling that the platform grants and only an operator raises (D52); the worker API also bounds how long a peer may stay silent, how long a connection lives and how many one address may hold (D55); the egress allowlist is stored and enforced by a guarded client (webhooks, connectors, and now scripts: a script reaches only what its policy and the namespace's egress policy allow, through its supervisor); CPU, memory, time, processes, output and scratch space are the policy of each script, clamped by a ceiling of the platform and of the runner, and enforced by the kernel through the container (005, D95, D108); `scripts` and `script_jobs` (builds and test runs in progress) are quotas |
-| Sandbox isolation, build isolation, pools by trust level, short-lived capability tokens per activity | Built for TypeScript and Python (feature 005, ADR-0013): a container per build and per run — no network, read-only root, no capabilities, `no-new-privileges`, seccomp, unprivileged user, memory/CPU/process/file/time limits — started by a runner that holds the container engine and no database; the code and its input go in on standard input, the result and the log come out on standard output and error, and everything else a script asks for (a request, a secret) is the supervisor's decision. The runner receives only the secrets its lease allows and reaches only what the egress policy names; artifacts are signed by the control plane and verified before anything runs. Not built: C#/Go/Java (G96), dependency installation and a supply-chain policy (G97), a sandboxed runtime in the repository (G98), pools shared between tenants (G99), pools by trust level |
+| Sandbox isolation, build isolation, pools by trust level, short-lived capability tokens per activity | Builder/runtime paths exist for TypeScript, Python, C#, Go and Java (Go requires an available target); the isolation design uses a container per build and per run — no network, read-only root, no capabilities, `no-new-privileges`, seccomp, unprivileged user, memory/CPU/process/file/time limits — started by a runner that holds the container engine and no database; the code and its input go in on standard input, the result and the log come out on standard output and error, and everything else a script asks for (a request, a secret) is the supervisor's decision. The runner receives only the secrets its lease allows and reaches only what the egress policy names; artifacts are signed by the control plane and verified before anything runs. G96 no longer describes C#/Go/Java as absent. Remaining proposed controls include dependency installation and a supply-chain policy (G97), a sandboxed runtime in the repository (G98), pools shared between tenants (G99), pools by trust level |
 | Webhook HMAC, timestamp window, nonce, TLS, rate limit | Feature 004 supports exclusive HMAC, deployment-approved OIDC and native mTLS profiles (ADR-0026). Identity failures are uniform 401, key-provider outages retryable; verified certificate identity never comes from forwarded headers. Every profile uses the timestamp/event-ID replay window, durable inbox and refusal audit. Native TLS revalidates certificates on keep-alive and bounds handshake/connection lifetime. Endpoint attempt throttling remains a local abuse guard, not a shared namespace rate quota. |
 
 The release-blocking criteria below are tested for what exists: cross-tenant read/write, secret exposure
 and quota bypass are in the battery and fail the build; sandbox escape, unauthorized script execution,
 incorrect webhook signature and replay of financial requests join it with the features that create them.
+
+## Disclosure boundaries
+
+Credential delivery to a leased executor is distinct from payload disclosure to a reader.
+The worker protocol explicitly returns credentials through `ResolveSecrets` (and the dedicated
+managed-database capability returns its selected credential). These are privileged disclosures,
+not public management reads. Constitution V bounds ordinary delivery to the immutable task's
+declared secret set, all or nothing, with current worker binding, pool-delivery and publisher-access
+checks. The managed database capability delivers only its pinned connection credential to the
+authorized lease-owning database-runner. Ordinary delivery is token-capability plus current caller
+authority, not an additional original-worker-session ownership check. Both paths revalidate identity/lease and selected
+input/revision after provider I/O and commit a value-free audit before returning values. These
+disclosure exceptions authorize neither database execution nor general/classified-secret reads. See the
+[amendment impact record](../governance/constitution-3.0.0-sync-impact.md).
+
+Feature 016 adds audited namespace grants for PII disclosure. Its owner-approved event-inbox and
+dead-letter exception allows authorized whole raw values without per-field classification carriers;
+it does not authorize disclosure of fields classified `secret` in classified payloads. Raw values
+without an event schema are not proof that every embedded credential can be detected or removed.
+See [owner decisions](../owner-decisions.md), [classification specification](../../specs/016-payload-classification/spec.md)
+and [event payload handling](../../crates/application/src/event_payloads.rs).
 
 ## Feature 005: what a script can and cannot do
 

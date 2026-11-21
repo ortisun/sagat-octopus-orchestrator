@@ -1,0 +1,189 @@
+{
+  "name": "run-input-validation",
+  "description": "Design 043 (FR-043-015, SC-043-005): every run input is checked against the inputSchema of the version it pins. A start the schema refuses is VALIDATION_FAILED with the reason RUN_INPUT_INVALID and the error's field and rule, never the value, and creates nothing; a matching input starts the run. A child whose version refuses the input its parent's node evaluated fails the parent with CHILD_INPUT_INVALID, and a continuation whose evaluated input is refused ends its run FAILED with CONTINUATION_INPUT_INVALID: both reach the run view of every language unchanged.",
+  "workflows": {
+    "order": {
+      "name": "riv-order",
+      "description": "One activity, and an input schema that requires orderId as a string.",
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "orderId"
+        ],
+        "properties": {
+          "orderId": {
+            "type": "string",
+            "maxLength": 64
+          }
+        }
+      },
+      "program": [
+        {
+          "op": "step",
+          "id": "work",
+          "activity": "riv.work"
+        },
+        {
+          "op": "end",
+          "id": "done"
+        }
+      ]
+    },
+    "parent": {
+      "name": "riv-parent",
+      "description": "Starts riv-order as a child with the kid member of its own input.",
+      "program": [
+        {
+          "op": "invokeChild",
+          "id": "kid",
+          "workflow": "riv-order",
+          "options": {
+            "input": "input.kid"
+          }
+        },
+        {
+          "op": "end",
+          "id": "done"
+        }
+      ]
+    },
+    "chain": {
+      "name": "riv-chain",
+      "description": "One activity, then a continue-as-new with the next member of its input, which the schema checks.",
+      "chainPolicy": {
+        "maxSegments": 3,
+        "timeoutMs": 86400000
+      },
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "segment"
+        ],
+        "properties": {
+          "segment": {
+            "type": "integer"
+          }
+        }
+      },
+      "program": [
+        {
+          "op": "step",
+          "id": "work",
+          "activity": "riv.work"
+        },
+        {
+          "op": "continueAsNew",
+          "id": "rollover",
+          "input": "input.next"
+        }
+      ]
+    }
+  },
+  "workers": {
+    "w1": {
+      "workerName": "riv-worker",
+      "protocolVersion": "1.5",
+      "transport": "poll",
+      "maxInflight": 2,
+      "autostart": false,
+      "activities": {
+        "riv.work": {
+          "behavior": {
+            "returns": {
+              "ok": true
+            }
+          }
+        }
+      }
+    }
+  },
+  "steps": [
+    {
+      "id": "wrong-type",
+      "op": "start",
+      "workflow": "order",
+      "input": {
+        "orderId": 42,
+        "note": "riv-sentinel-value"
+      },
+      "idempotencyKey": "riv-wrong-{{unique}}"
+    },
+    {
+      "id": "missing",
+      "op": "start",
+      "workflow": "order",
+      "input": {},
+      "idempotencyKey": "riv-missing-{{unique}}"
+    },
+    {
+      "id": "start-worker",
+      "op": "startWorker",
+      "worker": "w1"
+    },
+    {
+      "id": "right",
+      "op": "start",
+      "workflow": "order",
+      "input": {
+        "orderId": "o-1"
+      },
+      "idempotencyKey": "riv-right-{{unique}}"
+    },
+    {
+      "id": "right-done",
+      "op": "waitForCompletion",
+      "run": "right",
+      "timeoutMs": 60000
+    },
+    {
+      "id": "parent",
+      "op": "start",
+      "workflow": "parent",
+      "input": {
+        "kid": {
+          "orderId": 7
+        }
+      },
+      "idempotencyKey": "riv-parent-{{unique}}"
+    },
+    {
+      "id": "parent-done",
+      "op": "waitForCompletion",
+      "run": "parent",
+      "timeoutMs": 60000
+    },
+    {
+      "id": "parent-journal",
+      "op": "events",
+      "run": "parent"
+    },
+    {
+      "id": "chain",
+      "op": "start",
+      "workflow": "chain",
+      "input": {
+        "segment": 1,
+        "next": {
+          "segment": "two"
+        }
+      },
+      "idempotencyKey": "riv-chain-{{unique}}"
+    },
+    {
+      "id": "chain-done",
+      "op": "waitForCompletion",
+      "run": "chain",
+      "timeoutMs": 60000
+    },
+    {
+      "id": "chain-journal",
+      "op": "events",
+      "run": "chain"
+    },
+    {
+      "id": "stop-worker",
+      "op": "stopWorker",
+      "worker": "w1"
+    }
+  ]
+}

@@ -362,6 +362,32 @@ impl CollectionEntry {
         Ok(entry)
     }
 
+    /// Constructs an entry whose items are the output of an operator chain applied to a blob's elements (design 042,
+    /// FR-042-010): the snapshot payload is the chained manifest, the items are the chain's output, stored per item.
+    ///
+    /// # Errors
+    /// Returns [`PrimitiveInputError::ItemCount`] if the output exceeds the pinned item limit.
+    pub fn from_chained_blob_source(
+        transition: CollectionTransition,
+        scope_id: CollectionScopeId,
+        manifest: &crate::collection_source::ChainedSourceManifest,
+        items: Vec<Vec<u8>>,
+        limits: CollectionLimits,
+    ) -> Result<Self, PrimitiveInputError> {
+        let mut entry = Self::from_snapshot(
+            transition,
+            scope_id,
+            manifest.count(),
+            manifest.to_json(),
+            limits,
+        )?;
+        entry.source = Some(BlobItems {
+            items,
+            blob: manifest.blob().id(),
+        });
+        Ok(entry)
+    }
+
     #[must_use]
     pub fn snapshot_content(&self) -> Option<&[u8]> {
         self.snapshot_content.as_deref()

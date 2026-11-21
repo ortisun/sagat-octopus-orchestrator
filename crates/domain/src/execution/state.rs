@@ -1808,6 +1808,9 @@ pub struct RunState {
     sagas: BTreeMap<NodeId, SagaState>,
     scope_sagas: BTreeMap<ExecutionInstanceId, ScopeSagaState>,
     chain: Option<RunChainState>,
+    /// The instant (microseconds since the epoch) until which the entry of the run is held, for a run
+    /// created with a start delay (feature 018, `FR-018-023`); cleared when the entry is released.
+    start_delayed_until_us: Option<i64>,
     applied: u64,
 }
 
@@ -1826,8 +1829,21 @@ impl RunState {
             sagas: BTreeMap::new(),
             scope_sagas: BTreeMap::new(),
             chain: None,
+            start_delayed_until_us: None,
             applied: 0,
         }
+    }
+
+    /// Whether the entry of the run is held by a start delay that has not ended yet.
+    #[must_use]
+    pub const fn is_start_delayed(&self) -> bool {
+        self.start_delayed_until_us.is_some()
+    }
+
+    /// The instant (microseconds since the epoch) the held entry is released at, if it is held.
+    #[must_use]
+    pub const fn start_delayed_until_us(&self) -> Option<i64> {
+        self.start_delayed_until_us
     }
 
     /// Rebuilds a state by applying `events` in order.
@@ -1910,8 +1926,17 @@ impl RunState {
             sagas,
             scope_sagas: BTreeMap::new(),
             chain: None,
+            start_delayed_until_us: None,
             applied: version,
         }
+    }
+
+    /// The state with its entry held until `until_us` (microseconds since the epoch), for a trusted
+    /// projection of a run created with a start delay that has not been released.
+    #[must_use]
+    pub fn with_start_delayed_until_us(mut self, until_us: Option<i64>) -> Self {
+        self.start_delayed_until_us = until_us;
+        self
     }
 
     #[must_use]
@@ -2157,18 +2182,26 @@ impl RunState {
                 let mut scoped = self.steps.iter().filter(|(instance, _)| {
                     instance.path() == path && !instance.node().is_compensation()
                 });
+                let original_of = |instance: &ExecutionInstanceId| {
+                    instance.node().forward().and_then(|forward| {
+                        self.steps
+                            .get(&ExecutionInstanceId::in_path(path.clone(), forward))
+                            .map(|original| original.status)
+                    })
+                };
                 if !scoped.any(|(instance, step)| {
                     step.status.is_terminal()
                         && (!instance.node().is_derived()
-                            || matches!(step.status, StepStatus::Succeeded | StepStatus::Skipped))
+                            || derived_settles_drain(instance, step.status, original_of(instance)))
                 }) || self.steps.iter().any(|(instance, step)| {
                     instance.path() == path
                         && !instance.node().is_compensation()
                         && (!step.status.is_terminal()
                             || (instance.node().is_derived()
-                                && !matches!(
+                                && !derived_settles_drain(
+                                    instance,
                                     step.status,
-                                    StepStatus::Succeeded | StepStatus::Skipped
+                                    original_of(instance),
                                 )))
                 }) {
                     return Err(ExecutionError::IllegalCollectionTransition {
@@ -3054,13 +3087,19 @@ impl RunState {
                 let mut found = false;
                 for (instance, step) in self.steps.iter().filter(|(id, _)| id.path() == &path) {
                     found = true;
+                    let original = instance.node().forward().and_then(|forward| {
+                        self.steps
+                            .get(&ExecutionInstanceId::in_path(path.clone(), forward))
+                            .map(|original| original.status)
+                    });
                     let unresolved_derived = instance.node().is_derived()
-                        && !matches!(step.status, StepStatus::Succeeded | StepStatus::Skipped);
+                        && !derived_settles_drain(instance, step.status, original);
                     // Nothing is in flight: a step that has not started, or one that waits to retry
                     // (or is ready to) in a run that is stopping and can no longer lease it.
-                    let safe_to_stop = (step.attempt == 0
+                    let safe_to_stop = ((step.attempt == 0
                         && matches!(step.status, StepStatus::Pending | StepStatus::Ready))
-                        || matches!(step.status, StepStatus::Ready | StepStatus::RetryWait)
+                        || matches!(step.status, StepStatus::Ready | StepStatus::RetryWait))
+                        && !retry_wait_holds_drain(step.status, step.failure.as_ref())
                         || (matches!(step.waiting_on(), Some(WaitingOn::Timer { .. }))
                             && step.is_valid_scoped_timer())
                         || step.is_valid_scoped_event_suspension();
@@ -3895,7 +3934,7 @@ impl RunState {
                     deadline: *deadline,
                 });
             }
-            RunEvent::WaitSatisfied { node } => {
+            RunEvent::WaitSatisfied { node, .. } => {
                 let step = self.step_mut(node, name, &[Waiting])?;
                 if !matches!(step.waiting, Some(WaitingOn::Event { .. })) {
                     return Err(ExecutionError::IllegalTransition {
@@ -4116,6 +4155,33 @@ impl RunState {
                         "a compensation plan names an entry twice or waits for one that is not in it",
                     ));
                 }
+                // The reducer has no workflow definition, so it cannot independently prove that a
+                // declared id belongs to this saga's region; the definition-aware planner owns that
+                // check. It can still reject derived companions, which are never original effects.
+                if entries
+                    .iter()
+                    .map(|entry| &entry.node)
+                    .chain(irreversible.iter())
+                    .any(NodeId::is_derived)
+                {
+                    return Err(ExecutionError::Invariant(
+                        "a compensation plan requires original effects",
+                    ));
+                }
+                // The current planner names only succeeded originals (feature 037). v0.1/v0.2 also
+                // planned a *defensive* compensation of an original whose last attempt ended with
+                // an unknown outcome; such a committed plan still replays. Anything else (a known
+                // failure, a step that never ran) was never a candidate and is refused.
+                if entries
+                    .iter()
+                    .map(|entry| &entry.node)
+                    .chain(irreversible.iter())
+                    .any(|forward| !self.step(forward).is_some_and(planned_effect))
+                {
+                    return Err(ExecutionError::Invariant(
+                        "a compensation plan requires succeeded original effects",
+                    ));
+                }
                 let companions: Vec<NodeId> =
                     entries.iter().map(|e| e.node.compensation()).collect();
                 self.activate(&companions)?;
@@ -4266,6 +4332,41 @@ impl RunState {
                     return Err(ExecutionError::NotPaused);
                 }
                 self.paused = false;
+            }
+            RunEvent::StartDelayed { until_us } => {
+                // recorded once, right after the start and before anything else happened
+                if self.applied != 1
+                    || self.start_delayed_until_us.is_some()
+                    || self.steps.len() != 1
+                {
+                    return Err(ExecutionError::Invariant(
+                        "a start delay is recorded once, right after the run starts",
+                    ));
+                }
+                self.start_delayed_until_us = Some(*until_us);
+            }
+            RunEvent::StartReleased { until_us } => {
+                if self.start_delayed_until_us != Some(*until_us) {
+                    return Err(ExecutionError::Invariant(
+                        "only a delayed run is released, at the instant it waits for",
+                    ));
+                }
+                self.start_delayed_until_us = None;
+            }
+            RunEvent::RunReset {
+                source_sequence, ..
+            } => {
+                // the events before it are the restored prefix of the source, so the run has started and is
+                // open, and a prefix has at least its `run.started`
+                if !self.has_started()
+                    || *source_sequence == 0
+                    || self.stop.is_some()
+                    || !matches!(self.status, RunStatus::Running | RunStatus::Waiting)
+                {
+                    return Err(ExecutionError::Invariant(
+                        "a reset follows the restored prefix of a run that has started and is open",
+                    ));
+                }
             }
             RunEvent::RunStopRequested { reason, code } => {
                 if self.stop.is_some() {
@@ -4479,8 +4580,22 @@ impl RunState {
                         "a scope plan names an instance twice or waits for one that is not in it",
                     ));
                 }
+                // The reducer has no workflow definition, so it cannot independently distinguish
+                // declared body nodes from foreign declared ids at the same path; the planner owns
+                // that check. Derived companions are structurally identifiable and are never
+                // original effects.
+                if entries
+                    .iter()
+                    .map(|entry| &entry.instance)
+                    .chain(irreversible.iter())
+                    .any(|instance| instance.node().is_derived())
+                {
+                    return Err(ExecutionError::Invariant(
+                        "a scope plan requires original effects",
+                    ));
+                }
                 // Every entry and every irreversible instance is a member of an iteration of this
-                // scope that finished its effect, or may have: nothing else can be undone.
+                // scope that finished its effect: nothing else can be undone.
                 for instance in entries
                     .iter()
                     .map(|entry| &entry.instance)
@@ -4495,12 +4610,9 @@ impl RunState {
                         .steps
                         .get(instance)
                         .ok_or_else(|| ExecutionError::UnknownInstance(instance.clone()))?;
-                    let unknown = matches!(step.status, StepStatus::Cancelled | StepStatus::Failed)
-                        && step
-                            .failure
-                            .as_ref()
-                            .is_some_and(FailureCode::leaves_outcome_unknown);
-                    if step.status != StepStatus::Succeeded && !unknown {
+                    // As for root plans: succeeded, or a v0.1/v0.2 defensive entry whose outcome
+                    // was unknown. The current scope planner names succeeded instances only.
+                    if !planned_effect(step) {
                         return Err(ExecutionError::Invariant(
                             "a scope plan names an instance that has no effect to undo",
                         ));
@@ -4642,6 +4754,10 @@ impl RunState {
             self.stop.is_some(),
             self.paused,
         );
+        // A run whose entry is held waits, whatever its steps say, until it is stopped or released.
+        if self.start_delayed_until_us.is_some() && self.stop.is_none() && !self.paused {
+            self.status = RunStatus::Waiting;
+        }
     }
 
     pub(super) fn compensation_in_progress(&self) -> bool {
@@ -4653,4 +4769,46 @@ impl RunState {
                 .values()
                 .any(|saga| saga.phase == SagaPhase::Compensating)
     }
+}
+
+/// Whether a committed compensation plan may name this original step: it succeeded, or (in a
+/// journal written by v0.1/v0.2) its last attempt ended with an unknown outcome and the old
+/// planner compensated it defensively. The current planners only ever emit the first case.
+fn planned_effect(step: &StepState) -> bool {
+    step.status == StepStatus::Succeeded
+        || (matches!(step.status, StepStatus::Cancelled | StepStatus::Failed)
+            && step
+                .failure
+                .as_ref()
+                .is_some_and(FailureCode::leaves_outcome_unknown))
+}
+
+/// Whether a derived step (a compensation `x~c` or a lookup `x~r`) no longer holds back the drain of
+/// the iteration it belongs to. A derived step is settled when it succeeded or was skipped. A lookup
+/// is also settled when it FAILED (it ran out of attempts or could not answer) and its original is
+/// terminal: that failure sent the original to review, and a person has settled the original since
+/// (feature 037, FR-037-007). Every drain check (domain, scheduler, SQL) uses this one rule.
+#[must_use]
+pub fn derived_settles_drain(
+    instance: &ExecutionInstanceId,
+    status: StepStatus,
+    original: Option<StepStatus>,
+) -> bool {
+    matches!(status, StepStatus::Succeeded | StepStatus::Skipped)
+        || (instance.node().is_reconciliation()
+            && status == StepStatus::Failed
+            && original.is_some_and(StepStatus::is_terminal))
+}
+
+/// Whether a step in `RETRY_WAIT` must hold back the drain of its iteration instead of being
+/// cancelled with it: its last attempt left the outcome unknown (a v0.1/v0.2 journal; current
+/// engines never schedule such a retry). Its due retry turns it into a review (`retry_due`), so the
+/// drain proceeds once a person has settled it. Domain, scheduler and SQL drains share this rule.
+///
+/// The scheduler and SQL callers pass only the step's status and code; a derived lookup in
+/// `RETRY_WAIT` therefore also holds the drain until its retry runs, which is the conservative
+/// reading (it is in flight in all but name).
+#[must_use]
+pub fn retry_wait_holds_drain(status: StepStatus, failure: Option<&FailureCode>) -> bool {
+    status == StepStatus::RetryWait && failure.is_some_and(FailureCode::leaves_outcome_unknown)
 }

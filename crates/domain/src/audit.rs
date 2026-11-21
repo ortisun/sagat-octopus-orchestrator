@@ -29,6 +29,9 @@ pub enum AuditAction {
     RunStarted,
     /// A quiescent run segment closed and atomically handed off to its successor.
     RunContinued,
+    /// A run input was refused by its version's `inputSchema` where nobody waits for the answer (a trigger), or was
+    /// reported and admitted in `report` mode (design 043). The reason names the closed refusal, never a value.
+    RunInputRefused,
     /// A scheduler committed the terminal outcome of a run and its execution chain.
     RunFinished,
     /// A current member settled its capacity membership from the evidence required by its kind.
@@ -43,6 +46,9 @@ pub enum AuditAction {
     RunStorageQuotaExceeded,
     /// An output could not be retained under the run data ceiling.
     RunDataLimitExceeded,
+    /// A collection's operator chain failed at scope entry and stopped the run (design 042); the reason names the
+    /// stage, the operator and the position, never a value.
+    RunCollectionChainFailed,
     RunCancelRequested,
     RunPaused,
     RunResumed,
@@ -92,6 +98,16 @@ pub enum AuditAction {
     DatabaseConnectionChanged,
     DatabaseDenied,
     DatabaseResultRead,
+    /// A catalog was browsed (feature 035). It names the connection and the level asked for, never a table. Every
+    /// browse is one row: it does not collapse repeats (D035-075).
+    DatabaseCatalogBrowsed,
+    /// An operator retried, skipped or resolved a destination step (feature 035).
+    DestinationDecided,
+    /// Someone asked for the commit of an Iceberg write to be reverted (feature 035).
+    IcebergRevertRequested,
+    /// An Iceberg write committed a snapshot (feature 035, FR-035-030): one record for each committed write, naming the node, the
+    /// connection, the table and the snapshot, and never a value, a partition value or a location.
+    IcebergWriteCommitted,
     SecretDeleted,
     /// Someone was allowed to reference a secret from workflows, or no longer is.
     SecretAccessGranted,
@@ -197,6 +213,37 @@ pub enum AuditAction {
     BlobUploaded,
     BlobRead,
     BlobDeleted,
+    /// A schedule (feature 018) was created, changed or deleted.
+    ScheduleCreated,
+    ScheduleUpdated,
+    ScheduleDeleted,
+    /// An operator paused or resumed a schedule, with a note.
+    SchedulePaused,
+    ScheduleResumed,
+    /// The platform paused a schedule: its authorizing subject lost access, or a run failed and the
+    /// schedule asks to pause on failure.
+    ScheduleAutoPaused,
+    /// A schedule was run by hand, outside its spec.
+    ScheduleTriggered,
+    ScheduleBackfillRequested,
+    ScheduleBackfillCancelled,
+    /// The input of a schedule was shown to a reader, at the level their grants allow.
+    ScheduleInputDisclosed,
+    /// An operator handed the cron triggers over to the schedule pass (`FR-018-017`).
+    /// A batch job was created, cancelled, or finished by itself.
+    BatchCreated,
+    BatchCancelled,
+    BatchFinished,
+    /// A new run was built from the journal prefix of another, or such a reset was requested and is
+    /// waiting for its source to end.
+    RunReset,
+    RunResetRequested,
+    /// A start or a schedule's action was refused because its business identifier is held: an open execution holds it
+    /// (`BUSINESS_ID_IN_USE`) or the reuse policy refuses a remembered one (`BUSINESS_ID_REUSE_REJECTED`). The reason is
+    /// that closed word; the identifier is customer text and is never written (`FR-018-044`, `G2086`). A person can repeat
+    /// the refused start at will, so the same refusal within five minutes is one record (D2221); the platform's records
+    /// carry the time, the job or the entry they decide in their reason and are each their own (D2220).
+    BusinessIdConflict,
 }
 
 impl AuditAction {
@@ -230,6 +277,8 @@ impl AuditAction {
                 | Self::PayloadRevealDenied
                 | Self::RunQueried
                 | Self::ApprovalDenied
+                | Self::ScheduleInputDisclosed
+                | Self::BusinessIdConflict
         )
     }
 
@@ -247,7 +296,9 @@ impl AuditAction {
             | Self::PayloadInspectionDenied
             | Self::PayloadDisclosed
             | Self::PayloadRevealDenied
-            | Self::RunQueried => Some(std::time::Duration::from_secs(300)),
+            | Self::RunQueried
+            | Self::ScheduleInputDisclosed
+            | Self::BusinessIdConflict => Some(std::time::Duration::from_secs(300)),
             Self::ApprovalDenied => Some(std::time::Duration::from_secs(300)),
             _ => None,
         }
@@ -276,6 +327,7 @@ impl AuditAction {
             Self::WorkflowPublished => "workflow.published",
             Self::RunStarted => "run.started",
             Self::RunContinued => "run.continued",
+            Self::RunInputRefused => "run.input_refused",
             Self::RunFinished => "run.finished",
             Self::CapacityMemberFinished => "capacity.member.finished",
             Self::CapacityMemberVacated => "capacity.member.vacated",
@@ -283,6 +335,7 @@ impl AuditAction {
             Self::LeafCollectionSuccessCertified => "collection.leaf_success_certified",
             Self::RunStorageQuotaExceeded => "run.storage_quota_exceeded",
             Self::RunDataLimitExceeded => "run.data_limit_exceeded",
+            Self::RunCollectionChainFailed => "run.collection_chain_failed",
             Self::RunCancelRequested => "run.cancel_requested",
             Self::RunPaused => "run.paused",
             Self::RunResumed => "run.resumed",
@@ -310,6 +363,10 @@ impl AuditAction {
             Self::SecretAttemptPinsReleased => "secret.attempt_pins_released",
             Self::DatabaseConnectionChanged => "database.connection_changed",
             Self::DatabaseResultRead => "database.result_read",
+            Self::DatabaseCatalogBrowsed => "database.catalog_browsed",
+            Self::DestinationDecided => "destination.decided",
+            Self::IcebergRevertRequested => "iceberg.revert_requested",
+            Self::IcebergWriteCommitted => "iceberg.write_committed",
             Self::DatabaseDenied => "database.denied",
             Self::SecretDeleted => "secret.deleted",
             Self::SecretAccessGranted => "secret.access_granted",
@@ -370,6 +427,22 @@ impl AuditAction {
             Self::BlobUploaded => "blob.uploaded",
             Self::BlobRead => "blob.read",
             Self::BlobDeleted => "blob.deleted",
+            Self::ScheduleCreated => "schedule.created",
+            Self::ScheduleUpdated => "schedule.updated",
+            Self::ScheduleDeleted => "schedule.deleted",
+            Self::SchedulePaused => "schedule.paused",
+            Self::ScheduleResumed => "schedule.resumed",
+            Self::ScheduleAutoPaused => "schedule.auto_paused",
+            Self::ScheduleTriggered => "schedule.triggered",
+            Self::ScheduleBackfillRequested => "schedule.backfill_requested",
+            Self::ScheduleBackfillCancelled => "schedule.backfill_cancelled",
+            Self::ScheduleInputDisclosed => "schedule.input_disclosed",
+            Self::BatchCreated => "batch.created",
+            Self::BatchCancelled => "batch.cancelled",
+            Self::BatchFinished => "batch.finished",
+            Self::RunReset => "run.reset",
+            Self::RunResetRequested => "run.reset_requested",
+            Self::BusinessIdConflict => "business_id.conflict",
         }
     }
 }
@@ -443,6 +516,10 @@ pub enum ResourceType {
     WebhookSubscription,
     BrokerSubscription,
     Connector,
+    /// A schedule of feature 018.
+    Schedule,
+    /// A batch job of feature 018.
+    BatchJob,
     Script,
     /// A version of a script, as `script-id/number`.
     ScriptVersion,
@@ -482,6 +559,8 @@ impl ResourceType {
             Self::WebhookSubscription => "webhook_subscription",
             Self::BrokerSubscription => "broker_subscription",
             Self::Connector => "connector",
+            Self::Schedule => "schedule",
+            Self::BatchJob => "batch_job",
             Self::Script => "script",
             Self::ScriptVersion => "script_version",
             Self::PublicationRequest => "publication_request",

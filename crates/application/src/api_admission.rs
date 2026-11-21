@@ -43,6 +43,10 @@ pub enum ApiOperation {
     DatabaseResultRead,
     RunOperate,
     RunRerun,
+    /// Create a run from the prefix of an ended one (feature 018): the permissions of a rerun.
+    RunReset,
+    /// The points a run can be reset to, and what a reset would do: it reads the journal of a run.
+    ResetInspect,
     RunSignal,
     ApprovalRead,
     ApprovalDecide,
@@ -67,6 +71,22 @@ pub enum ApiOperation {
     PublicationApprove,
     VersionActivate,
     Promotion,
+    ScheduleRead,
+    /// Create, replace and delete a schedule: every action runs as its authorizer.
+    ScheduleWrite,
+    ScheduleOperate,
+    /// Resume also makes the caller the authority of the schedule.
+    ScheduleResume,
+    /// Trigger-now starts a run as the schedule, under the role of the caller.
+    ScheduleTrigger,
+    /// A backfill starts runs as the schedule, under the role of its requester.
+    ScheduleBackfill,
+    /// Read a batch job, its items and the list of jobs of a namespace.
+    BatchRead,
+    /// Create or cancel a batch job; the permissions of the action are checked by the service.
+    BatchWrite,
+    /// Count what a selector matches: it reads runs, so it needs both permissions.
+    BatchPreview,
 }
 
 impl ApiOperation {
@@ -76,8 +96,8 @@ impl ApiOperation {
             EgressManage, EventManage, EventPublish, EventRead, NamespaceRead, OpsRead,
             PublicationApprove, PublicationManage, QuotaManage, QuotaRead, RunOperate,
             RunPayloadInspect, RunQuery, RunRead, RunSignal, RunStart, RunUpdate, SagaOverride,
-            ScriptPublish, ScriptRead, ScriptWrite, SecretManage, SecretRead, VersionActivate,
-            WorkerBind, WorkerManage,
+            ScheduleOperate, ScheduleRead, ScriptPublish, ScriptRead, ScriptWrite, SecretManage,
+            SecretRead, VersionActivate, WorkerBind, WorkerManage,
         };
         match self {
             Self::NamespaceRead => &[NamespaceRead],
@@ -92,7 +112,8 @@ impl ApiOperation {
             Self::PayloadDisclose => &[RunRead],
             Self::DatabaseResultRead => &[RunRead, Permission::DatabaseResultRead],
             Self::RunOperate => &[RunOperate],
-            Self::RunRerun => &[RunOperate, RunStart],
+            Self::RunRerun | Self::RunReset => &[RunOperate, RunStart],
+            Self::ResetInspect => &[RunOperate, RunRead],
             Self::RunSignal => &[RunSignal],
             Self::ApprovalRead => &[RunRead, ApprovalRead],
             Self::ApprovalDecide => &[ApprovalDecide],
@@ -117,6 +138,15 @@ impl ApiOperation {
             Self::PublicationApprove => &[PublicationApprove],
             Self::VersionActivate => &[VersionActivate],
             Self::Promotion => &[DefinitionPublish, DefinitionWrite],
+            Self::ScheduleRead => &[ScheduleRead],
+            Self::ScheduleWrite => &[Permission::ScheduleWrite, RunStart],
+            Self::ScheduleOperate => &[ScheduleOperate],
+            Self::ScheduleResume | Self::ScheduleTrigger | Self::ScheduleBackfill => {
+                &[ScheduleOperate, RunStart]
+            }
+            Self::BatchRead => &[RunRead],
+            Self::BatchWrite => &[Permission::RunBatch],
+            Self::BatchPreview => &[Permission::RunBatch, RunRead],
         }
     }
 }

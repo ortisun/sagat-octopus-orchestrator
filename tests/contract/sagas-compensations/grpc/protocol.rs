@@ -27,6 +27,27 @@ const ACTIVITIES: &[&str] = &[
     "payment.lookup",
 ];
 
+const UNKNOWN_WORKER_FAILURE_CODES: &[&str] = &[
+    // Existing public control: the worker explicitly says it cannot establish the outcome.
+    "OUTCOME_UNKNOWN",
+    // These taxonomy codes are also syntactically accepted at the worker boundary and describe
+    // uncertainty wherever they appear. Accepting one must not turn it into a known failure.
+    "RECONCILIATION_NOT_FINAL",
+    "RECONCILIATION_FAILED",
+    "RECONCILIATION_UNKNOWN",
+    "STORAGE_QUOTA_EXCEEDED",
+];
+
+fn root_effect_ir(name: &str) -> Value {
+    json!({
+        "apiVersion": "sagat-octopus-orchestrator.io/v1", "kind": "Workflow",
+        "metadata": {"name": name}, "entrypoint": "effect",
+        "nodes": [
+            {"id": "effect", "type": "activity", "activity": "payment.submit"}
+        ]
+    })
+}
+
 /// A run whose `submit` was declined, so `reserve` is being released.
 async fn compensating(p: &Platform, w: &mut Worker<'_>) -> (String, TaskLease) {
     let wf = p.publish("settlement", &saga_ir("settlement")).await;
@@ -39,6 +60,20 @@ async fn compensating(p: &Platform, w: &mut Worker<'_>) -> (String, TaskLease) {
     let submit = w.one_task().await;
     w.fail(&submit, false).await.expect("declined");
     (run, reserve)
+}
+
+async fn graph_step(p: &Platform, run: &str, id: &str) -> Value {
+    let (status, graph) = p
+        .rest(Method::GET, &format!("/runs/{run}/graph"), None)
+        .await;
+    assert_eq!(status, 200, "{graph}");
+    graph["nodes"]
+        .as_array()
+        .expect("nodes")
+        .iter()
+        .find(|node| node["id"] == id)
+        .unwrap_or_else(|| panic!("missing graph node {id}: {graph}"))
+        .clone()
 }
 
 #[tokio::test]
@@ -104,6 +139,114 @@ async fn a_lookup_arrives_as_a_task_and_is_answered_with_a_verdict() {
     w.complete(&lookup, &json!({"effect": "not_applied"}))
         .await
         .expect("answer");
+    assert_eq!(p.status(&run).await, "MANUAL_REVIEW");
+    let submit = graph_step(&p, &run, "submit").await;
+    assert_eq!(submit["status"], "WAITING");
+    assert_eq!(submit["failureCode"], "RECONCILIATION_NOT_FINAL");
+    assert!(
+        w.poll(8).await.is_empty(),
+        "negative lookup leases no retry"
+    );
+}
+
+#[tokio::test]
+async fn an_unknown_lookup_verdict_remains_review_over_grpc() {
+    let p = platform().await;
+    let wf = p
+        .publish("unknown-verdict", &saga_ir("unknown-verdict"))
+        .await;
+    let run = p.start(&wf, &json!({})).await;
+    let mut w = p.worker("wendy").await;
+    w.register(ACTIVITIES).await;
+    let reserve = w.one_task().await;
+    w.complete(&reserve, &json!({})).await.expect("reserve");
+    let submit = w.one_task().await;
+    w.fail_with(&submit, "OUTCOME_UNKNOWN", false)
+        .await
+        .expect("unknown original");
+    let lookup = w.one_task().await;
+    w.complete(&lookup, &json!({"effect": "unknown"}))
+        .await
+        .expect("unknown verdict");
+
+    assert_eq!(p.status(&run).await, "MANUAL_REVIEW");
+    let submit = graph_step(&p, &run, "submit").await;
+    assert_eq!(submit["status"], "WAITING");
+    assert_eq!(submit["failureCode"], "RECONCILIATION_UNKNOWN");
+    assert!(
+        w.poll(8).await.is_empty(),
+        "review consumes no worker lease"
+    );
+}
+
+#[tokio::test]
+async fn accepted_unknown_taxonomy_codes_cannot_retry_or_terminalize_a_root_effect() {
+    let p = platform().await;
+    let mut w = p.worker("wendy").await;
+    w.register(ACTIVITIES).await;
+
+    for (index, code) in UNKNOWN_WORKER_FAILURE_CODES.iter().enumerate() {
+        let name = format!("unknown-root-{index}");
+        let wf = p.publish(&name, &root_effect_ir(&name)).await;
+        let run = p.start(&wf, &json!({})).await;
+        let effect = w.one_task().await;
+
+        let ack = w
+            .fail_with(&effect, code, true)
+            .await
+            .unwrap_or_else(|error| panic!("{code} must be accepted as a typed failure: {error}"));
+        assert_eq!(
+            ack.step_status, "WAITING",
+            "{code} cannot authorize an automatic original-effect retry"
+        );
+        assert_eq!(p.status(&run).await, "MANUAL_REVIEW", "{code}");
+        let retained = graph_step(&p, &run, "effect").await;
+        assert_eq!(retained["status"], "WAITING", "{code}");
+        assert_eq!(retained["failureCode"], *code, "{code}");
+
+        p.tick().await;
+        assert!(
+            w.poll(8).await.is_empty(),
+            "{code} must remain review instead of becoming worker work"
+        );
+    }
+}
+
+#[tokio::test]
+async fn accepted_unknown_taxonomy_codes_cannot_retry_or_fail_a_compensation() {
+    let p = platform().await;
+    let mut w = p.worker("wendy").await;
+    w.register(ACTIVITIES).await;
+
+    for (index, code) in UNKNOWN_WORKER_FAILURE_CODES.iter().enumerate() {
+        let name = format!("unknown-compensation-{index}");
+        let wf = p.publish(&name, &saga_ir(&name)).await;
+        let run = p.start(&wf, &json!({})).await;
+        let reserve = w.one_task().await;
+        w.complete(&reserve, &json!({})).await.expect("reserve");
+        let submit = w.one_task().await;
+        w.fail(&submit, false).await.expect("known decline");
+        let compensation = w.one_task().await;
+
+        let ack = w
+            .fail_with(&compensation, code, true)
+            .await
+            .unwrap_or_else(|error| panic!("{code} must be accepted as a typed failure: {error}"));
+        assert_eq!(
+            ack.step_status, "WAITING",
+            "{code} cannot authorize repeating or terminalizing a compensation"
+        );
+        assert_eq!(p.status(&run).await, "MANUAL_REVIEW", "{code}");
+        let retained = graph_step(&p, &run, "reserve~c").await;
+        assert_eq!(retained["status"], "WAITING", "{code}");
+        assert_eq!(retained["failureCode"], *code, "{code}");
+
+        p.tick().await;
+        assert!(
+            w.poll(8).await.is_empty(),
+            "{code} must remain review instead of becoming worker work"
+        );
+    }
 }
 
 #[tokio::test]
@@ -135,19 +278,21 @@ async fn cancelling_a_run_does_not_cancel_the_compensation_that_is_undoing_it() 
 }
 
 #[tokio::test]
-async fn a_late_report_for_a_compensation_is_refused_like_any_stale_attempt() {
+async fn an_expired_compensation_waits_for_review_and_fences_late_reports() {
     let p = platform().await;
     let mut doomed = p.worker("wendy").await;
     let (run, _) = compensating(&p, &mut doomed).await;
     let first = doomed.one_task().await;
     p.expire_lease(&run, "reserve~c").await;
     p.tick().await;
-    p.elapse_retry_delay(&run, "reserve~c").await;
-    p.tick().await;
-    let mut rescuer = p.worker("rhea").await;
-    rescuer.register(ACTIVITIES).await;
-    let second = rescuer.one_task().await;
-    assert!(second.generation > first.generation);
+    assert_eq!(p.status(&run).await, "MANUAL_REVIEW");
+    let compensation = graph_step(&p, &run, "reserve~c").await;
+    assert_eq!(compensation["status"], "WAITING");
+    assert_eq!(compensation["failureCode"], "LEASE_EXPIRED");
+    assert!(
+        doomed.poll(8).await.is_empty(),
+        "unknown compensation outcome is not retried automatically"
+    );
 
     let late = doomed
         .complete(&first, &json!({}))
@@ -156,10 +301,19 @@ async fn a_late_report_for_a_compensation_is_refused_like_any_stale_attempt() {
     assert_eq!(machine_code(&late), "STALE_ATTEMPT");
     let late = doomed.fail(&first, true).await.expect_err("stale");
     assert_eq!(machine_code(&late), "STALE_ATTEMPT");
-    rescuer
-        .complete(&second, &json!({}))
-        .await
-        .expect("the live attempt counts");
+
+    let decision = json!({"action": "RESOLVE_STEP", "stepId": "reserve~c",
+                          "outcome": "SUCCEEDED",
+                          "reason": "provider operator confirmed the release completed"});
+    let (status, body) = p
+        .rest(
+            Method::POST,
+            &format!("/runs/{run}/operations"),
+            Some(&decision),
+        )
+        .await;
+    assert_eq!(status, 202, "{body}");
+    assert_eq!(p.status(&run).await, "COMPENSATED");
 }
 
 #[tokio::test]

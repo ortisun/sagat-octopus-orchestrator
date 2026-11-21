@@ -1,6 +1,8 @@
 import { SagatError, invalid } from './errors.js';
 import { canonicalJson } from './json.js';
 import { databaseNode, type DatabaseOptions } from './database.js';
+import { icebergWriteNode, type IcebergWriteOptions } from './iceberg.js';
+import type { Operator } from './ops.js';
 
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 type Node = Record<string, Json>;
@@ -21,6 +23,11 @@ export interface UpdateDefinition {
   readonly result: string;
   readonly resultSchema: Record<string, Json>;
   readonly disclosure: DisclosurePolicy;
+  /**
+   * Keeps the arguments of every applied instance of this Update, so a reset can validate and apply them
+   * again. Left out of the document unless true; a server publishes it only when its capability is on.
+   */
+  readonly reapplyOnReset?: boolean;
 }
 
 export interface StateDefinition {
@@ -100,6 +107,11 @@ export interface SwitchCase {
 export interface CollectionOptions {
   readonly maxItems: number;
   readonly maxConcurrency: number;
+  /**
+   * Stages applied once, when the collection is entered, to the list `items` yields, built with `ops`
+   * (design 042). Absent or empty, the node has no `operators`. The server validates the chain.
+   */
+  readonly operators?: readonly Operator[];
 }
 
 export interface LoopOptions {
@@ -275,6 +287,10 @@ export class Flow {
   database(id: string, options: DatabaseOptions): this {
     return this.push(databaseNode(id, options));
   }
+  /** Appends records to an Iceberg table through the isolated Sagat lake runner; no catalog or storage credential appears here. */
+  icebergWrite(id: string, options: IcebergWriteOptions): this {
+    return this.push(icebergWriteNode(id, options));
+  }
   /** @internal */
   readonly nodes: Node[] = [];
 
@@ -363,9 +379,11 @@ export class Flow {
     if (!Number.isInteger(options.maxConcurrency) || options.maxConcurrency < 1 || options.maxConcurrency > 256) {
       throw invalid(`forEach ${id} maxConcurrency must be between 1 and 256`);
     }
+    const operators = options.operators ?? [];
     return this.push({
       id, type: 'forEach', items, body, result,
       maxItems: options.maxItems, maxConcurrency: options.maxConcurrency,
+      ...(operators.length === 0 ? {} : { operators: operators.map((stage) => copyJson(stage as unknown as Json)) }),
     });
   }
 
@@ -596,6 +614,9 @@ export class WorkflowBuilder extends Flow {
         if (!OPERATION_NAME.test(name)) throw invalid(`update name ${JSON.stringify(name)} is invalid`);
         if (update === null || typeof update !== 'object') throw invalid(`update ${name} is required`);
         if (update.disclosure !== DISCLOSURE) throw invalid(`update ${name} needs disclosure ${DISCLOSURE}`);
+        if (update.reapplyOnReset !== undefined && typeof update.reapplyOnReset !== 'boolean') {
+          throw invalid(`update ${name}.reapplyOnReset must be a boolean`);
+        }
         return [name, clean({
           argsSchema: argsSchema(update.argsSchema, `update ${name}`),
           validate: update.validate === undefined ? undefined : expression(update.validate, `update ${name}.validate`),
@@ -603,6 +624,8 @@ export class WorkflowBuilder extends Flow {
           result: expression(update.result, `update ${name}.result`),
           resultSchema: resultSchema(update.resultSchema, `update ${name}.resultSchema`),
           disclosure: update.disclosure,
+          // the default is not written, so a document that does not opt in is the one made before the field
+          reapplyOnReset: update.reapplyOnReset === true ? true : undefined,
         })];
       }));
     }

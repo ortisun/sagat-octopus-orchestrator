@@ -1,0 +1,98 @@
+asyncapi: 3.0.0
+info:
+  title: Feature 026 draft fragment — outbound approval events and new alert kinds
+  version: 0.0.0-draft
+  description: |
+    DRAFT, not implemented. Merged into specs/001-platform-foundation/contracts/events.asyncapi.yaml
+    by T026-008 under docs/event-schema-evolution.md: messages only grow, the two new messages are new
+    names, the alert `kind` enumeration gains two values, and events.baseline.json is regenerated after
+    review. Every outbound subscription destination (webhook, NATS, Kafka, SQS and the new chat and
+    e-mail channels) may subscribe to the new kinds; chat and e-mail channels render them with fixed
+    templates (contracts/channel-messages.md). Payloads are identifiers, names, statuses and times:
+    no summary value, actor, reason code or decision input is ever in a message body.
+components:
+  messages:
+    ApprovalRequestedWebhook:
+      name: ApprovalRequestedWebhook
+      contentType: application/json
+      headers:
+        type: object
+        required: [X-Octopus-Signature, X-Octopus-Timestamp, X-Octopus-Event-Id, X-Octopus-Event-Type, X-Octopus-Delivery-Id, X-Octopus-Attempt, X-Octopus-Schema-Version]
+        properties:
+          X-Octopus-Signature: {type: string, description: 'As for the delivery of a finished run.'}
+          X-Octopus-Timestamp: {type: string}
+          X-Octopus-Event-Id: {type: string, description: 'One per opened approval request.'}
+          X-Octopus-Event-Type: {type: string, enum: [approval.requested]}
+          X-Octopus-Delivery-Id: {type: string, format: uuid}
+          X-Octopus-Attempt: {type: string, pattern: '^[0-9]+$'}
+          X-Octopus-Schema-Version: {type: string}
+          traceparent: {type: string}
+      payload:
+        type: object
+        required: [id, type, time, data]
+        properties:
+          id: {type: string}
+          type: {type: string, enum: [approval.requested]}
+          time: {type: string, format: date-time}
+          data:
+            type: object
+            required: [tenantId, namespaceId, runId, approvalId, workflow, nodeId, deadline]
+            properties:
+              tenantId: {type: string, format: uuid}
+              namespaceId: {type: string, format: uuid}
+              runId: {type: string, format: uuid}
+              approvalId: {type: string, format: uuid}
+              workflow: {type: string}
+              nodeId: {type: string}
+              deadline: {type: string, format: date-time}
+              traceId: {type: [string, 'null']}
+    ApprovalSettledWebhook:
+      name: ApprovalSettledWebhook
+      contentType: application/json
+      description: 'Outcome and time only. The decider, the reason code and the input stay in the audit trail and the run.'
+      headers:
+        type: object
+        required: [X-Octopus-Signature, X-Octopus-Timestamp, X-Octopus-Event-Id, X-Octopus-Event-Type, X-Octopus-Delivery-Id, X-Octopus-Attempt, X-Octopus-Schema-Version]
+        properties:
+          X-Octopus-Signature: {type: string}
+          X-Octopus-Timestamp: {type: string}
+          X-Octopus-Event-Id: {type: string}
+          X-Octopus-Event-Type: {type: string, enum: [approval.settled]}
+          X-Octopus-Delivery-Id: {type: string, format: uuid}
+          X-Octopus-Attempt: {type: string, pattern: '^[0-9]+$'}
+          X-Octopus-Schema-Version: {type: string}
+          traceparent: {type: string}
+      payload:
+        type: object
+        required: [id, type, time, data]
+        properties:
+          id: {type: string}
+          type: {type: string, enum: [approval.settled]}
+          time: {type: string, format: date-time}
+          data:
+            type: object
+            required: [tenantId, namespaceId, runId, approvalId, status, settledAt]
+            properties:
+              tenantId: {type: string, format: uuid}
+              namespaceId: {type: string, format: uuid}
+              runId: {type: string, format: uuid}
+              approvalId: {type: string, format: uuid}
+              status: {type: string, enum: [APPROVED, REJECTED, EXPIRED, CANCELLED]}
+              settledAt: {type: string, format: date-time}
+              traceId: {type: [string, 'null']}
+    ApprovalRequestedBroker:
+      name: ApprovalRequestedBroker
+      contentType: application/json
+      headers: {$ref: '#/components/messages/RunFinishedBroker/headers'}
+      payload: {$ref: '#/components/messages/ApprovalRequestedWebhook/payload'}
+    ApprovalSettledBroker:
+      name: ApprovalSettledBroker
+      contentType: application/json
+      headers: {$ref: '#/components/messages/RunFinishedBroker/headers'}
+      payload: {$ref: '#/components/messages/ApprovalSettledWebhook/payload'}
+  x-additive-changes:
+    OperationalAlertWebhook.payload.data.kind:
+      adds: [PUBLIC_LINK_OWNER_UNAUTHORIZED, NOTIFICATION_TARGET_SKIPPED]
+      note: 'A consumer treats an unknown kind as something new happened (docs/event-schema-evolution.md rule 3).'
+    RunFinishedBroker.headers.event-type:
+      adds: [approval.requested, approval.settled]

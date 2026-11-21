@@ -1,0 +1,7 @@
+# The runtime requirement plus the tools of the unit tests, the type check, the lint and the audit.
+# `requirements-dev.lock` is made from this file; the runtime image installs `requirements.lock` only.
+-r requirements.in
+mypy==2.3.1
+pip-audit==2.10.1
+pytest==9.1.1
+ruff==0.16.9

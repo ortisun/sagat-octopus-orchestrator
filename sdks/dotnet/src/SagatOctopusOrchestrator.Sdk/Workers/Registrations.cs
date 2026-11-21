@@ -72,7 +72,8 @@ internal abstract class ActivityRegistration(RegistrationKind kind)
         if (typeof(T) == typeof(JsonElement))
         {
             // A JsonElement of the step document dies with the document: hand the handler its own copy.
-            return (T)(object)(input?.Clone() ?? JsonDocument.Parse("null").RootElement);
+            // An absent input is a JSON null that owns no pooled document (CA2026).
+            return (T)(object)(input?.Clone() ?? JsonSerializer.SerializeToElement<object?>(null));
         }
 
         return input is { } element ? JsonSerializer.Deserialize<T>(element, options) : JsonSerializer.Deserialize<T>("null", options);

@@ -1,5 +1,7 @@
 # Sagat Octopus Orchestrator: Python SDK
 
+> Documentation status: the contract sections below describe the inspected source. Existing runtime, test-count and advisory records are historical developer notes; this documentation update did not rerun or revalidate those records.
+
 `sagat-octopus-orchestrator` 0.2.0 is the Python SDK of the Sagat Octopus Orchestrator, a durable workflow
 platform. It is three things in one package and nothing else (`sdks/SPEC.md`):
 
@@ -51,7 +53,7 @@ asyncio.run(main())
 ```
 
 `start` takes a workflow id or name. Without an `idempotency_key` it makes one per call and reuses it for every
-retry of that call, so a lost answer never starts a second run. Amounts of money are strings (`"19.99"`): the
+retry of that call, so a retry of that call sends the same key; server acceptance follows the platform contract. Amounts of money are strings (`"19.99"`): the
 SDK never converts a string to a number, and `600000` is never sent as `600000.0`.
 
 For a large run input, use `await client.upload_run_input(one_pass_iterable, ...)`, then pass the returned
@@ -73,6 +75,87 @@ with SyncSagatClient(config) as client:
 The blocking facade also exposes `update_chain`, `rerun_as_new` and
 `wait_for_chain_completion(namespace_id, chain_id)`. The chain wait follows `finalOutcome` across
 continuations; `wait_for_completion(run_id)` keeps waiting for that exact segment only.
+
+## Schedules, business identifiers, batch jobs and reset
+
+Three groups hang off the client (`client.schedules`, `client.batch`, `client.business_ids`; the blocking client has
+the same ones, blocking) and the calls about one run are methods of the client. Every call that changes something
+carries one `Idempotency-Key`, given as `idempotency_key=` or made once per call and reused by every retry.
+
+```python
+from datetime import datetime, timedelta, timezone
+from sagat_octopus_orchestrator import (
+    BatchRequest,
+    BatchSelector,
+    ScheduleAction,
+    ScheduleSpec,
+    ScheduleWrite,
+)
+
+# A run under a business identifier, held for a minute. `started` says whether this call created it:
+# `False` when an open run already held the identifier and USE_EXISTING was asked (the server answered 200).
+run = await client.start(
+    "order-flow",
+    {"orderId": "o-1"},
+    business_id="order-o-1",
+    business_id_conflict_policy="USE_EXISTING",
+    start_delay=timedelta(minutes=1),
+)
+binding = await client.business_ids.get(namespace_id, "order-o-1")
+
+# Signal the open run of an identifier, or start one with the signal delivered at its creation.
+await client.signal_with_start("order-flow", "order-o-1", {"orderId": "o-1"}, "payment.confirmed", {"paid": "19.99"})
+# Apply a declared Update the same way; a refusal of the validator is an answer (`update.outcome == "REJECTED"`).
+await client.update_with_start(
+    "order-flow", "order-o-1", {}, "balance.set", "set-1", {"next": 1}, expected_state_revision=0
+)
+
+write = ScheduleWrite(
+    name="nightly",
+    spec=ScheduleSpec(cron=["0 2 * * *"], timezone="UTC"),
+    action=ScheduleAction(workflow_id=workflow_id, input={"kind": "nightly"}),
+)
+schedule = await client.schedules.create(namespace_id, write)
+await client.schedules.update(
+    namespace_id, schedule.schedule_id, write, schedule.revision
+)  # REVISION_CONFLICT if stale
+await client.schedules.backfill(
+    namespace_id, schedule.schedule_id, datetime(2026, 1, 1, tzinfo=timezone.utc), "2026-01-02T00:00:00Z"
+)
+
+job = await client.batch.create(
+    namespace_id,
+    BatchRequest(selector=BatchSelector(run_ids=[run.run_id]), action="CANCEL", reason="clean up the held runs"),
+)
+
+points = await client.reset_points(run.run_id)
+await client.reset(run.run_id, sequence=points.items[0].sequence, reason="start over from the top")
+```
+
+* `start_delay` is a `timedelta`, turned once, before the first attempt, into integer milliseconds (truncated toward
+  zero) and sent as `startDelayMs`; anything that is not a `timedelta` is `VALIDATION_FAILED`. The range (1 ms to
+  366 days) is the server's to judge.
+* A business identifier is sent as given (no trimming, no case folding). `business_ids.get` percent-encodes it and
+  refuses locally only a value that is not 1 to 200 visible ASCII characters, and `.` or `..` alone (a whole dot
+  segment is a step in the path for every URL resolver, `%2E` too); `...` and `a..b` are valid.
+* A schedule's action can name a business-id prefix, so that every run it starts gets the identifier
+  `<prefix>-<nominal time>` (RFC 3339 in UTC to the second): `ScheduleAction(workflow_id=..., input=...,
+  business_id_prefix="order", business_id_conflict_policy="USE_EXISTING", business_id_reuse_policy="REJECT_DUPLICATE")`.
+  Both policies are optional and only mean something with a prefix (the server's defaults are `FAIL` and
+  `ALLOW_DUPLICATE`). The prefix is customer text, sent as given (no trimming, no case folding, no local check, the empty
+  string included: the server answers `VALIDATION_FAILED` with the reason `SCHEDULE_SPEC_INVALID`) and left out of the
+  `repr` of the write and of what is read back. `schedule.action.business_id_prefix`, `.business_id_conflict_policy` and
+  `.business_id_reuse_policy` are what the server sent as the strings it sent (a policy newer than this SDK is kept
+  as is), and `None` for an action that has no prefix; an action that sets none of the three sends none of the three
+  keys. An action record may now say `BUSINESS_ID_CONFLICT` (reason `BUSINESS_ID_IN_USE` or
+  `BUSINESS_ID_REUSE_REJECTED`) or `ALREADY_ACTED` with the `run_id` of the holder: like every outcome, a string.
+* An instant you send (`start_at`, `end_at`, a backfill range, `created_after`) is an aware `datetime` or RFC 3339 text
+  with an offset and goes out in UTC (`Z`); a naive `datetime` or text without an offset is `VALIDATION_FAILED`
+  because the SDK never guesses a local offset. An instant you read is an aware `datetime` in UTC.
+* An id that becomes a path segment must be a UUID, `expected_revision` an integer of at least 1, and a
+  pause/resume note and the `update_key` of `update_with_start` non-empty: otherwise `VALIDATION_FAILED`, nothing sent.
+* A value of an enumeration the SDK does not know (an action `outcome`, a batch item `state`, a reset point `kind`)
+  is kept as the string it came as. Every typed answer keeps the JSON it was read from in `raw`.
 
 ## An activity: register it, serve it
 
@@ -191,17 +274,17 @@ document = (
 
 `build()` reads every `flow()` when it is called, not when it is joined: a step added to a branch or a saga body
 after `parallel(...)` or `saga(...)` is part of the document. `build()` links node *i* to node *i + 1*, writes nested flows after the top flow and raises
-`SagatError(VALIDATION_FAILED)` for what the server would refuse and the builder can see (a duplicate id, an empty
+`SagatError(VALIDATION_FAILED)` for locally visible constraints (a duplicate id, an empty
 saga, a dangling reference, an `irreversible` step with a compensation...). The canonical text (`to_json()`, RFC 8785: keys
 sorted at every depth by UTF-16 code units, not code points, so U+1F600 sorts before U+FF5E; numbers as ECMAScript
-prints them; no whitespace) is byte-identical across the five SDKs.
+prints them; no whitespace) is byte-identical across the six SDKs.
 
 ## Errors
 
 Every failure is one `SagatError` with `code`, `message` (safe to log: never a payload, a token or a secret),
 `status` (HTTP status, or the gRPC status name), `retryable`, `trace_id`, `reason`, `retry_after_ms` and
 `remediation`. The catalog (`sdks/error-catalog.json`) is embedded and a test proves the copy is current. The SDK
-retries only when repeating a call cannot do harm (`sdks/SPEC.md` section 5); never a 4xx other than 429. An HTTP
+retries only when repeating a call cannot do harm (`sdks/SPEC.md` section 5); HTTP 408 maps to UNAVAILABLE; other non-rate-limit 4xx failures do not become retriable merely because a body says so. An HTTP
 redirect is never followed (it could carry the token to another host): a 3xx is a `PROTOCOL` error with the status
 kept. Certificate verification is never switched off (a test reads the source for it).
 
@@ -307,3 +390,31 @@ Use the database builder with a logical connection created in Sagat. See the
 [five-language guide](../../docs/guides/managed-database-sdk.md) for typed parameters,
 result consumption, permissions and the shared real-service scenario. Credentials
 are resolved by the separate managed executor.
+
+<!-- EGM directory contract -->
+
+## Interface
+
+- Distribution sagat-octopus-orchestrator 0.2.0 declares Python >=3.10, httpx/grpcio/protobuf dependencies and an optional OpenTelemetry extra. Setuptools includes the SDK package, py.typed and generated typing metadata. [pyproject.toml:requires-python] [pyproject.toml:dependencies] [pyproject.toml:optional-dependencies] [pyproject.toml:package-data]
+
+- [proto](./proto/README.md) — component contract.
+- [sagat_octopus_orchestrator](./sagat_octopus_orchestrator/README.md) — component contract.
+- [scripts](./scripts/README.md) — component contract.
+
+## Invariants
+
+- None
+
+## Side Effects
+
+- None
+
+## Verification
+
+Run from the repository root:
+
+```sh
+cd sdks/python && .venv/bin/python -m pytest && .venv/bin/mypy && .venv/bin/ruff check .
+```
+
+These commands are documented from the existing build configuration; they were not executed during this documentation update.

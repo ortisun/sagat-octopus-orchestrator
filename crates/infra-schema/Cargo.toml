@@ -19,8 +19,26 @@ sagat-application.workspace = true
 sagat-domain.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-# No network or file resolution: a `$ref` to anything outside the document is an error, never a request.
+# The nil identifier the pre-checks outside a start queue under in the validator's permits (design 043, D043-177).
+uuid.workspace = true
+# No network or file resolution: a `$ref` to anything outside the document is an error, never a request. The scripts'
+# schemas (feature 005) and the classification carriers use it; the run-input validator does not (D043-074): there it is
+# the oracle of a test only.
 jsonschema = { version = "0.58", default-features = false }
+# The run-input validator's patterns: parsed against an allowlist, compiled with every runtime engine bounded (design 043).
+regex-automata = "0.4"
+regex-syntax = "0.8"
+# The permits, their wait and the off-worker step of the run-input validator live here, not in `sagat-application`
+# (D043-071, ADR-0090 decision 4).
+tokio = { workspace = true, features = ["sync", "time", "rt-multi-thread"] }
+# A panic of the run-input validator is logged, with the schema's digest only (design 043).
+tracing.workspace = true
+
+[features]
+# Counts the run-input validator's primitive operations, so the adversarial tests hold them to a multiple of the units.
+test-support = []
 
 [dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "sync", "time"] }
 proptest = { version = "1", default-features = false, features = ["std"] }
+sagat-infra-schema = { path = ".", features = ["test-support"] }

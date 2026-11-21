@@ -1,6 +1,7 @@
 mod control;
 #[path = "faults.rs"]
 mod faults;
+mod operations;
 mod rest;
 use futures_util::{FutureExt, StreamExt};
 use sagat_octopus_orchestrator_sdk::*;
@@ -16,6 +17,20 @@ fn text<'a>(value: &'a Value, key: &str) -> &'a str {
 }
 fn millis(value: &Value, key: &str, default: u64) -> Duration {
     Duration::from_millis(value.get(key).and_then(Value::as_u64).unwrap_or(default))
+}
+fn operation_options(step: &Value) -> OperationOptions {
+    let outcome = match step["outcome"].as_str() {
+        Some("SUCCEEDED") => Some(StepOutcome::Succeeded),
+        Some("FAILED") => Some(StepOutcome::Failed),
+        _ => None,
+    };
+    OperationOptions {
+        expected_run_version: step["expectedRunVersion"].as_u64(),
+        step_id: step["stepId"].as_str().map(str::to_owned),
+        outcome,
+        error_code: step["errorCode"].as_str().map(str::to_owned),
+        ..Default::default()
+    }
 }
 #[derive(Default)]
 struct Measurement {
@@ -50,6 +65,29 @@ fn run_json(run: Run) -> Value {
         if let Some(value) = run.raw.get(key).filter(|v| !v.is_null()) {
             result[key] = value.clone();
         }
+    }
+    // Present only for a run started under a business identifier, or held by a start delay.
+    if let Some(id) = &run.business_id {
+        result["businessId"] = json!(id);
+    }
+    if run.start_delayed_until.is_some() {
+        result["startDelayedUntil"] = operations::instant(run.start_delayed_until);
+    }
+    // Present only for a run a schedule started, or a reset made.
+    if let Some(schedule) = &run.schedule {
+        result["schedule"] = json!({
+            "scheduleId": schedule.schedule_id,
+            "nominalTime": operations::instant(Some(schedule.nominal_time)),
+            "kind": schedule.kind,
+            "revision": schedule.revision,
+        });
+    }
+    if let Some(reset) = &run.reset_from {
+        result["resetFrom"] = json!({"runId": reset.run_id, "sequence": reset.sequence});
+    }
+    // Present only for a run stopped with a failure code (design 043).
+    if let Some(code) = &run.failure_code {
+        result["failureCode"] = json!(code);
     }
     result
 }
@@ -343,46 +381,60 @@ pub async fn run(scenario: &Value, config: &Value) -> Result<Value, Failure> {
     }
     let mut observations = Vec::new();
     let mut results = BTreeMap::new();
-    for step in scenario["steps"]
+    // The ids of the steps that have a result, in the order they got it: a run is named by the first.
+    let mut order: Vec<String> = Vec::new();
+    for given in scenario["steps"]
         .as_array()
         .ok_or("scenario steps missing")?
     {
+        // References inside a step are resolved before it runs; one that cannot be is the failure of
+        // that step, recorded like any other.
+        let resolved = match operations::resolve(given, config, &results) {
+            Ok(step) => step,
+            Err(message) => {
+                observations.push(json!({"id":given["id"],"op":given["op"],"ok":false,"error":{"code":"UNEXPECTED","message":message}}));
+                continue;
+            }
+        };
+        let step = &resolved;
         let op = text(step, "op");
         let token = step["token"].as_str().unwrap_or("default");
         let client = clients.get(token).ok_or("unknown scenario token")?;
-        if !matches!(
-            op,
-            "start"
-                | "startWithBlob"
-                | "workflowByName"
-                | "get"
-                | "list"
-                | "startWorker"
-                | "stopWorker"
-                | "restartWorker"
-                | "waitForCompletion"
-                | "events"
-                | "sleep"
-                | "control"
-                | "cancel"
-                | "operate"
-                | "awaitJournal"
-                | "awaitWorkerLog"
-                | "probeWorker"
-                | "signal"
-                | "publishEvent"
-                | "query"
-                | "update"
-                | "listApprovals"
-                | "decideApproval"
-                | "queryChain"
-                | "updateChain"
-                | "signalChain"
-                | "cancelChain"
-                | "listChainRuns"
-                | "inspectChain"
-                | "waitForChainCompletion"
-        ) {
+        if !operations::plays(op)
+            && !matches!(
+                op,
+                "start"
+                    | "startWithBlob"
+                    | "workflowByName"
+                    | "get"
+                    | "list"
+                    | "startWorker"
+                    | "stopWorker"
+                    | "restartWorker"
+                    | "waitForCompletion"
+                    | "events"
+                    | "sleep"
+                    | "control"
+                    | "cancel"
+                    | "operate"
+                    | "awaitJournal"
+                    | "awaitWorkerLog"
+                    | "probeWorker"
+                    | "signal"
+                    | "publishEvent"
+                    | "query"
+                    | "update"
+                    | "listApprovals"
+                    | "decideApproval"
+                    | "queryChain"
+                    | "updateChain"
+                    | "signalChain"
+                    | "cancelChain"
+                    | "listChainRuns"
+                    | "inspectChain"
+                    | "waitForChainCompletion"
+            )
+        {
             return Err(
                 format!("Rust runtime scenario operation {op} is not implemented yet").into(),
             );
@@ -391,7 +443,12 @@ pub async fn run(scenario: &Value, config: &Value) -> Result<Value, Failure> {
             "start"|"workflowByName"=>{
                 let workflow=&config["workflows"][text(step,"workflow")];let reference=text(workflow,if op=="start"{"workflowId"}else{"name"});
                 let options=StartOptions{call:CallOptions{idempotency_key:step["idempotencyKey"].as_str().map(str::to_owned),traceparent:step["traceparent"].as_str().map(str::to_owned),..Default::default()},correlation_id:step["correlationId"].as_str().map(str::to_owned),deadline:step.get("deadlineInMs").and_then(Value::as_u64).map(|n|RunDeadline::After(Duration::from_millis(n))),..Default::default()};
-                Some(run_json(client.start(reference,&step.get("input").cloned().unwrap_or_else(||json!({})),options).await?))
+                let options=StartOptions{business_id:step["businessId"].as_str().map(str::to_owned),business_id_conflict_policy:step["businessIdConflictPolicy"].as_str().map(BusinessIdConflictPolicy::from),business_id_reuse_policy:step["businessIdReusePolicy"].as_str().map(BusinessIdReusePolicy::from),start_delay:operations::delay_of(&step["startDelayMs"])?,..options};
+                let started=client.start(reference,&step.get("input").cloned().unwrap_or_else(||json!({})),options).await?;
+                let mut observed=run_json(started.run);
+                // `started` only when the step asked for a business identifier: the other observations stay as they were.
+                if step.get("businessId").is_some(){observed["started"]=json!(started.started);}
+                Some(observed)
             }
             "startWithBlob"=>{
                 let body=if let Some(text)=step["inputBlobText"].as_str(){text.as_bytes().to_vec()}else{vec![b'i';step["inputBlobBytes"].as_u64().unwrap_or(0) as usize]};
@@ -413,7 +470,7 @@ pub async fn run(scenario: &Value, config: &Value) -> Result<Value, Failure> {
                 for host in &mut worker.hosts{host.stop(millis(step,"timeoutMs",5000)).await?;}
                 if op=="restartWorker"{let host=worker.hosts.last_mut().ok_or_else(||SagatError::validation("worker was never started"))?;host.start().await?;Some(json!({"protocolVersion":host.protocol_version()}))}else{None}
             }
-            "cancel"|"operate"=>{let result=client.operate(&run_of(step,&results)?,if op=="cancel"{"CANCEL"}else{text(step,"action")},text(step,"reason"),OperationOptions{expected_run_version:step["expectedRunVersion"].as_u64(),step_id:step["stepId"].as_str().map(str::to_owned),..Default::default()}).await?;let mut value=json!({"accepted":result.accepted,"runStatus":result.run_status});if let Some(id)=result.new_run_id{value["newRunId"]=json!(id);}Some(value)}
+            "cancel"|"operate"=>{let result=client.operate(&run_of(step,&results)?,if op=="cancel"{"CANCEL"}else{text(step,"action")},text(step,"reason"),operation_options(step)).await?;let mut value=json!({"accepted":result.accepted,"runStatus":result.run_status});if let Some(id)=result.new_run_id{value["newRunId"]=json!(id);}Some(value)}
             "sleep"=>{tokio::time::sleep(millis(step,"ms",0)).await;None}
             "control"=>{let mut body=json!({"action":step["action"]});if step.get("run").is_some(){body["run"]=json!(run_of(step,&results)?);}
 if let Some(node)=step.get("node"){body["node"]=node.clone();}let response=control::client()?.post(format!("{}/control",text(config,"controlUrl"))).json(&body).send().await.map_err(|_|SagatError::validation("control transport failed"))?;if !response.status().is_success(){return Err(SagatError::validation("control request refused"));}None}
@@ -422,16 +479,29 @@ if tokio::time::Instant::now()>=end{return Err(SagatError::validation("the scena
             "awaitWorkerLog"=>{let worker=workers.get(text(step,"worker")).ok_or_else(||SagatError::validation("unknown scenario worker"))?;let end=tokio::time::Instant::now()+millis(step,"timeoutMs",20000);loop{if worker.measure.lock().map_err(|_|SagatError::validation("measurement unavailable"))?.log.len()>=step["count"].as_u64().unwrap_or(0) as usize{break;}
 if tokio::time::Instant::now()>=end{return Err(SagatError::validation("the scenario worker log barrier was not reached"));}tokio::time::sleep(Duration::from_millis(20)).await;}None}
             "probeWorker"=>{let mut options=WorkerOptions::new(text(config,"grpcUrl"),text(config,"namespace"),format!("probe-{}",text(config,"unique")),TokenSource::bearer(text(config,"workerToken")));options.protocol_version=text(step,"protocolVersion").into();options.retry.max_attempts=1;let mut probe=WorkerHost::new(options)?;probe.activity("conformance.probe",|_:ActivityContext,_:Value|async{Ok(())})?;let result=probe.start().await.map(|_|json!({"accepted":probe.protocol_version()}));let _=probe.stop(Duration::from_millis(500)).await;Some(result?)}
+            op if operations::plays(op)=>operations::play(op,client,step,config,&results,&order).await?,
             _=>rest::play(op,client,step,config,&results).await?,
         }; Ok(output) }.await;
         let mut observation = json!({"id":step["id"],"op":op,"ok":result.is_ok()});
         match result {
             Ok(Some(result)) => {
+                if !results.contains_key(text(step, "id")) {
+                    order.push(text(step, "id").into());
+                }
                 results.insert(text(step, "id").into(), result.clone());
                 observation["result"] = result;
             }
             Ok(None) => {}
-            Err(error) => observation["error"] = error.as_json(),
+            Err(error) => {
+                let mut fields = error.as_json();
+                // design 043: the field is compared with the rule of a refused run input, not for the other reasons
+                if fields.get("rule").is_none()
+                    && let Some(map) = fields.as_object_mut()
+                {
+                    map.remove("field");
+                }
+                observation["error"] = fields;
+            }
         }
         observations.push(observation);
     }
@@ -451,4 +521,30 @@ if tokio::time::Instant::now()>=end{return Err(SagatError::validation("the scena
     Ok(
         json!({"scenario":scenario["name"],"language":"rust","sdkVersion":VERSION,"observations":observations,"workerLog":log,"workerMeasurements":measurements,"faultsApplied":plan.applied()}),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn operation_options_preserve_manual_outcomes_and_failure_codes() {
+        let succeeded = operation_options(&json!({
+            "stepId": "pay",
+            "outcome": "SUCCEEDED",
+            "expectedRunVersion": 41
+        }));
+        assert_eq!(succeeded.step_id.as_deref(), Some("pay"));
+        assert!(matches!(succeeded.outcome, Some(StepOutcome::Succeeded)));
+        assert_eq!(succeeded.expected_run_version, Some(41));
+        assert!(succeeded.error_code.is_none());
+
+        let failed = operation_options(&json!({
+            "stepId": "pay",
+            "outcome": "FAILED",
+            "errorCode": "PAYMENT_NOT_FOUND"
+        }));
+        assert!(matches!(failed.outcome, Some(StepOutcome::Failed)));
+        assert_eq!(failed.error_code.as_deref(), Some("PAYMENT_NOT_FOUND"));
+    }
 }

@@ -71,13 +71,13 @@ describe('which decisions are offered', () => {
     expect(list.getByText('Only a compensation (an id ending in ~c) can be retried this way: use Retry step.')).toBeInTheDocument();
   });
 
-  it('asks for saga:override to retry a step whose effect may already have happened', async () => {
+  it('blocks retry of an unresolved effect for both operator and administrator', async () => {
     const { panel, unmount } = await panelOf('charge', OPERATOR);
     expect(state(actions(panel, 'charge').getByRole('button', { name: 'Retry step' }))).toBe('disabled');
-    expect(actions(panel, 'charge').getByText(/may already have happened \(OUTCOME_UNKNOWN\)\. Retrying it needs the saga:override permission/)).toBeInTheDocument();
+    expect(actions(panel, 'charge').getByText(/outcome is unresolved \(OUTCOME_UNKNOWN\).*resolve the outcome/)).toBeInTheDocument();
     unmount();
     const admin = await panelOf('charge', ADMIN);
-    expect(state(actions(admin.panel, 'charge').getByRole('button', { name: 'Retry step' }))).toBe('enabled');
+    expect(state(actions(admin.panel, 'charge').getByRole('button', { name: 'Retry step' }))).toBe('disabled');
   });
 
   it('gives a viewer nothing to press on a step, with the permission each action lacks', async () => {
@@ -254,6 +254,66 @@ describe('deciding', () => {
     await waitFor(() => expect(platform.calls.some((call) => call.url.includes(NEW_RUN))).toBe(true));
   });
 
+  describe('the business identifier of a run started again', () => {
+    const NEW_RUN = '019b5d6e-0000-7000-8000-0000000000ff';
+    const answer = () => jsonResponse({ operationId: '019b5d6e-0000-7000-8000-0000000000cc', accepted: true, runStatus: 'FAILED', runVersion: 10, newRunId: NEW_RUN }, 202);
+
+    async function rerunDialog(over: Parameters<typeof runOf>[0], operate: () => Response = answer) {
+      const { nodes, edges } = sagaRun();
+      const opened = await openRunPage(
+        { run: runOf({ status: 'FAILED', finishedAt: '2026-10-10T10:05:00Z', ...over }), graph: graphOf(nodes, edges, { status: 'FAILED' }), operate },
+        [...ADMIN, 'run:start'],
+      );
+      await opened.user.click(await screen.findByRole('button', { name: 'Run actions' }));
+      await opened.user.click(within(screen.getByRole('list', { name: 'Run actions' })).getByRole('button', { name: 'Run again as new' }));
+      return { ...opened, dialog: await screen.findByRole('dialog') };
+    }
+
+    it('keeps the identifier by default and sends nothing about it', async () => {
+      const { dialog, user, platform } = await rerunDialog({ businessId: 'order-1001' });
+      expect(within(dialog).getByText(/order-1001/)).toBeInTheDocument();
+      expect(within(dialog).getByRole('radio', { name: /Keep it on the new run/ })).toBeChecked();
+      await user.type(reasonBox(dialog), 'the provider fixed the bug');
+      await user.click(within(dialog).getByRole('button', { name: 'Confirm: Run again as new' }));
+      await waitFor(() => expect(platform.operations).toHaveLength(1));
+      expect(platform.operations[0]?.body).not.toHaveProperty('businessId');
+    });
+
+    it('starts the new run without the identifier when asked to', async () => {
+      const { dialog, user, platform } = await rerunDialog({ businessId: 'order-1001' });
+      await user.click(within(dialog).getByRole('radio', { name: /without it/ }));
+      await user.type(reasonBox(dialog), 'the provider fixed the bug');
+      await user.click(within(dialog).getByRole('button', { name: 'Confirm: Run again as new' }));
+      await waitFor(() => expect(platform.operations).toHaveLength(1));
+      expect(platform.operations[0]?.body).toMatchObject({ action: 'RERUN_AS_NEW', businessId: 'DROP' });
+    });
+
+    it('offers no choice for a run that has no identifier', async () => {
+      const { dialog, user, platform } = await rerunDialog({});
+      expect(within(dialog).queryByRole('radio')).not.toBeInTheDocument();
+      await user.type(reasonBox(dialog), 'the provider fixed the bug');
+      await user.click(within(dialog).getByRole('button', { name: 'Confirm: Run again as new' }));
+      await waitFor(() => expect(platform.operations).toHaveLength(1));
+      expect(platform.operations[0]?.body).not.toHaveProperty('businessId');
+    });
+
+    it('says what to do when another open run holds the identifier, and does not offer to refresh', async () => {
+      const held = () =>
+        jsonResponse({ code: 'CONFLICT', message: 'another open execution holds this business identifier', retryable: false, details: { reason: 'BUSINESS_ID_IN_USE', runId: NEW_RUN } }, 409);
+      const { dialog, user, platform } = await rerunDialog({ businessId: 'order-1001' }, held);
+      await user.type(reasonBox(dialog), 'the provider fixed the bug');
+      await user.click(within(dialog).getByRole('button', { name: 'Confirm: Run again as new' }));
+      await waitFor(() => expect(platform.operations).toHaveLength(1));
+      expect(await within(dialog).findByText(/Another open run holds this business identifier\. End that run first, or start the new run without it\./)).toBeVisible();
+      expect(within(dialog).queryByRole('button', { name: 'Refresh and decide again' })).not.toBeInTheDocument();
+      // and the other choice goes with another key, because it is another request
+      await user.click(within(dialog).getByRole('radio', { name: /without it/ }));
+      await user.click(within(dialog).getByRole('button', { name: 'Confirm: Run again as new' }));
+      await waitFor(() => expect(platform.operations).toHaveLength(2));
+      expect(platform.operations[1]?.key).not.toBe(platform.operations[0]?.key);
+    });
+  });
+
   it('does not edit the graph itself: the card changes when the platform says so', async () => {
     const { dialog, user, platform } = await dialogFor('Retry compensation');
     await user.type(reasonBox(dialog), REASON);
@@ -283,19 +343,14 @@ describe('deciding', () => {
     expect(platform.operations[0]?.body).toEqual({ action: 'SKIP_COMPENSATION', stepId: 'reserve~c', reason: REASON, expectedRunVersion: 10 });
   });
 
-  it('warns that a step whose effect may already have happened will happen twice, and asks for its id to retry it', async () => {
+  it('keeps an unresolved effect visible without opening a retry confirmation or sending a request', async () => {
     const { panel, platform, user } = await panelOf('charge', ADMIN);
-    await user.click(actions(panel, 'charge').getByRole('button', { name: 'Retry step' }));
-    const dialog = await screen.findByRole('dialog');
-    expect(dialog).toHaveTextContent(/may already have happened \(OUTCOME_UNKNOWN\): if it did, it will happen twice/);
-    await user.type(within(dialog).getByRole('textbox', { name: 'Reason' }), REASON);
-    await user.click(within(dialog).getByRole('button', { name: 'Confirm: Retry step' }));
-    expect(within(dialog).getByText('Type the step id exactly as shown to confirm.')).toBeInTheDocument();
+    const retry = actions(panel, 'charge').getByRole('button', { name: 'Retry step' });
+    expect(state(retry)).toBe('disabled');
+    await user.click(retry);
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     expect(platform.operations).toHaveLength(0);
-    await user.type(within(dialog).getByRole('textbox', { name: 'Type the step id to confirm' }), 'charge');
-    await user.click(within(dialog).getByRole('button', { name: 'Confirm: Retry step' }));
-    await waitFor(() => expect(platform.operations).toHaveLength(1));
-    expect(platform.operations[0]?.body).toMatchObject({ action: 'RETRY_STEP', stepId: 'charge' });
+    expect(state(actions(panel, 'charge').getByRole('button', { name: 'Resolve step' }))).toBe('enabled');
   });
 
   it('asks what happened to the step to resolve it, and the error code only if it did not happen', async () => {

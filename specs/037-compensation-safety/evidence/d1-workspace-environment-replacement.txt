@@ -1,0 +1,2 @@
+Interrupted only duplicate primitives process 4502 owned by original workspace cargo22778. It inherited RUST_LOG=warn, whose Collector conflict was reproduced; clean full target is already running in d1-workflow-primitives-full.txt. Parent changed-module gate passed90. This is replacement of the contaminated target, not a passing workspace claim. Original --no-fail-fast cargo continues remaining targets.
+The fixture absorbed SIGINT, so the same verified owned process4502 was terminated with SIGKILL. Any teardown-tail diagnostics are not valid test results.

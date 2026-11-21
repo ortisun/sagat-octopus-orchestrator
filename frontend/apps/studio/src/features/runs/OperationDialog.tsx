@@ -26,6 +26,9 @@ function facts(decision: Decision, node: RuntimeNode | undefined, run: RunFacts)
   return node === undefined ? 'gone' : [node.status, node.attempt, node.generation, node.waitingOn, node.failureCode].join('|');
 }
 
+/** The reason of a refusal because another open run holds the business identifier the rerun would keep. */
+const HELD = 'BUSINESS_ID_IN_USE';
+
 /**
  * The words the platform's refusal is shown with. A 409 can be the run having moved on since the
  * version this decision was made against (`REVISION_CONFLICT`) or the state not allowing it any
@@ -38,7 +41,9 @@ export function refusal(error: unknown): unknown {
       ? 'The run changed while you were deciding. Refresh to see what happened, then decide again.'
       : error.reason === 'STATE_CONFLICT'
         ? `${error.message.replace(/[.\s]+$/, '')}. Another operator may have decided first, or the run moved on. Refresh to see the current state.`
-        : error.message;
+        : error.reason === HELD
+          ? 'Another open run holds this business identifier. End that run first, or start the new run without it.'
+          : error.message;
   return new ApiError({ code: error.code, status: error.status, message, retryable: false, traceId: error.traceId, details: error.details });
 }
 
@@ -81,6 +86,7 @@ function DecisionForm({ decision, run, live, runId, onDone }: { decision: Decisi
   const [outcome, setOutcome] = useState<'SUCCEEDED' | 'FAILED' | ''>('');
   const [errorCode, setErrorCode] = useState('');
   const [typed, setTyped] = useState('');
+  const [dropId, setDropId] = useState(false);
   const [submitted, setSubmitted] = useState(false);
   const [sending, setSending] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -101,7 +107,7 @@ function DecisionForm({ decision, run, live, runId, onDone }: { decision: Decisi
 
   const reasonCheck = checkReason(reason, scope);
   const reasonProblem = submitted ? reasonCheck.problem : undefined;
-  const idProblem = submitted && asksForStepId(action, node) && typed !== stepId ? 'Type the step id exactly as shown to confirm.' : undefined;
+  const idProblem = submitted && asksForStepId(action) && typed !== stepId ? 'Type the step id exactly as shown to confirm.' : undefined;
   const outcomeProblem = submitted && action === 'RESOLVE_STEP' && outcome === '' ? 'Choose what happened to the step.' : undefined;
   const codeProblem = action === 'RESOLVE_STEP' && outcome === 'FAILED' && errorCode !== '' && !ERROR_CODE.test(errorCode) ? 'Use letters, digits and _ . : - only, up to 64 characters.' : undefined;
 
@@ -114,6 +120,8 @@ function DecisionForm({ decision, run, live, runId, onDone }: { decision: Decisi
       action,
       ...(stepId === undefined ? {} : { stepId }),
       ...(action === 'RESOLVE_STEP' && outcome !== '' ? { outcome, ...(outcome === 'FAILED' && errorCode !== '' ? { errorCode } : {}) } : {}),
+      // keeping the identifier is the default and is not sent (and only a run that has one offers the choice)
+      ...(action === 'RERUN_AS_NEW' && dropId ? { businessId: 'DROP' as const } : {}),
       reason: reason.trim(),
       ...(version === undefined ? {} : { expectedRunVersion: version }),
     };
@@ -147,7 +155,7 @@ function DecisionForm({ decision, run, live, runId, onDone }: { decision: Decisi
       reasonRef.current?.focus();
       return;
     }
-    if (!available || (asksForStepId(action, node) && typed !== stepId) || (action === 'RESOLVE_STEP' && (outcome === '' || codeProblem !== undefined))) return;
+    if (!available || (asksForStepId(action) && typed !== stepId) || (action === 'RESOLVE_STEP' && (outcome === '' || codeProblem !== undefined))) return;
     void send();
   };
 
@@ -166,7 +174,8 @@ function DecisionForm({ decision, run, live, runId, onDone }: { decision: Decisi
     }
   };
 
-  const conflict = isApiError(error) && error.code === 'CONFLICT';
+  // a stale decision can be refreshed and decided again; a held identifier is for the person to settle
+  const conflict = isApiError(error) && error.code === 'CONFLICT' && error.reason !== HELD;
 
   return (
     <form onSubmit={submit} noValidate>
@@ -209,9 +218,21 @@ function DecisionForm({ decision, run, live, runId, onDone }: { decision: Decisi
         <TextInput label="Error code (optional)" hint="Letters, digits and _ . : - only. Left empty it is recorded as DECLARED_FAILED_BY_OPERATOR." error={codeProblem} value={errorCode} maxLength={64} autoComplete="off" spellCheck={false} mono onChange={setErrorCode} />
       ) : null}
 
+      {action === 'RERUN_AS_NEW' && run.businessId !== undefined ? (
+        <RadioGroup
+          label={`Business identifier ${clip(run.businessId, 60)}`}
+          value={dropId ? 'drop' : 'keep'}
+          onChange={(next) => setDropId(next === 'drop')}
+          options={[
+            { value: 'keep', label: 'Keep it on the new run (refused while another open run holds it)' },
+            { value: 'drop', label: 'Start the new run without it' },
+          ]}
+        />
+      ) : null}
+
       <TextArea label="Reason" hint={`8 to ${MAX_REASON} characters, kept with the decision. ${reasonCheck.length} / ${MAX_REASON}`} error={reasonProblem} ref={reasonRef} value={reason} rows={4} onChange={setReason} />
 
-      {asksForStepId(action, node) && stepId !== undefined ? (
+      {asksForStepId(action) && stepId !== undefined ? (
         <TextInput label="Type the step id to confirm" hint={`The step is ${clip(stepId, 60)}.`} error={idProblem} value={typed} autoComplete="off" spellCheck={false} mono onChange={setTyped} />
       ) : null}
 

@@ -211,6 +211,28 @@ async fn the_operator_sets_and_withdraws_a_weight_and_each_change_is_audited() {
 
     let w = world().await;
     let tenant = w.admin.tenant_id();
+    // The operator command writes through the owner connection; runtime services only read
+    // scheduling weights. Keep that boundary even when this fixture uses sagat_app elsewhere.
+    let privileges: (bool, bool, bool, bool) = sqlx::query_as(
+        "SELECT has_table_privilege('sagat_app','tenant_scheduling','SELECT'), \
+         has_table_privilege('sagat_app','tenant_scheduling','INSERT'), \
+         has_table_privilege('sagat_app','tenant_scheduling','UPDATE'), \
+         has_table_privilege('sagat_app','tenant_scheduling','DELETE')",
+    )
+    .fetch_one(&w.db.pool)
+    .await
+    .expect("runtime weight privileges");
+    assert_eq!(privileges, (true, false, false, false));
+    let operator_quotas = sagat_application::quotas::QuotaService::new(
+        sagat_infra_postgres::PgRunStore::new(
+            w.db.pool.clone(),
+            sagat_application::execution::DefinitionCache::new(
+                std::sync::Arc::new(sagat_infra_ir::JsonIrCodec),
+                1,
+            ),
+        ),
+        sagat_application::clock::SystemClock,
+    );
     let stored = || async {
         sqlx::query_scalar::<_, i16>("SELECT weight FROM tenant_scheduling WHERE tenant_id = $1")
             .bind(tenant.as_uuid())
@@ -220,17 +242,17 @@ async fn the_operator_sets_and_withdraws_a_weight_and_each_change_is_audited() {
     };
     assert_eq!(stored().await, None);
 
-    w.quotas
+    operator_quotas
         .set_scheduling_weight(tenant, Some(7))
         .await
         .expect("set");
     assert_eq!(stored().await, Some(7));
-    w.quotas
+    operator_quotas
         .set_scheduling_weight(tenant, Some(2))
         .await
         .expect("change");
     assert_eq!(stored().await, Some(2), "a second call changes it");
-    w.quotas
+    operator_quotas
         .set_scheduling_weight(tenant, None)
         .await
         .expect("withdraw");
@@ -256,12 +278,14 @@ async fn the_operator_sets_and_withdraws_a_weight_and_each_change_is_audited() {
     // Out of range is refused and leaves nothing behind; so is a tenant that does not exist.
     for bad in [0_u16, 17, 1000] {
         assert!(matches!(
-            w.quotas.set_scheduling_weight(tenant, Some(bad)).await,
+            operator_quotas
+                .set_scheduling_weight(tenant, Some(bad))
+                .await,
             Err(AppError::NotAllowed(_))
         ));
     }
     assert!(matches!(
-        w.quotas
+        operator_quotas
             .set_scheduling_weight(TenantId::generate(), Some(2))
             .await,
         Err(AppError::NotFound)

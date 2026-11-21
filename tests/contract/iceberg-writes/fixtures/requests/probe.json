@@ -1,0 +1,52 @@
+{
+  "protocol": "sagat.lake.v1",
+  "operation": "probe",
+  "relay": {
+    "socket": "/work/attempt-1/relay.sock",
+    "token": "relay-token-canary-0123456789abcdef"
+  },
+  "connection": {
+    "catalog": {
+      "type": "rest",
+      "rest": {
+        "uri": "https://catalog.example/api",
+        "warehouse": "s3://lake/warehouse/",
+        "prefix": "tenant-a",
+        "auth": {
+          "type": "oauth2",
+          "tokenUri": "https://auth.example/token",
+          "scope": "catalog"
+        },
+        "accessDelegation": "none",
+        "remoteSigning": false
+      }
+    },
+    "storage": {
+      "type": "s3",
+      "s3": {
+        "region": "eu-west-1",
+        "pathStyle": false
+      },
+      "credentials": "static"
+    },
+    "warehouseLocations": ["s3://lake/warehouse/"],
+    "credentials": {
+      "catalog": {
+        "clientId": "client-1",
+        "clientSecret": "client-secret-canary"
+      },
+      "storage": {
+        "accessKeyId": "AKIAEXAMPLE",
+        "secretAccessKey": "storage-secret-canary"
+      }
+    }
+  },
+  "probe": {
+    "connection": {
+      "name": "lake-main",
+      "revision": 3
+    },
+    "checks": ["CATALOG_AUTH", "WAREHOUSE", "STORAGE_ACCESS"],
+    "checkTimeoutMs": 7000
+  }
+}

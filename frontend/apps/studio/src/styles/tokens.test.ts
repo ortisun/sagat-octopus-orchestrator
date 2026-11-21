@@ -14,7 +14,7 @@ function declared(source: string): Set<string> {
   return new Set([...source.matchAll(/(--[\w-]+)\s*:/g)].map((match) => match[1] ?? ''));
 }
 
-describe('the Studio stylesheets (SC-007-005, ADR-0101 rule 5)', () => {
+describe('the Studio stylesheets (Success criterion 007-005, Architecture decision 0101 rule 5)', () => {
   it('hold no literal colour: every colour is a token of the theme', () => {
     for (const file of files) {
       expect(read(file), file).not.toMatch(/#[\da-f]{3,8}\b|\b(?:rgb|hsl|oklch|oklab|lab|lch|color-mix)a?\(/i);
@@ -32,7 +32,7 @@ describe('the Studio stylesheets (SC-007-005, ADR-0101 rule 5)', () => {
   });
 
   it('declare no colour, type, spacing or radius token of their own', () => {
-    // What the Studio declares is layout only; a parallel token system is what ADR-0101 removes.
+    // What the Studio declares is layout only; a parallel token system is what Architecture decision 0101 removes.
     for (const name of declared(studio)) {
       expect(name, name).not.toMatch(/^--(color|font|text|spacing|radius|shadow|focus|size-element)-/);
     }

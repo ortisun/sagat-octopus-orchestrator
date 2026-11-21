@@ -1,23 +1,27 @@
 //! What the journal of a run becomes as spans and measurements (FR-008-001, US01, US02).
 #![allow(clippy::expect_used, clippy::panic)] // helpers fail the test by panicking
 
+use sagat_domain::saga::ReconcileVerdict;
 use std::collections::HashMap;
 
 use sagat_application::telemetry::{
-    AttemptOutcome, CONTEXT_EVENTS, JournalEntry, Observation, RunFacts, attempts, derive,
+    AttemptOutcome, CONTEXT_EVENTS, JournalEntry, Observation, ResetOrigin, RunFacts, attempts,
+    derive,
 };
 use sagat_domain::execution::{
-    ExecutionInstanceId, FailureCode, Fence, InstancePath, ReviewOutcome, RunEvent, RunId,
-    RunStatus, StopReason,
+    ExecutionInstanceId, FailureCode, Fence, InstancePath, ReconcileResult, ResetReapply,
+    ReviewOutcome, RunEvent, RunId, RunStatus, StopReason,
 };
 use sagat_domain::identity::{NamespaceId, TenantId};
-use sagat_domain::workflow::NodeId;
-use sagat_telemetry::{AttrValue, SpanData, SpanStatus, TraceId, attempt_span_id, run_span_id};
+use sagat_domain::workflow::{Digest, NodeId};
+use sagat_telemetry::{
+    AttrValue, SpanData, SpanLink, SpanStatus, TraceId, attempt_span_id, run_span_id,
+};
 use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
 
 fn node(name: &str) -> NodeId {
-    NodeId::parse(name).expect("a node id")
+    NodeId::parse_stored(name).expect("a stored node id")
 }
 
 fn code(text: &str) -> FailureCode {
@@ -67,6 +71,7 @@ fn facts(steps: &[&str]) -> RunFacts {
             .iter()
             .map(|s| (ExecutionInstanceId::root(node(s)), Uuid::new_v4()))
             .collect(),
+        reset: None,
     }
 }
 
@@ -455,6 +460,204 @@ fn a_lost_lease_is_an_error_attempt_with_its_code() {
         attr(span, "sagat.outcome"),
         Some(&AttrValue::from("failed"))
     );
+}
+
+#[test]
+fn review_telemetry_preserves_source_codes_without_inventing_a_negative_lookup_attempt() {
+    const SECRET_PAYLOAD_CANARY: &str = "worker-secret-payload-must-not-escape";
+
+    let direct_facts = facts(&["charge"]);
+    let mut direct = Journal::new();
+    let charge = node("charge");
+    direct.push(
+        0,
+        "system:engine",
+        RunEvent::StepReleased {
+            node: charge.clone(),
+        },
+    );
+    direct.push(
+        10,
+        &format!("worker:{SECRET_PAYLOAD_CANARY}"),
+        RunEvent::StepLeased {
+            node: charge.clone(),
+            attempt: 1,
+            generation: 1,
+        },
+    );
+    direct.push(
+        10,
+        &format!("worker:{SECRET_PAYLOAD_CANARY}"),
+        RunEvent::StepNeedsReview {
+            node: charge.clone(),
+            code: FailureCode::outcome_unknown(),
+            fence: Some(Fence {
+                attempt: 1,
+                generation: 1,
+            }),
+        },
+    );
+    let direct_derived = derive(&direct_facts, &direct.entries, 0);
+    let direct_span = named(&direct_derived.spans, "step.attempt")[0];
+    assert_eq!(
+        attr(direct_span, "sagat.outcome"),
+        Some(&AttrValue::from("review"))
+    );
+    assert_eq!(
+        attr(direct_span, "sagat.failure.code"),
+        Some(&AttrValue::from("OUTCOME_UNKNOWN"))
+    );
+    assert_eq!(
+        direct_span.status,
+        SpanStatus::Error("OUTCOME_UNKNOWN".to_owned())
+    );
+    assert!(
+        !format!("{:?}", direct_derived.spans).contains(SECRET_PAYLOAD_CANARY),
+        "worker-provided text is not a span attribute"
+    );
+
+    // A negative lookup concludes the original uncertainty and moves that original step to review.
+    // It does not lease a third attempt, so telemetry must expose the bounded review code on the
+    // reconciliation event instead of fabricating a `review` attempt span.
+    let reconciled_facts = facts(&["charge", "charge~r"]);
+    let mut reconciled = Journal::new();
+    let lookup = node("charge").reconciliation();
+    reconciled.push(
+        0,
+        "system:engine",
+        RunEvent::StepReleased {
+            node: charge.clone(),
+        },
+    );
+    reconciled.push(
+        10,
+        &format!("worker:{SECRET_PAYLOAD_CANARY}"),
+        RunEvent::StepLeased {
+            node: charge.clone(),
+            attempt: 1,
+            generation: 1,
+        },
+    );
+    reconciled.push(
+        10,
+        &format!("worker:{SECRET_PAYLOAD_CANARY}"),
+        RunEvent::ReconciliationRequested {
+            node: charge.clone(),
+            fence: Fence {
+                attempt: 1,
+                generation: 1,
+            },
+            cause: FailureCode::outcome_unknown(),
+        },
+    );
+    reconciled.push(
+        5,
+        "system:engine",
+        RunEvent::StepReleased {
+            node: lookup.clone(),
+        },
+    );
+    reconciled.push(
+        10,
+        &format!("worker:{SECRET_PAYLOAD_CANARY}"),
+        RunEvent::StepLeased {
+            node: lookup.clone(),
+            attempt: 1,
+            generation: 1,
+        },
+    );
+    reconciled.push(
+        10,
+        &format!("worker:{SECRET_PAYLOAD_CANARY}"),
+        RunEvent::StepCompleted {
+            node: lookup,
+            attempt: 1,
+            generation: 1,
+        },
+    );
+    reconciled.push(
+        0,
+        &format!("worker:{SECRET_PAYLOAD_CANARY}"),
+        RunEvent::ReconciliationConcluded {
+            node: charge.clone(),
+            verdict: ReconcileVerdict::NotApplied,
+            result: ReconcileResult::Review(FailureCode::reconciliation_not_final()),
+        },
+    );
+    reconciled.push(
+        10,
+        "system:operator",
+        RunEvent::StepResolved {
+            node: charge,
+            outcome: ReviewOutcome::Succeeded,
+        },
+    );
+    reconciled.push(
+        10,
+        "system:engine",
+        RunEvent::RunFinished {
+            status: RunStatus::Succeeded,
+        },
+    );
+
+    let reconciled_derived = derive(&reconciled_facts, &reconciled.entries, 0);
+    let attempt_spans = named(&reconciled_derived.spans, "step.attempt");
+    assert_eq!(
+        attempt_spans.len(),
+        2,
+        "forward plus lookup, not a made-up review attempt"
+    );
+    let forward = attempt_spans
+        .iter()
+        .find(|span| attr(span, "sagat.node") == Some(&AttrValue::from("charge")))
+        .expect("forward attempt span");
+    assert_eq!(
+        attr(forward, "sagat.outcome"),
+        Some(&AttrValue::from("unknown_outcome"))
+    );
+    assert_eq!(
+        attr(forward, "sagat.failure.code"),
+        Some(&AttrValue::from("OUTCOME_UNKNOWN"))
+    );
+    assert!(
+        attempt_spans
+            .iter()
+            .all(|span| attr(span, "sagat.outcome") != Some(&AttrValue::from("review"))),
+        "the negative lookup is a reconciliation decision, not another attempt"
+    );
+    let run_span = named(&reconciled_derived.spans, "workflow.run")[0];
+    let concluded = run_span
+        .events
+        .iter()
+        .find(|event| event.name == "reconciliation.concluded")
+        .expect("reconciliation event on the run span");
+    assert!(
+        concluded.attributes.iter().any(|(key, value)| {
+            key == "sagat.failure.code" && *value == AttrValue::from("RECONCILIATION_NOT_FINAL")
+        }),
+        "the review reason remains distinguishable from a final negative lookup: {concluded:?}"
+    );
+
+    let span_debug = format!("{:?}", reconciled_derived.spans);
+    assert!(!span_debug.contains(SECRET_PAYLOAD_CANARY));
+    let metric_input = format!(
+        "{:?}{:?}",
+        direct_derived.observations, reconciled_derived.observations
+    );
+    for forbidden in [
+        SECRET_PAYLOAD_CANARY.to_owned(),
+        direct_facts.tenant_id.to_string(),
+        direct_facts.namespace_id.to_string(),
+        direct_facts.run_id.to_string(),
+        reconciled_facts.tenant_id.to_string(),
+        reconciled_facts.namespace_id.to_string(),
+        reconciled_facts.run_id.to_string(),
+    ] {
+        assert!(
+            !metric_input.contains(&forbidden),
+            "metric observations keep only closed outcome/status labels: {metric_input}"
+        );
+    }
 }
 
 #[test]
@@ -965,7 +1168,10 @@ fn a_wait_that_starts_in_one_batch_and_is_satisfied_in_a_later_one_gets_its_span
     j.push(
         60_000,
         "system:events",
-        RunEvent::WaitSatisfied { node: hold.clone() },
+        RunEvent::WaitSatisfied {
+            node: hold.clone(),
+            via: None,
+        },
     );
     let applied = 2;
     let kept: Vec<JournalEntry> = j
@@ -1082,4 +1288,156 @@ async fn the_attempts_of_a_journal_longer_than_a_batch_are_all_there_and_all_clo
         .expect("the run exists");
         assert_eq!(read, whole, "batches of {page}");
     }
+}
+
+/// The history of a run a reset made: the source's first four steps of life, two things done to it, the
+/// reset, and what the new run did.
+fn reset_journal(source: RunId) -> Journal {
+    let (a, b) = (node("a"), node("b"));
+    let mut j = Journal::new();
+    j.push(
+        0,
+        "system:engine",
+        RunEvent::RunStarted {
+            entrypoint: a.clone(),
+        },
+    );
+    j.push(
+        5,
+        "system:engine",
+        RunEvent::StepReleased { node: a.clone() },
+    );
+    j.push(
+        20,
+        "worker:w1",
+        RunEvent::StepLeased {
+            node: a.clone(),
+            attempt: 1,
+            generation: 1,
+        },
+    );
+    j.push(
+        100,
+        "worker:w1",
+        RunEvent::StepCompleted {
+            node: a,
+            attempt: 1,
+            generation: 1,
+        },
+    );
+    // two things an operator did to the source, which a span of the source already tells
+    j.push(30, "alice", RunEvent::RunPaused);
+    j.push(30, "alice", RunEvent::RunResumed);
+    j.push(
+        10,
+        "alice",
+        RunEvent::RunReset {
+            source_run_id: source,
+            source_sequence: 6,
+            prefix_digest: Digest::new([1; 32]),
+            reapply: ResetReapply::None,
+        },
+    );
+    j.push(
+        5,
+        "system:engine",
+        RunEvent::StepReleased { node: b.clone() },
+    );
+    j.push(
+        20,
+        "worker:w1",
+        RunEvent::StepLeased {
+            node: b.clone(),
+            attempt: 1,
+            generation: 1,
+        },
+    );
+    j.push(
+        100,
+        "worker:w1",
+        RunEvent::StepCompleted {
+            node: b,
+            attempt: 1,
+            generation: 1,
+        },
+    );
+    j.push(
+        1,
+        "system:engine",
+        RunEvent::RunFinished {
+            status: RunStatus::Succeeded,
+        },
+    );
+    j
+}
+
+#[test]
+fn the_restored_prefix_of_a_reset_run_is_not_told_again_and_the_run_span_links_its_source() {
+    let source = RunId::generate();
+    let source_trace = TraceId::generate();
+    let journal = reset_journal(source).entries;
+    let mut facts = facts(&["a", "b"]);
+
+    // without the fact that a reset made it, every attempt of the journal is this run's
+    let plain = derive(&facts, &journal, 0);
+    assert_eq!(named(&plain.spans, "step.attempt").len(), 2);
+
+    facts.reset = Some(ResetOrigin {
+        source,
+        source_trace: Some(source_trace),
+        restored_through: 6,
+    });
+    let derived = derive(&facts, &journal, 0);
+    // only what this run did: the attempt of `b`
+    let attempts_told = named(&derived.spans, "step.attempt");
+    assert_eq!(attempts_told.len(), 1, "{attempts_told:?}");
+    assert_eq!(
+        attr(attempts_told[0], "sagat.node"),
+        Some(&AttrValue::from("b"))
+    );
+    let measured = derived
+        .observations
+        .iter()
+        .filter(|o| matches!(o, Observation::AttemptEnded { .. }))
+        .count();
+    assert_eq!(measured, 1, "one attempt is measured, not two");
+
+    // the run span links the span of the source, and tells only what happened to this run
+    let runs = named(&derived.spans, "workflow.run");
+    assert_eq!(runs.len(), 1);
+    assert_eq!(
+        runs[0].links,
+        [SpanLink {
+            trace_id: source_trace,
+            span_id: run_span_id(source.as_uuid())
+        }]
+    );
+    assert!(
+        runs[0].events.is_empty(),
+        "the pause and the resume were the source's: {:?}",
+        runs[0].events
+    );
+    let plain_runs = named(&plain.spans, "workflow.run");
+    assert!(plain_runs[0].links.is_empty());
+    assert_eq!(plain_runs[0].events.len(), 2);
+
+    // a projector that starts again from the beginning tells the same: the prefix is never derived
+    for applied in [0, 3, 6] {
+        let again = derive(&facts, &journal, applied);
+        assert_eq!(
+            named(&again.spans, "step.attempt").len(),
+            1,
+            "applied {applied}"
+        );
+    }
+
+    // a source without a trace is not linked, and the prefix is still the source's
+    facts.reset = Some(ResetOrigin {
+        source,
+        source_trace: None,
+        restored_through: 6,
+    });
+    let unlinked = derive(&facts, &journal, 0);
+    assert!(named(&unlinked.spans, "workflow.run")[0].links.is_empty());
+    assert_eq!(named(&unlinked.spans, "step.attempt").len(), 1);
 }

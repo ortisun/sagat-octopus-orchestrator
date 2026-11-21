@@ -1,5 +1,6 @@
 //! Typed errors of the application layer and of its storage port (AGENTS.md rule 10).
 
+use sagat_domain::database::LakeRefusal;
 use sagat_domain::identity::{IdentityError, Permission};
 use sagat_domain::scripts::ScriptError;
 use sagat_domain::versioning::{RequestId, VersioningError};
@@ -26,6 +27,8 @@ pub enum ConflictKind {
     ConnectorSlug,
     /// A script with that name already exists in the namespace.
     ScriptName,
+    /// A schedule with that name already exists in the namespace.
+    ScheduleName,
     /// A request to publish was published without the approvals it needs.
     RequestNotApproved,
 }
@@ -61,6 +64,14 @@ pub enum StoreError {
     DatabaseUnavailable,
     #[error("database operation exceeds connection limits")]
     DatabaseLimit,
+    /// The write sets a `pii` egress ceiling and the actor does not hold the namespace's reveal grant (FR-035-005).
+    /// It is a refusal of the actor, not of the resource: the actor does manage connections, so nothing is hidden.
+    #[error("setting the pii egress ceiling needs the payload reveal grant")]
+    RevealGrantRequired,
+    /// The settings of an Apache Iceberg connection refuse a step: a mode it does not allow, or fields above its ceiling
+    /// (FR-035-005, FR-035-025). The step's author may use the connection, so nothing is hidden by saying which node.
+    #[error("an Apache Iceberg write is refused by the settings of its connection")]
+    LakeRefused { node: String, refusal: LakeRefusal },
     #[error("conflict with the current state: {0}")]
     StateConflict(&'static str),
     #[error("uniqueness conflict")]
@@ -85,6 +96,59 @@ pub enum StoreError {
     /// this build's to touch: callers that serve many runs skip it and go on (G460).
     #[error("a stored workflow version cannot be read by this build")]
     UnreadableDefinition,
+    /// A start's business identifier is held (feature 018, FR-018-019/020): `reason` is the closed
+    /// `details.reason` of the contract, `holder` the execution that holds it and `reusable_after`
+    /// the instant its window ends, for a closed holder.
+    #[error("business identifier held: {reason}")]
+    BusinessIdHeld {
+        reason: &'static str,
+        holder: uuid::Uuid,
+        reusable_after: Option<time::OffsetDateTime>,
+    },
+}
+
+impl StoreError {
+    /// The kind of the error as one of a fixed set of words, never its text or its detail: what a log may say of a failed statement
+    /// besides its SQLSTATE when the statement runs over customer text (the purge of batch jobs). The `match` is exhaustive, so a
+    /// variant added to the error needs its word.
+    #[must_use]
+    pub const fn kind(&self) -> &'static str {
+        match self {
+            Self::DatabaseUnavailable => "database_unavailable",
+            Self::DatabaseLimit => "database_limit",
+            Self::RevealGrantRequired => "reveal_grant_required",
+            Self::LakeRefused { .. } => "lake_refused",
+            Self::StateConflict(_) => "state_conflict",
+            Self::Conflict(_) => "conflict",
+            Self::MissingReference => "missing_reference",
+            Self::RevisionConflict { .. } => "revision_conflict",
+            Self::IdempotencyKeyReused => "idempotency_key_reused",
+            Self::QuotaExceeded { .. } => "quota_exceeded",
+            Self::Unavailable { .. } => "unavailable",
+            Self::Internal { .. } => "internal",
+            Self::UnreadableDefinition => "unreadable_definition",
+            Self::BusinessIdHeld { .. } => "business_id_held",
+        }
+    }
+
+    /// The SQLSTATE of a failure that a store reported by it and by nothing else of the error: five upper-case letters and digits
+    /// (`57014` a statement over its timeout, `40P01` a deadlock), written by the adapter as `sqlstate:XXXXX` in `detail`
+    /// (G2094, D2203). It is the one thing of the error of a selection round that may be logged: the text of a database error can
+    /// quote a value. `None` for every other error, whatever its text, and for a failure that was no database error.
+    #[must_use]
+    pub fn sqlstate(&self) -> Option<&str> {
+        match self {
+            Self::Unavailable { detail } | Self::Internal { detail } => {
+                detail.strip_prefix("sqlstate:").filter(|code| {
+                    code.len() == 5
+                        && code
+                            .bytes()
+                            .all(|b| b.is_ascii_digit() || b.is_ascii_uppercase())
+                })
+            }
+            _ => None,
+        }
+    }
 }
 
 /// Failure of a use case, already expressed in terms the API can translate one-to-one.
@@ -129,6 +193,86 @@ pub enum AppError {
     /// A request the *current state* of the resource cannot accept (cancelling a finished run).
     #[error("conflict with the current state: {0}")]
     StateConflict(&'static str),
+    /// A connection (feature 035) whose settings are not acceptable: `reason` is the closed `details.reason` of the
+    /// contract (`CREDENTIAL_IN_URI`, ...). It names a rule and never a value of the request.
+    #[error("the connection settings are not acceptable: {reason}")]
+    InvalidConnection { reason: &'static str },
+    /// A schedule (feature 018) that is not acceptable: `reason` is the closed `details.reason`
+    /// of the contract and `field` the place of the request it concerns. Never a payload.
+    #[error("invalid schedule: {reason}")]
+    InvalidSchedule {
+        reason: &'static str,
+        field: Option<String>,
+    },
+    /// A schedule that is in a state the request cannot be taken in (`details.reason` of the
+    /// contract): owned by a cron trigger, or waiting for the trigger handover.
+    #[error("schedule conflict: {reason}")]
+    ScheduleConflict { reason: &'static str },
+    /// A batch operation (feature 018) that is not acceptable: `reason` is the closed
+    /// `details.reason` of the contract and `field` the place of the request it concerns. Never a
+    /// payload.
+    #[error("invalid batch operation: {reason}")]
+    InvalidBatch {
+        reason: &'static str,
+        field: Option<String>,
+    },
+    /// A batch job that is in a state the request cannot be taken in (`details.reason` of the
+    /// contract): a job that already ended cannot be cancelled.
+    #[error("batch conflict: {reason}")]
+    BatchConflict { reason: &'static str },
+    /// A start option (feature 018) that is not acceptable: `reason` is the closed `details.reason`
+    /// of the contract (`BUSINESS_ID_INVALID`) and `field` the place of the request it concerns.
+    /// Never the value.
+    #[error("invalid start option: {reason}")]
+    InvalidStart {
+        reason: &'static str,
+        field: Option<String>,
+    },
+    /// A run input that its version's `inputSchema` refuses (design 043, `FR-043-003`): `reason` is
+    /// `RUN_INPUT_INVALID` (with `field`, a pointer that holds only names the schema declares and array
+    /// indices, and `rule`, the closed keyword that failed) or `RUN_INPUT_SCHEMA_UNUSABLE`, or, for a
+    /// schedule, `SCHEDULE_INPUT_INVALID` and `NOMINAL_TIME_FIELD_INVALID`. Never a value. Nothing was
+    /// created.
+    #[error("invalid run input: {reason}")]
+    InvalidRunInput {
+        reason: &'static str,
+        field: Option<String>,
+        rule: Option<&'static str>,
+    },
+    /// A signal that a with-start request cannot deliver (feature 018, `FR-018-024`): `reason` is the
+    /// closed `details.reason` of the contract, `NOT_WAITING` (the open run does not wait for it now)
+    /// or `SIGNAL_NOT_ACCEPTED_AT_START` (nothing in the new run waits for it, so nothing was
+    /// created). A signal is never buffered.
+    #[error("signal refused: {reason}")]
+    SignalRefused { reason: &'static str },
+    /// A reset to a point that cannot be made (feature 018, `FR-018-035`..`FR-018-039`): `reason` is the
+    /// closed `details.reason` of the contract (`RESET_POINT_NOT_ELIGIBLE`, `RESET_RULE_MISSING`,
+    /// `RESET_REEXECUTION_NOT_ACKNOWLEDGED`, `RESET_SOURCE_NOT_TERMINAL`, ...) and `event_type` names the type
+    /// without a rule when that is the reason. Nothing was created.
+    #[error("reset refused: {reason}")]
+    ResetRefused {
+        reason: &'static str,
+        event_type: Option<String>,
+    },
+    /// A declared Update that an Update-with-Start request carried was refused before the run was
+    /// admitted (feature 018, `FR-018-025`): an undeclared operation, arguments the declaration
+    /// does not accept, a key reused with another request, a run that no longer admits updates.
+    /// Nothing was created. The API translates it as the declared-operations routes do.
+    #[error("declared update refused: {0}")]
+    DeclaredUpdate(#[from] crate::declared_operations::DeclaredOperationStoreError),
+    /// A business identifier that an open or remembered execution holds (`BUSINESS_ID_IN_USE`,
+    /// `BUSINESS_ID_REUSE_REJECTED`). `holder` names the execution; the API shows it only to a caller
+    /// who may read runs. `reusable_after` is when a remembered id is free again.
+    #[error("business identifier conflict: {reason}")]
+    BusinessIdConflict {
+        reason: &'static str,
+        holder: sagat_domain::execution::RunId,
+        reusable_after: Option<time::OffsetDateTime>,
+    },
+    /// Another attempt was asked of a step whose last outcome is unknown; it must be settled
+    /// (`RESOLVE_STEP`) before anything is repeated, by any role (feature 037).
+    #[error("the step's last outcome is unknown and must be settled first")]
+    OutcomeUnresolved,
     /// The request was well-formed but violates a domain rule.
     #[error("invalid input: {0}")]
     Invalid(IdentityError),
@@ -224,6 +368,12 @@ impl From<StoreError> for AppError {
             StoreError::DatabaseLimit => {
                 Self::NotAllowed("database operation exceeds connection limits")
             }
+            StoreError::RevealGrantRequired => Self::Forbidden {
+                permission: Permission::PayloadRevealPii,
+            },
+            StoreError::LakeRefused { node, refusal } => {
+                Self::InvalidDefinition(Box::new(IrError::LakeWriteRefused { node, refusal }))
+            }
             StoreError::StateConflict(reason) => Self::StateConflict(reason),
             StoreError::Conflict(kind) => Self::Conflict(kind),
             StoreError::MissingReference => Self::NotFound,
@@ -232,6 +382,107 @@ impl From<StoreError> for AppError {
             StoreError::QuotaExceeded { what } => Self::QuotaExceeded(what),
             StoreError::Unavailable { .. } => Self::Unavailable,
             StoreError::Internal { .. } | StoreError::UnreadableDefinition => Self::Internal,
+            StoreError::BusinessIdHeld {
+                reason,
+                holder,
+                reusable_after,
+            } => Self::BusinessIdConflict {
+                reason,
+                holder: sagat_domain::execution::RunId::new(holder),
+                reusable_after,
+            },
         }
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::{ConflictKind, StoreError};
+
+    /// What a log says of a failed statement besides its SQLSTATE is the kind of the error, one of a fixed set of words and never its
+    /// text (the purge of batch jobs, whose statements run over customer text). Every variant has its word, the words are distinct, and
+    /// none holds the detail of the error. Catches: a kind that is the text of an error, two kinds that read alike, and a variant added
+    /// without a word (the `match` of `kind` is exhaustive).
+    #[test]
+    fn every_kind_of_error_has_one_closed_word_and_never_its_text() {
+        let canary = "a value the database quoted";
+        let all = [
+            (StoreError::DatabaseUnavailable, "database_unavailable"),
+            (StoreError::DatabaseLimit, "database_limit"),
+            (StoreError::RevealGrantRequired, "reveal_grant_required"),
+            (StoreError::StateConflict(canary), "state_conflict"),
+            (StoreError::Conflict(ConflictKind::TenantSlug), "conflict"),
+            (StoreError::MissingReference, "missing_reference"),
+            (
+                StoreError::RevisionConflict { current: 3 },
+                "revision_conflict",
+            ),
+            (StoreError::IdempotencyKeyReused, "idempotency_key_reused"),
+            (StoreError::QuotaExceeded { what: canary }, "quota_exceeded"),
+            (
+                StoreError::Unavailable {
+                    detail: canary.to_owned(),
+                },
+                "unavailable",
+            ),
+            (
+                StoreError::Internal {
+                    detail: canary.to_owned(),
+                },
+                "internal",
+            ),
+            (StoreError::UnreadableDefinition, "unreadable_definition"),
+            (
+                StoreError::LakeRefused {
+                    node: canary.to_owned(),
+                    refusal: sagat_domain::database::LakeRefusal::Egress(Vec::new()),
+                },
+                "lake_refused",
+            ),
+            (
+                StoreError::BusinessIdHeld {
+                    reason: canary,
+                    holder: uuid::Uuid::nil(),
+                    reusable_after: None,
+                },
+                "business_id_held",
+            ),
+        ];
+        let mut seen = std::collections::BTreeSet::new();
+        for (error, word) in &all {
+            assert_eq!(error.kind(), *word, "{error:?}");
+            assert!(seen.insert(*word), "{word} names two kinds");
+            assert!(!error.kind().contains(canary));
+        }
+    }
+
+    /// The one thing of the error of a selection round that may be logged is its SQLSTATE, and only as the closed code the adapter
+    /// writes: five upper-case letters and digits after `sqlstate:`. Any other text, however it is dressed, is nothing (G2094, D2203).
+    /// Catches: a reader that hands back a longer or looser text (a message that quotes a value would pass for a code).
+    #[test]
+    fn only_a_closed_sqlstate_is_read_from_an_error_and_never_its_text() {
+        let unavailable = |detail: &str| StoreError::Unavailable {
+            detail: detail.to_owned(),
+        };
+        let internal = |detail: &str| StoreError::Internal {
+            detail: detail.to_owned(),
+        };
+        assert_eq!(unavailable("sqlstate:57014").sqlstate(), Some("57014"));
+        assert_eq!(internal("sqlstate:40P01").sqlstate(), Some("40P01"));
+        for text in [
+            "sqlstate:none",
+            "sqlstate:",
+            "sqlstate:5701",
+            "sqlstate:570144",
+            "sqlstate:57o14",
+            "sqlstate:57014 and a value that was quoted",
+            "error returned from database: the statement over canary-1 was cancelled",
+            "",
+        ] {
+            assert_eq!(unavailable(text).sqlstate(), None, "{text:?}");
+            assert_eq!(internal(text).sqlstate(), None, "{text:?}");
+        }
+        // an error that is no failure of the store says no code, whatever it is
+        assert_eq!(StoreError::MissingReference.sqlstate(), None);
+        assert_eq!(StoreError::StateConflict("sqlstate:57014").sqlstate(), None);
     }
 }

@@ -1502,7 +1502,7 @@ async fn a_scanned_output_refusal_rechecks_the_original_lease_after_path_drop() 
                 && audit.action == "worker.bound"
                 && audit.resource_type == "worker_binding"
                 && audit.resource_id == namespace
-                && audit.reason.as_deref() == Some("scope-worker: line.reserve")
+                && audit.reason.as_deref() == Some("scope-worker: line.reserve; profile: database")
                 && audit.trace_id.as_deref() == Some(trace_id.as_str())
                 && audit.created_at >= replacement_started_at
                 && audit.created_at <= replacement_finished_at,

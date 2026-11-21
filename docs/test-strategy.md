@@ -11,6 +11,91 @@
 - E2E: author→publish→trigger→run→saga compensation→visualize; inline code TypeScript and C#; human approval.
 - Load/stress: partitioning, active steps, 10k/100k/1M waits, pools/quotas, high fanout, huge DAG and backpressure.
 
+## What CI runs
+
+The rule is in the constitution (Development Workflow, CI gates) and is checked by `scripts/tests/test_ci_workflow.py`.
+
+**A pull request** runs only the tests of what it changes (a merge into `develop` starts no run, since the push that
+merges a pull request would prove again what the pull request proved):
+
+- the unit tests of the workspace packages that contain a changed file and of every package that depends on one of them,
+  directly or not (`cargo test -p <package>`), and every package when
+  `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `.cargo/`, `clippy.toml`, `rustfmt.toml` or `vendor/` changes;
+- the unit tests of an SDK when a file under `sdks/<language>/` changes, of the Studio when a file under `frontend/` changes,
+  and of the scripts when a file under `scripts/` changes; and of the lake runtime (Python, `runners/lake/`) with the
+  audit of its lock when a file other than Markdown under it changes;
+- the integration suites (the `sagat-tests` targets: integration, contract, fault, e2e and performance, which start
+  PostgreSQL through Testcontainers) that were themselves changed: the suite whose directory holds a changed file (the
+  deepest one, so `tests/contract/<feature>/rest/` does not select its parent) or whose `[[test]]` entry is new or
+  changed. A changed package does not select a suite because the suite uses it, or uses what depends on it: the suites are
+  expensive and the release runs all of them. The browser
+  suites when `frontend/e2e` or `examples/` changes; the SDK suites when `sdks/<language>/conformance` changes; the lake
+  suites (`integration`, `fault`, `e2e` and `performance` of `iceberg-writes`) when `runners/lake/` changes; the budget of the
+  hot path (`integration_claim_transition_efficiency`, design 038) when a file of `crates/infra-postgres/` or of the worker,
+  execution and run modules of `crates/application` changes (constitution 4.4.0, OD-2026-11-12-4).
+  A contract file (`specs/<feature>/contracts/`, Markdown included) selects the contract suites (`tests/contract/`) and
+  the workspace packages whose Rust sources read it, and the packages that depend on those; the selector finds them from
+  the string literals that are paths to the file, or to its directory joined with its name (constitution 4.6.0,
+  OD-2026-11-20-7). An integration, fault, e2e or performance suite that also reads a contract is not selected by it.
+  What is shared selects no suite: `tests/support`, `tests/fixtures`, any other `runners/` directory, a dependency of
+  `tests/Cargo.toml` and `Cargo.lock` (which does select the unit tests of every package) are used by suites nobody
+  changed, and the release runs those (OD-2026-11-06-2). The log of the selector says
+  `select no suite: <file> is shared by the suites` so that nobody wonders why a suite did not run.
+
+Two cheap checks run on every pull request whatever it changes, in the job `documentation`: `scripts/check-docs-first.py`
+(a pull request that changes behaviour code changes a document, or says why not) and `scripts/check-plain-words.py`
+(words in full in the lines it adds); they read git history only, build nothing and take seconds (constitution 4.7.0).
+
+Nothing else runs: no formatting, no `clippy`, no architecture, agent-configuration or design-doc check, no contract
+validation, no advisory audit, no upgrade, Compose smoke-test, scale or native-runner job. A change that touches only
+Markdown, `docs/`, `tasks/`, `.claude/` or `infra/` runs no test at all.
+
+**A release** runs everything: every unit test and integration suite, formatting, `clippy`, the checks above, the contract
+and observability validation, the advisory audit, and the upgrade, Compose smoke-test, scale and native-runner jobs. A
+release is a push to `main`, `release/**` or `hotfix/**`, a tag `v*`, a pull request into one of those branches, a manual
+run (`workflow_dispatch`), a change of `.github/workflows`, or any run with no usable base commit. For the lake runtime
+that adds the types and lint, the image build, the smoke test of the image and its SBOM; its lock is also audited every
+week by `.github/workflows/lake-audit.yml`.
+
+**How the selected suites run.** The integration suites that the rules above select, for a pull request or a release,
+run in parallel shards: jobs `integration suites (shard i of n)` of `ci.yml`, summed up by one job named
+`integration suites`. Sharding changes how the suites run, not which suites run. Run one after another in one step, every
+suite took longer than that step's 110 minutes although each one passed (run 44793165198), and a rerun cannot fix that.
+`scripts/select-test-targets.py` plans the shards and writes them as `shards` (JSON) next to `targets`. It places the
+suites greedily, longest first, each into the least-loaded shard. The durations are the measured ones on the CI runner,
+from `scripts/integration-suite-durations.toml` (method and source runs in its header); a suite missing from that table
+counts as 600 seconds. The planner starts with as many shards as the total needs at 1,800 seconds of test time each, which is the
+longest suite (`integration_workflow_primitives`) and so the shortest any plan can be. It adds a shard while one holds
+more than that, up to six shards. A change that selects a few suites gets one shard, a change that selects none gets no
+shard and no job, and a release currently gets four. Each shard builds `sagat-tests` for its own targets, runs the
+preflight steps of the suites it holds, then runs those suites with `--no-fail-fast`. The environment, the 110-minute
+step limit and the runtime-role steps are the same as before. A failing shard does not cancel the others. The cost is one
+build of `sagat-tests` per shard instead of one per run: about 17 to 29 runner minutes for each extra shard. The `rust`
+job keeps formatting, `clippy` and the unit tests and no longer runs any suite.
+`scripts/tests/test_select_test_targets.py` fails when the duration table and `tests/Cargo.toml` list different suites,
+when a figure is longer than a shard, or when a release no longer fits in the shards allowed. Add a figure with a new
+suite, remove it with the suite, and refresh the table the same way when a suite's time changes noticeably.
+
+**Mutation testing** is not part of a pull request, of a merge or of the CI (OD-2026-11-06-2). It runs when a release is
+closed, by whoever closes it, over the guards that the release added or changed: each is weakened once, in a throw-away
+copy of the tree, and a named test must fail. A survivor gets a test, or the code it guards is removed as unneeded, and an
+equivalent mutant is said to be one. The repository has no mutation tooling, and the scripts are written for the occasion;
+run each mutant with bytecode off (`PYTHONDONTWRITEBYTECODE=1`), because two mutants of the same size written within a second
+share a bytecode cache entry and the second is then judged by the first one's code. The result goes in the release's
+validation report. Until then the tests of a change are written first and seen failing, and nothing more is claimed for them.
+
+What this costs, so it is not forgotten: a violation of a lint or of an architecture rule reaches `develop` and is found when
+a release is closed, and a suite that reaches the code only over HTTP, without naming its package, is not selected for a
+change to that package. Run the lints and the suites you affect before the pull request (`/verify`). Measured on the
+repository: a change to a leaf package (`infra-egress`) selects 12 of the 83 suites, a change to `domain` selects 76,
+because almost everything depends on it. A coverage map from test to file would select exactly; it is not built.
+
+Measured on GitHub's runners on 2026-11-05, with two throwaway pull requests against `develop`: a change to one Markdown
+file ran the selection job (8 s) and skipped every other job; a comment added to `infra-egress` ran only the `rust` job,
+which took 28 min 51 s (the unit tests of that package and the 12 suites above), against 1 h 30 min for the same job in a
+release, with every other job skipped. The first run of the release rule, the merge of the change that introduced it, ran
+all 13 jobs green because it changed `.github/workflows`.
+
 ## Where the tests live and what they are called
 
 `tests/<kind>/<feature>/` with `<kind>` one of `e2e`, `integration`, `contract`, `fault` and `performance`, and `<feature>` the
@@ -35,7 +120,12 @@ Unrestricted host-level test parallelism reproduced transient PostgreSQL pool ti
 503s in the developer-experience fixtures. With two test threads, all 32 runnable DX tests and
 all 11 event E2E tests passed against fresh containers. This is a test-runner resource profile,
 not a change to production pool sizes, admission limits or the races exercised within tests.
-Keep performance benchmarks separate and report their own concurrency and hardware.
+Keep performance benchmarks separate and report their own concurrency and hardware. A benchmark scenario is `#[ignore]`
+and its sizes default to a smoke run: a pull request that changes a `perf_*` target runs only the unit tests of its helpers
+(CI runs the target without `--ignored`), and the sizes of the report come from the environment of the script that runs it
+(`tests/performance/schedules-bulk-operations/run.sh` is the model: a disposable PostgreSQL of its own, the load of the machine
+before and after every repetition, N repetitions, fragments the report is written from). The report says which bound each
+scenario asserts and whether it held; a bound the data exceeds is a finding, not a number to loosen.
 
 CI sets the Cargo dev and test profiles to `debug = "line-tables-only"`. This retains filename/line
 backtraces while omitting type and variable debugging metadata; test commands are unchanged, and

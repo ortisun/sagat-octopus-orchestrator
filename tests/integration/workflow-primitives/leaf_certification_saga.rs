@@ -8,15 +8,19 @@ use super::{
     *,
 };
 use crate::support::{
-    eventually,
+    bounded, eventually,
     scope_flow::{RunHold, node},
 };
 use sagat_domain::execution::ExecutionInstanceId;
-use sagat_scheduler::CollectionAdvance;
-use std::{future::Future, pin::Pin};
+use sagat_scheduler::{CollectionAdvance, Keeper, KeeperSettings, Placement};
+use std::{future::Future, pin::Pin, time::Instant};
 use tokio::time::timeout;
 
 const WAIT: Duration = Duration::from_secs(10);
+// Bound contention below the SQL budget; refresh authority before observing lock order.
+const CONTENTION_LIMIT: Duration = Duration::from_secs(45);
+const STATEMENT_LIMIT: Duration = Duration::from_secs(60);
+const AUTHORITY_TTL: Duration = Duration::from_secs(300);
 
 fn effectful_later(name: &str) -> Value {
     let mut d = document(name);
@@ -36,7 +40,10 @@ async fn gated_commit(f: &Flow, gate: i32) -> i32 {
     }).await
 }
 
-async fn blocked<F: Future>(operation: Pin<&mut F>, f: &Flow, leader: i32, fragment: &str) {
+async fn blocked<F: Future>(operation: Pin<&mut F>, f: &Flow, leader: i32, fragment: &str)
+where
+    F::Output: std::fmt::Debug,
+{
     let observed = async {
         eventually("follower waits on the actual committing writer's original Run", || async {
             let yes: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND usename='sagat_app' AND wait_event_type='Lock' AND position($1 in query)>0 AND $2=ANY(pg_blocking_pids(pid)))")
@@ -45,9 +52,137 @@ async fn blocked<F: Future>(operation: Pin<&mut F>, f: &Flow, leader: i32, fragm
         }).await;
     };
     tokio::select! {
-        _ = operation => panic!("follower bypassed the committing original Run writer"),
+        result = operation => panic!("follower ended before the committing original Run writer: {result:?}"),
         _ = observed => (),
     }
+}
+
+// Setup uses the same real API, scheduler and worker as the ordering proof.
+async fn planning_flow(name: &str, cancel: bool) -> (Flow, String) {
+    let f = Flow::start_with_statement_timeout(
+        name,
+        effectful_later(name),
+        json!([{"v":1}]),
+        STATEMENT_LIMIT,
+    )
+    .await;
+    sqlx::query("GRANT INSERT ON leaf_collection_success_certifications TO sagat_app")
+        .execute(&f.api.db.pool)
+        .await
+        .expect("disposable dormant activation");
+    f.drive().await;
+    let first = f.poll().await;
+    assert_eq!(first.len(), 1);
+    assert_eq!(
+        first[0]
+            .instance
+            .as_ref()
+            .expect("selected path")
+            .instance_path[0]
+            .scope_node_id,
+        "lines"
+    );
+    f.complete(&first[0], json!({"ordinary":true})).await;
+    f.drive().await;
+    let later = f.poll().await;
+    assert_eq!(later.len(), 1);
+    assert_eq!(node(&later[0]), "work");
+    assert_eq!(
+        later[0]
+            .instance
+            .as_ref()
+            .expect("later path")
+            .instance_path[0]
+            .scope_node_id,
+        "later"
+    );
+    f.complete(&later[0], json!({"charged":true})).await;
+    f.drive().await;
+    let ready: (String, bool) = sqlx::query_as("SELECT status,lease_token_hash IS NULL AND lease_expires_at IS NULL AND leased_by IS NULL FROM steps WHERE tenant_id=$1 AND run_id=$2 AND instance_path_nodes=ARRAY['later']::text[] AND instance_path_indices=ARRAY[0]::integer[] AND node='after'")
+        .bind(f.tenant.as_uuid()).bind(f.run.as_uuid()).fetch_one(&f.api.db.pool).await.expect("actual later READY successor after a known effect");
+    assert_eq!(ready, ("READY".into(), true));
+    let source = selected_sources(&f).await;
+    if cancel {
+        let (status, _) = f
+            .operate(json!({"action":"CANCEL","reason":"cancel after later effect"}))
+            .await;
+        assert_eq!(status, reqwest::StatusCode::ACCEPTED);
+    } else {
+        let after = f.poll().await;
+        assert_eq!(after.len(), 1);
+        assert_eq!(node(&after[0]), "after");
+        f.fail(&after[0], "LATER_DECLINED", false).await;
+    }
+    f.until_planning().await;
+    assert_eq!(selected_sources(&f).await, source);
+    assert_eq!(counts(&f).await, (0, 0));
+    f.verify().await;
+    (f, source)
+}
+
+async fn renew_contention_lease(mut f: Flow) -> Flow {
+    let owner = command(&f).await.scheduler.owner().to_owned();
+    let placement = Placement::new(owner);
+    Keeper::new(
+        f.api.executions.clone(),
+        placement.clone(),
+        KeeperSettings { ttl: AUTHORITY_TTL },
+    )
+    .round()
+    .await
+    .expect("fresh authority before bounded contention");
+    let authority = command(&f).await.scheduler;
+    let lease = placement
+        .snapshot()
+        .lease_of(Shard::of(f.run.as_uuid()), Instant::now())
+        .expect("fresh local lease for the actual Run");
+    assert_eq!(placement.owner(), authority.owner());
+    assert_eq!(lease, authority.lease());
+    f.scheduler = f.scheduler.with_placement(placement);
+    f
+}
+
+#[tokio::test]
+async fn saga_planner_remains_blocked_beyond_the_default_statement_timeout() {
+    let (f, _) = bounded::within(
+        "lock budget setup",
+        Duration::from_secs(120),
+        planning_flow("leaf-saga-lock-budget", false),
+    )
+    .await;
+    let f = bounded::within(
+        "refresh contention authority",
+        Duration::from_secs(30),
+        renew_contention_lease(f),
+    )
+    .await;
+    bounded::within("planner lock budget", Duration::from_secs(30), async {
+        let hold = RunHold::take(&f).await;
+        let owner = ExecutionInstanceId::root(NodeId::parse("later").expect("later owner"));
+        let planner = f.scheduler.advance_collection_from_run(f.tenant, f.run, &owner);
+        tokio::pin!(planner);
+        let full_run = "SELECT id, tenant_id, namespace_id, workflow_id, workflow_version_id,";
+        observe_first(planner.as_mut(), &f.api.db.pool, full_run).await;
+        let (pid, started): (i32, String) = sqlx::query_as("SELECT pid,query_start::text FROM pg_stat_activity WHERE datname=current_database() AND usename='sagat_app' AND wait_event_type='Lock' AND position($1 in query)>0")
+            .bind(full_run).fetch_one(&f.api.db.pool).await.expect("the original blocked planner statement");
+        // Hold the real lock until PostgreSQL observes an 11-second query age. This
+        // exceeds the default 10-second statement limit without a sleep or retry.
+        let aged = async {
+            loop {
+                let yes: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_stat_activity waiter JOIN pg_stat_activity holder ON holder.pid=ANY(pg_blocking_pids(waiter.pid)) WHERE waiter.datname=current_database() AND waiter.usename='sagat_app' AND waiter.wait_event_type='Lock' AND waiter.pid=$1 AND waiter.query_start::text=$2 AND position('SELECT 1 FROM runs' in holder.query)>0 AND clock_timestamp()-waiter.query_start > interval '11 seconds')")
+                    .bind(pid).bind(&started).fetch_one(&f.api.db.pool).await.expect("held original Run query age");
+                if yes { break; }
+                tokio::task::yield_now().await;
+            }
+        };
+        tokio::select! {
+            result = planner.as_mut() => panic!("planner ended before the permitted lock observation: {result:?}"),
+            () = aged => (),
+        }
+        hold.release().await;
+        assert_eq!(timeout(WAIT, planner).await.expect("planner resumes after lock release")
+            .expect("actual planner commits after the held Run"), CollectionAdvance::Compensated);
+    }).await;
 }
 
 #[tokio::test]
@@ -55,58 +190,18 @@ async fn later_effectful_saga_planning_and_certification_preserve_selected_sourc
     for cancel in [false, true] {
         for certifier_first in [false, true] {
             let name = format!("leaf-saga-{cancel}-{certifier_first}");
-            let f = Flow::start(&name, effectful_later(&name), json!([{"v":1}])).await;
-            sqlx::query("GRANT INSERT ON leaf_collection_success_certifications TO sagat_app")
-                .execute(&f.api.db.pool)
-                .await
-                .expect("disposable dormant activation");
-            f.drive().await;
-            let first = f.poll().await;
-            assert_eq!(first.len(), 1);
-            assert_eq!(
-                first[0]
-                    .instance
-                    .as_ref()
-                    .expect("selected path")
-                    .instance_path[0]
-                    .scope_node_id,
-                "lines"
-            );
-            f.complete(&first[0], json!({"ordinary":true})).await;
-            f.drive().await;
-            let later = f.poll().await;
-            assert_eq!(later.len(), 1);
-            assert_eq!(node(&later[0]), "work");
-            assert_eq!(
-                later[0]
-                    .instance
-                    .as_ref()
-                    .expect("later path")
-                    .instance_path[0]
-                    .scope_node_id,
-                "later"
-            );
-            f.complete(&later[0], json!({"charged":true})).await;
-            f.drive().await;
-            let ready: (String, bool) = sqlx::query_as("SELECT status,lease_token_hash IS NULL AND lease_expires_at IS NULL AND leased_by IS NULL FROM steps WHERE tenant_id=$1 AND run_id=$2 AND instance_path_nodes=ARRAY['later']::text[] AND instance_path_indices=ARRAY[0]::integer[] AND node='after'")
-                .bind(f.tenant.as_uuid()).bind(f.run.as_uuid()).fetch_one(&f.api.db.pool).await.expect("actual later READY successor after a known effect");
-            assert_eq!(ready, ("READY".into(), true));
-            let source = selected_sources(&f).await;
-            if cancel {
-                let (status, _) = f
-                    .operate(json!({"action":"CANCEL","reason":"cancel after later effect"}))
-                    .await;
-                assert_eq!(status, reqwest::StatusCode::ACCEPTED);
-            } else {
-                let after = f.poll().await;
-                assert_eq!(after.len(), 1);
-                assert_eq!(node(&after[0]), "after");
-                f.fail(&after[0], "LATER_DECLINED", false).await;
-            }
-            f.until_planning().await;
-            assert_eq!(selected_sources(&f).await, source);
-            assert_eq!(counts(&f).await, (0, 0));
-            f.verify().await;
+            let (f, source) = bounded::within(
+                "saga ordering setup",
+                Duration::from_secs(120),
+                planning_flow(&name, cancel),
+            )
+            .await;
+            let f = bounded::within(
+                "refresh contention authority",
+                Duration::from_secs(30),
+                renew_contention_lease(f),
+            )
+            .await;
             let c = command(&f).await;
             let store = PgLeafCollectionSuccessStore::new(
                 f.api.api_pool.clone(),
@@ -147,87 +242,94 @@ async fn later_effectful_saga_planning_and_certification_preserve_selected_sourc
                 .advance_collection_from_run(f.tenant, f.run, &owner);
             let certifier = store.certify_leaf_collection_success(&c);
             tokio::pin!(planner, certifier);
-            let created = if certifier_first {
-                // Queue the preliminary restore BEFORE certification. Certification reaching
-                // COMMIT then proves that restore released its Run. A subsequent planner wait
-                // behind the certifier must therefore be its actual planning transaction.
-                let hold = RunHold::take(&f).await;
-                let full_run =
-                    "SELECT id, tenant_id, namespace_id, workflow_id, workflow_version_id,";
-                let native_run = "SELECT workflow_version_id,run_version,trace_id FROM runs";
-                observe_first(planner.as_mut(), &f.api.db.pool, full_run).await;
-                observe_order(
-                    planner.as_mut(),
-                    certifier.as_mut(),
-                    &f.api.db.pool,
-                    full_run,
-                    native_run,
-                )
-                .await;
-                hold.release().await;
-                let pid = tokio::select! {
-                    _ = certifier.as_mut() => panic!("certifier bypassed its deferred COMMIT gate"),
-                    _ = planner.as_mut() => panic!("actual planner bypassed committing certification"),
-                    pid = gated_commit(&f, gate_pid) => pid,
-                };
-                own_guards_held(&f).await;
-                blocked(planner.as_mut(), &f, pid, full_run).await;
-                gate.rollback()
-                    .await
-                    .expect("release actual certification COMMIT");
-                let created = timeout(WAIT, certifier.as_mut())
-                    .await
-                    .expect("certifier deadline")
-                    .expect("first certification commits");
-                assert_eq!(
-                    timeout(WAIT, planner.as_mut())
+            let contention = async {
+                if certifier_first {
+                    // Queue the preliminary restore BEFORE certification. Certification reaching
+                    // COMMIT then proves that restore released its Run. A subsequent planner wait
+                    // behind the certifier must therefore be its actual planning transaction.
+                    let hold = RunHold::take(&f).await;
+                    let full_run =
+                        "SELECT id, tenant_id, namespace_id, workflow_id, workflow_version_id,";
+                    let native_run = "SELECT workflow_version_id,run_version,trace_id FROM runs";
+                    observe_first(planner.as_mut(), &f.api.db.pool, full_run).await;
+                    observe_order(
+                        planner.as_mut(),
+                        certifier.as_mut(),
+                        &f.api.db.pool,
+                        full_run,
+                        native_run,
+                    )
+                    .await;
+                    hold.release().await;
+                    let pid = tokio::select! {
+                        result = certifier.as_mut() => panic!("certifier ended before its deferred COMMIT gate: {result:?}; cancel={cancel}, certifier_first={certifier_first}"),
+                        result = planner.as_mut() => panic!("planner ended before committing certification: {result:?}; cancel={cancel}, certifier_first={certifier_first}"),
+                        pid = gated_commit(&f, gate_pid) => pid,
+                    };
+                    own_guards_held(&f).await;
+                    blocked(planner.as_mut(), &f, pid, full_run).await;
+                    gate.rollback()
                         .await
-                        .expect("planner deadline")
-                        .expect("actual saga planner commits"),
-                    CollectionAdvance::Compensated
-                );
-                created
-            } else {
-                // The outer scheduler first restores the run and releases that transaction.
-                // Observe its *actual planning COMMIT*, not that preliminary read transaction.
-                let pid = tokio::select! {
-                    _ = planner.as_mut() => panic!("saga planner bypassed its deferred COMMIT gate"),
-                    pid = gated_commit(&f, gate_pid) => pid,
-                };
-                own_guards_held(&f).await;
-                blocked(
-                    certifier.as_mut(),
-                    &f,
-                    pid,
-                    "SELECT workflow_version_id,run_version,trace_id FROM runs",
-                )
-                .await;
-                gate.rollback()
-                    .await
-                    .expect("release actual saga planning COMMIT");
-                assert_eq!(
-                    timeout(WAIT, planner.as_mut())
+                        .expect("release actual certification COMMIT");
+                    let created = timeout(WAIT, certifier.as_mut())
                         .await
-                        .expect("planner deadline")
-                        .expect("actual saga planner commits"),
-                    CollectionAdvance::Compensated
-                );
-                let fresh = command(&f).await;
-                assert!(fresh.expected_run_revision > c.expected_run_revision);
-                assert_eq!(
-                    timeout(WAIT, certifier.as_mut())
+                        .expect("certifier deadline")
+                        .expect("first certification commits");
+                    assert_eq!(
+                        timeout(WAIT, planner.as_mut())
+                            .await
+                            .expect("planner deadline")
+                            .expect("actual saga planner commits"),
+                        CollectionAdvance::Compensated
+                    );
+                    created
+                } else {
+                    // The outer scheduler first restores the run and releases that transaction.
+                    // Observe its *actual planning COMMIT*, not that preliminary read transaction.
+                    let pid = tokio::select! {
+                        result = planner.as_mut() => panic!("saga planner ended before its deferred COMMIT gate: {result:?}; cancel={cancel}, certifier_first={certifier_first}"),
+                        pid = gated_commit(&f, gate_pid) => pid,
+                    };
+                    own_guards_held(&f).await;
+                    blocked(
+                        certifier.as_mut(),
+                        &f,
+                        pid,
+                        "SELECT workflow_version_id,run_version,trace_id FROM runs",
+                    )
+                    .await;
+                    gate.rollback()
                         .await
-                        .expect("certifier deadline"),
-                    Err(LeafCollectionSuccessError::StaleRunRevision {
-                        current: fresh.expected_run_revision
-                    })
-                );
-                assert_eq!(counts(&f).await, (0, 0));
-                store
-                    .certify_leaf_collection_success(&fresh)
-                    .await
-                    .expect("fresh CAS certifies alongside another owner's saga")
+                        .expect("release actual saga planning COMMIT");
+                    assert_eq!(
+                        timeout(WAIT, planner.as_mut())
+                            .await
+                            .expect("planner deadline")
+                            .expect("actual saga planner commits"),
+                        CollectionAdvance::Compensated
+                    );
+                    let fresh = command(&f).await;
+                    assert!(fresh.expected_run_revision > c.expected_run_revision);
+                    assert_eq!(
+                        timeout(WAIT, certifier.as_mut())
+                            .await
+                            .expect("certifier deadline"),
+                        Err(LeafCollectionSuccessError::StaleRunRevision {
+                            current: fresh.expected_run_revision
+                        })
+                    );
+                    assert_eq!(counts(&f).await, (0, 0));
+                    store
+                        .certify_leaf_collection_success(&fresh)
+                        .await
+                        .expect("fresh CAS certifies alongside another owner's saga")
+                }
             };
+            let created = bounded::within(
+                format!("saga/certification contention cancel={cancel}, certifier_first={certifier_first}"),
+                CONTENTION_LIMIT,
+                contention,
+            ).await;
             assert!(!created.replayed);
             let headers: Vec<(String,String,String,Option<String>,bool)> = sqlx::query_as("SELECT owner_node,phase,cause_code,outcome,during_stop FROM scope_sagas WHERE tenant_id=$1 AND run_id=$2 ORDER BY owner_node")
                 .bind(f.tenant.as_uuid()).bind(f.run.as_uuid()).fetch_all(&f.api.db.pool).await.expect("actual positive saga header");

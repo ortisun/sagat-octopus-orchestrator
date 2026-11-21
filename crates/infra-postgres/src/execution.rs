@@ -12,6 +12,9 @@ mod ad_hoc;
 mod database;
 mod path;
 mod path_read;
+mod resets;
+#[doc(hidden)]
+pub use resets::EXPIRED_RESETS_SQL;
 mod scoped_events;
 mod worker_capacity;
 use scoped_events::EventWaitReadState;
@@ -90,13 +93,14 @@ use sagat_application::definitions::{
 use sagat_application::error::StoreError;
 use sagat_application::execution::{
     BreakerPolicy, DefinitionCache, Effects, LeaseDeadlines, MAX_RUN_OUTPUT_BYTES, ParentLink,
-    PathExecutionSnapshot, PathExecutionStore, PathExecutionTx, RunData, RunInfo, RunRecord,
-    RunSegment, RunTx, ScopeInput, compensation_id, instance_compensation_id, instance_step_id,
+    PathExecutionSnapshot, PathExecutionStore, PathExecutionTx, ResetProvenance, RunData, RunInfo,
+    RunRecord, RunSegment, RunTx, ScheduleProvenance, ScopeInput, compensation_id,
+    instance_compensation_id, instance_step_id,
 };
 use sagat_application::primitives::CollectionFinish;
 use sagat_application::runs::{
-    ApprovalView, ChainView, GraphSnapshot, JournalEntry, Lock, NewRun, RunFilter, RunStore,
-    SagaView, StepView,
+    Admitted, ApprovalView, ChainView, GraphSnapshot, JournalEntry, Lock, NewRun, RunFilter,
+    RunStore, SagaView, StepView,
 };
 use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
 use sagat_domain::definition::{Workflow, WorkflowId, WorkflowVersion, WorkflowVersionId};
@@ -137,6 +141,11 @@ pub struct PgRunStore {
     pub(crate) definitions: PgDefinitionStore,
     breaker: BreakerPolicy,
     pub(crate) scoped_worker_protocol: bool,
+    /// Reads the projections a definition excludes and refuses a run that has any, for a test run that
+    /// checks the exclusion against everything the suites do. Off: such a projection is not read.
+    verify_skipped_loads: bool,
+    /// The deployment's `lake.enabled` (feature 035): whether a run may carry an Iceberg write. Off unless set.
+    pub(crate) lake_enabled: bool,
 }
 
 impl PgRunStore {
@@ -149,7 +158,25 @@ impl PgRunStore {
             cache,
             breaker: BreakerPolicy::default(),
             scoped_worker_protocol: false,
+            verify_skipped_loads: false,
+            lake_enabled: false,
         }
+    }
+
+    /// Makes every command check that a projection its definition excludes is in fact empty. For
+    /// test runs: it costs a statement per command and refuses a run that fails it.
+    #[must_use]
+    pub const fn with_skipped_load_verification(mut self, verify: bool) -> Self {
+        self.verify_skipped_loads = verify;
+        self
+    }
+
+    /// Lets a run carry an Apache Iceberg write: the deployment's `lake.enabled`, off by default (D035-059, D035-137).
+    /// Publication has its own switch; a process that admits runs sets this one from the same setting.
+    #[must_use]
+    pub const fn with_lake_enabled(mut self, enabled: bool) -> Self {
+        self.lake_enabled = enabled;
+        self
     }
 
     /// When the compensations of a provider operation stop being leased (FR-003-003).
@@ -215,8 +242,10 @@ impl PgRunStore {
         if let Some(def) = self.cache.get(version) {
             return Ok(def);
         }
-        let document: Vec<u8> = sqlx::query_scalar(
-            "SELECT document FROM workflow_versions WHERE tenant_id = $1 AND id = $2",
+        // Whether the workflow is private is a row of the store (`workflows.internal`, immutable), and it alone decides which entry restores
+        // the document: nothing in the document does (ADR-0080).
+        let (document, internal): (Vec<u8>, bool) = sqlx::query_as(
+            "SELECT v.document, w.internal FROM workflow_versions v JOIN workflows w ON w.tenant_id = v.tenant_id AND w.id = v.workflow_id WHERE v.tenant_id = $1 AND v.id = $2",
         )
         .bind(tenant.as_uuid())
         .bind(version.as_uuid())
@@ -224,29 +253,51 @@ impl PgRunStore {
         .await
         .map_err(store_error)?
         .ok_or_else(|| corrupt("workflow version reference"))?;
-        self.cache
-            .get_or_parse(version, &document)
-            .map_err(|error| {
-                tracing::error!(%error, %version, "a stored workflow version no longer parses");
-                StoreError::UnreadableDefinition
-            })
+        if internal {
+            self.cache.get_or_parse_private(version, &document)
+        } else {
+            self.cache.get_or_parse(version, &document)
+        }
+        .map_err(|error| {
+            tracing::error!(%error, %version, "a stored workflow version no longer parses");
+            StoreError::UnreadableDefinition
+        })
     }
 
     pub(crate) async fn begin_in_transaction(
         &self,
-        mut tx: Transaction<'static, Postgres>,
+        tx: Transaction<'static, Postgres>,
         tenant: TenantId,
         run: RunId,
         lock: Lock,
         chain_lock: Option<LockedChainHead>,
     ) -> Result<Option<PgRunTx>, StoreError> {
         let row = match lock {
-            Lock::Wait => sqlx::query(RUN_FOR_UPDATE)
+            Lock::Wait => RunRow::Wait,
+            Lock::SkipLocked => RunRow::SkipLocked,
+        };
+        self.begin_row(tx, tenant, run, row, chain_lock).await
+    }
+
+    async fn begin_row(
+        &self,
+        mut tx: Transaction<'static, Postgres>,
+        tenant: TenantId,
+        run: RunId,
+        row: RunRow<'_>,
+        chain_lock: Option<LockedChainHead>,
+    ) -> Result<Option<PgRunTx>, StoreError> {
+        let row = match row {
+            RunRow::Wait => sqlx::query(RUN_FOR_UPDATE)
                 .bind(tenant.as_uuid())
                 .bind(run.as_uuid()),
-            Lock::SkipLocked => sqlx::query(RUN_FOR_UPDATE_SKIP_LOCKED)
+            RunRow::SkipLocked => sqlx::query(RUN_FOR_UPDATE_SKIP_LOCKED)
                 .bind(tenant.as_uuid())
                 .bind(run.as_uuid()),
+            RunRow::Claim(activities) => sqlx::query(RUN_FOR_CLAIM)
+                .bind(tenant.as_uuid())
+                .bind(run.as_uuid())
+                .bind(activities),
         }
         .fetch_optional(&mut *tx)
         .await
@@ -279,15 +330,29 @@ impl PgRunStore {
         .map_err(store_error)?;
         let mut steps = BTreeMap::new();
         let mut stored = BTreeSet::new();
+        let mut stored_kinds = BTreeMap::new();
         for row in &step_rows {
             let node: String = col(row, "node")?;
             let node = NodeId::parse_stored(&node).map_err(|_| corrupt("step node"))?;
             let path = step_instance_path(row)?;
             let instance = ExecutionInstanceId::in_path(path, node);
             stored.insert(instance.clone());
+            stored_kinds.insert(instance.clone(), col::<String>(row, "stored_node_kind")?);
             steps.insert(instance, step_state(row)?);
         }
-        let sagas = load_sagas(&mut tx, tenant, run).await?;
+        // The pinned definition says which kinds of state the run can have; the others are not read.
+        let definition = self
+            .definition(&mut tx, tenant, record.info.version_id)
+            .await?;
+        let kinds = definition.projected_state();
+        if self.verify_skipped_loads {
+            verify_excluded_projections(&mut tx, tenant, run, kinds).await?;
+        }
+        let sagas = if kinds.sagas {
+            load_sagas(&mut tx, tenant, run).await?
+        } else {
+            BTreeMap::new()
+        };
         let stop = match record.stop_reason {
             None => None,
             Some(reason) => Some((
@@ -306,13 +371,25 @@ impl PgRunStore {
             steps,
             sagas,
             record.version,
+        )
+        .with_start_delayed_until_us(
+            record
+                .start_delayed_until
+                .map(|at| {
+                    i64::try_from(at.unix_timestamp_nanos() / 1_000)
+                        .map_err(|_| corrupt("run start delay"))
+                })
+                .transpose()?,
         );
-        let definition = self
-            .definition(&mut tx, tenant, record.info.version_id)
-            .await?;
-        load_collections(&mut tx, tenant, run, &definition, &mut state).await?;
-        load_loops(&mut tx, tenant, run, &mut state).await?;
-        load_scope_sagas(&mut tx, tenant, run, &mut state).await?;
+        if kinds.collections {
+            load_collections(&mut tx, tenant, run, &definition, &mut state).await?;
+        }
+        if kinds.loops {
+            load_loops(&mut tx, tenant, run, &mut state).await?;
+        }
+        if kinds.scope_sagas() {
+            load_scope_sagas(&mut tx, tenant, run, &mut state).await?;
+        }
         load_chain(&mut tx, tenant, run, &mut state).await?;
         for row in &step_rows {
             let node = NodeId::parse_stored(&col::<String>(row, "node")?)
@@ -353,9 +430,11 @@ impl PgRunStore {
             })
             .map(|(instance, step)| (instance.clone(), EventWaitReadState::from_step(step)))
             .collect();
+        let schedule_origin = crate::outbound::ScheduleOrigin::from_row(&row)?;
         Ok(Some(PgRunTx {
             tx,
             info: record.info,
+            schedule_origin,
             now,
             own_scheduler_time: None,
             scoped_event_delivery: None,
@@ -367,9 +446,11 @@ impl PgRunStore {
             data: None,
             input_digest,
             stored,
+            stored_kinds,
             timer_read_states,
             event_wait_read_states,
             breaker: self.breaker,
+            lake_enabled: self.lake_enabled,
             script_retention: BTreeMap::new(),
             signals: Vec::new(),
             chain_lock,
@@ -447,12 +528,14 @@ impl PgRunStore {
             .ok_or(StoreError::MissingReference)?;
         let info = run_record(&row)?.info;
         let definition = self.definition(conn, tenant, info.version_id).await?;
-        if definition.nodes().any(|n| n.database_operation().is_some()) {
+        if definition.nodes().any(|n| n.managed_kind().is_some()) {
             let mut actors = crate::database::run_actors(conn, &info).await?;
+            // a schedule that replays the key of a time stands on the member that authorized it
+            let subject = crate::database::authority_of(conn, tenant, subject).await?;
             if subject != sagat_domain::identity::Subject::engine().as_str()
-                && !actors.iter().any(|s| s == subject)
+                && !actors.contains(&subject)
             {
-                actors.push(subject.to_owned());
+                actors.push(subject);
             }
             crate::database::admit_definition(
                 conn,
@@ -462,6 +545,7 @@ impl PgRunStore {
                 &definition,
                 Some(run),
                 Some(&info),
+                self.lake_enabled,
             )
             .await?;
         }
@@ -480,6 +564,16 @@ impl PgRunStore {
             .map_err(|e| e.to_string())?
             .ok_or("the run does not exist")?;
         let stored = stored_tx.state.clone();
+        // The projection above was read without the kinds the definition excludes. Here that
+        // exclusion is part of what is verified: a row of such a kind is a difference too.
+        verify_excluded_projections(
+            &mut stored_tx.tx,
+            tenant,
+            run,
+            stored_tx.def.projected_state(),
+        )
+        .await
+        .map_err(|e| e.to_string())?;
         let rows = sqlx::query(
             "SELECT seq, event_type, node, detail, instance_path_nodes, instance_path_indices \
              FROM run_events \
@@ -926,7 +1020,11 @@ async fn current_worker_authorized(
     namespace: NamespaceId,
     subject: &str,
 ) -> Result<bool, StoreError> {
-    crate::quotas::lock_secrets(tx, tenant, namespace).await?;
+    // Every report and scoped claim of an ordinary worker passes here. It reads its membership under
+    // the row lock a revocation waits for, and takes the namespace's secrets lock first only to keep
+    // the order of the catalog mutations. Shared: held exclusively it made one namespace's reports
+    // wait for each other until commit.
+    crate::quotas::share_secrets_lock(tx, tenant, namespace).await?;
     let role: Option<String> =
         sqlx::query_scalar("SELECT role FROM public.sagat_lock_memberships($1, ARRAY[$2::text])")
             .bind(tenant.as_uuid())
@@ -945,8 +1043,45 @@ async fn current_worker_authorized(
             .contains(&sagat_domain::identity::Permission::WorkerExecute))
 }
 
+/// The subject a schedule acts for, looked at again under the lock of its membership (feature 018, `FR-018-015`): a revocation that
+/// has returned stops the action. A workflow with managed database steps takes the catalog first, as 017 does (ADR-0050 decision
+/// 7). A cron trigger's schedule acts as the engine whatever starts the run (the tick, the release of an action that waited, a
+/// run-now whose waiting action was released): `system:engine` is no member and holds no authority to look at again (database
+/// steps stand on the publisher). A backfill and a run-now of a person keep theirs. Nothing to do for a run no schedule makes.
+async fn recheck_schedule_authority(
+    conn: &mut PgConnection,
+    tenant: TenantId,
+    new: &NewRun,
+) -> Result<(), StoreError> {
+    let Some(schedule) = &new.schedule else {
+        return Ok(());
+    };
+    let database = crate::database::database_writes(&new.definition);
+    if database.is_some() {
+        crate::quotas::lock_secrets(conn, tenant, new.info.namespace_id).await?;
+    }
+    let engine = schedule.trigger.is_some()
+        && schedule.authority == sagat_domain::identity::Subject::engine().as_str();
+    if !engine {
+        crate::schedules::recheck_authority(conn, tenant, schedule, database).await?;
+    }
+    Ok(())
+}
+
 impl RunStore for PgRunStore {
     type Tx = PgRunTx;
+
+    async fn current_segment(&self, tenant: TenantId, run: RunId) -> Result<RunId, StoreError> {
+        let current: Option<Uuid> = sqlx::query_scalar(
+            "SELECT current_run_id FROM execution_chains WHERE tenant_id = $1 AND chain_id = $2",
+        )
+        .bind(tenant.as_uuid())
+        .bind(run.as_uuid())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(store_error)?;
+        Ok(current.map_or(run, RunId::new))
+    }
 
     async fn replay_start(
         &self,
@@ -970,16 +1105,82 @@ impl RunStore for PgRunStore {
         Ok(result)
     }
 
-    async fn create(&self, mut new: NewRun) -> Result<Applied<PgRunTx>, StoreError> {
+    async fn create(&self, mut new: NewRun) -> Result<Admitted<PgRunTx>, StoreError> {
         let tenant = new.info.tenant_id;
+        // The input was checked against the schema of one version: a run of another would hold an input nobody
+        // checked for it (design 043, FR-043-017). Logged without the value.
+        if new.input.version() != new.info.version_id {
+            tracing::error!(
+                run = %new.info.run_id,
+                version = %new.info.version_id,
+                checked_against = %new.input.version(),
+                "a run input checked against another version was refused"
+            );
+            return Err(StoreError::Internal {
+                detail: "the run input was checked against another version".into(),
+            });
+        }
         let hash = hash(&new.idempotency.fingerprint);
-        let input_digest = Sha256::digest(&new.input).to_vec();
+        let input_digest = Sha256::digest(new.input.bytes()).to_vec();
         for _ in 0..2 {
             let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
             if let Some(existing) = replay(&mut tx, tenant, &new.idempotency, &hash).await? {
                 self.check_database_replay(&mut tx, tenant, &new.info.started_by, &existing)
                     .await?;
-                return Ok(Applied::Replayed(existing));
+                return Ok(Admitted::Replayed(existing));
+            }
+            // The action of a schedule takes its fence and the schedule row before any other
+            // admission lock (ADR-0050 decision 7).
+            if let Some(schedule) = &new.schedule {
+                crate::schedules::lock_for_admission(&mut tx, tenant, schedule).await?;
+            }
+            // The completion of a reset that waited takes its fence and its entry in the same slot: the one of
+            // the aggregates that create runs. An entry that was completed first, or a lease that moved, ends
+            // the transaction here, before anything is written.
+            if let Some(pending) = &new.pending_reset {
+                resets::lock_pending(&mut tx, tenant, pending).await?;
+            }
+            // The business identifier of the start is claimed next, in the same slot: after the
+            // schedule's row and before any run's (ADR-0050 decision 7). A refusal, or a holder
+            // returned in place of a new run, ends the transaction here so the binding's row is not
+            // held while the connection waits to be reused.
+            if let Some(business) = &new.business {
+                match crate::business_ids::claim(
+                    &mut tx,
+                    tenant,
+                    new.info.namespace_id,
+                    new.info.workflow_id.as_uuid(),
+                    new.info.run_id,
+                    business,
+                )
+                .await
+                {
+                    Ok(crate::business_ids::Claimed::Bound) => {}
+                    // What follows is a decision of the schedule (the action is recorded as the holder's, or as a conflict): the subject
+                    // it acts for is looked at again first, under the lock of its membership, as for a run, so that a revocation that
+                    // has returned is what is recorded, not a decision about the id. The order is the one of the admission: the binding,
+                    // the catalog, the membership.
+                    Ok(crate::business_ids::Claimed::Existing(holder)) => {
+                        if let Err(revoked) =
+                            recheck_schedule_authority(&mut tx, tenant, &new).await
+                        {
+                            let _ = tx.rollback().await;
+                            return Err(revoked);
+                        }
+                        let _ = tx.rollback().await;
+                        return Ok(Admitted::Existing(holder.to_string()));
+                    }
+                    Err(error) => {
+                        if let Err(revoked) =
+                            recheck_schedule_authority(&mut tx, tenant, &new).await
+                        {
+                            let _ = tx.rollback().await;
+                            return Err(revoked);
+                        }
+                        let _ = tx.rollback().await;
+                        return Err(error);
+                    }
+                }
             }
             // Advance the rerun FK's stable identity guard before admission locks.
             // This grants no authority over the source run's business state (ADR-0039).
@@ -1014,10 +1215,14 @@ impl RunStore for PgRunStore {
                 return Err(StoreError::MissingReference);
             }
             let version_document: Vec<u8> = col(&version_row, "document")?;
-            let declared_state = self
-                .cache
-                .declared_state_publication(&version_document)
-                .map_err(|error| {
+            // A retained definition is a private workflow's (`retain` just wrote it), and a private version is read by the private entry
+            // here as everywhere else (ADR-0080): the row decides, not the document.
+            let declared_state = if new.retained.is_some() {
+                self.cache.declared_state_publication_private(&version_document)
+            } else {
+                self.cache.declared_state_publication(&version_document)
+            }
+            .map_err(|error| {
                     tracing::error!(%error, version = %new.info.version_id, "stored declared state no longer validates");
                     StoreError::Internal {
                         detail: "stored declared state no longer validates".to_owned(),
@@ -1025,7 +1230,7 @@ impl RunStore for PgRunStore {
                 })?;
             let initial_state = self
                 .cache
-                .initial_declared_state(&version_document, &new.input)
+                .initial_declared_state(&version_document, new.input.bytes())
                 .map_err(|error| {
                     tracing::warn!(%error, version = %new.info.version_id, "declared initial state evaluation failed");
                     StoreError::Internal {
@@ -1075,11 +1280,16 @@ impl RunStore for PgRunStore {
                 let _ = tx.rollback().await;
                 return Err(error);
             }
-            let bindings = if new
-                .definition
-                .nodes()
-                .any(|n| n.database_operation().is_some())
-            {
+            // The subject a schedule acts for is looked at again where the run is admitted, under
+            // the lock of its membership: a revocation that has returned stops the run. A workflow
+            // with managed database steps takes the catalog first, as 017 does (ADR-0050 decision 7).
+            recheck_schedule_authority(&mut tx, tenant, &new).await?;
+            // The member who asked for the reset is looked at again where the run is admitted, under the lock
+            // of their membership: a revocation that has returned stops the run.
+            if let Some(pending) = &new.pending_reset {
+                resets::recheck_requester(&mut tx, tenant, pending).await?;
+            }
+            let bindings = if new.definition.nodes().any(|n| n.managed_kind().is_some()) {
                 let actors = crate::database::run_actors(&mut tx, &new.info).await?;
                 crate::database::admit_definition(
                     &mut tx,
@@ -1089,6 +1299,7 @@ impl RunStore for PgRunStore {
                     &new.definition,
                     None,
                     Some(info),
+                    self.lake_enabled,
                 )
                 .await?
             } else {
@@ -1106,6 +1317,29 @@ impl RunStore for PgRunStore {
                 let _ = tx.rollback().await;
                 return Err(error);
             }
+            // After admission (which holds the namespace's lock of secrets to the end of the transaction) and the quota lock of the
+            // namespace: see the function.
+            if info.origin == Some(sagat_application::runs::RunOrigin::ConnectionProbe)
+                && new
+                    .definition
+                    .nodes()
+                    .any(|n| n.lake_probe_target().is_some())
+                && let Err(error) =
+                    ad_hoc::ensure_no_probe_in_flight(&mut tx, info, &bindings).await
+            {
+                let _ = tx.rollback().await;
+                // A retry of the key that started the probe can reach this point while the first start still holds the lock (it did its
+                // replay lookup before that start committed): the probe in flight is then its own, and the key stands for that run
+                // and not for a conflict. A fresh transaction sees what the first one committed.
+                if matches!(error, StoreError::StateConflict(_))
+                    && let Some(existing) = self
+                        .replay_start(tenant, &new.info.started_by, &new.idempotency)
+                        .await?
+                {
+                    return Ok(Admitted::Replayed(existing));
+                }
+                return Err(error);
+            }
             // Admission locks precede payload uniqueness checks, as in evaluated handoff.
             // A novel input/state can be retained concurrently by either writer.
             sqlx::query(
@@ -1114,7 +1348,7 @@ impl RunStore for PgRunStore {
             )
             .bind(tenant.as_uuid())
             .bind(&input_digest)
-            .bind(&new.input)
+            .bind(new.input.bytes())
             .execute(&mut *tx)
             .await
             .map_err(store_error)?;
@@ -1148,9 +1382,11 @@ impl RunStore for PgRunStore {
                 "INSERT INTO runs (id, tenant_id, namespace_id, workflow_id, workflow_version_id, \
                  status, run_version, paused, input_digest, correlation_id, started_by, trace_id, \
                  deadline_at, created_at, updated_at, parent_run_id, parent_node, cancel_policy, \
-                 depth, root_run_id, trace_parent_span, rerun_of, input_blob_id, origin) \
+                 depth, root_run_id, trace_parent_span, rerun_of, input_blob_id, origin, \
+                 schedule_id, schedule_nominal_at, schedule_action_kind, schedule_revision, \
+                 business_id, reset_sequence) \
                  VALUES ($1, $2, $3, $4, $5, 'RUNNING', 0, false, $6, $7, $8, $9, $10, $11, $11, \
-                         $12, $13, $14, $15, $16, $17, $18, $19, $20)",
+                         $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26)",
             )
             .bind(info.run_id.as_uuid())
             .bind(tenant.as_uuid())
@@ -1172,9 +1408,27 @@ impl RunStore for PgRunStore {
             .bind(info.rerun_of.map(|r| r.as_uuid()))
             .bind(input_blob.map(sagat_domain::blobs::BlobId::as_uuid))
             .bind(info.origin.map(sagat_application::runs::RunOrigin::as_str))
+            .bind(new.schedule.as_ref().map(|s| s.schedule.as_uuid()))
+            .bind(new.schedule.as_ref().map(|s| s.nominal_at))
+            .bind(new.schedule.as_ref().map(|s| s.kind.as_str()))
+            .bind(
+                new.schedule
+                    .as_ref()
+                    .map(|s| i32::try_from(s.revision).unwrap_or(i32::MAX)),
+            )
+            .bind(new.business.as_ref().map(|b| b.id.as_str()))
+            .bind(
+                new.reset_sequence
+                    .map(i64::try_from)
+                    .transpose()
+                    .map_err(|_| corrupt("reset sequence"))?,
+            )
             .execute(&mut *tx)
             .await
             .map_err(store_error)?;
+            if let Some(schedule) = &new.schedule {
+                crate::schedules::record_start(&mut tx, tenant, info.run_id, schedule, now).await?;
+            }
             capture_run_limits(
                 &mut tx,
                 tenant.as_uuid(),
@@ -1219,11 +1473,15 @@ impl RunStore for PgRunStore {
                         .replay_start(tenant, &new.info.started_by, &new.idempotency)
                         .await?
                 {
-                    return Ok(Applied::Replayed(existing));
+                    return Ok(Admitted::Replayed(existing));
                 }
                 return Err(error);
             }
             insert_audit(&mut tx, &new.audit).await?;
+            // `report` mode: the refusal is audited with the run it admitted, once across a retry and a replay (D043-039).
+            if let Some(reported) = new.input.reported_audit(&new.audit, info.run_id) {
+                insert_audit(&mut tx, &reported).await?;
+            }
             if remember(
                 &mut tx,
                 tenant,
@@ -1235,8 +1493,10 @@ impl RunStore for PgRunStore {
             {
                 let mut info = info.clone();
                 info.created_at = now;
-                return Ok(Applied::Done(PgRunTx {
+                return Ok(Admitted::Created(PgRunTx {
                     tx,
+                    schedule_origin: None,
+                    stored_kinds: BTreeMap::new(),
                     timer_read_states: BTreeMap::new(),
                     event_wait_read_states: BTreeMap::new(),
                     info,
@@ -1250,7 +1510,7 @@ impl RunStore for PgRunStore {
                     persisted: 0,
                     data: Some(RunData {
                         run_id: Some(new.info.run_id),
-                        input: new.input.clone(),
+                        input: new.input.bytes().to_vec(),
                         input_blob,
                         state: initial_state.as_ref().map(|value| value.content().to_vec()),
                         state_revision: initial_state.as_ref().map(|_| 0),
@@ -1260,6 +1520,7 @@ impl RunStore for PgRunStore {
                     input_digest,
                     stored: BTreeSet::new(),
                     breaker: self.breaker,
+                    lake_enabled: self.lake_enabled,
                     script_retention: BTreeMap::new(),
                     signals: Vec::new(),
                     chain_lock: None,
@@ -1289,6 +1550,15 @@ impl RunStore for PgRunStore {
     ) -> Result<Option<sagat_application::runs::ConnectionProbe>, StoreError> {
         ad_hoc::latest_probe(self, tenant, namespace, name).await
     }
+    async fn is_lake_connection(
+        &self,
+        tenant: TenantId,
+        namespace: NamespaceId,
+        name: &Slug,
+        revision: Option<u32>,
+    ) -> Result<bool, StoreError> {
+        ad_hoc::is_lake_connection(self, tenant, namespace, name, revision).await
+    }
 
     async fn begin(
         &self,
@@ -1303,6 +1573,25 @@ impl RunStore for PgRunStore {
             RunChainLock::Contended => return Ok(None),
         };
         self.begin_in_transaction(tx, tenant, run, lock, chain_lock)
+            .await
+    }
+
+    async fn begin_claim(
+        &self,
+        tenant: TenantId,
+        run: RunId,
+        activities: &[String],
+    ) -> Result<Option<PgRunTx>, StoreError> {
+        let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
+        let chain_lock = match self
+            .lock_chain_for_run(&mut tx, tenant, run, Lock::SkipLocked)
+            .await?
+        {
+            RunChainLock::NotMember => None,
+            RunChainLock::Locked(chain) => Some(chain),
+            RunChainLock::Contended => return Ok(None),
+        };
+        self.begin_row(tx, tenant, run, RunRow::Claim(activities), chain_lock)
             .await
     }
 
@@ -1328,9 +1617,11 @@ impl RunStore for PgRunStore {
     ) -> Result<Vec<RunRecord>, StoreError> {
         sqlx::query(
             "SELECT id, tenant_id, namespace_id, workflow_id, workflow_version_id, status, run_version, \
-                    stop_reason, paused, correlation_id, started_by, trace_id, deadline_at, \
+                    stop_reason, stop_code, paused, correlation_id, started_by, trace_id, deadline_at, \
                     created_at, updated_at, finished_at, parent_run_id, root_run_id, parent_node, \
-                    cancel_policy, depth, trace_parent_span, rerun_of, origin, \
+                    cancel_policy, depth, trace_parent_span, rerun_of, origin, business_id, \
+                    start_delayed_until, schedule_id, schedule_nominal_at, schedule_action_kind, \
+                    schedule_revision, reset_sequence, \
                     seg_chain_id, seg_index, seg_completion, seg_successor \
              FROM runs LEFT JOIN LATERAL ( \
                SELECT chain_id AS seg_chain_id, segment_index AS seg_index, \
@@ -1343,6 +1634,9 @@ impl RunStore for PgRunStore {
                AND ($4::uuid IS NULL OR runs.workflow_id = $4) \
                AND ($5::text IS NULL OR runs.status = $5) \
                AND ($7::text IS NULL OR runs.origin = $7) \
+               AND ($8::text IS NULL OR runs.business_id = $8) \
+               AND ($9::text IS NULL OR runs.business_id LIKE $9 ESCAPE '\\') \
+               AND ($10::uuid IS NULL OR runs.schedule_id = $10) \
              ORDER BY runs.id DESC LIMIT $6",
         )
         .bind(tenant.as_uuid())
@@ -1352,6 +1646,13 @@ impl RunStore for PgRunStore {
         .bind(filter.status.map(RunStatus::as_str))
         .bind(i64::from(limit))
         .bind(filter.origin.map(sagat_application::runs::RunOrigin::as_str))
+        .bind(filter.business_id.as_ref().map(|id| id.as_str()))
+        .bind(filter.business_id_prefix.as_deref().map(like_prefix))
+        .bind(
+            filter
+                .schedule
+                .map(sagat_domain::schedules::ScheduleId::as_uuid),
+        )
         .fetch_all(&self.pool)
         .await
         .map_err(store_error)?
@@ -1463,6 +1764,75 @@ impl RunStore for PgRunStore {
             })
             .collect::<Result<Vec<_>, StoreError>>()
             .map(Some)
+    }
+
+    async fn business_binding(
+        &self,
+        tenant: TenantId,
+        namespace: NamespaceId,
+        id: &sagat_domain::business_ids::BusinessId,
+    ) -> Result<Option<sagat_application::runs::BusinessBinding>, StoreError> {
+        crate::business_ids::binding(&self.pool, tenant, namespace, id).await
+    }
+
+    async fn reset_source(
+        &self,
+        tenant: TenantId,
+        run: RunId,
+    ) -> Result<Option<sagat_application::runs::ResetSource>, StoreError> {
+        resets::read_source(&self.pool, tenant, run).await
+    }
+
+    async fn run_resets(
+        &self,
+        tenant: TenantId,
+        source: RunId,
+    ) -> Result<Vec<sagat_application::runs::ResetRecord>, StoreError> {
+        resets::list(&self.pool, tenant, source).await
+    }
+
+    async fn run_reset(
+        &self,
+        tenant: TenantId,
+        source: RunId,
+        reset: sagat_domain::execution::ResetId,
+    ) -> Result<Option<sagat_application::runs::ResetRecord>, StoreError> {
+        resets::get(&self.pool, tenant, source, reset).await
+    }
+
+    async fn reset_made(
+        &self,
+        tenant: TenantId,
+        run: RunId,
+    ) -> Result<Option<sagat_application::runs::ResetRecord>, StoreError> {
+        resets::made(&self.pool, tenant, run).await
+    }
+
+    async fn reset_receipt(
+        &self,
+        tenant: TenantId,
+        idempotency: &Idempotency,
+    ) -> Result<Option<String>, StoreError> {
+        resets::receipt(&self.pool, tenant, idempotency).await
+    }
+
+    async fn payload_contents(
+        &self,
+        tenant: TenantId,
+        digests: &[Vec<u8>],
+        read: bool,
+    ) -> Result<Vec<Option<sagat_application::runs::Retained>>, StoreError> {
+        resets::payload_contents(&self.pool, tenant, digests, read).await
+    }
+
+    async fn retained_update_arguments(
+        &self,
+        tenant: TenantId,
+        run: RunId,
+        sequences: &[u64],
+        read: bool,
+    ) -> Result<Vec<Option<sagat_application::runs::Retained>>, StoreError> {
+        resets::retained_arguments(&self.pool, tenant, run, sequences, read).await
     }
 
     async fn rerun_source(
@@ -1658,6 +2028,12 @@ impl RunStore for PgRunStore {
         use sagat_application::identity::IdentityStore;
         self.identity.record_denial(audit).await
     }
+
+    async fn record_refusal(&self, audit: &AuditRecord) -> Result<(), StoreError> {
+        let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
+        crate::identity::insert_audit(&mut tx, audit).await?;
+        tx.commit().await.map_err(store_error)
+    }
 }
 
 /// Pins the effective instance and depth ceilings of a run that was just inserted.
@@ -1759,11 +2135,14 @@ async fn claim_reservation(
 
 // `get` and `list` also read the run's chain segment as four extra columns (`run_record` reads them
 // when present): one lateral index probe (`chain_segments_run_unique`) that yields nothing for a run
-// outside any chain.
+// outside any chain. They read as well the columns a run was created with that say where it came from
+// (the schedule action and the reset sequence), from the row they already load: no query per run.
 const RUN_SELECT: &str = "SELECT id, tenant_id, namespace_id, workflow_id, workflow_version_id, status, \
-     run_version, stop_reason, paused, correlation_id, started_by, trace_id, deadline_at, \
+     run_version, stop_reason, stop_code, paused, correlation_id, started_by, trace_id, deadline_at, \
      created_at, updated_at, finished_at, parent_run_id, root_run_id, parent_node, cancel_policy, depth, \
-     trace_parent_span, rerun_of, origin, seg_chain_id, seg_index, seg_completion, seg_successor \
+     trace_parent_span, rerun_of, origin, business_id, start_delayed_until, \
+     schedule_id, schedule_nominal_at, schedule_action_kind, schedule_revision, reset_sequence, \
+     seg_chain_id, seg_index, seg_completion, seg_successor \
      FROM runs LEFT JOIN LATERAL ( \
        SELECT chain_id AS seg_chain_id, segment_index AS seg_index, \
               completion_kind AS seg_completion, successor_run_id AS seg_successor \
@@ -1773,13 +2152,21 @@ const RUN_SELECT: &str = "SELECT id, tenant_id, namespace_id, workflow_id, workf
      WHERE runs.tenant_id = $1 AND runs.id = $2";
 
 /// The columns a command transaction reads about a run; `$tail` is the lock clause, if any.
+///
+/// `start_delayed_until` is read through a snapshot of the row, so that a schema that does not have it yet
+/// (a rollback, or a rollout whose migration has not run) still loads the run: every pass of the scheduler
+/// goes through here, and none of them may fail for a delay that no run of that schema can have.
 macro_rules! run_columns_sql {
     ($tail:literal) => {
         concat!(
             "SELECT id, tenant_id, namespace_id, workflow_id, workflow_version_id, \
      status, run_version, stop_reason, stop_code, paused, input_digest, correlation_id, started_by, \
      trace_id, deadline_at, created_at, updated_at, finished_at, parent_run_id, root_run_id, parent_node, \
-     cancel_policy, depth, trace_parent_span, rerun_of, origin, clock_timestamp() AS db_now \
+     cancel_policy, depth, trace_parent_span, rerun_of, origin, \
+     (to_jsonb(runs.*) ->> 'start_delayed_until')::timestamptz AS start_delayed_until, \
+     (to_jsonb(runs.*) ->> 'schedule_id')::uuid AS origin_schedule_id, \
+     (to_jsonb(runs.*) ->> 'schedule_nominal_at')::timestamptz AS origin_schedule_nominal_at, \
+     clock_timestamp() AS db_now \
      FROM runs WHERE tenant_id = $1 AND id = $2",
             $tail
         )
@@ -1789,6 +2176,28 @@ macro_rules! run_columns_sql {
 const RUN_FOR_UPDATE: &str = run_columns_sql!(" FOR UPDATE");
 
 const RUN_FOR_UPDATE_SKIP_LOCKED: &str = run_columns_sql!(" FOR UPDATE SKIP LOCKED");
+
+/// How a run's row is read when it is opened: the lock modes of [`Lock`], and a worker's claim.
+enum RunRow<'a> {
+    Wait,
+    SkipLocked,
+    /// [`RUN_FOR_CLAIM`], with the activities the session serves.
+    Claim(&'a [String]),
+}
+
+/// The run of a candidate a poll read a moment ago, for a root claim: not locked by another
+/// transaction, and still with a ready root step of an activity the session serves (`$3`). A root
+/// claim leases nothing else: it takes only ready root activity steps whose activity is one the
+/// session advertised, and a step row's `activity` is the one the candidate scan matched it by. The
+/// condition only ever makes a claim give up on a run, as a lock held by another poller does, and a
+/// run it gives up on is found again by a later poll if such a step is ready then; what is leased is
+/// still decided from the step rows read under the lock.
+const RUN_FOR_CLAIM: &str = run_columns_sql!(
+    " AND EXISTS (SELECT 1 FROM steps s WHERE s.tenant_id = runs.tenant_id \
+        AND s.run_id = runs.id AND s.status = 'READY' \
+        AND cardinality(s.instance_path_nodes) = 0 AND s.activity = ANY($3::text[])) \
+        FOR UPDATE SKIP LOCKED"
+);
 
 /// The same read without a lock, for the bounded snapshot of a scope transition (D523).
 pub(crate) const RUN_SNAPSHOT: &str = run_columns_sql!("");
@@ -1806,6 +2215,19 @@ fn parent_link(row: &PgRow) -> Result<Option<ParentLink>, StoreError> {
         })),
         _ => Err(corrupt("parent link")),
     }
+}
+
+/// A literal prefix as a `LIKE` pattern: `\`, `%` and `_` stand for themselves.
+fn like_prefix(prefix: &str) -> String {
+    let mut pattern = String::with_capacity(prefix.len() + 1);
+    for character in prefix.chars() {
+        if matches!(character, '\\' | '%' | '_') {
+            pattern.push('\\');
+        }
+        pattern.push(character);
+    }
+    pattern.push('%');
+    pattern
 }
 
 pub(crate) fn run_record(row: &PgRow) -> Result<RunRecord, StoreError> {
@@ -1832,6 +2254,14 @@ pub(crate) fn run_record(row: &PgRow) -> Result<RunRecord, StoreError> {
             parent: parent_link(row)?,
             depth: u8::try_from(col::<i16>(row, "depth")?).map_err(|_| corrupt("run depth"))?,
             root: RunId::new(col::<Uuid>(row, "root_run_id")?),
+            // only `get` and `list` select it: a row from a command transaction has none
+            business_id: match sqlx::Row::try_get::<Option<String>, _>(row, "business_id") {
+                Ok(Some(text)) => Some(
+                    sagat_domain::business_ids::BusinessId::new(&text)
+                        .map_err(|_| corrupt("run business identifier"))?,
+                ),
+                Ok(None) | Err(_) => None,
+            },
         },
         status: status.parse().map_err(|_| corrupt("run status"))?,
         version: u64::try_from(version).map_err(|_| corrupt("run version"))?,
@@ -1846,8 +2276,74 @@ pub(crate) fn run_record(row: &PgRow) -> Result<RunRecord, StoreError> {
         paused: col(row, "paused")?,
         updated_at: col(row, "updated_at")?,
         finished_at: col(row, "finished_at")?,
+        // tolerant like `business_id`: a read that does not select the column has no delay to show
+        start_delayed_until: sqlx::Row::try_get::<Option<OffsetDateTime>, _>(
+            row,
+            "start_delayed_until",
+        )
+        .ok()
+        .flatten(),
         chain: run_segment(row)?,
+        schedule: run_schedule(row)?,
+        reset_from: run_reset(row)?,
+        failure_code: selected::<String>(row, "stop_code")?
+            .map(|code| FailureCode::parse(&code).map_err(|_| corrupt("stop code")))
+            .transpose()?,
     })
+}
+
+/// A column only some reads select (`RUN_SELECT` and the list query): a row a command transaction read does not
+/// have it, and that is not an error (`None`); one that is there and cannot be read means the row was changed
+/// behind our back. This is **not** tolerance of a schema that lacks the column: `get`, `list`, the graph read and
+/// `check_database_replay` name the columns in their statements and fail on such a schema, as `business_id` and
+/// `start_delayed_until` already do (those are reads of the API, which runs the schema it was built for). What the
+/// engine's passes read tolerates it: `run_columns_sql!` does not select them, and `add_schedule_origin` reads them
+/// through a snapshot of the row.
+fn selected<'r, T>(row: &'r PgRow, name: &'static str) -> Result<Option<T>, StoreError>
+where
+    T: sqlx::Decode<'r, sqlx::Postgres> + sqlx::Type<sqlx::Postgres>,
+{
+    match sqlx::Row::try_get::<Option<T>, _>(row, name) {
+        Ok(value) => Ok(value),
+        Err(sqlx::Error::ColumnNotFound(_)) => Ok(None),
+        Err(_) => Err(corrupt(name)),
+    }
+}
+
+/// The schedule action that started the run. The four columns are all null or all set (a check of the
+/// migration); one set without the others is a row that was changed behind our back.
+fn run_schedule(row: &PgRow) -> Result<Option<ScheduleProvenance>, StoreError> {
+    let Some(schedule) = selected::<Uuid>(row, "schedule_id")? else {
+        return Ok(None);
+    };
+    let nominal_at = selected::<OffsetDateTime>(row, "schedule_nominal_at")?
+        .ok_or_else(|| corrupt("run schedule nominal time"))?;
+    let kind = selected::<String>(row, "schedule_action_kind")?
+        .ok_or_else(|| corrupt("run schedule action kind"))?
+        .parse::<sagat_domain::schedules::ActionKind>()
+        .map_err(|()| corrupt("run schedule action kind"))?;
+    let revision = selected::<i32>(row, "schedule_revision")?
+        .and_then(|revision| u32::try_from(revision).ok())
+        .ok_or_else(|| corrupt("run schedule revision"))?;
+    Ok(Some(ScheduleProvenance {
+        schedule: sagat_domain::schedules::ScheduleId::new(schedule),
+        nominal_at,
+        kind,
+        revision,
+    }))
+}
+
+/// The run a reset made this one from: `rerun_of` names it and `reset_sequence` says how much of it the
+/// new run holds. A run with the first and without the second is a rerun as new, which is not a reset.
+fn run_reset(row: &PgRow) -> Result<Option<ResetProvenance>, StoreError> {
+    let Some(sequence) = selected::<i64>(row, "reset_sequence")? else {
+        return Ok(None);
+    };
+    let source = selected::<Uuid>(row, "rerun_of")?.ok_or_else(|| corrupt("run reset source"))?;
+    Ok(Some(ResetProvenance {
+        source: RunId::new(source),
+        sequence: u64::try_from(sequence).map_err(|_| corrupt("run reset sequence"))?,
+    }))
 }
 
 /// The segment columns of `get` and `list`; a row from a command transaction has none.
@@ -3192,6 +3688,38 @@ fn scope_owner_instance(row: &PgRow) -> Result<ExecutionInstanceId, StoreError> 
     ))
 }
 
+/// The check behind the loads a definition lets a command skip: a run has no row of a kind its
+/// definition excludes. `verify_run` always makes it; a store asked to
+/// ([`PgRunStore::with_skipped_load_verification`]) makes it for every command.
+async fn verify_excluded_projections(
+    tx: &mut Transaction<'static, Postgres>,
+    tenant: TenantId,
+    run: RunId,
+    kinds: sagat_domain::workflow::ProjectedState,
+) -> Result<(), StoreError> {
+    let (sagas, scope_sagas, collections, loops): (bool, bool, bool, bool) = sqlx::query_as(
+        "SELECT EXISTS (SELECT 1 FROM run_sagas WHERE tenant_id = $1 AND run_id = $2), \
+                EXISTS (SELECT 1 FROM scope_sagas WHERE tenant_id = $1 AND run_id = $2), \
+                EXISTS (SELECT 1 FROM iteration_scopes WHERE tenant_id = $1 AND run_id = $2) \
+                  OR EXISTS (SELECT 1 FROM collection_iterations WHERE tenant_id = $1 AND run_id = $2), \
+                EXISTS (SELECT 1 FROM loop_scopes WHERE tenant_id = $1 AND run_id = $2) \
+                  OR EXISTS (SELECT 1 FROM loop_iterations WHERE tenant_id = $1 AND run_id = $2)",
+    )
+    .bind(tenant.as_uuid())
+    .bind(run.as_uuid())
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(store_error)?;
+    if (sagas && !kinds.sagas)
+        || (scope_sagas && !kinds.scope_sagas())
+        || (collections && !kinds.collections)
+        || (loops && !kinds.loops)
+    {
+        return Err(corrupt("a projection its definition excludes"));
+    }
+    Ok(())
+}
+
 /// The sagas of a run, rebuilt from their rows.
 async fn load_sagas(
     tx: &mut Transaction<'static, Postgres>,
@@ -3275,6 +3803,10 @@ async fn load_sagas(
 pub struct PgRunTx {
     tx: Transaction<'static, Postgres>,
     info: RunInfo,
+    /// The schedule action that started the run, as the row the transaction opened says: `None` when that row was
+    /// not read here (a run this transaction creates), in which case the run's end reads it (`add_schedule_origin`).
+    /// Carried so that the completion that ends a run adds no statement for it (design 038's budget).
+    schedule_origin: Option<crate::outbound::ScheduleOrigin>,
     now: OffsetDateTime,
     own_scheduler_time: Option<OffsetDateTime>,
     scoped_event_delivery: Option<scoped_events::ScopedEventDelivery>,
@@ -3290,9 +3822,14 @@ pub struct PgRunTx {
     /// "insert or update" is decided here, not by `ON CONFLICT` (which checks constraints on the
     /// proposed row before it takes the update path).
     stored: BTreeSet<ExecutionInstanceId>,
+    /// The kind each step row held when the run was loaded under its row lock. Nothing else writes a
+    /// kind while that lock is held, so a row whose kind is already the definition's needs no write.
+    stored_kinds: BTreeMap<ExecutionInstanceId, String>,
     timer_read_states: BTreeMap<ExecutionInstanceId, TimerReadState>,
     event_wait_read_states: BTreeMap<ExecutionInstanceId, EventWaitReadState>,
     breaker: BreakerPolicy,
+    /// The store's `lake.enabled`, for the admission of a claim.
+    lake_enabled: bool,
     /// Pins selected under the retention-policy fence before a lease is granted. `persist` adds
     /// them to the matching immutable `step.leased` detail in this transaction.
     script_retention: BTreeMap<NodeId, ScriptRetentionPins>,
@@ -3327,11 +3864,53 @@ impl std::fmt::Debug for PgRunTx {
 }
 
 impl PgRunTx {
+    /// Takes into the state of this transaction the journal row `sequence`, which a declared Update wrote to the
+    /// database directly: the event is read back and applied, and the sequence persisted moves to it, so what
+    /// this transaction writes next goes after it.
+    async fn absorb_written_update(&mut self, sequence: u64) -> Result<(), StoreError> {
+        if sequence != self.persisted + 1 {
+            return Err(StoreError::Internal {
+                detail: "an Update was written out of sequence".to_owned(),
+            });
+        }
+        let row = sqlx::query(
+            "SELECT event_type, node, detail FROM run_events \
+             WHERE tenant_id = $1 AND run_id = $2 AND seq = $3",
+        )
+        .bind(self.info.tenant_id.as_uuid())
+        .bind(self.info.run_id.as_uuid())
+        .bind(i64::try_from(sequence).map_err(|_| corrupt("sequence"))?)
+        .fetch_one(&mut *self.tx)
+        .await
+        .map_err(store_error)?;
+        let event_type: String = col(&row, "event_type")?;
+        let node: Option<String> = col(&row, "node")?;
+        let detail: serde_json::Value = col(&row, "detail")?;
+        let event = decode(&event_type, node.as_deref(), &detail)
+            .ok_or_else(|| corrupt("the journal row of an Update"))?;
+        self.state
+            .apply_addressed(&AddressedRunEvent::root(event))
+            .map_err(|error| StoreError::Internal {
+                detail: format!("the journal row of an Update does not apply: {error}"),
+            })?;
+        self.persisted = sequence;
+        Ok(())
+    }
+
     async fn ensure_node_kind(
         &mut self,
         instance: &ExecutionInstanceId,
         node_kind: &str,
     ) -> Result<(), StoreError> {
+        // The kind is immutable. A row read with the definition's kind is left alone; any other is
+        // put to the statement below, which upgrades a legacy row and refuses everything else.
+        if self
+            .stored_kinds
+            .get(instance)
+            .is_some_and(|stored| stored == node_kind)
+        {
+            return Ok(());
+        }
         let (path_nodes, path_indices) = stored_path_parts(instance.path());
         let updated = sqlx::query(
             "UPDATE steps SET node_kind=$6 \
@@ -3351,6 +3930,8 @@ impl PgRunTx {
         if updated.rows_affected() != 1 {
             return Err(corrupt("immutable step node kind"));
         }
+        self.stored_kinds
+            .insert(instance.clone(), node_kind.to_owned());
         Ok(())
     }
 
@@ -3544,6 +4125,119 @@ fn micros(duration: Duration) -> i64 {
 }
 
 impl RunTx for PgRunTx {
+    async fn restore_prefix<'a>(
+        &'a mut self,
+        prefix: &'a sagat_application::runs::RestoredPrefix,
+    ) -> Result<(), StoreError> {
+        resets::restore(self, prefix).await
+    }
+
+    async fn register_reset<'a>(
+        &'a mut self,
+        registration: &'a sagat_application::runs::ResetRegistration<'a>,
+    ) -> Result<(), StoreError> {
+        resets::register(self, registration).await
+    }
+
+    async fn register_pending_reset<'a>(
+        &'a mut self,
+        registration: &'a sagat_application::runs::PendingRegistration<'a>,
+    ) -> Result<(), StoreError> {
+        resets::register_pending(self, registration).await
+    }
+
+    async fn child_started<'a>(
+        &'a mut self,
+        node: &'a NodeId,
+        child: RunId,
+    ) -> Result<bool, StoreError> {
+        // `FOR UPDATE`: the creation of the child claims this row (`claim_reservation`), so it either committed and is
+        // seen here, or waits for this transaction and then finds the step moved on
+        let started: Option<bool> = sqlx::query_scalar(
+            "SELECT child_started FROM steps WHERE tenant_id = $1 AND run_id = $2 AND node = $3 \
+               AND status = 'WAITING' AND waiting_kind = 'CHILD' AND child_run_id = $4 FOR UPDATE",
+        )
+        .bind(self.info.tenant_id.as_uuid())
+        .bind(self.info.run_id.as_uuid())
+        .bind(node.as_str())
+        .bind(child.as_uuid())
+        .fetch_optional(&mut *self.tx)
+        .await
+        .map_err(store_error)?;
+        Ok(started.unwrap_or(true))
+    }
+
+    async fn remember_start_served<'a>(
+        &'a mut self,
+        start: &'a Idempotency,
+        marker: &'a Idempotency,
+        holder: RunId,
+        reported: Option<&'a AuditRecord>,
+    ) -> Result<(), StoreError> {
+        let tenant = self.info.tenant_id;
+        let holder = holder.to_string();
+        // `false` is a concurrent request with the same key that committed first; it served the same
+        // holder under the same fingerprint (a different one is refused when the start is replayed)
+        let mut first = false;
+        for record in [start, marker] {
+            let kept = remember(
+                &mut self.tx,
+                tenant,
+                record,
+                &hash(&record.fingerprint),
+                &holder,
+            )
+            .await?;
+            first |= kept && std::ptr::eq(record, start);
+        }
+        // `report` mode (design 043): the refusal of the start's input is audited with the receipt that answers its
+        // retries, so once (correctness review of 2026-11-15, Major 2)
+        if first && let Some(audit) = reported {
+            insert_audit(&mut self.tx, audit).await?;
+        }
+        Ok(())
+    }
+
+    async fn apply_declared_update<'a>(
+        &'a mut self,
+        update: &'a sagat_application::declared_operations::DeclaredUpdate,
+        evaluator: &'a dyn sagat_application::declared_operations::DeclaredOperationEvaluator,
+    ) -> Result<
+        sagat_application::declared_operations::AppliedInTx,
+        sagat_application::declared_operations::DeclaredOperationStoreError,
+    > {
+        // The Update is written to the database as it is addressed, and what is absorbed below is this run's: an
+        // Update for another run is refused before anything is written.
+        if update.request().resolved_run_id() != self.info.run_id {
+            return Err(
+                sagat_application::declared_operations::DeclaredOperationStoreError::Storage(
+                    StoreError::Internal {
+                        detail:
+                            "an Update addressed to another run than the one of the transaction"
+                                .to_owned(),
+                    },
+                ),
+            );
+        }
+        let applied = crate::declared_operations::apply_declared_update_in_tx(
+            &mut self.tx,
+            update,
+            evaluator,
+        )
+        .await?;
+        // The Update wrote its journal row straight to the database. This transaction goes on after it (a reset
+        // delivers signals and Updates one after the other), so the journal row it wrote is part of the state
+        // and the sequence it persists from: read back, the way a replay would take it.
+        if applied.resolution.receipt().status()
+            == sagat_domain::execution::UpdateReceiptStatus::Applied
+            && !applied.resolution.replayed()
+        {
+            self.absorb_written_update(applied.resolution.receipt().run_version())
+                .await?;
+        }
+        Ok(applied)
+    }
+
     fn info(&self) -> &RunInfo {
         &self.info
     }
@@ -3922,12 +4616,49 @@ impl RunTx for PgRunTx {
     ) -> Result<sagat_application::database::DatabaseInput, StoreError> {
         self.database_snapshot(node, subject).await
     }
-    async fn pin_database_credential(
+    async fn pin_database_credentials(
         &mut self,
         node: &NodeId,
-        secret: &sagat_application::secrets::StoredSecret,
+        secrets: &[sagat_application::database::SelectedSecret],
     ) -> Result<(), StoreError> {
-        self.database_pin(node, secret).await
+        self.database_pin(node, secrets).await
+    }
+    async fn lake_lease_facts(
+        &mut self,
+        node: &NodeId,
+    ) -> Result<sagat_application::database::LakeLeaseFacts, StoreError> {
+        self.lake_facts(node).await
+    }
+    async fn lake_probe_facts(
+        &mut self,
+        node: &NodeId,
+    ) -> Result<sagat_application::database::ProbeLeaseFacts, StoreError> {
+        self.lake_probe_facts(node).await
+    }
+    async fn lake_record_blobs(
+        &mut self,
+        ids: &[sagat_domain::blobs::BlobId],
+    ) -> Result<Vec<sagat_domain::blobs::BlobDescriptor>, StoreError> {
+        self.lake_blob_descriptors(ids).await
+    }
+    async fn pin_lake_blobs(
+        &mut self,
+        node: &NodeId,
+        fence: sagat_domain::execution::Fence,
+        ids: &[sagat_domain::blobs::BlobId],
+    ) -> Result<(), StoreError> {
+        self.lake_blob_pin(node, fence, ids).await
+    }
+    async fn lake_blob_pinned(
+        &mut self,
+        node: &NodeId,
+        fence: sagat_domain::execution::Fence,
+        id: sagat_domain::blobs::BlobId,
+    ) -> Result<bool, StoreError> {
+        self.lake_blob_is_pinned(node, fence, id).await
+    }
+    async fn lake_attempt_resolved(&mut self, node: &NodeId) -> Result<bool, StoreError> {
+        self.lake_resolved(node).await
     }
     async fn database_result_limits(
         &mut self,
@@ -3939,7 +4670,8 @@ impl RunTx for PgRunTx {
         &mut self,
         node: &NodeId,
     ) -> Result<Option<sagat_application::secrets::StoredSecret>, StoreError> {
-        self.database_pinned_secret(node).await
+        self.database_pinned_secret(node, sagat_domain::database::SecretRole::Primary)
+            .await
     }
 
     async fn current_worker_authorized(&mut self, subject: &str) -> Result<bool, StoreError> {
@@ -4402,7 +5134,17 @@ impl RunTx for PgRunTx {
             let seq = i64::try_from(self.persisted + 1 + offset as u64)
                 .map_err(|_| corrupt("sequence"))?;
             let mut encoded = encode(event);
-            if let RunEvent::StepLeased { node, .. } = event
+            // The row of a source run that a reset re-emits (feature 018): it is the row the source stored,
+            // who did it and when included, marked `restored`; the first one says where the history came from.
+            let restored = effects
+                .restored
+                .as_deref()
+                .and_then(|prefix| prefix.events.get(offset));
+            if let (Some(prefix), Some(row)) = (effects.restored.as_deref(), restored) {
+                encoded.detail = resets::restored_detail(row, prefix, offset)?;
+            }
+            if restored.is_none()
+                && let RunEvent::StepLeased { node, .. } = event
                 && let Some(pins) = self.script_retention.get(node)
             {
                 let detail =
@@ -4448,23 +5190,28 @@ impl RunTx for PgRunTx {
                   trace_id, occurred_at, instance_id, instance_path_nodes, instance_path_indices) \
                  VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)",
             );
+            let actor = restored.map_or_else(|| effects.actor.label(), |row| row.actor.clone());
             insert
                 .bind(tenant.as_uuid())
                 .bind(run.as_uuid())
                 .bind(seq)
-                .bind(encoded.event_type)
-                .bind(encoded.node.as_deref())
-                .bind(encoded.attempt)
+                .bind(restored.map_or(encoded.event_type, |row| row.event_type.as_str()))
+                .bind(restored.map_or(encoded.node.as_deref(), |row| row.node.as_deref()))
+                .bind(restored.map_or(encoded.attempt, |row| row.attempt))
                 .bind(&encoded.detail)
-                .bind(payload.map(Vec::as_slice))
-                .bind(effects.actor.label())
-                .bind(
-                    effects
+                .bind(match restored {
+                    Some(row) => row.payload_digest.as_deref(),
+                    None => payload.map(Vec::as_slice),
+                })
+                .bind(actor)
+                .bind(match restored {
+                    Some(row) => row.trace_id.as_deref(),
+                    None => effects
                         .trace_id
                         .as_deref()
                         .or(self.info.trace_id.as_deref()),
-                )
-                .bind(self.now)
+                })
+                .bind(restored.map_or(self.now, |row| row.occurred_at))
                 .bind(root_instance_id)
                 .bind(root_instance_id.map(|_| Vec::<String>::new()))
                 .bind(root_instance_id.map(|_| Vec::<i32>::new()))
@@ -4475,6 +5222,19 @@ impl RunTx for PgRunTx {
             // The steps the event created or changed, from the one definition of them the platform has
             // (the Studio's changes of the graph are made of the same list).
             touched.extend(event.changed_nodes());
+            if restored.is_some() {
+                // History has none of the effects it had the first time: no task is announced, no child
+                // settled, no breaker told, no signal sent. What the state says of a saga is written.
+                if let RunEvent::SagaEntered { node, .. }
+                | RunEvent::SagaCompleted { node }
+                | RunEvent::SagaAborting { node, .. }
+                | RunEvent::SagaCompensated { node, .. }
+                | RunEvent::CompensationPlanned { node, .. } = event
+                {
+                    sagas.insert(node.clone());
+                }
+                continue;
+            }
             self.signals.extend(of_event(event));
             match event {
                 RunEvent::SagaEntered { node, .. }
@@ -4627,6 +5387,27 @@ impl RunTx for PgRunTx {
                     detail: "the run changed while its row was locked".into(),
                 });
             }
+            // The start delay is a column of its own so that the pass that releases it finds the due
+            // ones by index; it follows the two events that set and clear it, in this transaction.
+            for event in events {
+                let until = match event {
+                    RunEvent::StartDelayed { until_us } => Some(
+                        OffsetDateTime::from_unix_timestamp_nanos(i128::from(*until_us) * 1_000)
+                            .map_err(|_| corrupt("run start delay"))?,
+                    ),
+                    RunEvent::StartReleased { .. } => None,
+                    _ => continue,
+                };
+                sqlx::query(
+                    "UPDATE runs SET start_delayed_until = $3 WHERE tenant_id = $1 AND id = $2",
+                )
+                .bind(tenant.as_uuid())
+                .bind(run.as_uuid())
+                .bind(until)
+                .execute(&mut *self.tx)
+                .await
+                .map_err(store_error)?;
+            }
         }
         self.persisted = version;
 
@@ -4636,6 +5417,9 @@ impl RunTx for PgRunTx {
 
         // 5. Audit and idempotency commit with everything above.
         if let Some(audit) = &effects.audit {
+            insert_audit(&mut self.tx, audit).await?;
+        }
+        for audit in &effects.further_audits {
             insert_audit(&mut self.tx, audit).await?;
         }
         if let Some((idempotency, result)) = &effects.idempotency
@@ -4767,6 +5551,40 @@ impl RunTx for PgRunTx {
         .rows_affected()
             > 0;
         Ok(inserted)
+    }
+
+    async fn settle_batch_item(
+        &mut self,
+        item: &sagat_application::batch::ItemSettlement,
+        outcome: &sagat_application::batch::ItemOutcome,
+        replay: bool,
+    ) -> Result<(), StoreError> {
+        // the item is recorded only with its own run: the run this transaction acts on, or the run a rerun repeats, in
+        // the tenant of the run (a batch job acts only on runs of its own tenant)
+        let own_run = self.info.run_id.as_uuid() == item.run
+            || self.info.rerun_of.map(RunId::as_uuid) == Some(item.run);
+        if item.tenant != self.info.tenant_id || !own_run {
+            return Err(StoreError::Internal {
+                detail: "a batch item was recorded with a run that is not its own".to_owned(),
+            });
+        }
+        crate::batch::record_item_in(
+            &mut self.tx,
+            &crate::batch::ItemRecordTarget {
+                tenant: item.tenant,
+                id: item.job,
+                ordinal: item.ordinal,
+                at: item.at,
+                fence: item.fence.as_ref(),
+                finished: &item.finished,
+                run: Some(item.run),
+                conflict: None,
+                // an effect applied now needs a job that still runs; one that committed before the cancel does not
+                running_only: !replay,
+            },
+            outcome,
+        )
+        .await
     }
 
     async fn worker_capacity_available(&mut self) -> Result<bool, StoreError> {
@@ -5391,6 +6209,9 @@ impl PgRunTx {
         if let Some(audit) = &effects.audit {
             insert_audit(&mut self.tx, audit).await?;
         }
+        for audit in &effects.further_audits {
+            insert_audit(&mut self.tx, audit).await?;
+        }
         if let Some((idempotency, result)) = &effects.idempotency
             && !remember(
                 &mut self.tx,
@@ -5788,6 +6609,29 @@ impl PgRunTx {
         // What subscribers are told, owed to each of them from this very commit: the event and the
         // obligation to deliver it are written together or not at all. Identifiers and the status,
         // never data of the run.
+        let mut data = serde_json::json!({
+            "tenantId": self.info.tenant_id.to_string(),
+            "namespaceId": self.info.namespace_id.to_string(),
+            "runId": self.info.run_id.to_string(),
+            "workflow": self.def.name().as_str(),
+            "status": status.as_str(),
+            // So a subscriber can put what it does about the run in the run's trace.
+            "traceId": self.info.trace_id,
+        });
+        // The schedule that started the run, when one did (`FR-018-046`): from the row this transaction opened,
+        // or read now when it did not open one.
+        match &self.schedule_origin {
+            Some(origin) => origin.add_to(&mut data)?,
+            None => {
+                crate::outbound::add_schedule_origin(
+                    &mut self.tx,
+                    self.info.tenant_id,
+                    self.info.run_id.as_uuid(),
+                    &mut data,
+                )
+                .await?;
+            }
+        }
         let body = serde_json::json!({
             "id": message.to_string(),
             "type": "run.finished",
@@ -5795,15 +6639,7 @@ impl PgRunTx {
                 .now
                 .format(&time::format_description::well_known::Rfc3339)
                 .unwrap_or_default(),
-            "data": {
-                "tenantId": self.info.tenant_id.to_string(),
-                "namespaceId": self.info.namespace_id.to_string(),
-                "runId": self.info.run_id.to_string(),
-                "workflow": self.def.name().as_str(),
-                "status": status.as_str(),
-                // So a subscriber can put what it does about the run in the run's trace.
-                "traceId": self.info.trace_id,
-            },
+            "data": data,
         });
         crate::outbound::fan_out(
             &mut self.tx,
@@ -6632,6 +7468,17 @@ fn versioned_script_retention(
 
 /// The run store also serves definitions, so one value can back every service that needs both.
 impl DefinitionStore for PgRunStore {
+    async fn replay_publication(
+        &self,
+        tenant: TenantId,
+        workflow: WorkflowId,
+        idempotency: &sagat_application::definitions::Idempotency,
+    ) -> Result<Option<sagat_application::definitions::VersionRecord>, StoreError> {
+        self.definitions
+            .replay_publication(tenant, workflow, idempotency)
+            .await
+    }
+
     async fn check_database_access(
         &self,
         principal: &Principal,

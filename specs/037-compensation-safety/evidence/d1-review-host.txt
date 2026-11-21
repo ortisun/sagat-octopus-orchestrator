@@ -1,0 +1,13 @@
+uname -sm
+Darwin arm64
+sysctl -n hw.model hw.ncpu hw.memsize
+Mac15,9
+16
+51539607552
+uptime
+13:04  up 15 days, 15:17, 3 users, load averages: 4.90 9.23 11.42
+df -h .
+Filesystem      Size    Used   Avail Capacity iused ifree %iused  Mounted on
+/dev/disk3s5   926Gi   790Gi    94Gi    90%     13M  983M    1%   /System/Volumes/Data
+docker info --format "CPUs={{.NCPU}} Memory={{.MemTotal}}"
+CPUs=16 Memory=8318709760

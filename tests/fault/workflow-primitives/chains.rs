@@ -1135,6 +1135,8 @@ async fn grandchild_handoff_and_root_child_admission_do_not_deadlock_on_the_root
         .expect("version")
         .expect("exists");
     let new = NewRun {
+        business: None,
+        schedule: None,
         retained: None,
         limits: RunLimits::of(&world.store, tenant, world.namespace.id())
             .await
@@ -1143,7 +1145,10 @@ async fn grandchild_handoff_and_root_child_admission_do_not_deadlock_on_the_root
             .cache
             .get_or_parse(leaf_version, &version.document)
             .expect("definition"),
-        input: serde_json::to_vec(&input).expect("input"),
+        input: sagat_application::run_input::CheckedRunInput::unchecked(
+            leaf_version,
+            serde_json::to_vec(&input).expect("input"),
+        ),
         input_blob: None,
         audit: AuditRecord::engine(
             tenant,
@@ -1160,6 +1165,8 @@ async fn grandchild_handoff_and_root_child_admission_do_not_deadlock_on_the_root
             fingerprint: info.run_id.as_uuid().as_bytes().to_vec(),
         },
         info,
+        reset_sequence: None,
+        pending_reset: None,
     };
     let mut guard = world.db.pool.begin().await.expect("tree gate");
     sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))")

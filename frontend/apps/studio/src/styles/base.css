@@ -1,7 +1,7 @@
-/* The Studio's own stylesheet (ADR-0101). The controls, the navigation, the dialogs and the tables are
+/* The Studio's own stylesheet (Architecture decision 0101). The controls, the navigation, the dialogs and the tables are
    Astryx components; colour, type, spacing and radius come from the `sagat` Astryx theme
    (`src/ui/theme/sagatTheme.ts`). What is declared here is only what Astryx has no token for: the sizes of
-   the Studio's own layout. No literal colour belongs in this directory (SC-007-005). */
+   the Studio's own layout. No literal colour belongs in this directory (Success criterion 007-005). */
 :root {
   --sidebar-width: 13.5rem;
   --topbar-height: 3.5rem;

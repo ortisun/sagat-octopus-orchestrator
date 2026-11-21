@@ -22,13 +22,36 @@ pub(crate) struct Capability {
     pub credentials: DatabaseCredentials,
     pub deadline: Instant,
 }
+/// Zeroises, in place, every secret a `ResolvedDatabase` carries: the PostgreSQL credential, and (feature 035) the
+/// `credentials` maps of the three lake connections. The lake maps are not read by the PostgreSQL path, so a response that
+/// carries one anyway (a server of another profile, a confused one) must not leave the bytes in the allocation.
+fn scrub(resolved: &mut pb::ResolvedDatabase) {
+    if let Some(credential) = &mut resolved.credential {
+        credential.value.zeroize();
+    }
+    let lake = [
+        resolved.iceberg.as_mut().map(|lake| &mut lake.credentials),
+        resolved
+            .object_storage
+            .as_mut()
+            .map(|lake| &mut lake.credentials),
+        resolved
+            .clickhouse
+            .as_mut()
+            .map(|lake| &mut lake.credentials),
+    ];
+    for credentials in lake.into_iter().flatten() {
+        for bytes in credentials.values_mut() {
+            bytes.zeroize();
+        }
+    }
+}
+
 /// On all early failures, clear the credential allocation received from protobuf.
 struct Guard(pb::ResolvedDatabase);
 impl Drop for Guard {
     fn drop(&mut self) {
-        if let Some(credential) = &mut self.0.credential {
-            credential.value.zeroize();
-        }
+        scrub(&mut self.0);
     }
 }
 pub(crate) fn decode(
@@ -170,6 +193,9 @@ mod tests {
     fn response(namespace: NamespaceId) -> pb::ResolvedDatabase {
         pb::ResolvedDatabase {
             tenant_id: uuid::Uuid::new_v4().to_string(),
+            iceberg: None,
+            object_storage: None,
+            clickhouse: None,
             namespace_id: namespace.to_string(),
             connection_id: uuid::Uuid::new_v4().to_string(),
             connection_name: "warehouse".into(),
@@ -256,6 +282,38 @@ mod tests {
             let mut response = response(namespace);
             mutate(&mut response);
             assert!(decode(response, namespace, ceiling).is_err());
+        }
+    }
+
+    /// Feature 035: the lake connections carry their secrets in `credentials` maps, which this path never reads. A response
+    /// that carries them anyway must not leave the bytes behind when the guard drops it.
+    #[test]
+    fn scrub_zeroises_the_credential_and_every_lake_secret() {
+        let namespace = NamespaceId::new(uuid::Uuid::new_v4());
+        let secret =
+            || std::collections::HashMap::from([("catalog".to_owned(), b"canary".to_vec())]);
+        let mut resolved = response(namespace);
+        resolved.iceberg = Some(pb::IcebergConnection {
+            credentials: secret(),
+            ..pb::IcebergConnection::default()
+        });
+        resolved.object_storage = Some(pb::ObjectStorageConnection {
+            credentials: secret(),
+            ..pb::ObjectStorageConnection::default()
+        });
+        resolved.clickhouse = Some(pb::ClickHouseConnection {
+            credentials: secret(),
+            ..pb::ClickHouseConnection::default()
+        });
+        scrub(&mut resolved);
+        assert!(resolved.credential.as_ref().unwrap().value.is_empty());
+        for credentials in [
+            &resolved.iceberg.as_ref().unwrap().credentials,
+            &resolved.object_storage.as_ref().unwrap().credentials,
+            &resolved.clickhouse.as_ref().unwrap().credentials,
+        ] {
+            assert_eq!(credentials.len(), 1, "the entry stays, its bytes do not");
+            assert!(credentials.values().all(Vec::is_empty));
         }
     }
 }

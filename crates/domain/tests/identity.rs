@@ -10,6 +10,50 @@ use time::OffsetDateTime;
 
 const NOW: OffsetDateTime = OffsetDateTime::UNIX_EPOCH;
 
+/// Every built-in role. The match is exhaustive on purpose: a new role is a compile error here until it is listed and judged.
+fn every_role() -> [Role; 7] {
+    let _judged = |role: Role| match role {
+        Role::Admin
+        | Role::Developer
+        | Role::Operator
+        | Role::Viewer
+        | Role::Worker
+        | Role::Runner
+        | Role::DatabaseRunner => (),
+    };
+    [
+        Role::Admin,
+        Role::Developer,
+        Role::Operator,
+        Role::Viewer,
+        Role::Worker,
+        Role::Runner,
+        Role::DatabaseRunner,
+    ]
+}
+
+/// What lets a lake write take the result a SQL step retained without asking the initiator for `database:result:read` (D035-145, O035-008): to
+/// cause a write into a lake a principal needs `database:write`, and no role has it without the right to read a result. Were one given it, a
+/// lake write would be a bulk export of results to a principal who may not see them, which ADR-0035 (item 10) refuses; then the lease would
+/// have to ask for the permission, and this test is where that is noticed.
+#[test]
+fn no_role_may_write_to_a_database_without_the_right_to_read_a_result() {
+    for role in every_role() {
+        if role.grants(Permission::DatabaseWrite) {
+            assert!(
+                role.grants(Permission::DatabaseResultRead),
+                "{role:?} may write to a database and may not read a result"
+            );
+        }
+    }
+    assert!(
+        every_role()
+            .iter()
+            .any(|role| role.grants(Permission::DatabaseWrite)),
+        "the invariant is about at least one role: if none writes, the question is moot and this test says so"
+    );
+}
+
 #[test]
 fn database_executor_is_a_separate_machine_identity() {
     let role = "database-runner"
@@ -197,12 +241,13 @@ const ALL_ROLES: [Role; 7] = [
 /// The authoritative matrix, written out by hand (not derived from `Role::permissions`).
 fn expected(role: Role) -> Vec<Permission> {
     use Permission::{
-        ApprovalDecide, ApprovalRead, DatabaseAdHoc, DatabaseUse, DefinitionPublish,
-        DefinitionRead, DefinitionWrite, EventManage, EventPublish, EventRead, NamespaceRead,
-        OpsRead, PayloadReadInternal, PublicationApprove, QuotaRead, RunOperate, RunPayloadInspect,
-        RunQuery, RunRead, RunSignal, RunStart, RunUpdate, ScriptBuild, ScriptExecute,
-        ScriptPublish, ScriptRead, ScriptWrite, SecretRead, SecretUse, VersionActivate,
-        WorkerExecute, WorkerManage, WorkspaceRead,
+        ApprovalDecide, ApprovalRead, DatabaseAdHoc, DatabaseBrowse, DatabaseUse,
+        DefinitionPublish, DefinitionRead, DefinitionWrite, EventManage, EventPublish, EventRead,
+        NamespaceRead, OpsRead, PayloadReadInternal, PublicationApprove, QuotaRead, RunBatch,
+        RunOperate, RunPayloadInspect, RunQuery, RunRead, RunSignal, RunStart, RunUpdate,
+        ScheduleOperate, ScheduleRead, ScheduleWrite, ScriptBuild, ScriptExecute, ScriptPublish,
+        ScriptRead, ScriptWrite, SecretRead, SecretUse, VersionActivate, WorkerExecute,
+        WorkerManage, WorkspaceRead,
     };
     match role {
         Role::Admin => Role::ADMIN_PERMISSIONS.to_vec(),
@@ -210,6 +255,7 @@ fn expected(role: Role) -> Vec<Permission> {
             vec![
                 DatabaseUse,
                 DatabaseAdHoc,
+                DatabaseBrowse,
                 WorkspaceRead,
                 NamespaceRead,
                 DefinitionRead,
@@ -233,6 +279,9 @@ fn expected(role: Role) -> Vec<Permission> {
                 ScriptPublish,
                 OpsRead,
                 PublicationApprove,
+                ScheduleRead,
+                ScheduleWrite,
+                ScheduleOperate,
             ]
         }
         Role::Operator => vec![
@@ -257,6 +306,9 @@ fn expected(role: Role) -> Vec<Permission> {
             WorkerManage,
             PublicationApprove,
             VersionActivate,
+            ScheduleRead,
+            ScheduleOperate,
+            RunBatch,
         ],
         Role::Viewer => vec![
             WorkspaceRead,
@@ -268,6 +320,7 @@ fn expected(role: Role) -> Vec<Permission> {
             EventRead,
             ScriptRead,
             OpsRead,
+            ScheduleRead,
         ],
         Role::Worker => vec![WorkerExecute],
         Role::Runner => vec![WorkerExecute, ScriptBuild, ScriptExecute],
@@ -277,7 +330,7 @@ fn expected(role: Role) -> Vec<Permission> {
 
 #[test]
 fn payload_permissions_are_fail_closed_for_builtin_roles() {
-    assert_eq!(Permission::ALL.len(), 48);
+    assert_eq!(Permission::ALL.len(), 53);
     assert_eq!(
         Permission::PayloadReadInternal.as_str(),
         "payload:read-internal"
@@ -317,6 +370,76 @@ fn role_permission_matrix_is_exactly_as_specified() {
                 role.grants(permission),
                 allowed.contains(&permission),
                 "role {role} / permission {permission}"
+            );
+        }
+    }
+}
+
+/// Feature 035 (D035-066): browsing the catalog of an Iceberg connection reads a customer's metadata, so it is a
+/// permission of its own, held by the roles that manage connections and by no machine role.
+#[test]
+fn database_browse_is_held_by_developers_and_admins_only() {
+    assert_eq!(Permission::DatabaseBrowse.as_str(), "database:browse");
+    for role in ALL_ROLES {
+        assert_eq!(
+            role.grants(Permission::DatabaseBrowse),
+            matches!(role, Role::Admin | Role::Developer),
+            "{role}"
+        );
+    }
+}
+
+/// The permissions only the admin role holds, decided one by one (the admin list is "everything but the PII reveal", so
+/// it would call any new permission decided).
+const ADMIN_ONLY: [Permission; 13] = [
+    Permission::WorkspaceCreate,
+    Permission::NamespaceCreate,
+    Permission::MembershipManage,
+    Permission::AuditRead,
+    Permission::QuotaManage,
+    Permission::SecretManage,
+    Permission::EgressManage,
+    Permission::WorkerBind,
+    Permission::SagaOverride,
+    Permission::PublicationManage,
+    Permission::DatabaseManage,
+    Permission::DatabaseWrite,
+    Permission::DatabaseResultRead,
+];
+
+/// The permissions a built-in role grants to nobody on purpose.
+const GRANTED_TO_NO_BUILTIN_ROLE: [Permission; 1] = [Permission::PayloadRevealPii];
+
+const OTHER_ROLES: [Role; 6] = [
+    Role::Developer,
+    Role::Operator,
+    Role::Viewer,
+    Role::Worker,
+    Role::Runner,
+    Role::DatabaseRunner,
+];
+
+/// A permission added to `ALL` is held by a role of the hand-written matrix, or is admin-only, or is granted to nobody,
+/// and it is named here. Without that it fails in this test and not in production.
+#[test]
+fn every_permission_has_a_role_decision() {
+    for permission in Permission::ALL {
+        let held_by_another_role = OTHER_ROLES
+            .into_iter()
+            .any(|role| expected(role).contains(&permission));
+        let decided = held_by_another_role
+            || ADMIN_ONLY.contains(&permission)
+            || GRANTED_TO_NO_BUILTIN_ROLE.contains(&permission);
+        assert!(
+            decided,
+            "{permission} is in Permission::ALL and in no role decision"
+        );
+    }
+    for permission in ADMIN_ONLY {
+        for role in OTHER_ROLES {
+            assert!(
+                !expected(role).contains(&permission),
+                "{permission} is listed as admin-only and {role} holds it"
             );
         }
     }

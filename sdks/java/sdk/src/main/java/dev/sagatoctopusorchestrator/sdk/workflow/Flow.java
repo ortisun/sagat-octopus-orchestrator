@@ -197,6 +197,12 @@ public final class Flow {
         return push(options.toNode(id));
     }
 
+    /** An append to an Iceberg table executed by the isolated lake runner; no catalog or storage credential appears here. */
+    public Flow icebergWrite(String id, IcebergWriteOptions options) {
+        if (options == null) throw IcebergWriteOptions.invalid();
+        return push(options.toNode(id));
+    }
+
     /** An activity executed by a worker. */
     public Flow step(String id, String activity, StepOptions options) {
         if (activity == null || activity.isEmpty()) {
@@ -408,6 +414,15 @@ public final class Flow {
 
     /** Invokes a named body once for every item captured from {@code items}. */
     public Flow forEach(String id, String items, String body, String result, CollectionOptions options) {
+        return forEach(id, items, body, result, options, null);
+    }
+
+    /**
+     * Invokes a named body once for every item captured from {@code items}, after the operators, built with
+     * {@link Ops}, are applied once to that list when the collection is entered (design 042). Null or empty, the node
+     * has no {@code operators}. The server validates the chain.
+     */
+    public Flow forEach(String id, String items, String body, String result, CollectionOptions options, Operators operators) {
         if (items == null || items.isEmpty() || body == null || body.isEmpty() || result == null || result.isEmpty()) {
             throw SagatException.invalid("forEach " + id + " needs items, body and result expressions");
         }
@@ -425,12 +440,20 @@ public final class Flow {
         node.put("result", result);
         node.put("maxItems", options.maxItems());
         node.put("maxConcurrency", options.maxConcurrency());
+        if (operators != null && !operators.isEmpty()) {
+            node.set("operators", operators.toArray());
+        }
         return push(node);
     }
 
     /** Value-returning collection authoring; emits the same durable {@code forEach} node. */
     public Flow map(String id, String items, String body, String result, CollectionOptions options) {
         return forEach(id, items, body, result, options);
+    }
+
+    /** Value-returning collection authoring with operators; emits the same durable {@code forEach} node. */
+    public Flow map(String id, String items, String body, String result, CollectionOptions options, Operators operators) {
+        return forEach(id, items, body, result, options, operators);
     }
 
     /** Runs a named body sequentially while a pre-test condition is true. */

@@ -1,0 +1,354 @@
+{
+  "name": "compensation-safety",
+  "description": "Delivery 1: uncertain forward and compensation effects wait for an outcome-bearing human decision, cancellation preserves the review, a negative lookup remains non-final, direct retry is refused, and an explicit fail policy applies only to a known compensation failure. The workers are synthetic fault injection and do not qualify a provider.",
+  "reviewEvidence": true,
+  "workflows": {
+    "unknown-forward": {
+      "name": "compensation-safety-unknown-forward",
+      "program": [
+        {
+          "op": "step",
+          "id": "pay",
+          "activity": "safety.pay",
+          "options": {
+            "retry": {
+              "maxAttempts": 3
+            }
+          }
+        }
+      ]
+    },
+    "negative-lookup": {
+      "name": "compensation-safety-negative-lookup",
+      "program": [
+        {
+          "op": "step",
+          "id": "lookup-pay",
+          "activity": "safety.lookup-pay",
+          "options": {
+            "reconcileWith": "safety.lookup-none",
+            "retry": {
+              "maxAttempts": 3
+            }
+          }
+        }
+      ]
+    },
+    "known-compensation-failure": {
+      "name": "compensation-safety-known-failure",
+      "program": [
+        {
+          "op": "saga",
+          "id": "known-saga",
+          "options": {
+            "onCompensationFailure": "fail"
+          },
+          "body": [
+            {
+              "op": "step",
+              "id": "known-reserve",
+              "activity": "safety.known-reserve",
+              "options": {
+                "compensateWith": "safety.known-release",
+                "compensationRetry": {
+                  "maxAttempts": 1
+                }
+              }
+            },
+            {
+              "op": "step",
+              "id": "known-stop",
+              "activity": "safety.known-stop",
+              "options": {
+                "retry": {
+                  "maxAttempts": 1
+                }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "unknown-compensation": {
+      "name": "compensation-safety-unknown-compensation",
+      "program": [
+        {
+          "op": "saga",
+          "id": "unknown-saga",
+          "body": [
+            {
+              "op": "step",
+              "id": "unknown-reserve",
+              "activity": "safety.unknown-reserve",
+              "options": {
+                "compensateWith": "safety.unknown-release",
+                "compensationRetry": {
+                  "maxAttempts": 1
+                }
+              }
+            },
+            {
+              "op": "step",
+              "id": "unknown-stop",
+              "activity": "safety.unknown-stop",
+              "options": {
+                "retry": {
+                  "maxAttempts": 1
+                }
+              }
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "workers": {
+    "w1": {
+      "workerName": "compensation-safety-worker",
+      "protocolVersion": "1.4",
+      "maxInflight": 2,
+      "activities": {
+        "safety.pay": {
+          "behavior": {
+            "outcomeUnknown": "provider accepted the request but the response was lost"
+          }
+        },
+        "safety.lookup-pay": {
+          "behavior": {
+            "outcomeUnknown": "provider response was lost before lookup"
+          }
+        },
+        "safety.lookup-none": {
+          "as": "reconciler",
+          "behavior": {
+            "verdict": "not_applied"
+          }
+        },
+        "safety.known-reserve": {
+          "behavior": {
+            "returns": {
+              "reservation": "known-r1"
+            }
+          }
+        },
+        "safety.known-release": {
+          "as": "compensation",
+          "behavior": {
+            "fails": {
+              "code": "PROVIDER_DOWN",
+              "message": "known permanent release failure",
+              "retryable": false
+            }
+          }
+        },
+        "safety.known-stop": {
+          "behavior": {
+            "fails": {
+              "code": "BUSINESS_REJECTED",
+              "message": "force known saga compensation",
+              "retryable": false
+            }
+          }
+        },
+        "safety.unknown-reserve": {
+          "behavior": {
+            "returns": {
+              "reservation": "unknown-r1"
+            }
+          }
+        },
+        "safety.unknown-release": {
+          "as": "compensation",
+          "behavior": {
+            "outcomeUnknown": "release may have completed"
+          }
+        },
+        "safety.unknown-stop": {
+          "behavior": {
+            "fails": {
+              "code": "BUSINESS_REJECTED",
+              "message": "force unknown saga compensation",
+              "retryable": false
+            }
+          }
+        }
+      }
+    }
+  },
+  "steps": [
+    {
+      "id": "unknown-forward",
+      "op": "start",
+      "workflow": "unknown-forward",
+      "input": {
+        "payment": "p-unknown"
+      }
+    },
+    {
+      "id": "unknown-forward-review",
+      "op": "awaitJournal",
+      "run": "unknown-forward",
+      "eventType": "step.needs_review",
+      "stepId": "pay",
+      "timeoutMs": 20000
+    },
+    {
+      "id": "unknown-forward-before-cancel",
+      "op": "get",
+      "run": "unknown-forward"
+    },
+    {
+      "id": "unknown-forward-cancel",
+      "op": "cancel",
+      "run": "unknown-forward",
+      "reason": "operator cancels while evidence is unresolved"
+    },
+    {
+      "id": "unknown-forward-after-cancel",
+      "op": "get",
+      "run": "unknown-forward"
+    },
+    {
+      "id": "unknown-forward-retry-refused",
+      "op": "operate",
+      "run": "unknown-forward",
+      "action": "RETRY_STEP",
+      "stepId": "pay",
+      "reason": "do not repeat an uncertain provider effect"
+    },
+    {
+      "id": "unknown-forward-resolved",
+      "op": "operate",
+      "run": "unknown-forward",
+      "action": "RESOLVE_STEP",
+      "stepId": "pay",
+      "outcome": "SUCCEEDED",
+      "reason": "provider receipt confirms payment p-unknown"
+    },
+    {
+      "id": "unknown-forward-done",
+      "op": "waitForCompletion",
+      "run": "unknown-forward",
+      "timeoutMs": 20000
+    },
+    {
+      "id": "unknown-forward-journal",
+      "op": "events",
+      "run": "unknown-forward"
+    },
+    {
+      "id": "negative",
+      "op": "start",
+      "workflow": "negative-lookup",
+      "input": {
+        "payment": "p-negative"
+      }
+    },
+    {
+      "id": "negative-concluded",
+      "op": "awaitJournal",
+      "run": "negative",
+      "eventType": "reconciliation.concluded",
+      "stepId": "lookup-pay",
+      "timeoutMs": 20000
+    },
+    {
+      "id": "negative-state",
+      "op": "get",
+      "run": "negative"
+    },
+    {
+      "id": "negative-retry-refused",
+      "op": "operate",
+      "run": "negative",
+      "action": "RETRY_STEP",
+      "stepId": "lookup-pay",
+      "reason": "negative lookup is not final provider evidence"
+    },
+    {
+      "id": "negative-resolved",
+      "op": "operate",
+      "run": "negative",
+      "action": "RESOLVE_STEP",
+      "stepId": "lookup-pay",
+      "outcome": "FAILED",
+      "errorCode": "PAYMENT_NOT_FOUND",
+      "reason": "authoritative provider record confirms absence"
+    },
+    {
+      "id": "negative-done",
+      "op": "waitForCompletion",
+      "run": "negative",
+      "timeoutMs": 20000
+    },
+    {
+      "id": "negative-journal",
+      "op": "events",
+      "run": "negative"
+    },
+    {
+      "id": "known",
+      "op": "start",
+      "workflow": "known-compensation-failure",
+      "input": {}
+    },
+    {
+      "id": "known-done",
+      "op": "waitForCompletion",
+      "run": "known",
+      "timeoutMs": 20000
+    },
+    {
+      "id": "known-journal",
+      "op": "events",
+      "run": "known"
+    },
+    {
+      "id": "unknown-compensation",
+      "op": "start",
+      "workflow": "unknown-compensation",
+      "input": {}
+    },
+    {
+      "id": "unknown-compensation-review",
+      "op": "awaitJournal",
+      "run": "unknown-compensation",
+      "eventType": "step.needs_review",
+      "stepId": "unknown-reserve~c",
+      "timeoutMs": 20000
+    },
+    {
+      "id": "unknown-compensation-state",
+      "op": "get",
+      "run": "unknown-compensation"
+    },
+    {
+      "id": "unknown-compensation-retry-refused",
+      "op": "operate",
+      "run": "unknown-compensation",
+      "action": "RETRY_COMPENSATION",
+      "stepId": "unknown-reserve~c",
+      "reason": "do not repeat an uncertain compensation"
+    },
+    {
+      "id": "unknown-compensation-resolved",
+      "op": "operate",
+      "run": "unknown-compensation",
+      "action": "RESOLVE_STEP",
+      "stepId": "unknown-reserve~c",
+      "outcome": "SUCCEEDED",
+      "reason": "provider evidence confirms release completed"
+    },
+    {
+      "id": "unknown-compensation-done",
+      "op": "waitForCompletion",
+      "run": "unknown-compensation",
+      "timeoutMs": 20000
+    },
+    {
+      "id": "unknown-compensation-journal",
+      "op": "events",
+      "run": "unknown-compensation"
+    }
+  ]
+}

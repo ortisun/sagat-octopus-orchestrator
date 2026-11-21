@@ -1,0 +1,28 @@
+{
+  "canonical": {
+    "plain": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"entrypoint\":\"work\",\"kind\":\"Workflow\",\"metadata\":{\"description\":\"The workflow every schedule of this scenario starts; it is never run.\",\"name\":\"schedule-plain\"},\"nodes\":[{\"activity\":\"schedule.work\",\"id\":\"work\",\"next\":\"done\",\"type\":\"activity\"},{\"id\":\"done\",\"type\":\"end\"}]}"
+  },
+  "workflows": {
+    "plain": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "entrypoint": "work",
+      "kind": "Workflow",
+      "metadata": {
+        "description": "The workflow every schedule of this scenario starts; it is never run.",
+        "name": "schedule-plain"
+      },
+      "nodes": [
+        {
+          "activity": "schedule.work",
+          "id": "work",
+          "next": "done",
+          "type": "activity"
+        },
+        {
+          "id": "done",
+          "type": "end"
+        }
+      ]
+    }
+  }
+}

@@ -35,6 +35,7 @@ import dev.sagatoctopusorchestrator.sdk.SagatException;
 import dev.sagatoctopusorchestrator.sdk.SagatSdk;
 import dev.sagatoctopusorchestrator.sdk.SignalResult;
 import dev.sagatoctopusorchestrator.sdk.StartOptions;
+import dev.sagatoctopusorchestrator.sdk.StartedRun;
 import dev.sagatoctopusorchestrator.sdk.WaitOptions;
 import dev.sagatoctopusorchestrator.sdk.worker.WorkerConfig;
 import dev.sagatoctopusorchestrator.sdk.worker.WorkerHost;
@@ -46,8 +47,12 @@ import dev.sagatoctopusorchestrator.sdk.workflow.CollectionOptions;
 import dev.sagatoctopusorchestrator.sdk.workflow.ChainPolicy;
 import dev.sagatoctopusorchestrator.sdk.workflow.Flow;
 import dev.sagatoctopusorchestrator.sdk.workflow.LoopOptions;
+import dev.sagatoctopusorchestrator.sdk.workflow.Operator;
+import dev.sagatoctopusorchestrator.sdk.workflow.Operators;
+import dev.sagatoctopusorchestrator.sdk.workflow.Ops;
 import dev.sagatoctopusorchestrator.sdk.workflow.QueryDefinition;
 import dev.sagatoctopusorchestrator.sdk.workflow.DatabaseOptions;
+import dev.sagatoctopusorchestrator.sdk.workflow.IcebergWriteOptions;
 import dev.sagatoctopusorchestrator.sdk.workflow.RetryOptions;
 import dev.sagatoctopusorchestrator.sdk.workflow.SagaOptions;
 import dev.sagatoctopusorchestrator.sdk.workflow.ScriptOptions;
@@ -123,6 +128,32 @@ public final class Runner {
                 throw new IllegalArgumentException("the runner does not know the option " + name + " of " + what);
             }
         }
+    }
+
+    /** A scenario's chain, built through the public operator factory; absent, there is none. */
+    private static Operators operatorsOf(JsonNode stages) {
+        if (stages == null || stages.isNull()) {
+            return null;
+        }
+        List<Operator> chain = new ArrayList<>();
+        for (JsonNode stage : stages) {
+            if (stage.size() != 1) {
+                throw new IllegalArgumentException("a stage has exactly one operator: " + stage);
+            }
+            String name = stage.fieldNames().next();
+            JsonNode p = stage.get(name);
+            chain.add(switch (name) {
+                case "filter" -> Ops.filter(p.path("where").asText(null));
+                case "map" -> Ops.map(p.path("select").asText(null));
+                case "flatMap" -> Ops.flatMap(p.path("select").asText(null));
+                case "skip" -> Ops.skip(p.path("count").asInt());
+                case "take" -> Ops.take(p.path("count").asInt());
+                case "distinct" -> p.has("by") ? Ops.distinct(p.path("by").asText(null)) : Ops.distinct();
+                case "window" -> Ops.window(p.path("count").asInt());
+                default -> throw new IllegalArgumentException("unknown operator " + name);
+            });
+        }
+        return Operators.of(chain);
     }
 
     private static <E extends Enum<E>> E enumOf(Class<E> type, JsonNode value) {
@@ -231,11 +262,75 @@ public final class Runner {
         }
     }
 
+    private static SagatException icebergInvalid() {
+        return SagatException.invalid("invalid iceberg write");
+    }
+
+    private static String icebergText(JsonNode node) {
+        if (!node.isTextual()) throw icebergInvalid();
+        return node.textValue();
+    }
+
+    private static long icebergLong(JsonNode node) {
+        if (!node.isIntegralNumber() || !node.canConvertToLong()) throw icebergInvalid();
+        return node.longValue();
+    }
+
+    private static IcebergWriteOptions icebergOptionsOf(JsonNode node) {
+        try {
+            JsonNode ref = node.path("connectionRef");
+            JsonNode table = node.path("table");
+            if (!table.path("namespace").isArray()) throw icebergInvalid();
+            List<String> namespace = new ArrayList<>();
+            for (JsonNode level : table.path("namespace")) namespace.add(icebergText(level));
+            JsonNode records = node.path("records");
+            if (!records.isObject() || records.size() != 1) throw icebergInvalid();
+            IcebergWriteOptions.Records source;
+            if (records.has("inline")) source = IcebergWriteOptions.Records.inline(icebergText(records.get("inline")));
+            else if (records.has("blobs")) source = IcebergWriteOptions.Records.blobs(icebergText(records.get("blobs")));
+            else if (records.has("databaseResult")) source = IcebergWriteOptions.Records.databaseResult(icebergText(records.get("databaseResult")));
+            else throw icebergInvalid();
+            if (ref.has("revision") && (!ref.get("revision").isIntegralNumber() || !ref.get("revision").canConvertToInt())) throw icebergInvalid();
+            IcebergWriteOptions options = IcebergWriteOptions.create(
+                new DatabaseOptions.ConnectionRef(icebergText(ref.path("name")), ref.has("revision") ? ref.get("revision").intValue() : null),
+                new IcebergWriteOptions.Table(namespace, icebergText(table.path("name"))), source);
+            if (node.has("ref")) options.ref(icebergText(node.get("ref")));
+            if (node.has("mapping")) {
+                if (!node.path("mapping").isArray()) throw icebergInvalid();
+                List<IcebergWriteOptions.Mapping> rows = new ArrayList<>();
+                for (JsonNode row : node.path("mapping")) rows.add(new IcebergWriteOptions.Mapping(icebergText(row.path("field")), icebergText(row.path("column"))));
+                options.mapping(rows);
+            }
+            if (node.has("ignoreUnknownFields")) {
+                if (!node.get("ignoreUnknownFields").isBoolean()) throw icebergInvalid();
+                options.ignoreUnknownFields(node.get("ignoreUnknownFields").booleanValue());
+            }
+            if (node.has("limits")) {
+                JsonNode bounds = node.get("limits");
+                if (!bounds.isObject()) throw icebergInvalid();
+                IcebergWriteOptions.Limits limits = new IcebergWriteOptions.Limits();
+                if (bounds.has("maxRecordBytes")) limits.maxRecordBytes(icebergLong(bounds.get("maxRecordBytes")));
+                if (bounds.has("maxRecords")) limits.maxRecords(icebergLong(bounds.get("maxRecords")));
+                if (bounds.has("timeoutMs")) limits.timeoutMs(icebergLong(bounds.get("timeoutMs")));
+                options.limits(limits);
+            }
+            if (node.has("compensation")) {
+                if (!"revert".equals(icebergText(node.get("compensation")))) throw icebergInvalid();
+                options.compensation(IcebergWriteOptions.Compensation.REVERT);
+            }
+            if (node.has("onError")) options.onError(icebergText(node.get("onError")));
+            return options;
+        } catch (IllegalArgumentException error) {
+            throw icebergInvalid();
+        }
+    }
+
     private static void apply(Flow target, JsonNode ops) {
         for (JsonNode op : ops) {
             String id = op.path("id").asText(null);
             switch (op.path("op").asText()) {
                 case "database" -> target.database(id, databaseOptionsOf(op.path("options")));
+                case "icebergWrite" -> target.icebergWrite(id, icebergOptionsOf(op.path("options")));
                 case "step" -> target.step(id, op.path("activity").asText(null), stepOptionsOf(op.get("options")));
                 case "script" -> {
                     JsonNode o = op.path("options");
@@ -301,13 +396,15 @@ public final class Runner {
                         op.path("items").asText(null),
                         op.path("body").asText(null),
                         op.path("result").asText(null),
-                        CollectionOptions.of(op.path("maxItems").asInt(), op.path("maxConcurrency").asInt()));
+                        CollectionOptions.of(op.path("maxItems").asInt(), op.path("maxConcurrency").asInt()),
+                        operatorsOf(op.get("operators")));
                 case "map" -> target.map(
                         id,
                         op.path("items").asText(null),
                         op.path("body").asText(null),
                         op.path("result").asText(null),
-                        CollectionOptions.of(op.path("maxItems").asInt(), op.path("maxConcurrency").asInt()));
+                        CollectionOptions.of(op.path("maxItems").asInt(), op.path("maxConcurrency").asInt()),
+                        operatorsOf(op.get("operators")));
                 case "while" -> target.whileLoop(
                         id, op.path("condition").asText(null), op.path("body").asText(null),
                         op.path("initial").asText(null), op.path("carry").asText(null), loopOptions(op));
@@ -431,7 +528,8 @@ public final class Runner {
                 updates.put(entry.getKey(), new UpdateDefinition(
                         update.get("argsSchema"), update.path("validate").textValue(),
                         update.path("state").textValue(), update.path("result").textValue(),
-                        update.get("resultSchema"), update.path("disclosure").textValue()));
+                        update.get("resultSchema"), update.path("disclosure").textValue(),
+                        update.path("reapplyOnReset").asBoolean(false)));
             });
             builder.state(new StateDefinition(state.get("schema"), state.path("initial").textValue(), queries, updates));
         }
@@ -535,6 +633,30 @@ public final class Runner {
         if (run.rerunOf() != null) {
             out.put("rerunOf", run.rerunOf());
         }
+        // Present only for a run started under a business identifier, or held by a start delay.
+        if (run.businessId() != null) {
+            out.put("businessId", run.businessId());
+        }
+        if (run.startDelayedUntil() != null) {
+            out.put("startDelayedUntil", Json.instant(run.startDelayedUntil()));
+        }
+        // Present only for a run a schedule started, or a reset made.
+        if (run.schedule() != null) {
+            ObjectNode schedule = out.putObject("schedule");
+            schedule.put("scheduleId", run.schedule().scheduleId());
+            schedule.set("nominalTime", instant(run.schedule().nominalTime()));
+            schedule.put("kind", run.schedule().kind());
+            schedule.put("revision", run.schedule().revision());
+        }
+        if (run.resetFrom() != null) {
+            ObjectNode resetFrom = out.putObject("resetFrom");
+            resetFrom.put("runId", run.resetFrom().runId());
+            resetFrom.put("sequence", run.resetFrom().sequence());
+        }
+        // Present only for a run stopped with a failure code (design 043).
+        if (run.failureCode() != null) {
+            out.put("failureCode", run.failureCode());
+        }
         return out;
     }
 
@@ -573,6 +695,12 @@ public final class Runner {
             }
             out.put("remediation", e.remediation());
             out.put("message", e.getMessage());
+            // design 043: only when the server sent them, so every other refusal reads as it always has
+            // (the field is compared with the rule of a refused run input, not for the other reasons)
+            e.rule().ifPresent(rule -> {
+                out.put("rule", rule);
+                e.field().ifPresent(value -> out.put("field", value));
+            });
             return out;
         }
         out.put("code", "UNEXPECTED");
@@ -661,8 +789,21 @@ public final class Runner {
             }
         }
 
-        for (JsonNode step : scenario.path("steps")) {
-            SagatClient client = clients.get(step.path("token").asText("default"));
+        for (JsonNode given : scenario.path("steps")) {
+            SagatClient client = clients.get(given.path("token").asText("default"));
+            JsonNode step;
+            try {
+                step = Operations.refs(given, config, results);
+            } catch (RuntimeException error) {
+                // A reference to a step that failed is a failure of this step, recorded like any other.
+                ObjectNode failed = F.objectNode();
+                failed.put("id", given.get("id").asText());
+                failed.put("op", given.get("op").asText());
+                failed.put("ok", false);
+                failed.set("error", errorJson(error));
+                observations.add(failed);
+                continue;
+            }
             ObjectNode observation = F.objectNode();
             observation.put("id", step.get("id").asText());
             observation.put("op", step.get("op").asText());
@@ -727,7 +868,7 @@ public final class Runner {
         return result;
     }
 
-    private static String runOf(JsonNode step, Map<String, JsonNode> results) {
+    static String runOf(JsonNode step, Map<String, JsonNode> results) {
         if (step.path("page").isTextual()) {
             // A segment of a page of listChainRuns, by position.
             JsonNode listed = results.get(step.get("page").asText());
@@ -807,7 +948,27 @@ public final class Runner {
                 if (step.has("deadlineInMs")) {
                     options.deadlineIn(Duration.ofMillis(step.get("deadlineInMs").asLong()));
                 }
-                return runJson(client.start(workflow.get("workflowId").asText(), step.has("input") ? step.get("input") : F.objectNode(), options));
+                if (step.has("businessId")) {
+                    options.businessId(step.get("businessId").asText());
+                }
+                if (step.has("businessIdConflictPolicy")) {
+                    options.businessIdConflictPolicy(step.get("businessIdConflictPolicy").asText());
+                }
+                if (step.has("businessIdReusePolicy")) {
+                    options.businessIdReusePolicy(step.get("businessIdReusePolicy").asText());
+                }
+                if (step.has("startDelayMs")) {
+                    // The scenario gives milliseconds; the SDK takes a Duration and drops what is below a millisecond.
+                    options.startDelay(Operations.millis(step.get("startDelayMs")));
+                }
+                StartedRun started = client.startResult(
+                        workflow.get("workflowId").asText(), step.has("input") ? step.get("input") : F.objectNode(), options);
+                ObjectNode result = runJson(started.run());
+                // "started" only when the step asked for a business identifier: the other observations stay as they were.
+                if (step.has("businessId")) {
+                    result.put("started", started.started());
+                }
+                return result;
             }
             case "startWithBlob": {
                 JsonNode workflow = config.path("workflows").path(step.get("workflow").asText());
@@ -1231,6 +1392,9 @@ public final class Runner {
                 return null;
             }
             default:
+                if (Operations.handles(step.get("op").asText())) {
+                    return Operations.play(step, client, config, results);
+                }
                 throw new IllegalArgumentException("unknown step op " + step.get("op").asText());
         }
     }

@@ -1,5 +1,5 @@
-//! A runner that vanishes: what it held goes to another, and what it says afterwards changes
-//! nothing.
+//! A runner that vanishes: builds and test runs can be taken over, but an unknown workflow
+//! effect waits for review. What the stale runner says afterwards changes nothing.
 
 use reqwest::Method;
 use sagat_application::worker::WorkerSettings;
@@ -8,9 +8,41 @@ use serde_json::json;
 use std::time::Duration;
 
 use crate::support::api::Options;
-use crate::support::scripts::{lab, lab_with};
+use crate::support::scripts::{Lab, lab, lab_with};
 
 const FAST_RETRY: &str = r#"{"maxAttempts": 3, "initialDelayMs": 1, "maxDelayMs": 1, "strategy": "fixed", "jitter": false}"#;
+
+async fn assert_lost_step_is_retained(lab: &Lab, run: &str) {
+    assert_eq!(lab.p.status(run).await, "MANUAL_REVIEW");
+    let waiting: (String, Option<String>, Option<String>, i32, bool) = sqlx::query_as(
+        "SELECT status,waiting_kind,failure_code,attempt,next_attempt_at IS NULL \
+         FROM steps WHERE run_id=$1 AND node='s'",
+    )
+    .bind(uuid::Uuid::parse_str(run).expect("run id"))
+    .fetch_one(&lab.p.api.db.pool)
+    .await
+    .expect("retained script obligation");
+    assert_eq!(
+        waiting,
+        (
+            "WAITING".into(),
+            Some("OPERATOR".into()),
+            Some("LEASE_EXPIRED".into()),
+            1,
+            true,
+        ),
+        "an unknown script outcome consumes no second attempt or retry timer"
+    );
+    assert!(lab.output(run, "s").await.is_none());
+    let finished: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM event_outbox WHERE aggregate_id=$1 AND event_type='run.finished'",
+    )
+    .bind(uuid::Uuid::parse_str(run).expect("run id"))
+    .fetch_one(&lab.p.api.db.pool)
+    .await
+    .expect("terminal event count");
+    assert_eq!(finished, 0, "uncertainty is not a terminal outcome");
+}
 
 #[tokio::test]
 async fn a_build_whose_runner_dies_is_taken_over_and_what_the_dead_one_says_late_changes_nothing() {
@@ -131,7 +163,7 @@ public sealed class Script : IInlineScript
 }
 
 #[tokio::test]
-async fn a_step_whose_runner_dies_runs_again_elsewhere_and_the_late_attempt_is_dropped() {
+async fn a_step_whose_runner_dies_waits_for_review_and_the_late_attempt_is_dropped() {
     let options = Options {
         worker: WorkerSettings {
             lease_ttl: Duration::from_secs(5),
@@ -161,50 +193,67 @@ async fn a_step_whose_runner_dies_runs_again_elsewhere_and_the_late_attempt_is_d
     let mut first = lab.runner.poll_steps(&namespace).await.expect("poll");
     assert_eq!(first.len(), 1);
     let slow = first.remove(0);
-    // The runner holding it goes quiet. The engine takes the step back and offers it again.
+    assert_eq!(slow.lease.idempotency_key, format!("{run}:s"));
+    // The runner goes quiet. The engine cannot know whether the script had an external effect,
+    // even though this fixture has not called run_step yet and the retry budget allows more.
     lab.p.expire_lease(&run, "s").await;
     lab.p.tick().await;
-    lab.p.elapse_retry_delay(&run, "s").await;
+    assert_lost_step_is_retained(&lab, &run).await;
     lab.p.tick().await;
-    let mut second = lab.runner.poll_steps(&namespace).await.expect("poll again");
-    assert_eq!(second.len(), 1, "the step is offered again");
-    let retry = second.remove(0);
-    assert_eq!(
-        lab.runner.run_step(retry).await.expect("run"),
-        StepOutcome::Completed
+    assert!(
+        lab.runner
+            .poll_steps(&namespace)
+            .await
+            .expect("poll again")
+            .is_empty(),
+        "review never offers an automatic repeat"
     );
-    lab.p.tick().await;
-    assert_eq!(lab.p.status(&run).await, "SUCCEEDED");
-    let kept = lab.output(&run, "s").await.expect("output");
+    let before: i64 = sqlx::query_scalar("SELECT count(*) FROM run_events WHERE run_id=$1")
+        .bind(uuid::Uuid::parse_str(&run).expect("run id"))
+        .fetch_one(&lab.p.api.db.pool)
+        .await
+        .expect("journal before the stale runner");
 
-    // The first attempt finally gets to run, and its report is dropped: the run already has an answer.
+    // The stale runner cannot acquire script capabilities or settle the retained obligation.
     assert_eq!(
         lab.runner.run_step(slow).await.expect("late"),
         StepOutcome::Abandoned
     );
-    assert_eq!(lab.output(&run, "s").await, Some(kept.clone()));
-    // A script runs at least once per attempt, and may run more than once per step; what makes an
-    // external effect safe to repeat is the key it can put in the request, the same on every attempt.
-    let key = kept["key"].as_str().expect("the key").to_owned();
-    assert_eq!(key, format!("{run}:s"));
-    // The attempt that lost its lease is stopped at the next beat of the lease if it is still
-    // running, and recorded if it finished before: either way the record that exists says what
-    // ran, with the key.
-    let executions = lab.executions(&digest).await;
+    lab.p.tick().await;
+    assert_lost_step_is_retained(&lab, &run).await;
+    let after: i64 = sqlx::query_scalar("SELECT count(*) FROM run_events WHERE run_id=$1")
+        .bind(uuid::Uuid::parse_str(&run).expect("run id"))
+        .fetch_one(&lab.p.api.db.pool)
+        .await
+        .expect("journal after the stale runner");
+    assert_eq!(after, before, "a stale attempt cannot rewrite the journal");
+    assert!(lab.executions(&digest).await.is_empty());
+
+    // Stopping future work cannot turn the lost attempt into a known no-effect outcome.
+    let (status, accepted) = lab
+        .p
+        .rest(
+            Method::POST,
+            &format!("/runs/{run}/operations"),
+            Some(
+                &json!({"action": "CANCEL", "reason": "stop while the script outcome is unknown"}),
+            ),
+        )
+        .await;
+    assert_eq!(status, 202, "{accepted}");
+    lab.p.tick().await;
+    assert_lost_step_is_retained(&lab, &run).await;
     assert!(
-        (1..=2).contains(&executions.len()),
-        "the second attempt is on record, the first if it got to finish: {executions:?}"
+        lab.runner
+            .poll_steps(&namespace)
+            .await
+            .expect("poll after cancellation")
+            .is_empty()
     );
-    for execution in executions {
-        assert!(
-            execution["log"].as_str().expect("log").contains(&key),
-            "{execution}"
-        );
-    }
 }
 
 #[tokio::test]
-async fn a_runner_that_restarts_serves_what_the_one_before_it_never_started() {
+async fn a_runner_that_restarts_preserves_unknown_work_and_serves_new_work() {
     let mut lab = lab().await;
     let script = lab
         .script(
@@ -232,7 +281,21 @@ async fn a_runner_that_restarts_serves_what_the_one_before_it_never_started() {
     lab.restart().await;
     lab.p.expire_lease(&run, "s").await;
     lab.p.tick().await;
-    lab.p.elapse_retry_delay(&run, "s").await;
-    assert_eq!(lab.drive(&run).await, "SUCCEEDED");
-    assert_eq!(lab.output(&run, "s").await, Some(json!({"ok": true})));
+    assert_lost_step_is_retained(&lab, &run).await;
+    assert!(
+        lab.runner
+            .poll_steps(&namespace)
+            .await
+            .expect("poll after restart")
+            .is_empty(),
+        "a new runner session does not make the old outcome known"
+    );
+    assert!(lab.executions(&digest).await.is_empty());
+
+    // Restart still restores service for new work; it does not recover by repeating the lost work.
+    let fresh = lab.p.start(&workflow, &json!({})).await;
+    assert_eq!(lab.drive(&fresh).await, "SUCCEEDED");
+    assert_eq!(lab.output(&fresh, "s").await, Some(json!({"ok": true})));
+    assert_eq!(lab.executions(&digest).await.len(), 1);
+    assert_lost_step_is_retained(&lab, &run).await;
 }

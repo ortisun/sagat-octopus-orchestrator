@@ -161,6 +161,12 @@ public final class WorkflowBuilder {
         return this;
     }
 
+    /** An append to an Iceberg table. The lake runner resolves the connection; no credential appears in the workflow. */
+    public WorkflowBuilder icebergWrite(String id, IcebergWriteOptions options) {
+        body.icebergWrite(id, options);
+        return this;
+    }
+
     public WorkflowBuilder sleep(String id, Duration duration) {
         body.sleep(id, duration);
         return this;
@@ -208,6 +214,20 @@ public final class WorkflowBuilder {
 
     public WorkflowBuilder map(String id, String items, String bodyName, String result, CollectionOptions options) {
         body.map(id, items, bodyName, result, options);
+        return this;
+    }
+
+    /** {@link Flow#forEach(String, String, String, String, CollectionOptions, Operators)} on the top flow. */
+    public WorkflowBuilder forEach(String id, String items, String bodyName, String result, CollectionOptions options,
+            Operators operators) {
+        body.forEach(id, items, bodyName, result, options, operators);
+        return this;
+    }
+
+    /** {@link Flow#map(String, String, String, String, CollectionOptions, Operators)} on the top flow. */
+    public WorkflowBuilder map(String id, String items, String bodyName, String result, CollectionOptions options,
+            Operators operators) {
+        body.map(id, items, bodyName, result, options, operators);
         return this;
     }
 

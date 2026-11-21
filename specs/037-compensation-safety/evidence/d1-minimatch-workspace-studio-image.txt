@@ -1,0 +1,245 @@
+$ docker build --progress=plain -f infra/docker/Dockerfile --target studio -t sagat-037-minimatch-review:scoped-workspace .
+#0 building with "desktop-linux" instance using docker driver
+
+#1 [internal] load build definition from Dockerfile
+#1 transferring dockerfile: 7.13kB done
+#1 DONE 0.0s
+
+#2 [auth] docker/dockerfile:pull token for registry-1.docker.io
+#2 DONE 0.0s
+
+#3 resolve image config for docker-image://docker.io/docker/dockerfile:1.7
+#3 DONE 0.8s
+
+#4 docker-image://docker.io/docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
+#4 resolve docker.io/docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e done
+#4 CACHED
+
+#5 [auth] library/node:pull token for registry-1.docker.io
+#5 DONE 0.0s
+
+#6 [internal] load metadata for docker.io/library/node:22-bookworm-slim
+#6 DONE 0.7s
+
+#7 [internal] load .dockerignore
+#7 transferring context: 411B done
+#7 DONE 0.0s
+
+#8 [studio  1/12] FROM docker.io/library/node:22-bookworm-slim@sha256:4b150b48b4116e2a22f2c39cc27025fbf4f153e2078fd3b14d159fdb5c7279da
+#8 resolve docker.io/library/node:22-bookworm-slim@sha256:4b150b48b4116e2a22f2c39cc27025fbf4f153e2078fd3b14d159fdb5c7279da done
+#8 DONE 0.0s
+
+#9 [internal] load build context
+#9 transferring context: 278.12kB 0.0s done
+#9 DONE 0.0s
+
+#10 [studio  2/12] WORKDIR /src/frontend
+#10 CACHED
+
+#11 [studio  3/12] COPY frontend/package.json frontend/package-lock.json frontend/tsconfig.base.json frontend/.npmrc ./
+#11 DONE 0.0s
+
+#12 [studio  4/12] COPY frontend/apps/studio/package.json apps/studio/package.json
+#12 DONE 0.0s
+
+#13 [studio  5/12] COPY frontend/e2e/package.json e2e/package.json
+#13 DONE 0.0s
+
+#14 [studio  6/12] COPY frontend/tools/minimatch-compat tools/minimatch-compat
+#14 DONE 0.0s
+
+#15 [studio  7/12] COPY frontend/tools/minimatch.test.mjs tools/minimatch.test.mjs
+#15 DONE 0.0s
+
+#16 [studio  8/12] RUN npm ci --ignore-scripts --no-audit --no-fund --workspace @sagat/studio
+#16 2.901 npm warn deprecated eslint@9.39.5: This version is no longer supported. Please see https://eslint.org/version-support for other options.
+#16 6.685 
+#16 6.685 added 423 packages in 7s
+#16 6.686 npm notice
+#16 6.686 npm notice New major version of npm available! 10.9.9 -> 12.2.1
+#16 6.686 npm notice Changelog: https://github.com/npm/cli/releases/tag/v12.2.1
+#16 6.686 npm notice To update run: npm install -g npm@12.2.1
+#16 6.686 npm notice
+#16 DONE 7.4s
+
+#17 [studio  9/12] RUN npm run test:tooling
+#17 0.221 
+#17 0.221 > test:tooling
+#17 0.221 > node --test tools/minimatch.test.mjs
+#17 0.221 
+#17 0.247 TAP version 13
+#17 0.355 # Subtest: @eslint/config-array resolves the reviewed bridge and patched matcher
+#17 0.356 ok 1 - @eslint/config-array resolves the reviewed bridge and patched matcher
+#17 0.356   ---
+#17 0.356   duration_ms: 10.97975
+#17 0.356   type: 'test'
+#17 0.356   ...
+#17 0.356 # Subtest: @eslint/eslintrc resolves the reviewed bridge and patched matcher
+#17 0.357 ok 2 - @eslint/eslintrc resolves the reviewed bridge and patched matcher
+#17 0.357   ---
+#17 0.357   duration_ms: 1.13425
+#17 0.357   type: 'test'
+#17 0.357   ...
+#17 0.357 # Subtest: eslint resolves the reviewed bridge and patched matcher
+#17 0.357 ok 3 - eslint resolves the reviewed bridge and patched matcher
+#17 0.357   ---
+#17 0.357   duration_ms: 0.503792
+#17 0.357   type: 'test'
+#17 0.357   ...
+#17 0.357 # Subtest: eslint-plugin-jsx-a11y resolves the reviewed bridge and patched matcher
+#17 0.357 ok 4 - eslint-plugin-jsx-a11y resolves the reviewed bridge and patched matcher
+#17 0.357   ---
+#17 0.357   duration_ms: 0.881
+#17 0.357   type: 'test'
+#17 0.357   ...
+#17 0.358 # Subtest: @redocly/openapi-core resolves the reviewed bridge and patched matcher
+#17 0.358 ok 5 - @redocly/openapi-core resolves the reviewed bridge and patched matcher
+#17 0.358   ---
+#17 0.358   duration_ms: 0.548291
+#17 0.358   type: 'test'
+#17 0.358   ...
+#17 0.358 # Subtest: @typescript-eslint/typescript-estree resolves the reviewed bridge and patched matcher
+#17 0.359 ok 6 - @typescript-eslint/typescript-estree resolves the reviewed bridge and patched matcher
+#17 0.359   ---
+#17 0.359   duration_ms: 0.74425
+#17 0.359   type: 'test'
+#17 0.359   ...
+#17 0.359 # Subtest: native ESM has both default and named imports required by tooling
+#17 0.359 ok 7 - native ESM has both default and named imports required by tooling
+#17 0.359   ---
+#17 0.359   duration_ms: 1.321125
+#17 0.359   type: 'test'
+#17 0.359   ...
+#17 0.359 # Subtest: optimization level 2 bounds globparts amplification in the actual installed matcher
+#17 0.359 ok 8 - optimization level 2 bounds globparts amplification in the actual installed matcher
+#17 0.359   ---
+#17 0.359   duration_ms: 30.461542
+#17 0.359   type: 'test'
+#17 0.359   ...
+#17 0.359 # Subtest: ESLint matching retains directory traversal, basename and negated-pattern options
+#17 0.359 ok 9 - ESLint matching retains directory traversal, basename and negated-pattern options
+#17 0.360   ---
+#17 0.360   duration_ms: 0.906208
+#17 0.360   type: 'test'
+#17 0.360   ...
+#17 0.360 # Subtest: jsx-a11y wildcard custom controls exercise the legacy callable matcher
+#17 0.360 ok 10 - jsx-a11y wildcard custom controls exercise the legacy callable matcher
+#17 0.360   ---
+#17 0.360   duration_ms: 19.161625
+#17 0.360   type: 'test'
+#17 0.360   ...
+#17 0.360 # Subtest: Redocly URL-header rules include only matching hosts and paths
+#17 0.360 ok 11 - Redocly URL-header rules include only matching hosts and paths
+#17 0.360   ---
+#17 0.360   duration_ms: 19.752459
+#17 0.360   type: 'test'
+#17 0.360   ...
+#17 0.368 1..11
+#17 0.368 # tests 11
+#17 0.368 # suites 0
+#17 0.368 # pass 11
+#17 0.368 # fail 0
+#17 0.368 # cancelled 0
+#17 0.368 # skipped 0
+#17 0.368 # todo 0
+#17 0.368 # duration_ms 126.962542
+#17 DONE 0.4s
+
+#18 [studio 10/12] COPY frontend/apps/studio apps/studio
+#18 DONE 0.1s
+
+#19 [studio 11/12] COPY specs/001-platform-foundation/contracts specs/001-platform-foundation/contracts
+#19 DONE 0.0s
+
+#20 [studio 12/12] RUN npm run build --workspace @sagat/studio
+#20 0.156 
+#20 0.156 > @sagat/studio@0.2.0 build
+#20 0.156 > tsc --noEmit && vite build
+#20 0.156 
+#20 6.810 vite v7.3.7 building client environment for production...
+#20 6.853 transforming...
+#20 29.31 ✓ 1515 modules transformed.
+#20 29.69 rendering chunks...
+#20 30.25 computing gzip size...
+#20 30.33 dist/index.html                                             0.52 kB │ gzip:     0.31 kB
+#20 30.33 dist/assets/geist-mono-latin-400-normal.DTRLJnHl.woff2      9.86 kB
+#20 30.33 dist/assets/geist-mono-latin-500-normal.YINYabwD.woff2     10.12 kB
+#20 30.33 dist/assets/geist-latin-400-normal.B40WzpMT.woff2          12.96 kB
+#20 30.33 dist/assets/geist-mono-latin-400-normal.B2yvC1Cq.woff      13.04 kB
+#20 30.33 dist/assets/geist-latin-500-normal.CTWBw9NS.woff2          13.30 kB
+#20 30.33 dist/assets/geist-mono-latin-500-normal.D-GG86Jb.woff      13.34 kB
+#20 30.33 dist/assets/geist-latin-600-normal.CSETrqM2.woff2          13.37 kB
+#20 30.33 dist/assets/geist-latin-400-normal.akEymXtG.woff           16.76 kB
+#20 30.33 dist/assets/geist-latin-500-normal.BDXIbFrL.woff           17.10 kB
+#20 30.33 dist/assets/geist-latin-600-normal.DsPlZH-9.woff           17.15 kB
+#20 30.33 dist/assets/codicon.DF1abBS2.ttf                          153.23 kB
+#20 30.33 dist/assets/editor.worker-CHzQTjO0.js                     275.63 kB
+#20 30.33 dist/assets/json.worker-BggoxaER.js                       406.91 kB
+#20 30.33 dist/assets/ts.worker-BrLZGe_E.js                       7,034.76 kB
+#20 30.33 dist/assets/namespaces.CC3vSQTu.css                         0.22 kB │ gzip:     0.17 kB
+#20 30.33 dist/assets/connections.CNzUZtkE.css                        0.46 kB │ gzip:     0.25 kB
+#20 30.33 dist/assets/CodeEditor.BWLkQNqP.css                         1.11 kB │ gzip:     0.48 kB
+#20 30.33 dist/assets/database.CVHGbdNF.css                           1.12 kB │ gzip:     0.48 kB
+#20 30.33 dist/assets/OperationsPage.DtenBwl2.css                     2.33 kB │ gzip:     0.67 kB
+#20 30.33 dist/assets/useScriptsApi.DWNcgNB6.css                      3.70 kB │ gzip:     1.13 kB
+#20 30.33 dist/assets/index.DmbDZaCT.css                             13.96 kB │ gzip:     3.49 kB
+#20 30.33 dist/assets/workflows.BlRg5II-.css                         14.56 kB │ gzip:     3.19 kB
+#20 30.33 dist/assets/initialViewport.BnuhLJ6X.css                   15.87 kB │ gzip:     2.67 kB
+#20 30.33 dist/assets/RunsPage.CpsMyvzG.css                          16.73 kB │ gzip:     3.86 kB
+#20 30.33 dist/assets/MonacoEditor.CBIBCA2r.css                     186.54 kB │ gzip:    27.72 kB
+#20 30.33 dist/assets/StatusBadge.WYl1bRZz.js                         0.25 kB │ gzip:     0.20 kB
+#20 30.33 dist/assets/api.XHrHlW6E.js                                 0.33 kB │ gzip:     0.22 kB
+#20 30.33 dist/assets/connections.DOlZoEPP.js                         0.39 kB │ gzip:     0.26 kB
+#20 30.33 dist/assets/Tabs.C-ijEkh6.js                                0.95 kB │ gzip:     0.55 kB
+#20 30.33 dist/assets/useInfiniteQuery.BfZHPR6Y.js                    1.12 kB │ gzip:     0.47 kB
+#20 30.33 dist/assets/Now.CYyOz_r9.js                                 1.14 kB │ gzip:     0.54 kB
+#20 30.33 dist/assets/ErrorState.Bktif18u.js                          1.21 kB │ gzip:     0.64 kB
+#20 30.33 dist/assets/time.pNJXdo7N.js                                1.24 kB │ gzip:     0.60 kB
+#20 30.33 dist/assets/useDatabaseCommand.Djni6ZbQ.js                  2.15 kB │ gzip:     1.06 kB
+#20 30.33 dist/assets/StartRun.Dsg2JWzk.js                            3.09 kB │ gzip:     1.58 kB
+#20 30.33 dist/assets/CodeEditor.B_LFmpHG.js                          3.26 kB │ gzip:     1.44 kB
+#20 30.33 dist/assets/python.DwBv5aWI.js                              3.76 kB │ gzip:     1.47 kB
+#20 30.33 dist/assets/follow.D1bTodIO.js                              4.15 kB │ gzip:     1.94 kB
+#20 30.33 dist/assets/csharp.Co3qMtFm.js                              4.39 kB │ gzip:     1.69 kB
+#20 30.33 dist/assets/NamespacesPage.g4eZ4957.js                      4.42 kB │ gzip:     1.86 kB
+#20 30.33 dist/assets/typescript.DY5OnN6E.js                          4.94 kB │ gzip:     1.97 kB
+#20 30.33 dist/assets/WorkflowsPage.ByD1eqcV.js                       5.71 kB │ gzip:     2.44 kB
+#20 30.33 dist/assets/SecretsPage.BamcrNoz.js                         5.78 kB │ gzip:     2.31 kB
+#20 30.33 dist/assets/useScriptsApi.DXKDkLpd.js                       5.98 kB │ gzip:     2.56 kB
+#20 30.33 dist/assets/registry.DmyqMd7z.js                            6.77 kB │ gzip:     2.28 kB
+#20 30.33 dist/assets/ScriptsPage.B4PDT0Cv.js                         7.07 kB │ gzip:     2.70 kB
+#20 30.33 dist/assets/DatabaseExecutionsPage.CWAAZs3e.js              7.15 kB │ gzip:     3.09 kB
+#20 30.33 dist/assets/workflows.CJP_rT7H.js                           9.81 kB │ gzip:     4.10 kB
+#20 30.33 dist/assets/OperationsPage.R0L4yvCz.js                     11.83 kB │ gzip:     3.89 kB
+#20 30.33 dist/assets/workers.DEIEgavq.js                            13.37 kB │ gzip:     4.02 kB
+#20 30.33 dist/assets/IntegrationsPage.CfcoDCQE.js                   13.74 kB │ gzip:     4.69 kB
+#20 30.33 dist/assets/ConnectionsPage.B_77csap.js                    14.55 kB │ gzip:     5.07 kB
+#20 30.33 dist/assets/RunsPage.D3C7s5oe.js                           18.79 kB │ gzip:     6.83 kB
+#20 30.33 dist/assets/tsMode.D-9AG91q.js                             22.04 kB │ gzip:     6.26 kB
+#20 30.33 dist/assets/index.DZ_-1C1O.js                              25.97 kB │ gzip:     7.88 kB
+#20 30.33 dist/assets/useEditorStore.BEq__TYC.js                     38.62 kB │ gzip:    12.60 kB
+#20 30.33 dist/assets/jsonMode.k4xKQdJc.js                           40.83 kB │ gzip:    11.86 kB
+#20 30.33 dist/assets/ScriptEditorPage.CUsgXIt7.js                   54.12 kB │ gzip:    16.70 kB
+#20 30.33 dist/assets/WorkflowEditorPage.CerkCr3S.js                 64.17 kB │ gzip:    21.16 kB
+#20 30.33 dist/assets/initialViewport.DcYtQtoo.js                    84.29 kB │ gzip:    26.06 kB
+#20 30.33 dist/assets/RunDetailPage.HG8kBMMm.js                      85.08 kB │ gzip:    26.33 kB
+#20 30.33 dist/assets/layout.KgPJyD8P.js                            145.89 kB │ gzip:    51.11 kB
+#20 30.33 dist/assets/index.DeXblfZL.js                             384.85 kB │ gzip:   122.72 kB
+#20 30.33 dist/assets/MonacoEditor.DsxY8hSr.js                    3,978.46 kB │ gzip: 1,031.91 kB
+#20 30.33 ✓ built in 23.50s
+#20 DONE 30.5s
+
+#21 exporting to image
+#21 exporting layers
+#21 exporting layers 7.9s done
+#21 exporting manifest sha256:33e2429c3d0eee7bcfd09f3313e74aea6eda1b078dcd80faa8576593c716ff75 done
+#21 exporting config sha256:2393c8b22bbf3494296ffbd93333ce5b5795956dceebcee88e91e5bdd6efa5c9 done
+#21 exporting attestation manifest sha256:276df0d73c9e4ca9df904090f1b791a4fec7164ef918ad55e104348d49208037 done
+#21 exporting manifest list sha256:e05c3281d2d28b90c161b489b22a265776d8fab689a1233c75cdc4c3d8b431ce done
+#21 naming to docker.io/library/sagat-037-minimatch-review:scoped-workspace done
+#21 unpacking to docker.io/library/sagat-037-minimatch-review:scoped-workspace
+#21 unpacking to docker.io/library/sagat-037-minimatch-review:scoped-workspace 2.4s done
+#21 DONE 10.3s
+
+View build details: docker-desktop://dashboard/build/desktop-linux/desktop-linux/oqlq8lzkfiizdydc4f1miucp7
+exit: 0

@@ -26,6 +26,9 @@ pub struct Config {
     pub development_loopback: bool,
     pub deployment: DeploymentPolicy,
     pub namespaces: Vec<NamespacePolicy>,
+    /// The lake profile (feature 035). Absent means it is off: the lake activities are not offered.
+    #[serde(default)]
+    pub lake: Option<crate::lake::settings::LakeSettings>,
 }
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
@@ -125,6 +128,10 @@ impl Config {
         }
         self.network()?;
         self.deployment.limits.validated()?;
+        if let Some(lake) = &self.lake {
+            lake.validated(self.development_loopback)
+                .map_err(|_| invalid())?;
+        }
         let mut ids = std::collections::BTreeSet::new();
         let mut slugs = std::collections::BTreeSet::new();
         for namespace in &self.namespaces {
@@ -306,5 +313,40 @@ mod tests {
             .unwrap();
         assert!(Config::read(&path).await.is_err());
         assert!(bounded_file(directory.path(), 10).await.is_err());
+    }
+    #[test]
+    fn the_lake_section_is_optional_and_when_present_is_validated_whole() {
+        let parse = |value: &serde_json::Value| Config::parse(&serde_json::to_vec(value).unwrap());
+        let section = json!({
+            "workRoot": "/work", "sandboxSocket": "/run/sagat/lake-sandbox.sock", "sandboxUid": 10002,
+            "slots": 8, "relayAllowCidrs": ["0.0.0.0/0"], "relayDenyCidrs": ["10.0.0.0/8"]
+        });
+        let mut value = document();
+        assert!(parse(&value).unwrap().lake.is_none(), "absent means off");
+
+        value["lake"] = section.clone();
+        assert!(parse(&value).unwrap().lake.is_some());
+
+        // a section that is not valid stops the runner; it is not left off
+        value["lake"]["slots"] = json!(0);
+        assert!(parse(&value).is_err());
+        value["lake"] = section.clone();
+        value["lake"]["image"] = json!("evil");
+        assert!(parse(&value).is_err());
+
+        // an empty allowance reaches nothing: refused, except in development
+        value["lake"] = section;
+        value["lake"]["relayAllowCidrs"] = json!([]);
+        assert!(parse(&value).is_err());
+        // and the platform's own ranges must be named: the relay denies nothing but loopback, link-local and metadata
+        value["lake"]["relayAllowCidrs"] = json!(["0.0.0.0/0"]);
+        value["lake"]["relayDenyCidrs"] = json!([]);
+        assert!(parse(&value).is_err());
+        value["lake"]["relayDenyCidrs"] = json!(["10.0.0.0/8"]);
+        assert!(parse(&value).is_ok());
+        value["lake"]["relayAllowCidrs"] = json!([]);
+        value["developmentLoopback"] = json!(true);
+        value["grpcUrl"] = json!("http://127.0.0.1:8443");
+        assert!(parse(&value).unwrap().lake.is_some());
     }
 }

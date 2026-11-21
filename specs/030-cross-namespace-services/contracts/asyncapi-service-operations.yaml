@@ -1,0 +1,84 @@
+asyncapi: 3.0.0
+info:
+  title: DRAFT fragment — feature 030 service operation hints
+  version: 0.0.0-draft.030
+  description: |
+    Not canonical. T030-007 adds these two channels, their operations and messages to
+    specs/001-platform-foundation/contracts/events.asyncapi.yaml (a minor version bump: messages
+    are only added) and regenerates events.baseline.json deliberately. Both are hints published by
+    the existing outbox dispatcher after the commit that wrote the row they point at: identifiers,
+    kinds, states and codes only, never inputs, results, schemas or secrets. Delivery is
+    at-least-once and unordered; `Nats-Msg-Id` is the outbox row id. The durable record is the
+    `service_operation_messages` row; a lost hint only delays the polling pass (FR-030-028).
+defaultContentType: application/json
+servers:
+  internal:
+    host: nats:4222
+    protocol: nats
+channels:
+  serviceOperationMessage:
+    address: sagat.v1.service.operation.message.{tenant}
+    description: An operation message became pending (START, CANCEL, STARTED, START_REFUSED, COMPLETED). The engine's pass for the message's shard wakes early; it still claims the row in PostgreSQL.
+    parameters:
+      tenant:
+        description: Tenant id (UUID).
+    messages:
+      serviceOperationMessage:
+        $ref: '#/components/messages/ServiceOperationMessage'
+  serviceOperationFinished:
+    address: sagat.v1.service.operation.finished.{tenant}
+    description: A caller record reached a terminal state. Nothing in the platform consumes it; it lets an operator or an integration watch calls without polling. Read the operation before acting on it.
+    parameters:
+      tenant:
+        description: Tenant id (UUID).
+    messages:
+      serviceOperationFinished:
+        $ref: '#/components/messages/ServiceOperationFinished'
+operations:
+  publishServiceOperationMessage:
+    action: send
+    channel: {$ref: '#/channels/serviceOperationMessage'}
+    messages: [{$ref: '#/channels/serviceOperationMessage/messages/serviceOperationMessage'}]
+  publishServiceOperationFinished:
+    action: send
+    channel: {$ref: '#/channels/serviceOperationFinished'}
+    messages: [{$ref: '#/channels/serviceOperationFinished/messages/serviceOperationFinished'}]
+components:
+  messages:
+    ServiceOperationMessage:
+      name: ServiceOperationMessage
+      contentType: application/json
+      headers:
+        type: object
+        properties:
+          Nats-Msg-Id: {type: string, description: 'The outbox row id; stable across redeliveries.'}
+      payload:
+        type: object
+        required: [tenantId, operationId, kind, toNamespaceId, shard]
+        properties:
+          tenantId: {type: string, format: uuid}
+          operationId: {type: string, format: uuid}
+          kind: {type: string, enum: [START, CANCEL, STARTED, START_REFUSED, COMPLETED]}
+          toNamespaceId: {type: string, format: uuid, description: 'The namespace whose engine pass consumes the message.'}
+          shard: {type: integer, minimum: 0, maximum: 63, description: 'run_shard of the receiving run (ADR-0020).'}
+          traceId: {type: [string, 'null'], description: 'W3C trace id (32 hex) of the caller run.'}
+    ServiceOperationFinished:
+      name: ServiceOperationFinished
+      contentType: application/json
+      headers:
+        type: object
+        properties:
+          Nats-Msg-Id: {type: string, description: 'The outbox row id; stable across redeliveries.'}
+      payload:
+        type: object
+        required: [tenantId, operationId, callerNamespaceId, handlerNamespaceId, callerRunId, state]
+        properties:
+          tenantId: {type: string, format: uuid}
+          operationId: {type: string, format: uuid}
+          callerNamespaceId: {type: string, format: uuid}
+          handlerNamespaceId: {type: string, format: uuid}
+          callerRunId: {type: string, format: uuid}
+          handlerRunId: {type: [string, 'null'], format: uuid, description: 'Absent when no handler run was admitted.'}
+          state: {type: string, enum: [SUCCEEDED, FAILED, CANCELLED, TIMED_OUT, START_TIMED_OUT], description: 'Consumers must accept values they do not know.'}
+          outcomeCode: {type: [string, 'null'], description: 'A code of the closed list or one the operation declares; never free text.'}
+          traceId: {type: [string, 'null'], description: 'W3C trace id (32 hex) of the caller run.'}

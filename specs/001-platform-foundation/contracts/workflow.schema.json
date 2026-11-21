@@ -45,7 +45,8 @@
       "minLength": 1
     },
     "inputSchema": {
-      "type": "object"
+      "type": "object",
+      "description": "The schema every run input of this version is checked against before the run is created (design 043, ADR-0090). It must stay within the supported subset of JSON Schema, with one meaning under $schema absent, draft-07 and 2020-12: type, properties, required, items (one schema), additionalProperties, enum, const, minimum, maximum, exclusiveMinimum, exclusiveMaximum (numbers), multipleOf (a positive integer), minLength, maxLength, minItems, maxItems, minProperties, maxProperties, pattern (an allowlisted syntax: no \\d, \\w, \\s, \\b, Unicode or POSIX classes, flags or named groups), allOf, anyOf, oneOf, a local $ref (no cycle, no sibling keyword but annotations), $defs, definitions, the annotations title, description, default, examples, $comment and format (never asserted), $schema and $id at the root only, and x-sagat-classification. Any other keyword makes the schema unusable: from 0.3.0 publication refuses it in enforce mode and every start of a stored version with it is refused RUN_INPUT_SCHEMA_UNUSABLE. The keyword list is specs/043-run-input-validation/contracts/errors.md and Technical Plan 4 of docs/designs/043-run-input-validation.md."
     },
     "outputSchema": {
       "type": "object"
@@ -136,6 +137,9 @@
         },
         {
           "$ref": "#/$defs/database"
+        },
+        {
+          "$ref": "#/$defs/icebergWrite"
         },
         {
           "$ref": "#/$defs/timer"
@@ -243,11 +247,11 @@
             },
             "compensateWith": {
               "type": "string",
-              "description": "The activity that undoes this one. It runs when a saga around this node compensates, or, for a step in the body of a collection or loop, when that scope stops (a failed iteration, a cancellation) with iterations that completed: inside one iteration in reverse dependency order, between collection iterations in no order, and across loop iterations last iteration first. It must be idempotent and tolerate an effect that never happened."
+              "description": "The activity that undoes this one. It runs when a saga around this node compensates, or, for a step in the body of a collection or loop, when that scope stops (a failed iteration, a cancellation) with iterations that completed: inside one iteration in reverse dependency order, between collection iterations in no order, and across loop iterations last iteration first. It must be idempotent. Feature 037: it is planned only for an effect that succeeded (or that a person settled as having happened); an effect whose outcome is unknown waits for review instead of being compensated defensively."
             },
             "reconcileWith": {
               "type": "string",
-              "description": "The activity that finds out whether this one happened, after an attempt with an unknown outcome. It answers {\"effect\": \"applied\"|\"not_applied\"|\"unknown\"} and, for applied, optionally {\"output\": ...}."
+              "description": "The activity that finds out whether this one happened, after an attempt with an unknown outcome. It answers {\"effect\": \"applied\"|\"not_applied\"|\"unknown\"} and, for applied, optionally {\"output\": ...}. Feature 037: `applied` completes the step; `not_applied` and `unknown` are not final, so the step waits for a person (`RECONCILIATION_NOT_FINAL`, `RECONCILIATION_UNKNOWN`) and is never retried automatically."
             },
             "idempotencyTemplate": {
               "type": "string"
@@ -277,7 +281,11 @@
             },
             "highRisk": {
               "type": "boolean",
-              "description": "An attempt whose outcome is unknown (lease lost, timeout, OUTCOME_UNKNOWN) is never retried or compensated blindly: it is reconciled when reconcileWith says how, and otherwise waits for an operator."
+              "description": "Informational since feature 037. Every activity's attempt whose outcome is unknown (lease lost, timeout, OUTCOME_UNKNOWN) is never retried or compensated blindly, whether or not it is high risk: it is reconciled when reconcileWith says how, and otherwise waits for an operator."
+            },
+            "destinations": {
+              "$ref": "#/$defs/stepDestinations",
+              "description": "Synchronous step-output destinations (feature 035). Refused inside structured bodies; at most 8 per step."
             }
           }
         }
@@ -492,7 +500,7 @@
                 "manual_review",
                 "fail"
               ],
-              "description": "manual_review (default): a compensation that fails after its retries waits for an operator. fail: the saga ends COMPENSATION_FAILED."
+              "description": "manual_review (default): a compensation that fails after its retries waits for an operator. fail: the saga ends COMPENSATION_FAILED, only for a known permanent failure after the retries, once every independent compensation has settled; an unknown, accepted or pending compensation outcome still waits for review (feature 037)."
             },
             "cancelPolicy": {
               "enum": [
@@ -1022,6 +1030,10 @@
         },
         "limits": {
           "$ref": "#/$defs/databaseLimits"
+        },
+        "destinations": {
+          "$ref": "#/$defs/stepDestinations",
+          "description": "Synchronous step-output destinations (feature 035). Refused inside structured bodies; at most 8 per step."
         }
       }
     },
@@ -1109,6 +1121,9 @@
         "items": {
           "$ref": "#/$defs/expression"
         },
+        "operators": {
+          "$ref": "#/$defs/collectionOperators"
+        },
         "body": {
           "$ref": "#/$defs/nodeId"
         },
@@ -1135,6 +1150,178 @@
         "maxItems",
         "maxConcurrency",
         "next"
+      ]
+    },
+    "collectionOperators": {
+      "description": "Stages applied once, when the collection is entered, to the list `items` yields; the body runs for each element of the last stage's output (design 042, ADR-0087). One to eight stages, in any order, each over the list the previous one produced. Stage expressions read `element` (the current element of the stage's input), `position` (its 0-based index in that input), `input`, `steps`, `run` and `state`; they never read `item`, `index`, `iteration`, `carry` or `bodyResult`. The body's `index` is the position in the output. Publication needs the deployment's collection-operators switch. `debounce` and `ignoreElements` are trigger operators and are refused here.",
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 8,
+      "items": {
+        "$ref": "#/$defs/collectionOperatorStage"
+      }
+    },
+    "collectionOperatorStage": {
+      "description": "One stage: an object with exactly one property, the operator's name, whose value is that operator's parameters.",
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "filter"
+          ],
+          "description": "Keeps the elements for which `where` is true; any other value, false included, drops the element, and a value that is not a boolean is an error.",
+          "properties": {
+            "filter": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "where"
+              ],
+              "properties": {
+                "where": {
+                  "$ref": "#/$defs/expression"
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "map"
+          ],
+          "description": "Replaces each element by the value of `select`.",
+          "properties": {
+            "map": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "select"
+              ],
+              "properties": {
+                "select": {
+                  "$ref": "#/$defs/expression"
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "flatMap"
+          ],
+          "description": "`select` yields a list for each element; the lists are concatenated in order, one level deep.",
+          "properties": {
+            "flatMap": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "select"
+              ],
+              "properties": {
+                "select": {
+                  "$ref": "#/$defs/expression"
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "skip"
+          ],
+          "description": "Drops the first `count` elements.",
+          "properties": {
+            "skip": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "count"
+              ],
+              "properties": {
+                "count": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 1000
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "take"
+          ],
+          "description": "Keeps the first `count` elements.",
+          "properties": {
+            "take": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "count"
+              ],
+              "properties": {
+                "count": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 1000
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "distinct"
+          ],
+          "description": "Keeps the first element of each canonical value of `by`, or of the element itself when `by` is absent.",
+          "properties": {
+            "distinct": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [],
+              "properties": {
+                "by": {
+                  "$ref": "#/$defs/expression"
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "window"
+          ],
+          "description": "Replaces the list by consecutive lists of `count` elements, the last one possibly shorter.",
+          "properties": {
+            "window": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "count"
+              ],
+              "properties": {
+                "count": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 1000
+                }
+              }
+            }
+          }
+        }
       ]
     },
     "while": {
@@ -1717,6 +1904,11 @@
         },
         "disclosure": {
           "const": "declared-business-result-v1"
+        },
+        "reapplyOnReset": {
+          "type": "boolean",
+          "default": false,
+          "description": "When true, the canonical arguments of every applied instance of this Update are retained as a content-addressed payload referenced by its state.updated journal row (charged to tenant_content_bytes), so a reset with reapply UPDATES or ALL can re-validate and re-apply it. Absent means false: the arguments are not retained and a reset reports the Update NOT_REAPPLIED (NOT_RETAINED). Not a classification carrier (FR-016-004). A new publication is refused unless the server's resetReapply capability is enabled (ADR-0032)."
         }
       },
       "required": [
@@ -1876,7 +2068,7 @@
         },
         "compensateWith": {
           "$ref": "#/$defs/name",
-          "description": "The activity that undoes this step when the collection or loop that owns the body stops with completed iterations (a failed iteration, a cancellation). Inside one iteration compensations run in reverse dependency order; collection iterations have no order between them; loop iterations compensate last first. It must be idempotent and tolerate an effect that never happened."
+          "description": "The activity that undoes this step when the collection or loop that owns the body stops with completed iterations (a failed iteration, a cancellation). Inside one iteration compensations run in reverse dependency order; collection iterations have no order between them; loop iterations compensate last first. It must be idempotent. Feature 037: it is planned only for an effect that succeeded (or that a person settled as having happened); an effect whose outcome is unknown waits for review instead of being compensated defensively."
         },
         "reconcileWith": {
           "$ref": "#/$defs/name"
@@ -1907,7 +2099,7 @@
         },
         "highRisk": {
           "type": "boolean",
-          "description": "An attempt whose outcome is unknown (lease lost, timeout, OUTCOME_UNKNOWN) is never retried or compensated blindly: it is reconciled when reconcileWith says how, and otherwise waits for an operator."
+          "description": "Informational since feature 037. Every activity's attempt whose outcome is unknown (lease lost, timeout, OUTCOME_UNKNOWN) is never retried or compensated blindly, whether or not it is high risk: it is reconciled when reconcileWith says how, and otherwise waits for an operator."
         }
       },
       "required": [
@@ -2150,7 +2342,7 @@
             "manual_review",
             "fail"
           ],
-          "description": "manual_review (default): a compensation that fails after its retries waits for an operator. fail: the saga ends COMPENSATION_FAILED."
+          "description": "manual_review (default): a compensation that fails after its retries waits for an operator. fail: the saga ends COMPENSATION_FAILED, only for a known permanent failure after the retries, once every independent compensation has settled; an unknown, accepted or pending compensation outcome still waits for review (feature 037)."
         },
         "cancelPolicy": {
           "enum": [
@@ -2211,7 +2403,7 @@
         },
         "compensateWith": {
           "$ref": "#/$defs/name",
-          "description": "The activity that undoes this step when the collection or loop that owns the body stops with completed iterations (a failed iteration, a cancellation). Inside one iteration compensations run in reverse dependency order; collection iterations have no order between them; loop iterations compensate last first. It must be idempotent and tolerate an effect that never happened."
+          "description": "The activity that undoes this step when the collection or loop that owns the body stops with completed iterations (a failed iteration, a cancellation). Inside one iteration compensations run in reverse dependency order; collection iterations have no order between them; loop iterations compensate last first. It must be idempotent. Feature 037: it is planned only for an effect that succeeded (or that a person settled as having happened); an effect whose outcome is unknown waits for review instead of being compensated defensively."
         },
         "secrets": {
           "type": "array",
@@ -2257,6 +2449,697 @@
         },
         "jitter": {
           "type": "boolean"
+        }
+      }
+    },
+    "lakeConnectionRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{0,62}$"
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "lakeTableIdentifier": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "namespace",
+        "name"
+      ],
+      "properties": {
+        "namespace": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 8,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 255
+          }
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255
+        }
+      }
+    },
+    "lakeExpression": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096,
+      "description": "A workflow expression evaluated by the engine (existing expression language)."
+    },
+    "lakeRecords": {
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "maxProperties": 1,
+      "properties": {
+        "inline": {
+          "$ref": "#/$defs/lakeExpression"
+        },
+        "blobs": {
+          "$ref": "#/$defs/lakeExpression",
+          "description": "Evaluates to 1..32 blob descriptors of record files (application/x-ndjson or application/vnd.apache.parquet) committed by earlier steps of the same run."
+        },
+        "databaseResult": {
+          "type": "string",
+          "description": "Id of an earlier root-level database node of the same run."
+        },
+        "output": {
+          "const": true,
+          "description": "Destinations only: the source node's output is one record."
+        },
+        "outputPath": {
+          "type": "string",
+          "pattern": "^(/[^/]+)+$",
+          "maxLength": 512,
+          "description": "Destinations only: JSON pointer to an array of records in the source node's output."
+        }
+      }
+    },
+    "lakeMapping": {
+      "type": "array",
+      "maxItems": 1024,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "field",
+          "column"
+        ],
+        "properties": {
+          "field": {
+            "type": "string",
+            "pattern": "^(/[^/]+)+$",
+            "maxLength": 512
+          },
+          "column": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 255
+          }
+        }
+      }
+    },
+    "lakeRecordSchema": {
+      "type": "object",
+      "description": "A closed, bounded JSON Schema of one record carrying x-sagat-classification per field. An egress annotation only, never a disclosure carrier (D035-051): a written field's level is the stricter of the inherited and the declared level; a field declared in neither is pii."
+    },
+    "lakeLimits": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "maxRecordBytes": {
+          "type": "integer",
+          "minimum": 1024,
+          "maximum": 2147483648
+        },
+        "maxRecords": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100000000
+        },
+        "timeoutMs": {
+          "type": "integer",
+          "minimum": 1000,
+          "maximum": 3600000
+        }
+      }
+    },
+    "lakeFilter": {
+      "description": "A bounded boolean expression over table columns: and/or/not of comparisons (eq, ne, lt, le, gt, ge, in, isNull, notNull) between a column and a typed parameter bound to a workflow expression. Literals are parameters, never text spliced into a query. Publication refuses more than 8 levels or 64 comparisons (FILTER_TOO_DEEP).",
+      "type": "object",
+      "maxProperties": 1,
+      "minProperties": 1,
+      "properties": {
+        "and": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 16,
+          "items": {
+            "$ref": "#/$defs/lakeFilter"
+          }
+        },
+        "or": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 16,
+          "items": {
+            "$ref": "#/$defs/lakeFilter"
+          }
+        },
+        "not": {
+          "$ref": "#/$defs/lakeFilter"
+        },
+        "compare": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "op",
+            "column"
+          ],
+          "properties": {
+            "op": {
+              "enum": [
+                "eq",
+                "ne",
+                "lt",
+                "le",
+                "gt",
+                "ge",
+                "in",
+                "isNull",
+                "notNull"
+              ]
+            },
+            "column": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 255
+            },
+            "value": {
+              "$ref": "#/$defs/lakeExpression"
+            }
+          }
+        }
+      }
+    },
+    "icebergWrite": {
+      "description": "Apache Iceberg write (feature 035). Allowed only in the root graph, never in a structured body: attempt credential pins are root-scoped. The table, the bucket and the namespace must already exist; the platform never creates them. Credentials are resolved under the leased managed capability.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "type",
+        "connectionRef",
+        "table",
+        "mode",
+        "records"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "type": {
+          "const": "icebergWrite"
+        },
+        "name": {
+          "type": "string"
+        },
+        "connectionRef": {
+          "$ref": "#/$defs/lakeConnectionRef"
+        },
+        "table": {
+          "$ref": "#/$defs/lakeTableIdentifier"
+        },
+        "ref": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255,
+          "default": "main"
+        },
+        "mode": {
+          "enum": [
+            "append",
+            "overwrite",
+            "upsert"
+          ]
+        },
+        "overwrite": {
+          "$ref": "#/$defs/lakeOverwrite"
+        },
+        "upsert": {
+          "$ref": "#/$defs/lakeUpsert"
+        },
+        "records": {
+          "$ref": "#/$defs/lakeRecords"
+        },
+        "mapping": {
+          "$ref": "#/$defs/lakeMapping"
+        },
+        "ignoreUnknownFields": {
+          "type": "boolean",
+          "default": false
+        },
+        "recordSchema": {
+          "$ref": "#/$defs/lakeRecordSchema"
+        },
+        "limits": {
+          "$ref": "#/$defs/lakeLimits"
+        },
+        "compensation": {
+          "enum": [
+            "revert"
+          ]
+        },
+        "next": {
+          "type": "string"
+        },
+        "onError": {
+          "type": "string"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "type": "object",
+            "properties": {
+              "mode": {
+                "const": "overwrite"
+              }
+            },
+            "required": [
+              "mode"
+            ]
+          },
+          "then": {
+            "type": "object",
+            "properties": {
+              "overwrite": true
+            },
+            "required": [
+              "overwrite"
+            ]
+          }
+        },
+        {
+          "if": {
+            "type": "object",
+            "properties": {
+              "overwrite": {
+                "type": "object",
+                "properties": {
+                  "scope": {
+                    "const": "filter"
+                  }
+                },
+                "required": [
+                  "scope"
+                ]
+              }
+            },
+            "required": [
+              "overwrite"
+            ]
+          },
+          "then": {
+            "type": "object",
+            "properties": {
+              "overwrite": {
+                "type": "object",
+                "properties": {
+                  "filter": true
+                },
+                "required": [
+                  "filter"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "not": {
+            "type": "object",
+            "properties": {
+              "records": {
+                "type": "object",
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "output": true
+                    },
+                    "required": [
+                      "output"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "outputPath": true
+                    },
+                    "required": [
+                      "outputPath"
+                    ]
+                  }
+                ]
+              }
+            },
+            "required": [
+              "records"
+            ]
+          }
+        }
+      ]
+    },
+    "stepDestination": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "kind",
+        "target",
+        "records"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{0,30}$"
+        },
+        "kind": {
+          "enum": [
+            "iceberg",
+            "postgresql",
+            "object_storage",
+            "clickhouse",
+            "broker_stream"
+          ]
+        },
+        "connectionRef": {
+          "$ref": "#/$defs/lakeConnectionRef"
+        },
+        "subscriptionRef": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{0,62}$",
+          "description": "broker_stream only: a subscription whose purpose is STEP_OUTPUT."
+        },
+        "target": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "table": {
+              "$ref": "#/$defs/lakeTableIdentifier"
+            },
+            "ref": {
+              "type": "string",
+              "maxLength": 255
+            },
+            "schema": {
+              "type": "string",
+              "maxLength": 63
+            },
+            "relation": {
+              "type": "string",
+              "maxLength": 63
+            },
+            "format": {
+              "enum": [
+                "parquet",
+                "ndjson"
+              ]
+            }
+          }
+        },
+        "mode": {
+          "enum": [
+            "append",
+            "overwrite",
+            "upsert",
+            "insert"
+          ]
+        },
+        "overwrite": {
+          "$ref": "#/$defs/lakeOverwrite"
+        },
+        "upsert": {
+          "$ref": "#/$defs/lakeUpsert"
+        },
+        "keyColumn": {
+          "type": "string",
+          "maxLength": 63,
+          "description": "postgresql insert: the constraint-backed column (a record field or the effect key column)."
+        },
+        "effectKeyColumn": {
+          "type": "string",
+          "maxLength": 63
+        },
+        "records": {
+          "$ref": "#/$defs/lakeRecords"
+        },
+        "mapping": {
+          "$ref": "#/$defs/lakeMapping"
+        },
+        "ignoreUnknownFields": {
+          "type": "boolean",
+          "default": false
+        },
+        "recordSchema": {
+          "$ref": "#/$defs/lakeRecordSchema"
+        },
+        "onFailure": {
+          "enum": [
+            "hold",
+            "fail",
+            "continue"
+          ],
+          "default": "hold"
+        },
+        "limits": {
+          "$ref": "#/$defs/lakeLimits"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "const": "broker_stream"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "type": "object",
+            "properties": {
+              "subscriptionRef": true
+            },
+            "required": [
+              "subscriptionRef"
+            ],
+            "not": {
+              "type": "object",
+              "properties": {
+                "connectionRef": true
+              },
+              "required": [
+                "connectionRef"
+              ]
+            }
+          },
+          "else": {
+            "type": "object",
+            "properties": {
+              "connectionRef": true
+            },
+            "required": [
+              "connectionRef"
+            ],
+            "not": {
+              "type": "object",
+              "properties": {
+                "subscriptionRef": true
+              },
+              "required": [
+                "subscriptionRef"
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "const": "iceberg"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "type": "object",
+            "properties": {
+              "mode": {
+                "enum": [
+                  "append",
+                  "overwrite",
+                  "upsert"
+                ]
+              }
+            },
+            "required": [
+              "mode"
+            ]
+          }
+        },
+        {
+          "if": {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "const": "postgresql"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "type": "object",
+            "properties": {
+              "mode": {
+                "enum": [
+                  "insert",
+                  "upsert"
+                ]
+              }
+            },
+            "required": [
+              "mode"
+            ]
+          }
+        },
+        {
+          "if": {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "enum": [
+                  "object_storage",
+                  "clickhouse",
+                  "broker_stream"
+                ]
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "not": {
+              "type": "object",
+              "properties": {
+                "mode": true
+              },
+              "required": [
+                "mode"
+              ]
+            }
+          }
+        },
+        {
+          "not": {
+            "type": "object",
+            "properties": {
+              "records": {
+                "type": "object",
+                "properties": {
+                  "databaseResult": true
+                },
+                "required": [
+                  "databaseResult"
+                ]
+              }
+            },
+            "required": [
+              "records"
+            ]
+          }
+        },
+        {
+          "if": {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "const": "broker_stream"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "type": "object",
+            "properties": {
+              "records": {
+                "not": {
+                  "type": "object",
+                  "properties": {
+                    "blobs": true
+                  },
+                  "required": [
+                    "blobs"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "stepDestinations": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 8,
+      "items": {
+        "$ref": "#/$defs/stepDestination"
+      }
+    },
+    "lakeOverwrite": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "scope"
+      ],
+      "properties": {
+        "scope": {
+          "enum": [
+            "batchPartitions",
+            "filter",
+            "table"
+          ]
+        },
+        "filter": {
+          "$ref": "#/$defs/lakeFilter"
+        },
+        "allowEmpty": {
+          "type": "boolean",
+          "default": false
+        }
+      }
+    },
+    "lakeUpsert": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "keyColumns": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "items": {
+            "type": "string"
+          }
+        },
+        "deleteMarker": {
+          "type": "string",
+          "pattern": "^(/[^/]+)+$",
+          "maxLength": 512
         }
       }
     }

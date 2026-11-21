@@ -1,5 +1,5 @@
 /**
- * The colour roles of the Studio's theme (ADR-0101, D2402), each as `[light, dark]`. The dark values are
+ * The colour roles of the Studio's theme (Architecture decision 0101, Decision 2402), each as `[light, dark]`. The dark values are
  * the owner's export recorded in `specs/007-workflow-studio/design/README.md`; the light values are the
  * accessible derivation of Feature 007. This is the only file where the Studio writes a literal colour:
  * `sagatTheme.ts` maps the roles to the design system's tokens, and `theme.test.ts` measures them.

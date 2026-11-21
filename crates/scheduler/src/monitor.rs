@@ -252,6 +252,11 @@ fn gauges(sample: &Sample) {
     metrics::gauge!("dead_items", "kind" => "connectors").set(sample.dead_letters as f64);
     metrics::gauge!("workers_registered").set(sample.workers as f64);
     metrics::gauge!("compensating_runs").set(sample.compensating_runs as f64);
+    // The ceiling of 20,000 pending waits per scheduler replica (OD-2026-11-04-6) is watched here:
+    // what waits, over the replicas alive (one when none is, so a stopped cluster still shows it).
+    metrics::gauge!("scheduler_pending_waits").set(sample.pending_waits as f64);
+    metrics::gauge!("scheduler_waits_per_replica")
+        .set(sample.pending_waits as f64 / sample.scheduler_replicas.max(1) as f64);
     // How late each pass of the scheduler is: what the engine's replicas scale on, and what an
     // alert watches (a pass that is minutes behind with every shard owned needs more replicas; one
     // with a shard unowned needs a replica back).
@@ -261,6 +266,11 @@ fn gauges(sample: &Sample) {
     metrics::gauge!("scheduler_lag_seconds", "pass" => "retries").set(late.retries);
     metrics::gauge!("scheduler_lag_seconds", "pass" => "leases").set(late.leases);
     metrics::gauge!("scheduler_lag_seconds", "pass" => "deadlines").set(late.deadlines);
+    metrics::gauge!("scheduler_lag_seconds", "pass" => "schedules").set(late.schedules);
+    metrics::gauge!("scheduler_lag_seconds", "pass" => "batches").set(late.batches);
+    metrics::gauge!("scheduler_lag_seconds", "pass" => "resets").set(late.resets);
+    metrics::gauge!("batch_jobs_active").set(sample.batch_jobs_active as f64);
+    metrics::gauge!("workflow_resets_pending").set(sample.resets_pending as f64);
     for status in LIVE_STATUSES {
         let n = sample
             .runs_by_status

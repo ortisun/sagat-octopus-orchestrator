@@ -1,0 +1,63 @@
+asyncapi: 3.0.0
+info:
+  title: Feature 024 draft fragment — data asset events
+  version: 0.0.0-draft
+  description: |
+    Draft fragment merged by T024-008 into specs/001-platform-foundation/contracts/events.asyncapi.yaml
+    under the growth rule of docs/event-schema-evolution.md (minor version bump; new message; enum
+    values appended; nothing removed or made required). The baseline events.baseline.json is
+    regenerated only after reading its diff. Payloads are metadata only: no snapshot content, no SQL,
+    no locator, no credential.
+channels:
+  dataAssetPublished:
+    address: webhook-subscriptions
+    description: |
+      Delivered to webhook subscriptions whose events include data.asset.published, as a row of the
+      outbound delivery pipeline written in the publication transaction (ADR-0025). The same document
+      is the data of the internal inbox event (source sagat.data, type data.asset.published,
+      subject = asset name, event id = <asset id>:<pointer version>) that event triggers match; the
+      inbox key deduplicates redelivery of one publication, and a rollback is a new event. The
+      document is closed and at most 1 KiB, stored as an ADR-0027 protected_system record: it is not
+      charged to content quota and does not spend events_per_second, so a full quota never rolls
+      back the publication that wrote it.
+    messages:
+      DataAssetPublished:
+        $ref: '#/components/messages/DataAssetPublished'
+operations:
+  sendDataAssetPublished:
+    action: send
+    channel: {$ref: '#/channels/dataAssetPublished'}
+components:
+  messages:
+    DataAssetPublished:
+      name: data.asset.published
+      title: A snapshot became the current snapshot of a managed asset
+      headers:
+        type: object
+        properties:
+          X-Octopus-Schema-Version: {type: string, const: '1'}
+      payload:
+        type: object
+        additionalProperties: true
+        required: [type, tenantId, namespaceId, assetName, snapshotId, pointerVersion, origin, publishedAt]
+        properties:
+          type: {type: string, const: data.asset.published}
+          tenantId: {type: string, format: uuid}
+          namespaceId: {type: string, format: uuid}
+          assetName: {type: string, pattern: '^[a-z][a-z0-9-]{1,61}[a-z0-9]$'}
+          snapshotId: {type: string, format: uuid}
+          previousSnapshotId: {type: [string, 'null'], format: uuid}
+          pointerVersion: {type: integer, minimum: 1}
+          declarationRevision: {type: integer, minimum: 1}
+          origin: {type: string, enum: [RUN_AUTO, RUN_NODE, API_PUBLISH, API_ROLLBACK]}
+          runId: {type: [string, 'null'], format: uuid}
+          rowCount: {type: string, pattern: '^(0|[1-9][0-9]{0,18})$'}
+          byteCount: {type: string, pattern: '^(0|[1-9][0-9]{0,18})$'}
+          publishedAt: {type: string, format: date-time}
+          traceId: {type: string}
+    OpsAlertKindAdditions:
+      name: ops.alert.fired / ops.alert.resolved (kind enum growth)
+      title: Two alert kinds appended to the existing alert payload enum
+      payload:
+        type: string
+        enum: [DATA_ASSET_STALE, DATA_SNAPSHOT_QUARANTINED]

@@ -1,0 +1,2 @@
+python3 scripts/check-vendor.py
+vendor check passed (84 upstream files, one manifest-only override)

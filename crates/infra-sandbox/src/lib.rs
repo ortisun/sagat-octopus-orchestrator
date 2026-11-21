@@ -7,6 +7,7 @@
 //! isolation, and `docs/adr/ADR-0013-inline-code-sandbox.md` for what it does not promise.
 
 pub mod docker;
+pub mod lake;
 pub mod lockfile;
 pub mod protocol;
 

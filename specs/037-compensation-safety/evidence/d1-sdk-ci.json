@@ -1,0 +1,41 @@
+[
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--workspace",
+      "--locked",
+      "--offline",
+      "--no-fail-fast",
+      "--test",
+      "sdk_conformance",
+      "--test",
+      "e2e_sdk_multilanguage",
+      "--test",
+      "fault_sdk_multilanguage",
+      "--",
+      "--ignored"
+    ],
+    "exit": 101,
+    "log": "d1-sdk-ci.txt"
+  },
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--workspace",
+      "--locked",
+      "--offline",
+      "--test",
+      "e2e_developer_experience",
+      "--",
+      "--ignored",
+      "us03::",
+      "order_processing::",
+      "saga::",
+      "scripts::"
+    ],
+    "exit": 0,
+    "log": "d1-examples-ci.txt"
+  }
+]

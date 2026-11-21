@@ -6,7 +6,7 @@ use sagat_application::{
     entropy::SystemEntropy,
     execution::{Engine, RunTx},
     runs::{Lock, RunStore},
-    worker::{WorkerService, WorkerSettings},
+    worker::{CapacityWindow, WorkerService, WorkerSettings},
 };
 use sagat_infra_ir::JsonEvaluator;
 use sagat_infra_postgres::{PgCapacityAcquireStore, PgCapacityVacateStore, PgRunStore};
@@ -89,7 +89,9 @@ async fn vacate(n: &NativeFixture) {
         .expect("real native Vacate commits before poll");
 }
 
-async fn acquire(n: &NativeFixture) {
+async fn try_acquire(
+    n: &NativeFixture,
+) -> Result<(), sagat_application::capacity_acquire::CapacityAcquireError> {
     use sagat_application::capacity_acquire::{
         CapacityAcquireCommand, CurrentChildRootAcquireStore,
     };
@@ -102,7 +104,48 @@ async fn acquire(n: &NativeFixture) {
             scheduler: c.scheduler,
         })
         .await
+        .map(|_| ())
+}
+
+async fn acquire(n: &NativeFixture) {
+    try_acquire(n)
+        .await
         .expect("real native Acquire commits before poll");
+}
+
+/// A second ACTIVE ChildRoot member of the same group on its own chain (owner join fixture;
+/// possession itself moves only through the real native commands). Returns that chain and member.
+async fn join_peer(n: &NativeFixture) -> (RunId, Uuid) {
+    let (_, peer) = spawn_native_child(&n.f.w, false).await;
+    let report = n.scheduler.tick().await;
+    assert_eq!(report.children_started, 1, "{report:?}");
+    assert_eq!(report.failed, 0);
+    let member = Uuid::new_v4();
+    let mut owner = n.f.w.db.pool.begin().await.expect("second member fixture");
+    sqlx::query("INSERT INTO capacity_group_members(tenant_id,group_id,member_id,namespace_id,member_kind,chain_id,state) VALUES($1,$2,$3,$4,'CHILD_ROOT',$5,'ACTIVE')")
+        .bind(n.f.w.admin.tenant_id().as_uuid()).bind(n.f.group).bind(member)
+        .bind(n.f.w.namespace.id().as_uuid()).bind(peer.as_uuid())
+        .execute(&mut *owner).await.expect("peer membership fixture");
+    sqlx::query("UPDATE capacity_groups SET revision=revision+1,active_members=active_members+1 WHERE tenant_id=$1 AND group_id=$2")
+        .bind(n.f.w.admin.tenant_id().as_uuid()).bind(n.f.group)
+        .execute(&mut *owner).await.expect("fixture join preserves old holder");
+    owner.commit().await.expect("join fixture commits");
+    (peer, member)
+}
+
+/// The claim transaction of `run`, left open after its capacity prerequisite answered.
+async fn open_claim(n: &NativeFixture, run: RunId) -> (bool, <PgRunStore as RunStore>::Tx) {
+    let store = PgRunStore::new(n.f.w.execution_pool.clone(), n.f.w.cache.clone());
+    let mut tx = store
+        .begin(n.f.w.admin.tenant_id(), run, Lock::Wait)
+        .await
+        .expect("claim transaction begins")
+        .expect("exact member run");
+    let available = tx
+        .worker_capacity_available()
+        .await
+        .expect("capacity prerequisite evaluates");
+    (available, tx)
 }
 
 async fn group_lock(n: &NativeFixture) -> sqlx::Transaction<'static, sqlx::Postgres> {
@@ -281,21 +324,7 @@ async fn an_active_nonholder_stays_ready_while_the_other_member_is_leased() {
         crate::support::bounded::LIFECYCLE_LIMIT,
         async {
             let n = guarded_fixture().await;
-            let (_, peer) = spawn_native_child(&n.f.w, false).await;
-            let report = n.scheduler.tick().await;
-            assert_eq!(report.children_started, 1, "{report:?}");
-            assert_eq!(report.failed, 0);
-            let member = Uuid::new_v4();
-            // Owner join fixture only; possession itself moves via real native commands.
-            let mut owner = n.f.w.db.pool.begin().await.expect("second member fixture");
-            sqlx::query("INSERT INTO capacity_group_members(tenant_id,group_id,member_id,namespace_id,member_kind,chain_id,state) VALUES($1,$2,$3,$4,'CHILD_ROOT',$5,'ACTIVE')")
-                .bind(n.f.w.admin.tenant_id().as_uuid()).bind(n.f.group).bind(member)
-                .bind(n.f.w.namespace.id().as_uuid()).bind(peer.as_uuid())
-                .execute(&mut *owner).await.expect("peer membership fixture");
-            sqlx::query("UPDATE capacity_groups SET revision=revision+1,active_members=active_members+1 WHERE tenant_id=$1 AND group_id=$2")
-                .bind(n.f.w.admin.tenant_id().as_uuid()).bind(n.f.group)
-                .execute(&mut *owner).await.expect("fixture join preserves old holder");
-            owner.commit().await.expect("join fixture commits");
+            let (peer, member) = join_peer(&n).await;
             vacate(&n).await;
             let c = native_member_command(&n.f, member, peer, peer).await;
             PgCapacityAcquireStore::new(n.f.w.execution_pool.clone())
@@ -315,6 +344,184 @@ async fn an_active_nonholder_stays_ready_while_the_other_member_is_leased() {
             assert_eq!(used, 1, "only the holder spends activity concurrency");
         },
     ).await;
+}
+
+/// ADR-0075 activation condition (j): a claim that is not the holder is decided from an unlocked
+/// header read, so it never takes a row lock on G. Otherwise, while the group is vacant, every
+/// member poller would hold G until its commit and starve the NOWAIT native Acquire.
+#[tokio::test]
+async fn a_peer_poll_on_a_vacant_group_does_not_starve_native_acquire() {
+    crate::support::bounded::within(
+        "vacant group: member pollers versus Acquire",
+        crate::support::bounded::LIFECYCLE_LIMIT,
+        async {
+            let n = guarded_fixture().await;
+            let (peer, _) = join_peer(&n).await;
+            vacate(&n).await;
+            // The peer's claim transaction stays open, exactly as it does while a worker
+            // finishes the other candidates of the same poll.
+            let (available, claim) = open_claim(&n, peer).await;
+            assert!(!available, "a vacant group grants no member a lease");
+            let acquired = try_acquire(&n).await;
+            claim.commit().await.expect("peer claim ends");
+            assert!(
+                acquired.is_ok(),
+                "a peer's refused claim must not hold G against Acquire: {acquired:?}"
+            );
+        },
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn a_nonholder_refusal_takes_no_row_lock_on_g() {
+    crate::support::bounded::within(
+        "held group: nonholder claims never lock G",
+        crate::support::bounded::LIFECYCLE_LIMIT,
+        async {
+            let n = guarded_fixture().await;
+            // The fixture member holds G; the peer is an ACTIVE non-holder.
+            let (peer, _) = join_peer(&n).await;
+            let (available, claim) = open_claim(&n, peer).await;
+            assert!(!available, "a non-holder is refused");
+            let probe = sqlx::query(
+                "SELECT group_id FROM capacity_groups WHERE tenant_id=$1 AND group_id=$2 \
+                 FOR UPDATE NOWAIT",
+            )
+            .bind(n.f.w.admin.tenant_id().as_uuid())
+            .bind(n.f.group)
+            .execute(&n.f.w.db.pool)
+            .await;
+            claim.commit().await.expect("peer claim ends");
+            assert!(
+                probe.is_ok(),
+                "the refused non-holder claim still holds a row lock on G: {probe:?}"
+            );
+        },
+    )
+    .await;
+}
+
+/// The runs of one part of the bounded candidate window a poll would receive (root paths only).
+async fn window(n: &NativeFixture, part: CapacityWindow, limit: u32) -> Vec<RunId> {
+    use sagat_application::worker::WorkerStore;
+    let store = PgRunStore::new(n.f.w.execution_pool.clone(), n.f.w.cache.clone());
+    store
+        .claimable_paths(
+            n.f.w.admin.tenant_id(),
+            n.f.w.namespace.id(),
+            &["capacity.work".to_owned(), "act.a".to_owned()],
+            limit,
+            100,
+            "capacity-window",
+            part,
+        )
+        .await
+        .expect("candidate window")
+        .into_iter()
+        .map(|(run, _)| run)
+        .collect()
+}
+
+/// Owner fixture: the discovery order is `ready_at`, so ageing a step is how a test puts a
+/// non-holder ahead of the holder without sleeping.
+async fn make_older(n: &NativeFixture, run: RunId) {
+    sqlx::query(
+        "UPDATE steps SET ready_at = ready_at - interval '1 hour' \
+         WHERE tenant_id=$1 AND run_id=$2 AND status='READY'",
+    )
+    .bind(n.f.w.admin.tenant_id().as_uuid())
+    .bind(run.as_uuid())
+    .execute(&n.f.w.db.pool)
+    .await
+    .expect("owner fixture ages the ready step");
+}
+
+/// ADR-0075 activation condition (d) / G715: the candidate window is only a hint. `Any` is the
+/// legacy window (the dormant compatibility promise); `Eligible` and `Ineligible` partition it by
+/// whether the possession prerequisite certainly refuses the run (an ACTIVE ChildRoot member that
+/// is not the holder), and the prerequisite itself stays the authority.
+#[tokio::test]
+async fn the_capacity_window_partitions_the_legacy_window_and_never_hides_an_available_run() {
+    crate::support::bounded::within(
+        "capacity-aware candidate window",
+        crate::support::bounded::LIFECYCLE_LIMIT,
+        async {
+            let n = guarded_fixture().await;
+            let holder = RunId::new(n.f.chain);
+            let (peer, _) = join_peer(&n).await;
+            let (workflow, _) = n.f.w.publish(chain("capacity-window-nonmember")).await;
+            let nonmember = n.f.w.start(workflow, &serde_json::json!({})).await;
+            make_older(&n, peer).await;
+            // Discovery order is ready_at: the non-holder peer, the holder, the non-member.
+            assert_eq!(
+                window(&n, CapacityWindow::Any, 4).await,
+                vec![peer, holder, nonmember]
+            );
+            assert_eq!(
+                window(&n, CapacityWindow::Eligible, 4).await,
+                vec![holder, nonmember]
+            );
+            assert_eq!(window(&n, CapacityWindow::Ineligible, 4).await, vec![peer]);
+            assert_eq!(
+                window(&n, CapacityWindow::Eligible, 1).await,
+                vec![holder],
+                "an older non-holder must not take the only place of the eligible window"
+            );
+            // Never narrower than the prerequisite, in a held and in a vacant group.
+            for vacant in [false, true] {
+                if vacant {
+                    vacate(&n).await;
+                }
+                let eligible = window(&n, CapacityWindow::Eligible, 4).await;
+                let ineligible = window(&n, CapacityWindow::Ineligible, 4).await;
+                let mut both = [eligible.clone(), ineligible.clone()].concat();
+                both.sort();
+                let mut any = window(&n, CapacityWindow::Any, 4).await;
+                any.sort();
+                assert_eq!(both, any, "the two parts partition the window (vacant={vacant})");
+                for run in [holder, peer, nonmember] {
+                    let (available, claim) = open_claim(&n, run).await;
+                    claim.commit().await.expect("read-only claim ends");
+                    assert!(
+                        !available || eligible.contains(&run),
+                        "run {run} passes the prerequisite but left the eligible window (vacant={vacant})"
+                    );
+                }
+                if vacant {
+                    assert_eq!(eligible, vec![nonmember], "a vacant group offers no member");
+                    assert_eq!(ineligible.len(), 2, "both members are certainly refused");
+                }
+            }
+        },
+    )
+    .await;
+}
+
+/// The window is `4 * wanted` candidates: with `wanted = 1`, four older non-holders hide the
+/// holder for ever unless the worker passes its guard flag to candidate selection.
+#[tokio::test]
+async fn a_guarded_poll_is_not_crowded_out_by_older_nonholders() {
+    crate::support::bounded::within(
+        "poll window versus non-holders",
+        crate::support::bounded::LIFECYCLE_LIMIT,
+        async {
+            let n = guarded_fixture().await;
+            for _ in 0..4 {
+                let (peer, _) = join_peer(&n).await;
+                make_older(&n, peer).await;
+            }
+            let session = n.f.w.session(&["capacity.work"]).await;
+            let tasks = n.f.w.poll(&session, 1).await;
+            assert_eq!(
+                tasks.len(),
+                1,
+                "the holder's ready step is offered to the poll"
+            );
+            assert_eq!(tasks[0].run_id, RunId::new(n.f.chain));
+        },
+    )
+    .await;
 }
 
 #[tokio::test]

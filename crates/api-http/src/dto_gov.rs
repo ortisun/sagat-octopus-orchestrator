@@ -95,6 +95,8 @@ pub struct BindingBody {
     pub activities: Vec<String>,
     /// The worker pools the identity was granted in the namespace (G48).
     pub pools: Vec<String>,
+    /// What kind of managed work a dedicated runner may register for (`database` or `lake`).
+    pub profile: &'static str,
     /// Only in the answer to a change.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub revoked: Option<RevokedBody>,
@@ -107,6 +109,7 @@ impl BindingBody {
             subject: view.subject.clone(),
             activities: view.patterns.clone(),
             pools: view.pools.clone(),
+            profile: view.profile.as_str(),
             revoked: None,
         }
     }
@@ -132,6 +135,10 @@ pub struct SetBindingBody {
     /// Replaces the pools the identity is granted; absent leaves them as they are, `[]` clears them.
     #[serde(default)]
     pub pools: Option<Vec<String>>,
+    /// Sets the profile of a dedicated runner, `database` or `lake`; absent keeps the one it has (`database` for a new
+    /// binding). A runner registers only for the managed activities of its profile, whatever its patterns cover.
+    #[serde(default)]
+    pub profile: Option<String>,
 }
 
 #[derive(Debug, Serialize)]

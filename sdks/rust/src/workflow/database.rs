@@ -107,26 +107,28 @@ fn ceiling(key: &str) -> u64 {
         _ => 0,
     }
 }
+/// A scoped logical name (3 to 63 characters, no `--`) and an optional revision; shared by every managed step.
+pub(super) fn valid_connection_ref(reference: &ConnectionRef) -> bool {
+    let name = &reference.name;
+    (3..=63).contains(&name.len())
+        && name.as_bytes()[0].is_ascii_lowercase()
+        && name
+            .as_bytes()
+            .last()
+            .is_some_and(u8::is_ascii_alphanumeric)
+        && name
+            .bytes()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-')
+        && !name.contains("--")
+        && reference
+            .revision
+            .is_none_or(|v| v != 0 && v <= i32::MAX as u32)
+}
 impl Builder {
     /// Declare a managed operation. Only the server resolves credentials and executes SQL.
     pub fn database(&self, id: &str, options: DatabaseOptions) -> &Self {
-        let name = &options.connection_ref.name;
-        let valid_name = (3..=63).contains(&name.len())
-            && name.as_bytes()[0].is_ascii_lowercase()
-            && name
-                .as_bytes()
-                .last()
-                .is_some_and(u8::is_ascii_alphanumeric)
-            && name
-                .bytes()
-                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-')
-            && !name.contains("--");
         let parameters = options.parameters.as_deref().unwrap_or_default();
-        if !valid_name
-            || options
-                .connection_ref
-                .revision
-                .is_some_and(|v| v == 0 || v > i32::MAX as u32)
+        if !valid_connection_ref(&options.connection_ref)
             || options.statement.trim().is_empty()
             || options.statement.len() > 65536
             || options.statement.contains('\0')

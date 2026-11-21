@@ -1,5 +1,7 @@
 # SagatOctopusOrchestrator.Sdk (C# / .NET)
 
+> Documentation status: the contract sections below describe the inspected source. Existing runtime, test-count and advisory records are historical developer notes; this documentation update did not rerun or revalidate those records.
+
 The .NET SDK of the Sagat Octopus Orchestrator, version **0.2.0**. It is three things in one package and nothing else
 (`sdks/SPEC.md`):
 
@@ -62,6 +64,47 @@ For a large run input, call `UploadRunInputAsync(onePassStream, options, ct)`, t
 `BlobDescriptor` to `StartWithBlobAsync`. The upload is streamed once and never retried; the descriptor is
 accepted only after source EOF and matching local size/SHA-256. Blob-backed start keeps the normal start
 idempotency, correlation, deadline and trace behavior.
+
+## Schedules, business identifiers, batch jobs and reset
+
+`StartOptions` takes a `BusinessId` (sent exactly as given: no trimming, no case folding), a `BusinessIdConflictPolicy`
+(`BusinessIdConflictPolicies.Fail`, the default, or `UseExisting`), a `BusinessIdReusePolicy` and a `StartDelay`
+(a `TimeSpan`, turned once, before the first attempt, into whole milliseconds, truncated toward zero; the range is the server's to judge).
+`StartAsync` answers a `StartedRun`: `Started` is false when an open run already held the identifier and `UseExisting` was asked (HTTP 200).
+`Run.BusinessId` and `Run.StartDelayedUntil` are `null` when there is none. So are `Run.Schedule` (a `RunSchedule`: the schedule, the nominal time as a
+`DateTimeOffset`, the kind of action, `SCHEDULED`, `TRIGGERED`, `BACKFILL` or any string a newer server sends, and the schedule's revision) and `Run.ResetFrom`
+(a `RunResetFrom`: the run a reset made this one from and the journal sequence it keeps); a malformed one is `Protocol`, never half a run.
+
+```csharp
+var run = await sagat.StartAsync("order-flow", new { orderId = "o-1" },
+    new StartOptions { BusinessId = "order-o-1", BusinessIdConflictPolicy = BusinessIdConflictPolicies.UseExisting, StartDelay = TimeSpan.FromMinutes(5) });
+var woke = await sagat.SignalWithStartAsync("order-flow", "order-o-1", new { orderId = "o-1" }, "payment.confirmed", new { paid = "12.50" });
+var update = await sagat.UpdateWithStartAsync("order-flow", "order-o-1", new { orderId = "o-1" }, "balance.set", "set-1", new { balance = 25 });
+var binding = await sagat.BusinessIds.GetAsync(namespaceId, "order-o-1");   // 1 to 200 visible ASCII characters, percent-encoded
+```
+
+- `sagat.Schedules` (`CreateAsync`, `GetAsync`, `ListAsync` / `ListAllAsync`, `UpdateAsync`, `DeleteAsync`, `PauseAsync`, `ResumeAsync`,
+  `TriggerAsync`, `BackfillAsync`, `CancelBackfillAsync`, `ListBackfillsAsync`, `ListActionsAsync`), `sagat.Batch` (`PreviewAsync`, `CreateAsync`,
+  `GetAsync`, `ListAsync`, `CancelAsync`, `ListItemsAsync`) and `sagat.BusinessIds`. Ids that become path segments (a namespace, a schedule, a batch
+  job, a backfill, a reset, a run) must be UUIDs; a revision is at least 1; a note is not empty: anything else is `ValidationFailed` and nothing is sent.
+- A schedule's action can name a business-id prefix, so that every run it starts gets the business id `<prefix>-<nominal time>` (RFC 3339 in UTC,
+  to the second): `new ScheduleAction { WorkflowId = wf, Input = input, BusinessIdPrefix = "order", BusinessIdConflictPolicy = BusinessIdConflictPolicies.UseExisting,
+  BusinessIdReusePolicy = BusinessIdReusePolicies.RejectDuplicate }`. Both policies are optional and mean something only with a prefix (the server's defaults are
+  `FAIL` and `ALLOW_DUPLICATE`). The prefix is customer text, sent as given (no trimming, no case folding, no local check, the empty string included: the
+  server answers `ValidationFailed` with `Reason` `SCHEDULE_SPEC_INVALID`) and left out of the text `ToString` makes of the write and of what is read back
+  (so is `Schedule.Raw`, which holds it). `schedule.Action.BusinessIdPrefix`, `.BusinessIdConflictPolicy` and `.BusinessIdReusePolicy` are the strings the
+  server sent (a policy newer than this SDK is kept as is) and `null` for an action that has no prefix; an action that sets none of the three sends none of the
+  three keys, and an update without a prefix leaves the schedule without one. An action record may say `BUSINESS_ID_CONFLICT` (reason `BUSINESS_ID_IN_USE` or
+  `BUSINESS_ID_REUSE_REJECTED`) or `ALREADY_ACTED` with the `RunId` of the holder: like every outcome, a string.
+- Every call that changes something carries one `Idempotency-Key`: `RequestOptions.IdempotencyKey`, or one generated for the call and kept by every
+  retry of it. `UpdateWithStartAsync` also needs the caller's `updateKey` (1 to 128 printable ASCII characters). A refusal of the update's validator
+  is an answer (`Update.Outcome` is `REJECTED`), not an exception.
+- An instant you send (`ScheduleSpec.StartAt` / `EndAt`, a backfill range, `BatchFilter.CreatedAfter` / `CreatedBefore`) is an `Instant`: a
+  `DateTimeOffset` converts to it, RFC 3339 text goes through `Instant.Parse` (which refuses anything else). It is always written in UTC with a `Z`.
+  The instants you read are `DateTimeOffset`.
+- A value of an enumeration a newer server adds (a schedule action `Outcome`, a batch item `State`, a reset point `Kind`) is kept as the string it
+  came as, never an error; every answer keeps the JSON it was read from in `Raw`.
+- `ResetPointsAsync`, `PreviewResetAsync`, `ResetAsync`, `ListResetsAsync` and `GetResetAsync` go back to a point of the journal of a run that ended.
 
 ## Register an activity
 
@@ -143,9 +186,9 @@ var document = Workflow.Create("order-flow")
 ```
 
 The builders are pure: no I/O, no clock, no randomness. `ToJson()` is the canonical text of RFC 8785 (keys sorted by UTF-16
-code unit, numbers as ECMAScript writes them, no whitespace), byte-identical to the one the other four SDKs write for the same
-program. What the builder can see the server would refuse (a duplicate id, a `Parallel` with fewer than two branches, an empty
-`Saga`, `Irreversible` with `CompensateWith`, a bad name, a reference to a node that does not exist) is a
+code unit, numbers as ECMAScript writes them, no whitespace), byte-identical to the one the five peer SDKs write for the same
+program. A locally visible invalid authoring input (a duplicate id, a `Parallel` with fewer than two branches, an empty
+`Saga`, `Irreversible` with `CompensateWith`, a bad name, a reference to a node that does not exist) raises a
 `SagatException` with `ValidationFailed` when the node is added (or at `Build()` for a reference). A flow joined into another (a `Parallel`
 branch, the body of a `Saga`) is read at `Build()`, not when it was joined: a step added to it afterwards is in the document, and an `End` added to
 a saga body afterwards is refused at `Build()`.
@@ -302,7 +345,7 @@ OpenTelemetry plus its in-memory exporter 1.19.0 for integration tests only.
 
 ```text
 bash scripts/sync-shared.sh      # copies worker.proto and error-catalog.json from the repository (a test fails when a copy is behind)
-dotnet test                      # 410 unit tests; offline after the first restore (NuGet's vulnerability audit, NU1900, is a warning, not an error)
+dotnet test                      # configured unit tests; offline after the first restore (NuGet's vulnerability audit, NU1900, is a warning, not an error)
 dotnet format --verify-no-changes
 bash conformance/prepare.sh      # builds the runner; the harness calls it, and conformance/run.sh
 ```
@@ -330,3 +373,31 @@ Use the database builder with a logical connection created in Sagat. See the
 [five-language guide](../../docs/guides/managed-database-sdk.md) for typed parameters,
 result consumption, permissions and the shared real-service scenario. Credentials
 are resolved by the separate managed executor.
+
+<!-- EGM directory contract -->
+
+## Interface
+
+- SagatOctopusOrchestrator.Sdk 0.2.0 targets net8.0/net10.0 and packages its README/license plus an embedded error catalog; protocol client types are internal. [src/SagatOctopusOrchestrator.Sdk/SagatOctopusOrchestrator.Sdk.csproj:Version] [src/SagatOctopusOrchestrator.Sdk/SagatOctopusOrchestrator.Sdk.csproj:TargetFrameworks] [src/SagatOctopusOrchestrator.Sdk/SagatOctopusOrchestrator.Sdk.csproj:PackageReadmeFile]
+
+- [proto](./proto/README.md) — component contract.
+- [scripts](./scripts/README.md) — component contract.
+- [src](./src/README.md) — component contract.
+
+## Invariants
+
+- Build configuration treats warnings as errors, enables analyzers/style enforcement and deterministic outputs; dependency versions are centrally managed. [Directory.Build.props:TreatWarningsAsErrors] [Directory.Build.props:Deterministic] [Directory.Packages.props:ManagePackageVersionsCentrally]
+
+## Side Effects
+
+- None
+
+## Verification
+
+Run from the repository root:
+
+```sh
+cd sdks/dotnet && dotnet test && dotnet format --verify-no-changes
+```
+
+These commands are documented from the existing build configuration; they were not executed during this documentation update.

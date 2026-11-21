@@ -87,7 +87,7 @@ class SagatClientTest {
     @Test
     void aStartSendsTheHeadersAndTheBodyTheApiExpectsAndReturnsATypedRunThatKeepsTheRawAnswer() {
         server.prepare((req, reply) -> reply.send(202, run()));
-        Run result = client().start(
+        StartedRun started = client().startResult(
                 WORKFLOW,
                 Map.of("orderId", "o-1"),
                 StartOptions.create()
@@ -95,6 +95,8 @@ class SagatClientTest {
                         .correlationId("corr-1")
                         .traceparent(TRACE)
                         .deadline(Instant.parse("2030-01-01T00:00:00Z")));
+        Run result = started.run();
+        assertTrue(started.started(), "a 202 is a run this call created");
         FakeRestServer.Seen request = server.seen.get(0);
         assertEquals("POST", request.method());
         assertEquals("/v1/runs", request.path());
@@ -235,6 +237,22 @@ class SagatClientTest {
         assertThrows(SagatException.class, () -> ClientConfig.builder().apiUrl("https://a.example/v1").token("t").build());
         assertThrows(SagatException.class, () -> ClientConfig.builder().apiUrl("https://a.example/v1").namespace("p").build());
         assertThrows(SagatException.class, () -> ClientConfig.builder().apiUrl("https://a.example/v1").namespace("p").token("t").timeout(Duration.ZERO).build());
+    }
+
+    @Test
+    void aRefusedRunInputCarriesTheFieldAndTheRuleBesideTheReason() {
+        // design 043 (FR-043-015): field and rule beside reason, as the server sent them
+        server.prepare((req, reply) -> reply.send(422, "{\"code\":\"VALIDATION_FAILED\",\"message\":\"no\",\"retryable\":false,"
+                + "\"details\":{\"reason\":\"RUN_INPUT_INVALID\",\"field\":\"/orderId\",\"rule\":\"type\"}}"));
+        SagatException error = assertThrows(SagatException.class, () -> client().get(RUN));
+        assertEquals("RUN_INPUT_INVALID", error.reason().orElseThrow());
+        assertEquals("/orderId", error.field().orElseThrow());
+        assertEquals("type", error.rule().orElseThrow());
+        server.prepare((req, reply) -> reply.send(422, "{\"code\":\"VALIDATION_FAILED\",\"message\":\"no\",\"retryable\":false,"
+                + "\"details\":{\"reason\":\"RUN_INPUT_SCHEMA_UNUSABLE\"}}"));
+        SagatException unusable = assertThrows(SagatException.class, () -> client().get(RUN));
+        assertTrue(unusable.field().isEmpty());
+        assertTrue(unusable.rule().isEmpty());
     }
 
     @Test
@@ -538,6 +556,16 @@ class SagatClientTest {
         assertEquals(List.of("wait"), signalled.deliveredTo());
         assertEquals("/v1/runs/" + RUN + "/signals/payment-confirmed", server.seen.get(1).path());
         assertEquals("{\"paymentId\":\"p-1\"}", server.seen.get(1).rawBody());
+    }
+
+    @Test
+    void aRunStoppedWithAFailureCodeCarriesItAndARunWithoutOneHasNone() {
+        server.prepare((req, reply) -> reply.send(200,
+                run("status", "\"FAILED\"", "failureCode", "\"CONTINUATION_INPUT_INVALID\"")));
+        assertEquals("CONTINUATION_INPUT_INVALID", client().get(RUN).failureCode());
+
+        server.prepare((req, reply) -> reply.send(200, run()));
+        assertEquals(null, client().get(RUN).failureCode());
     }
 
     @Test

@@ -43,6 +43,9 @@ use tokio::net::{TcpListener, TcpStream};
 pub mod cleanup;
 pub mod cli;
 pub mod config;
+pub mod handover;
+pub mod inventory;
+pub mod registry;
 
 /// Parsed workflow versions kept in memory (they are immutable, so they never go stale).
 const DEFINITION_CACHE_ENTRIES: usize = 256;
@@ -83,6 +86,10 @@ pub enum RunError {
     Unhealthy(String),
     #[error("secret cleanup could not finish; retry the command")]
     Cleanup,
+    /// An operator command that was understood and is deliberately not carried out, with the sentence that says what to
+    /// do next (the engines that lack a capability, a count that is not the one expected, a role that may not run it).
+    #[error("{0}")]
+    Declined(String),
 }
 
 impl RunError {
@@ -93,6 +100,7 @@ impl RunError {
             | Self::Refused(_)
             | Self::Auth(_)
             | Self::Studio(_)
+            | Self::Declined(_)
             | Self::LeastPrivilege(_) => 2,
             Self::Database(_)
             | Self::Migrate(_)
@@ -439,6 +447,28 @@ pub async fn reseal_secrets(
     Ok(moved)
 }
 
+/// The service of runs the API serves, as the configuration says: how late telemetry may be, whether an Update-with-Start
+/// is served, and whether a reset may deliver signals and Updates again (`SAGAT_RESET_REAPPLY_ENABLED`, off unless the
+/// operator set it). One function, so that what the operator configured and what the service does can be tested together.
+#[must_use]
+pub fn run_service(
+    executions: sagat_infra_postgres::PgRunStore,
+    cache: DefinitionCache,
+    serve: &ServeConfig,
+) -> RunService<sagat_infra_postgres::PgRunStore, SystemClock, JsonEvaluator> {
+    RunService::new(executions, SystemClock, Engine::new(JsonEvaluator), cache)
+        // every start is checked against its version's inputSchema, in the mode of the process (design 043)
+        .with_run_inputs(sagat_infra_schema::run_input::RunInputValidator::gate(
+            serve.run_input_validation,
+        ))
+        .with_lag_budget(serve.telemetry_lag_budget)
+        .with_reset_reapply(serve.reset_reapply_enabled)
+        .with_reset_cancel_source(serve.reset_cancel_source_enabled)
+        // Update-with-Start applies a declared Update in the transaction that creates the run
+        .with_declared_updates(Arc::new(JsonDeclaredOperationEvaluator))
+        .with_lake_probes(Arc::new(sagat_infra_ir::JsonLakeProbeCodec))
+}
+
 /// Runs the HTTP API on `listener` until `shutdown` completes, then drains in-flight requests.
 ///
 /// # Errors
@@ -479,6 +509,11 @@ pub async fn serve_with_admin(
              SAGAT_ENV=dev; run `control-plane migrate` as a separate step",
         ));
     }
+    // A workflow may declare an Update that a reset applies again only where the operator turned the reapply
+    // on (ADR-0032, D1974): the capability is the process's, and is only ever switched on here.
+    if serve.reset_reapply_enabled {
+        sagat_infra_ir::set_reset_reapply(true);
+    }
     // Everything that can be checked without the database comes first.
     let fetcher = HttpJwksFetcher::new(&serve.auth).map_err(|e| RunError::Auth(e.to_string()))?;
     let verifier = TokenVerifier::new(Arc::new(fetcher), &serve.auth);
@@ -499,6 +534,20 @@ pub async fn serve_with_admin(
         tracing::info!("database role verified: it cannot rewrite the audit trail");
     }
     let service = IdentityService::new(store, SystemClock);
+    // The place of this process in the instance-capability registry (FR-018-052). Nothing is written until
+    // `register`, below, once everything that can fail from configuration has been built: a closed gate refuses every
+    // call until then.
+    // The registry has a connection of its own: the heartbeat of a healthy process must not wait for the pool that its
+    // requests may have saturated.
+    let registry_pool = connect(&registry::registry_pool_config(&config.database))
+        .await
+        .map_err(|e| RunError::Database(e.to_string()))?;
+    let member = registry::member(
+        &registry_pool,
+        sagat_application::instances::InstanceKind::ControlPlane,
+        &registry::capabilities(serve.run_input_validation),
+        None,
+    );
     // Install the metrics recorder before the first request so nothing is missed. Idle series are
     // forgotten when the page is rendered, so a process nobody scrapes needs this timer.
     let metrics_upkeep = spawn_metrics_upkeep(Metrics::global(), METRICS_UPKEEP_INTERVAL);
@@ -507,11 +556,13 @@ pub async fn serve_with_admin(
     let state = AppState::with_rate_limit(service, verifier, serve.rate_limit)
         .map_err(|e| config::rate_limit_error(config::TENANT_RATE_VARS, e))?
         .with_subject_rate_limit(serve.subject_rate_limit)
-        .map_err(|e| config::rate_limit_error(config::SUBJECT_RATE_VARS, e))?;
+        .map_err(|e| config::rate_limit_error(config::SUBJECT_RATE_VARS, e))?
+        .with_serving_gate(Arc::clone(member.gate()));
     // Workflow documents are validated and parsed once per immutable version, then kept.
     let codec: Arc<dyn IrCodec> = Arc::new(JsonIrCodec);
     let cache = DefinitionCache::new(codec, DEFINITION_CACHE_ENTRIES);
-    let executions = PgRunStore::new(pool.clone(), cache.clone());
+    let executions =
+        PgRunStore::new(pool.clone(), cache.clone()).with_lake_enabled(serve.lake_enabled);
     let mut governance = GovState::new(
         state.clone(),
         sagat_application::api_admission::ApiAdmissionService::new(executions.clone(), SystemClock),
@@ -532,6 +583,75 @@ pub async fn serve_with_admin(
         SystemClock,
         serve.runbook_base.clone(),
     ));
+    // The times a schedule is created, updated, resumed or triggered at, and the slots of a batch
+    // job, are computed on the database's clock, whatever this process's own says (FR-018-005,
+    // D1802); it is kept in step below, once the shutdown signal exists.
+    let schedule_clock = (serve.schedules_enabled || serve.batches_enabled)
+        .then(|| sagat_infra_postgres::DatabaseClock::new(pool.clone(), SystemClock));
+    if let Some(clock) = &schedule_clock
+        && let Err(error) = clock.sync().await
+    {
+        tracing::warn!(%error, "could not read the database clock; schedules and batch jobs use this process's clock until it can");
+    }
+    if serve.schedules_enabled
+        && let Some(schedule_clock) = schedule_clock.clone()
+    {
+        let ceilings = sagat_domain::schedules::Ceilings::default();
+        let schedules = || sagat_infra_postgres::PgScheduleStore::new(pool.clone());
+        governance = governance
+            .with_schedules(Arc::new(sagat_application::schedule_api::ScheduleApi::new(
+                sagat_application::schedules::ScheduleService::new(
+                    schedules(),
+                    sagat_infra_ir::schedule_calendar::SpecCalendar,
+                    schedule_clock.clone(),
+                    ceilings,
+                )
+                // a schedule's input is checked at write against the version it targets (design 043, row 14)
+                .with_run_inputs(
+                    sagat_infra_schema::run_input::RunInputValidator::gate(
+                        serve.run_input_validation,
+                    ),
+                    cache.clone(),
+                ),
+                // trigger-now starts a run in this process, as the schedule: it needs the run service
+                sagat_application::schedule_firing::ScheduleFiring::new(
+                    schedules(),
+                    sagat_infra_ir::schedule_calendar::SpecCalendar,
+                    schedule_clock,
+                    sagat_infra_postgres::PgIdentityStore::new(pool.clone()),
+                    sagat_application::runs::RunService::new(
+                        executions.clone(),
+                        SystemClock,
+                        sagat_application::execution::Engine::new(sagat_infra_ir::JsonEvaluator),
+                        cache.clone(),
+                    )
+                    .with_run_inputs(
+                        sagat_infra_schema::run_input::RunInputValidator::gate(
+                            serve.run_input_validation,
+                        ),
+                    ),
+                    ceilings,
+                ),
+            )))
+            // the values of a schedule's input come out only through this audited read (FR-018-042)
+            .with_schedule_input_disclosures(Arc::new(
+                sagat_application::schedule_disclosure::ScheduleInputDisclosureService::new(
+                    schedules(),
+                    SystemClock,
+                    sagat_infra_schema::classification::Classifier::default(),
+                    sagat_infra_ir::JsonPayloadProjector,
+                ),
+            ));
+    }
+    if serve.batches_enabled
+        && let Some(clock) = schedule_clock.clone()
+    {
+        governance =
+            governance.with_batches(Arc::new(sagat_application::batch::BatchService::new(
+                sagat_infra_postgres::PgBatchStore::new(pool.clone()),
+                clock,
+            )));
+    }
     let provider: Option<Arc<dyn sagat_application::secret_provider::SecretProvider>> =
         match &serve.openbao {
             Some(settings) => Some(
@@ -590,10 +710,10 @@ pub async fn serve_with_admin(
         )
         .with_redis_callbacks(serve.redis_callbacks),
     );
-    governance = governance.with_connections(sagat_application::database::ConnectionService::new(
-        executions.clone(),
-        SystemClock,
-    ));
+    governance = governance.with_connections(
+        sagat_application::database::ConnectionService::new(executions.clone(), SystemClock)
+            .with_lake_enabled(serve.lake_enabled),
+    );
     if let (Some(settings), Some(provider)) = (&serve.openbao, provider) {
         let key = settings.intent_key().await.map_err(|_| {
             RunError::Refused("OpenBao management requires a 32-byte SAGAT_OPENBAO_INTENT_KEY_FILE")
@@ -629,14 +749,15 @@ pub async fn serve_with_admin(
             ),
         );
     }
-    let publishing = PublishingService::new(executions.clone(), SystemClock, JsonIrCodec);
-    let mut runs = RunService::new(
-        executions.clone(),
-        SystemClock,
-        Engine::new(JsonEvaluator),
-        cache,
-    )
-    .with_lag_budget(serve.telemetry_lag_budget);
+    tracing::info!(
+        mode = serve.run_input_validation.as_str(),
+        "publication checks every inputSchema against the supported subset in this mode"
+    );
+    let publishing = PublishingService::new(executions.clone(), SystemClock, JsonIrCodec)
+        .with_lake_enabled(serve.lake_enabled)
+        .with_input_validation(serve.run_input_validation)
+        .with_collection_operators_enabled(serve.collection_operators_enabled);
+    let mut runs = run_service(executions.clone(), cache, serve);
     if let Some(settings) = &serve.blobs {
         let backend = sagat_infra_blobstore::build_backend(&settings.store, settings.part_size)
             .map_err(|_| RunError::Refused("could not set up the object store (SAGAT_BLOB_*)"))?;
@@ -645,14 +766,11 @@ pub async fn serve_with_admin(
             max_bytes = settings.limits.max_bytes,
             "run input blob store enabled"
         );
-        runs = runs.with_input_blobs(
-            sagat_application::blobs::BlobService::new(
-                Arc::new(sagat_infra_postgres::PgBlobCatalog::new(pool.clone())),
-                backend,
-                settings.limits,
-            ),
-            Arc::new(sagat_infra_schema::Schemas),
-        );
+        runs = runs.with_input_blobs(sagat_application::blobs::BlobService::new(
+            Arc::new(sagat_infra_postgres::PgBlobCatalog::new(pool.clone())),
+            backend,
+            settings.limits,
+        ));
     }
     let database_results = sagat_application::database_results::DatabaseResultService::new(
         executions.clone(),
@@ -663,7 +781,10 @@ pub async fn serve_with_admin(
     let exec = ExecState::new(
         state,
         sagat_application::api_admission::ApiAdmissionService::new(executions.clone(), SystemClock),
-        DefinitionService::new(executions.clone(), SystemClock, JsonIrCodec),
+        DefinitionService::new(executions.clone(), SystemClock, JsonIrCodec)
+            .with_lake_enabled(serve.lake_enabled)
+            .with_input_validation(serve.run_input_validation)
+            .with_collection_operators_enabled(serve.collection_operators_enabled),
         runs,
     )
     .with_database_results(Arc::new(database_results))
@@ -706,10 +827,40 @@ pub async fn serve_with_admin(
 
     // One shutdown signal drives both listeners.
     let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
-    tokio::spawn(async move {
-        shutdown.await;
-        let _ = stop_tx.send(true);
+    let stop_tx = Arc::new(stop_tx);
+    tokio::spawn({
+        let stop_tx = Arc::clone(&stop_tx);
+        async move {
+            shutdown.await;
+            let _ = stop_tx.send(true);
+        }
     });
+    let clock_sync = schedule_clock.map(|clock| {
+        let stop = stop_rx.clone();
+        tokio::spawn(async move {
+            // a few seconds of process-clock drift is far below what a schedule time can notice
+            let mut tick = tokio::time::interval(Duration::from_secs(5));
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            let mut stopped = std::pin::pin!(stopped(stop));
+            loop {
+                tokio::select! {
+                    () = &mut stopped => break,
+                    _ = tick.tick() => {
+                        if let Err(error) = clock.sync().await {
+                            tracing::warn!(%error, "could not read the database clock; keeping the last difference");
+                        }
+                    }
+                }
+            }
+        })
+    });
+
+    // Register before the first request is served: the one transaction that takes the requirement epoch, checks what
+    // the platform requires of a control plane against what this binary can do, and writes the row. Until it has
+    // registered, and while the platform requires what this binary lacks, the gate is closed: every call but liveness
+    // is refused and readiness fails (FR-018-052).
+    let mut heartbeat =
+        tokio::spawn(registry::join(&member, serve.registry, stop_rx.clone()).await);
 
     // Public settings only; never the database URL.
     tracing::info!(
@@ -741,18 +892,34 @@ pub async fn serve_with_admin(
         }
         None => None,
     };
-    if let Some(tls) = serve.tls.clone() {
-        sagat_api_http::serve_tls(listener, app, serve.server, tls, stopped(stop_rx)).await?;
-    } else {
-        sagat_api_http::serve(listener, app, serve.server, stopped(stop_rx)).await?;
+    // The heartbeat is supervised: if it ends while the server runs, the server is stopped and the process fails.
+    let serving = async {
+        if let Some(tls) = serve.tls.clone() {
+            sagat_api_http::serve_tls(listener, app, serve.server, tls, stopped(stop_rx)).await
+        } else {
+            sagat_api_http::serve(listener, app, serve.server, stopped(stop_rx)).await
+        }
+    };
+    let served = registry::serve_until_the_heartbeat_ends(serving, &mut heartbeat, &stop_tx).await;
+    // However the server ended, the membership ends with it, and only now: the heartbeat goes on while the server
+    // drains (an activation in the grace window still counts this replica), then the row is deleted, not left to expire.
+    let _ = stop_tx.send(true);
+    if !heartbeat.is_finished() {
+        let _ = tokio::time::timeout(Duration::from_secs(5), &mut heartbeat).await;
     }
+    member.leave().await;
     if let Some(admin) = admin {
         let _ = admin.await;
     }
     tracing::info!("control plane stopped");
     pool_metrics.abort();
     metrics_upkeep.abort();
+    if let Some(task) = clock_sync {
+        task.abort();
+    }
+    registry_pool.close().await;
     pool.close().await;
+    served?;
     Ok(())
 }
 

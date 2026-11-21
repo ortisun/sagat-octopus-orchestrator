@@ -539,6 +539,11 @@ async fn the_tenant_view_has_no_single_usage_for_a_per_namespace_resource() {
             (QuotaResource::DatabaseConcurrency, false),
             (QuotaResource::TenantDatabaseConcurrency, true),
             (QuotaResource::SecretProviderOperations, false),
+            (QuotaResource::Schedules, false),
+            (QuotaResource::ScheduleBackfills, false),
+            (QuotaResource::BatchJobs, false),
+            (QuotaResource::TenantBatchJobs, true),
+            (QuotaResource::PendingResets, false),
         ]
     );
     let used = tenant_view
@@ -586,6 +591,10 @@ async fn the_tenant_view_has_no_single_usage_for_a_per_namespace_resource() {
             (QuotaResource::DatabaseConnections, Some(0)),
             (QuotaResource::DatabaseConcurrency, Some(0)),
             (QuotaResource::SecretProviderOperations, Some(0)),
+            (QuotaResource::Schedules, Some(0)),
+            (QuotaResource::ScheduleBackfills, Some(0)),
+            (QuotaResource::BatchJobs, Some(0)),
+            (QuotaResource::PendingResets, Some(0)),
         ]
     );
 }

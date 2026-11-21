@@ -259,6 +259,29 @@ pub struct Options {
     pub streams: Option<sagat_api_http::streams::StreamLimits>,
     /// Serve the Studio from this directory under `/studio/` (D143).
     pub studio: Option<sagat_api_http::studio::StudioConfig>,
+    /// Let a reset deliver signals and Updates again (`SAGAT_RESET_REAPPLY_ENABLED`, feature 018). ON BY DEFAULT
+    /// HERE, unlike in production (where it is off unless the operator sets it), so that the suites can exercise
+    /// the reapply; the gate is what a test of the refusal turns off. That the production default is off is
+    /// proved by `reapply::the_service_the_control_plane_builds_refuses_the_reapply_unless_the_operator_set_it`,
+    /// which builds the service from the real configuration.
+    pub reset_reapply: bool,
+    /// Let a reset cancel an open source and wait for it (`SAGAT_RESET_CANCEL_SOURCE_ENABLED`, feature 018). ON BY
+    /// DEFAULT HERE, unlike in production (where it is off unless the operator sets it), so that the suites can
+    /// exercise it; the gate is what a test of the refusal turns off. That the production default is off is proved by
+    /// `cancel_source::the_service_the_control_plane_builds_refuses_the_cancel_of_a_source_unless_the_operator_set_it`.
+    pub reset_cancel_source: bool,
+    /// The gate of the instance-capability registry (`FR-018-052`): while it is closed every call but `/v1/health` is
+    /// `503 BINARY_CAPABILITY_MISSING`. `None` is a process with no registry, which serves.
+    pub serving_gate: Option<Arc<sagat_application::instances::ServingGate>>,
+
+    /// The lake is on: Iceberg writes are published, admitted and leased, and the worker service completes them (feature 035).
+    pub lake: bool,
+    /// How the run service treats an input its version refuses (design 043): `enforce`, as production does by default; a
+    /// suite that needs a run admitted before 0.3.0 (an input its schema refuses) serves in `report`.
+    pub run_input_validation: sagat_application::run_input::InputValidationMode,
+    /// A `forEach` may be published with `operators` (`SAGAT_COLLECTION_OPERATORS_ENABLED`, design 042). Off, as in
+    /// production, unless a test turns it on.
+    pub collection_operators: bool,
 }
 
 impl Default for Options {
@@ -291,6 +314,13 @@ impl Default for Options {
             script_ceiling: sagat_domain::scripts::Policy::default(),
             streams: None,
             studio: None,
+            reset_reapply: true,
+            reset_cancel_source: true,
+            serving_gate: None,
+
+            lake: false,
+            run_input_validation: sagat_application::run_input::InputValidationMode::Enforce,
+            collection_operators: false,
         }
     }
 }
@@ -360,11 +390,16 @@ async fn start_on_ready_db(db: TestDb, options: Options, supplied_pool: Option<P
         .expect("valid budget")
         .with_subject_rate_limit(options.subject_rate_limit)
         .expect("valid subject budget");
+    if let Some(gate) = &options.serving_gate {
+        state = state.with_serving_gate(Arc::clone(gate));
+    }
     state.tenant_concurrency = Arc::new(sagat_api_http::TenantConcurrency::new(
         options.limits.max_in_flight_per_tenant,
     ));
     let cache = DefinitionCache::new(Arc::new(JsonIrCodec), 64);
-    let executions = PgRunStore::new(api_pool.clone(), cache.clone()).with_scoped_worker_protocol();
+    let executions = PgRunStore::new(api_pool.clone(), cache.clone())
+        .with_scoped_worker_protocol()
+        .with_lake_enabled(options.lake);
     let key_k1 = sagat_infra_secrets::generate_key().expect("a key");
     let keys =
         sagat_infra_secrets::SecretsConfig::parse(&format!("k1:{key_k1}")).expect("a key ring");
@@ -391,6 +426,48 @@ async fn start_on_ready_db(db: TestDb, options: Options, supplied_pool: Option<P
         SystemClock,
         "docs/runbooks/alerts.md",
     ))
+    .with_schedules(Arc::new(sagat_application::schedule_api::ScheduleApi::new(
+        sagat_application::schedules::ScheduleService::new(
+            sagat_infra_postgres::PgScheduleStore::new(api_pool.clone()),
+            sagat_infra_ir::schedule_calendar::SpecCalendar,
+            SystemClock,
+            sagat_domain::schedules::Ceilings::default(),
+        )
+        .with_run_inputs(
+            sagat_infra_schema::run_input::RunInputValidator::gate(
+                sagat_application::run_input::InputValidationMode::Enforce,
+            ),
+            cache.clone(),
+        ),
+        sagat_application::schedule_firing::ScheduleFiring::new(
+            sagat_infra_postgres::PgScheduleStore::new(api_pool.clone()),
+            sagat_infra_ir::schedule_calendar::SpecCalendar,
+            SystemClock,
+            sagat_infra_postgres::PgIdentityStore::new(api_pool.clone()),
+            sagat_application::runs::RunService::new(
+                executions.clone(),
+                SystemClock,
+                Engine::new(JsonEvaluator),
+                cache.clone(),
+            )
+            .with_run_inputs(sagat_infra_schema::run_input::RunInputValidator::gate(
+                sagat_application::run_input::InputValidationMode::Enforce,
+            )),
+            sagat_domain::schedules::Ceilings::default(),
+        ),
+    )))
+    .with_schedule_input_disclosures(Arc::new(
+        sagat_application::schedule_disclosure::ScheduleInputDisclosureService::new(
+            sagat_infra_postgres::PgScheduleStore::new(api_pool.clone()),
+            SystemClock,
+            sagat_infra_schema::classification::Classifier::default(),
+            sagat_infra_ir::JsonPayloadProjector,
+        ),
+    ))
+    .with_batches(Arc::new(sagat_application::batch::BatchService::new(
+        sagat_infra_postgres::PgBatchStore::new(api_pool.clone()),
+        SystemClock,
+    )))
     .with_secrets(SecretService::new(
         executions.clone(),
         SystemClock,
@@ -438,10 +515,10 @@ async fn start_on_ready_db(db: TestDb, options: Options, supplied_pool: Option<P
             options.script_ceiling,
         ),
     );
-    governance = governance.with_connections(sagat_application::database::ConnectionService::new(
-        executions.clone(),
-        SystemClock,
-    ));
+    governance = governance.with_connections(
+        sagat_application::database::ConnectionService::new(executions.clone(), SystemClock)
+            .with_lake_enabled(options.lake),
+    );
     if let Some(provider) = &options.secret_provider {
         governance = governance.with_managed_secrets(
             sagat_application::managed_secrets::ManagedSecretService::new(
@@ -479,25 +556,37 @@ async fn start_on_ready_db(db: TestDb, options: Options, supplied_pool: Option<P
         SystemClock,
         Engine::new(JsonEvaluator),
         cache,
-    );
+    )
+    .with_run_inputs(sagat_infra_schema::run_input::RunInputValidator::gate(
+        options.run_input_validation,
+    ))
+    .with_declared_updates(Arc::new(sagat_infra_ir::JsonDeclaredOperationEvaluator))
+    .with_reset_reapply(options.reset_reapply)
+    .with_reset_cancel_source(options.reset_cancel_source)
+    .with_lake_probes(Arc::new(sagat_infra_ir::JsonLakeProbeCodec));
     if let Some(blobs) = &blobs {
-        runs = runs.with_input_blobs(blobs.clone(), Arc::new(sagat_infra_schema::Schemas));
+        runs = runs.with_input_blobs(blobs.clone());
     }
     let mut exec = ExecState::new(
         state,
         sagat_application::api_admission::ApiAdmissionService::new(executions.clone(), SystemClock),
-        DefinitionService::new(executions.clone(), SystemClock, JsonIrCodec),
+        DefinitionService::new(executions.clone(), SystemClock, JsonIrCodec)
+            .with_lake_enabled(options.lake)
+            .with_collection_operators_enabled(options.collection_operators),
         runs,
     )
     .with_blob_transfer(sagat_api_http::HttpBlobTransfer {
         max_concurrent: options.blob_transfer.max_concurrent,
         timeout: options.blob_transfer.timeout,
     })
-    .with_publishing(sagat_application::publishing::PublishingService::new(
-        executions.clone(),
-        SystemClock,
-        JsonIrCodec,
-    ))
+    .with_publishing(
+        sagat_application::publishing::PublishingService::new(
+            executions.clone(),
+            SystemClock,
+            JsonIrCodec,
+        )
+        .with_collection_operators_enabled(options.collection_operators),
+    )
     .with_database_results(Arc::new(
         sagat_application::database_results::DatabaseResultService::new(
             executions.clone(),
@@ -534,11 +623,16 @@ async fn start_on_ready_db(db: TestDb, options: Options, supplied_pool: Option<P
     .with_database_content(
         Arc::new(sagat_infra_secrets::database::JsonDatabaseCredentials),
         Arc::new(sagat_infra_ir::JsonDatabaseResultValidator),
-    );
+    )
+    .with_lake_receipts(Arc::new(sagat_infra_ir::JsonLakeReceiptCodec))
+    .with_lake_probes(Arc::new(sagat_infra_ir::JsonLakeProbeCodec));
     if let Some(provider) = &options.secret_provider {
         workers = workers.with_secret_provider(provider.clone());
     }
     let mut grpc = WorkerGrpc::new(exec.clone(), workers);
+    if let Some(gate) = &options.serving_gate {
+        grpc = grpc.with_serving_gate(Arc::clone(gate));
+    }
     if let Some(blobs) = &blobs {
         grpc = grpc.with_blobs(blobs.clone(), options.blob_transfer);
     }
@@ -577,6 +671,10 @@ async fn start_on_ready_db(db: TestDb, options: Options, supplied_pool: Option<P
         .expect("bind api");
     let addr = listener.local_addr().expect("addr");
     let server = options.server;
+    // The server closes a connection that sends no request head for `header_read_timeout`, idle keep-alive ones included.
+    // A client that keeps an idle connection longer sends its next request into the close and gets `IncompleteMessage`
+    // (it failed a request after a long wait on a held gate), so the client forgets an idle connection after half of it.
+    let idle_limit = server.header_read_timeout / 2;
     let https = options.http_tls.is_some();
     let http_server = tokio::spawn(async move {
         if let Some(tls) = options.http_tls {
@@ -587,7 +685,9 @@ async fn start_on_ready_db(db: TestDb, options: Options, supplied_pool: Option<P
         }
     });
 
-    let mut client = Client::builder().timeout(Duration::from_secs(10));
+    let mut client = Client::builder()
+        .timeout(Duration::from_secs(10))
+        .pool_idle_timeout(idle_limit);
     if let Some(root) = options.http_tls_ca {
         client = client
             .add_root_certificate(reqwest::Certificate::from_pem(&root).expect("HTTP TLS root"));

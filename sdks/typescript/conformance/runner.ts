@@ -4,10 +4,12 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import {
-  ActivityFailure, BlobOutput, SDK_VERSION, SagatClient, SagatError, WorkerHost, body, flow, reconcile, workflow,
-  type ActivityContext, type Body, type Flow, type Run, type StateDefinition, type WorkflowBuilder,
+  ActivityFailure, BlobOutput, SDK_VERSION, SagatClient, SagatError, WorkerHost, body, flow, ops, reconcile, workflow,
+  type ActivityContext, type CollectionOptions, type Operator, type BatchJob, type Body, type Flow, type Reset, type Run, type Schedule,
+  type ScheduleBackfill, type StateDefinition, type UpdateWithStartReceipt, type WorkflowBuilder,
 } from '../src/index.js';
 import { FaultPlan, type Fault } from './faults.js';
+import { actionJson, descriptionJson, iso, scheduleJson } from './observe.js';
 
 type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 type Obj = Record<string, any>;
@@ -26,19 +28,42 @@ function templated<T>(value: T, unique: string): T {
 
 // ----------------------------------------------------------------------------------------- builders
 
+/** One stage of a scenario's `operators`, built through the public operator factory. */
+function operator(stage: Obj): Operator {
+  const [name, ...others] = Object.keys(stage);
+  if (name === undefined || others.length > 0) throw new Error(`a stage has exactly one operator: ${JSON.stringify(stage)}`);
+  const p = stage[name] as Obj;
+  switch (name) {
+    case 'filter': return ops.filter(p['where']);
+    case 'map': return ops.map(p['select']);
+    case 'flatMap': return ops.flatMap(p['select']);
+    case 'skip': return ops.skip(p['count']);
+    case 'take': return ops.take(p['count']);
+    case 'distinct': return ops.distinct(p['by']);
+    case 'window': return ops.window(p['count']);
+    default: throw new Error(`unknown operator ${name}`);
+  }
+}
+
+function collectionOptions(op: Obj): CollectionOptions {
+  const options = { maxItems: op['maxItems'], maxConcurrency: op['maxConcurrency'] };
+  return op['operators'] === undefined ? options : { ...options, operators: (op['operators'] as Obj[]).map(operator) };
+}
+
 function apply(target: Flow, ops: Obj[]): void {
   for (const op of ops) {
     switch (op['op']) {
       case 'step': target.step(op['id'], op['activity'], op['options']); break;
       case 'database': target.database(op['id'], op['options']); break;
+      case 'icebergWrite': target.icebergWrite(op['id'], op['options']); break;
       case 'script': target.script(op['id'], op['artifactDigest'], op['options']); break;
       case 'sleep': target.sleep(op['id'], op['durationMs']); break;
       case 'waitForEvent': target.waitForEvent(op['id'], op['options']); break;
       case 'invokeChild': target.invokeChild(op['id'], op['workflow'], op['options']); break;
       case 'condition': target.condition(op['id'], op['expression'], op['ifTrue'], op['ifFalse']); break;
       case 'switch': target.switch(op['id'], op['cases'], op['default']); break;
-      case 'forEach': target.forEach(op['id'], op['items'], op['body'], op['result'], { maxItems: op['maxItems'], maxConcurrency: op['maxConcurrency'] }); break;
-      case 'map': target.map(op['id'], op['items'], op['body'], op['result'], { maxItems: op['maxItems'], maxConcurrency: op['maxConcurrency'] }); break;
+      case 'forEach': target.forEach(op['id'], op['items'], op['body'], op['result'], collectionOptions(op)); break;
+      case 'map': target.map(op['id'], op['items'], op['body'], op['result'], collectionOptions(op)); break;
       case 'while': target.while(op['id'], op['condition'], op['body'], op['initial'], op['carry'], { maxIterations: op['maxIterations'], timeoutMs: op['timeoutMs'], delayMs: op['delayMs'], onError: op['onError'] }); break;
       case 'repeatUntil': target.repeatUntil(op['id'], op['condition'], op['body'], op['initial'], op['carry'], { maxIterations: op['maxIterations'], timeoutMs: op['timeoutMs'], delayMs: op['delayMs'], onError: op['onError'] }); break;
       case 'approval': target.approval(op['id'], { policy: op['policy'], timeoutMs: op['timeoutMs'], onApprove: op['onApprove'], onReject: op['onReject'], onExpire: op['onExpire'] }); break;
@@ -112,8 +137,6 @@ function build(scenario: Obj): Obj {
 
 // ---------------------------------------------------------------------------------------- observations
 
-const iso = (date: Date | null): string | null => (date ? date.toISOString() : null);
-
 function runJson(run: Run): Obj {
   return {
     runId: run.runId, workflowId: run.workflowId, versionId: run.versionId, status: run.status, version: run.version,
@@ -124,11 +147,52 @@ function runJson(run: Run): Obj {
     ...(run.chain ? { chain: run.chain } : {}),
     // Present only for a run started again from an ended one.
     ...(run.rerunOf ? { rerunOf: run.rerunOf } : {}),
+    // Present only for a run started under a business identifier, or held by a start delay.
+    ...(run.businessId !== null ? { businessId: run.businessId } : {}),
+    ...(run.startDelayedUntil !== null ? { startDelayedUntil: iso(run.startDelayedUntil) } : {}),
+    // Present only for a run a schedule started, or a reset made.
+    ...(run.schedule !== null
+      ? { schedule: { scheduleId: run.schedule.scheduleId, nominalTime: iso(run.schedule.nominalTime), kind: run.schedule.kind, revision: run.schedule.revision } }
+      : {}),
+    ...(run.resetFrom !== null ? { resetFrom: { runId: run.resetFrom.runId, sequence: run.resetFrom.sequence } } : {}),
+    // Present only for a run stopped with a failure code (design 043).
+    ...(run.failureCode !== null ? { failureCode: run.failureCode } : {}),
+  };
+}
+
+function backfillJson(b: ScheduleBackfill): Obj {
+  return { backfillId: b.backfillId, start: iso(b.start), end: iso(b.end), cursor: iso(b.cursor), state: b.state, overlap: b.overlap, counts: b.counts };
+}
+
+function jobJson(j: BatchJob): Obj {
+  return {
+    batchId: j.batchId, action: j.action, state: j.state, failureReason: j.failureReason, createdBy: j.createdBy, hasPayload: j.hasPayload,
+    maxItems: j.maxItems, itemsPerSecond: j.itemsPerSecond, counts: j.counts, createdAt: iso(j.createdAt), startedAt: iso(j.startedAt),
+    finishedAt: iso(j.finishedAt), expiresAt: iso(j.expiresAt),
+  };
+}
+
+function resetJson(r: Reset): Obj {
+  return {
+    resetId: r.resetId, sourceRunId: r.sourceRunId, sequence: r.sequence, state: r.state, failureReason: r.failureReason,
+    newRunId: r.newRunId, reapplyReport: r.reapplyReport, createdAt: iso(r.createdAt),
+  };
+}
+
+function receiptJson(r: UpdateWithStartReceipt | null): Obj | null {
+  return r && {
+    operation: r.operation, updateKey: r.updateKey, status: r.status, result: r.result, beforeStateRevision: r.beforeStateRevision,
+    afterStateRevision: r.afterStateRevision, runVersion: r.runVersion, replayed: r.replayed,
   };
 }
 
 function errorJson(error: unknown): Obj {
-  if (error instanceof SagatError) return error.toJSON();
+  if (error instanceof SagatError) {
+    // design 043: the field of an error is compared with the rule of a refused run input, not for the other reasons
+    const fields = error.toJSON();
+    if (!('rule' in fields)) delete fields['field'];
+    return fields;
+  }
   return { code: 'UNEXPECTED', message: error instanceof Error ? error.name : 'unknown' };
 }
 
@@ -394,12 +458,68 @@ async function run(scenario: Obj, config: Obj): Promise<Obj> {
     return resolved;
   };
 
+  // References inside the parameters of a step: a value an earlier step produced (`{{step:<id>:<field>}}`), a workflow
+  // id (`{{workflow:<key>}}`), the namespace id, and instants computed when the step runs (`{{now:<offsetMs>}}`, and
+  // `{{hour:<offsetHours>}}` for the start of a UTC hour). A string that is exactly one reference becomes its value.
+  const refs = (value: any): any => {
+    if (typeof value === 'string') {
+      if (value === '{{namespaceId}}') return config['namespaceId'];
+      let match = /^\{\{workflow:([^}]+)\}\}$/.exec(value);
+      if (match) return config['workflows'][match[1]!].workflowId;
+      match = /^\{\{step:([^:}]+):([^}]+)\}\}$/.exec(value);
+      if (match) {
+        const found = results.get(match[1]!)?.[match[2]!];
+        if (found === undefined) throw new Error(`step ${match[1]} has no ${match[2]}`);
+        return found;
+      }
+      match = /^\{\{now:(-?\d+)\}\}$/.exec(value);
+      if (match) return new Date(Date.now() + Number(match[1])).toISOString();
+      match = /^\{\{hour:(-?\d+)\}\}$/.exec(value);
+      if (match) {
+        const at = new Date();
+        at.setUTCMinutes(0, 0, 0);
+        at.setUTCHours(at.getUTCHours() + Number(match[1]));
+        return at.toISOString();
+      }
+      return value;
+    }
+    if (Array.isArray(value)) return value.map(refs);
+    if (value !== null && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, refs(v)]));
+    return value;
+  };
+  const namespaceId = config['namespaceId'] as string;
+  /** The id of the step whose result holds this run, or `?` for a run no step of the scenario started. */
+  const stepOfRun = (runId: string): string => {
+    for (const [id, found] of results) if (found['runId'] === runId || found['newRunId'] === runId) return id;
+    return '?';
+  };
+  const stepResult =(id: string, field: string): string => {
+    const found = results.get(id)?.[field];
+    if (typeof found !== 'string') throw new Error(`step ${id} has no ${field}`);
+    return found;
+  };
+  const awaiting = async (what: string, timeoutMs: number, done: () => Promise<boolean>): Promise<void> => {
+    const end = Date.now() + timeoutMs;
+    while (!(await done())) {
+      if (Date.now() > end) throw new Error(`timed out waiting for ${what}`);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+  };
+
   for (const [key, entry] of Object.entries(hosts)) {
     if (entry.def['autostart'] !== false) await startWorker(key);
   }
 
-  for (const step of scenario['steps'] as Obj[]) {
-    const client = clients[step['token'] ?? 'default']!;
+  for (const given of scenario['steps'] as Obj[]) {
+    const client = clients[given['token'] ?? 'default']!;
+    let step: Obj = given;
+    try {
+      step = refs(given) as Obj;
+    } catch (error) {
+      // A reference to a step that failed is a failure of this step, recorded like any other.
+      observations.push({ id: given['id'], op: given['op'], ok: false, error: errorJson(error) });
+      continue;
+    }
     const observation: Obj = { id: step['id'], op: step['op'] };
     if (process.env['SAGAT_RUNNER_TRACE']) process.stderr.write(`step ${String(step['id'])}\n`);
     try {
@@ -407,12 +527,135 @@ async function run(scenario: Obj, config: Obj): Promise<Obj> {
       switch (step['op']) {
         case 'start': {
           const workflowId = config['workflows'][step['workflow']].workflowId as string;
-          result = runJson(await client.start(workflowId, step['input'] ?? {}, {
+          const started = await client.start(workflowId, step['input'] ?? {}, {
             idempotencyKey: step['idempotencyKey'], correlationId: step['correlationId'],
             traceparent: step['traceparent'], deadlineInMs: step['deadlineInMs'],
-          }));
+            businessId: step['businessId'], businessIdConflictPolicy: step['businessIdConflictPolicy'],
+            businessIdReusePolicy: step['businessIdReusePolicy'], startDelayMs: step['startDelayMs'],
+          });
+          // `started` only when the step asked for a business identifier: the other observations stay as they were.
+          result = { ...runJson(started), ...(step['businessId'] !== undefined ? { started: started.started } : {}) };
           break;
         }
+        case 'scheduleCreate': result = scheduleJson(await client.schedules.create(namespaceId, step['write'], { idempotencyKey: step['idempotencyKey'] })); break;
+        case 'scheduleGet': result = descriptionJson(await client.schedules.get(namespaceId, stepResult(step['schedule'], 'scheduleId'), { nextCount: step['nextCount'], recentCount: step['recentCount'] })); break;
+        case 'scheduleList': {
+          const names: Obj[] = [];
+          const read = (s: Schedule): void => { names.push({ name: s.name, state: s.state, origin: s.origin, revision: s.revision }); };
+          let nextCursor: string | null = null;
+          if (step['all']) {
+            for await (const item of client.schedules.listAll(namespaceId, { ...(step['filter'] ?? {}), limit: step['limit'] })) read(item);
+          } else {
+            const listed = await client.schedules.list(namespaceId, { ...(step['filter'] ?? {}), limit: step['limit'] });
+            listed.items.forEach(read);
+            nextCursor = listed.nextCursor;
+          }
+          result = { items: names, nextCursor: nextCursor === null ? null : '<cursor>' };
+          break;
+        }
+        case 'scheduleUpdate': result = scheduleJson(await client.schedules.update(namespaceId, stepResult(step['schedule'], 'scheduleId'), step['write'], step['expectedRevision'], { idempotencyKey: step['idempotencyKey'] })); break;
+        case 'scheduleDelete': await client.schedules.delete(namespaceId, stepResult(step['schedule'], 'scheduleId'), step['expectedRevision'], { idempotencyKey: step['idempotencyKey'] }); result = { deleted: true }; break;
+        case 'schedulePause': result = scheduleJson(await client.schedules.pause(namespaceId, stepResult(step['schedule'], 'scheduleId'), step['note'], { idempotencyKey: step['idempotencyKey'] })); break;
+        case 'scheduleResume': result = scheduleJson(await client.schedules.resume(namespaceId, stepResult(step['schedule'], 'scheduleId'), step['note'], { idempotencyKey: step['idempotencyKey'] })); break;
+        case 'scheduleTrigger': result = actionJson(await client.schedules.trigger(namespaceId, stepResult(step['schedule'], 'scheduleId'), { overlap: step['overlap'], idempotencyKey: step['idempotencyKey'] })); break;
+        case 'scheduleBackfill': result = backfillJson(await client.schedules.backfill(namespaceId, stepResult(step['schedule'], 'scheduleId'), step['start'], step['end'], { overlap: step['overlap'], idempotencyKey: step['idempotencyKey'] })); break;
+        case 'scheduleCancelBackfill': result = backfillJson(await client.schedules.cancelBackfill(namespaceId, stepResult(step['schedule'], 'scheduleId'), stepResult(step['backfill'], 'backfillId'), { idempotencyKey: step['idempotencyKey'] })); break;
+        case 'scheduleBackfills': result = { items: (await client.schedules.listBackfills(namespaceId, stepResult(step['schedule'], 'scheduleId'))).map(backfillJson) }; break;
+        case 'scheduleActions': {
+          const listed = await client.schedules.listActions(namespaceId, stepResult(step['schedule'], 'scheduleId'), { outcome: step['outcome'], limit: step['limit'] });
+          result = { items: listed.items.map(actionJson), nextCursor: listed.nextCursor === null ? null : '<cursor>' };
+          break;
+        }
+        case 'awaitSchedule': {
+          // The scheduler decides the times of a backfill: wait for its counters, never for a delay.
+          const id = stepResult(step['schedule'], 'scheduleId');
+          await awaiting(`schedule counter ${String(step['counter'])}`, step['timeoutMs'] ?? 30_000, async () =>
+            ((await client.schedules.get(namespaceId, id, { nextCount: 0, recentCount: 0 })).counters[step['counter']] ?? 0) >= (step['atLeast'] ?? 1));
+          break;
+        }
+        case 'awaitBackfill': {
+          // A backfill counts the times it found already acted on in its own counts, not in the schedule's counters.
+          const schedule = stepResult(step['schedule'], 'scheduleId');
+          const id = stepResult(step['backfill'], 'backfillId');
+          await awaiting(`backfill state ${String(step['state'])}`, step['timeoutMs'] ?? 30_000, async () =>
+            (await client.schedules.listBackfills(namespaceId, schedule)).some((b) => b.backfillId === id && b.state === step['state']));
+          break;
+        }
+        case 'businessIdGet': {
+          const b = await client.businessIds.get(namespaceId, step['businessId']);
+          result = {
+            businessId: b.businessId, executionId: b.executionId, currentRunId: b.currentRunId, open: b.open, lastStatus: b.lastStatus,
+            workflowId: b.workflowId, boundAt: iso(b.boundAt), reusableAfter: iso(b.reusableAfter),
+          };
+          break;
+        }
+        case 'signalWithStart': {
+          const r = await client.signalWithStart(step['workflow'] ? config['workflows'][step['workflow']].workflowId : step['workflowId'], step['businessId'], step['input'] ?? {}, step['signal']['name'], step['signal']['payload'] ?? {}, {
+            idempotencyKey: step['idempotencyKey'], businessIdReusePolicy: step['businessIdReusePolicy'],
+          });
+          result = { runId: r.runId, started: r.started, deliveredTo: r.deliveredTo };
+          break;
+        }
+        case 'updateWithStart': {
+          const u = step['update'];
+          const r = await client.updateWithStart(config['workflows'][step['workflow']].workflowId, step['businessId'], step['input'] ?? {}, u['name'], u['updateKey'], u['args'] ?? null, {
+            idempotencyKey: step['idempotencyKey'], businessIdConflictPolicy: step['businessIdConflictPolicy'],
+            businessIdReusePolicy: step['businessIdReusePolicy'], startDelayMs: step['startDelayMs'], expectedStateRevision: u['expectedStateRevision'],
+          });
+          result = { runId: r.runId, started: r.started, update: { outcome: r.update.outcome, reason: r.update.reason, receipt: receiptJson(r.update.receipt) } };
+          break;
+        }
+        case 'batchPreview': {
+          const p = await client.batch.preview(namespaceId, step['selector'], step['maxItems']);
+          // The sample is a set of runs in the order the server chose; the scenario compares which of its own runs it holds.
+          result = { matched: p.matched, capped: p.capped, sampleSize: p.sample.length, sampleSteps: p.sample.map(stepOfRun).sort() };
+          break;
+        }
+        case 'batchCreate': {
+          // What does not change while the job runs (its state and counters do): the job as it was accepted.
+          const j = await client.batch.create(namespaceId, step['request'], { idempotencyKey: step['idempotencyKey'] });
+          result = { batchId: j.batchId, action: j.action, createdBy: j.createdBy, hasPayload: j.hasPayload, maxItems: j.maxItems, itemsPerSecond: j.itemsPerSecond };
+          break;
+        }
+        case 'batchGet': result = jobJson(await client.batch.get(namespaceId, stepResult(step['batch'], 'batchId'))); break;
+        case 'batchList': {
+          const listed = await client.batch.list(namespaceId, { state: step['state'], limit: step['limit'] });
+          result = { items: listed.items.map((j) => ({ action: j.action, state: j.state, counts: j.counts })), nextCursor: listed.nextCursor === null ? null : '<cursor>' };
+          break;
+        }
+        case 'batchCancel': result = jobJson(await client.batch.cancel(namespaceId, stepResult(step['batch'], 'batchId'), step['reason'], { idempotencyKey: step['idempotencyKey'] })); break;
+        case 'batchItems': {
+          const listed = await client.batch.listItems(namespaceId, stepResult(step['batch'], 'batchId'), { state: step['state'], limit: step['limit'] });
+          // The order of the items is the server's; which of the scenario's runs sits at which ordinal is not part of the
+          // contract, so the items are named by the step that started the run and sorted by it.
+          result = {
+            items: listed.items.map((i) => ({ runStep: stepOfRun(i.runId), state: i.state, reason: i.reason, errorCode: i.errorCode, attempts: i.attempts, newRunId: i.newRunId }))
+              .sort((a, b) => a.runStep.localeCompare(b.runStep)),
+            nextCursor: listed.nextCursor === null ? null : '<cursor>',
+          };
+          break;
+        }
+        case 'awaitBatch': {
+          const id = stepResult(step['batch'], 'batchId');
+          await awaiting(`batch state ${String(step['state'])}`, step['timeoutMs'] ?? 30_000, async () => (await client.batch.get(namespaceId, id)).state === step['state']);
+          break;
+        }
+        case 'resetPoints': {
+          const listed = await client.resetPoints(runOf(step), { limit: step['limit'] });
+          result = { items: listed.items.map((p) => ({ sequence: p.sequence, kind: p.kind, node: p.node, occurredAt: iso(p.occurredAt) })), nextCursor: listed.nextCursor === null ? null : '<cursor>' };
+          break;
+        }
+        case 'resetPreview': {
+          const plan = await client.previewReset(runOf(step), step['sequence'], step['reapply']);
+          result = { sequence: plan.sequence, restored: plan.restored, reexecuted: plan.reexecuted, reapply: plan.reapply, requiresAcknowledgement: plan.requiresAcknowledgement, prefixEvents: plan.prefixEvents };
+          break;
+        }
+        case 'reset': result = resetJson(await client.reset(runOf(step), {
+          sequence: step['sequence'], reason: step['reason'], reapply: step['reapply'], sourcePolicy: step['sourcePolicy'],
+          businessId: step['businessId'], acknowledgeReexecution: step['acknowledgeReexecution'],
+        }, { idempotencyKey: step['idempotencyKey'] })); break;
+        case 'resets': result = { items: (await client.listResets(runOf(step))).map(resetJson) }; break;
+        case 'getReset': result = resetJson(await client.getReset(runOf(step), stepResult(step['reset'], 'resetId'))); break;
         case 'startWithBlob': {
           const workflowId = config['workflows'][step['workflow']].workflowId as string;
           const body = typeof step['inputBlobText'] === 'string' ? Buffer.from(step['inputBlobText'], 'utf8') : Buffer.alloc(step['inputBlobBytes'], 'i');
@@ -651,7 +894,10 @@ async function main(): Promise<void> {
   if (!mode || !scenarioPath) throw new Error('usage: runner build <scenario> | run <scenario> <config> <out>');
   const raw = read(scenarioPath);
   if (mode === 'build') {
-    process.stdout.write(JSON.stringify(build(raw)));
+    // The harness reads a pipe: exiting before its write completes truncates larger IRs.
+    await new Promise<void>((resolve, reject) => {
+      process.stdout.write(JSON.stringify(build(raw)), (error) => error ? reject(error) : resolve());
+    });
     return;
   }
   if (mode === 'run' && configPath && outPath) {

@@ -1,0 +1,2 @@
+python3 scripts/check-architecture.py
+architecture check passed (24 workspace crates, layers respected, no cycles)

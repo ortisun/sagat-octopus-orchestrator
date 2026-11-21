@@ -9,14 +9,7 @@ use crate::canary::{
 use crate::canary_support::{assert_absent, assert_present, audience_cases};
 
 fn target_dir() -> PathBuf {
-    std::env::current_exe()
-        .expect("test executable")
-        .parent()
-        .and_then(Path::parent)
-        .expect("target debug directory")
-        .parent()
-        .expect("Cargo target directory")
-        .to_owned()
+    crate::support::target_dir()
 }
 
 pub(crate) async fn cli(fixture: &Fixture, subject: &str, args: &[&str]) -> Output {

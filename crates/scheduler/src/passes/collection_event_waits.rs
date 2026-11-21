@@ -39,7 +39,7 @@ where
         + LoopProgressStore
         + ScopeFrontierStore
         + ApprovalSchedulerStore,
-    E: ExpressionEvaluator,
+    E: ExpressionEvaluator + 'static,
     R: Entropy,
 {
     fn event_wait_key(

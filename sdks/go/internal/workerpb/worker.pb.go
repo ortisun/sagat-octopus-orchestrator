@@ -119,6 +119,165 @@ func (DatabaseTlsMode) EnumDescriptor() ([]byte, []int) {
 	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{1}
 }
 
+// Lake connections (feature 035), additive: the lake runner's `ResolveDatabase` answers with the message of the
+// connection's kind set in `ResolvedDatabase` and `postgres` unset. Each connection message holds the pinned non-secret
+// settings of one revision and `credentials`, one entry per secret of the connection (an Iceberg connection has
+// `catalog` and `storage`), resolved through the same two-phase path as the PostgreSQL credential and compared, pinned
+// and audited separately. Values are write-only to the runner, which zeroises them when the attempt ends. The protocol
+// minor that carries these is assigned when the first lake activity is registered (D035-043).
+type EgressCeiling int32
+
+const (
+	EgressCeiling_EGRESS_CEILING_UNSPECIFIED EgressCeiling = 0
+	EgressCeiling_EGRESS_CEILING_PUBLIC      EgressCeiling = 1
+	EgressCeiling_EGRESS_CEILING_INTERNAL    EgressCeiling = 2
+	EgressCeiling_EGRESS_CEILING_PII         EgressCeiling = 3
+)
+
+// Enum value maps for EgressCeiling.
+var (
+	EgressCeiling_name = map[int32]string{
+		0: "EGRESS_CEILING_UNSPECIFIED",
+		1: "EGRESS_CEILING_PUBLIC",
+		2: "EGRESS_CEILING_INTERNAL",
+		3: "EGRESS_CEILING_PII",
+	}
+	EgressCeiling_value = map[string]int32{
+		"EGRESS_CEILING_UNSPECIFIED": 0,
+		"EGRESS_CEILING_PUBLIC":      1,
+		"EGRESS_CEILING_INTERNAL":    2,
+		"EGRESS_CEILING_PII":         3,
+	}
+)
+
+func (x EgressCeiling) Enum() *EgressCeiling {
+	p := new(EgressCeiling)
+	*p = x
+	return p
+}
+
+func (x EgressCeiling) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (EgressCeiling) Descriptor() protoreflect.EnumDescriptor {
+	return file_sagat_octopus_orchestrator_v1_worker_proto_enumTypes[2].Descriptor()
+}
+
+func (EgressCeiling) Type() protoreflect.EnumType {
+	return &file_sagat_octopus_orchestrator_v1_worker_proto_enumTypes[2]
+}
+
+func (x EgressCeiling) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use EgressCeiling.Descriptor instead.
+func (EgressCeiling) EnumDescriptor() ([]byte, []int) {
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{2}
+}
+
+type LakeRestAuth int32
+
+const (
+	LakeRestAuth_LAKE_REST_AUTH_UNSPECIFIED LakeRestAuth = 0
+	LakeRestAuth_LAKE_REST_AUTH_OAUTH2      LakeRestAuth = 1
+	LakeRestAuth_LAKE_REST_AUTH_BEARER      LakeRestAuth = 2
+	LakeRestAuth_LAKE_REST_AUTH_SIGV4       LakeRestAuth = 3
+)
+
+// Enum value maps for LakeRestAuth.
+var (
+	LakeRestAuth_name = map[int32]string{
+		0: "LAKE_REST_AUTH_UNSPECIFIED",
+		1: "LAKE_REST_AUTH_OAUTH2",
+		2: "LAKE_REST_AUTH_BEARER",
+		3: "LAKE_REST_AUTH_SIGV4",
+	}
+	LakeRestAuth_value = map[string]int32{
+		"LAKE_REST_AUTH_UNSPECIFIED": 0,
+		"LAKE_REST_AUTH_OAUTH2":      1,
+		"LAKE_REST_AUTH_BEARER":      2,
+		"LAKE_REST_AUTH_SIGV4":       3,
+	}
+)
+
+func (x LakeRestAuth) Enum() *LakeRestAuth {
+	p := new(LakeRestAuth)
+	*p = x
+	return p
+}
+
+func (x LakeRestAuth) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (LakeRestAuth) Descriptor() protoreflect.EnumDescriptor {
+	return file_sagat_octopus_orchestrator_v1_worker_proto_enumTypes[3].Descriptor()
+}
+
+func (LakeRestAuth) Type() protoreflect.EnumType {
+	return &file_sagat_octopus_orchestrator_v1_worker_proto_enumTypes[3]
+}
+
+func (x LakeRestAuth) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use LakeRestAuth.Descriptor instead.
+func (LakeRestAuth) EnumDescriptor() ([]byte, []int) {
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{3}
+}
+
+type LakeConditionalCreate int32
+
+const (
+	LakeConditionalCreate_LAKE_CONDITIONAL_CREATE_UNKNOWN     LakeConditionalCreate = 0
+	LakeConditionalCreate_LAKE_CONDITIONAL_CREATE_SUPPORTED   LakeConditionalCreate = 1
+	LakeConditionalCreate_LAKE_CONDITIONAL_CREATE_UNSUPPORTED LakeConditionalCreate = 2
+)
+
+// Enum value maps for LakeConditionalCreate.
+var (
+	LakeConditionalCreate_name = map[int32]string{
+		0: "LAKE_CONDITIONAL_CREATE_UNKNOWN",
+		1: "LAKE_CONDITIONAL_CREATE_SUPPORTED",
+		2: "LAKE_CONDITIONAL_CREATE_UNSUPPORTED",
+	}
+	LakeConditionalCreate_value = map[string]int32{
+		"LAKE_CONDITIONAL_CREATE_UNKNOWN":     0,
+		"LAKE_CONDITIONAL_CREATE_SUPPORTED":   1,
+		"LAKE_CONDITIONAL_CREATE_UNSUPPORTED": 2,
+	}
+)
+
+func (x LakeConditionalCreate) Enum() *LakeConditionalCreate {
+	p := new(LakeConditionalCreate)
+	*p = x
+	return p
+}
+
+func (x LakeConditionalCreate) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (LakeConditionalCreate) Descriptor() protoreflect.EnumDescriptor {
+	return file_sagat_octopus_orchestrator_v1_worker_proto_enumTypes[4].Descriptor()
+}
+
+func (LakeConditionalCreate) Type() protoreflect.EnumType {
+	return &file_sagat_octopus_orchestrator_v1_worker_proto_enumTypes[4]
+}
+
+func (x LakeConditionalCreate) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use LakeConditionalCreate.Descriptor instead.
+func (LakeConditionalCreate) EnumDescriptor() ([]byte, []int) {
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{4}
+}
+
 type WorkerCapabilities struct {
 	state       protoimpl.MessageState `protogen:"open.v1"`
 	Languages   []string               `protobuf:"bytes,1,rep,name=languages,proto3" json:"languages,omitempty"`
@@ -2340,6 +2499,1014 @@ func (x *DatabaseLimits) GetIdleTimeoutMs() uint32 {
 	return 0
 }
 
+type LakeLimits struct {
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	MaxRecordBytes uint32                 `protobuf:"varint,1,opt,name=max_record_bytes,json=maxRecordBytes,proto3" json:"max_record_bytes,omitempty"`
+	MaxRecords     uint32                 `protobuf:"varint,2,opt,name=max_records,json=maxRecords,proto3" json:"max_records,omitempty"`
+	TimeoutMs      uint32                 `protobuf:"varint,3,opt,name=timeout_ms,json=timeoutMs,proto3" json:"timeout_ms,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *LakeLimits) Reset() {
+	*x = LakeLimits{}
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[25]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *LakeLimits) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*LakeLimits) ProtoMessage() {}
+
+func (x *LakeLimits) ProtoReflect() protoreflect.Message {
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[25]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use LakeLimits.ProtoReflect.Descriptor instead.
+func (*LakeLimits) Descriptor() ([]byte, []int) {
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{25}
+}
+
+func (x *LakeLimits) GetMaxRecordBytes() uint32 {
+	if x != nil {
+		return x.MaxRecordBytes
+	}
+	return 0
+}
+
+func (x *LakeLimits) GetMaxRecords() uint32 {
+	if x != nil {
+		return x.MaxRecords
+	}
+	return 0
+}
+
+func (x *LakeLimits) GetTimeoutMs() uint32 {
+	if x != nil {
+		return x.TimeoutMs
+	}
+	return 0
+}
+
+type IcebergRestCatalog struct {
+	state             protoimpl.MessageState `protogen:"open.v1"`
+	Uri               string                 `protobuf:"bytes,1,opt,name=uri,proto3" json:"uri,omitempty"`
+	Warehouse         string                 `protobuf:"bytes,2,opt,name=warehouse,proto3" json:"warehouse,omitempty"`
+	Prefix            string                 `protobuf:"bytes,3,opt,name=prefix,proto3" json:"prefix,omitempty"`
+	Auth              LakeRestAuth           `protobuf:"varint,4,opt,name=auth,proto3,enum=sagat_octopus_orchestrator.v1.LakeRestAuth" json:"auth,omitempty"`
+	TokenUri          string                 `protobuf:"bytes,5,opt,name=token_uri,json=tokenUri,proto3" json:"token_uri,omitempty"`
+	Scope             string                 `protobuf:"bytes,6,opt,name=scope,proto3" json:"scope,omitempty"`
+	Region            string                 `protobuf:"bytes,7,opt,name=region,proto3" json:"region,omitempty"`
+	SigningName       string                 `protobuf:"bytes,8,opt,name=signing_name,json=signingName,proto3" json:"signing_name,omitempty"`
+	VendedCredentials bool                   `protobuf:"varint,9,opt,name=vended_credentials,json=vendedCredentials,proto3" json:"vended_credentials,omitempty"`
+	RemoteSigning     bool                   `protobuf:"varint,10,opt,name=remote_signing,json=remoteSigning,proto3" json:"remote_signing,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
+
+func (x *IcebergRestCatalog) Reset() {
+	*x = IcebergRestCatalog{}
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[26]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *IcebergRestCatalog) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*IcebergRestCatalog) ProtoMessage() {}
+
+func (x *IcebergRestCatalog) ProtoReflect() protoreflect.Message {
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[26]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use IcebergRestCatalog.ProtoReflect.Descriptor instead.
+func (*IcebergRestCatalog) Descriptor() ([]byte, []int) {
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{26}
+}
+
+func (x *IcebergRestCatalog) GetUri() string {
+	if x != nil {
+		return x.Uri
+	}
+	return ""
+}
+
+func (x *IcebergRestCatalog) GetWarehouse() string {
+	if x != nil {
+		return x.Warehouse
+	}
+	return ""
+}
+
+func (x *IcebergRestCatalog) GetPrefix() string {
+	if x != nil {
+		return x.Prefix
+	}
+	return ""
+}
+
+func (x *IcebergRestCatalog) GetAuth() LakeRestAuth {
+	if x != nil {
+		return x.Auth
+	}
+	return LakeRestAuth_LAKE_REST_AUTH_UNSPECIFIED
+}
+
+func (x *IcebergRestCatalog) GetTokenUri() string {
+	if x != nil {
+		return x.TokenUri
+	}
+	return ""
+}
+
+func (x *IcebergRestCatalog) GetScope() string {
+	if x != nil {
+		return x.Scope
+	}
+	return ""
+}
+
+func (x *IcebergRestCatalog) GetRegion() string {
+	if x != nil {
+		return x.Region
+	}
+	return ""
+}
+
+func (x *IcebergRestCatalog) GetSigningName() string {
+	if x != nil {
+		return x.SigningName
+	}
+	return ""
+}
+
+func (x *IcebergRestCatalog) GetVendedCredentials() bool {
+	if x != nil {
+		return x.VendedCredentials
+	}
+	return false
+}
+
+func (x *IcebergRestCatalog) GetRemoteSigning() bool {
+	if x != nil {
+		return x.RemoteSigning
+	}
+	return false
+}
+
+type IcebergGlueCatalog struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Region        string                 `protobuf:"bytes,1,opt,name=region,proto3" json:"region,omitempty"`
+	CatalogId     string                 `protobuf:"bytes,2,opt,name=catalog_id,json=catalogId,proto3" json:"catalog_id,omitempty"`
+	RoleArn       string                 `protobuf:"bytes,3,opt,name=role_arn,json=roleArn,proto3" json:"role_arn,omitempty"`
+	ExternalId    string                 `protobuf:"bytes,4,opt,name=external_id,json=externalId,proto3" json:"external_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *IcebergGlueCatalog) Reset() {
+	*x = IcebergGlueCatalog{}
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[27]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *IcebergGlueCatalog) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*IcebergGlueCatalog) ProtoMessage() {}
+
+func (x *IcebergGlueCatalog) ProtoReflect() protoreflect.Message {
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[27]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use IcebergGlueCatalog.ProtoReflect.Descriptor instead.
+func (*IcebergGlueCatalog) Descriptor() ([]byte, []int) {
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{27}
+}
+
+func (x *IcebergGlueCatalog) GetRegion() string {
+	if x != nil {
+		return x.Region
+	}
+	return ""
+}
+
+func (x *IcebergGlueCatalog) GetCatalogId() string {
+	if x != nil {
+		return x.CatalogId
+	}
+	return ""
+}
+
+func (x *IcebergGlueCatalog) GetRoleArn() string {
+	if x != nil {
+		return x.RoleArn
+	}
+	return ""
+}
+
+func (x *IcebergGlueCatalog) GetExternalId() string {
+	if x != nil {
+		return x.ExternalId
+	}
+	return ""
+}
+
+type IcebergHiveCatalog struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Uris          []string               `protobuf:"bytes,1,rep,name=uris,proto3" json:"uris,omitempty"`
+	TlsRequired   bool                   `protobuf:"varint,2,opt,name=tls_required,json=tlsRequired,proto3" json:"tls_required,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *IcebergHiveCatalog) Reset() {
+	*x = IcebergHiveCatalog{}
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[28]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *IcebergHiveCatalog) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*IcebergHiveCatalog) ProtoMessage() {}
+
+func (x *IcebergHiveCatalog) ProtoReflect() protoreflect.Message {
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[28]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use IcebergHiveCatalog.ProtoReflect.Descriptor instead.
+func (*IcebergHiveCatalog) Descriptor() ([]byte, []int) {
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{28}
+}
+
+func (x *IcebergHiveCatalog) GetUris() []string {
+	if x != nil {
+		return x.Uris
+	}
+	return nil
+}
+
+func (x *IcebergHiveCatalog) GetTlsRequired() bool {
+	if x != nil {
+		return x.TlsRequired
+	}
+	return false
+}
+
+type IcebergJdbcCatalog struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Host          string                 `protobuf:"bytes,1,opt,name=host,proto3" json:"host,omitempty"`
+	Port          uint32                 `protobuf:"varint,2,opt,name=port,proto3" json:"port,omitempty"`
+	Database      string                 `protobuf:"bytes,3,opt,name=database,proto3" json:"database,omitempty"`
+	Tls           DatabaseTlsMode        `protobuf:"varint,4,opt,name=tls,proto3,enum=sagat_octopus_orchestrator.v1.DatabaseTlsMode" json:"tls,omitempty"`
+	CaPem         string                 `protobuf:"bytes,5,opt,name=ca_pem,json=caPem,proto3" json:"ca_pem,omitempty"`
+	Engine        string                 `protobuf:"bytes,6,opt,name=engine,proto3" json:"engine,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *IcebergJdbcCatalog) Reset() {
+	*x = IcebergJdbcCatalog{}
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[29]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *IcebergJdbcCatalog) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*IcebergJdbcCatalog) ProtoMessage() {}
+
+func (x *IcebergJdbcCatalog) ProtoReflect() protoreflect.Message {
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[29]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use IcebergJdbcCatalog.ProtoReflect.Descriptor instead.
+func (*IcebergJdbcCatalog) Descriptor() ([]byte, []int) {
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{29}
+}
+
+func (x *IcebergJdbcCatalog) GetHost() string {
+	if x != nil {
+		return x.Host
+	}
+	return ""
+}
+
+func (x *IcebergJdbcCatalog) GetPort() uint32 {
+	if x != nil {
+		return x.Port
+	}
+	return 0
+}
+
+func (x *IcebergJdbcCatalog) GetDatabase() string {
+	if x != nil {
+		return x.Database
+	}
+	return ""
+}
+
+func (x *IcebergJdbcCatalog) GetTls() DatabaseTlsMode {
+	if x != nil {
+		return x.Tls
+	}
+	return DatabaseTlsMode_DATABASE_TLS_UNSPECIFIED
+}
+
+func (x *IcebergJdbcCatalog) GetCaPem() string {
+	if x != nil {
+		return x.CaPem
+	}
+	return ""
+}
+
+func (x *IcebergJdbcCatalog) GetEngine() string {
+	if x != nil {
+		return x.Engine
+	}
+	return ""
+}
+
+type LakeS3Storage struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Region        string                 `protobuf:"bytes,1,opt,name=region,proto3" json:"region,omitempty"`
+	Endpoint      string                 `protobuf:"bytes,2,opt,name=endpoint,proto3" json:"endpoint,omitempty"`
+	PathStyle     bool                   `protobuf:"varint,3,opt,name=path_style,json=pathStyle,proto3" json:"path_style,omitempty"`
+	RoleArn       string                 `protobuf:"bytes,4,opt,name=role_arn,json=roleArn,proto3" json:"role_arn,omitempty"`
+	ExternalId    string                 `protobuf:"bytes,5,opt,name=external_id,json=externalId,proto3" json:"external_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *LakeS3Storage) Reset() {
+	*x = LakeS3Storage{}
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[30]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *LakeS3Storage) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*LakeS3Storage) ProtoMessage() {}
+
+func (x *LakeS3Storage) ProtoReflect() protoreflect.Message {
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[30]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use LakeS3Storage.ProtoReflect.Descriptor instead.
+func (*LakeS3Storage) Descriptor() ([]byte, []int) {
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{30}
+}
+
+func (x *LakeS3Storage) GetRegion() string {
+	if x != nil {
+		return x.Region
+	}
+	return ""
+}
+
+func (x *LakeS3Storage) GetEndpoint() string {
+	if x != nil {
+		return x.Endpoint
+	}
+	return ""
+}
+
+func (x *LakeS3Storage) GetPathStyle() bool {
+	if x != nil {
+		return x.PathStyle
+	}
+	return false
+}
+
+func (x *LakeS3Storage) GetRoleArn() string {
+	if x != nil {
+		return x.RoleArn
+	}
+	return ""
+}
+
+func (x *LakeS3Storage) GetExternalId() string {
+	if x != nil {
+		return x.ExternalId
+	}
+	return ""
+}
+
+type LakeGcsStorage struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Project       string                 `protobuf:"bytes,1,opt,name=project,proto3" json:"project,omitempty"`
+	Endpoint      string                 `protobuf:"bytes,2,opt,name=endpoint,proto3" json:"endpoint,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *LakeGcsStorage) Reset() {
+	*x = LakeGcsStorage{}
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[31]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *LakeGcsStorage) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*LakeGcsStorage) ProtoMessage() {}
+
+func (x *LakeGcsStorage) ProtoReflect() protoreflect.Message {
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[31]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use LakeGcsStorage.ProtoReflect.Descriptor instead.
+func (*LakeGcsStorage) Descriptor() ([]byte, []int) {
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{31}
+}
+
+func (x *LakeGcsStorage) GetProject() string {
+	if x != nil {
+		return x.Project
+	}
+	return ""
+}
+
+func (x *LakeGcsStorage) GetEndpoint() string {
+	if x != nil {
+		return x.Endpoint
+	}
+	return ""
+}
+
+type LakeAdlsStorage struct {
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	Account        string                 `protobuf:"bytes,1,opt,name=account,proto3" json:"account,omitempty"`
+	EndpointSuffix string                 `protobuf:"bytes,2,opt,name=endpoint_suffix,json=endpointSuffix,proto3" json:"endpoint_suffix,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *LakeAdlsStorage) Reset() {
+	*x = LakeAdlsStorage{}
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[32]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *LakeAdlsStorage) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*LakeAdlsStorage) ProtoMessage() {}
+
+func (x *LakeAdlsStorage) ProtoReflect() protoreflect.Message {
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[32]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use LakeAdlsStorage.ProtoReflect.Descriptor instead.
+func (*LakeAdlsStorage) Descriptor() ([]byte, []int) {
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{32}
+}
+
+func (x *LakeAdlsStorage) GetAccount() string {
+	if x != nil {
+		return x.Account
+	}
+	return ""
+}
+
+func (x *LakeAdlsStorage) GetEndpointSuffix() string {
+	if x != nil {
+		return x.EndpointSuffix
+	}
+	return ""
+}
+
+type LakeStorage struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Types that are valid to be assigned to Kind:
+	//
+	//	*LakeStorage_S3
+	//	*LakeStorage_Gcs
+	//	*LakeStorage_Adls
+	Kind isLakeStorage_Kind `protobuf_oneof:"kind"`
+	// The catalog vends the storage credentials to the sandboxed attempt; none travel here.
+	VendedCredentials bool `protobuf:"varint,4,opt,name=vended_credentials,json=vendedCredentials,proto3" json:"vended_credentials,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
+
+func (x *LakeStorage) Reset() {
+	*x = LakeStorage{}
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[33]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *LakeStorage) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*LakeStorage) ProtoMessage() {}
+
+func (x *LakeStorage) ProtoReflect() protoreflect.Message {
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[33]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use LakeStorage.ProtoReflect.Descriptor instead.
+func (*LakeStorage) Descriptor() ([]byte, []int) {
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{33}
+}
+
+func (x *LakeStorage) GetKind() isLakeStorage_Kind {
+	if x != nil {
+		return x.Kind
+	}
+	return nil
+}
+
+func (x *LakeStorage) GetS3() *LakeS3Storage {
+	if x != nil {
+		if x, ok := x.Kind.(*LakeStorage_S3); ok {
+			return x.S3
+		}
+	}
+	return nil
+}
+
+func (x *LakeStorage) GetGcs() *LakeGcsStorage {
+	if x != nil {
+		if x, ok := x.Kind.(*LakeStorage_Gcs); ok {
+			return x.Gcs
+		}
+	}
+	return nil
+}
+
+func (x *LakeStorage) GetAdls() *LakeAdlsStorage {
+	if x != nil {
+		if x, ok := x.Kind.(*LakeStorage_Adls); ok {
+			return x.Adls
+		}
+	}
+	return nil
+}
+
+func (x *LakeStorage) GetVendedCredentials() bool {
+	if x != nil {
+		return x.VendedCredentials
+	}
+	return false
+}
+
+type isLakeStorage_Kind interface {
+	isLakeStorage_Kind()
+}
+
+type LakeStorage_S3 struct {
+	S3 *LakeS3Storage `protobuf:"bytes,1,opt,name=s3,proto3,oneof"`
+}
+
+type LakeStorage_Gcs struct {
+	Gcs *LakeGcsStorage `protobuf:"bytes,2,opt,name=gcs,proto3,oneof"`
+}
+
+type LakeStorage_Adls struct {
+	Adls *LakeAdlsStorage `protobuf:"bytes,3,opt,name=adls,proto3,oneof"`
+}
+
+func (*LakeStorage_S3) isLakeStorage_Kind() {}
+
+func (*LakeStorage_Gcs) isLakeStorage_Kind() {}
+
+func (*LakeStorage_Adls) isLakeStorage_Kind() {}
+
+type IcebergConnection struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Types that are valid to be assigned to Catalog:
+	//
+	//	*IcebergConnection_Rest
+	//	*IcebergConnection_Glue
+	//	*IcebergConnection_Hive
+	//	*IcebergConnection_Jdbc
+	Catalog isIcebergConnection_Catalog `protobuf_oneof:"catalog"`
+	Storage *LakeStorage                `protobuf:"bytes,5,opt,name=storage,proto3" json:"storage,omitempty"`
+	// Every table, data, delete and metadata location must start with one of these.
+	WarehouseLocations []string `protobuf:"bytes,6,rep,name=warehouse_locations,json=warehouseLocations,proto3" json:"warehouse_locations,omitempty"`
+	// append, overwrite, upsert.
+	AllowedModes  []string          `protobuf:"bytes,7,rep,name=allowed_modes,json=allowedModes,proto3" json:"allowed_modes,omitempty"`
+	EgressCeiling EgressCeiling     `protobuf:"varint,8,opt,name=egress_ceiling,json=egressCeiling,proto3,enum=sagat_octopus_orchestrator.v1.EgressCeiling" json:"egress_ceiling,omitempty"`
+	Limits        *LakeLimits       `protobuf:"bytes,9,opt,name=limits,proto3" json:"limits,omitempty"`
+	Credentials   map[string][]byte `protobuf:"bytes,10,rep,name=credentials,proto3" json:"credentials,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *IcebergConnection) Reset() {
+	*x = IcebergConnection{}
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[34]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *IcebergConnection) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*IcebergConnection) ProtoMessage() {}
+
+func (x *IcebergConnection) ProtoReflect() protoreflect.Message {
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[34]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use IcebergConnection.ProtoReflect.Descriptor instead.
+func (*IcebergConnection) Descriptor() ([]byte, []int) {
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{34}
+}
+
+func (x *IcebergConnection) GetCatalog() isIcebergConnection_Catalog {
+	if x != nil {
+		return x.Catalog
+	}
+	return nil
+}
+
+func (x *IcebergConnection) GetRest() *IcebergRestCatalog {
+	if x != nil {
+		if x, ok := x.Catalog.(*IcebergConnection_Rest); ok {
+			return x.Rest
+		}
+	}
+	return nil
+}
+
+func (x *IcebergConnection) GetGlue() *IcebergGlueCatalog {
+	if x != nil {
+		if x, ok := x.Catalog.(*IcebergConnection_Glue); ok {
+			return x.Glue
+		}
+	}
+	return nil
+}
+
+func (x *IcebergConnection) GetHive() *IcebergHiveCatalog {
+	if x != nil {
+		if x, ok := x.Catalog.(*IcebergConnection_Hive); ok {
+			return x.Hive
+		}
+	}
+	return nil
+}
+
+func (x *IcebergConnection) GetJdbc() *IcebergJdbcCatalog {
+	if x != nil {
+		if x, ok := x.Catalog.(*IcebergConnection_Jdbc); ok {
+			return x.Jdbc
+		}
+	}
+	return nil
+}
+
+func (x *IcebergConnection) GetStorage() *LakeStorage {
+	if x != nil {
+		return x.Storage
+	}
+	return nil
+}
+
+func (x *IcebergConnection) GetWarehouseLocations() []string {
+	if x != nil {
+		return x.WarehouseLocations
+	}
+	return nil
+}
+
+func (x *IcebergConnection) GetAllowedModes() []string {
+	if x != nil {
+		return x.AllowedModes
+	}
+	return nil
+}
+
+func (x *IcebergConnection) GetEgressCeiling() EgressCeiling {
+	if x != nil {
+		return x.EgressCeiling
+	}
+	return EgressCeiling_EGRESS_CEILING_UNSPECIFIED
+}
+
+func (x *IcebergConnection) GetLimits() *LakeLimits {
+	if x != nil {
+		return x.Limits
+	}
+	return nil
+}
+
+func (x *IcebergConnection) GetCredentials() map[string][]byte {
+	if x != nil {
+		return x.Credentials
+	}
+	return nil
+}
+
+type isIcebergConnection_Catalog interface {
+	isIcebergConnection_Catalog()
+}
+
+type IcebergConnection_Rest struct {
+	Rest *IcebergRestCatalog `protobuf:"bytes,1,opt,name=rest,proto3,oneof"`
+}
+
+type IcebergConnection_Glue struct {
+	Glue *IcebergGlueCatalog `protobuf:"bytes,2,opt,name=glue,proto3,oneof"`
+}
+
+type IcebergConnection_Hive struct {
+	Hive *IcebergHiveCatalog `protobuf:"bytes,3,opt,name=hive,proto3,oneof"`
+}
+
+type IcebergConnection_Jdbc struct {
+	Jdbc *IcebergJdbcCatalog `protobuf:"bytes,4,opt,name=jdbc,proto3,oneof"`
+}
+
+func (*IcebergConnection_Rest) isIcebergConnection_Catalog() {}
+
+func (*IcebergConnection_Glue) isIcebergConnection_Catalog() {}
+
+func (*IcebergConnection_Hive) isIcebergConnection_Catalog() {}
+
+func (*IcebergConnection_Jdbc) isIcebergConnection_Catalog() {}
+
+type ObjectStorageConnection struct {
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	Storage *LakeStorage           `protobuf:"bytes,1,opt,name=storage,proto3" json:"storage,omitempty"`
+	Prefix  string                 `protobuf:"bytes,2,opt,name=prefix,proto3" json:"prefix,omitempty"`
+	// parquet, ndjson.
+	Formats           []string              `protobuf:"bytes,3,rep,name=formats,proto3" json:"formats,omitempty"`
+	ConditionalCreate LakeConditionalCreate `protobuf:"varint,4,opt,name=conditional_create,json=conditionalCreate,proto3,enum=sagat_octopus_orchestrator.v1.LakeConditionalCreate" json:"conditional_create,omitempty"`
+	EgressCeiling     EgressCeiling         `protobuf:"varint,5,opt,name=egress_ceiling,json=egressCeiling,proto3,enum=sagat_octopus_orchestrator.v1.EgressCeiling" json:"egress_ceiling,omitempty"`
+	Limits            *LakeLimits           `protobuf:"bytes,6,opt,name=limits,proto3" json:"limits,omitempty"`
+	Credentials       map[string][]byte     `protobuf:"bytes,7,rep,name=credentials,proto3" json:"credentials,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
+
+func (x *ObjectStorageConnection) Reset() {
+	*x = ObjectStorageConnection{}
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[35]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ObjectStorageConnection) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ObjectStorageConnection) ProtoMessage() {}
+
+func (x *ObjectStorageConnection) ProtoReflect() protoreflect.Message {
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[35]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ObjectStorageConnection.ProtoReflect.Descriptor instead.
+func (*ObjectStorageConnection) Descriptor() ([]byte, []int) {
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{35}
+}
+
+func (x *ObjectStorageConnection) GetStorage() *LakeStorage {
+	if x != nil {
+		return x.Storage
+	}
+	return nil
+}
+
+func (x *ObjectStorageConnection) GetPrefix() string {
+	if x != nil {
+		return x.Prefix
+	}
+	return ""
+}
+
+func (x *ObjectStorageConnection) GetFormats() []string {
+	if x != nil {
+		return x.Formats
+	}
+	return nil
+}
+
+func (x *ObjectStorageConnection) GetConditionalCreate() LakeConditionalCreate {
+	if x != nil {
+		return x.ConditionalCreate
+	}
+	return LakeConditionalCreate_LAKE_CONDITIONAL_CREATE_UNKNOWN
+}
+
+func (x *ObjectStorageConnection) GetEgressCeiling() EgressCeiling {
+	if x != nil {
+		return x.EgressCeiling
+	}
+	return EgressCeiling_EGRESS_CEILING_UNSPECIFIED
+}
+
+func (x *ObjectStorageConnection) GetLimits() *LakeLimits {
+	if x != nil {
+		return x.Limits
+	}
+	return nil
+}
+
+func (x *ObjectStorageConnection) GetCredentials() map[string][]byte {
+	if x != nil {
+		return x.Credentials
+	}
+	return nil
+}
+
+type ClickHouseConnection struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Url           string                 `protobuf:"bytes,1,opt,name=url,proto3" json:"url,omitempty"`
+	Database      string                 `protobuf:"bytes,2,opt,name=database,proto3" json:"database,omitempty"`
+	CaPem         string                 `protobuf:"bytes,3,opt,name=ca_pem,json=caPem,proto3" json:"ca_pem,omitempty"`
+	EgressCeiling EgressCeiling          `protobuf:"varint,4,opt,name=egress_ceiling,json=egressCeiling,proto3,enum=sagat_octopus_orchestrator.v1.EgressCeiling" json:"egress_ceiling,omitempty"`
+	Limits        *LakeLimits            `protobuf:"bytes,5,opt,name=limits,proto3" json:"limits,omitempty"`
+	Credentials   map[string][]byte      `protobuf:"bytes,6,rep,name=credentials,proto3" json:"credentials,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ClickHouseConnection) Reset() {
+	*x = ClickHouseConnection{}
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[36]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ClickHouseConnection) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ClickHouseConnection) ProtoMessage() {}
+
+func (x *ClickHouseConnection) ProtoReflect() protoreflect.Message {
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[36]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ClickHouseConnection.ProtoReflect.Descriptor instead.
+func (*ClickHouseConnection) Descriptor() ([]byte, []int) {
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{36}
+}
+
+func (x *ClickHouseConnection) GetUrl() string {
+	if x != nil {
+		return x.Url
+	}
+	return ""
+}
+
+func (x *ClickHouseConnection) GetDatabase() string {
+	if x != nil {
+		return x.Database
+	}
+	return ""
+}
+
+func (x *ClickHouseConnection) GetCaPem() string {
+	if x != nil {
+		return x.CaPem
+	}
+	return ""
+}
+
+func (x *ClickHouseConnection) GetEgressCeiling() EgressCeiling {
+	if x != nil {
+		return x.EgressCeiling
+	}
+	return EgressCeiling_EGRESS_CEILING_UNSPECIFIED
+}
+
+func (x *ClickHouseConnection) GetLimits() *LakeLimits {
+	if x != nil {
+		return x.Limits
+	}
+	return nil
+}
+
+func (x *ClickHouseConnection) GetCredentials() map[string][]byte {
+	if x != nil {
+		return x.Credentials
+	}
+	return nil
+}
+
 type ResolvedDatabase struct {
 	state                 protoimpl.MessageState `protogen:"open.v1"`
 	ConnectionId          string                 `protobuf:"bytes,1,opt,name=connection_id,json=connectionId,proto3" json:"connection_id,omitempty"`
@@ -2355,14 +3522,18 @@ type ResolvedDatabase struct {
 	NamespaceId    string `protobuf:"bytes,10,opt,name=namespace_id,json=namespaceId,proto3" json:"namespace_id,omitempty"`
 	ConnectionName string `protobuf:"bytes,11,opt,name=connection_name,json=connectionName,proto3" json:"connection_name,omitempty"`
 	// Trusted identity scope for audit-correlated executor telemetry; not a metric label.
-	TenantId      string `protobuf:"bytes,12,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
+	TenantId string `protobuf:"bytes,12,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
+	// Feature 035, lake profile: the connection of the matching kind. Never set together with `postgres`.
+	Iceberg       *IcebergConnection       `protobuf:"bytes,13,opt,name=iceberg,proto3" json:"iceberg,omitempty"`
+	ObjectStorage *ObjectStorageConnection `protobuf:"bytes,14,opt,name=object_storage,json=objectStorage,proto3" json:"object_storage,omitempty"`
+	Clickhouse    *ClickHouseConnection    `protobuf:"bytes,15,opt,name=clickhouse,proto3" json:"clickhouse,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ResolvedDatabase) Reset() {
 	*x = ResolvedDatabase{}
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[25]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2374,7 +3545,7 @@ func (x *ResolvedDatabase) String() string {
 func (*ResolvedDatabase) ProtoMessage() {}
 
 func (x *ResolvedDatabase) ProtoReflect() protoreflect.Message {
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[25]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2387,7 +3558,7 @@ func (x *ResolvedDatabase) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResolvedDatabase.ProtoReflect.Descriptor instead.
 func (*ResolvedDatabase) Descriptor() ([]byte, []int) {
-	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{25}
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{37}
 }
 
 func (x *ResolvedDatabase) GetConnectionId() string {
@@ -2472,6 +3643,27 @@ func (x *ResolvedDatabase) GetTenantId() string {
 		return x.TenantId
 	}
 	return ""
+}
+
+func (x *ResolvedDatabase) GetIceberg() *IcebergConnection {
+	if x != nil {
+		return x.Iceberg
+	}
+	return nil
+}
+
+func (x *ResolvedDatabase) GetObjectStorage() *ObjectStorageConnection {
+	if x != nil {
+		return x.ObjectStorage
+	}
+	return nil
+}
+
+func (x *ResolvedDatabase) GetClickhouse() *ClickHouseConnection {
+	if x != nil {
+		return x.Clickhouse
+	}
+	return nil
 }
 
 var File_sagat_octopus_orchestrator_v1_worker_proto protoreflect.FileDescriptor
@@ -2690,7 +3882,100 @@ const file_sagat_octopus_orchestrator_v1_worker_proto_rawDesc = "" +
 	"timeout_ms\x18\x06 \x01(\rR\ttimeoutMs\x12,\n" +
 	"\x12connect_timeout_ms\x18\a \x01(\rR\x10connectTimeoutMs\x12\x1b\n" +
 	"\tpool_size\x18\b \x01(\rR\bpoolSize\x12&\n" +
-	"\x0fidle_timeout_ms\x18\t \x01(\rR\ridleTimeoutMs\"\xb0\x05\n" +
+	"\x0fidle_timeout_ms\x18\t \x01(\rR\ridleTimeoutMs\"v\n" +
+	"\n" +
+	"LakeLimits\x12(\n" +
+	"\x10max_record_bytes\x18\x01 \x01(\rR\x0emaxRecordBytes\x12\x1f\n" +
+	"\vmax_records\x18\x02 \x01(\rR\n" +
+	"maxRecords\x12\x1d\n" +
+	"\n" +
+	"timeout_ms\x18\x03 \x01(\rR\ttimeoutMs\"\xe1\x02\n" +
+	"\x12IcebergRestCatalog\x12\x10\n" +
+	"\x03uri\x18\x01 \x01(\tR\x03uri\x12\x1c\n" +
+	"\twarehouse\x18\x02 \x01(\tR\twarehouse\x12\x16\n" +
+	"\x06prefix\x18\x03 \x01(\tR\x06prefix\x12?\n" +
+	"\x04auth\x18\x04 \x01(\x0e2+.sagat_octopus_orchestrator.v1.LakeRestAuthR\x04auth\x12\x1b\n" +
+	"\ttoken_uri\x18\x05 \x01(\tR\btokenUri\x12\x14\n" +
+	"\x05scope\x18\x06 \x01(\tR\x05scope\x12\x16\n" +
+	"\x06region\x18\a \x01(\tR\x06region\x12!\n" +
+	"\fsigning_name\x18\b \x01(\tR\vsigningName\x12-\n" +
+	"\x12vended_credentials\x18\t \x01(\bR\x11vendedCredentials\x12%\n" +
+	"\x0eremote_signing\x18\n" +
+	" \x01(\bR\rremoteSigning\"\x87\x01\n" +
+	"\x12IcebergGlueCatalog\x12\x16\n" +
+	"\x06region\x18\x01 \x01(\tR\x06region\x12\x1d\n" +
+	"\n" +
+	"catalog_id\x18\x02 \x01(\tR\tcatalogId\x12\x19\n" +
+	"\brole_arn\x18\x03 \x01(\tR\aroleArn\x12\x1f\n" +
+	"\vexternal_id\x18\x04 \x01(\tR\n" +
+	"externalId\"K\n" +
+	"\x12IcebergHiveCatalog\x12\x12\n" +
+	"\x04uris\x18\x01 \x03(\tR\x04uris\x12!\n" +
+	"\ftls_required\x18\x02 \x01(\bR\vtlsRequired\"\xc9\x01\n" +
+	"\x12IcebergJdbcCatalog\x12\x12\n" +
+	"\x04host\x18\x01 \x01(\tR\x04host\x12\x12\n" +
+	"\x04port\x18\x02 \x01(\rR\x04port\x12\x1a\n" +
+	"\bdatabase\x18\x03 \x01(\tR\bdatabase\x12@\n" +
+	"\x03tls\x18\x04 \x01(\x0e2..sagat_octopus_orchestrator.v1.DatabaseTlsModeR\x03tls\x12\x15\n" +
+	"\x06ca_pem\x18\x05 \x01(\tR\x05caPem\x12\x16\n" +
+	"\x06engine\x18\x06 \x01(\tR\x06engine\"\x9e\x01\n" +
+	"\rLakeS3Storage\x12\x16\n" +
+	"\x06region\x18\x01 \x01(\tR\x06region\x12\x1a\n" +
+	"\bendpoint\x18\x02 \x01(\tR\bendpoint\x12\x1d\n" +
+	"\n" +
+	"path_style\x18\x03 \x01(\bR\tpathStyle\x12\x19\n" +
+	"\brole_arn\x18\x04 \x01(\tR\aroleArn\x12\x1f\n" +
+	"\vexternal_id\x18\x05 \x01(\tR\n" +
+	"externalId\"F\n" +
+	"\x0eLakeGcsStorage\x12\x18\n" +
+	"\aproject\x18\x01 \x01(\tR\aproject\x12\x1a\n" +
+	"\bendpoint\x18\x02 \x01(\tR\bendpoint\"T\n" +
+	"\x0fLakeAdlsStorage\x12\x18\n" +
+	"\aaccount\x18\x01 \x01(\tR\aaccount\x12'\n" +
+	"\x0fendpoint_suffix\x18\x02 \x01(\tR\x0eendpointSuffix\"\x8d\x02\n" +
+	"\vLakeStorage\x12>\n" +
+	"\x02s3\x18\x01 \x01(\v2,.sagat_octopus_orchestrator.v1.LakeS3StorageH\x00R\x02s3\x12A\n" +
+	"\x03gcs\x18\x02 \x01(\v2-.sagat_octopus_orchestrator.v1.LakeGcsStorageH\x00R\x03gcs\x12D\n" +
+	"\x04adls\x18\x03 \x01(\v2..sagat_octopus_orchestrator.v1.LakeAdlsStorageH\x00R\x04adls\x12-\n" +
+	"\x12vended_credentials\x18\x04 \x01(\bR\x11vendedCredentialsB\x06\n" +
+	"\x04kind\"\x9b\x06\n" +
+	"\x11IcebergConnection\x12G\n" +
+	"\x04rest\x18\x01 \x01(\v21.sagat_octopus_orchestrator.v1.IcebergRestCatalogH\x00R\x04rest\x12G\n" +
+	"\x04glue\x18\x02 \x01(\v21.sagat_octopus_orchestrator.v1.IcebergGlueCatalogH\x00R\x04glue\x12G\n" +
+	"\x04hive\x18\x03 \x01(\v21.sagat_octopus_orchestrator.v1.IcebergHiveCatalogH\x00R\x04hive\x12G\n" +
+	"\x04jdbc\x18\x04 \x01(\v21.sagat_octopus_orchestrator.v1.IcebergJdbcCatalogH\x00R\x04jdbc\x12D\n" +
+	"\astorage\x18\x05 \x01(\v2*.sagat_octopus_orchestrator.v1.LakeStorageR\astorage\x12/\n" +
+	"\x13warehouse_locations\x18\x06 \x03(\tR\x12warehouseLocations\x12#\n" +
+	"\rallowed_modes\x18\a \x03(\tR\fallowedModes\x12S\n" +
+	"\x0eegress_ceiling\x18\b \x01(\x0e2,.sagat_octopus_orchestrator.v1.EgressCeilingR\regressCeiling\x12A\n" +
+	"\x06limits\x18\t \x01(\v2).sagat_octopus_orchestrator.v1.LakeLimitsR\x06limits\x12c\n" +
+	"\vcredentials\x18\n" +
+	" \x03(\v2A.sagat_octopus_orchestrator.v1.IcebergConnection.CredentialsEntryR\vcredentials\x1a>\n" +
+	"\x10CredentialsEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\fR\x05value:\x028\x01B\t\n" +
+	"\acatalog\"\xb9\x04\n" +
+	"\x17ObjectStorageConnection\x12D\n" +
+	"\astorage\x18\x01 \x01(\v2*.sagat_octopus_orchestrator.v1.LakeStorageR\astorage\x12\x16\n" +
+	"\x06prefix\x18\x02 \x01(\tR\x06prefix\x12\x18\n" +
+	"\aformats\x18\x03 \x03(\tR\aformats\x12c\n" +
+	"\x12conditional_create\x18\x04 \x01(\x0e24.sagat_octopus_orchestrator.v1.LakeConditionalCreateR\x11conditionalCreate\x12S\n" +
+	"\x0eegress_ceiling\x18\x05 \x01(\x0e2,.sagat_octopus_orchestrator.v1.EgressCeilingR\regressCeiling\x12A\n" +
+	"\x06limits\x18\x06 \x01(\v2).sagat_octopus_orchestrator.v1.LakeLimitsR\x06limits\x12i\n" +
+	"\vcredentials\x18\a \x03(\v2G.sagat_octopus_orchestrator.v1.ObjectStorageConnection.CredentialsEntryR\vcredentials\x1a>\n" +
+	"\x10CredentialsEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\fR\x05value:\x028\x01\"\x9b\x03\n" +
+	"\x14ClickHouseConnection\x12\x10\n" +
+	"\x03url\x18\x01 \x01(\tR\x03url\x12\x1a\n" +
+	"\bdatabase\x18\x02 \x01(\tR\bdatabase\x12\x15\n" +
+	"\x06ca_pem\x18\x03 \x01(\tR\x05caPem\x12S\n" +
+	"\x0eegress_ceiling\x18\x04 \x01(\x0e2,.sagat_octopus_orchestrator.v1.EgressCeilingR\regressCeiling\x12A\n" +
+	"\x06limits\x18\x05 \x01(\v2).sagat_octopus_orchestrator.v1.LakeLimitsR\x06limits\x12f\n" +
+	"\vcredentials\x18\x06 \x03(\v2D.sagat_octopus_orchestrator.v1.ClickHouseConnection.CredentialsEntryR\vcredentials\x1a>\n" +
+	"\x10CredentialsEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\fR\x05value:\x028\x01\"\xb0\a\n" +
 	"\x10ResolvedDatabase\x12#\n" +
 	"\rconnection_id\x18\x01 \x01(\tR\fconnectionId\x12/\n" +
 	"\x13connection_revision\x18\x02 \x01(\rR\x12connectionRevision\x12M\n" +
@@ -2708,7 +3993,12 @@ const file_sagat_octopus_orchestrator_v1_worker_proto_rawDesc = "" +
 	"\fnamespace_id\x18\n" +
 	" \x01(\tR\vnamespaceId\x12'\n" +
 	"\x0fconnection_name\x18\v \x01(\tR\x0econnectionName\x12\x1b\n" +
-	"\ttenant_id\x18\f \x01(\tR\btenantId*e\n" +
+	"\ttenant_id\x18\f \x01(\tR\btenantId\x12J\n" +
+	"\aiceberg\x18\r \x01(\v20.sagat_octopus_orchestrator.v1.IcebergConnectionR\aiceberg\x12]\n" +
+	"\x0eobject_storage\x18\x0e \x01(\v26.sagat_octopus_orchestrator.v1.ObjectStorageConnectionR\robjectStorage\x12S\n" +
+	"\n" +
+	"clickhouse\x18\x0f \x01(\v23.sagat_octopus_orchestrator.v1.ClickHouseConnectionR\n" +
+	"clickhouse*e\n" +
 	"\x15DatabaseOperationKind\x12\"\n" +
 	"\x1eDATABASE_OPERATION_UNSPECIFIED\x10\x00\x12\x12\n" +
 	"\x0eDATABASE_QUERY\x10\x01\x12\x14\n" +
@@ -2716,7 +4006,21 @@ const file_sagat_octopus_orchestrator_v1_worker_proto_rawDesc = "" +
 	"\x0fDatabaseTlsMode\x12\x1c\n" +
 	"\x18DATABASE_TLS_UNSPECIFIED\x10\x00\x12\x1c\n" +
 	"\x18DATABASE_TLS_VERIFY_FULL\x10\x01\x12&\n" +
-	"\"DATABASE_TLS_DEVELOPMENT_PLAINTEXT\x10\x022\xa4\t\n" +
+	"\"DATABASE_TLS_DEVELOPMENT_PLAINTEXT\x10\x02*\x7f\n" +
+	"\rEgressCeiling\x12\x1e\n" +
+	"\x1aEGRESS_CEILING_UNSPECIFIED\x10\x00\x12\x19\n" +
+	"\x15EGRESS_CEILING_PUBLIC\x10\x01\x12\x1b\n" +
+	"\x17EGRESS_CEILING_INTERNAL\x10\x02\x12\x16\n" +
+	"\x12EGRESS_CEILING_PII\x10\x03*~\n" +
+	"\fLakeRestAuth\x12\x1e\n" +
+	"\x1aLAKE_REST_AUTH_UNSPECIFIED\x10\x00\x12\x19\n" +
+	"\x15LAKE_REST_AUTH_OAUTH2\x10\x01\x12\x19\n" +
+	"\x15LAKE_REST_AUTH_BEARER\x10\x02\x12\x18\n" +
+	"\x14LAKE_REST_AUTH_SIGV4\x10\x03*\x8c\x01\n" +
+	"\x15LakeConditionalCreate\x12#\n" +
+	"\x1fLAKE_CONDITIONAL_CREATE_UNKNOWN\x10\x00\x12%\n" +
+	"!LAKE_CONDITIONAL_CREATE_SUPPORTED\x10\x01\x12'\n" +
+	"#LAKE_CONDITIONAL_CREATE_UNSUPPORTED\x10\x022\xa4\t\n" +
 	"\rWorkerService\x12}\n" +
 	"\x0eRegisterWorker\x124.sagat_octopus_orchestrator.v1.RegisterWorkerRequest\x1a5.sagat_octopus_orchestrator.v1.RegisterWorkerResponse\x12n\n" +
 	"\tPollTasks\x12/.sagat_octopus_orchestrator.v1.PollTasksRequest\x1a0.sagat_octopus_orchestrator.v1.PollTasksResponse\x12r\n" +
@@ -2742,84 +4046,126 @@ func file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP() []byte {
 	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescData
 }
 
-var file_sagat_octopus_orchestrator_v1_worker_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes = make([]protoimpl.MessageInfo, 26)
+var file_sagat_octopus_orchestrator_v1_worker_proto_enumTypes = make([]protoimpl.EnumInfo, 5)
+var file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes = make([]protoimpl.MessageInfo, 41)
 var file_sagat_octopus_orchestrator_v1_worker_proto_goTypes = []any{
 	(DatabaseOperationKind)(0),        // 0: sagat_octopus_orchestrator.v1.DatabaseOperationKind
 	(DatabaseTlsMode)(0),              // 1: sagat_octopus_orchestrator.v1.DatabaseTlsMode
-	(*WorkerCapabilities)(nil),        // 2: sagat_octopus_orchestrator.v1.WorkerCapabilities
-	(*RegisterWorkerRequest)(nil),     // 3: sagat_octopus_orchestrator.v1.RegisterWorkerRequest
-	(*RegisterWorkerResponse)(nil),    // 4: sagat_octopus_orchestrator.v1.RegisterWorkerResponse
-	(*PollTasksRequest)(nil),          // 5: sagat_octopus_orchestrator.v1.PollTasksRequest
-	(*ScopePathSegment)(nil),          // 6: sagat_octopus_orchestrator.v1.ScopePathSegment
-	(*ExecutionInstanceIdentity)(nil), // 7: sagat_octopus_orchestrator.v1.ExecutionInstanceIdentity
-	(*TaskLease)(nil),                 // 8: sagat_octopus_orchestrator.v1.TaskLease
-	(*PollTasksResponse)(nil),         // 9: sagat_octopus_orchestrator.v1.PollTasksResponse
-	(*HeartbeatRequest)(nil),          // 10: sagat_octopus_orchestrator.v1.HeartbeatRequest
-	(*HeartbeatResponse)(nil),         // 11: sagat_octopus_orchestrator.v1.HeartbeatResponse
-	(*CompleteStepRequest)(nil),       // 12: sagat_octopus_orchestrator.v1.CompleteStepRequest
-	(*FailStepRequest)(nil),           // 13: sagat_octopus_orchestrator.v1.FailStepRequest
-	(*ResolveSecretsRequest)(nil),     // 14: sagat_octopus_orchestrator.v1.ResolveSecretsRequest
-	(*ResolvedSecret)(nil),            // 15: sagat_octopus_orchestrator.v1.ResolvedSecret
-	(*ResolveSecretsResponse)(nil),    // 16: sagat_octopus_orchestrator.v1.ResolveSecretsResponse
-	(*WriteBlobRequest)(nil),          // 17: sagat_octopus_orchestrator.v1.WriteBlobRequest
-	(*WriteBlobHeader)(nil),           // 18: sagat_octopus_orchestrator.v1.WriteBlobHeader
-	(*WriteBlobResponse)(nil),         // 19: sagat_octopus_orchestrator.v1.WriteBlobResponse
-	(*ReadBlobRequest)(nil),           // 20: sagat_octopus_orchestrator.v1.ReadBlobRequest
-	(*ReadBlobResponse)(nil),          // 21: sagat_octopus_orchestrator.v1.ReadBlobResponse
-	(*ReadBlobHeader)(nil),            // 22: sagat_octopus_orchestrator.v1.ReadBlobHeader
-	(*StepCommandResponse)(nil),       // 23: sagat_octopus_orchestrator.v1.StepCommandResponse
-	(*DatabaseValue)(nil),             // 24: sagat_octopus_orchestrator.v1.DatabaseValue
-	(*PostgresConnection)(nil),        // 25: sagat_octopus_orchestrator.v1.PostgresConnection
-	(*DatabaseLimits)(nil),            // 26: sagat_octopus_orchestrator.v1.DatabaseLimits
-	(*ResolvedDatabase)(nil),          // 27: sagat_octopus_orchestrator.v1.ResolvedDatabase
+	(EgressCeiling)(0),                // 2: sagat_octopus_orchestrator.v1.EgressCeiling
+	(LakeRestAuth)(0),                 // 3: sagat_octopus_orchestrator.v1.LakeRestAuth
+	(LakeConditionalCreate)(0),        // 4: sagat_octopus_orchestrator.v1.LakeConditionalCreate
+	(*WorkerCapabilities)(nil),        // 5: sagat_octopus_orchestrator.v1.WorkerCapabilities
+	(*RegisterWorkerRequest)(nil),     // 6: sagat_octopus_orchestrator.v1.RegisterWorkerRequest
+	(*RegisterWorkerResponse)(nil),    // 7: sagat_octopus_orchestrator.v1.RegisterWorkerResponse
+	(*PollTasksRequest)(nil),          // 8: sagat_octopus_orchestrator.v1.PollTasksRequest
+	(*ScopePathSegment)(nil),          // 9: sagat_octopus_orchestrator.v1.ScopePathSegment
+	(*ExecutionInstanceIdentity)(nil), // 10: sagat_octopus_orchestrator.v1.ExecutionInstanceIdentity
+	(*TaskLease)(nil),                 // 11: sagat_octopus_orchestrator.v1.TaskLease
+	(*PollTasksResponse)(nil),         // 12: sagat_octopus_orchestrator.v1.PollTasksResponse
+	(*HeartbeatRequest)(nil),          // 13: sagat_octopus_orchestrator.v1.HeartbeatRequest
+	(*HeartbeatResponse)(nil),         // 14: sagat_octopus_orchestrator.v1.HeartbeatResponse
+	(*CompleteStepRequest)(nil),       // 15: sagat_octopus_orchestrator.v1.CompleteStepRequest
+	(*FailStepRequest)(nil),           // 16: sagat_octopus_orchestrator.v1.FailStepRequest
+	(*ResolveSecretsRequest)(nil),     // 17: sagat_octopus_orchestrator.v1.ResolveSecretsRequest
+	(*ResolvedSecret)(nil),            // 18: sagat_octopus_orchestrator.v1.ResolvedSecret
+	(*ResolveSecretsResponse)(nil),    // 19: sagat_octopus_orchestrator.v1.ResolveSecretsResponse
+	(*WriteBlobRequest)(nil),          // 20: sagat_octopus_orchestrator.v1.WriteBlobRequest
+	(*WriteBlobHeader)(nil),           // 21: sagat_octopus_orchestrator.v1.WriteBlobHeader
+	(*WriteBlobResponse)(nil),         // 22: sagat_octopus_orchestrator.v1.WriteBlobResponse
+	(*ReadBlobRequest)(nil),           // 23: sagat_octopus_orchestrator.v1.ReadBlobRequest
+	(*ReadBlobResponse)(nil),          // 24: sagat_octopus_orchestrator.v1.ReadBlobResponse
+	(*ReadBlobHeader)(nil),            // 25: sagat_octopus_orchestrator.v1.ReadBlobHeader
+	(*StepCommandResponse)(nil),       // 26: sagat_octopus_orchestrator.v1.StepCommandResponse
+	(*DatabaseValue)(nil),             // 27: sagat_octopus_orchestrator.v1.DatabaseValue
+	(*PostgresConnection)(nil),        // 28: sagat_octopus_orchestrator.v1.PostgresConnection
+	(*DatabaseLimits)(nil),            // 29: sagat_octopus_orchestrator.v1.DatabaseLimits
+	(*LakeLimits)(nil),                // 30: sagat_octopus_orchestrator.v1.LakeLimits
+	(*IcebergRestCatalog)(nil),        // 31: sagat_octopus_orchestrator.v1.IcebergRestCatalog
+	(*IcebergGlueCatalog)(nil),        // 32: sagat_octopus_orchestrator.v1.IcebergGlueCatalog
+	(*IcebergHiveCatalog)(nil),        // 33: sagat_octopus_orchestrator.v1.IcebergHiveCatalog
+	(*IcebergJdbcCatalog)(nil),        // 34: sagat_octopus_orchestrator.v1.IcebergJdbcCatalog
+	(*LakeS3Storage)(nil),             // 35: sagat_octopus_orchestrator.v1.LakeS3Storage
+	(*LakeGcsStorage)(nil),            // 36: sagat_octopus_orchestrator.v1.LakeGcsStorage
+	(*LakeAdlsStorage)(nil),           // 37: sagat_octopus_orchestrator.v1.LakeAdlsStorage
+	(*LakeStorage)(nil),               // 38: sagat_octopus_orchestrator.v1.LakeStorage
+	(*IcebergConnection)(nil),         // 39: sagat_octopus_orchestrator.v1.IcebergConnection
+	(*ObjectStorageConnection)(nil),   // 40: sagat_octopus_orchestrator.v1.ObjectStorageConnection
+	(*ClickHouseConnection)(nil),      // 41: sagat_octopus_orchestrator.v1.ClickHouseConnection
+	(*ResolvedDatabase)(nil),          // 42: sagat_octopus_orchestrator.v1.ResolvedDatabase
+	nil,                               // 43: sagat_octopus_orchestrator.v1.IcebergConnection.CredentialsEntry
+	nil,                               // 44: sagat_octopus_orchestrator.v1.ObjectStorageConnection.CredentialsEntry
+	nil,                               // 45: sagat_octopus_orchestrator.v1.ClickHouseConnection.CredentialsEntry
 }
 var file_sagat_octopus_orchestrator_v1_worker_proto_depIdxs = []int32{
-	2,  // 0: sagat_octopus_orchestrator.v1.RegisterWorkerRequest.capabilities:type_name -> sagat_octopus_orchestrator.v1.WorkerCapabilities
-	6,  // 1: sagat_octopus_orchestrator.v1.ExecutionInstanceIdentity.instance_path:type_name -> sagat_octopus_orchestrator.v1.ScopePathSegment
-	7,  // 2: sagat_octopus_orchestrator.v1.TaskLease.instance:type_name -> sagat_octopus_orchestrator.v1.ExecutionInstanceIdentity
-	7,  // 3: sagat_octopus_orchestrator.v1.TaskLease.target_instance:type_name -> sagat_octopus_orchestrator.v1.ExecutionInstanceIdentity
-	8,  // 4: sagat_octopus_orchestrator.v1.PollTasksResponse.tasks:type_name -> sagat_octopus_orchestrator.v1.TaskLease
-	7,  // 5: sagat_octopus_orchestrator.v1.HeartbeatRequest.instance:type_name -> sagat_octopus_orchestrator.v1.ExecutionInstanceIdentity
-	7,  // 6: sagat_octopus_orchestrator.v1.CompleteStepRequest.instance:type_name -> sagat_octopus_orchestrator.v1.ExecutionInstanceIdentity
-	7,  // 7: sagat_octopus_orchestrator.v1.FailStepRequest.instance:type_name -> sagat_octopus_orchestrator.v1.ExecutionInstanceIdentity
-	7,  // 8: sagat_octopus_orchestrator.v1.ResolveSecretsRequest.instance:type_name -> sagat_octopus_orchestrator.v1.ExecutionInstanceIdentity
-	15, // 9: sagat_octopus_orchestrator.v1.ResolveSecretsResponse.secrets:type_name -> sagat_octopus_orchestrator.v1.ResolvedSecret
-	18, // 10: sagat_octopus_orchestrator.v1.WriteBlobRequest.header:type_name -> sagat_octopus_orchestrator.v1.WriteBlobHeader
-	7,  // 11: sagat_octopus_orchestrator.v1.WriteBlobHeader.instance:type_name -> sagat_octopus_orchestrator.v1.ExecutionInstanceIdentity
-	7,  // 12: sagat_octopus_orchestrator.v1.ReadBlobRequest.instance:type_name -> sagat_octopus_orchestrator.v1.ExecutionInstanceIdentity
-	22, // 13: sagat_octopus_orchestrator.v1.ReadBlobResponse.header:type_name -> sagat_octopus_orchestrator.v1.ReadBlobHeader
+	5,  // 0: sagat_octopus_orchestrator.v1.RegisterWorkerRequest.capabilities:type_name -> sagat_octopus_orchestrator.v1.WorkerCapabilities
+	9,  // 1: sagat_octopus_orchestrator.v1.ExecutionInstanceIdentity.instance_path:type_name -> sagat_octopus_orchestrator.v1.ScopePathSegment
+	10, // 2: sagat_octopus_orchestrator.v1.TaskLease.instance:type_name -> sagat_octopus_orchestrator.v1.ExecutionInstanceIdentity
+	10, // 3: sagat_octopus_orchestrator.v1.TaskLease.target_instance:type_name -> sagat_octopus_orchestrator.v1.ExecutionInstanceIdentity
+	11, // 4: sagat_octopus_orchestrator.v1.PollTasksResponse.tasks:type_name -> sagat_octopus_orchestrator.v1.TaskLease
+	10, // 5: sagat_octopus_orchestrator.v1.HeartbeatRequest.instance:type_name -> sagat_octopus_orchestrator.v1.ExecutionInstanceIdentity
+	10, // 6: sagat_octopus_orchestrator.v1.CompleteStepRequest.instance:type_name -> sagat_octopus_orchestrator.v1.ExecutionInstanceIdentity
+	10, // 7: sagat_octopus_orchestrator.v1.FailStepRequest.instance:type_name -> sagat_octopus_orchestrator.v1.ExecutionInstanceIdentity
+	10, // 8: sagat_octopus_orchestrator.v1.ResolveSecretsRequest.instance:type_name -> sagat_octopus_orchestrator.v1.ExecutionInstanceIdentity
+	18, // 9: sagat_octopus_orchestrator.v1.ResolveSecretsResponse.secrets:type_name -> sagat_octopus_orchestrator.v1.ResolvedSecret
+	21, // 10: sagat_octopus_orchestrator.v1.WriteBlobRequest.header:type_name -> sagat_octopus_orchestrator.v1.WriteBlobHeader
+	10, // 11: sagat_octopus_orchestrator.v1.WriteBlobHeader.instance:type_name -> sagat_octopus_orchestrator.v1.ExecutionInstanceIdentity
+	10, // 12: sagat_octopus_orchestrator.v1.ReadBlobRequest.instance:type_name -> sagat_octopus_orchestrator.v1.ExecutionInstanceIdentity
+	25, // 13: sagat_octopus_orchestrator.v1.ReadBlobResponse.header:type_name -> sagat_octopus_orchestrator.v1.ReadBlobHeader
 	1,  // 14: sagat_octopus_orchestrator.v1.PostgresConnection.tls:type_name -> sagat_octopus_orchestrator.v1.DatabaseTlsMode
-	25, // 15: sagat_octopus_orchestrator.v1.ResolvedDatabase.postgres:type_name -> sagat_octopus_orchestrator.v1.PostgresConnection
-	0,  // 16: sagat_octopus_orchestrator.v1.ResolvedDatabase.operation:type_name -> sagat_octopus_orchestrator.v1.DatabaseOperationKind
-	24, // 17: sagat_octopus_orchestrator.v1.ResolvedDatabase.parameters:type_name -> sagat_octopus_orchestrator.v1.DatabaseValue
-	26, // 18: sagat_octopus_orchestrator.v1.ResolvedDatabase.limits:type_name -> sagat_octopus_orchestrator.v1.DatabaseLimits
-	15, // 19: sagat_octopus_orchestrator.v1.ResolvedDatabase.credential:type_name -> sagat_octopus_orchestrator.v1.ResolvedSecret
-	3,  // 20: sagat_octopus_orchestrator.v1.WorkerService.RegisterWorker:input_type -> sagat_octopus_orchestrator.v1.RegisterWorkerRequest
-	5,  // 21: sagat_octopus_orchestrator.v1.WorkerService.PollTasks:input_type -> sagat_octopus_orchestrator.v1.PollTasksRequest
-	5,  // 22: sagat_octopus_orchestrator.v1.WorkerService.StreamTasks:input_type -> sagat_octopus_orchestrator.v1.PollTasksRequest
-	10, // 23: sagat_octopus_orchestrator.v1.WorkerService.Heartbeat:input_type -> sagat_octopus_orchestrator.v1.HeartbeatRequest
-	12, // 24: sagat_octopus_orchestrator.v1.WorkerService.CompleteStep:input_type -> sagat_octopus_orchestrator.v1.CompleteStepRequest
-	13, // 25: sagat_octopus_orchestrator.v1.WorkerService.FailStep:input_type -> sagat_octopus_orchestrator.v1.FailStepRequest
-	14, // 26: sagat_octopus_orchestrator.v1.WorkerService.ResolveSecrets:input_type -> sagat_octopus_orchestrator.v1.ResolveSecretsRequest
-	14, // 27: sagat_octopus_orchestrator.v1.WorkerService.ResolveDatabase:input_type -> sagat_octopus_orchestrator.v1.ResolveSecretsRequest
-	17, // 28: sagat_octopus_orchestrator.v1.WorkerService.WriteBlob:input_type -> sagat_octopus_orchestrator.v1.WriteBlobRequest
-	20, // 29: sagat_octopus_orchestrator.v1.WorkerService.ReadBlob:input_type -> sagat_octopus_orchestrator.v1.ReadBlobRequest
-	4,  // 30: sagat_octopus_orchestrator.v1.WorkerService.RegisterWorker:output_type -> sagat_octopus_orchestrator.v1.RegisterWorkerResponse
-	9,  // 31: sagat_octopus_orchestrator.v1.WorkerService.PollTasks:output_type -> sagat_octopus_orchestrator.v1.PollTasksResponse
-	9,  // 32: sagat_octopus_orchestrator.v1.WorkerService.StreamTasks:output_type -> sagat_octopus_orchestrator.v1.PollTasksResponse
-	11, // 33: sagat_octopus_orchestrator.v1.WorkerService.Heartbeat:output_type -> sagat_octopus_orchestrator.v1.HeartbeatResponse
-	23, // 34: sagat_octopus_orchestrator.v1.WorkerService.CompleteStep:output_type -> sagat_octopus_orchestrator.v1.StepCommandResponse
-	23, // 35: sagat_octopus_orchestrator.v1.WorkerService.FailStep:output_type -> sagat_octopus_orchestrator.v1.StepCommandResponse
-	16, // 36: sagat_octopus_orchestrator.v1.WorkerService.ResolveSecrets:output_type -> sagat_octopus_orchestrator.v1.ResolveSecretsResponse
-	27, // 37: sagat_octopus_orchestrator.v1.WorkerService.ResolveDatabase:output_type -> sagat_octopus_orchestrator.v1.ResolvedDatabase
-	19, // 38: sagat_octopus_orchestrator.v1.WorkerService.WriteBlob:output_type -> sagat_octopus_orchestrator.v1.WriteBlobResponse
-	21, // 39: sagat_octopus_orchestrator.v1.WorkerService.ReadBlob:output_type -> sagat_octopus_orchestrator.v1.ReadBlobResponse
-	30, // [30:40] is the sub-list for method output_type
-	20, // [20:30] is the sub-list for method input_type
-	20, // [20:20] is the sub-list for extension type_name
-	20, // [20:20] is the sub-list for extension extendee
-	0,  // [0:20] is the sub-list for field type_name
+	3,  // 15: sagat_octopus_orchestrator.v1.IcebergRestCatalog.auth:type_name -> sagat_octopus_orchestrator.v1.LakeRestAuth
+	1,  // 16: sagat_octopus_orchestrator.v1.IcebergJdbcCatalog.tls:type_name -> sagat_octopus_orchestrator.v1.DatabaseTlsMode
+	35, // 17: sagat_octopus_orchestrator.v1.LakeStorage.s3:type_name -> sagat_octopus_orchestrator.v1.LakeS3Storage
+	36, // 18: sagat_octopus_orchestrator.v1.LakeStorage.gcs:type_name -> sagat_octopus_orchestrator.v1.LakeGcsStorage
+	37, // 19: sagat_octopus_orchestrator.v1.LakeStorage.adls:type_name -> sagat_octopus_orchestrator.v1.LakeAdlsStorage
+	31, // 20: sagat_octopus_orchestrator.v1.IcebergConnection.rest:type_name -> sagat_octopus_orchestrator.v1.IcebergRestCatalog
+	32, // 21: sagat_octopus_orchestrator.v1.IcebergConnection.glue:type_name -> sagat_octopus_orchestrator.v1.IcebergGlueCatalog
+	33, // 22: sagat_octopus_orchestrator.v1.IcebergConnection.hive:type_name -> sagat_octopus_orchestrator.v1.IcebergHiveCatalog
+	34, // 23: sagat_octopus_orchestrator.v1.IcebergConnection.jdbc:type_name -> sagat_octopus_orchestrator.v1.IcebergJdbcCatalog
+	38, // 24: sagat_octopus_orchestrator.v1.IcebergConnection.storage:type_name -> sagat_octopus_orchestrator.v1.LakeStorage
+	2,  // 25: sagat_octopus_orchestrator.v1.IcebergConnection.egress_ceiling:type_name -> sagat_octopus_orchestrator.v1.EgressCeiling
+	30, // 26: sagat_octopus_orchestrator.v1.IcebergConnection.limits:type_name -> sagat_octopus_orchestrator.v1.LakeLimits
+	43, // 27: sagat_octopus_orchestrator.v1.IcebergConnection.credentials:type_name -> sagat_octopus_orchestrator.v1.IcebergConnection.CredentialsEntry
+	38, // 28: sagat_octopus_orchestrator.v1.ObjectStorageConnection.storage:type_name -> sagat_octopus_orchestrator.v1.LakeStorage
+	4,  // 29: sagat_octopus_orchestrator.v1.ObjectStorageConnection.conditional_create:type_name -> sagat_octopus_orchestrator.v1.LakeConditionalCreate
+	2,  // 30: sagat_octopus_orchestrator.v1.ObjectStorageConnection.egress_ceiling:type_name -> sagat_octopus_orchestrator.v1.EgressCeiling
+	30, // 31: sagat_octopus_orchestrator.v1.ObjectStorageConnection.limits:type_name -> sagat_octopus_orchestrator.v1.LakeLimits
+	44, // 32: sagat_octopus_orchestrator.v1.ObjectStorageConnection.credentials:type_name -> sagat_octopus_orchestrator.v1.ObjectStorageConnection.CredentialsEntry
+	2,  // 33: sagat_octopus_orchestrator.v1.ClickHouseConnection.egress_ceiling:type_name -> sagat_octopus_orchestrator.v1.EgressCeiling
+	30, // 34: sagat_octopus_orchestrator.v1.ClickHouseConnection.limits:type_name -> sagat_octopus_orchestrator.v1.LakeLimits
+	45, // 35: sagat_octopus_orchestrator.v1.ClickHouseConnection.credentials:type_name -> sagat_octopus_orchestrator.v1.ClickHouseConnection.CredentialsEntry
+	28, // 36: sagat_octopus_orchestrator.v1.ResolvedDatabase.postgres:type_name -> sagat_octopus_orchestrator.v1.PostgresConnection
+	0,  // 37: sagat_octopus_orchestrator.v1.ResolvedDatabase.operation:type_name -> sagat_octopus_orchestrator.v1.DatabaseOperationKind
+	27, // 38: sagat_octopus_orchestrator.v1.ResolvedDatabase.parameters:type_name -> sagat_octopus_orchestrator.v1.DatabaseValue
+	29, // 39: sagat_octopus_orchestrator.v1.ResolvedDatabase.limits:type_name -> sagat_octopus_orchestrator.v1.DatabaseLimits
+	18, // 40: sagat_octopus_orchestrator.v1.ResolvedDatabase.credential:type_name -> sagat_octopus_orchestrator.v1.ResolvedSecret
+	39, // 41: sagat_octopus_orchestrator.v1.ResolvedDatabase.iceberg:type_name -> sagat_octopus_orchestrator.v1.IcebergConnection
+	40, // 42: sagat_octopus_orchestrator.v1.ResolvedDatabase.object_storage:type_name -> sagat_octopus_orchestrator.v1.ObjectStorageConnection
+	41, // 43: sagat_octopus_orchestrator.v1.ResolvedDatabase.clickhouse:type_name -> sagat_octopus_orchestrator.v1.ClickHouseConnection
+	6,  // 44: sagat_octopus_orchestrator.v1.WorkerService.RegisterWorker:input_type -> sagat_octopus_orchestrator.v1.RegisterWorkerRequest
+	8,  // 45: sagat_octopus_orchestrator.v1.WorkerService.PollTasks:input_type -> sagat_octopus_orchestrator.v1.PollTasksRequest
+	8,  // 46: sagat_octopus_orchestrator.v1.WorkerService.StreamTasks:input_type -> sagat_octopus_orchestrator.v1.PollTasksRequest
+	13, // 47: sagat_octopus_orchestrator.v1.WorkerService.Heartbeat:input_type -> sagat_octopus_orchestrator.v1.HeartbeatRequest
+	15, // 48: sagat_octopus_orchestrator.v1.WorkerService.CompleteStep:input_type -> sagat_octopus_orchestrator.v1.CompleteStepRequest
+	16, // 49: sagat_octopus_orchestrator.v1.WorkerService.FailStep:input_type -> sagat_octopus_orchestrator.v1.FailStepRequest
+	17, // 50: sagat_octopus_orchestrator.v1.WorkerService.ResolveSecrets:input_type -> sagat_octopus_orchestrator.v1.ResolveSecretsRequest
+	17, // 51: sagat_octopus_orchestrator.v1.WorkerService.ResolveDatabase:input_type -> sagat_octopus_orchestrator.v1.ResolveSecretsRequest
+	20, // 52: sagat_octopus_orchestrator.v1.WorkerService.WriteBlob:input_type -> sagat_octopus_orchestrator.v1.WriteBlobRequest
+	23, // 53: sagat_octopus_orchestrator.v1.WorkerService.ReadBlob:input_type -> sagat_octopus_orchestrator.v1.ReadBlobRequest
+	7,  // 54: sagat_octopus_orchestrator.v1.WorkerService.RegisterWorker:output_type -> sagat_octopus_orchestrator.v1.RegisterWorkerResponse
+	12, // 55: sagat_octopus_orchestrator.v1.WorkerService.PollTasks:output_type -> sagat_octopus_orchestrator.v1.PollTasksResponse
+	12, // 56: sagat_octopus_orchestrator.v1.WorkerService.StreamTasks:output_type -> sagat_octopus_orchestrator.v1.PollTasksResponse
+	14, // 57: sagat_octopus_orchestrator.v1.WorkerService.Heartbeat:output_type -> sagat_octopus_orchestrator.v1.HeartbeatResponse
+	26, // 58: sagat_octopus_orchestrator.v1.WorkerService.CompleteStep:output_type -> sagat_octopus_orchestrator.v1.StepCommandResponse
+	26, // 59: sagat_octopus_orchestrator.v1.WorkerService.FailStep:output_type -> sagat_octopus_orchestrator.v1.StepCommandResponse
+	19, // 60: sagat_octopus_orchestrator.v1.WorkerService.ResolveSecrets:output_type -> sagat_octopus_orchestrator.v1.ResolveSecretsResponse
+	42, // 61: sagat_octopus_orchestrator.v1.WorkerService.ResolveDatabase:output_type -> sagat_octopus_orchestrator.v1.ResolvedDatabase
+	22, // 62: sagat_octopus_orchestrator.v1.WorkerService.WriteBlob:output_type -> sagat_octopus_orchestrator.v1.WriteBlobResponse
+	24, // 63: sagat_octopus_orchestrator.v1.WorkerService.ReadBlob:output_type -> sagat_octopus_orchestrator.v1.ReadBlobResponse
+	54, // [54:64] is the sub-list for method output_type
+	44, // [44:54] is the sub-list for method input_type
+	44, // [44:44] is the sub-list for extension type_name
+	44, // [44:44] is the sub-list for extension extendee
+	0,  // [0:44] is the sub-list for field type_name
 }
 
 func init() { file_sagat_octopus_orchestrator_v1_worker_proto_init() }
@@ -2847,13 +4193,24 @@ func file_sagat_octopus_orchestrator_v1_worker_proto_init() {
 		(*DatabaseValue_BinaryValue)(nil),
 		(*DatabaseValue_JsonValue)(nil),
 	}
+	file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[33].OneofWrappers = []any{
+		(*LakeStorage_S3)(nil),
+		(*LakeStorage_Gcs)(nil),
+		(*LakeStorage_Adls)(nil),
+	}
+	file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[34].OneofWrappers = []any{
+		(*IcebergConnection_Rest)(nil),
+		(*IcebergConnection_Glue)(nil),
+		(*IcebergConnection_Hive)(nil),
+		(*IcebergConnection_Jdbc)(nil),
+	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_sagat_octopus_orchestrator_v1_worker_proto_rawDesc), len(file_sagat_octopus_orchestrator_v1_worker_proto_rawDesc)),
-			NumEnums:      2,
-			NumMessages:   26,
+			NumEnums:      5,
+			NumMessages:   41,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

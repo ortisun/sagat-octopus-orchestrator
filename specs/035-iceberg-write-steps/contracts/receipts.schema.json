@@ -1,0 +1,325 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sagat-octopus-orchestrator.dev/schemas/035/receipts.json",
+  "title": "Receipts of Iceberg writes and destination writes (FR-035-027, FR-035-043)",
+  "description": "Step outputs. They never contain record values, field names of dropped fields, data file locations or object keys beyond the platform-derived name hash. Each branch forbids unevaluated properties; the runner rebuilds receipts from typed fields (D035-062).",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/iceberg"
+    },
+    {
+      "$ref": "#/$defs/postgresql"
+    },
+    {
+      "$ref": "#/$defs/objectStorage"
+    },
+    {
+      "$ref": "#/$defs/clickhouse"
+    },
+    {
+      "$ref": "#/$defs/brokerStream"
+    },
+    {
+      "$ref": "#/$defs/failed"
+    }
+  ],
+  "$defs": {
+    "count": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]{0,18})$",
+      "description": "Unsigned integer as a decimal string (five-language representation)."
+    },
+    "common": {
+      "type": "object",
+      "required": [
+        "kind",
+        "outcome",
+        "effectKey",
+        "foundByLookup"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string"
+        },
+        "outcome": {
+          "type": "string"
+        },
+        "effectKey": {
+          "type": "string",
+          "maxLength": 512
+        },
+        "foundByLookup": {
+          "type": "boolean",
+          "description": "The outcome was established by the effect-key lookup or the destination's deduplication, not by this attempt's write."
+        },
+        "ignoredFields": {
+          "$ref": "#/$defs/count"
+        },
+        "droppedValues": {
+          "$ref": "#/$defs/count"
+        }
+      }
+    },
+    "iceberg": {
+      "type": "object",
+      "allOf": [
+        {
+          "$ref": "#/$defs/common"
+        }
+      ],
+      "properties": {
+        "kind": {
+          "const": "iceberg"
+        },
+        "outcome": {
+          "enum": [
+            "COMMITTED",
+            "EMPTY_NO_COMMIT",
+            "REVERTED"
+          ]
+        },
+        "mode": {
+          "enum": [
+            "append",
+            "overwrite",
+            "upsert"
+          ]
+        },
+        "ref": {
+          "type": "string"
+        },
+        "snapshotId": {
+          "type": "string",
+          "pattern": "^-?[0-9]{1,20}$"
+        },
+        "sequenceNumber": {
+          "$ref": "#/$defs/count"
+        },
+        "schemaId": {
+          "type": "integer"
+        },
+        "formatVersion": {
+          "enum": [
+            1,
+            2
+          ]
+        },
+        "rowLevelMode": {
+          "enum": [
+            "NONE",
+            "COPY_ON_WRITE"
+          ]
+        },
+        "rowsAdded": {
+          "$ref": "#/$defs/count"
+        },
+        "rowsRemoved": {
+          "$ref": "#/$defs/count"
+        },
+        "keysNotFound": {
+          "$ref": "#/$defs/count"
+        },
+        "dataFilesAdded": {
+          "$ref": "#/$defs/count"
+        },
+        "dataFilesRemoved": {
+          "$ref": "#/$defs/count"
+        },
+        "deleteFilesAdded": {
+          "$ref": "#/$defs/count"
+        },
+        "bytesWritten": {
+          "$ref": "#/$defs/count"
+        },
+        "uncommittedFiles": {
+          "$ref": "#/$defs/count"
+        },
+        "priorAttemptMayHaveLeftFiles": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "kind",
+        "outcome",
+        "mode",
+        "ref"
+      ],
+      "unevaluatedProperties": false
+    },
+    "postgresql": {
+      "type": "object",
+      "allOf": [
+        {
+          "$ref": "#/$defs/common"
+        }
+      ],
+      "properties": {
+        "kind": {
+          "const": "postgresql"
+        },
+        "outcome": {
+          "const": "COMMITTED"
+        },
+        "mode": {
+          "enum": [
+            "insert",
+            "upsert"
+          ]
+        },
+        "rowsInserted": {
+          "$ref": "#/$defs/count"
+        },
+        "rowsUpdated": {
+          "$ref": "#/$defs/count"
+        },
+        "rowsAlreadyPresent": {
+          "$ref": "#/$defs/count"
+        }
+      },
+      "required": [
+        "kind",
+        "outcome",
+        "mode"
+      ],
+      "unevaluatedProperties": false
+    },
+    "objectStorage": {
+      "type": "object",
+      "allOf": [
+        {
+          "$ref": "#/$defs/common"
+        }
+      ],
+      "properties": {
+        "kind": {
+          "const": "object_storage"
+        },
+        "outcome": {
+          "enum": [
+            "CREATED",
+            "ALREADY_PRESENT"
+          ]
+        },
+        "format": {
+          "enum": [
+            "parquet",
+            "ndjson"
+          ]
+        },
+        "objectNameSha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "records": {
+          "$ref": "#/$defs/count"
+        },
+        "bytes": {
+          "$ref": "#/$defs/count"
+        },
+        "conditionalCreate": {
+          "type": "boolean"
+        },
+        "recordsSha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "description": "SHA-256 of the canonical NDJSON form of the mapped records (D035-064)."
+        }
+      },
+      "required": [
+        "kind",
+        "outcome",
+        "format"
+      ],
+      "unevaluatedProperties": false
+    },
+    "clickhouse": {
+      "type": "object",
+      "allOf": [
+        {
+          "$ref": "#/$defs/common"
+        }
+      ],
+      "properties": {
+        "kind": {
+          "const": "clickhouse"
+        },
+        "outcome": {
+          "const": "INSERTED"
+        },
+        "records": {
+          "$ref": "#/$defs/count"
+        },
+        "deduplicationConfirmed": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "kind",
+        "outcome"
+      ],
+      "unevaluatedProperties": false
+    },
+    "brokerStream": {
+      "type": "object",
+      "allOf": [
+        {
+          "$ref": "#/$defs/common"
+        }
+      ],
+      "properties": {
+        "kind": {
+          "const": "broker_stream"
+        },
+        "outcome": {
+          "const": "DELIVERED"
+        },
+        "messages": {
+          "$ref": "#/$defs/count"
+        },
+        "attempts": {
+          "$ref": "#/$defs/count"
+        }
+      },
+      "required": [
+        "kind",
+        "outcome"
+      ],
+      "unevaluatedProperties": false
+    },
+    "failed": {
+      "type": "object",
+      "description": "Receipt of a destination step ended by the continue policy or skipped by an operator.",
+      "required": [
+        "kind",
+        "outcome",
+        "failureCode"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "iceberg",
+            "postgresql",
+            "object_storage",
+            "clickhouse",
+            "broker_stream"
+          ]
+        },
+        "outcome": {
+          "enum": [
+            "FAILED_CONTINUED",
+            "SKIPPED_BY_OPERATOR"
+          ]
+        },
+        "failureCode": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "effectKey": {
+          "type": "string",
+          "maxLength": 512
+        }
+      },
+      "unevaluatedProperties": false
+    }
+  }
+}

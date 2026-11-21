@@ -20,7 +20,32 @@ export type ErrorCode =
   | 'TRANSPORT'
   | 'CANCELLED'
   | 'PROTOCOL'
-  | 'PAYLOAD_TOO_LARGE';
+  | 'PAYLOAD_TOO_LARGE'
+  | 'ICEBERG_TABLE_NOT_FOUND'
+  | 'ICEBERG_UNSUPPORTED_TABLE'
+  | 'ICEBERG_LOCATION_NOT_ALLOWED'
+  | 'ICEBERG_SCHEMA_MISMATCH'
+  | 'ICEBERG_DUPLICATE_KEY'
+  | 'ICEBERG_SCOPE_VIOLATION'
+  | 'ICEBERG_COMMIT_CONFLICT'
+  | 'ICEBERG_REVERT_BLOCKED'
+  | 'ICEBERG_LIMIT_EXCEEDED'
+  | 'CATALOG_UNAVAILABLE'
+  | 'STORAGE_UNAVAILABLE'
+  | 'DESTINATION_KEY_CONSTRAINT_MISSING'
+  | 'DESTINATION_SCHEMA_MISMATCH'
+  | 'DESTINATION_DEDUPLICATION_NOT_CONFIRMED'
+  | 'DESTINATION_OBJECT_CONFLICT'
+  | 'DESTINATION_DELIVERY_BOUND_EXCEEDED'
+  | 'DESTINATION_SUBSCRIPTION_SHARED'
+  | 'DESTINATION_AUTH_FAILED'
+  | 'DESTINATION_UNAVAILABLE'
+  | 'DESTINATION_SUBSCRIPTION_UNUSABLE'
+  | 'DESTINATION_FAILED'
+  | 'LAKE_HOST_PROTOCOL'
+  | 'LAKE_SANDBOX_UNAVAILABLE'
+  | 'CLASSIFICATION_EGRESS_REFUSED'
+  | 'OUTCOME_UNKNOWN';
 
 export interface SagatErrorInit {
   code: ErrorCode;
@@ -33,6 +58,10 @@ export interface SagatErrorInit {
   /** The server's stable sub-reason (`details.reason`, or the gRPC `x-sagat-error` value). */
   reason?: string | null;
   retryAfterMs?: number | null;
+  /** Design 043: `details.field`, a JSON pointer whose segments are names the schema declares and array indices. */
+  field?: string | null;
+  /** Design 043: `details.rule`, the closed keyword of the input schema that failed. */
+  rule?: string | null;
 }
 
 const entries = new Map(CATALOG.map((entry) => [entry.code, entry]));
@@ -95,6 +124,10 @@ export class SagatError extends Error {
   readonly reason: string | null;
   readonly retryAfterMs: number | null;
   readonly remediation: string;
+  /** `details.field` of the server, if it sent one (design 043): never a value of the input. */
+  readonly field: string | null;
+  /** `details.rule` of the server, if it sent one (design 043). */
+  readonly rule: string | null;
 
   constructor(init: SagatErrorInit) {
     // What a server says is bounded (SPEC §10): its words are cut, a trace id that is not 32 hexadecimal
@@ -108,11 +141,13 @@ export class SagatError extends Error {
     this.reason = init.reason === undefined || init.reason === null ? null : init.reason.slice(0, 128);
     this.retryAfterMs = init.retryAfterMs === undefined || init.retryAfterMs === null ? null : Math.min(init.retryAfterMs, MAX_WAIT_MS);
     this.remediation = remediationOf(init.code);
+    this.field = init.field === undefined || init.field === null ? null : init.field.slice(0, 512);
+    this.rule = init.rule === undefined || init.rule === null ? null : init.rule.slice(0, 64);
   }
 
   /** The fields that are compared across SDKs; the message is the SDK's own words. */
   toJSON(): Record<string, unknown> {
-    return {
+    const fields: Record<string, unknown> = {
       code: this.code,
       status: this.status,
       retryable: this.retryable,
@@ -122,6 +157,10 @@ export class SagatError extends Error {
       remediation: this.remediation,
       message: this.message,
     };
+    // only when the server sent them, so every other refusal reads as it always has
+    if (this.field !== null) fields['field'] = this.field;
+    if (this.rule !== null) fields['rule'] = this.rule;
+    return fields;
   }
 }
 

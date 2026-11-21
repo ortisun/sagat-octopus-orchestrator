@@ -1,0 +1,19 @@
+   Compiling sagat-application v0.2.0 (/Users/marcelo/Documents/Projects/sagat-octopus-compensation-safety/crates/application)
+    Finished `test` profile [unoptimized] target(s) in 1.86s
+     Running tests/telemetry_derive.rs (/var/folders/60/bf6rmfzx6zq67nrbzb3m0p480000gn/T/sagat-037-target-q0fwz2gu/debug/deps/telemetry_derive-d66f3ae78739bf24)
+
+running 1 test
+
+thread 'review_telemetry_preserves_source_codes_without_inventing_a_negative_lookup_attempt' (782851223) panicked at crates/application/tests/telemetry_derive.rs:630:5:
+the review reason remains distinguishable from a final negative lookup: SpanEvent { name: "reconciliation.concluded", unix_nano: 1800000000045000000, attributes: [("sagat.actor.kind", Str("system")), ("sagat.node", Str("charge")), ("sagat.cause.code", Str("not_applied"))] }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test review_telemetry_preserves_source_codes_without_inventing_a_negative_lookup_attempt ... FAILED
+
+failures:
+
+failures:
+    review_telemetry_preserves_source_codes_without_inventing_a_negative_lookup_attempt
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 20 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p sagat-application --test telemetry_derive`

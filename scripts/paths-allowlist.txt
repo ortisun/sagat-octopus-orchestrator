@@ -1,0 +1,22 @@
+# Tokens that the backticked-path check of check-agent-config.py cannot resolve because they are not
+# files of this repository. Each entry has its reason on the line above. Never list a .specify path or a
+# speckit name here: a stale pointer must be fixed, not allowed.
+
+# a personal preferences file, ignored by git
+CLAUDE.local.md
+# the local Python virtual environment of the Python SDK, ignored by git
+sdks/python/.venv
+# the local environment file of the compose stack, ignored by git and denied to agents
+infra/docker/.env
+# the local runner token, ignored by git and denied to agents
+infra/docker/runner.token
+# a build output of the Studio
+frontend/apps/studio/dist
+# a build output of the SDK packaging script
+target/sdk-packages
+# a container image name in an example
+registry.example.com/team/
+# a priority label, not a path
+P2/later
+# two directory names written together
+bin/obj

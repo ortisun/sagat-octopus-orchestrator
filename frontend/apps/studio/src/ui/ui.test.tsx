@@ -6,7 +6,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { announcedAssertively, choose, chooseValue, chosen, expectAvailable, expectUnavailable, optionsOf, selector, valueOf } from '../../test/ui';
 import { Actions, Badge, Banner, Button, Checkbox, ColumnHeader, Dialog, Empty, Field, Heading, Hint, Link, Loading, Select, StatusBadge, Table, TableBody, TableCell, TableHead, TableRow, Tabs, TextArea, TextInput, UiProvider } from '.';
 
-/** The contract of the interface module (ADR-0101): what every screen relies on, whatever draws it. */
+/** The contract of the interface module (Architecture decision 0101): what every screen relies on, whatever draws it. */
 describe('Button', () => {
   it('is named by its text, or by a fuller aria-label, and reports a click', async () => {
     const user = userEvent.setup();
@@ -22,7 +22,7 @@ describe('Button', () => {
     expect(screen.getByRole('button', { name: 'Drain worker identity w1' })).toHaveTextContent('Drain identity');
   });
 
-  it('when disabled is announced as unavailable and a click does nothing (D2403)', async () => {
+  it('when disabled is announced as unavailable and a click does nothing (Decision 2403)', async () => {
     const user = userEvent.setup();
     const clicked = vi.fn();
     render(
@@ -197,6 +197,13 @@ describe('Checkbox and Field', () => {
     expect(changed).toHaveBeenCalledWith(true);
   });
 
+  it('a checkbox ties what is missing to itself', () => {
+    render(<Checkbox label="I know the steps run again" checked={false} onChange={() => undefined} error="Confirm that you know." />);
+    const box = screen.getByRole('checkbox', { name: /I know the steps run again/ });
+    expect(box).toBeInvalid();
+    expect(box).toHaveAccessibleDescription(expect.stringContaining('Confirm that you know.'));
+  });
+
   it('a field labels and describes a control that is not one of the module’s own', () => {
     render(
       <Field label="Source" hint="JavaScript." error="It does not parse.">
@@ -240,6 +247,28 @@ describe('Dialog', () => {
   });
 });
 
+describe('Dialog: where focus goes when it opens', () => {
+  it('goes to the first control of the body that can be used, as the platform dialog does', async () => {
+    render(
+      <Dialog open title="Pause the schedule" onClose={() => undefined}>
+        <p>Runs stop until it is resumed.</p>
+        <TextInput label="Locked" value="" onChange={() => undefined} disabled />
+        <TextInput label="Why" value="" onChange={() => undefined} />
+      </Dialog>,
+    );
+    await waitFor(() => expect(screen.getByLabelText('Why')).toHaveFocus());
+  });
+
+  it('goes to the title when the body has nothing to use', async () => {
+    render(
+      <Dialog open title="Connection probe" onClose={() => undefined}>
+        <p>Probing…</p>
+      </Dialog>,
+    );
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Connection probe' })).toHaveFocus());
+  });
+});
+
 describe('Dialog: the close button', () => {
   it('has a close button of its own, for a body that offers no way out', async () => {
     const user = userEvent.setup();
@@ -255,7 +284,7 @@ describe('Dialog: the close button', () => {
 });
 
 describe('Banner, Badge and the words of a state', () => {
-  it('announces an error and a warning, and not information (D2404)', () => {
+  it('announces an error and a warning, and not information (Decision 2404)', () => {
     render(
       <>
         <Banner tone="error" title="Saving failed.">

@@ -1,11 +1,13 @@
 # sagat-octopus-orchestrator-sdk — Java
 
+> Documentation status: the contract sections below describe the inspected source. Existing runtime, test-count and advisory records are historical developer notes; this documentation update did not rerun or revalidate those records.
+
 The Java SDK of the Sagat Octopus Orchestrator: a **client** for runs and events, a **worker host** for
 activities, compensations and reconciliations, and **builders** of the workflow document. One artifact.
 
 The SDK keeps no journal of its own. The platform owns every state, every retry decision and every timer; the
 SDK speaks its REST API and its worker protocol (gRPC) and reports faithfully. It behaves like the TypeScript,
-Go, Python and C# SDKs because all five are held to the same conformance suite
+Go, Python, C# and Rust SDKs through the shared conformance suite
 (`tests/contract/sdk-conformance/`); the behaviour is written down in [`../SPEC.md`](../SPEC.md).
 
 ## Install
@@ -20,8 +22,9 @@ Coordinates: `dev.sagatoctopusorchestrator:sagat-octopus-orchestrator-sdk:0.2.0`
 </dependency>
 ```
 
-The artifact is **not published to a repository yet** (no signing or release pipeline exists). Build and install
-it into your local repository with `./mvnw install` from this directory. The library depends on Jackson
+The artifact is **not published to a Maven repository**. The release workflow packages it (jar, sources, javadoc and
+POMs), attests provenance and attaches it to the GitHub Release, which is the only distribution channel. Download it
+from there, or build and install it into your local repository with `./mvnw install` from this directory. The library depends on Jackson
 (`jackson-databind`), gRPC (`grpc-api`, `grpc-stub`, `grpc-protobuf`, `grpc-netty-shaded` at run time) and
 `protobuf-java`; it logs through `System.Logger`. The opt-in `OpenTelemetryBridge` uses the optional
 `opentelemetry-api` dependency; the application owns the provider and exporter. There is no logging-framework dependency.
@@ -45,22 +48,111 @@ try (SagatClient client = SagatClient.create(config)) {
 }
 ```
 
-`start` takes a workflow name or id. Every call has a blocking form and an `...Async` form returning a
+`start` takes a workflow name or id and answers the `Run`. `startResult` is the same call answering a `StartedRun`: the `Run`
+(`run()`) and whether this call created it (`started()`; `false` is the `200` of a `USE_EXISTING` business identifier). Most network operations have a blocking form and an `...Async` form returning a
 `CompletableFuture` (the asynchronous form runs the blocking one on an executor, so cancelling the future
 interrupts a call that is waiting; the executor is the client's own, or yours through
-`ClientConfig.Builder.asyncExecutor`). `listAll` is a lazy `Stream` that reads a page when the previous one is
-consumed, in the order the server gave (newest first).
+`ClientConfig.Builder.asyncExecutor`). `resolveWorkflow` has no asynchronous counterpart. `listAll` is a lazy `Stream` that reads a page when the previous one is
+consumed, in the order returned by the server.
 
 For a large run input, call `uploadRunInput(onePassInputStream, options)`, then pass its verified
 `BlobDescriptor` to `startWithBlob`. The upload is streamed once and never retried; its descriptor is accepted
 only after source EOF and matching local size/SHA-256. Both operations also have asynchronous forms.
 
+## Schedules, business identifiers, batch jobs, with-start and reset
+
+```java
+String namespaceId = "0190aaaa-0000-7000-8000-00000000aaaa";
+String workflowId = "0190aaaa-bbbb-7ccc-8ddd-eeeeeeeeeeee";
+try (SagatClient client = SagatClient.create(config)) {
+    // A business identifier names the one open run of an order; a second start answers that run.
+    StartedRun order = client.startResult("order-flow", Map.of("orderId", "o-1"), StartOptions.create()
+            .businessId("order-o-1")
+            .businessIdConflictPolicy(BusinessIdConflictPolicy.USE_EXISTING)
+            .startDelay(Duration.ofMinutes(5)));
+    System.out.println(order.runId() + (order.started() ? " was started" : " already existed"));
+    BusinessIdBinding binding = client.businessIds().get(namespaceId, "order-o-1", null);
+    System.out.println(binding.currentRunId() + " open=" + binding.open());
+
+    // A schedule: every day at 09:00 UTC. The instants are sent in UTC, whatever the zone of the process.
+    Schedule schedule = client.schedules().create(namespaceId, ScheduleWrite.of("daily-report",
+            ScheduleWrite.Spec.create().cron("0 9 * * *").timezone("UTC").startAt(Instant.parse("2027-01-01T00:00:00Z")),
+            ScheduleWrite.Action.of(workflowId, Map.of("kind", "daily"))), null);
+    client.schedules().pause(namespaceId, schedule.scheduleId(), "maintenance window", null);
+    ScheduleDescription described = client.schedules().get(namespaceId, schedule.scheduleId(),
+            ScheduleGetOptions.create().nextCount(3).recentCount(5));
+    System.out.println(described.counters() + " " + described.nextActions());
+    client.schedules().delete(namespaceId, schedule.scheduleId(), schedule.revision(), null);
+
+    // A schedule whose runs get the business identifier "<prefix>-<nominal time>" (RFC 3339 UTC to the second, "Z").
+    Schedule orders = client.schedules().create(namespaceId, ScheduleWrite.of("hourly-orders",
+            ScheduleWrite.Spec.create().cron("0 * * * *").timezone("UTC"),
+            ScheduleWrite.Action.of(workflowId, Map.of("kind", "hourly")).businessIdPrefix("orders")
+                    .businessIdConflictPolicy(BusinessIdConflictPolicy.USE_EXISTING)
+                    .businessIdReusePolicy(BusinessIdReusePolicy.REJECT_DUPLICATE)), null);
+    System.out.println(orders.action().businessIdPrefix() + " " + orders.action().businessIdConflictPolicy()
+            + " " + orders.action().businessIdReusePolicy()); // orders USE_EXISTING REJECT_DUPLICATE
+
+    // A batch job over many runs; the same key and body answer the first job.
+    BatchJob job = client.batch().create(namespaceId, BatchRequest.of(
+            BatchSelector.runIds(List.of(order.runId())), "CANCEL", "clean up the held runs"),
+            CallOptions.create().idempotencyKey("cleanup-2027-01-01"));
+    System.out.println(job.state() + " " + job.counts());
+
+    // Signal a run by business identifier, starting it first when none is open; update it the same way.
+    client.signalWithStart("order-flow", "order-o-1", Map.of("orderId", "o-1"), "payment.confirmed", Map.of("paid", "12.50"), null);
+    UpdateWithStartResult updated = client.updateWithStart("order-flow", "order-o-1", Map.of("orderId", "o-1"),
+            "balance.set", "set-1", Map.of("balance", 25), UpdateWithStartOptions.create().expectedStateRevision(0L));
+    System.out.println(updated.update().outcome());
+
+    // Reset a run that ended to a point of its journal.
+    Page<ResetPoint> points = client.resetPoints(order.runId(), null);
+    ResetPlan plan = client.previewReset(order.runId(), points.items().get(0).sequence(), null, null);
+    Reset reset = client.reset(order.runId(), ResetRequest.of(plan.sequence(), "run the steps again")
+            .acknowledgeReexecution(plan.requiresAcknowledgement()), null);
+    System.out.println(reset.newRunId());
+}
+```
+
+`client.schedules()`, `client.batch()` and `client.businessIds()` are groups of the client; `signalWithStart`,
+`updateWithStart`, `resetPoints`, `previewReset`, `reset`, `listResets` and `getReset` are methods of it, and each has an
+`...Async` form. The rules are those of `sdks/SPEC.md` section 3.1, the same in every SDK:
+
+- Every call that changes something carries **one** `Idempotency-Key`: the caller's (`CallOptions.idempotencyKey`) or
+  one generated once for the call, reused by every retry of it. `updateWithStart` also needs the caller's `updateKey`
+  (1 to 128 printable ASCII characters), and refuses a missing or invalid one before anything is sent.
+- A start delay is a `java.time.Duration`, turned **once** into whole milliseconds (truncated toward zero) before the first
+  attempt and sent as `startDelayMs`; the range (1 ms to 366 days) is the server's to judge (`START_DELAY_INVALID`).
+- The action of a schedule may name a business-id prefix (`ScheduleWrite.Action.businessIdPrefix`, with the optional
+  `businessIdConflictPolicy` and `businessIdReusePolicy`, strings like those of `start`): every run it starts gets the
+  identifier `<prefix>-<nominal time>`. The prefix is customer text, **sent as given** (no trimming, no case folding, no
+  check of its pattern or length, the empty string included): the server judges it (`VALIDATION_FAILED`, reason
+  `SCHEDULE_SPEC_INVALID`). Set none of the three and none of the three keys is sent. `Schedule.action()` holds
+  what the server sent (`businessIdPrefix()`, `businessIdConflictPolicy()`, `businessIdReusePolicy()`, each a string, null
+  for an action that has no prefix; a policy newer than this SDK is kept as is). The prefix is left out of the
+  `toString` of the write and of everything read back (`raw()` keeps it), and the SDK never logs or traces it. An
+  action record may say `BUSINESS_ID_CONFLICT` (reason `BUSINESS_ID_IN_USE` or `BUSINESS_ID_REUSE_REJECTED`) or
+  `ALREADY_ACTED` with the `runId` that holds the identifier: like every outcome, strings.
+- A business identifier is sent **as given** by `start`, `signalWithStart` and `updateWithStart`; the server judges it
+  (`BUSINESS_ID_INVALID`). `businessIds().get` percent-encodes it in the path and refuses locally, as
+  `VALIDATION_FAILED` with nothing sent, only what cannot be a path segment: a value that is not 1 to 200 visible ASCII
+  characters, and a whole `.` or `..` (every URL resolver takes it for a step in the path). `...` and `a..b` are valid.
+- Ids that become path segments (namespace, schedule, backfill, batch, reset, run) must be UUIDs; `expectedRevision` is
+  1 or more; a pause or resume note is not empty; a reset sequence is 1 or more. A refusal made by the SDK is
+  `VALIDATION_FAILED`, and nothing is sent.
+- An instant you give is an `Instant`, or RFC 3339 text with an offset (`Schedules.backfill`, `ScheduleWrite.Spec.startAt`,
+  `BatchSelector.Filter.createdAfter`); text that is not an instant is refused. It is sent in UTC with a `Z`. An instant
+  you read is an `Instant` (null where the contract says it may be absent).
+- A value of an enumeration the SDK does not know (an action outcome, a batch item state or reason, a reset point kind)
+  is kept as the string it came as; policies are strings too (`OverlapPolicy`, `BusinessIdConflictPolicy`,
+  `BusinessIdReusePolicy` hold the names the SDK knows). Typed answers keep the server's JSON in `raw()`.
+- A `REJECTED` outcome of `updateWithStart` is an answer, not an error. `schedules().delete` answers `204` with no body.
+
 The SDK propagates the W3C `traceparent` (the one you pass, else the ambient context you expose through
 `ClientConfig.Builder.traceContext(...)`, for example from OpenTelemetry), the correlation id and the deadline, and
 retries **only when that is safe**: a `GET`, or a `POST` that carries an idempotency key (8 to 160 visible ASCII
 characters) or an event id (the SDK generates one per call and reuses it for every retry of that call), and only
-after `TRANSPORT`, `UNAVAILABLE`, `RATE_LIMITED` or `INTERNAL` errors (`SagatException.isRetriable()`); never a `4xx`
-other than `429`, whatever the body claims. A `501`, or a `404` that does not carry the platform's error envelope, is
+after `TRANSPORT`, `UNAVAILABLE`, `RATE_LIMITED` or `INTERNAL` errors (`SagatException.isRetriable()`); HTTP 408 maps to `UNAVAILABLE`, while other non-rate-limit 4xx failures are not retried merely because a body claims they are retryable. A `501`, or a `404` that does not carry the platform's error envelope, is
 `NOT_FOUND` with the reason `UNSUPPORTED_BY_SERVER` (a newer SDK talking to an older server).
 
 Every failure is a `SagatException` with `code()`, `httpStatus()` / `grpcStatus()`, `retryable()`, `traceId()`,
@@ -147,13 +239,13 @@ ObjectNode document = WorkflowBuilder.named("order-flow")
 ```
 
 The builders (`step`, `sleep`/`sleepMs`, `waitForEvent`, `invokeChild`, `condition`, `parallel`, `saga`, `end`) have no
-side effects and refuse what the server would refuse and they can see (a duplicate id, a dangling reference, a
-saga without a body), as `VALIDATION_FAILED`. A duplicate node id is raised when the node is added, across nested flows;
+side effects and apply local validation (including duplicate IDs, dangling references and empty saga bodies),
+raising `VALIDATION_FAILED`. These checks do not establish server acceptance. A duplicate node id is raised when the node is added, across nested flows;
 a `Flow` joined to a workflow (`parallel`, `saga`) is read when `build()` is called, so a step added to it after it was joined
 is part of the document (ids are checked again against the whole document each time a node is added, and by `build()`);
 a flow can be joined to more than one workflow and each reads it. `WorkflowBuilder.append(Flow)` is the exception: it adds a
 copy of the flow's nodes as they are then. `build()` returns the document; `toJson()` its canonical JSON (RFC 8785: no whitespace, keys sorted by UTF-16 code
-unit, numbers as ECMAScript prints them, so `1.0` is `1`), byte for byte what the other four SDKs write for the same
+unit, numbers as ECMAScript prints them, so `1.0` is `1`), byte for byte what the five peer SDKs write for the same
 program. Canonical text refuses an integer beyond 2^53 - 1 (send it as a string); the text sent on the wire does not
 round anything.
 
@@ -174,8 +266,8 @@ The snippets above are compiled by the build (`sdk/src/test/java/.../ReadmeExamp
 * gRPC accepts `io.grpc.ClientInterceptor`s: `WorkerConfig.Builder.interceptor(...)`.
 * `TlsOptions` configures TLS for both channels (see below). Plain `http://` outside loopback is accepted and logs
   one warning when the client or the host is created (it names only the host); `https://` logs none.
-* Logs go to `System.Logger` (`dev.sagatoctopusorchestrator.sdk`, `...sdk.worker`) and never contain a payload, a
-  token, a lease token or a secret. `WorkerConfig.Builder.onEvent(...)` receives `WorkerEvent`s (tasks taken,
+* SDK-generated logs go to `System.Logger` (`dev.sagatoctopusorchestrator.sdk`, `...sdk.worker`) with bounded fields.
+  `ActivityLogger` forwards caller-supplied text; handlers must keep payloads, tokens and secrets out of that text. `WorkerConfig.Builder.onEvent(...)` receives `WorkerEvent`s (tasks taken,
   completed with their duration, failed, stale, heartbeats, polls, reconnects) for metrics. `OpenTelemetryBridge`
   adapts this callback and `ClientConfig.Builder.traceContext(...)` without installing a provider or exporter.
 
@@ -308,7 +400,7 @@ version `grpc-protobuf` 1.83.1 depends on), Jackson 2.22.3, JUnit Jupiter 5.14.4
 ## Develop
 
 ```text
-./mvnw -q verify                      # compiles (the stubs are generated from sdk/src/main/proto/worker.proto), then runs the 204 unit tests
+./mvnw -q verify                      # compiles generated stubs and SDK code, then runs configured tests
 scripts/sync-shared.sh                # copies worker.proto and error-catalog.json from the repository; SharedContractsTest fails when behind
 conformance/prepare.sh                # builds the runner (target/classpath.txt); conformance/run.sh build|run ... is what the harness calls
 cargo test -p sagat-tests --test sdk_conformance -- --ignored   # the conformance suite (needs Docker), from the repository root
@@ -326,3 +418,31 @@ Use the database builder with a logical connection created in Sagat. See the
 [five-language guide](../../docs/guides/managed-database-sdk.md) for typed parameters,
 result consumption, permissions and the shared real-service scenario. Credentials
 are resolved by the separate managed executor.
+
+<!-- EGM directory contract -->
+
+## Interface
+
+- Parent coordinates dev.sagatoctopusorchestrator:sagat-octopus-orchestrator-sdk-parent:0.2.0 group sdk and conformance modules. Production contracts below cover sdk and scripts. [pom.xml:artifactId] [pom.xml:modules]
+- The Maven wrapper pins Maven 3.9.16 and a distribution SHA-256; Maven configuration enables strict checksums. [.mvn/wrapper/maven-wrapper.properties:distributionUrl] [.mvn/wrapper/maven-wrapper.properties:distributionSha256Sum] [.mvn/maven.config:--strict-checksums]
+
+- [scripts](./scripts/README.md) — component contract.
+- [sdk](./sdk/README.md) — component contract.
+
+## Invariants
+
+- The parent pins Java release 17 and dependency versions for gRPC, protobuf, Jackson, JUnit and OpenTelemetry. [pom.xml:maven.compiler.release] [pom.xml:grpc.version] [pom.xml:protobuf.version] [pom.xml:jackson.version] [pom.xml:junit.version] [pom.xml:opentelemetry.version]
+
+## Side Effects
+
+- Invoked Maven builds may download the wrapper, dependencies and code generators and write compiled artifacts. [.mvn/wrapper/maven-wrapper.properties:distributionUrl] [sdk/pom.xml:protocArtifact] [sdk/pom.xml:pluginArtifact]
+
+## Verification
+
+Run from the repository root:
+
+```sh
+cd sdks/java && ./mvnw -q verify
+```
+
+These commands are documented from the existing build configuration; they were not executed during this documentation update.

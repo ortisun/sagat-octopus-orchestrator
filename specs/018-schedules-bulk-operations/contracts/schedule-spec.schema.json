@@ -1,0 +1,101 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sagat-octopus-orchestrator.io/schemas/018/schedule-spec.schema.json",
+  "title": "Schedule spec and policies (feature 018, DRAFT, not implemented)",
+  "description": "Closed shapes of a schedule's spec and policies, used by the REST fragment rest.openapi.yaml. The server additionally enforces: total entries (calendars + cron + intervals) at most the effective ceiling (default 10, hard 32); at least one occurrence inside [startAt, endAt); no two of the next 1,000 occurrences closer than the effective minimum spacing (default 60 s, floor 10 s); jitterMs at most 24 h. This is not a workflow IR change: the workflow schema is untouched.",
+  "$ref": "#/$defs/ScheduleSpec",
+  "$defs": {
+    "Range": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["start"],
+      "properties": {
+        "start": {"type": "integer", "minimum": 0},
+        "end": {"type": "integer", "minimum": 0, "description": "Inclusive; equals start when absent."},
+        "step": {"type": "integer", "minimum": 1, "default": 1}
+      }
+    },
+    "Field": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 32,
+      "items": {"$ref": "#/$defs/Range"},
+      "description": "Union of ranges. The server checks each bound against the field's domain."
+    },
+    "CalendarSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Structured calendar. second, minute and hour default to [{start:0}]; dayOfMonth, month, year and dayOfWeek default to every value. Domains: second 0-59, minute 0-59, hour 0-23, dayOfMonth 1-31, month 1-12, year 2000-2200, dayOfWeek 0-6 (0 = Sunday). A day matches when both dayOfMonth and dayOfWeek match.",
+      "properties": {
+        "second": {"$ref": "#/$defs/Field"},
+        "minute": {"$ref": "#/$defs/Field"},
+        "hour": {"$ref": "#/$defs/Field"},
+        "dayOfMonth": {"$ref": "#/$defs/Field"},
+        "month": {"$ref": "#/$defs/Field"},
+        "year": {"$ref": "#/$defs/Field"},
+        "dayOfWeek": {"$ref": "#/$defs/Field"},
+        "comment": {"type": "string", "maxLength": 128}
+      }
+    },
+    "CronString": {
+      "type": "string",
+      "maxLength": 120,
+      "pattern": "^[A-Za-z0-9*/,?\\- ]+$",
+      "description": "Exactly the feature-004 grammar: five fields (minute hour day-of-month month day-of-week), evaluated with the same calendar library."
+    },
+    "IntervalSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["everyMs"],
+      "properties": {
+        "everyMs": {"type": "integer", "minimum": 10000, "maximum": 31622400000},
+        "offsetMs": {"type": "integer", "minimum": 0, "default": 0, "description": "Phase from the Unix epoch; must be less than everyMs."}
+      }
+    },
+    "DstPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "gap": {"type": "string", "enum": ["SKIP", "SHIFT_FORWARD"], "default": "SKIP", "description": "A local time that does not exist: no action, or the first valid instant after the gap."},
+        "ambiguous": {"type": "string", "enum": ["ONCE_EARLIER", "TWICE"], "default": "ONCE_EARLIER", "description": "A local time that happens twice: the earlier instant only, or both."}
+      }
+    },
+    "ScheduleSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "calendars": {"type": "array", "maxItems": 32, "items": {"$ref": "#/$defs/CalendarSpec"}},
+        "cron": {"type": "array", "maxItems": 32, "items": {"$ref": "#/$defs/CronString"}},
+        "intervals": {"type": "array", "maxItems": 32, "items": {"$ref": "#/$defs/IntervalSpec"}},
+        "exclusions": {"type": "array", "maxItems": 32, "items": {"$ref": "#/$defs/CalendarSpec"}, "description": "A nominal time matched by any exclusion is not an occurrence."},
+        "startAt": {"type": "string", "format": "date-time"},
+        "endAt": {"type": "string", "format": "date-time", "description": "Exclusive. No action is taken at or after it, jitter included."},
+        "timezone": {"type": "string", "minLength": 1, "maxLength": 64, "default": "UTC", "description": "IANA name; the calendars and cron strings are evaluated in it; intervals are not."},
+        "jitterMs": {"type": "integer", "minimum": 0, "maximum": 86400000, "default": 0, "description": "Deterministic offset in [0, jitterMs) per (schedule, nominal time), bounded by the gap to the next nominal time."},
+        "dst": {"$ref": "#/$defs/DstPolicy"}
+      },
+      "anyOf": [
+        {"required": ["calendars"]},
+        {"required": ["cron"]},
+        {"required": ["intervals"]}
+      ]
+    },
+    "OverlapPolicy": {
+      "type": "string",
+      "enum": ["SKIP", "BUFFER_ONE", "BUFFER_ALL", "CANCEL_OTHER", "ALLOW_ALL"],
+      "default": "SKIP",
+      "description": "No terminate variant exists (D1004)."
+    },
+    "SchedulePolicies": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "overlap": {"$ref": "#/$defs/OverlapPolicy"},
+        "catchupWindowMs": {"type": "integer", "minimum": 10000, "maximum": 31622400000, "default": 31622400000},
+        "catchupMode": {"type": "string", "enum": ["ONE", "ALL"], "default": "ONE"},
+        "pauseOnFailure": {"type": "boolean", "default": false},
+        "bufferLimit": {"type": "integer", "minimum": 1, "maximum": 1000, "default": 100, "description": "BUFFER_ALL only; clamped to the namespace ceiling."}
+      }
+    }
+  }
+}

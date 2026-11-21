@@ -1,0 +1,20 @@
+    Finished `test` profile [unoptimized] target(s) in 0.40s
+     Running unittests src/lib.rs (/var/folders/60/bf6rmfzx6zq67nrbzb3m0p480000gn/T/sagat-037-target-q0fwz2gu/debug/deps/sagat_infra_sandbox-668c1b124745ce13)
+
+running 5 tests
+test docker::tests::a_go_cpu_burn_is_stopped_by_the_production_quota ... ok
+test docker::tests::go_and_java_native_container_measurements ... GO_TOOLCHAIN=build=sha256:2d62b8411c20bfdbfb48148159d05f25350319389f6e4a486b7ef609bdf7d84c;runtime=sha256:1787e7b2ecb1610dc01f7eb0d4e1287b1d112f44da3075d515f6d7837fd51dbe;protocol=artifact-v3;target=linux-arm64;abi=sagat-inline-v1;compiler=go1.25.3;compression=gzip-canonical-v1
+GO_BUILD_MS=[752, 864, 802, 800, 774, 821]
+GO_START_MS=[151, 146, 143, 146, 152, 166]
+GO_WALL_MS=[507, 501, 497, 492, 498, 516]
+JAVA_TOOLCHAIN=build=sha256:b3e550f92a70596e66515b45fc53d532d032d572f73f4d2ae701eb1da70102d3;runtime=sha256:7bbac14c97d25250389915bc23b4debe50b55422ef20f62734f2bdd40bf3bdbd;protocol=artifact-v3;target=jvm-17;abi=sagat-inline-v1;compiler=javac-17.0.16+8;json=jackson-2.17.2
+JAVA_BUILD_MS=[1334, 1268, 1215, 1295, 1296, 1348]
+JAVA_START_MS=[268, 287, 315, 320, 253, 305]
+JAVA_WALL_MS=[629, 655, 680, 689, 662, 670]
+ok
+test docker::tests::go_production_path_host_calls_network_target_timeout_and_cleanup ... ok
+test docker::tests::java_production_path_build_run_and_host_calls ... ok
+test docker::tests::native_go_production_path_probe ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 22 filtered out; finished in 27.72s
+

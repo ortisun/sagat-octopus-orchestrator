@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sagat-octopus-orchestrator.example/schemas/run-archive/sagat-run-archive-v1.json",
+  "title": "Run archive object, sagat-run-archive-v1 (draft)",
+  "description": "An archive is two objects per run under `<prefix>/sagat-run-archive-v1/t=<tenant>/ns=<namespace>/dt=<finished UTC date>/<runId>`: `<runId>.ndjson.gz` (gzip, one JSON value per line: line 1 is the header, then one line per journal event in sequence order, then one `payload` line per distinct retained payload within the policy) and `<runId>.manifest.json` (this schema's `manifest`). The names are deterministic, so a retried export rewrites the same objects with identical bytes. Verification compares the stored size and SHA-256 of the data object with the manifest before any hot data is deleted (FR-020-033). The document model is the history export's (run-history.schema.json): an archived run exported later gives the same `digest`. Under the PLATFORM destination the prefix is `tenants/<tenant>/namespaces/<namespace>/archive` in the platform blob store (ADR-0023 key rules).",
+  "$defs": {
+    "manifest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["format", "runId", "tenantId", "namespaceId", "createdAt", "valuesLevel", "dataObject", "dataSha256", "dataSize", "lines", "historyDigest"],
+      "properties": {
+        "format": {"const": "sagat-run-archive-v1"},
+        "runId": {"type": "string", "format": "uuid"},
+        "tenantId": {"type": "string", "format": "uuid"},
+        "namespaceId": {"type": "string", "format": "uuid"},
+        "createdAt": {"type": "string", "format": "date-time"},
+        "valuesLevel": {"enum": ["METADATA_ONLY", "UP_TO_INTERNAL", "UP_TO_PII"]},
+        "dataObject": {"type": "string", "maxLength": 512},
+        "dataSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "dataSize": {"type": "integer", "minimum": 0},
+        "lines": {"type": "object", "required": ["events", "payloads"], "properties": {"events": {"type": "integer"}, "payloads": {"type": "integer"}, "withheldValues": {"type": "integer"}}},
+        "historyDigest": {"type": "string", "pattern": "^[0-9a-f]{64}$", "description": "Equals sagat-run-history-v1 `digest` of the run."},
+        "blobs": {"type": "array", "maxItems": 1024, "items": {"type": "object", "required": ["id", "size", "sha256"], "properties": {"id": {"type": "string", "format": "uuid"}, "size": {"type": "integer"}, "sha256": {"type": "string"}, "contentType": {"type": "string"}}}, "description": "Descriptors of the run's committed blobs. Bytes are not archived in v1 (G1088)."}
+      }
+    },
+    "headerLine": {
+      "type": "object",
+      "required": ["line", "run", "definition"],
+      "properties": {
+        "line": {"const": "header"},
+        "run": {"description": "The `run` object of sagat-run-history-v1."},
+        "definition": {"description": "The `definition` object of sagat-run-history-v1, with the IR document."},
+        "searchAttributes": {"type": "object", "description": "Final values, each within valuesLevel; others withheld."}
+      }
+    },
+    "eventLine": {
+      "type": "object",
+      "required": ["line", "event"],
+      "properties": {"line": {"const": "event"}, "event": {"description": "One element of sagat-run-history-v1 `events` (payload as a reference)."}}
+    },
+    "payloadLine": {
+      "type": "object",
+      "required": ["line", "sha256", "level"],
+      "properties": {
+        "line": {"const": "payload"},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "level": {"type": "string"},
+        "value": {"description": "The payload projected to valuesLevel with FR-016-009 withheld nodes; absent for METADATA_ONLY. `secret` nodes are always withheld."}
+      }
+    }
+  }
+}

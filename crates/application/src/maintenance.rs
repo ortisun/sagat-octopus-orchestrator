@@ -112,6 +112,23 @@ pub struct LostLease {
     pub cause: LeaseLoss,
 }
 
+/// What one call of the purge of batch jobs removed: the items, then the jobs whose items were all gone
+/// (`FR-018-033`). The two are counted apart because a job is one row and its items may be many, and an
+/// operator reads them apart (`batch_purged_total{kind}`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct BatchPurged {
+    pub jobs: u64,
+    pub items: u64,
+}
+
+impl BatchPurged {
+    /// Rows removed, the unit the bound of a call is counted in.
+    #[must_use]
+    pub const fn rows(self) -> u64 {
+        self.jobs + self.items
+    }
+}
+
 /// Candidate queries and housekeeping. Implemented by `sagat-infra-postgres`; every time
 /// comparison uses the database clock, so instances with skewed clocks agree.
 pub trait MaintenanceStore: Send + Sync {
@@ -151,6 +168,14 @@ pub trait MaintenanceStore: Send + Sync {
         &self,
         window: &Window,
     ) -> impl Future<Output = Result<Vec<LostLease>, StoreError>> + Send;
+
+    /// Runs whose start delay has ended and whose entry is still held (`WAITING`), oldest first
+    /// (feature 018, `FR-018-023`). The query only discovers candidates; the fenced release
+    /// revalidates each one under the run's lock.
+    fn due_start_releases(
+        &self,
+        window: &Window,
+    ) -> impl Future<Output = Result<Vec<RunRef>, StoreError>> + Send;
 
     /// Unfinished runs past their deadline.
     fn overdue_runs(
@@ -216,6 +241,34 @@ pub trait MaintenanceStore: Send + Sync {
         &self,
         limit: u32,
     ) -> impl Future<Output = Result<u64, StoreError>> + Send;
+
+    /// Deletes up to `rows` actions of schedules that are past their retention, looking at up to
+    /// `schedules` schedules, least recently visited first; returns how many. An action is kept
+    /// while it is among the last 1,000 of its schedule or younger than 30 days, and a waiting
+    /// (`BUFFERED`) action is never deleted (`FR-018-013`).
+    fn purge_schedule_actions(
+        &self,
+        schedules: u32,
+        rows: u32,
+    ) -> impl Future<Output = Result<u64, StoreError>> + Send;
+
+    /// Deletes up to `rows` bindings of business identifiers that are free again: the holder
+    /// closed and its window passed, or the holder is gone; returns how many. A binding whose
+    /// holder is open, or closed inside its window, is never deleted (`FR-018-018`).
+    fn purge_business_ids(&self, rows: u32)
+    -> impl Future<Output = Result<u64, StoreError>> + Send;
+
+    /// Deletes the items and then the rows of batch jobs that are past their retention, oldest
+    /// window first, at most `jobs` jobs and `rows` rows (items and jobs together) in one call; a job
+    /// that the row bound cut short keeps its terminal state and the items it has left, and the next
+    /// call goes on with it. A job that has not finished, or that ended or is inside its window, is
+    /// never deleted, and neither are its items (`FR-018-033`). The error carries no text of the
+    /// database: a job holds customer text (a selector, a reason), and an error can quote it.
+    fn purge_batch_jobs(
+        &self,
+        jobs: u32,
+        rows: u32,
+    ) -> impl Future<Output = Result<BatchPurged, StoreError>> + Send;
 
     /// Deletes up to `limit` outbox messages delivered more than `older_than` ago; returns how
     /// many. Undelivered messages are never deleted.

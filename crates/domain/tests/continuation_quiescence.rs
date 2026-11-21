@@ -14,7 +14,7 @@ use sagat_domain::workflow::NodeId;
 use time::OffsetDateTime;
 
 fn node(value: &str) -> NodeId {
-    NodeId::parse(value).expect("node id")
+    NodeId::parse_stored(value).expect("stored node id")
 }
 
 fn at(seconds: i64) -> OffsetDateTime {
@@ -22,8 +22,17 @@ fn at(seconds: i64) -> OffsetDateTime {
 }
 
 fn step(status: StepStatus, routed: bool, waiting: Option<WaitingOn>) -> StepState {
+    step_with_failure(status, routed, waiting, None)
+}
+
+fn step_with_failure(
+    status: StepStatus,
+    routed: bool,
+    waiting: Option<WaitingOn>,
+    failure: Option<FailureCode>,
+) -> StepState {
     StepState::restore(
-        status, 1, 1, false, routed, None, waiting, None, None, false,
+        status, 1, 1, false, routed, None, waiting, failure, None, false,
     )
 }
 
@@ -186,6 +195,51 @@ fn a_saga_that_is_not_done_blocks_as_compensation_and_a_done_saga_does_not() {
             "{phase:?}"
         );
     }
+}
+
+#[test]
+fn operator_reviews_report_the_recovery_obligation_they_preserve() {
+    let unknown = FailureCode::outcome_unknown();
+    let state = run(
+        vec![(
+            "payment",
+            step_with_failure(
+                StepStatus::Waiting,
+                false,
+                Some(WaitingOn::Operator {
+                    code: unknown.clone(),
+                }),
+                Some(unknown),
+            ),
+        )],
+        BTreeMap::new(),
+    );
+    assert_eq!(
+        blocker_of(&state),
+        Some(QuiescenceBlocker::UnknownEffect),
+        "an operator wait cannot hide an unresolved external outcome as generic sibling work"
+    );
+
+    let compensation_failure = FailureCode::parse("PROVIDER_DOWN").expect("code");
+    let state = run(
+        vec![(
+            "payment~c",
+            step_with_failure(
+                StepStatus::Waiting,
+                false,
+                Some(WaitingOn::Operator {
+                    code: compensation_failure.clone(),
+                }),
+                Some(compensation_failure),
+            ),
+        )],
+        BTreeMap::new(),
+    );
+    assert_eq!(
+        blocker_of(&state),
+        Some(QuiescenceBlocker::Compensation),
+        "a compensation review is diagnostic even without an active saga shortcut"
+    );
 }
 
 #[test]

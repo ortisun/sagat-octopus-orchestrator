@@ -18,6 +18,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         "sagat_octopus_orchestrator.v1.ResolvedSecret",
         "sagat_octopus_orchestrator.v1.ResolvedDatabase",
         "sagat_octopus_orchestrator.v1.DatabaseValue",
+        // The lake connections (feature 035) hold the credentials of their secrets in a map of bytes.
+        "sagat_octopus_orchestrator.v1.IcebergConnection",
+        "sagat_octopus_orchestrator.v1.ObjectStorageConnection",
+        "sagat_octopus_orchestrator.v1.ClickHouseConnection",
     ]);
     // The chunks of a blob are handed on without being copied.
     config.bytes([

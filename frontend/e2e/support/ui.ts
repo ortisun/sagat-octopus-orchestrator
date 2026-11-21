@@ -1,8 +1,8 @@
 import { expect } from '@playwright/test';
-import type { Locator } from '@playwright/test';
+import type { Locator, Page } from '@playwright/test';
 
 /**
- * How a journey operates the controls of the Studio's interface module (ADR-0101, D2403). The design
+ * How a journey operates the controls of the Studio's interface module (Architecture decision 0101, Decision 2403). The design
  * system draws a selector as a button that opens a list, and marks an unavailable control with the
  * native attribute or with `aria-disabled`, by its own choice per release: journeys go through these
  * helpers so that neither detail is written in a journey.
@@ -59,4 +59,14 @@ export async function expectFieldError(control: Locator, message?: string | RegE
   if (message === undefined) await expect.poll(said).not.toBe('');
   else if (typeof message === 'string') await expect.poll(said).toContain(message);
   else await expect.poll(said).toMatch(message);
+}
+
+/**
+ * The value of a named fact of a page (the interface module's `Facts`, a description list of the design system): the `dd` that
+ * follows the `dt` whose whole text is `term`, inside `scope`. The design system puts a term and its value side by side in the
+ * list, or wraps each pair in an element of its own when the facts are laid out in columns: the value follows its term either way.
+ */
+export function factValue(scope: Page | Locator, term: string): Locator {
+  const whole = new RegExp(`^\\s*${term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*$`);
+  return scope.locator('dt').filter({ hasText: whole }).locator('xpath=following-sibling::dd[1]');
 }

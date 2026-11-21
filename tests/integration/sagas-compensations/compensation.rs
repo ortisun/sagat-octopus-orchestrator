@@ -209,6 +209,141 @@ async fn independent_branches_are_compensated_at_the_same_time() {
 }
 
 #[tokio::test]
+async fn terminal_failure_waits_for_independent_compensation() {
+    let w = world().await;
+    let mut saga = saga_node("shop", "split", None);
+    saga["onCompensationFailure"] = json!("fail");
+    let one_attempt = |id: &str| {
+        with(
+            effect_node(id, None, false),
+            "compensationRetry",
+            json!({ "maxAttempts": 1, "initialDelayMs": 100, "maxDelayMs": 100,
+                    "strategy": "fixed", "jitter": false }),
+        )
+    };
+    let (workflow, _) = w
+        .publish(document(
+            "independent-failure",
+            "shop",
+            vec![
+                saga,
+                with(
+                    parallel_node("split", &["card", "stock"], "all"),
+                    "next",
+                    json!("ship"),
+                ),
+                one_attempt("card"),
+                one_attempt("stock"),
+                activity("ship"),
+            ],
+        ))
+        .await;
+    let mut names = effect_activities(&["card", "stock"]);
+    names.push("act.ship".into());
+    let names: Vec<&str> = names.iter().map(String::as_str).collect();
+    let s = w.session(&names).await;
+    let run = w.start(workflow, &json!({})).await;
+
+    for task in w.poll(&s, 8).await {
+        w.complete(&s, &task, &json!({})).await.expect("branch");
+    }
+    let ship = w.one_task(&s).await;
+    w.fail(&s, &ship, false).await.expect("ship fails");
+    let mut undo = w.poll(&s, 8).await;
+    assert_eq!(undo.len(), 2, "both independent compensations are eligible");
+    undo.sort_by(|a, b| a.activity.as_str().cmp(b.activity.as_str()));
+    let card = undo.remove(0);
+    let stock = undo.remove(0);
+    assert_eq!(card.activity.as_str(), "undo.card");
+    assert_eq!(stock.activity.as_str(), "undo.stock");
+
+    w.fail(&s, &card, false)
+        .await
+        .expect("known permanent compensation failure");
+    assert_eq!(
+        w.run_status(run).await,
+        RunStatus::Compensating,
+        "explicit fail cannot terminalize while independent recovery is active"
+    );
+    assert_eq!(w.step_status(run, "card~c").await, Some(StepStatus::Failed));
+    assert!(
+        matches!(
+            w.step_status(run, "stock~c").await,
+            Some(StepStatus::Leased | StepStatus::Running)
+        ),
+        "the independent compensation remains eligible"
+    );
+
+    w.complete(&s, &stock, &json!({}))
+        .await
+        .expect("independent compensation settles");
+    assert_eq!(w.run_status(run).await, RunStatus::CompensationFailed);
+    assert_eq!(w.step_status(run, "card~c").await, Some(StepStatus::Failed));
+    assert_eq!(
+        w.step_status(run, "stock~c").await,
+        Some(StepStatus::Succeeded)
+    );
+    let active: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM steps WHERE run_id=$1 AND kind='COMPENSATION' \
+         AND status IN ('READY','LEASED','RUNNING','RETRY_WAIT','WAITING')",
+    )
+    .bind(run.as_uuid())
+    .fetch_one(&w.db.pool)
+    .await
+    .expect("active compensations");
+    assert_eq!(active, 0, "terminal compensation failure is quiescent");
+    assert!(w.poll(&s, 8).await.is_empty(), "no post-terminal work");
+    w.assert_consistent(run).await;
+}
+
+#[tokio::test]
+async fn unknown_compensation_overrides_fail() {
+    let w = world().await;
+    let (workflow, _) = w.publish(crate::review::one_shot(Some("fail"))).await;
+    let s = worker(&w).await;
+    let run = w.start(workflow, &json!({})).await;
+    let reserve = w.one_task(&s).await;
+    w.complete(&s, &reserve, &json!({})).await.expect("reserve");
+    let submit = w.one_task(&s).await;
+    w.fail(&s, &submit, false).await.expect("submit fails");
+    let undo = w.one_task(&s).await;
+    w.fail_with(&s, &undo, "OUTCOME_UNKNOWN", false)
+        .await
+        .expect("unknown compensation report");
+
+    assert_eq!(
+        w.step_status(run, "reserve~c").await,
+        Some(StepStatus::Waiting)
+    );
+    assert_eq!(
+        w.run_status(run).await,
+        RunStatus::ManualReview,
+        "uncertainty takes precedence over explicit fail and exhausted attempts"
+    );
+    let waiting: (Option<String>, Option<String>) = sqlx::query_as(
+        "SELECT failure_code,waiting_kind FROM steps WHERE run_id=$1 AND node='reserve~c'",
+    )
+    .bind(run.as_uuid())
+    .fetch_one(&w.db.pool)
+    .await
+    .expect("unknown compensation evidence");
+    assert_eq!(
+        waiting,
+        (Some("OUTCOME_UNKNOWN".into()), Some("OPERATOR".into()))
+    );
+    let finished: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM event_outbox WHERE aggregate_id=$1 AND event_type='run.finished'",
+    )
+    .bind(run.as_uuid())
+    .fetch_one(&w.db.pool)
+    .await
+    .expect("terminal outbox");
+    assert_eq!(finished, 0, "unknown is not terminal compensation failure");
+    assert!(w.poll(&s, 8).await.is_empty(), "review consumes no lease");
+    w.assert_consistent(run).await;
+}
+
+#[tokio::test]
 async fn a_failure_inside_the_saga_that_something_handles_does_not_compensate() {
     let w = world().await;
     // `reserve` fails and the body routes the failure to `recover`: still inside the saga.

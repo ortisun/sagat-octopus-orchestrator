@@ -234,3 +234,73 @@ fn bounded_collection_event_waits_publish_at_entry_and_after_an_activity() {
             .expect("bounded public scoped event wait");
     }
 }
+
+/// The six SDKs' operator chains (design 042, FR-042-028): the reviewed builder golden is what the server's codec
+/// decodes on publication, with the chain the scenario declares, and its canonical text is the server's own encoding.
+#[test]
+fn six_sdk_collection_operator_golden_is_the_server_canonical_definition() {
+    use sagat_domain::workflow::NodeKind;
+    use sagat_infra_ir::canonical_chain;
+
+    let path = super::repository_root()
+        .join("tests/contract/sdk-conformance/expected/collection-operators.workflows.json");
+    let golden: Value =
+        serde_json::from_slice(&std::fs::read(path).expect("reviewed SDK golden")).expect("JSON");
+    let scenario: Value = serde_json::from_slice(
+        &std::fs::read(
+            super::repository_root()
+                .join("tests/contract/sdk-conformance/scenarios/collection-operators.json"),
+        )
+        .expect("scenario"),
+    )
+    .expect("scenario JSON");
+    let workflows = golden["workflows"].as_object().expect("workflow documents");
+    assert_eq!(workflows.len(), 2);
+    for (name, document) in workflows {
+        let parsed = JsonIrCodec
+            .parse(&serde_json::to_vec(document).expect("workflow JSON"))
+            .expect("the SDK chain is a publishable structured v1 definition");
+        assert_eq!(
+            String::from_utf8(parsed.canonical).expect("canonical UTF-8"),
+            golden["canonical"][name]
+                .as_str()
+                .expect("reviewed canonical text"),
+            "SDK and server canonical forms differ for {name}"
+        );
+        let program = scenario["workflows"][name]["program"]
+            .as_array()
+            .expect("program");
+        let mut chains = 0;
+        for op in program
+            .iter()
+            .filter(|op| op["op"] == "forEach" || op["op"] == "map")
+        {
+            let id = sagat_domain::workflow::NodeId::parse(op["id"].as_str().expect("id"))
+                .expect("node id");
+            let NodeKind::ForEach { operators, .. } =
+                parsed.definition.node(&id).expect("the collection").kind()
+            else {
+                panic!("{name}: {id:?} is not a collection");
+            };
+            match (operators, op.get("operators")) {
+                (Some(chain), Some(declared)) => {
+                    let declared = serde_json::to_string(declared).expect("declared chain");
+                    let decoded: Value =
+                        serde_json::from_slice(&canonical_chain(chain)).expect("canonical chain");
+                    assert_eq!(
+                        decoded,
+                        serde_json::from_str::<Value>(&declared).expect("declared JSON"),
+                        "{name}: the decoded chain is not the declared one"
+                    );
+                    chains += 1;
+                }
+                (None, None) => {}
+                (decoded, declared) => panic!(
+                    "{name}: chain {:?} decoded where the scenario declares {declared:?}",
+                    decoded.as_ref().map(|c| c.stages().len())
+                ),
+            }
+        }
+        assert_eq!(chains, 1, "{name}: one chained collection");
+    }
+}

@@ -1,0 +1,143 @@
+warning: unused import: `SagaPhase`
+  --> crates/domain/src/execution/command.rs:22:37
+   |
+22 | use super::state::{RunId, RunState, SagaPhase, StepState, StepStatus, WaitingOn};
+   |                                     ^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: `sagat-domain` (lib) generated 1 warning (run `cargo fix --lib -p sagat-domain` to apply 1 suggestion)
+   Compiling sagat-domain v0.2.0 (/Users/marcelo/Documents/Projects/sagat-octopus-compensation-safety/crates/domain)
+    Finished `test` profile [unoptimized] target(s) in 0.54s
+     Running tests/sagas.rs (/var/folders/60/bf6rmfzx6zq67nrbzb3m0p480000gn/T/sagat-037-target-q0fwz2gu/debug/deps/sagas-8c257bc5dfd4d1ac)
+
+running 66 tests
+test a_compensation_and_a_reconciliation_are_derived_nodes_that_nothing_routes_to ... ok
+test a_cancellation_whose_compensation_fails_is_not_a_clean_cancellation ... ok
+test a_compensation_that_exhausts_its_retries_waits_for_an_operator ... ok
+test a_deadline_compensates_and_the_run_times_out_only_when_that_is_done ... ok
+test a_compensation_that_fails_is_retried_with_its_own_budget ... ok
+test a_decision_cannot_be_forced_on_a_step_that_waits_for_something_other_than_a_person ... ok
+test a_double_manual_command_is_refused_and_changes_nothing ... ok
+test a_failure_that_something_inside_handles_does_not_start_a_compensation ... ok
+
+thread 'a_high_risk_step_with_an_unknown_outcome_waits_for_an_operator_instead_of_retrying' (781393439) panicked at crates/domain/tests/sagas.rs:1020:5:
+assertion `left == right` failed
+  left: Waiting
+ right: RetryWait
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test a_failed_compensation_does_not_hold_back_an_independent_one ... ok
+test a_high_risk_step_with_an_unknown_outcome_waits_for_an_operator_instead_of_retrying ... FAILED
+
+thread 'a_lookup_that_found_nothing_leaves_the_step_known_not_to_have_happened' (781393440) panicked at crates/domain/tests/sagas.rs:1809:5:
+assertion `left == right` failed
+  left: Waiting
+ right: RetryWait
+test a_lookup_that_found_nothing_leaves_the_step_known_not_to_have_happened ... FAILED
+
+thread 'a_reconciled_step_can_be_reconciled_again_after_a_retry' (781393442) panicked at crates/domain/tests/sagas.rs:962:29:
+due: IllegalTransition { node: NodeId("submit"), status: Waiting, event: "step.retry_due" }
+test a_provider_that_cannot_say_is_never_assumed_either_way ... ok
+test a_reconciled_step_can_be_reconciled_again_after_a_retry ... FAILED
+test a_reconciliation_is_completed_with_its_verdict_and_nothing_else ... ok
+test a_reconciliation_that_cannot_be_completed_sends_the_step_to_an_operator ... ok
+test a_saga_body_is_a_closed_region_without_an_end ... ok
+test a_retry_is_refused_on_a_step_of_a_saga_that_stopped_going_forward ... ok
+test a_saga_in_a_branch_that_loses_the_join_compensates_what_it_did ... ok
+test a_saga_that_completed_before_the_join_failed_is_not_compensated_by_it ... ok
+test a_saga_that_completes_just_continues ... ok
+test a_saga_that_could_not_undo_everything_does_not_let_its_error_route_end_the_run_successfully ... ok
+test a_sibling_saga_whose_compensation_failed_is_not_hidden_by_the_one_that_ended_the_run ... ok
+test a_worker_can_say_it_does_not_know_what_happened ... ok
+test aborting_without_compensation_just_stops ... ok
+test an_attempt_with_an_unknown_outcome_is_reconciled_before_anything_else ... ok
+test an_attempt_whose_outcome_became_unknown_while_the_run_was_being_cancelled_is_still_undone ... ok
+test an_effect_cannot_be_both_irreversible_and_compensated_and_only_an_activity_has_one ... ok
+
+thread 'an_effect_that_may_have_happened_is_compensated_defensively' (781393476) panicked at crates/domain/tests/sagas.rs:1355:5:
+assertion `left == right` failed
+  left: Waiting
+ right: RetryWait
+test an_effect_that_may_have_happened_is_compensated_defensively ... FAILED
+test an_inner_saga_that_fails_is_compensated_and_then_the_outer_one_compensates_the_rest ... ok
+test an_irreversible_effect_makes_the_outcome_partial_even_when_everything_else_is_undone ... ok
+test an_operator_can_declare_a_compensation_done_outside_the_platform ... ok
+test an_operator_can_have_a_step_that_waited_tried_again_or_failed ... ok
+test an_ordinary_failure_is_not_reconciled ... ok
+test an_unhandled_failure_of_a_saga_goes_to_the_error_route_of_the_saga ... ok
+test an_unknown_outcome_is_reconciled_before_a_saga_that_is_being_stopped_compensates ... ok
+test branches_of_a_parallel_node_are_independent_in_the_plan ... ok
+test an_unknown_outcome_only_makes_the_saga_partial_when_nothing_can_undo_what_may_have_happened ... ok
+test cancelling_a_paused_run_still_undoes_what_it_did ... ok
+test cancelling_a_run_that_waits_for_an_operator_gives_up_on_the_review ... ok
+test cancelling_a_run_whose_forward_step_waits_for_an_operator_gives_up_and_compensates_defensively ... ok
+test cancelling_compensates_what_completed_and_ends_cancelled ... ok
+
+thread 'every_way_an_outcome_can_be_unknown_makes_the_effect_compensated_defensively' (781393497) panicked at crates/domain/tests/sagas.rs:1387:9:
+assertion `left == right` failed: lease
+  left: Forward
+ right: Compensating
+test every_way_an_outcome_can_be_unknown_makes_the_effect_compensated_defensively ... FAILED
+test compensations_run_in_reverse_order_and_each_waits_for_the_one_after_it ... ok
+test negative_lookup_requires_finality ... ok
+test independent_branches_are_compensated_at_the_same_time ... ok
+test neither_a_lookup_nor_a_compensation_in_flight_is_asked_to_stop_when_the_run_is_cancelled ... ok
+test only_a_compensation_can_be_skipped ... ok
+test nested_outcomes_are_not_hidden_by_the_outer_saga ... ok
+test reserve_completed_and_submit_failed_for_good_compensates_the_reservation ... ok
+test scopes_nest_and_the_innermost_one_decides ... ok
+test skipping_a_compensation_ends_the_saga_as_partial ... ok
+
+thread 'stop_preserves_recovery_obligation' (781393507) panicked at crates/domain/tests/sagas.rs:2093:13:
+assertion `left == right` failed
+  left: Cancelled
+ right: Waiting
+test skipping_a_compensation_lets_the_ones_that_waited_for_it_go_on ... ok
+test stop_preserves_recovery_obligation ... FAILED
+test the_author_cannot_write_an_id_that_collides_with_a_derived_one ... ok
+test the_plan_is_the_reverse_of_the_forward_order ... ok
+
+thread 'the_provider_says_the_effect_did_not_happen_so_the_step_is_tried_again' (781393511) panicked at crates/domain/tests/sagas.rs:849:5:
+assertion `left == right` failed
+  left: Waiting
+ right: RetryWait
+test the_provider_says_the_effect_did_not_happen_so_the_step_is_tried_again ... FAILED
+test the_provider_says_the_effect_happened_so_the_step_succeeds_without_a_second_attempt ... ok
+test the_plan_is_the_same_as_the_one_worked_out_the_long_way ... ok
+test unknown_activity_defaults_to_review ... ok
+
+thread 'unknown_effect_is_not_a_compensation_candidate' (781393515) panicked at crates/domain/tests/sagas.rs:2055:5:
+replay must refuse a forged defensive plan
+test unknown_effect_is_not_a_compensation_candidate ... FAILED
+
+thread 'unknown_effect_retry_requires_resolution' (781393516) panicked at crates/domain/tests/sagas.rs:2074:9:
+assertion failed: run.operator_retry(node).is_err()
+test unknown_effect_retry_requires_resolution ... FAILED
+test waiting_for_what_is_in_flight_then_compensating_everything_that_completed ... ok
+test unknown_compensation_overrides_fail ... ok
+test what_ran_after_a_join_is_undone_before_the_branches_that_fed_it ... ok
+
+thread 'when_the_effect_did_not_happen_and_no_attempt_is_left_the_saga_compensates' (781393519) panicked at crates/domain/tests/sagas.rs:876:5:
+assertion `left == right` failed
+  left: Waiting
+ right: Failed
+test when_the_effect_did_not_happen_and_no_attempt_is_left_the_saga_compensates ... FAILED
+test when_the_saga_does_not_wait_for_a_human_a_failed_compensation_ends_it_and_the_run ... ok
+
+failures:
+
+failures:
+    a_high_risk_step_with_an_unknown_outcome_waits_for_an_operator_instead_of_retrying
+    a_lookup_that_found_nothing_leaves_the_step_known_not_to_have_happened
+    a_reconciled_step_can_be_reconciled_again_after_a_retry
+    an_effect_that_may_have_happened_is_compensated_defensively
+    every_way_an_outcome_can_be_unknown_makes_the_effect_compensated_defensively
+    stop_preserves_recovery_obligation
+    the_provider_says_the_effect_did_not_happen_so_the_step_is_tried_again
+    unknown_effect_is_not_a_compensation_candidate
+    unknown_effect_retry_requires_resolution
+    when_the_effect_did_not_happen_and_no_attempt_is_left_the_saga_compensates
+
+test result: FAILED. 56 passed; 10 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `-p sagat-domain --test sagas`

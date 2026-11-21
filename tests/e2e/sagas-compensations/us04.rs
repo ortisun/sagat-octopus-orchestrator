@@ -253,3 +253,95 @@ async fn us04_the_second_of_two_decisions_is_refused_and_another_tenant_sees_not
     assert_eq!(second, 409, "{body}");
     assert_eq!(p.status(&run).await, "PARTIAL");
 }
+
+// T037-014 exercises the existing feature-003 review interface; it does not qualify a provider.
+#[tokio::test]
+async fn a_revoked_review_authority_is_refused_with_the_same_token_and_preserves_the_obligation() {
+    let p = platform().await;
+    let mut w = p.worker("wendy").await;
+    let run = stuck(&p, &mut w).await;
+    p.grant(p.tenant, "reviewer", Role::Admin).await;
+    let token = p.api.idp.token("reviewer", "acme").build();
+    let authenticated = p
+        .api
+        .request(Method::GET, "/auth/context")
+        .bearer_auth(&token)
+        .send()
+        .await
+        .expect("authenticate original administrator");
+    assert_eq!(authenticated.status(), 200);
+
+    let before_events = journal(&p, &run).await;
+    let before_graph = graph(&p, &run).await;
+    let durable_effects = || async {
+        sqlx::query_as::<_, (i64, i64, i64, i64)>(
+            "SELECT r.run_version, \
+             (SELECT count(*) FROM event_outbox o WHERE o.tenant_id=r.tenant_id AND o.aggregate_id=r.id), \
+             (SELECT count(*) FROM audit_records a WHERE a.tenant_id=r.tenant_id \
+                AND a.resource_id=r.id::text || '/reserve~c' AND a.action LIKE 'saga.%'), \
+             (SELECT count(*) FROM command_dedupe d WHERE d.tenant_id=r.tenant_id \
+                AND d.scope='run.review:' || r.id::text) \
+             FROM runs r WHERE r.tenant_id=$1 AND r.id=$2",
+        )
+        .bind(p.tenant.as_uuid())
+        .bind(uuid::Uuid::parse_str(&run).expect("run UUID"))
+        .fetch_one(&p.api.db.pool)
+        .await
+        .expect("review durable effects")
+    };
+    let before_effects = durable_effects().await;
+
+    // Revoking the decision permission preserves membership; deleting it then revokes access.
+    for (statement, expected, key) in [
+        (
+            "UPDATE memberships SET role='viewer' WHERE tenant_id=$1 AND subject='reviewer'",
+            403,
+            "review-demoted-token-0001",
+        ),
+        (
+            "DELETE FROM memberships WHERE tenant_id=$1 AND subject='reviewer'",
+            401,
+            "review-deleted-token-0001",
+        ),
+    ] {
+        let changed = sqlx::query(statement)
+            .bind(p.tenant.as_uuid())
+            .execute(&p.api.db.pool)
+            .await
+            .expect("revoke current database authority");
+        assert_eq!(changed.rows_affected(), 1);
+        let response = p
+            .api
+            .request(Method::POST, &format!("/runs/{run}/operations"))
+            .bearer_auth(&token)
+            .header("x-octopus-namespace", "payments")
+            .header("idempotency-key", key)
+            .json(
+                &json!({"action": "RESOLVE_STEP", "stepId": "reserve~c", "outcome": "SUCCEEDED",
+                          "reason": "the former administrator cannot settle this obligation"}),
+            )
+            .send()
+            .await
+            .expect("same token requests review after revocation");
+        let status = response.status().as_u16();
+        let body = response.text().await.expect("refusal body");
+        assert_eq!(status, expected, "{body}");
+        assert_eq!(p.status(&run).await, "MANUAL_REVIEW");
+        assert_eq!(journal(&p, &run).await, before_events);
+        assert_eq!(
+            node(&graph(&p, &run).await, "reserve~c"),
+            node(&before_graph, "reserve~c")
+        );
+        assert_eq!(durable_effects().await, before_effects);
+        assert!(w.poll(8).await.is_empty());
+    }
+    let denied: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_records WHERE tenant_id=$1 \
+         AND actor='reviewer' AND action='access.denied.permission'",
+    )
+    .bind(p.tenant.as_uuid())
+    .fetch_one(&p.api.db.pool)
+    .await
+    .expect("permission denial remains audited");
+    assert_eq!(denied, 1);
+}

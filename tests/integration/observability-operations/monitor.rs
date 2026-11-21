@@ -227,3 +227,64 @@ async fn the_gauge_of_firing_alerts_counts_those_kept_and_not_only_those_seen() 
         2
     );
 }
+
+/// What the scheduler's replicas carry, for the ceiling of 20,000 pending waits per replica
+/// (OD-2026-11-04-6): every timer, event wait and approval that waits, over the replicas alive.
+#[test]
+fn the_monitor_reports_pending_waits_and_waits_per_replica() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    let (telemetry, recorder) =
+        sagat_telemetry::Metrics::detached(std::time::Duration::from_secs(60));
+    metrics::with_local_recorder(&recorder, || {
+        runtime.block_on(async {
+            let w = world().await;
+            let (sleeper, _) = w
+                .publish(document(
+                    "waits-per-replica",
+                    "pause",
+                    vec![crate::support::engine::timer_node("pause", 3_600_000)],
+                ))
+                .await;
+            for _ in 0..4 {
+                w.start(sleeper, &json!({})).await;
+            }
+            w.scheduler.tick().await;
+            for owner in ["replica-a", "replica-b"] {
+                sqlx::query(
+                    "INSERT INTO scheduler_members (owner, started_at, expires_at) \
+                     VALUES ($1, now(), now() + interval '1 minute') \
+                     ON CONFLICT (owner) DO UPDATE SET expires_at = excluded.expires_at",
+                )
+                .bind(owner)
+                .execute(&w.db.pool)
+                .await
+                .expect("a live replica");
+            }
+            sqlx::query(
+                "DELETE FROM scheduler_members WHERE owner NOT IN ('replica-a', 'replica-b')",
+            )
+            .execute(&w.db.pool)
+            .await
+            .expect("only the two replicas of this test");
+            let monitor = Monitor::new(w.store.clone(), MonitorSettings::default());
+            monitor.run_once().await;
+        });
+    });
+    let rendered = telemetry.render();
+    let gauge = |name: &str| -> Option<f64> {
+        rendered
+            .lines()
+            .find(|line| line.starts_with(&format!("{name} ")))
+            .and_then(|line| line.rsplit(' ').next())
+            .and_then(|value| value.parse().ok())
+    };
+    assert_eq!(gauge("scheduler_pending_waits"), Some(4.0), "{rendered}");
+    assert_eq!(
+        gauge("scheduler_waits_per_replica"),
+        Some(2.0),
+        "{rendered}"
+    );
+}

@@ -1,0 +1,80 @@
+[
+  {
+    "sdk": "typescript",
+    "command": "npm test",
+    "exit": 0,
+    "log": "specs/037-compensation-safety/evidence/d1-sdk-00-typescript.txt"
+  },
+  {
+    "sdk": "python",
+    "command": ".venv/bin/python -m pytest",
+    "exit": 1,
+    "log": "specs/037-compensation-safety/evidence/d1-sdk-01-python.txt"
+  },
+  {
+    "sdk": "python",
+    "command": ".venv/bin/mypy",
+    "exit": 127,
+    "log": "specs/037-compensation-safety/evidence/d1-sdk-02-python.txt"
+  },
+  {
+    "sdk": "python",
+    "command": ".venv/bin/ruff check .",
+    "exit": 127,
+    "log": "specs/037-compensation-safety/evidence/d1-sdk-03-python.txt"
+  },
+  {
+    "sdk": "go",
+    "command": "go test -race ./...",
+    "exit": 0,
+    "log": "specs/037-compensation-safety/evidence/d1-sdk-04-go.txt"
+  },
+  {
+    "sdk": "go",
+    "command": "go vet ./...",
+    "exit": 0,
+    "log": "specs/037-compensation-safety/evidence/d1-sdk-05-go.txt"
+  },
+  {
+    "sdk": "go",
+    "command": "gofmt -l .",
+    "exit": 0,
+    "log": "specs/037-compensation-safety/evidence/d1-sdk-06-go.txt"
+  },
+  {
+    "sdk": "dotnet",
+    "command": "dotnet test",
+    "exit": 0,
+    "log": "specs/037-compensation-safety/evidence/d1-sdk-07-dotnet.txt"
+  },
+  {
+    "sdk": "dotnet",
+    "command": "dotnet format --verify-no-changes",
+    "exit": 0,
+    "log": "specs/037-compensation-safety/evidence/d1-sdk-08-dotnet.txt"
+  },
+  {
+    "sdk": "java",
+    "command": "./mvnw -q verify",
+    "exit": 0,
+    "log": "specs/037-compensation-safety/evidence/d1-sdk-09-java.txt"
+  },
+  {
+    "sdk": "rust",
+    "command": "cargo fmt --check",
+    "exit": 0,
+    "log": "specs/037-compensation-safety/evidence/d1-sdk-10-rust.txt"
+  },
+  {
+    "sdk": "rust",
+    "command": "cargo clippy --all-targets --locked --offline -- -D warnings",
+    "exit": 0,
+    "log": "specs/037-compensation-safety/evidence/d1-sdk-11-rust.txt"
+  },
+  {
+    "sdk": "rust",
+    "command": "cargo test --locked --offline",
+    "exit": 0,
+    "log": "specs/037-compensation-safety/evidence/d1-sdk-12-rust.txt"
+  }
+]

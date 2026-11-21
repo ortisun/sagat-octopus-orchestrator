@@ -12,7 +12,7 @@ Made from `specs/001-platform-foundation/contracts/workflow.schema.json`. A work
 | `bodies` | object |  |  |
 | `chainPolicy` | [`chainPolicy`](#chainPolicy) |  |  |
 | `entrypoint` | string (min length 1) | yes |  |
-| `inputSchema` | object |  |  |
+| `inputSchema` | object |  | The schema every run input of this version is checked against before the run is created (design 043, ADR-0090). It must stay within the supported subset of JSON Schema, with one meaning under $schema absent, draft-07 and 2020-12: type, properties, required, items (one schema), additionalProperties, enum, const, minimum, maximum, exclusiveMinimum, exclusiveMaximum (numbers), multipleOf (a positive integer), minLength, maxLength, minItems, maxItems, minProperties, maxProperties, pattern (an allowlisted syntax: no \d, \w, \s, \b, Unicode or POSIX classes, flags or named groups), allOf, anyOf, oneOf, a local $ref (no cycle, no sibling keyword but annotations), $defs, definitions, the annotations title, description, default, examples, $comment and format (never asserted), $schema and $id at the root only, and x-sagat-classification. Any other keyword makes the schema unusable: from 0.3.0 publication refuses it in enforce mode and every start of a stored version with it is refused RUN_INPUT_SCHEMA_UNUSABLE. The keyword list is specs/043-run-input-validation/contracts/errors.md and Technical Plan 4 of docs/designs/043-run-input-validation.md. |
 | `kind` | `"Workflow"` | yes |  |
 | `limits` | [`limits`](#limits) |  |  |
 | `metadata` | object | yes |  |
@@ -34,7 +34,7 @@ Made from `specs/001-platform-foundation/contracts/workflow.schema.json`. A work
 
 ## Nodes
 
-Every node has the fields below; each kind adds its own. The kinds: [`activity`](#activity), [`database`](#database), [`timer`](#timer), [`waitEvent`](#waitEvent), [`condition`](#condition), [`parallel`](#parallel), [`child`](#child), [`saga`](#saga), [`script`](#script), [`foreach`](#foreach), [`humanApproval`](#humanApproval), [`end`](#end), [`forEach`](#forEach), [`while`](#while), [`repeatUntil`](#repeatUntil), [`approval`](#approval), [`switch`](#switch), [`continueAsNew`](#continueAsNew).
+Every node has the fields below; each kind adds its own. The kinds: [`activity`](#activity), [`database`](#database), [`icebergWrite`](#icebergWrite), [`timer`](#timer), [`waitEvent`](#waitEvent), [`condition`](#condition), [`parallel`](#parallel), [`child`](#child), [`saga`](#saga), [`script`](#script), [`foreach`](#foreach), [`humanApproval`](#humanApproval), [`end`](#end), [`forEach`](#forEach), [`while`](#while), [`repeatUntil`](#repeatUntil), [`approval`](#approval), [`switch`](#switch), [`continueAsNew`](#continueAsNew).
 
 ### base
 
@@ -51,14 +51,15 @@ Every node has the fields below; each kind adds its own. The kinds: [`activity`]
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `activity` | string | yes |  |
-| `compensateWith` | string |  | The activity that undoes this one. It runs when a saga around this node compensates, or, for a step in the body of a collection or loop, when that scope stops (a failed iteration, a cancellation) with iterations that completed: inside one iteration in reverse dependency order, between collection iterations in no order, and across loop iterations last iteration first. It must be idempotent and tolerate an effect that never happened. |
+| `compensateWith` | string |  | The activity that undoes this one. It runs when a saga around this node compensates, or, for a step in the body of a collection or loop, when that scope stops (a failed iteration, a cancellation) with iterations that completed: inside one iteration in reverse dependency order, between collection iterations in no order, and across loop iterations last iteration first. It must be idempotent. Feature 037: it is planned only for an effect that succeeded (or that a person settled as having happened); an effect whose outcome is unknown waits for review instead of being compensated defensively. |
 | `compensationRetry` | [`retry`](#retry) |  | The retry budget of the compensation (compensateWith). Five attempts, exponential from two seconds to five minutes, with jitter when absent. |
 | `compensationTimeoutMs` | integer (min 1) |  | Longest one attempt of the compensation may take. |
-| `highRisk` | boolean |  | An attempt whose outcome is unknown (lease lost, timeout, OUTCOME_UNKNOWN) is never retried or compensated blindly: it is reconciled when reconcileWith says how, and otherwise waits for an operator. |
+| `destinations` | [`stepDestinations`](#stepDestinations) |  | Synchronous step-output destinations (feature 035). Refused inside structured bodies; at most 8 per step. |
+| `highRisk` | boolean |  | Informational since feature 037. Every activity's attempt whose outcome is unknown (lease lost, timeout, OUTCOME_UNKNOWN) is never retried or compensated blindly, whether or not it is high risk: it is reconciled when reconcileWith says how, and otherwise waits for an operator. |
 | `idempotencyTemplate` | string |  |  |
 | `irreversible` | boolean |  | The effect cannot be undone once it has happened. A saga, or the collection or loop that owns the body, that has to compensate past it ends PARTIAL. Cannot be combined with compensateWith. |
 | `outputSchema` | object |  | Classifies this activity's retained output for payload disclosure. |
-| `reconcileWith` | string |  | The activity that finds out whether this one happened, after an attempt with an unknown outcome. It answers {"effect": "applied"\|"not_applied"\|"unknown"} and, for applied, optionally {"output": ...}. |
+| `reconcileWith` | string |  | The activity that finds out whether this one happened, after an attempt with an unknown outcome. It answers {"effect": "applied"\|"not_applied"\|"unknown"} and, for applied, optionally {"output": ...}. Feature 037: `applied` completes the step; `not_applied` and `unknown` are not final, so the step waits for a person (`RECONCILIATION_NOT_FINAL`, `RECONCILIATION_UNKNOWN`) and is never retried automatically. |
 | `retry` | [`retry`](#retry) |  |  |
 | `secrets` | array of string (max items 16) |  | Names of the secrets of the namespace the worker may ask for while it holds a lease on this step. Names only: a value is never part of a definition. |
 | `type` | `"activity"` | yes |  |
@@ -70,6 +71,7 @@ Every node has the fields below; each kind adds its own. The kinds: [`activity`]
 | `connectionRef` | object | yes |  |
 | `connectionRef.name` | string (pattern `^[a-z][a-z0-9-]{2,63}$`) | yes |  |
 | `connectionRef.revision` | integer (min 1, max 2147483647) |  |  |
+| `destinations` | [`stepDestinations`](#stepDestinations) |  | Synchronous step-output destinations (feature 035). Refused inside structured bodies; at most 8 per step. |
 | `id` | string (min length 1) | yes |  |
 | `limits` | [`databaseLimits`](#databaseLimits) |  |  |
 | `next` | string |  |  |
@@ -79,6 +81,28 @@ Every node has the fields below; each kind adds its own. The kinds: [`activity`]
 | `statement` | string (min length 1, max length 65536) | yes |  |
 | `timeoutMs` | integer (min 1, max 60000) |  |  |
 | `type` | `"database"` | yes |  |
+
+### icebergWrite
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `compensation` | one of `"revert"` |  |  |
+| `connectionRef` | [`lakeConnectionRef`](#lakeConnectionRef) | yes |  |
+| `id` | string | yes |  |
+| `ignoreUnknownFields` | boolean |  |  |
+| `limits` | [`lakeLimits`](#lakeLimits) |  |  |
+| `mapping` | [`lakeMapping`](#lakeMapping) |  |  |
+| `mode` | one of `"append"`, `"overwrite"`, `"upsert"` | yes |  |
+| `name` | string |  |  |
+| `next` | string |  |  |
+| `onError` | string |  |  |
+| `overwrite` | [`lakeOverwrite`](#lakeOverwrite) |  |  |
+| `recordSchema` | [`lakeRecordSchema`](#lakeRecordSchema) |  |  |
+| `records` | [`lakeRecords`](#lakeRecords) | yes |  |
+| `ref` | string (min length 1, max length 255) |  |  |
+| `table` | [`lakeTableIdentifier`](#lakeTableIdentifier) | yes |  |
+| `type` | `"icebergWrite"` | yes |  |
+| `upsert` | [`lakeUpsert`](#lakeUpsert) |  |  |
 
 ### timer
 
@@ -134,7 +158,7 @@ Every node has the fields below; each kind adds its own. The kinds: [`activity`]
 |---|---|---|---|
 | `begin` | string | yes | The first node of the saga. Everything reachable from it is the body of the saga; the body is entered only from here and holds no end node. When it completes, control goes to next. |
 | `cancelPolicy` | one of `"compensate_completed"`, `"abort_no_compensation"`, `"wait_in_flight_then_compensate"` |  | What a cancellation or a deadline does to the saga. compensate_completed (default): stop what is in flight and compensate what completed. wait_in_flight_then_compensate: let the attempts in flight finish, then compensate everything that completed. abort_no_compensation: stop and compensate nothing. |
-| `onCompensationFailure` | one of `"manual_review"`, `"fail"` |  | manual_review (default): a compensation that fails after its retries waits for an operator. fail: the saga ends COMPENSATION_FAILED. |
+| `onCompensationFailure` | one of `"manual_review"`, `"fail"` |  | manual_review (default): a compensation that fails after its retries waits for an operator. fail: the saga ends COMPENSATION_FAILED, only for a known permanent failure after the retries, once every independent compensation has settled; an unknown, accepted or pending compensation outcome still waits for review (feature 037). |
 | `type` | `"saga"` | yes |  |
 
 ### script
@@ -188,6 +212,7 @@ Every node has the fields below; each kind adds its own. The kinds: [`activity`]
 | `maxItems` | integer (min 1, max 10000) | yes |  |
 | `next` | [`nodeId`](#nodeId) | yes |  |
 | `onError` | [`nodeId`](#nodeId) |  |  |
+| `operators` | [`collectionOperators`](#collectionOperators) |  |  |
 | `result` | [`expression`](#expression) | yes |  |
 | `timeoutMs` | [`duration`](#duration) |  |  |
 | `type` | `"forEach"` | yes |  |
@@ -277,10 +302,10 @@ Every node has the fields below; each kind adds its own. The kinds: [`activity`]
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `activity` | [`name`](#name) | yes |  |
-| `compensateWith` | [`name`](#name) |  | The activity that undoes this step when the collection or loop that owns the body stops with completed iterations (a failed iteration, a cancellation). Inside one iteration compensations run in reverse dependency order; collection iterations have no order between them; loop iterations compensate last first. It must be idempotent and tolerate an effect that never happened. |
+| `compensateWith` | [`name`](#name) |  | The activity that undoes this step when the collection or loop that owns the body stops with completed iterations (a failed iteration, a cancellation). Inside one iteration compensations run in reverse dependency order; collection iterations have no order between them; loop iterations compensate last first. It must be idempotent. Feature 037: it is planned only for an effect that succeeded (or that a person settled as having happened); an effect whose outcome is unknown waits for review instead of being compensated defensively. |
 | `compensationRetry` | [`bodyRetry`](#bodyRetry) |  | The retry budget of the compensation (compensateWith). Five attempts, exponential from two seconds to five minutes, with jitter when absent. |
 | `compensationTimeoutMs` | [`duration`](#duration) |  |  |
-| `highRisk` | boolean |  | An attempt whose outcome is unknown (lease lost, timeout, OUTCOME_UNKNOWN) is never retried or compensated blindly: it is reconciled when reconcileWith says how, and otherwise waits for an operator. |
+| `highRisk` | boolean |  | Informational since feature 037. Every activity's attempt whose outcome is unknown (lease lost, timeout, OUTCOME_UNKNOWN) is never retried or compensated blindly, whether or not it is high risk: it is reconciled when reconcileWith says how, and otherwise waits for an operator. |
 | `id` | [`nodeId`](#nodeId) | yes |  |
 | `idempotencyTemplate` | [`expression`](#expression) |  |  |
 | `irreversible` | boolean |  | The effect cannot be undone once it has happened. A saga, or the collection or loop that owns the body, that has to compensate past it ends PARTIAL. Cannot be combined with compensateWith. |
@@ -355,7 +380,7 @@ any
 | `cancelPolicy` | one of `"compensate_completed"`, `"abort_no_compensation"`, `"wait_in_flight_then_compensate"` |  | What a cancellation or a deadline does to the saga. compensate_completed (default): stop what is in flight and compensate what completed. wait_in_flight_then_compensate: let the attempts in flight finish, then compensate everything that completed. abort_no_compensation: stop and compensate nothing. |
 | `id` | [`nodeId`](#nodeId) | yes |  |
 | `next` | [`nodeId`](#nodeId) |  |  |
-| `onCompensationFailure` | one of `"manual_review"`, `"fail"` |  | manual_review (default): a compensation that fails after its retries waits for an operator. fail: the saga ends COMPENSATION_FAILED. |
+| `onCompensationFailure` | one of `"manual_review"`, `"fail"` |  | manual_review (default): a compensation that fails after its retries waits for an operator. fail: the saga ends COMPENSATION_FAILED, only for a known permanent failure after the retries, once every independent compensation has settled; an unknown, accepted or pending compensation outcome still waits for review (feature 037). |
 | `onError` | [`nodeId`](#nodeId) |  |  |
 | `timeoutMs` | [`duration`](#duration) |  |  |
 | `type` | `"saga"` | yes |  |
@@ -365,7 +390,7 @@ any
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `artifactDigest` | string (pattern `^sha256:[0-9a-f]{64}$`) | yes | The artifact a build made: the digest of a ready version of a script of the same tenant. The step runs exactly this code; publishing a newer version of the script changes nothing about a workflow that names this digest. Checked when the workflow is published. |
-| `compensateWith` | [`name`](#name) |  | The activity that undoes this step when the collection or loop that owns the body stops with completed iterations (a failed iteration, a cancellation). Inside one iteration compensations run in reverse dependency order; collection iterations have no order between them; loop iterations compensate last first. It must be idempotent and tolerate an effect that never happened. |
+| `compensateWith` | [`name`](#name) |  | The activity that undoes this step when the collection or loop that owns the body stops with completed iterations (a failed iteration, a cancellation). Inside one iteration compensations run in reverse dependency order; collection iterations have no order between them; loop iterations compensate last first. It must be idempotent. Feature 037: it is planned only for an effect that succeeded (or that a person settled as having happened); an effect whose outcome is unknown waits for review instead of being compensated defensively. |
 | `id` | [`nodeId`](#nodeId) | yes |  |
 | `language` | one of `"typescript"`, `"python"`, `"csharp"`, `"go"`, `"java"` |  | Informational: the runner takes the language from the artifact. |
 | `next` | [`nodeId`](#nodeId) |  |  |
@@ -417,6 +442,14 @@ any
 | `maxSegments` | integer (min 1, max 10000) | yes |  |
 | `timeoutMs` | [`duration`](#duration) | yes |  |
 
+### collectionOperatorStage
+
+any
+
+### collectionOperators
+
+array of [`collectionOperatorStage`](#collectionOperatorStage)
+
 ### databaseLimits
 
 | Field | Type | Required | Description |
@@ -446,6 +479,77 @@ integer
 ### expression
 
 string
+
+### lakeConnectionRef
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `name` | string (pattern `^[a-z][a-z0-9-]{0,62}$`) | yes |  |
+| `revision` | integer (min 1) |  |  |
+
+### lakeExpression
+
+string
+
+### lakeFilter
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `and` | array of [`lakeFilter`](#lakeFilter) (min items 2, max items 16) |  |  |
+| `compare` | object |  |  |
+| `compare.column` | string (min length 1, max length 255) | yes |  |
+| `compare.op` | one of `"eq"`, `"ne"`, `"lt"`, `"le"`, `"gt"`, `"ge"`, `"in"`, `"isNull"`, `"notNull"` | yes |  |
+| `compare.value` | [`lakeExpression`](#lakeExpression) |  |  |
+| `not` | [`lakeFilter`](#lakeFilter) |  |  |
+| `or` | array of [`lakeFilter`](#lakeFilter) (min items 2, max items 16) |  |  |
+
+### lakeLimits
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `maxRecordBytes` | integer (min 1024, max 2147483648) |  |  |
+| `maxRecords` | integer (min 1, max 100000000) |  |  |
+| `timeoutMs` | integer (min 1000, max 3600000) |  |  |
+
+### lakeMapping
+
+array of object
+
+### lakeOverwrite
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `allowEmpty` | boolean |  |  |
+| `filter` | [`lakeFilter`](#lakeFilter) |  |  |
+| `scope` | one of `"batchPartitions"`, `"filter"`, `"table"` | yes |  |
+
+### lakeRecordSchema
+
+object
+
+### lakeRecords
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `blobs` | [`lakeExpression`](#lakeExpression) |  | Evaluates to 1..32 blob descriptors of record files (application/x-ndjson or application/vnd.apache.parquet) committed by earlier steps of the same run. |
+| `databaseResult` | string |  | Id of an earlier root-level database node of the same run. |
+| `inline` | [`lakeExpression`](#lakeExpression) |  |  |
+| `output` | `true` |  | Destinations only: the source node's output is one record. |
+| `outputPath` | string (max length 512, pattern `^(/[^/]+)+$`) |  | Destinations only: JSON pointer to an array of records in the source node's output. |
+
+### lakeTableIdentifier
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `name` | string (min length 1, max length 255) | yes |  |
+| `namespace` | array of string (min items 1, max items 8) | yes |  |
+
+### lakeUpsert
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `deleteMarker` | string (max length 512, pattern `^(/[^/]+)+$`) |  |  |
+| `keyColumns` | array of string (min items 1, max items 16) |  |  |
 
 ### limits
 
@@ -502,6 +606,36 @@ any
 | `schema` | [`resultSchema`](#resultSchema) | yes |  |
 | `updates` | object |  |  |
 
+### stepDestination
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `connectionRef` | [`lakeConnectionRef`](#lakeConnectionRef) |  |  |
+| `effectKeyColumn` | string (max length 63) |  |  |
+| `ignoreUnknownFields` | boolean |  |  |
+| `keyColumn` | string (max length 63) |  | postgresql insert: the constraint-backed column (a record field or the effect key column). |
+| `kind` | one of `"iceberg"`, `"postgresql"`, `"object_storage"`, `"clickhouse"`, `"broker_stream"` | yes |  |
+| `limits` | [`lakeLimits`](#lakeLimits) |  |  |
+| `mapping` | [`lakeMapping`](#lakeMapping) |  |  |
+| `mode` | one of `"append"`, `"overwrite"`, `"upsert"`, `"insert"` |  |  |
+| `name` | string (pattern `^[a-z][a-z0-9-]{0,30}$`) | yes |  |
+| `onFailure` | one of `"hold"`, `"fail"`, `"continue"` |  |  |
+| `overwrite` | [`lakeOverwrite`](#lakeOverwrite) |  |  |
+| `recordSchema` | [`lakeRecordSchema`](#lakeRecordSchema) |  |  |
+| `records` | [`lakeRecords`](#lakeRecords) | yes |  |
+| `subscriptionRef` | string (pattern `^[a-z][a-z0-9-]{0,62}$`) |  | broker_stream only: a subscription whose purpose is STEP_OUTPUT. |
+| `target` | object | yes |  |
+| `target.format` | one of `"parquet"`, `"ndjson"` |  |  |
+| `target.ref` | string (max length 255) |  |  |
+| `target.relation` | string (max length 63) |  |  |
+| `target.schema` | string (max length 63) |  |  |
+| `target.table` | [`lakeTableIdentifier`](#lakeTableIdentifier) |  |  |
+| `upsert` | [`lakeUpsert`](#lakeUpsert) |  |  |
+
+### stepDestinations
+
+array of [`stepDestination`](#stepDestination)
+
 ### subject
 
 string
@@ -512,6 +646,7 @@ string
 |---|---|---|---|
 | `argsSchema` | object | yes |  |
 | `disclosure` | `"declared-business-result-v1"` | yes |  |
+| `reapplyOnReset` | boolean |  | When true, the canonical arguments of every applied instance of this Update are retained as a content-addressed payload referenced by its state.updated journal row (charged to tenant_content_bytes), so a reset with reapply UPDATES or ALL can re-validate and re-apply it. Absent means false: the arguments are not retained and a reset reports the Update NOT_REAPPLIED (NOT_RETAINED). Not a classification carrier (FR-016-004). A new publication is refused unless the server's resetReapply capability is enabled (ADR-0032). |
 | `result` | [`expression`](#expression) | yes |  |
 | `resultSchema` | [`resultSchema`](#resultSchema) | yes |  |
 | `state` | [`expression`](#expression) | yes |  |

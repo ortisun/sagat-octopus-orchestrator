@@ -8,16 +8,16 @@ publish = false
 sagat-octopus-orchestrator-sdk = { path = ".." }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "=1.0.151", features = ["arbitrary_precision"] }
-tokio = { version = "=1.53.2", features = ["rt-multi-thread", "macros", "time", "sync"] }
+tokio = { version = "=1.53.3", features = ["rt-multi-thread", "macros", "time", "sync"] }
 futures-util = "=0.3.34"
-time = "=0.3.55"
+time = { version = "=0.3.55", features = ["formatting"] }
 reqwest = { version = "=0.13.5", default-features = false, features = ["json"] }
 
 sha2 = "=0.10.9"
 rustls = { version = "=0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
-tonic = { version = "=0.14.6", default-features = false, features = ["transport", "router"] }
-tonic-prost = "=0.14.6"
-prost = "=0.14.4"
+tonic = { version = "=0.14.9", default-features = false, features = ["transport", "router"] }
+tonic-prost = "=0.14.9"
+prost = "=0.14.5"
 tokio-stream = { version = "=0.1.19", features = ["net"] }
 hyper = { version = "=1.12.0", features = ["server", "http1"] }
 hyper-util = { version = "=0.1.21", features = ["tokio"] }
@@ -25,4 +25,4 @@ http-body-util = "=0.1.5"
 bytes = "=1.12.1"
 [build-dependencies]
 protox = "=0.10.0"
-tonic-prost-build = "=0.14.6"
+tonic-prost-build = "=0.14.9"

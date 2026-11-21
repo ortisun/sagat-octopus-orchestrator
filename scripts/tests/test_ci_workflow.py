@@ -1,0 +1,239 @@
+"""Guards the CI rule (run: python3 -m unittest discover scripts/tests).
+
+The rule (docs/constitution.md, CI gates): a pull request runs only the unit tests of the changed packages and of
+their dependents and the integration suites that were themselves changed, a merge into develop starts no run, and a release runs the whole
+stack, lints included. The job `changes` runs scripts/select-test-targets.py and every other job is gated by its outputs. A step
+that ran a lint, a verification job or an integration suite without that gate would bring the full cost back on
+every pull request, or hide the release check.
+"""
+import pathlib
+import re
+import unittest
+
+WORKFLOW = pathlib.Path(__file__).resolve().parents[2] / ".github" / "workflows" / "ci.yml"
+FULL = "needs.changes.outputs.full == 'true'"
+# Jobs that only a release runs: lints, verification of the product as a whole, advisories.
+RELEASE_ONLY_JOBS = ("released-upgrade", "native-runners", "contracts", "local-environment", "observability",
+                     "scale", "dependencies")
+# Jobs whose steps are scoped by the change (and run whole for a release).
+SCOPED_JOBS = ("rust", "integration", "sdks", "studio", "architecture", "lake-runtime")
+ANY = "needs.changes.outputs.any == 'true'"
+SHARD_TARGETS = "matrix.shard.targets"
+LAKE = "needs.changes.outputs.lake == 'true'"
+AUDIT_WORKFLOW = WORKFLOW.parent / "lake-audit.yml"
+
+
+def steps(text):
+    """Each step of the workflow as text: a chunk that starts at a line '      - ' (the steps' indentation)."""
+    chunks = re.split(r"(?m)^(?=      - )", text)
+    return [chunk for chunk in chunks if chunk.startswith("      - ")]
+
+
+def job_block(text, job):
+    block = re.search(rf"(?ms)^  {job}:\n(.*?)^  [a-z0-9-]+:\n", text + "\n  end:\n")
+    assert block is not None, f"job {job} not found"
+    return block.group(1)
+
+
+class CiRule(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.text = WORKFLOW.read_text()
+        cls.steps = steps(cls.text)
+
+    def test_the_selection_job_exists_and_every_other_job_waits_for_it(self):
+        self.assertRegex(self.text, r"(?m)^  changes:$")
+        self.assertIn("scripts/select-test-targets.py", self.text)
+        for job in (*SCOPED_JOBS, *RELEASE_ONLY_JOBS):
+            self.assertIn("needs: changes", job_block(self.text, job), f"job {job} must wait for the selection")
+
+    def test_the_rust_job_frees_the_disk_it_does_not_need_before_it_builds_everything(self):
+        """A build of the whole workspace and its tests ran a runner out of disk once ("No space left on device", on a
+        push that changed Cargo.lock). The step is the first of the job, only for a build of everything, and it leaves
+        the .NET SDK alone because some suites call it on the host."""
+        first = steps(job_block(self.text, "rust"))[0]
+        self.assertIn("free disk space", first)
+        self.assertRegex(
+            first,
+            r"(?m)^        if: needs\.changes\.outputs\.full == 'true' \|\| needs\.changes\.outputs\.crates == 'ALL'\s*$",
+        )
+        for path in ("/usr/local/lib/android", "/opt/ghc", "/usr/local/.ghcup", "/opt/hostedtoolcache/CodeQL"):
+            self.assertIn(path, first)
+        self.assertNotIn("/usr/share/dotnet", first)
+
+    def test_the_lints_and_verification_jobs_run_only_for_a_release(self):
+        for job in RELEASE_ONLY_JOBS:
+            self.assertRegex(job_block(self.text, job), rf"(?m)^    if: {re.escape(FULL)}\s*$",
+                             f"job {job} must run only for a release")
+
+    def test_the_formatting_and_lint_steps_run_only_for_a_release(self):
+        # The release-only jobs are gated as a whole (test above); the steps of the scoped jobs one by one.
+        found = 0
+        for job in SCOPED_JOBS:
+            for step in steps(job_block(self.text, job)):
+                commands = [l for l in step.splitlines() if not l.lstrip().startswith("#")]
+                if any(re.search(r"cargo (fmt|clippy)\b|npm run (lint|typecheck)\b|check-[a-z-]+\.py|\bmypy\b|\bruff\b|go vet|gofmt|dotnet format", l)
+                       for l in commands):
+                    found += 1
+                    self.assertRegex(step, rf"(?m)^        if: {re.escape(FULL)}\s*$",
+                                     f"this lint step of job {job} must run only for a release:\n{step}")
+        self.assertGreater(found, 5, "the test no longer finds the lint steps it is meant to guard")
+
+    def test_the_workspace_unit_tests_leave_the_integration_crate_out(self):
+        for line in self.text.splitlines():
+            if "cargo test --workspace" in line:
+                self.assertIn("--exclude sagat-tests", line, line.strip())
+
+    def test_the_unit_tests_are_those_of_the_changed_packages(self):
+        step = next(s for s in self.steps if s.startswith("      - name: unit tests of the changed packages"))
+        self.assertIn("needs.changes.outputs.crates", step)
+        self.assertIn('[ "$CRATES" = ALL ]', step)
+
+    def test_every_step_that_runs_an_integration_suite_is_gated_by_the_selection(self):
+        # A step of the integration job is gated by its shard, whose targets come from the selection (the test below).
+        shard_steps = {s.splitlines()[0] for s in steps(job_block(self.text, "integration"))}
+        found = 0
+        for step in self.steps:
+            # a comment may mention the crate; only commands count
+            commands = [l for l in step.splitlines()
+                        if "cargo test" in l and "sagat-tests" in l and "--exclude sagat-tests" not in l
+                        and not l.lstrip().startswith("#")]
+            if not commands:
+                continue
+            found += 1
+            gated = re.search(r"(?m)^        if: .*needs\.changes\.outputs", step) or "needs.changes.outputs.targets" in step
+            gated = gated or (step.splitlines()[0] in shard_steps and SHARD_TARGETS in step)
+            self.assertTrue(gated, f"this step runs sagat-tests without the selection:\n{step}")
+        self.assertGreater(found, 0, "the test no longer finds the steps it is meant to guard")
+
+    def test_the_selection_hands_out_the_shard_matrix(self):
+        self.assertIn("shards: ${{ steps.select.outputs.shards }}", job_block(self.text, "changes"))
+
+    def test_the_selected_integration_suites_run_in_parallel_shards_of_the_selection(self):
+        """Run one after another in one step, every suite outgrew the step's 110 minutes (run 44793165198). The
+        selection decides which suites run and how they are spread; each shard builds `sagat-tests` and runs only its
+        own targets, and one failing shard does not cancel the others."""
+        block = job_block(self.text, "integration")
+        self.assertIn("needs: changes", block)
+        self.assertRegex(block, rf"(?m)^    if: {re.escape(ANY)}\s*$")
+        self.assertRegex(block, r"(?m)^      fail-fast: false\s*$")
+        self.assertRegex(block, r"(?m)^        shard: \$\{\{ fromJSON\(needs\.changes\.outputs\.shards\) \}\}\s*$")
+        run = next(s for s in steps(block) if s.startswith("      - name: integration suites of this shard"))
+        self.assertIn(f"TARGETS: ${{{{ {SHARD_TARGETS} }}}}", run)
+        self.assertIn('for target in $TARGETS; do args+=(--test "$target"); done', run)
+        self.assertIn("cargo test -p sagat-tests --locked --no-fail-fast", run)
+        self.assertRegex(run, r"(?m)^        timeout-minutes: 110\s*$")
+
+    def test_each_shard_prepares_what_its_suites_need_and_runs_their_preflight(self):
+        block = job_block(self.text, "integration")
+        names = [s.splitlines()[0] for s in steps(block)]
+        for name in ("isolated C# compiler and runtime images", "build isolated database executor for process tests",
+                     "capacity and migration regression preflight", "bounded ChildRoot holder discovery",
+                     "scoped event quota rollback boundary", "worker capacity lease boundary"):
+            self.assertIn(f"      - name: {name}", names)
+        for step in steps(block):
+            self.assertNotIn("needs.changes.outputs.targets", step,
+                             f"a step of a shard must follow the shard's targets, not the whole selection:\n{step}")
+        primitives = [s for s in steps(block) if "--test integration_workflow_primitives" in s]
+        self.assertGreater(len(primitives), 3)
+        for step in primitives:
+            if "TARGETS" in step:
+                continue  # the preflight decides per suite from the shard's targets
+            self.assertIn(f"if: contains(format(' {{0}} ', {SHARD_TARGETS}), ' integration_workflow_primitives ')", step)
+
+    def test_the_rust_job_leaves_the_integration_suites_to_the_shards(self):
+        block = job_block(self.text, "rust")
+        for step in steps(block):
+            commands = [l for l in step.splitlines() if not l.lstrip().startswith("#")]
+            self.assertFalse(any(re.search(r"cargo test -p sagat-tests\b", l) for l in commands),
+                             f"the rust job runs an integration suite:\n{step}")
+        self.assertNotIn("needs.changes.outputs.any", block.split("steps:", 1)[0],
+                         "the rust job has nothing to do for a change that selects only suites")
+
+    def test_one_check_says_whether_every_shard_passed(self):
+        """The number of shards follows the selection; one job of a fixed name sums them up."""
+        block = job_block(self.text, "integration-result")
+        self.assertRegex(block, r"(?m)^    needs: \[changes, integration\]\s*$")
+        self.assertRegex(block, rf"(?m)^    if: always\(\) && {re.escape(ANY)}\s*$")
+        self.assertIn("RESULT: ${{ needs.integration.result }}", block)
+        self.assertIn('[ "$RESULT" = success ]', block)
+
+    def test_the_sdk_unit_tests_follow_the_changed_languages(self):
+        for language in ("TypeScript", "Python", "Go", "C#", "Java", "Rust"):
+            step = next(s for s in self.steps if s.startswith(f"      - name: {language} SDK\n"))
+            self.assertIn("needs.changes.outputs.sdks", step, f"{language} SDK must follow the changed languages")
+
+    def test_the_studio_unit_tests_follow_the_frontend_and_the_rest_is_for_a_release(self):
+        unit = next(s for s in self.steps if s.startswith("      - name: unit tests\n"))
+        self.assertIn("needs.changes.outputs.frontend", unit)
+        build = next(s for s in self.steps if s.startswith("      - name: lint, types, build"))
+        self.assertRegex(build, rf"(?m)^        if: {re.escape(FULL)}\s*$")
+
+    def test_the_selection_hands_out_the_lake_gate(self):
+        self.assertIn("lake: ${{ steps.select.outputs.lake }}", self.text)
+
+    def test_the_lake_runtime_job_follows_the_lake_gate(self):
+        block = job_block(self.text, "lake-runtime")
+        self.assertIn("needs: changes", block)
+        self.assertRegex(block, rf"(?m)^    if: {re.escape(LAKE)}\s*$")
+        unit = next(s for s in steps(block) if "pytest" in s)
+        self.assertNotRegex(unit, r"(?m)^        if:", "the unit tests of the lake runtime run whenever the gate is open")
+        audit = next(s for s in steps(block) if "pip-audit" in s)
+        self.assertIn("--require-hashes", audit)
+        self.assertNotRegex(audit, r"(?m)^        if:", "the audit of the lock runs with every change of the runtime")
+
+    def test_the_lake_runtime_image_and_its_sbom_are_built_only_for_a_release(self):
+        found = 0
+        for step in steps(job_block(self.text, "lake-runtime")):
+            commands = [l for l in step.splitlines() if not l.lstrip().startswith("#")]
+            if any(re.search(r"docker (buildx )?(build|create)|smoke-image\.sh|check_sbom", l) for l in commands):
+                found += 1
+                self.assertRegex(step, rf"(?m)^        if: {re.escape(FULL)}\s*$",
+                                 f"this image step must run only for a release:\n{step}")
+        self.assertGreaterEqual(found, 3, "the image, its smoke test and its SBOM are all built")
+
+    def test_the_lake_image_is_built_with_pinned_inputs(self):
+        block = job_block(self.text, "lake-runtime")
+        self.assertRegex(block, r"image=moby/buildkit:v[0-9.]+@sha256:[0-9a-f]{64}", "the builder image is pinned")
+        self.assertRegex(block, r"buildkit-syft-scanner:[0-9]+@sha256:[0-9a-f]{64}", "the SBOM scanner is pinned")
+
+    def test_the_lake_lock_is_audited_every_week_by_a_workflow_of_its_own(self):
+        audit = AUDIT_WORKFLOW.read_text()
+        self.assertRegex(audit, r"(?m)^  schedule:\n    - cron: ")
+        self.assertRegex(audit, r"(?m)^  workflow_dispatch:")
+        self.assertRegex(audit, r"(?ms)^permissions:\n  contents: read\n")
+        self.assertIn("pip-audit", audit)
+        self.assertIn("runners/lake/requirements.lock", audit)
+        for action in re.findall(r"(?m)^\s*(?:- )?uses: (\S+)", audit):
+            self.assertRegex(action, r"@[0-9a-f]{40}$", f"{action} must be pinned to a commit")
+
+    def test_a_release_can_be_triggered_by_a_tag_a_branch_and_by_hand(self):
+        self.assertRegex(self.text, r'(?m)^    tags: \["v\*"\]')
+        self.assertRegex(self.text, r'(?m)^    branches: \[main, "release/\*\*", "hotfix/\*\*"\]')
+        self.assertRegex(self.text, r"(?m)^  workflow_dispatch:")
+
+    def test_a_merge_into_develop_starts_no_run_and_a_pull_request_still_does(self):
+        """The owner's rule (OD-2026-11-05-1): the CI runs for a pull request and for a release, and a merge into
+        develop is neither: what the pull request proved is not proved again by the push that merges it."""
+        triggers = self.text.split("\njobs:", 1)[0]
+        pushed = re.search(r"(?ms)^  push:\n(.*?)^  \S", triggers)
+        self.assertIsNotNone(pushed, "the workflow has a push trigger")
+        self.assertNotIn("develop", pushed.group(1), "a push to develop starts the CI")
+        self.assertRegex(triggers, r"(?m)^  pull_request:")
+
+    def test_the_documentation_checks_run_on_every_pull_request_and_nothing_else(self):
+        """Documentation first and words in full (constitution 4.7.0): a pull request runs both checks whatever it
+        changes, so the job waits for no selection and has no step gate; a push, a tag or a manual run starts the same
+        jobs as before, so the job runs only for a pull request. The checks compare the pull request's own commits:
+        HEAD^1 is the tip of the base branch in the merge commit a pull request checks out, HEAD^2 its head."""
+        block = job_block(self.text, "documentation")
+        self.assertRegex(block, r"(?m)^    if: github\.event_name == 'pull_request'\s*$")
+        self.assertNotIn("needs:", block)
+        self.assertIn("fetch-depth: 0", block)
+        for script in ("scripts/check-docs-first.py", "scripts/check-plain-words.py"):
+            step = next(s for s in steps(block) if script in s)
+            self.assertNotRegex(step, r"(?m)^        if:", f"{script} runs on every pull request")
+            self.assertIn('--base "$(git rev-parse HEAD^1)" --head "$(git rev-parse HEAD^2)"', step)
+
+if __name__ == "__main__":
+    unittest.main()

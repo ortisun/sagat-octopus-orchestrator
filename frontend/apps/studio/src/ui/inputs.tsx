@@ -36,6 +36,8 @@ export interface TextInputProps extends Labelled, AriaAttributes {
   type?: 'text' | 'password' | 'email' | 'search' | 'url';
   /** Digits are expected: a touch keyboard shows the number pad. The value stays the text that was typed. */
   numeric?: boolean | undefined;
+  /** A number with a fraction is expected: a touch keyboard shows the pad with a decimal point. The value stays the text that was typed. */
+  decimal?: boolean | undefined;
   maxLength?: number | undefined;
   placeholder?: string | undefined;
   autoComplete?: string | undefined;
@@ -50,7 +52,7 @@ export interface TextInputProps extends Labelled, AriaAttributes {
 }
 
 /** One line of text, with its label, hint and error tied together for assistive technology. */
-export function TextInput({ value, onChange, type = 'text', numeric, maxLength, autoFocus, readOnly, spellCheck, mono, onBlur, label, hideLabel, hint, error, disabled, required, className, width, ...rest }: TextInputProps) {
+export function TextInput({ value, onChange, type = 'text', numeric, decimal, maxLength, autoFocus, readOnly, spellCheck, mono, onBlur, label, hideLabel, hint, error, disabled, required, className, width, ...rest }: TextInputProps) {
   return (
     <AstryxTextInput
       {...common({ label, hideLabel, hint, error, disabled, required, className, width })}
@@ -59,7 +61,7 @@ export function TextInput({ value, onChange, type = 'text', numeric, maxLength, 
       onChange={(next) => onChange(next)}
       hasAutoFocus={autoFocus === true}
       isReadOnly={readOnly === true}
-      {...(numeric ? { inputMode: 'numeric' as const } : {})}
+      {...(numeric ? { inputMode: 'numeric' as const } : decimal ? { inputMode: 'decimal' as const } : {})}
       {...(spellCheck !== undefined ? { hasSpellCheck: spellCheck } : {})}
       {...(mono ? { controlClassName: 'ui-mono' } : {})}
       {...(onBlur ? { onBlur } : {})}
@@ -120,7 +122,7 @@ export interface SelectProps<V extends string> extends Labelled {
 
 /**
  * One choice of a list. Astryx draws it as a button with the `combobox` role that opens a `listbox`
- * (D2403), not as the platform's native picker; an empty value shows the placeholder.
+ * (Decision 2403), not as the platform's native picker; an empty value shows the placeholder.
  */
 export function Select<V extends string>({ value, onChange, options, placeholder, label, hideLabel, hint, error, disabled, required, className, width, ...rest }: SelectProps<V>) {
   return (
@@ -145,6 +147,8 @@ export function Select<V extends string>({ value, onChange, options, placeholder
 export interface CheckboxProps extends AriaAttributes {
   label: string;
   hint?: string | undefined;
+  /** What is missing, tied to the checkbox and announced, as for every other field. */
+  error?: string | undefined;
   checked: boolean;
   onChange: (checked: boolean) => void;
   disabled?: boolean | undefined;
@@ -153,9 +157,9 @@ export interface CheckboxProps extends AriaAttributes {
 }
 
 /** A yes or no. */
-export function Checkbox({ label, hint, checked, onChange, disabled, hideLabel, ...rest }: CheckboxProps) {
+export function Checkbox({ label, hint, error, checked, onChange, disabled, hideLabel, ...rest }: CheckboxProps) {
   return (
-    <CheckboxInput label={label} isLabelHidden={hideLabel === true} {...(hint ? { description: hint } : {})} value={checked} onChange={(next) => onChange(next)} isDisabled={disabled === true} {...rest} />
+    <CheckboxInput label={label} isLabelHidden={hideLabel === true} {...(hint ? { description: hint } : {})} {...status(error)} value={checked} onChange={(next) => onChange(next)} isDisabled={disabled === true} {...rest} />
   );
 }
 

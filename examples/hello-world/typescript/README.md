@@ -18,7 +18,7 @@ sagat workflow publish hello-world/workflow.json
 sagat worker bind --workflow hello-world/workflow.json     # let your identity serve its two activities
 
 ./prepare.sh        # once: npm ci for the SDK and for the example, then tsc
-./run.sh            # npm start -- [NAME]
+./run.sh            # node dist/main.js [NAME]
 ```
 
 It prints, in every language:
@@ -38,7 +38,34 @@ and `sagat workflow inspect <run>` shows the journal: the same one whatever the 
   run (its first argument) and the outputs of the steps before it (`ctx.steps.<id>`); what it returns is its
   output.
 - A real effect (a payment, an e-mail) sends `ctx.idempotencyKey` to its provider: it is the same for every
-  attempt of the step, so a repeat does not do it twice.
+  attempt of the step; the provider must deduplicate that key to prevent duplicate effects.
 - `package.json` points at the SDK in this checkout (`"@sagat-octopus-orchestrator/sdk":
   "file:../../../sdks/typescript"`), which `prepare.sh` builds first; replace the line with the version of
   the package, and drop the SDK build from `prepare.sh`, once the SDK is published.
+
+## Interface
+
+- `prepare.sh` builds the checkout SDK and example; `run.sh` launches compiled `dist/main.js`. [examples/hello-world/typescript/prepare.sh:npm_install]
+- Package scripts expose `build` and `start`. [examples/hello-world/typescript/package.json:scripts]
+- [src](src/README.md) — TypeScript executable serving and starting the canonical greeting workflow.
+
+## Invariants
+
+- Preparation is fail-fast and disables dependency lifecycle scripts, audit, and funding output. [examples/hello-world/typescript/prepare.sh:set -euo pipefail]
+- The package requires Node 20 or newer and references the checkout SDK. [examples/hello-world/typescript/package.json:engines]
+- Compilation uses strict TypeScript with NodeNext modules and ES2022 output. [examples/hello-world/typescript/tsconfig.json:compilerOptions]
+
+## Side Effects
+
+- Installs locked SDK/example dependencies and writes compiled output to `dist`. [examples/hello-world/typescript/prepare.sh:npm_install]
+- Replaces the shell with Node and forwards arguments. [examples/hello-world/typescript/run.sh:exec]
+
+## Verification
+
+From the repository root, with Docker, the selected example toolchains, and a private `CARGO_TARGET_DIR` outside the checkout:
+
+```sh
+cargo test -p sagat-tests --test e2e_developer_experience --locked -- --ignored
+```
+
+The shared real-platform suite is declared in `tests/Cargo.toml`; language preparation and run commands remain in the example READMEs. [tests/Cargo.toml:e2e_developer_experience]

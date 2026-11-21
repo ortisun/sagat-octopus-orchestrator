@@ -98,6 +98,51 @@ impl ErrorCode {
             (Self::ValidationFailed, "INVALID_ARGUMENTS") => {
                 "Send arguments that match the argument schema the operation declares."
             }
+            (Self::ValidationFailed, "INVALID_URI") => {
+                "Send an http or https address with a host, and no space or control character."
+            }
+            (Self::ValidationFailed, "PLAIN_HTTP_OUTSIDE_LOOPBACK") => {
+                "Use an https address. Plain http is only for a development fixture on the same machine, named localhost, 127.0.0.1 or ::1: no other http address can run."
+            }
+            (Self::ValidationFailed, "CREDENTIAL_IN_URI") => {
+                "Remove the user name, the password and the query from the address: a credential belongs in a secret, which the connection refers to by name."
+            }
+            (Self::ValidationFailed, "INVALID_CATALOG") => {
+                "Check the catalog settings: the REST warehouse and prefix, the Glue region and catalog id, 1 to 4 thrift:// addresses for Hive, or the JDBC target."
+            }
+            (Self::ValidationFailed, "INVALID_STORAGE") => {
+                "Check the storage settings: the region, the account name and the endpoint of the storage type."
+            }
+            (Self::ValidationFailed, "VENDED_NEEDS_DELEGATION") => {
+                "Vended credentials need a REST catalog whose accessDelegation is vended-credentials; otherwise use static credentials."
+            }
+            (Self::ValidationFailed, "STORAGE_SECRET_WITH_VENDED") => {
+                "Remove the storage secret: with vended credentials the catalog supplies them and the platform never holds them."
+            }
+            (Self::ValidationFailed, "STORAGE_SECRET_REQUIRED") => {
+                "Name the secret that holds the storage credentials, or use vended credentials with a REST catalog that delegates access."
+            }
+            (Self::ValidationFailed, "CATALOG_SECRET_REQUIRED") => {
+                "Name the secret that holds the catalog credentials."
+            }
+            (Self::ValidationFailed, "CATALOG_SECRET_FORBIDDEN") => {
+                "Remove the catalog secret: a Hive metastore has no credentials."
+            }
+            (Self::ValidationFailed, "INVALID_LOCATIONS") => {
+                "Send 1 to 16 distinct warehouse locations, each without a query, a fragment, user information or a .. segment."
+            }
+            (Self::ValidationFailed, "LOCATION_SCHEME_MISMATCH") => {
+                "Use the scheme of the storage type for every warehouse location: s3:// for S3, gs:// for GCS, abfss:// for ADLS."
+            }
+            (Self::ValidationFailed, "INVALID_MODES") => {
+                "Allow at least one of append, overwrite and upsert, each once."
+            }
+            (Self::ValidationFailed, "INVALID_LIMITS") => {
+                "Keep each limit inside its range, or leave it out; zero does not mean unlimited."
+            }
+            (Self::ValidationFailed, "UNAUTHENTICATED_METASTORE_NOT_ALLOWED") => {
+                "This deployment does not allow a Hive metastore without TLS: use tls required, or ask the operator to allow it."
+            }
             (Self::ValidationFailed, "INVALID_UPDATE_KEY") => {
                 "Use an update key of 1 to 128 printable ASCII characters without spaces, and keep it for retries."
             }
@@ -121,6 +166,122 @@ impl ErrorCode {
             }
             (Self::Conflict, "RUN_CONTINUED") => {
                 "Address the current chain head explicitly if the update is meant for its successor."
+            }
+            // feature 018: the sentences of `specs/018-schedules-bulk-operations/contracts/errors.md`,
+            // which a contract test keeps equal to this table
+            (Self::ValidationFailed, "SCHEDULE_NAME_RESERVED") => {
+                "The name is one a schedule of a cron trigger has or may fall back to (`trigger-` and 32 hex digits, optionally `-` and digits); choose another."
+            }
+            (Self::ValidationFailed, "SCHEDULE_SPEC_INVALID") => {
+                "A spec field is outside its domain or ceiling; `details.field` names the JSON pointer."
+            }
+            (Self::ValidationFailed, "SCHEDULE_NEVER_FIRES") => {
+                "The spec has no occurrence between `startAt` and `endAt`."
+            }
+            (Self::ValidationFailed, "SCHEDULE_TOO_FREQUENT") => {
+                "Two occurrences are closer than the minimum spacing; widen the spec."
+            }
+            (Self::ValidationFailed, "SCHEDULE_ZONE_UNKNOWN") => {
+                "Use an IANA zone name known to the platform."
+            }
+            (Self::ValidationFailed, "SCHEDULE_INPUT_INVALID") => {
+                "The input does not match the target version's input schema (no excerpt)."
+            }
+            (Self::ValidationFailed, "NOMINAL_TIME_FIELD_INVALID") => {
+                "The field is not a declared top-level string property of the input schema."
+            }
+            // design 043: the sentences of `specs/043-run-input-validation/contracts/errors.md`
+            (Self::ValidationFailed, "RUN_INPUT_INVALID") => {
+                "Fix the input at `details.field`: `details.rule` names the keyword of the input schema it fails (no excerpt)."
+            }
+            (Self::ValidationFailed, "RUN_INPUT_SCHEMA_UNUSABLE") => {
+                "The version's input schema is outside the supported subset; publish a version within it (`control-plane input-schema-inventory` lists them)."
+            }
+            (Self::ValidationFailed, "BACKFILL_RANGE_INVALID") => {
+                "`start` must be before `end` and `end` not after now."
+            }
+            (Self::ValidationFailed, "BACKFILL_LIMIT") => {
+                "The range holds more nominal times than one backfill may act on; split it."
+            }
+            (Self::Conflict, "SCHEDULE_TRIGGER_OWNED") => {
+                "Change the cron trigger in the workflow definition and publish it."
+            }
+            (Self::Conflict, "SCHEDULE_TRIGGER_GONE") => {
+                "The cron trigger of this schedule is no longer in force; the schedule is removed with it. Publish the trigger again to have it back."
+            }
+            (Self::Conflict, "SCHEDULE_TRIGGER_HANDOVER_PENDING") => {
+                "The legacy cron pass still runs; the operator completes the handover once every engine is upgraded."
+            }
+            (
+                Self::QuotaExceeded,
+                "SCHEDULE_LIMIT" | "BACKFILL_CONCURRENCY" | "BATCH_LIMIT" | "PENDING_RESET_LIMIT",
+            ) => "A namespace or tenant ceiling is reached; free capacity or ask an administrator.",
+            (Self::ValidationFailed, "BUSINESS_ID_INVALID") => "1 to 200 visible ASCII characters.",
+            (Self::Conflict, "BUSINESS_ID_IN_USE") => {
+                "Another open execution holds this id; `details.runId` names it when the caller may read runs."
+            }
+            (Self::Conflict, "BUSINESS_ID_REUSE_REJECTED") => {
+                "The reuse policy forbids a new run while the previous one is remembered; `details.reusableAfter` says until when."
+            }
+            (Self::ValidationFailed, "START_DELAY_INVALID") => "1 ms to 366 days.",
+            (Self::ValidationFailed, "START_DELAY_WITH_SIGNAL") => {
+                "A delayed run cannot accept a signal at creation; start, then signal later."
+            }
+            (Self::Conflict, "NOT_WAITING") => {
+                "No step of the run waits for this signal now; signals are never buffered."
+            }
+            (Self::Conflict, "SIGNAL_NOT_ACCEPTED_AT_START") => {
+                "The workflow's entry does not wait for this signal, or feature 022 would queue the new run; nothing was created."
+            }
+            (Self::ValidationFailed, "BATCH_SELECTOR_INVALID") => {
+                "The filter or run-id list is malformed or over its ceiling."
+            }
+            (Self::ValidationFailed, "QUERY_UNSUPPORTED_OPERATOR") => "Use the structured filter.",
+            (Self::ValidationFailed, "BATCH_ACTION_UNAVAILABLE") => {
+                "Enable the feature or choose another action."
+            }
+            (Self::ValidationFailed, "BATCH_LIMITS_INVALID") => {
+                "`maxItems` is 1 to 100,000 and `itemsPerSecond` above 0 and at most 200."
+            }
+            (Self::ValidationFailed, "BATCH_REASON_INVALID") => {
+                "The reason is 8 to 2,000 characters of plain text once trimmed: no control character, a new line included."
+            }
+            (Self::ValidationFailed, "BATCH_PAYLOAD_INVALID" | "BATCH_PAYLOAD_TOO_LARGE") => {
+                "The payload must be a JSON object (a signal) and at most 256 KiB."
+            }
+            (Self::ValidationFailed, "BATCH_SELECTOR_UNSUPPORTED") => {
+                "This deployment cannot evaluate that selector; select by the other filters or by run ids."
+            }
+            (Self::ValidationFailed, "BATCH_ACTION_PARAMETERS") => {
+                "The action needs (or refuses) `stepId`, `signal` or `update`; a signal name is 1 to 128 characters of letters, digits and `_ . : -`; a step id is a step of the workflow."
+            }
+            (Self::Conflict, "BATCH_NOT_CANCELLABLE") => "The job already ended.",
+            (Self::ValidationFailed, "RESET_NOT_SUPPORTED_FOR_SOURCE") => {
+                "Child runs, members of a continuation chain and runs of a database execution cannot be reset in this version."
+            }
+            (Self::ValidationFailed, "RESET_POINT_NOT_ELIGIBLE") => {
+                "Choose a sequence listed by `listResetPoints`."
+            }
+            (Self::ValidationFailed, "RESET_PREFIX_TOO_LONG") => {
+                "The prefix exceeds the reset ceiling; choose an earlier point."
+            }
+            (Self::ValidationFailed, "RESET_REEXECUTION_NOT_ACKNOWLEDGED") => {
+                "Steps that completed in the source, or that are in flight in a run being cancelled, will run again; set `acknowledgeReexecution`."
+            }
+            (Self::Conflict, "RESET_SOURCE_NOT_TERMINAL") => {
+                "Wait for the run to end, or ask for `sourcePolicy: CANCEL_SOURCE` to cancel it and have the run created when it has ended."
+            }
+            (Self::ValidationFailed, "RESET_CANCEL_SOURCE_NOT_AVAILABLE") => {
+                "Wait for the run to end and reset it then, or ask the operator of the platform to enable resets that cancel their source."
+            }
+            (Self::ValidationFailed, "RESET_RULE_MISSING") => {
+                "Reset to an earlier point; the owning feature must declare the rule."
+            }
+            (Self::ValidationFailed, "RESET_REAPPLY_NOT_AVAILABLE") => {
+                "Ask for `reapply: NONE`, or ask the operator of the platform to enable reset reapply."
+            }
+            (Self::ValidationFailed, "RESET_REAPPLY_TOO_MANY") => {
+                "The run received more than 256 signals and retained Updates after that point; choose a later point or `reapply: NONE`."
             }
             (Self::NotFound, "ROUTE_NOT_FOUND") | (Self::BadRequest, "METHOD_NOT_ALLOWED") => {
                 "This server does not have that call: check the path and method, and the version of the API it speaks."
@@ -147,6 +308,9 @@ impl ErrorCode {
             (Self::QuotaExceeded, _) => {
                 "Release something the limit counts, or ask an administrator to raise the limit."
             }
+            (Self::Unavailable, "BINARY_CAPABILITY_MISSING") => {
+                "The service cannot serve this call now: try again. If it keeps happening, tell the operator of the platform."
+            }
             (Self::Unavailable, _) => {
                 "Try again with a growing pause; if it lasts, check the platform's readiness and report the trace id."
             }
@@ -154,6 +318,29 @@ impl ErrorCode {
                 "Try again once; if it happens again, report the trace id to the operator of the platform."
             }
         }
+    }
+}
+
+/// The `details.reason` of a refusal at one of the ceilings feature 018 adds; the other limits carry
+/// only `details.limit`.
+fn quota_reason(limit: &str) -> Option<&'static str> {
+    use sagat_domain::quota::QuotaResource;
+    // The label is the one the refusing store passes: a resource's `limit_name`, or the one ceiling of
+    // a backfill per schedule, which is not a resource of its own.
+    if limit == QuotaResource::Schedules.limit_name() {
+        Some("SCHEDULE_LIMIT")
+    } else if limit == QuotaResource::ScheduleBackfills.limit_name()
+        || limit == "schedule_backfills_per_schedule"
+    {
+        Some("BACKFILL_CONCURRENCY")
+    } else if limit == QuotaResource::BatchJobs.limit_name()
+        || limit == QuotaResource::TenantBatchJobs.limit_name()
+    {
+        Some("BATCH_LIMIT")
+    } else if limit == QuotaResource::PendingResets.limit_name() {
+        Some("PENDING_RESET_LIMIT")
+    } else {
+        None
     }
 }
 
@@ -366,6 +553,18 @@ impl ApiError {
         self
     }
 
+    /// Adds one entry to the details of the error, keeping the ones it has.
+    #[must_use]
+    pub fn with_detail(mut self, key: &str, value: Value) -> Self {
+        let mut details = match self.parts.details.take() {
+            Some(Value::Object(map)) => map,
+            _ => serde_json::Map::new(),
+        };
+        details.insert(key.to_owned(), value);
+        self.parts.details = Some(Value::Object(details));
+        self
+    }
+
     /// The error as it will be reported, for transports other than HTTP (the gRPC adapter maps the
     /// same classification onto its own status codes, so both agree on what an error means).
     #[must_use]
@@ -564,6 +763,7 @@ impl ApiError {
                     }
                     ConflictKind::ConnectorSlug => "a connector with this slug already exists",
                     ConflictKind::ScriptName => "a script with this name already exists",
+                    ConflictKind::ScheduleName => "a schedule with this name already exists",
                     ConflictKind::RequestNotApproved => {
                         "the request is not approved with what the namespace asks for now"
                     }
@@ -573,7 +773,8 @@ impl ApiError {
                     ConflictKind::WorkflowName
                     | ConflictKind::WebhookSubscriptionName
                     | ConflictKind::BrokerSubscriptionName
-                    | ConflictKind::ScriptName => {
+                    | ConflictKind::ScriptName
+                    | ConflictKind::ScheduleName => {
                         json!({ "field": "name" })
                     }
                     ConflictKind::EventIdReused => json!({ "reason": "EVENT_ID_REUSED" }),
@@ -610,6 +811,10 @@ impl ApiError {
                 e.parts.details = Some(json!({ "reason": "IDEMPOTENCY_KEY_REUSED" }));
                 e
             }
+            // design 043: the pre-check of the `inputSchema` had no permit within its wait, as a start's `Busy`
+            AppError::InvalidDefinition(error) if matches!(*error, IrError::ValidatorBusy) => {
+                Self::unavailable()
+            }
             AppError::InvalidDefinition(error) => {
                 let mut e = Self::validation(error.to_string());
                 e.parts.details = Some(definition_details(&error));
@@ -636,6 +841,142 @@ impl ApiError {
                 e.parts.details = Some(json!({ "reason": "STATE_CONFLICT" }));
                 e
             }
+            AppError::InvalidConnection { reason } => {
+                let mut e = Self::validation(format!(
+                    "the connection settings are not acceptable: {reason}"
+                ));
+                e.parts.details = Some(json!({ "reason": reason }));
+                e
+            }
+            AppError::InvalidSchedule { reason, field } => {
+                let mut e = Self::validation(format!("the schedule is not acceptable: {reason}"));
+                e.parts.details = Some(match field {
+                    Some(field) => json!({ "reason": reason, "field": field }),
+                    None => json!({ "reason": reason }),
+                });
+                e
+            }
+            AppError::InvalidBatch { reason, field } => {
+                let mut e =
+                    Self::validation(format!("the batch operation is not acceptable: {reason}"));
+                e.parts.details = Some(match field {
+                    Some(field) => json!({ "reason": reason, "field": field }),
+                    None => json!({ "reason": reason }),
+                });
+                e
+            }
+            // design 043: the reason, the pointer and the closed rule; never a value of the input
+            AppError::InvalidRunInput {
+                reason,
+                field,
+                rule,
+            } => {
+                let mut e = Self::validation(format!(
+                    "the run input does not match the workflow's input schema: {reason}"
+                ));
+                let mut details = json!({ "reason": reason });
+                if let Some(field) = field {
+                    details["field"] = json!(field);
+                }
+                if let Some(rule) = rule {
+                    details["rule"] = json!(rule);
+                }
+                e.parts.details = Some(details);
+                e
+            }
+            AppError::InvalidStart { reason, field } => {
+                let mut e =
+                    Self::validation(format!("the start option is not acceptable: {reason}"));
+                e.parts.details = Some(match field {
+                    Some(field) => json!({ "reason": reason, "field": field }),
+                    None => json!({ "reason": reason }),
+                });
+                e
+            }
+            // what a declared Update refuses before admission reads as it does on `updateRun`
+            AppError::DeclaredUpdate(error) => crate::routes::declared_operations::store_error(
+                error,
+                sagat_domain::identity::Permission::RunUpdate,
+            ),
+            AppError::ResetRefused { reason, event_type } => {
+                let mut e = if reason == "RESET_SOURCE_NOT_TERMINAL" {
+                    Self::new(
+                        StatusCode::CONFLICT,
+                        ErrorCode::Conflict,
+                        "the run has not ended: wait for it or reset it while cancelling it",
+                    )
+                } else {
+                    Self::validation(format!("the reset cannot be made: {reason}"))
+                };
+                e.parts.details = Some(match event_type {
+                    Some(event_type) => json!({ "reason": reason, "eventType": event_type }),
+                    None => json!({ "reason": reason }),
+                });
+                e
+            }
+            AppError::SignalRefused { reason } => {
+                let mut e = Self::new(
+                    StatusCode::CONFLICT,
+                    ErrorCode::Conflict,
+                    if reason == "NOT_WAITING" {
+                        "the run is not waiting for that signal"
+                    } else {
+                        "the new run would not accept that signal: nothing was created"
+                    },
+                );
+                e.parts.details = Some(json!({ "reason": reason }));
+                e
+            }
+            // The holder is named by the route, and only to a caller who may read runs: this
+            // conversion does not know who is asking.
+            AppError::BusinessIdConflict {
+                reason,
+                reusable_after,
+                ..
+            } => {
+                let message = if reason == "BUSINESS_ID_REUSE_REJECTED" {
+                    "the reuse policy forbids a new run while the previous one is remembered"
+                } else {
+                    "another open execution holds this business identifier"
+                };
+                let mut e = Self::new(StatusCode::CONFLICT, ErrorCode::Conflict, message);
+                let after = reusable_after.and_then(|at| {
+                    at.format(&time::format_description::well_known::Rfc3339)
+                        .ok()
+                });
+                e.parts.details = Some(match after {
+                    Some(after) => json!({ "reason": reason, "reusableAfter": after }),
+                    None => json!({ "reason": reason }),
+                });
+                e
+            }
+            AppError::ScheduleConflict { reason } => {
+                let mut e = Self::new(
+                    StatusCode::CONFLICT,
+                    ErrorCode::Conflict,
+                    "the schedule is in a state that cannot take this request",
+                );
+                e.parts.details = Some(json!({ "reason": reason }));
+                e
+            }
+            AppError::BatchConflict { reason } => {
+                let mut e = Self::new(
+                    StatusCode::CONFLICT,
+                    ErrorCode::Conflict,
+                    "the batch operation is in a state that cannot take this request",
+                );
+                e.parts.details = Some(json!({ "reason": reason }));
+                e
+            }
+            AppError::OutcomeUnresolved => {
+                let mut e = Self::new(
+                    StatusCode::CONFLICT,
+                    ErrorCode::Conflict,
+                    "the step's last outcome is unknown: settle it before it is repeated",
+                );
+                e.parts.details = Some(json!({ "reason": "OUTCOME_UNRESOLVED" }));
+                e
+            }
             AppError::Invalid(inner) => Self::validation(inner.to_string()),
             AppError::InvalidScript(inner) => {
                 let mut e = Self::validation(inner.to_string());
@@ -650,7 +991,11 @@ impl ApiError {
                     ErrorCode::QuotaExceeded,
                     "a limit was reached; release something and retry",
                 );
-                e.parts.details = Some(json!({ "limit": what }));
+                // the ceilings of feature 018 say which they are (`contracts/errors.md`)
+                e.parts.details = Some(match quota_reason(what) {
+                    Some(reason) => json!({ "limit": what, "reason": reason }),
+                    None => json!({ "limit": what }),
+                });
                 e
             }
             AppError::Unavailable => Self::unavailable(),
@@ -799,6 +1144,47 @@ const fn script_reason(error: ScriptError) -> &'static str {
     }
 }
 
+/// The most refused fields one answer lists; the count of the rest is in `omitted`.
+const MAX_REFUSED_FIELDS: usize = 20;
+
+/// `details` of a refused Apache Iceberg write: the reason, the node, and the mode or the paths and classes of the
+/// fields, never a value (FR-035-025).
+fn lake_refusal_details(node: &str, refusal: &sagat_domain::database::LakeRefusal) -> Value {
+    use sagat_domain::database::{EgressRefusal, LakeRefusal};
+    match refusal {
+        LakeRefusal::ModeNotAllowed(mode) => {
+            json!({ "reason": "MODE_NOT_ALLOWED", "node": node, "mode": mode.as_str() })
+        }
+        LakeRefusal::Egress(refusals) => {
+            let fields: Vec<Value> = refusals
+                .iter()
+                .filter_map(|each| match each {
+                    EgressRefusal::Field { path, level } => {
+                        Some(json!({ "path": path, "level": level.as_str() }))
+                    }
+                    EgressRefusal::NotComputed => None,
+                })
+                .collect();
+            let unclassified = refusals
+                .iter()
+                .any(|each| matches!(each, EgressRefusal::NotComputed));
+            let omitted = fields.len().saturating_sub(MAX_REFUSED_FIELDS);
+            let mut details = json!({
+                "reason": "CLASSIFICATION_EGRESS_REFUSED",
+                "node": node,
+                "fields": fields.into_iter().take(MAX_REFUSED_FIELDS).collect::<Vec<_>>(),
+            });
+            if unclassified {
+                details["unclassified"] = json!(true);
+            }
+            if omitted > 0 {
+                details["omitted"] = json!(omitted);
+            }
+            details
+        }
+    }
+}
+
 /// Structured detail for a rejected workflow document: paths and node ids, never document values
 /// beyond the clipped fragments the codec already limited.
 fn definition_details(error: &IrError) -> Value {
@@ -849,14 +1235,51 @@ fn definition_details(error: &IrError) -> Value {
         IrError::Expression { node, field, .. } => {
             json!({ "reason": "EXPRESSION", "node": node, "field": field })
         }
+        IrError::LakeDisabled { node } => json!({ "reason": "LAKE_DISABLED", "node": node }),
+        IrError::CollectionOperatorsDisabled { node } => {
+            json!({ "reason": "COLLECTION_OPERATORS_DISABLED", "node": node })
+        }
+        IrError::Operator {
+            node,
+            stage,
+            operator,
+            refusal,
+            ..
+        } => json!({
+            "reason": "INVALID_OPERATOR",
+            "node": node,
+            "stage": stage,
+            "operator": operator,
+            "refusal": refusal.as_str(),
+        }),
+        IrError::LakeWriteRefused { node, refusal } => lake_refusal_details(node, refusal),
         IrError::NameMismatch { .. } => json!({ "reason": "NAME_MISMATCH" }),
         IrError::UnknownScript { digest } => {
             json!({ "reason": "UNKNOWN_SCRIPT", "artifactDigest": digest })
         }
+        // Design 043: the closed issue, the keyword and its pointer, as a schema problem of the document.
+        IrError::InputSchema {
+            issue,
+            keyword,
+            path,
+        } => json!({
+            "reason": "SCHEMA",
+            "issues": [{
+                "code": issue.as_str(), "keyword": keyword, "path": path, "message": error.to_string(),
+            }],
+        }),
+        // answered `503` before the details are built (`AppError::InvalidDefinition` above)
+        IrError::ValidatorBusy => json!({ "reason": "VALIDATOR_BUSY" }),
         IrError::TooLarge => json!({ "reason": "TOO_LARGE" }),
         IrError::Malformed => json!({ "reason": "MALFORMED" }),
         IrError::EscapingBodyEdge { body, from, .. } => {
             json!({ "reason": "INVALID_SCOPE", "body": body.as_str(), "node": from.as_str() })
+        }
+        IrError::Invalid(WorkflowError::IcebergNodeNotRoot) => {
+            json!({ "reason": "ICEBERG_NODE_NOT_ROOT" })
+        }
+        IrError::Invalid(WorkflowError::InvalidIcebergNode) => {
+            json!({ "reason": "INVALID_ICEBERG_NODE" })
         }
         IrError::Invalid(WorkflowError::ExpressionByteLimit { node, limit }) => {
             json!({ "reason": "EXPRESSION", "node": node.as_str(), "limit": limit })

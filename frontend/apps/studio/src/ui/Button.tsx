@@ -10,7 +10,7 @@ export interface ButtonProps extends AriaAttributes {
   variant?: Variant;
   type?: 'button' | 'submit' | 'reset';
   size?: 'sm' | 'md' | 'lg';
-  /** A disabled button is announced as unavailable and activating it does nothing (D2403). The design system marks it with the native attribute or, when it carries an explanation or is busy, with `aria-disabled` so that it stays reachable. */
+  /** A disabled button is announced as unavailable and activating it does nothing (Decision 2403). The design system marks it with the native attribute or, when it carries an explanation or is busy, with `aria-disabled` so that it stays reachable. */
   disabled?: boolean | undefined;
   /** The action is in flight: the button shows it and ignores another activation. */
   busy?: boolean | undefined;

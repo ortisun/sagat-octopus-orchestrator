@@ -1,0 +1,391 @@
+warning: field `tagged_fields` is never read
+   --> vendor/rskafka/src/protocol/messages/create_topics.rs:291:9
+    |
+278 | pub struct CreateTopicsResponse {
+    |            -------------------- field in this struct
+...
+291 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `CreateTopicsResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: fields `name`, `value`, `read_only`, `config_source`, `is_sensitive`, and `tagged_fields` are never read
+   --> vendor/rskafka/src/protocol/messages/create_topics.rs:321:9
+    |
+319 | pub struct CreateTopicResponseConfig {
+    |            ------------------------- fields in this struct
+320 |     /// The configuration name.
+321 |     pub name: CompactString,
+    |         ^^^^
+...
+324 |     pub value: CompactNullableString,
+    |         ^^^^^
+...
+327 |     pub read_only: Boolean,
+    |         ^^^^^^^^^
+...
+330 |     pub config_source: Int8,
+    |         ^^^^^^^^^^^^^
+...
+333 |     pub is_sensitive: Boolean,
+    |         ^^^^^^^^^^^^
+...
+336 |     pub tagged_fields: TaggedFields,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `CreateTopicResponseConfig` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: fields `num_partitions`, `replication_factor`, `configs`, and `tagged_fields` are never read
+   --> vendor/rskafka/src/protocol/messages/create_topics.rs:374:9
+    |
+359 | pub struct CreateTopicResponse {
+    |            ------------------- fields in this struct
+...
+374 |     pub num_partitions: Option<Int32>,
+    |         ^^^^^^^^^^^^^^
+...
+379 |     pub replication_factor: Option<Int16>,
+    |         ^^^^^^^^^^^^^^^^^^
+...
+384 |     pub configs: Vec<CreateTopicResponseConfig>,
+    |         ^^^^^^^
+...
+389 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `CreateTopicResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: fields `low_watermark` and `tagged_fields` are never read
+   --> vendor/rskafka/src/protocol/messages/delete_records.rs:182:9
+    |
+177 | pub struct DeleteResponsePartition {
+    |            ----------------------- fields in this struct
+...
+182 |     pub low_watermark: Int64,
+    |         ^^^^^^^^^^^^^
+...
+190 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `DeleteResponsePartition` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `tagged_fields` is never read
+   --> vendor/rskafka/src/protocol/messages/delete_records.rs:226:9
+    |
+216 | pub struct DeleteResponseTopic {
+    |            ------------------- field in this struct
+...
+226 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `DeleteResponseTopic` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `tagged_fields` is never read
+   --> vendor/rskafka/src/protocol/messages/delete_records.rs:269:9
+    |
+258 | pub struct DeleteRecordsResponse {
+    |            --------------------- field in this struct
+...
+269 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `DeleteRecordsResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `tagged_fields` is never read
+   --> vendor/rskafka/src/protocol/messages/delete_topics.rs:101:9
+    |
+ 88 | pub struct DeleteTopicsResponse {
+    |            -------------------- field in this struct
+...
+101 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `DeleteTopicsResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `tagged_fields` is never read
+   --> vendor/rskafka/src/protocol/messages/delete_topics.rs:144:9
+    |
+129 | pub struct DeleteTopicsResponseTopic {
+    |            ------------------------- field in this struct
+...
+144 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `DeleteTopicsResponseTopic` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: fields `producer_id` and `first_offset` are never read
+   --> vendor/rskafka/src/protocol/messages/fetch.rs:170:9
+    |
+168 | pub struct FetchResponseAbortedTransaction {
+    |            ------------------------------- fields in this struct
+169 |     /// The producer id associated with the aborted transaction.
+170 |     pub producer_id: Int64,
+    |         ^^^^^^^^^^^
+...
+173 |     pub first_offset: Int64,
+    |         ^^^^^^^^^^^^
+    |
+    = note: `FetchResponseAbortedTransaction` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `aborted_transactions` is never read
+   --> vendor/rskafka/src/protocol/messages/fetch.rs:213:9
+    |
+192 | pub struct FetchResponsePartition {
+    |            ---------------------- field in this struct
+...
+213 |     pub aborted_transactions: Vec<FetchResponseAbortedTransaction>,
+    |         ^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `FetchResponsePartition` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `timestamp` is never read
+   --> vendor/rskafka/src/protocol/messages/list_offsets.rs:184:9
+    |
+169 | pub struct ListOffsetsResponsePartition {
+    |            ---------------------------- field in this struct
+...
+184 |     pub timestamp: Option<Int64>,
+    |         ^^^^^^^^^
+    |
+    = note: `ListOffsetsResponsePartition` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: fields `log_append_time_ms` and `log_start_offset` are never read
+   --> vendor/rskafka/src/protocol/messages/produce.rs:148:9
+    |
+132 | pub struct ProduceResponsePartitionResponse {
+    |            -------------------------------- fields in this struct
+...
+148 |     pub log_append_time_ms: Option<Int64>,
+    |         ^^^^^^^^^^^^^^^^^^
+...
+153 |     pub log_start_offset: Option<Int64>,
+    |         ^^^^^^^^^^^^^^^^
+    |
+    = note: `ProduceResponsePartitionResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: fields `session_lifetime_ms` and `tagged_fields` are never read
+   --> vendor/rskafka/src/protocol/messages/sasl_msg.rs:198:9
+    |
+181 | pub struct SaslAuthenticateResponse {
+    |            ------------------------ fields in this struct
+...
+198 |     pub session_lifetime_ms: Option<Int64>,
+    |         ^^^^^^^^^^^^^^^^^^^
+...
+203 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `SaslAuthenticateResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: struct `CompactArray` is never constructed
+   --> vendor/rskafka/src/protocol/primitives.rs:725:12
+    |
+725 | pub struct CompactArray<T>(pub Option<Vec<T>>);
+    |            ^^^^^^^^^^^^
+
+warning: `rskafka` (lib) generated 14 warnings
+   Compiling sagat-tests v0.2.0 (/Users/marcelo/Documents/Projects/sagat-octopus-compensation-safety/tests)
+    Finished `test` profile [unoptimized] target(s) in 1m 09s
+     Running contract/durable-execution/grpc/main.rs (/var/folders/60/bf6rmfzx6zq67nrbzb3m0p480000gn/T/sagat-037-target-q0fwz2gu/debug/deps/contract_grpc_durable_execution-1efbc130422ad90c)
+
+running 70 tests
+test blobs::a_blob_belongs_to_one_step_and_a_retried_report_is_answered_again ... ok
+test blobs::a_blob_nobody_used_is_swept_with_its_bytes ... ok
+test blobs::a_blob_over_the_maximum_is_refused_and_leaves_nothing ... ok
+test blobs::a_chunk_of_exactly_the_agreed_size_is_accepted ... ok
+test blobs::a_large_output_travels_as_a_blob_and_the_run_keeps_only_its_descriptor ... ok
+test blobs::a_read_returns_no_bytes_when_its_audit_cannot_be_appended ... ok
+test blobs::a_report_names_the_output_inline_or_as_a_blob_never_both ... ok
+test blobs::a_stated_size_or_digest_that_is_wrong_is_refused_and_leaves_nothing ... ok
+test blobs::a_tenant_cannot_pile_up_unused_blobs ... ok
+test blobs::a_transfer_that_stalls_is_cut_and_leaves_nothing ... ok
+test blobs::an_attempt_with_declared_secrets_cannot_upload_until_stream_scanning_is_available ... ok
+test blobs::an_empty_blob_is_a_blob ... ok
+test blobs::an_upload_that_is_not_header_then_chunks_is_refused ... ok
+test blobs::another_tenants_blob_is_exactly_as_missing_as_one_that_does_not_exist ... ok
+test blobs::blobs_are_refused_where_none_is_configured ... ok
+test blobs::content_that_changed_in_the_store_ends_the_download_with_an_error ... ok
+test blobs::inline_descriptor_and_blob_completion_cannot_share_an_idempotency_key ... ok
+test blobs::only_so_many_transfers_run_at_once ... ok
+test blobs::only_the_holder_of_a_current_lease_can_move_blobs ... ok
+test blobs::rejected_blob_completion_replays_after_unused_blob_collection ... ok
+test blobs::stalled_download_releases_tenant_and_transfer_slots_at_its_deadline ... ok
+test input_blobs::child_inherits_catalog_provenance_only_when_it_inherits_the_input ... ok
+test input_blobs::concurrent_same_start_returns_one_run_and_audit_failure_rolls_back_the_binding ... ok
+test input_blobs::large_input_is_private_until_start_then_lease_readable_and_deduplicated ... ok
+test input_blobs::replay_precedes_active_version_and_expired_deadline_and_catalog_checks ... ok
+test input_blobs::stalled_chunked_upload_times_out_and_releases_capacity_and_oversize_is_typed ... ok
+test input_blobs::upload_routes_preserve_protected_unknown_routes_and_method_errors ... ok
+test input_blobs::uploader_scope_schema_and_mode_fail_without_binding_or_creating_a_run ... ok
+test limits::a_connection_beyond_the_cap_waits_for_a_place_instead_of_being_served ... ok
+test limits::a_full_engine_sheds_calls_that_look_for_work_before_calls_that_keep_work_alive ... ok
+test input_blobs::uploads_enforce_size_digest_normal_body_limit_and_expire_unused_inputs ... ok
+test protocol::a_cancellation_reaches_the_worker_through_the_heartbeat ... ok
+test protocol::a_completion_is_idempotent_and_a_conflicting_replay_is_refused ... ok
+test protocol::a_failure_is_routed_by_the_engine_and_unknown_codes_are_normalised ... ok
+test protocol::a_heartbeat_after_its_own_report_is_answered_without_an_error ... ok
+test protocol::a_report_without_the_current_lease_is_stale_and_changes_nothing ... ok
+test protocol::a_heartbeat_of_a_lost_lease_stays_stale_after_human_resolution_without_another_lease ... ok
+test protocol::a_subject_over_its_budget_is_told_when_to_come_back ... ok
+test protocol::a_session_that_is_not_used_expires ... ok
+test protocol::a_task_stream_spends_credit_across_successive_frames ... ok
+test protocol::a_worker_executes_a_workflow_through_every_rpc ... ok
+test protocol::a_worker_of_another_tenant_cannot_see_touch_or_reuse_anything ... ok
+test protocol::an_activity_without_a_result_completes_with_an_empty_output ... ok
+test protocol::an_oversized_message_is_refused_before_it_is_processed ... ok
+test protocol::an_underfilled_task_stream_ends_with_one_positive_retry_hint ... ok
+test protocol::cancelling_while_a_claim_waits_rolls_back_before_the_fence_opens ... ok
+test protocol::every_rpc_requires_a_valid_bearer_token_from_a_known_member ... ok
+test protocol::malformed_requests_are_invalid_arguments_and_leave_the_attempt_intact ... ok
+test protocol::max_inflight_bounds_what_one_session_can_hold ... ok
+test protocol::nothing_to_do_is_an_empty_answer_with_a_retry_hint_not_an_error ... ok
+test protocol::only_the_worker_role_may_speak_the_worker_protocol ... ok
+test protocol::task_stream_credit_is_validated_and_old_sessions_cannot_lease ... ok
+test protocol::task_stream_byte_credit_is_cumulative_across_frames ... ok
+test protocol::unary_and_stream_claims_share_the_exact_session_limit ... ok
+test protocol::task_stream_lifetime_admission_survives_headers_and_is_released_on_drop ... ok
+test protocol_compatibility::committed_step_output_provenance_gates_the_downstream_task ... ok
+test protocol_compatibility::mixed_workers_only_lease_run_input_blobs_to_protocol_1_3 ... ok
+test protocol_compatibility::incompatible_backlog_does_not_hide_later_inline_work_from_an_old_worker ... ok
+test run_result::a_child_result_becomes_the_output_of_the_parent_step ... ok
+test run_result::a_result_expression_that_fails_fails_the_child_and_the_parent_step ... ok
+test run_result::a_parent_that_cannot_keep_the_result_fails_its_step_with_run_data_limit ... ok
+test run_result::a_result_larger_than_one_payload_fails_the_child_with_run_data_limit ... ok
+test run_result::an_end_without_an_output_expression_leaves_the_parent_step_without_output ... ok
+test stream_security::cancelling_an_idle_stream_stops_its_claims_and_a_new_stream_recovers ... ok
+test stream_security::bearer_expiry_ends_a_waiting_stream_and_suppresses_later_work ... ok
+test stream_security::foreign_tenant_token_session_and_namespace_never_lease_ready_work ... ok
+test stream_security::narrowed_and_revoked_bindings_end_waiting_streams_before_another_lease ... ok
+test stream_security::role_and_membership_removal_end_waiting_streams_before_another_lease ... ok
+test stream_telemetry::saturated_stream_admission_preserves_lease_calls_and_another_tenant ... ok
+test stream_telemetry::stream_metrics_are_bounded_clean_and_trace_preserving ... ok
+
+test result: ok. 70 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 249.82s
+
+     Running e2e/developer-experience/main.rs (/var/folders/60/bf6rmfzx6zq67nrbzb3m0p480000gn/T/sagat-037-target-q0fwz2gu/debug/deps/e2e_developer_experience-f5fa471ccca1765e)
+
+running 37 tests
+test dev_environment::a_provider_that_never_stops_answering_is_not_read_to_the_end ... ok
+test dev_environment::a_token_is_not_written_through_a_link_somebody_planted ... ok
+test dev_environment::a_token_from_the_development_provider_is_the_first_credential_of_the_first_day ... ok
+test dev_environment::the_command_says_what_went_wrong_asking_for_a_token ... ok
+test dev_environment::seed_dev_leaves_a_namespace_for_the_administrator_and_leaves_it_alone_the_second_time ... ok
+test dev_environment::the_namespace_seed_is_refused_outside_development_and_without_the_tenant ... ok
+test dev_environment::two_seeds_at_once_leave_one_workspace_and_one_namespace ... ok
+test diagnostics::us04_a_file_that_is_not_a_document_is_told_what_a_document_is ... ok
+test diagnostics::us04_a_manifest_with_an_invalid_document_is_told_the_same_way ... ok
+test diagnostics::us04_a_workflow_with_an_invalid_node_is_told_where_what_to_do_and_where_to_read_more ... ok
+test diagnostics::us04_what_only_the_platform_can_find_is_told_with_the_same_help ... ok
+test doctor::a_namespace_that_is_not_there_is_told_with_the_ones_that_are ... ok
+test doctor::a_machine_that_is_ready_is_told_so_check_by_check ... ok
+test doctor::a_token_near_expiry_is_a_warning_and_not_a_failed_check ... ok
+test doctor::a_token_the_platform_does_not_accept_is_told_with_what_to_do ... ok
+test doctor::an_address_that_leads_nowhere_is_told_what_kind_of_nowhere ... ok
+test doctor::the_command_line_and_the_platform_are_compared_by_release ... ok
+test doctor::the_machine_readable_form_says_the_same_thing ... ok
+test onboarding_browser::us01_compose_cli_sdk_and_studio_are_one_real_first_day_path ... ignored, needs Node, the built Studio, frontend dependencies and Playwright Chromium
+test order_processing::order_processing_examples_have_one_semantic_contract_in_all_five_sdks ... ignored, needs Node, Python, Go, .NET and a JDK: the sdks job runs it with --ignored
+test saga::us02_the_payment_saga_of_the_example_compensates_a_decline_and_reconciles_a_lost_answer ... ignored, needs Node: the sdks job of CI runs it with --ignored
+test doctor::the_worker_endpoint_and_the_broker_are_checked_when_they_are_named ... ok
+test scripts::a_script_that_runs_out_of_time_and_a_source_that_does_not_build_say_what_to_do ... ok
+test scripts::a_script_is_tried_and_published_from_a_file_and_the_digest_pins_it_in_a_workflow ... ok
+test scripts::with_the_real_sandbox_a_script_is_run_and_its_result_comes_back ... ignored, needs the container engine: the sdks job of CI runs it with --ignored
+test scripts::without_a_sandbox_runner_the_tool_waits_for_the_time_it_was_given_and_says_why ... ok
+test stories::us01_a_run_that_waits_for_a_worker_says_so_instead_of_hanging_and_can_be_cancelled ... ok
+test scripts::an_existing_script_after_the_first_page_is_updated_instead_of_created_again ... ok
+test stories::us01_following_the_quickstart_a_two_step_workflow_runs_and_can_be_seen ... ok
+test stories::us02_a_lost_answer_is_reconciled_before_anything_is_repeated ... ok
+test stories::us03_every_template_publishes_as_the_workflow_its_readme_names ... ok
+test stories::us02_a_payment_saga_is_rehearsed_against_a_mock_provider_that_fails_on_demand ... ok
+test stories::us03_the_cron_and_script_templates_publish_the_way_they_say ... ok
+test stories::us03_the_approval_template_waits_for_a_decision_and_acts_on_it ... ok
+test stories::us03_the_event_template_starts_a_run_for_each_event_and_a_repeat_starts_nothing ... ok
+test us03::us03_the_hello_world_of_each_sdk_makes_the_same_run_as_the_others ... ignored, needs Node, Python, Go, .NET and a JDK: the sdks job of CI runs it with --ignored
+test stories::worker_bind_lets_the_identity_serve_the_activities_of_a_workflow_for_an_sdk_worker ... ok
+
+test result: ok. 32 passed; 0 failed; 5 ignored; 0 measured; 0 filtered out; finished in 129.65s
+
+     Running e2e/durable-execution/main.rs (/var/folders/60/bf6rmfzx6zq67nrbzb3m0p480000gn/T/sagat-037-target-q0fwz2gu/debug/deps/e2e_durable_execution-d97cfd578f1c13cb)
+
+running 16 tests
+test engine::an_engine_pointed_at_an_unmigrated_database_is_alive_but_not_ready_until_the_migration_runs ... ok
+test engine::a_parent_run_waits_for_its_child_across_the_whole_stack_and_the_api_shows_the_link ... ok
+test engine::outside_development_the_engine_refuses_a_role_that_could_rewrite_the_audit_trail ... ok
+test engine::probes_tell_the_truth_and_metrics_are_served_on_the_admin_listener_only ... ok
+test engine::stopping_the_engine_drains_the_server_and_ends_every_loop ... ok
+test engine::the_engine_preserves_a_dead_workers_step_for_review_by_itself ... ok
+test engine::the_engine_fires_timers_announces_work_and_serves_workers_with_nobody_driving_it ... ok
+test engine::the_insecure_key_url_is_refused_outside_development ... ok
+test engine::without_nats_workers_still_poll_and_the_outbox_waits_for_a_dispatcher ... ok
+test stories::us01_a_dag_runs_to_completion_and_every_step_is_checkpointed ... ok
+test stories::us02_a_dead_workers_step_requires_review_and_the_stale_generation_is_dead ... ok
+test stories::us03_a_one_hour_timer_holds_no_worker_and_the_scheduler_resumes_it ... ok
+test stories::us03_a_run_waiting_for_a_signal_resumes_when_it_arrives ... ok
+test stories::us04_contending_workers_get_each_task_once_and_duplicate_reports_commit_once ... ok
+test stream_recovery::a_streamed_lease_can_complete_after_the_engine_restarts_without_registering_again ... ok
+test stream_recovery::an_abandoned_streamed_lease_reviews_after_restart_and_fences_its_late_result ... ok
+
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 70.94s
+
+     Running e2e/inline-code-sandbox/main.rs (/var/folders/60/bf6rmfzx6zq67nrbzb3m0p480000gn/T/sagat-037-target-q0fwz2gu/debug/deps/e2e_inline_code_sandbox-46cc01ddbc1eeed8)
+
+running 28 tests
+test us01::a_python_script_is_tried_the_same_way ... ok
+test us01::a_result_that_breaks_the_declared_schema_is_a_failure_that_names_the_rule_and_not_the_value ... ok
+test us01::a_script_that_does_not_build_says_why_without_running ... ok
+test us01::a_script_that_returns_nothing_has_succeeded_with_a_null_result ... ok
+test us01::a_script_that_throws_fails_with_its_error_in_the_log ... ok
+test us01::a_test_run_has_no_production_secrets_and_the_attempt_is_audited ... ok
+test us01::a_test_that_is_never_taken_fails_as_unavailable ... ok
+test us01::only_someone_who_may_write_scripts_can_try_one ... ok
+test us01::an_author_tries_a_typescript_script_and_gets_the_result_the_log_and_the_inferred_schemas ... ok
+test us01::the_log_the_author_sees_is_filtered ... ok
+test us02::a_build_that_fails_is_visible_and_the_fixed_draft_becomes_the_next_version ... ok
+test us02::a_lockfile_that_pins_a_package_is_refused_with_the_reason_because_installing_is_not_built ... ok
+test us02::a_signature_that_the_platform_did_not_make_is_not_trusted_even_over_the_right_bytes ... ok
+test us02::a_new_version_changes_nothing_for_a_workflow_pinned_to_the_old_one ... ok
+test us02::a_workflow_can_only_pin_an_artifact_this_tenant_built ... ok
+test us02::an_artifact_that_was_tampered_with_in_the_database_is_not_run ... ok
+test us02::publishing_builds_a_signed_artifact_that_a_workflow_pins_and_a_run_executes ... ok
+test us02::the_same_draft_is_the_same_version_and_the_same_source_is_never_built_twice ... ok
+test us03::dedicated_go_and_java_builders_are_accepted_by_the_registry ... ok
+test us03::csharp_with_an_allowlisted_nuget_package_is_tested_published_and_run_by_a_workflow ... ok
+test us04::a_memory_bomb_is_killed_and_nothing_is_left_running ... ok
+test us04::a_cpu_burner_is_stopped_at_its_time_limit_and_the_step_fails_with_the_code ... ok
+test us04::a_script_sees_nothing_of_the_host_and_runs_as_nobody ... ok
+test us04::a_script_that_does_not_catch_the_refusal_fails_its_step_without_a_retry ... ok
+test us04::a_script_that_floods_its_output_is_cut_off ... ok
+test us04::a_script_that_reaches_for_the_cloud_metadata_service_is_refused_and_it_is_audited ... ok
+test us04::a_script_without_network_policy_has_no_way_out_even_when_the_namespace_allows_one ... ok
+test us04::a_secret_the_step_declared_reaches_the_script_and_nothing_else_does_and_it_cannot_leave_through_the_log_or_the_result ... ok
+
+test result: ok. 28 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 107.33s
+
+     Running e2e/sagas-compensations/main.rs (/var/folders/60/bf6rmfzx6zq67nrbzb3m0p480000gn/T/sagat-037-target-q0fwz2gu/debug/deps/e2e_sagas_compensations-d54d29db37bf1729)
+
+running 21 tests
+test us01::us01_a_compensation_declared_outside_a_saga_is_published_with_a_warning ... ok
+test telemetry::compensations_reconciliations_and_decisions_are_counted_without_naming_anyone ... ok
+test us01::us01_a_compensation_that_cannot_work_is_refused_when_the_author_publishes ... ok
+test us01::us01_another_tenant_cannot_read_a_plan_and_a_worker_identity_cannot_either ... ok
+test us01::us01_publishing_a_saga_records_its_plan_with_durable_compensation_ids ... ok
+test us01::us01_the_plan_the_workers_follow_is_the_plan_that_was_recorded ... ok
+test us02::us02_a_declined_payment_releases_the_reserved_limit_and_the_run_is_compensated ... ok
+test us02::us02_a_worker_that_dies_while_releasing_requires_review_without_a_second_attempt ... ok
+test us02::us02_cancelling_a_payment_in_flight_undoes_what_completed_and_ends_cancelled ... ok
+test us03::us03_a_negative_lookup_preserves_review_until_a_human_resolves_without_a_second_attempt ... ok
+test us03::us03_a_provider_that_cannot_say_leaves_the_decision_to_a_person_who_records_why ... ok
+test us03::us03_a_worker_that_does_not_know_what_happened_says_so_and_the_lookup_follows ... ok
+test us03::us03_an_answer_that_is_not_a_verdict_never_counts_as_one ... ok
+test us03::us03_after_an_engine_restart_the_lost_payment_is_looked_up_before_it_is_retried ... ok
+test us04::a_revoked_review_authority_is_refused_with_the_same_token_and_preserves_the_obligation ... ok
+test us04::us04_a_decision_that_makes_no_sense_is_refused_precisely ... ok
+test us04::us04_a_release_that_failed_after_its_retries_waits_for_a_person_and_nothing_else_moves ... ok
+test us04::us04_an_operator_asks_for_another_attempt_and_the_run_finishes_compensated ... ok
+test us04::us04_declaring_the_release_done_elsewhere_ends_the_saga_compensated ... ok
+test us04::us04_giving_up_on_a_release_is_an_administrators_decision_and_ends_the_saga_partial ... ok
+test us04::us04_the_second_of_two_decisions_is_refused_and_another_tenant_sees_nothing ... ok
+
+test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 35.91s
+

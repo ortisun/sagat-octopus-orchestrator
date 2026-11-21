@@ -42,8 +42,7 @@ if they were distinct workflow runs.
 From the repository root:
 
 ```sh
-SPECIFY_FEATURE_DIRECTORY=specs/016-payload-classification SPECIFY_FEATURE_NO_PERSIST=1 \
-  .specify/scripts/bash/check-prerequisites.sh --json --require-spec --require-tasks --include-tasks
+ls specs/016-payload-classification
 git diff --check
 # the relative-link check of the Markdown set is the snippet recorded in analysis.md
 ```

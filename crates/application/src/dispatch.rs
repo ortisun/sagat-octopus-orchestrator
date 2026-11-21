@@ -265,6 +265,16 @@ impl DeliveryRef {
         })
     }
 
+    /// The delivery of `event` to the trigger `id` that started no run: the trigger's version refused the run's input
+    /// (design 043, D043-027). A redelivery finds it and repeats nothing.
+    #[must_use]
+    pub fn refused_at_trigger(event: &ClaimedEvent, id: Uuid) -> Self {
+        Self {
+            run_id: None,
+            ..Self::to_trigger(event, id, RunId::new(Uuid::nil()))
+        }
+    }
+
     /// The delivery of `event` to the trigger `id`, which starts `run`.
     #[must_use]
     pub fn to_trigger(event: &ClaimedEvent, id: Uuid, run: RunId) -> Self {
@@ -291,6 +301,16 @@ pub trait EventDispatchStore: Send + Sync {
         lease: Duration,
     ) -> impl Future<Output = Result<Vec<ClaimedEvent>, StoreError>> + Send;
 
+    /// Records, in one transaction, the delivery of an event to a trigger that started no run because its input was
+    /// refused (design 043, `FR-043-007`) and, only when that delivery is new, `audit`. `false` when the delivery was
+    /// recorded before: nothing is written again.
+    fn record_refused_delivery(
+        &self,
+        tenant: TenantId,
+        delivery: &DeliveryRef,
+        audit: &sagat_domain::audit::AuditRecord,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send;
+
     /// The event has been delivered to everything it was due to reach.
     fn finish_event(
         &self,
@@ -308,6 +328,12 @@ pub trait EventDispatchStore: Send + Sync {
         dead: bool,
         counted: bool,
     ) -> impl Future<Output = Result<(), StoreError>> + Send;
+
+    /// Where the cron triggers fire from (feature 018, `FR-018-017`): the legacy cron pass runs only while the state is
+    /// not `HANDED_OVER`. One row.
+    fn trigger_handover(
+        &self,
+    ) -> impl Future<Output = Result<crate::schedule_triggers::HandoverState, StoreError>> + Send;
 
     /// The registered event triggers of the namespace that could be about this source and type.
     fn triggers_matching(
@@ -364,6 +390,18 @@ pub trait EventDispatchStore: Send + Sync {
         id: Uuid,
         expected: Option<OffsetDateTime>,
         next: OffsetDateTime,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send;
+
+    /// A cron tick whose version refused its input (`FR-043-007`): moves the trigger to `next`, provided it is still at
+    /// `expected`, and writes `audit` in the same transaction only when this call moved it. The tick is so audited once,
+    /// however many dispatchers reach it and wherever one of them stops (G043-002, D043-156). `true` when this call moved
+    /// it.
+    fn refuse_cron_tick(
+        &self,
+        id: Uuid,
+        expected: OffsetDateTime,
+        next: OffsetDateTime,
+        audit: &sagat_domain::audit::AuditRecord,
     ) -> impl Future<Output = Result<bool, StoreError>> + Send;
 
     /// A tick that could not be started is not owed any less: it stays at `scheduled` and is tried

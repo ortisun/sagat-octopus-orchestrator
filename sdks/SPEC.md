@@ -61,6 +61,8 @@ language's native shape: exception, error value, result):
 | `retryable` | Whether the same call may be made again as it is. From the server's own `retryable` when it sent one |
 | `traceId` | 32 lowercase hex characters from `X-Trace-Id` / the error envelope; empty when the server did not answer |
 | `reason` | The server's stable sub-reason (`details.reason`, or the gRPC `x-sagat-error` value), if any |
+| `field` | The server's `details.field`, if any: a JSON pointer into the request (or, for a refused run input, into the input) whose segments are only names the version's `inputSchema` declares and array indices, never a value (design 043) |
+| `rule` | The server's `details.rule`, if any: the closed keyword of the input schema that failed (`type`, `required`, `pattern`, ..., `workLimit`, `maxDepth`, `other`; design 043). An SDK passes a value it does not know through unchanged |
 | `retryAfterMs` | From `Retry-After` / `retry-after-ms`, if any |
 | `remediation` | What to do about it: the fixed sentence of the catalog for `code` |
 
@@ -74,7 +76,12 @@ file. Codes:
   `UNSUPPORTED_PROTOCOL` (registration refused the version);
 - raised by the SDK itself: `TRANSPORT` (no answer: connection refused, reset, timed out),
   `CANCELLED` (the caller's own cancellation), `PROTOCOL` (an answer that does not match the
-  contract), `PAYLOAD_TOO_LARGE` (an output over 256 KiB, before it is sent).
+  contract), `PAYLOAD_TOO_LARGE` (an output over 256 KiB, before it is sent);
+- reported by the database runner for a managed step (feature 035, `contracts/errors.md`): `ICEBERG_*`,
+  `CATALOG_UNAVAILABLE`, `STORAGE_UNAVAILABLE`, `DESTINATION_*`, `LAKE_HOST_PROTOCOL`, `LAKE_SANDBOX_UNAVAILABLE`,
+  `CLASSIFICATION_EGRESS_REFUSED` and `OUTCOME_UNKNOWN` (25 codes, origin `worker`, no HTTP status). They arrive as
+  the code of a failed step; `ICEBERG_COMMIT_CONFLICT`, `CATALOG_UNAVAILABLE`, `STORAGE_UNAVAILABLE`,
+  `DESTINATION_UNAVAILABLE`, `LAKE_HOST_PROTOCOL` and `LAKE_SANDBOX_UNAVAILABLE` are retryable by default.
 
 gRPC mapping (the trailer `x-sagat-error` wins when present): `UNAUTHENTICATED` → `UNAUTHENTICATED`;
 `PERMISSION_DENIED` → `NOT_BOUND` / `SECRET_NOT_USABLE` / `FORBIDDEN`; `INVALID_ARGUMENT` →
@@ -160,6 +167,83 @@ Rules:
   bytes. The descriptor is opaque and scoped by the server to its tenant, namespace and uploader.
   `startWithBlob` sends only its id and uses the normal run-start idempotency key; `input` and
   `inputBlobRef` are never sent together. Uploading alone does not start a run.
+
+### 3.1 Schedules, business identifiers, batch jobs, the with-start calls and reset (feature 018)
+
+Names are given in TypeScript style; each SDK uses its own casing. The operations are groups on the client
+(`schedules`, `batch`, `businessIds`) and methods of it. The request/answer shapes are those of the REST contract
+(`openapi.yaml`, tags Schedules, Batch operations, Runs, Operations); the scenarios are
+`tests/contract/sdk-conformance/scenarios/{schedules-crud,schedules-operate,schedules-overlap,business-ids,start-delay,signal-with-start,update-with-start,batch-operations,reset}.json`.
+
+| Operation | Request | Success |
+|---|---|---|
+| `schedules.create(namespaceId, write, options)` | `POST /namespaces/{ns}/schedules`, `Idempotency-Key` | `201` Schedule |
+| `schedules.get(namespaceId, id, {nextCount, recentCount})` | `GET …/schedules/{id}?nextCount=&recentCount=` | `200` ScheduleDescription |
+| `schedules.list(namespaceId, filter)`, `listAll` | `GET …/schedules?state=&origin=&workflowId=&name=&limit=&cursor=` | page; `listAll` follows opaque cursors |
+| `schedules.update(namespaceId, id, write, expectedRevision, options)` | `PUT …/schedules/{id}` with the write and `expectedRevision`, `Idempotency-Key` | `200` Schedule |
+| `schedules.delete(namespaceId, id, expectedRevision, options)` | `DELETE …/schedules/{id}?expectedRevision=`, `Idempotency-Key` | `204` empty |
+| `schedules.pause / resume(namespaceId, id, note, options)` | `POST …/schedules/{id}/pause` / `…/resume` with `{note}`, `Idempotency-Key` | `200` Schedule |
+| `schedules.trigger(namespaceId, id, {overlap}, options)` | `POST …/schedules/{id}/trigger` with `{}` or `{overlap}`, `Idempotency-Key` | `202` ScheduleActionRecord |
+| `schedules.backfill(namespaceId, id, start, end, {overlap}, options)`, `cancelBackfill`, `listBackfills` | `POST …/backfills` with `{start, end, overlap?}`; `POST …/backfills/{b}/cancel`; `GET …/backfills` | `202` / `200` ScheduleBackfill |
+| `schedules.listActions(namespaceId, id, {outcome, limit, cursor})` | `GET …/schedules/{id}/actions` | page of ScheduleActionRecord |
+| `businessIds.get(namespaceId, businessId)` | `GET /namespaces/{ns}/business-ids/{businessId}` | `200` BusinessIdBinding |
+| `start(…, {businessId, businessIdConflictPolicy, businessIdReusePolicy, startDelay})` | `POST /runs` as before plus the new fields | `202` Run, or `200` the run that already held the identifier |
+| `signalWithStart(workflow, businessId, input, signalName, payload, options)` | `POST /runs/signal-with-start` with `{workflowId, businessId, input, signal: {name, payload}, …}`, `Idempotency-Key` | `202` `{runId, started, deliveredTo}` |
+| `updateWithStart(workflow, businessId, input, updateName, updateKey, args, options)` | `POST /runs/update-with-start` with `{…, update: {name, updateKey, args, expectedStateRevision?}}`, `Idempotency-Key` | `200` `{runId, started, update: {outcome, receipt \| reason}}` |
+| `batch.preview(namespaceId, selector, maxItems)` | `POST …/batch-operations/preview` | `200` BatchPreview |
+| `batch.create / get / list / cancel / listItems` | `…/batch-operations…`, `Idempotency-Key` on the writes | BatchJob / page |
+| `resetPoints(runId)`, `previewReset(runId, sequence, reapply)`, `reset(runId, request, options)`, `listResets`, `getReset` | `GET /runs/{id}/reset-points`, `POST …/reset-previews`, `POST …/resets` (`Idempotency-Key`), `GET …/resets`, `GET …/resets/{resetId}` | ResetPoint page / ResetPlan / Reset |
+
+Rules:
+
+- Every call that changes something carries one `Idempotency-Key` (8 to 160 visible ASCII characters), given or
+  generated once per call and kept by every retry. `updateWithStart` also requires the caller's `updateKey` (1 to 128).
+- A business identifier is sent **as given** in `start`, `signalWithStart` and `updateWithStart`: no trimming, no case
+  folding and no local pattern check, so the server's `BUSINESS_ID_INVALID` is what every language reads.
+  `businessIds.get` percent-encodes it in the path and refuses locally (`VALIDATION_FAILED`, nothing sent) only what is
+  not 1 to 200 visible ASCII characters and an identifier that is exactly `.` or `..`: every URL resolver (also for
+  `%2E`) takes a whole dot segment as a step in the path, so the request would reach another route. An identifier that
+  merely contains dots is valid.
+- `start` says whether it created the run: `started` is true for `202` and false for the `200` of `USE_EXISTING`. An
+  SDK that never sends a conflict policy never sees the `200`. Where the language cannot widen the type `start` already
+  returns (Java: `Run` is a final record), `start` keeps answering the `Run` and `startResult` answers the pair. A `Run` carries `businessId` and `startDelayedUntil` when
+  the server sent them.
+- A `Run` says where it came from, when the server says so: `schedule` (`{scheduleId, nominalTime, kind, revision}`: the schedule action
+  that started it, `kind` being the kind of the action, `SCHEDULED`, `TRIGGERED` or `BACKFILL`, or another string kept as sent) and
+  `resetFrom` (`{runId, sequence}`: the run a reset made it from and the journal sequence it keeps). Both are absent/null/None/nil for a run
+  that has none, read strictly (a `schedule` that is not an object, lacks `scheduleId` or `kind`, has an unreadable `nominalTime` or a
+  `revision` below 1, and a `resetFrom` without `runId` or with a `sequence` below 1, is the SDK's `PROTOCOL` error, never a run with half of
+  it), and an instant keeps the language's native precision (the server writes microseconds). The conformance observation of a `Run` carries the
+  two objects only when the run has them, so the observations of every other run are what they were.
+- A `Run` carries `failureCode` (design 043, FR-043-015), a string, when its stop carries a failure code (the code of the step whose failure
+  failed it, a ceiling such as `STORAGE_QUOTA_EXCEEDED`, or `CONTINUATION_INPUT_INVALID`) and is absent/null/None/nil/empty otherwise; the
+  conformance observation of a `Run` carries the key only when it is present, never as `null`.
+- The action of a schedule may name a business-id prefix (FR-018-016): `businessIdPrefix` (a string), `businessIdConflictPolicy` and
+  `businessIdReusePolicy` (the two policies of `start`), optional on the schedule write (create and update) and on the `action` of what is
+  read back. **Absent means absent**: a write that sets none of them sends none of the three keys (not `null`, not empty), and a schedule whose
+  action has none reads back with none (null, None, nil). The prefix is customer text and is sent **as given**, like a business id: no
+  trimming, no case folding, no local pattern or length check (the platform answers `VALIDATION_FAILED`, reason `SCHEDULE_SPEC_INVALID`, for
+  one that is not 1 to 160 visible ASCII characters and for a policy without a prefix), and it never appears in a log line, a span, a metric
+  label or an error text an SDK writes, nor in the debug text of the types that hold it. The values of the two policies on a read are kept as the
+  string the platform sent. The outcomes of a schedule action record that a prefix can make (`BUSINESS_ID_CONFLICT`; `ALREADY_ACTED` with the
+  `runId` of the run that held the id) and their reasons (`BUSINESS_ID_IN_USE`, `BUSINESS_ID_REUSE_REJECTED`) are kept as raw strings like
+  every other. The observation of a schedule's action carries the three keys **only when the value is present**, so the observations of
+  every schedule without a prefix are what they were.
+- The `businessIdPrefix` of a batch selector's filter (a literal prefix of the id the runs carry, 1 to 200 visible ASCII characters) is sent
+  as given in the same way; the platform counts and selects the runs it matches, and a prefix that matches nothing counts zero.
+- A start delay is a duration in the language's idiom, converted **once**, before the first attempt, to integer
+  milliseconds by truncation toward zero and sent as `startDelayMs`. Only a value that is not a finite number is
+  refused locally; the range (1 ms to 366 days) is the server's (`START_DELAY_INVALID`).
+- Instants sent (a schedule's `startAt` and `endAt`, a backfill's range, a batch filter's bounds) are written in UTC
+  (`…Z`); text that is not an instant is refused locally. Instants read are date-times.
+- A value of an enumeration this SDK does not know (`ScheduleActionOutcome`, a batch item state or reason, a reset point
+  kind) is kept as the raw string and is never an error.
+- Ids that become path segments (namespace, schedule, backfill, batch, reset, run) are UUIDs; `expectedRevision` is an
+  integer of 1 or more; a pause or resume note is not empty; a reset sequence is an integer of 1 or more. A refusal made
+  by the SDK is `VALIDATION_FAILED` and sends nothing.
+- A `REJECTED` outcome of `updateWithStart` (the validator said no, or the expected revision is stale) is an answer,
+  not an error: the run was started and the receipt is absent.
+- The input of a schedule is customer content: the SDK sends it and the server never returns it, only its digest.
 
 ## 4. Trace context, correlation, deadline
 
@@ -321,8 +405,9 @@ A handler's input type that cannot be built from the document is not a crash: th
   for it, so a handler that raises its cancellation error is reported as `CANCELLED` (above) and one that
   returns is reported as what it returned. `lease-lost`: nothing is reported. `shutdown` (the host is
   stopping, §6.8): a handler that then raises its cancellation error is **not reported** — the lease lapses and
-  the platform leases the step again; failing a step for good because a deploy stopped its worker would be
-  wrong. A handler that returns a value, or fails with another error, after `shutdown` is reported as usual.
+  the platform applies its unknown-outcome recovery rules. The SDK does not promise a replacement lease;
+  failing a step for good because a deploy stopped its worker would be wrong. A handler that returns a value,
+  or fails with another error, after `shutdown` is reported as usual.
 - `ABORTED` (`STALE_ATTEMPT`) or `FAILED_PRECONDITION` from a heartbeat → the lease is lost: the token is
   cancelled with the reason `lease-lost` and the eventual result is dropped.
 - A heartbeat that fails with a transport error is retried on the next beat; the lease is still ours until
@@ -334,6 +419,10 @@ A handler's input type that cannot be built from the document is not a crash: th
   "done-<task_id>", output_json, traceparent}`. `output_json` is the JSON of the handler's result (`null` →
   `"null"`; no result → empty string means "no value"). More than 256 KiB: not sent;
   `FailStep(error_code = "PAYLOAD_TOO_LARGE", retryable = false)` instead.
+  `CompleteStep` is the handler's final-domain-result assertion, not proof that the SDK, platform or
+  provider independently established finality. Accepted, queued or pending provider responses are
+  reported as `OUTCOME_UNKNOWN`, including for compensation; `retryable = true` cannot make such a
+  result a known failure.
 - Protocol 1.3 exposes `ctx.writeBlob(onePassSource, options)` and `ctx.readBlob(descriptor)` only while
   the handler is active. Upload sends one header followed by chunks no larger than 256 KiB, measures the
   source once, and accepts the returned descriptor only when its size and SHA-256 match locally. Read requires
@@ -344,7 +433,7 @@ A handler's input type that cannot be built from the document is not a crash: th
 - Failure: `FailStep{..., idempotency_key = "failed-<task_id>", error_code, safe_message, retryable,
   traceparent}`. A handler fails by raising an **`ActivityFailure(code, message, retryable)`**; helpers:
   `retryable(code, message)`, `permanent(code, message)` (non-retryable), `outcomeUnknown(message)`
-  (`OUTCOME_UNKNOWN`, non-retryable, reserved: the platform reconciles instead of retrying blindly).
+  (`OUTCOME_UNKNOWN`, non-retryable, reserved: the platform reconciles or reviews instead of retrying blindly).
   Any other raised error is reported as `error_code = "ACTIVITY_ERROR"`, `retryable = true`, and the
   `safe_message` is only its type name — never its text, which may hold the data it was handed.
   `safe_message` is cut to 512 Unicode code points (never inside a surrogate pair, and a lone surrogate becomes
@@ -358,15 +447,18 @@ A handler's input type that cannot be built from the document is not a crash: th
 - `registerCompensation(name, handler)` and `registerReconciler(name, handler)` are `registerActivity`
   with the same lease handling; they differ in the context (`taskKind`) and in what the host does with
   the result.
-- A **compensation** handler undoes the effect of `ctx.targetNode`; its `idempotencyKey` is the key of
-  *this* compensation and `targetIdempotencyKey` the key that identifies the original effect at the
-  provider (send the latter to the provider). It **MUST** be idempotent and tolerate an effect that never
-  happened (the platform compensates a step whose outcome stayed unknown). Its output is discarded by
-  the server.
+- A **compensation** handler attempts to undo the known-applied effect of `ctx.targetNode`; its
+  `idempotencyKey` is the key of *this* compensation and `targetIdempotencyKey` the key that identifies
+  the original effect at the provider (send the latter to the provider). It **MUST** be idempotent.
+  Delivery 1 does not defensively compensate an unknown original, and declarations/stable keys do not
+  prove absent-effect tolerance or safe repetition. Its output is discarded by the server.
 - A **reconciler** answers a verdict: `applied(output?)`, `notApplied()` or `unknown()`. The host
   completes the task with exactly `{"effect": "applied" | "not_applied" | "unknown", "output": …}`
   (`output` only for `applied`) and nothing else. A handler of another shape is a programming error
   reported as `FailStep(error_code = "RECONCILIATION_ANSWER_INVALID", retryable = false)`.
+  `applied` is the handler's final-result assertion. `notApplied` is an observation, not proof of
+  permanent absence, and the server holds the original for review as `RECONCILIATION_NOT_FINAL`;
+  `unknown` also reviews. Neither verdict authorizes the SDK to repeat the original itself.
 - The three kinds are told apart at run time by `task_kind` (protocol 1.2); a server at 1.0 or 1.1 never
   sends the others.
 
@@ -383,8 +475,9 @@ raises `UNSUPPORTED_PROTOCOL` instead of calling.
 
 `start()` registers and begins the loop and returns once registered; `stop(timeout)` stops polling,
 cancels nothing, waits for the tasks in flight up to `timeout` (default 30 s), then cancels their tokens
-with the reason `shutdown` and returns. A task that did not finish keeps its lease until it lapses (the
-server leases it again). The host is restartable. Metrics hooks (counters for tasks taken, completed,
+with the reason `shutdown` and returns. A task that did not finish keeps its lease until it lapses; the
+server then reconciles or holds review according to task kind and available evidence. The host is
+restartable. Metrics hooks (counters for tasks taken, completed,
 failed, stale, heartbeats, polls, reconnects; a histogram of activity duration) are optional callbacks
 or the ecosystem's standard (C#: `System.Diagnostics.Metrics`).
 
@@ -402,6 +495,7 @@ workflow(name).description(text).label(key, value)
   .step(id, activity, {retry, timeoutMs, compensateWith, reconcileWith, idempotencyTemplate, secrets,
                        compensationRetry, compensationTimeoutMs, irreversible, highRisk, onError})
   .database(id, {connectionRef, operation, statement, parameters?, limits?, timeoutMs?, onError?})
+  .icebergWrite(id, {connectionRef, table, records, ref?, mapping?, ignoreUnknownFields?, limits?, compensation?, onError?})
   .sleep(id, durationMs)
   .waitForEvent(id, {eventType, correlationExpr, timeoutMs, onTimeout?, lookbackMs?})
   .invokeChild(id, workflow, {version?, input?, cancelPolicy?})
@@ -412,6 +506,14 @@ workflow(name).description(text).label(key, value)
   .trigger(kind, {...}) .inputSchema(schema) .outputSchema(schema)
   .build()
 ```
+
+`.inputSchema(schema)` must stay within the supported subset of JSON Schema (design 043, ADR-0090: the keyword list is
+in `specs/001-platform-foundation/contracts/workflow.schema.json`): from release 0.3.0 the platform checks every run
+input against it before the run is created, refuses a publication whose schema is outside it in `enforce` mode, and
+answers a refused start `VALIDATION_FAILED` with `reason` `RUN_INPUT_INVALID` and the error's `field` and `rule`, or
+`RUN_INPUT_SCHEMA_UNUSABLE`. An SDK checks nothing of it locally. `CHILD_INPUT_INVALID`, `CONTINUATION_INPUT_INVALID`
+and `RUN_INPUT_SCHEMA_UNUSABLE` reach a run view as failure codes, unchanged, and a schedule action's `INPUT_INVALID`
+as an outcome.
 
 A `Flow` (the body of a saga, a branch of a parallel) is **read when `build()` is called**, not when it is joined: a
 step added to it after it was joined is part of the document. Ids are checked when a node is added to its flow and again
@@ -463,6 +565,51 @@ requires the dedicated result permission. See
 [the five-language guide](../docs/guides/managed-database-sdk.md) and the shared
 `database-connections` conformance scenario.
 
+### 7.2 Iceberg append (feature 035)
+
+All six SDKs emit the same canonical `type: icebergWrite` node, always with `mode: append`: overwrite and
+upsert are not built yet, so no SDK accepts a mode. `connectionRef` is the same `{name, revision?}` as
+for a database node and never carries a catalog, bucket, credential or secret. `table` is
+`{namespace, name}` with 1 to 8 namespace levels. `records` holds exactly one of `inline` (an expression
+that evaluates to a list of objects), `blobs` (one that evaluates to 1 to 32 blob descriptors) or
+`databaseResult` (the id of an earlier root-level database step; the lake runner does not read that source
+yet, gap G035-067). `mapping` is a list of `{field, column}` rows whose field is a JSON pointer
+(`/customer/name`, at most 16 segments, escapes `~0` and `~1`); a field or a column used twice is refused.
+`limits` may tighten `maxRecordBytes` (1024 to 2147483648), `maxRecords` (1 to 100000000) and `timeoutMs`
+(1000 to 3600000). `compensation` is `revert` or absent.
+
+The builder snapshots the supplied values when the node is added, validates the shapes and the contract
+bounds, and raises `VALIDATION_FAILED` with the fixed message `invalid iceberg write`, which names no
+value. A supplied empty `mapping` or `limits` is kept as `[]` or `{}`; an option that is absent is omitted.
+Whether the connection exists, the table is writable and the classification allows the write are server
+responsibilities. The shared scenario holds no refusal for an unknown member, because the typed builders cannot
+express one uniformly (the conformance runners of Go, Java and C# ignore it when they read the options; the Rust
+options type refuses it when decoded).
+The shared scenario is `iceberg-write-builders` (build only: it claims neither publication nor execution).
+
+### 7.3 Collection operators (feature 042)
+
+A `forEach` (and `map`, which writes the same node) may carry `operators`, the stages applied once to the list
+`items` yields when the collection is entered. Each SDK builds a stage with one factory and the same names, in its own
+casing: `filter(where)`, `map(select)`, `flatMap(select)`, `skip(count)`, `take(count)`, `distinct(by?)` and
+`window(count)`. A stage is an object with exactly one key, the operator's name: `{"filter":{"where":"…"}}`, and
+`distinct` without `by` is `{"distinct":{}}`. The chain is carried without breaking a present call:
+
+| SDK | Chain | Factory |
+|---|---|---|
+| TypeScript | optional `operators` of `CollectionOptions` | `ops.filter(…)`, `ops.flatMap(…)`, … (type `Operator`) |
+| Go | variadic `operators ...ops.Operator` after `maxConcurrency` in `ForEach` and `Map` | package `workflow/ops`: `ops.Filter`, `ops.FlatMap`, `ops.Distinct()`, `ops.DistinctBy(by)`, … |
+| Python | keyword-only `operators=None` of `for_each` and `map` | module `ops`: `ops.filter`, `ops.flat_map`, … (type `Operator`) |
+| C# | optional init property `Operators` of `CollectionOptions` | static class `Ops` (type `OperatorStage`) |
+| Java | overloads `forEach(…, CollectionOptions, Operators)` and `map(…)`; the record keeps its two components | class `Ops`; `Operators.of(…)` gathers the stages |
+| Rust | `for_each_with_operators` and `map_with_operators`; `CollectionOptions` is unchanged | module `workflow::ops`: `ops::filter`, `ops::flat_map`, `ops::distinct()`, `ops::distinct_by(by)`, … |
+
+An absent or empty chain writes no `operators`, so every document built before the field existed is unchanged. The
+builders only assemble the list, in the order given: the chain's length (one to eight), the ranges of the counts, the
+operators allowed on a collection and the variables a stage expression reads (`element`, `position`, `input`, `steps`,
+`run`, `state`) are checked by the server at publication. A stage the factory did not build is `VALIDATION_FAILED`
+where the language can express one. The shared scenario is `collection-operators` (build only).
+
 ## 8. Serialization
 
 - JSON only. Integers up to 2^63-1 round-trip where the language can hold them; TypeScript holds up to
@@ -498,6 +645,19 @@ requires the dedicated result permission. See
   platform's envelope at all. (A `404` for a run that does not exist carries the envelope without that reason.)
 - **Older SDK, newer server.** Unknown fields are ignored; the worker is served at its own version.
 - Runtime matrix and package metadata: `sdks/README.md`.
+- **Register of worker-protocol minors.** A minor is taken by one feature, recorded here when its contract merges;
+  a feature whose draft names a minor that is taken uses the next free one (OD-2026-11-15-8).
+
+  | Minor | What it adds | Feature or source |
+  |---|---|---|
+  | 1.1 | The step identity on `Heartbeat` | `worker.proto` |
+  | 1.2 | `task_kind` (compensation, reconciliation) and `ResolveSecrets` | features 003 and 009 |
+  | 1.3 | Blobs (`WriteBlob`, `ReadBlob`, `input_blob_ref`) | FR-002-008 |
+  | 1.4 | Bounded task streams (`StreamTasks`) | ADR-0029 |
+  | 1.5 | Scoped execution identity | `ExecutionInstanceIdentity` |
+  | 1.6 | Managed database capabilities (`ResolveDatabase`) | feature 017, D600 |
+  | 1.7 | Step logs (`AppendStepLogs`, `StepLogPolicy`) | feature 041, OD-2026-11-15-8; served from its task T041-7 |
+  | next | Drafts 020, 021, 025 and 026 each name a minor; each takes the next free one when its contract merges | |
 
 ## 10. Observability and safety
 
@@ -550,3 +710,24 @@ contract. Historical five-language results remain historical; Rust/six-language 
 new named conformance, fault and packaging results. Rust uses Tokio/tonic, native typed values,
 lossless JSON and idiomatic Result/cancellation APIs. Its public crate is independent of backend
 workspaces and contains its own checked canonical protocol/catalog for clean consumers.
+
+## Feature 037 delivery 1 — implementation in verification
+
+The delivery uses the existing wire shapes and treats every leased `Activity` as external-capable,
+regardless of `highRisk`. Unknown outcomes take precedence over retry, cancellation and explicit
+failure. The server will not directly retry an unknown original or compensation, even for a caller
+with `SagaOverride`; an authorized outcome-bearing resolution must atomically retain actor and
+reason first, and no new in-place attempt after resolution is promised. Refused conflicts create no
+success audit, scheduling outbox or idempotency success. A known failed, retry-eligible operation
+continues to use the existing retry command.
+
+Human success resolution can allow a saga to report `COMPENSATED`, but that result retains human
+provenance and is not provider confirmation. No provider/capability, SDK handler or plugin is
+qualified by delivery 1, and no qualification registry or exception path exists; US04 remains open.
+The historical behavior and rationale remain in features
+[003](../specs/003-sagas-compensations/spec.md) and
+[014](../specs/014-workflow-primitives/spec.md). The proposed direction is recorded in
+[ADR-0076](../docs/adr/ADR-0076-compensation-failure-and-uncertain-effects.md), whose status remains
+**PROPOSED**. Consult the feature-037
+[validation report](../specs/037-compensation-safety/validation-report.md) before claiming
+implementation acceptance; SDK conformance proves protocol behavior, not a real provider guarantee.

@@ -1,0 +1,1017 @@
+[
+  {
+    "path": "README.md",
+    "sha256": "f70b40f1f8c571498069edc7ca9ebe3cb7afb21473842453879268d727e5b642",
+    "lines": 797
+  },
+  {
+    "path": "apps/README.md",
+    "sha256": "16b05d2ec73fe4e8eecb8c04f23fbdbfb7cd53f880af85182b3913bf8c70fa8b",
+    "lines": 33
+  },
+  {
+    "path": "apps/cli/README.md",
+    "sha256": "72d79c0cb9c7b26be03a554003bd738282b21d6244894ffdab37d3cd2b401250",
+    "lines": 28
+  },
+  {
+    "path": "apps/cli/src/README.md",
+    "sha256": "904b05a81b2ccf582616e0eb89dea3df26a82df5f7c8f15e560f515c946ca9f2",
+    "lines": 39
+  },
+  {
+    "path": "apps/control-plane/README.md",
+    "sha256": "b67344b4bf2c9869106800a6f009e0f9d78b1111739a2da0831ac5c6bc6cbe89",
+    "lines": 28
+  },
+  {
+    "path": "apps/control-plane/src/README.md",
+    "sha256": "ea3ac03ba9d5aa81fa1bc235405c78b25de754aebd1a464089476f5367b1475a",
+    "lines": 35
+  },
+  {
+    "path": "apps/database-runner/README.md",
+    "sha256": "a81d1d59b6ce52dd2723bc17246783dfdefffed695b5969da041c6d435083c49",
+    "lines": 28
+  },
+  {
+    "path": "apps/database-runner/src/README.md",
+    "sha256": "b402b95cd10a346c9ce4d313ab6b0795867a8654ecfbd935fba213efa6a0a25e",
+    "lines": 34
+  },
+  {
+    "path": "apps/dev-idp/README.md",
+    "sha256": "bde90981b4b7fa16155534a12f7894055c0dec02537f9dfa8e23ffe558f4c6ff",
+    "lines": 28
+  },
+  {
+    "path": "apps/dev-idp/src/README.md",
+    "sha256": "77755620876822a6311c8408accf0f553b67a9c70d64de686929455c587fc779",
+    "lines": 31
+  },
+  {
+    "path": "apps/execution-engine/README.md",
+    "sha256": "ab7c94050ef8246e3808384fcaf8d892adea58cf4ac7b7e24302c9df0a6d0618",
+    "lines": 28
+  },
+  {
+    "path": "apps/execution-engine/src/README.md",
+    "sha256": "cd5635faddd7b6cae4e178e1a8833c6bccf2f981e89403a3fe94601b33a65c9f",
+    "lines": 35
+  },
+  {
+    "path": "apps/sandbox-runner/README.md",
+    "sha256": "45fce6e92e18d3affe342494398e96632dae1cf69b1a9b60afcaf099f6daecc7",
+    "lines": 28
+  },
+  {
+    "path": "apps/sandbox-runner/src/README.md",
+    "sha256": "a1957336712d960e75646a2a190484aac79e4d42a73986189b5a84cca7483b06",
+    "lines": 33
+  },
+  {
+    "path": "crates/README.md",
+    "sha256": "cbb685353053c1d4a7e6583682022618008cd8aabe23591820a2e83c5acc848c",
+    "lines": 47
+  },
+  {
+    "path": "crates/api-grpc/README.md",
+    "sha256": "cd8bbc69828eb1ed0adedfec5b324e9f873d4f805dc4c51bae88bb91cf42cdfc",
+    "lines": 29
+  },
+  {
+    "path": "crates/api-grpc/src/README.md",
+    "sha256": "77dc96fcf48c8b5c2c1a18facee192768706efe978a21c150caf1d2709faa422",
+    "lines": 44
+  },
+  {
+    "path": "crates/api-http/README.md",
+    "sha256": "5237299e864525bd2561090208a921267ca23c7a58de28e563d8094577e12d21",
+    "lines": 29
+  },
+  {
+    "path": "crates/api-http/src/README.md",
+    "sha256": "65a9d2f249754374e18729772ecbeda6cb93c1a9cb0388af6d45f9e844835e9f",
+    "lines": 51
+  },
+  {
+    "path": "crates/api-http/src/auth/README.md",
+    "sha256": "11caff89591ca46e1966c7616833afc450557bc3b22f762ebd39adcd855d18cb",
+    "lines": 36
+  },
+  {
+    "path": "crates/api-http/src/routes/README.md",
+    "sha256": "43ee095be9db27714c869ed05cf878d499b9235695f12e10ef82927d3d60add1",
+    "lines": 51
+  },
+  {
+    "path": "crates/application/README.md",
+    "sha256": "8e0f2dbc8744d01f900c233fab53caae4fdd06656897f7683016eaf582ce9513",
+    "lines": 29
+  },
+  {
+    "path": "crates/application/src/README.md",
+    "sha256": "cef701cec276e6b2b415b80582d0654270989a0afcd0cbc6b3ae4ec7ef472d7c",
+    "lines": 114
+  },
+  {
+    "path": "crates/application/src/execution/README.md",
+    "sha256": "7d34e7aa8c5cbc53845aa4ecf07d7e84e6a9421fe30b96ac6c478bea9e6273c7",
+    "lines": 31
+  },
+  {
+    "path": "crates/application/src/runs/README.md",
+    "sha256": "7cfcbea9437e78fa93b96a43a9d4f56308bd5993a5ed3e331dc56525488d3a40",
+    "lines": 34
+  },
+  {
+    "path": "crates/application/src/scripts/README.md",
+    "sha256": "80d7ce9fe967848138fdfda0bef7ea8421f36ecf5521984c3553e55994b28ea3",
+    "lines": 30
+  },
+  {
+    "path": "crates/application/src/worker/README.md",
+    "sha256": "7a1a6e06f0772ca740717119cab6858b35733a1979d2b0ae7d1d5624059cd532",
+    "lines": 39
+  },
+  {
+    "path": "crates/domain/README.md",
+    "sha256": "183f541c5fbbb2e2c58050d9a96d0db0773a8c720b1b907c9289a3a3679bbf86",
+    "lines": 29
+  },
+  {
+    "path": "crates/domain/src/README.md",
+    "sha256": "df35335fd93ea2d653b6537b0afc576d00c7c1caf4b1e9ae688837fd2a924289",
+    "lines": 49
+  },
+  {
+    "path": "crates/domain/src/database/README.md",
+    "sha256": "166cd4977d6ab766f6833579bcb8c8f31742247fc8302b6ec18dbccbbfe273bd",
+    "lines": 28
+  },
+  {
+    "path": "crates/domain/src/execution/README.md",
+    "sha256": "aa5d61fc008be30153d95da3277a450b6daf81aeba6d6675a058ca9bd31c7afb",
+    "lines": 60
+  },
+  {
+    "path": "crates/domain/src/workflow/README.md",
+    "sha256": "3460803c5655404501a2d039a03bc32b254c95b6a44be073cff9f757146be534",
+    "lines": 33
+  },
+  {
+    "path": "crates/infra-blobstore/README.md",
+    "sha256": "9e5dd87d1f0000c443ae0565e5a8b247de9be53865351803981984e083ee7810",
+    "lines": 29
+  },
+  {
+    "path": "crates/infra-blobstore/src/README.md",
+    "sha256": "d692c061d6f522ac6e8ec4eea78061ffebe417d929e10e972be500ab3467e56d",
+    "lines": 30
+  },
+  {
+    "path": "crates/infra-connectors/README.md",
+    "sha256": "576f873e3958c7a4b40677437210b5d97e10b1d1f7e05820037867bdff578618",
+    "lines": 29
+  },
+  {
+    "path": "crates/infra-connectors/src/README.md",
+    "sha256": "7b5e6ce9f384686995632013e8b231cb9b5790cf9284a195bd15f8d7fe7852bc",
+    "lines": 35
+  },
+  {
+    "path": "crates/infra-database/README.md",
+    "sha256": "bf9ee160f529a776fa11c0a49a4d6e06ef5eb75bb20f1fdd400824b7103e65ab",
+    "lines": 29
+  },
+  {
+    "path": "crates/infra-database/src/README.md",
+    "sha256": "b3003b02bd4dbfb3c9710dbaafd84ede6e4e66c45e4592d5b3b7c141d2e15b07",
+    "lines": 32
+  },
+  {
+    "path": "crates/infra-egress/README.md",
+    "sha256": "f39a38b0032292d8f3c0e3630cfb025555833bfb7c235390037693e948badc2d",
+    "lines": 29
+  },
+  {
+    "path": "crates/infra-egress/src/README.md",
+    "sha256": "b4715c6bb6c9639f18c5721d97fe838f058e0a505510715802eecbfe0fd44ad7",
+    "lines": 29
+  },
+  {
+    "path": "crates/infra-expr/README.md",
+    "sha256": "1ead04e28f1ff824c496ddd89901e5e14033e89038df00d96f0463c9da4780a0",
+    "lines": 29
+  },
+  {
+    "path": "crates/infra-expr/src/README.md",
+    "sha256": "a7035432938469973baa2509f0c50603b13085af6aaf4a211346b52a34993c93",
+    "lines": 29
+  },
+  {
+    "path": "crates/infra-ir/README.md",
+    "sha256": "2adb49f296e7e04849ea1d1d3860cd802fe47c31fcc62c5cb912d0d994a7b84e",
+    "lines": 29
+  },
+  {
+    "path": "crates/infra-ir/src/README.md",
+    "sha256": "abdfd7134f30bc5dfab6e98f16fdf89821f176de1a0bd706c655708df1f82342",
+    "lines": 38
+  },
+  {
+    "path": "crates/infra-nats/README.md",
+    "sha256": "00142f472c1083daa045023cb1fd0fc881e587a1333d5917ae467ab9c9bea2f6",
+    "lines": 29
+  },
+  {
+    "path": "crates/infra-nats/src/README.md",
+    "sha256": "057698d90769eb995bfa4348bde78b7ff2181dab13e868b33212f569cb7fb37e",
+    "lines": 29
+  },
+  {
+    "path": "crates/infra-postgres/README.md",
+    "sha256": "f83769ca6c2ba8bcb2ecf89b9d359c053fbd84d2c98dd57ee9d91b9edd72d559",
+    "lines": 32
+  },
+  {
+    "path": "crates/infra-postgres/migrations/README.md",
+    "sha256": "5d4c5640c553bd1d9799ca9783364cadf834f3b9a10ea689c77aa4536dbebc0d",
+    "lines": 68
+  },
+  {
+    "path": "crates/infra-postgres/src/README.md",
+    "sha256": "09d53f60b82dc024973990bd4c2f3aa708d64ad0f8ce6c0a451ef5fcb2cc328a",
+    "lines": 99
+  },
+  {
+    "path": "crates/infra-postgres/src/database/README.md",
+    "sha256": "7f1deb80fb0ea9392b985b70053a2893eaba3bf20487435a788d924c43528153",
+    "lines": 33
+  },
+  {
+    "path": "crates/infra-postgres/src/execution/README.md",
+    "sha256": "0ab85ab2ce9e61217cde6ede564beac8f153c6acdc8b330316ec9f707ffe2848",
+    "lines": 41
+  },
+  {
+    "path": "crates/infra-postgres/src/scripts/README.md",
+    "sha256": "746f5e86859a1344021e572bdee1e492ce5079c18b77b9b9dd3ffc3639982029",
+    "lines": 32
+  },
+  {
+    "path": "crates/infra-sandbox/README.md",
+    "sha256": "cf0f09c6c393f132d390fa7d5b1757b89357b40e0a17b19e1d05f07cee123d47",
+    "lines": 30
+  },
+  {
+    "path": "crates/infra-sandbox/shims/README.md",
+    "sha256": "7d25f123ab465847c7af29c520ef1bd8a9b9b1643c064418523c1676d4bbb905",
+    "lines": 30
+  },
+  {
+    "path": "crates/infra-sandbox/src/README.md",
+    "sha256": "0d51fe0c7b809578ce970d5ba6e061628cdd8edc7cbb35362a1595a409eb21b4",
+    "lines": 32
+  },
+  {
+    "path": "crates/infra-schema/README.md",
+    "sha256": "9e6406cd3e7e3bac66cc31887d7abcf5eed1bb55a4fcbb4684eba6fc85509552",
+    "lines": 29
+  },
+  {
+    "path": "crates/infra-schema/src/README.md",
+    "sha256": "c836ef70d078743dfc14427462745231ca69bff70f73b99fb5fd53be8821452a",
+    "lines": 33
+  },
+  {
+    "path": "crates/infra-schema/src/classification/README.md",
+    "sha256": "af4b73471b948b5c474c166db45bc03784a3c68675d50f4dc5dbf923fbeed647",
+    "lines": 37
+  },
+  {
+    "path": "crates/infra-secrets/README.md",
+    "sha256": "9d551d513267f9fbcbfcc10e9e5b6679c63751b19e903bb90cae2c3b476d4161",
+    "lines": 29
+  },
+  {
+    "path": "crates/infra-secrets/src/README.md",
+    "sha256": "834eff2502f224708d9d771fb7d59fee23f4d53e30d02dcf7b32a2ea57a3144d",
+    "lines": 32
+  },
+  {
+    "path": "crates/scheduler/README.md",
+    "sha256": "fcc68e347fc57b3aed15998737ab3d1ad784c751e45ecee14e0d0266243477d0",
+    "lines": 29
+  },
+  {
+    "path": "crates/scheduler/src/README.md",
+    "sha256": "ac9e69d97ca9242888aac1873acb9aa7fbde8a839e01efbaf5f3800034576361",
+    "lines": 47
+  },
+  {
+    "path": "crates/scheduler/src/passes/README.md",
+    "sha256": "2712b86c56c289ef68ae4071bfffdb732c6e4e1ac93ba041a623726c27f66615",
+    "lines": 34
+  },
+  {
+    "path": "crates/telemetry/README.md",
+    "sha256": "f1ff387c4ea86e4a825c8b83778f126054a47ded151efca0848fdee02eaa6335",
+    "lines": 29
+  },
+  {
+    "path": "crates/telemetry/src/README.md",
+    "sha256": "1bc5ecb3b89e0841e5693fb2a8fd8ddcfb4c460b2eaf099a885bfb86366d034b",
+    "lines": 41
+  },
+  {
+    "path": "examples/README.md",
+    "sha256": "9f703a8b3c93309ab41d53bd89bf0016773b2a42bdbe3ead981d4622cbc96ce5",
+    "lines": 31
+  },
+  {
+    "path": "examples/hello-world/README.md",
+    "sha256": "7b493c1cd4f430f5d2391ebf05124e361a6e123de84f6ce4439b4e045b20dd75",
+    "lines": 32
+  },
+  {
+    "path": "examples/hello-world/dotnet/README.md",
+    "sha256": "fb18d6cf576b8ad8af5dfa4cc778173482c601ffca178d2c1dc27c9c30b34987",
+    "lines": 70
+  },
+  {
+    "path": "examples/hello-world/go/README.md",
+    "sha256": "d4e56f027b43c1f70b88eba21d1566ec1f7cc33715d6d687a0293608ced6a8df",
+    "lines": 69
+  },
+  {
+    "path": "examples/hello-world/java/README.md",
+    "sha256": "7e18efb3872f35972b0013e2a0ec72502895a068ee49065a6b51859715d38cb9",
+    "lines": 78
+  },
+  {
+    "path": "examples/hello-world/java/src/README.md",
+    "sha256": "7fa7947abc33022ac3a9511a3dcfe8da170bca785bdc614f513772a997cc5dec",
+    "lines": 29
+  },
+  {
+    "path": "examples/hello-world/java/src/main/README.md",
+    "sha256": "1f9356e4f56358f241af764021a830c69f4a32cc80df5a16bdca7e60bdc7ab17",
+    "lines": 29
+  },
+  {
+    "path": "examples/hello-world/java/src/main/java/README.md",
+    "sha256": "15622493cdb73fdd283f08629027486c80575b98e3f21af390d75d8fccf13c49",
+    "lines": 29
+  },
+  {
+    "path": "examples/hello-world/python/README.md",
+    "sha256": "04e57941fd2a8025c3fbb389c640e036b171941899bafa8c43fc3fbf46c1c0bb",
+    "lines": 69
+  },
+  {
+    "path": "examples/hello-world/typescript/README.md",
+    "sha256": "7a6ffbfbf2635c8e4dab91ae3c8a8d0b2b114111232e59a776800c5aeef8368d",
+    "lines": 71
+  },
+  {
+    "path": "examples/hello-world/typescript/src/README.md",
+    "sha256": "c2f10b8a8178deecb2b44f887b022b9cb3a4520b4794507fd92dd60b635ec243",
+    "lines": 28
+  },
+  {
+    "path": "examples/order-processing/README.md",
+    "sha256": "fd5621bc358ed52e51962bf51f3f2f64b4ba9a6f6430ecd71dfc2d5e08132977",
+    "lines": 128
+  },
+  {
+    "path": "examples/order-processing/dotnet/README.md",
+    "sha256": "550b746ba05f408e5dfd431218c17776f4787c237b09cff6863f66b8d39b572f",
+    "lines": 78
+  },
+  {
+    "path": "examples/order-processing/go/README.md",
+    "sha256": "ab745bb734786a5fb9f6d58791534bdb399b684a3f5d57e4b60f2d9dd63bbdb8",
+    "lines": 80
+  },
+  {
+    "path": "examples/order-processing/java/README.md",
+    "sha256": "f4788b80a8e3be98c4088d70ed571279b08822f783c8a7fcf53f931fcefe705e",
+    "lines": 78
+  },
+  {
+    "path": "examples/order-processing/java/src/README.md",
+    "sha256": "b14332769ac7ea1d80da3a556490485591423ce11d6b300bd05815289ddd0f6b",
+    "lines": 29
+  },
+  {
+    "path": "examples/order-processing/java/src/main/README.md",
+    "sha256": "5dfc04b5798f03c94b1ca365d4c417eed68bcdbbd270340bfd02a5ac9372343d",
+    "lines": 29
+  },
+  {
+    "path": "examples/order-processing/java/src/main/java/README.md",
+    "sha256": "b20798e9f2df329a4434dbf57b5ab94e932011592dd4f15a0b3eed175c87305e",
+    "lines": 29
+  },
+  {
+    "path": "examples/order-processing/python/README.md",
+    "sha256": "0224d4a6f56dea919b896dbffa8174d86b0ec63ac93d0fa7151edd972f6ccd37",
+    "lines": 94
+  },
+  {
+    "path": "examples/order-processing/typescript/README.md",
+    "sha256": "b3b46cc4a967b8f1513ad9fb782789653d06fa409b39396de9bd8b0b8201e932",
+    "lines": 94
+  },
+  {
+    "path": "examples/order-processing/typescript/src/README.md",
+    "sha256": "b8198092bf9426760126b1e670b43ff12522506e7c35fcb0d4d01fcd33f515fe",
+    "lines": 29
+  },
+  {
+    "path": "examples/payment-saga/README.md",
+    "sha256": "95de62a37dc0f4c2551c3cc02091592ec199448f250d781ff72883763d62bae6",
+    "lines": 28
+  },
+  {
+    "path": "examples/payment-saga/typescript/README.md",
+    "sha256": "8501ddda263afb61a8d9df0fe30b9030de47b32de48496bcd4c88e86d844a857",
+    "lines": 86
+  },
+  {
+    "path": "examples/payment-saga/typescript/src/README.md",
+    "sha256": "bee508a8d766cb60b498fc04c2056029883a6fd5e5bbed30359d504ca2be20e1",
+    "lines": 32
+  },
+  {
+    "path": "frontend/README.md",
+    "sha256": "6d9230679139109098a3f69aae918fba9640a6cb630f19513942696267a369da",
+    "lines": 114
+  },
+  {
+    "path": "frontend/apps/README.md",
+    "sha256": "c46d0b486f034d26ef1349bec9582145ba49bb787200047f946ebe216703de14",
+    "lines": 33
+  },
+  {
+    "path": "frontend/apps/studio/README.md",
+    "sha256": "a4412049017d10cd244690788b0edac3243e7bb95555862219ae94a447e35735",
+    "lines": 35
+  },
+  {
+    "path": "frontend/apps/studio/scripts/README.md",
+    "sha256": "4c8afeae5fc117407b98ecec57ab629d68da2468469ce95e93bd4052a3970797",
+    "lines": 30
+  },
+  {
+    "path": "frontend/apps/studio/src/README.md",
+    "sha256": "a491f38c47f41cac18557e4e9873959387b0ff4ea185bc2c08b12885162f4bbe",
+    "lines": 36
+  },
+  {
+    "path": "frontend/apps/studio/src/api/README.md",
+    "sha256": "eb551459550cf93a9431b773e30d0f1a33fc3d81899ec0bd9050c20ec20b5b13",
+    "lines": 50
+  },
+  {
+    "path": "frontend/apps/studio/src/app/README.md",
+    "sha256": "c54abe2924fe7bd1dfbd37b0ff321c5d39214a7928a462d9a0c7e991d299ab86",
+    "lines": 37
+  },
+  {
+    "path": "frontend/apps/studio/src/auth/README.md",
+    "sha256": "4ab135175514431854c30f7608bb4da629764af495818589500aaccc5f07691b",
+    "lines": 33
+  },
+  {
+    "path": "frontend/apps/studio/src/features/README.md",
+    "sha256": "6b99c254fc2aa80f0d9ae7ae9de882d7d26af760c35de1e87ddc4e7ab6efbc7c",
+    "lines": 50
+  },
+  {
+    "path": "frontend/apps/studio/src/features/connections/README.md",
+    "sha256": "868d8e818289c8c1775d80e81c0d1b4391983d89c665b1e21308576d1a330566",
+    "lines": 33
+  },
+  {
+    "path": "frontend/apps/studio/src/features/database/README.md",
+    "sha256": "b063d560cada7ad693ecea4e0cd301003167162da5396ea607cb64beeab76ef7",
+    "lines": 33
+  },
+  {
+    "path": "frontend/apps/studio/src/features/integrations/README.md",
+    "sha256": "6193ec87893c6b1f754b648e80db07f17b779a4015f163cbbcf55f47620ef696",
+    "lines": 32
+  },
+  {
+    "path": "frontend/apps/studio/src/features/operations/README.md",
+    "sha256": "fbf27a454b68b677eed6664f6c421007b8f9224b6867f7ef2fbad4331fa8c3e7",
+    "lines": 32
+  },
+  {
+    "path": "frontend/apps/studio/src/features/runs/README.md",
+    "sha256": "e43c0d3558f28bbbe7a4bded0803f9dd9dbe0bbf5e93c13d6b1699e02ac492ef",
+    "lines": 58
+  },
+  {
+    "path": "frontend/apps/studio/src/features/scripts/README.md",
+    "sha256": "90591aae346b4dc590eda6949ada3243ab1db810ac3bebaa14649b855867e7ea",
+    "lines": 44
+  },
+  {
+    "path": "frontend/apps/studio/src/features/secrets/README.md",
+    "sha256": "b236d64d2d61f98d8e5898d720f0ec520b977ebb24d6c6a7e732ee3b4c260c89",
+    "lines": 34
+  },
+  {
+    "path": "frontend/apps/studio/src/features/workflows/README.md",
+    "sha256": "4d5364f4b38fbbb40a29eff2a29d4b71c00059610458f0a6ff3d20662ff1237d",
+    "lines": 49
+  },
+  {
+    "path": "frontend/apps/studio/src/model/README.md",
+    "sha256": "6818b311b781acda9d6dc9fffdbc5d348edb53b0e49b9a931af1cf68c81e4e2e",
+    "lines": 39
+  },
+  {
+    "path": "frontend/apps/studio/src/ui/README.md",
+    "sha256": "b3714a5551a87a7ab646a1c5d6aaca71975c4c6ac71115ee7486f9f0610a9f68",
+    "lines": 34
+  },
+  {
+    "path": "infra/README.md",
+    "sha256": "57749ffb0e07651ef1f0c0fed421ce0a76fcf5fe83bdf97e0f15feb3144b7f74",
+    "lines": 34
+  },
+  {
+    "path": "infra/docker/README.md",
+    "sha256": "a689b1e1b13f9d51241d57c520bd80f3fce840d957fca7be55392f1fc2b00441",
+    "lines": 31
+  },
+  {
+    "path": "infra/docker/postgres-init/README.md",
+    "sha256": "10d8aba03b3ea4f04b595528e97b6a09b60e95c32de65e174a8832f276d2b0f5",
+    "lines": 29
+  },
+  {
+    "path": "infra/dr/README.md",
+    "sha256": "950ab67d150f4a2c3b2cccc734a1a3f4c53fab93b2bc7df7b8e7bfa9f0373127",
+    "lines": 31
+  },
+  {
+    "path": "infra/openbao/README.md",
+    "sha256": "a8a766fe0796005c631f0bcb200d2a736c14bda5c2a84a8e58b05818bbe1a908",
+    "lines": 34
+  },
+  {
+    "path": "infra/openbao/policies/README.md",
+    "sha256": "c8029eabb71bbf0c1ed054c8b0abce5a7f7e239abe4a0c66b5db1d79b39acbf2",
+    "lines": 28
+  },
+  {
+    "path": "runners/README.md",
+    "sha256": "53cdbe8639df3eb141327360ce20ba5753896f76496fb6dd6a6661aac305973e",
+    "lines": 33
+  },
+  {
+    "path": "runners/dotnet/README.md",
+    "sha256": "a4f654ccfc945f3fdba2b2cca9ae7232cbfb2abfdac89316bbd801e298f0920b",
+    "lines": 58
+  },
+  {
+    "path": "runners/dotnet/Sagat.DotnetBuild/README.md",
+    "sha256": "d2c37db2d3b63c31e72a79d24fc9300bd0b8d0151d7370746610d903f708267b",
+    "lines": 31
+  },
+  {
+    "path": "runners/dotnet/Sagat.DotnetRuntime/README.md",
+    "sha256": "514d42bcd956f05ae145d28853a0bf4d0193fef7a1e1761e1fadccf2aa867336",
+    "lines": 31
+  },
+  {
+    "path": "runners/dotnet/Sagat.ScriptContract/README.md",
+    "sha256": "ac9c5205c31839547986fd5696f31ba728cfc78cf78a495a416313506e52fbfc",
+    "lines": 29
+  },
+  {
+    "path": "runners/go/README.md",
+    "sha256": "ac2b3d30130b525d29fe7fd20b1ed8090ca8bfb278a8817f71931b117f28f7db",
+    "lines": 53
+  },
+  {
+    "path": "runners/java/README.md",
+    "sha256": "47f80eb01ba6910d6a949a9b0c191b66479349e33a9913af81ad22f9c5218ebd",
+    "lines": 39
+  },
+  {
+    "path": "runners/java/api/README.md",
+    "sha256": "b245532010af8d6670a4085f28aa6b53242d75ef0542a192479246cb533db07c",
+    "lines": 28
+  },
+  {
+    "path": "runners/java/api/sagat/README.md",
+    "sha256": "3a4842ea99475a4571c2720015086a296ae729db5105b8bb8c189b9065a7f396",
+    "lines": 28
+  },
+  {
+    "path": "runners/java/api/sagat/inline/README.md",
+    "sha256": "b9f91810002da446c4fe65b87f4e5ac0dc0582c98f067982f8dc816931bbc49e",
+    "lines": 30
+  },
+  {
+    "path": "runners/java/host/README.md",
+    "sha256": "8406f5db508136e8345be917c0a22110e2e7ccda5d5989eff8f4cb9f0e5bf2ee",
+    "lines": 33
+  },
+  {
+    "path": "runners/java/host/sagat/README.md",
+    "sha256": "d0a16f36cabd5bf453d4dec6e10337fddb69d82b3afedbbc71af2366f0d70fae",
+    "lines": 33
+  },
+  {
+    "path": "runners/java/host/sagat/host/README.md",
+    "sha256": "0a49ba6f79c09b80e5a7a71e51285f3a47b6b0860e1bfb4d8fbc754d6114b6a6",
+    "lines": 34
+  },
+  {
+    "path": "scripts/README.md",
+    "sha256": "b6733f43cdf65bf1fe7f44360adb862cdf2f7af167240df690c2bd249bf8578e",
+    "lines": 37
+  },
+  {
+    "path": "sdks/README.md",
+    "sha256": "b9b6935521db4b782d48d6bb3abafacf06d6dc27530a3d4c7d386e939e3c14a9",
+    "lines": 101
+  },
+  {
+    "path": "sdks/dotnet/README.md",
+    "sha256": "952a2b6d59138af37321b6c2c42f5d2950aeb03d7b319feea00ddb8e71e95a51",
+    "lines": 362
+  },
+  {
+    "path": "sdks/dotnet/proto/README.md",
+    "sha256": "90123378079f2a5a74394a04da750574f3049c6148afc20e216e0c4f04c6dee5",
+    "lines": 29
+  },
+  {
+    "path": "sdks/dotnet/scripts/README.md",
+    "sha256": "7e9a82625d8db2f5a4c4935e14a21a5bdde3ba7284cdc8f6e5dde2b796d353fc",
+    "lines": 27
+  },
+  {
+    "path": "sdks/dotnet/src/README.md",
+    "sha256": "5f8f605c4526b85ce0ab0a0d428ead0bfaef79e37816a9baada116e6eef8ab86",
+    "lines": 27
+  },
+  {
+    "path": "sdks/dotnet/src/SagatOctopusOrchestrator.Sdk/DependencyInjection/README.md",
+    "sha256": "882b08f641781d27b9849893e3973359c38250c9fe21c49d8462e56ba1ac31ee",
+    "lines": 28
+  },
+  {
+    "path": "sdks/dotnet/src/SagatOctopusOrchestrator.Sdk/Internal/README.md",
+    "sha256": "7a2151e9556bae71cf707617c85d7eeaa36b86b32c81d3d375ce61ff1430e020",
+    "lines": 28
+  },
+  {
+    "path": "sdks/dotnet/src/SagatOctopusOrchestrator.Sdk/README.md",
+    "sha256": "f4462563ff7f3ac3277d20671f23e920a1e8132f61e702029dcaafd666705e98",
+    "lines": 35
+  },
+  {
+    "path": "sdks/dotnet/src/SagatOctopusOrchestrator.Sdk/Workers/README.md",
+    "sha256": "3d01fdf3faf5be59414e1fb5e2eed0beeb1b168390e6188c9aff97420079061b",
+    "lines": 30
+  },
+  {
+    "path": "sdks/dotnet/src/SagatOctopusOrchestrator.Sdk/Workflows/README.md",
+    "sha256": "882869a02a70aff5184ed1191e79c66da4d88c5798108c5074c5c92307df0645",
+    "lines": 30
+  },
+  {
+    "path": "sdks/go/README.md",
+    "sha256": "a32f02249d477b155732f65071db231507928207476279093f8501dc4f011175",
+    "lines": 342
+  },
+  {
+    "path": "sdks/go/client/README.md",
+    "sha256": "63c45ff5727014a64097d93ff8219b6f8de19ff43aea099b6f959c9ba3bb9e9d",
+    "lines": 31
+  },
+  {
+    "path": "sdks/go/internal/README.md",
+    "sha256": "c07331f9b11fbf2813da3d232b548394d84af72625c90eff5fd46e04fb2dc4f6",
+    "lines": 33
+  },
+  {
+    "path": "sdks/go/internal/backoff/README.md",
+    "sha256": "036dc2d7ff9796b8d8836b71700b7a58631873048275a497d9b63ff37c0e5499",
+    "lines": 27
+  },
+  {
+    "path": "sdks/go/internal/bound/README.md",
+    "sha256": "a79ef84d137bd49deb4f51d7f1679c735b6498ae731c317b5aaaac11d2c18d2e",
+    "lines": 27
+  },
+  {
+    "path": "sdks/go/internal/ids/README.md",
+    "sha256": "fcc529d6b852428d397cac803a9d0e3e89b8acd7af6e2be331beaffe5bd26ef7",
+    "lines": 27
+  },
+  {
+    "path": "sdks/go/internal/jsonx/README.md",
+    "sha256": "bdcfaa9eee83995f30dfed6f8c129bbb81e6b9add2808d73a20a0bfb715e3f54",
+    "lines": 27
+  },
+  {
+    "path": "sdks/go/internal/safelog/README.md",
+    "sha256": "fa4ffbbda84c70dd461f985086dbdab79a6b4ca6bab1467eb0ed937e75325675",
+    "lines": 27
+  },
+  {
+    "path": "sdks/go/internal/tokenfail/README.md",
+    "sha256": "02b78352bcca7a863c2115dba0c29c3963415222641aea96c757af538c91424a",
+    "lines": 27
+  },
+  {
+    "path": "sdks/go/internal/workerpb/README.md",
+    "sha256": "7e6738513080c2ad690a2579ef07b5ffad333d4955375cfb751725c9dd89c4e5",
+    "lines": 28
+  },
+  {
+    "path": "sdks/go/otelbridge/README.md",
+    "sha256": "028e47c203f1bf50af0e3018ddf9d6486b2250c5e778280a63da82947c5954af",
+    "lines": 27
+  },
+  {
+    "path": "sdks/go/proto/README.md",
+    "sha256": "ba078c059c1cf7c62f16e56c8db24b09e5009d2e6d2a2f261113d0f1aa4460cb",
+    "lines": 27
+  },
+  {
+    "path": "sdks/go/proto/sagat_octopus_orchestrator/README.md",
+    "sha256": "b0ee26053d4266c728d72864e879db848d4c500a090dba5f26b21e729cc9c656",
+    "lines": 27
+  },
+  {
+    "path": "sdks/go/proto/sagat_octopus_orchestrator/v1/README.md",
+    "sha256": "d09ee8cf583139154ce112636dd5e16010f5ca9a7984f0030ac12a07a5362751",
+    "lines": 29
+  },
+  {
+    "path": "sdks/go/scripts/README.md",
+    "sha256": "08c66ad993c3b2cbf298366fea2b1f14db1686bcf14f75f6438011da17756bb9",
+    "lines": 27
+  },
+  {
+    "path": "sdks/go/worker/README.md",
+    "sha256": "6d20b245b766a14f002f94beb6ceb8a022175c95ede8113a5dd6aaadbbb05134",
+    "lines": 30
+  },
+  {
+    "path": "sdks/go/workflow/README.md",
+    "sha256": "eb3b4412850031dd65005b370796cdeb3e6db0a94b4a07cd960f0833277fab04",
+    "lines": 29
+  },
+  {
+    "path": "sdks/java/README.md",
+    "sha256": "f8461b68e0711c7e5712498e3ae0c66c924e9303a207f46dd1f9dedb68b89a1e",
+    "lines": 357
+  },
+  {
+    "path": "sdks/java/scripts/README.md",
+    "sha256": "8b0a7eed0e54511a2a5c52d5746ceca2012b4cb34610fb745cf47757af00f452",
+    "lines": 27
+  },
+  {
+    "path": "sdks/java/sdk/README.md",
+    "sha256": "617323c3935a2f158f42484062380ba4f6f036df4ee0fc6885aa54b3ee7a93b6",
+    "lines": 29
+  },
+  {
+    "path": "sdks/java/sdk/src/README.md",
+    "sha256": "8a89685c601a92aa0199d4b7343a79005ffd184e8800f64ba363e17410a8c6f8",
+    "lines": 27
+  },
+  {
+    "path": "sdks/java/sdk/src/main/README.md",
+    "sha256": "cebcd2364740d58eca466153ddc7883c0f8e52e7797ab9036c98d90d92540dee",
+    "lines": 28
+  },
+  {
+    "path": "sdks/java/sdk/src/main/java/README.md",
+    "sha256": "c52138251e8deaf655c50e14e0f2a83db375b38b20ab2109d5b2576ad9075c35",
+    "lines": 27
+  },
+  {
+    "path": "sdks/java/sdk/src/main/java/dev/README.md",
+    "sha256": "0568470d73aa8eb04ee1708dce1ba247dfca4fecd50707da58cd0714fc55ce15",
+    "lines": 27
+  },
+  {
+    "path": "sdks/java/sdk/src/main/java/dev/sagatoctopusorchestrator/README.md",
+    "sha256": "681c9dc857cf5d910c5e3ede72ca824232071a33aec5b3532ff767e0297661c8",
+    "lines": 27
+  },
+  {
+    "path": "sdks/java/sdk/src/main/java/dev/sagatoctopusorchestrator/sdk/README.md",
+    "sha256": "77a4e16903a1751e831b4cbe78da6352dda17da46601f8bfc900642363cdc58d",
+    "lines": 37
+  },
+  {
+    "path": "sdks/java/sdk/src/main/java/dev/sagatoctopusorchestrator/sdk/opentelemetry/README.md",
+    "sha256": "eb93b72a739bcbf74e7ea4c3ee4daab7400f558788942251a367e74d5f51152a",
+    "lines": 27
+  },
+  {
+    "path": "sdks/java/sdk/src/main/java/dev/sagatoctopusorchestrator/sdk/worker/README.md",
+    "sha256": "8aababacc37f550d1e95522e3c214f413efecb3dbb8aded4168d8a0a1dafbc10",
+    "lines": 33
+  },
+  {
+    "path": "sdks/java/sdk/src/main/java/dev/sagatoctopusorchestrator/sdk/workflow/README.md",
+    "sha256": "a6688b8cf5f3ae420bcff523fc3117a690fb754e94ce256d315a2fb15f09e515",
+    "lines": 33
+  },
+  {
+    "path": "sdks/java/sdk/src/main/proto/README.md",
+    "sha256": "b0cbf4ffef39a0519df5599f0ea70132c516325f0fedbd0bddde4f015894eae8",
+    "lines": 28
+  },
+  {
+    "path": "sdks/python/README.md",
+    "sha256": "efde95954a0fc537e37a0980be0220ec46f73dd75f2bcdf963b1ec3c14bd831d",
+    "lines": 339
+  },
+  {
+    "path": "sdks/python/proto/README.md",
+    "sha256": "bd458422889102b05060d9a96f5ac1122783350c176844312926d62b47375476",
+    "lines": 29
+  },
+  {
+    "path": "sdks/python/sagat_octopus_orchestrator/README.md",
+    "sha256": "404990c65cbe41eb737310903fd5d3837a87dc02a174d8709f8356c6b15dcc35",
+    "lines": 38
+  },
+  {
+    "path": "sdks/python/sagat_octopus_orchestrator/_proto/README.md",
+    "sha256": "0891202244a2b0bf1d216870c48472364d924c5f978360509b71d449b583f6c3",
+    "lines": 27
+  },
+  {
+    "path": "sdks/python/sagat_octopus_orchestrator/worker/README.md",
+    "sha256": "150e06e91790f2a8d42c35292fb47c13d95b80126a7d9843e2de6ce8ca1dd6f5",
+    "lines": 33
+  },
+  {
+    "path": "sdks/python/scripts/README.md",
+    "sha256": "cc8b9ba4d6600b912f46afa26d44d42055d302979d2dc6f062592d2f51b5d0e9",
+    "lines": 27
+  },
+  {
+    "path": "sdks/rust/README.md",
+    "sha256": "2dabc95486bb873d48666169923323ccc2623c09bd455a68c475448adf6a3fa1",
+    "lines": 105
+  },
+  {
+    "path": "sdks/rust/consumer/README.md",
+    "sha256": "249c396b6b2c9acd5f970f14a90cf942970ac26426a426f3d022966d3c875c44",
+    "lines": 31
+  },
+  {
+    "path": "sdks/rust/consumer/src/README.md",
+    "sha256": "1f3345df44a5702f22f5b08cd4ba604d87af9b7407d0c5b86cd0e122b1bf5e5a",
+    "lines": 29
+  },
+  {
+    "path": "sdks/rust/proto/README.md",
+    "sha256": "7915caf2a10482eabd8e118cbe35cc389b947a137f8c016ca9c8637ab176c39c",
+    "lines": 31
+  },
+  {
+    "path": "sdks/rust/src/README.md",
+    "sha256": "76b3853eba400f1e37553c814a1d010df688185f28b27438855a257ac2fae410",
+    "lines": 40
+  },
+  {
+    "path": "sdks/rust/src/capabilities/README.md",
+    "sha256": "ae1cd4f23f977277e5cdf0be057a69224ce427d5fe1f62df3040cd324f3b1949",
+    "lines": 29
+  },
+  {
+    "path": "sdks/rust/src/client/README.md",
+    "sha256": "a54dde5b83d117c986bc6d98ec4dfa243e59b2b29727de833c8e310f1108e38d",
+    "lines": 31
+  },
+  {
+    "path": "sdks/rust/src/workflow/README.md",
+    "sha256": "2da2f73d0eee5eaf2de952b3457494f3087fd83d556553c3392e620899086193",
+    "lines": 32
+  },
+  {
+    "path": "sdks/typescript/README.md",
+    "sha256": "3ffd2256f74d181c3ee5b0924746b35ed0c43b1b6fe288d716a77235206e2163",
+    "lines": 196
+  },
+  {
+    "path": "sdks/typescript/examples/README.md",
+    "sha256": "63cb608d6037903ed684fde0b93e0b79120a9a7621225977c5c50ee31481c04d",
+    "lines": 27
+  },
+  {
+    "path": "sdks/typescript/proto/README.md",
+    "sha256": "5756f4ca3eed351396e9eec154e06b36dffebc00e44b1cd03777adffd0e6c9e1",
+    "lines": 29
+  },
+  {
+    "path": "sdks/typescript/scripts/README.md",
+    "sha256": "c74169981b88e7a8452afb9b18620294137e44221faa668b788505158936ec64",
+    "lines": 27
+  },
+  {
+    "path": "sdks/typescript/src/README.md",
+    "sha256": "b2e46d3f280b684285147ee7dfb696b08e3d2044f31c4aa89e9bc9624fea7dae",
+    "lines": 38
+  },
+  {
+    "path": "sdks/typescript/src/worker/README.md",
+    "sha256": "5f8e65aff6758785d7ee18df1ce4e0877e877141c3eb80fba6d69a26bb3cdab1",
+    "lines": 34
+  },
+  {
+    "path": "specs/001-platform-foundation/README.md",
+    "sha256": "c28e93009a3825c609f6e0676e236e6878ff63cf01a429529091d15b1646cd38",
+    "lines": 31
+  },
+  {
+    "path": "specs/001-platform-foundation/contracts/README.md",
+    "sha256": "60e500099135183197bd990972a073f2e7c6e9b881d94e507621d445891caa7f",
+    "lines": 46
+  },
+  {
+    "path": "specs/README.md",
+    "sha256": "b4d98c49ea8b3b396f10880b766c0892d02fea088927bad66e0478ffb9ea9111",
+    "lines": 31
+  },
+  {
+    "path": "templates/README.md",
+    "sha256": "5cc09da9508a707eef596a4f8059ccce79bdecb8ab360c77af1e7a956bfaebf5",
+    "lines": 31
+  },
+  {
+    "path": "templates/inline-script/README.md",
+    "sha256": "9abb4316efda5d7fc4bd3f2ad0bd38d57280ea60151c8c202b7882560ad8ff7a",
+    "lines": 43
+  },
+  {
+    "path": "vendor/README.md",
+    "sha256": "bb3fbcc9b5119f61f5e53e26f83546d3d21cef33e729202b9d37c1643455ead4",
+    "lines": 30
+  },
+  {
+    "path": "vendor/contracts/README.md",
+    "sha256": "10a335302d32f8668f21d5777bb3447642021200274d87a8abdb174ea6a366b2",
+    "lines": 25
+  },
+  {
+    "path": "vendor/contracts/rskafka/README.md",
+    "sha256": "5e7fc036daf2519d3b39332f83ef4593ad0933dc29a668b23b968b2f79150247",
+    "lines": 36
+  },
+  {
+    "path": "vendor/contracts/rskafka/src/README.md",
+    "sha256": "c3ad9a72b755fc2da633a2b83fcf7eca376a5a049dbe6e1fd7d9f803ac05aabb",
+    "lines": 40
+  },
+  {
+    "path": "vendor/contracts/rskafka/src/client/README.md",
+    "sha256": "3f709ff540e742c2519600343629c37540ebe1404f0bdb5ead0f7cb439b93780",
+    "lines": 39
+  },
+  {
+    "path": "vendor/contracts/rskafka/src/client/producer/README.md",
+    "sha256": "d987adea43c90642011cb1a67dcea7c6cbc46690cc43d1e12ec78fd8176a98cf",
+    "lines": 32
+  },
+  {
+    "path": "vendor/contracts/rskafka/src/connection/README.md",
+    "sha256": "8d5a27592f3276bf2b0b93802c3aaee326ea4874120af2d97903f839fbb41602",
+    "lines": 32
+  },
+  {
+    "path": "vendor/contracts/rskafka/src/connection/transport/README.md",
+    "sha256": "c64c9dbc313a37200c2ff94fb193e8d97ad66b840aac9c66669a9292d8446aaf",
+    "lines": 31
+  },
+  {
+    "path": "vendor/contracts/rskafka/src/protocol/README.md",
+    "sha256": "5bff55193bc525de87d08d9a64a402b39fe73c3dcc523ee836813f5494760943",
+    "lines": 40
+  },
+  {
+    "path": "vendor/contracts/rskafka/src/protocol/messages/README.md",
+    "sha256": "d26aac2ac783c3ef07bb91d6cecc5c5412f918c514be2452b503503deaa18818",
+    "lines": 34
+  }
+]
