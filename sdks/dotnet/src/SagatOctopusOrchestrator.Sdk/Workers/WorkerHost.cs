@@ -21,6 +21,17 @@ public sealed partial class WorkerHost : IWorkerHost
     private const int ReportAttempts = 5;
     private const int MaxMessage = 512;
 
+    // At most this many hand-backs are on their way at once; the others wait their turn in the order received (SPEC section 6.2,
+    // decision D006-026): a server that answers a poll with thousands of leases does not start thousands of reports.
+    private const int MaxHandBacks = 8;
+
+    // Why a lease the host received is handed back (SPEC section 6.2): it arrived after the stop began, it is beyond the credit or the
+    // free slots, it is in the rest of a frame that broke the receive contract, or the host could not start it.
+    private const string HandBackStopping = "stopping";
+    private const string HandBackCredit = "credit";
+    private const string HandBackMalformed = "malformed";
+    private const string HandBackNotStarted = "not_started";
+
     [DebuggerBrowsable(DebuggerBrowsableState.Never)]
     private readonly SagatOptions options;
     private readonly ILoggerFactory loggerFactory;
@@ -28,7 +39,22 @@ public sealed partial class WorkerHost : IWorkerHost
     private readonly JsonSerializerOptions json;
     private readonly int maxInflight;
     private readonly Dictionary<string, ActivityRegistration> handlers = new(StringComparer.Ordinal);
-    private readonly ConcurrentDictionary<long, InFlight> inflight = new();
+
+    // The tasks in flight by their in-flight key (InflightKey): the task id, which sibling iterations of a collection share, and from
+    // protocol 1.5 the instance path.
+    private readonly ConcurrentDictionary<string, InFlight> inflight = new(StringComparer.Ordinal);
+
+    // The hand-backs on their way, queued ones included, by the in-flight key of their lease: stop waits for them as for the tasks in
+    // flight, and a lease under one of these keys is a duplicate (decision D006-027), but they hold no slot.
+    private readonly ConcurrentDictionary<string, TaskCompletionSource> handingBack = new(StringComparer.Ordinal);
+
+    // The hand-backs waiting for one of the MaxHandBacks workers, in the order they were received, and how many workers drain them.
+    private readonly ConcurrentQueue<HandBackItem> handBackQueue = new();
+
+    // How a task is started: the thread pool. The tests replace it by reflection with a runtime that refuses a task, the one path of
+    // Dispatch that nothing else can reach.
+    private readonly Func<Func<Task>, Task> startTask = static work => Task.Run(work);
+    private int handBackWorkers;
     private readonly SemaphoreSlim lifecycle = new(1, 1);
     private readonly object wakeGate = new();
     private readonly TagList tags;
@@ -47,7 +73,6 @@ public sealed partial class WorkerHost : IWorkerHost
     private TaskCompletionSource? wake;
     private TaskCompletionSource stopSignal = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private bool wakePending;
-    private long sequence;
 
     /// <summary>Creates a host. <see cref="SagatOptions.GrpcUrl"/>, <see cref="SagatOptions.Namespace"/>, a token and <see cref="WorkerOptions.Name"/> are required to start it.</summary>
     public WorkerHost(SagatOptions options, ILoggerFactory? loggerFactory = null)
@@ -194,14 +219,17 @@ public sealed partial class WorkerHost : IWorkerHost
             WakeForStop();
             loopCancel?.Cancel();
 
-            // The poll in progress ends and no other starts; what it leased is in flight from here on. Cancelling
-            // the token ends the wait for that poll at once (the host is going away).
+            // The receive call in progress ends and no other starts; a poll answer or a stream frame the loop already holds is handed back
+            // whole (SPEC section 6.2). Cancelling the token ends the wait for that call at once (the host is going away), never the code
+            // that reads what was received.
             using (cancellationToken.Register(static state => ((CancellationTokenSource)state!).Cancel(), loopCancel))
             {
                 await loop.ConfigureAwait(false);
             }
 
-            var pending = Task.WhenAll(inflight.Values.Select(task => task.Completion.Task));
+            // The loop has ended: every task and every hand-back it started is in one of the two tables. The hand-backs are waited for within
+            // the same grace, so that the channel is still open for them.
+            var pending = Task.WhenAll(inflight.Values.Select(task => task.Completion.Task).Concat(handingBack.Values.Select(handBack => handBack.Task)));
             var late = false;
             try
             {
@@ -459,34 +487,61 @@ public sealed partial class WorkerHost : IWorkerHost
                         var delivered = 0;
                         var inputBytes = 0;
                         var hintedWait = 0L;
+                        var window = new HashSet<string>(StringComparer.Ordinal);
+                        var windowMinor = minor;
                         await foreach (var frame in channel.StreamTasksAsync(
                             new PollTasksRequest { WorkerId = workerId, SessionToken = sessionToken, MaxTasks = asked },
                             cancellationToken).ConfigureAwait(false))
                         {
+                            if (stopping)
+                            {
+                                // A host that is stopping starts nothing new: the frame it read is handed back whole.
+                                foreach (var lease in frame.Tasks)
+                                {
+                                    Take(window, lease, HandBackStopping, session, windowMinor);
+                                }
+
+                                return;
+                            }
+
                             if (frame.Tasks.Count == 0)
                             {
                                 hintedWait = frame.RetryAfterMs;
                                 continue;
                             }
+
+                            // The host runs at most the credit it asked for and has slots for, within the input budget of the window: the
+                            // lease that breaks either and the rest of the frame after it are handed back, and the stream is given up.
                             var allowed = Math.Min(asked - delivered, maxInflight - inflight.Count);
-                            var excess = frame.Tasks.Count > allowed;
-                            for (var i = 0; i < Math.Min(frame.Tasks.Count, Math.Max(0, allowed)); i++)
+                            var taken = 0;
+                            string? why = null;
+                            SagatException? broken = null;
+                            foreach (var lease in frame.Tasks)
                             {
-                                var lease = frame.Tasks[i];
                                 var bytes = Encoding.UTF8.GetByteCount(lease.InputJson);
-                                if (bytes > MaxStreamInputBytes - inputBytes)
+                                if (why is null && taken >= allowed)
                                 {
-                                    throw SagatException.Invalid("a task stream exceeded its input budget");
+                                    why = HandBackCredit;
+                                    broken = SagatException.Invalid("a task stream exceeded its receive credit");
+                                }
+                                else if (why is null && bytes > MaxStreamInputBytes - inputBytes)
+                                {
+                                    why = HandBackMalformed;
+                                    broken = SagatException.Invalid("a task stream exceeded its input budget");
                                 }
 
-                                inputBytes += bytes;
-                                Dispatch(lease, session);
-                                delivered++;
-                                meaningful = true;
+                                if (Take(window, lease, why, session, windowMinor))
+                                {
+                                    inputBytes += bytes;
+                                    delivered++;
+                                    taken++;
+                                    meaningful = true;
+                                }
                             }
-                            if (excess)
+
+                            if (broken is not null)
                             {
-                                throw SagatException.Invalid("a task stream exceeded its receive credit");
+                                throw broken;
                             }
                         }
                         failures = 0;
@@ -509,6 +564,7 @@ public sealed partial class WorkerHost : IWorkerHost
                         continue;
                     }
                 }
+                var answerMinor = minor;
                 var response = await channel.PollAsync(
                     new PollTasksRequest { WorkerId = workerId, SessionToken = sessionToken, MaxTasks = asked },
                     cancellationToken).ConfigureAwait(false);
@@ -516,16 +572,29 @@ public sealed partial class WorkerHost : IWorkerHost
                 refused = 0;
                 Safe.Add(Telemetry.Polls, tags);
 
-                // The host runs at most as many tasks as it asked for: the others keep a lease that lapses and is given again.
+                // The host runs at most as many tasks as it asked for, and nothing once it is stopping: a server that sends more is not
+                // obeyed, and the rest are handed back (SPEC section 6.2).
                 var got = response.Tasks.Count;
                 if (got > asked)
                 {
                     Log.TooManyTasks(logger, got, asked, got - asked);
                 }
 
-                for (var i = 0; i < Math.Min(got, asked); i++)
+                var answer = new HashSet<string>(StringComparer.Ordinal);
+                var dispatched = 0;
+                var stoppingNow = stopping;
+                foreach (var lease in response.Tasks)
                 {
-                    Dispatch(response.Tasks[i], session);
+                    var why = stoppingNow ? HandBackStopping : dispatched >= asked ? HandBackCredit : null;
+                    if (Take(answer, lease, why, session, answerMinor))
+                    {
+                        dispatched++;
+                    }
+                }
+
+                if (stoppingNow)
+                {
+                    return;
                 }
 
                 if (got == 0)
@@ -630,54 +699,198 @@ public sealed partial class WorkerHost : IWorkerHost
 
     // ------------------------------------------------------------------------------------------- tasks
 
-    private void Dispatch(TaskLease lease, Session session)
+    /// <summary>
+    /// What identifies a task while it runs: the legacy task id is <c>run/node/generation</c>, which sibling iterations of a collection share, so
+    /// from protocol 1.5 the instance path is part of it.
+    /// </summary>
+    private static string InflightKey(TaskLease lease, int protocolMinor)
     {
+        if (protocolMinor < 5 || lease.Instance is null || lease.Instance.InstancePath.Count == 0)
+        {
+            return lease.TaskId;
+        }
+
+        var key = new StringBuilder(lease.TaskId);
+        foreach (var segment in lease.Instance.InstancePath)
+        {
+            key.Append('/').Append(segment.ScopeNodeId).Append('[').Append(segment.IterationIndex.ToString(System.Globalization.CultureInfo.InvariantCulture)).Append(']');
+        }
+
+        return key.ToString();
+    }
+
+    /// <summary>
+    /// Dispatches a lease of a poll answer or of a stream receive window, or hands it back when <paramref name="why"/> is not null, and says
+    /// whether it took a slot of the credit (it was dispatched, or the host tried to start it). A lease whose in-flight key is in flight, or
+    /// was already seen in the same answer or window (<paramref name="seen"/>), is a duplicate: it is ignored and never reported, since its fence
+    /// may be the one of the running handler (SPEC section 6.2).
+    /// </summary>
+    private bool Take(HashSet<string> seen, TaskLease lease, string? why, Session session, int protocolMinor)
+    {
+        var key = InflightKey(lease, protocolMinor);
+        if (inflight.ContainsKey(key) || handingBack.ContainsKey(key) || !seen.Add(key))
+        {
+            Log.DuplicateIgnored(logger, lease.TaskId);
+            return false;
+        }
+
+        if (why is not null)
+        {
+            HandBack(lease, key, session, protocolMinor, why);
+            return false;
+        }
+
+        Dispatch(lease, key, session, protocolMinor);
+        return true;
+    }
+
+    /// <summary>
+    /// Reports a lease the host received and will not run: <c>FailStep</c> <c>TASK_NOT_STARTED</c>, retryable, before any handler of it runs
+    /// (SPEC section 6.2). The server gives the step back without consuming the attempt when it can; a lease left to lapse would be an unknown
+    /// outcome. It is the failure report of every task, with its retries, made by one of at most <see cref="MaxHandBacks"/> workers in the
+    /// order received; nothing here waits, so the receive loop never blocks on the bound. Stop waits for it like a task in flight, so the
+    /// channel is still open.
+    /// </summary>
+    private void HandBack(TaskLease lease, string key, Session session, int protocolMinor, string why)
+    {
+        var done = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        if (!handingBack.TryAdd(key, done))
+        {
+            // Take looked for the key just before, and only the loop hands back: a lease is handed back at most once.
+            Log.DuplicateIgnored(logger, lease.TaskId);
+            return;
+        }
+
+        Log.HandingBack(logger, lease.TaskId, why);
+        handBackQueue.Enqueue(new HandBackItem(lease, key, session, protocolMinor, done));
+        if (!TakeHandBackWorker())
+        {
+            // Every worker is busy: the one that finishes first takes this hand-back up.
+            return;
+        }
+
         try
         {
-            var protocolMinor = minor;
-            var id = Interlocked.Increment(ref sequence);
-            var entry = new InFlight(new TaskRuntime(lease.ExpiresAtEpochMs));
-            inflight[id] = entry;
-            try
-            {
-                Safe.Add(Telemetry.TasksTaken, tags);
-                Log.TaskTaken(logger, lease.TaskId, lease.ActivityName, lease.Attempt);
-                _ = Task.Run(async () =>
-                {
-                    try
-                    {
-                        await ExecuteAsync(lease, entry.Runtime, session, protocolMinor).ConfigureAwait(false);
-                    }
-#pragma warning disable CA1031 // A bug in one task must not take the host down.
-                    catch (Exception error)
-#pragma warning restore CA1031
-                    {
-                        Log.TaskCrashed(logger, lease.TaskId, error.GetType().Name);
-                    }
-                    finally
-                    {
-                        // Its own entry, whatever else was leased under the same task id.
-                        inflight.TryRemove(id, out _);
-                        entry.Completion.TrySetResult();
-                        Wake();
-                    }
-                });
-            }
-#pragma warning disable CA1031 // The task could not be started: it is not in flight, and its lease lapses and is given again.
-            catch (Exception error)
-#pragma warning restore CA1031
-            {
-                inflight.TryRemove(id, out _);
-                entry.Completion.TrySetResult();
-                Log.TaskCrashed(logger, lease.TaskId, error.GetType().Name);
-            }
+            _ = Task.Run(DrainHandBacksAsync);
         }
-#pragma warning disable CA1031 // One lease that cannot be dispatched must not cost the others of the same answer.
+#pragma warning disable CA1031 // A worker that cannot be started is logged: the queued hand-backs wait for another, or lapse when stop gives up.
         catch (Exception error)
 #pragma warning restore CA1031
         {
-            Log.TaskCrashed(logger, lease.TaskId, error.GetType().Name);
+            Interlocked.Decrement(ref handBackWorkers);
+            Log.HandBackNotStarted(logger, lease.TaskId, error.GetType().Name);
         }
+    }
+
+    /// <summary>Takes one of the <see cref="MaxHandBacks"/> places of a hand-back worker, if one is free.</summary>
+    private bool TakeHandBackWorker()
+    {
+        while (true)
+        {
+            var workers = Volatile.Read(ref handBackWorkers);
+            if (workers >= MaxHandBacks)
+            {
+                return false;
+            }
+
+            if (Interlocked.CompareExchange(ref handBackWorkers, workers + 1, workers) == workers)
+            {
+                return true;
+            }
+        }
+    }
+
+    private async Task DrainHandBacksAsync()
+    {
+        while (true)
+        {
+            while (handBackQueue.TryDequeue(out var item))
+            {
+                try
+                {
+                    if (item.Session.ReportToken.IsCancellationRequested)
+                    {
+                        // The channel closed when stop gave up: the lease lapses.
+                        Safe.Add(Telemetry.TasksDropped, tags);
+                        Log.FailureNotReported(logger, item.Lease.TaskId, "CANCELLED");
+                    }
+                    else
+                    {
+                        await FailAsync(item.Session, item.Lease, item.ProtocolMinor, "TASK_NOT_STARTED", "the host did not start this task", retryable: true, started: null, span: null).ConfigureAwait(false);
+                    }
+                }
+                finally
+                {
+                    handingBack.TryRemove(new KeyValuePair<string, TaskCompletionSource>(item.Key, item.Done));
+                    item.Done.TrySetResult();
+                }
+            }
+
+            Interlocked.Decrement(ref handBackWorkers);
+
+            // A hand-back queued while this worker was leaving may have found every place taken: it is taken up again here.
+            if (handBackQueue.IsEmpty || !TakeHandBackWorker())
+            {
+                return;
+            }
+        }
+    }
+
+    private void Dispatch(TaskLease lease, string key, Session session, int protocolMinor)
+    {
+        InFlight? entry = null;
+        try
+        {
+            entry = new InFlight(new TaskRuntime(lease.ExpiresAtEpochMs));
+            if (!inflight.TryAdd(key, entry))
+            {
+                // Only the loop adds to the table, and it looked for the key just before: nothing else can be under it.
+                entry = null;
+                Log.DuplicateIgnored(logger, lease.TaskId);
+                return;
+            }
+
+            var started = entry;
+            _ = startTask(async () =>
+            {
+                try
+                {
+                    await ExecuteAsync(lease, started.Runtime, session, protocolMinor).ConfigureAwait(false);
+                }
+#pragma warning disable CA1031 // A bug in one task must not take the host down.
+                catch (Exception error)
+#pragma warning restore CA1031
+                {
+                    Log.TaskCrashed(logger, lease.TaskId, error.GetType().Name);
+                }
+                finally
+                {
+                    // Its own entry only: a lease under the same key that is taken after this one ended is another task.
+                    inflight.TryRemove(new KeyValuePair<string, InFlight>(key, started));
+                    started.Completion.TrySetResult();
+                    Wake();
+                }
+            });
+        }
+#pragma warning disable CA1031 // The task could not be started (its runtime refused it): it is not in flight and is handed back.
+        catch (Exception error)
+#pragma warning restore CA1031
+        {
+            if (entry is not null)
+            {
+                inflight.TryRemove(new KeyValuePair<string, InFlight>(key, entry));
+                entry.Completion.TrySetResult();
+            }
+
+            Log.TaskCrashed(logger, lease.TaskId, error.GetType().Name);
+            HandBack(lease, key, session, protocolMinor, HandBackNotStarted);
+            return;
+        }
+
+        // Counted once the task is started, outside the block above, so that nothing after the start can hand back a started task: a lease
+        // the host could not start is handed back and was never taken.
+        Safe.Add(Telemetry.TasksTaken, tags);
+        Log.TaskTaken(logger, lease.TaskId, lease.ActivityName, lease.Attempt);
     }
 
     private async Task ExecuteAsync(TaskLease lease, TaskRuntime runtime, Session session, int protocolMinor)
@@ -1211,7 +1424,8 @@ public sealed partial class WorkerHost : IWorkerHost
         }
     }
 
-    private async Task FailAsync(Session session, TaskLease lease, int protocolMinor, string code, string message, bool retryable, long started, Activity? span)
+    /// <summary>Reports a failure; <paramref name="started"/> is null for a lease that is handed back, which is not an attempt and has no duration.</summary>
+    private async Task FailAsync(Session session, TaskLease lease, int protocolMinor, string code, string message, bool retryable, long? started, Activity? span)
     {
         var channel = session.Rpc;
         var safeCode = CodePattern().IsMatch(code) ? code : "WORKER_ERROR";
@@ -1250,7 +1464,10 @@ public sealed partial class WorkerHost : IWorkerHost
             var failed = tags;
             failed.Add("sagat.error.code", safeCode);
             Safe.Add(Telemetry.TasksFailed, failed);
-            Safe.Record(Telemetry.ActivityDuration, Stopwatch.GetElapsedTime(started).TotalSeconds, tags);
+            if (started is { } since)
+            {
+                Safe.Record(Telemetry.ActivityDuration, Stopwatch.GetElapsedTime(since).TotalSeconds, tags);
+            }
             Safe.Fail(span);
             Safe.Tag(span, "error.type", safeCode);
             Safe.Tag(span, "sagat.outcome", "failed");
@@ -1384,6 +1601,8 @@ public sealed partial class WorkerHost : IWorkerHost
             Rpc.Dispose();
         }
     }
+
+    private sealed record HandBackItem(TaskLease Lease, string Key, Session Session, int ProtocolMinor, TaskCompletionSource Done);
 
     private sealed class InFlight(TaskRuntime runtime)
     {
