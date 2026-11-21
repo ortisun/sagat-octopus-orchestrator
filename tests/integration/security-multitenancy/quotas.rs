@@ -545,7 +545,8 @@ async fn the_tenant_view_has_no_single_usage_for_a_per_namespace_resource() {
             (QuotaResource::TenantBatchJobs, true),
             (QuotaResource::PendingResets, false),
             // Feature 041: the admin holds run:logs:read, so the step-log usage is shown.
-            (QuotaResource::TenantStepLogBytes, true),
+            // Withheld: the admin holds no PII reveal grant (decision D041-133).
+            (QuotaResource::TenantStepLogBytes, false),
             (QuotaResource::StepLogAttemptRecords, false),
             (QuotaResource::StepLogAttemptBytes, false),
             (QuotaResource::StepLogRetentionDays, false),
@@ -607,28 +608,92 @@ async fn the_tenant_view_has_no_single_usage_for_a_per_namespace_resource() {
     );
 }
 
-/// Feature 041 (D041-066): the retained step-log bytes say how much a tenant's runs log, so a caller
-/// without `run:logs:read` (a viewer holds `quota:read`) is not shown them; a developer is.
+/// Feature 041 (decision D041-133, OD-2026-11-20-19): the retained step-log bytes move with what other runs log, so
+/// `used` of `tenant_step_log_bytes` is shown only to a caller who holds `run:logs:read` and the PII reveal grant in
+/// every namespace of the tenant; anyone else sees the resource and its limit with `usage_withheld` and no usage.
 #[tokio::test]
-async fn the_step_log_usage_is_shown_only_to_a_reader_of_step_logs() {
+async fn the_step_log_usage_is_shown_only_with_the_grant_in_every_namespace() {
     let w = world().await;
-    let tenant = w.admin.tenant_id();
-    let used = |views: Vec<sagat_application::quotas::QuotaView>| {
+    let step_log = |views: Vec<sagat_application::quotas::QuotaView>| {
         views
             .into_iter()
             .find(|q| q.resource == QuotaResource::TenantStepLogBytes)
-            .map(|q| q.used)
+            .map(|q| (q.used, q.usage_withheld))
     };
-    let viewer = Principal::new(tenant, subject_of("a-viewer"), Role::Viewer);
-    let developer = Principal::new(tenant, subject_of("a-developer"), Role::Developer);
+    let grants = sagat_application::reveal_grants::RevealGrantService::new(
+        w.store.clone(),
+        sagat_application::clock::SystemClock,
+    );
+    let grant = |namespace: NamespaceId, principal: Principal| {
+        let grants = &grants;
+        let admin = &w.admin;
+        async move {
+            let scope = grants
+                .prepare(admin, namespace, &ctx())
+                .await
+                .expect("admin scope");
+            grants
+                .grant(&scope, principal.subject().as_str(), &ctx())
+                .await
+                .expect("grant");
+        }
+    };
+    let viewer = w.member("a-viewer", Role::Viewer).await;
+    let developer = w.member("a-developer", Role::Developer).await;
+    let list = |principal: Principal| {
+        let quotas = &w.quotas;
+        async move { step_log(quotas.list(&principal, None, &ctx()).await.expect("list")) }
+    };
     assert_eq!(
-        used(w.quotas.list(&viewer, None, &ctx()).await.expect("list")),
-        Some(None),
-        "listed, without its usage"
+        list(viewer.clone()).await,
+        Some((None, true)),
+        "a viewer: listed, usage withheld"
     );
     assert_eq!(
-        used(w.quotas.list(&developer, None, &ctx()).await.expect("list")),
-        Some(Some(0))
+        list(developer.clone()).await,
+        Some((None, true)),
+        "run:logs:read without the grant"
+    );
+    grant(w.namespace.id(), developer.clone()).await;
+    assert_eq!(
+        list(developer.clone()).await,
+        Some((Some(0), false)),
+        "the grant in the tenant's only namespace"
+    );
+    let second = w.add_namespace("second-ns").await;
+    assert_eq!(
+        list(developer.clone()).await,
+        Some((None, true)),
+        "the grant in one of the tenant's two namespaces"
+    );
+    grant(second.id(), developer.clone()).await;
+    assert_eq!(list(developer.clone()).await, Some((Some(0), false)));
+    // The view a change returns is withheld the same way: the admin holds no grant yet.
+    let set = w
+        .quotas
+        .set(
+            &w.admin,
+            None,
+            QuotaResource::TenantStepLogBytes,
+            1 << 20,
+            &ctx(),
+        )
+        .await
+        .expect("set");
+    assert_eq!((set.used, set.usage_withheld), (None, true));
+    grant(w.namespace.id(), w.admin.clone()).await;
+    grant(second.id(), w.admin.clone()).await;
+    let cleared = w
+        .quotas
+        .clear(&w.admin, None, QuotaResource::TenantStepLogBytes, &ctx())
+        .await
+        .expect("clear");
+    assert_eq!((cleared.used, cleared.usage_withheld), (Some(0), false));
+    // Every other resource is never withheld.
+    let all = w.quotas.list(&viewer, None, &ctx()).await.expect("list");
+    assert!(
+        all.iter()
+            .all(|q| q.usage_withheld == (q.resource == QuotaResource::TenantStepLogBytes))
     );
 }
 

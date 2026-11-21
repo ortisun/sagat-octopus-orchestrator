@@ -66,6 +66,33 @@ pub async fn has_effective_payload_reveal_grant(
     .map_err(store_error)
 }
 
+/// Whether `subject` holds the reveal grant in every namespace of `tenant`, each read as
+/// [`has_effective_payload_reveal_grant`] reads it: the current membership role, locked shared, may use a grant, and a
+/// grant row exists for each namespace. A tenant with no namespace answers false (fail-closed). It discloses no payload,
+/// only whether the quota view shows the tenant's step-log usage (design 041, decision D041-133), so it takes no
+/// namespace's grant-set fence: a revoke that commits after this read changes the next view.
+pub(crate) async fn reveals_in_every_namespace(
+    conn: &mut PgConnection,
+    tenant: TenantId,
+    subject: &Subject,
+) -> Result<bool, StoreError> {
+    let roles = lock_membership_roles(conn, tenant, &[subject]).await?;
+    if !locked_role(&roles, subject).is_some_and(role_can_use_reveal_grant) {
+        return Ok(false);
+    }
+    sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM namespaces WHERE tenant_id = $1) \
+            AND NOT EXISTS (SELECT 1 FROM namespaces n WHERE n.tenant_id = $1 \
+                AND NOT EXISTS (SELECT 1 FROM payload_reveal_grants g \
+                    WHERE g.tenant_id = n.tenant_id AND g.namespace_id = n.id AND g.subject = $2))",
+    )
+    .bind(tenant.as_uuid())
+    .bind(subject.as_str())
+    .fetch_one(conn)
+    .await
+    .map_err(store_error)
+}
+
 fn role_can_use_reveal_grant(role: Role) -> bool {
     role.grants(Permission::PayloadReadInternal)
 }

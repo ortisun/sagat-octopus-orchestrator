@@ -9,7 +9,7 @@
 use std::future::Future;
 
 use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
-use sagat_domain::identity::{NamespaceId, Permission, Principal, TenantId};
+use sagat_domain::identity::{NamespaceId, Permission, Principal, Subject, TenantId};
 use sagat_domain::quota::{self, QuotaError, QuotaResource, QuotaScope, QuotaSource};
 use sagat_domain::workflow::ActivityName;
 
@@ -183,6 +183,15 @@ pub trait QuotaStore: QuotaLookup + NamespaceDirectory {
         namespace: Option<NamespaceId>,
         resource: QuotaResource,
     ) -> impl Future<Output = Result<u64, StoreError>> + Send;
+
+    /// Whether `subject` holds the PII reveal grant in every namespace of `tenant`, each read as
+    /// `has_effective_payload_reveal_grant` reads it (its current membership role may use a grant, and the grant row
+    /// exists). A tenant with no namespace answers false (fail-closed; design 041, decision D041-133).
+    fn reveals_in_every_namespace(
+        &self,
+        tenant: TenantId,
+        subject: &Subject,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send;
 }
 
 /// One line of the quota view.
@@ -193,8 +202,12 @@ pub struct QuotaView {
     pub source: QuotaSource,
     /// The most the tenant may set for this resource (and the most that can be in force).
     pub ceiling: u64,
-    /// `None` when the view is the tenant-wide default of a resource that is counted per namespace.
+    /// `None` when the view is the tenant-wide default of a resource that is counted per namespace, or when the usage is
+    /// withheld.
     pub used: Option<u64>,
+    /// True only for `tenant_step_log_bytes` when its usage is withheld: the caller lacks `run:logs:read` or the PII
+    /// reveal grant in some namespace of the tenant (decision D041-133, OD-2026-11-20-19).
+    pub usage_withheld: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -378,6 +391,8 @@ where
                 .map(|r| r.value)
         };
         let mut views = Vec::new();
+        // Read once per list, and only if the step-log resource is in it.
+        let mut shown = None;
         for resource in QuotaResource::ALL {
             // A namespace view shows what is counted there; a tenant view shows everything, but a
             // per-namespace resource has no single usage at that level.
@@ -391,8 +406,9 @@ where
                 setting(&tenant_level, resource),
                 ceiling,
             );
+            let usage_withheld = self.usage_withheld(principal, resource, &mut shown).await?;
             let used = match (
-                usage_shown(principal, resource),
+                resource.has_usage() && !usage_withheld,
                 resource.scope(),
                 namespace,
             ) {
@@ -408,6 +424,7 @@ where
                 source,
                 ceiling,
                 used,
+                usage_withheld,
             });
         }
         Ok(views)
@@ -532,8 +549,9 @@ where
                 .map(|r| r.value),
             ceiling,
         );
+        let usage_withheld = self.usage_withheld(principal, resource, &mut None).await?;
         let used = match (
-            usage_shown(principal, resource),
+            resource.has_usage() && !usage_withheld,
             resource.scope(),
             namespace,
         ) {
@@ -549,6 +567,7 @@ where
             source,
             ceiling,
             used,
+            usage_withheld,
         })
     }
 
@@ -627,6 +646,34 @@ where
         Ok(())
     }
 
+    /// Whether the view withholds the usage of `resource` from `principal`. The retained step-log bytes of a tenant
+    /// move with what its runs log, so they are shown only to a caller who holds `run:logs:read` and the PII reveal
+    /// grant in every namespace of the tenant (decision D041-133, OD-2026-11-20-19, replacing D041-066's
+    /// permission-only rule); `shown` caches the answer across one list.
+    async fn usage_withheld(
+        &self,
+        principal: &Principal,
+        resource: QuotaResource,
+        shown: &mut Option<bool>,
+    ) -> Result<bool, AppError> {
+        if resource != QuotaResource::TenantStepLogBytes {
+            return Ok(false);
+        }
+        let shown = match *shown {
+            Some(known) => known,
+            None => {
+                let known = principal.authorize(Permission::RunLogsRead).is_ok()
+                    && self
+                        .store
+                        .reveals_in_every_namespace(principal.tenant_id(), principal.subject())
+                        .await?;
+                *shown = Some(known);
+                known
+            }
+        };
+        Ok(!shown)
+    }
+
     /// A namespace of another tenant looks exactly like one that does not exist, and is audited.
     async fn check_namespace(
         &self,
@@ -650,13 +697,4 @@ fn invalid(error: QuotaError) -> AppError {
             "the value is above the ceiling the platform grants this tenant (see `ceiling`)"
         }
     })
-}
-
-/// Whether the quota view shows the usage of `resource` to `principal`. The retained step-log bytes
-/// of a tenant say how much its runs log, so a caller who may not read step logs is not shown them
-/// (feature 041, D041-066).
-fn usage_shown(principal: &Principal, resource: QuotaResource) -> bool {
-    resource.has_usage()
-        && (resource != QuotaResource::TenantStepLogBytes
-            || principal.authorize(Permission::RunLogsRead).is_ok())
 }

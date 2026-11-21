@@ -2483,7 +2483,7 @@ Slice A, decisions, contracts and the spike:
 
 Slice B, the server stores:
 
-- [ ] T041-4 Domain and quota resources. `crates/domain/src/step_logs.rs`: the types, `validate_batch` (which takes no
+- [x] T041-4 Domain and quota resources. `crates/domain/src/step_logs.rs`: the types, `validate_batch` (which takes no
   final mark, D041-090), `validate_carry` (section 2a, C2, 64 records and 16 KiB) and `plan_batch`, which plans a carry as
   it plans a batch, with the carry's `highest_sequence` as the final mark and `in_order` as an input, with property tests
   of the counting rule of section 2 (lines stored, markers excluded, + dropped by the worker + dropped by the server =
@@ -2539,6 +2539,31 @@ Slice B, the server stores:
   `crates/domain/tests/identity.rs`, `crates/application/src/quotas.rs`, `crates/infra-postgres/src/quotas.rs`,
   `tests/integration/security-multitenancy/{main.rs,quotas.rs}`, `tests/contract/platform-foundation/main.rs`,
   `tests/integration/workflow-primitives/{release_upgrade.rs,release_upgrade_inflight.rs,release_upgrade_callback_cutover.rs}`.
+  Evidence (2026-11-21): the enums and the contract agree since e8b70cd2; the rest on this branch after 19cc381d:
+    `validate_batch` takes no final mark, `validate_carry` returns `Full`, `MarkOnly` or `Ignored` (64 records,
+    16 KiB, `highest_sequence` below 2^62 and at least the last record's), `plan_batch` takes an optional `CarryMark`
+    (`highest_sequence`, `in_order`, a `MarkOnlyReason`) and returns its drops per `DropReason` (data-model.md §8a
+    item 5: a mark-only carry counts each distinct sent sequence in (`last_sequence`, `highest_sequence`] once);
+    `DropReason` and `MarkOnlyReason` with `ALL`/`PLANNED` and `as_str`; the stream's `not_stored_reason` set only by a
+    `service_busy` mark-only carry. `cargo test -p sagat-domain --locked`: every target ok, the lib 104 passed (the
+    step_logs module 19, the property test over batches, carries, `in_order` values, the six mark-only reasons and
+    refusals included); `crates/domain/tests/identity.rs` (the role matrix) and `audit.rs` ok. Hand mutations, each
+    seen failing and restored with a fresh build: `in_order` ignored (2 tests fail), a mark-only duplicate counted
+    twice (1), 64 records refused (1), `service_busy` setting a ceiling (1), the gap above a ceiling counted as the
+    worker's (1), `highest_sequence` 2^62 accepted (1). The quota view (D041-133, OD-2026-11-20-19):
+    `QuotaView.usage_withheld` and `QuotaBody.usageWithheld`, `QuotaStore::reveals_in_every_namespace`
+    (`crates/infra-postgres/src/reveal_grants.rs`, the membership role locked as `has_effective_payload_reveal_grant`
+    locks it, none for a tenant with no namespace); test
+    `quotas::the_step_log_usage_is_shown_only_with_the_grant_in_every_namespace` (a viewer; `run:logs:read` without a
+    grant; the grant in one of two namespaces; in both; the views `set` and `clear` return), seen failing under two
+    hand mutations (the permission or the grant; no grant needed) and passing restored;
+    `the_tenant_view_has_no_single_usage_for_a_per_namespace_resource` now expects the admin's usage withheld. The
+    migration's comment names ADR-0097 as accepted (OD-2026-11-20-15) and D041-113. `cargo test -p sagat-tests --test
+    integration_security_multitenancy -- quota step_log`: 30 passed, 0 failed, as the owner role and with
+    `SAGAT_TEST_AS_RUNTIME_ROLE=1` (the migration's up and down test among them); `--test contract_platform_foundation`:
+    32 passed; `cargo test -p sagat-application --lib`: 192 passed; `python3 scripts/check-upgrade-boundary.py`:
+    boundaries match migration 20270201000100; `cargo clippy` of the five touched packages `--all-targets -D warnings`:
+    clean.
 - [ ] T041-5 The quota leases and the step-log tables (data-model.md §2 to §4).
   No longer waits: the owner answered O041-040 (OD-2026-11-20-16), accepted ADR-0097 (OD-2026-11-20-15), settled the
   environment question of decision D041-109 (OD-2026-11-20-13, which stands in for task T041-35's pass) and chose the

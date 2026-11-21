@@ -18,7 +18,7 @@ use sagat_application::authz::NamespaceDirectory;
 use sagat_application::error::StoreError;
 use sagat_application::quotas::{QuotaLookup, QuotaStore, StoredActivityLimit, StoredLimit};
 use sagat_domain::audit::AuditRecord;
-use sagat_domain::identity::{NamespaceId, TenantId};
+use sagat_domain::identity::{NamespaceId, Subject, TenantId};
 use sagat_domain::quota::{self, QuotaKind, QuotaResource};
 use sagat_domain::workflow::ActivityName;
 use sqlx::{PgConnection, PgPool};
@@ -1071,6 +1071,18 @@ impl QuotaStore for PgRunStore {
         }
         insert_audit(&mut tx, audit).await?;
         tx.commit().await.map_err(store_error)
+    }
+
+    async fn reveals_in_every_namespace(
+        &self,
+        tenant: TenantId,
+        subject: &Subject,
+    ) -> Result<bool, StoreError> {
+        let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
+        let shown =
+            crate::reveal_grants::reveals_in_every_namespace(&mut tx, tenant, subject).await?;
+        tx.commit().await.map_err(store_error)?;
+        Ok(shown)
     }
 
     async fn usage(
