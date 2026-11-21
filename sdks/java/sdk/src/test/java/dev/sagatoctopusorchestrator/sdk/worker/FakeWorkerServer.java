@@ -23,7 +23,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
 
 /** An in-memory worker service the tests script: queued leases, queued failures, a record of every call. */
@@ -71,6 +73,12 @@ final class FakeWorkerServer extends WorkerServiceGrpc.WorkerServiceImplBase imp
     volatile boolean streamCancelled;
     /** A misbehaving service: answers a poll with every task it has, whatever {@code max_tasks} says. */
     volatile boolean ignoreMax;
+    /** When set, a FailStep waits at this gate before it is answered (at most 30 s). */
+    volatile CountDownLatch failStepGate;
+    /** The FailStep calls that arrived, the ones on their way at the service now, and the most there were at once. */
+    final AtomicInteger failStepsArrived = new AtomicInteger();
+    final AtomicInteger failStepsOnTheirWay = new AtomicInteger();
+    final AtomicInteger failStepsPeak = new AtomicInteger();
     private final Server server;
 
     FakeWorkerServer() throws IOException {
@@ -138,6 +146,10 @@ final class FakeWorkerServer extends WorkerServiceGrpc.WorkerServiceImplBase imp
         streamFailureAfterFirst = null;
         streamCancelled = false;
         ignoreMax = false;
+        failStepGate = null;
+        failStepsArrived.set(0);
+        failStepsOnTheirWay.set(0);
+        failStepsPeak.set(0);
     }
 
     private <R> void answer(String method, Object request, StreamObserver<R> out, Function<Object, R> make) {
@@ -269,8 +281,21 @@ final class FakeWorkerServer extends WorkerServiceGrpc.WorkerServiceImplBase imp
 
     @Override
     public void failStep(Worker.FailStepRequest request, StreamObserver<Worker.StepCommandResponse> out) {
-        answer("FailStep", request, out, r -> Worker.StepCommandResponse.newBuilder()
-                .setCommandId("c").setStepStatus("FAILED").setRunStatus("RUNNING").build());
+        failStepsArrived.incrementAndGet();
+        failStepsPeak.accumulateAndGet(failStepsOnTheirWay.incrementAndGet(), Math::max);
+        try {
+            CountDownLatch gate = failStepGate;
+            if (gate != null) {
+                gate.await(30, TimeUnit.SECONDS);
+            }
+            answer("FailStep", request, out, r -> Worker.StepCommandResponse.newBuilder()
+                    .setCommandId("c").setStepStatus("FAILED").setRunStatus("RUNNING").build());
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            out.onError(Status.CANCELLED.asRuntimeException());
+        } finally {
+            failStepsOnTheirWay.decrementAndGet();
+        }
     }
 
     @Override

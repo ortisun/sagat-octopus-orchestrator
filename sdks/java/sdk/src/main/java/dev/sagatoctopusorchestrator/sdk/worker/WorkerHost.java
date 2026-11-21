@@ -17,10 +17,12 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Iterator;
 import java.util.Map;
+import java.util.Set;
 import java.util.TreeMap;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
@@ -28,9 +30,11 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
@@ -55,6 +59,14 @@ public final class WorkerHost implements AutoCloseable {
     private static final Pattern CODE = Pattern.compile("^[A-Z0-9_]{1,64}$");
     private static final Pattern VERSION = Pattern.compile("^1(?:\\.(\\d+))?$");
     private static final Pattern BLOB_SHA256 = Pattern.compile("^[0-9a-f]{64}$");
+    // Why a lease the host received is handed back (SPEC section 6.2).
+    private static final String HAND_BACK_STOPPING = "stopping";
+    private static final String HAND_BACK_CREDIT = "credit";
+    private static final String HAND_BACK_MALFORMED = "malformed";
+    private static final String HAND_BACK_NOT_STARTED = "not_started";
+    // At most this many hand-backs are on their way at once; the others wait their turn in the order received (SPEC
+    // section 6.2, decision D006-026): a server that answers with tens of thousands of leases does not get a thread each.
+    private static final int MAX_HAND_BACKS = 8;
 
     private enum Kind {
         ACTIVITY,
@@ -84,6 +96,9 @@ public final class WorkerHost implements AutoCloseable {
     private final Object lifecycle = new Object();
     private final Map<String, Registered> handlers = new TreeMap<>();
     private final ConcurrentHashMap<String, Inflight> inflight = new ConcurrentHashMap<>();
+    // The hand-backs on their way, queued ones included, by in-flight key: stop waits for them like the tasks in flight,
+    // and a lease leased again while its hand-back is on its way is a duplicate (decision D006-027). They hold no slot.
+    private final ConcurrentHashMap<String, CompletableFuture<Void>> handBacks = new ConcurrentHashMap<>();
     private final Object wakeLock = new Object();
     private boolean wakeFlag;
 
@@ -98,7 +113,14 @@ public final class WorkerHost implements AutoCloseable {
     private volatile Map<String, Registered> active = Map.of();
     private Thread loop;
     private ExecutorService tasks;
+    private ExecutorService reports;
     private ScheduledThreadPoolExecutor beats;
+    // Called with the number of leases after a poll answer or a stream frame is read and before it is looked at; null
+    // except in the tests, which hold the loop there while stop begins.
+    volatile java.util.function.IntConsumer frameReceived;
+    // Called with a lease before the task pool is asked to run it; null except in the tests, which throw
+    // RejectedExecutionException from it to stand for a pool that refuses the task.
+    volatile java.util.function.Consumer<Worker.TaskLease> beforeTaskStarts;
 
     public WorkerHost(WorkerConfig config) {
         this.config = config;
@@ -197,6 +219,15 @@ public final class WorkerHost implements AutoCloseable {
             String name = config.workerName();
             AtomicInteger taskCounter = new AtomicInteger();
             tasks = Executors.newCachedThreadPool(runnable -> new Thread(runnable, "sagat-worker-" + name + "-task-" + taskCounter.incrementAndGet()));
+            // The hand-backs have a pool of their own: the loop never waits on their retries, and a lease the task pool
+            // refused can still be handed back. Its threads are all started here, so that handing a lease back on the loop
+            // only queues it and never has to start a thread.
+            AtomicInteger reportCounter = new AtomicInteger();
+            ThreadPoolExecutor reportPool = new ThreadPoolExecutor(MAX_HAND_BACKS, MAX_HAND_BACKS, 0L, TimeUnit.MILLISECONDS,
+                    new LinkedBlockingQueue<>(),
+                    runnable -> new Thread(runnable, "sagat-worker-" + name + "-hand-back-" + reportCounter.incrementAndGet()));
+            reportPool.prestartAllCoreThreads();
+            reports = reportPool;
             AtomicInteger beatCounter = new AtomicInteger();
             beats = new ScheduledThreadPoolExecutor(Math.max(1, Math.min(config.maxInflight(), 8)), runnable -> {
                 Thread thread = new Thread(runnable, "sagat-worker-" + name + "-beat-" + beatCounter.incrementAndGet());
@@ -215,13 +246,14 @@ public final class WorkerHost implements AutoCloseable {
     }
 
     /**
-     * Stops polling, waits up to {@code timeout} for the tasks in flight, then cancels the ones left (reason
-     * {@code shutdown}) and returns. A task that did not finish keeps its lease until it lapses. Calling it on a
-     * host that is not running does nothing.
+     * Stops polling, waits up to {@code timeout} for the tasks in flight and for the leases it hands back (the ones it
+     * received and will not run, SPEC section 6.2), then cancels the tasks left (reason {@code shutdown}) and returns. A
+     * task that did not finish keeps its lease until it lapses. Calling it on a host that is not running does nothing.
      */
     public void stop(Duration timeout) {
         Thread loopThread;
         ExecutorService taskPool;
+        ExecutorService reportPool;
         ScheduledThreadPoolExecutor beatPool;
         WorkerRpc channel;
         synchronized (lifecycle) {
@@ -231,6 +263,7 @@ public final class WorkerHost implements AutoCloseable {
             stopping = true;
             loopThread = loop;
             taskPool = tasks;
+            reportPool = reports;
             beatPool = beats;
             channel = rpc;
         }
@@ -241,7 +274,8 @@ public final class WorkerHost implements AutoCloseable {
         }
         long end = System.nanoTime() + Math.max(0, timeout.toNanos());
         try {
-            // The poll in progress ends and no other starts; what it leased is in flight from here on.
+            // The poll in progress ends and no other starts; what it received while stopping is handed back, and the
+            // hand-backs are waited for with the tasks in flight, before the channel closes (SPEC section 6.2).
             loopThread.join(Math.max(1, TimeUnit.NANOSECONDS.toMillis(end - System.nanoTime())));
             if (loopThread.isAlive()) {
                 channel.abort();
@@ -249,10 +283,15 @@ public final class WorkerHost implements AutoCloseable {
                 loopThread.join(2000);
             }
             List<Inflight> pending = new ArrayList<>(inflight.values());
-            boolean late = false;
+            List<CompletableFuture<Void>> waited = new ArrayList<>();
             for (Inflight task : pending) {
+                waited.add(task.done);
+            }
+            waited.addAll(handBacks.values());
+            boolean late = false;
+            for (CompletableFuture<Void> done : waited) {
                 try {
-                    task.done.get(Math.max(0, TimeUnit.NANOSECONDS.toMillis(end - System.nanoTime())), TimeUnit.MILLISECONDS);
+                    done.get(Math.max(0, TimeUnit.NANOSECONDS.toMillis(end - System.nanoTime())), TimeUnit.MILLISECONDS);
                 } catch (TimeoutException e) {
                     late = true;
                     break;
@@ -265,9 +304,9 @@ public final class WorkerHost implements AutoCloseable {
                     task.cancel.cancel(CancelReason.SHUTDOWN);
                 }
                 long grace = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
-                for (Inflight task : pending) {
+                for (CompletableFuture<Void> done : waited) {
                     try {
-                        task.done.get(Math.max(0, TimeUnit.NANOSECONDS.toMillis(grace - System.nanoTime())), TimeUnit.MILLISECONDS);
+                        done.get(Math.max(0, TimeUnit.NANOSECONDS.toMillis(grace - System.nanoTime())), TimeUnit.MILLISECONDS);
                     } catch (TimeoutException e) {
                         break;
                     } catch (ExecutionException | CancellationException e) {
@@ -289,8 +328,14 @@ public final class WorkerHost implements AutoCloseable {
             // The host cancels the tokens of the tasks and nothing else (SPEC section 6.4): a handler that ignores its
             // token runs to its end on its own thread, never interrupted, and its late report on the closed channel fails.
             taskPool.shutdown();
+            reportPool.shutdown();
             channel.close();
         }
+    }
+
+    /** Whether stop has begun; for the tests. */
+    boolean isStopping() {
+        return stopping;
     }
 
     /** Same as {@link #stop()}. */
@@ -440,24 +485,46 @@ public final class WorkerHost implements AutoCloseable {
                                 return;
                             }
                             Iterator<Worker.PollTasksResponse> frames = opened.frames();
+                            // The in-flight keys this receive window dispatched or handed back.
+                            Set<String> seen = new HashSet<>();
                             while (frames.hasNext()) {
                                 Worker.PollTasksResponse frame = frames.next();
+                                java.util.function.IntConsumer received = frameReceived;
+                                if (received != null) {
+                                    received.accept(frame.getTasksCount());
+                                }
+                                if (stopping) {
+                                    // A host that is stopping starts nothing new: what it read is handed back.
+                                    for (Worker.TaskLease lease : frame.getTasksList()) {
+                                        take(lease, seen, HAND_BACK_STOPPING);
+                                    }
+                                    return;
+                                }
                                 if (frame.getTasksCount() == 0) { hint = frame.getRetryAfterMs(); continue; }
                                 int allowed = Math.min(asked - delivered, config.maxInflight() - inflight.size());
-                                boolean excess = frame.getTasksCount() > allowed;
-                                for (int i = 0; i < Math.min(frame.getTasksCount(), Math.max(0, allowed)); i++) {
-                                    Worker.TaskLease lease = frame.getTasks(i);
+                                // The first lease beyond the credit or over the input budget ends the receive; it and the
+                                // rest of the frame are handed back.
+                                String why = null;
+                                SagatException broken = null;
+                                int taken = 0;
+                                for (Worker.TaskLease lease : frame.getTasksList()) {
                                     int size = lease.getInputJson().getBytes(StandardCharsets.UTF_8).length;
-                                    if (size > MAX_STREAM_INPUT_BYTES - inputBytes) {
-                                        throw SagatException.invalid("a task stream exceeded its input budget");
+                                    if (why == null && taken >= allowed) {
+                                        why = HAND_BACK_CREDIT;
+                                        broken = SagatException.invalid("a task stream exceeded its receive credit");
+                                    } else if (why == null && size > MAX_STREAM_INPUT_BYTES - inputBytes) {
+                                        why = HAND_BACK_MALFORMED;
+                                        broken = SagatException.invalid("a task stream exceeded its input budget");
                                     }
-                                    inputBytes += size;
-                                    dispatch(lease);
-                                    delivered++;
-                                    meaningful = true;
+                                    if (take(lease, seen, why)) {
+                                        inputBytes += size;
+                                        delivered++;
+                                        taken++;
+                                        meaningful = true;
+                                    }
                                 }
-                                if (excess) {
-                                    throw SagatException.invalid("a task stream exceeded its receive credit");
+                                if (broken != null) {
+                                    throw broken;
                                 }
                             }
                         } finally {
@@ -484,17 +551,28 @@ public final class WorkerHost implements AutoCloseable {
                         .setSessionToken(session)
                         .setMaxTasks(asked)
                         .build());
+                java.util.function.IntConsumer received = frameReceived;
+                if (received != null) {
+                    received.accept(response.getTasksCount());
+                }
                 failures = 0;
                 refused = 0;
                 emit(new WorkerEvent.Poll(response.getTasksCount()));
                 List<Worker.TaskLease> leases = response.getTasksList();
-                // The host runs at most as many tasks as it asked for: the rest are logged and left to lapse.
-                for (int i = 0; i < leases.size() && i < asked; i++) {
-                    dispatch(leases.get(i));
-                }
-                if (leases.size() > asked) {
+                // The host runs at most as many tasks as it asked for, and nothing once it is stopping: a server that sends
+                // more is not obeyed, and the rest are handed back (SPEC section 6.2).
+                boolean stoppingNow = stopping;
+                if (!stoppingNow && leases.size() > asked) {
                     Hooks.log(log, System.Logger.Level.WARNING,
-                            "a poll answer carried " + leases.size() + " tasks, " + asked + " were asked for: the rest are left to lapse");
+                            "a poll answer carried " + leases.size() + " tasks, " + asked + " were asked for: the rest are handed back");
+                }
+                Set<String> seen = new HashSet<>();
+                int taken = 0;
+                for (Worker.TaskLease lease : leases) {
+                    String why = stoppingNow ? HAND_BACK_STOPPING : taken >= asked ? HAND_BACK_CREDIT : null;
+                    if (take(lease, seen, why)) {
+                        taken++;
+                    }
                 }
                 if (leases.isEmpty()) {
                     long wait = Math.max(50, response.getRetryAfterMs() > 0 ? response.getRetryAfterMs() : 1000);
@@ -551,30 +629,101 @@ public final class WorkerHost implements AutoCloseable {
 
     // ----------------------------------------------------------------------------------------- tasks
 
-    private void dispatch(Worker.TaskLease lease) {
+    /**
+     * Dispatches a lease, or hands it back when {@code why} is not null, and tells whether it dispatched it. A lease whose
+     * in-flight key is in flight, or was already seen in this poll answer or receive window ({@code seen}), is a
+     * duplicate: it is ignored and never reported, since its fence may be the one of the running handler.
+     */
+    private boolean take(Worker.TaskLease lease, Set<String> seen, String why) {
+        String key = inflightKey(lease);
+        if (inflight.containsKey(key) || handBacks.containsKey(key) || !seen.add(key)) {
+            Hooks.log(log, System.Logger.Level.WARNING, "a task that is in flight or was already received was leased again, ignored task=" + lease.getTaskId());
+            return false;
+        }
+        if (why != null) {
+            handBack(lease, key, why);
+            return false;
+        }
+        return dispatch(lease, key);
+    }
+
+    /**
+     * Reports a lease the host received and will not run: FailStep TASK_NOT_STARTED, retryable, before any handler of it
+     * runs (SPEC section 6.2). The server gives the step back without consuming the attempt when it can; a lease left to
+     * lapse would be an unknown outcome. It runs off the loop, at most eight at once, and stop waits for it like a task in
+     * flight, so the channel is still open. Until its report ends, its key counts as in flight.
+     */
+    private void handBack(Worker.TaskLease lease, String key, String why) {
+        Hooks.log(log, System.Logger.Level.WARNING, "the host hands back a task it did not start task=" + lease.getTaskId() + " reason=" + why);
         WorkerRpc channel = rpc;
-        Inflight task = new Inflight();
-        if (inflight.putIfAbsent(inflightKey(lease), task) != null) {
-            Hooks.log(log, System.Logger.Level.WARNING, "a task that is in flight was leased again, ignored task=" + lease.getTaskId());
+        ExecutorService pool = reports;
+        if (channel == null || pool == null) {
+            // The host has stopped (the loop outlived the stop): the report cannot be made, and the lease lapses.
+            dropHandBack(lease);
             return;
         }
-        emit(new WorkerEvent.TaskTaken(lease.getTaskId(), lease.getActivityName(), lease.getAttempt(), lease.getTraceparent()));
+        int minor = minorOf(accepted);
+        CompletableFuture<Void> done = new CompletableFuture<>();
+        handBacks.put(key, done);
         try {
+            pool.execute(() -> {
+                try {
+                    fail(channel, lease, new LeaseState(lease.getExpiresAtEpochMs()), minor, "TASK_NOT_STARTED", "the host did not start this task", true, System.nanoTime());
+                } catch (Throwable t) {
+                    Hooks.log(log, System.Logger.Level.ERROR, "a hand-back failed task=" + lease.getTaskId() + " (" + t.getClass().getSimpleName() + ")");
+                    Hooks.rethrowIfFatal(t);
+                } finally {
+                    handBacks.remove(key, done);
+                    done.complete(null);
+                }
+            });
+        } catch (RuntimeException e) {
+            // The pool was shut down by a stop (RejectedExecutionException), or could not take it: nothing on the loop
+            // throws for a hand-back, the report is not made, and the lease lapses.
+            handBacks.remove(key, done);
+            done.complete(null);
+            dropHandBack(lease);
+        }
+    }
+
+    private void dropHandBack(Worker.TaskLease lease) {
+        emit(new WorkerEvent.TaskDropped(lease.getTaskId(), ErrorCode.CANCELLED.name()));
+        Hooks.log(log, System.Logger.Level.ERROR, "the hand-back could not be made: the host has stopped task=" + lease.getTaskId());
+    }
+
+    private boolean dispatch(Worker.TaskLease lease, String key) {
+        WorkerRpc channel = rpc;
+        Inflight task = new Inflight();
+        if (inflight.putIfAbsent(key, task) != null) {
+            Hooks.log(log, System.Logger.Level.WARNING, "a task that is in flight was leased again, ignored task=" + lease.getTaskId());
+            return false;
+        }
+        try {
+            java.util.function.Consumer<Worker.TaskLease> refuse = beforeTaskStarts;
+            if (refuse != null) {
+                refuse.accept(lease);
+            }
             tasks.execute(() -> {
                 try {
+                    // Told here, on the task's own thread before anything of it runs: a lease the pool refused was never taken.
+                    emit(new WorkerEvent.TaskTaken(lease.getTaskId(), lease.getActivityName(), lease.getAttempt(), lease.getTraceparent()));
                     execute(channel, lease, task);
                 } catch (Throwable t) {
                     Hooks.log(log, System.Logger.Level.ERROR, "a task failed outside its handler task=" + lease.getTaskId() + " (" + t.getClass().getSimpleName() + ")");
                     Hooks.rethrowIfFatal(t);
                 } finally {
-                    inflight.remove(inflightKey(lease));
+                    inflight.remove(key);
                     task.done.complete(null);
                     wake();
                 }
             });
+            return true;
         } catch (RejectedExecutionException e) {
-            inflight.remove(inflightKey(lease));
+            // The task pool would not run it: no handler of it started, so it is handed back.
+            inflight.remove(key);
             task.done.complete(null);
+            handBack(lease, key, HAND_BACK_NOT_STARTED);
+            return false;
         }
     }
 
