@@ -525,3 +525,10 @@ design of delivery acknowledgement, so this list starts at 030.
 - **G006-030 — No session honours `TASK_NOT_STARTED` before protocol 1.8 negotiates.** A host of 1.6 or 1.7 that hands a
   lease back gets an ordinary failure: the attempt is spent and retried with its backoff. That is a known outcome, never a
   review. Closed when the delivery acknowledgement build (ADR-0099) accepts 1.8.
+- **G006-031 — Until 1.8, a host's hand-back spends the attempt.** The six SDKs hand leases back on every minor (D006-020
+  to D006-023), and the server honours the code only from 1.8 (D006-030). So, today, a host that stops with leases it has
+  not started turns each into an ordinary retryable failure: retried with its backoff while the budget allows, and, for a
+  step with one attempt, a failure for good (its `onError` route or the run's failure) where before it lapsed into a review.
+  It is a known outcome either way, never a review. Who chooses between the two for one-attempt steps (hand back only from
+  1.8 and let older minors lapse, or keep the ordinary failure) is the coordinator, then the owner: it is a guarantee of the
+  worker protocol. Closed by 1.8.
