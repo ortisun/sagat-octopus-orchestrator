@@ -67,6 +67,8 @@ type Builder struct {
 	state       map[string]any
 	limits      map[string]any
 	chainPolicy map[string]any
+	concurrency map[string]any
+	rateLimit   map[string]any
 	bodies      map[string]*Builder
 
 	nodes    []node
@@ -198,6 +200,34 @@ func (b *Builder) ChainPolicy(maxSegments int, timeout time.Duration) *Builder {
 	return b
 }
 
+// Concurrency gates the start of every run (feature 022): a run holds a permit of its key from its start to its end,
+// and waits for one when the key has Limit holders. The key reads input. A second call replaces the first.
+func (b *Builder) Concurrency(policy ConcurrencyPolicy) *Builder {
+	if b.err != nil {
+		return b
+	}
+	document, err := policy.document()
+	if err != nil {
+		return b.fail(err)
+	}
+	b.concurrency = document
+	return b
+}
+
+// RateLimit limits the starts of runs (feature 022): at most Limit runs of one key are granted in any window of Per;
+// the others wait, in admission order. The key reads input. A second call replaces the first.
+func (b *Builder) RateLimit(policy RateLimitPolicy) *Builder {
+	if b.err != nil {
+		return b
+	}
+	document, err := policy.document()
+	if err != nil {
+		return b.fail(err)
+	}
+	b.rateLimit = document
+	return b
+}
+
 // ---- the nodes
 
 // Step adds an activity executed by a worker.
@@ -236,6 +266,9 @@ func (b *Builder) Script(id, artifactDigest string, opts ...ScriptOption) *Build
 	n := node{"id": id, "type": "script", "artifactDigest": artifactDigest}
 	for _, opt := range opts {
 		opt(n)
+	}
+	if err, failed := n[scriptOptionError].(error); failed {
+		return b.fail(err)
 	}
 	if secrets, ok := n["secrets"].([]any); ok {
 		for _, value := range secrets {
@@ -820,6 +853,12 @@ func (b *Builder) Build() (map[string]any, error) {
 			"maxSegments": b.chainPolicy["maxSegments"],
 			"timeoutMs":   b.chainPolicy["timeoutMs"],
 		}
+	}
+	if b.concurrency != nil {
+		document["concurrency"] = b.concurrency
+	}
+	if b.rateLimit != nil {
+		document["rateLimit"] = b.rateLimit
 	}
 	if len(bodyNodes) > 0 {
 		bodies := make(map[string]any, len(bodyNodes))

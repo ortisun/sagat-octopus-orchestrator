@@ -132,6 +132,48 @@ func retryOptions(m object) []workflow.RetryOption {
 	return opts
 }
 
+// concurrencyPolicy reads a scenario's concurrency in the IR's names (feature 022).
+func concurrencyPolicy(m object) workflow.ConcurrencyPolicy {
+	var policy workflow.ConcurrencyPolicy
+	for _, key := range sortedKeys(m) {
+		switch key {
+		case "limit":
+			policy.Limit = asInt(m[key])
+		case "key":
+			policy.Key = asString(m[key])
+		case "group":
+			policy.Group = asString(m[key])
+		case "queueTimeoutMs":
+			policy.QueueTimeout = asMillis(m[key])
+		default:
+			panic(fmt.Sprintf("unknown concurrency member %q", key))
+		}
+	}
+	return policy
+}
+
+// rateLimitPolicy reads a scenario's rateLimit in the IR's names (feature 022).
+func rateLimitPolicy(m object) workflow.RateLimitPolicy {
+	var policy workflow.RateLimitPolicy
+	for _, key := range sortedKeys(m) {
+		switch key {
+		case "limit":
+			policy.Limit = asInt(m[key])
+		case "per":
+			policy.Per = workflow.RatePeriod(asString(m[key]))
+		case "key":
+			policy.Key = asString(m[key])
+		case "group":
+			policy.Group = asString(m[key])
+		case "queueTimeoutMs":
+			policy.QueueTimeout = asMillis(m[key])
+		default:
+			panic(fmt.Sprintf("unknown rateLimit member %q", key))
+		}
+	}
+	return policy
+}
+
 func stepOptions(m object) []workflow.StepOption {
 	var opts []workflow.StepOption
 	for _, key := range sortedKeys(m) {
@@ -165,6 +207,10 @@ func stepOptions(m object) []workflow.StepOption {
 			opts = append(opts, workflow.OnError(asString(value)))
 		case "outputSchema":
 			opts = append(opts, workflow.OutputSchema(asObject(value)))
+		case "concurrency":
+			opts = append(opts, workflow.Concurrency(concurrencyPolicy(asObject(value))))
+		case "rateLimit":
+			opts = append(opts, workflow.RateLimit(rateLimitPolicy(asObject(value))))
 		default:
 			panic(fmt.Sprintf("unknown step option %q", key))
 		}
@@ -221,6 +267,10 @@ func apply(b *workflow.Builder, ops []any) {
 					opts = append(opts, workflow.ScriptOnError(asString(options[key])))
 				case "outputSchema":
 					opts = append(opts, workflow.ScriptOutputSchema(asObject(options[key])))
+				case "concurrency":
+					opts = append(opts, workflow.ScriptConcurrency(concurrencyPolicy(asObject(options[key]))))
+				case "rateLimit":
+					opts = append(opts, workflow.ScriptRateLimit(rateLimitPolicy(asObject(options[key]))))
 				default:
 					panic(fmt.Sprintf("unknown script option %q", key))
 				}
@@ -433,6 +483,12 @@ func builderOf(definition object) *workflow.Builder {
 	}
 	if policy := asObject(definition["chainPolicy"]); policy != nil {
 		b.ChainPolicy(asInt(policy["maxSegments"]), asMillis(policy["timeoutMs"]))
+	}
+	if policy := asObject(definition["concurrency"]); policy != nil {
+		b.Concurrency(concurrencyPolicy(policy))
+	}
+	if policy := asObject(definition["rateLimit"]); policy != nil {
+		b.RateLimit(rateLimitPolicy(policy))
 	}
 	for _, name := range sortedKeys(asObject(definition["bodies"])) {
 		bodyDefinition := asObject(asObject(definition["bodies"])[name])

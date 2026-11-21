@@ -1,0 +1,32 @@
+{
+  "canonical": {
+    "serial": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"concurrency\":{\"key\":\"input.accountId\",\"limit\":1},\"entrypoint\":\"work\",\"kind\":\"Workflow\",\"metadata\":{\"description\":\"One activity under a run permit of the account.\",\"name\":\"flow-serial\"},\"nodes\":[{\"activity\":\"flow.work\",\"id\":\"work\",\"next\":\"done\",\"type\":\"activity\"},{\"id\":\"done\",\"type\":\"end\"}]}"
+  },
+  "workflows": {
+    "serial": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "concurrency": {
+        "key": "input.accountId",
+        "limit": 1
+      },
+      "entrypoint": "work",
+      "kind": "Workflow",
+      "metadata": {
+        "description": "One activity under a run permit of the account.",
+        "name": "flow-serial"
+      },
+      "nodes": [
+        {
+          "activity": "flow.work",
+          "id": "work",
+          "next": "done",
+          "type": "activity"
+        },
+        {
+          "id": "done",
+          "type": "end"
+        }
+      ]
+    }
+  }
+}

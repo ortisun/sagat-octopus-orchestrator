@@ -945,6 +945,125 @@ func TestARunStoppedWithAFailureCodeCarriesItAndOtherRunsHaveNone(t *testing.T) 
 	}
 }
 
+func TestARunPermitIsCarriedWhenTheRunHoldsOrWaitsForOneAndIsNilOtherwise(t *testing.T) {
+	f := newFake(t)
+	c := newClient(t, f)
+	f.answer(func(_ seen, w http.ResponseWriter) {
+		reply(w, 200, run(map[string]any{"status": "WAITING", "concurrency": map[string]any{
+			"state": "WAITING", "pool": "ORDINARY", "group": "orders", "keyLabel": "0123456789ab",
+			"since": "2026-11-20T10:00:00.123456Z", "queueDeadline": "2026-11-20T10:10:00Z",
+		}}))
+	})
+	waiting, err := c.Get(context.Background(), runUUID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	permit := waiting.Concurrency
+	if permit == nil || permit.State != "WAITING" || permit.Pool != "ORDINARY" || permit.Group != "orders" ||
+		permit.KeyLabel != "0123456789ab" || !permit.Since.Equal(time.Date(2026, 11, 20, 10, 0, 0, 123456000, time.UTC)) ||
+		!permit.QueueDeadline.Equal(time.Date(2026, 11, 20, 10, 10, 0, 0, time.UTC)) {
+		t.Fatalf("permit %+v", permit)
+	}
+	f.answer(func(_ seen, w http.ResponseWriter) {
+		reply(w, 200, run(map[string]any{"concurrency": map[string]any{
+			"state": "LENDING", "pool": "DRAFT_TEST", "group": "g", "keyLabel": nil, "since": "2026-11-20T10:00:00Z", "queueDeadline": nil,
+		}}))
+	})
+	holding, err := c.Get(context.Background(), runUUID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p := holding.Concurrency; p == nil || p.KeyLabel != "" || !p.QueueDeadline.IsZero() || p.State != "LENDING" {
+		t.Fatalf("a hidden label, no deadline and an unknown state kept: %+v", p)
+	}
+	f.answer(func(_ seen, w http.ResponseWriter) { reply(w, 200, run(nil)) })
+	plain, err := c.Get(context.Background(), runUUID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plain.Concurrency != nil {
+		t.Fatalf("a run that neither holds nor waits has none: %+v", plain.Concurrency)
+	}
+	for _, broken := range []any{
+		map[string]any{"pool": "ORDINARY", "group": "g", "since": "2026-11-20T10:00:00Z"},
+		map[string]any{"state": "HOLDING", "pool": "ORDINARY", "group": "g"},
+		"HOLDING",
+	} {
+		f.answer(func(_ seen, w http.ResponseWriter) { reply(w, 200, run(map[string]any{"concurrency": broken})) })
+		_, err := c.Get(context.Background(), runUUID)
+		var failure *sagat.Error
+		if !errors.As(err, &failure) || failure.Code != sagat.CodeProtocol {
+			t.Fatalf("%v: %v", broken, err)
+		}
+	}
+}
+
+func TestARunRateLimitSlotIsCarriedWhileItCountsOrWaitsAndIsNilOtherwise(t *testing.T) {
+	f := newFake(t)
+	c := newClient(t, f)
+	f.answer(func(_ seen, w http.ResponseWriter) {
+		reply(w, 200, run(map[string]any{"status": "WAITING", "rateLimit": map[string]any{
+			"state": "WAITING", "pool": "ORDINARY", "group": "provider-starts", "keyLabel": "0123456789ab", "limit": 2,
+			"per": "minute", "since": "2026-11-20T10:00:00.123456Z", "queueDeadline": "2026-11-20T10:10:00Z",
+			"position": 3, "estimatedGrantAt": "2026-11-20T10:01:00Z",
+		}}))
+	})
+	waiting, err := c.Get(context.Background(), runUUID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	slot := waiting.RateLimit
+	if slot == nil || slot.State != "WAITING" || slot.Pool != "ORDINARY" || slot.Group != "provider-starts" ||
+		slot.KeyLabel != "0123456789ab" || slot.Limit != 2 || slot.Per != "minute" || slot.Position != 3 ||
+		!slot.Since.Equal(time.Date(2026, 11, 20, 10, 0, 0, 123456000, time.UTC)) ||
+		!slot.QueueDeadline.Equal(time.Date(2026, 11, 20, 10, 10, 0, 0, time.UTC)) ||
+		!slot.EstimatedGrantAt.Equal(time.Date(2026, 11, 20, 10, 1, 0, 0, time.UTC)) {
+		t.Fatalf("slot %+v", slot)
+	}
+	f.answer(func(_ seen, w http.ResponseWriter) {
+		reply(w, 200, run(map[string]any{"rateLimit": map[string]any{
+			"state": "GRANTED", "pool": "ORDINARY", "group": "g", "keyLabel": nil, "limit": 1, "per": "fortnight",
+			"since": "2026-11-20T10:00:00Z",
+		}}))
+	})
+	granted, err := c.Get(context.Background(), runUUID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s := granted.RateLimit; s == nil || s.KeyLabel != "" || !s.QueueDeadline.IsZero() || s.Position != 0 ||
+		!s.EstimatedGrantAt.IsZero() || s.Per != "fortnight" {
+		t.Fatalf("a granted slot without the optional members, a window this SDK does not know kept: %+v", s)
+	}
+	f.answer(func(_ seen, w http.ResponseWriter) { reply(w, 200, run(nil)) })
+	plain, err := c.Get(context.Background(), runUUID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plain.RateLimit != nil {
+		t.Fatalf("a run without a slot has none: %+v", plain.RateLimit)
+	}
+	whole := func(change func(map[string]any)) any {
+		m := map[string]any{"state": "WAITING", "pool": "ORDINARY", "group": "g", "limit": 1, "per": "second", "since": "2026-11-20T10:00:00Z"}
+		change(m)
+		return m
+	}
+	for _, broken := range []any{
+		whole(func(m map[string]any) { delete(m, "per") }),
+		whole(func(m map[string]any) { m["limit"] = 0 }),
+		whole(func(m map[string]any) { m["limit"] = 1.5 }),
+		whole(func(m map[string]any) { delete(m, "since") }),
+		whole(func(m map[string]any) { m["position"] = 0 }),
+		"WAITING",
+	} {
+		f.answer(func(_ seen, w http.ResponseWriter) { reply(w, 200, run(map[string]any{"rateLimit": broken})) })
+		_, err := c.Get(context.Background(), runUUID)
+		var failure *sagat.Error
+		if !errors.As(err, &failure) || failure.Code != sagat.CodeProtocol {
+			t.Fatalf("%v: %v", broken, err)
+		}
+	}
+}
+
 func TestRerunAsNewNamesTheNewRunAndTheNewRunNamesItsOrigin(t *testing.T) {
 	const started = "0190aaaa-0000-7000-8000-000000000021"
 	f := newFake(t)

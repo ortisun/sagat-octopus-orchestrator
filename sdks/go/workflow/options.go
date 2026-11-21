@@ -138,6 +138,28 @@ func OutputSchema(schema map[string]any) StepOption {
 	return func(s *stepSpec) { s.fields["outputSchema"] = schema }
 }
 
+// Concurrency gates the step (feature 022): at most Limit attempts of one key hold a permit at once; a ready step
+// waits for one. The key reads the run data when the step becomes ready.
+func Concurrency(policy ConcurrencyPolicy) StepOption {
+	return func(s *stepSpec) { document, err := policy.document(); s.gate("concurrency", document, err) }
+}
+
+// RateLimit limits the leases of the step (feature 022): at most Limit of one key in any window of Per; a step waits
+// for a slot without spending an attempt. The key reads the run data when the step would become ready.
+func RateLimit(policy RateLimitPolicy) StepOption {
+	return func(s *stepSpec) { document, err := policy.document(); s.gate("rateLimit", document, err) }
+}
+
+func (s *stepSpec) gate(key string, document map[string]any, err error) {
+	if err != nil {
+		if s.err == nil {
+			s.err = err
+		}
+		return
+	}
+	s.fields[key] = document
+}
+
 // ScriptOption sets one optional field of a pinned script node.
 type ScriptOption func(map[string]any)
 
@@ -155,6 +177,33 @@ func ScriptOutputSchema(schema map[string]any) ScriptOption {
 	return func(m map[string]any) { m["outputSchema"] = schema }
 }
 
+// ScriptConcurrency gates the script as Concurrency gates a step.
+func ScriptConcurrency(policy ConcurrencyPolicy) ScriptOption {
+	return func(m map[string]any) {
+		document, err := policy.document()
+		scriptGate(m, "concurrency", document, err)
+	}
+}
+
+// ScriptRateLimit limits the leases of the script as RateLimit limits a step's.
+func ScriptRateLimit(policy RateLimitPolicy) ScriptOption {
+	return func(m map[string]any) { document, err := policy.document(); scriptGate(m, "rateLimit", document, err) }
+}
+
+// scriptGate writes a policy, or the mistake in it under a key Script reads back and never writes to the document.
+func scriptGate(m map[string]any, key string, document map[string]any, err error) {
+	if err != nil {
+		if _, failed := m[scriptOptionError]; !failed {
+			m[scriptOptionError] = err
+		}
+		return
+	}
+	m[key] = document
+}
+
+// scriptOptionError is where a script option leaves its mistake; no IR member has this name.
+const scriptOptionError = "\x00error"
+
 func ScriptSecrets(names ...string) ScriptOption {
 	return func(m map[string]any) {
 		list := make([]any, 0, len(names))
@@ -163,6 +212,79 @@ func ScriptSecrets(names ...string) ScriptOption {
 		}
 		m["secrets"] = list
 	}
+}
+
+// ---- flow control (feature 022)
+
+// ConcurrencyPolicy is a concurrency gate: at most Limit holders of one key. At the workflow level a run holds a permit
+// from its start to its end and Key reads input; on a step an attempt holds it. A member left at its zero value is
+// absent from the document. The builder only assembles the policy: the server checks every bound at publication.
+type ConcurrencyPolicy struct {
+	// Limit is the most holders of one key (1 to 10000).
+	Limit int
+	// Key is an expression whose value is the key; empty, the whole group is one key.
+	Key string
+	// Group is shared by the definitions of a namespace that name it; empty, derived from the workflow (and node).
+	Group string
+	// QueueTimeout is how long a run or a ready step waits for a permit, in whole milliseconds (1 ms to 1 day); zero,
+	// the server's default of 10 minutes.
+	QueueTimeout time.Duration
+}
+
+// RatePeriod is the sliding window of a rate limit.
+type RatePeriod string
+
+// The windows of a rate limit.
+const (
+	PerSecond RatePeriod = "second"
+	PerMinute RatePeriod = "minute"
+	PerHour   RatePeriod = "hour"
+)
+
+// RateLimitPolicy is a rate limit: at most Limit grants of one key in any window of Per, strictly (there is no burst).
+// At the workflow level a run is granted at its start and Key reads input; on a step a grant counts from its lease. A
+// member left at its zero value is absent from the document. The builder only assembles the policy: the server checks
+// every bound, and the ceiling of each window, at publication.
+type RateLimitPolicy struct {
+	// Limit is the most grants of one key in a window (1 to 10000; at most 100 a second and 6000 a minute).
+	Limit int
+	// Per is the length of the window.
+	Per RatePeriod
+	// Key is an expression whose value is the key; empty, the whole group is one key.
+	Key string
+	// Group is shared by the definitions of a namespace that name it; empty, derived from the workflow (and node).
+	Group string
+	// QueueTimeout is how long a run or a step waits for a slot, in whole milliseconds (1 ms to 1 day); zero, the
+	// server's default of 10 minutes.
+	QueueTimeout time.Duration
+}
+
+func (p ConcurrencyPolicy) document() (map[string]any, error) {
+	m := map[string]any{"limit": int64(p.Limit)}
+	return m, gateMembers(m, "concurrency", p.Key, p.Group, p.QueueTimeout)
+}
+
+func (p RateLimitPolicy) document() (map[string]any, error) {
+	m := map[string]any{"limit": int64(p.Limit), "per": string(p.Per)}
+	return m, gateMembers(m, "rateLimit", p.Key, p.Group, p.QueueTimeout)
+}
+
+// gateMembers writes the optional members a policy kind shares. A duration is written in milliseconds and must be a
+// whole number of them: rounding would publish a timeout the author did not write.
+func gateMembers(m map[string]any, kind, key, group string, queueTimeout time.Duration) error {
+	if key != "" {
+		m["key"] = key
+	}
+	if group != "" {
+		m["group"] = group
+	}
+	if queueTimeout != 0 {
+		if queueTimeout%time.Millisecond != 0 {
+			return sagat.Invalid("%s queueTimeoutMs must be a whole number of milliseconds", kind)
+		}
+		m["queueTimeoutMs"] = millis(queueTimeout)
+	}
+	return nil
 }
 
 // ---- wait for an event

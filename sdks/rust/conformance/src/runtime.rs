@@ -89,6 +89,35 @@ fn run_json(run: Run) -> Value {
     if let Some(code) = &run.failure_code {
         result["failureCode"] = json!(code);
     }
+    // Present only for a run that holds or waits for a run permit (feature 022). A key label is a
+    // keyed digest under the platform's own key: whether one was disclosed is the observation, not
+    // its value.
+    if let Some(permit) = &run.concurrency {
+        result["concurrency"] = json!({
+            "state": permit.state,
+            "pool": permit.pool,
+            "group": permit.group,
+            "keyLabel": permit.key_label.as_ref().map(|_| "disclosed"),
+            "since": operations::instant(Some(permit.since)),
+            "queueDeadline": operations::instant(permit.queue_deadline),
+        });
+    }
+    // Present only for a run whose rate-limit slot counts or that is buffered (feature 022); the
+    // label as for a permit, the position as it came.
+    if let Some(slot) = &run.rate_limit {
+        result["rateLimit"] = json!({
+            "state": slot.state,
+            "pool": slot.pool,
+            "group": slot.group,
+            "keyLabel": slot.key_label.as_ref().map(|_| "disclosed"),
+            "limit": slot.limit,
+            "per": slot.per,
+            "since": operations::instant(Some(slot.since)),
+            "queueDeadline": operations::instant(slot.queue_deadline),
+            "position": slot.position,
+            "estimatedGrantAt": operations::instant(slot.estimated_grant_at),
+        });
+    }
     result
 }
 fn log_entry(ctx: &ActivityContext, input: &Value, name: &str, kind: &str, outcome: &str) -> Value {

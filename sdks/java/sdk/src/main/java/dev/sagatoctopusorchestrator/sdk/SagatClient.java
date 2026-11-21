@@ -1242,7 +1242,34 @@ public final class SagatClient implements AutoCloseable {
                 toRunSchedule(raw.path("schedule")),
                 toRunResetFrom(raw.path("resetFrom")),
                 optStr(raw, "failureCode"),
+                toRunConcurrency(raw.path("concurrency")),
+                toRunRateLimit(raw.path("rateLimit")),
                 raw);
+    }
+
+    private static Run.RateLimitOfRun toRunRateLimit(JsonNode node) {
+        if (node.isMissingNode() || node.isNull()) return null;
+        JsonNode slot = object(node, "a run rate-limit slot");
+        Instant since = optInstant(slot, "since");
+        if (since == null) {
+            throw SagatException.of(ErrorCode.PROTOCOL, "since is missing or invalid in the answer");
+        }
+        JsonNode rank = slot.path("position");
+        Long position = rank.isMissingNode() || rank.isNull() ? null : revision(slot, "position", 1);
+        return new Run.RateLimitOfRun(str(slot, "state"), str(slot, "pool"), str(slot, "group"),
+                optStr(slot, "keyLabel"), revision(slot, "limit", 1), str(slot, "per"), since,
+                optInstant(slot, "queueDeadline"), position, optInstant(slot, "estimatedGrantAt"));
+    }
+
+    private static Run.ConcurrencyOfRun toRunConcurrency(JsonNode node) {
+        if (node.isMissingNode() || node.isNull()) return null;
+        JsonNode permit = object(node, "a run permit");
+        Instant since = optInstant(permit, "since");
+        if (since == null) {
+            throw SagatException.of(ErrorCode.PROTOCOL, "since is missing or invalid in the answer");
+        }
+        return new Run.ConcurrencyOfRun(str(permit, "state"), str(permit, "pool"), str(permit, "group"),
+                optStr(permit, "keyLabel"), since, optInstant(permit, "queueDeadline"));
     }
 
     private static Run.ScheduleOfRun toRunSchedule(JsonNode node) {

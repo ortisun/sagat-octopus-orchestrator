@@ -45,6 +45,9 @@ import dev.sagatoctopusorchestrator.sdk.workflow.ApprovalPolicy;
 import dev.sagatoctopusorchestrator.sdk.workflow.ApprovalRole;
 import dev.sagatoctopusorchestrator.sdk.workflow.CollectionOptions;
 import dev.sagatoctopusorchestrator.sdk.workflow.ChainPolicy;
+import dev.sagatoctopusorchestrator.sdk.workflow.ConcurrencyPolicy;
+import dev.sagatoctopusorchestrator.sdk.workflow.RateLimitPolicy;
+import dev.sagatoctopusorchestrator.sdk.workflow.RatePeriod;
 import dev.sagatoctopusorchestrator.sdk.workflow.Flow;
 import dev.sagatoctopusorchestrator.sdk.workflow.LoopOptions;
 import dev.sagatoctopusorchestrator.sdk.workflow.Operator;
@@ -181,13 +184,58 @@ public final class Runner {
         return retry;
     }
 
+    /** A scenario's {@code concurrency} in the IR's names, through the public type (feature 022). */
+    private static ConcurrencyPolicy concurrencyOf(JsonNode node) {
+        known(node, "concurrency", "limit", "key", "group", "queueTimeoutMs");
+        ConcurrencyPolicy policy = ConcurrencyPolicy.of(node.path("limit").intValue());
+        if (node.has("key")) {
+            policy.key(node.get("key").asText());
+        }
+        if (node.has("group")) {
+            policy.group(node.get("group").asText());
+        }
+        if (node.has("queueTimeoutMs")) {
+            policy.queueTimeoutMs(node.get("queueTimeoutMs").asLong());
+        }
+        return policy;
+    }
+
+    /** A scenario's {@code rateLimit} in the IR's names, through the public type (feature 022). */
+    private static RateLimitPolicy rateLimitOf(JsonNode node) {
+        known(node, "rateLimit", "limit", "per", "key", "group", "queueTimeoutMs");
+        RatePeriod per = switch (node.path("per").asText()) {
+            case "second" -> RatePeriod.SECOND;
+            case "minute" -> RatePeriod.MINUTE;
+            case "hour" -> RatePeriod.HOUR;
+            default -> throw new IllegalArgumentException("unknown rate period " + node.path("per").asText());
+        };
+        RateLimitPolicy policy = RateLimitPolicy.of(node.path("limit").intValue(), per);
+        if (node.has("key")) {
+            policy.key(node.get("key").asText());
+        }
+        if (node.has("group")) {
+            policy.group(node.get("group").asText());
+        }
+        if (node.has("queueTimeoutMs")) {
+            policy.queueTimeoutMs(node.get("queueTimeoutMs").asLong());
+        }
+        return policy;
+    }
+
     private static StepOptions stepOptionsOf(JsonNode node) {
         StepOptions options = StepOptions.create();
         if (node == null || node.isNull()) {
             return options;
         }
         known(node, "step", "retry", "timeoutMs", "compensateWith", "reconcileWith", "idempotencyTemplate", "secrets",
-                "compensationRetry", "compensationTimeoutMs", "irreversible", "highRisk", "onError", "outputSchema");
+                "compensationRetry", "compensationTimeoutMs", "irreversible", "highRisk", "onError", "outputSchema",
+                "concurrency", "rateLimit");
+        if (node.has("concurrency")) {
+            options.concurrency(concurrencyOf(node.get("concurrency")));
+        }
+        if (node.has("rateLimit")) {
+            options.rateLimit(rateLimitOf(node.get("rateLimit")));
+        }
         if (node.has("retry")) {
             options.retry(retryOf(node.get("retry")));
         }
@@ -334,7 +382,8 @@ public final class Runner {
                 case "step" -> target.step(id, op.path("activity").asText(null), stepOptionsOf(op.get("options")));
                 case "script" -> {
                     JsonNode o = op.path("options");
-                    known(o, "script", "language", "retry", "compensateWith", "secrets", "onError", "outputSchema");
+                    known(o, "script", "language", "retry", "compensateWith", "secrets", "onError", "outputSchema",
+                            "concurrency", "rateLimit");
                     ScriptOptions options = ScriptOptions.create();
                     if (o.has("language")) options.language(o.get("language").asText());
                     if (o.has("retry")) options.retry(retryOf(o.get("retry")));
@@ -342,6 +391,8 @@ public final class Runner {
                     if (o.has("secrets")) { List<String> values = new ArrayList<>(); o.get("secrets").forEach(value -> values.add(value.asText())); options.secrets(values); }
                     if (o.has("onError")) options.onError(o.get("onError").asText());
                     if (o.has("outputSchema")) options.outputSchema(o.get("outputSchema"));
+                    if (o.has("concurrency")) options.concurrency(concurrencyOf(o.get("concurrency")));
+                    if (o.has("rateLimit")) options.rateLimit(rateLimitOf(o.get("rateLimit")));
                     target.script(id, op.path("artifactDigest").asText(null), options);
                 }
                 case "sleep" -> target.sleepMs(id, op.path("durationMs").asLong());
@@ -539,6 +590,12 @@ public final class Runner {
                     policy.path("maxSegments").intValue(),
                     Duration.ofMillis(policy.path("timeoutMs").longValue())));
         }
+        if (definition.has("concurrency")) {
+            builder.concurrency(concurrencyOf(definition.get("concurrency")));
+        }
+        if (definition.has("rateLimit")) {
+            builder.rateLimit(rateLimitOf(definition.get("rateLimit")));
+        }
         definition.path("bodies").properties().forEach(e -> {
             Flow nested = Flow.body();
             apply(nested, e.getValue().path("program"));
@@ -656,6 +713,45 @@ public final class Runner {
         // Present only for a run stopped with a failure code (design 043).
         if (run.failureCode() != null) {
             out.put("failureCode", run.failureCode());
+        }
+        // Present only for a run that holds or waits for a run permit (feature 022). A key label is a keyed digest under
+        // the platform's own key: whether one was disclosed is the observation, not its value.
+        if (run.concurrency() != null) {
+            ObjectNode permit = out.putObject("concurrency");
+            permit.put("state", run.concurrency().state());
+            permit.put("pool", run.concurrency().pool());
+            permit.put("group", run.concurrency().group());
+            if (run.concurrency().keyLabel() == null) {
+                permit.putNull("keyLabel");
+            } else {
+                permit.put("keyLabel", "disclosed");
+            }
+            permit.set("since", instant(run.concurrency().since()));
+            permit.set("queueDeadline", instant(run.concurrency().queueDeadline()));
+        }
+        // Present only for a run whose rate-limit slot counts or that is buffered (feature 022); the label as for a permit,
+        // the position as it came.
+        if (run.rateLimit() != null) {
+            Run.RateLimitOfRun slot = run.rateLimit();
+            ObjectNode rate = out.putObject("rateLimit");
+            rate.put("state", slot.state());
+            rate.put("pool", slot.pool());
+            rate.put("group", slot.group());
+            if (slot.keyLabel() == null) {
+                rate.putNull("keyLabel");
+            } else {
+                rate.put("keyLabel", "disclosed");
+            }
+            rate.put("limit", slot.limit());
+            rate.put("per", slot.per());
+            rate.set("since", instant(slot.since()));
+            rate.set("queueDeadline", instant(slot.queueDeadline()));
+            if (slot.position() == null) {
+                rate.putNull("position");
+            } else {
+                rate.put("position", slot.position().longValue());
+            }
+            rate.set("estimatedGrantAt", instant(slot.estimatedGrantAt()));
         }
         return out;
     }

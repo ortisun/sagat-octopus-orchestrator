@@ -16,6 +16,8 @@ mod database;
 pub use database::*;
 mod iceberg;
 pub use iceberg::*;
+mod flow_control;
+pub use flow_control::*;
 
 fn invalid(message: &str) -> SagatError {
     SagatError::new("VALIDATION_FAILED", message)
@@ -128,6 +130,12 @@ pub struct StepOptions {
     pub on_error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub output_schema: Option<Value>,
+    /// How many attempts of one key may run at once (feature 022).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub concurrency: Option<ConcurrencyPolicy>,
+    /// How many leases of one key the step may have per window (feature 022).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rate_limit: Option<RateLimitPolicy>,
 }
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]

@@ -41,9 +41,11 @@ from sagat_octopus_orchestrator import (
     BlobOutput,
     Body,
     ClientConfig,
+    ConcurrencyPolicy,
     Flow,
     Operator,
     QueryDefinition,
+    RateLimitPolicy,
     Reset,
     RetryPolicy,
     Run,
@@ -136,17 +138,37 @@ def operators(stages: list[Obj] | None) -> list[Operator] | None:
     return chain
 
 
+def concurrency_policy(policy: Obj) -> ConcurrencyPolicy:
+    """A scenario's ``concurrency`` in the IR's names, built through the public type (feature 022)."""
+    return ConcurrencyPolicy(**snake(policy))
+
+
+def rate_limit_policy(policy: Obj) -> RateLimitPolicy:
+    """A scenario's ``rateLimit`` in the IR's names, built through the public type (feature 022)."""
+    return RateLimitPolicy(**snake(policy))
+
+
+def gated(options: Obj | None) -> Obj:
+    """Step or script options in Python's names, with their flow-control policies as the public types."""
+    named = snake(options)
+    if named.get("concurrency") is not None:
+        named["concurrency"] = concurrency_policy(named["concurrency"])
+    if named.get("rate_limit") is not None:
+        named["rate_limit"] = rate_limit_policy(named["rate_limit"])
+    return named
+
+
 def apply(target: Flow, ops: list[Obj]) -> None:
     for op in ops:
         kind = op["op"]
         if kind == "step":
-            target.step(op["id"], op["activity"], **snake(op.get("options")))
+            target.step(op["id"], op["activity"], **gated(op.get("options")))
         elif kind == "database":
             target.database(op["id"], **snake(op["options"]))
         elif kind == "icebergWrite":
             target.iceberg_write(op["id"], **snake(op["options"]))
         elif kind == "script":
-            target.script(op["id"], op["artifactDigest"], **snake(op.get("options")))
+            target.script(op["id"], op["artifactDigest"], **gated(op.get("options")))
         elif kind == "sleep":
             target.sleep(op["id"], op["durationMs"])
         elif kind == "waitForEvent":
@@ -291,6 +313,10 @@ def builder_of(definition: Obj) -> Any:
     if definition.get("chainPolicy") is not None:
         policy = definition["chainPolicy"]
         builder.chain_policy(max_segments=policy["maxSegments"], timeout_ms=policy["timeoutMs"])
+    if definition.get("concurrency") is not None:
+        builder.concurrency(concurrency_policy(definition["concurrency"]))
+    if definition.get("rateLimit") is not None:
+        builder.rate_limit(rate_limit_policy(definition["rateLimit"]))
     for name, body_definition in (definition.get("bodies") or {}).items():
         nested = body()
         apply(nested, body_definition["program"])
@@ -382,6 +408,34 @@ def run_json(run: Run) -> Obj:
     # Present only for a run stopped with a failure code (design 043).
     if run.failure_code is not None:
         observed["failureCode"] = run.failure_code
+    # Present only for a run that holds or waits for a run permit (feature 022). A key label is a keyed digest under
+    # the platform's own key: whether one was disclosed is the observation, not its value.
+    if run.concurrency is not None:
+        permit = run.concurrency
+        observed["concurrency"] = {
+            "state": permit.state,
+            "pool": permit.pool,
+            "group": permit.group,
+            "keyLabel": None if permit.key_label is None else "disclosed",
+            "since": instant(permit.since),
+            "queueDeadline": instant(permit.queue_deadline),
+        }
+    # Present only for a run whose rate-limit slot counts or that is buffered (feature 022); the label as for a permit,
+    # the position as it came.
+    if run.rate_limit is not None:
+        slot = run.rate_limit
+        observed["rateLimit"] = {
+            "state": slot.state,
+            "pool": slot.pool,
+            "group": slot.group,
+            "keyLabel": None if slot.key_label is None else "disclosed",
+            "limit": slot.limit,
+            "per": slot.per,
+            "since": instant(slot.since),
+            "queueDeadline": instant(slot.queue_deadline),
+            "position": slot.position,
+            "estimatedGrantAt": instant(slot.estimated_grant_at),
+        }
     return observed
 
 

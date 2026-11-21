@@ -411,6 +411,53 @@ test('a run stopped with a failure code carries it, and a run without one has no
   assert.equal((await client().get('0190aaaa-0000-7000-8000-000000000001')).failureCode, null);
 });
 
+test('a run that holds or waits for a run permit carries it, and a run that does neither has none (feature 022)', async () => {
+  const id = '0190aaaa-0000-7000-8000-000000000001';
+  prepare((_req, res) => reply(res, 200, run({ status: 'WAITING', concurrency: {
+    state: 'WAITING', pool: 'ORDINARY', group: 'orders', keyLabel: '0123456789ab', since: '2026-11-20T10:00:00.123456Z', queueDeadline: '2026-11-20T10:10:00Z',
+  } })));
+  assert.deepEqual((await client().get(id)).concurrency, {
+    state: 'WAITING', pool: 'ORDINARY', group: 'orders', keyLabel: '0123456789ab',
+    since: new Date('2026-11-20T10:00:00.123Z'), queueDeadline: new Date('2026-11-20T10:10:00Z'),
+  });
+  // a caller without the reveal grant sees no label; a holder has no deadline; a state the SDK does not know is kept
+  prepare((_req, res) => reply(res, 200, run({ concurrency: { state: 'LENDING', pool: 'DRAFT_TEST', group: 'g', keyLabel: null, since: '2026-11-20T10:00:00Z', queueDeadline: null } })));
+  const holding = (await client().get(id)).concurrency;
+  assert.equal(holding?.keyLabel, null);
+  assert.equal(holding?.queueDeadline, null);
+  assert.equal(holding?.state, 'LENDING');
+  prepare((_req, res) => reply(res, 200, run()));
+  assert.equal((await client().get(id)).concurrency, null);
+  for (const broken of [{ pool: 'ORDINARY', group: 'g', keyLabel: null, since: '2026-11-20T10:00:00Z' }, { state: 'HOLDING', pool: 'ORDINARY', group: 'g', keyLabel: null }, 'HOLDING']) {
+    prepare((_req, res) => reply(res, 200, run({ concurrency: broken })));
+    await assert.rejects(client().get(id), (error: unknown) => error instanceof SagatError && error.code === 'PROTOCOL');
+  }
+});
+
+test('a run whose rate-limit slot counts or that is buffered carries it, and another run has none (feature 022)', async () => {
+  const id = '0190aaaa-0000-7000-8000-000000000001';
+  prepare((_req, res) => reply(res, 200, run({ status: 'WAITING', rateLimit: {
+    state: 'WAITING', pool: 'ORDINARY', group: 'provider-starts', keyLabel: '0123456789ab', limit: 2, per: 'minute',
+    since: '2026-11-20T10:00:00.123456Z', queueDeadline: '2026-11-20T10:10:00Z', position: 3, estimatedGrantAt: '2026-11-20T10:01:00Z',
+  } })));
+  assert.deepEqual((await client().get(id)).rateLimit, {
+    state: 'WAITING', pool: 'ORDINARY', group: 'provider-starts', keyLabel: '0123456789ab', limit: 2, per: 'minute',
+    since: new Date('2026-11-20T10:00:00.123Z'), queueDeadline: new Date('2026-11-20T10:10:00Z'), position: 3,
+    estimatedGrantAt: new Date('2026-11-20T10:01:00Z'),
+  });
+  // a granted slot from a listing, for a caller without the reveal grant, with a window the SDK does not know
+  prepare((_req, res) => reply(res, 200, run({ rateLimit: { state: 'GRANTED', pool: 'ORDINARY', group: 'g', keyLabel: null, limit: 1, per: 'fortnight', since: '2026-11-20T10:00:00Z' } })));
+  const granted = (await client().get(id)).rateLimit;
+  assert.deepEqual([granted?.keyLabel, granted?.queueDeadline, granted?.position, granted?.estimatedGrantAt, granted?.per], [null, null, null, null, 'fortnight']);
+  prepare((_req, res) => reply(res, 200, run()));
+  assert.equal((await client().get(id)).rateLimit, null);
+  const whole = { state: 'WAITING', pool: 'ORDINARY', group: 'g', limit: 1, per: 'second', since: '2026-11-20T10:00:00Z' };
+  for (const broken of [{ ...whole, per: undefined }, { ...whole, limit: 0 }, { ...whole, limit: 1.5 }, { ...whole, since: undefined }, { ...whole, position: 0 }, 'WAITING']) {
+    prepare((_req, res) => reply(res, 200, run({ rateLimit: broken })));
+    await assert.rejects(client().get(id), (error: unknown) => error instanceof SagatError && error.code === 'PROTOCOL', JSON.stringify(broken));
+  }
+});
+
 test('waiting for completion polls until the run is terminal', async () => {
   let polls = 0;
   prepare((_req, res) => reply(res, 200, run({ status: ++polls < 3 ? 'RUNNING' : 'SUCCEEDED' })));

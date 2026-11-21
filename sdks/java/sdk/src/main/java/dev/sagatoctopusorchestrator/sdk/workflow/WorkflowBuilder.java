@@ -39,6 +39,8 @@ public final class WorkflowBuilder {
     private ObjectNode state;
     private ObjectNode limits;
     private ChainPolicy chainPolicy;
+    private ObjectNode concurrency;
+    private ObjectNode rateLimit;
 
     private WorkflowBuilder(String name) {
         if (name == null || !NAME.matcher(name).matches()) {
@@ -112,6 +114,31 @@ public final class WorkflowBuilder {
             throw SagatException.invalid("chainPolicy timeoutMs must be between 1 and 31622400000");
         }
         this.chainPolicy = policy;
+        return this;
+    }
+
+    /**
+     * Gates the start of every run (feature 022): a run holds a permit of its key from its start to its end, and waits for
+     * one when the key has {@code limit} holders. The key reads {@code input}. Read now; a second call replaces the first.
+     */
+    public WorkflowBuilder concurrency(ConcurrencyPolicy policy) {
+        if (policy == null) {
+            throw SagatException.invalid("concurrency needs a policy");
+        }
+        this.concurrency = policy.toJson();
+        return this;
+    }
+
+    /**
+     * Limits the starts of runs (feature 022): at most {@code limit} runs of one key are granted in any window of
+     * {@code per}; the others wait, in admission order. The key reads {@code input}. Read now; a second call replaces the
+     * first.
+     */
+    public WorkflowBuilder rateLimit(RateLimitPolicy policy) {
+        if (policy == null) {
+            throw SagatException.invalid("rateLimit needs a policy");
+        }
+        this.rateLimit = policy.toJson();
         return this;
     }
 
@@ -352,6 +379,12 @@ public final class WorkflowBuilder {
             ObjectNode policy = document.putObject("chainPolicy");
             policy.put("maxSegments", chainPolicy.maxSegments());
             policy.put("timeoutMs", chainPolicy.timeout().toMillis());
+        }
+        if (concurrency != null) {
+            document.set("concurrency", concurrency.deepCopy());
+        }
+        if (rateLimit != null) {
+            document.set("rateLimit", rateLimit.deepCopy());
         }
         if (!bodyNodes.isEmpty()) {
             ObjectNode bodyObject = document.putObject("bodies");

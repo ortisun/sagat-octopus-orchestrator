@@ -11,6 +11,7 @@ Typed workflow primitives, state definitions and logical database and Iceberg-ap
 - Iceberg authoring exposes IcebergTable, IcebergRecords (inline, blobs or databaseResult), IcebergMapping, IcebergLimits, IcebergCompensation, IcebergWriteOptions and Builder::iceberg_write; the mode is always append. [iceberg.rs:IcebergWriteOptions] [iceberg.rs:iceberg_write]
 - The parent workflow module supplies Builder, activity/retry/saga options, base node methods, build/json and canonical_json. [../workflow.rs:Builder] [../workflow.rs:canonical_json]
 - Module ops is the collection operator factory (filter, map, flat_map, skip, take, distinct, distinct_by, window) returning ops::Operator; Builder::for_each_with_operators and map_with_operators carry a chain, and an empty one writes no operators (design 042). [ops.rs:Operator] [primitives.rs:for_each_with_operators]
+- ConcurrencyPolicy and RateLimitPolicy (RatePeriod Second, Minute, Hour; serde in the IR's names, unknown members refused when decoded) gate a run's start through Builder::concurrency and rate_limit, and an activity or script through the concurrency and rate_limit fields of StepOptions and ScriptOptions; every bound is left to the server (feature 022). [flow_control.rs:ConcurrencyPolicy] [flow_control.rs:RateLimitPolicy] [flow_control.rs:concurrency]
 
 ## Invariants
 

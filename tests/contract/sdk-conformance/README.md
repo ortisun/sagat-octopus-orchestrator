@@ -72,6 +72,34 @@ one `map` with a short chain and one collection without operators. The server's 
 `contract_workflow_primitives` decodes the golden on publication and compares its canonical text and its chain. The
 runtime behaviour is `collection-operators-runtime` and `collection-operators-limits`, not written yet.
 
+`flow-control-builders.json` checks feature 022's `concurrency` and `rateLimit` in the six SDKs (FR-022-035,
+FR-022-050): at the workflow level and on activity and script steps, built through each SDK's public types. It is build
+only. Two of its workflows are the shared fixtures `provider-sync` and `account-serial` of
+`tests/contract/flow-control-step-policies/fixtures`, and the third carries every member at the bounds of the IR schema.
+`flow_control_builder_golden_is_the_shared_fixtures_and_the_server_canonical_definition` (this crate, no Docker) checks
+that the reviewed golden equals those fixtures, that each document's canonical text is the server codec's own and that it
+decodes to the gates the scenario declares. The runtime contracts are `flow-concurrency` and `flow-rate-limit`.
+
+`flow-concurrency.json` is feature 022's US02 contract in six languages (SC-022-012). The platform is booted with the
+concurrency gate on (`server.flowControl`: the control plane's switch and the fleet's activation, and the engine's
+switch and digest key file, so that it lists `flow-control-concurrency-v1`). One run of key A holds its permit while
+three more queue, a run of key B is not delayed, the third run of A is cancelled while it queues (`concurrency.dequeued`,
+never a permit), and the others are granted in admission order once the worker starts. `flowControlEvidence` reads the
+gate events from the platform's journal: the harness checks from their instants that A never had two holders and that
+the grants kept the queue's order (`flow_control.rs`, unit-tested), and the golden keeps their order without instants.
+The worker log is compared as a set (`workerLogOrder: unordered`): two ready tasks of different keys are taken in claim
+order. `flow-rate-limit.json` is user story 7's contract in six languages (SC-022-023): two runs of provider P are granted at
+once, three more are buffered and the fifth is cancelled while it waits, a run of provider Q is not held back, and the
+third and fourth are granted from the queue in the order they were buffered once the first grants leave the window. The
+harness checks from the journal's instants that no window held more than two run grants of P nor more than one lease of
+the rate-limited activity a second, and that a grant said it came from the queue exactly when the run had waited.
+
+A scenario may name, under `deferred`, a check of its contract it cannot make yet, with the reason and the task it waits
+for (D022-097). The harness prints each one as not made on every run; it never turns a failure into a pass. The
+registry test requires every reason to name a task or a gap. `flow-rate-limit` deferred the run resource's
+`rateLimit.state=WAITING` with its `position` until task T022-078 served it and task T022-120 read it in the six SDKs; it
+now observes it through each SDK and defers nothing.
+
 `loop-builders.json` checks additive v1 `while` and `repeatUntil` authoring in the five SDKs.
 It is build-only while durable loop execution remains disabled. The reviewed fixture covers pre-test
 and post-test shapes, the maximum iteration and duration bounds, optional durable delay/error routing,

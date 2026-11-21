@@ -69,6 +69,12 @@ public sealed record StepOptions
 
     /// <summary>The node to go to when the step fails for good.</summary>
     public string? OnError { get; init; }
+
+    /// <summary>How many attempts of one key may run at once (feature 022).</summary>
+    public ConcurrencyPolicy? Concurrency { get; init; }
+
+    /// <summary>How many leases of one key the step may have per window (feature 022).</summary>
+    public RateLimitPolicy? RateLimit { get; init; }
 }
 
 /// <summary>Options of a pinned script artifact node.</summary>
@@ -80,6 +86,69 @@ public sealed record ScriptOptions
     public IReadOnlyList<string>? Secrets { get; init; }
     public string? OnError { get; init; }
     public JsonObject? OutputSchema { get; init; }
+
+    /// <summary>How many attempts of one key may run at once (feature 022).</summary>
+    public ConcurrencyPolicy? Concurrency { get; init; }
+
+    /// <summary>How many leases of one key the script may have per window (feature 022).</summary>
+    public RateLimitPolicy? RateLimit { get; init; }
+}
+
+/// <summary>
+/// A concurrency gate (feature 022): at most <see cref="Limit"/> holders of one key. At the workflow level a run holds a
+/// permit from its start to its end and <see cref="Key"/> reads <c>input</c>; on a step an attempt holds it. An absent
+/// member is left out of the document. The builder only assembles the policy: the server checks every bound at publication.
+/// </summary>
+public sealed record ConcurrencyPolicy
+{
+    /// <summary>The most holders of one key (1 to 10000).</summary>
+    public required int Limit { get; init; }
+
+    /// <summary>An expression whose value is the key; absent, the whole group is one key.</summary>
+    public string? Key { get; init; }
+
+    /// <summary>Shared by the definitions of a namespace that name it; absent, derived from the workflow (and node).</summary>
+    public string? Group { get; init; }
+
+    /// <summary>How long a run or a ready step waits for a permit, in whole milliseconds (1 ms to 1 day; 10 minutes by default).</summary>
+    public TimeSpan? QueueTimeout { get; init; }
+}
+
+/// <summary>The sliding window of a rate limit.</summary>
+public enum RatePeriod
+{
+    /// <summary>One second.</summary>
+    Second,
+
+    /// <summary>One minute.</summary>
+    Minute,
+
+    /// <summary>One hour.</summary>
+    Hour,
+}
+
+/// <summary>
+/// A rate limit (feature 022): at most <see cref="Limit"/> grants of one key in any window of <see cref="Per"/>, strictly
+/// (there is no burst). At the workflow level a run is granted at its start and <see cref="Key"/> reads <c>input</c>; on a
+/// step a grant counts from its lease. An absent member is left out of the document. The builder only assembles the policy:
+/// the server checks every bound, and the ceiling of each window, at publication.
+/// </summary>
+public sealed record RateLimitPolicy
+{
+    /// <summary>The most grants of one key in a window (1 to 10000; at most 100 a second and 6000 a minute).</summary>
+    public required int Limit { get; init; }
+
+    /// <summary>The length of the window.</summary>
+    public required RatePeriod Per { get; init; }
+
+    /// <summary>An expression whose value is the key; absent, the whole group is one key.</summary>
+    public string? Key { get; init; }
+
+    /// <summary>Shared by the definitions of a namespace that name it; absent, derived from the workflow (and node).</summary>
+    public string? Group { get; init; }
+
+    /// <summary>How long a run or a step waits for a slot, in whole milliseconds (1 ms to 1 day; 10 minutes by default).</summary>
+    public TimeSpan? QueueTimeout { get; init; }
 }
 
 /// <summary>Options of <see cref="FlowBase{TSelf}.WaitForEvent"/>.</summary>

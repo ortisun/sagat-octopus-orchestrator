@@ -14,6 +14,8 @@ public final class ScriptOptions {
     List<String> secrets;
     String onError;
     JsonNode outputSchema;
+    ConcurrencyPolicy concurrency;
+    RateLimitPolicy rateLimit;
 
     public static ScriptOptions create() { return new ScriptOptions(); }
     public ScriptOptions language(String value) { language = value; return this; }
@@ -21,6 +23,10 @@ public final class ScriptOptions {
     public ScriptOptions compensateWith(String value) { compensateWith = value; return this; }
     public ScriptOptions secrets(List<String> value) { secrets = value == null ? null : new ArrayList<>(value); return this; }
     public ScriptOptions onError(String value) { onError = value; return this; }
+    /** How many attempts of one key may run at once (feature 022). Read when the script is added. */
+    public ScriptOptions concurrency(ConcurrencyPolicy value) { concurrency = value; return this; }
+    /** How many leases of one key the script may have per window (feature 022). Read when the script is added. */
+    public ScriptOptions rateLimit(RateLimitPolicy value) { rateLimit = value; return this; }
     public ScriptOptions outputSchema(Object value) {
         JsonNode node = Json.toTree(value);
         if (!node.isObject()) throw SagatException.invalid("outputSchema is a JSON object");

@@ -891,6 +891,40 @@ internal sealed partial class RunMode : IAsyncDisposable
             observed["failureCode"] = failureCode;
         }
 
+        // Present only for a run that holds or waits for a run permit (feature 022). A key label is a keyed digest under the
+        // platform's own key: whether one was disclosed is the observation, not its value.
+        if (run.Concurrency is { } permit)
+        {
+            observed["concurrency"] = new JsonObject
+            {
+                ["state"] = permit.State,
+                ["pool"] = permit.Pool,
+                ["group"] = permit.Group,
+                ["keyLabel"] = permit.KeyLabel is null ? null : "disclosed",
+                ["since"] = Iso(permit.Since),
+                ["queueDeadline"] = Iso(permit.QueueDeadline),
+            };
+        }
+
+        // Present only for a run whose rate-limit slot counts or that is buffered (feature 022); the label as for a permit,
+        // the position as it came.
+        if (run.RateLimit is { } slot)
+        {
+            observed["rateLimit"] = new JsonObject
+            {
+                ["state"] = slot.State,
+                ["pool"] = slot.Pool,
+                ["group"] = slot.Group,
+                ["keyLabel"] = slot.KeyLabel is null ? null : "disclosed",
+                ["limit"] = slot.Limit,
+                ["per"] = slot.Per,
+                ["since"] = Iso(slot.Since),
+                ["queueDeadline"] = Iso(slot.QueueDeadline),
+                ["position"] = slot.Position,
+                ["estimatedGrantAt"] = Iso(slot.EstimatedGrantAt),
+            };
+        }
+
         return observed;
     }
 

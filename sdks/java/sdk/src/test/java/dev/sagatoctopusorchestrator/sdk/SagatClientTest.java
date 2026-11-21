@@ -559,6 +559,75 @@ class SagatClientTest {
     }
 
     @Test
+    void aRunRateLimitSlotIsCarriedWhileItCountsOrWaitsAndIsNullOtherwise() {
+        server.prepare((req, reply) -> reply.send(200, run("status", "\"WAITING\"", "rateLimit",
+                "{\"state\":\"WAITING\",\"pool\":\"ORDINARY\",\"group\":\"provider-starts\",\"keyLabel\":\"0123456789ab\","
+                        + "\"limit\":2,\"per\":\"minute\",\"since\":\"2026-11-20T10:00:00.123456Z\","
+                        + "\"queueDeadline\":\"2026-11-20T10:10:00Z\",\"position\":3,\"estimatedGrantAt\":\"2026-11-20T10:01:00Z\"}")));
+        assertEquals(new Run.RateLimitOfRun("WAITING", "ORDINARY", "provider-starts", "0123456789ab", 2, "minute",
+                        Instant.parse("2026-11-20T10:00:00.123456Z"), Instant.parse("2026-11-20T10:10:00Z"), 3L,
+                        Instant.parse("2026-11-20T10:01:00Z")),
+                client().get(RUN).rateLimit());
+
+        server.prepare((req, reply) -> reply.send(200, run("rateLimit",
+                "{\"state\":\"GRANTED\",\"pool\":\"ORDINARY\",\"group\":\"g\",\"keyLabel\":null,\"limit\":1,"
+                        + "\"per\":\"fortnight\",\"since\":\"2026-11-20T10:00:00Z\"}")));
+        Run.RateLimitOfRun granted = client().get(RUN).rateLimit();
+        assertEquals(null, granted.keyLabel());
+        assertEquals(null, granted.queueDeadline());
+        assertEquals(null, granted.position());
+        assertEquals(null, granted.estimatedGrantAt());
+        assertEquals("fortnight", granted.per());
+
+        server.prepare((req, reply) -> reply.send(200, run()));
+        assertEquals(null, client().get(RUN).rateLimit());
+
+        String whole = "\"state\":\"WAITING\",\"pool\":\"ORDINARY\",\"group\":\"g\"";
+        String since = ",\"since\":\"2026-11-20T10:00:00Z\"";
+        for (String broken : List.of(
+                "{" + whole + ",\"limit\":1" + since + "}",
+                "{" + whole + ",\"limit\":0,\"per\":\"second\"" + since + "}",
+                "{" + whole + ",\"limit\":1.5,\"per\":\"second\"" + since + "}",
+                "{" + whole + ",\"limit\":1,\"per\":\"second\"}",
+                "{" + whole + ",\"limit\":1,\"per\":\"second\",\"position\":0" + since + "}",
+                "\"WAITING\"")) {
+            server.prepare((req, reply) -> reply.send(200, run("rateLimit", broken)));
+            SagatException error = assertThrows(SagatException.class, () -> client().get(RUN));
+            assertEquals(ErrorCode.PROTOCOL, error.code(), broken);
+        }
+    }
+
+    @Test
+    void aRunPermitIsCarriedWhenTheRunHoldsOrWaitsForOneAndIsNullOtherwise() {
+        server.prepare((req, reply) -> reply.send(200, run("status", "\"WAITING\"", "concurrency",
+                "{\"state\":\"WAITING\",\"pool\":\"ORDINARY\",\"group\":\"orders\",\"keyLabel\":\"0123456789ab\","
+                        + "\"since\":\"2026-11-20T10:00:00.123456Z\",\"queueDeadline\":\"2026-11-20T10:10:00Z\"}")));
+        assertEquals(new Run.ConcurrencyOfRun("WAITING", "ORDINARY", "orders", "0123456789ab",
+                        Instant.parse("2026-11-20T10:00:00.123456Z"), Instant.parse("2026-11-20T10:10:00Z")),
+                client().get(RUN).concurrency());
+
+        server.prepare((req, reply) -> reply.send(200, run("concurrency",
+                "{\"state\":\"LENDING\",\"pool\":\"DRAFT_TEST\",\"group\":\"g\",\"keyLabel\":null,"
+                        + "\"since\":\"2026-11-20T10:00:00Z\",\"queueDeadline\":null}")));
+        Run.ConcurrencyOfRun holding = client().get(RUN).concurrency();
+        assertEquals(null, holding.keyLabel());
+        assertEquals(null, holding.queueDeadline());
+        assertEquals("LENDING", holding.state());
+
+        server.prepare((req, reply) -> reply.send(200, run()));
+        assertEquals(null, client().get(RUN).concurrency());
+
+        for (String broken : List.of(
+                "{\"pool\":\"ORDINARY\",\"group\":\"g\",\"since\":\"2026-11-20T10:00:00Z\"}",
+                "{\"state\":\"HOLDING\",\"pool\":\"ORDINARY\",\"group\":\"g\"}",
+                "\"HOLDING\"")) {
+            server.prepare((req, reply) -> reply.send(200, run("concurrency", broken)));
+            SagatException error = assertThrows(SagatException.class, () -> client().get(RUN));
+            assertEquals(ErrorCode.PROTOCOL, error.code(), broken);
+        }
+    }
+
+    @Test
     void aRunStoppedWithAFailureCodeCarriesItAndARunWithoutOneHasNone() {
         server.prepare((req, reply) -> reply.send(200,
                 run("status", "\"FAILED\"", "failureCode", "\"CONTINUATION_INPUT_INVALID\"")));

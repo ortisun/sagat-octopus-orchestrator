@@ -1,0 +1,131 @@
+{
+  "canonical": {
+    "account-serial": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"concurrency\":{\"group\":\"orders-by-account\",\"key\":\"input.accountId\",\"limit\":1,\"queueTimeoutMs\":600000},\"entrypoint\":\"price\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"account-serial\"},\"nodes\":[{\"activity\":\"catalog.price\",\"id\":\"price\",\"next\":\"notify\",\"type\":\"activity\"},{\"activity\":\"crm.notify\",\"concurrency\":{\"key\":\"steps.price.output.region\",\"limit\":2},\"id\":\"notify\",\"next\":\"done\",\"type\":\"activity\"},{\"id\":\"done\",\"type\":\"end\"}]}",
+    "gated-script": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"entrypoint\":\"transform\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"flow-gated-script\"},\"nodes\":[{\"artifactDigest\":\"sha256:0000000000000000000000000000000000000000000000000000000000000000\",\"concurrency\":{\"group\":\"z.0123456789-0123456789.0123456789-0123456789.0123456789-0123456\",\"key\":\"input.tenant\",\"limit\":10000,\"queueTimeoutMs\":86400000},\"id\":\"transform\",\"next\":\"notify\",\"rateLimit\":{\"group\":\"a\",\"key\":\"input.tenant\",\"limit\":100,\"per\":\"second\",\"queueTimeoutMs\":1},\"type\":\"script\"},{\"activity\":\"crm.notify\",\"concurrency\":{\"limit\":1},\"id\":\"notify\",\"next\":\"done\",\"rateLimit\":{\"limit\":6000,\"per\":\"minute\"},\"type\":\"activity\"},{\"id\":\"done\",\"type\":\"end\"}],\"rateLimit\":{\"limit\":10000,\"per\":\"hour\"}}",
+    "provider-sync": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"concurrency\":{\"key\":\"input.accountId\",\"limit\":1},\"entrypoint\":\"fetch\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"provider-sync\"},\"nodes\":[{\"activity\":\"provider.fetch\",\"id\":\"fetch\",\"next\":\"done\",\"rateLimit\":{\"key\":\"input.providerId\",\"limit\":10,\"per\":\"second\"},\"type\":\"activity\"},{\"id\":\"done\",\"type\":\"end\"}],\"rateLimit\":{\"group\":\"provider-starts\",\"key\":\"input.providerId\",\"limit\":100,\"per\":\"minute\",\"queueTimeoutMs\":900000}}"
+  },
+  "workflows": {
+    "account-serial": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "concurrency": {
+        "group": "orders-by-account",
+        "key": "input.accountId",
+        "limit": 1,
+        "queueTimeoutMs": 600000
+      },
+      "entrypoint": "price",
+      "kind": "Workflow",
+      "metadata": {
+        "name": "account-serial"
+      },
+      "nodes": [
+        {
+          "activity": "catalog.price",
+          "id": "price",
+          "next": "notify",
+          "type": "activity"
+        },
+        {
+          "activity": "crm.notify",
+          "concurrency": {
+            "key": "steps.price.output.region",
+            "limit": 2
+          },
+          "id": "notify",
+          "next": "done",
+          "type": "activity"
+        },
+        {
+          "id": "done",
+          "type": "end"
+        }
+      ]
+    },
+    "gated-script": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "entrypoint": "transform",
+      "kind": "Workflow",
+      "metadata": {
+        "name": "flow-gated-script"
+      },
+      "nodes": [
+        {
+          "artifactDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+          "concurrency": {
+            "group": "z.0123456789-0123456789.0123456789-0123456789.0123456789-0123456",
+            "key": "input.tenant",
+            "limit": 10000,
+            "queueTimeoutMs": 86400000
+          },
+          "id": "transform",
+          "next": "notify",
+          "rateLimit": {
+            "group": "a",
+            "key": "input.tenant",
+            "limit": 100,
+            "per": "second",
+            "queueTimeoutMs": 1
+          },
+          "type": "script"
+        },
+        {
+          "activity": "crm.notify",
+          "concurrency": {
+            "limit": 1
+          },
+          "id": "notify",
+          "next": "done",
+          "rateLimit": {
+            "limit": 6000,
+            "per": "minute"
+          },
+          "type": "activity"
+        },
+        {
+          "id": "done",
+          "type": "end"
+        }
+      ],
+      "rateLimit": {
+        "limit": 10000,
+        "per": "hour"
+      }
+    },
+    "provider-sync": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "concurrency": {
+        "key": "input.accountId",
+        "limit": 1
+      },
+      "entrypoint": "fetch",
+      "kind": "Workflow",
+      "metadata": {
+        "name": "provider-sync"
+      },
+      "nodes": [
+        {
+          "activity": "provider.fetch",
+          "id": "fetch",
+          "next": "done",
+          "rateLimit": {
+            "key": "input.providerId",
+            "limit": 10,
+            "per": "second"
+          },
+          "type": "activity"
+        },
+        {
+          "id": "done",
+          "type": "end"
+        }
+      ],
+      "rateLimit": {
+        "group": "provider-starts",
+        "key": "input.providerId",
+        "limit": 100,
+        "per": "minute",
+        "queueTimeoutMs": 900000
+      }
+    }
+  }
+}
