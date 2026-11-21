@@ -398,3 +398,25 @@ async def test_a_hand_back_still_on_its_way_when_the_grace_ends_is_dropped_and_i
     assert dropped == sorted(f"run-{i}/charge/1" for i in range(2, total + 1))
     assert [e for e in events if e.type in ("task.failed", "task.stale")] == []
     assert len(fake.of("FailStep")) == 8, "the queued hand-backs are not sent on a closed connection"
+
+
+async def test_a_frame_after_the_credit_is_used_up_is_read_and_handed_back(
+    fake: FakeWorkerService, make_host: MakeHost
+) -> None:
+    fake.accepted_version = "1.4"
+    fake.hold_stream = True
+    fake.stream_batches = [[numbered(1)], [numbered(2), numbered(3)]]
+    release = asyncio.Event()
+
+    async def charge(_input: Any, _ctx: ActivityContext) -> int:
+        await release.wait()
+        return 1
+
+    host = make_host(max_inflight=1)
+    host.register_activity("charge", charge)
+    await host.start()
+    await until(lambda: len(fake.of("FailStep")) == 2, "the two hand-backs")
+    release.set()
+    await until(lambda: len(fake.of("CompleteStep")) == 1, "the kept task")
+    await host.stop(5)
+    assert handed_back(fake) == ["run-2/charge/1", "run-3/charge/1"]

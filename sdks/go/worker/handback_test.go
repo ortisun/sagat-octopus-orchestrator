@@ -492,3 +492,29 @@ func TestAHandBackStillOnItsWayWhenTheGraceEndsIsDroppedAndItsLeaseLapses(t *tes
 		t.Fatalf("%d hand-backs reached the server: the queued ones are not sent on a closed connection", len(f.of("FailStep")))
 	}
 }
+
+func TestAFrameAfterTheCreditIsUsedUpIsReadAndHandedBack(t *testing.T) {
+	f := newFakeService(t)
+	f.accepted = "1.4"
+	f.stream = func(_ *pb.PollTasksRequest, s grpc.ServerStreamingServer[pb.PollTasksResponse]) error {
+		if len(f.of("StreamTasks")) > 1 {
+			<-s.Context().Done()
+			return s.Context().Err()
+		}
+		if err := s.Send(&pb.PollTasksResponse{Tasks: []*pb.TaskLease{numbered(1)}}); err != nil {
+			return err
+		}
+		return s.Send(&pb.PollTasksResponse{Tasks: []*pb.TaskLease{numbered(2), numbered(3)}})
+	}
+	release := make(chan struct{})
+	h := newHost(t, f, worker.WithMaxInflight(1))
+	must(t, h.RegisterActivity("charge", func(context.Context, json.RawMessage) (any, error) { <-release; return 1, nil }))
+	start(t, h)
+	until(t, "the two hand-backs", func() bool { return len(f.of("FailStep")) == 2 })
+	close(release)
+	until(t, "the kept task completes", func() bool { return len(f.of("CompleteStep")) == 1 })
+	stop(t, h)
+	if got := handedBack(t, f); fmt.Sprint(got) != "[run-2/charge/1 run-3/charge/1]" {
+		t.Fatalf("handed back %v: the frame after the credit is read and handed back", got)
+	}
+}
