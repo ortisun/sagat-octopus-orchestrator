@@ -348,6 +348,13 @@ The host runs at most as many tasks as it asked for (`max_tasks`): if a poll ans
 first ones, logs the rest and leaves their leases to lapse. A wait derived from the server (`retry_after_ms`,
 `Retry-After`) is capped at 60 s, whatever it says.
 
+**A lease the host will not run is handed back.** A host that drops a lease it received (it is stopping, a frame carries
+more than it may run, or the rest of a malformed frame is dropped) reports `FailStep` for it with the code
+`TASK_NOT_STARTED`, retryable, with the lease's fence, before any handler of that task runs, and never for a task whose
+handler started. The server then gives the step back to `READY` without consuming the attempt when it can (decision D006-005
+of `specs/006-sdk-multilanguage/research.md`), otherwise retries it as an ordinary failure; a lease left to lapse would be an
+unknown outcome and, for an `Activity`, a review (feature 037).
+
 The host never busy-polls: an empty answer is always followed by a wait. It opens its connection when
 it starts, not before. A connection that was idle may be closed by the server; `UNAVAILABLE` on it is
 "reconnect and retry", not an outage.
@@ -700,6 +707,10 @@ cancel pending receiving promptly on stop while preserving its existing handler 
 The stream has a five-second server lifetime; clients additionally bound receiving to six
 seconds or their shorter configured call timeout. A normal underfilled window ends with a
 positive empty retry hint. An unexpected underfilled EOF MUST wait before reconnecting.
+A lease the server committed and did not hand to the transport is withdrawn by the server, once the fleet honours it; a
+lease the host drops is handed back with `TASK_NOT_STARTED` (§6.2). A frame lost on the wire still lapses until delivery
+acknowledgement (OD-2026-11-20-12) is designed and built
+([`stream-completion.md`](../specs/006-sdk-multilanguage/stream-completion.md), "Leases that never reach a host").
 Protocol version changes do not themselves change package SemVer.
 
 
@@ -714,7 +725,9 @@ workspaces and contains its own checked canonical protocol/catalog for clean con
 ## Feature 037 delivery 1 — implementation in verification
 
 The delivery uses the existing wire shapes and treats every leased `Activity` as external-capable,
-regardless of `highRisk`. Unknown outcomes take precedence over retry, cancellation and explicit
+regardless of `highRisk`. A lease that never reached a handler is not an attempt: a lease the server withdrew, or one a host
+handed back with `TASK_NOT_STARTED` while it was still `LEASED`, has a known outcome (nothing ran) and is never reviewed; a
+lease that lapses keeps its unknown outcome (D006-007). Unknown outcomes take precedence over retry, cancellation and explicit
 failure. The server will not directly retry an unknown original or compensation, even for a caller
 with `SagaOverride`; an authorized outcome-bearing resolution must atomically retain actor and
 reason first, and no new in-place attempt after resolution is promised. Refused conflicts create no

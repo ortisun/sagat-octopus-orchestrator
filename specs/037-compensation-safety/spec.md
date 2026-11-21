@@ -148,6 +148,10 @@ adapter does not qualify a real provider.
   compensation scheduling is authorized.
 - **FR-037-006**: An unknown external-effect outcome MUST default to consultation/review in original
   and compensation work, including shutdown/drain paths; `highRisk` MUST NOT authorize an exception.
+  *Clarification (2026-11-20, D006-007 of `specs/006-sdk-multilanguage/research.md`, delegate OD-2026-11-20-6):* a lease
+  the server withdrew because it never handed it to the transport, or that a host handed back with `TASK_NOT_STARTED` while
+  the step was still `LEASED`, is not an attempt and has a known outcome (no handler ran), so FR-037-006 does not apply to it.
+  A lease that lapses is unchanged: its outcome is unknown.
 - **FR-037-007**: An unresolved lookup or manual decision about an unknown effect MUST survive
   cancellation/deadline unless an explicitly authorized resolution or qualified action settles it.
 - **FR-037-008**: A negative lookup MUST authorize subsequent work only when the integration's

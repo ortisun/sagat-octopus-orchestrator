@@ -182,3 +182,108 @@ how to operate it is `docs/runbooks/sdks.md`; the behaviour of the SDKs is `sdks
   rates. Why the SDKs differ (2.0 against 1.3 beats per task) was not investigated.
   **Decided 2026-10-16 (owner): option (b), built the same day.** The step keeps the hash of the lease that reported its attempt (`steps.reported_lease_token_hash`, migration `20261108000000`, cleared on every new lease); a heartbeat whose token is that lease gets OK with `lease_expires_at_epoch_ms = 0` and `cancel_requested = false`, counted in `worker_heartbeats_after_report_total`. The protocol has no new field and the five SDKs do not change (they only take a positive deadline; SPEC §6.4). A lost or forged lease stays `STALE_ATTEMPT`: `contract_grpc_durable_execution` covers both, and the reporting-lease case failed before the change.
 
+
+## Leases that never reach a host (2026-11-20, D006-001 to D006-010, G006-001 to G006-003, O006-001)
+
+The finding. The engine commits a lease before it knows the task reached a host, and nothing takes the lease back: it lapses
+after the lease time-to-live. Since feature 037 a lapsed lease of a declared `Activity` is an unknown outcome
+(`expire_attempt` records `LEASE_EXPIRED`, which `end_attempt` sends to reconciliation or `step.needs_review`), so work that
+never ran waits for an operator. Seen twice in CI (`reset` in Go, jobs 136567175914 and 136453650156: no `step.started` within
+30 s, the lease time-to-live) and once in feature 022 (`flow-rate-limit` in C#, PR #251: `step.leased` attempt 1 then
+`step.needs_review`, the handler never ran). Where the server drops a committed lease (`crates/api-grpc/src/service.rs`):
+(1) `timeout_at(producer_end, claim)` drops a claim future that already committed one or more runs (`claim` commits one
+transaction per run); (2) at the window deadline `TaskBody::poll_next` discards a queued frame that carries leases; (3) when
+the body is dropped (client deadline or cancel, lost connection) or the token expires, the producer is aborted, possibly
+between a commit and the send, and the queue is drained; (4) a frame already handed to the transport can be lost on the wire,
+and the answer of a unary `PollTasks` likewise. Where a host drops a lease it received: Go and Python when the host is
+stopping, Python on a malformed frame, and the excess of a frame over the credit in the hosts that truncate it; none reports
+it. The contract said "After commit, before delivery: lease remains durable; expiration/reaper creates later fenced
+attempt" (stream-completion.md), which stopped being true for activities with feature 037.
+
+All decisions below are "delegate (OD-2026-11-20-6)" unless they say otherwise.
+
+### Decisions
+
+- **D006-001 — The server withdraws a lease it knows never left the process** (cases 1 to 3, and a unary poll whose handler is
+  dropped before it returns). Withdrawn: in one fenced transaction per run, only while the step is still `LEASED` (no
+  heartbeat), with the same generation and lease-token hash the server issued; the step goes back to `READY`, its lease is
+  cleared, no attempt is consumed and no review is opened. A fence that does not hold (the step moved on) withdraws nothing
+  and is counted. Weighed: leaving the lease to lapse (today: a false review); shortening the lease time-to-live (makes every
+  slow first heartbeat a lapse); treating an expiry with no heartbeat as unambiguous (unsafe: a handler can have its effect
+  before its first heartbeat, at least 500 ms by default); a delivery acknowledgement (closes more, changes the protocol:
+  O006-001). Withdrawal is the only option that fixes what the server can see without changing a guarantee.
+- **D006-002 — The producer is never aborted in the middle of a claim.** The body signals the producer to stop; the producer
+  finishes the claim it is in (the claim is already bounded by the store's statement and lock timeouts), queues nothing more,
+  and hands every lease it holds and did not hand to the transport to the withdrawal. A lease is "handed to the transport"
+  when `TaskBody::poll_next` returns its frame; from then on only O006-001 can recover it.
+- **D006-003 — The journal records a withdrawal with a new event, `step.lease_withdrawn`.** Weighed against reusing an event
+  old engines already replay: `step.released` moves `PENDING` to `READY` only, so an older replica replaying it on a `LEASED`
+  step fails with an illegal transition; `step.retry_scheduled` then `step.retry_due` mean "an attempt failed and the budget
+  allows another", consume the attempt and the retry budget, and would fail a step for good when no attempt is left. Neither
+  fits exactly. The event carries `node`, `attempt`, `generation` and `cause` (`NOT_SENT` when the server withdrew it,
+  `NOT_STARTED` when a host handed it back, D006-005). It moves `LEASED` (that attempt and generation) to `READY` and sets the
+  attempt back by one, so the next lease reuses the attempt number that never began; the generation is kept, so the next lease
+  has the next generation and every fence stays monotonic. It is part of the step's history: a reset copies it like
+  `step.leased`.
+- **D006-004 — It is written only when every live control plane and engine honours it.** A new capability,
+  `lease-withdrawal-v1`, is listed by every control plane and engine of the build that can replay the event (unconditionally:
+  it is what the binary and every configuration of it will honour). The engine withdraws only when the requirement
+  `lease-withdrawal-v1` is recorded for both kinds, which it learns from the heartbeat of the instance-capability registry (the
+  gate keeps the recorded set); until then the lease lapses as before, and the counter
+  `worker_leases_undelivered_total{cause, outcome="lapsed"}` shows what activation would recover. Recording the requirement is
+  the operator's act (ADR-0082 decision 1): a command `control-plane lease-withdrawal-activate` with `--operator`,
+  `--expect-live N` and `--dry-run`, run with the owner role, in one bounded transaction, with no step of its own. A binary of
+  release 0.2 does not register, so an activation cannot see it: the runbook's rule stands (the whole fleet on a build that
+  registers before any activation, `docs/runbooks/instance-registry.md` section 7), and the released-v0.2 upgrade path proves
+  that no `step.lease_withdrawn` is written before the activation and that the current build replays a journal that holds one.
+- **D006-005 — A host that drops a lease it received hands it back** through `FailStep` with the code `TASK_NOT_STARTED`,
+  retryable, before any handler of it runs, with the lease's fence: when it is stopping, when a frame carries more than it may
+  run, and when the rest of a malformed frame is dropped. Never for a task whose handler started. All six SDKs. A server that
+  has the requirement of D006-004 recorded and finds the step still `LEASED` withdraws it as in D006-001 with the cause
+  `NOT_STARTED`; otherwise (an older server, the requirement not recorded, the step already `RUNNING`) it is an ordinary
+  retryable failure, which is never ambiguous: it is retried while the budget allows and fails for good after. Weighed: a plain
+  retryable failure always (consumes an attempt for work that never ran, and fails a step without retries for good); saying
+  nothing (today: a false review).
+- **D006-006 — No cap on withdrawals of one step.** A withdrawal needs the server's own proof that the frame never left the
+  process, or the host's own statement while it holds the lease; neither repeats without new polling, which the pace of the
+  receive loop bounds. The counter `worker_leases_undelivered_total{cause, outcome="withdrawn"}` and the attempt that is not consumed make a loop
+  visible. Revisit if a cause other than stopping or a window deadline shows in it.
+- **D006-007 — Feature 037 is clarified, not changed.** A withdrawn lease is not an attempt and has a known outcome (nothing
+  ran), so FR-037-006 does not apply to it; a lease that lapses keeps its meaning (unknown outcome, consultation or review).
+- **D006-008 — The tests are deterministic.** A barrier after the commit of a claim and before the send, and a channel slot
+  the test holds, never a sleep. Each asserts: the step back to `READY`, no `step.needs_review`, the attempt not consumed, and
+  the handler run exactly once afterwards.
+- **D006-009 — The residue is named, not hidden.** A frame handed to the transport and lost, and a lost answer of a unary
+  poll, still lapse into a review after this change (G006-001); O006-001 closes them.
+- **D006-010 — Where this lives.** The contract is `stream-completion.md` ("Leases that never reach a host"), the host rule is
+  `sdks/SPEC.md` §6.2 and §10, the clarification of feature 037 is in `specs/037-compensation-safety/spec.md` after FR-037-006,
+  and the hard-to-reverse choice (a new journal event behind a fleet requirement) is ADR-0098.
+
+### Gaps
+
+- **G006-001 — A lease handed to the transport and lost still lapses into a review** (a frame lost on the wire after
+  `poll_next` returned it, the answer of a unary `PollTasks` lost after the handler returned). Closed by O006-001.
+- **G006-002 — A process that stops (or crashes) between a claim and its withdrawal** leaves the lease to lapse. The withdrawal
+  is spawned when the body ends and runs to its own bound; a graceful shutdown waits for it, a crash does not.
+- **G006-003 — Before the operator records `lease-withdrawal-v1`, nothing changes** but the counter: an upgraded fleet keeps
+  today's behaviour until the activation.
+
+### Owner question
+
+- **O006-001 — Delivery acknowledgement (option C).** Answered by the owner on 2026-11-20: "Yes, in 0.3.0"
+  (OD-2026-11-20-12). The sketch the question was asked on:
+  - *Variant 1, a provisional lease.* A claim grants a provisional lease (`OFFERED`) with a short acknowledgement deadline;
+    the host acknowledges each task (a new RPC, or a frame of a bidirectional stream) before it runs the handler; only the
+    acknowledgement makes the step `LEASED`; an offer not acknowledged in time is withdrawn by the engine. Exact ("the handler
+    runs only after the server knows the host has the task"); costs one round trip and one statement per task; needs a new step
+    status and a new event.
+  - *Variant 2, the first heartbeat before the handler.* Every host of the new minor sends its first heartbeat when it
+    dispatches a task and starts the handler only when that heartbeat is answered; the engine withdraws a lease still `LEASED`
+    (no heartbeat) when the acknowledgement deadline passes, because a host of that minor cannot have started it. Reuses
+    `Heartbeat` and `step.started` (the first heartbeat already moves `LEASED` to `RUNNING`) and the withdrawal of D006-003;
+    costs the same round trip per task, moved before the handler instead of after one interval.
+  - Both need a new worker-protocol minor (the next free one in the register of `sdks/SPEC.md`, after 1.7 of design 041:
+    OD-2026-11-15-8), all six SDKs, conformance scenarios in six languages, and the server must keep serving older minors
+    unchanged (their leases keep today's semantics). The acknowledgement deadline must be derived from measured delivery and
+    heartbeat latency, not guessed. The variant, the minor and the deadline are decided in the ADR that follows (design first,
+    the four reviewers before any code).
