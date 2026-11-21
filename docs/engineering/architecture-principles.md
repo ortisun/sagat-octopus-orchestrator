@@ -27,6 +27,8 @@ An architectural rule that nothing checks is a wish. Each row is a rule and what
 | Incomplete capacity coordination stays dormant; new lease producers need inventory review | `scripts/check-capacity-activation.py` and negative fixtures (source-text check, not a call-graph proof); runtime lock/race tests remain required |
 | Current-schema upgrade oracles follow the latest migration | `scripts/check-upgrade-boundary.py` and negative fixtures; runs before the released producer build; genuine released-source runtime checks remain required |
 | The temporary Kafka dependency snapshot matches its registry source except for the reviewed zstd version | `scripts/check-vendor.py` and its negative controls (CI `architecture`) |
+| The Studio reaches the Astryx design system only through its interface module, and a screen hand-writes no control ([ADR-0101](../adr/ADR-0101-the-studio-builds-its-interface-on-the-astryx-design-system.md)) | the Studio's ESLint configuration (`no-restricted-imports`, `no-restricted-syntax`), run by `npm run lint` (CI `frontend`) |
+| The Studio's theme keeps the recorded colours above their contrast floors and maps every one of them; the design system is pinned exactly and its command line tool is not a dependency; a Studio stylesheet holds no literal colour and no token of its own | `src/ui/theme/theme.test.ts` and `src/styles/tokens.test.ts`, run by `npm test` (CI `frontend`) |
 
 When you add a rule worth keeping, add its row and its check in the same change.
 
