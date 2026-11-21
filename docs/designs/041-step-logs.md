@@ -1,8 +1,14 @@
 # Step logs per run
 
 *   **Author:** Claude Code, for the owner
-*   **Status:** Draft
-*   **Date:** 2026-11-20
+*   **Status:** Approved
+*   **Date:** 2026-11-21
+*   **Reviewed-commit:** 543417134ff7ebda70a96690329bb95ddde55c8c
+*   **EGM-hash:** 003679ced8d0c6ffa103b14109aa8f8bab83aaf817a3e15479e122fc0f1683f9
+*   **Claude-Code:** 2.1.329
+*   **Reports:** docs/designs/041-step-logs.reviews/2026-11-20-approval/final/egm-review.md sha256:3d374d4b722d069716796572818b5c11a29d48b1b9e16a470ad631cb84f562c3; docs/designs/041-step-logs.reviews/2026-11-20-approval/final/architecture.md sha256:d936baee5e664b7430a7744e3b7724bd49e417fd8e88c74803fa26f3c6d3450a; docs/designs/041-step-logs.reviews/2026-11-20-approval/final/security.md sha256:d6c213dfe43eb74eb0e9180f44a802233b2e04025b18d560651e0308f5a2389e; docs/designs/041-step-logs.reviews/2026-11-20-approval/final/correctness.md sha256:ab4528184ddef0f1142e1613529416c66b9f34d6c332ed1a4a78e379b3a88b00
+*   **Open findings:** Blocker 0, Major 0
+*   **Accepted:** 6; OD-2026-11-21-200, OD-2026-11-21-201, OD-2026-11-21-202, OD-2026-11-21-203, OD-2026-11-21-204, OD-2026-11-21-205
 *   **Owner-acceptance:** OD-2026-11-15-17 (the design, for 0.3.0); OD-2026-11-16-7 (the approval path); OD-2026-11-19-1 (the direction of the redesign); OD-2026-11-20-1 (the carry in one round trip and the p99 allowance); OD-2026-11-20-13 to OD-2026-11-20-16 (the fourth carry spike's cost, the busy loss, ADR-0095 and ADR-0097, the amendment of ADR-0027); OD-2026-11-20-17 (the approval path of this revision); OD-2026-11-20-18 (the top-up after the commit); OD-2026-11-20-19 (the step-log usage hidden without the PII grant)
 
 --------------------------------------------------------------------------------
@@ -2361,6 +2367,13 @@ Slice A, decisions, contracts and the spike:
     The approval of this design's revision of 2026-11-19 and 2026-11-20 runs under this task, on the owner's path "Full
     review, capped" (OD-2026-11-20-17): its reports are in docs/designs/041-step-logs.reviews/2026-11-20-approval/,
     and the new approval block cites them.
+  Evidence continued (2026-11-21): the revision's approval run on the owner's path "Full review, capped"
+    (OD-2026-11-20-17): the first round, all five egm-review stages in order and the three repository reviewers on
+    ff8033cd (docs/designs/041-step-logs.reviews/2026-11-20-approval/); short re-reads at 4d6fe4cc (round-2/) and
+    c52b5d37 (round-3/); one final read of the last fixes at 54341713 (final/), Blocker 0; its six Majors and the first
+    round's Z-2 accepted under the cap by OD-2026-11-21-200 to -205 (final/egm-review.md#1 to #4, architecture.md#1,
+    correctness.md#1); every finding answered in resolution.md; the approval block cites the four reports of final/.
+    python3 scripts/check-design-docs.py: design docs ok.
 - [x] T041-2 Put O041-014 to O041-024, except O041-020 and O041-021 (which T041-31 owns), to the owner and record each
   answer as a row of `docs/owner-decisions.md` and in research.md; correct the ADRs' Revision sections and this design
   for the answers. Done when each of those questions has a row with Status `Decided`, and every task that builds one of
@@ -2372,7 +2385,7 @@ Slice A, decisions, contracts and the spike:
     questions; the ADR Revision sections corrected (ADR-0084 and ADR-0085 Revision of 2026-11-15, ADR-0027 Amendment);
     every task building one of those answers cites its row on an Owner-gate line (T041-3 to T041-7, T041-10 to T041-14,
     T041-29, T041-30, T041-32 and the SDK tasks); python3 scripts/check-design-docs.py: design docs ok.
-- [ ] T041-33 Put the restated O041-025 to the owner and record the answer as a row of `docs/owner-decisions.md` and in
+- [x] T041-33 Put the restated O041-025 to the owner and record the answer as a row of `docs/owner-decisions.md` and in
   research.md; for (a), add the reading as a Note of ADR-0084's Revision; for (b), change this design (T2 and the lock
   order) and have it reviewed again. Done when the row is `Decided` and T041-6 cites it on an `Owner-gate:` line.
   Refs: FR-041-005, FR-041-020
@@ -2384,7 +2397,9 @@ Slice A, decisions, contracts and the spike:
     scripts/check-design-docs.py lets a task ticked since develop stand only in an Approved doc; the evidence above is
     unchanged, and the approval pull request of this revision ticks it again. T041-6 now carries OD-2026-11-16-11 on its
     own Owner-gate line, so T041-34 is withdrawn.
-- [ ] T041-35 Spike of the carry (the new spike of OD-2026-11-19-1), before the schema was fixed: a prototype of the carry
+  Evidence continued (2026-11-21): ticked again by the approval of this revision (Reviewed-commit 54341713); the
+    evidence of 2026-11-18 is unchanged; python3 scripts/check-design-docs.py: design docs ok.
+- [x] T041-35 Spike of the carry (the new spike of OD-2026-11-19-1), before the schema was fixed: a prototype of the carry
   of section 2a and of the quota leases of section 2b in the benchmark's own disposable database (the scratch schema
   `spike_041`, a report hook behind the `perf-spike` feature, nothing reaching a migration), measured against
   SC-041-007's gates (1), (2b), (3) and (4) (defined in SC-041-007) at 1 × 16 and 8 × 128, each gate judged on the
@@ -2417,6 +2432,10 @@ Slice A, decisions, contracts and the spike:
     (answered with ADR-0095's acceptance, OD-2026-11-20-15). The box stays empty while the design is Draft, because
     rule 9 of scripts/check-design-docs.py lets a task ticked since develop stand only in an Approved doc; the approval
     pull request of this revision ticks it on that row, with this run as its evidence.
+  Evidence continued (2026-11-21): ticked on OD-2026-11-20-13 with run 44834024933 as its evidence, as stated above,
+    now that the revision is Approved (Reviewed-commit 54341713, the approval run's reports in
+    docs/designs/041-step-logs.reviews/2026-11-20-approval/final/, Accepted OD-2026-11-21-200 to -205 under
+    OD-2026-11-20-17); python3 scripts/check-design-docs.py: design docs ok.
 - [ ] T041-3 Contracts: contracts.md §1, as revised on 2026-11-19 (D041-090), and §2.
   No longer waits: task T041-35 is settled by OD-2026-11-20-13, which stands in for its pass, and the owner accepted
   ADR-0095 (O041-038, OD-2026-11-20-15).

@@ -278,3 +278,24 @@ egm-review) whose Counts are the open findings after the re-read; one acceptance
 recommended "accept" (expected: Z-3's kept tier and D-12), citing OD-2026-11-20-17 and anchored `<report path>#<n>`;
 the approval block; tick T041-35 with evidence (run 44834024933, OD-2026-11-20-13). The build (step 2) has not
 started.
+
+## Update after the approval (2026-11-21)
+
+**Done:**
+- `e8b70cd2`: the part of task T041-4 that makes the contract and the domain agree (`CeilingReason` without
+  `TenantQuotaBusy`, `NotStoredReason::ServiceBusy`, the fitness test of both enums), which CI had flagged.
+- `54341713`: the third round answered, documents first: the 8 × 128 gate (2b) floor (OD-2026-11-21-1, decision
+  D041-136), decision D041-137 (the owned connection, *Q* per transaction, the pooler's sizing rule, the top-up's
+  answers, per-replica pool names), the owner rows OD-2026-11-21-1 to -3, the second- and third-round reports saved
+  in `2026-11-20-approval/round-2/` and `round-3/`.
+- The final read at `54341713` (`2026-11-20-approval/final/`): no Blocker, six Majors accepted under the cap
+  (OD-2026-11-21-200 to -205), Z-2 with them; the Nits are listed in `resolution.md` "Final read" with the task that
+  settles each. The design is Approved (Reviewed-commit `54341713`); T041-35 and T041-33 are ticked.
+
+**For the owner, through the coordinating session:** the release-level false-stop estimate (up to about 34% at eight
+valid rounds, about 15 points of it from gates (1) and (3) at 8 × 128, which keep the fixed 90%); the p99 report
+threshold (OD-2026-11-21-200); heavy multiplexing behind a transaction pooler (OD-2026-11-21-201); ADR-0097's
+delegate amendments D041-134 and D041-137, accepted with this approval.
+
+**Next:** the build: merge the held tasks T041-3 and T041-4, then the tasks in the design's order through T041-36 and
+T041-37. The body of the approved design may now change only by ticks, evidence and follow-up tasks.

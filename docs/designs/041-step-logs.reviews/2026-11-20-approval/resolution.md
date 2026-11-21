@@ -338,3 +338,52 @@ one-shot processes listed, `PoolName`, the registry pool's name, *Q* computed an
 `pg_authid`), 8 (fewer than seven valid rounds) and 9 (the fault test in `cancellation.rs`, which T041-36's Files list).
 Readiness Nits 1 and 7 (the `releaseAnswer` and `heldAnswers` placement; the reason after a `MarkOnly(failed)` re-run)
 are left to the build of T041-14 and T041-36, where the goldens and the plan type are written.
+
+## Final read
+
+The final confirmation read of the third round's fixes ran once, at `54341713`, by the same five reviewers; their
+reports are in `final/`, verbatim (`architecture.md`, `security.md` and `correctness.md` with the header lines the
+approval check reads; `design.md` and `readiness.md`, which `final/egm-review.md` summarizes). Totals: no Blocker;
+Majors: architecture 1, security 0, correctness 1, stages 5 to 8 3 (D-12 among them), readiness 0; Nits 30.
+
+Under the cap (OD-2026-11-20-17) no further round runs and no Major is fixed after this read: each is accepted by one
+owner row, OD-2026-11-21-200 to OD-2026-11-21-205 (Z-2 of the first round with them). Two of them carry a residual the
+coordinating session puts to the owner: the owner report's threshold on the p99 (OD-2026-11-21-200 and -205: it fires
+on the accepted build's own rounds, so its threshold is derived from the eight valid rounds' figures when task T041-9
+records them) and the pooler's server-pool sizing rule (OD-2026-11-21-201 and -204: heavy multiplexing behind a
+transaction pooler is not bounded, and task T041-37's pooler rows are measured at the rule's size).
+
+The Nits stay open in the approved text; the build follows the reviewers' corrections, and the task named settles
+each:
+- the top-up's `held` still listed at design section 2b's metric paragraph and the `NOWAIT` of data-model.md §8a
+  (correctness 1 and 2, design 4): the built code has no `held` answer and tries `SKIP LOCKED` (T041-5, T041-36);
+- a negative share (F < 0 after a lowered limit or with enforcement off) answers `limit`, with a test (correctness 3,
+  T041-5);
+- the refill's and the top-up's freedom from subtransactions is checked by a source-text test that their bodies hold no
+  `EXCEPTION` (correctness 4, T041-5);
+- the "no runtime" branch of `OwnedTransaction`'s `Drop` calls `detach()`, since `PoolConnection::drop` spawns
+  (correctness 5, architecture 2, readiness 4, T041-36);
+- the pooler rows judge the pool's `maxwait` and B's heartbeat and task-lease latency measured by the driver, not "B's
+  `maxwait`"; the sizing rule counts the pooler's other clients and the configured Logs cap (correctness 6, security 1
+  and 2, design 7, architecture 1, T041-37 and the runbook);
+- the per-release false-stop figures are estimates where they add the resampled gates (correctness 7, design 10), and
+  the owner is shown them with the approval (the coordinating session's report);
+- counting a carry only when its transaction commits undercounts one whose `COMMIT` outcome is unknown but which
+  committed (correctness 8, accepted: the stream row stays exact);
+- `definitions.rs:164-165` and `primitives.rs`'s own helpers take `&mut PgConnection` (architecture 3, readiness 1,
+  T041-36);
+- ADR-0097's "Enforced by" gains the owned-connection fault test, the per-transaction *Q* tests and the pooler checks,
+  and its header cites OD-2026-11-20-17 rather than rules 2 and 4 (architecture 4, design 9), with the ADR edit of
+  T041-36;
+- the Owner-acceptance line and T041-9's Owner-gate cannot change in an approved header and body; OD-2026-11-21-1 to -3
+  cite the design (architecture 5, design 6);
+- the revision note's list misses section 2's admission paragraph and tasks T041-6 and T041-7 (design 5);
+- below a pool of 16 one tenant's tickets equal the Logs cap (design 8): stated in data-model.md §6 and the runbook;
+- the batch's and the marker's *Q* each get a test that a transaction held after its first statement reads the store's
+  *Q*, and data-model.md §8 shows the set_config (readiness 2, T041-6 and T041-13);
+- one function in `crates/infra-postgres/src/pool.rs` computes *Q* from the pool's maximum, tested in T041-5 and called
+  by both stores (readiness 3);
+- the owned-connection test reads `idle in transaction` after a fresh acquire of the pool's only connection
+  (readiness 5, T041-36);
+- readiness 7 and 8 (the `holdAnswer` goldens; the reason a `MarkOnly` carries) are settled in T041-14 and T041-36;
+- security 3 (the timeouts behind a pooler that drops `options`): accepted, the runbook says to set them on the role.
