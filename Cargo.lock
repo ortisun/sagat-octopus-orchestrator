@@ -1049,9 +1049,9 @@ dependencies = [
 
 [[package]]
 name = "croner"
-version = "4.0.1"
+version = "4.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4b5b023fc2978536bbb2a3b71237964fc4630bec1eb31077b4977127f4cdb9c0"
+checksum = "0097e28936e948e8f759478e1b5ec2e5ca70ab62cf38aaa9bd3aa660023e3fca"
 dependencies = [
  "chrono",
  "derive_builder",
@@ -5659,7 +5659,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",
