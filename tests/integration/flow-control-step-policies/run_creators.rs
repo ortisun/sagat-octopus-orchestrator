@@ -75,7 +75,7 @@ async fn admitted(w: &World, run: RunId) -> Admitted {
     decision
 }
 
-async fn runs_of(w: &World, workflow: WorkflowId) -> Vec<RunId> {
+pub(crate) async fn runs_of(w: &World, workflow: WorkflowId) -> Vec<RunId> {
     let ids: Vec<Uuid> =
         sqlx::query_scalar("SELECT id FROM runs WHERE workflow_id = $1 ORDER BY created_at, id")
             .bind(workflow.as_uuid())
@@ -85,11 +85,11 @@ async fn runs_of(w: &World, workflow: WorkflowId) -> Vec<RunId> {
     ids.into_iter().map(RunId::new).collect()
 }
 
-fn idempotency() -> String {
+pub(crate) fn idempotency() -> String {
     format!("creators-{}", Uuid::now_v7())
 }
 
-fn request<'a>(workflow: WorkflowId, input: &'a [u8], key: &'a str) -> StartRun<'a> {
+pub(crate) fn request<'a>(workflow: WorkflowId, input: &'a [u8], key: &'a str) -> StartRun<'a> {
     StartRun {
         namespace: "payments",
         workflow,
@@ -101,7 +101,7 @@ fn request<'a>(workflow: WorkflowId, input: &'a [u8], key: &'a str) -> StartRun<
     }
 }
 
-fn business(id: &str) -> BusinessStart {
+pub(crate) fn business(id: &str) -> BusinessStart {
     BusinessStart {
         id: BusinessId::new(id).expect("an identifier"),
         conflict: ConflictPolicy::UseExisting,
@@ -111,7 +111,7 @@ fn business(id: &str) -> BusinessStart {
 }
 
 /// Completes every task of `activity` that is offered now; returns how many.
-async fn complete_all(w: &World, activity: &str) -> usize {
+pub(crate) async fn complete_all(w: &World, activity: &str) -> usize {
     let session = w.session(&[activity]).await;
     let tasks = w.poll(&session, 16).await;
     for task in &tasks {
@@ -184,7 +184,7 @@ async fn a_rerun_as_new_admits_through_the_key() {
 }
 
 /// The entry of `doc` waits for the signal `payment.confirmed`; its start takes a permit of `input.accountId`.
-fn gated_waiter(name: &str) -> Value {
+pub(crate) fn gated_waiter(name: &str) -> Value {
     let mut doc = document(
         name,
         "w",
@@ -201,7 +201,7 @@ fn gated_waiter(name: &str) -> Value {
     doc
 }
 
-async fn signal_with_start(
+pub(crate) async fn signal_with_start(
     w: &World,
     workflow: WorkflowId,
     id: &str,
@@ -237,13 +237,13 @@ async fn a_signal_with_start_with_room_holds_a_permit_and_is_signalled_at_creati
     assert_eq!(delivered, ["w"]);
 }
 
-fn declared(name: &str) -> Value {
+pub(crate) fn declared(name: &str) -> Value {
     let mut doc = declared_waiter(name);
     doc["concurrency"] = json!({"group": "accounts", "key": "input.accountId", "limit": 1});
     doc
 }
 
-async fn update_with_start(
+pub(crate) async fn update_with_start(
     w: &World,
     workflow: WorkflowId,
     id: &str,
@@ -565,15 +565,13 @@ impl ItemActions for Runs {
     }
 }
 
-/// Row 4 (a batch `RERUN`): each rerun the job makes is a new run admitted through its key.
-#[tokio::test]
-async fn a_batch_rerun_admits_through_the_key() {
-    let w = Arc::new(gated_world().await);
-    let workflow = publish(&w, serial_start("creators-batch", 1)).await;
-    let source = w.start(workflow, &json!({"accountId": "acct-1"})).await;
-    assert_eq!(complete_all(&w, "act.g").await, 1);
-    assert_eq!(w.run_status(source).await, RunStatus::Succeeded);
-    let holder = w.start(workflow, &json!({"accountId": "acct-1"})).await;
+/// Creates a batch job that reruns the namespace's succeeded runs and steps it until `workflow` has `runs_after` runs (or
+/// two minutes passed).
+pub(crate) async fn rerun_the_succeeded_by_a_batch(
+    w: &Arc<World>,
+    workflow: WorkflowId,
+    runs_after: usize,
+) {
     let clock = TestClock::at(OffsetDateTime::now_utc() + Duration::seconds(2));
     let store = PgBatchStore::new(w.db.pool.clone());
     let job = BatchService::new(store.clone(), clock.clone())
@@ -604,7 +602,7 @@ async fn a_batch_rerun_admits_through_the_key() {
         .expect("a job");
     let executor = BatchExecutor::new(
         store,
-        Runs(Arc::clone(&w)),
+        Runs(Arc::clone(w)),
         PgIdentityStore::new(w.db.pool.clone()),
         clock,
         ExecutorSettings::default(),
@@ -618,7 +616,9 @@ async fn a_batch_rerun_admits_through_the_key() {
         match executor.step(&due, None).await.expect("a step") {
             Stepped::Acted => {}
             Stepped::Idle | Stepped::Refused(_) | Stepped::Backoff => {
-                if runs_of(&w, workflow).await.len() == 3 || std::time::Instant::now() > give_up {
+                if runs_of(w, workflow).await.len() == runs_after
+                    || std::time::Instant::now() > give_up
+                {
                     break;
                 }
                 // the selection waits for transactions open at the job's creation (another test's)
@@ -626,6 +626,18 @@ async fn a_batch_rerun_admits_through_the_key() {
             }
         }
     }
+}
+
+/// Row 4 (a batch `RERUN`): each rerun the job makes is a new run admitted through its key.
+#[tokio::test]
+async fn a_batch_rerun_admits_through_the_key() {
+    let w = Arc::new(gated_world().await);
+    let workflow = publish(&w, serial_start("creators-batch", 1)).await;
+    let source = w.start(workflow, &json!({"accountId": "acct-1"})).await;
+    assert_eq!(complete_all(&w, "act.g").await, 1);
+    assert_eq!(w.run_status(source).await, RunStatus::Succeeded);
+    let holder = w.start(workflow, &json!({"accountId": "acct-1"})).await;
+    rerun_the_succeeded_by_a_batch(&w, workflow, 3).await;
     let runs = runs_of(&w, workflow).await;
     assert_eq!(runs.len(), 3, "the source, the holder and the rerun");
     assert_eq!(admitted(&w, holder).await, Admitted::Acquired);
@@ -681,18 +693,14 @@ async fn a_with_start_the_key_refuses_creates_nothing() {
     assert_eq!(runs_of(&w, workflow).await.len(), 1);
 }
 
-/// Row 13 (an ad hoc database workflow, and the private rerun of one): a caller's ad hoc document that gates its start
-/// is admitted through its key like a published one, and so is its private rerun. (A connection probe's document is the
-/// platform's own and declares no gate.)
-#[tokio::test]
-async fn an_ad_hoc_workflow_and_its_private_rerun_admit_through_the_key() {
+/// The connection `creators-db` of the namespace, whose credentials are a secret held by OpenBao (nothing reads or
+/// connects in these tests).
+pub(crate) async fn ad_hoc_connection(w: &World) {
     use sagat_application::database::{ConnectionService, ConnectionWrite};
-    use sagat_application::runs::{AdHocMode, RunOperation, StartDatabaseExecution};
     use sagat_domain::database::{ConnectionConfig, ConnectionStatus, DatabaseLimits, TlsPolicy};
     use sagat_domain::identity::Slug;
     use sagat_domain::secrets::SecretName;
 
-    let w = gated_world().await;
     // the connection names a secret of the namespace held by OpenBao; nothing reads or connects in this test, so the
     // fixture records the authority without a provider (a fixture value)
     w.put_secret("db-credentials", "creators-fixture-value")
@@ -724,6 +732,39 @@ async fn an_ad_hoc_workflow_and_its_private_rerun_admit_through_the_key() {
         )
         .await
         .expect("the connection");
+}
+
+/// Starts the caller's ad hoc workflow `document` under the idempotency key `key`.
+pub(crate) async fn start_ad_hoc(w: &World, document: &[u8], key: &str) -> RunId {
+    use sagat_application::runs::{AdHocMode, StartDatabaseExecution};
+    w.runs
+        .start_database(
+            &w.admin,
+            &StartDatabaseExecution {
+                namespace: w.namespace.id(),
+                mode: AdHocMode::Workflow,
+                document,
+                input: b"{}",
+                timeout_ms: None,
+                key,
+            },
+            &ctx(),
+        )
+        .await
+        .expect("an ad hoc start")
+        .info
+        .run_id
+}
+
+/// Row 13 (an ad hoc database workflow, and the private rerun of one): a caller's ad hoc document that gates its start
+/// is admitted through its key like a published one, and so is its private rerun. (A connection probe's document is the
+/// platform's own and declares no gate.)
+#[tokio::test]
+async fn an_ad_hoc_workflow_and_its_private_rerun_admit_through_the_key() {
+    use sagat_application::runs::RunOperation;
+
+    let w = gated_world().await;
+    ad_hoc_connection(&w).await;
     let mut doc = document(
         "creators-ad-hoc",
         "query",
@@ -736,23 +777,7 @@ async fn an_ad_hoc_workflow_and_its_private_rerun_admit_through_the_key() {
     let bytes = serde_json::to_vec(&doc).expect("json");
     let mut runs = Vec::new();
     for key in ["creators-ad-hoc-0001", "creators-ad-hoc-0002"] {
-        let run = w
-            .runs
-            .start_database(
-                &w.admin,
-                &StartDatabaseExecution {
-                    namespace: w.namespace.id(),
-                    mode: AdHocMode::Workflow,
-                    document: &bytes,
-                    input: b"{}",
-                    timeout_ms: None,
-                    key,
-                },
-                &ctx(),
-            )
-            .await
-            .expect("an ad hoc start");
-        runs.push(run.info.run_id);
+        runs.push(start_ad_hoc(&w, &bytes, key).await);
     }
     assert_eq!(admitted(&w, runs[0]).await, Admitted::Acquired);
     assert_eq!(admitted(&w, runs[1]).await, Admitted::Queued);
