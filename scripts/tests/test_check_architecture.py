@@ -659,6 +659,26 @@ class EveryRunIsCreatedWithACheckedInput(unittest.TestCase):
         }))
         self.assertEqual(code, 0, out)
 
+    def test_a_test_probe_of_the_worker_api_is_refused_outside_the_tests(self):
+        """Feature 006, D006-093 (security round 4 Minor 2): the probes hold claims until a test releases them."""
+        for probe in ("with_delivery_probe", "with_commit_probe"):
+            with self.subTest(probe=probe):
+                code, out = creator_check(creator_tree(**{
+                    "apps/execution-engine/src/lib.rs": f"fn build() -> G {{\n    WorkerGrpc::new(a, b)\n        .{probe}(p)\n}}\n",
+                }))
+                self.assertEqual(code, 1, out)
+                self.assertIn("apps/execution-engine/src/lib.rs:3: ", out)
+                self.assertIn(probe, out)
+        code, out = creator_check(creator_tree(**{
+            "crates/api-grpc/src/service.rs": (
+                "/// set it with `WorkerGrpc::with_commit_probe`\n"
+                "pub fn with_commit_probe(mut self, probe: P) -> Self { self }\n"
+                "pub fn with_delivery_probe(mut self, probe: P) -> Self { self }\n"
+                "#[cfg(test)]\nmod tests { fn t() { let _ = g.with_commit_probe(p); } }\n"
+            ),
+        }))
+        self.assertEqual(code, 0, out)
+
     def test_a_checked_input_built_outside_the_gate_is_refused(self):
         for source in (
             "fn f() -> X { CheckedRunInput { version: 1 } }\n",

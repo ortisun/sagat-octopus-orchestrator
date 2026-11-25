@@ -505,9 +505,32 @@ async fn an_underfilled_task_stream_ends_with_one_positive_retry_hint() {
     assert!(stream.message().await.expect("normal eof").is_none());
 }
 
+/// Holds the first claim that is about to commit leases until the server knows its consumer is gone; the claims after it
+/// pass (decisions D006-008 and D006-092: a barrier, never a sleep).
+fn held_at_the_first_commit() -> sagat_api_grpc::DeliveryProbe {
+    let seen = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    std::sync::Arc::new(move |abandoned: sagat_api_grpc::Abandonment| {
+        let first = !seen.swap(true, std::sync::atomic::Ordering::SeqCst);
+        Box::pin(async move {
+            if first {
+                abandoned.wait().await;
+            }
+        })
+    })
+}
+
+/// Feature 006, decision D006-092: a claim that waits on a lock inside a run's transaction (here the drain lock) when its
+/// client goes away goes on once the lock opens, and is rolled back at its commit, so the step is never leased. The
+/// platform does not withdraw (it has no gate), as every fleet before the activation of `lease-withdrawal-v1`: a lease
+/// committed for the gone client would lapse. The claim is held before its commit until the server knows the client is
+/// gone, and the step is read only once the claim ended.
 #[tokio::test]
-async fn cancelling_while_a_claim_waits_rolls_back_before_the_fence_opens() {
-    let p = platform().await;
+async fn cancelling_while_a_claim_waits_on_a_lock_rolls_its_run_back() {
+    let p = platform_with(Options {
+        commit_probe: Some(held_at_the_first_commit()),
+        ..Options::default()
+    })
+    .await;
     let wf = p
         .publish("cancel-mid-claim", &single_ir("cancel-mid-claim", None))
         .await;
@@ -537,7 +560,7 @@ async fn cancelling_while_a_claim_waits_rolls_back_before_the_fence_opens() {
         .await
         .expect("open stream")
         .into_inner();
-    tokio::time::timeout(Duration::from_secs(2), async {
+    tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             let blocked: bool = sqlx::query_scalar(
                 "SELECT EXISTS (SELECT 1 FROM pg_stat_activity waiter \
@@ -557,31 +580,27 @@ async fn cancelling_while_a_claim_waits_rolls_back_before_the_fence_opens() {
     .await
     .expect("claim reached the drain fence");
 
+    // The client goes away while its claim waits; the lock then opens and the claim reaches its commit, where the probe
+    // holds it until the server knows the client is gone.
     drop(stream);
     drop(cancelling);
     fence.commit().await.expect("release drain fence");
-    tokio::time::timeout(Duration::from_secs(2), async {
-        loop {
-            let blocked: bool = sqlx::query_scalar(
-                "SELECT EXISTS (SELECT 1 FROM pg_stat_activity waiter \
-                 WHERE waiter.datname = current_database() \
-                   AND $1 = ANY(pg_blocking_pids(waiter.pid)))",
-            )
-            .bind(fence_pid)
-            .fetch_one(&p.api.db.pool)
-            .await
-            .expect("observe cancellation");
-            if !blocked {
-                break;
-            }
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("cancelled claim left the database wait");
+    // the claim ran on the tracker of the worker API: it ended once the tracker is empty
+    assert!(
+        p.api
+            .worker_withdrawals
+            .drain(Duration::from_secs(15))
+            .await,
+        "the cancelled claim ended"
+    );
+    assert_eq!(
+        p.api.worker_withdrawals.handed_over(),
+        0,
+        "nothing was committed, so nothing went to the withdrawal"
+    );
 
-    let projection: (String, i32, Option<String>) = sqlx::query_as(
-        "SELECT status, attempt, leased_by FROM steps \
+    let projection: (String, i32, i64, Option<String>) = sqlx::query_as(
+        "SELECT status, attempt, generation, leased_by FROM steps \
          WHERE tenant_id = $1 AND run_id = $2 AND node = 'a'",
     )
     .bind(p.tenant.as_uuid())
@@ -589,7 +608,20 @@ async fn cancelling_while_a_claim_waits_rolls_back_before_the_fence_opens() {
     .fetch_one(&p.api.db.pool)
     .await
     .expect("step projection");
-    assert_eq!(projection, ("READY".into(), 0, None));
+    assert_eq!(
+        projection,
+        ("READY".into(), 0, 0, None),
+        "the run's transaction was rolled back"
+    );
+    let leased: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM run_events WHERE tenant_id = $1 AND run_id = $2 AND event_type = 'step.leased'",
+    )
+    .bind(p.tenant.as_uuid())
+    .bind(uuid::Uuid::parse_str(&run).expect("run id"))
+    .fetch_one(&p.api.db.pool)
+    .await
+    .expect("journal");
+    assert_eq!(leased, 0, "the journal holds no lease");
 
     let mut recovery = w
         .client
@@ -604,6 +636,11 @@ async fn cancelling_while_a_claim_waits_rolls_back_before_the_fence_opens() {
         .expect("recovery frame");
     assert_eq!(frame.tasks.len(), 1);
     assert_eq!(frame.tasks[0].run_id, run);
+    assert_eq!(
+        (frame.tasks[0].attempt, frame.tasks[0].generation),
+        (1, 1),
+        "the first lease of the step"
+    );
 }
 
 #[tokio::test]

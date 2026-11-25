@@ -896,3 +896,169 @@ async fn a_scoped_lease_is_withdrawn_in_its_path_for_either_cause() {
             .expect("the journal replays the withdrawal");
     }
 }
+
+/// Feature 006, decision D006-092, the scoped path: a claim whose consumer goes away before the commit of the path
+/// transaction that leased rolls it back, on the real store. The iteration stays `READY` with no attempt spent and no
+/// generation used, the journal holds no lease, and the next claim leases it with the first attempt and generation.
+#[tokio::test]
+async fn a_scoped_claim_whose_consumer_goes_before_its_commit_is_rolled_back() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use sagat_application::worker::{ClaimWatch, MAX_POLL_BYTES};
+
+    /// The consumer goes away just as the transaction that leased is about to commit.
+    struct GoesBeforeCommit(AtomicBool);
+
+    impl ClaimWatch for GoesBeforeCommit {
+        fn consumer_gone(&self) -> bool {
+            self.0.load(Ordering::SeqCst)
+        }
+
+        fn before_commit(
+            &self,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
+            self.0.store(true, Ordering::SeqCst);
+            Box::pin(std::future::ready(()))
+        }
+    }
+
+    let world = world().await;
+    crate::limits::allow_iterations(&world, 1).await;
+    let store = PgRunStore::new(world.db.runtime_pool_with(8).await, world.cache.clone())
+        .with_scoped_worker_protocol();
+    let workers = WorkerService::new(
+        store.clone(),
+        SystemClock,
+        Engine::new(JsonEvaluator),
+        SystemEntropy,
+        WorkerSettings::default(),
+    );
+    let placement = Placement::new("scoped-gone-before-commit");
+    Keeper::new(
+        store.clone(),
+        placement.clone(),
+        KeeperSettings {
+            ttl: std::time::Duration::from_secs(3600),
+        },
+    )
+    .round()
+    .await
+    .expect("acquire the collection scheduler's shard fences");
+    let scheduler = Scheduler::new(
+        store.clone(),
+        Engine::new(JsonEvaluator),
+        SystemEntropy,
+        SchedulerSettings::default(),
+    )
+    .with_placement(placement);
+    let (workflow, _) = world
+        .publish(json!({
+            "apiVersion":"sagat-octopus-orchestrator.io/v1", "kind":"Workflow",
+            "metadata":{"name":"scoped-gone-before-commit"}, "entrypoint":"items",
+            "limits":{"maxInstances":8,"maxDepth":1},
+            "bodies":{"line":{"entrypoint":"work","nodes":[
+                {"id":"work","type":"activity","activity":"scoped.work",
+                 "retry":{"maxAttempts":1,"strategy":"fixed","initialDelayMs":1,"maxDelayMs":1,"jitter":false},
+                 "next":"returned"},
+                {"id":"returned","type":"return","result":"steps.work.output"}
+            ]}},
+            "nodes":[
+                {"id":"items","type":"forEach","items":"input.items","body":"line",
+                 "result":"bodyResult","maxItems":1,"maxConcurrency":1,"next":"done"},
+                {"id":"done","type":"end"}
+            ]
+        }))
+        .await;
+    let session = workers
+        .register(
+            &world.worker,
+            "payments",
+            "scoped-gone-before-commit",
+            &Capabilities {
+                activities: vec!["scoped.work".into()],
+                languages: vec![],
+                pools: vec![],
+                max_inflight: 1,
+                protocol_version: "1.5".into(),
+            },
+        )
+        .await
+        .expect("scoped worker");
+    let run = world.start(workflow, &json!({"items":[1]})).await;
+    // the iteration becomes ready once the scheduler has expanded the collection
+    let mut ready = false;
+    for _ in 0..8 {
+        let report = scheduler.tick().await;
+        assert_eq!(report.failed, 0, "{report:?}");
+        let waiting: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM steps WHERE run_id = $1 AND node = 'work' AND status = 'READY' \
+             AND instance_path_nodes = ARRAY['items']::text[]",
+        )
+        .bind(run.as_uuid())
+        .fetch_one(&world.db.pool)
+        .await
+        .expect("ready iteration");
+        if waiting == 1 {
+            ready = true;
+            break;
+        }
+    }
+    assert!(ready, "the iteration is ready");
+    let gone = GoesBeforeCommit(AtomicBool::new(false));
+    let claimed = workers
+        .poll_bounded(
+            &world.worker,
+            session.worker_id,
+            session.session_token.expose(),
+            1,
+            MAX_POLL_BYTES,
+            None,
+            &gone,
+        )
+        .await
+        .expect("the claim");
+    assert!(gone.consumer_gone(), "the claim reached its commit");
+    assert!(
+        claimed.is_empty(),
+        "nothing is returned for a gone consumer"
+    );
+    let iteration: (String, i32, i64) = sqlx::query_as(
+        "SELECT status, attempt, generation FROM steps WHERE run_id = $1 AND node = 'work' \
+         AND instance_path_nodes = ARRAY['items']::text[]",
+    )
+    .bind(run.as_uuid())
+    .fetch_one(&world.db.pool)
+    .await
+    .expect("iteration projection");
+    assert_eq!(
+        iteration,
+        ("READY".to_owned(), 0, 0),
+        "the path transaction was rolled back"
+    );
+    let leased: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM run_events WHERE run_id = $1 AND event_type = 'step.leased'",
+    )
+    .bind(run.as_uuid())
+    .fetch_one(&world.db.pool)
+    .await
+    .expect("journal");
+    assert_eq!(leased, 0, "the journal holds no lease");
+    let next = workers
+        .poll(
+            &world.worker,
+            session.worker_id,
+            session.session_token.expose(),
+            1,
+            None,
+        )
+        .await
+        .expect("the next claim")
+        .pop()
+        .expect("the iteration is leased");
+    assert!(!next.instance.path().is_root());
+    assert_eq!((next.fence.attempt, next.fence.generation), (1, 1));
+    store
+        .verify_run(world.admin.tenant_id(), run)
+        .await
+        .expect("the journal replays");
+}

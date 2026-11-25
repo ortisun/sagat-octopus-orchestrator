@@ -289,6 +289,8 @@ pub struct Options {
     pub lease_withdrawal: Option<Arc<sagat_application::instances::ServingGate>>,
     /// A barrier after each run's transaction of a claim committed leases (decisions D006-008 and D006-035).
     pub delivery_probe: Option<sagat_api_grpc::DeliveryProbe>,
+    /// A barrier just before a run's transaction that leased commits (decisions D006-008 and D006-092).
+    pub commit_probe: Option<sagat_api_grpc::DeliveryProbe>,
     /// `SAGAT_LEASE_WITHDRAWAL`: whether the worker API writes new withdrawals (decision D006-032). On by default.
     pub new_withdrawals: bool,
     /// The ceiling hand-backs are judged by; this build's own by default (ADR-0099 decision 9). A test of the honoured
@@ -335,6 +337,7 @@ impl Default for Options {
             collection_operators: false,
             lease_withdrawal: None,
             delivery_probe: None,
+            commit_probe: None,
             new_withdrawals: true,
             hand_back_ceiling: sagat_application::worker::PROTOCOL_MINOR,
         }
@@ -654,6 +657,9 @@ async fn start_on_ready_db(db: TestDb, options: Options, supplied_pool: Option<P
     let mut grpc = WorkerGrpc::new(exec.clone(), workers);
     if let Some(probe) = &options.delivery_probe {
         grpc = grpc.with_delivery_probe(Arc::clone(probe));
+    }
+    if let Some(probe) = &options.commit_probe {
+        grpc = grpc.with_commit_probe(Arc::clone(probe));
     }
     let worker_withdrawals = grpc.withdrawals();
     if let Some(gate) = &options.serving_gate {

@@ -558,6 +558,24 @@ def gate_wiring_errors(root):
     return errors
 
 
+# Feature 006, decisions D006-008, D006-092 and D006-093: the delivery probe and the commit probe hold a claim (the commit probe
+# inside its open run transaction, with the run's locks) until a test lets it go. They are for the tests only: no production
+# source may call them; the tests package and a crate's own test modules may.
+TEST_PROBE_CALL = re.compile(r"\.\s*(with_delivery_probe|with_commit_probe)\s*\(")
+
+
+def test_probe_errors(root):
+    """A call of a test-only probe of the worker API in a production source under `crates/*/src` or `apps/*/src`."""
+    errors = []
+    for rel, text, masked, _ in production_sources(root):
+        for m in TEST_PROBE_CALL.finditer(masked):
+            errors.append(
+                f"{rel}:{text.count(chr(10), 0, m.start()) + 1}: `{m.group(1)}` is called outside the tests: the probe holds "
+                f"claims until a test releases them, and production never sets one (D006-093)"
+            )
+    return errors
+
+
 def test_support_errors(pkgs):
     """`sagat-application`'s `test-support` feature enabled outside `[dev-dependencies]`, as a dependency or by a feature."""
     errors = []
@@ -776,6 +794,7 @@ def main(argv):
     errors.extend(run_input_runtime_errors(rust_root))
     errors.extend(gate_wiring_errors(rust_root))
     errors.extend(test_support_errors(pkgs))
+    errors.extend(test_probe_errors(rust_root))
 
     # Cycle detection over workspace members (DFS, three colours).
     WHITE, GREY, BLACK = 0, 1, 2
@@ -807,7 +826,7 @@ def main(argv):
         return 1
     print(f"architecture check passed ({len(graph)} workspace crates, layers respected, no cycles, the lease row is a leaf lock, every run.finished body says its schedule, "
           f"no jsonschema in the run-input validator, the application's runtime confined to one file, every creator given the gate, every run created with a checked input, "
-          f"the capability checks list the code's capabilities)")
+          f"the capability checks list the code's capabilities, no test probe in production)")
     return 0
 
 

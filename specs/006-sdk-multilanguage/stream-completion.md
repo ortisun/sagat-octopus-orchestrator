@@ -218,7 +218,7 @@ server and SDKs, not five isolated unit-test results.
 
 ## Leases that never reach a host
 
-Decisions D006-001 to D006-018, D006-030 to D006-039 and D006-080 to D006-091 of [`research.md`](research.md); ADR-0098. A committed lease that no host received used to be
+Decisions D006-001 to D006-018, D006-030 to D006-039 and D006-080 to D006-093 of [`research.md`](research.md); ADR-0098. A committed lease that no host received used to be
 left to lapse; since feature 037 a lapse of an `Activity` opens a review for work that never ran. The rules:
 
 1. **The server withdraws what it knows it did not send.** A lease is *handed to the transport* when `TaskBody::poll_next`
@@ -227,8 +227,10 @@ left to lapse; since feature 037 a lapse of an `Activity` opens a review for wor
    a frame queued when the window deadline passes, of a frame drained at token expiry or when the body is dropped, of a frame
    sent into a closed queue, and of a unary poll whose handler is dropped before it returns.
 2. **The producer is told to stop, never aborted in a claim.** The run transaction it is in finishes (it is bounded by the
-   store's timeouts); the claim leases no further run once its consumer is gone; nothing more is queued; what it holds goes
-   to the withdrawal. The producer and the unary claim run on the tracker a graceful shutdown waits for (D006-035, D006-036).
+   store's timeouts); if that transaction wrote nothing but its leases and its consumer is gone when it reaches its commit,
+   it is rolled back instead, and nothing is leased (D006-092); the claim leases no further run once its consumer is gone; nothing more is
+   queued; what it holds goes to the withdrawal. The producer and the unary claim run on the tracker a graceful shutdown
+   waits for (D006-035, D006-036).
 3. **A withdrawal is fenced.** One transaction per run, under the run lock; it acts only on a step that is still `LEASED` with
    the generation and lease-token hash the server issued. It appends `step.lease_withdrawn` (`node`, `attempt`, `generation`,
    `cause`: `NOT_SENT` or `NOT_STARTED`), clears the lease, returns the step to `READY` and sets its attempt back by one, so
