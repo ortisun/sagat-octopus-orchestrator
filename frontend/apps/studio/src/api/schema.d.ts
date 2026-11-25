@@ -5806,6 +5806,8 @@ export interface components {
              * @description The acquisition instant of the group's oldest holder, whole; null when nobody holds.
              */
             oldestHolderSince: string | null;
+            /** @description Whether its sums were begun by an earlier page (a group with more keys than a page reads): they then mix the snapshots of the pages that read it, and may show more holders than its keys allow (D022-101). */
+            spansPages: boolean;
         };
         /** @description Feature 022 (FR-022-048, T022-111, D022-086). One pool, scope and group of the namespace's rate-limit windows, summed over its windows across the pages that read it, each page one snapshot at its own instant, each window read as RateLimitKey reads it; no key's label, value or own count, not how many windows it has, and not when its next slot frees (an instant that links a waiting run to a granted one; a caller with the reveal right reads it per key). */
         RateLimitKeyGroup: {
@@ -5822,6 +5824,8 @@ export interface components {
              * @description The queueing instant of the group's oldest waiter, whole; null when nobody waits.
              */
             oldestWaitSince: string | null;
+            /** @description Whether its sums were begun by an earlier page (a group with more keys than a page reads): they then mix the snapshots of the pages that read it, and may show more grants than its windows allow (D022-101). */
+            spansPages: boolean;
         };
         /** @description Feature 022 (FR-022-048). One rate-limit window row of the namespace; counts are a snapshot read without the key's lock, at the page's instant. */
         RateLimitKey: {

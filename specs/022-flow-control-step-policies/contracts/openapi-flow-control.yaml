@@ -429,32 +429,31 @@ components:
     ConcurrencyKeyGroup:
       type: object
       additionalProperties: false
-      required: [pool, scope, group, keys, holders, waiters, oldestWaitSince, oldestHolderSince]
-      description: Feature 022 (FR-022-022, T022-111, D022-086). One pool, scope and group of the namespace's concurrency keys, summed over its keys in the page's snapshot; no key's label, value or own count.
+      required: [pool, scope, group, holders, waiters, oldestWaitSince, oldestHolderSince, spansPages]
+      description: Feature 022 (FR-022-022, T022-111, D022-086). One pool, scope and group of the namespace's concurrency keys, summed over its keys across the pages that read it, each page one snapshot; no key's label, value or own count, and not how many keys it has.
       properties:
         pool: {type: string, enum: [ORDINARY, DRAFT_TEST]}
         scope: {type: string, enum: [RUN, STEP]}
         group: {type: string}
-        keys: {type: integer, minimum: 1, description: 'Its live keys.'}
         holders: {type: integer, minimum: 0}
         waiters: {type: integer, minimum: 0}
         oldestWaitSince: {type: [string, 'null'], format: date-time, description: 'The queueing instant of the group''s oldest waiter, whole; null when nobody waits.'}
         oldestHolderSince: {type: [string, 'null'], format: date-time, description: 'The acquisition instant of the group''s oldest holder, whole; null when nobody holds.'}
+        spansPages: {type: boolean, description: 'Whether its sums were begun by an earlier page (a group with more keys than a page reads): they then mix the snapshots of the pages that read it, and may show more holders than its keys allow (D022-101).'}
     RateLimitKeyGroup:
       type: object
       additionalProperties: false
-      required: [pool, scope, group, keys, grantsInWindow, unleasedGrants, waiters, oldestWaitSince, nextSlotAt]
-      description: Feature 022 (FR-022-048, T022-111, D022-086). One pool, scope and group of the namespace's rate-limit windows, summed over its windows at the page's instant, each read as RateLimitKey reads it; no key's label, value or own count.
+      required: [pool, scope, group, grantsInWindow, unleasedGrants, waiters, oldestWaitSince, spansPages]
+      description: Feature 022 (FR-022-048, T022-111, D022-086). One pool, scope and group of the namespace's rate-limit windows, summed over its windows across the pages that read it, each page one snapshot at its own instant, each window read as RateLimitKey reads it; no key's label, value or own count, not how many windows it has, and not when its next slot frees (an instant that links a waiting run to a granted one; a caller with the reveal right reads it per key).
       properties:
         pool: {type: string, enum: [ORDINARY, DRAFT_TEST]}
         scope: {type: string, enum: [RUN, STEP]}
         group: {type: string}
-        keys: {type: integer, minimum: 1, description: 'Its windows (keys).'}
         grantsInWindow: {type: integer, minimum: 0}
         unleasedGrants: {type: integer, minimum: 0}
         waiters: {type: integer, minimum: 0}
         oldestWaitSince: {type: [string, 'null'], format: date-time, description: 'The queueing instant of the group''s oldest waiter, whole; null when nobody waits.'}
-        nextSlotAt: {type: [string, 'null'], format: date-time, description: 'The earliest nextSlotAt of its windows.'}
+        spansPages: {type: boolean, description: 'Whether its sums were begun by an earlier page (a group with more keys than a page reads): they then mix the snapshots of the pages that read it, and may show more grants than its windows allow (D022-101).'}
     RateLimitKey:
       description: Release 0.3.0 slice (US07). One window row of the namespace. Counts are a snapshot read without the key's lock, at the page's instant.
       type: object

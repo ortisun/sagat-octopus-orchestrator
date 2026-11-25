@@ -357,6 +357,8 @@ pub struct ConcurrencyGroupView {
     pub waiters: u64,
     pub oldest_wait_since: Option<OffsetDateTime>,
     pub oldest_holder_since: Option<OffsetDateTime>,
+    /// Whether an earlier page began its sums: they then mix the snapshots of the pages that read it (decision D022-101).
+    pub spans_pages: bool,
     /// Where a page that ends with this group resumes (its digest is all zero: groups are ordered by pool, scope and
     /// name).
     pub position: KeyPosition,
@@ -375,6 +377,8 @@ pub struct RateLimitGroupView {
     pub unleased_grants: u64,
     pub waiters: u64,
     pub oldest_wait_since: Option<OffsetDateTime>,
+    /// Whether an earlier page began its sums: they then mix the snapshots of the pages that read it (decision D022-101).
+    pub spans_pages: bool,
     pub position: KeyPosition,
 }
 

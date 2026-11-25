@@ -2047,6 +2047,18 @@ taken after `git grep D022-04` on every `origin/*` branch.
   `rest::an_expired_cursor_is_refused_with_its_own_message` (a real page's cursor sealed again sixteen minutes earlier
   with the deployment's ring is refused, and fourteen minutes earlier is read).
 
+- **D022-101 — A group row says when its sums were read across pages (2026-11-25; batch 5 correctness minor 5; decision
+  D022-086 item 5).** Delegate (OD-2026-11-24-4). A group with more keys than a page reads is summed across the pages
+  that read it, each page one snapshot, so its sums mix instants: a group may show more holders than its keys' limits
+  allow, or a waiter counted on one page and its holder row on the next. Options: (a) a required `spansPages` boolean
+  on each group row of both listings, `true` when its sums were begun by an earlier page (the page resumed it from the
+  cursor's partial sums), so a reader knows the row is not one snapshot; (b) words in the contract only (a reader
+  cannot tell which row); (c) read a group whole on one page (the bound of a page is lost). Chosen (a): it tells nothing
+  a viewer could not already infer from following the cursor (a page with no group and a `nextCursor`), and nothing
+  about which runs share a key. Test:
+  `rest::a_group_larger_than_a_page_is_summed_across_pages_and_the_next_group_is_reached` (the big group's row
+  `spansPages: true`, the next group's `false`, in both listings).
+
 ### Decisions of the Studio slice (2026-11-24)
 
 - **D022-150 — How the Studio authors, shows and lists the gates (tasks T022-054, T022-055, T022-056, T022-085;

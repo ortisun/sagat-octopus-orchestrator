@@ -882,6 +882,7 @@ impl sagat_application::flow_control_keys::FlowControlKeyReader for crate::PgRun
                 waiters: summed.partial.sums[1],
                 oldest_wait_since: summed.partial.instant(0),
                 oldest_holder_since: summed.partial.instant(1),
+                spans_pages: summed.spans_pages,
                 position: KeyPosition::of_group(summed.pool, summed.scope, summed.group.clone()),
                 pool: summed.pool,
                 scope: summed.scope,
@@ -926,6 +927,7 @@ impl sagat_application::flow_control_keys::FlowControlKeyReader for crate::PgRun
                 unleased_grants: summed.partial.sums[1],
                 waiters: summed.partial.sums[2],
                 oldest_wait_since: summed.partial.instant(0),
+                spans_pages: summed.spans_pages,
                 position: KeyPosition::of_group(summed.pool, summed.scope, summed.group.clone()),
                 pool: summed.pool,
                 scope: summed.scope,
@@ -1306,6 +1308,8 @@ struct SummedGroup {
     scope: GateLevel,
     group: ResolvedGroup,
     partial: sagat_application::flow_control_keys::GroupPartial,
+    /// Whether an earlier page began its sums (it was resumed from the cursor's partial sums, decision D022-101).
+    spans_pages: bool,
 }
 
 /// What one page of a group view read in its snapshot.
@@ -1359,6 +1363,7 @@ async fn group_page(
             .map(|partial| (p.pool, p.scope, p.group.clone(), p.digest.to_vec(), partial))
     });
     let next = loop {
+        let spans_pages = current.is_some();
         let (pool_of, scope, group, mut digest, mut partial) = match current.take() {
             Some(resumed) => resumed,
             None => {
@@ -1431,6 +1436,7 @@ async fn group_page(
             scope,
             group,
             partial,
+            spans_pages,
         });
     };
     let queued_runs: i64 = sqlx::query_scalar(QUEUED_RUNS_SQL)

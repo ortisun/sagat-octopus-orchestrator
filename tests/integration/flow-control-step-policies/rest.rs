@@ -1296,7 +1296,8 @@ async fn a_page_of_groups_reads_at_most_its_budget_of_key_rows() {
 /// Batch 4 reviews of 2026-11-25, correctness Major 1 (decision D022-086 item 5): one group of 100,000 keys and a group
 /// `zz` after it. A viewer pages both listings one group at a time: every page answers `200`, the first holds no group
 /// (the big group is summed across pages, its partial sums in the sealed cursor), the big group's row comes whole, its
-/// sums those of every key, and `zz` is reached.
+/// sums those of every key, and `zz` is reached. The big group's row says its sums were read across pages, `zz`'s does
+/// not (batch 5 correctness minor 5, decision D022-101).
 #[tokio::test]
 async fn a_group_larger_than_a_page_is_summed_across_pages_and_the_next_group_is_reached() {
     use sagat_domain::identity::Role;
@@ -1355,6 +1356,12 @@ async fn a_group_larger_than_a_page_is_summed_across_pages_and_the_next_group_is
             );
         }
         assert!(groups[0]["oldestWaitSince"].is_string(), "{groups:?}");
+        // batch 5 correctness minor 5 (decision D022-101): the row says its sums were read across pages
+        assert_eq!(
+            (&groups[0]["spansPages"], &groups[1]["spansPages"]),
+            (&json!(true), &json!(false)),
+            "{listing}: {groups:?}"
+        );
     }
 }
 

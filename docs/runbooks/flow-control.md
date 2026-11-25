@@ -502,8 +502,9 @@ Every other caller reads `view: GROUPS`: `items` is empty and `groups` holds one
 `waiters` and `oldestWaitSince` (rate limits) summed over the group's keys, whole instants (D022-061, D022-086). A group
 row never says how many keys the group has, nor when its next slot frees: both would tell which runs share a key. A
 page of groups reads at most 200 key rows; a group with more keys is summed across the pages that read it, each page
-one snapshot (its counts may move between pages), and its row is on the page that reads its last key, so a page can
-hold no group and still have a `nextCursor`: follow the cursor. A cursor is sealed for its namespace, its
+one snapshot (its counts may move between pages), and its row is on the page that reads its last key, with
+`spansPages: true` (its sums mix the pages' snapshots, so it may show more holders than its keys allow, D022-101); a
+page can hold no group and still have a `nextCursor`: follow the cursor. A cursor is sealed for its namespace, its
 kind of listing and the digest key version in force: an altered, foreign, other group's or forcibly retired one is a
 `400`, and so is one more than fifteen minutes old (read the listing again without a cursor, D022-100); an invalid group is a `422`; a page that cannot be read in 2 s is a `503` (retry it). Another tenant's namespace
 is a `404`.
