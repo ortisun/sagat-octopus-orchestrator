@@ -3,7 +3,7 @@
 **Status:** Proposed
 **Decided by:** agent proposal (design 013, 2026-11-24), for acceptance under Owner decision 2026-11-24-4 once the review of design 013 is complete
 **Refines / supersedes:** refines Architecture decision 0016 (the Studio is a same-origin application; its OIDC flow now talks to the platform's own issuer when federation is on) and Architecture decision 0019 decision 3 (the development identity provider stays development-only and gains the flows a federated sign-in needs); refines Architecture decision 0062 decision 5 (an embedded app's sign-in popup goes to the platform's issuer); supersedes none. The deployment issuer of feature 001 (`crates/api-http/src/auth`) is kept unchanged beside it
-**Enforced by:** planned in design 013 and not existing yet: `tests/contract/federated-login/` (a platform token whose tenant claim differs from its connection's tenant is refused; an identity provider's token is never accepted as a platform token; the authorize endpoint refuses an unregistered redirect URI and a request without S256 PKCE); `tests/integration/federated-login/revocation.rs` (a suspended member's next request is refused; a revoked session's token is refused within the revocation poll interval); the architecture rule that only `crates/api-http/src/auth` builds a `Principal` from a token
+**Enforced by:** planned in design 013 and not existing yet: the signer test that a sign-in through a connection can only produce a token naming that connection's tenant; `tests/contract/federated-login/` (an identity provider's token and an ID token are never accepted as a platform access token; the authorize endpoint refuses an unregistered redirect URI and a request without S256 PKCE; no route returns a platform token to the apps origin; a sign-in started by another site establishes no session); `tests/integration/federated-login/revocation.rs` (a suspended member's next request is refused on every path that acts for a subject; a revoked session's token is refused within 15 seconds, including a revocation committed behind a poll); the architecture rule that only `crates/api-http/src/auth` builds a `Principal` from a token
 
 ## Context
 
@@ -31,21 +31,31 @@ Owner decision 2026-11-24-1 asks for "Studio sign-in through each organization's
 2. Each identity connection MUST belong to exactly one tenant. A sign-in through it MUST produce a token for that
    tenant only; no claim, attribute, parameter or path segment from the identity provider or the browser MAY choose
    the tenant.
-3. The platform MUST issue its own access tokens: ES256 JSON web tokens of at most five minutes, with `iss` the
-   platform issuer, `tenant`, `sub` (the platform subject the connection's identity is linked to), `sid` (the sign-in
-   session) and `jti`. The signing keys MUST be held through the secret provider of feature 017 and rotated with an
-   overlap; the public keys MUST be served at the issuer's key set. An identity provider's own token MUST NOT be
-   accepted by the API as a platform token.
+3. The platform MUST issue its own access tokens: ES256 JSON web tokens of at most 300 seconds, with `typ`
+   `at+jwt`, `aud` the API's resource identifier, `client_id`, `iss` the platform issuer, `tenant`, `sub` (the platform
+   subject the connection's identity is linked to), `sid` (the sign-in session) and `jti`; the platform verifier MUST
+   require each and enforce the lifetime itself. The signing key MUST live in a separate OpenBao mount and policy for
+   identity material (a Transit key that never leaves OpenBao where available), never nameable by a workflow secret
+   reference, and be rotated with an overlap; the public keys MUST be served at the issuer's key set, disjoint from
+   the connections' client keys. An identity provider's own token, an ID token, or a token signed by a connection key
+   MUST NOT be accepted by the API as a platform access token. A deployment issuer equal to the platform issuer MUST be
+   refused at start-up, and a deployment-issuer token naming a `user:` subject MUST be refused.
 4. The API's verifier MUST accept tokens from the deployment issuer exactly as today and from the platform issuer by
    its in-process key set; it MUST select the verifier by `iss` and refuse any other issuer. The built-in role MUST
    still come from the membership on every request, which MUST now also be active (not suspended).
-5. A sign-in session MUST be a database row with an absolute and an idle expiry, bound to the browser by an
-   `HttpOnly`, `Secure`, `SameSite=Lax`, host-only cookie whose value is stored only as a hash. The Studio MUST obtain
-   new access tokens from the session through a same-origin renewal call that the browser cannot send cross-site
-   (cookie, exact `Origin`, a custom request header); tokens stay in memory, as today.
-6. Revoking a session (sign-out, sign-out everywhere, suspension, removal, a SCIM deactivation) MUST stop renewal at
-   once and MUST make every serving process refuse that session's tokens within a bounded poll interval (default 10
-   seconds) of a revocation table; a suspended or removed membership MUST be refused on its next request.
+5. A sign-in session MUST be a database row with an absolute and an idle expiry, created only when the client
+   redeems its authorization code with the PKCE verifier (never at the provider's callback), and, for the Studio,
+   bound to the browser by an `HttpOnly`, `Secure`, `SameSite=Lax`, host-only cookie whose value is stored only as a
+   hash. The Studio MUST obtain new access tokens from the session through a same-origin renewal call that the browser
+   cannot send cross-site (cookie, exact `Origin`, a custom request header, no CORS on any sign-in route); tokens stay
+   in memory, as today. The apps origin of feature 027 MUST never receive a platform token: its codes are redeemed in
+   process by its session creation.
+6. Revoking a session (sign-out, sign-out everywhere, suspension, removal, a SCIM deactivation, a disabled or reset
+   connection, a raised authentication context) MUST stop renewal at once and MUST make every serving process refuse
+   that session's tokens within 15 seconds of the revocation's commit: each process re-reads, every 10 seconds, the
+   window of revocations younger than the token lifetime plus leeway plus one interval (a window, never a watermark),
+   and refuses platform tokens when its last read is older than 15 seconds. A suspended or removed membership MUST be
+   refused on its next request on every path that acts for that subject.
 7. The deployment issuer and the operator's recovery command MUST stay available as the break-glass path for a tenant
    that requires federated sign-in, with every use audited and alerted.
 

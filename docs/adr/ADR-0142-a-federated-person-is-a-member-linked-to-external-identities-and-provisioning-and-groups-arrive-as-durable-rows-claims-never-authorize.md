@@ -21,11 +21,14 @@ they leave.
 
 1. A person in a tenant MUST be a membership. A federated identity MUST be an external identity row: (tenant,
    connection, the provider's stable identifier), linked to exactly one membership subject. The stable identifier is
-   the OIDC `sub` or the SAML persistent name identifier (or a configured immutable attribute), never an e-mail
-   address or a display name.
-2. A membership created by federation MUST get the platform subject `user:<uuid>`. An administrator MAY link an
-   external identity to an existing subject (a member created before federation, or a person moving between
-   providers); the link is audited. The platform MUST NOT link two identities because their e-mail addresses match.
+   the OIDC subject claim (`sub`, or `oid` with `tid` for Entra ID) or the SAML persistent name identifier (or a
+   configured immutable attribute), never an e-mail address or a display name. A connection's issuer or entity
+   identifier is immutable, so that a subject is never re-read under another provider.
+2. A membership created by federation MUST get the platform subject `user:<uuid>`. An external identity MAY be linked
+   to an existing subject (a member created before federation, or a person moving between providers) only inside a
+   sign-in by that subject, who confirms it; the link is audited. An administrator MAY unlink and pre-provision, never
+   attach an identity to a subject that already has one or to an `admin` subject. The platform MUST NOT link two
+   identities because their e-mail addresses match.
 3. Just-in-time provisioning, when a connection enables it, MUST create the membership, its external identity and its
    first role in the sign-in transaction, with a default role of `viewer`, `operator` or `developer` (never `admin`).
    SCIM provisioning MUST do the same for a user the provider pushes, before the person's first sign-in.
@@ -35,12 +38,15 @@ they leave.
    for that connection; it confers nothing once the sign-in session that wrote it ends, by revocation or expiry, and
    at most 24 hours after the sign-in). A group confers nothing until an administrator assigns it a role or a folder entry
    (feature 029); its appearance in a claim grants nothing.
-5. A connection MAY map provider groups to the built-in role by an ordered list of rules; the highest role any rule
-   gives MUST win; the result MUST be computed on stored groups only and MUST change the membership's role only when
-   it differs and the member's role is not pinned by an administrator. A change is audited and applies feature 029's
-   revocation of custom grants (Requirement 029-024).
-6. A SCIM deactivation or deletion MUST suspend or remove the membership, revoke its sessions in the same transaction
-   and keep the external identity for the audit trail.
+5. A membership MUST have one owning connection (the one that provisioned it, or the one an administrator names);
+   only its rules and its SCIM may change the member's role or status. Its rules map only groups sourced from that
+   connection, by an ordered list; the highest role any rule gives MUST win; the result MUST be computed on stored
+   groups only and MUST change the membership's role only when it differs and the member's role is not pinned by an
+   administrator. A role mapped from assertion groups MUST be stored with its source and the expiry of those groups
+   and fall back to the connection's default role when they stop conferring, so a claim never leaves a durable role
+   behind. A change is audited and applies feature 029's revocation of custom grants (Requirement 029-024).
+6. A SCIM deactivation or deletion by the owning connection MUST suspend or remove the membership, revoke its sign-in
+   sessions and its app sessions in the same transaction, and keep the external identity for the audit trail.
 
 ## Considered options
 

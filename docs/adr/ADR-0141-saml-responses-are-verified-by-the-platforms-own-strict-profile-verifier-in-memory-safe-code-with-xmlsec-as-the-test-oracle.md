@@ -27,16 +27,22 @@ encrypted keys) can be refused.
 2. The parser MUST refuse a document type declaration, an entity, a processing instruction other than the XML
    declaration, a document over 256 KiB, a depth over 64 and more than 10,000 elements, before any signature work.
 3. The profile MUST accept exactly one `Assertion` (an `EncryptedAssertion` is refused), signed either itself or by a
-   signature on the enclosing `Response`, with one `Reference` whose URI is the `ID` of the signed element, the
-   enveloped-signature transform and exclusive canonicalization only, SHA-256 digests, and RSA with SHA-256 or ECDSA
-   P-256 with SHA-256 signatures by a certificate configured on the connection. Every `ID` in the document MUST be
-   unique. The element whose signature verified MUST be the element the platform reads, found by identity, never by
-   a second search of the document.
-4. The verifier MUST check, with 60 seconds of tolerance on times: the response `Destination` and the subject
-   confirmation `Recipient` equal the connection's assertion consumer service address; `InResponseTo` equals a
-   pending request of this browser; the `Issuer` equals the connection's identity provider; the audience equals the
-   platform's entity identifier for the connection; `NotBefore`, `NotOnOrAfter` and the subject confirmation's
-   `NotOnOrAfter`; and that the assertion identifier has not been seen before its expiry (a replay store).
+   signature on the enclosing `Response` (whose direct child it then is), with at most one `Signature` per element,
+   each an immediate child of the element it signs, with one `Reference` whose URI is `#` plus that element's `ID`; when
+   both are signed, both MUST verify. Transforms: the enveloped-signature transform and exclusive canonicalization
+   only (the `#WithComments` forms refused by name); SHA-256 digests; RSA (at least 2,048 bits) with SHA-256 or ECDSA
+   P-256 with SHA-256, by a key configured on the connection only (`KeyInfo` and embedded certificates are ignored).
+   Every `ID` in the document MUST be unique. The element whose signature verified MUST be the element the platform
+   reads, found by identity, never by a second search of the document.
+4. The verifier MUST check, with 60 seconds of tolerance on times, over the verified Assertion: its `Issuer` equals
+   the connection's identity provider; the audience equals the platform's entity identifier for the connection;
+   `NotBefore` and `NotOnOrAfter`, the latter at most 10 minutes ahead so that the replay store is bounded; an
+   `AuthnStatement` is present; the subject confirmation `Method` is `bearer`, its data has `Recipient` equal to the
+   connection's assertion consumer service, `InResponseTo` equal to a pending request of this browser, `NotOnOrAfter`
+   and no `NotBefore`; and the assertion identifier has not been seen before its expiry (a replay store). It MAY read
+   exactly these unsigned values of the Response, compared by equality and used for nothing else: `StatusCode`
+   (`Success`), `Destination` (the assertion consumer service), `InResponseTo` (equal to the subject confirmation's)
+   and `Issuer` when present (equal to the Assertion's). The request body MUST be bounded before base64 decoding.
 5. The name identifier and the attributes MUST be read as text content of the verified element only; a comment or a
    processing instruction inside them MUST refuse the response.
 6. The exclusive canonicalization MUST be the platform's implementation, held to `xmlsec1` as an oracle in the test
@@ -64,7 +70,8 @@ encrypted keys) can be refused.
   cost of a mistake.
 - Encrypted assertions are not supported in 0.3.0 (Gap 013-004 of design 013); the response travels over TLS and is
   consumed by the platform only.
-- A connection whose provider signs with SHA-1 cannot be activated until its provider signs with SHA-256.
+- A connection whose provider signs with SHA-1, or with an RSA key under 2,048 bits, cannot be activated until the
+  provider changes; the certificate's own signature algorithm does not matter for a key the connection pins.
 - Rollback: disabling SAML connections leaves OIDC connections working.
 
 ## Evidence
