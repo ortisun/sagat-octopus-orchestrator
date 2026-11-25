@@ -353,8 +353,11 @@ fn a_key_has_the_strictest_level_of_the_locations_it_reads_over_the_016_carriers
         ("input.account.id", Some(Level::Public)),
         ("input.email", Some(Level::Pii)),
         ("input.undeclared", Some(Level::Pii)),
-        ("state.counter", Some(Level::Pii)),
-        ("steps.missing.output.region", Some(Level::Pii)),
+        // no carrier of its own: the strictest level of every carrier of the document (batch 4 reviews, security
+        // Major 2), here `secret`
+        ("state.counter", None),
+        ("steps.missing.output.region", None),
+        ("steps", None),
         ("'one-key'", Some(Level::Public)),
         // a structure read whole holds a secret below it; so does a list read at a computed position
         ("string(size(input.account))", None),
@@ -421,6 +424,90 @@ fn a_key_has_the_strictest_level_of_the_locations_it_reads_over_the_016_carriers
         ),
         Ok(_) => panic!("a top-level key over a secret is refused"),
     }
+}
+
+/// Batch 4 reviews of 2026-11-25, security Major 2: a value that reaches a location without a carrier of its own takes
+/// the strictest level of every carrier of the document, never less than `pii`. A `database` node's output has no
+/// carrier (its rows are whatever the database holds): beside an input with a `secret` field, a key over that output is
+/// refused; beside carriers that hold nothing above `internal`, it is `pii`, warned. (A `forEach` that returns a body's
+/// output is the reviewer's case; a gate beside a `forEach` is not published by this build, `UNSUPPORTED_NODE`, and the
+/// same rule reads it.)
+#[test]
+fn a_key_over_a_node_without_its_own_carrier_takes_the_strictest_level_of_the_document() {
+    let document = |level: &str, key: &str| {
+        serde_json::to_vec(&serde_json::json!({
+            "apiVersion": "sagat-octopus-orchestrator.io/v1", "kind": "Workflow",
+            "metadata": {"name": "carrierless"}, "entrypoint": "read",
+            "inputSchema": {"type": "object", "x-sagat-classification": "public", "properties": {
+                "token": {"type": "string", "x-sagat-classification": level}}},
+            "nodes": [
+                {"id": "read", "type": "database", "connectionRef": {"name": "orders-db"}, "operation": "query",
+                 "statement": "SELECT id FROM orders", "next": "call"},
+                {"id": "call", "type": "activity", "activity": "provider.call",
+                 "concurrency": {"key": key, "limit": 1}}
+            ]
+        }))
+        .expect("json")
+    };
+    for key in [
+        "steps.read.output.rows[0].id",
+        "string(steps.read)",
+        "string(steps)",
+    ] {
+        match JsonIrCodec.parse(&document("secret", key)) {
+            Err(error) => assert_eq!(
+                problems_of(&error)
+                    .into_iter()
+                    .map(|problem| (problem.code, problem.node))
+                    .collect::<Vec<_>>(),
+                [("FLOW_CONTROL_KEY_SECRET", Some("call".to_owned()))],
+                "{key}"
+            ),
+            Ok(parsed) => panic!(
+                "{key}: what reaches a node without a carrier may be the input's secret: {:?}",
+                parsed.warnings
+            ),
+        }
+        let parsed = JsonIrCodec
+            .parse(&document("internal", key))
+            .unwrap_or_else(|error| panic!("{key}: {error:?}"));
+        let level = parsed
+            .definition
+            .gated_nodes()
+            .next()
+            .and_then(|node| node.flow_control().concurrency())
+            .map(sagat_domain::workflow::ConcurrencyPolicy::key_level);
+        assert_eq!(level, Some(Level::Pii), "{key}: never less than pii");
+    }
+}
+
+/// Batch 4 reviews of 2026-11-25, the security suspicion: a carrier whose classification walk did not complete (an
+/// annotation reached through a keyword the walk does not follow, here a `$ref` to a `secret` field under `not`) cannot
+/// be proved not to hold a secret. Publication refuses such a schema already (`CLASSIFICATION_UNSUPPORTED_KEYWORD`); a
+/// stored version restored with it gives a key over any location of that carrier the level `secret`, whose label nobody
+/// may see, even one declared `public`.
+#[test]
+fn a_key_over_a_carrier_whose_walk_did_not_complete_counts_as_secret() {
+    let mut document: Value = serde_json::from_slice(&classified("input.tier")).expect("json");
+    document["inputSchema"]["properties"]["opaque"] =
+        serde_json::json!({"type": "string", "not": {"$ref": "#/$defs/token"}});
+    let bytes = serde_json::to_vec(&document).expect("bytes");
+    assert!(
+        JsonIrCodec.parse(&bytes).is_err(),
+        "publication refuses the schema"
+    );
+    let stored = JsonIrCodec
+        .parse_stored(&bytes)
+        .unwrap_or_else(|error| panic!("a stored version is restored: {error:?}"));
+    assert_eq!(
+        stored
+            .definition
+            .gated_nodes()
+            .next()
+            .and_then(|node| node.flow_control().concurrency())
+            .map(sagat_domain::workflow::ConcurrencyPolicy::key_level),
+        Some(Level::Secret)
+    );
 }
 
 #[test]

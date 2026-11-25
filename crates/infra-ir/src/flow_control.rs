@@ -9,7 +9,9 @@
 
 use std::time::Duration;
 
-use sagat_application::classification::{CarrierPointer, ClassificationSegment};
+use sagat_application::classification::{
+    CarrierPointer, ClassificationCarrierStatus, ClassificationSegment,
+};
 use sagat_application::definitions::IrError;
 use sagat_domain::classification::Level;
 use sagat_domain::workflow::flow_control::{self as domain, DEFAULT_QUEUE_TIMEOUT};
@@ -115,11 +117,12 @@ pub(crate) fn check_secret_keys(definition: &WorkflowDefinition) -> Result<(), I
     Ok(())
 }
 
-/// The strictest level of every place `text` reads; `public` for a key that reads nothing, and `pii` for one this build
-/// cannot compile (a stored text an earlier grammar accepted), as for anything it cannot follow.
+/// The strictest level of every place `text` reads; `public` for a key that reads nothing, and the document's floor
+/// ([`document_floor`]) for one this build cannot compile (a stored text an earlier grammar accepted), as for anything
+/// it cannot follow.
 fn key_level(schemas: &Schemas<'_>, text: &str) -> Level {
     let Ok(compiled) = Compiled::compile(text) else {
-        return Level::UNMARKED;
+        return document_floor(schemas);
     };
     compiled
         .reads()
@@ -128,36 +131,69 @@ fn key_level(schemas: &Schemas<'_>, text: &str) -> Level {
         .fold(Level::Public, Level::stricter)
 }
 
+/// Whether `carrier` is one of the document's own carriers (its walk ended, complete or not).
+fn has_carrier(schemas: &Schemas<'_>, carrier: &CarrierPointer) -> bool {
+    schemas
+        .index
+        .status()
+        .carriers
+        .iter()
+        .any(|status| match status {
+            ClassificationCarrierStatus::Complete(own) => own == carrier,
+            ClassificationCarrierStatus::Failed(failure) => &failure.carrier == carrier,
+        })
+}
+
+/// The level of a value that reaches a location without a carrier of its own (`state`, the output of a `forEach`, a
+/// `while`, a `database` node, `steps` read whole, a path this reading cannot follow): it may hold anything the run has
+/// seen, so it is the strictest level of every carrier of the document, never less than `pii` (the level of a location
+/// no schema classifies); `secret` when any carrier's walk did not complete, since what it did not walk cannot be
+/// proved not to be secret (batch 4 reviews of 2026-11-25, security Major 2 and its suspicion).
+fn document_floor(schemas: &Schemas<'_>) -> Level {
+    if schemas
+        .index
+        .status()
+        .carriers
+        .iter()
+        .any(|status| matches!(status, ClassificationCarrierStatus::Failed(_)))
+    {
+        return Level::Secret;
+    }
+    schemas
+        .index
+        .locations()
+        .iter()
+        .map(|location| location.level)
+        .fold(Level::UNMARKED, Level::stricter)
+}
+
 /// The level of one place a key reads, everything under it included. `input` is the input carrier; `steps.<id>.output`
-/// (and `steps.<id>`, whose only field it is) the output carrier of a root node; every node's output for `steps` as a
-/// whole. `state` has no carrier (016 refuses an annotation there), so it is `pii`, the level of a location no schema
-/// classifies, as is anything else this reading cannot follow.
+/// (and `steps.<id>`, whose only field it is) the output carrier of a root node that has one. Anything else, and a
+/// carrier that is not the document's, takes the document's floor ([`document_floor`]); a carrier whose walk did not
+/// complete is `secret`.
 fn read_level(schemas: &Schemas<'_>, read: &Read) -> Level {
     let (carrier, path) = match (read.variable.as_str(), read.path.as_slice()) {
         ("input", path) => (CarrierPointer::Input, path),
         ("steps", [ReadStep::Field(node), rest @ ..]) => {
             let Ok(node) = NodeId::parse(node) else {
-                return Level::UNMARKED;
+                return document_floor(schemas);
             };
             match rest {
                 [] => (CarrierPointer::NodeOutput(node), rest),
                 [ReadStep::Field(output), rest @ ..] if output == "output" => {
                     (CarrierPointer::NodeOutput(node), rest)
                 }
-                _ => return Level::UNMARKED,
+                _ => return document_floor(schemas),
             }
         }
-        ("steps", []) => {
-            return schemas
-                .index
-                .locations()
-                .iter()
-                .filter(|location| matches!(location.carrier, CarrierPointer::NodeOutput(_)))
-                .map(|location| location.level)
-                .fold(Level::UNMARKED, Level::stricter);
-        }
-        _ => return Level::UNMARKED,
+        _ => return document_floor(schemas),
     };
+    if !has_carrier(schemas, &carrier) {
+        return document_floor(schemas);
+    }
+    if schemas.index.status().failure(&carrier).is_some() {
+        return Level::Secret;
+    }
     let Some(location) = path
         .iter()
         .map(|step| match step {
@@ -166,7 +202,8 @@ fn read_level(schemas: &Schemas<'_>, read: &Read) -> Level {
         })
         .collect::<Option<Vec<_>>>()
     else {
-        return Level::UNMARKED;
+        // a position this build cannot address
+        return document_floor(schemas);
     };
     schemas
         .level_at(&carrier, &location)

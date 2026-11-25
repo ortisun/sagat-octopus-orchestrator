@@ -1772,6 +1772,21 @@ taken after `git grep D022-04` on every `origin/*` branch.
   a_key_over_personal_data_is_published_with_a_warning_and_one_over_internal_data_is_not,
   every_invalid_fixture_is_refused_with_its_code_before_a_version_exists}` and
   `integration_flow_control_step_policies::rest::a_key_label_is_shown_to_whoever_may_disclose_every_location_the_key_reads`.
+  8. *Revised 2026-11-25 (batch 4 reviews, security Major 2 and the security suspicion).* A value carried through a node
+     without an output carrier of its own (a `forEach` returning a body activity's `secret` output, a `while` or
+     `repeatUntil` carry, a `database` node's rows, `state`) was graded `pii` and published with a warning: the level
+     of "no schema says", not of what can reach it. Options: (a) follow each value's flow through expressions (a data
+     flow analysis this build does not have); (b) refuse every key over such a location (refuses keys over `state`,
+     which are legitimate); (c) the strictest level of every carrier of the document, never less than `pii`. Chosen
+     (c): what reaches a carrierless location came from the run's input or from some node's output, so it is at most
+     the strictest of them; it is exact for a document without a `secret` field and safe otherwise. `steps` read whole
+     folds every carrier, the bodies' included. A carrier whose walk did not complete (`CLASSIFICATION_TOO_COMPLEX`,
+     `CLASSIFICATION_UNRESOLVED_REF`, `CLASSIFICATION_UNSUPPORTED_KEYWORD`) cannot be proved not to hold a secret, so a
+     key over it, and the floor of every carrierless location, is `secret`: publication refuses such a schema already,
+     and a version restored with it hides the key's label from everyone. Evidence:
+     `ir::{a_key_over_a_node_without_its_own_carrier_takes_the_strictest_level_of_the_document,
+     a_key_over_a_carrier_whose_walk_did_not_complete_counts_as_secret}` and the revised cases of
+     `a_key_has_the_strictest_level_of_the_locations_it_reads_over_the_016_carriers` (`state`, a missing node, `steps`).
 
 - **D022-086 — The key listings' group view, read by a walk of the groups, not from counter rows (2026-11-25; task
   T022-111; FR-022-022, FR-022-057; decisions D022-061, D022-068 item 6; gap G022-014; departs from T022-111's "per-group

@@ -735,10 +735,18 @@ Added after the review of 2026-11-13:
   (`FLOW_CONTROL_KEY_PII`). A key label MUST be shown only to a caller who may disclose, at its level, every
   location the key reads; to others the label is `null`. A label stays an online oracle for those who may
   see it (G1185).
+  *Amended 2026-11-25 (decision D022-085 item 8; batch 4 reviews, security Major 2):* a location without a carrier
+  of its own (`state`, `steps` read whole, the output of a node whose kind has no output carrier, such as a
+  `database`, `forEach` or `while` node, or a path that cannot be followed) MUST take the strictest level of every
+  carrier of the document, never less than `pii`; a carrier whose classification walk did not complete MUST count as
+  `secret`.
 - **FR-022-058 — Namespace counters**: `queued_runs` and live keys per namespace MUST be usage rows of
   ADR-0050 slot 8b, sharded like `run_active_counts` (16 slots), changed in the transaction that changes
   what they count and maintained by `SECURITY DEFINER` triggers; the runtime role reads them only. A run
   waiting for both gates counts once in `queued_runs` and once in each key's waiters.
+  *Amended 2026-11-25 (decision D022-084; batch 3 reviews, correctness minor 7):* only `queued_runs` is kept in the
+  counter rows; the live keys are counted from the semaphore and window rows of the digest versions in force, since a
+  live-key counter would be locked between the key locks of one decision (D022-084 item 2).
 - **FR-022-059 — The one admission port is enforced**: The gate MUST run inside `PgRunStore::create`
   (`crates/infra-postgres/src/execution.rs`), the one function that inserts a new run; the only other
   inserts into `runs`, the continue-as-new successors of `crates/infra-postgres/src/chain_progress.rs`,
