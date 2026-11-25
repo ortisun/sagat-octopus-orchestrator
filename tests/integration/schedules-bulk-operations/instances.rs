@@ -1071,9 +1071,11 @@ async fn the_epoch_is_one_row_and_the_history_and_the_epoch_cannot_be_rewritten_
 
 // --- privileges -----------------------------------------------------------------------------------------------------
 
-const PROCESS_FUNCTIONS: [&str; 3] = [
+const PROCESS_FUNCTIONS: [&str; 4] = [
     "instance_register(uuid, bytea, text, text, text, text[])",
     "instance_heartbeat(uuid, bytea)",
+    // the beat of the follow-up of pull request #260 (feature 006, decision D006-098); the one above stays for older builds
+    "instance_heartbeat_reporting_change(uuid, bytea)",
     "instance_deregister(uuid, bytea)",
 ];
 const OPERATOR_FUNCTIONS: [&str; 3] = [
@@ -1083,7 +1085,7 @@ const OPERATOR_FUNCTIONS: [&str; 3] = [
 ];
 
 #[tokio::test]
-async fn the_runtime_role_reads_the_registry_and_calls_three_functions_only() {
+async fn the_runtime_role_reads_the_registry_and_calls_its_four_functions_only() {
     let r = registry().await;
     let owner = &r.db.pool;
     // the instances are readable column by column, all but the hash of the token (a column privilege is not a table one)
@@ -1217,14 +1219,15 @@ async fn the_functions_are_security_definer_with_a_fixed_search_path_and_the_liv
           WHERE proname IN ('instance_register', 'instance_heartbeat', 'instance_deregister', \
                             'platform_requirement_lock', 'platform_requirement_activate', 'platform_requirement_remove', \
                             'lease_withdrawal_required', 'platform_capability_census', \
-                            'platform_requirements_replay_floor_guard')",
+                            'platform_requirements_replay_floor_guard', 'instance_heartbeat_reporting_change')",
     )
     .fetch_all(&r.db.pool)
     .await
     .expect("functions");
     // the two of the lease withdrawal too (feature 006, D006-093: security round 4 Nit 3), and the replay-floor guard,
-    // rewritten in place to run as its owner (Task 006-070, decision D006-095)
-    assert_eq!(rows.len(), 9);
+    // rewritten in place to run as its owner (Task 006-070, decision D006-095), and the beat that reports a change in
+    // progress (Task 006-072, decision D006-098)
+    assert_eq!(rows.len(), 10);
     for row in &rows {
         let name: String = row.get("proname");
         assert!(row.get::<bool, _>("prosecdef"), "{name} runs as its owner");
@@ -1241,6 +1244,7 @@ async fn the_functions_are_security_definer_with_a_fixed_search_path_and_the_liv
         if matches!(
             name.as_str(),
             "instance_heartbeat"
+                | "instance_heartbeat_reporting_change"
                 | "platform_requirement_activate"
                 | "instance_register"
                 | "platform_capability_census"
@@ -1252,6 +1256,135 @@ async fn the_functions_are_security_definer_with_a_fixed_search_path_and_the_liv
             );
         }
     }
+}
+
+// --- the beat that never waits for the epoch (feature 006, decision D006-098) ----------------------------------------------
+
+/// The beat, through the store a process uses, while an operator's transaction holds the epoch row `FOR UPDATE`: it does
+/// not wait (the call is bounded by the test, not by a timeout of its own), it refreshes `last_seen`, and it reports a change
+/// in progress with the committed epoch. Once the transaction ends, a beat reports none and the epoch it moved to.
+#[tokio::test]
+async fn a_beat_held_behind_an_owner_transaction_reports_the_change_and_does_not_wait() {
+    let r = registry().await;
+    let instance = r.serving(ENGINE, &[SCHEDULES]).await;
+    let before = r.epoch_now().await;
+    r.age(instance, 40).await;
+    let mut operator = r.db.pool.begin().await.expect("a transaction");
+    sqlx::query_scalar::<_, i64>("SELECT platform_requirement_lock()")
+        .fetch_one(&mut *operator)
+        .await
+        .expect("the epoch, FOR UPDATE");
+    let beat = crate::support::bounded::within(
+        "a beat while the epoch is held",
+        Duration::from_secs(10),
+        r.process.heartbeat(instance, &TEST_TOKEN),
+    )
+    .await
+    .expect("the beat succeeds");
+    assert!(beat.found);
+    assert!(
+        beat.change_in_progress,
+        "the owner transaction holds the epoch"
+    );
+    assert_eq!(beat.epoch, before, "the committed epoch, read plainly");
+    let live: bool = sqlx::query_scalar(
+        "SELECT last_seen > clock_timestamp() - interval '30 seconds' FROM serving_instances WHERE instance_id = $1",
+    )
+    .bind(instance)
+    .fetch_one(&r.db.pool)
+    .await
+    .expect("last_seen");
+    assert!(live, "the beat counts for liveness");
+    // the operator records a requirement and commits: the next beat reports no change, and the new epoch
+    let recorded: String = sqlx::query_scalar(
+        "SELECT out_outcome FROM platform_requirement_activate('lease-withdrawal-v1', ARRAY['CONTROL_PLANE'], 'ops')",
+    )
+    .fetch_one(&mut *operator)
+    .await
+    .expect("activate");
+    assert_eq!(recorded, "RECORDED");
+    operator.commit().await.expect("committed");
+    let beat = r
+        .process
+        .heartbeat(instance, &TEST_TOKEN)
+        .await
+        .expect("beat");
+    assert!(!beat.change_in_progress);
+    assert_eq!(beat.epoch, before + 1);
+}
+
+/// Decision D006-098: a beat that holds the epoch row `FOR SHARE` (its transaction held open here, as a slow beat would be)
+/// makes an activation wait; the activation's census, a statement after its lock under READ COMMITTED, then sees the beat's
+/// `last_seen` and refuses the process, which was not live before the beat and lacks the capability.
+#[tokio::test]
+async fn an_activation_waits_for_a_beat_that_holds_the_epoch_and_sees_its_last_seen() {
+    let r = registry().await;
+    let instance = r.serving(ENGINE, &[SCHEDULES]).await;
+    r.age(instance, 40).await;
+    let mut beat = r.process_pool.begin().await.expect("a transaction");
+    let change: bool = sqlx::query_scalar(
+        "SELECT out_change_in_progress FROM instance_heartbeat_reporting_change($1, $2)",
+    )
+    .bind(instance)
+    .bind(TEST_TOKEN.as_bytes().as_slice())
+    .fetch_one(&mut *beat)
+    .await
+    .expect("the beat, not committed");
+    assert!(!change, "nothing holds the epoch");
+    let operator = r.operator.clone();
+    let activation = tokio::spawn(async move {
+        let actor = Subject::operator();
+        operator
+            .activate(
+                Activation {
+                    capability: Capability::LeaseWithdrawalV1,
+                    kinds: &[ENGINE],
+                    actor: &actor,
+                },
+                nothing,
+            )
+            .await
+    });
+    r.wait_for_lock_waiters(1, "the activation waits for the beat's share lock")
+        .await;
+    beat.commit().await.expect("the beat commits");
+    match activation.await.expect("the activation ended") {
+        Err(ChangeRefused::InstancesLackCapability { missing, examples }) => {
+            assert_eq!(missing, 1);
+            assert_eq!(examples, vec![instance]);
+        }
+        other => panic!("the census must see the beat: {other:?}"),
+    }
+}
+
+/// The beat raises when the epoch row is missing (decision D006-098): it never answers an epoch it did not read. The row is
+/// deleted with the guards off, in a transaction that is rolled back.
+#[tokio::test]
+async fn the_beat_raises_when_the_epoch_row_is_missing() {
+    let r = registry().await;
+    let instance = r.serving(ENGINE, &[SCHEDULES]).await;
+    let mut tx = r.db.pool.begin().await.expect("a transaction");
+    sqlx::query("ALTER TABLE platform_requirement_epoch DISABLE TRIGGER ALL")
+        .execute(&mut *tx)
+        .await
+        .expect("guards off in this transaction");
+    sqlx::query("DELETE FROM platform_requirement_epoch")
+        .execute(&mut *tx)
+        .await
+        .expect("no epoch row");
+    let refused = sqlx::query("SELECT * FROM instance_heartbeat_reporting_change($1, $2)")
+        .bind(instance)
+        .bind(TEST_TOKEN.as_bytes().as_slice())
+        .fetch_one(&mut *tx)
+        .await
+        .expect_err("the beat raises");
+    assert!(
+        refused
+            .to_string()
+            .contains("the requirement epoch row is missing"),
+        "{refused}"
+    );
+    tx.rollback().await.expect("rolled back");
 }
 
 // --- the closed values, in code, in the schema and in the data model ----------------------------------------------------

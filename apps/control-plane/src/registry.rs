@@ -16,7 +16,8 @@ use std::time::{Duration, Instant};
 use sagat_application::entropy::{Entropy, SystemEntropy};
 use sagat_application::error::StoreError;
 use sagat_application::instances::{
-    Capability, Counting, InstanceKind, InstanceStore, LIVENESS, Member, RegistrySettings,
+    Capability, Counting, InstanceKind, InstanceStore, LIVENESS, Member,
+    REGISTRY_STATEMENT_TIMEOUT, RegistrySettings,
 };
 use sagat_infra_postgres::{PgInstanceStore, PgPool, PoolConfig};
 use tokio::sync::watch;
@@ -30,7 +31,8 @@ pub const BINARY_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// What this control plane process will honour: the code of the binary narrowed by its configuration, read once, so the
 /// list is true for the life of the process. Design 043: `run-input-validation-v1` only in `enforce` mode
 /// (`SAGAT_RUN_INPUT_VALIDATION`, FR-043-013), so that a replica in `report` is refused once the operator requires it.
-/// Feature 006: `lease-withdrawal-v1` always, since every configuration of this build replays `step.lease_withdrawn`.
+/// Feature 006: `lease-withdrawal-v1` always, since every configuration of this build replays `step.lease_withdrawn`, and
+/// `lease-withdrawal-v2` always, since it replays every cause of it and its membership applies the silent-registry rule.
 #[must_use]
 pub fn capabilities(
     run_input_validation: sagat_application::run_input::InputValidationMode,
@@ -41,6 +43,8 @@ pub fn capabilities(
     }
     // feature 006 (decision D006-004): every control plane of this build replays `step.lease_withdrawn`
     listed.push(Capability::LeaseWithdrawalV1);
+    // the follow-up of pull request #260 (decisions D006-096 and D006-098)
+    listed.push(Capability::LeaseWithdrawalV2);
     listed
 }
 
@@ -50,13 +54,14 @@ pub fn new_instance_id() -> Uuid {
     Uuid::new_v4()
 }
 
-/// The pool of the registry: one connection, of its own, with the statement timeout of the process. It costs the database
-/// one connection per process and spares the heartbeat the contention of the pool that serves requests.
+/// The pool of the registry: one connection, of its own, with the statement timeout of the process, at most
+/// [`REGISTRY_STATEMENT_TIMEOUT`] (5 s: a slow beat cannot use up the window of capability calls, decision D006-098). It
+/// costs the database one connection per process and spares the heartbeat the contention of the pool that serves requests.
 #[must_use]
 pub fn registry_pool_config(db: &DatabaseConfig) -> PoolConfig {
     let mut config = PoolConfig::new(db.url.clone());
     config.max_connections = 1;
-    config.statement_timeout = db.statement_timeout;
+    config.statement_timeout = db.statement_timeout.min(REGISTRY_STATEMENT_TIMEOUT);
     config
 }
 
@@ -254,8 +259,12 @@ pub async fn run_heartbeat<S: InstanceStore>(
 ) {
     let mut silence = Silence::since(Instant::now());
     while !*stop.borrow() {
+        // while capability calls are refused for a silent registry, ask again at the pace of a closed gate (decision D006-098)
         let pause = jittered(
-            pace(member.gate().is_open(), settings.heartbeat),
+            pace(
+                member.gate().serves_capability_calls(Instant::now()),
+                settings.heartbeat,
+            ),
             &SystemEntropy,
         );
         tokio::select! {
@@ -415,12 +424,13 @@ mod tests {
             capabilities(InputValidationMode::Enforce),
             vec![
                 Capability::RunInputValidationV1,
-                Capability::LeaseWithdrawalV1
+                Capability::LeaseWithdrawalV1,
+                Capability::LeaseWithdrawalV2
             ]
         );
         assert_eq!(
             capabilities(InputValidationMode::Report),
-            vec![Capability::LeaseWithdrawalV1]
+            vec![Capability::LeaseWithdrawalV1, Capability::LeaseWithdrawalV2]
         );
     }
 
@@ -436,8 +446,17 @@ mod tests {
             config.max_connections, 1,
             "not a share of the pool of the process"
         );
-        assert_eq!(config.statement_timeout, Duration::from_secs(7));
+        assert_eq!(
+            config.statement_timeout,
+            Duration::from_secs(5),
+            "lowered to at most 5 s, never refused (decision D006-098)"
+        );
         assert_eq!(config.url, db.url);
+        let shorter = registry_pool_config(&DatabaseConfig {
+            statement_timeout: Duration::from_secs(2),
+            ..db
+        });
+        assert_eq!(shorter.statement_timeout, Duration::from_secs(2));
     }
 
     /// What a registry that counts beats and fails on demand remembers.
@@ -496,6 +515,7 @@ mod tests {
                 found: true,
                 epoch: 0,
                 live: vec![],
+                change_in_progress: false,
             })
         }
         async fn deregister(

@@ -309,9 +309,11 @@ impl InstanceStore for PgInstanceStore {
         instance: Uuid,
         token: &InstanceToken,
     ) -> Result<Heartbeat, StoreError> {
+        // the beat that never waits for the epoch and says when an operator's change holds it (feature 006, decision
+        // D006-098; migration `20270211000300_instance_heartbeat_reporting_change`)
         let row = sqlx::query(
-            "SELECT out_found, out_epoch, out_live_kinds, out_live_counts \
-             FROM instance_heartbeat($1, $2)",
+            "SELECT out_found, out_epoch, out_live_kinds, out_live_counts, out_change_in_progress \
+             FROM instance_heartbeat_reporting_change($1, $2)",
         )
         .bind(instance)
         .bind(token.as_bytes().as_slice())
@@ -323,6 +325,7 @@ impl InstanceStore for PgInstanceStore {
         Ok(Heartbeat {
             found: col(&row, "out_found")?,
             epoch: col(&row, "out_epoch")?,
+            change_in_progress: col(&row, "out_change_in_progress")?,
             live: kinds
                 .into_iter()
                 .zip(counts)

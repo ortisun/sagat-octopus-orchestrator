@@ -865,6 +865,66 @@ Task 006-073 on `feature/delivery-acknowledgement` and cut as a pull request of 
   secret step whose cancellation was requested could then fail past the fence with a code a handler may have raised before
   1.8); deciding the hand-back's verdict before the fence (the verdict needs the requirement's lock, which the scan's
   transaction must not hold across the provider's input and output).
+- **D006-098 — An engine whose registry is silent serves no capability call** (Task 006-072; request (7) of D006-059; the
+  amendment of ADR-0082 decision 5, recorded in its Amendments section and in section 3 of `docs/runbooks/instance-registry.md`).
+  - **The beat.** The migration `20270211000300_instance_heartbeat_reporting_change` adds
+    `instance_heartbeat_reporting_change(p_instance uuid, p_token bytea)`, a function of its own name (the two-argument
+    `instance_heartbeat` keeps its contract for older binaries, and no call is ambiguous). It does what `instance_heartbeat`
+    does, then takes the epoch row `FOR SHARE SKIP LOCKED` and returns that locked read's epoch with
+    `out_change_in_progress = false`; only when an owner transaction holds the row does it read the committed epoch plainly
+    and return `true`. It raises when the row is missing. It takes the epoch after the process's own row and the day rule,
+    so the share lock is held only for the counts and the commit, and it never waits for it, so it adds no wait to the lock
+    order of the registry. `EXECUTE` is revoked from `PUBLIC` and granted to the runtime role; it runs as its owner with the
+    fixed search path. Both kinds call it (their membership is the shared `Member`). Under the share lock an activation
+    waits for the beat, and its census, a statement after its lock under READ COMMITTED, sees the beat's `last_seen`, so it
+    refuses an engine that lacks the capability.
+  - **The decision.** The gate keeps the start of the last registration or beat that succeeded with no change in progress and
+    whose decision under its epoch succeeded (the requirements read again when the epoch moved). Capability calls are served
+    while the gate is open and that start is at most `CAPABILITY_WINDOW` = 25 s old (`LIVENESS` less 5 s). A beat that
+    reports a change in progress is a successful beat for liveness, readiness and the closing rule, applies an epoch that
+    moved (closing the gate when the process lacks what was recorded), keeps the current decision only while it is inside its
+    window and never renews it, so a lapsed one waits for a beat with no change in progress; it is counted in
+    `instance_heartbeats_change_in_progress_total{kind}`. A gate no registry decides (`ServingGate::opened`, a process or
+    a test without a registry) is not bounded. The derivation: a census counts a process live when its `last_seen` is
+    within 30 s, and `last_seen` is written after the beat's start, so a process the census cannot see stopped serving
+    capability calls at least 5 s before; the 5 s cover the clocks of the process and of the database and the time from the
+    second check to the answer.
+  - **The refusal.** `ResolveSecrets`, `ResolveDatabase`, `ReadBlob` and `WriteBlob`, the lease-token calls other than
+    `Heartbeat`, `CompleteStep` and `FailStep` (`AcknowledgeTasks` does not exist before 1.8), are refused `UNAVAILABLE` with
+    the envelope reason `REGISTRY_SILENT` and `retry-after-ms` 1000, counted in
+    `worker_capability_calls_refused_total{method, reason="REGISTRY_SILENT"}`. The gate is checked when the call arrives and
+    again before the first byte of an answer that hands data out (after the secrets or the database credential are
+    resolved and before the answer is built; at the first item of a blob download) and before the store's write of an
+    upload starts. A resolution refused at the second check was audited as resolved: the trail records a resolution whose
+    values did not leave, the safe direction. While the window has lapsed the heartbeat tries every second
+    (`RETRY_WHILE_CLOSED`), as for a closed gate, so the calls come back within about a second of the registry answering.
+  - **The connection.** The registry's pool carries the process's statement timeout, at most 5 s
+    (`REGISTRY_STATEMENT_TIMEOUT`); a longer setting is lowered, not refused. With a beat every 12 s at most, each bounded to
+    5 s, a healthy process renews its decision well inside the 25 s.
+  - **The capability.** Every control plane and engine of this build lists `lease-withdrawal-v2` from this task on (D006-096).
+  Tested, each red first: the gate's window at its edges and the beat that reports a change (unit tests of
+  `crates/application/src/instances.rs`); `a_beat_held_behind_an_owner_transaction_reports_the_change_and_does_not_wait`,
+  `an_activation_waits_for_a_beat_that_holds_the_epoch_and_sees_its_last_seen` and the privilege tests
+  (`integration_schedules_bulk_operations`); `a_silent_engine_serves_no_capability_call_and_keeps_heartbeats_and_reports`
+  (`contract_grpc_durable_execution`). Weighed: closing the whole gate at 25 s (stops reports and heartbeats too, so a
+  short silence would fail leases whose work is done; the requests asked for capability calls only); measuring from the end
+  of the beat (a beat that waited would count from a moment after the database last saw the process); a fallback that
+  serves while a change is in progress (the open owner transaction is exactly the activation that may forbid the call);
+  checking only on arrival (a call admitted just before the window ends could hand out a secret after it).
+- **G006-034 — The writer of `NOT_ACKNOWLEDGED` reads `lease-withdrawal-v2` under the lock its removal waits for in the
+  build of 1.8.** This build writes no such withdrawal, so it has no reader of the requirement under a share lock; the guard
+  of D006-096 is the half that is here. Closed by the task of the delivery acknowledgement build that writes the cause.
+- **G006-035 — A host below 1.8 does not repeat a `REGISTRY_SILENT` refusal.** `sdks/SPEC.md` §5 asks the repetition of 1.8
+  hosts; an older host turns the refusal into the handler's error, so an attempt that resolves a secret, a database or a
+  blob in the window from 25 s of silence fails retryably where it was served before. The window adds 5 s to what ADR-0082
+  decision 5 already closed at 30 s for a failure that is not a lost connection, and a lost connection leaves no database to
+  resolve from. Closed when every host of the fleet is of 1.8 or later; no SDK change is part of this follow-up.
+- **G006-036 — No alert on `worker_capability_calls_refused_total` or `instance_heartbeats_change_in_progress_total`.** The
+  silence that causes them already raises `SagatInstanceRegistrySilent` after a minute; a change left open shows on the
+  second counter only. To be added with the alerts of the delivery acknowledgement build.
+- **G006-037 — The rest of request (1) of D006-059 is behaviour of protocol 1.8.** The expiry of an acknowledged lease and the
+  lifted expiry of a lease whose mark counts read the acknowledgement marks, which this build does not write. Closed by the
+  tasks of the delivery acknowledgement build that write them.
 
 ## Delivery acknowledgement (2026-11-20, Decision 006-040 to Decision 006-066, Gap 006-040 to Gap 006-048, Owner question 006-002)
 

@@ -50,4 +50,16 @@ Bad: the operator needs the owner credentials to activate (a runbook step, as fo
 
 - **2026-11-08 (ADR-0083).** Decision 2's rule that the feature's step "reads, does not lock" is narrowed for the step of the cron-trigger handover, which takes the table lock of `workflow_triggers` (bounded at two seconds) and the handover row, for the reason and with the safety argument given in ADR-0083. It stands for every other step.
 - **2026-11-08, a gap (G2022 of feature 018).** The alert rule test of this ADR, `infra/observability/tests/instance_registry_test.yaml`, exists and passes locally with `promtool test rules`, but the CI step of `.github/workflows/ci.yml` that runs `promtool test rules` lists only `batch_stalled_test.yaml`, so CI does not run it. The line to add after `/tests/batch_stalled_test.yaml` is ` /tests/instance_registry_test.yaml /tests/trigger_schedules_test.yaml`; the workflow is changed with the next change of it.
-
+- **2026-11-24, decision 5 for capability calls (ADR-0099, request (7) of Decision 006-059 of feature 006; Decision 006-098).** An
+  engine whose last successful beat with no change in progress (or registration) started more than 25 seconds ago (the liveness
+  window less 5 seconds) answers every lease-token call but `Heartbeat`, `CompleteStep` and `FailStep` (and, from protocol 1.8,
+  `AcknowledgeTasks`) with `UNAVAILABLE`, the reason `REGISTRY_SILENT` and a retry hint, until a beat and the gate's decision under
+  the epoch it returned have both succeeded; the gate is checked again before the first byte of an answer that hands data out and
+  before the write of a call that writes. The beat is the new function `instance_heartbeat_reporting_change`, which takes the epoch
+  row `FOR SHARE SKIP LOCKED` and, when an owner transaction holds it, reads it plainly and reports a change in progress: such a beat
+  is a successful beat for liveness, readiness and the rest of this decision, applies an epoch that moved, and never renews the
+  capability decision. The registry's connection carries a statement timeout of at most 5 seconds. Everything else in decision 5
+  stands: a lost connection still leaves the gate open for every other call, and any other failure past the liveness window still
+  closes it. Enforced by the gate tests of `crates/application/src/instances.rs`, the beat and activation tests of
+  `tests/integration/schedules-bulk-operations/instances.rs` and `a_silent_engine_serves_no_capability_call_and_keeps_heartbeats_and_reports`
+  of `tests/contract/durable-execution/grpc/lease_withdrawal.rs`.

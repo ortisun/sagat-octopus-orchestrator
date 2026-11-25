@@ -152,7 +152,11 @@ async fn a_control_plane_registers_before_it_serves_and_its_row_is_gone_when_it_
     // plane of this build lists `lease-withdrawal-v1`
     assert_eq!(
         capabilities,
-        vec!["lease-withdrawal-v1", "run-input-validation-v1"],
+        vec![
+            "lease-withdrawal-v1",
+            "lease-withdrawal-v2",
+            "run-input-validation-v1"
+        ],
         "{capabilities:?}"
     );
     assert_eq!(
@@ -381,6 +385,7 @@ async fn an_engine_registers_before_its_first_pass_with_the_capabilities_of_its_
         row.get::<Vec<String>, _>("capabilities"),
         vec![
             "lease-withdrawal-v1",
+            "lease-withdrawal-v2",
             "run-input-validation-v1",
             "schedules-v1"
         ],
@@ -627,7 +632,11 @@ async fn an_engine_lists_schedules_v1_only_when_it_runs_the_schedule_pass_and_an
         .expect("registered");
     assert_eq!(
         capabilities,
-        vec!["lease-withdrawal-v1", "run-input-validation-v1"],
+        vec![
+            "lease-withdrawal-v1",
+            "lease-withdrawal-v2",
+            "run-input-validation-v1"
+        ],
         "{capabilities:?}"
     );
     let refused = r
@@ -657,6 +666,7 @@ async fn an_engine_lists_schedules_v1_only_when_it_runs_the_schedule_pass_and_an
         capabilities,
         vec![
             "lease-withdrawal-v1",
+            "lease-withdrawal-v2",
             "run-input-validation-v1",
             "schedules-v1"
         ]
@@ -705,8 +715,8 @@ async fn the_run_input_requirement_is_refused_while_an_engine_reports_and_closes
         .expect("registered");
     assert_eq!(
         capabilities,
-        vec!["lease-withdrawal-v1"],
-        "an engine in report mode does not list it (feature 006: it lists lease-withdrawal-v1 always): {capabilities:?}"
+        vec!["lease-withdrawal-v1", "lease-withdrawal-v2"],
+        "an engine in report mode does not list it (feature 006: it lists lease-withdrawal-v1 and lease-withdrawal-v2 always): {capabilities:?}"
     );
     let refused = r
         .require(

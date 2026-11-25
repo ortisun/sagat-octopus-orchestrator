@@ -1196,3 +1196,111 @@ async fn a_hand_back_of_a_run_whose_cancellation_was_requested_is_withdrawn() {
         replays(&p, &run).await;
     }
 }
+
+/// A member's gate, open, whose last decision under its epoch started `ago` before now.
+fn gate_decided(ago: Duration) -> Arc<ServingGate> {
+    let gate = ServingGate::closed();
+    gate.decided_by_the_registry();
+    gate.open(1);
+    let now = std::time::Instant::now();
+    gate.decided_at(now.checked_sub(ago).unwrap_or(now));
+    Arc::new(gate)
+}
+
+/// Request (7) of decision D006-059 (Task 006-072, decision D006-098; the amendment of ADR-0082 decision 5): an engine whose
+/// last beat decided under its epoch started more than 25 s ago serves no capability call (`ResolveSecrets`,
+/// `ResolveDatabase`, `ReadBlob`, `WriteBlob`): each is `UNAVAILABLE` with `REGISTRY_SILENT` and a retry hint, while
+/// `Heartbeat` and the reports are served. A beat that decides again serves them again.
+#[tokio::test]
+async fn a_silent_engine_serves_no_capability_call_and_keeps_heartbeats_and_reports() {
+    let gate = gate_decided(Duration::from_secs(26));
+    let mut options = Options::default();
+    options.worker.idle_retry = Duration::from_millis(50);
+    options.serving_gate = Some(Arc::clone(&gate));
+    options.blobs = Some(sagat_application::blobs::BlobLimits {
+        max_bytes: 1024 * 1024,
+        max_pending: 8,
+        upload_ttl: Duration::from_secs(3600),
+        abandoned_after: Duration::from_secs(3600),
+    });
+    let p = platform_with(options).await;
+    let workflow = p.publish("silent", &one_attempt("silent")).await;
+    let run = p.start(&workflow, &json!({})).await;
+    let mut worker = stream_worker(&p, "first").await;
+    let lease = worker.one_task().await;
+    let silent = |status: &tonic::Status, call: &str| {
+        assert_eq!(
+            status.code(),
+            tonic::Code::Unavailable,
+            "{call}: {status:?}"
+        );
+        assert_eq!(
+            machine_code(status),
+            "REGISTRY_SILENT",
+            "{call}: {status:?}"
+        );
+        assert_eq!(
+            status
+                .metadata()
+                .get("retry-after-ms")
+                .and_then(|value| value.to_str().ok()),
+            Some("1000"),
+            "{call}: a retry hint"
+        );
+    };
+    let refused = worker
+        .resolve_secrets(&lease)
+        .await
+        .expect_err("no secret is handed out");
+    silent(&refused, "ResolveSecrets");
+    let request = worker.req(Worker::resolve_secrets_message(&lease));
+    let refused = worker
+        .client
+        .resolve_database(request)
+        .await
+        .expect_err("no credential is handed out");
+    silent(&refused, "ResolveDatabase");
+    let header = sagat_api_grpc::pb::WriteBlobHeader {
+        content_type: "application/json".into(),
+        ..sagat_api_grpc::pb::WriteBlobHeader::default()
+    };
+    let refused = worker
+        .write_blob(&lease, header.clone(), b"{}", 2)
+        .await
+        .expect_err("nothing is stored");
+    silent(&refused, "WriteBlob");
+    let refused = worker
+        .read_blob(&lease, &Uuid::now_v7().to_string())
+        .await
+        .expect_err("nothing is read");
+    silent(&refused, "ReadBlob");
+    // heartbeats and reports keep flowing
+    worker
+        .client
+        .heartbeat(worker.req(worker.heartbeat_message(&lease)))
+        .await
+        .expect("the heartbeat is served");
+
+    // a beat decided under its epoch: the calls are served again
+    gate.decided_at(std::time::Instant::now());
+    assert!(
+        worker
+            .resolve_secrets(&lease)
+            .await
+            .expect("served again")
+            .is_empty()
+    );
+    let stored = worker
+        .write_blob(&lease, header, b"{}", 2)
+        .await
+        .expect("stored");
+    worker
+        .read_blob(&lease, &stored.blob_id)
+        .await
+        .expect("read");
+    worker
+        .complete(&lease, &json!({"ok": true}))
+        .await
+        .expect("the report is served");
+    assert_eq!(p.status(&run).await, "SUCCEEDED");
+}

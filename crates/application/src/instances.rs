@@ -36,6 +36,10 @@
 //!   activation, since an activation refuses while a live process lacks the capability.
 //! - The last successful beat is kept in the gate; readiness fails when it is older than the liveness window, whatever
 //!   the gate says.
+//! - Capability calls stop sooner (feature 006, decision D006-098; the amendment of ADR-0082 decision 5): an engine serves
+//!   them only while the last registration or beat that succeeded with no change in progress, and whose decision under its
+//!   epoch succeeded, started at most [`CAPABILITY_WINDOW`] ago. A beat that finds an operator's change in progress (the
+//!   epoch row held) is a successful beat for everything else, applies an epoch that moved, and never renews that decision.
 
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
@@ -52,6 +56,17 @@ pub const HEARTBEAT: Duration = Duration::from_secs(10);
 /// A process is live when it was seen within this long, on the database's clock. The value is the database's
 /// (the functions of migration `20270113000000_instance_registry` hold it); a test keeps the two equal.
 pub const LIVENESS: Duration = Duration::from_secs(30);
+
+/// How long after the start of its last beat decided under its epoch a process serves capability calls: the liveness
+/// window less 5 s (feature 006, decision D006-098). A census counts a process live when the database saw it within
+/// [`LIVENESS`], and the database sees a beat after it started, so a process an activation cannot see stopped serving them
+/// at least 5 s before.
+pub const CAPABILITY_WINDOW: Duration = Duration::from_secs(25);
+const _: () = assert!(CAPABILITY_WINDOW.as_secs() + 5 == LIVENESS.as_secs());
+
+/// The longest statement of the registry's own connection (decision D006-098): a slow beat cannot use the capability window
+/// up. A longer setting of the process is lowered to it, never refused.
+pub const REGISTRY_STATEMENT_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// The settings of a process's membership. Not read from the environment: the liveness window the activation judges by
 /// is the database's, so a setting that moved the heartbeat would only be a way to make a healthy process look dead.
@@ -76,6 +91,9 @@ pub const REASON_CAPABILITY_MISSING: &str = "BINARY_CAPABILITY_MISSING";
 /// The closed reasons of the refusal counter besides the one above.
 pub const REASON_REGISTRY_FULL: &str = "REGISTRY_FULL";
 pub const REASON_REGISTRY_UNREACHABLE: &str = "REGISTRY_UNREACHABLE";
+/// The reason a capability call is refused with while the registry has been silent past [`CAPABILITY_WINDOW`] (feature 006,
+/// decision D006-098): `UNAVAILABLE`, with a retry hint.
+pub const REASON_REGISTRY_SILENT: &str = "REGISTRY_SILENT";
 
 /// The kind of process an instance is. A closed set that only grows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -219,6 +237,9 @@ pub struct Heartbeat {
     pub epoch: i64,
     /// The live instances by kind token, as stored (a kind this build does not know is carried, not an error).
     pub live: Vec<(String, u32)>,
+    /// Whether an operator's transaction held the epoch row, so the epoch is the committed one read without its lock
+    /// (feature 006, decision D006-098): the beat counts for liveness, and does not renew the capability decision.
+    pub change_in_progress: bool,
 }
 
 /// A recorded requirement, as stored: the tokens are read as written, so a capability or a kind added by a newer
@@ -264,8 +285,8 @@ pub trait InstanceStore: Send + Sync {
     ) -> impl Future<Output = Result<Registered, StoreError>> + Send;
 
     /// Sets `last_seen` of the instance's own row (the one the token opens) to the database's clock, deletes the rows
-    /// silent for a day, and reports the epoch and the live counts. A row the token does not open is a row not found:
-    /// it is not touched.
+    /// silent for a day, and reports the epoch, the live counts and whether an operator's change held the epoch (it is
+    /// never waited for). A row the token does not open is a row not found: it is not touched.
     fn heartbeat(
         &self,
         instance: Uuid,
@@ -299,6 +320,19 @@ pub struct ServingGate {
     /// The requirements as last read, with their epoch, for a member that keeps them ([`Member::keeping_requirements`]);
     /// `None` before the first read. A feature asks it whether it may act ([`Self::requires`]).
     kept: Mutex<Option<Requirements>>,
+    /// What decides capability calls (decision D006-098).
+    capability: Mutex<CapabilityDecision>,
+}
+
+/// What decides whether a process serves capability calls (decision D006-098).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CapabilityDecision {
+    /// No registry decides them: the process or the test has no registry.
+    Unbounded,
+    /// A registry decides them and has not yet: none is served.
+    Undecided,
+    /// The start of the last registration or beat decided under its epoch.
+    DecidedAt(Instant),
 }
 
 impl Default for ServingGate {
@@ -318,6 +352,7 @@ impl ServingGate {
             created: Instant::now(),
             last_heard: Mutex::new(None),
             kept: Mutex::new(None),
+            capability: Mutex::new(CapabilityDecision::Unbounded),
         }
     }
 
@@ -432,6 +467,67 @@ impl ServingGate {
     pub fn beat_is_stale(&self, now: Instant) -> bool {
         self.silent_for(now) > LIVENESS
     }
+
+    /// Capability calls are decided by the registry from now on: none is served until a registration or a beat decides
+    /// them ([`Self::decided_at`]). A member's gate is; a gate no registry decides serves them while it is open.
+    pub fn decided_by_the_registry(&self) {
+        *self
+            .capability
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = CapabilityDecision::Undecided;
+    }
+
+    /// A registration or a beat that started at `started` succeeded with no change in progress, and the gate was decided
+    /// under the epoch it returned. Never moves the decision back.
+    pub fn decided_at(&self, started: Instant) {
+        let mut decision = self
+            .capability
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        *decision = match *decision {
+            CapabilityDecision::DecidedAt(before) if before > started => {
+                CapabilityDecision::DecidedAt(before)
+            }
+            _ => CapabilityDecision::DecidedAt(started),
+        };
+    }
+
+    /// The start of the last registration or beat decided under its epoch, if a registry decides capability calls and has.
+    #[must_use]
+    pub fn capability_decided_at(&self) -> Option<Instant> {
+        match *self
+            .capability
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+        {
+            CapabilityDecision::DecidedAt(at) => Some(at),
+            CapabilityDecision::Unbounded | CapabilityDecision::Undecided => None,
+        }
+    }
+
+    /// Whether the process serves capability calls at `now` (decision D006-098): the gate is open, and the registry decides
+    /// none or decided them within [`CAPABILITY_WINDOW`].
+    #[must_use]
+    pub fn serves_capability_calls(&self, now: Instant) -> bool {
+        self.is_open() && !self.capability_window_lapsed(now)
+    }
+
+    /// Whether a registry decides capability calls and its decision is older than [`CAPABILITY_WINDOW`] at `now` (or was
+    /// never made): the reason `REGISTRY_SILENT`.
+    #[must_use]
+    pub fn capability_window_lapsed(&self, now: Instant) -> bool {
+        match *self
+            .capability
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+        {
+            CapabilityDecision::Unbounded => false,
+            CapabilityDecision::Undecided => true,
+            CapabilityDecision::DecidedAt(at) => {
+                now.saturating_duration_since(at) > CAPABILITY_WINDOW
+            }
+        }
+    }
 }
 
 /// Why a process may not serve. A closed set of reasons, which is also the closed label of the refusal counter.
@@ -539,6 +635,8 @@ impl<S: InstanceStore> Member<S> {
         let mut capabilities = capabilities.to_vec();
         capabilities.sort();
         capabilities.dedup();
+        let gate = ServingGate::closed();
+        gate.decided_by_the_registry();
         Self {
             store,
             instance,
@@ -547,7 +645,7 @@ impl<S: InstanceStore> Member<S> {
             binary_version: binary_version.into(),
             capabilities,
             scheduler_owner,
-            gate: Arc::new(ServingGate::closed()),
+            gate: Arc::new(gate),
             keeps_requirements: false,
         }
     }
@@ -598,13 +696,17 @@ impl<S: InstanceStore> Member<S> {
     /// # Errors
     /// [`Refusal`] when the platform requires what this process lacks, or the registry cannot be asked.
     pub async fn register(&self) -> Result<Counting, Refusal> {
+        let started = Instant::now();
         let outcome = match self.register_once().await {
             Ok(Registered::Serving { epoch }) => {
                 self.gate.open(epoch);
+                // decided under the epoch lock the registration took
+                self.gate.decided_at(started);
                 Ok(Counting::Counted)
             }
             Ok(Registered::Full { epoch }) => {
                 self.gate.open(epoch);
+                self.gate.decided_at(started);
                 count_refusal(REASON_REGISTRY_FULL);
                 Ok(Counting::NotCounted)
             }
@@ -651,10 +753,16 @@ impl<S: InstanceStore> Member<S> {
     /// The store could not be asked. The gate is left as it was: see the fail mode in the module documentation, and
     /// [`Self::fail_closed`] for the one case the caller closes it.
     pub async fn beat(&self) -> Result<Beat, StoreError> {
+        // the capability decision is measured from the start of the beat, before the database saw it (decision D006-098)
+        let started = Instant::now();
         let heartbeat = self.store.heartbeat(self.instance, &self.token).await?;
         self.gate.heard();
         self.publish_live(&heartbeat);
-        let beat = self.decide(&heartbeat).await;
+        if heartbeat.change_in_progress {
+            metrics::counter!("instance_heartbeats_change_in_progress_total", "kind" => self.kind.as_str())
+                .increment(1);
+        }
+        let beat = self.decide(&heartbeat, started).await;
         if beat.is_ok() {
             self.refresh_kept().await;
         }
@@ -662,11 +770,21 @@ impl<S: InstanceStore> Member<S> {
         beat
     }
 
-    async fn decide(&self, heartbeat: &Heartbeat) -> Result<Beat, StoreError> {
+    /// Decides the gate after `heartbeat`, which started at `started`. A beat with no change in progress renews the
+    /// capability decision once the gate is decided under its epoch; one with a change in progress applies an epoch that
+    /// moved and leaves the decision as it was, so a lapsed one stays lapsed (decision D006-098).
+    async fn decide(&self, heartbeat: &Heartbeat, started: Instant) -> Result<Beat, StoreError> {
+        let renew = |gate: &ServingGate| {
+            if !heartbeat.change_in_progress {
+                gate.decided_at(started);
+            }
+        };
         if !heartbeat.found {
+            // registered again under the epoch lock: a decision whatever the beat found
             return match self.register_once().await? {
                 Registered::Serving { epoch } => {
                     self.reopen(epoch);
+                    self.gate.decided_at(started);
                     Ok(Beat::Serving)
                 }
                 Registered::CapabilityMissing { epoch, missing } => {
@@ -678,11 +796,13 @@ impl<S: InstanceStore> Member<S> {
                 Registered::Full { epoch } => {
                     count_refusal(REASON_REGISTRY_FULL);
                     self.reopen(epoch);
+                    self.gate.decided_at(started);
                     Ok(Beat::Serving)
                 }
             };
         }
         if heartbeat.epoch == self.gate.epoch() {
+            renew(&self.gate);
             return Ok(self.current());
         }
         let requirements = self.store.requirements().await?;
@@ -692,9 +812,11 @@ impl<S: InstanceStore> Member<S> {
         let missing = missing_for(self.kind, &self.capabilities, &requirements);
         if missing.is_empty() {
             self.reopen(requirements.epoch);
+            renew(&self.gate);
             Ok(Beat::Serving)
         } else {
             self.closing(requirements.epoch, missing);
+            renew(&self.gate);
             Ok(Beat::Refused)
         }
     }
@@ -1069,7 +1191,110 @@ mod tests {
             found,
             epoch,
             live: vec![("EXECUTION_ENGINE".to_owned(), 2)],
+            change_in_progress: false,
         })
+    }
+
+    /// A beat that found an operator's change holding the epoch row: `epoch` is the committed one.
+    fn beat_during_a_change(epoch: i64) -> Result<Heartbeat, StoreError> {
+        Ok(Heartbeat {
+            change_in_progress: true,
+            ..beat(true, epoch)?
+        })
+    }
+
+    /// Decision D006-098 at its edges: a gate no registry decides serves capability calls while it is open; a member's gate
+    /// serves none before its registration, serves them for 25 s after the start of the last decision, and not a
+    /// millisecond more; a decision never moves back.
+    #[test]
+    fn capability_calls_are_served_within_the_window_of_the_last_decision() {
+        let now = Instant::now();
+        let free = ServingGate::opened();
+        assert!(free.serves_capability_calls(now + Duration::from_secs(3600)));
+        let gate = ServingGate::closed();
+        gate.decided_by_the_registry();
+        gate.open(1);
+        assert!(!gate.serves_capability_calls(now), "nothing decided yet");
+        assert!(gate.capability_window_lapsed(now));
+        gate.decided_at(now);
+        assert!(gate.serves_capability_calls(now + CAPABILITY_WINDOW));
+        assert!(!gate.serves_capability_calls(now + CAPABILITY_WINDOW + Duration::from_millis(1)));
+        assert!(gate.capability_window_lapsed(now + CAPABILITY_WINDOW + Duration::from_millis(1)));
+        if let Some(earlier) = now.checked_sub(Duration::from_secs(1)) {
+            gate.decided_at(earlier);
+        }
+        assert_eq!(gate.capability_decided_at(), Some(now), "never moved back");
+        gate.close(2, vec!["lease-withdrawal-v2".to_owned()]);
+        assert!(
+            !gate.serves_capability_calls(now),
+            "a closed gate serves nothing"
+        );
+        assert_eq!(CAPABILITY_WINDOW, LIVENESS - Duration::from_secs(5));
+    }
+
+    /// Decision D006-098: a member's gate is decided by its registration; a beat with no change in progress renews the
+    /// decision (from the beat's start), a beat during an operator's change does not, though it succeeds, keeps the gate
+    /// open and applies an epoch that moved (closing it when the process lacks what was recorded).
+    #[tokio::test]
+    async fn a_beat_that_reports_a_change_keeps_the_decision_and_never_renews_it() {
+        let fake = Arc::new(Fake::default());
+        fake.registers
+            .lock()
+            .expect("lock")
+            .push_back(Ok(Registered::Serving { epoch: 3 }));
+        let member = member(&fake, &[Capability::LeaseWithdrawalV1]);
+        let before = Instant::now();
+        assert!(
+            !member.gate().serves_capability_calls(before),
+            "nothing before the registration"
+        );
+        member.register().await.expect("registered");
+        let registered = member.gate().capability_decided_at().expect("decided");
+        assert!(registered >= before);
+        assert!(member.gate().serves_capability_calls(Instant::now()));
+
+        fake.heartbeats
+            .lock()
+            .expect("lock")
+            .push_back(beat_during_a_change(3));
+        assert_eq!(member.beat().await, Ok(Beat::Serving), "a successful beat");
+        assert_eq!(
+            member.gate().capability_decided_at(),
+            Some(registered),
+            "a change in progress does not renew the decision"
+        );
+        assert!(member.gate().is_open());
+        let lapsed = registered + CAPABILITY_WINDOW + Duration::from_millis(1);
+        assert!(
+            !member.gate().serves_capability_calls(lapsed),
+            "kept only inside its window"
+        );
+
+        fake.heartbeats
+            .lock()
+            .expect("lock")
+            .push_back(beat(true, 3));
+        let started = Instant::now();
+        assert_eq!(member.beat().await, Ok(Beat::Serving));
+        let renewed = member.gate().capability_decided_at().expect("decided");
+        assert!(
+            renewed >= started && renewed > registered,
+            "renewed from the beat's start"
+        );
+
+        // an activation committed during a beat that saw a change in progress: the moved epoch is applied, the decision
+        // is not renewed
+        fake.heartbeats
+            .lock()
+            .expect("lock")
+            .push_back(beat_during_a_change(4));
+        fake.reads.lock().expect("lock").push_back(Ok(requirements(
+            4,
+            vec![requirement("lease-withdrawal-v2", &["EXECUTION_ENGINE"])],
+        )));
+        assert_eq!(member.beat().await, Ok(Beat::Refused));
+        assert!(!member.gate().is_open(), "it lacks what was recorded");
+        assert_eq!(member.gate().capability_decided_at(), Some(renewed));
     }
 
     const BOTH: [InstanceKind; 2] = [InstanceKind::ControlPlane, InstanceKind::ExecutionEngine];
@@ -1553,6 +1778,7 @@ mod tests {
                 .lock()
                 .expect("lock")
                 .push_back(Ok(Heartbeat {
+                    change_in_progress: false,
                     found: true,
                     epoch: 1,
                     live: vec![("EXECUTION_ENGINE".to_owned(), 3), ("RUNNER".to_owned(), 9)],

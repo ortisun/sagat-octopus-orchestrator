@@ -165,6 +165,45 @@ impl<St, S, C, E, R> AdmissionProvider for WorkerGrpc<St, S, C, E, R> {
 
 const STREAM_WINDOW: Duration = Duration::from_secs(5);
 
+/// Where a [`CheckedFirst`] stream is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FirstItem {
+    Unchecked,
+    Passing,
+    Refused,
+}
+
+/// A stream of a capability call that asks the gate again before its first item (feature 006, decision D006-098): a call
+/// admitted at the edge of the capability window hands nothing out after it.
+struct CheckedFirst<S> {
+    inner: S,
+    admission: Admission,
+    method: &'static str,
+    state: FirstItem,
+}
+
+impl<S, T> Stream for CheckedFirst<S>
+where
+    S: Stream<Item = Result<T, Status>> + Unpin,
+{
+    type Item = Result<T, Status>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        match self.state {
+            FirstItem::Refused => return Poll::Ready(None),
+            FirstItem::Unchecked => {
+                if let Some(refused) = self.admission.capability_refusal(self.method) {
+                    self.state = FirstItem::Refused;
+                    return Poll::Ready(Some(Err(refused)));
+                }
+                self.state = FirstItem::Passing;
+            }
+            FirstItem::Passing => {}
+        }
+        Pin::new(&mut self.inner).poll_next(cx)
+    }
+}
+
 /// How long before the hard end of a receive window the producer stops claiming and queues its terminal hint. It is
 /// 5% of the window: measured under CPU load the hint took up to 15 ms to reach a reader that was keeping up, and the
 /// 10 ms this was before was lost twice in 34 runs of the contract test under load.
@@ -981,6 +1020,10 @@ where
     ) -> Result<Response<pb::ResolveSecretsResponse>, Status> {
         let trace = trace_of(&request);
         observe(&self.core, "ResolveSecrets", trace, async {
+            // a silent registry serves no capability call (decision D006-098)
+            if let Some(refused) = self.admission.capability_refusal("ResolveSecrets") {
+                return Err(refused);
+            }
             let auth = self.authenticate(&request).await?;
             let message = request.get_ref();
             let mut attempt = Attempt::parse(
@@ -1005,6 +1048,10 @@ where
                 )
                 .await
                 .map_err(app)?;
+            // asked again before the first byte of the values (decision D006-098)
+            if let Some(refused) = self.admission.capability_refusal("ResolveSecrets") {
+                return Err(refused);
+            }
             Ok(pb::ResolveSecretsResponse {
                 secrets: resolved
                     .iter()
@@ -1025,6 +1072,9 @@ where
     ) -> Result<Response<pb::ResolvedDatabase>, Status> {
         let trace = trace_of(&request);
         observe(&self.core, "ResolveDatabase", trace, async {
+            if let Some(refused) = self.admission.capability_refusal("ResolveDatabase") {
+                return Err(refused);
+            }
             let auth = self.authenticate(&request).await?;
             let m = request.get_ref();
             let mut attempt = Attempt::parse(
@@ -1049,6 +1099,9 @@ where
                 )
                 .await
                 .map_err(app)?;
+            if let Some(refused) = self.admission.capability_refusal("ResolveDatabase") {
+                return Err(refused);
+            }
             crate::database::response(resolved).map_err(app)
         })
         .await
@@ -1206,6 +1259,9 @@ where
         let trace = trace_of(&request);
         observe(&self.core, "WriteBlob", trace, async {
             let started = Instant::now();
+            if let Some(refused) = self.admission.capability_refusal("WriteBlob") {
+                return Err(refused);
+            }
             let auth = self.authenticate(&request).await?;
             let blobs = self.blob_access()?;
             let _place = blobs.permit()?;
@@ -1300,6 +1356,10 @@ where
             } else {
                 scope.ok_or_else(|| app(AppError::Internal))?
             };
+            // asked again before the store's write starts (decision D006-098)
+            if let Some(refused) = self.admission.capability_refusal("WriteBlob") {
+                return Err(refused);
+            }
             let storing = blobs
                 .service
                 .write(scope, principal.subject().as_str(), write, body);
@@ -1343,6 +1403,9 @@ where
     ) -> Result<Response<Self::ReadBlobStream>, Status> {
         let trace = trace_of(&request);
         observe(&self.core, "ReadBlob", trace, async {
+            if let Some(refused) = self.admission.capability_refusal("ReadBlob") {
+                return Err(refused);
+            }
             let auth = self.authenticate(&request).await?;
             let blobs = self.blob_access()?;
             let place = blobs.permit()?;
@@ -1397,8 +1460,13 @@ where
                 sha256: descriptor.digest().to_hex(),
                 content_type: descriptor.content_type().as_str().to_owned(),
             };
-            let stream: Self::ReadBlobStream =
-                Box::pin(Download::new(header, body, place, auth, blobs.timeout));
+            // the gate is asked again before the download's first item (decision D006-098)
+            let stream: Self::ReadBlobStream = Box::pin(CheckedFirst {
+                inner: Download::new(header, body, place, auth, blobs.timeout),
+                admission: self.admission.clone(),
+                method: "ReadBlob",
+                state: FirstItem::Unchecked,
+            });
             Ok(stream)
         })
         .await
