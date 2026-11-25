@@ -2030,6 +2030,23 @@ taken after `git grep D022-04` on every `origin/*` branch.
   pass of the default scheduler (nothing granted, `skipped` counted, the window's hint unchanged), then a pass one key at a
   time refuses `w2` for its permit and rests the window at the holder's grant plus one hour.
 
+- **D022-100 — A key listing's cursor expires fifteen minutes after its page (2026-11-25; batch 5 security suspicion 3;
+  decisions D022-059, D022-086 item 5).** Delegate (OD-2026-11-24-4). A cursor of a group view carries the sums of a
+  group read in part; replayed later, it adds those old sums to rows read now, and a page boundary kept for long tells
+  whether a group still crosses 200 keys. Options: (a) every cursor of both key listings, in both views, carries the
+  instant its page sealed it, and is refused fifteen minutes later; (b) only a cursor that carries a group read in part
+  expires (a key view's cursor replayed later only resumes a later snapshot, but two rules for one opaque value are
+  harder to state and to test); (c) no partial sums, each page reading its groups whole (the 200-row bound of a page,
+  D022-086 item 5, is lost). Chosen (a). The instant is the serving process's clock in whole seconds, inside the sealed
+  text, so a caller can neither read nor move it; a cursor older than fifteen minutes is a `400` with a message of its
+  own, "the cursor has expired: read the listing again without a cursor", decided with the other refusals of a cursor
+  before admission (it tells nothing of the namespace: the cursor was sealed for it). A cursor whose instant is ahead of
+  the reader's clock (replicas' clocks differ by far less than the lifetime) is read. The longest position sealed grows
+  by the instant's at most 21 bytes and stays under `MAX_CURSOR_PLAIN_BYTES`. Tests:
+  `flow_control_keys::tests::a_cursor_expires_fifteen_minutes_after_its_page` and
+  `rest::an_expired_cursor_is_refused_with_its_own_message` (a real page's cursor sealed again sixteen minutes earlier
+  with the deployment's ring is refused, and fourteen minutes earlier is read).
+
 ### Decisions of the Studio slice (2026-11-24)
 
 - **D022-150 — How the Studio authors, shows and lists the gates (tasks T022-054, T022-055, T022-056, T022-085;

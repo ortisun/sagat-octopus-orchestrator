@@ -1507,3 +1507,91 @@ async fn a_cursor_of_the_other_view_is_refused_with_its_own_message() {
         "{refused}"
     );
 }
+
+/// Batch 5 security suspicion 3 (decision D022-100): a key listing's cursor expires fifteen minutes after its page. A
+/// real page's cursor of both listings and both views, opened and sealed again with the deployment's ring sixteen
+/// minutes earlier, is refused `400` with a message of its own; sealed fourteen minutes earlier, it is read.
+#[tokio::test]
+async fn an_expired_cursor_is_refused_with_its_own_message() {
+    use sagat_application::flow_control_keys::{KeyListing, KeyPosition};
+    use sagat_application::keyed_digest::KeyRing;
+    use sagat_domain::identity::Role;
+    let (api, namespace, acme) = api().await;
+    member(&api, acme, "vera-viewer", Role::Viewer).await;
+    let accounts = publish(&api, "rest-expired-a", serial_start("rest-expired-a", 1))
+        .await
+        .expect("published");
+    let mut regions = serial_start("rest-expired-r", 1);
+    regions["concurrency"]["group"] = json!("regions");
+    let regions = publish(&api, "rest-expired-r", regions)
+        .await
+        .expect("published");
+    let mut rated = serial_start("rest-expired-rate", 1);
+    rated
+        .as_object_mut()
+        .expect("a document")
+        .remove("concurrency");
+    rated["rateLimit"] =
+        json!({"group": "providers", "key": "input.accountId", "limit": 1, "per": "hour"});
+    let rated = publish(&api, "rest-expired-rate", rated)
+        .await
+        .expect("published");
+    for (workflow, account) in [
+        (&accounts, CANARY),
+        (&accounts, "acct-expired"),
+        (&regions, CANARY),
+        (&rated, CANARY),
+        (&rated, "acct-expired"),
+    ] {
+        start(&api, workflow, account).await;
+    }
+    let ring = KeyRing::parse(crate::support::flow_control::RING).expect("the ring");
+    let namespace_id: sagat_domain::identity::NamespaceId = namespace.parse().expect("an id");
+    for (gate, path, subject) in [
+        (KeyListing::Concurrency, "concurrency-keys", "alice"),
+        (KeyListing::Concurrency, "concurrency-keys", "vera-viewer"),
+        (KeyListing::RateLimit, "rate-limit-keys", "alice"),
+    ] {
+        let listing = format!("/namespaces/{namespace}/{path}");
+        let (status, page) = read_as(&api, &format!("{listing}?limit=1"), subject).await;
+        assert_eq!(status, StatusCode::OK, "{path} as {subject}: {page}");
+        let cursor = page["nextCursor"].as_str().expect("a next page");
+        let opened = KeyPosition::open_either(cursor, gate, &ring, acme, namespace_id)
+            .expect("a cursor of the deployment's ring");
+        let aged = |minutes: i64| {
+            opened
+                .position
+                .seal(
+                    gate.of(opened.view),
+                    &ring,
+                    1,
+                    acme,
+                    namespace_id,
+                    opened.sealed_at - time::Duration::minutes(minutes),
+                )
+                .expect("sealed again")
+        };
+        let (status, read) = read_as(
+            &api,
+            &format!("{listing}?limit=1&cursor={}", aged(14)),
+            subject,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{path} as {subject}: {read}");
+        let (status, refused) = read_as(
+            &api,
+            &format!("{listing}?limit=1&cursor={}", aged(16)),
+            subject,
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::BAD_REQUEST,
+            "{path} as {subject}: {refused}"
+        );
+        assert!(
+            refused.to_string().contains("the cursor has expired"),
+            "{path} as {subject}: {refused}"
+        );
+    }
+}

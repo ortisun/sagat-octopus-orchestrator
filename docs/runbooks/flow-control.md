@@ -505,7 +505,7 @@ page of groups reads at most 200 key rows; a group with more keys is summed acro
 one snapshot (its counts may move between pages), and its row is on the page that reads its last key, so a page can
 hold no group and still have a `nextCursor`: follow the cursor. A cursor is sealed for its namespace, its
 kind of listing and the digest key version in force: an altered, foreign, other group's or forcibly retired one is a
-`400`; an invalid group is a `422`; a page that cannot be read in 2 s is a `503` (retry it). Another tenant's namespace
+`400`, and so is one more than fifteen minutes old (read the listing again without a cursor, D022-100); an invalid group is a `422`; a page that cannot be read in 2 s is a `503` (retry it). Another tenant's namespace
 is a `404`.
 
 One run: `GET /runs/{runId}` shows `concurrency` (`state` `HOLDING` or `WAITING`, `pool`, `group`, `keyLabel`, `since`,

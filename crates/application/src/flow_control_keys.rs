@@ -447,11 +447,27 @@ impl KeyListing {
     }
 }
 
-/// The position a cursor names, and the view of the listing that wrote it (decision D022-086).
+/// How long a key listing's cursor is read after its page sealed it (decision D022-100): a cursor of a group view carries
+/// the sums of a group read in part, which a later page must not add to rows read much later, and a page boundary kept
+/// for long would tell whether a group still crosses the bound of a page.
+pub const KEY_CURSOR_LIFETIME: time::Duration = time::Duration::minutes(15);
+
+/// The position a cursor names, the view of the listing that wrote it (decision D022-086), and the instant its page
+/// sealed it, in whole seconds (decision D022-100).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ListingPosition {
     pub view: KeyView,
     pub position: KeyPosition,
+    pub sealed_at: OffsetDateTime,
+}
+
+impl ListingPosition {
+    /// Whether the cursor has outlived [`KEY_CURSOR_LIFETIME`] at `now` (decision D022-100). A cursor sealed ahead of
+    /// `now` (another process whose clock is ahead) is read: processes' clocks differ by far less than the lifetime.
+    #[must_use]
+    pub fn expired(&self, now: OffsetDateTime) -> bool {
+        now - self.sealed_at > KEY_CURSOR_LIFETIME
+    }
 }
 
 /// The place of a key in the listing's order: oldest wait first (a key nobody waits for last), then pool, scope, group
@@ -490,8 +506,9 @@ impl std::fmt::Debug for KeyPosition {
 
 impl KeyPosition {
     /// The cursor a caller is given: the position sealed for this namespace of this tenant under `version`, the digest
-    /// key version the database has active. `None` when this process does not hold it (it cannot then hand out a
-    /// cursor; the service refuses the page, D022-059).
+    /// key version the database has active, with `sealed_at`, the instant of its page, in whole seconds (decision
+    /// D022-100). `None` when this process does not hold that version (it cannot then hand out a cursor; the service
+    /// refuses the page, D022-059).
     #[must_use]
     pub fn seal(
         &self,
@@ -500,11 +517,14 @@ impl KeyPosition {
         version: u16,
         tenant: TenantId,
         namespace: NamespaceId,
+        sealed_at: OffsetDateTime,
     ) -> Option<String> {
-        ring.seal_cursor(version, tenant, namespace, self.encode(listing).as_bytes())
+        let plain = format!("{}.{}", sealed_at.unix_timestamp(), self.encode(listing));
+        ring.seal_cursor(version, tenant, namespace, plain.as_bytes())
     }
 
-    /// The position a cursor [`Self::seal`] wrote for this namespace of this tenant; `None` for anything else.
+    /// The position a cursor [`Self::seal`] wrote for this namespace of this tenant, whatever its age; `None` for
+    /// anything else.
     #[must_use]
     pub fn open(
         text: &str,
@@ -513,12 +533,13 @@ impl KeyPosition {
         tenant: TenantId,
         namespace: NamespaceId,
     ) -> Option<Self> {
-        let plain = ring.open_cursor(tenant, namespace, text)?;
-        Self::decode(std::str::from_utf8(&plain).ok()?, listing)
+        let (_, plain) = Self::unseal(text, ring, tenant, namespace)?;
+        Self::decode(&plain, listing)
     }
 
     /// The position a cursor of either view of the listing of `gate` names (its key view's or its group view's), with
-    /// that view; `None` for anything else.
+    /// that view and the instant its page sealed it; `None` for anything else. Whether it has expired is
+    /// [`ListingPosition::expired`].
     #[must_use]
     pub fn open_either(
         text: &str,
@@ -527,14 +548,33 @@ impl KeyPosition {
         tenant: TenantId,
         namespace: NamespaceId,
     ) -> Option<ListingPosition> {
-        let plain = ring.open_cursor(tenant, namespace, text)?;
-        let plain = std::str::from_utf8(&plain).ok()?;
+        let (sealed_at, plain) = Self::unseal(text, ring, tenant, namespace)?;
         [KeyView::Keys, KeyView::Groups]
             .into_iter()
             .find_map(|view| {
-                Self::decode(plain, gate.of(view))
-                    .map(|position| ListingPosition { view, position })
+                Self::decode(&plain, gate.of(view)).map(|position| ListingPosition {
+                    view,
+                    position,
+                    sealed_at,
+                })
             })
+    }
+
+    /// The instant and the position's text a cursor sealed for this namespace of this tenant holds.
+    fn unseal(
+        text: &str,
+        ring: &KeyRing,
+        tenant: TenantId,
+        namespace: NamespaceId,
+    ) -> Option<(OffsetDateTime, String)> {
+        let plain = String::from_utf8(ring.open_cursor(tenant, namespace, text)?).ok()?;
+        let (sealed_at, position) = plain.split_once('.')?;
+        // whole seconds since the epoch, digits only (no sign)
+        if !sealed_at.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        let sealed_at = OffsetDateTime::from_unix_timestamp(sealed_at.parse().ok()?).ok()?;
+        Some((sealed_at, position.to_owned()))
     }
 
     /// The place of a group in the group view's order (pool, scope and name; the digest all zero).
@@ -788,6 +828,74 @@ mod tests {
         }
     }
 
+    /// The instant the tests' cursors are sealed at, 2026-11-25 12:00 UTC.
+    fn page_instant() -> OffsetDateTime {
+        OffsetDateTime::from_unix_timestamp(1_795_608_000).expect("an instant")
+    }
+
+    /// Decision D022-100 (batch 5 security suspicion 3): a cursor carries the instant of its page, sealed, and expires
+    /// fifteen minutes after it; one sealed ahead of the reader's clock is read; an instant that is not whole seconds
+    /// written by [`KeyPosition::seal`] is no cursor.
+    #[test]
+    fn a_cursor_expires_fifteen_minutes_after_its_page() {
+        let ring = KeyRing::parse(RING).expect("ring");
+        let (tenant, namespace) = (TenantId::generate(), NamespaceId::generate());
+        let p = position(Some(1_763_640_000_123_456), "payments.eu");
+        let sealed_at = page_instant() + time::Duration::milliseconds(700);
+        let cursor = p
+            .seal(
+                KeyListing::Concurrency,
+                &ring,
+                1,
+                tenant,
+                namespace,
+                sealed_at,
+            )
+            .expect("sealed");
+        let opened =
+            KeyPosition::open_either(&cursor, KeyListing::Concurrency, &ring, tenant, namespace)
+                .expect("opened");
+        assert_eq!(
+            (opened.view, &opened.position, opened.sealed_at),
+            (KeyView::Keys, &p, page_instant()),
+            "the page's instant, in whole seconds"
+        );
+        for (now, expired) in [
+            (page_instant() - time::Duration::minutes(1), false),
+            (page_instant(), false),
+            (page_instant() + KEY_CURSOR_LIFETIME, false),
+            (
+                page_instant() + KEY_CURSOR_LIFETIME + time::Duration::seconds(1),
+                true,
+            ),
+            (page_instant() + time::Duration::hours(1), true),
+        ] {
+            assert_eq!(opened.expired(now), expired, "{now}");
+        }
+        // the instant is inside the sealed text: a forged one is no cursor
+        for instant in ["-1", "+1", "", "1.5"] {
+            let forged = ring
+                .seal_cursor(
+                    1,
+                    tenant,
+                    namespace,
+                    format!("{instant}.{}", p.encode(KeyListing::Concurrency)).as_bytes(),
+                )
+                .expect("sealed");
+            assert_eq!(
+                KeyPosition::open_either(
+                    &forged,
+                    KeyListing::Concurrency,
+                    &ring,
+                    tenant,
+                    namespace
+                ),
+                None,
+                "{instant:?}"
+            );
+        }
+    }
+
     /// Decision D022-067 item 5 (review of task T022-078, architecture minor 7): a position written for one listing is
     /// refused by the other, both ways.
     #[test]
@@ -987,7 +1095,14 @@ mod tests {
         let (tenant, namespace) = (TenantId::generate(), NamespaceId::generate());
         let p = position(Some(1_763_640_000_123_456), "payments.eu");
         let cursor = p
-            .seal(KeyListing::Concurrency, &ring, 1, tenant, namespace)
+            .seal(
+                KeyListing::Concurrency,
+                &ring,
+                1,
+                tenant,
+                namespace,
+                page_instant(),
+            )
             .expect("sealed");
         assert!(!cursor.contains(&hex(&p.digest)), "{cursor}");
         assert!(!cursor.contains(&hex(&p.digest[..6])), "{cursor}");
@@ -1028,7 +1143,8 @@ mod tests {
                 &KeyRing::default(),
                 1,
                 tenant,
-                namespace
+                namespace,
+                page_instant()
             ),
             None
         );
@@ -1062,7 +1178,14 @@ mod tests {
             p.encode(KeyListing::Concurrency).len() <= crate::keyed_digest::MAX_CURSOR_PLAIN_BYTES
         );
         let cursor = p
-            .seal(KeyListing::Concurrency, &ring, 1, tenant, namespace)
+            .seal(
+                KeyListing::Concurrency,
+                &ring,
+                1,
+                tenant,
+                namespace,
+                page_instant(),
+            )
             .expect("sealed");
         assert_eq!(
             KeyPosition::open(&cursor, KeyListing::Concurrency, &ring, tenant, namespace),
@@ -1086,7 +1209,7 @@ mod tests {
                 longest.encode(listing).len()
             );
             let cursor = longest
-                .seal(listing, &ring, 1, tenant, namespace)
+                .seal(listing, &ring, 1, tenant, namespace, page_instant())
                 .expect("sealed");
             assert_eq!(
                 KeyPosition::open(&cursor, listing, &ring, tenant, namespace),

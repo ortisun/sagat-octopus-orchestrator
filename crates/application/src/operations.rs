@@ -858,7 +858,14 @@ impl<S: AlertReader + FlowControlKeyReader, C: Clock> OperationsService<S, C> {
             .flow_control_key_ring()
             .zip(version)
             .and_then(|(ring, version)| {
-                last.seal(listing, ring, version, principal.tenant_id(), namespace)
+                last.seal(
+                    listing,
+                    ring,
+                    version,
+                    principal.tenant_id(),
+                    namespace,
+                    self.clock.now(),
+                )
             })
             .ok_or(AppError::Unavailable)
     }
@@ -882,6 +889,13 @@ impl<S: AlertReader + FlowControlKeyReader, C: Clock> OperationsService<S, C> {
             principal.tenant_id(),
             namespace,
         )
+    }
+
+    /// Whether a cursor's page sealed it more than [`KEY_CURSOR_LIFETIME`](crate::flow_control_keys::KEY_CURSOR_LIFETIME)
+    /// ago by this process's clock (a `400` with a message of its own, decision D022-100).
+    #[must_use]
+    pub fn key_cursor_expired(&self, position: &ListingPosition) -> bool {
+        position.expired(self.clock.now())
     }
 
     /// Whether the digest key version an opened cursor was sealed under is still in force (active, or retiring with
