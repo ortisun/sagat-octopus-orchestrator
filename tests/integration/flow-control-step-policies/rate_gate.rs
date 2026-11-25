@@ -1241,3 +1241,116 @@ async fn a_raised_ceiling_applies_to_the_buffered_starts_up_to_their_declaration
         w.assert_consistent(run).await;
     }
 }
+
+// ------------------------------------------------------------------------------- no re-authorization at grant (T022-106)
+
+/// Task T022-106 (FR-022-060, decision D022-034): a grant from the buffer does not re-authorize. `carol`, a developer,
+/// starts a run that waits behind a holder for its permit and its slot; she then loses `run:start` (her membership is
+/// demoted to viewer, and a start of hers is refused). Once the holder ends and its slot ages out, the next pass grants
+/// her buffered run both gates all the same, and the run keeps her as its initiator: `runs.started_by`, the actor of its
+/// `run.started` and its one `run.started` audit record; the pass adds no start record of its own.
+#[tokio::test]
+async fn a_grant_from_the_buffer_does_not_reauthorize_and_keeps_the_initiator() {
+    use sagat_application::runs::StartRun;
+    use sagat_domain::identity::{Permission, Principal, Role};
+
+    let w = gated_world().await;
+    let mut doc = rated_start("rate-initiator", 1, "second");
+    doc["concurrency"] = json!({"group": "accounts", "key": "input.accountId", "limit": 1});
+    let workflow = publish(&w, doc).await;
+    let session = w.session(&["act.g"]).await;
+    let holder = w.start(workflow, &json!({"accountId": "acct-1"})).await;
+    let carol = w.member("carol", Role::Developer).await;
+    w.bind_everything(&carol).await;
+    let input = serde_json::to_vec(&json!({"accountId": "acct-1"})).expect("json");
+    let start = |principal: Principal, key: &'static str| {
+        let input = input.clone();
+        let w = &w;
+        async move {
+            w.runs
+                .start(
+                    &principal,
+                    &StartRun {
+                        namespace: "payments",
+                        workflow,
+                        version: None,
+                        input: &input,
+                        correlation_id: None,
+                        deadline: None,
+                        key,
+                    },
+                    &crate::support::engine::ctx(),
+                )
+                .await
+                .map(|record| record.info.run_id)
+        }
+    };
+    let buffered = start(carol.clone(), "initiator-buffered")
+        .await
+        .expect("admitted");
+    assert_eq!(
+        w.journal(buffered).await,
+        ["run.started", "rate_limit.queued", "concurrency.queued"]
+    );
+
+    sqlx::query(
+        "UPDATE memberships SET role = 'viewer' WHERE tenant_id = $1 AND subject = 'carol'",
+    )
+    .bind(w.admin.tenant_id().as_uuid())
+    .execute(&w.db.pool)
+    .await
+    .expect("demoted");
+    let demoted = Principal::new(w.admin.tenant_id(), carol.subject().clone(), Role::Viewer);
+    assert!(
+        matches!(
+            start(demoted, "initiator-refused").await,
+            Err(AppError::Forbidden {
+                permission: Permission::RunStart
+            })
+        ),
+        "carol may no longer start a run"
+    );
+
+    let task = w.one_task(&session).await;
+    assert_eq!(task.run_id, holder);
+    w.complete(&session, &task, &json!({})).await.expect("done");
+    until_past(
+        &w.db.pool,
+        start_slot(&w, holder).await.2.expect("granted") + SECOND_US,
+    )
+    .await;
+    assert_eq!(w.scheduler.tick().await.gates_granted, 1);
+    assert_eq!(
+        start_slot(&w, buffered).await.0,
+        1,
+        "granted from the buffer"
+    );
+    assert_eq!(count(&w, buffered, "concurrency.acquired").await, 1);
+
+    let (started_by, journal_actor): (String, String) = sqlx::query_as(
+        "SELECT r.started_by, e.actor FROM runs r JOIN run_events e ON e.run_id = r.id \
+          WHERE r.id = $1 AND e.event_type = 'run.started'",
+    )
+    .bind(buffered.as_uuid())
+    .fetch_one(&w.db.pool)
+    .await
+    .expect("the run");
+    // the run names its initiator as a subject, the journal as an actor
+    assert_eq!(started_by, carol.subject().as_str());
+    assert_eq!(journal_actor, format!("user:{}", carol.subject().as_str()));
+    let audit: Vec<String> = sqlx::query_scalar(
+        "SELECT actor FROM audit_records WHERE action = 'run.started' AND resource_id = $1",
+    )
+    .bind(buffered.to_string())
+    .fetch_all(&w.db.pool)
+    .await
+    .expect("audit");
+    assert_eq!(
+        audit,
+        [carol.subject().as_str().to_owned()],
+        "one start record, hers"
+    );
+    for run in [holder, buffered] {
+        w.assert_consistent(run).await;
+    }
+}
