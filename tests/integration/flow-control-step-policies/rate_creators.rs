@@ -570,7 +570,12 @@ async fn a_batch_rerun_of_a_rate_limited_run_admits_through_the_key() {
     let holder = w.start(workflow, &json!({"accountId": "acct-1"})).await;
     rerun_the_succeeded_by_a_batch(&w, workflow, 3).await;
     let runs = runs_of(&w, workflow).await;
-    assert_eq!(runs.len(), 3, "the source, the holder and the rerun");
+    assert_eq!(
+        runs.len(),
+        3,
+        "the source, the holder and the rerun: {}",
+        crate::run_creators::batch_state(&w).await
+    );
     assert_eq!(admitted(&w, holder).await, Admitted::Granted);
     assert_eq!(admitted(&w, runs[2]).await, Admitted::Buffered);
 }

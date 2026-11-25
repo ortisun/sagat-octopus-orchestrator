@@ -1985,6 +1985,8 @@ async fn a_second_saturated_key_is_served_at_its_own_limit_and_every_tenant_with
         latest = latest.max(granted_us(&w, holder).await);
     }
     until_past(&w.db.pool, latest + SECOND_US).await;
+    // the keys are due now: a start queued at a full window rests its key to the moved slots' age-out
+    keys_due(&w).await;
     let report = w.scheduler.grant_gates().await;
     assert_eq!(
         report.gates_granted, 3,
@@ -2025,6 +2027,7 @@ async fn a_second_saturated_key_is_served_at_its_own_limit_and_every_tenant_with
         latest = latest.max(granted_us(&w, *holder).await);
     }
     until_past(&w.db.pool, latest + SECOND_US).await;
+    keys_due(&w).await;
     let narrow = scheduler(
         &w,
         SchedulerSettings {

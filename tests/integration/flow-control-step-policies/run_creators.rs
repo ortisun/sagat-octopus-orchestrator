@@ -565,6 +565,28 @@ impl ItemActions for Runs {
     }
 }
 
+/// The batch jobs of the namespace and their items, as `(job state, failure, [(item state, reason, error)])`: what a
+/// failed assertion on a batch rerun shows.
+pub(crate) async fn batch_state(w: &World) -> String {
+    let jobs: Vec<(String, Option<String>)> = sqlx::query_as(
+        "SELECT state, failure_reason FROM batch_jobs WHERE namespace_id = $1 ORDER BY created_at",
+    )
+    .bind(w.namespace.id().as_uuid())
+    .fetch_all(&w.db.pool)
+    .await
+    .expect("jobs");
+    let items: Vec<(String, Option<String>, Option<String>, i16)> = sqlx::query_as(
+        "SELECT i.state, i.reason, i.error_code, i.attempts FROM batch_items i \
+           JOIN batch_jobs j ON j.tenant_id = i.tenant_id AND j.id = i.job_id \
+          WHERE j.namespace_id = $1 ORDER BY i.ordinal",
+    )
+    .bind(w.namespace.id().as_uuid())
+    .fetch_all(&w.db.pool)
+    .await
+    .expect("items");
+    format!("jobs {jobs:?}, items {items:?}")
+}
+
 /// Creates a batch job that reruns the namespace's succeeded runs and steps it until `workflow` has `runs_after` runs (or
 /// two minutes passed).
 pub(crate) async fn rerun_the_succeeded_by_a_batch(
@@ -612,7 +634,11 @@ pub(crate) async fn rerun_the_succeeded_by_a_batch(
         id: job.id,
     };
     let give_up = std::time::Instant::now() + std::time::Duration::from_secs(120);
-    for _ in 0..400 {
+    // bounded by `give_up` only: under a loaded machine the wait for older transactions outlasts any count of steps
+    loop {
+        if std::time::Instant::now() > give_up {
+            break;
+        }
         match executor.step(&due, None).await.expect("a step") {
             Stepped::Acted => {}
             Stepped::Idle | Stepped::Refused(_) | Stepped::Backoff => {
@@ -639,7 +665,12 @@ async fn a_batch_rerun_admits_through_the_key() {
     let holder = w.start(workflow, &json!({"accountId": "acct-1"})).await;
     rerun_the_succeeded_by_a_batch(&w, workflow, 3).await;
     let runs = runs_of(&w, workflow).await;
-    assert_eq!(runs.len(), 3, "the source, the holder and the rerun");
+    assert_eq!(
+        runs.len(),
+        3,
+        "the source, the holder and the rerun: {}",
+        batch_state(&w).await
+    );
     assert_eq!(admitted(&w, holder).await, Admitted::Acquired);
     assert_eq!(admitted(&w, runs[2]).await, Admitted::Queued);
 }
