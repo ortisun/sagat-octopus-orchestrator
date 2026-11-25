@@ -1,9 +1,10 @@
 # ADR-0145: At protocol 1.8, a hand-back the fleet cannot honour lapses
 
-**Status:** Accepted (2026-11-24, delegate, OD-2026-11-24-4)
+**Status:** Accepted (2026-11-24, delegate, OD-2026-11-24-4; revised before its merge by round 16 of the design review, Decision 006-068)
 **Decided by:** agent, delegate (OD-2026-11-24-4), on the coordinator's disposition of Major 1 of the round-15 architecture
 review of the delivery acknowledgement design (`specs/006-sdk-multilanguage/reviews/2026-11-21-delivery-ack/round-15/architecture.md`);
-the reasoning is Decision 006-067 of `specs/006-sdk-multilanguage/research.md`. Reported to the owner afterwards, as
+the reasoning is Decision 006-067 of `specs/006-sdk-multilanguage/research.md`, and Decision 006-068 for the round-16 revision
+(rules 2, 3, 4 and 5; delegate, OD-2026-11-24-4). Reported to the owner afterwards, as
 OD-2026-11-24-4 asks.
 **Refines / supersedes:** **supersedes Architecture decision 0099 decision 9** for one case only: a hand-back of a lease under the
 reserved code, still `LEASED` to it, that the server refuses for a reason of the fleet rather than of the lease (and, with it,
@@ -50,17 +51,28 @@ a capability that was served. That reason argues against a withdrawal, not for a
    `worker_leases_undelivered_total{cause="NOT_STARTED", outcome="lapsed"}`, or `outcome="disabled"` for the switch.
 2. The reasons of the fleet are exactly: `delivery-acknowledgement-v1` not recorded for engines, or the lease claimed before its
    current recording; `lease-withdrawal-v1` not recorded, or `lease-withdrawal-v2` not recorded for both process kinds; the engine's
-   switch off, for a lease whose mark does not count; the lease claimed on another incarnation of the database server
-   (`lease_claim_incarnation` other than the current `pg_postmaster_start_time()`).
+   switch off, for an unmarked lease or a lease whose mark does not count; the lease claimed on another incarnation of the database
+   server (`lease_claim_incarnation` other than the current `pg_postmaster_start_time()`); and a lease that carries no reservation
+   (`lease_hand_back_generation` not its generation, as when an engine of the floor build claimed it) while the holder's stored
+   session minor is 8 or more. For the last, the session row is read, which Architecture decision 0099 decision 9 forbids for a withdrawal because
+   registering again overwrites it; it is safe here because a lapse never withdraws (round 16).
 3. The ordinary retryable failure, with the host's `retryable` flag, MUST remain only for the reasons of the lease: the step
    `RUNNING`, a capability served to the lease (also counted and audited as a protocol violation), and the cap of four withdrawals
    per attempt reached (Architecture decision 0098 decision 7). A hand-back from a session below 1.8, whose code is not reserved, is
-   an ordinary failure as the base decides.
+   an ordinary failure as the base decides. The reasons MUST be judged in this order, the first that holds deciding (round 16): the
+   step no longer held by the lease (its fence misses: the stale answer of any report); the step `RUNNING` under the lease, or a
+   capability served (the ordinary failure; a capability also a violation, Decision 006-053); the reasons of the fleet of rule 2
+   (the lapse, counted `disabled` when the switch is off for the lease, whatever other reason holds with it, as the base's gate
+   reads the switch first, and `lapsed` otherwise); the cap (the ordinary failure).
 4. The expiry is not a reason of the lease: a hand-back under the reservation that lands after the lease's expiry, before the pass
    has ended the lease, MUST be withdrawn while the reservation is honoured and MUST be answered `STALE_ATTEMPT` per rule 1
-   otherwise, whether the lease is marked or not. The pass and such a hand-back are ordered by the step row's lock.
-5. An engine of the floor build is unchanged: it clamps the holder's minor to its own ceiling (Decision 006-059 (3)), so a 1.8
-   hand-back that reaches it is an ordinary failure. This decision MUST NOT be read as a request to that build.
+   otherwise, whether the lease is marked or not. The pass and such a hand-back are ordered by the step row's lock and, for an unmarked lease, by the run or path lock that both
+   take first (round 16).
+5. An engine of the floor build clamps the holder's minor to its own ceiling (Decision 006-059 (3)), so, as built, a 1.8 hand-back
+   that reaches it is an ordinary failure. This decision makes a request of that build (round 16; request (10) of Decision
+   006-059, built by the follow-up of pull request #260, which is not built yet): in `hand_back_verdict`, a session whose stored
+   minor, before the clamp, is 8 or more while the clamped minor is below 8 MUST decide the lapse of rule 1 instead of an ordinary
+   failure; the clamped minor alone still decides a withdrawal, so that build never withdraws a 1.8 hand-back.
 
 ## Considered options
 
@@ -88,8 +100,10 @@ holds its slot until its expiry and the pass; a host's probe after such a stale 
 and does not count the call (`sdks/SPEC.md` §6.2). A failover during a hand-back (Gap 006-047) now ends in that lapse rather than in
 an ordinary failure.
 
-Compatibility with runs in flight: nothing written changes meaning; a lease that lapses keeps today's meaning. In a mixed fleet the
-hand-back that reaches the floor build is still an ordinary failure (rule 5), the residue of a rolling upgrade or a rollback.
+Compatibility with runs in flight: nothing written changes meaning; a lease that lapses keeps today's meaning. In a mixed fleet,
+and after a rollback, a hand-back that reaches the floor build lapses once that build has request (10) (rule 5), and one that
+reaches this build for a lease the floor build claimed lapses by rule 2; until the follow-up is released, a floor build without
+request (10) still answers it with the ordinary failure, the residue of a rolling upgrade or a rollback.
 
 Rollback: nothing to roll back on its own; the rollback of `stream-completion.md` ("Rollback") applies, and after its removal of
 the requirement every 1.8 hand-back that this build receives lapses by this decision.
@@ -99,4 +113,4 @@ the requirement every 1.8 hand-back that this build receives lapses by this deci
 `specs/006-sdk-multilanguage/research.md` Decision 006-067, D006-080, D006-089, Decision 006-064 and Decision 006-045, and Gap
 006-033 and Gap 006-047; `specs/006-sdk-multilanguage/stream-completion.md`, "The hand-back at 1.8" and "The withdrawals";
 `sdks/SPEC.md` §6.2; the base's verdict function `hand_back_verdict` (`crates/application/src/worker/withdrawal.rs`) and its use
-in `crates/application/src/worker.rs`; the round-15 architecture review.
+in `crates/application/src/worker.rs`; the round-15 and round-16 architecture reviews.

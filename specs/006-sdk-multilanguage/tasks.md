@@ -131,7 +131,7 @@ actual acceptance is tracked by T034 tasks and is not supplied by this note.
 ## Phase: Delivery acknowledgement (Architecture decision 0099, protocol 1.8; Owner decision 2026-11-20-12)
 
 The contract is `stream-completion.md`, "Delivery acknowledgement (protocol 1.8)"; the decisions are Decision 006-040 to Decision
-006-067 of `research.md`. Every test below is written first and seen failing for the right reason (AGENTS.md rule 18); races are
+006-068 of `research.md`. Every test below is written first and seen failing for the right reason (AGENTS.md rule 18); races are
 held with a lock or a barrier, never a sleep; every task that touches a lease has a root and a scoped row in its evidence. A task is
 ticked only with the named test and its result, or the command and its output.
 
@@ -140,7 +140,7 @@ ticked only with the named test and its result, or the command and its output.
   pull request #260, with its scoped withdrawal, its reservation of `TASK_NOT_STARTED`, its cap of four per attempt, its replay floor
   and its generic `capability-activate`) and the SDK hand-back (`bugfix/withdraw-leases-sdks`, with its rewrite of a handler-raised
   code). Against its final head (2026-11-24, with D006-092 and D006-093; re-dated in round 15) still only request (3) of Decision 006-059 is built; (1) for the secret fence, (2), (5),
-  (6), (7), (8) and (9) go into a follow-up of pull request #260. The tasks that write or decode the cause, use the secret fence,
+  (6), (7), (8), (9) and (10) (round 16: Decision 006-068) go into a follow-up of pull request #260. The tasks that write or decode the cause, use the secret fence,
   read a requirement's kinds or run the server end to end wait for that follow-up to merge: Task 006-045 to Task 006-047, Task
   006-050, Task 006-051, Task 006-053 to Task 006-056, Task 006-058, Task 006-065 and Task 006-066; the registry migration of Task
   006-046 sorts after the follow-up's and its closed lists carry `lease-withdrawal-v2` too, since both rewrite the same three
@@ -215,7 +215,10 @@ shared conformance owner, Task 006-058; one owner per SDK, Task 006-059 to Task 
   `instance_heartbeats_change_in_progress_total{kind}`; the second check before the first byte of a call that hands data out and before the write of one that
   writes; heartbeats, reports and claims flow); `docs/runbooks/lease-withdrawal.md` and section 5 of
   `docs/runbooks/instance-registry.md` updated (the kinds of each requirement, the removal order, that the wrong order costs only
-  marks, and never to leave the owner transaction open), section 3 checked as the floor build updated it (the "Refined by" pointers of
+  marks, and never to leave the owner transaction open; in `docs/runbooks/lease-withdrawal.md`, the reasons of the fleet of 1.8 that
+  count a hand-back `lapsed` (a lease claimed before the current recording, on another server incarnation, or without reservation
+  from a 1.8 session) and the cost of the window before the activation, every stopping 1.8 host sending its `Activity` leases to a
+  review, with the advice to activate `delivery-acknowledgement-v1` soon after the whole fleet runs the build; round 16), section 3 checked as the floor build updated it (the "Refined by" pointers of
   Architecture decision 0098 decisions 5 and 8 are done in pull request #264, round 15). Evidence: an owner transaction holding `platform_requirement_lock()` for 60 s:
   no gate closes, no readiness failure, heartbeats and reports flow, serving engines keep serving `ResolveSecrets` and an engine that
   was silent for 31 s before the hold keeps refusing it with `REGISTRY_SILENT` until after the commit and its own decision; an engine
@@ -310,7 +313,10 @@ shared conformance owner, Task 006-058; one owner per SDK, Task 006-059 to Task 
   for a reason of the fleet (`delivery-acknowledgement-v1` not recorded or the lease claimed before its current recording,
   `lease-withdrawal-v1` or `lease-withdrawal-v2` not recorded, the switch off for an unmarked lease, another incarnation) recording
   nothing and answering `STALE_ATTEMPT`, counted `lapsed` or `disabled` (Decision 006-067, Architecture decision 0145), the ordinary
-  failure kept for the reasons of the lease alone; the expiry lifted for every lease under the reservation, marked or not, until the
+  failure kept for the reasons of the lease alone; a hand-back of a lease without reservation while the holder's stored session
+  minor is 8 or more, the session row read for that lapse alone, never for a withdrawal (round 16: Decision 006-068); the reasons
+  judged in the order of Decision 006-068 (the step no longer held by the lease, stale; `RUNNING` or a capability served, the
+  ordinary failure; the fleet's reasons, the lapse; the cap, the ordinary failure); the expiry lifted for every lease under the reservation, marked or not, until the
   pass has ended it; a `NOT_SENT` withdrawal of a marked lease needing only
   `lease-withdrawal-v1`, every other withdrawal of a marked lease `lease-withdrawal-v2`; the hand-back of an acknowledged `LEASED` lease withdrawn with a stop asked or past its expiry, through the
   report fence of a step with declared secrets too;
@@ -320,7 +326,12 @@ shared conformance owner, Task 006-058; one owner per SDK, Task 006-059 to Task 
   capability was served, or the cap reached, handed back: an ordinary failure; a lease claimed on another incarnation, handed back:
   `STALE_ATTEMPT`, left to lapse; the compile-time assert of the server build stays until Task 006-057; the attempt flag in its fenced form
   in the three projection statements, `$flag` bound by the application's withdrawal service alone. Evidence: the unit
-  test of the pure function over every combination of status, marks, incarnation, recording and deadlines; a provisional `Activity` lease past its
+  test of the pure function over every combination of status, marks, incarnation, recording and deadlines, and over each pair of
+  reasons of Decision 006-068 (a capability served with each reason of the fleet: the ordinary failure; each reason of the fleet at
+  the cap: the lapse; a fence that misses with any other reason: stale; the switch with another reason of the fleet: `disabled`,
+  as the base's gate reads the switch first; round 16); a hand-back of a lease the floor build claimed for a session stored at 8,
+  and of a lease claimed at 1.7 while the session row now says 1.8, each root and scoped: `STALE_ATTEMPT`, nothing written, counted
+  `lapsed`, then ended by the pass (round 16: Decision 006-068); a provisional `Activity` lease past its
   expiry, and one past its attempt deadline, withdrawn with no review and the attempt reused, root and scoped; an acknowledged one
   expired as an unknown outcome; a lease handed back once and the next lease of its attempt unflagged, so that with every
   acknowledgement failing at the server the step runs on its second lease and no attempt is spent, at an 18 s and a 30 s time-to-live
@@ -338,7 +349,9 @@ shared conformance owner, Task 006-058; one owner per SDK, Task 006-059 to Task 
   incarnation, each answered `STALE_ATTEMPT` with no event, no failure and the step still `LEASED` with its attempt, counted
   `lapsed` (`disabled` for the switch), then ended by the pass with `expire_attempt`, an `Activity` to a review; for each reason of
   the lease, root and scoped (the step `RUNNING`, a capability served, the cap of four), the ordinary failure; the base's
-  `a_hand_back_on_a_fleet_that_does_not_withdraw_leaves_the_lease_to_lapse` green throughout; a hand-back of a lease under the
+  `a_hand_back_on_a_fleet_that_does_not_withdraw_leaves_the_lease_to_lapse` green throughout, by construction and not by changing
+  what it expects: its claim runs at 1.8 under the ceiling that the `test-support` feature of `sagat-application` raises, so the
+  claim writes `lease_hand_back_generation` and the lease is under the reservation (round 16); a hand-back of a lease under the
   reservation 1 ms past its expiry with the pass held, root and scoped, for a marked lease and for each unmarked kind
   (`short_deadline`, `declined`, `flagged_before`, `switch_off`): withdrawn while the reservation is honoured, and answered
   `STALE_ATTEMPT` with the pass then ending it otherwise (closing that item of Gap 006-033); `WriteBlob` root and scoped followed by
@@ -354,7 +367,8 @@ shared conformance owner, Task 006-058; one owner per SDK, Task 006-059 to Task 
   `NOT_ACKNOWLEDGED` withdrawal counted `heartbeat`; the pair of `withdrawn_lease_token_hash` and `withdrawn_on_hand_back` asserted
   after each kind of withdrawal (a `NOT_SENT` withdrawal of a marked lease setting the flag `false`, round 15), a hand-back of one generation followed by a `NOT_ACKNOWLEDGED` withdrawal of the next among them; an engine with the switch off withdraws a
   marked lease; a hand-back after its session registered again at 1.7 under the
-  same name, still withdrawn; a hand-back of a lease claimed at 1.7 while the session row says 1.8, an ordinary failure; a stopping
+  same name, still withdrawn; a hand-back of a lease claimed at 1.7 while the session row says 1.8, a lapse (round 16: Decision 006-068; it was an ordinary
+  failure); a stopping
   collection drains a withdrawn instance; a cancelled step's hand-back with declared secrets withdraws and cancels.
 - [ ] T006-051 The races, in `tests/fault/sdk-multilanguage/`: the acknowledgement holds the row while the pass's withdrawal waits, and
   the reverse; the same with the hand-back's withdrawal; a repeated acknowledgement while the first is held before its commit (the
@@ -427,8 +441,9 @@ shared conformance owner, Task 006-058; one owner per SDK, Task 006-059 to Task 
   `requires` of `Activatable`, refusing while `lease-withdrawal-v2` is not recorded for both kinds and while any registered instance, live or lapsed, lacks it;
   the reserve of 4 places for the class `Acknowledge`, which the raised minor turns on; the tests of the hand-back use real 1.8
   sessions; once Task 006-050 decides the hand-back from `lease_hand_back_generation`, the compile-time assert of
-  `crates/application/src/worker/withdrawal.rs` (lines 28 to 31: the build's ceiling below the minor that reserves the code) and the
-  session-minor path (`lease_holder_minor`, read by `root_hand_back` and its scoped twin) are removed (round 15). Evidence: the ceiling tests,
+  `crates/application/src/worker/withdrawal.rs` (lines 28 to 31: the build's ceiling below the minor that reserves the code) is
+  removed, and the session-minor path (`lease_holder_minor`, read by `root_hand_back` and its scoped twin) no longer decides a
+  withdrawal: it is kept only to decide the lapse of a lease without reservation (round 15; round 16: Decision 006-068). Evidence: the ceiling tests,
   `apps/execution-engine/tests/registry.rs` lists the capability and the control plane's registry test does not; the command refused
   the capability as not activatable before this task (a test of Task 006-046), refuses it without `lease-withdrawal-v2` for both
   kinds and with a lapsed instance of a build of pull request #260 that does not list it, by the command and by hand SQL alike, and an activation passes on a fleet of
@@ -544,14 +559,16 @@ shared conformance owner, Task 006-058; one owner per SDK, Task 006-059 to Task 
   case (the switch set off and confirmed, the provisional leases drained while a long acknowledged task runs and a 1.8 worker keeps
   working, the requirement removed, the binary rolled back to the floor, which replays the journal, the switch set back and the floor
   then withdrawing an unmarked lease; a session stored at 8
-  whose hand-back on the floor is an ordinary failure, once after a capability was served and once without; a binary below the floor
+  whose hand-back on the floor is, on a floor with request (10) of Decision 006-059, a lapse (`STALE_ATTEMPT`, nothing written),
+  once after a capability was served and once without, and on a floor without it an ordinary failure, reported (round 16); a binary below the floor
   refused by the registry, an engine and a control plane of a build of pull request #260 without its follow-up among them, while a
   `NOT_ACKNOWLEDGED` withdrawal exists, from a third pinned phase at #260's merge commit, or its release tag if one exists, with its
   own source-manifest check: the binary lists `lease-withdrawal-v1`, is refused `CAPABILITY_MISSING` with `out_missing =
   {lease-withdrawal-v2}`, and, registered before the recording and held silent past the 30 s window at it, closes its gate at its
   next beat); a mixed fleet before the activation and after the removal, the stream on an engine of this build and
   `ResolveSecrets` on an engine of the floor build, the hand-back received by this build (`STALE_ATTEMPT`, nothing written, the lease left to lapse, never withdrawn after the floor's
-  unrecorded capability; Decision 006-067); an engine of the
+  unrecorded capability; Decision 006-067); the stream on an engine of the floor build, which claims the lease for a 1.8 session
+  without a reservation, and the hand-back received by this build: a lapse, root and scoped (round 16: Decision 006-068); an engine of the
   floor build held silent across an activation refusing worker calls after it reconnects until its beat; a v0.2 handler that raises `TASK_NOT_STARTED` (an
   ordinary failure); a host of the SDK build of
   Architecture decision 0098 at 1.5 that hands back (an ordinary failure, the attempt spent). Evidence: the `released-upgrade` job's

@@ -311,7 +311,7 @@ What the code showed the decisions above do not settle. All "delegate (OD-2026-1
 ### Owner question
 
 - **O006-001 — Delivery acknowledgement (option C).** Answered by the owner on 2026-11-20: "Yes, in 0.3.0"
-  (Owner decision 2026-11-20-12). Designed in Architecture decision 0099 (Decision 006-040 to Decision 006-067 below: a flag on the lease, a provisional mark on the
+  (Owner decision 2026-11-20-12). Designed in Architecture decision 0099 (Decision 006-040 to Decision 006-068 below: a flag on the lease, a provisional mark on the
   step row, an acknowledgement under the row lock, protocol 1.8, the lease's own deadline). The sketch the question was asked on:
   - *Variant 1, a provisional lease.* A claim grants a provisional lease (`OFFERED`) with a short acknowledgement deadline;
     the host acknowledges each task (a new RPC, or a frame of a bidirectional stream) before it runs the handler; only the
@@ -424,7 +424,7 @@ All decisions below are "delegate (OD-2026-11-20-6)".
 ### Decisions after the reviews (2026-11-21, D006-030 to D006-039, G006-030)
 
 The three reviews of the build (`reviews/2026-11-21/`) found three Blockers and six Majors. The coordinator chose the fixes;
-each decision below is "delegate (OD-2026-11-20-6)". Numbers 019 to 029 and 040 to 079 belong to the SDK branch and to the design of delivery acknowledgement, which uses 040 to 067 (round 15; the text said 040 to 061), so this list starts at 030.
+each decision below is "delegate (OD-2026-11-20-6)". Numbers 019 to 029 and 040 to 079 belong to the SDK branch and to the design of delivery acknowledgement, which uses 040 to 068 (rounds 15 and 16; the text said 040 to 061), so this list starts at 030.
 
 - **D006-030 — `TASK_NOT_STARTED` belongs to the host, never to a handler** (security Blocker 1, architecture Blocker 1).
   Three layers. (a) Every SDK rewrites a `TASK_NOT_STARTED` that a handler raises into an ordinary error (`WORKER_ERROR`), as
@@ -547,7 +547,7 @@ each decision below is "delegate (OD-2026-11-20-6)". Numbers 019 to 029 and 040 
 
 What the handoff of pull request #260 left open, and the coordinator's answer to gap G006-031. Each decision is "delegate
 (OD-2026-11-20-6)" unless it says otherwise. The numbers 040 to 079 are left to the design of delivery acknowledgement,
-which uses 040 to 067 (067 since its round 15) and may need more, so this list starts at 080. The acceptance of ADR-0098 is the owner's:
+which uses 040 to 068 (067 and 068 since its rounds 15 and 16) and may need more, so this list starts at 080. The acceptance of ADR-0098 is the owner's:
 OD-2026-11-21-4 ("Accept, if the final review is clean"), applied when the round-3 reviews of
 `reviews/2026-11-21/round-3-*.md` close with no Blocker and no Major.
 
@@ -780,7 +780,7 @@ holds the lock, not when it ends.
     tests. Recorded in G006-033 with the probe's locks.
   - Security Nit 3 (no test pins the two newer definer functions): fixed, the privilege test lists them.
 
-## Delivery acknowledgement (2026-11-20, Decision 006-040 to Decision 006-067, Gap 006-040 to Gap 006-048, Owner question 006-002)
+## Delivery acknowledgement (2026-11-20, Decision 006-040 to Decision 006-068, Gap 006-040 to Gap 006-048, Owner question 006-002)
 
 Owner question 006-001 was answered "Yes, in 0.3.0" (Owner decision 2026-11-20-12), which left the variant, the protocol minor and
 the deadline to this design. All decisions below are "delegate (Owner decision 2026-11-20-6)" unless they say otherwise. The
@@ -1002,7 +1002,8 @@ one receive call.
   Architecture decision 0098 decision 8 has it for `lease-withdrawal-v1` and any withdrawal, so no binary below the floor is admitted once any `NOT_ACKNOWLEDGED` withdrawal exists,
   whatever was released before it: a release of pull request #260 without the follow-up lists only `lease-withdrawal-v1` (round 11:
   correctness Major 2, security Major 1, architecture Major 1, design Major 1). On the floor a 1.8 session's hand-back is an ordinary failure, because that build clamps the holder's minor to
-  its own ceiling (Decision 006-059 (3); round 4: security Major 1, correctness Minor 3, architecture Minor 10). The `down` migration
+  its own ceiling (Decision 006-059 (3); round 4: security Major 1, correctness Minor 3, architecture Minor 10); with request (10)
+  of Decision 006-059 it lapses instead, still never withdrawn (round 16: Decision 006-068). The `down` migration
   refuses while a provisional mark counts, while the history names the capability, or while a live process lists it.
 - **D006-056 — What is counted and alerted** is listed in `stream-completion.md`, "Observability": ratios over
   `worker_lease_marks_total`, the count of marked claims (round 10: architecture Minor 5), and one closed `mark` vocabulary for both
@@ -1110,7 +1111,9 @@ one receive call.
   `delivery-acknowledgement-v1` also refuses while any registered instance, live or not (the registry deletes a row silent for a
   day), lacks `lease-withdrawal-v2`, so no binary without (7) still holds an open gate when the first provisional lease is claimed
   (round 11: correctness Major 2, security Major 1, architecture Major 1, design Major 1). Requests (1) for the secret fence and (5) belong to the same
-  follow-up. (Round 15, correcting a restatement that predated D006-080 and D006-089: below 1.8 there is no hand-back, the hosts
+  follow-up. (10) In `hand_back_verdict`, a session whose stored minor, before the clamp of (3), is 8 or more while its clamped
+  minor is below 8 decides `Lapse` (nothing recorded, `STALE_ATTEMPT`) instead of the ordinary failure; the clamped minor alone
+  still decides `Withdraw` (round 16: Decision 006-068); missing, built by the same follow-up, not a precondition of Task 006-057. (Round 15, correcting a restatement that predated D006-080 and D006-089: below 1.8 there is no hand-back, the hosts
   drop the lease and it lapses, D006-080, which closed G006-031; from a 1.8 session on a fleet that does not withdraw the base
   records nothing and answers `STALE_ATTEMPT`, D006-089, which Decision 006-067 extends to the fleet reasons of 1.8; round 3:
   correctness Major 4, design Major 3.)
@@ -1295,11 +1298,40 @@ one receive call.
   `recovered` for a mark that does not count, or `CANCELLED`, so the host hands back once more, runs nothing and does not count the
   call), step 2 of the rollback, and the mixed-fleet case of Task 006-066. What it leaves: an engine of the floor build clamps the
   holder's minor (Decision 006-059 (3)), so a 1.8 hand-back that reaches it, in a rolling upgrade or after a rollback, is still an
-  ordinary failure; that build is not asked to change. The tests are Task 006-050's, root and scoped (each reason of the fleet:
+  ordinary failure; that build is not asked to change (revised in round 16 by Decision 006-068: request (10) of Decision 006-059
+  asks it for the lapse, and a lease it claimed for a 1.8 session lapses when it is handed back to this build). The tests are Task 006-050's, root and scoped (each reason of the fleet:
   `STALE_ATTEMPT`, nothing written, then `expire_attempt` at the pass; each reason of the lease: the ordinary failure; a hand-back
   1 ms past the expiry with the pass held, withdrawn while honoured and `STALE_ATTEMPT` otherwise), with the base's
   `a_hand_back_on_a_fleet_that_does_not_withdraw_leaves_the_lease_to_lapse` kept green through it; the host's unit case of Task
   006-059; the mixed-fleet case of Task 006-066.
+- **D006-068 — The lapse of Decision 006-067 also covers a lease without reservation from a 1.8 session and the floor after a
+  rollback, and the reasons are judged in one order** (delegate, Owner decision 2026-11-24-4; round 16: architecture Minors 1 to 3;
+  Architecture decision 0145 rules 2, 3 and 5 revised before its merge).
+  - *A lease the floor build claimed for a 1.8 session* (Minor 1). An engine of the floor build claims without writing
+    `lease_hand_back_generation`, so in a mixed fleet a 1.8 session can hold a lease with no reservation; handed back to this build
+    it was an ordinary failure, the regression of Decision 006-067 in another form. It is a reason of the fleet: when the lease
+    carries no reservation and the holder's stored session minor is 8 or more, the verdict is the lapse (`STALE_ATTEMPT`, nothing
+    written, counted `lapsed`). The session row is read for it, which Architecture decision 0099 decision 9 forbids for a withdrawal
+    because a new registration under the same name overwrites it; for a lapse that does not matter, since a lapse never withdraws:
+    the worst a stale row can do is turn an ordinary failure into a lapse, an unknown outcome that a review settles. The same rule
+    makes a hand-back of a lease claimed at 1.7 while the session row now says 1.8 a lapse rather than an ordinary failure.
+  - *The floor after a rollback* (Minor 2). After a binary rollback to the floor, sessions stored at 1.8 keep handing back, and the
+    floor's clamp makes each an ordinary failure that spends the attempt. Request (10) of Decision 006-059, built by the follow-up of
+    pull request #260 (not built yet, so the request costs nothing to make): in `hand_back_verdict`, a session whose stored minor,
+    before the clamp, is 8 or more while its clamped minor is below 8 decides `Lapse` instead of the ordinary failure; the clamped
+    minor alone still decides `Withdraw`, so the floor never withdraws a 1.8 hand-back. Until a release has it, the floor's
+    ordinary failure is the residue of a rollback.
+  - *The order of the reasons* (Minor 3). The first that holds decides: the step no longer held by the lease (the fence misses: the
+    stale answer of any report); the step `RUNNING` under the lease, or a capability served (the ordinary failure; a capability also
+    a counted and audited violation, Decision 006-053); the reasons of the fleet (the lapse, `disabled` when the switch is off for the lease,
+    whatever other reason holds with it, as the base's gate reads the switch first, `lapsed` otherwise); the cap of four (the ordinary failure). So a lease that a capability reached is never left to lapse on a
+    fleet reason, and a fleet reason is judged before the cap because the cap is a property of the attempt, which a lapse does not
+    touch. The unit test of the pure function in Task 006-050 covers each pair of reasons.
+
+  Weighed for Minor 1: leaving the ordinary failure (the regression in a rolling upgrade), and reading the session row for a
+  withdrawal too (unsafe: the row may describe a later registration). Weighed for Minor 2: a rule in the rollback runbook alone (it
+  cannot stop a session that hands back). Tested in Task 006-050 (root and scoped) and Task 006-066 (the stream on a floor engine,
+  the hand-back to this build: a lapse; a session stored at 8 handing back on the floor with request (10): a lapse).
 
 ### Gaps
 

@@ -49,8 +49,9 @@ Run input validation, refined in the build: [ADR-0092](ADR-0092-the-application-
 ## Every decision
 
 Each record, in number order, with the status written at its top (shortened to its first clause; the file has the
-rest). Numbers 0011, 0034, 0041 to 0049 and 0091 have no file on `develop`; numbers are shared by every branch (rule 1
-above), so check the other branches before taking one. The [template](TEMPLATE.md) is the starting point for a new record.
+rest). Numbers 0011, 0034, 0041 to 0049 and 0091 have no file on `develop`; on this branch 0093 to 0097 and 0101 to 0144 have
+no file either, being reserved or used on other branches (0130 to 0137 and 0143 to 0144 among them, seen on 2026-11-24); numbers
+are shared by every branch (rule 1 above), so check the other branches before taking one. The [template](TEMPLATE.md) is the starting point for a new record.
 
 | Number | Decision | Status |
 |---|---|---|

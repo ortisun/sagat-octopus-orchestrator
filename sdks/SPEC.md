@@ -440,8 +440,9 @@ from the session, and honoured only while the operator has activated `delivery-a
 activation on the current database server; a lease not yet `RUNNING` (no heartbeat) to which no capability was served is then
 withdrawn on its hand-back, whether or not it was acknowledged, also after its expiry until the server's pass has ended it. A
 hand-back that the server refuses at 1.8 for a reason of the fleet (those activations not recorded, the lease claimed before the
-current activation or on another database server, the engine's switch off for a lease that was not flagged) is answered
-`STALE_ATTEMPT` with nothing recorded, so the lease lapses (decision D006-067, Architecture decision 0145). Otherwise (a step no
+current activation or on another database server, the engine's switch off for a lease that was not flagged, a lease that an engine of
+the older build claimed without the reservation while the session is stored at 1.8) is answered `STALE_ATTEMPT` with nothing
+recorded, so the lease lapses (decisions D006-067 and D006-068, Architecture decision 0145). Otherwise (a step no
 longer `LEASED` to the lease or `RUNNING`, a capability served, the cap reached, a session below 1.8) the server records it as an
 ordinary failure, which spends the attempt. The rules (decisions D006-020 to D006-023;
 from 1.8 only, decision D006-080):

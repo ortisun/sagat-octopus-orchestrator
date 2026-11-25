@@ -263,7 +263,7 @@ left to lapse; since feature 037 a lapse of an `Activity` opens a review for wor
 
 ## Delivery acknowledgement (protocol 1.8)
 
-Decision 006-040 to Decision 006-067 of [`research.md`](research.md); Architecture decision 0099, decision 9 partly superseded by
+Decision 006-040 to Decision 006-068 of [`research.md`](research.md); Architecture decision 0099, decision 9 partly superseded by
 Architecture decision 0145; Owner decision 2026-11-20-12.
 Minor 1.8 adds a flag on the lease (`acknowledge_before_start`) with the attempt deadline of a flagged lease
 (`attempt_deadline_epoch_ms`), a call (`AcknowledgeTasks`) and a registration field
@@ -373,7 +373,10 @@ ordinary failure, the attempt spent, the flag the host sent honoured, never a re
 - **The build of Architecture decision 0098 never honours a 1.8 hand-back.** It decides the holder's minor as the smaller of the
   stored minor and its own compiled ceiling, so with its ceiling at 7 or below it reads no session as 1.8, and its tests raise both
   (Decision 006-059 (3)). A hand-back that reaches an engine of the older build in a mixed fleet, or after a rollback, is an ordinary
-  failure, the safe direction.
+  failure, safe against a withdrawal, at the cost of the attempt; with request (10) of Decision 006-059, which the follow-up of pull
+  request #260 builds, a session whose stored minor before the clamp is 8 or more lapses there instead, and the clamped minor alone
+  still decides a withdrawal (round 16: Decision 006-068). A lease such an engine claimed for a 1.8 session carries no reservation;
+  handed back to this build it lapses ("A refusal for a reason of the fleet lapses", below).
 - **A lease its host did not start is withdrawn on its hand-back, provisional or acknowledged.** For a lease whose mark counts that
   is still `LEASED` (no heartbeat has made it `RUNNING`) and to which no capability was served, the hand-back is withdrawn, also
   after the expiry and with a stop asked, until the pass has ended it: nothing ran, the host says so as it does for a provisional
@@ -398,7 +401,13 @@ ordinary failure, the attempt spent, the flag the host sent honoured, never a re
   is not recorded or the lease was claimed before its current recording, because `lease-withdrawal-v1` or `lease-withdrawal-v2` is
   not recorded, because the switch is off for an unmarked lease, or because the lease was claimed on another incarnation, records
   nothing and answers `STALE_ATTEMPT` (counted `lapsed`, or `disabled` for the switch); the lost-lease pass then ends the lease
-  with `expire_attempt`, as today. The ordinary failure stays for the step `RUNNING`, a capability served and the cap of four.
+  with `expire_attempt`, as today. So does a hand-back of a lease that carries no reservation (claimed by an engine of the floor
+  build, or at 1.7) while the holder's stored session minor is 8 or more: the session row is read for it, which is safe because a
+  lapse never withdraws (round 16: Decision 006-068). The ordinary failure stays for the step `RUNNING`, a capability served and the
+  cap of four. The reasons are judged in this order, the first that holds deciding (round 16): the step no longer held by the lease
+  (the stale answer of any report whose fence misses); the step `RUNNING` under the lease, or a capability served (the ordinary
+  failure, a capability also a violation, Decision 006-053); the reasons of the fleet (the lapse: `disabled` when the switch is off for
+  the lease, whatever other reason holds with it, as the base's gate reads the switch first, `lapsed` otherwise); the cap (the ordinary failure).
 - **The order of locks**: the binding checks of the report path come before the requirement read and the re-read of the step row
   `FOR UPDATE`, in every withdrawal path.
 
@@ -731,6 +740,7 @@ attempt with `expire_attempt` in the same transaction, as today; it never leaves
 | `RUNNING` (heartbeated), or a capability served, handed back | An ordinary retryable failure, the attempt spent; after a capability, a violation |
 | A 1.8 lease that is not marked (`lease_hand_back_generation` only), handed back | Withdrawn as Architecture decision 0098 decides, only while `delivery-acknowledgement-v1` is recorded and for a lease claimed after its recording on the current incarnation, also after its expiry until the pass has ended it; otherwise, for a reason of the fleet (those requirements or that recording missing, another incarnation, the switch off), nothing recorded and `STALE_ATTEMPT`, counted `lapsed` or `disabled`, the lease left to lapse; for a reason of the lease (`RUNNING`, a capability served, the cap) an ordinary failure (round 15: Decision 006-067) |
 | A marked lease the server never handed to the transport (`NOT_SENT`) | Withdrawn as Architecture decision 0098 decides, needing only `lease-withdrawal-v1`: its token never left the server |
+| No reservation (claimed by the floor build, or at 1.7), handed back by a session stored at 1.8 or later | Nothing recorded, `STALE_ATTEMPT`, counted `lapsed`; the lease lapses (round 16: Decision 006-068) |
 | Not marked, below 1.8 | As today, and as Architecture decision 0098 decides |
 | Anything else (acknowledged since the candidate was read, replaced) | Nothing; `fence_missed` (the lease is no longer this one) |
 
@@ -907,7 +917,8 @@ withdrawn instance as one never leased. Each task of the plan has a scoped row i
    waits for, which cannot be removed once a journal holds `step.lease_withdrawn` with the cause `NOT_ACKNOWLEDGED` (as Architecture decision 0098 decision 8 has it
    for `lease-withdrawal-v1` and any withdrawal), so a binary that does not list it, a release of #260 without the follow-up among them, is refused
    registration. On the floor a 1.8 session's hand-back is an ordinary failure, because that build clamps the holder's minor to its
-   own ceiling (Decision 006-059 (3)), and this build withdraws none once the requirement is removed (it answers `STALE_ATTEMPT`
+   own ceiling (Decision 006-059 (3)), or, once the follow-up has request (10) of Decision 006-059, a lapse that never withdraws
+   (round 16: Decision 006-068), and this build withdraws none once the requirement is removed (it answers `STALE_ATTEMPT`
    and the lease lapses, Decision 006-067), so a capability served by an engine of the floor build can never be followed by a
    withdrawal. A session at 1.8 meeting a binary below 1.7 is the case of
    design 041; an unflagged lease asks nothing of 1.8.
@@ -984,7 +995,8 @@ within 200 ms; with a 30 s time-to-live the attempts after a 15 s promotion are 
 - **One meaning of `outcome`** (round 15). The `outcome` of `worker_leases_undelivered_total` says why a withdrawal was or was not
   written, never what followed. `lapsed`: none was written because something the fleet or the session must provide is missing (a
   requirement not recorded, the lease claimed before the current recording of `delivery-acknowledgement-v1` or on another server
-  incarnation, a session below 1.8 whose code is not reserved); `disabled`: the engine's switch is off for an unmarked lease;
+  incarnation, a lease without reservation while its session is stored at 1.8 or later, a session below 1.8 whose code is not
+  reserved); `disabled`: the engine's switch is off for an unmarked lease;
   `capped`, `fence_missed`, `withdrawn` and `error` as Architecture decision 0098 counts them. What follows is the lease's: a lease
   not sent or a hand-back answered `STALE_ATTEMPT` lapses, and the lost-lease pass ends an expired lease with `expire_attempt`; the
   hand-back of a session below 1.8, which the base counts `lapsed`, is recorded as the ordinary failure, as its code may be a
