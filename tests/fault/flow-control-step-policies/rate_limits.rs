@@ -402,11 +402,7 @@ async fn a_crash_inside_the_admission_leaves_nothing_and_the_retry_is_buffered_o
 async fn a_crash_inside_the_grant_leaves_the_start_buffered_and_the_next_pass_grants_it_once() {
     let w = gated_world().await;
     let workflow = publish(&w, rated_start("fault-rate-grant", 1, "second")).await;
-    let input = json!({"accountId": "acct-1"});
-    let holder = w.start(workflow, &input).await;
-    let waiter = w.start(workflow, &input).await;
-    assert_eq!(start_rows(&w, waiter).await, (0, 1));
-    until_past(&w.db.pool, granted_us(&w, holder).await + SECOND_US).await;
+    let (holder, waiter) = grantable(&w, workflow, "acct-1").await;
     let windows = hold(&w, "rate_limit_windows").await;
     let grants = scheduler(&w, SchedulerSettings::default(), None);
     let (report, ()) = tokio::join!(grants.grant_gates(), crash_the_waiting_transaction(&w));
@@ -1088,10 +1084,14 @@ async fn restarted_processes_go_on_with_the_buffer_window_after_window() {
     let input = json!({"accountId": "acct-1"});
     let holder = w.start(workflow, &input).await;
     let mut admitted = vec![holder];
+    // the holder's counted instants moved ahead while the three are admitted, so they queue whatever the runner's speed
+    // (the runtime-role run of 2026-11-25 admitted one of them a second after the holder's grant), and moved back
+    move_grant_instants(&w, holder, ADMISSION_MARGIN_US).await;
     for _ in 0..3 {
         admitted.push(w.start(workflow, &input).await);
     }
     assert_eq!(counted_waiters(&w).await, 3);
+    move_grant_instants(&w, holder, -ADMISSION_MARGIN_US).await;
     drain(&w, || async { restarted(&w).grant_gates().await }).await;
     let grants = start_grants(&w, &admitted).await;
     assert_eq!(grants.len(), 4, "each run granted once: {grants:?}");

@@ -1513,9 +1513,10 @@ taken after `git grep D022-04` on every `origin/*` branch.
      new settings would be configuration nobody has a reason to tune apart.
   8. *Stale comments* (`apps/control-plane/src/flow_control.rs`, the build lists both capabilities;
      `crates/telemetry/src/flow_control.rs`, decisions are counted since decision D022-045) are corrected.
-- **D022-078 — The declaration a waiter is bounded by is a column of its own, `pinned_limit`, and the order bound of a
-  pass starts at any refusal for lack of room (2026-11-24; decision D022-076 items 4 and 7).** Delegate
-  (OD-2026-11-24-4). Building decision D022-076 found two places where its text cannot be built as written:
+- **D022-078 — The declaration a waiter is bounded by is a column of its own, `pinned_limit`, the order bound of a
+  pass starts at any refusal for lack of room, and the place counts the waiters that will be ahead (2026-11-24;
+  decision D022-076 items 4, 5 and 7).** Delegate
+  (OD-2026-11-24-4). Building decision D022-076 found three places where its text cannot be built as written:
   1. *The column of item 7.* The waiter rows of both gates already have a `declared_limit`: the filed limit (the
      declaration clamped by the namespace's ceiling at admission), which the `*.queued` event of the row records as its
      `limit`. A second column of that name cannot be added. Options: (a) rename the column to `filed_limit` and add
@@ -1542,6 +1543,15 @@ taken after `git grep D022-04` on every `origin/*` branch.
      free came between), the pass leaves the key due, and the next pass grants in admission order. Weighed: the literal
      reading (a younger waiter granted first in the reviewer's case, against FR-022-042) and a count of frees since the
      selection (a statement more per waiter tried, for a case the bound already closes).
+  3. *The place of item 5.* The grant routine decides eligibility at the decision's instant: at a full window every
+     waiter is refused by its own limit, so counting ahead only the waiters eligible now would give every waiter of a
+     full key the position 1 and the estimate of the first (found by `rate_rest::a_run_shows_its_rate_slot_and_a_waiting_run_its_place`).
+     The place is an estimate of the instant this waiter has room, and at that instant every waiter ahead whose limit is
+     not lower and whose window is not longer than this one's has room too, so the grant routine will count it ahead.
+     Chosen: a waiter ahead counts when it is of no tighter limit and window than this one, or, tighter, when its own
+     window has room for it now (the reviewer's case: a waiter refused by its own lower limit, or over a longer window,
+     is not ahead). Weighed: the literal reading (a position that says nothing at a full key) and a projection of every
+     waiter's window to the estimated instant (a second pass over the counted leases, for a read the plan bounds).
 
 ## Gaps
 

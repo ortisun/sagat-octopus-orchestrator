@@ -1068,9 +1068,10 @@ pub const RATE_KEY_LISTING_OF_GROUP_SQL: &str = concat!(
 /// "Visibility of the rate gate", D022-014): its limit `L` (the lower of its declaration and the namespace's current
 /// ceiling of its window length, `$3`, `$4` and `$5` for a second, a minute and an hour: the limit the grant routine
 /// decides it with, decisions D022-075 item 3 and D022-076 item 7) and window, `n` the key's grants that count over its
-/// window at `t`, `a` the waiters ahead of it that the grant routine counts ahead (not past their deadline, their run
-/// running or waiting and not paused, and below the count of their own window by the lower of their declaration and the
-/// ceiling of its length: decision D022-076 item 5), `t` (the statement's instant), the lease of the `k`-th oldest counted grant for
+/// window at `t`, `a` the waiters ahead of it that the grant routine will count ahead when this one has room (not past
+/// their deadline, their run running or waiting and not paused, and either of no tighter limit and window than this one,
+/// so eligible whenever it has room, or below the count of their own window by the lower of their declaration and the
+/// ceiling of its length now: decisions D022-076 item 5 and D022-078 item 3), `t` (the statement's instant), the lease of the `k`-th oldest counted grant for
 /// `k = n + a - limit + 1` (offset `k - 1`, at least 0), and its own deadline and whether the pass skips its run (decision
 /// D022-068 item 1). A run's grant is leased at its grant (`rate_limit_grants_shape`), so its counted grants are those
 /// leased within its window, one range of `rate_limit_grants_count_idx`.
@@ -1098,11 +1099,13 @@ pub const RATE_PLACE_SQL: &str = "WITH me AS ( \
             AND x.limit_scope = me.limit_scope AND x.group_name = me.group_name AND x.key_digest = me.key_digest \
            JOIN runs r ON r.tenant_id = x.tenant_id AND r.id = x.run_id \
            LEFT JOIN counts c ON c.ms = x.period_ms \
+           CROSS JOIN LATERAL ( \
+             SELECT least(coalesce(x.pinned_limit, x.declared_limit)::bigint, CASE x.period_ms \
+                          WHEN 1000 THEN $3::bigint WHEN 60000 THEN $4::bigint WHEN 3600000 THEN $5::bigint \
+                          ELSE coalesce(x.pinned_limit, x.declared_limit)::bigint END) AS lx) b \
           WHERE (x.enqueued_at, x.run_id, x.node) < (me.enqueued_at, me.run_id, me.node) \
             AND x.deadline_at > me.t AND r.status IN ('RUNNING', 'WAITING') AND NOT r.paused \
-            AND least(coalesce(x.pinned_limit, x.declared_limit)::bigint, CASE x.period_ms WHEN 1000 THEN $3::bigint \
-                      WHEN 60000 THEN $4::bigint WHEN 3600000 THEN $5::bigint \
-                      ELSE coalesce(x.pinned_limit, x.declared_limit)::bigint END) > coalesce(c.n, 0)) \
+            AND ((b.lx >= me.l AND x.period_ms <= me.period_ms) OR b.lx > coalesce(c.n, 0))) \
      SELECT me.l, me.period_ms, counted.n, ahead.a, me.t, \
             (SELECT g.leased_at FROM rate_limit_grants g \
               WHERE g.tenant_id = me.tenant_id AND g.namespace_id = me.namespace_id AND g.pool = me.pool \
