@@ -23,8 +23,8 @@ resource types that specialise feature 021's closed operation kinds (fixed hosts
 script and workflow templates. An administrator imports an integration into a tenant; what is imported is data, pinned
 by version and digest, and nothing in it runs in the server.
 
-The architecture is [ADR-0122](../adr/ADR-0122-oauth-tokens-are-held-by-a-broker-in-the-control-plane-and-executors-receive-only-a-current-access-token.md)
-(the broker) and [ADR-0123](../adr/ADR-0123-hub-integrations-are-signed-data-that-specialise-closed-operation-kinds-and-are-imported-as-pinned-versions.md)
+The architecture is [Architecture decision 0122](../adr/ADR-0122-oauth-tokens-are-held-by-a-broker-in-the-control-plane-and-executors-receive-only-a-current-access-token.md)
+(the broker) and [Architecture decision 0123](../adr/ADR-0123-hub-integrations-are-signed-data-that-specialise-closed-operation-kinds-and-are-imported-as-pinned-versions.md)
 (the hub). Both are Proposed. The registers are in `specs/047-oauth-integration-hub/research.md`. The principles cited by
 numeral are those of [the constitution](../constitution.md), version 5.0.0 (Owner decision 2026-11-24-2), whose
 "Admitted scope" names this design.
@@ -174,7 +174,7 @@ drafts and runs nothing in the server (Delivery Constraints, 5.0.0).
 **Cross-cutting**
 
 - **Requirement 047-023** The feature MUST be switched on by the capability `oauth-broker` in the instance registry
-  (ADR-0082); without it, OAuth schemes and resource declarations on scripts and activities are refused at publication.
+  (Architecture decision 0082); without it, OAuth schemes and resource declarations on scripts and activities are refused at publication.
   *Acceptance:* the capability test.
 - **Requirement 047-024** Telemetry and audit as in Technical Plan 10; errors typed and value-free; a provider's error
   body never reaches a response (only its RFC 6749 `error` code from a closed list). *Acceptance:* the error contract
@@ -208,11 +208,11 @@ drafts and runs nothing in the server (Delivery Constraints, 5.0.0).
 ### User stories
 
 - **User story 047-01** An integrator connects a provider account to a resource and uses it from a `resourceOperation`
-  node, a script and an activity (CUJs 1 and 2).
-- **User story 047-02** An administrator registers the tenant's client, or opts into the operator's (CUJ 3).
+  node, a script and an activity (journeys 1 and 2).
+- **User story 047-02** An administrator registers the tenant's client, or opts into the operator's (journey 3).
 - **User story 047-03** A developer imports a curated integration and has a working resource type, provider and
-  templates in a minute (CUJ 4).
-- **User story 047-04** An operator survives a lost refresh token and a revoked hub item without surprises (CUJs 5 and
+  templates in a minute (journey 4).
+- **User story 047-04** An operator survives a lost refresh token and a revoked hub item without surprises (journeys 5 and
   6).
 
 ## Goals
@@ -228,7 +228,7 @@ drafts and runs nothing in the server (Delivery Constraints, 5.0.0).
 - Token exchange to narrow a token per step (RFC 8693), sender-constrained tokens (DPoP, RFC 9449; mutual-TLS-bound
   tokens, RFC 8705), and dynamic client registration (RFC 7591): Gaps 047-001 to 047-003.
 - An open marketplace, tenant publishing, ratings or payments (constitution).
-- Notification channels of feature 026, which keep their own credentials in 0.3.0 (ADR-0055 rule 11b; Gap 047-004).
+- Notification channels of feature 026, which keep their own credentials in 0.3.0 (Architecture decision 0055 rule 11b; Gap 047-004).
 
 ## Open Questions
 
@@ -240,12 +240,12 @@ the keep-alive interval per provider).
 None. The design follows Owner decision 2026-11-24-1 (the feature is in 0.3.0) and the 5.0.0 amendment (Owner decision
 2026-11-24-2). Its product choices were taken under Owner decisions 2026-11-20-6 and 2026-11-24-4 and are recorded as
 Decisions 047-001 to 047-020 in `specs/047-oauth-integration-hub/research.md`, each marked "delegate (OD-2026-11-24-4)"
-with its reasoning. ADR-0122 and ADR-0123 are accepted or rejected under Owner decision 2026-11-24-4 when this design
+with its reasoning. Architecture decision 0122 and Architecture decision 0123 are accepted or rejected under Owner decision 2026-11-24-4 when this design
 completes its review.
 
 ## Critical User Journeys (CUJs)
 
-### CUJ 1: Connect a Google account and read a sheet from a script
+### Journey 1: Connect a Google account and read a sheet from a script
 
 *   **Given**: a tenant that imported the Google integration and registered its own client; a namespace with the
     capability `oauth-broker` recorded.
@@ -255,7 +255,7 @@ completes its review.
     gets the access token through its supervisor; the audit shows a value-free disclosure per attempt; the refresh token
     is in OpenBao only.
 
-### CUJ 2: A workflow waits a day, then calls Microsoft Graph
+### Journey 2: A workflow waits a day, then calls Microsoft Graph
 
 *   **Given**: a run that sleeps 24 hours and then runs a `resourceOperation` preset `sendMail` on a Microsoft Graph
     resource.
@@ -264,14 +264,14 @@ completes its review.
     of concurrent steps, stores the rotated refresh token before activating it, and the integration runner receives the
     new access token.
 
-### CUJ 3: The operator offers a shared client
+### Journey 3: The operator offers a shared client
 
 *   **Given**: a SaaS deployment whose operator registered one Slack app for all tenants.
 *   **When**: the operator offers it and a tenant administrator opts in.
 *   **Then**: the tenant's people can connect Slack workspaces with that app; the tenant never sees the app's secret; an
     opt-out stops new connections and leaves existing credentials until disconnected.
 
-### CUJ 4: Import an integration
+### Journey 4: Import an integration
 
 *   **Given**: the release's hub with the Atlassian integration.
 *   **When**: a developer opens the hub in the Studio, reads the integration's description and requirements, and
@@ -280,7 +280,7 @@ completes its review.
     and two workflow templates as drafts; the response lists what to prepare (a registration at Atlassian, the egress
     host `api.atlassian.com`); nothing ran.
 
-### CUJ 5: A refresh token is lost
+### Journey 5: A refresh token is lost
 
 *   **Given**: a credential at a provider that rotates refresh tokens and revokes the family on reuse.
 *   **When**: a control plane crashes after the provider answered a refresh and before the new refresh token was
@@ -288,7 +288,7 @@ completes its review.
 *   **Then**: the provider answers `invalid_grant`; the credential becomes `NEEDS_REAUTHORIZATION`, its managers are told,
     steps that need it fail retryable and wait under their retry policy; a person reconnects and the runs carry on.
 
-### CUJ 6: A hub item is revoked
+### Journey 6: A hub item is revoked
 
 *   **Given**: a tenant that imported the HubSpot resource type 1.2.0.
 *   **When**: the next release's index revokes 1.2.0 (a preset sent data to a wrong path) and adds 1.2.1.
@@ -323,7 +323,7 @@ runner REST surface for scripts; the worker gRPC service for activities), which 
 
 ### 2. Data
 
-Additive tables (`specs/047-oauth-integration-hub/data-model.md`, written with Task T047-1):
+Additive tables (`specs/047-oauth-integration-hub/data-model.md`, written with Task 047-1):
 
 - `oauth_providers` (scope tenant or deployment, id, version, source `HUB` or `AUTHORED`, provenance, endpoints, issuer,
   methods, scope catalogue, rotation flag, keep-alive interval, default lifetime, extra parameters allowed); immutable
@@ -415,7 +415,7 @@ failed check or audit refuses the whole set.
 - Activities: a new worker gRPC method `ResolveResources` beside `ResolveSecrets`, in the same limit class, with an
   additive protocol minor; the six SDKs expose `resource(name)`.
 
-A token returned to an executor is a secret value in that executor: it is redacted from step logs (ADR-0085's
+A token returned to an executor is a secret value in that executor: it is redacted from step logs (Architecture decision 0085's
 by-value redaction in the worker) and results as declared secrets are.
 
 ### 6. Providers, registrations and offers
@@ -423,7 +423,7 @@ by-value redaction in the worker) and results as declared secrets are.
 A provider definition is validated on write: https endpoints, hosts allowed by the deployment's egress policy, a scope
 catalogue of at most 200 entries, a closed set of methods. A tenant may author one; an imported one carries
 provenance. A registration's secret or private key is written through feature 017's provisioning; its client id is not
-a secret. A deployment registration belongs to the operator (ADR-0074's platform-operator surface) and is offered to
+a secret. A deployment registration belongs to the operator (Architecture decision 0074's platform-operator surface) and is offered to
 named tenants; a tenant opts in with `oauth:client:manage`. Credentials made with a deployment registration belong to
 the tenant; an opt-out stops new connections.
 
@@ -516,7 +516,7 @@ resource names, `hub.imported`, `hub.item_revoked`, `hub.version_blocked`.
 
 Everything is additive: tables, endpoints, a gRPC method under a new protocol minor, an IR field (`resources` on script
 nodes and activity definitions, refused by publication without the capability). Recording `oauth-broker` requires every
-control plane, engine and runner to list it (ADR-0082). Rolling back the binaries leaves credential rows an old binary
+control plane, engine and runner to list it (Architecture decision 0082). Rolling back the binaries leaves credential rows an old binary
 does not read; versions that declare resources are refused by an old engine's publication but runs admitted before the
 rollback fail their steps with `SCRIPT_DENIED`; the release notes say rollback is forward-only once declarations exist.
 
@@ -544,7 +544,7 @@ Written against version 5.0.0 (Owner decision 2026-11-24-2).
 | IV. Compatibility is versioned and pinned | Pass | Providers, types and presets are immutable versions pinned by resources; a hub update never changes a resource; additive protocol minor |
 | V. Code, tenant boundary and secrets are isolated | Pass with conditions (Complexity Tracking) | The broker runs no tenant code; executors receive only declared resources through ordinary declared-secret delivery, never a refresh token, client secret or key; tenant-scoped paths and rows; deployment registrations offered per tenant; canary tests. Condition: the access token of a declared resource is delivered as a declared secret of the task, which this design reads as within Principle V's first declared set; the coordinating session confirms the 5.0.0 wording |
 | VI. Observability and audit are part of the feature | Pass | Technical Plan 10 |
-| VII. Events are redeliverable; inbox and outbox are the contract | n/a | No message path is added |
+| VII. Events are redeliverable; inbox and outbox are the contract | not applicable | No message path is added |
 | VIII. Failure is tested and contracts are verified, honestly | Pass | Race, crash, canary, cross-tenant, egress and recorded-response tests; real-provider runs are gaps until credentials exist |
 | Delivery Constraints | Pass | The hub is the 5.0.0 "curated integration and template hub": signed sources only, imported as data and drafts, nothing run in the server; no open marketplace |
 
@@ -560,41 +560,41 @@ Written against version 5.0.0 (Owner decision 2026-11-24-2).
 
 ## Alternatives Considered
 
-- **Executors refresh their own tokens** (feature 021's current client-credentials design): rejected (ADR-0122,
+- **Executors refresh their own tokens** (feature 021's current client-credentials design): rejected (Architecture decision 0122,
   option 2).
-- **An OAuth secrets engine plugin in OpenBao:** rejected (ADR-0122, option 3).
+- **An OAuth secrets engine plugin in OpenBao:** rejected (Architecture decision 0122, option 3).
 - **A cookie-bound callback on the API's origin:** the platform's API is a bearer API (the Studio signs in with OIDC in
   the browser); a cookie would add a second session model. The Studio page posting with the person's token binds the
   callback to the person with what exists.
-- **Executable connectors in the hub:** rejected (ADR-0123, option 3).
+- **Executable connectors in the hub:** rejected (Architecture decision 0123, option 3).
 - **Tenant-defined resource types beside the hub:** a tenant can write an `http_api` resource with its own hosts under
   its egress policy, which covers the need without a second catalogue (decided with feature 021's Owner question 1122).
 
 ## Non-Functional Requirements
 
 As stated under Requirements (Non-functional requirements 047-001 to 047-004). Their tests: the canary tests for 047-001;
-the benchmark of Task T047-20 for 047-002; bound fixtures for 047-003; the metric-label test of Task T047-17 for
+the benchmark of Task 047-20 for 047-002; bound fixtures for 047-003; the metric-label test of Task 047-17 for
 047-004.
 
 --------------------------------------------------------------------------------
 
 ## Detailed Implementation Plan
 
-Documentation first: Task T047-1 lands before any code. Build slices for two builders that never touch the same crate at
+Documentation first: Task 047-1 lands before any code. Build slices for two builders that never touch the same crate at
 the same time:
 
-- **Slice 1 (builder A): the broker.** Tasks T047-2 to T047-9. Crates `domain`, `application` (`oauth/`), `infra-oauth`
+- **Slice 1 (builder A): the broker.** Tasks 047-2 to 047-9. Crates `domain`, `application` (`oauth/`), `infra-oauth`
   (new), `infra-postgres`, `api-http` (`oauth` routes). Needs feature 021's resource and slot model (021's resource
   catalogue tasks) and feature 017's provisioning.
-- **Slice 2 (builder B): the hub's content and its checks.** Tasks T047-10, T047-13 and T047-14. `hub/`, the item
+- **Slice 2 (builder B): the hub's content and its checks.** Tasks 047-10, 047-13 and 047-14. `hub/`, the item
   schemas and codecs in `crates/infra-schema` (which slice 1 does not touch), request presets in feature 021's
   `crates/infra-integrations`, the contract suite in `tests/`. Needs feature 028's index contract and feature 021's
   operation contracts, not their code.
-- **Slice 3 (after both): import, delivery and surfaces.** Tasks T047-11, T047-12 and T047-15 to T047-21.
+- **Slice 3 (after both): import, delivery and surfaces.** Tasks 047-11, 047-12 and 047-15 to 047-21.
   `crates/application/src/hub/` (with feature 028's index code), `api-grpc`, `api-http` (`hub` routes),
   `infra-sandbox`, `apps/sandbox-runner`, the six SDKs, `frontend/apps/studio`, `apps/cli`, `tests/`. Slice 3 can itself
   run on two builders: server side (`application`, `api-grpc`, `api-http`, `infra-sandbox`, `apps/sandbox-runner`) and
-  clients (`sdks/`, `frontend/apps/studio`, `apps/cli`) against the contracts of Task T047-1.
+  clients (`sdks/`, `frontend/apps/studio`, `apps/cli`) against the contracts of Task 047-1.
 
 - [ ] T047-1 Write the contracts (`contracts/oauth.openapi.yaml`, `contracts/hub-items.md`,
   `contracts/resource-delivery.md` for the gRPC method and the host call, `contracts/errors.md`), `data-model.md`, the
@@ -664,4 +664,4 @@ None yet.
   refused; a redirect not followed; a preset that changes the host refused.
 - **Conformance:** the SDK scenario `resource_access` in the six SDKs; the script host call in TypeScript and Python.
 - **Contracts:** OpenAPI lint; feature 028's index tests with the new kinds; `contract_integration_hub`.
-- **Benchmark:** Task T047-20.
+- **Benchmark:** Task 047-20.
