@@ -73,6 +73,18 @@ ceiling above the proposed defaults is published.
      (`FOR SHARE`) → usage;
    - claim: run → drain fence → worker session → sorted activity-quota rows → sorted semaphores → usage;
    - attempt end (completion, failure, cancellation, lease expiry): run → step → semaphore → usage.
+
+   *Amended 2026-11-24, delegate (OD-2026-11-24-4; feature 022 decisions D022-204 and D022-208, ADR-0135 and ADR-0136
+   proposed):* the as-built order. Since ADR-0094 a transition on an existing run decides its keys in evaluation rounds
+   before `persist`: the path's entity locks (chain, run; a shard fence only where a pass already holds one) → the run's
+   active-run counter row when the commit ends a run that holds a permit (T022-022) → the lookup round's cache scope and
+   entry rows, `FOR SHARE` (feature 022 US01) → the gates round's semaphores, then windows, each sorted → `persist`, which
+   writes the `runs` row, the journal and the projections → usage rows last. The terminal path reads the namespace
+   failure-handler policy row without a lock and records its `config_revision` on the dispatch row, so that row is no
+   longer a transition row of this decision. A cacheable step released after the gates round of the same commit (by a
+   key failure's route) is looked up in a later round, after the semaphores; this is allowed because the only exclusive
+   takers of cache rows (invalidation, purge, erasure, the store writer's insert) lock no run, semaphore, window or
+   counter row after one (ADR-0135 decision 7).
 3. **Every run creator acquires at admission.** Run admission MUST either acquire a run permit or enqueue
    the new run in its admission transaction, through one application port that every run creator calls:
    the start API, event and cron triggers, child nodes (including `onFailure` children), reruns, 017 ad hoc

@@ -36,6 +36,8 @@ key value, a cached value, a pin, a payload or a secret. Every row needs a test 
 | Redrive of a dispatch that is not `DEAD` | 409 | `CONFLICT` | `STATE_CONFLICT` | no |
 | Invalidation target names no scope | 404 | `NOT_FOUND` | — | no |
 | Capability disabled for a start of an existing version (rollback) | 422 | `VALIDATION_FAILED` | `CAPABILITY_DISABLED` | no |
+| Publication, start or request using `cache`, `earlyReturn`, `onFailure`, a standalone step or a draft test run before the operator activated its registry capability (`step-cache-v1`, `early-return-v1`, `failure-handler-v1`, `step-executions-v1`, `draft-test-runs-v1`; added 2026-11-24, decision D022-206) | 422 | `VALIDATION_FAILED` | `FLOW_CONTROL_ACTIVATION_PENDING` | no |
+| Standalone step whose `businessId` is held by an open execution, or reused against its policy (018's reasons, reused; added 2026-11-24, decision D022-209) | 409 | `CONFLICT` | `BUSINESS_ID_IN_USE`, `BUSINESS_ID_REUSE_REJECTED` | no |
 
 Existing reasons reused unchanged: `IDEMPOTENCY_KEY_REUSED`, `STATE_CONFLICT`, `REVISION_CONFLICT`,
 `PII_REVEAL_NOT_GRANTED` (a `fromRun` pin of a `pii` value without the grant), `ROUTE_NOT_FOUND`.
@@ -62,6 +64,7 @@ Existing reasons reused unchanged: `IDEMPOTENCY_KEY_REUSED`, `STATE_CONFLICT`, `
 | `ENCODING_CARRIAGE_MISMATCH` | error | owned by 031: `earlyReturn.result` carries encoded locations that differ from `outputSchema` (as `end.outputExpr`) |
 | `UNSUPPORTED_NODE` + `dependency` `SCOPED_CACHE` / `SCOPED_CONCURRENCY` | error | `cache` or node `concurrency` inside a body |
 | `UNSUPPORTED_NODE` + `dependency` `SCOPED_RATE_LIMIT` | error | US07: node `rateLimit` inside a body (G1175) |
+| `UNSUPPORTED_NODE` + `dependency` `COLLECTION_FINISH_ROUTING` | error | added 2026-11-24 (decision D022-207): `cache`, `earlyReturn` or `onFailure` in a definition with a `forEach`, `while` or `repeatUntil` node, until the finish paths are routed through the reducer (task T022-207), which removes the row |
 | `UNSUPPORTED_NODE` (capability disabled) | error | existing code: any of the four capabilities, or (US07) `rateLimits`, not enabled |
 
 ## Durable failure codes (journal, step failure, run cause)
@@ -76,6 +79,10 @@ Existing reasons reused unchanged: `IDEMPOTENCY_KEY_REUSED`, `STATE_CONFLICT`, `
 | `EXPRESSION_ERROR` | run | existing: an `earlyReturn.result` or a top-level concurrency or rate-limit key failed to evaluate |
 | `RUN_DATA_LIMIT` | run | existing: an early result over 256 KiB, or a cache-hit copy over the run's retained limit |
 | `STORAGE_QUOTA_EXCEEDED` | run | existing: the copy of a hit or an early result exceeded the tenant content quota (ADR-0027 path) |
+
+*Amended 2026-11-24 (decision D022-205):* a hit copies no bytes: it references the entry's payload row, and the consumer
+run is charged the output's logical bytes like any completion, so the two rows above read "a hit's output" for "a
+cache-hit copy" and "the copy of a hit".
 | `FAILURE_HANDLER_TIMEOUT` | handler outcome only | the handler exceeded `onFailure.timeoutMs`; the run keeps its pending status |
 
 ## Dispatch error codes (`failure_handler_dispatches.last_error_code`, closed)

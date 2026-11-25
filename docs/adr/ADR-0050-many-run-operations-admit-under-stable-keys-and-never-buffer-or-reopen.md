@@ -100,6 +100,16 @@ be delivered at creation without a buffer; `RunState::replay` rebuilds state for
 
    Recorded deviation (D2223, 2026-11-13): a batch `RERUN` item that keeps its business identifier takes the business-id row (slot 3, order (a)) and, after the new run (6), its job and item rows (8a), in the one transaction decision 2 asks for; order (a) otherwise never locks a job or an item. No cycle: no transaction that holds a job or an item row locks a business-id row or a run, and the other transactions that take a business-id row first lock no job or item.
 
+   *Amended 2026-11-24, delegate (OD-2026-11-24-4; feature 022 decision D022-214, ADR-0136 and ADR-0137 proposed):* the
+   slots of feature 022's new creators. A namespace failure-handler dispatch takes its dispatch row (`FOR UPDATE SKIP
+   LOCKED`) in slot 3, as a run-creating aggregate like a pending-reset row; the failed source run's identity guard
+   (`KEY SHARE`, ADR-0039) in 3R; the handler workflow's head in 4b; the handler run in 6; and updates its dispatch row
+   (already locked) in 8a. A draft test run takes the `fromRun` source runs (`KEY SHARE`, ascending id) in 3R and the
+   draft's workflow row (`FOR SHARE`, the revision check) in 4b, never before slot 1 as feature 022's plan row T16 first
+   said; its pin payload rows, `test_run_pins` rows and the upstream pins' `step.mocked` events are new run rows of slot
+   6, written with the run. A standalone step takes 018's business-id row in slot 3. Every one of them then takes its
+   gates in slot 7 through `Engine::start`.
+
    Transitions on an existing run (claims, completions, approvals, stream appends, operation messages,
    agent rows) start at slot 3R with the run (chain before run), then take the rows their own ADR lists
    (019 claim fences, 025 agent rows, 026 stream heads, 030 operation record and message), never a

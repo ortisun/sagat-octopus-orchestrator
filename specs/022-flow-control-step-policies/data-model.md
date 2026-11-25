@@ -6,6 +6,10 @@ with the minimum privileges listed, and has each variable-size column entered in
 `crates/infra-postgres/storage-classification.json` (ADR-0027). Classes: **content** (charged to
 `tenant_content_bytes`), **protected** (bounded by a closed schema, pattern or size check with a test).
 
+*Amended 2026-11-24 (decision D022-220):* each slice of the rest of the feature adds its own additive migration,
+numbered after the latest on the tree when it is written (`20270209000100` at `d8d3cf79`), not one migration after
+`20261220000000`.
+
 ## Domain entities and states
 
 ### Cache policy and entry
@@ -23,6 +27,9 @@ A scope can be invalidated as a whole: entries created at or before `invalidated
 and purged later. Entries are immutable.
 
 Step transitions added: `READY → SUCCEEDED` by `step.cache_hit` (no lease, attempt 0).
+
+*Amended 2026-11-24 (the rest of 022): see [Revision of 2026-11-24](#revision-of-2026-11-24-the-rest-of-022), which wins where it differs: a cacheable step waits `WAITING(CACHE_LOOKUP)` and leaves it by `step.cache_hit` or `step.cache_missed`
+(decision D022-203).*
 
 ### Early result
 
@@ -103,6 +110,9 @@ Indexes: `(tenant_id, expires_at)` for purge; `(tenant_id, source_run_id)` for e
 SELECT, INSERT, DELETE; an `ALWAYS` trigger refuses UPDATE. Byte trigger charges `output` on insert and
 releases on delete.
 
+*Amended 2026-11-24 (the rest of 022): see [Revision of 2026-11-24](#revision-of-2026-11-24-the-rest-of-022), which wins where it differs: no `output` column and no byte trigger; the entry references `payloads (tenant_id, digest)`
+(decision D022-205).*
+
 ### `step_cache_hit_provenance`
 
 PK `(tenant_id, consumer_run_id, node)`; `namespace_id`, `source_run_id`, `entry_id`, `payload_digest`,
@@ -110,6 +120,8 @@ PK `(tenant_id, consumer_run_id, node)`; `namespace_id`, `source_run_id`, `entry
 a copy of a source run's output. Index `(tenant_id, source_run_id)`. FK `(tenant_id, consumer_run_id)` →
 `runs`; no FK to the source (archival of the source must not cascade). Grants: SELECT, INSERT, DELETE.
 Protected.
+
+*Amended 2026-11-24 (the rest of 022): see [Revision of 2026-11-24](#revision-of-2026-11-24-the-rest-of-022), which wins where it differs: the foreign key to `runs` includes the namespace (decision D022-213).*
 
 ### `step_cache_store_obligations`
 
@@ -119,6 +131,8 @@ PK `(tenant_id, run_id, node, attempt)`; `namespace_id`, `scope_digest`, `key_di
 INSERT, UPDATE (lease columns), DELETE. Protected. The obligation references the completed attempt's
 payload row by FK. Erasure of the run deletes its obligations (T18); the
 writer skips an obligation whose source payload no longer exists.
+
+*Amended 2026-11-24 (the rest of 022): see [Revision of 2026-11-24](#revision-of-2026-11-24-the-rest-of-022), which wins where it differs: namespaced foreign keys, the payload referenced by `(tenant_id, payload_digest)`.*
 
 ### `concurrency_semaphores`
 
@@ -170,6 +184,8 @@ PK `(tenant_id, source_run_id)`; `namespace_id`, `shard`, `workflow_id`, `versio
 `updated_at`. FK `(tenant_id, source_run_id)` → `runs`. Index `(shard, next_attempt_at) WHERE state =
 'PENDING'`. Grants: SELECT, INSERT, UPDATE, DELETE.
 
+*Amended 2026-11-24 (the rest of 022): see [Revision of 2026-11-24](#revision-of-2026-11-24-the-rest-of-022), which wins where it differs: namespaced foreign key; the row is locked at slot 3 by the dispatcher (decision D022-214).*
+
 ### `test_run_pins`
 
 PK `(tenant_id, run_id, node)`; `namespace_id`, `source_kind` CHECK `IN ('MOCK','RUN_PIN')`,
@@ -177,6 +193,8 @@ PK `(tenant_id, run_id, node)`; `namespace_id`, `source_kind` CHECK `IN ('MOCK',
 `source_node text null`, `floor_level text null` CHECK `IN ('public','internal','pii')`, `created_at`.
 Immutable (`ALWAYS` trigger refuses UPDATE). Index `(tenant_id, source_run_id) WHERE source_run_id IS NOT
 NULL` for erasure. Grants: SELECT, INSERT, DELETE. Protected.
+
+*Amended 2026-11-24 (the rest of 022): see [Revision of 2026-11-24](#revision-of-2026-11-24-the-rest-of-022), which wins where it differs: namespaced foreign key; the payload by `(tenant_id, payload_digest)`; written at slot 6 with the run.*
 
 ### Content stores registered with 020 (FR-022-037, coordinator decision C8)
 
@@ -205,6 +223,9 @@ neither place fails 020's migration test.
 The `origin` CHECK of migration `20261125000000_database_ad_hoc` is extended with `STANDALONE_STEP` and
 `DRAFT_TEST`. All new `runs` columns are protected (closed values).
 
+*Amended 2026-11-24 (the rest of 022): see [Revision of 2026-11-24](#revision-of-2026-11-24-the-rest-of-022), which wins where it differs: `handler_for_run_id`'s foreign key includes the namespace; `test_tree` is copied by every child
+admission and never changes (decisions D022-212, D022-213).*
+
 ## Consistency invariants (checked by `verify_run` / `assert_consistent` after fault tests)
 
 1. `concurrency_semaphores.holders` = count of `concurrency_holders` for the key = open
@@ -219,8 +240,12 @@ The `origin` CHECK of migration `20261125000000_database_ad_hoc` is extended wit
 5. A dispatch `ADMITTED` names a run whose `handler_for_run_id` is the dispatch's source run.
 6. Every `step.cache_hit` and `step.mocked` references a payload retained by that run; every
    `step.cache_hit` has a matching `step_cache_hit_provenance` row.
+   *Amended 2026-11-24 (decision D022-205):* a `step.cache_hit`'s payload is the entry's payload row, referenced, not
+   copied.
 7. No row of any concurrency table carries `pool = 'ORDINARY'` for a run with `test_tree = true`, or the
    reverse.
+   *Amended 2026-11-24 (decision D022-212):* over the concurrency and rate-limit tables; checked by
+   `support::flow_control::key_consistency`.
 
 ## Retention
 
@@ -251,6 +276,9 @@ permit; after a semaphore a transaction locks only the listed transition rows (t
 policy row) and usage rows, never an existing run, count or activity-quota row. The cache rows and the
 failure-handler policy row are the transition rows ADR-0050 decision 7 lets each ADR list; ADR-0056
 decision 2 gives every path's order.
+
+*Amended 2026-11-24 (the rest of 022): see [Revision of 2026-11-24](#revision-of-2026-11-24-the-rest-of-022), which wins where it differs: the as-built order of a commit (evaluation rounds before `persist`) is restated there, and the
+failure-handler policy row is read without a lock (decision D022-208).*
 
 ## Rate limits (release 0.3.0 slice, US07)
 
@@ -399,6 +427,8 @@ rows it actually deleted.
 11. Every commit in which a step of a gated node leaves `RUNNING`/`RETRY_WAIT` towards readiness contains,
     for that step, either the grants of all its gates or a `*.queued`; no gated step is `READY` without an
     open grant for each declared gate.
+    *Amended 2026-11-24 (decisions D022-203, D022-204):* "either the grants of all its gates, a `*.queued`, a
+    `step.cache_hit` or a `step.mocked`"; a gated step that a hit or a pin completes holds no grant.
 12. Every waiter row belongs to a run that is not terminal; a breach raises `flow_control_waiter_orphaned`.
 13. At no instant does a key have more granted, unleased steps than the smallest `limit` among them.
 
@@ -481,3 +511,78 @@ rows it actually deleted.
   `next_eligible_at = clock_timestamp()` whatever it was; one queued at a full window sets `next_eligible_at =
   least(next_eligible_at, the first instant a grant the window counts for the waiter's own period ages out of it)`,
   and a hint absent becomes `clock_timestamp()`.
+
+## Revision of 2026-11-24 (the rest of 022)
+
+Decisions D022-203 to D022-219, proposed ADR-0135 to ADR-0137. Where this section and the ones above disagree, this
+section wins. Every table below is tenant-keyed, carries the namespace, references `runs` by `(tenant_id, namespace_id,
+run_id)` to `runs (tenant_id, namespace_id, id)` (constraint `runs_tenant_namespace_id_uniq`, decision D022-213) and
+`payloads` by `(tenant_id, digest)`, is created by the migration of the slice that first writes it, is granted to
+`sagat_app` with the privileges listed, and has every variable-size column in `storage-classification.json`.
+
+### Steps, added states
+
+- A node that declares `cache`: its first `step.released` in a run leads to `WAITING(CACHE_LOOKUP)`; `step.cache_hit`
+  (with `step.completed`, attempt 0) leads to `SUCCEEDED`; `step.cache_missed {outcome}` leads to `READY`, or to
+  `WAITING(RATE_LIMIT | CONCURRENCY)` when the node also declares a gate (decided in the same commit). A retry never
+  returns to `CACHE_LOOKUP`. A step committed `WAITING(CACHE_LOOKUP)` exists only while its run is paused.
+  `steps.waiting_kind` gains `CACHE_LOOKUP`.
+- A pinned node of a draft test run: an upstream pin is `SUCCEEDED` by `step.mocked` at admission; a downstream pin's
+  `step.released` leads to `SUCCEEDED` by `step.mocked` in the same commit, before any lookup or gate.
+
+### `step_cache_entries`, revised
+
+| Column | Type | Notes |
+|---|---|---|
+| `tenant_id`, `namespace_id`, `scope_digest` | | FK to `step_cache_scopes` |
+| `key_digest` | bytea | 32 bytes; PK `(tenant_id, namespace_id, scope_digest, key_digest)` |
+| `key_version` | smallint | the digest key version the key was filed under; during a rotation a lookup computes the digests of the versions in force, as a gate decision does (ADR-0093); an entry of a retired version simply misses and expires (D1168) |
+| `entry_id` | uuid | UNIQUE `(tenant_id, entry_id)` |
+| `payload_digest` | bytea | 32 bytes; FK `(tenant_id, payload_digest)` → `payloads (tenant_id, digest)`; replaces `output` and `output_digest` |
+| `carrier_digest` | bytea | 32 bytes |
+| `classification_rules` | integer | copied from the producing version |
+| `source_run_id`, `source_node`, `source_attempt`, `source_seq` | uuid, text, integer, bigint | provenance; no FK (archival of the source must not cascade); index `(tenant_id, namespace_id, source_run_id)` for erasure |
+| `created_at`, `expires_at` | timestamptz | database clock; CHECK `expires_at > created_at` |
+
+Grants: SELECT, INSERT, DELETE; an `ALWAYS` trigger refuses UPDATE. No byte trigger: the value is the producer's payload
+row, already charged. The namespace's entries are counted by a quota resource (task T022-202).
+
+### Other tables, revised
+
+| Table | Change |
+|---|---|
+| `step_cache_scopes` | `workflow_id`, `version_id` FKs include the namespace; locked `FOR UPDATE` only by an invalidation (T4), which locks nothing after it but usage rows |
+| `step_cache_hit_provenance` | PK `(tenant_id, namespace_id, consumer_run_id, node)`; FK `(tenant_id, namespace_id, consumer_run_id)` → `runs`; `payload_digest` FK to `payloads`; index `(tenant_id, namespace_id, source_run_id)` |
+| `step_cache_store_obligations` | PK `(tenant_id, namespace_id, run_id, node, attempt)`; FK `(tenant_id, namespace_id, run_id)` → `runs`; `payload_digest` FK to `payloads` |
+| `failure_handler_dispatches` | PK `(tenant_id, namespace_id, source_run_id)`; FK `(tenant_id, namespace_id, source_run_id)` → `runs`; `handler_run_id` UNIQUE `(tenant_id, handler_run_id)` and FK `(tenant_id, namespace_id, handler_run_id)` → `runs`; `config_revision` is the revision read without a lock by the terminal commit |
+| `test_run_pins` | PK `(tenant_id, namespace_id, run_id, node)`; FK `(tenant_id, namespace_id, run_id)` → `runs`; `payload_digest` FK to `payloads`; `source_run_id` without FK, index `(tenant_id, namespace_id, source_run_id) WHERE source_run_id IS NOT NULL` |
+| `namespace_failure_handlers` | FK `(tenant_id, namespace_id)` → `namespaces`; `workflow_id` FK includes the namespace; never locked by a deciding transaction (decision D022-208) |
+| `runs` | `handler_for_run_id`: FK `(tenant_id, namespace_id, handler_for_run_id)` → `runs`, UNIQUE `(tenant_id, handler_for_run_id)` where not null; `test_tree`: set at admission, copied by every child admission, immutable (trigger) |
+
+### Content stores registered (decision D022-217)
+
+Feature 020 is not on the tree. The rest of 022 creates `crates/infra-postgres/run-content-references.json` in the shape
+of 020's data model ("Reference discovery") with its own entries: `step_cache_entries.source_run_id` (hook: delete by
+source run, T18), `step_cache_hit_provenance.source_run_id` and `test_run_pins.source_run_id` (hook: list by source
+run). The payload references are foreign keys, which 020's catalog-driven discovery finds. A contract test fails when a
+022 column that references run content is neither a foreign key nor an entry of the file.
+
+### Invariants, added
+
+14. Every commit in which a step of a node that declares `cache` is first released contains, for that step, a
+    `step.cache_hit` or a `step.cache_missed`, unless its run is paused, in which case the step is
+    `WAITING(CACHE_LOOKUP)`; no step of such a node is `READY` or leased before one of them.
+15. Every `step.mocked` belongs to a run with `test_tree = true`, has a `test_run_pins` row whose `payload_digest` is its
+    payload, and no `step.leased` of that node exists in the run.
+16. Every run with `handler_for_run_id` has a dispatch row `ADMITTED` naming it, and at most one run names a given
+    failed run (the unique index).
+
+### Lock order, as built (replaces "Lock order summary" for the rest)
+
+A transition on an existing run: chain → run (a shard fence only where a pass already holds one, a leaf lock) → the
+active-run counter row when the commit ends a run that holds a permit → cache scope → cache entry (`FOR SHARE`, the
+lookup round) → semaphores, then windows, each sorted (the gates round) → `persist` (the `runs` row and the transition's
+rows; the namespace handler policy row read without a lock) → quota, rate and usage rows and the deferred content flush,
+last. A later lookup round of the same commit may read cache rows after the semaphores: the exclusive takers of cache
+rows (T3, T4, T5, T18) lock nothing after one but usage rows (ADR-0135 decision 7). An admission follows ADR-0050
+decision 7, as amended (dispatch row 3, source runs 3R, draft workflow row 4b, pins 6, gates 7).

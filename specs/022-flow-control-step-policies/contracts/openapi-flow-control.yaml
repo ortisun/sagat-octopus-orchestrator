@@ -22,6 +22,10 @@ paths:
         node's `outputSchema`), retains or reuses it per tenant, namespace, actor and canonical digest, and
         admits an ordinary run with origin `STANDALONE_STEP`. The same key and body return the same run after
         current authorization; a changed body under the key is 409. `compensateWith` is refused (422).
+        Amended 2026-11-24 (decisions D022-206, D022-209, D022-211): admitted through the one admission port
+        (`Engine::start`), so the node's `concurrency` and `rateLimit` gate it like a workflow's, with a default group
+        derived from the activity name or the script artifact's digest; an optional `businessId` with 018's conflict
+        and reuse policies; refused 422 `FLOW_CONTROL_ACTIVATION_PENDING` until `step-executions-v1` is activated.
       parameters:
         - {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/parameters/NamespaceId'}
         - {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/parameters/IdempotencyKey'}
@@ -60,6 +64,9 @@ paths:
         the publication rules (409 if the draft moved), retains a private definition (origin DRAFT_TEST,
         publisher the actor) and admits a run. Nothing is published. A test run produces no outbound
         delivery, fires no trigger and starts no namespace failure handler.
+        Amended 2026-11-24 (decisions D022-200, D022-206, D022-211, D022-212): `dev` and `staging` namespaces allow it;
+        admitted through `Engine::start`; the run and every child it starts are a test tree whose gates use the
+        `DRAFT_TEST` pool; refused 422 `FLOW_CONTROL_ACTIVATION_PENDING` until `draft-test-runs-v1` is activated.
       parameters:
         - {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/parameters/WorkflowId'}
         - {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/parameters/IdempotencyKey'}
@@ -327,6 +334,9 @@ components:
         input: {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/schemas/JsonObject'}
         timeoutMs: {type: integer, minimum: 1, maximum: 3600000, default: 300000}
         correlationId: {type: string, maxLength: 160}
+        businessId: {type: string, minLength: 1, maxLength: 200, pattern: '^[!-~]+$', description: 'Added 2026-11-24 (decision D022-209): feature 018''s business identifier (FR-018-018); at most one open execution holds it at any commit. Claimed at slot 3 of the admission order.'}
+        businessIdConflictPolicy: {type: string, enum: [FAIL, USE_EXISTING], default: FAIL, description: 'Added 2026-11-24 (decision D022-209): FR-018-019, as for startRun.'}
+        businessIdReusePolicy: {type: string, enum: [ALLOW_DUPLICATE, ALLOW_DUPLICATE_FAILED_ONLY, REJECT_DUPLICATE], default: ALLOW_DUPLICATE, description: 'Added 2026-11-24 (decision D022-209): FR-018-020, as for startRun.'}
     StartDraftTestRunRequest:
       type: object
       additionalProperties: false

@@ -76,7 +76,7 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "node": {"$ref": "#/$defs/nodeId", "description": "Entry of the handler region: a root node not reachable from the entrypoint; everything reachable from it is the region."},
+        "node": {"$ref": "#/$defs/nodeId", "description": "Entry of the handler region: a root node not reachable from the entrypoint; everything reachable from it is the region. A region of the root graph, not a named body: its nodes are root nodes for every root-only rule, so they may declare cache, concurrency and rateLimit (decision D022-210, 2026-11-24)."},
         "workflow": {"type": "string", "pattern": "^[a-z][a-z0-9-]{2,63}$", "description": "A workflow of the same namespace started as a derived child run (origin failure-handler)."},
         "version": {"type": "integer", "minimum": 1, "description": "Child form only: a pinned version; the active version at handler start when absent."},
         "input": {"$ref": "#/$defs/expression", "description": "Child form only: evaluated over the run data plus `failure`; must yield a JSON object. Default: {\"failure\": failure}."},

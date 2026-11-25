@@ -23,6 +23,13 @@ decisions 3 and 5 (accepted) is proposed as
 [ADR-0089](../../docs/adr/ADR-0089-a-gated-step-waits-outside-ready-and-one-fenced-grant-routine-serves-every-waiter-by-key.md)
 and needs the owner. ADR-0056 and ADR-0088 were accepted on 2026-11-13 (OD-2026-11-13-17).
 
+**Release 0.3.0, the rest of 022 (2026-11-24)**: the owner put the whole feature in release 0.3.0 (OD-2026-11-24-1)
+and delegated its open questions and ADR acceptances (OD-2026-11-24-4). O1160, O1161 and O1162 are answered as
+recommended (decisions D022-200 to D022-202); the requirements below that the as-built slice or the new decisions change
+carry dated amendment lines (decisions D022-203 to D022-221; proposed ADR-0135, ADR-0136 and ADR-0137). What the rest
+takes and in which order is in [Release 0.3.0, the rest of 022](#release-030-the-rest-of-022). Nothing of it is
+implemented.
+
 **Input**: Bring Windmill/Temporal flow control to the platform without changing its execution model: a
 declared **step result cache** (key = canonical input digest + pinned identity + scope, TTL, retained and
 classified entries, journaled hits, explicit invalidation); **early return** of a workflow's declared
@@ -70,6 +77,10 @@ content-store registry (FR-022-037). Business-ID
 policies for standalone executions are 018; priority/fairness keys are 019 (grants are oldest first until
 then); run-and-wait and Streams are 026 (they consume the early result); the time-skipping clock is 028;
 encrypted fields (031) are opaque to keys (FR-022-036).
+
+*Amended 2026-11-24 (decisions D022-211 and D022-217):* the one admission port is `Engine::start` (D022-049), not
+017's `RunStore::create`: standalone steps, draft test runs, namespace handler dispatch and derived `onFailure~h` children
+admit through it. Feature 020 is not on the tree: erasure acts through a 022-side port that 020 will call (gap G022-021).
 
 Rate limits (US07, added on 2026-11-13) reuse the same pieces as concurrency keys: the key expression, the
 keyed digest and its label, groups, the one admission port, the queue ceilings and the shard-fenced grant
@@ -383,6 +394,9 @@ Added after the review of 2026-11-13:
   `version` an author separator. Publication MUST refuse `cache` with `compensateWith`, `reconcileWith`,
   `irreversible` or `highRisk`, on database or other node kinds (`CACHE_WITH_EFFECT`,
   `CACHE_POLICY_INVALID`), and in bodies (`UNSUPPORTED_NODE`, dependency `SCOPED_CACHE`).
+  *Amended 2026-11-24, delegate (OD-2026-11-24-4; decision D022-207):* until the collection- and loop-finish paths are routed through
+  the reducer (task T022-207), publication also refuses `cache`, `earlyReturn` and `onFailure` in a definition with a
+  `forEach`, `while` or `repeatUntil` node (`UNSUPPORTED_NODE`, dependency `COLLECTION_FINISH_ROUTING`).
 - **FR-022-002 — Cache identity**: An entry MUST be identified by tenant, namespace, scope identity (pinned
   version, workflow or cache name), node fingerprint and key digest. The fingerprint MUST cover the
   executable identity (activity name or artifact digest), the canonical key expression, the author
@@ -393,15 +407,27 @@ Added after the review of 2026-11-13:
   retained payloads (charged like any output), journal `step.cache_hit` (entry, source run/node/attempt,
   payload digest, expiry) and the ordinary completion, and continue scheduling, with no lease or attempt.
   Replay MUST reach the same state from the journal and the run's payloads without reading the cache.
+  *Amended 2026-11-24, delegate (OD-2026-11-24-4; decisions D022-203, D022-204, D022-205; ADR-0135 proposed):* a cacheable step does
+  not become `READY` before its lookup: its first `step.released` leaves it `WAITING` (`CACHE_LOOKUP`) and the lookup
+  is an evaluation round asked before the gates round, in the commit that released it; the outcome is journaled as
+  `step.cache_hit` (with `step.completed`) or `step.cache_missed {outcome}` (`miss`, `expired`, `invalidated`,
+  `unauthorized`, `bypassed`). A hit takes no permit and no slot. "Copy the entry's output" reads "reference the
+  entry's payload": no payload row is written, and the consumer run is charged the output's logical bytes like any
+  completion. No task-ready hint is written for a step a hit completes. While its run is paused a cacheable step waits
+  for its lookup undecided and is looked up on resume.
 - **FR-022-004 — Liveness and authorization of a hit**: A hit MUST require a matching entry whose expiry is
   later than the database clock in that transaction and whose scope was not invalidated after its
   creation. For a step declaring secrets, the publisher MUST currently be allowed to use them (metadata
   check, no value resolved); otherwise it is a miss. A key error or oversized key MUST bypass the cache.
+  *Amended 2026-11-24, delegate (OD-2026-11-24-4; decision D022-203):* a step is looked up once per run; a retry is an attempt of the
+  miss. An unanswered lookup fails closed (the transaction is refused and retried), never a miss.
 - **FR-022-005 — Storing an entry**: A successful completion of a miss with an inline output MUST write a
   store obligation in its completion transaction; a leased writer MUST insert the entry from the run's
   immutable retained output, insert-if-absent, with expiry from the database clock. Storing MUST NOT fail,
   delay or roll back the step or run: quota exhaustion, blob output, a full backlog and an existing entry
   are counted outcomes. Failures, cancelled attempts and outputs refused by secret scanning are never stored.
+  *Amended 2026-11-24, delegate (OD-2026-11-24-4; decision D022-205):* the obligation and the entry reference the completed attempt's
+  payload row (`payloads (tenant_id, digest)`); the writer inserts no copy.
 - **FR-022-006 — Invalidation and retention**: An authorized principal MUST be able to invalidate by
   workflow and node (optionally one version), by key value (sent in the body, digested server-side), or by
   shared cache name. Invalidation and expiry purge MUST release bytes in the deleting transaction and MUST
@@ -410,6 +436,9 @@ Added after the review of 2026-11-13:
   `tenant_content_bytes` (ADR-0027) and in the storage classification manifest. A consuming run discloses
   a copied output only through its own pinned carrier, identical to the producer's by FR-022-002. Cache APIs
   MUST NOT disclose a value.
+  *Amended 2026-11-24, delegate (OD-2026-11-24-4; decision D022-205):* an entry's value is the producer's payload row, already charged
+  to `tenant_content_bytes`; an entry adds a fixed-size row, counted against the cache-entries ceiling, and is
+  classified in the storage classification manifest. The capability is activated as `step-cache-v1` (FR-022-031).
 
 #### Early return (US04)
 
@@ -417,10 +446,16 @@ Added after the review of 2026-11-13:
   `result` and `next`. Publication MUST refuse it outside the root graph, in a saga body, parallel branch,
   body or handler region, reachable from another `earlyReturn`, with `continueAsNew`, or when an `end` with
   `outputExpr` is reachable from it (`EARLY_RETURN_PLACEMENT`).
+  *Amended 2026-11-24, delegate (OD-2026-11-24-4; decision D022-207):* and, until task T022-207, in a definition with a `forEach`,
+  `while` or `repeatUntil` node (`UNSUPPORTED_NODE`, dependency `COLLECTION_FINISH_ROUTING`).
 - **FR-022-009 — Early-return transition**: Reaching it MUST, in one transaction, evaluate `result`, store it
   under the run-result bounds (256 KiB, content quota), set `runs.result_digest`, journal `result.returned`,
   write the `run.result_returned` outbox and delivery records, and schedule `next`. Evaluation failure MUST
   fail the run with `EXPRESSION_ERROR`, an oversized value with `RUN_DATA_LIMIT`. The status MUST NOT change.
+  *Amended 2026-11-24, delegate (OD-2026-11-24-4; decision D022-215; ADR-0136 proposed):* `result` is evaluated by the round
+  `Evaluation::EarlyResult`, and `persist` writes the rest in that commit; a test tree writes no `run.result_returned`
+  delivery (FR-022-030). The result is set once, before the run is terminal, and nothing after it changes it.
+  Activated as `early-return-v1`.
 - **FR-022-010 — Visibility of an early result**: The run resource MUST expose `resultSource`
   (`EARLY_RETURN` | `END`) and `resultAvailableAt`. The existing result disclosure MUST serve an early
   result before the run is terminal, with its existing permissions. The SSE stream and journal MUST show
@@ -438,6 +473,8 @@ Added after the review of 2026-11-13:
   default) and `timeoutMs`. A region MUST be disjoint from the graph reachable from the entrypoint, hold
   only activity, script, condition, switch, timer, parallel, child and end nodes, and its ends MUST NOT
   declare `outputExpr` (`FAILURE_HANDLER_REGION`). `onFailure` with `continueAsNew` MUST be refused.
+  *Amended 2026-11-24, delegate (OD-2026-11-24-4; decision D022-210):* the region is a region of the root graph, not a named body;
+  its nodes are root nodes for every root-only rule (they may declare `cache`, `concurrency` and `rateLimit`).
 - **FR-022-013 — Handler ordering and context**: When a run would finish with a status in `on`, the engine
   MUST first complete the existing stop (cancel unstarted work, settle in-flight attempts, finish
   compensation and reconciliation), then journal `failure_handler.started` with the pending status and
@@ -446,10 +483,16 @@ Added after the review of 2026-11-13:
   ends before it ever acquired its run permit (queue timeout, key error at admission) MUST finish directly,
   without its workflow handler, because the handler would run outside the key limit; the namespace handler
   still applies. A run holding a permit keeps it through its handler phase.
+  *Amended 2026-11-24, delegate (OD-2026-11-24-4; decision D022-216; ADR-0136 proposed):* `failure_handler.started` replaces
+  `run.finished`; the child form is created through `Evaluation::Child` and admitted through `Engine::start`; the
+  start's `concurrency.released` and `run.finished` are written in the commit of `failure_handler.finished`. "Acquired
+  its run permit" reads "was granted every gate of its start".
 - **FR-022-014 — Handler outcome**: A handler MUST NOT change the outcome: when it ends (succeeded, failed,
   timed out, cancelled) the engine MUST journal `failure_handler.finished` and finish the run with the
   pending status in the same transaction. A handler's failure MUST NOT re-invoke it. Cancellation during the
   handler MUST stop its work and finish with the pending status. `CANCELLED` runs MUST NOT start a handler.
+  *Amended 2026-11-24, delegate (OD-2026-11-24-4; decision D022-201, O1161 answered):* recovery is a handler that starts a reset or a
+  rerun as new under its own authority: an audited new run, never a change of the failed run's outcome.
 - **FR-022-015 — Namespace default handler**: An administrator MUST be able to set, read and clear one
   default handler per namespace (workflow, optional pinned version, statuses, enabled flag; optimistic
   revision, justification, audit). It applies to runs whose version declares no `onFailure` or whose
@@ -462,6 +505,10 @@ Added after the review of 2026-11-13:
   MUST retry with bounded backoff, then become `DEAD`, alerted and redrivable. Handler runs (dispatched or
   `onFailure` children), test-tree runs and cancelled runs MUST NOT be dispatched; a failed `onFailure`
   child is covered by its parent's dispatch.
+  *Amended 2026-11-24, delegate (OD-2026-11-24-4; decisions D022-208, D022-211, D022-214):* the configuration is read without a lock
+  in the terminal commit and its `config_revision` is recorded on the dispatch row; there is no policy lock. The
+  dispatcher admits through `Engine::start`, in ADR-0050's slots (dispatch row slot 3, the source run's identity guard
+  3R, the handler workflow's head 4b, the run 6, its gates 7). Activated as `failure-handler-v1`.
 
 #### Concurrency limits by key (US02)
 
@@ -486,6 +533,9 @@ Added after the review of 2026-11-13:
   it); when 019 is present, by (019 priority 1 first, enqueue time ascending) among those waiters; creating
   the waiter's first tasks and outbox; a grant and the queue timeout MUST be decided by first
   commit (ADR-0056).
+  *Amended 2026-11-24, delegate (OD-2026-11-24-4; decision D022-211):* the one admission port is `Engine::start` (D022-049); the
+  creators "022 standalone, draft-test and handler dispatch" and the derived `onFailure~h` child call it, each with a
+  run-creator conformance case (task T022-221).
 - **FR-022-019 — Step permits** *(revised 2026-11-13 after review, D022-019; changes ADR-0056 decision 3
   through the proposed ADR-0089)*: A step whose node declares `concurrency` MUST NOT become `READY` before
   it holds a permit. The transaction that would make it ready (FR-022-051) MUST acquire the permit when its
@@ -525,6 +575,11 @@ Added after the review of 2026-11-13:
   node's; retain or reuse it per tenant, namespace, actor and digest; and admit a run with origin
   `STANDALONE_STEP` in the existing admission transaction. Same key and body MUST replay after
   reauthorization; changed content MUST be `CONFLICT`.
+  *Amended 2026-11-24, delegate (OD-2026-11-24-4; decisions D022-209, D022-211; ADR-0137 proposed):* admission goes through
+  `Engine::start`, not "the existing admission transaction". The start MAY carry 018's `businessId` with
+  `businessIdConflictPolicy` and `businessIdReusePolicy` (FR-018-018..020; gap G1166 closed). The default group of the
+  node's `concurrency` or `rateLimit` is derived from the activity name or the script artifact's digest, never from the
+  private definition. Activated as `step-executions-v1`.
 - **FR-022-024 — Standalone semantics**: The node's retry, timeout, secrets, idempotency template,
   `reconcileWith`, `cache` and node `concurrency` MUST behave as in a workflow; `compensateWith` MUST be
   refused. A database node MUST keep every 017 rule; when feature 021 exists, its typed managed operation
@@ -532,6 +587,8 @@ Added after the review of 2026-11-13:
 - **FR-022-025 — Standalone operations**: Standalone runs MUST be listed (`GET /runs?origin=STANDALONE_STEP`),
   inspected, cancelled, retried and disclosed through existing routes; the five SDKs MUST offer start and
   execute-and-wait; the Studio MUST offer a start form and a list filter.
+  *Amended 2026-11-24, delegate (OD-2026-11-24-4; decision D022-220):* "the five SDKs" reads "the six SDKs" (TypeScript, Go, Python,
+  C#, Java, Rust).
 
 #### Test mode for drafts (US06)
 
@@ -540,6 +597,9 @@ Added after the review of 2026-11-13:
   revision with publication rules and enabled capabilities; retain a private definition (origin
   `DRAFT_TEST`, publisher the actor); and admit a run. A moved draft MUST be `CONFLICT`; nothing is
   published. A `prod` namespace MUST refuse (`FORBIDDEN`, `TEST_RUN_PRODUCTION_NAMESPACE`).
+  *Amended 2026-11-24, delegate (OD-2026-11-24-4; decisions D022-200, D022-211, D022-214; O1160 answered):* `dev` and `staging`
+  namespaces allow test runs; admission goes through `Engine::start`; the draft's workflow row is read `FOR SHARE` at
+  slot 4b of ADR-0050's order. Activated as `draft-test-runs-v1`.
 - **FR-022-027 — Pins and mocks**: A pin MUST be `{mock}` or `{fromRun, fromNode?}` on an activity, script,
   child or waitEvent node, or, when those features exist, on a 021 `resourceOperation`, 024 data, 025 agent
   or 030 `serviceCall` node; it is held only in the request and the run's data, never in a definition. A
@@ -548,6 +608,11 @@ Added after the review of 2026-11-13:
   MUST complete (at admission for upstream pins, else when reached) with `step.mocked` (source, payload
   digest), without lease, attempt, cache lookup, child run or wait, and MUST be excluded from compensation
   and reconciliation planning.
+  *Amended 2026-11-24, delegate (OD-2026-11-24-4; decisions D022-204, D022-214, D022-218):* a downstream pin completes in the commit
+  that releases its node, before any lookup or gate is asked, and invariant 11 admits `step.mocked` in place of grants.
+  Upstream pins (payload rows, `test_run_pins` rows, `step.mocked`) are written at slot 6 with the run. The four effect
+  kinds are not on the tree: the refusal is built as an exhaustive classification of node kinds with no effect member
+  yet (gap G022-023).
 - **FR-022-028 — Start from a chosen node**: `startAt` MUST be a root node outside saga bodies, parallel
   branches, bodies and handler regions. Each node reachable from it that references an output of a node not
   reachable from it MUST have that node pinned (`MISSING_PIN`); upstream pins MUST commit in the admission
@@ -565,6 +630,11 @@ Added after the review of 2026-11-13:
   ordinary semantics; declared secrets resolve under the actor's current `secret:use` and access lists
   (O1162). Features 026 (no approval notifications) and 020 (no export of `DRAFT_TEST` runs) apply their
   own rules to test trees.
+  *Amended 2026-11-24, delegate (OD-2026-11-24-4; decisions D022-202, D022-212, D022-219; O1162 answered):* `runs.test_tree` is set at
+  admission and copied by every child admission; every gate decision takes its pool from that flag through one function
+  (`GatePool::of_run`), never a literal; each secret resolution of an unmocked step is audited
+  (`test_run.secret_resolved`); `RESET_SOURCE_TEST_RUN` is raised by 018's reset, rerun and batch admissions in the
+  slice that adds the flag.
 
 #### Rate limits with buffering (US07)
 
@@ -683,6 +753,10 @@ Added after the review of 2026-11-13:
   or `*.queued` in the same commit; a commit that leaves a gated step released with neither is an invariant
   breach (`verify_run`). The task-ready outbox hint MUST NOT be written for a step that ends the
   transaction `WAITING`.
+  *Amended 2026-11-24, delegate (OD-2026-11-24-4; decisions D022-203, D022-204):* a gated step may also leave its readiness completed
+  by a `step.cache_hit` (asked before its gates) or a `step.mocked` (a draft test's pin), without any grant; the
+  invariant reads "its grants, a `*.queued`, a `step.cache_hit` or a `step.mocked`". The task-ready hint is written only
+  for a step that is `READY` when its commit ends.
 - **FR-022-052 — One grant routine and one timeout routine**: Every waiter, run or step, whatever its
   gates, MUST be granted by one routine and timed out by one routine. The grant routine is driven by key: a
   scheduler pass selects keys that have waiters and may have room (FR-022-047), under the fence of the
@@ -733,6 +807,9 @@ Added after the review of 2026-11-13:
   inserts into `runs`, the continue-as-new successors of `crates/infra-postgres/src/chain_progress.rs`,
   MUST assert that their definition declares no run-level gate (refused at publication, FR-022-017,
   FR-022-039). `scripts/check-architecture.py` MUST fail when `INSERT INTO runs` appears elsewhere.
+  *Amended 2026-11-24, delegate (OD-2026-11-24-4; decision D022-211):* the gate runs in `Engine::start`, as D022-049 decided for the
+  slice ("inside `PgRunStore::create`" is superseded); `run_start_errors` of `scripts/check-architecture.py` refuses a
+  domain start call outside it, and `PgRunStore::create` still refuses a gated definition a process does not serve.
 - **FR-022-060 — A grant does not re-authorize**: Admission authorizes a start; a grant from the buffer
   MUST NOT re-check the initiator's permissions (a buffered run is an admitted run, like one waiting on a
   timer), and cancelling it is the remedy for a revoked initiator. The run keeps its original initiator in
@@ -744,10 +821,17 @@ Added after the review of 2026-11-13:
   (ADR-0032). `stepCache`, `earlyReturn`, `failureHandler` and `concurrencyKeys` MUST be separately enabled;
   using a disabled one MUST fail before a version exists; disabling MUST stop new publications and starts
   while existing runs drain with compatible readers.
+  *Amended 2026-11-24, delegate (OD-2026-11-24-4; decision D022-206):* each of `stepCache`, `earlyReturn` and `failureHandler`, and the
+  surfaces of standalone steps and draft test runs, is also a capability of 018's instance-capability registry
+  (`step-cache-v1`, `early-return-v1`, `failure-handler-v1`, `step-executions-v1`, `draft-test-runs-v1`, required of
+  `CONTROL_PLANE` and `EXECUTION_ENGINE`), activated as FR-022-053 says; until activation their use is refused
+  `VALIDATION_FAILED`, `FLOW_CONTROL_ACTIVATION_PENDING`.
 - **FR-022-032 — Authorization and tenant boundary**: Operations MUST follow the plan's matrix (new
   `cache:invalidate`, `failure-handler:manage`, `step:standalone`; test runs need `definition:write` and
   `run:start`). Tenant and namespace come from the authenticated context; foreign resources MUST be opaque
   `NOT_FOUND`; replays MUST reauthorize; authorization MUST fail closed.
+  *Amended 2026-11-24, delegate (OD-2026-11-24-4; decision D022-220):* the catalog holds 53 permissions today
+  (`crates/domain/src/identity.rs`); the three new ones make 56; machine roles hold none.
 - **FR-022-033 — Observability and audit**: Each capability MUST emit the plan's spans and fixed-label
   metrics, journal events in the run transaction, and audit in the decision transaction (invalidation,
   handler configuration and redrive, standalone and test admission, pin disclosure). Metric labels MUST
@@ -761,6 +845,7 @@ Added after the review of 2026-11-13:
   fields and offer standalone, test-run, result-wait and invalidation calls, passing shared conformance.
   The Studio MUST author the same IR, show hits, mocks, early results, handler phases and waits from the
   journal, and show unknown capabilities as unsupported, never with sample values (FR-007-010).
+  *Amended 2026-11-24, delegate (OD-2026-11-24-4; decision D022-220):* "the five SDKs" reads "the six SDKs", as FR-022-050 says.
 - **FR-022-036 — Encrypted payloads**: With feature 031, this feature's positions and write paths are
   entries of 031's encoded-field registry (`specs/031-client-side-encryption/contracts/workflow-encoding.md`,
   shared check §5): publication MUST refuse a cache key over an encoded location with
@@ -778,6 +863,11 @@ Added after the review of 2026-11-13:
   020 erases a run, every cache entry whose `source_run_id` is that run and every pending store obligation
   of it MUST be deleted (no later hit may copy it), and the runs that already received a copy (hit
   provenance, `fromRun` pins) MUST be discoverable by source run for 020's erasure to act on.
+  *Amended 2026-11-24, delegate (OD-2026-11-24-4; decisions D022-205, D022-213, D022-217):* cache entries hold no inline copy: they
+  reference the producer's payload row by foreign key, so 020's discovery finds them; their `source_run_id` (no foreign
+  key, archival must not cascade) is registered with the hook "delete by `source_run_id`". 020 is not on the tree: a
+  022-side port deletes a source run's entries and pending obligations and lists the runs that received a copy, and
+  022 creates the registry file with its own entries; SC-022-016 stays pending until 020 calls the port (gap G022-021).
 - **FR-022-038 — Reset rules**: Every journal event type this feature adds MUST declare its reset rule in
   018's reset-rule registry (`COPY`, `REMATERIALIZE`, `EXCLUDE`, `REFUSE`), as listed in
   `contracts/journal-events.md`: permit events and `result.returned` are re-materialized by the reset
@@ -852,6 +942,7 @@ All criteria are future evidence; none is satisfied by this document.
   unadmittable handler becomes `DEAD`, alerts and can be redriven. (FR-022-015, FR-022-016)
 - **SC-022-007**: In all five SDKs an early result is disclosed while the run runs and remains the result
   after a later failure or cancellation. (FR-022-008..011)
+  *Amended 2026-11-24 (decision D022-220):* in all six SDKs.
 - **SC-022-008**: Standalone activity, script and database steps survive a lost response, duplicate request,
   worker crash and cancellation, and their results equal a one-node published workflow's. (FR-022-023..025)
 - **SC-022-009**: A draft test from a chosen node creates zero leases for pinned nodes, refuses missing pins,
@@ -862,6 +953,8 @@ All criteria are future evidence; none is satisfied by this document.
 - **SC-022-011**: Every ceiling has a test at and over its bound; zero refuses. (FR-022-034)
 - **SC-022-012**: The five SDKs emit byte-identical canonical IR for the shared fixtures and identical
   normalized observations for the six conformance scenarios. (FR-022-035)
+  *Amended 2026-11-24 (decision D022-220):* the six SDKs, for the seven scenarios of `contracts/conformance.md`
+  (the slice added `flow-rate-limit`).
 - **SC-022-013**: Old fixture corpora publish and replay unchanged with each capability enabled and disabled;
   disabling refuses new publication while active runs finish. (FR-022-031, FR-022-036)
 - **SC-022-014**: The benchmark report states environment, measured latencies and failures, with no number
@@ -875,6 +968,8 @@ All criteria are future evidence; none is satisfied by this document.
 - **SC-022-016**: After 020 erases a source run, no cache entry or pending store obligation from it
   remains, the next lookup misses, the manifest-driven reference check reports no unregistered
   referencing column, and every consumer copy is listed by source run. (FR-022-037)
+  *Amended 2026-11-24 (decision D022-217):* pending until feature 020 calls the 022-side port (gap G022-021); until
+  then the evidence is the port's own test against the registry file and the next lookup's miss.
 
 - **SC-022-017**: With `limit: 10, per: second` and 1,000 same-key starts, across an engine restart, no
   one-second interval of the journals holds more than 10 grants of the key, grants follow admission order,
@@ -934,6 +1029,8 @@ All criteria are future evidence; none is satisfied by this document.
 - A failure handler never changes the outcome (O1161) and does not run for `CANCELLED`.
 - Draft test runs never run in `prod` namespaces (O1160); unmocked steps are real executions with real
   effects in the chosen non-production namespace.
+- *Amended 2026-11-24:* O1160, O1161 and O1162 are answered as these assumptions say (decisions D022-200 to D022-202,
+  delegate, OD-2026-11-24-4). The business-ID policies of 018 exist: a standalone step accepts them (D022-209).
 - The idempotency key identifies a standalone execution until 018 adds business-ID policies; grants are
   oldest first until 019 adds priority.
 - A rate limit bounds when work becomes eligible (a run's start, a step's lease), not how long the work
@@ -972,6 +1069,8 @@ O1162 (secrets in draft test runs), each with a recommended default. For the 0.3
 window" means), O1164 (what the buffer guarantees), O1165 (a full buffer), O1166 (whether a retry takes a
 slot), O1167 (rate limits inside collections), O1168 (whether a reset may wait), each with options and a
 recommendation; the owner accepted all six recommendations on 2026-11-13 (OD-2026-11-13-16).
+*Amended 2026-11-24:* O1160, O1161 and O1162 are answered by delegation (OD-2026-11-24-4), each with its
+recommended option (a) (decisions D022-200 to D022-202).
 
 ## Release 0.3.0 slice
 
@@ -994,3 +1093,36 @@ writer; the rule "no workflow handler without a permit" (D1197) has nothing to a
 permissions `cache:invalidate`, `failure-handler:manage` and `step:standalone` are not added. The tasks of
 the slice are listed in [tasks.md](tasks.md#release-030-slice-us02-and-us07) and its plan in
 [plan.md](plan.md#release-030-slice).
+
+*Amended 2026-11-24 (OD-2026-11-24-1):* the stories and requirements this section leaves out are now in release 0.3.0
+too; see the next section.
+
+## Release 0.3.0, the rest of 022
+
+Decided by the owner on 2026-11-24 (OD-2026-11-24-1, "Inclua tudo na 0.3.0"), with the design questions delegated
+(OD-2026-11-24-4). The approved requirements above stand, as amended on 2026-11-24.
+
+| In release 0.3.0 now | Requirements | Success criteria | Design |
+|---|---|---|---|
+| US01 — the step result cache | FR-022-001..007 | SC-022-001, SC-022-002 | ADR-0135 (proposed) |
+| US03 — failure handlers | FR-022-012..016 | SC-022-005, SC-022-006 | ADR-0136 (proposed) |
+| US04 — early return | FR-022-008..011 | SC-022-007 | ADR-0136 (proposed) |
+| US05 — standalone steps | FR-022-023..025 | SC-022-008 | ADR-0137 (proposed) |
+| US06 — draft test runs | FR-022-026..030 | SC-022-009 | ADR-0137 (proposed) |
+| Cross-cutting for these stories | FR-022-031..035, FR-022-037, FR-022-038 | SC-022-010..016 | decisions D022-206, D022-211..213, D022-217 |
+
+What the rest of the feature changes in the as-built engine, in order of the commit:
+
+1. **Admission** goes through the one port `Engine::start` for every new creator (standalone, draft test, handler
+   dispatch, the derived handler child), in the slots of ADR-0050 decision 7 as amended (D022-211, D022-214).
+2. **Evaluation rounds before `persist`**, in this order: the lookup round (`Evaluation::CacheLookup`, D022-203), then
+   the gates round (`Evaluation::Gates`, ADR-0094), each asked once the planner has nothing else to emit; the early
+   result (`Evaluation::EarlyResult`) and a handler child (`Evaluation::Child`) are asked where the planner reaches them.
+   A hit or a mock completes a step before its gates are asked, so it takes no permit and no slot (D022-204).
+3. **`persist`** writes the transition, the result, the handler phase's events and the namespace dispatch row (the
+   policy row read without a lock, D022-208), and announces only a step that is `READY` when the commit ends.
+4. **Every end of a run** goes through the reducer: the collection- and loop-finish paths are routed (D022-207).
+
+Still pending on another feature: FR-022-036 (031, gap G022-022), SC-022-016 (020, gap G022-021), and the effect kinds
+of `TEST_RUN_UNMOCKED_EFFECT` (021, 024, 025, 030; gap G022-023). The plan is in
+[plan.md](plan.md#release-030-the-rest-of-022) and the slices in [tasks.md](tasks.md#release-030-the-rest-of-022-od-2026-11-24-1).

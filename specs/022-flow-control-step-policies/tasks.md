@@ -635,3 +635,160 @@ Added for the findings recorded in `reviews/2026-11-13/` (D022-019..034). The sl
 - US02 and US07 share T022-096 (readiness gate), T022-097 (grant) and T022-098 (timeout); T022-022 and
   T022-072 each land their invariants (D022-033); T022-099 and T022-100 after T022-096.
 - T022-101..106 after the codec (T022-069) and the gate (T022-096).
+
+## Release 0.3.0, the rest of 022 (OD-2026-11-24-1)
+
+Added on 2026-11-24. The owner put the rest of the feature in release 0.3.0 (OD-2026-11-24-1) and delegated its
+design questions (OD-2026-11-24-4); the decisions are D022-200 to D022-221 in `research.md`, the plan is the section
+"Release 0.3.0, the rest of 022" of `plan.md`, and the design is in ADR-0135, ADR-0136 and ADR-0137 (proposed). The task
+texts above are not edited and no task is ticked by this section: it orders the open tasks into slices, says how each
+reads on the as-built engine, and adds the follow-up tasks T022-200 to T022-223. A slice is one reviewed pull request;
+it closes a task only with the task's evidence and the slice's.
+
+**Evidence every behaviour slice brings**, besides what its tasks name: the named tests, run against real PostgreSQL as
+the schema owner and as `sagat_app` (`SAGAT_TEST_AS_RUNTIME_ROLE=1`), each seen failing first for the right reason; a
+hand mutation of each new rule caught by a test; `World::assert_consistent` after every test (with the invariants the
+slice adds to `verify_run`); the hot-path budget lines of the plan's table that the slice adds, recorded in the plan
+before the test and unchanged lines for a definition without the slice's fields (`integration_claim_transition_efficiency`);
+the fault cases named, races held by locks or barriers, never sleeps; `python3 scripts/check-architecture.py` and its
+tests; the independent architecture, correctness and security reviews, their findings answered in `research.md`.
+
+### Existing tasks, as they read now
+
+| Task | Reads now as | Decision |
+|---|---|---|
+| T022-001 | O1160 to O1162 answered by delegation; the ADRs are 0135 to 0137, accepted or rejected by the coordinator (T022-200) | D022-200 to D022-202 |
+| T022-011 | a catalog of 56 entries (53 on the tree plus three), not 51 | D022-220 |
+| T022-016 | the lookup round of ADR-0135 (`Evaluation::CacheLookup`, before the gates), not "inside the readiness transaction" | D022-203, D022-204 |
+| T022-017 | the writer is a pass of `crates/scheduler/src/passes.rs`; the entry references the payload row | D022-205, D022-220 |
+| T022-022's creators | the four new creators admit through `Engine::start` (T022-221) | D022-211 |
+| T022-033 | the dispatcher is a pass of `crates/scheduler/src/passes.rs`, admitting through `Engine::start` | D022-211, D022-214 |
+| T022-039, T022-042 | admission through `Engine::start`, not the 017 `RunStore::create` order; T16 at the slots of D022-214 | D022-211, D022-214 |
+| T022-048 to T022-053 | six SDKs (Rust is T022-220); `sdk_conformance -- --ignored` in six languages | D022-220 |
+| T022-063 | the 022-side port and registry file (T022-212); SC-022-016 reported pending until 020 calls it | D022-217 |
+
+### Slice 1: documents (this change)
+
+Closes no task. Brings decisions D022-200 to D022-221, ADR-0135 to ADR-0137 (proposed), the amendments of `spec.md`,
+`plan.md`, `data-model.md` and `contracts/`, and dated amendments to ADR-0050 decision 7, ADR-0056 decision 2 and ADR-0094
+decision 4. Evidence: `python3 scripts/check-docs-index.py`, `check-plain-words.py`, `check-docs-first.py`,
+`check-agent-config.py` and `check-design-docs.py` pass.
+
+- [ ] T022-200 The coordinator's review and acceptance of ADR-0135, ADR-0136 and ADR-0137 and of the four ADR amendments, after independent architecture, correctness and security reviews of this slice (reports in `reviews/`); each act recorded as "delegate (OD-2026-11-24-4)"; T022-001 then ticked with the recorded answers. All FR of US01, US03 to US06. Owner-gate: every task below that builds behaviour. Evidence: the review reports, their answers in `research.md`, the ADR status lines set.
+
+### Slice 2: foundations
+
+Closes T022-011. Adds the registry capabilities, the quotas, the fixtures, the vocabulary and the two fitness rules
+every later slice needs; builds no behaviour a run can reach.
+
+- [ ] T022-201 Registry capabilities `step-cache-v1`, `early-return-v1`, `failure-handler-v1`, `step-executions-v1`, `draft-test-runs-v1` (`Capability` values, their migration, 018's rule 5 listing them, the per-process switches of the plan's table); `FLOW_CONTROL_ACTIVATION_PENDING` for each until activation; `failure-handler-v1` and `early-return-v1` refused activation while a live process lacks the finish-path routing (T022-207). FR-022-031; D022-206. Evidence: as T022-094 for each capability (activation refused while a live engine lacks it, use refused before, `503`/`BINARY_CAPABILITY_MISSING` after, a disabled switch `CAPABILITY_DISABLED`), `integration_schedules_bulk_operations -- instances`.
+- [ ] T022-202 Quota resources and ceilings of the rest (the rest of T022-013): cache entries and pending store obligations per namespace, cached nodes and `earlyReturn` nodes per definition, pending handler dispatches per namespace, active draft test runs per namespace and per actor, pins and pin bytes per test run; the OpenAPI enums and the `CHECK` lists pinned to `QuotaResource::ALL`. FR-022-034; SC-022-011. Evidence: at and over each bound, zero refuses; `contract_flow_control_step_policies::quotas`; the baseline read as T022-013 did.
+- [ ] T022-203 [P] Fixtures of the rest (the rest of T022-002): `order-intake.workflow.json` and one invalid document per publication rule of `contracts/errors.md` for `cache`, `earlyReturn` and `onFailure`, including `COLLECTION_FINISH_ROUTING`; the pending list of `ir.rs` covers each until its codec lands. FR-022-001, 008, 012, 034. Evidence: `contract_flow_control_step_policies` with each new rule listed or covered.
+- [ ] T022-204 The gate pool from the run: `GatePool::of_run` (from `runs.test_tree`, `ORDINARY` until T022-217 adds the column) threaded through every decision, grant, timeout, listing and journal event of `readiness_gate.rs`, `gate_queue.rs`, `maintenance.rs`, `event_codec.rs` and `flow_control_keys.rs`; a rule of `scripts/check-architecture.py` refusing a pool literal outside it. FR-022-020, FR-022-030; D022-212. Evidence: the flow-control suites unchanged and green; the rule's test with a negative fixture; a seeded `DRAFT_TEST` row granted only to a test-tree waiter (invariant 7).
+- [ ] T022-205 [P] A rule of `scripts/check-architecture.py` refusing a migration of feature 022 whose foreign key to `runs` omits the namespace, with its tests. D022-213. Evidence: `python3 -m unittest scripts.tests.test_check_architecture` with a negative fixture.
+- [ ] T022-206 The interim publication refusal: `cache`, `earlyReturn` or `onFailure` in a definition with a `forEach`, `while` or `repeatUntil` node is refused `UNSUPPORTED_NODE`, dependency `COLLECTION_FINISH_ROUTING`, until T022-207 removes it. FR-022-001, 008, 012; D022-207; gap G022-025. Evidence: the fixture of T022-203 refused before a version exists.
+- [ ] T022-222 [P] The rest of the closed telemetry vocabulary (the rest of T022-014): `step_cache_*`, `early_returns_total`, `failure_handler_*`, `standalone_steps_total`, `test_runs_total` and the spans of the plan, with the audit actions. FR-022-033. Evidence: `cargo test -p sagat-telemetry --test flow_control_vocabulary` rejects an unknown label.
+- [ ] T022-223 [P] The rest of the error rows (the rest of T022-012): every REST refusal of `contracts/errors.md` for the rest, mapped in `crates/api-http/src/error.rs`. FR-022-034. Evidence: one contract test per row; `the_error_catalog_of_the_sdks_is_unchanged`.
+
+Evidence of the slice: T022-011's catalog test (56 entries, machine roles none) and the tasks' evidence above.
+
+### Slice 3: the finish-path routing (gap G1197)
+
+- [ ] T022-207 Route the collection finish (`crates/infra-postgres/src/primitives.rs`) and the loop finish (`loop_progress.rs`, and the part of `crates/scheduler/src/passes.rs` that drives them) through the planner and `persist` (plan row T31): the successor's release decided by the rounds, the run's end written by `persist` with T8's records; remove the `RuntimeNotIntegrated` refusal of a gated successor, D022-049's refusal of a start gate with a collection or loop, and T022-206's refusal. FR-022-051; ADR-0094 decision 4 as amended; D022-207. Evidence: one test per finish path and successor kind (an `end`, a gated step, a plain step, a run end with a start permit released), `verify_run`, a crash at the finish commit (`fault_flow_control_step_policies`), the collection and loop finish budget lines recorded against today's, owner and runtime role.
+
+### Slices 4 and 5: US04, early return
+
+Slice 4 closes T022-035.
+
+- [ ] T022-208 [US4] The `earlyReturn` kind in the IR codec and the domain (placement rules, `EARLY_RETURN_PLACEMENT`), the capability `earlyReturn`, `Evaluation::EarlyResult`, the event `result.returned` with its reset rule `REMATERIALIZE`, the migration of `runs.result_source` and `result_available_at`, their classification. FR-022-008, 009, 038; D022-215. Evidence: codec tests over the fixtures; one replay test per event; the reset corpus case.
+
+Evidence of slice 4: T022-035's replay and invariant 3 in `verify_run`, a crash at T6, the budget line "a completion that reaches `earlyReturn`".
+
+Slice 5 closes T022-036, T022-037 and T022-038. Evidence: the early result disclosed while the run is `RUNNING`
+(REST, SSE), kept after a later failure and a cancellation, `run.result_returned` written in T6 and none for a test tree
+(checked again by slice 19), each placement refusal; owner and runtime role.
+
+### Slices 6 to 9: US01, the step result cache
+
+Slice 6 closes T022-015.
+
+- [ ] T022-209 [US1] The `cache` declaration in the IR codec and the domain (`CACHE_POLICY_INVALID`, `CACHE_WITH_EFFECT`, `SCOPED_CACHE`), the capability `stepCache`; the migration of `step_cache_scopes`, `step_cache_entries` (by payload reference), `step_cache_hit_provenance` and `step_cache_store_obligations` with namespaced foreign keys and their classification; the events `step.cache_hit` and `step.cache_missed` with their reset rules; the reducer's `WAITING(CACHE_LOOKUP)` and `Evaluation::CacheLookup`. FR-022-001..003, 038; ADR-0135 decisions 1, 2 and 8; D022-203, D022-205. Evidence: `crates/domain/tests/step_cache.rs` (the reducer never `READY` before a decision; asked once; a retry not looked up again); the migration's up and down (down refuses while rows exist), owner and runtime role.
+
+Slice 7 closes T022-016 and T022-018.
+
+- [ ] T022-210 [US1] The lookup round's adapter and `persist`'s rules: the hit in the releasing commit (no lease, attempt, permit or slot), a miss reaching its gates in the same commit, the task-ready hint only for a step `READY` at the end of its commit, `persist` refusing an undecided lookup except while paused, the resume asking it; invariant 11 as amended and invariant 14 in `verify_run`. FR-022-003, 004, 051; ADR-0135 decisions 3 to 6; D022-203, D022-204. Evidence: one test per readiness source; a seeded commit without a decision refused by `verify_run`; no `task.ready` delivery for a step a hit completes (red on today's hint rule); a paused run looked up on resume; the three budget lines of the plan's table.
+
+Slice 8 closes T022-017 and T022-019.
+
+- [ ] T022-211 [US1] The rule of `scripts/check-architecture.py` that only the invalidation, purge, erasure and store-writer files lock a cache row exclusively and that they lock no run, semaphore, window or counter row after one; the later lookup round of one commit tested against an invalidation holding the scope row. ADR-0135 decision 7; D022-204. Evidence: the rule's test with a negative fixture; a barrier test with a held scope lock and a `pg_blocking_pids` probe, no deadlock.
+
+Slice 9 closes T022-020 and T022-063 (SC-022-016 reported pending, not passed).
+
+- [ ] T022-212 [US1] The 022-side erasure port (application port and PostgreSQL adapter, T18): delete a source run's cache entries and pending store obligations, list the runs that received a copy (hit provenance, `fromRun` pins) by source run; `crates/infra-postgres/run-content-references.json` created in the shape of 020's data model with 022's entries; a contract test that every 022 column referencing run content is a foreign key or an entry. FR-022-037; D022-217; gap G022-021. Evidence: erasure then the next lookup misses; the contract test red with an entry removed by hand.
+
+### Slices 10 to 13: US03, failure handlers
+
+Slice 10 closes T022-030.
+
+- [ ] T022-213 [US3] The `onFailure` declaration in the IR codec and the domain (`FAILURE_HANDLER_REGION`, a root-graph region whose nodes keep the root-only rules), the capability `failureHandler`; the migration of `runs.failure_handler_state`, `pending_terminal_status` and `handler_for_run_id` (namespaced foreign key, unique), `namespace_failure_handlers` and `failure_handler_dispatches`; the events `failure_handler.started` and `failure_handler.finished` with their reset rules. FR-022-012..014, 038; ADR-0136 decisions 1 to 4; D022-210, D022-216. Evidence: domain tests per `on` status, a timed-out waiter finishing directly, the reset corpus refusing every point inside the phase.
+
+Slice 11 closes T022-031. Evidence: invariant 4 in `verify_run`; a handler step that declares `concurrency` waiting
+for its gate in the phase; the start's permit kept through the phase and released with `run.finished`; the budget lines
+"a completion that enters a handler phase" and "one that ends a run `FAILED` in a namespace with a default handler".
+
+Slice 12 closes T022-032 and T022-033.
+
+- [ ] T022-214 [US3] The dispatcher as a pass of `crates/scheduler/src/passes.rs` admitting through `Engine::start` in the slots of ADR-0050 decision 7 as amended (dispatch row 3, source identity 3R, handler head 4b, run 6, gates 7, the row's update 8a); the terminal commit's plain read of the policy row with its `config_revision`; the slot-order reference of `tests/fault/schedules-bulk-operations/slot_order.rs` extended to the dispatch. FR-022-016; ADR-0136 decision 5; D022-208, D022-214; gap G022-024. Evidence: exactly one handler run per failure; a configuration cleared in both orders against a terminal commit held by a barrier; the slot-order case without deadlock; invariants 5 and 16.
+
+Slice 13 closes T022-034.
+
+- [ ] T022-215 [US3] Recovery by a new run: a handler run that starts a reset or a rerun as new under its publisher's authority produces an audited new run with provenance and leaves the failed run's outcome unchanged; refused without `run:operate`. FR-022-014; D022-201. Evidence: an integration test per path (reset, rerun), the audit rows, the source's status unchanged.
+
+### Slices 14 and 15: US05, standalone steps
+
+Slice 14 closes T022-039.
+
+- [ ] T022-216 [US5] Standalone admission through `Engine::start` with 018's `businessId`, `businessIdConflictPolicy` and `businessIdReusePolicy`, the origin `STANDALONE_STEP` added to the run origins, the capability `step-executions-v1`, and the default gate group derived from the executable identity (its spelling fixed here, never equal to a group a published workflow can derive, within 130 characters, accepted by the listings' `group` filter). FR-022-023, 024; D022-209, D022-211; gap G1166 closed. Evidence: a second start with an open holder refused `BUSINESS_ID_IN_USE`, `USE_EXISTING` returning the holder; two actors' executions of one activity sharing one key; the collision test; the budget line "a standalone admission".
+
+Slice 15 closes T022-040 and T022-041. Evidence: as written, and `database-executions` unchanged on the shared path
+(`tests/integration/database-connections`).
+
+### Slices 16 to 19: US06, draft test runs
+
+Slice 16 closes T022-042.
+
+- [ ] T022-217 [US6] The test-tree flag: `runs.test_tree` (set at admission of a `DRAFT_TEST` run, copied by every child admission, immutable by trigger), the origin `DRAFT_TEST`, the capability `draft-test-runs-v1`, and `GatePool::of_run` reading the flag (T022-204). FR-022-026, 030; D022-212. Evidence: a child of a test run filed under `DRAFT_TEST`; an update of the flag refused; invariant 7.
+- [ ] T022-218 [US6] The `TEST_RUN_UNMOCKED_EFFECT` mechanism: an exhaustive classification of node kinds (no effect kind on the tree today) and the refusal naming the node; a test that fails to compile when a kind is added without a class. FR-022-027; D022-218; gap G022-023. Evidence: the classification test; a fixture kind classified as an effect in a test build refuses an unpinned draft.
+
+Evidence of slice 16: one test per refusal of T022-042 (`prod` refused before any row, `dev` and `staging` admitted,
+a moved draft `CONFLICT`, `INVALID_START_NODE`, `MISSING_PIN`); the draft workflow row read at slot 4b (the slot-order
+reference extended); the budget line "a draft test admission with two upstream pins".
+
+Slice 17 closes T022-043. Evidence: zero leases for pinned nodes; a downstream pin completed before any lookup or gate,
+a gated pinned node holding no permit (invariant 11 as amended, invariant 15); compensation skipping mocked steps.
+
+Slice 18 closes T022-044 and T022-046. Evidence: as written, with the tenant battery for the route (T022-058).
+
+Slice 19 closes T022-045 and T022-047.
+
+- [ ] T022-219 [US6] Secrets of unmocked steps under the actor's current `secret:use` and access lists, each resolution audited `test_run.secret_resolved` (name and version, never a value); `RESET_SOURCE_TEST_RUN` raised by 018's reset, rerun and batch admissions for a test-tree source. FR-022-030; D022-202, D022-219. Evidence: a revoked right refused at the next resolution; one audit row per resolution; the three 018 refusals; `contract_schedules_bulk_operations` with the reason raised.
+
+### The surfaces
+
+- [ ] T022-220 [P] Rust SDK builders and client calls of the rest (`cache`, `onFailure`, `earlyReturn`, `startStepExecution`, `executeStep`, `startTestRun`, `awaitResult`, `invalidateStepCache`), as T022-048..052 for the other five; the four Rust lock files moved together. FR-022-035; D022-220. Evidence: unit tests; the canonical fixture byte-identical.
+- [ ] T022-221 Run-creator conformance for the four new creators (standalone, draft test and its children, handler dispatch, the derived `onFailure~h` child) in `tests/integration/flow-control-step-policies/run_creators.rs`, each admitted through its key or queued, and failing when the creator bypasses `Engine::start`. FR-022-018; D022-211. Evidence: one case per creator; a hand mutation starting a run around the port caught.
+
+The surfaces also close T022-048 to T022-053 (six languages, the seven scenarios of `contracts/conformance.md`),
+T022-054 to T022-056 (Studio), T022-057 (CLI), T022-058 (battery and canaries for every new route), T022-059 (restart
+end to end with pending obligations, dispatches and a handler in progress), T022-060 (the fragments merged into the
+canonical contracts, baselines read before they move), T022-061 (runbook: `failure_handler_dead`, `cache_store_backlog`,
+redrive, G022-024), T022-062 (benchmark of the lookup and the dispatch) and T022-065 (final gates). Each is ticked with
+its own evidence, as written.
+
+### Order of the rest
+
+- T022-200 first (owner gate). Slice 2 next; T022-204 and T022-205 before any migration of slices 4 to 19.
+- Slice 3 (T022-207) before slices 4 to 13: every end of a run must go through the reducer first.
+- US04 (slices 4, 5) → US01 (slices 6 to 9) → US03 (slices 10 to 13) → US05 (slices 14, 15) → US06 (slices 16 to 19).
+- Surfaces after the story they show; T022-221 after slices 12, 14 and 16; T022-060 before T022-065.
+- Parallel: T022-203, T022-205, T022-222, T022-223 within slice 2; T022-220 and the SDK tasks per language.

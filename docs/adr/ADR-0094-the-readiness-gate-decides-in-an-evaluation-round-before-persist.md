@@ -33,6 +33,14 @@ each gated step. Building it (T022-096) showed two things that decision does not
 4. Every consumer of `Progress::pending` answers `Evaluation::Gates` or refuses (fail closed). The collection- and
    loop-finish paths, which write their successor's step row directly, refuse a gated successor (G1197) until they are
    integrated with the round.
+   *Amended 2026-11-24, delegate (OD-2026-11-24-4; feature 022 decisions D022-203, D022-207 and D022-215, ADR-0135 and
+   ADR-0136 proposed):* the rule covers every round the rest of feature 022 adds: `Evaluation::CacheLookup` (asked before
+   `Evaluation::Gates`) and `Evaluation::EarlyResult`. Every consumer of the pending progress answers them or refuses
+   its command. The collection- and loop-finish paths are routed through the reducer (task T022-207) instead of refusing:
+   their successor's release and the run's end are then decided by the rounds and written by `persist`, like every
+   other commit, which closes G1197. Until that routing lands, publication refuses `cache`, `earlyReturn` and
+   `onFailure` in a definition with a `forEach`, `while` or `repeatUntil` node (`UNSUPPORTED_NODE`, dependency
+   `COLLECTION_FINISH_ROUTING`), so no run reaches a path that cannot serve them.
 
 ## Alternatives
 

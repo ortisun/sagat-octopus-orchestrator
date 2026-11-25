@@ -19,6 +19,13 @@ reviewed). Each SDK must also emit byte-identical canonical IR for the authoring
 Release 0.3.0 slice (US02 and US07, D022-016): `flow-concurrency` above and the scenario below run in
 **six** languages (TypeScript, Go, Python, C#, Java, Rust); the other five scenarios wait for their stories.
 
+*Amended 2026-11-24 (OD-2026-11-24-1; decisions D022-209, D022-220):* every scenario of this file runs in the six
+languages, the five of the rest included, as their stories land. `flow-cache` also asserts that the hit's run has no
+`step.leased` and that the hit's step was never announced (no task-ready delivery), and that a run of the other key has
+`step.cache_missed` with outcome `miss`. `flow-standalone` also starts with a `businessId`: a second start with the same
+id while the first is open is `409 BUSINESS_ID_IN_USE` (`businessIdConflictPolicy: FAIL`), or returns the first run with
+`USE_EXISTING`.
+
 | Scenario | Steps | Normalized observations |
 |---|---|---|
 | `flow-rate-limit` | publish a workflow with top-level `rateLimit: {key, limit: 2, per: "second"}` and one activity with node-level `rateLimit: {limit: 1, per: "second"}`; start five runs of one key and one of another key at once; cancel the fifth while buffered; wait for the rest | runs 1–2 have `rate_limit.granted` with `from_queue: false` and never waited; runs 3–4 have `rate_limit.queued` then `rate_limit.granted` with `from_queue: true`, in admission order; no one-second interval holds more than 2 run-scope `granted_at_us` of the key nor more than 1 `step.leased` of the activity's key; the other key's run never waited for the run-level limit; run 5 is `CANCELLED` with `rate_limit.dequeued` and no grant; a buffered run reports `rateLimit.state=WAITING` with a `position` |
@@ -35,7 +42,8 @@ SDK surface added (names per language idiom; semantics identical):
 - Builders: `cache({key, ttlSeconds, scope, name, version})`, `concurrency({key, limit, group,
   queueTimeoutMs})` on activity/script steps and at workflow level, `onFailure(node | workflow, {on,
   timeoutMs, input})`, `earlyReturn(id, result)`.
-- Client: `startStepExecution(step, input, options)` and `executeStep(...)` (start then await result),
+- Client: `startStepExecution(step, input, options)` and `executeStep(...)` (start then await result; `options` carries
+  the idempotency key and 018's `businessId` with its conflict and reuse policies, added 2026-11-24),
   `startTestRun(workflowId, {draftRevision, input, startAt, pins})`, `awaitResult(runId, {timeout})`
   (follows run state until `resultAvailableAt` or a terminal status, then discloses the result; a client
   timeout stops waiting, never the run), `invalidateStepCache(target, reason)`.
