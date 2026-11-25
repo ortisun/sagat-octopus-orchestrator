@@ -1,8 +1,8 @@
 # ADR-0134: A ready step wakes parked streams after its commit, and a completion may lease the next step of the run to the session that completed
 
 **Status:** Proposed (2026-11-24)
-**Decided by:** agent proposal (design 051, Part B), to be accepted under Owner decision 2026-11-24-4 once design 051's review is complete
-**Refines / supersedes:** refines [ADR-0029](ADR-0029-worker-task-streams-spend-finite-receive-credit.md) (a stream also claims on a wake, not only after its idle interval) and [ADR-0015](ADR-0015-sdks-meet-the-server-by-minor-version-and-are-held-to-one-conformance-suite.md) (protocol minor 1.8 adds `want_next` and `next_task`); supersedes nothing
+**Decided by:** agent proposal (design 052, first drafted as part B of design 051), to be accepted under Owner decision 2026-11-24-4 once design 052's review is complete; design 051's first review found it not ready, and design 052 answers those findings
+**Refines / supersedes:** refines [ADR-0029](ADR-0029-worker-task-streams-spend-finite-receive-credit.md) (a stream also claims on a wake, not only after its idle interval) and [ADR-0015](ADR-0015-sdks-meet-the-server-by-minor-version-and-are-held-to-one-conformance-suite.md) (the protocol minor after delivery acknowledgement's, which holds 1.8, adds `want_next`, `session_token`, `next_task` and `next_declined`); supersedes nothing
 **Enforced by:** the wake tests and the lost-wake test (Task 051-24), the cross-process wake test (Task 051-25), the conformance scenario `next-task-in-completion` in six SDKs (Tasks 051-26 and 051-27), design 038's guards unmodified
 
 ## Context
@@ -14,15 +14,17 @@ worker that serves the next activity polls for it.
 
 ## Decision
 
-1. After a transaction that made steps ready commits, the process MUST wake its parked streams and long polls whose
-   bindings cover those steps' (tenant, namespace, activity). With a notification transport configured, each engine
+1. After a transaction that made steps ready commits, the process MUST wake its parked streams whose bindings cover
+   those steps' (tenant, namespace, activity); a stream reads its keys' wake counters before it claims and parks only if
+   none moved. Unary polls are unchanged. With a notification transport configured, each engine
    process MUST also wake on the outbox hint of a ready step. A wake is a hint: a lost or extra wake changes no state,
    and `idle_retry` stays the upper bound.
 2. The wake MUST NOT use `NOTIFY`, whose commit-time lock serializes the commits of every transaction that issues it.
-3. A session at protocol minor 1.8 MAY set `want_next` on `CompleteStep`. The completion's transaction then MUST run, for
-   the first ready step of the same run that the session serves, every check of a claim in the claim's lock order with
-   the run row already held, and MUST return the lease in `next_task` if all pass. Any refusal leaves the step ready
-   and changes nothing else.
+3. A session at that minor MAY set `want_next` with its session token on `CompleteStep`. The completion's transaction
+   then MUST call the claim's own per-run routine for the first ready step of the same run that the session serves, in
+   the claim's lock order after the run row, and MUST return the lease in `next_task` only if every check passes without
+   writing a refusal; otherwise the step stays ready for an ordinary claim. The lease follows the withdrawal rules of
+   ADR-0098 and ADR-0099, and a replay never re-issues an earlier token.
 4. Wake keys MUST NOT be metric labels.
 
 ## Considered options
@@ -46,5 +48,5 @@ worker that serves the next activity polls for it.
 
 ## Evidence
 
-Design 051 and its review reports; `crates/api-grpc/src/service.rs` (the idle sleep); `crates/infra-nats/src/lib.rs`
+Design 052, and the review reports of design 051's first draft (`docs/designs/051-competitive-benchmark.reviews/2026-11-24/`); `crates/api-grpc/src/service.rs` (the idle sleep); `crates/infra-nats/src/lib.rs`
 (hints published, not consumed). To be added when built: Success criterion 051-005's measurement.

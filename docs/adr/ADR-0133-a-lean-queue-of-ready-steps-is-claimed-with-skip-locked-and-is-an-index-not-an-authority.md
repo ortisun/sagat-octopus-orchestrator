@@ -1,8 +1,8 @@
 # ADR-0133: A lean queue of ready steps is claimed with SKIP LOCKED, and it is an index of candidates, not an authority
 
 **Status:** Proposed (2026-11-24)
-**Decided by:** agent proposal (design 051, Part B), to be accepted under Owner decision 2026-11-24-4 once design 051's review is complete
-**Refines / supersedes:** refines [ADR-0030](ADR-0030-structured-instances-and-continuation-chains.md) and [ADR-0078](ADR-0078-capacity-group-lock-order-and-possession-protocol.md) (the claim's lock order gains the queue row before the run row); supersedes nothing
+**Decided by:** agent proposal (design 052, first drafted as part B of design 051), to be accepted under Owner decision 2026-11-24-4 once design 052's review is complete; design 051's first review found it not ready, and design 052 answers those findings
+**Refines / supersedes:** refines [ADR-0030](ADR-0030-structured-instances-and-continuation-chains.md), ADR-0050, ADR-0056 and [ADR-0078](ADR-0078-capacity-group-lock-order-and-possession-protocol.md), which state parts of the claim's lock order (it gains the queue row first, before the chain row); supersedes nothing
 **Enforced by:** the barrier tests of the claim's lock chain with a queue row held (Task 051-22), design 038's guards passing unmodified, the reconciliation check that fails the suites on a repaired queue (Task 051-23), and design 038's barrier test of K pollers with probes per lease at most 1.1
 
 ## Context
@@ -16,11 +16,14 @@ and row locks in the scan for an architecture decision.
 ## Decision
 
 1. Every leasable step that becomes `READY` MUST get a row in `ready_steps`, by a trigger on `steps`, in the transaction
-   that made it ready. Nothing else inserts.
-2. A claim MUST take its next candidate from `ready_steps` with `FOR UPDATE SKIP LOCKED`, delete it in the claim's
-   transaction, and then claim that run exactly as today, from the run row on. A lease is decided only from the step
-   rows read under the run lock.
-3. Only claims and the queue's sweeper lock a queue row, always with `SKIP LOCKED` and before any run row. No other
+   that made it ready, unique by (tenant, run, step identity, generation). Only the trigger, the backfill and the
+   reconciliation insert.
+2. A claim MUST take its next candidate from `ready_steps` with `FOR UPDATE SKIP LOCKED`, excluding the rows its poll
+   already tried, and then claim that run exactly as today, from the chain row on. It deletes the rows of the steps it
+   leased; it leaves in place, and excludes for the rest of the poll, a row whose step is still `READY` but refused. A
+   lease is decided only from the step rows read under the run lock.
+3. Only claims, the queue's sweeper and a completion's next-step lease lock a queue row, always with `SKIP LOCKED` and
+   before the chain and run rows; the full order is design 052's Requirement 052-003. No other
    transaction locks or deletes a queue row; a queue row whose step is no longer ready is deleted by the claim or the
    sweeper that finds it.
 4. A reconciliation MUST add a queue row for every leasable ready step without one and count it; the integration suites
@@ -54,5 +57,5 @@ and row locks in the scan for an architecture decision.
 
 ## Evidence
 
-Design 051 and its review reports; design 038 and its research register. To be added when built: the barrier tests and
+Design 052, and the review reports of design 051's first draft (`docs/designs/051-competitive-benchmark.reviews/2026-11-24/`); design 038 and its research register. To be added when built: the barrier tests and
 the measurement of Task 051-12.

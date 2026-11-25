@@ -19,11 +19,13 @@ blocks their writes, and a drop releases no quota because it fires no row trigge
 1. Every run MUST carry an immutable `journal_bucket`, the UTC month of its `created_at` (or the legacy value), computed
    once by the creating transaction; every row a run writes to a partitioned journal table MUST carry it, and a trigger
    MUST refuse a row whose run does not have that bucket.
-2. `run_events` and a new `run_payloads` MUST be partitioned by range of `journal_bucket`, one partition per month; the
-   existing `run_events` becomes the legacy partition without a copy and without an index build under a blocking lock.
-3. A run's payloads MUST be keyed by the run, `(tenant_id, journal_bucket, run_id, digest)`; a run MUST NOT reference
-   another run's payload; payloads of rows that belong to no run, and the tombstones of feature 020's stubs, stay in
-   `payloads`.
+2. `run_events` and a new `run_payloads` MUST be partitioned by range of `journal_bucket`, one partition per month, with
+   the bucket last in their primary keys so that lookups by run keep their prefix; the existing `run_events` becomes the
+   legacy partition without a copy and without an index build under a blocking lock.
+3. A run created after the switch MUST keep its payloads in `run_payloads`, keyed by the run, `(tenant_id, run_id,
+   digest, journal_bucket)`, and MUST NOT reference another run's payload. A legacy run keeps its payloads in
+   `payloads`, uncopied, purged by feature 020's reference check on partial indexes of legacy rows only. Payloads of
+   rows that belong to no run, and the tombstones of feature 020's stubs, stay in `payloads`.
 4. No foreign key MUST point into or out of a partitioned journal table. Every reference to run content MUST be listed in
    feature 020's registry and checked on write by a trigger.
 5. Every statement on a partitioned journal table MUST compare its bucket to a parameter or a literal, and the way
@@ -52,8 +54,8 @@ blocks their writes, and a drop releases no quota because it fires no row trigge
 
 - Good: a single run is purged by its key; retention costs a drop per month where every namespace has a policy no longer
   than the month's age; hot partitions stay small.
-- Bad: identical bytes in two runs are stored, and charged to the tenant, twice; the payload move takes two releases with
-  a dual write in between; a trigger call per write replaces the built-in key check; a namespace with no policy (the
+- Bad: identical bytes in two new runs are stored, and charged to the tenant, twice; legacy runs keep the shared regime
+  and its reference-checked purge; a trigger call per write replaces the built-in key check; a namespace with no policy (the
   default) holds every month, so the drop is opportunistic and the per-run purge the main path.
 - Harder: every new statement on the journal must name its bucket (checked); every new reference to run content must be
   registered (checked); a long-lived run holds its month.
