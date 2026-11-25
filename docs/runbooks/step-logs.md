@@ -130,3 +130,40 @@ A carry puts line text into the parameters of a call on the report path. Set, fo
 `log_parameter_max_length = 0` and `log_parameter_max_length_on_error = 0` (no parameter value is logged, not even a
 prefix), and `log_error_verbosity = terse`, so that a database error never copies line text into PostgreSQL's own log
 (security review Nit S-5).
+
+## 7. Retention and the purge
+
+A stream takes the namespace's `step_log_retention_days` when it is created and keeps it. Its expiry is the server's
+time of its last recorded batch or carry plus that retention, so a step that keeps logging keeps its stream. **Lowering
+the retention applies only to streams created after the change**: it never shortens the expiry of a stored stream
+(ADR-0027's retention rule). To remove lines early, use `DELETE /runs/{runId}/logs`.
+
+The housekeeping pass of every execution engine removes expired lines in two steps, each in short transactions:
+1. **Mark**: at most 500 expired streams a transaction get `removed_at`. From then on readers show them as `expired`
+   with no line, and a worker's next batch on one is answered `STOP_ATTEMPT` (`REMOVED`). A stream whose row an ingest
+   holds is skipped and marked by the next pass.
+2. **Delete**: at most 500 lines of one tenant a transaction; a stream with no line left gets `purged_at`. Each delete
+   releases its bytes from the tenant's `tenant_step_log_bytes` usage at its commit.
+
+Watch `step_log_purge_backlog` (the streams expired or being removed and not yet purged, counted at the start of each
+pass) and `step_log_purged_lines_total`. A backlog that grows across passes means the purge does not keep up with what
+expires: shorten `SAGAT_HOUSEKEEPING_INTERVAL_SECS` (300 by default) or look for a long transaction holding the streams
+(`database_oldest_transaction_age_seconds`). `step_log_purge_failures_total{cause="underflow"}` counts a delete whose
+release would have taken the tenant's usage below zero; it never happens unless the accounting is broken, so open an
+incident, keep the lines (the delete was rolled back) and compare `sagat_quota_step_log_usage(tenant)` with the sum of
+the tenant's stored line charges. The stream rows themselves stay until the run is deleted (feature 020, gap G041-004).
+
+## 8. The quota reclaims and their counters
+
+A backend's quota lease that has not been charged for 10 minutes, or whose backend has ended (a pool recycle, a
+restart), is folded back into the tenant's usage by the same pass: at most 100 tenants a pass, one tenant a
+transaction. A tenant whose step-log fence is held at that moment (a change of its limit in progress) is skipped and
+tried again at the next pass. A change of the tenant's `tenant_step_log_bytes` limit or ceiling reclaims every quota
+lease of the tenant at once.
+
+`step_log_quota_refills_total{kind}` (`refill`, `reclaim`, `idle`, `ended`) and the gauge `step_log_quota_lease_rows`
+come from counters the database keeps and are published only by the replica that holds shard 0, so a sum across
+replicas counts each event once. The counters count attempts: a refill whose transaction rolled back is counted too. A
+replica that loses shard 0 sets its gauge to 0 and stops publishing; the next holder starts from its own first read. A
+steady rise of `step_log_quota_lease_rows` means backends that charge and then live on idle: it is bounded by the
+backends that charged in the last 10 minutes.

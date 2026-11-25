@@ -59,6 +59,7 @@ mod scoped_leaf_finish;
 mod scripts;
 mod secrets;
 mod signals;
+mod step_logs;
 mod telemetry;
 mod trigger_schedules;
 mod versioning;

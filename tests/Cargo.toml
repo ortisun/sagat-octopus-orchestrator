@@ -450,6 +450,10 @@ name = "perf_iceberg_writes"
 path = "performance/iceberg-writes/main.rs"
 
 [[test]]
+name = "integration_step_logs"
+path = "integration/step-logs/main.rs"
+
+[[test]]
 name = "integration_step_destinations"
 path = "integration/step-destinations/main.rs"
 
