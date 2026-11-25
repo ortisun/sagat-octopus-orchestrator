@@ -377,8 +377,8 @@ These run in the phase named in each; their reasons are in `plan.md`, "Readiness
 
 ## Dependencies and order
 
-- Readiness of 2026-11-24: design 048 (the in-region topology and the waited replay of its Task T048-7) comes before
-  slice 3; T032-058 builds on T048-7. With design 049, whichever lands second writes its migration against the other's
+- Readiness of 2026-11-24: design 048 (the in-region topology, the commit rule and the waited beacon of its Task T048-7)
+  comes before slice 3; T032-058 builds the durability lease on T048-7's `durability_beacons`. With design 049, whichever lands second writes its migration against the other's
   `run_events`. T032-065 to T032-067 come before US02.
 
 - T032-001 blocks everything. Phase 2 blocks every story.

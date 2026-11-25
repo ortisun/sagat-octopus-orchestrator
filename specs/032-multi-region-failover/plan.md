@@ -49,15 +49,17 @@ line below disagree, this section is right.
 7. **More replay paths.** About 25 store modules answer from a receipt or a duplicate (among them `business_ids.rs`,
    `batch.rs`, `execution/resets.rs`, the `capacity_*` modules, `scoped_leaf_finish.rs`, `approval_progress.rs`,
    `trigger_schedules.rs`, `declared_operations.rs`, `database_results.rs`, `managed_secrets.rs`,
-   `execution/scoped_events.rs`). Design 048 (Requirement 048-012, Task T048-7) builds the waited replay in-region for
-   all of them; Task T032-058 extends that mechanism to the cross-region quorum and the durability lease instead of
-   building its own.
+   `execution/scoped_events.rs`). Design 048 does not add a write per replay: it never lets a commit's wait be cancelled
+   (Requirement 048-012) and makes every new connection commit a waited beacon before its first use (Requirement 048-013,
+   Task T048-7, table `durability_beacons`). Task T032-058 builds the cross-region quorum and ADR-0067's durability lease
+   (a beacon renewed on a schedule) on that table, which replaces the `region_beacons` of `data-model.md`; a transaction
+   must write a row for its commit to wait, so D1590's `pg_current_xact_id()` alone would not wait.
 8. **In-region high availability is now design 048's reference topology.** The HA manager (CloudNativePG or Patroni)
    owns `synchronous_standby_names`; this feature MUST NOT set it by hand (D1591's manual setting is replaced). Gap
    G1585: CloudNativePG replica clusters and Patroni standby clusters stream asynchronously, so `sync_quorum` across
    regions needs one HA cluster stretched across the regions (Patroni with an etcd of three regions, or CloudNativePG on
    a Kubernetes cluster that spans them); Task T032-003's harness decides which reference it uses and records the gap's
-   answer. The in-region promotion rule of FR-032-010 is design 048's.
+   answer. Design 048 relies on the HA manager's failover quorum for in-region promotion (its Requirement 048-001); FR-032-010's verification of the highest synchronous flush position stays this feature's.
 9. **Rolling upgrades follow design 048.** This feature's migration is expand-only (inert lease triggers, a down that
    refuses once a cell is initialized); the epoch-aware behaviour waits for the `region-v1` capability (item 5).
 10. **Journal partitioning (design 049) and the epoch column.** `run_events.region_epoch` is added on the partitioned

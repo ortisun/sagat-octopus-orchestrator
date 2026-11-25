@@ -3,7 +3,7 @@
 **Status:** Proposed (2026-11-24)
 **Decided by:** agent proposal (design 048), to be accepted under Owner decision 2026-11-24-4 once design 048's review is complete
 **Refines / supersedes:** refines [ADR-0082](ADR-0082-the-instance-registry-records-requirements-only-for-the-operator-and-a-refused-process-stays-up-with-a-closed-gate.md) (the registry's gate also closes on a schema mismatch, and its census gates new behaviour); replaces the stopped upgrade of `docs/runbooks/scaling.md` section 3 from release 0.3.0 on; supersedes nothing
-**Enforced by:** `scripts/check-migrations.py` and its negative fixtures (Task 048-12), the schema handshake tests (Task 048-13), `scripts/test-mixed-writers.py` in the release workflow (Task 048-15)
+**Enforced by:** `scripts/check-migrations.py` and its negative fixtures, the checksum test (Task 048-12), the handshake tests as the runtime role and the architecture check of entry points (Task 048-13), `migrate`'s refusal tests (Task 048-14), `scripts/test-mixed-writers.py` in the release workflow (Task 048-15)
 
 ## Context
 
@@ -15,26 +15,27 @@ writers together.
 
 ## Decision
 
-1. Every new migration MUST declare `expand` or `contract` on the line after an optional `-- no-transaction`, and a
-   contract names its expand. An expand migration MUST leave the schema usable by release N-1; a contract migration MUST
-   remove only what N-1 no longer uses and MUST ship in a release after its expand. Applied migrations are never edited;
-   the lint judges only migrations after a recorded cut-off.
-2. A migration MUST set a lock timeout on every statement that blocks inserts (and `migrate` retries it), build indexes
-   on existing tables concurrently after dropping any invalid one, add constraints `NOT VALID` and validate them later,
-   and MUST NOT rewrite a table, change a type in place, rename, add a volatile default or an undefaulted `NOT NULL`
-   column, run `SET NOT NULL`, or replace a function, trigger, policy or view in an expand migration. A waiver is a header
-   line naming the rule and the reason.
-3. Each release's last migration MUST record the oldest release whose binaries may run on the schema, from a manifest
-   made when the release is cut. A process MUST read the applied versions through an owner-defined function, and close
-   its serving gate, write nothing and answer 503 when its release is older than that, or when a migration it was built
-   with is missing; it re-checks at every instance heartbeat.
-4. A change that writes state release N-1 cannot process MUST be behind a registry capability, switched on by the
-   registry's activation, which raises the oldest compatible release in the same transaction; `migrate` MUST refuse a
-   contract migration while a process older than the release before it is live.
-5. Release N MUST NOT be published unless N-1 and N engines and control planes pass the integrity oracle together, with
-   N's migrations applied during the load, a rollback before activation, and the transition latency under the lock
-   timeout.
-6. The promise starts with 0.3.0 as N-1. The upgrade from 0.2.x to 0.3.0 stays a stopped upgrade.
+1. Every migration after the lint's cut-off MUST declare `expand` or `contract` on the line after an optional
+   `-- no-transaction`, and a contract names its expand and the capability that must be active before it runs. An expand
+   migration MUST leave the schema usable by release N-1; a contract removes only what N-1 no longer uses and ships in a
+   release after its expand. Applied migrations are never edited (their checksums are tested).
+2. A transactional migration MUST take at most one lock that blocks inserts, last, under a 2 s lock timeout; a migration
+   without a transaction holds one concurrent statement and is idempotent; constraints are added `NOT VALID` and validated
+   later; no table rewrite, type change in place, rename, volatile default, undefaulted `NOT NULL` column, `SET NOT NULL`
+   outside a contract after a validated check, or replaced function, trigger, policy or view in an expand migration; a
+   definer function pins its search path and is revoked from public. A waiver is a header naming the rule and the reason.
+3. `migrate` MUST apply migrations one by one, retry one that met a lock timeout, refuse a contract whose capability is
+   not active or while a process older than the previous release lives, and refuse to run from an older release.
+4. Each release MUST record, from a manifest made when it is cut, the oldest release whose binaries may run on its schema.
+   Every entry point that opens the database MUST call an owner-defined handshake at start, on every new connection and at
+   every heartbeat, and close its serving gate, write nothing and answer 503 when its release is too old or a migration it
+   was built with is missing.
+5. A change that writes state release N-1 cannot process MUST be behind a registry capability whose activation raises the
+   oldest compatible release in the same transaction, and whose deactivation lowers it.
+6. Release N MUST NOT be published unless N-1 and N pass the integrity oracle together, with N's migrations applied during
+   the load, an activation, a deactivation and a rollback, and the 99th percentile latency during the migrations within the
+   lock timeout of a baseline.
+7. The promise starts with 0.3.0 as N-1; the upgrade from 0.2.x to 0.3.0 stays a stopped upgrade.
 
 ## Considered options
 
@@ -48,8 +49,8 @@ writers together.
 
 ## Consequences
 
-- Good: an upgrade is a rolling deployment; a binary on the wrong schema cannot corrupt state; a migration cannot
-  stall the hot path for more than its lock timeout.
+- Good: an upgrade is a rolling deployment; a binary on the wrong schema cannot corrupt state; a migration waits at most
+  its lock timeout for its one blocking lock, which it takes last.
 - Bad: every schema change that removes something takes two releases; migrations are written in more, smaller files.
 - Harder: authors must think about N-1 for every change; the lint and the mixed-writer test make that mechanical.
 - Compatibility: the marks and the table are additive; existing migrations are treated as of their release.
