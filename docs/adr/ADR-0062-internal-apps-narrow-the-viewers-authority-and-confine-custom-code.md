@@ -188,6 +188,12 @@ a rule above:
 3. **Lock order.** The app-session row is locked `FOR UPDATE` in slot 1, as Architecture decision 0050's slot table
    records.
 
+4. **Sign-in pages on the Studio origin.** Design 013's platform issuer is the Studio origin (`SAGAT_PUBLIC_ORIGIN`
+   MUST equal it and differ from the apps, component sandbox and public-forms origins; start-up refuses otherwise), and
+   its platform-authored sign-in pages (the connection chooser, the neutral page, the unsolicited-response page, with
+   no script and no author or anonymous user content) are the one exception to decision 8's rule that the Studio origin
+   serves no anonymous content; `/v1/auth/*` answers `404` on the other origins.
+
 Built-in components are built on the Studio's interface module over Astryx (Architecture decision 0101, accepted the
 same day); decision 4's closed documents are unaffected.
 

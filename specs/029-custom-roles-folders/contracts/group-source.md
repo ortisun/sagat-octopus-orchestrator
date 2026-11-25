@@ -11,8 +11,8 @@ kinds, and some SCIM providers push only changes, so freshness is stated per kin
 
 | Kind | Delivered by | What one delivery carries | Freshness |
 |---|---|---|---|
-| `SCIM` | an identity provider through design 013's SCIM 2.0 endpoint of one connection | a full member set (`PUT`) or member additions and removals (`PATCH`) of one group | a SCIM group does not expire by silence: the provider pushes every change, deprovisioning included; design 013 raises an informational alert after 7 days without any request on the connection |
-| `ASSERTION` | a sign-in through one connection whose groups claim or attribute is mapped | the full set of that person's groups for that connection | ends when the sign-in session that wrote it ends (revoked or expired), and at most 24 hours after the sign-in; past it the memberships confer nothing until the next sign-in |
+| `SCIM` | an identity provider through design 013's SCIM 2.0 endpoint of one connection, into rows of `access_groups` and `access_group_members` with source `SCIM` (design 013, Decision 013-017) | a full member set (`PUT`) or member additions and removals (`PATCH`) of one group | a SCIM group does not expire by silence: the provider pushes every change, deprovisioning included; design 013 raises an informational alert after 7 days without any request on the connection |
+| `ASSERTION` | a sign-in through one connection whose groups claim or attribute is mapped, into the same tables with source `ASSERTION` | the full set of that person's groups for that connection | ends when the sign-in session that wrote it ends (revoked or expired), and at most 24 hours after the sign-in; past it the memberships confer nothing until the next sign-in |
 
 ## Guarantees a source must provide
 
@@ -36,7 +36,7 @@ kinds, and some SCIM providers push only changes, so freshness is stated per kin
 
 ## What the platform side must keep
 
-- One delivery is one transaction under the exclusive tenant access fence, with a writer `lock_timeout`.
+- A SCIM delivery is one transaction that takes the affected memberships, then the exclusive tenant access fence (Architecture decision 0050, slot 4a), with a writer `lock_timeout`. An assertion is written at the sign-in's redemption without the exclusive fence (design 013, Technical Plan 4, which argues why the fence's guarantee still holds); a narrowing it brings governs every request authorized after its commit.
 - External groups and their members are read-only through feature 029's REST routes (`EXTERNAL_GROUP_READ_ONLY`).
 - Membership in a fresh external group is evaluated like a local one; it never bypasses the human-role,
   reserved-permission or non-escalation rules. Linking an external group to roles or folders is an ordinary

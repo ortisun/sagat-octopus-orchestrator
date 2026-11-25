@@ -181,3 +181,12 @@ bounded per role; audit records are protected system records under ADR-0027. No 
 a secret or a token.
 
 *Note 2026-11-08 (018 T018-080, G2001).* `platform_requirement_epoch` is readable by `sagat_app` but cannot be locked by it (`FOR SHARE` needs `UPDATE`); the request path that "reads the epoch `FOR SHARE`" needs a runtime-executable definer function, and must not hold the share lock for the whole tenant transaction (an activation's `FOR UPDATE` would queue behind it and stall new registrations).
+
+## External groups (2026-11-24)
+
+Design 013 adds to `access_groups` the columns `source_kind` (`LOCAL` by default, `SCIM`, `ASSERTION`), `connection_id`,
+`external_value` and `generation`, and to `access_group_members` the freshness bound of an assertion-sourced member
+(design 013, Decision 013-017), so that assignments, folder entries and operation lists name an external group exactly
+as a local one. This feature's migration lands first; design 013's adds the columns. External rows are read-only through
+this feature's routes (`EXTERNAL_GROUP_READ_ONLY`); a connection whose groups are named cannot be deleted.
+

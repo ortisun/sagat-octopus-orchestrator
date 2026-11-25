@@ -27,3 +27,31 @@ All 25 findings are accepted and fixed; none is contested.
 | 15 | Major | Fixed: the profile names the unsigned Response values it compares and adds every structural and semantic check listed; the certificate check replaced by the signature algorithm and key size | Technical Plan 5; Architecture decision 0141 decisions 3 and 4 |
 | 16 | Major | Fixed: limits per address and global, a per-tenant limit that admits live attempts and sessions first, a capped attempts table purged at expiry | Technical Plans 3 and 8 |
 | 17 to 25 | Nit | Fixed: machine members exempt by role, break-glass audited once per token and refused on a failed audit; codes stored as hashes and bound; the loopback redirect and no CLI cookie; no provider error text forwarded; `startLogin` and the content security policy described as they are; the tenant check restated as a signer test; PS256 not mapped to RS256; key rotation keeps the state; SCIM and callback scoping; the test sign-in provisions nobody; enumeration recorded as Gap 013-007 | Requirements 013-004, 013-005, 013-006, 013-015, 013-017, 013-021, 013-030; Technical Plans 3, 4, 7, 10; Architecture decision 0140 "Enforced by" |
+
+## Architecture review, round 1 (`architecture.md`, at `77f6a49b`)
+
+All 26 findings are accepted and fixed; none is contested. Finding 4 also replaces the revocation poll that the
+security review's Blocker 3 fix had specified: revocation now happens through the membership read every request already
+makes, so the watermark, window and fail-closed questions of that Blocker no longer arise.
+
+| Finding | Severity | Disposition | Where |
+|---|---|---|---|
+| 1 | Blocker | Fixed: suspension enforced in the schema (the redefined `sagat_lock_memberships` and the three plain reads), an architecture rule on reads of `memberships`, a test per caller family | Requirement 013-016, Technical Plans 2 and 3, Task 013-5 |
+| 2 | Blocker | Fixed: `identity-federation-v1` in the instance registry, operator activation, refusals until recorded, design 050's names derived from it, rollback below it unsupported, an older-replica test | Requirement 013-032, Rollout, Architecture decision 0140 decision 9, Task 013-10 |
+| 3 | Major | Fixed: the slot sequence of every write transaction; no app-session writes; memberships before the fence; the assertion write's deviation argued | Technical Plan 4 (Lock order), the group-source contract |
+| 4 | Major | Fixed: the session joined into the per-request membership read; poll, table and fail-closed mode removed | Requirement 013-019, Decision 013-003, Technical Plan 4, Architecture decision 0140 decision 6 and option 5 |
+| 5 | Major | Fixed: the key lifecycle (operator commands, the active version in PostgreSQL, publish before signing), the OpenBao dependency and its alert, `TokenSigner` and `IdentitySecrets` in `infra-secrets`, the intent, write, verify, activate protocol, the development overlay's identity mount | Requirement 013-025, Technical Plans 2, 4 and 9, Architecture decision 0140 decision 7 |
+| 6 | Major | Fixed: Decision 013-019 and Owner decision row OD-2026-11-24-717, cited by `Owner-gate:` on Tasks 013-11 and 013-17; feature 015's roadmap row in Task 013-1; the 026 and 027 tests gated | Decision 013-019, Tasks 013-1, 013-11, 013-17 |
+| 7 | Major | Fixed: the engine verifies the deployment issuer only; workers stay machine identities; `Core::authenticate` widened | Decision 013-016, Gap 013-008, Technical Plans 2 and 4 |
+| 8 | Major | Fixed: external groups are rows of 029's `access_groups` with new columns; 029's migration first; the connection-delete rule; recorded in 029's data model and contract | Decision 013-017, Technical Plan 3, specs/029 data-model and group-source |
+| 9 | Major | Fixed: `PlatformSignIn::redeem_for_app`; app sessions bound to the sign-in session; Requirement 027-014 amended | Technical Plan 2, Task 013-17, specs/027 spec |
+| 10 | Major | Fixed: Architecture decision 0062 refined with the sign-in pages' exception and the origin equalities; start-up test | Technical Plan 7 (Origins), Architecture decision 0062 acceptance refinement 4 |
+| 11 | Major | Fixed: the `config.json` shape with both issuers, the deployment issuer kept in `connect-src`, `credentials: 'same-origin'` | Technical Plan 7, Task 013-14 |
+| 12 | Major | Fixed: the prefix is `federated:`, reserved by `Subject::parse`, and the migration refuses while a membership uses it | Requirement 013-032, Technical Plan 3 |
+| 13 | Major | Fixed: `down` refuses while a member is suspended or any federation row exists; the rollback path stated | Requirement 013-032, Technical Plan 3, Rollout |
+| 14 | Major | Fixed: the effective role computed in the per-request read; the maintenance passes placed with their lease and capability | Technical Plan 6, Technical Plan 2, Task 013-13 |
+| 15 | Major | Fixed: separate paths for the browser flows, the JSON route kept, Architecture decision 0140 decision 8 | Technical Plan 9, Task 013-3 |
+| 16 | Major | Fixed: the development providers moved to the server lane first; Task 013-5 split in three; 026 and 027 tests gated; audit, metrics and ceiling tests named | Detailed Implementation Plan |
+| 17 | Major | Fixed: the rules on `VerifiedClaims` and `Membership::principal`, with negative fixtures | Technical Plan 2, Architecture decision 0140 "Enforced by" |
+| 18 | Major | Fixed: break-glass, tenant settings, signing keys and break-glass uses tables; tenant keys everywhere; the federated-only flag on `tenants`; delete rules | Technical Plan 3 |
+| 19 to 26 | Nit | Fixed: the identity egress policy in the domain, the resolver in `infra-egress`; the OIDC rules in the domain and `JwksCache` shared; the process split argued with revisit criteria; the contradictions removed; `x-access` on the new operations; the CLI's source order; streams reconnecting with `Last-Event-ID`; the region epoch note | Technical Plans 2, 4, 11; Decision 013-018; Requirements 013-019, 013-026; Gap 013-009; Architecture decision 0140 |

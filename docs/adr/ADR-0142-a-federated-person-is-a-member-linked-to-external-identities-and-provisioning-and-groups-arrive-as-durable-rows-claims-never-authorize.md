@@ -24,7 +24,7 @@ they leave.
    the OIDC subject claim (`sub`, or `oid` with `tid` for Entra ID) or the SAML persistent name identifier (or a
    configured immutable attribute), never an e-mail address or a display name. A connection's issuer or entity
    identifier is immutable, so that a subject is never re-read under another provider.
-2. A membership created by federation MUST get the platform subject `user:<uuid>`. An external identity MAY be linked
+2. A membership created by federation MUST get the platform subject `federated:<uuid>`. An external identity MAY be linked
    to an existing subject (a member created before federation, or a person moving between providers) only inside a
    sign-in by that subject, who confirms it; the link is audited. An administrator MAY unlink and pre-provision, never
    attach an identity to a subject that already has one or to an `admin` subject. The platform MUST NOT link two
@@ -69,7 +69,7 @@ they leave.
 - Feature 029's group-source contract is amended (two source kinds, freshness per kind) in the same delivery.
 - Feature 016's Gap 290 (no way to add a member) is closed by just-in-time provisioning, SCIM and the member routes of
   design 013.
-- Approval policies keep naming subjects; a federated member's subject is `user:<uuid>`, chosen in the Studio from the
+- Approval policies keep naming subjects; a federated member's subject is `federated:<uuid>`, chosen in the Studio from the
   member list (design 050, Gap 050-004).
 - Rollback: disabling a connection stops new sign-ins and SCIM writes; members and their links stay.
 
