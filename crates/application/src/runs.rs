@@ -2418,39 +2418,115 @@ where
         Ok(None)
     }
 
-    /// Shows the key label of each run-level permit to a caller who may reveal personal data in the run's namespace;
-    /// every other caller reads it hidden (FR-022-057, D022-060). One check per namespace the runs are in.
+    /// Shows the key label of each run-level permit and slot to a caller who may disclose, at its level, every location the
+    /// key reads (FR-022-057, decision D022-085): a key over `public` locations to every reader, over `internal` ones to
+    /// a role that reads internal payloads, over `pii` ones to a caller who may reveal personal data in the run's
+    /// namespace (feature 009's grant, D022-060), and a `secret` one (refused at publication; a version an earlier build
+    /// published) to nobody. The level is the run's pinned version's, read by the codec from its schemas: one parse per
+    /// version (cached), one reveal check per namespace, and neither for a run without a permit or slot.
     async fn reveal_permit_labels(
         &self,
         principal: &Principal,
         runs: &mut [RunRecord],
     ) -> Result<(), AppError> {
-        let mut decided: Vec<(sagat_domain::identity::NamespaceId, bool)> = Vec::new();
+        use sagat_domain::classification::Level;
+        let internal = principal.role().grants(Permission::PayloadReadInternal);
+        let mut reveals: Vec<(sagat_domain::identity::NamespaceId, bool)> = Vec::new();
+        let mut levels: Vec<(WorkflowVersionId, (Level, Level))> = Vec::new();
         for run in runs {
             if run.concurrency.is_none() && run.rate_limit.is_none() {
                 continue;
             }
+            let version = run.info.version_id;
+            let (concurrency, rate) =
+                if let Some((_, of)) = levels.iter().find(|(v, _)| *v == version) {
+                    *of
+                } else {
+                    let of = self.key_levels(principal, version).await?;
+                    levels.push((version, of));
+                    of
+                };
             let namespace = run.info.namespace_id;
-            let reveal = if let Some((_, reveal)) = decided.iter().find(|(n, _)| *n == namespace) {
-                *reveal
-            } else {
-                let reveal = self
-                    .store
-                    .reveals_personal_data(principal.tenant_id(), namespace, principal.subject())
-                    .await?;
-                decided.push((namespace, reveal));
-                reveal
+            let mut may_disclose = async |level: Level| -> Result<bool, AppError> {
+                Ok(match level {
+                    Level::Public => true,
+                    Level::Internal => internal,
+                    Level::Pii => {
+                        if let Some((_, reveal)) = reveals.iter().find(|(n, _)| *n == namespace) {
+                            *reveal
+                        } else {
+                            let reveal = self
+                                .store
+                                .reveals_personal_data(
+                                    principal.tenant_id(),
+                                    namespace,
+                                    principal.subject(),
+                                )
+                                .await?;
+                            reveals.push((namespace, reveal));
+                            reveal
+                        }
+                    }
+                    Level::Secret => false,
+                })
             };
-            if reveal {
-                if let Some(permit) = run.concurrency.as_mut() {
-                    permit.reveal_label();
-                }
-                if let Some(slot) = run.rate_limit.as_mut() {
-                    slot.reveal_label();
-                }
+            if let Some(permit) = run.concurrency.as_mut()
+                && may_disclose(concurrency).await?
+            {
+                permit.reveal_label();
+            }
+            if let Some(slot) = run.rate_limit.as_mut()
+                && may_disclose(rate).await?
+            {
+                slot.reveal_label();
             }
         }
         Ok(())
+    }
+
+    /// The levels of what the run-level concurrency and rate-limit keys of `version` read (decision D022-085): `secret`
+    /// (no label for anyone) when the version cannot be read, so a failure hides a label instead of showing it.
+    async fn key_levels(
+        &self,
+        principal: &Principal,
+        version: WorkflowVersionId,
+    ) -> Result<
+        (
+            sagat_domain::classification::Level,
+            sagat_domain::classification::Level,
+        ),
+        AppError,
+    > {
+        use sagat_domain::classification::Level;
+        let definition = match self.cache.get(version) {
+            Some(definition) => Some(definition),
+            None => self
+                .store
+                .get_version_by_id(principal.tenant_id(), version)
+                .await?
+                .and_then(|stored| {
+                    self.cache
+                        .get_or_parse(version, &stored.document)
+                        .map_err(|error| {
+                            tracing::warn!(%error, %version, "a pinned version does not parse; its key labels stay hidden");
+                        })
+                        .ok()
+                }),
+        };
+        let Some(definition) = definition else {
+            return Ok((Level::Secret, Level::Secret));
+        };
+        let gates = definition.run_flow_control();
+        Ok((
+            gates.concurrency().map_or(
+                Level::Secret,
+                sagat_domain::workflow::ConcurrencyPolicy::key_level,
+            ),
+            gates.rate_limit().map_or(
+                Level::Secret,
+                sagat_domain::workflow::RateLimitPolicy::key_level,
+            ),
+        ))
     }
 
     /// # Errors

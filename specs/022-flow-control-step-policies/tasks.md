@@ -695,6 +695,18 @@ Added for the findings recorded in `reviews/2026-11-13/` (D022-019..034). The sl
   were built by T022-074; this task adds the rule and the evidence.
 - [ ] T022-104 Key classification: `FLOW_CONTROL_KEY_SECRET` refused, `FLOW_CONTROL_KEY_PII` warned; `keyLabel` `null` for callers who may not disclose every location the key reads. FR-022-057; G1185. Evidence: codec tests over 016 carriers; REST tests with and without disclosure rights.
   - *Follow-up 2026-11-16 (from T022-002):* its evidence also adds the fixture documents of `FLOW_CONTROL_KEY_SECRET` (invalid) and `FLOW_CONTROL_KEY_PII` (warning) and removes both codes from `PENDING` in `ir.rs`.
+  *Evidence 2026-11-25 (0.3.0 slice; decision D022-085), not ticked.* Codec over the 016 carriers:
+  `contract_flow_control_step_policies::ir::{a_key_has_the_strictest_level_of_the_locations_it_reads_over_the_016_carriers,
+  a_key_over_personal_data_is_published_with_a_warning_and_one_over_internal_data_is_not,
+  every_invalid_fixture_is_refused_with_its_code_before_a_version_exists}` with the fixtures
+  `invalid-flow-control-key-secret.workflow.json` and `warning-flow-control-key-pii.workflow.json`; both codes removed from
+  `PENDING` (input, `$ref`, the strictest branch of an `anyOf`, a structure read whole, a computed index,
+  `additionalProperties`, a node's output, `state`, an undeclared field; a stored `secret` key restored with its level).
+  Hand mutations caught: the refusal not called (two tests red), the levels not read from the schemas (three red), a
+  computed index's place not read (one red). REST: `integration_flow_control_step_policies::rest::a_key_label_is_shown_to_whoever_may_disclose_every_location_the_key_reads`
+  (keys over public, internal and pii fields at both gates; a viewer, a developer without the grant and an admin with it,
+  in `getRun`, the run listing and both key listings; red with the internal rule disabled by hand). `cargo test -p
+  sagat-infra-expr --lib reads` 3 passed; `cargo test -p sagat-cli --locked` passed (the two codes' help and sections).
 - [ ] T022-110 Close G022-013: a takeover test that races a real keeper takeover (alpha's short lease run out by the database clock while its grant waits for a held key, `beta.round()` the second lock waiter), and SC-022-004 at run level (five same-key starts with `limit: 1`: at most one holder, grants in admission order; a mixed-limit pair sharing a group). Evidence: `fault_flow_control_step_policies` with hand mutations.
   *Evidence 2026-11-25 (0.3.0 slice), not ticked.*
   `fault_flow_control_step_policies::concurrency::{a_real_takeover_skips_the_shard_of_a_grant_in_flight_and_nothing_is_granted_twice,

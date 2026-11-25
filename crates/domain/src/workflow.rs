@@ -1145,6 +1145,13 @@ pub enum DefinitionWarning {
         group: GroupName,
         other: Slug,
     },
+    /// A concurrency or rate-limit key reads a location classified `pii` (an unannotated one included): its label is shown
+    /// only to a caller who may reveal personal data in the namespace (feature 022, `FLOW_CONTROL_KEY_PII`, FR-022-057,
+    /// decision D022-085). `node` is `None` for a run-level declaration.
+    FlowControlKeyPii {
+        node: Option<NodeId>,
+        kind: GateKind,
+    },
 }
 
 /// Why an `inputSchema` is outside the supported subset of design 043 (D043-065): the closed codes of a
@@ -1253,6 +1260,12 @@ impl fmt::Display for DefinitionWarning {
             ),
             Self::InputSchemaAppliesToTriggers => f.write_str(
                 "the inputSchema is applied to the run input of every trigger, the event envelope {event, data}: a schema written for a manual input refuses the triggered starts",
+            ),
+            Self::FlowControlKeyPii { node, kind } => write!(
+                f,
+                "{}: the {} key reads a location classified pii (an unannotated location is pii); its label is shown only to callers who may reveal personal data",
+                where_declared(node.as_ref()),
+                kind.field()
             ),
         }
     }
@@ -1778,6 +1791,26 @@ impl WorkflowDefinition {
         &self.run_flow_control
     }
 
+    /// Gives every key of the run start and of the root nodes the level of what it reads, as `level` gives it for the
+    /// node (`None` for the run start), the gate's kind and the key expression (feature 022, decision D022-085). Derived
+    /// from the document's schemas by the codec, for publication and for the restore alike; never canonical.
+    #[must_use]
+    pub fn with_flow_control_key_levels(
+        mut self,
+        mut level: impl FnMut(Option<&NodeId>, GateKind, &Expression) -> crate::classification::Level,
+    ) -> Self {
+        self.run_flow_control = self
+            .run_flow_control
+            .with_key_levels(|kind, key| level(None, kind, key));
+        for (id, node) in &mut self.graph.nodes {
+            if node.flow_control.is_gated() {
+                let gates = std::mem::take(&mut node.flow_control);
+                node.flow_control = gates.with_key_levels(|kind, key| level(Some(id), kind, key));
+            }
+        }
+        self
+    }
+
     /// The root nodes that declare a gate, in id order.
     pub fn gated_nodes(&self) -> impl Iterator<Item = &Node> {
         self.nodes().filter(|node| node.flow_control().is_gated())
@@ -2251,6 +2284,21 @@ impl WorkflowDefinition {
                 .any(|trigger| trigger.kind() != crate::triggers::TriggerKind::Manual)
         {
             out.push(DefinitionWarning::InputSchemaAppliesToTriggers);
+        }
+        // a key over personal data: its label is the reveal right's only (FR-022-057, decision D022-085)
+        let pii = crate::classification::Level::Pii;
+        out.extend(
+            self.run_flow_control
+                .keys_at(pii)
+                .map(|kind| DefinitionWarning::FlowControlKeyPii { node: None, kind }),
+        );
+        for node in self.gated_nodes() {
+            out.extend(node.flow_control().keys_at(pii).map(|kind| {
+                DefinitionWarning::FlowControlKeyPii {
+                    node: Some(node.id().clone()),
+                    kind,
+                }
+            }));
         }
         out
     }

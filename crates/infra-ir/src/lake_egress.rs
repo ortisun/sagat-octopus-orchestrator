@@ -22,11 +22,8 @@
 //!   everything under the place it indexes;
 //! - a list described by more positions than [`MAX_POSITIONS`] is read as `pii`, so the cost of the reading is bounded.
 
-use std::collections::HashMap;
-
-use sagat_application::{
-    classification::{CarrierPointer, ClassificationResolution, ClassificationSegment},
-    classification_index::ClassificationLocationIndex,
+use sagat_application::classification::{
+    CarrierPointer, ClassificationResolution, ClassificationSegment,
 };
 use sagat_domain::{
     classification::{DATABASE_RESULT, Level, written_level},
@@ -34,6 +31,8 @@ use sagat_domain::{
     workflow::{NodeId, WorkflowDefinition},
 };
 use serde_json::Value;
+
+use crate::classified_locations::Schemas;
 
 /// The most positions of a list that are read one by one. A schema that describes more is read as `pii` instead.
 const MAX_POSITIONS: usize = 64;
@@ -48,96 +47,6 @@ pub(crate) fn attach(document: &Value, definition: WorkflowDefinition) -> Workfl
     }
     let schemas = Schemas::new(document);
     definition.with_iceberg_egress(|_, step| levels(&schemas, step))
-}
-
-/// The classification of one document, read once.
-struct Schemas<'a> {
-    document: &'a Value,
-    index: ClassificationLocationIndex,
-    /// The strictest level at or below each location, so that a question about a structure is a lookup, not a scan.
-    below: HashMap<(CarrierPointer, Vec<ClassificationSegment>), Level>,
-}
-
-impl<'a> Schemas<'a> {
-    fn new(document: &'a Value) -> Self {
-        let index = ClassificationLocationIndex::build(|visitor| {
-            crate::classification_check::visit_locations(document, visitor)
-        });
-        let mut below: HashMap<(CarrierPointer, Vec<ClassificationSegment>), Level> =
-            HashMap::new();
-        for location in index.locations() {
-            for depth in 0..=location.location.len() {
-                let key = (
-                    location.carrier.clone(),
-                    location.location[..depth].to_vec(),
-                );
-                below
-                    .entry(key)
-                    .and_modify(|level| *level = level.stricter(location.level))
-                    .or_insert(location.level);
-            }
-        }
-        Self {
-            document,
-            index,
-            below,
-        }
-    }
-
-    /// The level a value at `location` can carry, and `None` when the carrier says nothing a caller can rely on.
-    fn level_at(
-        &self,
-        carrier: &CarrierPointer,
-        location: &[ClassificationSegment],
-    ) -> Option<Level> {
-        match self.index.resolve_matched(carrier, location) {
-            (
-                ClassificationResolution::Resolved {
-                    level, source_path, ..
-                },
-                Some(matched),
-            ) => {
-                // Everything below the location that answered, including a location that governs a name or an item the
-                // request did not spell out.
-                let below = self
-                    .below
-                    .get(&(carrier.clone(), matched))
-                    .copied()
-                    .unwrap_or(level);
-                Some(if self.is_scalar(&source_path) {
-                    below
-                } else {
-                    below.stricter(Level::UNMARKED)
-                })
-            }
-            // Nothing is described there: the answer is the floor of the nearest named ancestor.
-            (ClassificationResolution::Resolved { level, .. }, None) => Some(level),
-            _ => None,
-        }
-    }
-
-    /// Whether the schema that governs a location says its value is a scalar (and so has no keys or elements the schema
-    /// does not name). A schema that cannot be found, or that says nothing of its type, is not.
-    fn is_scalar(&self, schema_path: &str) -> bool {
-        const SCALARS: [&str; 5] = ["string", "integer", "number", "boolean", "null"];
-        let Some(kind) = self
-            .document
-            .pointer(schema_path)
-            .and_then(|schema| schema.get("type"))
-        else {
-            return false;
-        };
-        match kind {
-            Value::String(name) => SCALARS.contains(&name.as_str()),
-            Value::Array(names) => {
-                !names.is_empty()
-                    && names
-                        .iter()
-                        .all(|name| name.as_str().is_some_and(|name| SCALARS.contains(&name)))
-            }
-            _ => false,
-        }
-    }
 }
 
 fn levels(schemas: &Schemas<'_>, step: &IcebergWrite) -> Vec<EgressField> {

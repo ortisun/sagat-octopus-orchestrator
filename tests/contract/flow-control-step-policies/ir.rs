@@ -8,6 +8,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use sagat_application::definitions::{IrCodec, IrError, problems_of};
+use sagat_domain::classification::Level;
 use sagat_domain::workflow::{DefinitionWarning, RatePeriod};
 use sagat_infra_ir::JsonIrCodec;
 use serde_json::Value;
@@ -37,7 +38,7 @@ fn refusal(name: &str) -> Vec<(&'static str, Option<String>)> {
 }
 
 /// What each invalid fixture is refused with, and the node it names.
-const REFUSED: [(&str, &str, Option<&str>); 8] = [
+const REFUSED: [(&str, &str, Option<&str>); 9] = [
     (
         "invalid-concurrency-policy.workflow.json",
         "CONCURRENCY_POLICY_INVALID",
@@ -76,6 +77,11 @@ const REFUSED: [(&str, &str, Option<&str>); 8] = [
     (
         "invalid-flow-control-key-unbounded.workflow.json",
         "FLOW_CONTROL_KEY_UNBOUNDED",
+        Some("call"),
+    ),
+    (
+        "invalid-flow-control-key-secret.workflow.json",
+        "FLOW_CONTROL_KEY_SECRET",
         Some("call"),
     ),
 ];
@@ -195,7 +201,22 @@ fn the_valid_fixtures_parse_to_their_declarations() {
         step_rate.key().map(|key| key.as_str()),
         Some("input.providerId")
     );
-    assert!(parsed.warnings.is_empty(), "{:?}", parsed.warnings);
+    // no schema classifies its input, so each key reads `pii` (016: an unannotated location is `pii`): published, warned
+    // at each declaration (FR-022-057, decision D022-085)
+    assert_eq!(
+        parsed
+            .warnings
+            .iter()
+            .map(|warning| sagat_application::definitions::warning_problem(warning).code)
+            .collect::<Vec<_>>(),
+        [
+            "FLOW_CONTROL_KEY_PII",
+            "FLOW_CONTROL_KEY_PII",
+            "FLOW_CONTROL_KEY_PII"
+        ],
+        "{:?}",
+        parsed.warnings
+    );
 
     let serial = JsonIrCodec
         .parse(&fixture("account-serial.workflow.json"))
@@ -230,6 +251,176 @@ fn a_self_starting_child_under_a_run_permit_is_published_with_a_warning() {
         "{:?}",
         parsed.warnings
     );
+}
+
+/// FR-022-057 (task T022-104, decision D022-085): a key over a `pii` location is published with a warning at its
+/// declaration, and one over `internal` locations only is not.
+#[test]
+fn a_key_over_personal_data_is_published_with_a_warning_and_one_over_internal_data_is_not() {
+    let parsed = JsonIrCodec
+        .parse(&fixture("warning-flow-control-key-pii.workflow.json"))
+        .expect("a warning does not refuse");
+    let problems: Vec<_> = parsed
+        .warnings
+        .iter()
+        .map(sagat_application::definitions::warning_problem)
+        .map(|problem| (problem.code, problem.node))
+        .collect();
+    assert_eq!(
+        problems,
+        [("FLOW_CONTROL_KEY_PII", None)],
+        "{:?}",
+        parsed.warnings
+    );
+    let def = &parsed.definition;
+    assert_eq!(
+        def.run_flow_control()
+            .concurrency()
+            .map(sagat_domain::workflow::ConcurrencyPolicy::key_level),
+        Some(Level::Pii)
+    );
+    assert_eq!(
+        def.gated_nodes()
+            .next()
+            .and_then(|node| node.flow_control().rate_limit())
+            .map(sagat_domain::workflow::RateLimitPolicy::key_level),
+        Some(Level::Internal),
+        "`region` inherits the input's `internal`"
+    );
+}
+
+/// A document whose input, `price` output and gated `call` node are given; `key` is the `call` node's concurrency key.
+fn classified(key: &str) -> Vec<u8> {
+    serde_json::to_vec(&serde_json::json!({
+        "apiVersion": "sagat-octopus-orchestrator.io/v1",
+        "kind": "Workflow",
+        "metadata": {"name": "classified-keys"},
+        "entrypoint": "price",
+        "inputSchema": {
+            "type": "object",
+            "x-sagat-classification": "public",
+            "$defs": {"token": {"type": "string", "x-sagat-classification": "secret"}},
+            "properties": {
+                "tier": {"type": "string"},
+                "team": {"type": "string", "x-sagat-classification": "internal"},
+                "email": {"type": "string", "x-sagat-classification": "pii"},
+                "token": {"$ref": "#/$defs/token"},
+                "either": {"anyOf": [
+                    {"type": "string"},
+                    {"type": "string", "x-sagat-classification": "secret"}
+                ]},
+                "account": {
+                    "type": "object",
+                    "properties": {
+                        "id": {"type": "string"},
+                        "key": {"type": "string", "x-sagat-classification": "secret"}
+                    }
+                },
+                "tags": {"type": "array", "items": {"type": "string", "x-sagat-classification": "internal"}},
+                "extra": {"type": "object", "additionalProperties": {"type": "string", "x-sagat-classification": "secret"}}
+            }
+        },
+        "nodes": [
+            {
+                "id": "price", "type": "activity", "activity": "catalog.price", "next": "call",
+                "outputSchema": {
+                    "type": "object",
+                    "x-sagat-classification": "internal",
+                    "properties": {
+                        "region": {"type": "string"},
+                        "card": {"type": "string", "x-sagat-classification": "secret"}
+                    }
+                }
+            },
+            {"id": "call", "type": "activity", "activity": "provider.call", "concurrency": {"key": key, "limit": 1}}
+        ]
+    }))
+    .expect("json")
+}
+
+/// FR-022-057 over the carriers of feature 016 (FR-016-002, FR-016-003; task T022-104, decision D022-085): the input,
+/// a root node's output, a `$ref`, the strictest branch of an `anyOf`, a structure read whole, a computed index, an
+/// `additionalProperties`, the declared state (no carrier) and a location no schema declares. A key over a `secret`
+/// location is refused at its node; any other has the strictest level it reads, `pii` warned; a stored version is
+/// restored with its level as published, whose label nobody may see.
+#[test]
+fn a_key_has_the_strictest_level_of_the_locations_it_reads_over_the_016_carriers() {
+    for (key, expected) in [
+        ("input.tier", Some(Level::Public)),
+        ("input.team + '/' + input.tier", Some(Level::Internal)),
+        ("input.tags[0]", Some(Level::Internal)),
+        ("steps.price.output.region", Some(Level::Internal)),
+        ("input.account.id", Some(Level::Public)),
+        ("input.email", Some(Level::Pii)),
+        ("input.undeclared", Some(Level::Pii)),
+        ("state.counter", Some(Level::Pii)),
+        ("steps.missing.output.region", Some(Level::Pii)),
+        ("'one-key'", Some(Level::Public)),
+        // a structure read whole holds a secret below it; so does a list read at a computed position
+        ("string(size(input.account))", None),
+        ("input.token", None),
+        ("input.either", None),
+        ("input.extra.anything", None),
+        ("steps.price.output.card", None),
+        ("steps.price.output[input.tier]", None),
+        ("input.team + steps.price.output.card", None),
+    ] {
+        let document = classified(key);
+        match (JsonIrCodec.parse(&document), expected) {
+            (Ok(parsed), Some(level)) => {
+                let read = parsed
+                    .definition
+                    .gated_nodes()
+                    .next()
+                    .and_then(|node| node.flow_control().concurrency())
+                    .map(sagat_domain::workflow::ConcurrencyPolicy::key_level);
+                assert_eq!(read, Some(level), "{key}");
+                let warned = parsed.warnings.iter().any(|warning| {
+                    sagat_application::definitions::warning_problem(warning).code
+                        == "FLOW_CONTROL_KEY_PII"
+                });
+                assert_eq!(warned, level == Level::Pii, "{key}: {:?}", parsed.warnings);
+            }
+            (Err(error), None) => {
+                let codes: Vec<_> = problems_of(&error)
+                    .into_iter()
+                    .map(|problem| (problem.code, problem.node))
+                    .collect();
+                assert_eq!(
+                    codes,
+                    [("FLOW_CONTROL_KEY_SECRET", Some("call".to_owned()))],
+                    "{key}"
+                );
+                let stored = JsonIrCodec
+                    .parse_stored(&document)
+                    .unwrap_or_else(|error| panic!("a stored {key} is restored: {error:?}"));
+                assert_eq!(
+                    stored
+                        .definition
+                        .gated_nodes()
+                        .next()
+                        .and_then(|node| node.flow_control().concurrency())
+                        .map(sagat_domain::workflow::ConcurrencyPolicy::key_level),
+                    Some(Level::Secret),
+                    "{key}: restored with the level it reads"
+                );
+            }
+            (outcome, expected) => panic!("{key}: {outcome:?}, expected {expected:?}"),
+        }
+    }
+    // a top-level key reads only `input`; a secret there is refused at the workflow
+    let mut top: Value = serde_json::from_slice(&classified("input.tier")).expect("json");
+    top["rateLimit"] = serde_json::json!({"key": "input.token", "limit": 1, "per": "second"});
+    match JsonIrCodec.parse(&serde_json::to_vec(&top).expect("bytes")) {
+        Err(error) => assert_eq!(
+            problems_of(&error)
+                .into_iter()
+                .map(|problem| (problem.code, problem.node))
+                .collect::<Vec<_>>(),
+            [("FLOW_CONTROL_KEY_SECRET", None)]
+        ),
+        Ok(_) => panic!("a top-level key over a secret is refused"),
+    }
 }
 
 #[test]
@@ -312,14 +503,10 @@ fn the_corpus_that_declares_no_gate_reads_as_before() {
 /// rule has a fixture in [`REFUSED`], is the warning of
 /// [`a_self_starting_child_under_a_run_permit_is_published_with_a_warning`], or is a namespace warning of
 /// [`NAMESPACE_WARNINGS`].
-const PENDING: [(&str, &str); 3] = [
-    ("FLOW_CONTROL_KEY_SECRET", "T022-104"),
-    ("FLOW_CONTROL_KEY_PII", "T022-104"),
-    (
-        "ENCODING_READ_BY_CONCURRENCY_KEY",
-        "feature 031 registers it (FR-022-036)",
-    ),
-];
+const PENDING: [(&str, &str); 1] = [(
+    "ENCODING_READ_BY_CONCURRENCY_KEY",
+    "feature 031 registers it (FR-022-036)",
+)];
 
 /// The warnings that compare a definition with the namespace's other published definitions (G1187): one document
 /// cannot show them, so they are proved against PostgreSQL by the named test of `integration_flow_control_step_policies`.
@@ -360,7 +547,10 @@ fn every_rule_that_names_a_gate_is_covered_or_pending() {
     let covered: BTreeSet<String> = REFUSED
         .iter()
         .map(|(_, code, _)| (*code).to_owned())
-        .chain(["CONCURRENCY_SELF_CHILD".to_owned()])
+        .chain([
+            "CONCURRENCY_SELF_CHILD".to_owned(),
+            "FLOW_CONTROL_KEY_PII".to_owned(),
+        ])
         .chain(PENDING.iter().map(|(code, _)| (*code).to_owned()))
         .chain(
             NAMESPACE_WARNINGS

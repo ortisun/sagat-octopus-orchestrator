@@ -1721,6 +1721,49 @@ taken after `git grep D022-04` on every `origin/*` branch.
      waiter and grant rows (migrations `20270130000000`, `20270130000100`), `SECURITY DEFINER` count triggers on the key
      rows, and `UPDATE (next_eligible_at, updated_at)` as the runtime role's only update of semaphores and windows.
 
+- **D022-085 — What a key reads, its level, and who sees its label (2026-11-25; task T022-104; FR-022-057; gaps G1185,
+  G022-015; amends D022-060).** Delegate (OD-2026-11-24-4).
+  1. *What a key reads.* Options: (a) only a plain reference (`input.a.b`, as the Iceberg write's fields are read,
+     feature 035), anything else `pii`; (b) every place of the expression's syntax tree; (c) the places an evaluation
+     touches (needs data). Chosen **(b)**: `Compiled::reads` (`crates/infra-expr/src/reads.rs`) lists each variable and
+     literal path the expression names, each standing for the value there and everything under it (an expression may
+     size, compare or convert a structure); a computed index ends the path where it stands and is read in turn; both arms
+     of a condition count. It is conservative (more than an evaluation touches, never less) and keys are usually
+     concatenations, which (a) would make `pii` for no reason.
+  2. *The level of a place.* The carriers of feature 016 (FR-016-002) through the walk publication already runs, read
+     once per document (`crates/infra-ir/src/classified_locations.rs`, shared with the Iceberg write's reading):
+     `input.<path>` is the input carrier, `steps.<id>.output.<path>` (and `steps.<id>`) a root node's output carrier,
+     `steps` whole every node's output; the level is the strictest at or under the place, at least `pii` when the schema
+     does not say the value is a scalar, and `pii` for a place no schema declares, for `state` (no carrier: 016 refuses
+     an annotation there) and for anything the reading cannot follow. A key's level is the strictest of its places;
+     a key that reads nothing (the group's single key, a constant) is `public`.
+  3. *Publication.* `secret` is refused `FLOW_CONTROL_KEY_SECRET` at the declaration (node, or the workflow) by
+     publication only; `pii` is published with the warning `FLOW_CONTROL_KEY_PII` at each declaration. A stored version
+     is restored with the level its key reads (an earlier build may have published a `secret` key), so its label is
+     shown to nobody.
+  4. *Where the level lives.* Options: (a) a column on the holder, waiter and grant rows, written by every decision;
+     (b) a column on the key rows, raised by each decision; (c) derived from the run's pinned version, read by the codec
+     (`ConcurrencyPolicy::key_level`, `RateLimitPolicy::key_level`, set by `WorkflowDefinition::with_flow_control_key_levels`
+     for publication and restore alike, never canonical). Chosen **(c)**: no migration and no write on the gate's path
+     (the hot-path budget is untouched), exact per run (the key of that run's definition, which (b) blurs across the
+     definitions sharing a group), and one source with publication's check. A run read parses the version once (the
+     definition cache) and checks the reveal grant once per namespace, only for runs with a permit or a slot; a version
+     that cannot be read hides its labels (`secret`).
+  5. *Who sees `Run.concurrency.keyLabel` and `Run.rateLimit.keyLabel`.* A key over `public` places: every reader; over
+     `internal` places: a role that reads internal payloads (`payload:read-internal`: developer, operator, admin; not a
+     viewer); over `pii` places: a caller who may reveal personal data in the namespace (D022-060's one rule,
+     `reveal_grants::may_reveal_payload_unlocked`); `secret`: nobody. The reveal right needs no explicit reveal request
+     here, as D022-060 decided: a label is a pseudonym, not an audited disclosure.
+  6. *The key listings.* A key row does not say which definitions filed it (two definitions may share a group and a key
+     value from places of different levels), so the per-key listings stay the view of a caller who may reveal personal
+     data, which covers every level a published key may read; every other caller is given the group rows of T022-111
+     (D022-086). A `secret` key of a version published before this rule could reach a revealer's listing by its label;
+     none exists in production, since the runbook forbids activating the capability before T022-104 (G022-015).
+  Evidence: `contract_flow_control_step_policies::ir::{a_key_has_the_strictest_level_of_the_locations_it_reads_over_the_016_carriers,
+  a_key_over_personal_data_is_published_with_a_warning_and_one_over_internal_data_is_not,
+  every_invalid_fixture_is_refused_with_its_code_before_a_version_exists}` and
+  `integration_flow_control_step_policies::rest::a_key_label_is_shown_to_whoever_may_disclose_every_location_the_key_reads`.
+
 ### Decisions of the Studio slice (2026-11-24)
 
 - **D022-150 — How the Studio authors, shows and lists the gates (tasks T022-054, T022-055, T022-056, T022-085;
@@ -1820,7 +1863,7 @@ taken after `git grep D022-04` on every `origin/*` branch.
 | G022-012 | The start's decision (`decide_start_gates`) and the step's (`decide_gates`) are two code paths over the same rules; T022-072 builds one core for both levels and both gates (D022-050 item 5; architecture review Major 1 of 2026-11-20). A paused queued run's deadline runs during its pause, as G022-008 says of a step. *2026-11-20 (D022-054): the start's three causes share one validator (`check_start_decisions`) and one adapter function; the step's decision is still its own path.* *Closed 2026-11-20 (D022-064 item 2): `gates_of` and `decide_filed` serve both levels and both gates.* | Closed; T022-072 |
 | G022-013 | Keys-review correctness m5 and m8 (2026-11-20): the takeover test races a raw `UPDATE` of the shard lease, not a keeper's takeover, and checks "nothing twice" afterwards; and SC-022-004 at run level lacks five same-key starts with `limit: 1` (at most one holder, grants in admission order) and a mixed-limit pair sharing a group. | Open; T022-110 |
 | G022-014 | Without the label, a key's counts and the oldest-wait order still let a caller who may not reveal personal data partly link runs (one key of a group with waiters: every `WAITING` run of the group waits on it). The labels are hidden and the instants truncated to the minute (D022-060), which narrows and does not stop linking (D022-061). An aggregated listing per (pool, scope, group) for such callers closes it: T022-111 (D022-061). *2026-11-20 (D022-067 item 8):* `getRun`'s `rateLimit.position` is another surface of the same class (how many runs of the key are ahead); the estimate is withheld from such callers. *2026-11-21 (T022-086 security re-review, nit):* one bit more of the same class, a key's fullness: the synchronous `409` of a reset refused `RATE_LIMIT_SLOT_UNAVAILABLE` or `CONCURRENCY_PERMIT_UNAVAILABLE`, and the `failureReason` of the reset register (`run_resets.failure_reason`), which shows it afterwards to anyone who can read the entry; no code change. | Open; T022-111, a release item with T022-104 |
-| G022-015 | Publication does not yet refuse a concurrency key over a `secret` location (T022-104), while this build lists and can activate the concurrency capability (D022-057). The runbook forbids production activation before it; the release cannot close with it open. | Open; release gate, T022-104 |
+| G022-015 | Publication does not yet refuse a concurrency key over a `secret` location (T022-104), while this build lists and can activate the concurrency capability (D022-057). The runbook forbids production activation before it; the release cannot close with it open. *Built 2026-11-25 (D022-085): `FLOW_CONTROL_KEY_SECRET` refused at publication, `FLOW_CONTROL_KEY_PII` warned, a run's labels per the level its key reads.* | Open until T022-104 is ticked; release gate |
 | G022-016 | A reset of a run whose start declares `rateLimit` is refused `BINARY_CAPABILITY_MISSING` (D022-064 item 7): `RATE_LIMIT_SLOT_UNAVAILABLE` (018's code, G1181) and the reset rules of the `rate_limit.*` events land with T022-086. The refusal is retryable and no process of this build lifts it, so a pending reset of such a run is retried until it is cancelled: the runbook forbids production activation before it (D022-066 item 5), and `run_creators::a_reset_of_a_rate_limited_start_is_refused_until_its_rules_are_built` pins it. *Built 2026-11-21 (T022-086, D022-069):* a reset takes a fresh slot right after `run.reset` or is refused `RATE_LIMIT_SLOT_UNAVAILABLE`, rate first, and the five `rate_limit.*` events have the rules of `contracts/journal-events.md`; the interim refusal and its test are gone. *Closed 2026-11-21:* T022-086 ticked after its re-review (three reviewers, 0 Blockers, 0 Majors). | Closed (T022-086) |
 | G022-017 | The purge keeps a grant for its window row's longest period seen (`max_period_ms`) plus a minute: an acquirer that later declares a longer window on the same key (a `RATE_LIMIT_MISMATCH` warned at publication) does not count the grants purged before it arrived, and may be admitted up to their number early in its first window. | Open; documented in the runbook |
 | G022-018 | The grant purge visits keys in no order, without key-shard partitioning or an index on the lease instant (a full scan of `rate_limit_grants` a call): under steady per-second traffic on more keys than it visits per housekeeping its backlog grows (reviews of 2026-11-20, architecture Major 5). *2026-11-20 (D022-066 item 1):* the rows of a namespace are bounded by its `rate_limit_live_keys` again, and a decision that would be refused reclaims its own namespace's purgeable windows of at most 64 grants first, so only a window of more grants waits for this purge. Open: the order, the shards, the index, a time budget, an `outcome="failed"` and an oldest-purgeable-age gauge; a call stops at the first round that deleted nothing, which a round of keys all held by others also is (re-review correctness minor 3). | Open; production gate (runbook section 6); T022-062, T022-089 |

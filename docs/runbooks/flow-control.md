@@ -55,9 +55,13 @@ is live.
 
 ### 1.2 Turning concurrency keys on
 
-**Not in production before T022-104** (G022-015): publication does not yet refuse a key over a `secret` field. Until
-then a key's label and its whole oldest instants are shown only to callers with the namespace's reveal grant; other
-readers get the instants truncated to the minute, which narrows but does not stop linking a key's runs (D022-061).
+**Not in production before T022-104 and T022-111 are ticked** (G022-015, G022-014). Built on 2026-11-25 (D022-085):
+publication refuses a key over a `secret` field (`FLOW_CONTROL_KEY_SECRET`) and warns one over a `pii` field, an
+unclassified one included (`FLOW_CONTROL_KEY_PII`); a run shows its key's label to a caller who may disclose every field
+the key reads (public: every reader; internal: a role that reads internal payloads; pii: the reveal grant). The key
+listings show labels and whole instants only to callers with the namespace's reveal grant; other readers get the
+instants truncated to the minute, which narrows but does not stop linking a key's runs (D022-061), until T022-111 gives
+them one row per group instead.
 
 **Turning the switch off** stops new gated publications and starts; keep the key file mounted so that what was admitted
 drains: a process with the switches off that is given the file still lists the gate (so a fleet that requires it keeps

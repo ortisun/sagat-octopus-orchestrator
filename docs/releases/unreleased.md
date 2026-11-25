@@ -66,7 +66,8 @@ OD-2026-11-20-11; runbook section 4). Finish the rolling upgrade before setting 
 migrations `20270203000000` and `20270206000000` is refused while runs or limits use them (runbook sections 5 and 6).
 
 **Release gates: do not activate in production before they are closed.** Concurrency keys: T022-104 (publication's
-refusal of a key over a `secret` field, gap G022-015); this release does not close with it open. Rate limits: also
+refusal of a key over a `secret` field, gap G022-015; built, `FLOW_CONTROL_KEY_SECRET` and `FLOW_CONTROL_KEY_PII`, awaiting
+its review) and T022-111 (the group rows of the key listings); this release does not close with them open. Rate limits: also
 T022-080 (the fault suite's review), T022-113 (the rate twins of the run creators) and gap G022-018 (the purge's order
 and backlog), as the runbook's section 6 lists them.
 

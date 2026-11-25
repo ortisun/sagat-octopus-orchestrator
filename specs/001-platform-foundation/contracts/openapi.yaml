@@ -7309,7 +7309,7 @@ components:
         state: {type: string, enum: [GRANTED, WAITING], description: 'GRANTED while the run''s slot counts (less than `per` since its grant), also after the run has ended, since a run-level slot is never given back; WAITING while it is buffered. The field is absent once the slot no longer counts (D022-067 item 1).'}
         pool: {type: string, enum: [ORDINARY, DRAFT_TEST]}
         group: {type: string}
-        keyLabel: {type: [string, 'null'], pattern: '^[0-9a-f]{12}$', description: 'The 12-hex label of the key''s keyed digest; null unless the caller may reveal personal data in the run''s namespace (FR-022-057).'}
+        keyLabel: {type: [string, 'null'], pattern: '^[0-9a-f]{12}$', description: 'The 12-hex label of the key''s keyed digest; null unless the caller may disclose, at its level, every location the key reads: a key over public fields to every reader, over internal fields to a role that reads internal payloads, over pii fields (an unclassified field is pii) only to a caller who may reveal personal data in the run''s namespace (FR-022-057, D022-085).'}
         limit: {type: integer, minimum: 1, description: 'The effective limit the slot was decided with: the lowest of the declaration and the namespace''s ceiling of its window.'}
         per: {type: string, enum: [second, minute, hour]}
         since: {type: string, format: date-time, description: 'When the slot was granted (GRANTED) or the run was buffered (WAITING).'}
@@ -7325,7 +7325,7 @@ components:
         state: {type: string, enum: [HOLDING, WAITING]}
         pool: {type: string, enum: [ORDINARY, DRAFT_TEST]}
         group: {type: string}
-        keyLabel: {type: [string, 'null'], pattern: '^[0-9a-f]{12}$', description: 'The 12-hex label of the key''s keyed digest; null unless the caller may reveal personal data in the run''s namespace (FR-022-057).'}
+        keyLabel: {type: [string, 'null'], pattern: '^[0-9a-f]{12}$', description: 'The 12-hex label of the key''s keyed digest; null unless the caller may disclose, at its level, every location the key reads: a key over public fields to every reader, over internal fields to a role that reads internal payloads, over pii fields (an unclassified field is pii) only to a caller who may reveal personal data in the run''s namespace (FR-022-057, D022-085).'}
         since: {type: string, format: date-time, description: 'When the permit was acquired (HOLDING) or the run was queued (WAITING).'}
         queueDeadline: {type: [string, 'null'], format: date-time, description: 'WAITING: when the run fails CONCURRENCY_WAIT_TIMEOUT if not granted before; null while HOLDING.'}
     AlertPage:

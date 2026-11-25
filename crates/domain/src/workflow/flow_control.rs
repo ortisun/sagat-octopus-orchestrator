@@ -15,6 +15,7 @@ use std::fmt;
 use std::time::Duration;
 
 use super::{Expression, NodeId, WorkflowError};
+use crate::classification::Level;
 use crate::identity::{Slug, clip};
 
 /// The most holders one key of a concurrency group may have (plan, "Finite ceilings").
@@ -239,6 +240,21 @@ pub enum FlowControlRule {
     /// would make a key of its own.
     #[error("a key that reads the run's identity makes a key per run")]
     UnboundedKey,
+    /// `FLOW_CONTROL_KEY_SECRET` (FR-022-057, decision D022-085): the key reads a location classified `secret`, whose
+    /// value would reach a digest, a label and the key rows.
+    #[error("a key may not read a location classified secret")]
+    SecretKey,
+}
+
+/// The level a key's label is shown at before the codec has read the schemas (decision D022-085): a key reads `pii` until
+/// proved otherwise, so forgetting to read them hides a label instead of showing it; a key that reads nothing (the
+/// group's single key) is `public`.
+const fn unread_key_level(key: Option<&Expression>) -> Level {
+    if key.is_some() {
+        Level::UNMARKED
+    } else {
+        Level::Public
+    }
 }
 
 /// At most `limit` holders of one key at once (FR-022-017). `key` is absent for the single key of the group.
@@ -246,6 +262,9 @@ pub enum FlowControlRule {
 pub struct ConcurrencyPolicy {
     group: FlowGroup,
     key: Option<Expression>,
+    /// The strictest level of the locations the key reads (FR-022-057, decision D022-085), read from the document's
+    /// schemas by the codec ([`Self::with_key_level`]); derived, never part of the canonical document.
+    key_level: Level,
     limit: u32,
     queue_timeout: Duration,
 }
@@ -267,10 +286,26 @@ impl ConcurrencyPolicy {
         check_queue_timeout(queue_timeout)?;
         Ok(Self {
             group,
+            key_level: unread_key_level(key.as_ref()),
             key,
             limit,
             queue_timeout,
         })
+    }
+
+    /// The same policy with the level of what its key reads; a policy without a key reads nothing and stays `public`.
+    #[must_use]
+    pub const fn with_key_level(mut self, level: Level) -> Self {
+        if self.key.is_some() {
+            self.key_level = level;
+        }
+        self
+    }
+
+    /// The strictest level of the locations the key reads: who may see its label (FR-022-057, decision D022-085).
+    #[must_use]
+    pub const fn key_level(&self) -> Level {
+        self.key_level
     }
 
     #[must_use]
@@ -299,6 +334,8 @@ impl ConcurrencyPolicy {
 pub struct RateLimitPolicy {
     group: FlowGroup,
     key: Option<Expression>,
+    /// As [`ConcurrencyPolicy`]'s (decision D022-085).
+    key_level: Level,
     limit: u32,
     per: RatePeriod,
     queue_timeout: Duration,
@@ -323,11 +360,27 @@ impl RateLimitPolicy {
         check_queue_timeout(queue_timeout)?;
         Ok(Self {
             group,
+            key_level: unread_key_level(key.as_ref()),
             key,
             limit,
             per,
             queue_timeout,
         })
+    }
+
+    /// As [`ConcurrencyPolicy::with_key_level`].
+    #[must_use]
+    pub const fn with_key_level(mut self, level: Level) -> Self {
+        if self.key.is_some() {
+            self.key_level = level;
+        }
+        self
+    }
+
+    /// As [`ConcurrencyPolicy::key_level`].
+    #[must_use]
+    pub const fn key_level(&self) -> Level {
+        self.key_level
     }
 
     #[must_use]
@@ -416,6 +469,40 @@ impl FlowControl {
             (None, Some(r)) => Some(r.queue_timeout),
             (None, None) => None,
         }
+    }
+
+    /// The same gates with the level of what each key reads, as `level` gives it for the gate's kind and key
+    /// expression (decision D022-085). A gate without a key is left `public`.
+    #[must_use]
+    pub fn with_key_levels(self, mut level: impl FnMut(GateKind, &Expression) -> Level) -> Self {
+        let concurrency = self.concurrency.map(|policy| match policy.key.clone() {
+            Some(key) => policy.with_key_level(level(GateKind::Concurrency, &key)),
+            None => policy,
+        });
+        let rate_limit = self.rate_limit.map(|policy| match policy.key.clone() {
+            Some(key) => policy.with_key_level(level(GateKind::RateLimit, &key)),
+            None => policy,
+        });
+        Self {
+            concurrency,
+            rate_limit,
+        }
+    }
+
+    /// The gates of this level whose key reads a location of `level`, with their kind.
+    pub fn keys_at(&self, level: Level) -> impl Iterator<Item = GateKind> + '_ {
+        [
+            self.concurrency
+                .as_ref()
+                .filter(|policy| policy.key.is_some() && policy.key_level == level)
+                .map(|_| GateKind::Concurrency),
+            self.rate_limit
+                .as_ref()
+                .filter(|policy| policy.key.is_some() && policy.key_level == level)
+                .map(|_| GateKind::RateLimit),
+        ]
+        .into_iter()
+        .flatten()
     }
 }
 

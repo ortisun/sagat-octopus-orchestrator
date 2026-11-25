@@ -525,6 +525,148 @@ async fn a_key_label_is_shown_only_to_a_caller_who_may_reveal_personal_data() {
     );
 }
 
+/// FR-022-057 (task T022-104, decision D022-085): a key's label in `Run.concurrency` and `Run.rateLimit` is shown to a
+/// caller who may disclose, at its level, every location the key reads: a key over `public` fields to every reader,
+/// over `internal` ones to a role that reads internal payloads (a developer, not a viewer), over `pii` ones only to a
+/// caller with the reveal grant; a key over `public` and `pii` fields is `pii`. The key listings keep their labels for
+/// the reveal grant (task T022-111 lists groups to every other caller).
+#[tokio::test]
+async fn a_key_label_is_shown_to_whoever_may_disclose_every_location_the_key_reads() {
+    use sagat_domain::identity::Role;
+    let (api, namespace, acme) = api().await;
+    member(&api, acme, "vera-viewer", Role::Viewer).await;
+    member(&api, acme, "dan-developer", Role::Developer).await;
+    let schema = json!({
+        "type": "object",
+        "x-sagat-classification": "public",
+        "properties": {
+            "accountId": {"type": "string"},
+            "tier": {"type": "string"},
+            "team": {"type": "string", "x-sagat-classification": "internal"},
+            "email": {"type": "string", "x-sagat-classification": "pii"}
+        }
+    });
+    let mut runs = Vec::new();
+    for (level, key) in [
+        ("public", "input.tier"),
+        ("internal", "input.team"),
+        ("pii", "input.tier + input.email"),
+    ] {
+        let name = format!("rest-level-{level}");
+        let mut document = serial_start(&name, 1);
+        document["inputSchema"] = schema.clone();
+        document["concurrency"] =
+            json!({"group": format!("level-{level}"), "key": key, "limit": 1});
+        document["rateLimit"] =
+            json!({"group": format!("level-{level}"), "key": key, "limit": 1, "per": "hour"});
+        let workflow = publish(&api, &name, document).await.expect("published");
+        let started = api
+            .as_user(Method::POST, "/runs", "alice", "acme")
+            .header("x-octopus-namespace", "payments")
+            .header("idempotency-key", Uuid::now_v7().to_string())
+            .json(&json!({"workflowId": workflow, "input": {
+                "accountId": CANARY, "tier": "gold", "team": "billing", "email": "ana@example.com"}}))
+            .send()
+            .await
+            .expect("start run");
+        assert_eq!(started.status(), StatusCode::ACCEPTED);
+        let run = json_of(started).await["runId"]
+            .as_str()
+            .expect("run id")
+            .to_owned();
+        let rate_label: String = sqlx::query_scalar(
+            "SELECT encode(substr(key_digest, 1, 6), 'hex') FROM rate_limit_grants \
+              WHERE run_id = $1::uuid AND node = ''",
+        )
+        .bind(&run)
+        .fetch_one(&api.db.pool)
+        .await
+        .expect("the run's grant row");
+        runs.push((level, run.clone(), (label_of(&api, &run).await, rate_label)));
+    }
+    let keys = format!("/namespaces/{namespace}/concurrency-keys");
+    let rate_keys = format!("/namespaces/{namespace}/rate-limit-keys");
+    let seen_by = |subject: &'static str| {
+        let api = &api;
+        let runs = runs.clone();
+        let (keys, rate_keys) = (keys.clone(), rate_keys.clone());
+        async move {
+            let (status, listing) = read_as(api, "/runs", subject).await;
+            assert_eq!(status, StatusCode::OK, "{listing}");
+            let mut seen = Vec::new();
+            for (level, run, label) in &runs {
+                let (status, body) = read_as(api, &format!("/runs/{run}"), subject).await;
+                assert_eq!(status, StatusCode::OK, "{body}");
+                assert_eq!(body["concurrency"]["state"], "HOLDING", "{body}");
+                assert_eq!(body["rateLimit"]["state"], "GRANTED", "{body}");
+                let listed = listing["items"]
+                    .as_array()
+                    .expect("items")
+                    .iter()
+                    .find(|item| item["runId"] == run.as_str())
+                    .expect("listed")
+                    .clone();
+                let shown = |value: &Value, label: &String| {
+                    if value.is_null() {
+                        false
+                    } else {
+                        assert_eq!(value, &json!(label), "{level}");
+                        true
+                    }
+                };
+                let reads = [
+                    shown(&body["concurrency"]["keyLabel"], &label.0),
+                    shown(&body["rateLimit"]["keyLabel"], &label.1),
+                    shown(&listed["concurrency"]["keyLabel"], &label.0),
+                    shown(&listed["rateLimit"]["keyLabel"], &label.1),
+                ];
+                assert!(
+                    reads.iter().all(|shown| *shown == reads[0]),
+                    "{level}: one rule for the four reads {reads:?}"
+                );
+                seen.push((*level, reads[0]));
+            }
+            let mut listed = Vec::new();
+            for path in [&keys, &rate_keys] {
+                let (status, page) = read_as(api, path, subject).await;
+                assert_eq!(status, StatusCode::OK, "{page}");
+                listed.extend(
+                    page["items"]
+                        .as_array()
+                        .expect("items")
+                        .iter()
+                        .map(|item| item["keyLabel"].is_string()),
+                );
+            }
+            (seen, listed)
+        }
+    };
+    let (viewer, listed) = seen_by("vera-viewer").await;
+    assert_eq!(
+        viewer,
+        [("public", true), ("internal", false), ("pii", false)],
+        "a viewer reads public payloads only"
+    );
+    assert!(listed.iter().all(|shown| !shown), "{listed:?}");
+    let (developer, listed) = seen_by("dan-developer").await;
+    assert_eq!(
+        developer,
+        [("public", true), ("internal", true), ("pii", false)],
+        "a developer reads internal payloads, not personal data without a grant"
+    );
+    assert!(listed.iter().all(|shown| !shown), "{listed:?}");
+    let (admin, listed) = seen_by("alice").await;
+    assert_eq!(
+        admin,
+        [("public", true), ("internal", true), ("pii", true)],
+        "an admin with the reveal grant"
+    );
+    assert!(
+        !listed.is_empty() && listed.iter().all(|shown| *shown),
+        "{listed:?}"
+    );
+}
+
 /// Publishes `document` as `name` in namespace `namespace` of `tenant`, as its admin `admin`.
 async fn publish_in(
     api: &TestApi,

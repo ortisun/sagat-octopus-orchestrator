@@ -71,6 +71,14 @@ pub const CATALOG: &[(&str, &str)] = &[
         "A concurrency or rate-limit key reads the run's identity (`run`), alone or beside other data: every run would have a key of its own, which the namespace keeps a row for. Key on what the gate protects (an account, a provider) read from `input`, or from `steps` and `state` on a step.",
     ),
     (
+        "FLOW_CONTROL_KEY_SECRET",
+        "A concurrency or rate-limit key reads a location classified secret (an `x-sagat-classification` of the input schema or of a step's output schema): its value would reach a key digest and a label. Key on a field that is not secret, or classify the field you key on.",
+    ),
+    (
+        "FLOW_CONTROL_KEY_PII",
+        "A concurrency or rate-limit key reads a location classified pii, or one no schema classifies (which is pii): published, and its key label is shown only to callers who may reveal personal data in the namespace. Classify the field `internal` or `public` in its schema if it is not personal data.",
+    ),
+    (
         "CONCURRENCY_SELF_CHILD",
         "A child node starts this workflow, whose run-level concurrency key the child may share with its parent: with a limit of 1 the child waits for the permit its parent holds until the queue timeout. Use another group, or another key, for the child.",
     ),

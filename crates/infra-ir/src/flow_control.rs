@@ -9,14 +9,18 @@
 
 use std::time::Duration;
 
+use sagat_application::classification::{CarrierPointer, ClassificationSegment};
 use sagat_application::definitions::IrError;
+use sagat_domain::classification::Level;
 use sagat_domain::workflow::flow_control::{self as domain, DEFAULT_QUEUE_TIMEOUT};
 use sagat_domain::workflow::{
     ConcurrencyPolicy, Expression, FlowControl, FlowControlRule, FlowGroup, GateKind, GroupName,
-    NodeId, RateLimitPolicy, RatePeriod,
+    NodeId, RateLimitPolicy, RatePeriod, WorkflowDefinition,
 };
-use sagat_infra_expr::Compiled;
+use sagat_infra_expr::{Compiled, Read, ReadStep};
 use serde_json::{Map, Value};
+
+use crate::classified_locations::Schemas;
 
 /// What a top-level key may read: the run's input, nothing that exists only once the run does.
 const RUN_KEY_VARIABLES: [&str; 1] = ["input"];
@@ -68,6 +72,105 @@ pub(crate) fn check_publication_keys(document: &Value) -> Result<(), IrError> {
         }
     }
     Ok(())
+}
+
+/// Gives every key of `definition` the level of what it reads, from the schemas of `document` (FR-022-057, decision
+/// D022-085), for publication and for the restore alike: the level decides who sees the key's label, so a version
+/// restored by a later build is read by the same rules. Derived, so it never reaches the canonical bytes. A definition
+/// without a key is returned as it is, and its schemas are not read.
+pub(crate) fn attach_key_levels(
+    document: &Value,
+    definition: WorkflowDefinition,
+) -> WorkflowDefinition {
+    let keyed = |gates: &FlowControl| {
+        gates
+            .concurrency()
+            .and_then(ConcurrencyPolicy::key)
+            .is_some()
+            || gates.rate_limit().and_then(RateLimitPolicy::key).is_some()
+    };
+    if !keyed(definition.run_flow_control())
+        && !definition
+            .gated_nodes()
+            .any(|node| keyed(node.flow_control()))
+    {
+        return definition;
+    }
+    let schemas = Schemas::new(document);
+    definition.with_flow_control_key_levels(|_, _, key| key_level(&schemas, key.as_str()))
+}
+
+/// Refuses, at publication only, a key that reads a location classified `secret` (`FLOW_CONTROL_KEY_SECRET`,
+/// FR-022-057, decision D022-085). A stored version is restored as it was published: its key keeps the level `secret`,
+/// whose label nobody may see.
+pub(crate) fn check_secret_keys(definition: &WorkflowDefinition) -> Result<(), IrError> {
+    if let Some(kind) = definition.run_flow_control().keys_at(Level::Secret).next() {
+        return Err(refused(kind, None, FlowControlRule::SecretKey));
+    }
+    for node in definition.gated_nodes() {
+        if let Some(kind) = node.flow_control().keys_at(Level::Secret).next() {
+            return Err(refused(kind, Some(node.id()), FlowControlRule::SecretKey));
+        }
+    }
+    Ok(())
+}
+
+/// The strictest level of every place `text` reads; `public` for a key that reads nothing, and `pii` for one this build
+/// cannot compile (a stored text an earlier grammar accepted), as for anything it cannot follow.
+fn key_level(schemas: &Schemas<'_>, text: &str) -> Level {
+    let Ok(compiled) = Compiled::compile(text) else {
+        return Level::UNMARKED;
+    };
+    compiled
+        .reads()
+        .iter()
+        .map(|read| read_level(schemas, read))
+        .fold(Level::Public, Level::stricter)
+}
+
+/// The level of one place a key reads, everything under it included. `input` is the input carrier; `steps.<id>.output`
+/// (and `steps.<id>`, whose only field it is) the output carrier of a root node; every node's output for `steps` as a
+/// whole. `state` has no carrier (016 refuses an annotation there), so it is `pii`, the level of a location no schema
+/// classifies, as is anything else this reading cannot follow.
+fn read_level(schemas: &Schemas<'_>, read: &Read) -> Level {
+    let (carrier, path) = match (read.variable.as_str(), read.path.as_slice()) {
+        ("input", path) => (CarrierPointer::Input, path),
+        ("steps", [ReadStep::Field(node), rest @ ..]) => {
+            let Ok(node) = NodeId::parse(node) else {
+                return Level::UNMARKED;
+            };
+            match rest {
+                [] => (CarrierPointer::NodeOutput(node), rest),
+                [ReadStep::Field(output), rest @ ..] if output == "output" => {
+                    (CarrierPointer::NodeOutput(node), rest)
+                }
+                _ => return Level::UNMARKED,
+            }
+        }
+        ("steps", []) => {
+            return schemas
+                .index
+                .locations()
+                .iter()
+                .filter(|location| matches!(location.carrier, CarrierPointer::NodeOutput(_)))
+                .map(|location| location.level)
+                .fold(Level::UNMARKED, Level::stricter);
+        }
+        _ => return Level::UNMARKED,
+    };
+    let Some(location) = path
+        .iter()
+        .map(|step| match step {
+            ReadStep::Field(name) => Some(ClassificationSegment::Property(name.clone())),
+            ReadStep::Position(at) => usize::try_from(*at).ok().map(ClassificationSegment::Index),
+        })
+        .collect::<Option<Vec<_>>>()
+    else {
+        return Level::UNMARKED;
+    };
+    schemas
+        .level_at(&carrier, &location)
+        .unwrap_or(Level::UNMARKED)
 }
 
 /// Refuses, before the schema is applied, a gate declared on a node of a body (`forEach`, `while`, `repeatUntil`): body

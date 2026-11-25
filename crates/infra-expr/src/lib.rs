@@ -20,8 +20,10 @@ mod eval;
 mod lexer;
 pub mod limits;
 mod parser;
+mod reads;
 mod template;
 
 pub use error::ExprError;
 pub use eval::{Compiled, Env};
+pub use reads::{Read, ReadStep};
 pub use template::Template;

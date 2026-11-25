@@ -1,0 +1,18 @@
+{
+  "apiVersion": "sagat-octopus-orchestrator.io/v1",
+  "kind": "Workflow",
+  "metadata": {"name": "customer-serial"},
+  "entrypoint": "call",
+  "inputSchema": {
+    "type": "object",
+    "x-sagat-classification": "internal",
+    "properties": {
+      "region": {"type": "string"},
+      "email": {"type": "string", "x-sagat-classification": "pii"}
+    }
+  },
+  "concurrency": {"key": "input.email", "limit": 1},
+  "nodes": [
+    {"id": "call", "type": "activity", "activity": "crm.notify", "rateLimit": {"key": "input.region", "limit": 5, "per": "second"}}
+  ]
+}
