@@ -28,7 +28,8 @@ queries from committed state with no worker. Some answers exist only in the func
    durably, validated by the function when its admission event is applied, handled by the function (which may schedule
    work), and completed with a result validated against its closed `resultSchema` by the platform's validator, or failed
    (`RESULT_SCHEMA_VIOLATION` when the result does not fit), the run left alone. An `updateKey` MUST be scoped by the run and the admitting
-   principal; a receipt and a repeated admission MUST be answered only within that scope (a holder of `run:operate`
+   principal and by the address the client used (a run or a chain, so a chain-addressed key holds across
+   continue-as-new, and a chain's signals keep their chain scope); a receipt and a repeated admission MUST be answered only within that scope (a holder of `run:operate`
    reads the list of every principal's update under the key), after authorization is checked again, and an unknown key
    MUST answer the same `404` as a missing one. The stop drain and the handoff of continue-as-new MUST finish every
    update that has not completed (`REJECTED` if admitted, `FAILED` if accepted, reason `RUN_ENDED` or `RUN_CONTINUED`),
@@ -49,7 +50,8 @@ queries from committed state with no worker. Some answers exist only in the func
    schema at all is structure only for everyone, as Decision 302 of feature 016 did for events, because an operator
    repairing a run and a replayer need those values; and it extends ADR-0036 decision 6's closed carrier set. A field
    classified `secret` MUST reach a workflow lease as the export's typed placeholder, never its value: a code run cannot
-   route a secret through the function, and an activity receives a secret only through its own entry's `secrets`. A
+   route a secret through the function, and an activity receives a secret only through its own entry's `secrets`. Each
+   stored payload MUST be classified by the carrier of the version that accepted it, so a move never declassifies it. A
    blob whose carrier schema has a `secret` field MUST NOT be delivered to a workflow, query or replay-check token, and
    the export MUST emit every blob as a reference only. The classification governs raw reads; the answers of declared
    queries and updates follow ADR-0031's declared disclosure.

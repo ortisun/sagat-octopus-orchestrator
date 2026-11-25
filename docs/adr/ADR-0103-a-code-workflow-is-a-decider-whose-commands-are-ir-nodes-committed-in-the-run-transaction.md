@@ -3,7 +3,7 @@
 **Status:** Proposed
 **Decided by:** agent (Claude Code, design 044), under the owner's delegation of the 0.3.0 design questions (OD-2026-11-20-6) and of the acceptance of design 044's architecture decisions (OD-2026-11-24-4); scope by the owner (OD-2026-11-24-3); no person has reviewed it
 **Refines / supersedes:** refines ADR-0003 (declarative IR: "procedural worker with determinism rules later") and ADR-0001; reuses ADR-0010, ADR-0076 and the step review of feature 003
-**Enforced by:** `integration_workflow_as_code::nodes::every_command_kind_runs_through_every_path`; `the_workflow_task_step_is_neither_derived_nor_forwarded`; `a_code_run_never_finishes_by_routing`; the crash tests of `fault_workflow_as_code` (between the statements of the batched path, after the commit); the differential test `the_batched_path_writes_what_persist_writes`; the budget test `a_completion_of_256_commands_of_every_kind_stays_within_63_statements`; `a_cancel_without_grace_after_a_cooperative_request_stops_at_once`; `code_definition_sites::every_definition_loader_calls_the_composer`; `code_workflow_sites::only_the_cancellation_function_calls_stop_run_with_cancelled`; `a_deferred_continue_as_new_after_a_cancellation_request_ends_cancelled`; `cancelling_a_run_under_review_stops_it_without_the_grace_and_applies_the_cancel_policies`; `code_definition_sites::every_call_site_is_listed`; `a_lease_and_a_completion_cost_what_the_budget_says_once` (a guard); `every_command_kind_round_trips_through_its_code_profile`; `an_expired_workflow_task_is_counted_without_review`; `workflow_task_expiry_parity`; `a_workflow_task_lease_is_refused_by_every_activity_rpc`; `an_activity_binding_named_workflow_order_gives_no_workflow_authority` (design 044, Tasks 044-4, 044-5, 044-8, 044-9)
+**Enforced by:** `integration_workflow_as_code::nodes::every_command_kind_runs_through_every_path`; `the_workflow_task_step_is_neither_derived_nor_forwarded`; `a_code_run_never_finishes_by_routing`; the crash tests of `fault_workflow_as_code` (between the statements of the batched path, after the commit); the differential test `the_batched_path_writes_what_persist_writes`; the budget test `a_completion_of_403_commands_of_every_kind_stays_within_63_statements`; `a_cancel_without_grace_after_a_cooperative_request_stops_at_once`; `code_definition_sites::every_definition_loader_calls_the_composer`; `code_workflow_sites::only_the_cancellation_function_calls_stop_run_with_cancelled`; `a_deferred_continue_as_new_after_a_cancellation_request_ends_cancelled`; `cancelling_a_run_under_review_stops_it_without_the_grace_and_applies_the_cancel_policies`; `code_definition_sites::every_call_site_is_listed`; `a_lease_and_a_completion_cost_what_the_budget_says_once` (a guard); `every_command_kind_round_trips_through_its_code_profile`; `an_expired_workflow_task_is_counted_without_review`; `workflow_task_expiry_parity`; `a_workflow_task_lease_is_refused_by_every_activity_rpc`; `an_activity_binding_named_workflow_order_gives_no_workflow_authority` (design 044, Tasks 044-4, 044-5, 044-8, 044-9)
 **Required before acceptance:** the measurements of design 044 Task 044-25 and the fault tests of Tasks 044-9 and 044-28, as ADR-0050 requires of a decision that changes the execution path
 
 ## Context
@@ -47,7 +47,7 @@ A code version has no graph. The constitution forbids tenant code in a platform 
 6. A completion MUST commit, in one transaction with the run row and the workflow-task step locked: the journal events
    of the completion and of every command, the overlay rows, the steps, timers and waits, the projections, the outbox
    hints and the state of the workflow-task step. It MUST run at most the 50 statements of today's `COMPLETION_WITH_A_NEXT_STEP` plus 13,
-   reads included, whatever the number of its commands (at most 339: 256 from the function's calls and 83 the SDK issues), that is at most 63; the count of the steps that
+   reads included, whatever the number of its commands (at most 403: 256 from the function's calls and 147 the SDK issues), that is at most 63; the count of the steps that
    can still act MUST be read, never kept by hand; the batched persistence path MUST write what
    `persist` writes. Every journal write of every run MUST go through one typed append function.
 7. The engine MUST NOT end a code run by routing; a terminal command MUST go through the engine's stop drain.
@@ -63,6 +63,8 @@ A code version has no graph. The constitution forbids tenant code in a platform 
    that already has a stop reason MUST journal nothing. A person with `run:operate` MUST be able to cancel without grace,
    which stops the run at once whether or not a cooperative request was journaled before, journaled and audited, the
    grace being part of the operation's idempotency fingerprint; first-request-wins holds for cooperative requests only.
+   The one function takes a closed origin (a request with its grace, a request without grace, the function's
+   acknowledgement, a continue-as-new after a request, a latched handoff), the last three stopping the run at once.
 
 ## Considered options
 

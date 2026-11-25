@@ -727,6 +727,32 @@ finding was answered.
 - **D044-200** (2026-11-25, later state) `golang.org/x/tools` is chosen when Task 044-16 starts (the newest release at
   least two weeks old whose `go` directive is at most 1.25.0), not pinned to v0.28.0 here.
 
+### Decisions after the eleventh review round (2026-11-25)
+
+The reports are in `docs/designs/044-workflow-as-code.reviews/2026-11-25/round-11/`; `resolution.md` there says how each
+finding was answered.
+
+- **D044-223** (2026-11-25, supersedes D044-216 in part) A completion carries at most 403 commands: 256 from the
+  function's calls and 147 the SDK issues (128 update commands for at most 64 open updates, one consumption covering
+  every signal name, one set-state, 16 scope closes and aborts, one re-emitted deferral).
+- **D044-224** (2026-11-25, supersedes D044-215 in part) A command names only a blob written under the run's workflow
+  lease or held by its latest deferral, which a re-emission names by descriptor; at most 16 command-value blobs per run
+  and per completion, apart from the tenant's count of uploaded blobs; a gated input and an approval's subject are
+  always inline; the validation semaphore holds 64 MiB, refusing with `UNAVAILABLE` that is not counted.
+- **D044-225** (2026-11-25) A terminal output and a continue-as-new input and carried state leave the run and are judged
+  against the tenant's content quota only; an update result over the run's bound fails that update only.
+- **D044-226** (2026-11-25) The continue-as-new check reads the chain inside the member-chain lock every run transaction
+  takes first (`lock_member_chain_sql`), so the lock order is the continuation pass's.
+- **D044-227** (2026-11-25) Cancellation takes a closed `CancelOrigin`; the source-text check counts every `stop_run(` call
+  site; `steps.code_step` marks code steps for the `outcome_seq` check and the can-act index.
+- **D044-228** (2026-11-25) Code update keys and chain signals keep the scope of the address the client used; each stored
+  payload is classified by the carrier of the version that accepted it.
+- **D044-229** (2026-11-25) A replay-check task is leased for 300 s; an item whose lease expired three times ends
+  `REPLAY_CHECK_ABANDONED`; a recorded verdict wakes its item; a verdict of a revoked session is not applied; the unserved
+  alert is the in-app kind `WORKFLOW_TASK_UNSERVED`.
+- **D044-209** (2026-11-25, later state) The per-transaction overlay bound is 771 KiB (Decision 044-213's round counted
+  the addressed step's rows).
+
 ## 3. Gaps
 
 - **G044-001** (2026-11-24) The memory of an idle cached run is not measured in any SDK; the TypeScript spike's heap
