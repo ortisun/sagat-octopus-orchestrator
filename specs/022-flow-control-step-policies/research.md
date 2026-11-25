@@ -1906,6 +1906,33 @@ taken after `git grep D022-04` on every `origin/*` branch.
   pool acquisition timeout) or the pool's late rollback above. Its assertion now prints the tick's report, which names
   which (`skipped`, `failed`, `fenced`).
 
+- **D022-089 — The merge with `develop` restates the quota resource lists of both features in a new migration
+  (2026-11-25).** Delegate (OD-2026-11-24-4). Merging `develop` (feature 041, step logs) into this branch put feature
+  041's `20270201000000_step_log_quotas` between this feature's `20270130000300_flow_control_quota_resources` and
+  `20270206000000_flow_control_rate_quota_resources`. Each of the three restates the whole lists of the CHECKs
+  `quota_ceilings_resource_valid`, `quota_limits_resource_valid` and `quota_limits_tenant_scoped`, and migrations run in
+  version order: the last one, `20270206000000`, was written without the four step-log names, so on the merged tree a
+  fresh database refused every step-log limit and ceiling. Seen failing on the merged tree with the new migration held
+  aside: `migrations::every_quota_resource_is_accepted_by_the_checks_in_force_on_a_fresh_database` (inserts every value
+  of `QuotaResource::ALL` at its default) and develop's
+  `migrations::the_last_restatement_of_each_quota_resource_list_names_every_resource` (reads the text), both in
+  `integration_platform_foundation`. Options: (a) edit `20270206000000` to name the step-log names (it is on no released
+  tree, but databases migrated from this branch already hold its checksum, and its down would also need both sets);
+  (b) re-stamp `20270206000000` after `20270210000100` (same checksum problem, and it would move the rate-limit names
+  after the step-log tables for no reason); (c) a new pair `20270215000000_quota_resources_of_flow_control_and_step_logs`
+  and `20270215000100_..._validate`, stamped after every migration of both, that restates the union `NOT VALID` and
+  validates it in a second transaction, with a down that refuses while a step-log limit or ceiling exists and otherwise
+  restores the lists of `20270206000000`. Chosen (c): no applied migration changes, the rule of the `REBASE HAZARD`
+  comments holds (the later restatement names both sets), and the two tests keep the next merge honest. Value ranges are
+  not restated: only `20270201000000` restated them, and this feature's resources take the general range (their bounds
+  are in code). Residual: the down of `20270201000000` restores the pre-041 lists, which lack this feature's six
+  concurrency names, so rolling back past it with a concurrency limit stored fails on the check instead of the clean
+  refusal of `20270130000300`'s down; the rollback needs those rows gone either way. The same merge brought `develop`'s
+  `migrations::a_constraint_added_not_valid_is_validated_by_a_later_migration`, which failed on
+  `steps_waiting_kind_valid` (restated `NOT VALID` by `20270130000600` and left unvalidated, as every earlier
+  restatement had left it): `20270215000200_flow_control_waiting_kind_validate` validates it under `SHARE UPDATE
+  EXCLUSIVE` (every restatement only added kinds, so every stored row satisfies it).
+
 ### Decisions of the Studio slice (2026-11-24)
 
 - **D022-150 — How the Studio authors, shows and lists the gates (tasks T022-054, T022-055, T022-056, T022-085;

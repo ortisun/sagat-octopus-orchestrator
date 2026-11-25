@@ -300,6 +300,98 @@ fn the_last_restatement_of_each_quota_resource_list_names_every_resource() {
     }
 }
 
+/// The merge of feature 022 and feature 041 (decision D022-089): the checks in force on a fresh database, not the text
+/// of the migrations, accept every resource the code knows, at its default value, as a tenant setting, as a namespace
+/// setting where the resource is counted per namespace, and as an operator's ceiling. Migrations run in version order,
+/// so a branch whose restatement is stamped later and merged earlier silently drops the other branch's names; this
+/// reads what the database enforces.
+#[tokio::test]
+async fn every_quota_resource_is_accepted_by_the_checks_in_force_on_a_fresh_database() {
+    use sagat_domain::quota::{QuotaResource, QuotaScope};
+    let db = migrated_db().await;
+    let tenant: sqlx::types::Uuid = sqlx::query_scalar(
+        "INSERT INTO tenants (id, slug, created_at) VALUES (gen_random_uuid(), 'acme', now()) RETURNING id",
+    )
+    .fetch_one(&db.pool)
+    .await
+    .expect("tenant");
+    let workspace: sqlx::types::Uuid = sqlx::query_scalar(
+        "INSERT INTO workspaces (id, tenant_id, slug, created_at) VALUES (gen_random_uuid(), $1, 'main', now()) RETURNING id",
+    )
+    .bind(tenant)
+    .fetch_one(&db.pool)
+    .await
+    .expect("workspace");
+    let namespace: sqlx::types::Uuid = sqlx::query_scalar(
+        "INSERT INTO namespaces (id, tenant_id, workspace_id, slug, environment, created_at) \
+         VALUES (gen_random_uuid(), $1, $2, 'dev', 'dev', now()) RETURNING id",
+    )
+    .bind(tenant)
+    .bind(workspace)
+    .fetch_one(&db.pool)
+    .await
+    .expect("namespace");
+    let mut refused = Vec::new();
+    for resource in QuotaResource::ALL {
+        let value = i64::try_from(
+            resource
+                .default_limit()
+                .clamp(resource.minimum(), resource.maximum()),
+        )
+        .expect("a limit fits a bigint");
+        let mut rows = vec![(
+            "quota_ceilings",
+            sqlx::query(
+                "INSERT INTO quota_ceilings (tenant_id, resource, max_value, granted_by) VALUES ($1, $2, $3, 'operator')",
+            )
+            .bind(tenant)
+            .bind(resource.as_str())
+            .bind(value)
+            .execute(&db.pool)
+            .await,
+        )];
+        // Iteration capacity is a tenant setting stored apart from quota_limits.
+        if resource != QuotaResource::IterationConcurrency {
+            rows.push((
+                "quota_limits of the tenant",
+                sqlx::query(
+                    "INSERT INTO quota_limits (tenant_id, namespace_id, resource, max_value, updated_by) \
+                     VALUES ($1, NULL, $2, $3, 'admin')",
+                )
+                .bind(tenant)
+                .bind(resource.as_str())
+                .bind(value)
+                .execute(&db.pool)
+                .await,
+            ));
+        }
+        if resource.scope() == QuotaScope::Namespace {
+            rows.push((
+                "quota_limits of the namespace",
+                sqlx::query(
+                    "INSERT INTO quota_limits (tenant_id, namespace_id, resource, max_value, updated_by) \
+                     VALUES ($1, $2, $3, $4, 'admin')",
+                )
+                .bind(tenant)
+                .bind(namespace)
+                .bind(resource.as_str())
+                .bind(value)
+                .execute(&db.pool)
+                .await,
+            ));
+        }
+        for (table, outcome) in rows {
+            if let Err(error) = outcome {
+                refused.push(format!("{resource} in {table}: {error}"));
+            }
+        }
+    }
+    assert!(
+        refused.is_empty(),
+        "the checks in force refuse: {refused:#?}"
+    );
+}
+
 /// The stamp of the migration before the one that gives a worker binding its profile (D035-136).
 const BEFORE_BINDING_PROFILE: i64 = 20_261_231_000_000;
 
