@@ -1568,7 +1568,8 @@ taken after `git grep D022-04` on every `origin/*` branch.
      request).
   2. *The rule.* The request reads, in a read-only transaction, the source's own run-level slot row (its grant, or its
      waiter while it is buffered), which names the key, and counts the key's grants that count over the start's window
-     now (a step's unleased grant included); the window is full when they reach the lower of the version's declared
+     now (run-scope grants only: a run's grant is leased at its grant, and a step's window is a row of its own; corrected
+     2026-11-25, review of the batch, security nit 2); the window is full when they reach the lower of the version's declared
      `limit` and the namespace's current ceiling of that window length. Waiters are not counted: the request refuses
      only what the window itself makes impossible, and the completion, which counts eligible waiters by the reservation
      rule (D022-076 item 3), stays the authority. A source without such a row (its grant purged, a window and a minute
@@ -1610,6 +1611,12 @@ taken after `git grep D022-04` on every `origin/*` branch.
      and fails when a body child is enabled, to be replaced by the body's own case.
   Proved by `child_starts::{a_child_refused_by_a_full_buffer_or_a_ceiling_fails_its_node_through_the_route,
   a_child_refused_by_its_capability_fails_its_node_through_the_route}`.
+  *Amended 2026-11-25 (review of the batch, correctness minor 3):* `BINARY_CAPABILITY_MISSING` is a fact of the replica
+  that decides (it holds no digest key ring), not of the child: the reservation is left for a replica that serves the
+  gate, as the grant pass leaves a key it cannot grant, and the pass counts a failure; `CAPABILITY_DISABLED` and
+  `FLOW_CONTROL_ACTIVATION_PENDING` (the operator's switch and the fleet's activation, which the runbook says to drain
+  before changing) still fail the node through its route. Proved by
+  `child_starts::a_child_a_replica_cannot_serve_is_left_for_one_that_can` (red first: the node failed).
 - **D022-081 — A key that reads the run's identity is refused, alone or beside other data (2026-11-25; task T022-103;
   FR-022-056; decision D022-025).** Delegate (OD-2026-11-24-4). FR-022-056 names "a key that reads only the run's
   identity (run id, business id, idempotency key)". On this tree an expression sees the run's identity through one
@@ -1619,8 +1626,10 @@ taken after `git grep D022-04` on every `origin/*` branch.
   run.id` makes one key per run exactly as `run.id` does, so the literal reading leaves the unbounded cardinality the
   rule exists for (the security review of 2026-11-13, Major 3) one concatenation away. The codec refuses it with the rule
   `FlowControlRule::UnboundedKey`, reported as `FLOW_CONTROL_KEY_UNBOUNDED` at the node; when `run` gains a field that is
-  not the identity, the rule narrows to the identity's fields. The codec reads stored versions with the same rule; no
-  release carries feature 022, so no stored version holds such a key. The specification gains a dated amendment line
+  not the identity, the rule narrows to the identity's fields. *Amended 2026-11-25 (review of the batch, correctness minor
+  1, security nit 1):* the rule is publication's only (`flow_control::check_publication_keys`, called by `parse` and not
+  by `parse_stored`): a stored version is restored as it was published, so a version an earlier build published keeps
+  its runs going. The specification gains a dated amendment line
   under FR-022-056.
 - **D022-082 — The window decision has one pure model in the domain, and a differential test in the flow-control suite
   holds the SQL to it (2026-11-25; task T022-071; FR-022-040, FR-022-048; decisions D022-003, D022-005, D022-009,
@@ -1728,8 +1737,8 @@ taken after `git grep D022-04` on every `origin/*` branch.
      1 to 10,000 for a concurrency limit and to the window's ceiling for a rate limit (100 a second, 6,000 a minute,
      10,000 an hour); `per` one of `second`, `minute`, `hour`; `group` `^[a-z][a-z0-9.-]{0,63}$`; `queueTimeoutMs` a
      whole number from 1 to 86,400,000; `key` from 1 to 1,024 bytes. What a key may read (`input` at the top level;
-     `input`, `steps`, `state`, `run` on a step) needs the platform's expression compiler, so it is said in the hint and
-     checked by the platform's validation, not guessed by a second parser in the browser. A namespace ceiling lowers a
+     `input`, `steps`, `state` on a step; never `run`, decision D022-081) needs the platform's expression compiler, so it
+     is said in the hint and checked by the platform's validation, not guessed by a second parser in the browser. A namespace ceiling lowers a
      limit at admission and never refuses a publication, so it is not a check either.
   3. *The order of the members.* The policy is written with its members in alphabetical order (`group`, `key`,
      `limit`, `per`, `queueTimeoutMs`), the canonical form the shared fixtures and the SDKs' canonical JSON use, so the

@@ -16,3 +16,18 @@ Blocker or a Major. Correctness: 4 minors and nits; security: 2 minors and 2 nit
 | Correctness nit: the eligibility rule of `scripts/check-architecture.py:541` matches one spelling of the run half only | The rule also matches the deadline half (`deadline_at` compared with an instant beside a `runs` join), with negative fixtures |
 | Correctness nit: the two `keys_due` helpers differ (`rate_lifecycle.rs:60` against `rate_limits.rs:1851`) | One helper, shared, with the margin the fault suite needs |
 | Correctness nit: `five_same_key_starts…` claims "at no instant" but checks between steps | The test's text says what it measures |
+
+## Built (2026-11-25)
+
+| Ruling | Change | Evidence |
+|---|---|---|
+| The `run` key rule | `flow_control::check_publication_keys`, called by `parse` only | `contract_flow_control_step_policies::ir::a_key_that_reads_the_runs_identity_is_refused_as_unbounded` now also restores the stored documents with `parse_stored`; red first (`parse_stored` refused them) |
+| The reset's receipt and advice | the advisory check moved under the source's row, after the receipt; an error of the read is no advice | `run_creators::a_cancel_source_reset_retried_while_the_first_is_in_flight_answers_its_entry` (the first request held back writing its entry, the window filled, a retry with its key): red first with the earlier order (`SlotUnavailable`). The failing read has no test: every statement the read could be held on is read earlier by the request (the run's own read, the quota read), so no lock isolates it, and the application has no store double |
+| `BINARY_CAPABILITY_MISSING` and a child | left for a replica that serves the gate; D022-080 amended | `child_starts::a_child_a_replica_cannot_serve_is_left_for_one_that_can`, red first (the node failed) |
+| The body child's assertion | the code and the node asserted | `child_starts::a_child_node_inside_a_collection_body_is_refused_at_publication`: the refusal names the body `line` (`UNSUPPORTED_NODE`, kind `body`), not the child node, which is what the codec does |
+| The reset's 403 and 404 before 409 | assertions in the full-window case | `run_creators::a_cancel_source_reset_on_a_full_window_is_refused_at_its_request_and_cancels_nothing`: another tenant's principal `NotFound`, a viewer `Forbidden`; green at once (the order was right; the case guards it) |
+| D022-079's text | corrected; `START_WINDOW_SQL`'s unreachable branch removed | the suites unchanged |
+| The Studio hint, D022-150 item 2, the codec's message | none lists `run` | `FlowControlFields.test.tsx` "says a step's key reads input, steps or state", red first |
+| The deadline half | `DEADLINE_HALF_TEXT` beside a waiter table joined with `runs` | `TheEligibilityOfAWaiterIsOneText::test_the_deadline_half_written_out_beside_a_runs_join_is_refused` red first; `test_a_deadline_that_has_passed_is_not_the_eligibility` |
+| One `keys_due` | `support::flow_control::keys_due`, the fault suite's margin | the suites |
+| The test's text | `five_same_key_starts…` says it checks after each step | — |
