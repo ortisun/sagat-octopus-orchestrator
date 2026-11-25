@@ -4,8 +4,17 @@
 feature is implemented (T020-056 turns it into `scripts/demo/visibility-analytics-archival.sh` and an e2e
 test). Commands use the CLI and REST shapes of the draft contracts; the development stack is the existing
 compose profile (`infra/docker/compose.yaml`) plus a MinIO-class S3 server and a ClickHouse server added
-to the test profile (T020-003). Environment: `SAGAT_API`, `SAGAT_TOKEN` (development identity provider),
+to the test profile (T020-003), and a `database-runner` with its `lake` profile for the object-storage
+sink (research Decision 020-002). Environment: `SAGAT_API`, `SAGAT_TOKEN` (development identity provider),
 namespace `demo`.
+
+```sh
+# Once per deployment, with the schema-owning role, after every engine and control plane is upgraded:
+control-plane visibility-activate --capability search-attributes-v1 --operator "$USER" --expect-live 2 --apply
+control-plane visibility-activate --capability analytics-v1 --operator "$USER" --expect-live 2 --apply
+# Expected: refused with the name of a live process that lacks the capability; otherwise the requirement is
+# recorded (FR-020-045). Before it, a publication with searchAttributes is 422 CAPABILITY_NOT_ACTIVE.
+```
 
 ## 1. Happy path — search attributes
 
@@ -46,11 +55,14 @@ Check: the journal of one run shows `search_attributes.upserted` at admission an
 ## 3. Happy path — analytics to object storage
 
 ```sh
+# An object_storage connection of feature 035 (bucket "analytics" on the test S3 server, prefix "sagat",
+# egress ceiling internal) named lake-s3 exists in the namespace; the sink references it.
 sagat analytics sinks create demo lake --kind OBJECT_STORAGE \
-  --settings '{"provider":"S3","bucket":"analytics","prefix":"sagat","endpoint":"https://minio.test:9000","format":"NDJSON_GZIP"}' \
-  --credentials-secret lake-s3 --max-level INTERNAL --start EARLIEST
+  --settings '{"connectionRef":{"name":"lake-s3"},"prefix":"exports","format":"NDJSON_GZIP"}' \
+  --max-level INTERNAL --start EARLIEST
+# A database-runner on the lake profile, bound to the sink, leases and writes its batches.
 # Run 50 workflows, then:
-duckdb -c "SELECT kind, count(*) FROM (SELECT * FROM read_ndjson_auto('s3://analytics/sagat/sagat.analytics.v1/*/*/*/*/*.ndjson.gz')
+duckdb -c "SELECT kind, count(*) FROM (SELECT * FROM read_ndjson_auto('s3://analytics/sagat/exports/sagat.analytics.v1/*/*/*/*/*.ndjson.gz')
            QUALIFY row_number() OVER (PARTITION BY key ORDER BY version DESC) = 1) GROUP BY kind"
 ```
 
@@ -61,8 +73,9 @@ any record (grep for the input canary `CANARY-020-VALUE` finds nothing). `GET
 
 ## 4. Failure scenarios — analytics
 
-1. **Crash between delivery and ack.** `SAGAT_FAULT=analytics_after_deliver_before_ack` → after restart
-   the same object names are rewritten with identical SHA-256 (compare the manifest), then acknowledged
+1. **Crash between delivery and ack.** Kill the database-runner after its writes and before `AckBatch` →
+   after the lease expires the batch is leased again (generation + 1), the same object names are found
+   with equal records (create-only, so nothing is overwritten; compare the manifest), then acknowledged
    once; the DuckDB count is unchanged.
 2. **Long transaction.** Hold `BEGIN; SELECT pg_current_xact_id(); SELECT pg_sleep(120);` in `psql` while
    runs complete → `analytics_xmin_horizon_age_seconds` rises, lag rises, and after `COMMIT` every record
@@ -76,8 +89,9 @@ any record (grep for the input canary `CANARY-020-VALUE` finds nothing). `GET
 
 ## 5. Happy path — retention, archive and history export
 
-Retention is available only after the principle-I amendment PR (T020-061) and ADR-0054 are accepted;
-until then `retention set` is refused and this section is not part of the demo.
+Retention is available only after the principle-I amendment (T020-061) is ratified (ADR-0054 was
+accepted on 2026-11-24) and `retention-v1` is activated; until then `retention set` is refused
+(`CAPABILITY_NOT_ACTIVE`) and this section is not part of the demo.
 
 ```sh
 sagat workflow export-history <RUN> --mode STRUCTURE > before.json

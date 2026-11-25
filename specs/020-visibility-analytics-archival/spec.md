@@ -4,7 +4,7 @@
 
 **Created**: 2026-10-26
 
-**Status**: Specification, plan and tasks approved for implementation by the owner on 2026-11-11 (Owner decision 2026-11-11-1, "Aprovo os rascunhos 019–032 e 036, pode implementar"); not implemented
+**Status**: Specification, plan and tasks approved for implementation by the owner on 2026-11-11 (Owner decision 2026-11-11-1, "Aprovo os rascunhos 019–032 e 036, pode implementar"); readiness review of 2026-11-24 done (research.md §5a: owner questions decided, ADR-0053 and ADR-0054 accepted, delegate under Owner decision 2026-11-24-4); not implemented. User stories 020-08 and 020-09 stay gated on the principle-I amendment (G1101)
 
 **Input**: Temporal-class visibility over runs without weakening the durable core. (1) Typed, classified
 **search attributes** declared per workflow version (additive IR), set at start and upserted by steps
@@ -30,14 +30,17 @@ commit with the transition that sets them. Analytics never runs on the write pat
 run: it is derived from the journal after the fact, like spans (ADR-0017). A terminal run never
 returns to running; retention removes content from terminal runs and leaves a stub. Retention changes
 an obligation of constitution principle I, so it ships only after a MINOR amendment of that principle
-(proposed in ADR-0054, not made here) and the owner's answers to O1080/O1082. External sinks
+(proposed in ADR-0054, not made here); the owner questions O1080/O1082 were decided on 2026-11-24
+(research.md §5). External sinks
 are at-least-once (ADR-0004): every record has a deterministic key and the platform never promises
-exactly-once delivery.
+exactly-once delivery. The engine never opens a connection to a customer destination: every sink
+whose destination is a 017 connection is written by the managed executor (`apps/database-runner`).
 
 Architecture decisions: [ADR-0053](../../docs/adr/ADR-0053-analytics-is-a-journal-derived-projection-delivered-through-per-sink-cursors.md)
 (analytics projection) and [ADR-0054](../../docs/adr/ADR-0054-run-content-leaves-the-hot-store-only-through-a-verified-archive-under-a-namespace-retention-policy.md)
-(retention, archival, G69). Both are Proposed. Decisions D1080–D1119, gaps G1080–G1100 and owner
-questions O1080–O1082 are in [research.md](research.md).
+(retention, archival, G69). Both were accepted on 2026-11-24, delegate (Owner decision 2026-11-24-4).
+Decisions D1080–D1119 and Decision 020-001 to Decision 020-015, gaps G1080–G1104 and Gap 020-001 to
+Gap 020-005, and owner questions O1080–O1082 are in [research.md](research.md).
 
 ## Dependencies and ownership
 
@@ -50,6 +53,16 @@ questions O1080–O1082 are in [research.md](research.md).
   connection kind of the 017 catalog, its classification ceiling and its effect-key lookup in the table
   history (FR-035-005, FR-035-018, FR-035-044); this sink depends on 035, not the reverse. 035 also owns
   synchronous step-output destinations; this feature is the asynchronous mode of the same choice.
+  *Corrected 2026-11-24:* by the owner's answer to O035-005 (2026-11-02, D035-070) the `OBJECT_STORAGE`
+  and `CLICKHOUSE` sinks reference 035's `object_storage` and `clickhouse` connection kinds, and every
+  connection-backed sink is written by `apps/database-runner` with 035's writer for that kind (its
+  `database` profile for PostgreSQL and ClickHouse, its `lake` profile for object storage and Iceberg;
+  research Decision 020-002).
+- **Uses (built since the draft, 2026-11-24):** 018's instance registry (ADR-0082) activates this
+  feature's three capabilities (FR-020-045); 018's business ids, schedules, Signal-with-Start and
+  Update-with-Start, batch operations and reset-rule registry; design 043's checked run input at every
+  creating path (FR-020-003); design 041's step logs (FR-020-046); design 045's deadline facts
+  (FR-020-017).
 - **Consumed by:** 018 batch operations select runs through the 020 query (`RunSelector`); without
   020 they use today's `RunFilter`. 028 replay tests read `sagat-run-history-v1` documents. 019 may add
   system attributes (for example a deployment version) through the registry of FR-020-005.
@@ -137,13 +150,16 @@ record key equals a fresh derivation from the journal, and no record is missing.
 1. **Given** analytics enabled and an active sink, **When** runs change, **Then** the application issues
    no statement it did not issue before (the note upsert is unchanged; a trigger sets `moved_xid`), the
    added WAL, index work and commit latency are within the measured report, and the projector takes no
-   run lock.
+   run lock and no lock on a scheduler shard row.
 2. **Given** a batch delivered but not acknowledged (crash), **When** the projector restarts, **Then** the
    same frozen batch is delivered again with the same object names and identical bytes, then acknowledged once.
 3. **Given** a write transaction that started before and commits after a later one, **When** both moved
    notes, **Then** no note is skipped: the cursor never passes the oldest running transaction.
-4. **Given** an engine replica losing scheduler shard 7 mid-batch, **When** its ack commits after the
-   takeover, **Then** the ack is refused by the fence and the new owner re-delivers.
+4. **Given** an engine replica losing scheduler shard 7 mid-batch while the new owner plans the same
+   sink and shard, **When** both plan and acknowledge, **Then** one batch is open at a time, each batch
+   is acknowledged once, a late acknowledgement of an acknowledged or superseded batch changes nothing,
+   and every record arrives at least once under its key. *Corrected 2026-11-24:* the batch row, not a
+   shard fence, gives this (research Decision 020-003).
 5. **Given** a sink created with `startPosition: EARLIEST`, **When** it activates, **Then** existing runs
    are backfilled from the journal while live changes flow, and overlaps deduplicate by key.
 
@@ -214,7 +230,7 @@ export-quota exhaustion; each produces its typed sink state, alert and resumptio
 
 ### US06 — Export through a pull exporter inside the customer network (Priority: P3)
 
-A data team runs an exporter (any of the five SDKs) inside its private network; it leases batches,
+A data team runs an exporter (any of the six SDKs) inside its private network; it leases batches,
 writes them to an internal store and acknowledges them.
 
 **Why this priority**: private destinations cannot be reached by the engine's guarded egress
@@ -343,11 +359,17 @@ whose input payload is shared with a retained run and check what survives.
   strictest carrier level the expression reads (an unresolvable path counts as `pii`). The two carriers
   this adds are stated in "Amendment to feature 016" below; versions under rules 0 and 1 keep their
   meaning.
-- **FR-020-003 — Values at start.** `startRun` MAY carry `searchAttributes` for declared names; invalid
-  explicit values MUST refuse the start (`VALIDATION_FAILED`/`SEARCH_ATTRIBUTE_VALUE_INVALID`) with no
-  run created. Declared `from` values are evaluated in the admission transaction. The indexed values and
-  one `search_attributes.upserted` journal event (values stored as a payload, referenced by digest) MUST
-  commit with the run.
+- **FR-020-003 — Values at start.** `startRun`, Signal-with-Start, Update-with-Start and a schedule
+  action's start template (018) MAY carry `searchAttributes` for declared names; invalid explicit values
+  sent by a caller MUST refuse the request (`VALIDATION_FAILED`/`SEARCH_ATTRIBUTE_VALUE_INVALID`) with no
+  run created, and a schedule's values are validated when the schedule is saved. Declared `from` values
+  are evaluated over the checked run input (design 043) in the creating transaction of every creating
+  path (`PgRunStore::create`, `continue_evaluated`). A stored value that no longer validates when a
+  schedule fires is journaled as `search_attributes.rejected` and the run starts. A rerun takes the
+  source's explicit values and recomputes the `from` values. The indexed values and one
+  `search_attributes.upserted` journal event (values stored as a payload, referenced by digest) MUST
+  commit with the run. *Corrected 2026-11-24:* every creating path, not only `startRun` (research
+  Decision 020-005).
 - **FR-020-004 — Upserts.** `activity`, `script`, `waitEvent` and `child` nodes MAY declare
   `upsertSearchAttributes` (name → expression, `null` removes). The engine MUST evaluate them over the
   committed output in the completion transaction and commit index rows and the journal event with the
@@ -392,9 +414,9 @@ whose input payload is shared with a retained run and check what survives.
   address bar and of persisted caches; a link carries a view id. When 029 is enabled, which runs a
   search, count, selection or view can see is decided by the 029 evaluator before classification
   gating applies.
-- **FR-020-012 — Authoring and clients.** The five SDK builders MUST emit byte-identical
-  `searchAttributes` and `upsertSearchAttributes` documents; the five clients MUST offer search and
-  count; `sagat workflow runs --query` and the `RunSelector` port for 018 MUST use the same compiler and
+- **FR-020-012 — Authoring and clients.** The six SDK builders (TypeScript, Go, Python, C#, Java, Rust)
+  MUST emit byte-identical `searchAttributes` and `upsertSearchAttributes` documents; the six clients
+  MUST offer search and count; `sagat workflow runs --query` and the `RunSelector` port for 018 MUST use the same compiler and
   gating.
 
 ### Functional Requirements — analytics projection
@@ -405,11 +427,13 @@ whose input payload is shared with a retained run and check what survives.
   envelope triggers and indexes are installed only when envelope capture is enabled. The cost is
   measured as WAL bytes, index-tuple inserts and commit latency per transition against a baseline.
   Telemetry projection semantics are unchanged.
-- **FR-020-014 — Sharded, fenced projector.** The replica holding scheduler shard *k* projects shard *k*;
-  every plan and ack transaction MUST read the shard row `FOR SHARE` in its own short statement, last
-  before commit and never across the note scan or sink I/O, and proceed only with the owner, generation
-  and expiry it believes. The projector MUST NOT lock a run or make a transition wait. Enabling analytics
-  is gated on zero skipped shard renewals under the contention test (G1100).
+- **FR-020-014 — Sharded projector, fenced by the batch.** The replica holding scheduler shard *k* plans
+  shard *k*, from the shards its keeper holds; shard ownership only routes work. Correctness MUST NOT
+  depend on it: one open batch per (sink, shard) by a unique index, every batch transition conditional
+  on the batch row read `FOR UPDATE`, and a leased batch fenced by its token, generation and
+  database-clock expiry. The projector MUST NOT lock a run, a scheduler shard row or make a transition
+  wait. *Corrected 2026-11-24:* the shard fence and its contention gate are removed (research Decision
+  020-003).
 - **FR-020-015 — Discovery and progress.** Per (sink, shard) a keyset cursor over `(moved_xid, run)`
   inside the sink's own `(tenant, namespace, shard)` index prefix, bounded above by the snapshot `xmin`;
   per (sink, run) the applied sequence. A sink never scans another namespace's notes.
@@ -422,7 +446,9 @@ whose input payload is shared with a retained run and check what survives.
   `step_attempt`, `journal_event`, `inbound_event`, `delivery`, `declared_record`, `run_tombstone`, each
   immutable under a deterministic key with `schemaVersion`. Every key, batch id, deduplication token and
   object name includes the 032 region epoch (0 without 032), so a lost timeline never collides with the
-  new one (D1615). The model only grows.
+  new one (D1615). The model only grows. A `step_attempt` carries design 045's deadline facts when they
+  exist (`startDeadlineAt`, `closeDeadlineAt`, `attemptDeadlineAt`, `attemptDeadlineCause`, and the
+  `deadline` cause of the event that ended the attempt), all optional and `internal`.
 - **FR-020-018 — Payload-free by default.** Without a declaration no payload value, event `data`,
   delivery body or blob byte MUST appear in a record; a search attribute value appears only when the
   run's pinned version declared `export` for it, otherwise its name with `withheld: NOT_DECLARED`.
@@ -437,32 +463,39 @@ whose input payload is shared with a retained run and check what survives.
   schema, scan for credential-shaped values, keep blobs as descriptors, and export a `withheld` marker
   instead of any value that fails.
 - **FR-020-020 — Sink resource.** Namespace-scoped sinks with typed destination (`OBJECT_STORAGE`,
-  `CLICKHOUSE`, `POSTGRESQL`, `ICEBERG`, `STREAM`, `PULL`), credentials as a secret reference (never a value),
-  filters (record kinds, workflows), batch policy, `maxLevel`, start position (`NOW`, `EARLIEST`, a
-  time), immutable revisions with optimistic concurrency, and actions pause, resume, rewind, skip, probe
-  and delete, each audited. Destinations pass the egress guard; platform state endpoints are refused.
+  `CLICKHOUSE`, `POSTGRESQL`, `ICEBERG`, `STREAM`, `PULL`), filters (record kinds, workflows), batch
+  policy, `maxLevel`, start position (`NOW`, `EARLIEST`, a time), immutable revisions with optimistic
+  concurrency, and actions pause, resume, rewind, skip, probe and delete, each audited. A sink never
+  holds a credential: `OBJECT_STORAGE`, `CLICKHOUSE`, `POSTGRESQL` and `ICEBERG` reference a 017
+  connection of the matching kind (`object_storage`, `clickhouse`, `postgresql`, `iceberg`), whose
+  revision the sink revision pins and whose egress ceiling bounds `maxLevel`; `STREAM` references a
+  subscription. Destinations pass 017's destination policy; platform state endpoints are refused.
+  *Corrected 2026-11-24:* connection references replace the secret reference (O035-005, research
+  Decision 020-002).
   `inbound_event`/`delivery` kinds are refused until envelope capture is enabled (`ENVELOPES_NOT_ENABLED`).
-- **FR-020-021 — Native sink semantics.** Object storage: deterministic names, manifest, HEAD
-  verification before ack. ClickHouse and PostgreSQL are written by the managed database executor
-  (`apps/database-runner`, ADR-0035) with fixed, platform-generated statements only: ClickHouse over its
-  HTTP interface with `insert_deduplication_token` per batch and kind, documented `ReplacingMergeTree`
-  DDL and a `DESCRIBE` probe; PostgreSQL through a 017 connection with `ON CONFLICT DO NOTHING`
-  templates on the record key and documented DDL; no platform-run DDL and no database client in the
-  engine. Placement follows the cross-feature rule written by 021 in ADR-0055 (fixed-shape batches to
-  non-database destinations from the engine through guarded egress; no engine or control-plane
-  connection to a customer database, whatever the protocol).
-  Each writer MUST map outcomes to `ACKED`, transient or permanent.
+- **FR-020-021 — Native sink semantics.** Every connection-backed sink is leased and written by a bound
+  `database-runner` (ADR-0035) with feature 035's writer for its kind and fixed, platform-generated
+  operations only: object storage (`lake` profile) with deterministic names, a manifest, create-only
+  writes and equal-records success (FR-035-040); ClickHouse (`database` profile) over its HTTP interface
+  with `insert_deduplication_token` per batch and kind, documented `ReplacingMergeTree` DDL and a
+  `DESCRIBE` probe; PostgreSQL (`database` profile) with `ON CONFLICT DO NOTHING` templates on the record
+  key and documented DDL; Iceberg (`lake` profile) per FR-020-044. No platform-run DDL; the engine opens
+  no connection to a customer destination and links no sink client. Each writer MUST map outcomes to
+  `ACKED`, transient or permanent. *Corrected 2026-11-24:* object storage moved from the engine to the
+  managed executor (research Decision 020-002); 020 no longer depends on ADR-0055 rule 11(b).
 - **FR-020-022 — Stream sink.** A `STREAM` sink references a webhook or broker subscription dedicated to
   it (one that receives no run events of its own); the ack transaction MUST insert its delivery rows
   (within the 64 KiB delivery bound, stable event id) together with the cursor; delivery, retry and
   redrive follow ADR-0025, and a delivery that ends `DEAD` MUST auto-pause the sink
   (`STREAM_DELIVERY_DEAD`).
-- **FR-020-023 — Pull exporter.** `AnalyticsExportService` (worker protocol, next additive minor) for a
-  machine identity holding `analytics:sink:export` and a current per-sink binding — `analytics-exporter`
-  for `PULL` sinks, `database-runner` for `POSTGRESQL`, `CLICKHOUSE` and `ICEBERG` sinks (which also resolves the
-  destination through the 017 two-phase path under the batch lease): lease with
-  finite record/byte credit, renew, ack and nack, each fenced by token hash, generation and database-clock
-  expiry. Five SDK helpers MUST pass shared conformance scenarios.
+- **FR-020-023 — Pull exporter.** `AnalyticsExportService` (worker protocol, the next free additive minor
+  of `sdks/SPEC.md` §9 when its contract merges) for a machine identity holding `analytics:sink:export`
+  and a current per-sink binding — `analytics-exporter` for `PULL` sinks, `database-runner` for
+  `POSTGRESQL`, `CLICKHOUSE`, `OBJECT_STORAGE` and `ICEBERG` sinks and for `CONNECTION` archives (which
+  also resolves the destination through the 017 two-phase path under the batch lease, answered with the
+  existing `ResolvedDatabase`): lease with finite record/byte credit, renew, ack and nack, each fenced by
+  token hash, generation and database-clock expiry. Six SDK helpers MUST pass shared conformance
+  scenarios.
 - **FR-020-024 — Failures never skip silently.** A permanent rejection MUST mark the batch `REJECTED` and
   the sink `AUTO_PAUSED` with a typed reason; transient failures retry with capped backoff and mark
   `FAILING` past a threshold; credentials or disclosure authority lost MUST auto-pause; `skip` (explicit
@@ -488,8 +521,9 @@ whose input payload is shared with a retained run and check what survives.
 
 - **FR-020-030 — Retention policy.** `retention:manage` holders MAY set a namespace policy:
   `hotRetentionDays` (1..3650, clamped to the operator ceiling), `archive` (`REQUIRED`, `NONE`),
-  `archiveValues` (`METADATA_ONLY`, `UP_TO_INTERNAL`, `UP_TO_PII`), destination (`PLATFORM` or an object
-  storage destination with a secret reference) and `sinkHoldDays`. `UP_TO_PII` needs the reveal grant.
+  `archiveValues` (`METADATA_ONLY`, `UP_TO_INTERNAL`, `UP_TO_PII`), destination (`PLATFORM`, the platform
+  blob store, or `CONNECTION`, an `object_storage` connection of feature 035 written by the managed
+  executor; *corrected 2026-11-24*, research Decision 020-012) and `sinkHoldDays`. `UP_TO_PII` needs the reveal grant.
   Without a policy nothing is deleted. Changes are audited and apply to eligibility from then on.
 - **FR-020-031 — Eligibility.** A run is eligible only when terminal, past its retention on the database
   clock, its whole tree terminal, its chain final (for segments), and every non-`DELETED` sink (paused and
@@ -512,8 +546,8 @@ whose input payload is shared with a retained run and check what survives.
   deletion) that no retained row references — references found from every foreign key in the catalog
   plus registered non-FK copies, a test failing on an unregistered one — never `DATA_SNAPSHOT_PART`
   blobs (024), keeps the run row as a stub with archive pointer and a tombstone `input_digest`, applies
-  the purge rule of every store in the content-store registry (data-model §6), emits the tombstone note
-  and audits `run.purged`.
+  the purge rule of every store in the content-store registry (data-model §6, the step logs of
+  FR-020-046 included), emits the tombstone note and audits `run.purged`.
 - **FR-020-035 — Archived runs.** Stubs remain listable and searchable by system attributes
   (`ArchiveState`); hot-only endpoints answer `NOT_FOUND`/`RUN_PURGED`; rerun and reset of a purged or
   purging run are refused `CONFLICT`/`RUN_PURGED` after the ADR-0039 identity guard (consumed by 018);
@@ -532,7 +566,7 @@ whose input payload is shared with a retained run and check what survives.
   optional archive, archive object deleted (platform destination), subject replaced in the stub,
   every store of the content-store registry handled by its erasure rule (022 cache entries by
   `source_run_id` through `step_cache_hit_provenance`, 026 stream events, 019 checkpoints, 025
-  transcripts, 030 operation messages, 018 retained Update arguments), tombstone emitted, and a report
+  transcripts, 030 operation messages, 018 retained Update arguments, 041 step logs), tombstone emitted, and a report
   of content that survived because another retained run references it.
 - **FR-020-038 — Studio and CLI.** Retention policy panel, archival status (backlog, blocked jobs),
   archived badge and history export in run detail; `sagat workflow export-history <RUN>`,
@@ -554,8 +588,8 @@ whose input payload is shared with a retained run and check what survives.
   (`payload.pii_revealed` per run); a `PII` sink batch writes one `analytics.batch_exported` with its
   retained run manifest as per-run evidence — an explicit refinement of FR-016-012 recorded in ADR-0053.
 - **FR-020-042 — Compatibility.** IR, OpenAPI, protobuf and AsyncAPI change additively; versions with
-  rules 0/1 and existing runs keep their behavior; each capability is enabled separately and rolled back
-  by disabling new publication/creation while readers stay.
+  rules 0/1 and existing runs keep their behavior; each capability is enabled separately (FR-020-045)
+  and rolled back by disabling new publication/creation while readers stay.
 - **FR-020-043 — Encrypted payloads (031).** Search-attribute `from`, `upsertSearchAttributes` and
   analytics `project` positions are entries of 031's encoded-field registry
   (`specs/031-client-side-encryption/contracts/workflow-encoding.md`); declarations reading an encoded
@@ -567,9 +601,10 @@ whose input payload is shared with a retained run and check what survives.
   connection (`connectionRef {name, revision?}`, pinned by the sink revision like a 017 connection),
   an Iceberg namespace and a table prefix, one existing table per record kind (documented schema; the
   platform never creates or alters tables). Its `maxLevel` MUST NOT exceed the connection's
-  classification ceiling. Batches are leased and written by the managed executor that runs 035's
-  Iceberg writes (`database-runner` unless 035's plan separates it), never by the engine (ADR-0055
-  rule 11): one append commit per record kind, each carrying the identity
+  classification ceiling. Batches are leased and written by the `lake` profile of `apps/database-runner`
+  (image `lake-runner`), where 035 runs its Iceberg writes in a per-attempt sandboxed host, never by the
+  engine (*corrected 2026-11-24* from "unless 035's plan separates it"): one append commit per record
+  kind, each carrying the identity
   `<sinkId>:<e>:<shard>:<batchSeq>:<kind>` as its effect key, preceded by 035's lookup (FR-035-018) so
   a re-leased batch whose commit landed is not written again. An inconclusive lookup appends again:
   every record carries its key and version, and readers deduplicate as for object storage (documented),
@@ -578,6 +613,21 @@ whose input payload is shared with a retained run and check what survives.
   conflicts past 035's retry bound → transient; schema mismatch or unsupported table → permanent
   `SCHEMA_MISMATCH`; authentication → `AUTH_FAILED`; a location outside the connection's warehouse →
   `SINK_DESTINATION_DENIED`.
+- **FR-020-045 — Activation through the instance registry (added 2026-11-24, Decision 020-004).** The
+  capabilities `search-attributes-v1` (engines and control planes), `analytics-v1` (engines) and
+  `retention-v1` (engines and control planes) MUST be switched on only through ADR-0082's registry, by
+  `control-plane visibility-activate` with the schema-owning role, after every live process of the
+  required kinds lists the capability. Until `search-attributes-v1` is required, a version declaring
+  `searchAttributes`, `upsertSearchAttributes` or `analytics` is refused at publication; until
+  `analytics-v1` is required, sink creation is refused and no note trigger exists; until `retention-v1`
+  is required, a retention policy or an erasure is refused. Each refusal is `VALIDATION_FAILED` with
+  reason `CAPABILITY_NOT_ACTIVE` naming the capability. The note trigger and index are installed by the
+  activation of `analytics-v1` (envelope ones with `--envelopes`), never by a migration.
+- **FR-020-046 — Step logs (added 2026-11-24, Decision 020-007).** Purge and erasure MUST delete the
+  run's feature-041 step-log streams and lines in the run's purge (they have no foreign key to `runs`).
+  An archive MUST hold the lines that still exist only when `archiveValues = UP_TO_PII` (log text is read
+  as `pii` in every namespace, FR-041-021) and otherwise each stream's metadata without text. A history
+  export MUST NOT carry log lines, and no analytics record carries log text.
 
 ### Amendment to feature 016
 
@@ -648,7 +698,7 @@ All are future evidence, not completed tests.
 - **SC-020-007**: Each sink failure class yields its typed state, alert within one monitor round and
   resumption with zero skipped records unless an audited `skip` names the window (FR-020-020..026).
 - **SC-020-008**: The search-attribute authoring, search/count and pull exporter scenarios pass in all
-  five SDKs with byte-identical documents and identical observations, including lease expiry and stale
+  six SDKs with byte-identical documents and identical observations, including lease expiry and stale
   ack (FR-020-012, FR-020-023).
 - **SC-020-009**: Archival fault matrix (crash after PUT, before verify, during purge; corrupted object;
   missing bucket) deletes no content without a verified archive in 100% of 200 runs (FR-020-030..034).
@@ -675,7 +725,8 @@ All are future evidence, not completed tests.
 ## Assumptions
 
 - PostgreSQL ≥ 13 (`xid8`); the reference compose uses 16.
-- Owner defaults O1080–O1082 as recommended in research.md until answered.
+- O1080–O1082 were decided on 2026-11-24 as their recommended defaults, delegate (Owner decision
+  2026-11-24-4; research.md §5).
 - Classification audiences are those of FR-016-007; the reveal grant list is FR-016-011.
 - Search attribute values are business metadata that authors choose; the platform classifies them but
   cannot judge whether a declared `public` value is in fact sensitive (as ADR-0031 states for results).
@@ -690,4 +741,7 @@ retroactive indexing of existing runs; audit-record retention; cross-region arch
 
 O1080 (default retention), O1081 (`pii` leaving the platform) and O1082 (run stubs) are stated with
 recommended defaults in [research.md](research.md#5-owner-questions-recommended-defaults-are-what-the-plan-assumes).
+All three were decided on 2026-11-24 as recommended, delegate (Owner decision 2026-11-24-4): no default
+retention, the uniform `pii`-egress rule of D1617, stubs kept. What still needs a person is the
+principle-I amendment (G1101), which gates User stories 020-08 and 020-09.
 See also the [requirements checklist](checklists/requirements.md).

@@ -49,17 +49,18 @@ A literal of the wrong type is `VALIDATION_FAILED`/`QUERY_TYPE`. `MATCH` tokeniz
 
 | Name | Type | Source | Gate |
 |---|---|---|---|
-| `RunId`, `WorkflowId`, `ParentRunId`, `RootRunId`, `ChainId`, `RerunOf` | keyword (UUID) | `runs`, chain link | `run:read` |
+| `RunId`, `WorkflowId`, `ParentRunId`, `RootRunId`, `RerunOf` | keyword (UUID) | `runs` (`id`, `workflow_id`, `parent_run_id`, `root_run_id`, `rerun_of`) | `run:read` |
+| `ChainId` | keyword (UUID) | `chain_segments` (the chain's initial run id; `runs` has no chain column, *corrected 2026-11-24*) | `run:read` |
 | `WorkflowName` | keyword | `workflows` metadata name | `run:read` |
 | `WorkflowVersion` | int | version number | `run:read` |
 | `Status` | keyword | `runs.status` (OpenAPI `Run.status` values) | `run:read` |
-| `Origin` | keyword | `runs.origin` | `run:read` |
+| `Origin` | keyword | `runs.origin` (`AD_HOC_STEP`, `AD_HOC_WORKFLOW`, `CONNECTION_PROBE`; null for an ordinary run, so `Origin IS NULL` selects those) | `run:read` |
 | `StartedAt`, `FinishedAt` | datetime | `created_at`, `finished_at` | `run:read` |
 | `Duration` | int (milliseconds) | `finished_at - created_at`, null while running | `run:read` |
 | `CorrelationId`, `StartedBy`, `TraceId` | keyword | `runs` | `run:read` (exposed by `getRun` today) |
 | `ArchiveState` | keyword | `runs.archive_state` | `run:read` |
-| `BusinessId` | keyword | `runs.business_id` (018; absent until 018 ships) | `run:read` (as 018 exposes it) |
-| `ScheduleId` | keyword (UUID) | `runs.schedule_id` (018) | `run:read` |
+| `BusinessId` | keyword | `runs.business_id` (018, built: `20270103000000_business_ids`) | `run:read` (as 018 exposes it) |
+| `ScheduleId` | keyword (UUID) | `runs.schedule_id` (018, built: `20261230000200_schedule_run_provenance`) | `run:read` |
 
 When 029 is enabled, the runs a search, count or saved view can return are first restricted by the 029
 evaluator (folder visibility); a saved view never widens it. Custom attributes follow their registry
@@ -107,8 +108,8 @@ as `searchRuns`; differences are stated here. Changes need the agreement of both
 | Aspect | Rule |
 |---|---|
 | Identity | Evaluated with the **job creator's current rights**, re-resolved at every round (membership, role, `payload:read-internal`, reveal grant). A right lost between rounds stops selection with `FORBIDDEN` and the reason of the lost right; 018 records it on the job. |
-| Paging | Keyset pages in the order `(StartedAt, RunId)` ascending with an opaque, query-bound cursor that 018 stores on the job; each page at most 500 runs; each round one page in one short read transaction. |
-| Snapshot | "Evaluated per round; fixed once materialized": a run is selected if it matches when its page is read. To include every run whose transaction began before job creation, 018 records `pg_snapshot_xmax(pg_current_snapshot())` at creation and starts the first round only when the current `pg_snapshot_xmin` has reached it, so every such transaction has finished (the horizon rule of ADR-0053). |
+| Paging | Keyset pages by `RunId` ascending (UUIDv7, creation order), restricted to `StartedAt <= selection_bound_at`; the cursor is the last run id looked at, which 018 stores in `batch_jobs.select_cursor` (the job's selector fixes the query, so the cursor needs no query binding of its own); each page at most 500 runs; each round one page in one short read transaction. *Corrected 2026-11-24* from a `(StartedAt, RunId)` keyset, to match 018 as built (research Decision 020-006). |
+| Snapshot | "Evaluated per round; fixed once materialized": a run is selected if it matches when its page is read. To include every run whose transaction began before job creation, 018 records the creating transaction's identity (`selection_horizon`, `pg_current_xact_id()`) and starts the first round only when `pg_snapshot_xmin(pg_current_snapshot()) > selection_horizon`, so every transaction that had an identity at creation has finished (the horizon rule of ADR-0053). *Corrected 2026-11-24:* the draft's `xmax` is wrong (it is the last completed identity plus one and lets an open transaction pass), as 018's migration `20270102000000_batch_operations` explains. |
 | Bounds | No total ceiling of its own: 018's `maxItems` (up to 100,000) bounds the job. The count ceiling of `countRuns` does not apply. Query bounds (length, predicates, `IN`, depth) and the statement budget apply per page. |
 | Preview | `preview(query, cap)` returns `count = min(matches, cap)`, `exact: matches < cap` and up to 20 run ids; 018 passes `cap = maxItems + 1` (at most 100,001) under the same statement budget; exceeding the budget is `QUOTA_EXCEEDED`/`QUERY_BUDGET_EXCEEDED`. |
 | Classification | Predicates on `internal`/`pii` attributes need the creator's rights as in `searchRuns`. Selection returns run ids only, never attribute values. |
