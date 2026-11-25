@@ -140,7 +140,9 @@ The decisions above stand. The following refine them; each is argued in
   signature made beside the key in `crates/application/src/script_signing.rs` (research Decisions 1236 and
   1627).
 - **Decision 8 and the policy, ownership.** The namespace script policy document and its endpoint, and the
-  lease-time statement (a `runnable` and `blocked_reason` pair on the per-tenant artifact row), are design
+  lease-time statement (it reads design 046's `script_artifact_blocks`, keyed by tenant, artifact digest and
+  namespace, because artifact rows are immutable; corrected on 2026-11-24 after design 046's review, feature 023
+  Decision 1628), are design
   046's and built first by it (ADR-0121); feature 023's language policy is a section of that document and
   its language reason extends that statement, with no second read (research Decision 1627).
 - **Decision 8, the lease read.** The check at lease is one statement with no row lock, made only for

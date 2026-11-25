@@ -273,10 +273,9 @@ permit as any failure does (Architecture decisions 0088 and 0089). A probed cand
 and every non-script lease cost nothing new (Requirements 038-001 and 038-002); the budget test gains a
 script-step shape. Design 046's malicious-package block extends this statement (Architecture decision 0121
 decision 5) rather than adding one. Owner of the statement (Decision 1627): design 046 builds it first
-(Task T046-17), reading a `runnable` and `blocked_reason` pair on the per-tenant artifact row; Task T023-061
-adds the language reason to that same statement. Because the language policy is per namespace and the
-artifact row per tenant, the language reason is not materialized in `runnable`: the extension joins the
-namespace's language section to the statement above, still one statement with no row lock.
+(Task T046-17), reading the block rows of `script_artifact_blocks` keyed by tenant, artifact digest and namespace
+(artifact rows are immutable, so nothing is stored on them; Decision 1628); Task T023-061 adds the language reason to
+that same statement by joining the namespace's language section, still one statement with no row lock.
 
 ### 8b. Reserved `python-data` runtime (mechanism for feature 024)
 
@@ -554,8 +553,8 @@ lane A builder, or by the lane B builder only while no lane A slice that edits `
    once A2 has merged} → B6 → B7, B8, B9. The minimum viable product is slice 0 + A1 + A3 + B1 + B2 + J1.
 2. Design 046 (Decision 1627, the coordinator's boundary): design 046 builds first, in its own slice 1,
    the namespace script policy document and its migration (Task T046-2), the provenance and SBOM builders
-   in `sagat-infra-packages` (Task T046-15) and the lease statement on `runnable` and `blocked_reason`
-   (Task T046-17). Slice A1 (the language section), A2, A3 (T023-044), A4 and B6 wait for the
+   in `sagat-infra-packages` (Task T046-15) and the lease statement on `script_artifact_blocks`
+   (Task T046-17, Decision 1628). Slice A1 (the language section), A2, A3 (T023-044), A4 and B6 wait for the
    corresponding task to merge; slice 0, B1 to B5, B7 to B9 and the rest of A1 and A3 do not. Its bundle
    version 5 and this feature's version 4 both edit `bundle.rs`; the later of the two rebases, keeping both
    numbers.

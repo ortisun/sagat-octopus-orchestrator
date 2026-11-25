@@ -371,7 +371,7 @@ task of design 046 to merge, for the part that uses it:
 - T023-009, T023-047 and T023-068 (provenance and SBOM): Task T046-15, the provenance and SBOM builders in
   `crates/infra-packages`.
 - T023-061 (the language reason at lease, extending the same statement): Task T046-17, the lease-time
-  check on `runnable` and `blocked_reason`.
+  check on `script_artifact_blocks` (Decision 1628).
 
 ## Dependencies & execution order
 

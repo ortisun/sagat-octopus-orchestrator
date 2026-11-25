@@ -530,6 +530,16 @@ weighs the options and chooses the most architectural and business advantage, ne
   the presence table, the language constraint, the registry capability `script-languages-v1` (Decision
   1234) and every refusal of the language section.
 
+- **D1628 — Corrections after design 046's second review round (2026-11-24, delegate (OD-2026-11-24-4)).** Three
+  statements above are corrected, without editing them: (a) the lease-time statement reads design 046's
+  `script_artifact_blocks` rows (tenant, artifact digest, namespace or all), not a `runnable` pair on the artifact row,
+  because `script_artifacts_immutable` refuses every update of that row (Decisions 1627 and 1235, plan 8a); (b) design
+  046's policy section is the top-level `packages` key of the document beside `languages`, so the reservation of
+  `languages.{typescript,python}.packages` in Decision 1237 is withdrawn (those keys stay refused); (c) design 046 keeps
+  no layer in the blob store: each runner builds a layer from the package gateway's store and checks a signed digest
+  (design 046, Decision 046-022), which Decision 1625 should read in place of "kept in the blob store". The table
+  `script_build_provenance` is created by design 046's migration with the columns of this feature's data model, and
+  its envelope names the lock and SBOM digests instead of listing every dependency, so the 65,536-byte bound holds.
 ## 4. Gaps
 
 | # | Gap | State |

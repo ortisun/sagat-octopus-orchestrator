@@ -30,12 +30,13 @@ alias), a path, a tag other than `latest`.
 
 At most 256 KiB, at most 2,000 packages. Top level: `lock-version = "1.0"`, `requires-python`, `environments` (the
 runtime's Python version on each required target), `created-by`, `packages`. Each package: `name`, `version`,
-`index` equal to the gateway's PyPI base (`https://package-gateway/pypi/simple/`, the literal placeholder the resolver
-shim writes and the control plane checks), `dependencies` (names of other packages of the lock), and `wheels`, an array
-of at least one wheel with `name` (the file name), `url` of the form `https://package-gateway/pypi/files/<sha256>/<name>`,
-`size` and `hashes.sha256`. Refused: `sdist`, `vcs`, `directory`, `archive`, any hash algorithm other than SHA-256, a
+`index` equal to the public placeholder `https://package-gateway/pypi/simple/` or, for a reserved name, the private
+placeholder `https://private-packages/pypi/simple/` (both literal, written by the resolver shim and checked by the control
+plane), an optional `marker`, `dependencies` (names of other packages of the lock), and `wheels`, an array of at least one
+wheel with `name` (the file name), `url` of the form `<placeholder base>/files/<sha256>/<name>`, `size` and
+`hashes.sha256`. Refused: `sdist`, `vcs`, `directory`, `archive`, any hash algorithm other than SHA-256, a
 wheel whose name's distribution and version differ from the package's, a wheel whose tags match no required target and
-the runtime's interpreter, two packages with one normalised name, a dependency not in the lock, a package unreachable
+the runtime's interpreter, two packages with one normalised name unless their markers select different required targets, a dependency not in the lock, a package unreachable
 from the manifest's requirements, a `marker` that cannot be evaluated.
 
 ## TypeScript lock: `package-lock.json` with `lockfileVersion: 3`
@@ -43,9 +44,10 @@ from the manifest's requirements, a `marker` that cannot be evaluated.
 At most 256 KiB, at most 2,000 entries. Top level: `name` (`sagat-script`), `lockfileVersion: 3`, `requires: true`,
 `packages`. The root entry `""` lists `dependencies` equal to the manifest's. Every other key is a canonical
 `node_modules/` path (segments are package names, at most 1,024 bytes, no `..`, nothing absolute). Each entry:
-`version`, `resolved` of the form `https://package-gateway/npm/<name>/-/<file>`, `integrity` (`sha512-` only),
+`version`, `resolved` of the form `https://package-gateway/npm/<name>/-/<file>` (or `https://private-packages/npm/<name>/-/<file>`
+for a reserved name), `integrity` (`sha512-` only),
 optional `dependencies`, `optionalDependencies`, `peerDependencies` (as metadata), `os`, `cpu`, `libc`, `license`,
-`hasInstallScript`, `engines`, `bin`. Refused: `link: true`, `inBundle`, a `resolved` outside the gateway, a missing
+`hasInstallScript`, `engines`, `bin`. Refused: `link: true`, `inBundle`, a `resolved` outside the two placeholders, a reserved name with the public one, a missing
 `integrity`, an entry unreachable from the root, a dependency that npm's resolution from that path would not find in
 the lock, `dev: true`.
 
