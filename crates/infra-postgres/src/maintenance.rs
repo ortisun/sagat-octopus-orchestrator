@@ -762,9 +762,10 @@ impl MaintenanceStore for PgRunStore {
     async fn purge_step_log_lines(
         &self,
         after: Option<TenantId>,
+        until: Option<TenantId>,
         limit: u32,
     ) -> Result<StepLogPurge, StoreError> {
-        crate::step_logs::purge_lines(self.pool(), after, limit).await
+        crate::step_logs::purge_lines(self.pool(), after, until, limit).await
     }
 
     async fn step_log_purge_backlog(&self) -> Result<u64, StoreError> {

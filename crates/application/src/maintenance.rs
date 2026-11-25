@@ -132,9 +132,10 @@ impl BatchPurged {
 /// What one transaction of the step-log purge did (design 041 section 4, task T041-10), over the removed streams of the
 /// first tenant after the caller's cursor (decision D041-145): the lines it deleted and the streams it found empty and
 /// marked purged; or that tenant's refusal of the release at its commit, which would have taken its step-log usage below
-/// zero (`step_log_usage_underflow`); or another failure of that tenant's transaction. A refusal or a failure rolls the
-/// transaction back, so nothing of it was deleted, and names the tenant so that the caller goes on with the tenants
-/// after it: one tenant that cannot be purged never keeps the others' lines past their retention.
+/// zero (`step_log_usage_underflow`); or another failure of that tenant's transaction. A refusal rolls the transaction
+/// back; a failure does too, except one of the `COMMIT` itself, whose outcome is unknown (the next call reads what is
+/// left). Either names the tenant so that the caller goes on with the tenants after it: one tenant that cannot be purged
+/// never keeps the others' lines past their retention.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StepLogPurge {
     /// No tenant after the cursor has a removed stream that another transaction does not hold.
@@ -156,13 +157,14 @@ pub enum StepLogPurge {
 /// What one call of the idle and ended-backend quota reclaim did (ADR-0097 decision 1): the tenants it served whose
 /// quota leases were folded, the quota leases folded, the tenants skipped because their step-log fence was held (they
 /// are tried again at the next pass, so a skip is never mistaken for a tenant with nothing idle), and the tenants whose
-/// reclaim failed, which the call goes on past (decision D041-145).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// reclaim failed, which the call goes on past, with the last of their errors for the log (decision D041-145).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct IdleLeaseReclaim {
     pub tenants: u64,
     pub leases: u64,
     pub skipped: u64,
     pub failed: u64,
+    pub last_error: Option<StoreError>,
 }
 
 /// The counters the database keeps for the step-log quota leases (`sagat_quota_step_log_counters()`): raw and monotonic
@@ -335,12 +337,13 @@ pub trait MaintenanceStore: Send + Sync {
     ) -> impl Future<Output = Result<u64, StoreError>> + Send;
 
     /// Deletes, in one transaction, at most `limit` lines of the removed streams of the first tenant whose id is after
-    /// `after` (any tenant when `None`), and marks purged those of its streams with no line left (design 041 section 4,
-    /// step 2); the deletes release the tenant's step-log quota at the commit. A stream another transaction holds is left
-    /// to a later call. An `Err` is a failure before a tenant was chosen.
+    /// `after` and at most `until` (no bound for a `None`), and marks purged those of its streams with no line left
+    /// (design 041 section 4, step 2); the deletes release the tenant's step-log quota at the commit. A stream another
+    /// transaction holds is left to a later call. An `Err` is a failure before a tenant was chosen.
     fn purge_step_log_lines(
         &self,
         after: Option<TenantId>,
+        until: Option<TenantId>,
         limit: u32,
     ) -> impl Future<Output = Result<StepLogPurge, StoreError>> + Send;
 

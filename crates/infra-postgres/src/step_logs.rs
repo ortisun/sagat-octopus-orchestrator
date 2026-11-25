@@ -52,14 +52,15 @@ pub(crate) async fn mark_expired_streams(pool: &PgPool, limit: u32) -> Result<u6
     .map_err(store_error_without_text)
 }
 
-/// Step 2 of the purge, one transaction: the removed and not yet purged streams of the first tenant after `after` that
-/// has one, locked `SKIP LOCKED`; at most `limit` of their lines deleted in key order; those streams with no line left
+/// Step 2 of the purge, one transaction: the removed and not yet purged streams of the first tenant after `after` and at
+/// most `until` that has one, locked `SKIP LOCKED`; at most `limit` of their lines deleted in key order; those streams with no line left
 /// marked `purged_at`. The deletes' release runs at the commit, under the tenant's usage row (ADR-0097 decision 5), and
 /// a release that would take the usage below zero is refused: the transaction is rolled back and the refusal returned.
 /// Once a tenant is chosen, every failure names it (decision D041-145).
 pub(crate) async fn purge_lines(
     pool: &PgPool,
     after: Option<TenantId>,
+    until: Option<TenantId>,
     limit: u32,
 ) -> Result<StepLogPurge, StoreError> {
     let mut tx = pool
@@ -69,7 +70,7 @@ pub(crate) async fn purge_lines(
     let streams: Vec<(Uuid, i64)> = sqlx::query_as(
         "WITH first AS (SELECT tenant_id FROM step_log_streams \
                           WHERE removed_at IS NOT NULL AND purged_at IS NULL \
-                            AND ($2::uuid IS NULL OR tenant_id > $2) \
+                            AND ($2::uuid IS NULL OR tenant_id > $2) AND ($3::uuid IS NULL OR tenant_id <= $3) \
                           ORDER BY tenant_id, stream_id LIMIT 1 FOR UPDATE SKIP LOCKED) \
          SELECT s.tenant_id, s.stream_id FROM step_log_streams s JOIN first ON first.tenant_id = s.tenant_id \
           WHERE s.removed_at IS NOT NULL AND s.purged_at IS NULL \
@@ -77,6 +78,7 @@ pub(crate) async fn purge_lines(
     )
     .bind(PURGE_STREAMS)
     .bind(after.map(|tenant| tenant.as_uuid()))
+    .bind(until.map(|tenant| tenant.as_uuid()))
     .fetch_all(&mut *tx)
     .await
     .map_err(store_error_without_text)?;
@@ -175,7 +177,10 @@ pub(crate) async fn reclaim_idle_leases(
                 done.leases += u64::try_from(reclaimed).unwrap_or(0);
             }
             Ok(_) => {}
-            Err(_) => done.failed += 1,
+            Err(error) => {
+                done.failed += 1;
+                done.last_error = Some(store_error_without_text(error));
+            }
         }
     }
     Ok(done)

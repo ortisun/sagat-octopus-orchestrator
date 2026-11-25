@@ -144,7 +144,7 @@ async fn a_purge_releases_the_quota_bytes_and_leaves_a_live_stream_alone() {
         );
         assert_eq!(
             w.store
-                .purge_step_log_lines(None, 500)
+                .purge_step_log_lines(None, None, 500)
                 .await
                 .expect("purge"),
             StepLogPurge::Purged {
@@ -163,7 +163,7 @@ async fn a_purge_releases_the_quota_bytes_and_leaves_a_live_stream_alone() {
         assert_eq!(w.store.step_log_purge_backlog().await.expect("backlog"), 0);
         assert_eq!(
             w.store
-                .purge_step_log_lines(None, 500)
+                .purge_step_log_lines(None, None, 500)
                 .await
                 .expect("purge"),
             StepLogPurge::Nothing,
@@ -238,7 +238,7 @@ async fn a_stream_purged_over_several_transactions_keeps_removed_at_from_the_fir
         for _ in 0..3 {
             gone.push(
                 w.store
-                    .purge_step_log_lines(None, 500)
+                    .purge_step_log_lines(None, None, 500)
                     .await
                     .expect("purge"),
             );
@@ -295,7 +295,7 @@ fn a_purge_whose_release_would_underflow_is_refused_and_counted() {
         );
         assert_eq!(
             w.store
-                .purge_step_log_lines(None, 500)
+                .purge_step_log_lines(None, None, 500)
                 .await
                 .expect("purge"),
             StepLogPurge::Underflow { tenant: me(&w) }
@@ -688,7 +688,7 @@ async fn a_purge_serves_only_the_tenants_after_its_cursor() {
         let high_id = sagat_domain::identity::TenantId::new(high.tenant);
         assert_eq!(
             w.store
-                .purge_step_log_lines(Some(low_id), 500)
+                .purge_step_log_lines(Some(low_id), None, 500)
                 .await
                 .expect("purge"),
             StepLogPurge::Purged {
@@ -709,14 +709,14 @@ async fn a_purge_serves_only_the_tenants_after_its_cursor() {
         );
         assert_eq!(
             w.store
-                .purge_step_log_lines(Some(high_id), 500)
+                .purge_step_log_lines(Some(high_id), None, 500)
                 .await
                 .expect("purge"),
             StepLogPurge::Nothing
         );
         assert_eq!(
             w.store
-                .purge_step_log_lines(None, 500)
+                .purge_step_log_lines(None, Some(low_id), 500)
                 .await
                 .expect("purge"),
             StepLogPurge::Purged {
@@ -727,4 +727,94 @@ async fn a_purge_serves_only_the_tenants_after_its_cursor() {
         );
     })
     .await;
+}
+
+/// The bound after the wrap (the re-read of decision D041-145): a pass that starts after the tenant the last pass ended
+/// with, and wraps around, serves a tenant whose purge fails at most once. The first pass purges only the tenant whose
+/// id sorts first, so the second starts after it: it meets the failing tenant, wraps, purges the first again and must
+/// not meet the failing one a second time.
+#[test]
+fn after_the_wrap_a_failing_tenant_is_met_once_a_pass() {
+    let page = recorded(|_| async {
+        let w = world().await;
+        let (low, high) = by_id(&w);
+        let first_backlog = stream_of(&w, low, "1 minute").await;
+        lines_of(&w, low, first_backlog, 1, 10).await;
+        w.scheduler.housekeeping().await;
+        assert_eq!(state(&w, first_backlog).await, (true, true, 0));
+        let again = stream_of(&w, low, "1 minute").await;
+        let failing = stream_of(&w, high, "1 minute").await;
+        lines_of(&w, low, again, 1, 10).await;
+        lines_of(&w, high, failing, 1, 10).await;
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "CREATE FUNCTION test_refuse_delete() RETURNS trigger LANGUAGE plpgsql AS $$ \
+             BEGIN IF OLD.tenant_id = '{}' THEN RAISE EXCEPTION 'refused by the test'; END IF; RETURN OLD; END $$",
+            high.tenant
+        )))
+        .execute(&w.db.pool)
+        .await
+        .expect("the refusing function");
+        sqlx::query(
+            "CREATE TRIGGER test_refuse_delete BEFORE DELETE ON step_log_lines FOR EACH ROW \
+             EXECUTE FUNCTION test_refuse_delete()",
+        )
+        .execute(&w.db.pool)
+        .await
+        .expect("the refusing trigger");
+        w.scheduler.housekeeping().await;
+        assert_eq!(
+            state(&w, again).await,
+            (true, true, 0),
+            "purged after the wrap"
+        );
+        assert_eq!(state(&w, failing).await, (true, false, 1));
+    });
+    assert_eq!(
+        series(
+            &page,
+            "step_log_purge_failures_total",
+            &[("cause", "error")]
+        ),
+        Some(1.0),
+        "the failing tenant was met once in the pass: {page}"
+    );
+}
+
+/// A tenure is a lease generation (the re-read of decision D041-145): a replica that loses shard 0 and takes it back
+/// under a new lease with no pass in between starts from a first reading, so the three refills of the gap, which another
+/// holder may have published, are not added; three refills after it are.
+#[test]
+fn a_regain_under_a_new_lease_generation_starts_from_a_first_reading() {
+    let page = recorded(|_| async move {
+        let w = world().await;
+        let s = stream(&w, "-1 day").await;
+        let placement = Placement::new(format!("step-logs-{}", Uuid::now_v7()));
+        let keeper = Keeper::new(
+            w.store.clone(),
+            placement.clone(),
+            KeeperSettings {
+                ttl: Duration::from_secs(3_600),
+            },
+        );
+        keeper
+            .round()
+            .await
+            .expect("the shards, shard 0 among them");
+        let holder = scheduler(&w, placement);
+        holder.housekeeping().await;
+        keeper.leave().await;
+        let _gap = three_refills(&w, s, 1).await;
+        keeper
+            .round()
+            .await
+            .expect("shard 0 again, under a new lease");
+        holder.housekeeping().await;
+        let _after = three_refills(&w, s, 10).await;
+        holder.housekeeping().await;
+    });
+    assert_eq!(
+        series(&page, "step_log_quota_refills_total", &[("kind", "refill")]),
+        Some(3.0),
+        "only the refills after the regain's first reading: {page}"
+    );
 }

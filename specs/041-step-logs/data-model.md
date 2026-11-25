@@ -527,7 +527,7 @@ Server, each metric with exactly one producer (decision D041-128):
   not transactional, so the counts include attempts whose transactions rolled back.
 - `step_log_purged_lines_total`, `step_log_purge_backlog` (the streams whose `expires_at` has passed or whose removal has
   begun and whose `purged_at` is null, counted by the purge pass at the start of each run) and
-  `step_log_purge_failures_total{cause}` (`underflow`, `error`; decision D041-145): the purge pass (task T041-10).
+  `step_log_purge_failures_total{cause}` (`underflow`, `error`, `reclaim`; decision D041-145): the purge pass (task T041-10).
 - `step_log_tails_open`, `step_log_tails_refused_total`: the tail (task T041-12).
 - `database_oldest_transaction_age_seconds` (a gauge of the operations snapshot over `pg_stat_activity.xact_start` and
   `pg_prepared_xacts.prepared`; it sees other roles' sessions only when the deployment grants `pg_read_all_stats`,

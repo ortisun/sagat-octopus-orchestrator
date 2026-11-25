@@ -693,8 +693,29 @@ fn register_batch_purge_series() {
 /// engine that has purged nothing shows zeros, and the first purge, or the first refusal of one, counts).
 fn register_step_log_purge_series() {
     metrics::counter!("step_log_purged_lines_total").absolute(0);
-    for cause in ["underflow", "error"] {
+    for cause in ["underflow", "error", "reclaim"] {
         metrics::counter!("step_log_purge_failures_total", "cause" => cause).absolute(0);
+    }
+}
+
+/// The publisher's memory of the step-log quota counters: the last reading, with the generation of the lease on shard 0
+/// it was taken under, and whether the replica is publishing now (its gauge set). The reading is kept while the replica
+/// does not hold the shard, so a regain under the same lease generation, which no other replica can have held, goes on
+/// from it; a regain under another generation starts from its own first reading, so no rise another holder published
+/// is added again (decision D041-145).
+#[derive(Debug, Default)]
+struct StepLogPublisher {
+    reading: Option<(u64, StepLogQuotaCounters)>,
+    publishing: bool,
+}
+
+impl StepLogPublisher {
+    /// Stops publishing: the quota-lease rows gauge goes to 0, once, so that a sum across replicas is never doubled.
+    fn stop(&mut self) {
+        if self.publishing {
+            metrics::gauge!("step_log_quota_lease_rows").set(0.0);
+            self.publishing = false;
+        }
     }
 }
 
@@ -831,10 +852,8 @@ pub struct Scheduler<S, E, R> {
     chain_permits: tokio::sync::Semaphore,
     /// Chained entries the running tick may still take; `usize::MAX` outside a tick (review of S1).
     chained_budget: std::sync::atomic::AtomicUsize,
-    /// The step-log quota counters this replica last published, with the generation of its lease on shard 0 they were
-    /// read under (design 041, task T041-10, decision D041-145); none before its first reading and after it lost the
-    /// shard, so a new tenure starts from its own first reading and no delta is published twice.
-    step_log_counters: std::sync::Mutex<Option<(u64, StepLogQuotaCounters)>>,
+    /// What this replica last published of the step-log quota counters (design 041, task T041-10, decision D041-145).
+    step_log_counters: std::sync::Mutex<StepLogPublisher>,
     /// The last tenant the step-log purge served, where the next pass starts (decision D041-145); none at first.
     step_log_purge_cursor: std::sync::Mutex<Option<sagat_domain::identity::TenantId>>,
 }
@@ -876,7 +895,7 @@ where
             reentries: collection_chain::Reentries::new(),
             chain_permits: tokio::sync::Semaphore::const_new(MAX_CONCURRENT_CHAINS),
             chained_budget: std::sync::atomic::AtomicUsize::new(usize::MAX),
-            step_log_counters: std::sync::Mutex::new(None),
+            step_log_counters: std::sync::Mutex::new(StepLogPublisher::default()),
             step_log_purge_cursor: std::sync::Mutex::new(None),
         }
     }
@@ -4392,16 +4411,18 @@ where
             .step_log_purge_cursor
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let (mut after, mut wrapped, mut last) = (start, start.is_none(), start);
+        // Before the wrap the tenants after `start`, after it those up to `start`: each tenant is served at most once a
+        // pass, except to go on with its own backlog.
+        let (mut after, mut until, mut wrapped, mut last) = (start, None, start.is_none(), start);
         loop {
             calls += 1;
             match self
                 .store
-                .purge_step_log_lines(after, STEP_LOG_PURGE_BATCH)
+                .purge_step_log_lines(after, until, STEP_LOG_PURGE_BATCH)
                 .await
             {
                 Ok(StepLogPurge::Nothing) if !wrapped => {
-                    (after, wrapped) = (None, true);
+                    (after, until, wrapped) = (None, start, true);
                 }
                 Ok(StepLogPurge::Nothing) => break,
                 Ok(StepLogPurge::Purged {
@@ -4462,14 +4483,26 @@ where
             .reclaim_idle_step_log_leases(STEP_LOG_RECLAIM_TENANTS)
             .await
         {
-            Ok(done) if done.leases > 0 || done.skipped > 0 || done.failed > 0 => tracing::info!(
-                tenants = done.tenants,
-                leases = done.leases,
-                skipped = done.skipped,
-                failed = done.failed,
-                "folded idle step-log quota leases back"
-            ),
-            Ok(_) => {}
+            Ok(done) => {
+                if done.leases > 0 || done.skipped > 0 {
+                    tracing::info!(
+                        tenants = done.tenants,
+                        leases = done.leases,
+                        skipped = done.skipped,
+                        "folded idle step-log quota leases back"
+                    );
+                }
+                if let Some(error) = &done.last_error {
+                    metrics::counter!("step_log_purge_failures_total", "cause" => "reclaim")
+                        .increment(done.failed);
+                    tracing::warn!(
+                        failed = done.failed,
+                        sqlstate = error.sqlstate().unwrap_or("none"),
+                        kind = error.kind(),
+                        "could not reclaim the idle step-log quota leases of some tenants; the others were served"
+                    );
+                }
+            }
             Err(error) => tracing::warn!(
                 sqlstate = error.sqlstate().unwrap_or("none"),
                 kind = error.kind(),
@@ -4493,21 +4526,15 @@ where
     }
 
     /// Publishes the database's step-log quota counters, on the replica that holds shard 0 only. A tenure is one lease
-    /// generation on the shard (decision D041-145): its first reading only remembers the values, each later one adds
-    /// what the sequences rose by, and the gauge of the quota-lease rows is set; a reading taken while the shard was
-    /// lost or changed hands is dropped, so a rise another holder published in between is never added again. A replica
-    /// that does not hold the shard sets its gauge to 0, once, and forgets its reading.
+    /// generation on the shard (decision D041-145): its first reading only remembers the values, each later one adds what
+    /// the sequences rose by, and the gauge of the quota-lease rows is set. A reading taken while the shard was lost or
+    /// changed hands is dropped. A replica that does not hold the shard sets its gauge to 0, once.
     async fn publish_step_log_quota_counters(&self) {
         let Some(tenure) = self.shard_zero_tenure() else {
-            let held = self
-                .step_log_counters
+            self.step_log_counters
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .take()
-                .is_some();
-            if held {
-                metrics::gauge!("step_log_quota_lease_rows").set(0.0);
-            }
+                .stop();
             return;
         };
         let now = match self.store.step_log_quota_counters().await {
@@ -4521,21 +4548,23 @@ where
                 return;
             }
         };
-        let mut last = self
+        let mut publisher = self
             .step_log_counters
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if self.shard_zero_tenure() != Some(tenure) {
-            *last = None;
+            publisher.stop();
             return;
         }
-        let deltas = match last.replace((tenure, now)) {
+        let deltas = match publisher.reading {
             Some((generation, previous)) if generation == tenure => {
                 step_log_refill_deltas(previous, now)
             }
             _ => [0; 4],
         };
-        drop(last);
+        publisher.reading = Some((tenure, now));
+        publisher.publishing = true;
+        drop(publisher);
         for (kind, delta) in STEP_LOG_REFILL_KINDS.into_iter().zip(deltas) {
             metrics::counter!("step_log_quota_refills_total", "kind" => kind).increment(delta);
         }
