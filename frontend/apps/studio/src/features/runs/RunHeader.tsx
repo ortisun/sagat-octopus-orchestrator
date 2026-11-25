@@ -17,6 +17,7 @@ import { originLabel } from './queries';
 import { ScheduleOrigin } from './ScheduleOrigin';
 import { TraceLink } from './TraceLink';
 import { shortId } from './display';
+import { RunGates } from './RunGates';
 
 const FOLLOW_SYMBOL: Record<LiveFollow, string> = { idle: '○', connecting: '◌', live: '●', polling: '↻', reconnecting: '↯', ended: '■', unauthorized: '✕', failed: '✕' };
 const FOLLOW_TONE: Record<LiveFollow, string> = { idle: 'idle', connecting: 'idle', live: 'ok', polling: 'waiting', reconnecting: 'waiting', ended: 'skip', unauthorized: 'bad', failed: 'bad' };
@@ -143,6 +144,7 @@ export function RunHeader({
             </Fact>
           ) : null}
         </dl>
+        <RunGates run={run} />
         <details className="rn-run-details">
           <summary>Run details</summary>
           <dl className="rn-facts rn-grid">
