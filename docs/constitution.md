@@ -66,17 +66,80 @@ must say so rather than hide it. Sources: ADR-0004, ADR-0005, ADR-0010, ADR-0076
 
 ### IV. Compatibility Is Versioned and Pinned
 
-A published workflow version and its IR are immutable and every run references exactly one
-version; there is no automatic migration of a running workflow to a new version. Wire contracts
+A published workflow version is immutable and a run's pin names exactly one version at any
+moment; there is no automatic migration of a running workflow to a new version. Wire contracts
 (OpenAPI, Protobuf, AsyncAPI, the workflow IR schema) are versioned, and a change MUST NOT break
-runs in progress. The SDK protocol has one semantic contract: the six official SDKs
-(TypeScript, Go, Python, C#, Java, Rust) pass the same conformance suite and MUST NOT fork the server
-semantics. The Studio draws the declarative IR; imperative code that cannot be converted is not
-promised a round trip. Toolchains and dependencies are pinned (`rust-toolchain.toml`,
-`Cargo.lock`, locked CI builds).
+runs in progress. The SDK protocol has one semantic contract: the six official SDKs (TypeScript,
+Go, Python, C#, Java, Rust) pass the same conformance suite and MUST NOT fork the server
+semantics. Toolchains and dependencies are pinned (`rust-toolchain.toml`, `Cargo.lock`, locked CI
+builds).
 
-*Rationale:* a durable run outlives the release that started it. Sources: ADR-0003, ADR-0007,
-`docs/architecture/overview.md` (invariant 1), AGENTS.md rule 8.
+A workflow is written in one of two models that share one engine, one journal and this one
+semantic contract. In the **graph model** the published version is the declarative IR, drawn in
+the Studio or compiled by an SDK builder, and the engine interprets it. In the **procedural
+model** (workflow as code) the published version names a workflow function by the digest of its
+code and declares the envelope it may use (activities, secrets, signals, child workflows, scripts,
+approvals). The function runs in an SDK worker, never in a platform process (the control plane,
+the scheduler, the engine and the API, replay checks and queries included; Principle V), and is
+replayed deterministically against the run's journal. It proposes commands, and the server
+decides:
+
+- **Commands are checked.** Each command is checked against the version's envelope, the current
+  authorization and the ceilings and quotas of the run and of its namespace (history length,
+  payload size and fan-out among them), so that a command can ask for nothing that a graph version
+  with the same declarations could not. An envelope entry that releases a secret names its
+  activities exactly.
+- **A completion is one transaction.** A workflow task's completion is a worker result under
+  Principle I (valid lease, fencing token) and commits all or nothing: the journal events of the
+  completion and of every command, the steps, timers, waits and subscriptions they create, the
+  outbox, and the next state of the workflow task decided from the journal. A command refused by
+  the checks refuses the whole completion. A completion that ends the run is refused while an
+  accepted signal, update or cancellation is still unseen by the function.
+- **Waits resolve once.** A wait ends by the first commit of its timeout or its event, as in
+  Principle I; a signal that arrives after the wait timed out is not dropped but kept in the
+  journal for the next activation.
+- **No secret and only the run's own history reach the function.** A workflow task carries no
+  secret value and no capability to resolve one; the envelope's secrets are released only to the
+  activities whose entry lists them, under Principle V. The history it receives is a projection of
+  that run's own journal, delivered only to a session whose current membership and binding to the
+  workflow type authorize it, checked again on every delivery; a classified field reaches it only
+  under the same classification rules as a step that reads that field. The SDK's determinism guard
+  is not a security control.
+- **The worker's memory is a cache** that replay can discard and rebuild, never a record.
+- **Effects are activities.** Code outside an activity may run again on every replay, so the
+  workflow function MUST NOT perform an external effect itself: effects are activities under
+  Principle III, an unknown outcome reaches the function as unknown, never as a failure, and the
+  SDK's determinism guard refuses or reports an effect outside an activity.
+- **A diverging replay commits nothing.** A replay that diverges from the journal MUST stop with
+  a typed, audited non-determinism error and commit none of its commands; the server judges the
+  match against its own record of the commands, not the worker's verdict.
+- **A pin changes only by a verified move.** An open procedural run moves to another version only
+  on an explicit request per run by a person allowed to operate the run and to activate the target
+  version, to a target approved for activation where the namespace requires approval. The move is
+  applied in one transaction with the run locked, only while no workflow task is leased and the
+  journal has not advanced past the activation that was verified, and only when the server finds
+  that a replay of the run's own history against the target code reproduces the journaled commands
+  and every outstanding step fits the target's envelope. Each move is journaled and audited, a
+  refused move leaves the run unchanged, a completion from a session of the former pin is stale,
+  and no policy moves runs by itself; that is not an automatic migration. Version markers in the
+  code of a later version let it branch for histories written under an earlier one, so that a
+  verified move can succeed. A run continued as new is a new run under Principle I and may pin
+  another version.
+- **The history format is a wire contract.** The history and command format that the code
+  replays is versioned under the rule above.
+- **Determinism is proven per language.** The procedural model MUST NOT ship in an SDK before
+  that language's determinism study and the shared replay conformance scenarios pass; an SDK that
+  does not offer it says so in its declared capabilities, and the suite reports those scenarios as
+  not offered, never as passed.
+
+The Studio draws the declarative IR and shows a procedural run as the graph observed from its
+journal; imperative code that cannot be converted to the IR is not promised a round trip.
+
+*Rationale:* a durable run outlives the release that started it, whichever model wrote it, and two
+models stay one product only if they share the journal, the fence and the conformance suite.
+Sources: ADR-0003, ADR-0007, design 044 and its records ADR-0103 to ADR-0109,
+`docs/architecture/overview.md` (invariant 1), `docs/architecture/workflow-ir-and-sdk-modes.md`,
+Owner decision 2026-11-24-3, AGENTS.md rule 8.
 
 ### V. Code, Tenant Boundary and Secrets Are Isolated
 
@@ -159,13 +222,52 @@ Sources: `docs/test-strategy.md`, AGENTS.md rules 9, 11 and 12.
 
 - **Technology baseline (V1):** Rust (Tokio, Axum, tonic, SQLx) with a pinned stable toolchain;
   PostgreSQL as authority; NATS JetStream notifications with the configurable Redis Streams
-  alternative governed by ADR-0069; graph-native declarative IR; single region with high
-  availability. NATS remains supported. This does not approve arbitrary transports, changes to
-  delivery authority or removal of the broker from a production profile. Other baseline changes
-  require a new ADR (Governance).
-- **Out of scope for V1:** multi-region active-active, exactly-once physical execution of external
-  effects, a connector marketplace, WASM as a mandatory runtime, reimplementing Temporal or
-  Restate, and automatic migration of arbitrary code.
+  alternative governed by ADR-0069; two authoring models on one engine, the graph-native
+  declarative IR and the procedural code-first model of Principle IV; one writable region per
+  cell, with high availability inside the region. NATS remains supported. This does not approve
+  arbitrary transports, changes to delivery authority or removal of the broker from a production
+  profile. Other baseline changes require a new ADR (Governance).
+- **Regions:** a cell is one PostgreSQL authority with its object store and its processes. It may
+  declare standby regions and fail over active-passive: an operator's activation, committed in one
+  transaction, raises a region epoch that the database itself enforces on leases, fences and
+  writes, so that nothing granted before the activation can act on the new authority after it; an
+  unplanned activation first needs the operator's written attestation that the former primary is
+  fenced (feature 032, ADR-0067). Cells share no data and no transaction spans two cells; different
+  cells may have their writable region in different regions. Cross-region failover is offered for
+  production only after its region drill passes (no acknowledged work lost in the synchronous
+  quorum mode, and the loss of the asynchronous mode counted and reported as specified) and its
+  commit-latency benchmark is published, each with its environment and failures; until then a
+  release may contain it built, but not offered for production. A replication mode or an
+  unplanned or forced activation that can lose acknowledged work says so before it is chosen,
+  counts and reports after a failover what it can read and states the window it cannot, and never
+  claims a recovery point objective of zero. In such a mode Principle I holds on the surviving
+  timeline: what is keyed by a journal sequence carries the region epoch, downstream consumers
+  receive a tombstone for what the loss undid, and the report lists the runs whose published
+  terminal state was undone. Changes that reduce authority (revocations of credentials, sessions,
+  memberships, bindings and grants; rotations and deletions of secrets) are reported as durable
+  only once the standby region holds them, in every mode; after an activation that can have lost
+  one, every session and token issued before the activation is invalidated, and the report lists
+  the changes of authority it can read and states the window it cannot.
+- **Admitted scope:** workflow as code (Principle IV); internal apps built in the Studio over
+  declared workflow operations, whose sessions carry only the intersection of their viewer's
+  current authority and the operations the pinned app version declares, and whose author code runs
+  only in an isolated frame that holds no credential and receives no value its author could not
+  read (feature 027, ADR-0062; a delegated execution mode would need its own ADR and an
+  amendment); a curated integration and template hub (features 021, 028 and design 047) whose only
+  sources are the index signed in the release and indexes the operator configures with keys the
+  operator pins, where every item and everything it pulls in is pinned by digest in its signed
+  index and verified before import, items are imported as drafts under the same publication,
+  signature, secret and isolation rules as authored content, and no item adds code, a template or
+  an expression that a platform process evaluates beyond what authored content of the same kind
+  may carry.
+- **Out of scope for V1:** two regions accepting writes for the same cell (multi-region
+  active-active inside a cell, with merged histories or conflict resolution); exactly-once physical
+  execution of external effects; an open marketplace (publishing by tenants or third parties,
+  unsigned or unpinned sources, ratings, payments); a generic application builder with its own
+  backend, database or server-side author code; wire, protocol or history compatibility with
+  another engine (running Temporal or Restate SDKs against this server, importing their
+  histories); distributed transactions across cells; WASM as a mandatory runtime; and automatic
+  migration of arbitrary code.
 - **Targets are not promises:** throughput, latency and SLO figures are benchmark criteria to
   verify on a stated environment (hardware, configuration, workload), not commitments. A benchmark
   report states the environment and the failures, not only the throughput.
@@ -197,7 +299,16 @@ Sources: `docs/test-strategy.md`, AGENTS.md rules 9, 11 and 12.
   a draft again. `scripts/check-design-docs.py` verifies the record in CI.
 - **Owner decisions:** product, scope, budget, release and security-exception decisions belong to
   the owner and are recorded in `docs/owner-decisions.md`. A task that depends on one carries an
-  `Owner-gate:` line that cites the row, and MUST NOT be ticked until the owner has decided.
+  `Owner-gate:` line that cites the row, and MUST NOT be ticked until the owner has decided. Until
+  release 0.3.0 is published, an act recorded there as decided by `delegate (OD-2026-11-24-4)`
+  counts as the owner's for this clause, the Approval clause and the Transitional clause, within
+  the scope of Owner decision 2026-11-24-4. These stay with the owner: acts that need the owner's
+  own hands or credentials, publishing the release, spending money, creating accounts, acts
+  outside this repository that cannot be undone, amending this constitution, and every
+  security exception, including accepting instead of fixing a finding of a security review or a
+  checklist item of a security checklist. `scripts/check-design-docs.py` names the delegation it
+  accepts and the tag `v0.3.0` that ends it; a delegate row that the tag contains, as it stands
+  there, stays valid after it.
 - **EGM pin:** a review counts only if it ran with an EGM plugin whose content hash is listed in
   `docs/engineering/egm-accepted-hashes.json`. Upgrading EGM adds an entry, in a pull request,
   after the owner has read the diff of the plugin, and amends this procedure if a step changed.
@@ -291,6 +402,6 @@ it is not approval of the implementation. A violation that cannot be avoided MUS
 the design doc's Complexity Tracking table with the simpler alternative that was rejected. For a
 feature not yet converted, the Check and the table live in its `plan.md`.
 
-**Version**: 4.7.0 | **Ratified**: 2026-10-11 | **Last Amended**: 2026-11-20
+**Version**: 5.0.0 | **Ratified**: 2026-10-11 | **Last Amended**: 2026-11-24
 
-Amendment scope and preserved obligations: [4.7.0 Sync Impact Report](governance/constitution-4.7.0-sync-impact.md). Previous amendments: [4.6.0 Sync Impact Report](governance/constitution-4.6.0-sync-impact.md), [4.5.0 Sync Impact Report](governance/constitution-4.5.0-sync-impact.md), [4.4.0 Sync Impact Report](governance/constitution-4.4.0-sync-impact.md), [4.3.0 Sync Impact Report](governance/constitution-4.3.0-sync-impact.md), [4.2.0 Sync Impact Report](governance/constitution-4.2.0-sync-impact.md), [4.1.0 Sync Impact Report](governance/constitution-4.1.0-sync-impact.md), [4.0.0 Sync Impact Report](governance/constitution-4.0.0-sync-impact.md), [3.0.0 Sync Impact Report](governance/constitution-3.0.0-sync-impact.md) and, for 2.0.0 (Principle III), the [compensation safety Sync Impact Report](governance/compensation-safety-sync-impact.md). Version 3.0.0 was adopted on 2026-11-01 by the owner's instruction to merge the pull request that carried that text. Version 4.0.0 was adopted on 2026-11-03 by merging the pull request that carries this text, on the owner's delegation to the assistant ("Decida por mim"); the owner may overrule it by a later amendment. Version 4.1.0 was adopted on 2026-11-04 by the owner's instruction to scope the CI to the change and to run the whole stack for a release (`docs/owner-decisions.md`, OD-2026-11-04-2). Version 4.2.0 was adopted on 2026-11-05 by the owner's instruction that a merge into `develop` starts no CI and that the CI stays for pull requests and releases (`docs/owner-decisions.md`, OD-2026-11-05-1). Version 4.5.0 is adopted by merging the pull request that carries it, on the owner's decision to amend the CI gate for step logs (`docs/owner-decisions.md`, OD-2026-11-15-10). Version 4.6.0 is adopted by merging the pull request that carries it, on the owner's delegation of the 0.3.0 decisions to the coordinating session (`docs/owner-decisions.md`, OD-2026-11-20-6 and OD-2026-11-20-7); the owner may overrule it by a later amendment. Version 4.7.0 is adopted by merging the pull request that carries it, on the owner's instructions that the document leads and the code follows, that words are written in full and that the identifiers are renamed to words (`docs/owner-decisions.md`, Owner decisions 2026-11-20-8, 2026-11-20-9 and 2026-11-20-10).
+Amendment scope and preserved obligations: [5.0.0 Sync Impact Report](governance/constitution-5.0.0-sync-impact.md). Previous amendments: [4.7.0 Sync Impact Report](governance/constitution-4.7.0-sync-impact.md), [4.6.0 Sync Impact Report](governance/constitution-4.6.0-sync-impact.md), [4.5.0 Sync Impact Report](governance/constitution-4.5.0-sync-impact.md), [4.4.0 Sync Impact Report](governance/constitution-4.4.0-sync-impact.md), [4.3.0 Sync Impact Report](governance/constitution-4.3.0-sync-impact.md), [4.2.0 Sync Impact Report](governance/constitution-4.2.0-sync-impact.md), [4.1.0 Sync Impact Report](governance/constitution-4.1.0-sync-impact.md), [4.0.0 Sync Impact Report](governance/constitution-4.0.0-sync-impact.md), [3.0.0 Sync Impact Report](governance/constitution-3.0.0-sync-impact.md) and, for 2.0.0 (Principle III), the [compensation safety Sync Impact Report](governance/compensation-safety-sync-impact.md). Version 3.0.0 was adopted on 2026-11-01 by the owner's instruction to merge the pull request that carried that text. Version 4.0.0 was adopted on 2026-11-03 by merging the pull request that carries this text, on the owner's delegation to the assistant ("Decida por mim"); the owner may overrule it by a later amendment. Version 4.1.0 was adopted on 2026-11-04 by the owner's instruction to scope the CI to the change and to run the whole stack for a release (`docs/owner-decisions.md`, OD-2026-11-04-2). Version 4.2.0 was adopted on 2026-11-05 by the owner's instruction that a merge into `develop` starts no CI and that the CI stays for pull requests and releases (`docs/owner-decisions.md`, OD-2026-11-05-1). Version 4.5.0 is adopted by merging the pull request that carries it, on the owner's decision to amend the CI gate for step logs (`docs/owner-decisions.md`, OD-2026-11-15-10). Version 4.6.0 is adopted by merging the pull request that carries it, on the owner's delegation of the 0.3.0 decisions to the coordinating session (`docs/owner-decisions.md`, OD-2026-11-20-6 and OD-2026-11-20-7); the owner may overrule it by a later amendment. Version 4.7.0 is adopted by merging the pull request that carries it, on the owner's instructions that the document leads and the code follows, that words are written in full and that the identifiers are renamed to words (`docs/owner-decisions.md`, Owner decisions 2026-11-20-8, 2026-11-20-9 and 2026-11-20-10). Version 5.0.0 is adopted by merging the pull request that carries it, on the owner's approval of the amendment that admits the full-parity scope of release 0.3.0 (`docs/owner-decisions.md`, Owner decisions 2026-11-24-1, 2026-11-24-2 and 2026-11-24-3), its review findings settled under Owner decision 2026-11-24-4; the owner may overrule it by a later amendment.

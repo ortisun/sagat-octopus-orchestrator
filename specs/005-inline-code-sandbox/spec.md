@@ -156,10 +156,12 @@ Check `docs/architecture/overview.md`, `docs/architecture/execution-semantics.md
 - Workflow IRs and versions are immutable after publication.
 - External integrations are at-least-once, subject to idempotency or reconciliation.
 - V1 single-region HA; multi-region active-active requirements are out of scope.
+  *Note (2026-11-24, constitution 5.0.0):* this feature's scope is unchanged; the platform now admits standby regions per cell with fenced active-passive failover (feature 032), and active-active inside a cell stays out.
 
 ## Out of Scope
 
 - Reimplementing Temporal/Restate; implementing the entire connector market; automatic migration of arbitrary code; exactly-once physical execution of external side effects.
+  *Note (2026-11-24, constitution 5.0.0):* this feature's scope is unchanged; the platform no longer excludes Temporal's programming model (workflow as code, design 044) or a curated integration and template hub (features 021, 028, design 047); wire or history compatibility with Temporal or Restate and an open marketplace stay out.
 
 ## Open Design Questions
 
