@@ -388,6 +388,21 @@ T022-063 (020 erasure).
   `integration_claim_transition_efficiency` 22 passed in both roles; `contract_flow_control_step_policies` 10 passed.
   - *Amended 2026-11-13 after review* (D022-020, D022-028, D022-029): the readiness ask is T022-096 for every source; the grant names attempt `attempt() + 1` and lease recording accepts only that attempt's `step.leased` after the grant, locking the grant row only; returns are T022-100.
 - [ ] T022-075 [US7] Lifecycle (T24): cancellation and run deadline of a waiter, pause skips a waiter, a lowered declaration and a lowered policy ceiling, a granted step cancelled before its lease, node-level `concurrency` with node-level `rateLimit`, a body `child` node starting a rate-limited workflow. FR-022-044,046. Evidence: one integration test per item (SC-022-022).
+  *Evidence 2026-11-25 (0.3.0 slice), not ticked.* One integration test per item: the run deadline of a waiter
+  `rate_lifecycle::a_run_deadline_dequeues_a_buffered_start`; pause skips a waiter
+  `rate_lifecycle::a_paused_waiter_is_skipped_and_its_resume_lets_the_pass_grant_it` (hand mutation caught: the pass's
+  run predicate always true, red with `queue::paused_heads_do_not_hold_back_the_waiters_behind_them_and_a_resume_rearms_the_key`;
+  dropping only `NOT paused` is equivalent, a pause stores the run `PAUSED` as well, decision D022-068 item 7); a lowered
+  declaration `rate_lifecycle::a_lowered_declaration_revokes_nothing_and_applies_to_the_next_start`. Proved where they
+  were built (named in the module text of `rate_lifecycle.rs`): the cancellation of a waiter
+  (`fault_flow_control_step_policies::rate_limits::a_grant_and_a_cancellation_of_a_buffered_start_are_decided_by_the_first_commit`,
+  `readiness::a_cancelled_run_takes_its_queued_step_out_of_every_queue`), a lowered policy ceiling
+  (`rate_limits::a_lowered_policy_ceiling_slows_later_grants_and_revokes_none`), a granted step cancelled before its
+  lease (`returns::a_cancellation_gives_back_a_granted_unleased_step`), node-level `concurrency` with node-level
+  `rateLimit` (`queue::a_dual_gated_head_is_not_starved_by_a_younger_waiter`,
+  `queue::a_dual_gated_waiter_times_out_on_the_gate_that_refuses_it_rate_first`), a body `child` node (refused at
+  publication on this tree: `child_starts::a_child_node_inside_a_collection_body_is_refused_at_publication`; a root one
+  is `rate_creators::a_child_run_of_a_rate_limited_definition_is_buffered_and_granted_from_the_queue`).
 - [x] T022-076 [US7] Hot-path budget: the budget of `tests/integration/claim-transition-efficiency/work_budget.rs` unchanged for a definition without the new fields; a new line for the claim of a rate-limited step equal to the plain claim; recorded lines for a completion whose next step declares `rateLimit` and for an admission that declares it. NFR-022-007; FR-038-001. Evidence: `integration_claim_transition_efficiency` passes; seen failing first with a statement added to the claim by hand. Lands before any call site in a completion.
   - *Amended 2026-11-13 after review* (D022-030): moved to Phase 2, after T022-091 and before T022-022.
   *Not done 2026-11-15.* Its lines measure the claim, completion and admission of a definition that declares `rateLimit`; in this build no such run can be admitted (D022-037), so there is nothing to measure. T022-091 holds the plain-admission line meanwhile, and the selector covers the files that can move it (T022-092). Lands with T022-096, before its call site.
@@ -469,6 +484,15 @@ T022-063 (020 erasure).
   `No space left on device` at migration, rerun alone and green); `integration_claim_transition_efficiency` 22 in both
   roles; `integration_security_multitenancy` 126 as the owner and, as the runtime role, 112 plus the 14 lost to the
   same disk, rerun with their modules (`secret_pools::`, `secrets::`, 49 passed).
+  *Evidence 2026-11-25 (residuals of the batch of 2026-11-24), not ticked.* Decision D022-077 item 1 at its call site:
+  `rate_limits::a_grant_pass_visits_at_most_256_keys_whatever_its_batch` (a batch of 300, 257 keys due: one pass
+  visits 256 and leaves one due; red with the cap removed from `grant_pass_keys` by hand).
+  `rate_limits::a_grant_that_ages_out_during_a_pass_never_puts_a_younger_waiter_first` no longer depends on real elapsed
+  time (decision D022-072): the holders' counted instants are moved ahead while the waiters are admitted and while the
+  pass selects, and set to one window before the database clock read once the pass is blocked, so they count as of the
+  selection and not at the decision; the windows then age on the database clock before the next pass only so that the
+  journals hold no two grants in one window (a wait that decides nothing). Red with the count taken at the decision's
+  own instant (`least` turned into `greatest` in `gate_queue.rs`) by hand.
 - [x] T022-081 [P] [US7] Lock-order barriers `tests/integration/flow-control-step-policies/rate_limit_locks.rs` for each path of ADR-0088 decision 4 (admission, grant, timeout, readiness, lease recording, cancellation, purge), alone and with a semaphore. FR-022-044; SC-022-019. Evidence: no deadlock; the reversed-order control waits as expected.
   *Done 2026-11-20 (0.3.0 slice).* `tests/integration/flow-control-step-policies/rate_limit_locks.rs`, against references
   in the order of the slots from every start (`support::lock_order::against_at`, the new slot `RateWindows`, 8b):
@@ -581,15 +605,50 @@ Added for the findings recorded in `reviews/2026-11-13/` (D022-019..034). The sl
   *Done 2026-11-20 (0.3.0 slice; D022-048). Owner-gate met: OD-2026-11-20-2 ("Aceitar ADR-0096", O1175 (a)); ADR-0096 is Accepted and partly supersedes ADR-0094 decisions 2 and 3. Evidence rerun on 2026-11-20 after the answer: `cargo test -p sagat-domain --test readiness_gate` 20 passed; `integration_flow_control_step_policies returns` 7 passed, owner and `SAGAT_TEST_AS_RUNTIME_ROLE=1`.* Build: `execution::pause_run` settles the run; the planner and the reducer give back the permit and slot of a granted, unleased root step on pause and make it wait; `RunState::waits_for_resume` (planner, invariant 11, `persist`); a re-decision over a slot the attempt gave back; a pause or resume locks the keys of its returns and of the run's waiters in one sorted pass. Evidence: `cargo test -p sagat-domain --test readiness_gate` 20 passed (`a_pause_returns_the_gates_of_a_granted_unleased_step_and_its_resume_asks_again`, `a_step_granted_while_its_run_is_paused_gives_its_gates_back_in_that_commit`, `a_review_hold_gives_back_and_a_retry_asks_again_for_the_same_attempt`); `integration_flow_control_step_policies::returns` 7 passed, owner and `SAGAT_TEST_AS_RUNTIME_ROLE=1` (pause and resume, hold for review then retry, cancellation, run end, the retry pass while paused, a cancellation of a paused run, the pause's sorted lock order with a held semaphore row and a `NOWAIT` probe); invariant 13 checked at each step (holders and unleased rate grants per key). Hand mutations caught: the planner's return on pause, the return on leaving `READY`, the re-decision over `ENDED`, invariant 11's exemption, the planner asking while paused, the rearmed keys left out of the sorted pass. Reviews in `reviews/2026-11-20/returns-*.md`.
 - [ ] T022-101 A step key that fails to evaluate or exceeds 256 bytes fails `FLOW_CONTROL_KEY_INVALID`, a live-keys ceiling `FLOW_CONTROL_LIMIT`, through the failure route, no attempt spent; rows in `contracts/errors.md`. FR-022-054; D022-025. Evidence: one test per cause; the step is never granted.
   - *Built in part 2026-11-19 (G1199, D022-045), not ticked:* the live-keys cause: a step key that would be a new semaphore beyond the namespace's `concurrency_live_keys` (or a namespace ceiling of zero) fails `FLOW_CONTROL_LIMIT` through its route, nothing filed; the namespace `concurrency_limit` and `flow_control_queue_timeout_ms` bound a declaration. Evidence: `integration_flow_control_step_policies::ceilings::{a_new_step_key_beyond_the_live_keys_ceiling_fails_flow_control_limit, the_namespace_limit_and_queue_timeout_bound_a_declaration}` (mutations caught: the refusal ignored, the namespace limit and the timeout ignored). Open: the 256-byte cause's own test, the rows of `contracts/errors.md`, the concurrent overshoot (G022-002, O1172).
+  *Evidence 2026-11-25 (0.3.0 slice), not ticked.* The 256-byte cause:
+  `readiness::a_key_longer_than_256_bytes_fails_the_step_through_its_route` (a canonical value of 257 bytes fails
+  `FLOW_CONTROL_KEY_INVALID` through `onError`, attempt 0, no grant, waiter or window row and no `rate_limit.*` event; one
+  of exactly 256 bytes is granted). The code was built by T022-096, so the test passed at once; hand mutation caught:
+  `>` turned into `>=` in `Engine::decide_gates` (the 256-byte key refused, red). The rows of `contracts/errors.md`
+  ("Durable failure codes") were present and are kept. The concurrent overshoot is settled by the owner (O1172,
+  G022-002): nothing to build.
 - [ ] T022-102 A child node (root and in a collection body) meeting a full buffer, `queued_runs` or the live-keys ceiling fails with its typed retryable code; no child run is created. FR-022-055; D022-024. Evidence: integration test with the retry policy retrying it and the failure route taking it.
   - *Follow-up 2026-11-20 (D022-062, re-review of 39157608 minor 7):* also a child start refused `CAPABILITY_DISABLED` or
     `FLOW_CONTROL_ACTIVATION_PENDING` (a running parent while the switch is off): today the pass fails every tick and the
     parent's node neither completes nor fails; it must fail with its typed code through the route.
+  *Evidence 2026-11-25 (0.3.0 slice; decision D022-080), not ticked.*
+  `child_starts::{a_child_refused_by_a_full_buffer_or_a_ceiling_fails_its_node_through_the_route,
+  a_child_refused_by_its_capability_fails_its_node_through_the_route, a_child_node_inside_a_collection_body_is_refused_at_publication}`:
+  `RATE_LIMIT_QUEUE_FULL`, `CONCURRENCY_QUEUE_FULL`, `FLOW_CONTROL_LIMIT` (`queued_runs`, live keys),
+  `CAPABILITY_DISABLED` and `FLOW_CONTROL_ACTIVATION_PENDING` each fail the child node through `onError`, no child run,
+  the pass reports a finished child and fails nothing, and the next pass finds nothing left. Red before the change: the
+  pass failed (`failed: 1`, nothing finished), seen again by hand with the refusal arms disabled. A `child` node has no
+  retry policy in IR v1, so the failure route is what handles it (amendment under FR-022-055); a body `child` node is
+  refused at publication on this tree. `cargo test -p sagat-application --lib flow_control` covers
+  `a_refused_child_fails_with_the_refusals_own_reason`.
 - [ ] T022-103 Publication refuses identity-only keys (`FLOW_CONTROL_KEY_UNBOUNDED`); window rows keep `max_period_ms`; the purge keeps grants for that period plus one minute and decrements `live_grants` by the rows it actually deleted. FR-022-056; D022-025. Evidence: codec tests; purge test with mixed periods.
   - *Follow-up 2026-11-16 (from T022-002):* its evidence also adds the invalid fixture document of `FLOW_CONTROL_KEY_UNBOUNDED` to `tests/contract/flow-control-step-policies/fixtures/` and removes the code from `PENDING` in `ir.rs`.
+  *Evidence 2026-11-25 (0.3.0 slice; decision D022-081), not ticked.* Codec:
+  `contract_flow_control_step_policies::ir::{a_key_that_reads_the_runs_identity_is_refused_as_unbounded,
+  every_invalid_fixture_is_refused_with_its_code_before_a_version_exists}` with the fixture
+  `invalid-flow-control-key-unbounded.workflow.json`; `FLOW_CONTROL_KEY_UNBOUNDED` left `PENDING` in `ir.rs` (both red
+  with the rule disabled by hand). Purge with mixed periods:
+  `rate_gate::the_purge_of_a_key_with_mixed_periods_counts_down_the_rows_it_deleted` (the window keeps an hour, a
+  per-second grant is kept an hour and a minute, at most `limit` rows a key, `live_grants` down by exactly the rows each
+  purge deleted; red with the purge's `LIMIT` removed by hand). The window's `max_period_ms` and the purge's predicate
+  were built by T022-074; this task adds the rule and the evidence.
 - [ ] T022-104 Key classification: `FLOW_CONTROL_KEY_SECRET` refused, `FLOW_CONTROL_KEY_PII` warned; `keyLabel` `null` for callers who may not disclose every location the key reads. FR-022-057; G1185. Evidence: codec tests over 016 carriers; REST tests with and without disclosure rights.
   - *Follow-up 2026-11-16 (from T022-002):* its evidence also adds the fixture documents of `FLOW_CONTROL_KEY_SECRET` (invalid) and `FLOW_CONTROL_KEY_PII` (warning) and removes both codes from `PENDING` in `ir.rs`.
 - [ ] T022-110 Close G022-013: a takeover test that races a real keeper takeover (alpha's short lease run out by the database clock while its grant waits for a held key, `beta.round()` the second lock waiter), and SC-022-004 at run level (five same-key starts with `limit: 1`: at most one holder, grants in admission order; a mixed-limit pair sharing a group). Evidence: `fault_flow_control_step_policies` with hand mutations.
+  *Evidence 2026-11-25 (0.3.0 slice), not ticked.*
+  `fault_flow_control_step_policies::concurrency::{a_real_takeover_skips_the_shard_of_a_grant_in_flight_and_nothing_is_granted_twice,
+  five_same_key_starts_hold_at_most_one_permit_and_are_granted_in_admission_order,
+  a_mixed_limit_pair_sharing_a_group_applies_each_limit_to_the_shared_holders}`. The takeover is a real keeper's: alpha's
+  one-second leases run out on the database clock while its grant waits for the held key; beta's round takes every shard
+  but the fenced one (the acquisition skips a locked shard, so beta does not wait as the gap's text supposed: it cannot
+  take the key's shard until the grant commits), its pass grants nothing; after the commit beta takes the last shard and
+  grants nothing twice. Hand mutation caught: the pass's permit waiters ordered youngest first (the five-start test red).
+  A mutation of the acquisition's `SKIP LOCKED` would hang the takeover test rather than fail it, so it was not run.
 - [ ] T022-111 The aggregated key listing for a caller who may not see labels (D022-061, G022-014): one row per (pool,
   scope, group) with holders, waiters and the group's oldest holder and oldest wait, from per-group counter rows kept by
   the triggers that keep the key rows' counters (with T022-105), so a page costs its own groups; per-key rows stay the
@@ -604,12 +663,45 @@ Added for the findings recorded in `reviews/2026-11-13/` (D022-019..034). The sl
   `purgeable_grant!` is one text for the purge, and a gate-neutral run permit state (`RunPermitState` documents and
   prints the concurrency gate's meaning for a rate slot). Decision D022-068 item 6 (architecture minors 2 and 4 of the
   review of task T022-078). Evidence: the suites unchanged and green; the five uses expand one macro.
+  *Evidence 2026-11-25 (0.3.0 slice), not ticked.* `eligible_gate_waiter!` and `live_gate_run!`
+  (`crates/infra-postgres/src/lib.rs`) are the one text of the eligibility for its seven uses (the five of the task and
+  the two of admission's eligible waiters, `readiness_gate.rs`) and the place estimate's "skipped";
+  `scripts/check-architecture.py` refuses a copy written out (`TheEligibilityOfAWaiterIsOneText`, three cases, red on a
+  copy); `gate_predicate_tests::the_eligibility_of_a_waiter_is_one_text`. `RunPermitState` became the gate-neutral
+  `RunGateState` (`Held`, `Waiting`), with no words of its own: each body names it (`HOLDING`, `GRANTED`, `WAITING`).
+  Suites unchanged and green (gate lines of this change).
 - [ ] T022-113 [US7] Rate twins of the run creators of T022-064 that `rate_creators.rs` does not cover: the start under a business identifier, the rerun as new, Signal- and Update-with-Start, the batch rerun, the ad hoc run and its private rerun, each admitted through its key (`rate_limit.granted` with a grant row, or `rate_limit.queued` with a waiter row) and checked by the consistency check. FR-022-041; D022-069 item 7. Evidence: `tests/integration/flow-control-step-policies/rate_creators.rs`.
+  *Evidence 2026-11-25 (0.3.0 slice), not ticked.* `rate_creators::{the_start_api_with_a_business_identifier_admits_a_rate_limited_start,
+  a_rerun_as_new_of_a_rate_limited_run_admits_through_the_key,
+  a_signal_with_start_of_a_rate_limited_definition_takes_its_slot_or_creates_nothing,
+  an_update_with_start_of_a_rate_limited_definition_admits_through_the_key,
+  a_batch_rerun_of_a_rate_limited_run_admits_through_the_key,
+  an_ad_hoc_rate_limited_workflow_and_its_private_rerun_admit_through_the_key}`, each admitted through its key and
+  checked by the consistency check (the helpers of `run_creators.rs` shared). The admission was built by T022-072, so
+  they passed at once; hand mutation caught: `Engine::start` treating a gated start as ungated (every twin red).
 - [ ] T022-114 [US7] A `CANCEL_SOURCE` reset of a rate-limited source whose key's window is full when the request arrives: an advisory refusal `RATE_LIMIT_SLOT_UNAVAILABLE` at the request, or a warning in the reset preview (D022-069 item 3; reviews of 2026-11-21, architecture Major 1, security minor). Evidence: an integration case with `limit: 1, per: hour`.
+  *Evidence 2026-11-25 (0.3.0 slice; decision D022-079: the advisory refusal at the request), not ticked.*
+  `run_creators::a_cancel_source_reset_on_a_full_window_is_refused_at_its_request_and_cancels_nothing` (`limit: 1, per:
+  hour`: refused `RATE_LIMIT_SLOT_UNAVAILABLE`, the source still running and not stopping, no entry, no run; a source
+  with room accepted); `run_creators::a_pending_reset_takes_a_fresh_slot_or_fails_rate_limit_slot_unavailable` now fills
+  the window after the request, so the completion's refusal stays proved. Red with the refusal disabled by hand. The
+  contracts (`resetRun` of 001's OpenAPI, the reset of 018's REST fragment) and both runbooks say so; the Studio client
+  matches (`npm run api && npm run check:api`).
 - [ ] T022-115 [US7] The second clause of SC-022-017: a second key whose own buffer is saturated at the same time, its grants coming from the pass, is served at its own limit; and with more keys and tenants holding waiters than one pass visits, every eligible key of another tenant is granted within two passes (review of task T022-080, minor 5; decision D022-075 item 7). Evidence: a fault case in `tests/fault/flow-control-step-policies/rate_limits.rs`.
+  *Evidence 2026-11-25 (0.3.0 slice), not ticked.*
+  `fault_flow_control_step_policies::rate_limits::a_second_saturated_key_is_served_at_its_own_limit_and_every_tenant_within_two_passes`:
+  `sat-a` (`limit: 1`) and `sat-b` (`limit: 2`) saturated together, one pass grants one and two, `sat-b`'s third waits;
+  six keys of two tenants behind a pass of four keys: four in the first pass (the second tenant served), two in the
+  second. Each start queues at a full window whatever the runner's speed (the holder's instants moved ahead while it is
+  admitted, decision D022-072).
 - [ ] T022-105 `flow_control_counts` slot rows with `SECURITY DEFINER` triggers and `SELECT`-only grants; foreign keys `(tenant_id, namespace_id, run_id)`; column-limited `UPDATE` grants on semaphores and windows (`next_eligible_at`, `updated_at`). FR-022-058; D022-026. Evidence: runtime-privilege sweep; a direct `UPDATE` of a counter as `sagat_app` is refused; a dual-gated run counts once.
   - *Built in part 2026-11-20 (0.3.0 slice; D022-051), not ticked:* the exactness of `queued_runs` that the owner made a merge condition: proved exact under the namespace's admission lock by `run_admission::two_starts_at_the_queued_runs_ceiling_are_decided_one_after_the_other` (held lock, both starts observed waiting, exactly one queued and one refused `FLOW_CONTROL_LIMIT`), owner and `SAGAT_TEST_AS_RUNTIME_ROLE=1`; hand mutations caught: the admission lock removed, the ceiling ignored. Open: the `flow_control_counts` slot rows and their triggers, the foreign keys, the column-limited grants.
 - [ ] T022-106 A grant from the buffer does not re-authorize: a buffered run whose initiator lost `run:start` is granted, and its journal and audit keep the original initiator. FR-022-060; D022-034. Evidence: integration test.
+  *Evidence 2026-11-25 (0.3.0 slice), not ticked.*
+  `rate_gate::a_grant_from_the_buffer_does_not_reauthorize_and_keeps_the_initiator`: a developer's run buffered for both
+  gates is granted after she is demoted to viewer (her own start then refused `Forbidden` `run:start`); `runs.started_by`,
+  the actor of `run.started` and the one `run.started` audit record stay hers. The grant path has no authorization to
+  mutate, so the test guards a future one.
 - [x] T022-107 Owner gate for ADR-0089 and O1169: the owner's answer recorded in `docs/owner-decisions.md` and `research.md`; ADR status set by a person. Owner-gate: T022-024, T022-096, T022-097, T022-098, T022-099. Evidence: the recorded answer.
   *Done 2026-11-15.* Evidence: OD-2026-11-13-19 in `docs/owner-decisions.md` on `develop` ("Aceitar o ADR-0089",
   added by `69dc08e2`); the status line of ADR-0089 reads `Accepted (2026-11-13, OD-2026-11-13-19)`, set by
