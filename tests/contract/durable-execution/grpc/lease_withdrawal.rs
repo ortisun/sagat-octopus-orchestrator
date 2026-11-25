@@ -1588,3 +1588,45 @@ async fn below_1_8_a_task_not_started_passes_no_cancellation() {
         );
     }
 }
+/// Correctness review minor 6 of 2026-11-25 (Task 006-068, decision D006-094): a journal that holds a withdrawal with the cause
+/// `NOT_ACKNOWLEDGED` replays (`verify_run`). Nothing of this build writes the cause, so the fixture is SQL: a hand-back is
+/// withdrawn as `NOT_STARTED`, then its event is given the cause of protocol 1.8, the append-only guard of the journal off for
+/// that one statement, in the fixture's own transaction.
+#[tokio::test]
+async fn a_journal_that_holds_a_not_acknowledged_withdrawal_replays() {
+    let p = withdrawing_platform(None).await;
+    let workflow = p
+        .publish("not-acknowledged", &one_attempt("not-acknowledged"))
+        .await;
+    let run = p.start(&workflow, &json!({})).await;
+    let mut worker = stream_worker(&p, "first").await;
+    as_protocol_1_8(&p, "first").await;
+    let lease = worker.one_task().await;
+    worker
+        .fail_with(&lease, "TASK_NOT_STARTED", true)
+        .await
+        .expect("the hand-back is withdrawn");
+    let mut fixture = p.api.db.pool.begin().await.expect("a transaction");
+    sqlx::query("ALTER TABLE run_events DISABLE TRIGGER run_events_append_only")
+        .execute(&mut *fixture)
+        .await
+        .expect("the guard off in this transaction");
+    let changed = sqlx::query(
+        "UPDATE run_events SET detail = jsonb_set(detail, '{cause}', '\"NOT_ACKNOWLEDGED\"') \
+          WHERE run_id = $1 AND event_type = 'step.lease_withdrawn'",
+    )
+    .bind(Uuid::parse_str(&run).expect("run id"))
+    .execute(&mut *fixture)
+    .await
+    .expect("the cause of 1.8");
+    assert_eq!(changed.rows_affected(), 1);
+    sqlx::query("ALTER TABLE run_events ENABLE ALWAYS TRIGGER run_events_append_only")
+        .execute(&mut *fixture)
+        .await
+        .expect("the guard back");
+    fixture.commit().await.expect("committed");
+    let journal = journal(&p, &run).await;
+    assert_eq!(assert_withdrawn(&journal, "NOT_ACKNOWLEDGED"), 1);
+    replays(&p, &run).await;
+    runs_once_afterwards(&p, &run, 1).await;
+}

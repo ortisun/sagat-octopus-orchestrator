@@ -975,6 +975,75 @@ async fn the_lease_withdrawal_v2_rolls_back_only_while_nothing_names_it() {
     assert!(index().await, "forward restores the partial index");
 }
 
+/// What `pg_proc` says of the two functions the follow-up rewrites: the digest of the body, whether it runs as its owner, and
+/// its settings.
+async fn the_two_functions(
+    pool: &sqlx::PgPool,
+) -> Vec<(String, String, bool, Option<Vec<String>>)> {
+    sqlx::query_as(
+        "SELECT proname::text, md5(prosrc), prosecdef, proconfig FROM pg_proc \
+          WHERE proname IN ('lease_withdrawal_required', 'platform_requirements_replay_floor_guard') ORDER BY proname",
+    )
+    .fetch_all(pool)
+    .await
+    .expect("the two functions")
+}
+
+/// Correctness review nit 1 of 2026-11-25 (decision D006-100): the rollback of the follow-up restores the two functions
+/// exactly as migration `20270208000200` left them: the same body (its digest), the same security and the same settings.
+/// The reference is a database that only ever ran the migrations up to that one.
+#[tokio::test]
+async fn the_rollback_of_the_follow_up_restores_the_two_functions_exactly() {
+    let reference = fresh_db().await;
+    for migration in MIGRATOR.iter().filter(|migration| {
+        migration.migration_type.is_up_migration() && migration.version <= BEFORE_THE_FOLLOW_UP
+    }) {
+        // the repository's own migration files, as sqlx would run them
+        sqlx::raw_sql(migration.sql.clone())
+            .execute(&reference.pool)
+            .await
+            .unwrap_or_else(|error| panic!("{}: {error}", migration.version));
+    }
+    let expected = the_two_functions(&reference.pool).await;
+    assert_eq!(expected.len(), 2);
+    let db = migrated_db().await;
+    assert_ne!(
+        the_two_functions(&db.pool).await,
+        expected,
+        "the follow-up rewrote them"
+    );
+    MIGRATOR
+        .undo(&db.pool, BEFORE_THE_FOLLOW_UP)
+        .await
+        .expect("the follow-up rolls back");
+    assert_eq!(the_two_functions(&db.pool).await, expected);
+}
+
+/// Correctness review minor 7 of 2026-11-25: the floor of `lease-withdrawal-v2` looks at the journal through its own partial
+/// index, as the floor of `lease-withdrawal-v1` does.
+#[tokio::test]
+async fn the_probe_of_not_acknowledged_withdrawals_uses_its_partial_index() {
+    let db = migrated_db().await;
+    let mut planner = db.pool.begin().await.expect("a transaction");
+    sqlx::query("SET LOCAL enable_seqscan = off")
+        .execute(&mut *planner)
+        .await
+        .expect("no sequential scan");
+    let plan: Vec<String> = sqlx::query_scalar(
+        "EXPLAIN SELECT 1 FROM public.run_events e \
+          WHERE e.event_type = 'step.lease_withdrawn' AND e.detail->>'cause' = 'NOT_ACKNOWLEDGED' LIMIT 1",
+    )
+    .fetch_all(&mut *planner)
+    .await
+    .expect("plan");
+    assert!(
+        plan.iter()
+            .any(|line| line.contains("run_events_lease_not_acknowledged_idx")),
+        "{plan:#?}"
+    );
+    planner.rollback().await.expect("rolled back");
+}
+
 /// Records `lease-withdrawal-v1` of both kinds, as the operator's activation does.
 async fn record_lease_withdrawal(pool: &sqlx::PgPool) {
     let recorded: String = sqlx::query_scalar(
