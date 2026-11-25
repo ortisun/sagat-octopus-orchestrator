@@ -1,0 +1,40 @@
+# ADR-0111: A workflow version may declare buffered signals, kept in a bounded inbox of the run and consumed once by a later wait
+
+**Status:** Proposed
+**Decided by:** agent, proposing for design 045 under the owner's delegation (Owner decision 2026-11-20-6, widened by Owner decision 2026-11-24-4), on the owner's decision that release 0.3.0 contains every missing parity feature (Owner decision 2026-11-24-1), of which the roadmap assessment of 2026-11-11 lists "buffered signals (an early signal is refused today)"
+**Refines / supersedes:** supersedes in part Architecture decision 0030 decision 17 (a signal is accepted only by an already waiting step) and Architecture decision 0050 decision 4 (no buffered signal; no table holds a signal for later delivery), for workflow versions that declare a buffered signal and for nothing else; refines requirement FR-018-024 (Signal-with-Start) and FR-018-039 (reset reapply) of feature 018. Keeps Architecture decision 0050 decisions 1 to 3 and 5 to 9 (lock order, no aggregate written by a run-driven transition, no reopen) unchanged.
+**Enforced by:** to be built with design 045: the unit tests of the inbox rules in `crates/domain`; the replay-equals-projection test with buffered, consumed, transferred and discarded signals; the barrier tests of a signal against a wait's entry, against a wait's timeout, against the run's end and against a continuation (`tests/fault/activity-timeouts/`, `fault_activity_timeouts`); the slot-order test of Signal-with-Start with a buffered signal (`tests/fault/schedules-bulk-operations/slot_order.rs`); the privilege audit of the new table (`integration_platform_foundation`); the conformance scenario `buffered-signals` in six languages.
+
+## Context
+
+Today a signal to a run is delivered only to `waitEvent` steps that are waiting when its transaction commits, each of them receiving a copy; otherwise `signalRun` answers `409` "the run is not waiting for that signal" (`crates/application/src/runs.rs`), and Signal-with-Start rolls back with `SIGNAL_NOT_ACCEPTED_AT_START`. Architecture decision 0050 rejected buffering on 2026-10-29 because it needs a lifecycle for undelivered signals (expiry, transfer across continuation, quotas) and changes what a `409` means; feature 018 left buffered signals out of scope. In Temporal a signal is part of the history whether or not code waits for it, which is what makes "send the approval before the workflow reaches the approval step" and a signal-driven work queue possible. Design 044 (workflow as code) needs the same substrate: a workflow function reads signals from a channel at the moment it chooses.
+
+The objections of Architecture decision 0050 are answered by making buffering an explicit property of a published version, bounded, stored under the run's own lock, and given a lifecycle in each transition that already exists.
+
+## Decision
+
+1. **Opt-in per version and per signal name.** A version declares `signals: [{"name", "buffered": true, "maxPending"}]`. A name that is declared buffered MUST be the event type of at least one `waitEvent` node of the version; publication refuses one that no wait can consume. For every name not declared, and for every version published before this decision, signals behave exactly as today, `409` included.
+2. **A buffered signal that no step waits for is kept.** When a declared name reaches a run with no step waiting for it, `signalRun` stores it in the run's inbox in the run's transaction, journals `signal.buffered` with its sequence, audits it as `run.signalled`, and answers `202` with `buffered: true`. When steps wait, delivery is as today (each waiting step gets a copy) and nothing is buffered.
+3. **A wait consumes the oldest pending signal of its name when it is entered.** In the transaction that makes a `waitEvent` step wait, the oldest pending signal of its event type, if any, satisfies it at once (`wait.satisfied` names the signal's sequence) and is marked consumed. Each buffered signal is consumed by exactly one wait, in the order of the commits that enter waits; it is never copied.
+4. **Bounded and charged.** At most `maxPending` (1 to 1,000) pending signals per name and 1,000 per run; the payload is at most 256 KiB, stored as run content in `payloads`, and counted in the run's retained bytes (4 MiB) and the tenant's content quota (Architecture decision 0027). A signal over a bound is refused with `409 SIGNAL_INBOX_FULL` or the existing quota error, and nothing is stored.
+5. **A lifecycle in transitions that already exist, under locks they already take.** The inbox rows are written only under the run's lock. Continue-as-new moves the pending signals to the successor in the continuation transaction (chain lock, then run lock, Architecture decision 0030) when the successor's version declares the name buffered, and discards the rest. The run's terminal transition marks every pending signal discarded and journals their count. Reset reapply (FR-018-039) treats a signal buffered after the reset point as a recorded signal: delivered, or buffered again when the new run's version declares it. No run-driven transition writes any aggregate row (Architecture decision 0050 decision 3 holds).
+6. **Signal-with-Start buffers instead of refusing**, for a declared name: the new run is created and the signal is delivered or buffered in the same transaction; the binding-then-run lock order of Architecture decision 0050 is unchanged. An open holder that does not wait buffers it as `signalRun` does.
+7. **Switched on by the fleet.** A version that declares a buffered signal publishes only once the operator recorded the requirement `signal-inbox-v1` (Architecture decision 0082).
+
+## Considered options
+
+1. **Opt-in per version and name, an inbox of the run (chosen).** Runs in flight and existing callers keep today's answers; the inbox has no new lock and no aggregate edge; design 044 reuses it.
+2. **Buffer every signal of every run.** Temporal's model, but it changes the answer to a call that callers rely on today (`409`), for runs already in flight (constitution principle IV). Rejected.
+3. **Keep refusing (Architecture decision 0050 decision 4).** Leaves a parity gap that the owner put in release 0.3.0 (Owner decision 2026-11-24-1), and leaves design 044 without a substrate. Rejected.
+4. **An expiry per buffered signal.** A signal that expires silently is a lost business message; the inbox is bounded by count and bytes, and lives as long as the run. Rejected for 0.3.0.
+
+## Consequences
+
+- An approval sent before its step is reached is no longer lost or refused, for versions that declare it.
+- A `409` from `signalRun` still means "not accepted" for every undeclared name; a new `202` with `buffered: true` means "kept for a later wait".
+- One table, written under the run lock; the continuation and terminal transitions do one more statement when the inbox is not empty, and none when it is (a flag on the run row says so).
+- Rollback: removing `signal-inbox-v1` is refused while a published version declares a buffered signal.
+
+## Evidence
+
+Design 045 (`docs/designs/045-activity-timeouts.md`, Technical Plan, "Buffered signals") and its reviews. Existing behaviour cited: `crates/application/src/runs.rs` (`deliver_signal`, `NOT_WAITING_FOR_SIGNAL`), Architecture decision 0030 decision 17, Architecture decision 0050 decision 4 and its rejected option 2, `specs/018-schedules-bulk-operations/spec.md` (FR-018-024, FR-018-039, Out of scope).
