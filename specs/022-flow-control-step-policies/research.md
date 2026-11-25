@@ -1307,7 +1307,8 @@ taken after `git grep D022-04` on every `origin/*` branch.
      waits is not applied to it, an under-delivery; the grant's journal records the filed limit, not the one it was
      decided with; both open with the review's answers). *Answered 2026-11-21 (decision D022-075 item 7, minor 3):* the
      grant row and `rate_limit.granted` record the limit the grant was decided with; a raised ceiling stays unapplied to
-     a waiter already filed.
+     a waiter already filed. *Reversed 2026-11-24 (decisions D022-076 item 7 and D022-078 item 1):* a raised ceiling
+     applies to a waiter already filed, up to its declaration.
   4. *Concurrency is unchanged:* the same question for a lowered `concurrency_limit` while runs are queued is not settled
      by the specification (its edge case speaks of a new version's lower limit only); left open as gap G022-020. *Decided 2026-11-21 (decision D022-074):* a lowered
      concurrency ceiling applies to the queued runs too.
@@ -1361,7 +1362,12 @@ taken after `git grep D022-04` on every `origin/*` branch.
      budget of a gated definition").
   4. *The hint.* A start queued while its key has room lowers the key's next-eligible hint to the statement's instant
      (`least(hint, now)`), so the next pass visits the key; a start queued at a full key keeps the hint it found (early
-     or the age-out instant, both never late).
+     or the age-out instant, both never late). *Amended 2026-11-24 (decision D022-076 items 1 and 2; re-review Majors 1
+     and 2):* a start or step queued while its key has room writes the key's hint to the statement's
+     `clock_timestamp()` whatever the hint was (`least` kept a hint a pass in progress had selected, and the pass's rest
+     then lost the new waiter's wake-up); one queued at a full window lowers the hint to the earliest instant a counted
+     grant ages out of its own window (`least(hint, that instant)`), so a long window's hint never holds back a short
+     one; a semaphore queued full keeps the hint it found, a hint absent becomes now.
   5. *The delay it costs a new start* (derived in `plan.md`, "The grant pass, by key"): at most `1.2 I + 2 D`, with `I`
      the scheduler's idle pause (`SAGAT_SCHEDULER_INTERVAL_MS`, 500 ms by default, jittered by up to 20 %) and `D` the
      duration of one tick; one tick more when more keys are due than one pass visits (the two passes of SC-022-017).
@@ -1422,11 +1428,120 @@ taken after `git grep D022-04` on every `origin/*` branch.
      limit and the current ceiling) in its grant row and in `rate_limit.granted`; decision D022-071 item 3 is corrected:
      a ceiling raised while a waiter waits is not applied to it, its bound being its filed limit (its declaration
      clamped at its admission), an under-delivery and never an over-grant; the specification's "its own pinned `limit`"
-     (US07, edge cases) is read as that filed limit, reported to the owner with this decision. (4) Done before this
+     (US07, edge cases) is read as that filed limit, reported to the owner with this decision (*reversed 2026-11-24 by decisions D022-076
+     item 7 and D022-078 item 1:* the bound is the lower of the declaration and the current ceiling, and the phrase is
+     read as the declaration the version pins). (4) Done before this
      answer: `plan.md` and task T022-080's amendment line name the method of decision D022-072. (5) The second clause of
      SC-022-017 (a second saturated key, more keys and tenants than one pass visits) is new task T022-115. (6) Done in
      item 1. Nit 1 (the ceilings read once per waiter tried) is kept: reading them once a pass would carry a value read
      outside the grant's transaction into it, and the statement is one primary-key range of `quota_limits`.
+- **D022-076 — The answers to the re-review of task T022-080 (2026-11-24;
+  `reviews/2026-11-24/rate-faults-rereview-correctness-reviewer.md`, 0 Blockers, 3 Majors, 7 minors, 2 nits).**
+  Delegate (OD-2026-11-24-4), which also settles review findings and ADR text. Each item below is built with a test
+  seen failing first, or with a hand mutation where the test can only follow code that is already right.
+  1. *Major 1 (a start queued during a pass loses its wake-up).* A start or step that queues while its gate has room
+     (it queues only behind an eligible waiter) always writes its key's next-eligible hint to the statement's
+     `clock_timestamp()`, whatever the hint was. The pass's rest compares the hint with the one it selected, so a hint
+     written during the pass makes the rest fail and the key stays due; the next pass grants the new waiter. Weighed:
+     re-listing the key at the end of each pass (a second read per key on every pass, and still a window between that
+     read and the rest) and taking the key's lock in the rest (a lock in a path that today takes none, against
+     ADR-0089 decision 3's one routine). The written hint costs nothing new: the statement exists. Decision D022-073
+     item 4 is amended to this wording.
+  2. *Major 2 (mixed windows keep a long hint).* A waiter that queues at a full window lowers its key's hint to the
+     earliest instant at which one of the key's counted grants ages out of the new waiter's own window
+     (`least(hint, that instant)`), so a short-window waiter is never held behind a hint computed for a longer window;
+     a key with one period computes what it computes today. Weighed: "due now" for every new waiter (one wasted pass
+     visit per new waiter of a full key, which is exactly the load a saturated key brings) against the age-out over the
+     waiter's own period (one aggregate over rows the statement has already locked and counted).
+  3. *Major 3 (a reset refused while its key has room).* A start cause that may not queue (a reset, decision D022-069;
+     a pending reset; a reset of a permit, decision D022-053) is decided by the reservation rule of ADR-0089 decision
+     4, not by strict order: it is granted when its key's counted holders or grants plus the eligible waiters ahead of
+     it are below its limit, and refused otherwise. FR-022-041 and FR-022-018 refuse a reset only without a free slot
+     or permit, and the reservation leaves room for every eligible waiter, so no waiter is overtaken in a way that
+     costs it its grant. Weighed: narrowing the specification to "refused while any eligible waiter exists" (a reset of
+     a run behind a dual-gated waiter blocked by its permit could then be refused indefinitely, the case the reviewer
+     names) against the reservation rule (the accepted rule of the grant routine, already in the code).
+  4. *minor 1 (frees between two decisions of one pass).* Within one pass, once a waiter of a key is refused for lack
+     of room while it is eligible, the pass grants no younger waiter of that key whose limit and window are not looser
+     than the refused one's (it skips to waiters only a looser limit admits, which skip-ahead, D1196, allows), and it
+     leaves the key due. A free committed between the two decisions is then used by the next pass, in order. Weighed:
+     naming the exception in decision D022-073 item 2 as the reviewer offered (a younger waiter granted first breaks
+     FR-022-042's order, which this feature sells) against carrying the refused position forward (a comparison in
+     memory, no statement).
+  5. *minor 2 (the place and the run view).* `RATE_PLACE_SQL` counts ahead only the waiters the grant routine would
+     count (eligible under the lower of their bound and the current ceiling of their own window); the run listing and
+     `get`'s fallback report the effective limit, never the filed one.
+  6. *minors 3, 4, 5 and 6 (weak tests).* A mixed-window case that asks for eligibility at admission; the permit
+     holder's recorded limit asserted equal to the decided one; a hint check that fails when `key_due` does nothing
+     (the releases no longer set the hint first); the lowered-ceiling fault case driven by the database clock (the
+     window aged by moving the counted instants, decision D022-072), not by five starts within one real second.
+  7. *minor 7 (a raised ceiling starves a filed waiter).* Decision D022-071 item 3 and decision D022-075 item 7 are
+     reversed: a waiter's bound is the lower of its declared limit and the namespace's current ceiling, at every
+     decision, so a raised ceiling applies to waiters already queued as a lowered one does (decisions D022-071 and
+     D022-074). The waiter rows of both gates gain a nullable `declared_limit` (an additive migration; a row written
+     before it uses its filed limit). Weighed: keeping the filed limit (a waiter filed under a low ceiling waits behind
+     newer arrivals at the raised limit until its timeout, a starvation the specification's queue does not allow)
+     against reading the declaration from the run's definition at each grant (a document read per waiter tried). The
+     specification's "its own pinned `limit`" (US07 edge cases) is read as the declared limit, pinned by the version.
+  8. *nit 1 (statement cost).* Kept: the count is one indexed range per window length present on the key, read under
+     locks the grant already holds; its cost is measured by task T022-089's benchmark, not estimated.
+  9. *nit 2 (ADR-0089's text).* ADR-0089 gains a dated amendment under decision 4: strict order at admission (decision
+     D022-073), the reservation rule in the grant routine and for causes that may not queue (item 3). A narrowing,
+     accepted under OD-2026-11-24-4.
+- **D022-077 — The documents follow the code where the code carries a recorded decision, and the code follows the
+  documents elsewhere (2026-11-24; the documentation of tasks T022-061 and T022-088).** Delegate (OD-2026-11-24-4).
+  Writing the runbook found these disagreements; each is settled here:
+  1. *Keys a grant pass visits.* The plan says 256; the code visits the scheduler's batch (200 by default). Decided: a
+     pass visits the scheduler's batch of keys, never more than 256 (the hard ceiling of the plan's table). One knob
+     bounds a tick's work for every pass, and the hard ceiling bounds the transactions one tick can start whatever an
+     operator sets. The code gains the cap and a test; the plan's row reads "the scheduler's batch (200), at most 256".
+  2. *The grant's lock order.* Plan row T26 names the fence first; decision D022-045 records run, fence, keys, as every
+     pass (ADR-0050 decision 7). The plan's row is corrected to the decided order.
+  3. *A step waiting for a permit.* `contracts/errors.md` says it stays `READY`; ADR-0089 decision 1 and FR-022-019 say
+     it waits outside `READY` (`WAITING`). The contract is corrected.
+  4. *The orphaned-waiter alert.* The plan lists `flow_control_waiter_orphaned`; the code logs and counts
+     `outcome="orphan"` only (gap G022-005). Built by task T022-082 as alert `FLOW_CONTROL_WAITER_ORPHANED`.
+  5. *FR-022-020's last sentence* (no new key version while old rows exist) is superseded by ADR-0093's per-key
+     rotation, which the owner accepted (OD-2026-11-19-2); the specification gains a dated amendment line under it.
+  6. *Task T022-082* builds `CONCURRENCY_QUEUE_STUCK` as well as the two rate alerts (the runbook documents three); an
+     amendment line under the task says so.
+  7. *The alerts' thresholds,* which the plan leaves open, are the runbook's: `CONCURRENCY_QUEUE_STUCK` when a key has
+     a waiter older than `SAGAT_ALERT_UNCLAIMED_SECS` (300) and no grant in that time; `RATE_LIMIT_GRANT_LAGGING` when a
+     key is due for longer than `SAGAT_ALERT_LEASE_GRACE_SECS` (60) and has had no grant in that time (a busy key the
+     pass reads in parts is not lagging); `RATE_LIMIT_QUEUE_SATURATED` at 80 % of the effective
+     `flow_control_key_waiters` of run starts. Reusing the existing alert settings keeps one operator vocabulary;
+     new settings would be configuration nobody has a reason to tune apart.
+  8. *Stale comments* (`apps/control-plane/src/flow_control.rs`, the build lists both capabilities;
+     `crates/telemetry/src/flow_control.rs`, decisions are counted since decision D022-045) are corrected.
+- **D022-078 — The declaration a waiter is bounded by is a column of its own, `pinned_limit`, and the order bound of a
+  pass starts at any refusal for lack of room (2026-11-24; decision D022-076 items 4 and 7).** Delegate
+  (OD-2026-11-24-4). Building decision D022-076 found two places where its text cannot be built as written:
+  1. *The column of item 7.* The waiter rows of both gates already have a `declared_limit`: the filed limit (the
+     declaration clamped by the namespace's ceiling at admission), which the `*.queued` event of the row records as its
+     `limit`. A second column of that name cannot be added. Options: (a) rename the column to `filed_limit` and add
+     `declared_limit` (not additive: a binary of the rollout reads the old name, constitution principle IV); (b) write
+     the declaration into the existing `declared_limit` from now on (no migration, but one column with two meanings by
+     the date of the row, and a row that no longer records what its `*.queued` event says, while the waiter rows are
+     the step's journal in the consistency checks); (c) a new nullable column `pinned_limit`, the declaration pinned by
+     the run's version before any ceiling (the specification's "its own pinned `limit`", US07 edge cases), `NULL` in a
+     row written before it, which is then bounded by its filed limit as item 7 says. Chosen (c): additive, each column
+     keeps one meaning, the row still records its event. Every decision bounds a waiter, deciding or ahead, by
+     `least(coalesce(pinned_limit, declared_limit), the current ceiling)`; a CHECK holds `pinned_limit >= declared_limit`
+     (the filed limit is never above the declaration), added `NOT VALID` and validated by a second migration. The
+     migration's rollback refuses while a waiter row's declaration is above its filed limit: dropping the column would
+     lose a bound no older binary can recover; a row whose two limits agree loses nothing. No grant changes (the table
+     grants cover the column) and no storage class is added (a fixed-size column, outside the variable-size review).
+  2. *"Eligible" in item 4.* The reviewer's own case (two frees committed between the refusal of `X` and the decision
+     for a younger `Y` of the same limit) refuses `X` while the key's holders equal its limit, so `X` is not eligible
+     in the sense of ADR-0089 decision 4 when it is refused. Read literally, item 4 would leave that case open. The
+     bound therefore starts at any waiter that the pass's own key refuses for lack of room, its own limit included; a
+     waiter refused by its other key, by its deadline, or skipped (`Busy`) sets none. A refused waiter holds back every
+     younger waiter of the key whose limit is not higher and whose window is not shorter (the counts that refused it
+     refuse those too unless a free came between); the grant routine reports the bound with its refusal and is given the
+     pass's bounds with each waiter (no statement more). When a bound holds back a waiter that the counts admitted (a
+     free came between), the pass leaves the key due, and the next pass grants in admission order. Weighed: the literal
+     reading (a younger waiter granted first in the reviewer's case, against FR-022-042) and a count of frees since the
+     selection (a statement more per waiter tried, for a case the bound already closes).
 
 ## Gaps
 

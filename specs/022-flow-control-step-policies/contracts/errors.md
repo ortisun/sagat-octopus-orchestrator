@@ -86,6 +86,8 @@ Existing reasons reused unchanged: `IDEMPOTENCY_KEY_REUSED`, `STATE_CONFLICT`, `
 ## gRPC worker protocol
 
 Unchanged. No draft invents an encrypted-field code: encoded-field refusals are 031's `ENCODING_*` codes
-(coordinator decision C7). Mocked and cached steps never produce a lease; a step waiting for a permit is simply not
-returned by `PollTasks` (it stays `READY`, no attempt spent), exactly as for an exhausted activity quota. A step waiting
-for a rate slot (US07) is not `READY` at all, so no claim ever considers it.
+(coordinator decision C7). Mocked and cached steps never produce a lease. A step waiting for a permit or for a rate
+slot (US07) is not `READY`: it waits outside it (`WAITING`, wait kind `CONCURRENCY` or `RATE_LIMIT`; ADR-0089 decision
+1, FR-022-019) until the grant of its last declared gate, so no claim ever considers it and no attempt is spent.
+*Corrected 2026-11-24 (decision D022-077 item 3):* this paragraph said that a step waiting for a permit stays `READY`
+and is skipped by `PollTasks`, the design ADR-0089 replaced.
