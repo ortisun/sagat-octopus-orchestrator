@@ -155,6 +155,98 @@ OD-2026-11-24-4; they are not on `develop` at the time of writing.
   - Rust: a single-threaded executor of 70 lines gave the same commands and result in two runs; 50 `HashMap`s of the
     same 8 keys built in one process gave 49 iteration orders.
 
+### Decisions after the first review round (2026-11-24)
+
+The reports are in `docs/designs/044-workflow-as-code.reviews/2026-11-24/round-1/`; `resolution.md` there says how each
+finding was answered. These entries supersede the earlier ones they name; the earlier ones stay as written.
+
+- **D044-042** (2026-11-24, supersedes the pin of D044-007) A move changes `runs.code_version_id`, a new column; the start
+  version `runs.workflow_version_id` never changes, because step identifiers, journal instance identifiers and
+  compensation identifiers are derived from it. Only the `SECURITY DEFINER` function `sagat_move_code_run` may change the
+  new column; `sagat_app` has no update privilege on it. A move waits while the `~workflow` step is leased, compares the
+  visible count (not `run_version`, which counts invisible events), and ends `RUN_BUSY` after three re-checks. Every
+  completion is refused as stale when the session's digest is not the run's current digest.
+- **D044-043** (2026-11-24, supersedes D044-004 and D044-005) The command chain covers the command number, kind, target
+  and `HMAC-SHA-256(seed, canonical fragment)` of every command, and the history sent to workers carries no fragment, so a
+  worker can produce the chain only by producing the same commands, inputs included. `strict` matching is removed: the
+  server's chain is strict by construction, and the SDK keeps the kind-and-target comparison for its report.
+- **D044-044** (2026-11-24, supersedes D044-006) A run that needs a person goes under the existing step review of feature
+  003 (`step.needs_review` on `~workflow`, the review retry), not a new hold state, route and events. The causes and their
+  behaviour are one table (design, Technical Plan 6.3); `NONDETERMINISM_RISK` and `VALIDATOR_COMMAND` go under review at
+  once, because retrying the same code cannot help.
+- **D044-045** (2026-11-24) Commands carry fragments of a *code profile* of each node kind: expression and template
+  fields become literals (`correlationKey`, child `input`) or are refused (`idempotencyTemplate`); publisher-only fields
+  are refused (`outputSchema`, `destinations`, an inline approval policy, `onError`) and come from the version (the
+  envelope's per-activity output schema, named approval policies). Delegated (OD-2026-11-20-6): run-time code must not
+  choose classifications, egress or the four-eyes rule of an approval.
+- **D044-046** (2026-11-24, supersedes the envelope of D044-025) The envelope's activities are entries with their own
+  secrets and output schema; the `script.` and `sagat.` prefixes are refused; scripts are listed by digest and fill
+  `workflow_version_scripts`; the accepted fragment is stored in `payloads` and its digest in the step, so
+  `ResolveSecrets` reads the declared secrets of a `c-<n>` step from an immutable record.
+- **D044-047** (2026-11-24, supersedes the claim of D044-002 and the table of the first draft) The `~workflow` step's
+  activity field holds `sagat.workflow:<type>:<digest>` (at most 128 characters, so a workflow type has at most 48), and
+  the existing claim, index, hints and reconciler route it unchanged; bindings cover a workflow type only by the exact
+  entry `workflow:<type>`; an activity registration or binding that names `sagat.workflow` is refused. `code_nodes` and
+  `worker_session_workflow_types` are dropped.
+- **D044-048** (2026-11-24, supersedes the route of D044-007) Moves of many runs are a batch action `MOVE_CODE_VERSION` of
+  feature 018; a single run has `POST /runs/{runId}/code-version`. Permissions: `run:operate` and `version:activate`, and
+  `run:batch` for many; the target must be approved for activation where the namespace requires it. Replay-check tasks
+  read each run's history by pages under a per-run read capability.
+- **D044-049** (2026-11-24, supersedes D044-039) No promotion replay check: under pinning a promotion changes no open
+  run; a dry-run move (Requirement 044-026) and the replay of exported histories answer the question.
+- **D044-050** (2026-11-24, supersedes D044-031) The history export applies feature 016's redaction and reveal rules to
+  every payload, never exports a `secret` field, and is granted to the admin and developer roles; a replay that reads a
+  placeholder stops `INCONCLUSIVE_REDACTED`.
+- **D044-051** (2026-11-24, supersedes D044-013) Python workflow workers run with a fixed `PYTHONHASHSEED` chosen by the
+  operator (any value but `random`), and the digest includes the `hash()` of a fixed string under that seed. Delegated
+  (OD-2026-11-20-6), Owner question 044-013.
+- **D044-052** (2026-11-24) The code digest includes the runtime's name and major and minor version and the dependency
+  closure (Technical Plan 3.2); each runtime gives workflow code UTC and the root locale; Python workflow code needs 3.11
+  and TypeScript workflow code Node 22.8 (`vm.constants.DONT_CONTEXTIFY`).
+- **D044-053** (2026-11-24) The TypeScript bridge places no host object in the context: the host calls in with string
+  arguments and reads the commands back as a JSON string. Spike of 2026-11-24 (appended to D044-041): with
+  `DONT_CONTEXTIFY`, `this.constructor.constructor("return typeof process")()` returned `undefined`; an ordinary
+  contextified object returned `object` even with code generation from strings refused.
+- **D044-054** (2026-11-24) A reset of a code run keeps its source's seed; to the same code version it starts at once, to
+  another it is replay-checked and answered `202`.
+- **D044-055** (2026-11-24, supersedes D044-023) An ordinary completion runs at most 10 statements (7 always, at most 3
+  for saga rows, declared state and update receipts); a terminal or continue-as-new completion adds exactly the existing
+  terminal or handoff path's statements. The batched persistence path is new code with its own crash tests.
+- **D044-056** (2026-11-24) A terminal command is refused with `OUTSTANDING_OBLIGATIONS` while a saga is open or aborting
+  or a step is under review or has an unknown outcome; other outstanding work is cancelled by its policies in the same
+  transaction. After 3 consecutive `UNHANDLED_EVENTS` refusals the run refuses new signals and updates until its next
+  completion commits.
+- **D044-057** (2026-11-24, supersedes D044-022 in part) The continue-as-new suggestion fires at 10,240 visible events or
+  3 MiB of retained bytes; at 51,200 the run goes under review `HISTORY_LIMIT`, whose retry opens a closing window of
+  1,024 visible events in which only commands that end, continue or wind down the run are accepted; external events are
+  refused from 50,176 (51,200 − 1,024) so that the window always has room.
+- **D044-058** (2026-11-24) Bounds: 1,024 signals per activation window per run, 64 updates awaiting acceptance per run,
+  2,048 outstanding steps, timers, waits and children per run; per namespace 64 worker queries, 256 update waits and 16
+  replay-check tasks in flight. Update waits re-read the receipt after 50, 100, 200, 400 and 800 ms and then every
+  1,000 ms, at most 64 reads in 60 s.
+- **D044-059** (2026-11-24, supersedes D044-021) The sticky preference lasts 1,000 ms by default (at most 5,000 ms) from
+  the moment the step becomes `READY`; `ReleaseSticky` applies only to the caller's own sticky steps.
+- **D044-060** (2026-11-24, supersedes D044-020 in part) Eager dispatch is kept in 0.3.0 but built after the non-eager
+  path, as a deferrable task; an idempotent replay returns no lease and the idempotency record stores no token.
+- **D044-061** (2026-11-24) A code saga's plan is computed at the abort, in reverse completion order, and stored in
+  run-scoped plan rows; its compensation identifiers are derived from the start version and the forward node. Task
+  044-22 chooses between the existing run saga rows and a new table and records the reason here.
+- **D044-062** (2026-11-24) The first publication of a code version activates the instance registry's requirement
+  `code-workflows` (ADR-0082), so that a process that registers later without the capability closes its gate.
+- **D044-063** (2026-11-24) An abandoned activation run is counted; at 4 a worker withdraws its workflow types and reports
+  itself unhealthy. Rust runs activation runs on a pool of threads without a Tokio runtime (one per core, at most 8) and
+  replaces a stuck one.
+- **D044-064** (2026-11-24) A namespace can pause the workflow tasks of all its code runs, audited.
+- **D044-065** (2026-11-24, supersedes D044-038) Behaviour flags: a reserved protocol field only in 0.3.0 (Gap 044-015).
+- **D044-066** (2026-11-24) The search-attribute command and event are not in 0.3.0 until feature 020 lands; Task 044-27
+  adds them.
+- **D044-067** (2026-11-24) Worker queries and code updates declare `disclosure` and a closed `resultSchema`, validated by
+  the platform's validator of design 043 before an answer is returned (ADR-0031). A receipt is readable by its admitting
+  principal or a principal with `run:operate`. Worker queries stay in 0.3.0 as a deferrable task, Owner question 044-014.
+- **D044-068** (2026-11-24) The failure detail of a workflow task is a closed cause, a command number, the actual kind and
+  target checked against the grammar of the kind, and an exception type name matching
+  `^[A-Za-z_][A-Za-z0-9_.$]{0,127}$`; the expected command comes from the server's record; no message is stored.
+
 ## 3. Gaps
 
 - **G044-001** (2026-11-24) The memory of an idle cached run is not measured in any SDK; the TypeScript spike's heap
@@ -184,6 +276,18 @@ OD-2026-11-24-4; they are not on `develop` at the time of writing.
   `scripts/check-vendor.py` and a pinned, hash-locked version before Task 044-10 merges.
 - **G044-013** (2026-11-24) The protocol minor is provisional (expected 1.9) until the contract of Task 044-2 merges and
   takes the next free row of the register.
+
+- **G044-014** (2026-11-24) Publication approval reviews the envelope, the declarations and the digest, not the code,
+  which the platform never receives; signed build provenance for the digest, as script artifacts have, is not in 0.3.0.
+- **G044-015** (2026-11-24) The behaviour flags of the SDKs are a reserved protocol field; the mechanism is built by the
+  first SDK release that changes how it turns calls into commands.
+- **G044-016** (2026-11-24) `PYTHONHASHSEED` is a 32-bit value; anyone who can read a Python code version's digest and
+  knows its modules' sources could search the seed from the fingerprint in the digest. Readers of versions are the
+  tenant's own; an outside sender sees no digest.
+- **G044-005** (2026-11-24, later entry) With the keyed chain over fragments the history does not carry, a worker can
+  produce a `match` only by producing the same commands; a worker of the tenant that runs the tenant's code to forge a
+  verdict harms only the tenant's own runs. The earlier sentence that "the chain check limits what a forged verdict can
+  claim" was false for the first draft's chain.
 
 ## 4. Owner questions (all delegated)
 
@@ -221,3 +325,11 @@ OD-2026-11-24-4; they are not on `develop` at the time of writing.
   because they work without workers and after the end; worker queries for what only the code knows.
 - **O044-012** (2026-11-24) Which commands in 0.3.0? delegate (OD-2026-11-20-6): the list of Requirement 044-012; the
   rest are graph children until a later release (Gap 044-003, Gap 044-004).
+- **O044-013** (2026-11-24, supersedes the answer of O044-004) A fixed hash seed of `0`, or a seed the operator
+  chooses? delegate (OD-2026-11-20-6): the operator's own fixed value. A seed known to everyone lets an outside sender
+  build colliding keys; a fixed secret value keeps determinism (every worker of a digest has the same seed, which the
+  digest proves) without that exposure. Raised by the security review of round 1.
+- **O044-014** (2026-11-24) Worker queries in 0.3.0, or declared queries only? delegate (OD-2026-11-20-6): keep worker
+  queries, as a deferrable task. Some answers exist only in the function's memory (journey 7 of the design), and the
+  alternative, publishing state at every iteration, grows the journal by one event per iteration. Contested against the
+  zoom-out review of round 1 (finding 7), which asked to defer them.
