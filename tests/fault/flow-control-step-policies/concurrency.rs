@@ -542,3 +542,196 @@ async fn a_restarted_process_goes_on_with_the_queue() {
         w.assert_consistent(run).await;
     }
 }
+
+/// Gap G022-013 (task T022-110), the takeover raced by a real keeper: alpha's keeper holds every shard with a lease of
+/// one second; its grant pass takes the queued start's run and its key's home-shard fence and waits for the key, which
+/// the test holds. Alpha's lease then runs out on the database clock, and beta's keeper takes over every shard it may:
+/// the fenced one is skipped (`FOR UPDATE SKIP LOCKED` against the grant's `FOR SHARE`), so beta's grant pass cannot
+/// serve that key while alpha's grant is in flight. The key released, alpha's grant commits once; beta's next round
+/// takes the last shard, and its pass grants nothing again.
+#[tokio::test]
+async fn a_real_takeover_skips_the_shard_of_a_grant_in_flight_and_nothing_is_granted_twice() {
+    let (w, workflow, holder) = held_key().await;
+    let session = w.session(&["act.g"]).await;
+    let alpha = keeper(&w, "alpha", std::time::Duration::from_secs(1));
+    alpha.round().await.expect("alpha");
+    assert_eq!(alpha.placement().owned(), ShardSet::all());
+    let old_owner = scheduler(
+        &w,
+        SchedulerSettings::default(),
+        Some(alpha.placement().clone()),
+    );
+    let waiter = w.start(workflow, &json!({"accountId": "acct-1"})).await;
+    let task = w.one_task(&session).await;
+    w.complete(&session, &task, &json!({}))
+        .await
+        .expect("the holder ends");
+    let home: i16 = sqlx::query_scalar("SELECT key_shard FROM concurrency_semaphores")
+        .fetch_one(&w.db.pool)
+        .await
+        .expect("the key's home shard");
+    let home =
+        sagat_domain::sharding::Shard::new(u8::try_from(home).expect("a shard")).expect("a shard");
+    let key = hold_keys(&w).await;
+    let grant = tokio::spawn(async move { old_owner.grant_gates().await });
+    barrier(&w, 1).await;
+    // alpha's leases (its shards' and its membership's) run out on the database clock; it does not renew them
+    let expiry: i64 = sqlx::query_scalar(
+        "SELECT (extract(epoch FROM greatest( \
+                    (SELECT max(expires_at) FROM scheduler_shards WHERE owner = 'alpha'), \
+                    (SELECT max(expires_at) FROM scheduler_members WHERE owner = 'alpha'))) * 1000000)::bigint",
+    )
+    .fetch_one(&w.db.pool)
+    .await
+    .expect("alpha's leases");
+    crate::support::flow_control::until_past(&w.db.pool, expiry).await;
+    let beta = keeper(&w, "beta", TTL);
+    beta.round().await.expect("beta");
+    let taken = beta.placement().owned();
+    assert!(
+        !taken.contains(home) && taken.len() == ShardSet::all().len() - 1,
+        "beta takes every shard but the one a grant in flight fences"
+    );
+    assert_eq!(
+        scheduler(
+            &w,
+            SchedulerSettings::default(),
+            Some(beta.placement().clone())
+        )
+        .grant_gates()
+        .await
+        .gates_granted,
+        0,
+        "beta does not serve the fenced key"
+    );
+    assert_eq!(start_rows(&w, waiter).await, (0, 1), "not granted yet");
+    key.rollback().await.expect("released");
+    let granted = grant.await.expect("grant");
+    assert_eq!(
+        granted.gates_granted, 1,
+        "the grant in flight commits: {granted:?}"
+    );
+    beta.round().await.expect("beta again");
+    assert_eq!(beta.placement().owned(), ShardSet::all());
+    let new_owner = scheduler(
+        &w,
+        SchedulerSettings::default(),
+        Some(beta.placement().clone()),
+    );
+    assert_eq!(
+        new_owner.grant_gates().await.gates_granted,
+        0,
+        "nothing twice"
+    );
+    assert_eq!(count(&w, waiter, "concurrency.acquired").await, 1);
+    assert_eq!(start_rows(&w, waiter).await, (1, 0));
+    for run in [holder, waiter] {
+        w.assert_consistent(run).await;
+    }
+}
+
+/// SC-022-004 at run level (gap G022-013, task T022-110): five same-key starts of `limit: 1`. The first holds the permit
+/// and four queue; each time the holder ends, one pass grants the oldest waiter. At no instant is there more than one
+/// holder, and the permits are granted in admission order.
+#[tokio::test]
+async fn five_same_key_starts_hold_at_most_one_permit_and_are_granted_in_admission_order() {
+    let w = gated_world().await;
+    let workflow = publish(&w, serial_start("fault-permit-five")).await;
+    let session = w.session(&["act.g"]).await;
+    let mut runs = Vec::new();
+    for _ in 0..5 {
+        runs.push(w.start(workflow, &json!({"accountId": "acct-1"})).await);
+    }
+    assert_eq!(counters(&w).await, (1, 4));
+    for (i, run) in runs.iter().enumerate() {
+        assert_eq!(
+            start_rows(&w, *run).await,
+            (1, 0),
+            "run {i} holds the permit"
+        );
+        assert!(counters(&w).await.0 <= 1, "at most one holder");
+        let task = w.one_task(&session).await;
+        assert_eq!(task.run_id, *run, "admission order");
+        w.complete(&session, &task, &json!({})).await.expect("done");
+        assert_eq!(counters(&w).await.0, 0, "released by its end");
+        let report = w.scheduler.grant_gates().await;
+        let expected = u32::from(i + 1 < runs.len());
+        assert_eq!(
+            report.gates_granted, expected,
+            "one grant a release: {report:?}"
+        );
+    }
+    let acquired: Vec<uuid::Uuid> = sqlx::query_scalar(
+        "SELECT run_id FROM run_events WHERE event_type = 'concurrency.acquired' AND run_id = ANY($1) \
+          ORDER BY occurred_at, seq",
+    )
+    .bind(runs.iter().map(|run| run.as_uuid()).collect::<Vec<_>>())
+    .fetch_all(&w.db.pool)
+    .await
+    .expect("grants");
+    assert_eq!(
+        acquired,
+        runs.iter().map(|run| run.as_uuid()).collect::<Vec<_>>(),
+        "granted in admission order"
+    );
+    for run in runs {
+        w.assert_consistent(run).await;
+    }
+    w.assert_keys_consistent().await;
+}
+
+/// SC-022-004, a mixed-limit pair sharing a group (gap G022-013; decision D022-009, each acquirer applies its own limit
+/// to the shared holders): `wide` declares `limit: 2` and `narrow` `limit: 1` in the group `accounts`, on one key. A
+/// `wide` run holds; a `narrow` start queues (one holder reaches its limit of one); a second `wide` start is granted at
+/// once (the narrow waiter, refused by its own limit, does not hold it back, D1196). The narrow waiter is granted only
+/// once no run holds the key, and the key never has more than two holders.
+#[tokio::test]
+async fn a_mixed_limit_pair_sharing_a_group_applies_each_limit_to_the_shared_holders() {
+    let w = gated_world().await;
+    let mut wide = document("fault-permit-wide", "g", vec![activity("g")]);
+    wide["concurrency"] = json!({"group": "accounts", "key": "input.accountId", "limit": 2});
+    let wide = publish(&w, wide).await;
+    let narrow = publish(&w, serial_start("fault-permit-narrow")).await;
+    let session = w.session(&["act.g"]).await;
+    let input = json!({"accountId": "acct-1"});
+    let first = w.start(wide, &input).await;
+    let waiter = w.start(narrow, &input).await;
+    assert_eq!(
+        start_rows(&w, waiter).await,
+        (0, 1),
+        "one holder is narrow's limit"
+    );
+    let second = w.start(wide, &input).await;
+    assert_eq!(
+        start_rows(&w, second).await,
+        (1, 0),
+        "wide's limit has room and the narrow waiter is not eligible"
+    );
+    assert_eq!(counters(&w).await, (2, 1));
+    let tasks = w.poll(&session, 8).await;
+    let mut leased: Vec<_> = tasks.iter().map(|task| task.run_id).collect();
+    leased.sort_by_key(|run| run.as_uuid());
+    let mut holders = vec![first, second];
+    holders.sort_by_key(|run| run.as_uuid());
+    assert_eq!(leased, holders, "only the two holders run");
+    for task in &tasks {
+        assert_eq!(
+            w.scheduler.grant_gates().await.gates_granted,
+            0,
+            "the narrow waiter waits while a run holds"
+        );
+        w.complete(&session, task, &json!({})).await.expect("done");
+        assert!(counters(&w).await.0 <= 2);
+    }
+    assert_eq!(w.scheduler.grant_gates().await.gates_granted, 1);
+    assert_eq!(
+        start_rows(&w, waiter).await,
+        (1, 0),
+        "granted once the key is free"
+    );
+    assert_eq!(count(&w, waiter, "concurrency.acquired").await, 1);
+    for run in [first, second, waiter] {
+        w.assert_consistent(run).await;
+    }
+    w.assert_keys_consistent().await;
+}
