@@ -163,3 +163,30 @@ is 4.7.0 because 5.0.0 is still in pull request #275; the design's Gap 013-009 n
 | 16 | Nit | Fixed: `If-Match` refuses stale writes when the provider sends it. Otherwise the providers' current-state resynchronization makes the stored state converge, and the argument is recorded | Technical Plan 6, Constitution Check VII |
 | 17 | Nit | Fixed: recorded in the Constitution V evidence and in Complexity Tracking | Constitution Check, Complexity Tracking |
 | 18 | Nit | Fixed: Gap 013-009 cites pull request #275, the quote is attributed to `20261126000000_authority_read_locks`, and the activation lag is about 12 seconds | Gap 013-009, Technical Plan 13, Terms |
+
+## egm-review Stage 9, Implementation Readiness (`readiness_report.md`, at `cc36272b`)
+
+All 27 findings are accepted and fixed; none is contested. The plan is rewritten: a target table, one builder and a
+milestone for every part and test, a verification command per task, Task 013-10 ordered before Task 013-9, and every
+external gate named.
+
+| Finding | Severity | Disposition | Where |
+|---|---|---|---|
+| 1 | Major | Fixed: five targets with paths, the SAML corpus and oracle in `security_federated_login`, the Playwright spec and the `BROWSER_SUITES` entry, and a verification line per task | The plan, Verification Plan |
+| 2 | Major | Fixed: `x-planned` operations listed in `not_built`, the battery's rule for the anonymous routes and the crossed-callback contract test, the SCIM fragment's lint step, and the `config.json` change in Task 013-10 | Technical Plan 11, Tasks 013-2, 013-10 |
+| 3 | Major | Fixed: a reason-to-code-to-status table. The token endpoint is form-encoded with RFC 6749 errors plus `error_reason`, and `SESSION_CONFLICT` is `400 invalid_request` there. Remediation rows come from the task that answers each reason | Technical Plan 11, Requirement 013-018 |
+| 4 | Major | Fixed: every part and test is tagged with its milestone | The plan |
+| 5 | Major | Fixed: each test sits where everything it needs exists. Task 013-10 comes before Task 013-9, with sessions inserted by the tests | The plan |
+| 6 | Major | Fixed: feature 029's fence, grant revocation, catalog entry and lock-order additions are absent until Task 013-17. The reactivation test is split between A and C. The `x-access` classes are stated and turned into classes by T029-015 | The plan, Technical Plan 11 |
+| 7 | Major | Fixed: Task 013-10 adds the `capabilities` field when design 050 has not merged. Origin checks are added with their settings. Task 013-14 waits for #267 | Requirement 013-032, Technical Plan 7, the plan |
+| 8 | Major | Fixed: the refresh grant and its tests are in Task 013-9, Task 013-15 has CLI-side tests only, the reload test moved to Task 013-14, and every path has an owner | The plan |
+| 9 | Major | Fixed: `VerifiedCaller`, the five implementations, `IssuerVerifiers` deployment-only in the engine, `IdentityStore::resolve_caller`, the narrowed existing test, and `Who` and `StreamLimits` (10 seconds for platform tokens, 30 for deployment tokens) | Technical Plan 4, Task 013-10 |
+| 10 | Major | Fixed: the `Capability` variant, the CHECK constraints and their `down`, the removal guard, and `identity federation activate|remove` | Technical Plan 12, Tasks 013-5, 013-10 |
+| 11 | Major | Fixed: a settings table, every command with its arguments, `identity.hcl`, both bootstraps, the Helm template and `start_openbao` | Technical Plans 9 and 12, Task 013-8 |
+| 12 | Major | Fixed: Keycloak 26.0.7 pinned by digest, the realm export, the entity identifier format, registration through the admin API, port and healthcheck, and the `xmlsec1` image | Technical Plan 9, Task 013-3 |
+| 13 | Major | Fixed: the development provider has its own issuer, key, discovery and key set paths, a closed `break` switch and a people file. Its tests are named | Technical Plan 9, Task 013-3 |
+| 14 | Major | Fixed: `<public origin>/scim/v2`; the token names the connection | Requirement 013-017, Technical Plan 11 |
+| 15 | Major | Fixed: the stale test is replaced and the missing tests are placed with their milestones | Tasks 013-4, 013-9, 013-11, 013-12 |
+| 16 | Major | Fixed: `x509-cert` 0.2, `keyring` 3, `std::fs::File::lock` (toolchain 1.100) and `webbrowser` 1. The key-store entry, fallback file, discovery and `sagat logout` are specified, and engine commands refuse key-store tokens | Tasks 013-7, 013-15 |
+| 17 | Major | Fixed: four product alerts (`AlertKind`) tested where raised, and one Prometheus rule tested by `contract_observability_operations`, each in a task | Technical Plan 11, Tasks 013-4, 013-8, 013-13 |
+| 18 to 27 | Nit | Fixed: `JwksCache` moves to `infra-egress` with a new constructor and its users listed. `Owner-gate:` lines are added to Tasks 013-5 and 013-8, and the architecture rules sit in Tasks 013-5 and 013-7. The caller families are listed, the dev-idp tests named, and the transfer change written into Task 013-9. The docs scripts are named. The lock order maps to the harness's `Slot` variants with the registry epoch first. The migration sorts after `20270119000000` and the references are completed | The plan, Technical Plan 4 |

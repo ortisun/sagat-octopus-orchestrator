@@ -267,7 +267,8 @@ already has.
   refusal for an app session and a link submission.
 - **Requirement 013-017** A SCIM endpoint MUST authenticate by a bearer token of 32 random bytes per connection, shown
   once, stored as SHA-256, at most two in force for rotation, and MUST take the tenant and the connection from the
-  token only (a path that names another connection answers `404`); it MUST be rate-limited per connection and bounded
+  token only, at the one base address `<public origin>/scim/v2` (a resource identifier of another connection answers
+  `404`); it MUST be rate-limited per connection and bounded
   (1 MiB per request; 1,000 member operations per request, whether a patch or the member list of a full `PUT` or
   `POST`, so a larger group is synced by patches, as Okta and Entra ID send them). *Acceptance:* the cross-tenant battery entries, a rotation
   test and the limit tests.
@@ -278,7 +279,8 @@ already has.
   hours by default, 8 hours on a connection without SCIM, at most 24; idle expiry 2 hours by default) and, for the `studio` client only, set a
   `__Host-sagat_signin` cookie (`Secure`, `HttpOnly`, `SameSite=Lax`, path `/`) whose value is stored only as a hash; a
   browser holds at most one platform session, so a person signed in to one organization who signs in to another ends
-  the first; the token endpoint MUST refuse, with `409` and `SESSION_CONFLICT`, a `studio` redemption that carries a
+  the first; the token endpoint MUST refuse, with `400` `invalid_request` and the reason `SESSION_CONFLICT`, a `studio`
+  redemption that carries a
   live session cookie of another tenant or subject unless the request says `replace_session=true`, which the Studio
   sends only after the person agreed, and the old session is then revoked in the redemption's transaction.
   Access tokens MUST be ES256 JSON web tokens with `typ` `at+jwt`, `aud` the API's resource identifier, `client_id`,
@@ -411,7 +413,9 @@ already has.
   Architecture decision 0082 decision 1, refused while a live process lacks it; until it is recorded, connection
   creation, SCIM, member suspension and the federated-only setting are refused (`FEDERATION_NOT_ACTIVATED`), and the
   advertised capability names `identity.federation` and `identity.scim` of `GET /version` (design 050, Technical Plan 3)
-  are derived from it; this design builds that derivation from the instance registry, the mapping of
+  are derived from it; the field itself is design 050's (Task 050-3), and when it has not merged Task 013-10 adds `capabilities` to
+  `PlatformVersion` as design 050's Technical Plan 3 defines it; this design builds the derivation from the instance
+  registry, the mapping of
   [Architecture decision 0143](../adr/ADR-0143-the-studio-draws-node-kinds-from-one-registry-checked-against-the-schema-and-enabled-by-the-servers-capabilities.md)
   decision 2, if no earlier feature has. A binary below the requirement cannot serve
   a deployment that recorded it (the registry's closed gate); rolling back below it is unsupported. The deployment
@@ -749,7 +753,7 @@ table.
 | `tenant_identity_settings` | `federated_only` (boolean, default false), session lifetimes, per-tenant ceilings | one row per tenant: the migration inserts one for every existing tenant and a trigger on `tenants` inserts it for every new tenant, including one a 0.2 binary provisions, so every lock of Technical Plan 13 finds it; the membership read joins it with a left join and defaults (`federated_only` false), so a missing row never refuses anyone |
 | `identity_break_glass_subjects` | tenant, subject, written by, written at | only `control-plane identity break-glass` (schema-owning role) writes it |
 | `identity_break_glass_uses` | tenant, `jti` or (`sub`, `iat`) when the token has no `jti`, first use | unique; the once-per-token audit |
-| `identity_signing_keys` | key version, public key, state (`PUBLISHED`, `ACTIVE`, `RETIRED`, `REVOKED`), published at, activated at, the identity-mount reference | deployment-wide; the operator command writes it |
+| `identity_signing_keys` | kind (`SIGNING`, or `SEALING` for the attempt-sealing key, which has no public key), key version, public key, state (`PUBLISHED`, `ACTIVE`, `RETIRED`, `REVOKED`), published at, activated at, the identity-mount reference | deployment-wide; the operator command writes it |
 | `identity_connections` | tenant, global id, slug, protocol, issuer or entity identifier (immutable), state, display name, the active settings and, while one is staged, a pending revision, `settings_revision` (a counter incremented by every change) and the revision a test sign-in verified, `identity_revision` (incremented when an activation changes the subject rule or the tenant restriction), up to two client secret references with their entered expiry, subject claim or attribute, tenant restriction (`hd`, `tid`), provisioning policy, required authentication context, the client secret reference and its protocol state | a change writes a revision; delete refused while one of its external groups is named (Decision 013-017) |
 | `identity_connection_keys` | tenant, connection, SAML signing keys and certificates, at most 3 | public data |
 | `identity_mapping_rules` | tenant, connection, position, group value, role | at most 32 |
@@ -854,12 +858,22 @@ the deployment issuer's `TokenVerifier` (whose rules do not change; the new refu
 is applied after it, in `authenticate_bearer`) or the platform issuer's verifier, whose key set is a `JwksCache` over a `JwksFetcher` that reads
 `identity_signing_keys` (one cache, one set of fault tests), `typ` `at+jwt`, the API
 audience, a `client_id` and a maximum lifetime of 300 seconds of its own. After verification, `Core::authenticate`
-receives the issuer kind, `sid` and `jti`, and the request path resolves, in one statement that merges today's two
+receives the issuer kind, `sid` and `jti` (its signature becomes `authenticate(&self, caller: &VerifiedCaller)`, with
+`VerifiedCaller { tenant, subject, issuer: IssuerKind, sid, jti, client_id }`, in all five implementations:
+`crates/api-http/src/core.rs`, `exec.rs`, `governance.rs`, `routes/declared_operations.rs`, `routes/primitives.rs`;
+`Core::verifier` returns the `IssuerVerifiers` of `auth/issuers.rs`, which the execution engine builds deployment-only,
+so its worker gRPC path refuses a platform token), and the request path resolves, through one new store method
+`IdentityStore::resolve_caller(slug, subject, session: Option<SessionRef>) -> Option<CallerRow>`, and the request path resolves, in one statement that merges today's two
 reads (`find_tenant_by_slug`, `find_membership`), the tenant and its identity-settings row (with `federated_only`), the membership with its
 status and its effective role (Technical Plan 13), and, for a platform token, its session by (`tenant`, `sid`) with the session's subject and client equal to the
 token's, its connection `ACTIVE` at the session's `identity_revision`, and the token's `kid` not `REVOKED` (primary-key
 lookups in the same statement); a suspended member or a revoked or expired session is refused with `401` and the reason `MEMBER_SUSPENDED` or
-`SESSION_REVOKED`. The execution engine verifies the deployment issuer only (Decision 013-016).
+`SESSION_REVOKED`. For a deployment token every failure keeps today's single answer; a platform token's caller has
+already proved who they are, so its two reasons tell the Studio and the CLI to sign in again, and the test
+`authenticate_gives_the_same_answer_for_every_kind_of_failure` is narrowed to deployment tokens. A stream's `Who`
+(`crates/api-http/src/routes/execution.rs`) gains the issuer kind and `sid`, and `StreamLimits`
+(`crates/api-http/src/streams.rs`) re-checks a platform token's stream every 10 seconds and keeps 30 seconds for a
+deployment token. The execution engine verifies the deployment issuer only (Decision 013-016).
 
 **Signing keys.** The platform key set is a `JwksCache` whose three settings are named here and not inherited from
 the deployment cache (whose time to live is 600 seconds): time to live and minimum refresh interval both equal the
@@ -891,7 +905,10 @@ fence exclusively and so waits for the request to commit). A request recomputes 
 transaction and leaves the rest to the leased job (Technical Plan 6); a connection's disable or activation takes the
 settings row and the connection row (its sessions are refused by the per-request statement and marked later in
 batches); a raised context takes the same rows, then the sessions it revokes. No transaction of this design writes a feature 027 app-session
-row (slot 1). The paths are added to `tests/support/lock_order.rs` and feature 029's
+row (slot 1). In `tests/support/lock_order.rs`, a writer that checks the federation requirement reads
+`Slot::RegistryEpoch` first; the code is `Slot::Receipt`; the settings row and the connection row are the first rows of
+`Slot::Authority`, in that order, before memberships; the advisory lock is recorded between `Slot::Receipt` and
+`Slot::Authority`. The paths are added to `tests/support/lock_order.rs` and feature 029's
 `lock_order.rs`.
 
 **Break-glass.** With federated sign-in required, `IdentityService::authenticate` refuses a deployment-issuer token
@@ -964,7 +981,8 @@ unsolicited-response page) are served with `default-src 'none'; style-src 'self'
 refuses that outside `SAGAT_ENV=dev`. A CLI sign-in sets no cookie in the browser.
 
 **Origins.** The platform issuer is the Studio origin: `SAGAT_PUBLIC_ORIGIN` MUST equal it (the `__Host-` cookies and
-the same-origin renewal need it) and differ from the apps, component sandbox and public-forms origins; the sign-in
+the same-origin renewal need it) and differ from the apps, component sandbox and public-forms origins once features
+027 and 026 add those settings (each check is added with its setting); the sign-in
 service's routes (the `/v1/auth/` routes of Technical Plan 11's first table) are served on the Studio origin only and
 answer `404` on the others; the REST routes `GET /auth/context` and `/auth/sessions` share the prefix and are ordinary
 bearer routes. The sign-in pages are platform-authored, carry no
@@ -982,17 +1000,29 @@ sign-ins by filling a shared table; a per-tenant limit, when configured, refuses
 
 `apps/dev-idp` keeps `/token` (JSON only, at most 4 KiB) for `sagat dev token` and gains, on separate paths, a
 development OIDC provider (`/oidc/authorize`, `/oidc/token`, `/oidc/userinfo`, `/oidc/end-session`, its discovery and
-key set), configured by a JSON file of test people (subject, e-mail, groups, `acr`). The browser routes accept
+key set), with its own issuer `<dev-idp base>/oidc`, its own ES256 key generated at start (never the key of the
+deployment issuer's `/token`), discovery at `/oidc/.well-known/openid-configuration` and its key set at
+`/oidc/jwks.json`, configured by the file that `SAGAT_DEV_IDP_PEOPLE` names: a JSON list of test people (`subject`,
+`email`, `name`, `groups`, `acr`, optional `hd` and `tid`). The browser routes accept
 navigation and form posts, so they keep the provider's other protections (Architecture decision 0019 decision 3:
 development only, loopback unless explicitly exposed, known `Host` authorities, bounded bodies) and issue tokens only
 for the configured test people (Architecture decision 0140 decision 8). Most OIDC refusal cases are unit tests over
-the pure claim rules in `crates/domain/src/federation/oidc.rs`; the integration refusals use a per-request switch of
-the development provider. SAML runs against a pinned Keycloak, started by `tests/support` for the integration and
-interoperability suites and by the development overlay for a laptop; the SAML refusals are the corpus of Architecture
-decision 0141, and `xmlsec1` runs in a disposable container for the oracle test. The development overlay
-`infra/docker/compose.database.yaml`, which already runs OpenBao, gains the identity mount and its policy in its
-bootstrap, and the Keycloak service with a pinned image, loopback ports and a healthcheck, documented in its runbook;
-`infra/docker/compose.yaml` gains nothing for production. The dev-idp keeps its start-up refusal outside
+the pure claim rules in `crates/domain/src/federation/oidc.rs`; the integration refusals use the switch `break` of
+`/oidc/authorize`, a query parameter carried into the code and applied when the ID token is made, with a closed list
+of values (`aud`, `azp`, `nonce`, `alg`, `iss`, `exp`, `hd`, `tid`, `acr`). SAML runs against a pinned Keycloak (`quay.io/keycloak/keycloak:26.0.7`, pinned by the digest
+that Task 013-3 records), started by `tests/support` for the integration and interoperability suites and by the
+development overlay for a laptop, from the realm export `tests/fixtures/keycloak/realm-sagat.json` (a SAML client
+template, test users with attributes, a persistent name identifier, the authentication context classes, an OIDC
+client for the interoperability run); a connection's assertion consumer service names its identifier, so the test
+support registers the Keycloak client through Keycloak's admin API after it creates the connection, with the service
+provider's entity identifier `<public origin>/v1/auth/saml/{connectionId}/metadata`. The service listens on loopback
+(`127.0.0.1:18080`) and its healthcheck reads `/health/ready` on the management port. The SAML refusals are the
+corpus of Architecture decision 0141, and `xmlsec1` runs for the oracle test in a disposable container built from
+`tests/support/images/xmlsec1/Dockerfile` (`debian:bookworm-slim` pinned by digest, the `xmlsec1` package pinned by
+version). The development overlay `infra/docker/compose.database.yaml` gains the Keycloak service; the identity mount
+and its policy (`infra/openbao/policies/identity.hcl`) are added by `infra/openbao/bootstrap-development.py`, for
+production by `infra/openbao/bootstrap-kubernetes.py` and `infra/helm/templates/_openbao.tpl`, and for the suites by
+`start_openbao` in `tests/support/bounded.rs`; `infra/docker/compose.yaml` gains nothing for production. The dev-idp keeps its start-up refusal outside
 `SAGAT_ENV=dev`, and the production image check keeps it out.
 
 ### 10. Studio
@@ -1050,13 +1080,62 @@ bootstrap, and the Keycloak service with a pinned image, loopback ports and a he
   `PROVIDER_DESTINATION_DENIED`, `REFRESH_TOKEN_REUSED`, `SESSION_REVOKED`,
   `MEMBER_SUSPENDED`, `ISSUER_IMMUTABLE`, `TENANT_RESTRICTION_REQUIRED`, `SUBJECT_FORMAT_REFUSED`,
   `CODE_CLIENT_MISMATCH`, `RECENT_SIGN_IN_REQUIRED`, `NOT_OWNING_CONNECTION`, `FEDERATION_NOT_ACTIVATED`,
-  `CONNECTION_GROUPS_NAMED`, `SESSION_CONFLICT`. Each has a remediation row. Alerts: `IDENTITY_BREAK_GLASS_USED`,
-  `IDENTITY_SIGNING_UNAVAILABLE`, `IDENTITY_CREDENTIAL_EXPIRING`, `IDENTITY_SCIM_SILENT`, `IDENTITY_OWNER_DISABLED`, each with a rule test.
+  `CONNECTION_GROUPS_NAMED`, `SESSION_CONFLICT`, and `IDENTITY_SIGNING_UNAVAILABLE`. Their `Error.code` and status, and
+  where each is answered, are in the table below; each gets its remediation row in `crates/api-http/src/error.rs` from
+  the task that first answers it.
+
+  | Reasons | `Error.code` | Status |
+  |---|---|---|
+  | `SIGNIN_ATTEMPT_INVALID` | `BAD_REQUEST` | 400 |
+  | `SIGNIN_PROVIDER_REFUSED`, `SIGNIN_TOKEN_INVALID`, `SAML_PROFILE_VIOLATION`, `SESSION_REVOKED`, `MEMBER_SUSPENDED` | `UNAUTHENTICATED` | 401 |
+  | `AUTH_CONTEXT_REQUIRED`, `IDENTITY_NOT_PROVISIONED`, `FEDERATION_REQUIRED`, `RECENT_SIGN_IN_REQUIRED`, `NOT_OWNING_CONNECTION` | `FORBIDDEN` | 403 |
+  | `CONNECTION_NOT_ACTIVE`, `CONNECTION_STATE`, `IDENTITY_LINK_CONFLICT`, `LOCKOUT_GUARD`, `FEDERATION_NOT_ACTIVATED`, `CONNECTION_GROUPS_NAMED` | `CONFLICT` | 409 |
+  | `PROVIDER_DESTINATION_DENIED`, `ISSUER_IMMUTABLE`, `TENANT_RESTRICTION_REQUIRED`, `SUBJECT_FORMAT_REFUSED` | `VALIDATION_FAILED` | 422 |
+  | `IDENTITY_SIGNING_UNAVAILABLE` | `UNAVAILABLE` | 503 |
+
+  `POST /v1/auth/token` is an OAuth token endpoint: it takes `application/x-www-form-urlencoded` and answers errors in
+  the form of RFC 6749 section 5.2, `400` with `error` (`invalid_request`, `invalid_grant`, `invalid_client`,
+  `unauthorized_client`) and the platform's closed reason in `error_reason` (`CODE_CLIENT_MISMATCH`,
+  `REFRESH_TOKEN_REUSED`, `SESSION_CONFLICT` and the others above), with the trace identifier; every other route
+  answers the platform's envelope. The sign-in pages show a sentence per reason.
+
+  SCIM is served at `<public origin>/scim/v2` (`/Users`, `/Groups`, `/ServiceProviderConfig`, `/ResourceTypes`,
+  `/Schemas` below it); the token names the connection, and no path segment does.
+
+  The cross-tenant battery treats the anonymous sign-in routes as it treats the probes (they take no tenant from the
+  caller); `contract_federated_login` checks instead that a callback of connection A with the attempt of connection B
+  answers `SIGNIN_ATTEMPT_INVALID`. The SCIM routes join the battery with a token of another tenant. The `x-access`
+  class of each operation follows feature 029's convention when its coverage test (T029-015) exists; until then each
+  operation's description states the intended class (`anonymous sign-in`, `SCIM token`, `tenant`), which T029-015
+  turns into classes.
+
+  Alerts: `IDENTITY_BREAK_GLASS_USED`, `IDENTITY_SCIM_SILENT`, `IDENTITY_OWNER_DISABLED` and
+  `IDENTITY_CREDENTIAL_EXPIRING` are product alerts (new `AlertKind` variants of `crates/domain/src/operations.rs`,
+  scoped to the tenant), each tested where it is raised; `IDENTITY_SIGNING_UNAVAILABLE` concerns one process and is a
+  Prometheus rule in `infra/observability/alerts.yaml` over the gauge `identity_signing_available`, tested with the
+  other rules by `contract_observability_operations`. Each has a runbook section.
 - `docs/runbooks/federated-login.md`: enabling federation, the public origin, keys and their rotation, provider
   guides, SCIM setup, break-glass, revocation, the alerts.
+- `.github/workflows/ci.yml`: the OpenAPI lint step also lints `specs/013-federated-login/contracts/scim.openapi.yaml`.
 - `docs/architecture/security-and-sandbox.md`: the sign-in service, the token issuers, the SAML profile.
 
-### 12. Rollout
+### 12. Settings, commands and rollout
+
+| Setting | Default | Read by |
+|---|---|---|
+| `SAGAT_IDENTITY_FEDERATION` (`on` or `off`) | `off` | the control plane and the execution engine; a process lists `identity-federation-v1` only when it is `on` |
+| `SAGAT_PUBLIC_ORIGIN` | none (required when federation is on) | the control plane: the Studio origin and the platform issuer's origin |
+| `SAGAT_IDENTITY_OPENBAO_MOUNT` | `sagat-identity` (KV version 2) | the control plane, with the token file of `SAGAT_IDENTITY_OPENBAO_TOKEN_FILE`, whose policy is `identity.hcl` |
+| `SAGAT_IDENTITY_KEYSET_REFRESH` | 30 seconds | the control plane and the API verifier (Technical Plan 4) |
+| `SAGAT_IDENTITY_ALLOWED_HOSTS`, `SAGAT_IDENTITY_DEV_INSECURE` | empty, off | the identity egress guard (Requirement 013-024) |
+
+Operator commands (`apps/control-plane`, schema-owning role and the identity mount's token, each audited with
+`--operator <name>`): `identity signing-key create|rotate|revoke`; `identity sealing-key create|rotate` (the active
+version recorded in `identity_signing_keys` with the kind `SEALING`, loaded by every control plane at start and on the
+same refresh); `identity break-glass add|remove --tenant <slug> --subject <subject>`; `identity federation
+activate|remove`, which records or removes the `identity-federation-v1` requirement through the registry's functions
+(Architecture decision 0082 decision 1), its step refusing a removal while any tenant requires federated sign-in.
+
 
 1. Deploy 0.3.0 with federation off: nothing changes.
 2. The operator sets `SAGAT_PUBLIC_ORIGIN` and the identity mount, enables federation in the configuration of every
@@ -1190,158 +1269,231 @@ with federation off and on (004); axe on the sign-in pages and identity screens 
 
 ## Detailed Implementation Plan
 
-Documents first: Task 013-1 lands before code. Tests are seen failing first. The new targets are
-`integration_federated_login`, `contract_federated_login`, `security_federated_login`, `fault_federated_login` and
-`e2e_federated_login`. Two builders can work in parallel after Task 013-2: the server builder (Tasks 013-3 to 013-13
-and 013-17; `crates/`, `apps/control-plane`, `apps/dev-idp`) and the clients builder (Tasks 013-14 and 013-15;
-`apps/cli`, `frontend/apps/studio/src/auth/`, `features/identity/`), which works against the contract of Task 013-2
-and the development provider of Task 013-3. Tasks 013-16 and 013-18 come last and belong to the server builder; they
-run once both lanes have merged, since their suites drive the Studio and the CLI too.
+Documents first: Task 013-1 lands before code. Tests are seen failing first, each in the task where everything it needs
+exists. Each red test names its milestone where it differs from its task's: **A** OIDC, sessions, just in time,
+members, the CLI, SCIM users; **B** SAML; **C** SCIM groups and mapping, gated on feature 029's migration; **D**
+federated-only and break-glass. A milestone closes with its part of Success criterion 013-001; a task is ticked when
+all its parts are built.
 
-Milestones (Decision 013-020), each closed by its own part of Success criterion 013-001: **A** Tasks 013-1 to 013-6,
-013-8 to 013-10 (without SAML and without federated-only), 013-11 for SCIM users, 013-12 (without the federated-only
-setting), 013-13 to 013-16; **B** Task 013-7 and the SAML parts of Tasks 013-9 and 013-18; **C** Task 013-17 and the
-SCIM groups and mapping parts of Tasks 013-11 and 013-12, gated on feature 029's migration; **D** the federated-only
-and break-glass parts of Tasks 013-10 and 013-12. A task is ticked when every part of it is built.
+**Targets.** New `[[test]]` entries in `tests/Cargo.toml`, made by the first task that needs each:
+`integration_federated_login` (`integration/federated-login/main.rs`), `contract_federated_login`
+(`contract/federated-login/main.rs`), `security_federated_login` (`security/federated-login/main.rs`, with the SAML
+corpus and the oracle in `security/federated-login/saml/`), `fault_federated_login` (`fault/federated-login/main.rs`)
+and `e2e_federated_login` (`e2e/federated-login/main.rs`, driving `frontend/e2e/tests/federated-login.spec.ts`, added
+to `BROWSER_SUITES` of `scripts/select-test-targets.py`). Domain rules are unit tests of `sagat-domain`
+(`cargo test -p sagat-domain federation`).
 
-- [ ] T013-1 Documents: `docs/architecture/security-and-sandbox.md` (the sign-in service, the issuers, the SAML profile),
-  `docs/runbooks/federated-login.md` (enabling, the identity mount, the signing-key commands, provider guides, SCIM,
-  break-glass, rollback), the remediation rows, `docs/glossary.md` (connection, external identity, sign-in session),
-  the refinement of Architecture decision 0062 decision 8 (the sign-in pages on the Studio origin), feature 015's
-  roadmap row (this design owns the identity mount and the signing key behind ports, Decision 013-019), and the rows
-  of `docs/engineering/architecture-principles.md` for the three new rules.
-  Verification: the docs checks; a reviewer reads each page against this design.
+**Builders.** The server builder owns `crates/`, `apps/` other than `apps/cli`, `tests/`, `infra/`, `scripts/`, the
+contracts and the documents. The clients builder owns `apps/cli`, `frontend/apps/studio/` (and regenerates
+`schema.d.ts` after Task 013-2) and `frontend/e2e/`. Before Tasks 013-10 and 013-9 merge, the clients builder works
+against the contract with mocked answers; its end-to-end runs wait for them. Gates outside this design: Task 013-14
+waits for pull request #267 (Astryx); milestone C waits for feature 029's migration; the app-session and link refusals
+wait for features 027 and 026. Until feature 029 exists, the access fence step of redemption and SCIM and the
+revocation of custom grants do not exist; Task 013-17 adds them with 029.
+
+- [ ] T013-1 Server builder. Documents: `docs/architecture/security-and-sandbox.md` (the sign-in service, the issuers,
+  the SAML profile), `docs/runbooks/federated-login.md` (enabling, settings, the identity mount, the commands, provider
+  guides, SCIM, break-glass, the alerts, rollback), `docs/glossary.md` (connection, external identity, sign-in
+  session), the refinement of Architecture decision 0062 decision 8, feature 015's roadmap row (Decision 013-019), and
+  the rows of `docs/engineering/architecture-principles.md` for the three new rules.
+  Verification: `python3 scripts/check-docs-index.py`, `python3 scripts/check-plain-words.py --base origin/develop`,
+  `python3 scripts/check-design-docs.py`.
   Refs: Requirement 013-001, Requirement 013-014, Requirement 013-030
-- [ ] T013-2 Contracts: the OpenAPI operations and schemas of Technical Plan 11 with `x-access` on each (the sign-in
-  routes public, SCIM by its token, the rest tenant), the SCIM fragment, the `config.json` shape, `schema.d.ts`
-  regenerated, the cross-tenant battery entries, the capability names.
-  Red tests: `contract_federated_login::the_operations_of_design_013_exist_with_their_errors`,
-  `the_studio_configuration_offers_both_issuers`.
+- [ ] T013-2 Server builder. Contracts: the operations of Technical Plan 11 marked `x-planned: '013'` and listed in
+  `not_built` of the battery (each route task switches its operations to `x-implemented`), the SCIM fragment and its
+  lint step, the `config.json` schema, the intended `x-access` classes; the clients builder regenerates `schema.d.ts`.
+  Red tests: `the_operations_of_design_013_are_in_the_document_with_their_errors` (`contract_federated_login`, reading
+  the YAML).
+  Verification: `npx --yes @redocly/cli@1 lint specs/001-platform-foundation/contracts/openapi.yaml
+  specs/013-federated-login/contracts/scim.openapi.yaml`; `cargo test -p sagat-tests --test contract_federated_login`;
+  `(cd frontend/apps/studio && npm run check:api)`.
   Refs: Requirement 013-005, Requirement 013-015, Requirement 013-020, Requirement 013-032
-- [ ] T013-3 `apps/dev-idp`: the development OIDC provider on its own paths, with its break switch; `/token` unchanged
-  for `sagat dev token`; the pinned Keycloak in `tests/support` and the development overlay, for SAML.
-  Red tests: `cargo test -p sagat-dev-idp`; `the_json_token_route_still_refuses_a_form_post`;
-  `the_production_image_has_no_dev_idp`.
+- [ ] T013-3 Server builder. `apps/dev-idp`: the development OIDC provider of Technical Plan 9 (milestone A); the
+  pinned Keycloak with its realm export, its digest, its healthcheck and its registration helper in `tests/support`,
+  and the `xmlsec1` image (milestone B).
+  Red tests (`cargo test -p sagat-dev-idp`): `the_dev_oidc_provider_issues_an_id_token_for_a_configured_person`,
+  `each_break_value_breaks_its_claim`, `the_dev_oidc_key_differs_from_the_deployment_key`,
+  `the_json_token_route_still_refuses_a_form_post`; `the_production_image_has_no_dev_idp` (the existing image check).
+  Verification: `cargo test -p sagat-dev-idp`; `docker compose -f infra/docker/compose.database.yaml config`.
   Refs: Requirement 013-033
-- [ ] T013-4 Domain: connections, the settings revision and states, mapping rules, owning connection, provisioning and
-  session policies, SCIM patch semantics, the OIDC claim rules, the SAML rules over parsed values, the identity egress
-  policy in `egress.rs`, `identity:manage` in `identity.rs` (`Subject::parse` unchanged).
-  Red tests: `a_change_of_an_active_connection_is_staged`, `the_highest_mapped_role_wins_in_any_order` (property),
-  `a_pinned_role_is_never_mapped`, `jit_never_defaults_to_admin`, `a_scim_patch_is_idempotent_by_effect`,
-  `a_shared_issuer_needs_a_tenant_restriction`, `the_identity_policy_refuses_loopback_link_local_and_metadata`, one
-  test per OIDC claim rule (wrong `aud`, `azp`, `nonce`, `hd` or `tid`, algorithm).
+- [ ] T013-4 Server builder. Domain: connections with staged revisions and states, mapping rules (C), owning
+  connection, provisioning and session policies, SCIM patch semantics, the OIDC claim rules, the SAML rules over parsed
+  values (B), the identity egress policy with its development relaxation in `egress.rs`, `identity:manage` in
+  `identity.rs` (`Subject::parse` unchanged), the four `AlertKind` variants.
+  Red tests (`cargo test -p sagat-domain federation`): `a_change_of_an_active_connection_is_staged`,
+  `the_highest_mapped_role_wins_in_any_order` (property, C), `a_pinned_role_is_never_mapped` (C),
+  `jit_never_defaults_to_admin`, `a_scim_patch_is_idempotent_by_effect`, `a_shared_issuer_needs_a_tenant_restriction`,
+  `a_template_issuer_is_refused`, `the_identity_policy_refuses_loopback_link_local_and_metadata`,
+  `the_development_relaxation_is_refused_outside_development`, one test per OIDC claim rule (`aud`, `azp`, `nonce`,
+  `hd`, `tid`, algorithm).
   Refs: Requirement 013-001, Requirement 013-003, Requirement 013-012, Requirement 013-013, Requirement 013-024
-- [ ] T013-5 Migration and stores (`crates/infra-postgres`): the tables of Technical Plan 3 with tenant keys,
-  `memberships.status`, `tenant_identity_settings` with one row per tenant, the redefined `sagat_lock_memberships`,
-  the two plain reads moved, the
-  session join of the membership read, grants, storage classification, the `up` and `down` refusals; the architecture
-  rule on reads of `memberships`.
-  Red tests: migration up and down (the `down` refused while a member is suspended); `runtime_privileges`; the
-  classification manifest test; one suspended-member refusal per caller family of `sagat_lock_memberships`;
-  `the_up_migration_refuses_an_existing_federated_subject`, `a_platform_token_for_a_federated_subject_authenticates_and_its_schedule_fires`,
-  `the_runtime_role_cannot_write_memberships`.
+- [ ] T013-5 Server builder. Migration `<ts>_federated_login` (its timestamp after `20270119000000_batch_purge`) and
+  stores: the tables of Technical Plan 3, `memberships.status`, `tenant_identity_settings` with its trigger, the
+  redefined `sagat_lock_memberships` and `sagat_active_membership`, the definer functions, the two plain reads moved,
+  `IdentityStore::resolve_caller`, grants and classification, the `up` and `down` refusals; the registry capability
+  `identity-federation-v1` (the `Capability` variant in `crates/application/src/instances.rs`, the three CHECK
+  constraints extended `NOT VALID` as `20270118000000_run_input_validation` does, their `down` refusals, the removal
+  guard); the architecture rule on reads of `memberships`.
+  Red tests (`integration_federated_login`): migration up and down; `runtime_privileges`; the classification manifest
+  test; one suspended-member refusal per caller family of `sagat_lock_memberships` (`workers.rs`, `secrets.rs`,
+  `schedules.rs`, `reveal_grants.rs`, `payload_disclosure.rs`, `managed_secrets.rs`, `execution.rs`,
+  `execution/resets.rs`, `execution/database.rs`, `event_payloads.rs`, `database.rs`, `database/admission.rs` under
+  `crates/infra-postgres/src`); `the_up_migration_refuses_an_existing_federated_subject`;
+  `the_runtime_role_cannot_write_memberships`; `the_capability_checks_and_the_data_model_agree`;
+  `a_tenant_created_by_an_old_binary_gets_its_settings_row`; the negative fixture of the architecture rule.
+  Verification: `cargo test -p sagat-tests --test integration_federated_login migration`, and with
+  `SAGAT_TEST_AS_RUNTIME_ROLE=1`; `python3 scripts/check-architecture.py`.
   Refs: Requirement 013-011, Requirement 013-016, Requirement 013-018, Requirement 013-032
-- [ ] T013-6 `crates/infra-egress`: `EgressClient` under the identity policy with no redirects; `JwksCache` and
-  `JwksFetcher` moved here, the deployment verifier unchanged in behaviour.
-  Red tests: `a_private_address_is_never_fetched`, `a_redirect_is_never_followed`, `a_changing_dns_answer_is_refused`,
-  `the_development_relaxation_is_refused_outside_development`,
-  the existing `jwks.rs` tests passing where the cache now lives.
+  Owner-gate: OD-2026-11-24-717
+- [ ] T013-6 Server builder. `crates/infra-egress`: `EgressClient` under the identity policy with no redirects;
+  `JwksCache` and `JwksFetcher` moved here with a constructor that takes no `AuthConfig`, and their users moved
+  (`crates/api-http/src/auth/webhooks.rs`, `apps/control-plane/src/lib.rs`, `apps/execution-engine/src/lib.rs`,
+  `tests/support/api.rs`, `tests/contract/platform-foundation/auth.rs`), the deployment verifier unchanged.
+  Red tests (`cargo test -p sagat-infra-egress`): `a_private_address_is_never_fetched`, `a_redirect_is_never_followed`,
+  `a_changing_dns_answer_is_refused`, `the_development_relaxation_reaches_loopback_only_in_development`; the existing
+  `jwks.rs` tests passing where the cache now lives.
   Refs: Requirement 013-024
-- [ ] T013-7 The SAML verifier of Architecture decision 0141 in `crates/infra-federation`, with its corpus and oracle.
-  Red tests: the corpus (each case its reason, every structural rule of Technical Plan 5),
-  `the_oracle_agrees_with_xmlsec_on_every_accepted_document`.
+- [ ] T013-7 Server builder, milestone B. The SAML verifier of Architecture decision 0141 in
+  `crates/infra-federation` (`roxmltree`, `x509-cert` 0.2 for the certificates' key size and expiry), the architecture
+  rule against `libxml` and `xmlsec`.
+  Red tests (`security_federated_login`, `saml/`): the corpus (each case its reason, every structural rule of Technical
+  Plan 5); `the_oracle_agrees_with_xmlsec_on_every_accepted_document`; the rule's negative fixture.
+  Verification: `cargo test -p sagat-tests --test security_federated_login saml`; `python3 scripts/check-architecture.py`.
   Refs: Requirement 013-008
-- [ ] T013-8 The OIDC client with `JwksCache` moved into `crates/infra-federation`; `TokenSigner` and
-  `IdentitySecrets` in `crates/infra-secrets`; the signing-key commands (`create`, `rotate`, `revoke`) and the
-  sealing-key command; the development overlay's identity mount.
-  Red tests: `a_random_kid_flood_fetches_at_most_once_per_interval`, `a_workflow_secret_reference_cannot_name_the_identity_mount`,
-  `no_replica_signs_with_a_key_another_replica_has_not_loaded`, `a_client_secret_write_follows_intent_write_verify_activate`,
-  `a_revoked_key_is_refused_on_every_replica_at_once`, `a_replica_with_a_stale_view_stops_signing`.
+- [ ] T013-8 Server builder. The OIDC client in `crates/infra-federation`, its key sets being `JwksCache` instances of
+  `infra-egress` over the identity egress guard; `TokenSigner` and `IdentitySecrets` in `crates/infra-secrets`; the
+  identity mount and `identity.hcl` in both bootstraps, the Helm template and `start_openbao`; the commands
+  `identity signing-key` and `identity sealing-key`; the gauge and Prometheus rule of `IDENTITY_SIGNING_UNAVAILABLE`.
+  Red tests (`integration_federated_login`): `a_random_kid_flood_fetches_at_most_once_per_interval`,
+  `a_workflow_secret_reference_cannot_name_the_identity_mount`,
+  `no_replica_signs_with_a_key_another_replica_has_not_loaded`, `a_replica_with_a_stale_view_stops_signing`,
+  `a_client_secret_write_follows_intent_write_verify_activate`; the alert rule's test in
+  `contract_observability_operations`.
+  Verification: `cargo test -p sagat-tests --test integration_federated_login keys`;
+  `cargo test -p sagat-tests --test contract_observability_operations`.
   Refs: Requirement 013-007, Requirement 013-025
-- [ ] T013-9 Sign-in use cases and routes: authorize (by slug), callbacks, redemption, renewal, logout; browser
-  binding; just-in-time provisioning; sessions; origins and the start-up refusals; the lock order of Technical Plan 4.
-  Red tests: `a_response_injected_into_another_browser_is_refused`,
-  `a_sign_in_started_by_another_site_establishes_no_session`, `a_provider_cannot_choose_the_tenant`,
-  `unknown_and_unconfigured_authorize_answers_are_identical`, `a_crash_after_the_membership_insert_leaves_nothing`,
-  `two_connections_with_one_email_make_two_members`, `a_second_organization_needs_the_person_to_replace_the_session`,
-  `authorize_writes_nothing_to_the_database`, `a_second_callback_of_one_attempt_is_refused`,
-  `two_sign_ins_in_two_tabs_both_complete`, `an_upload_outlives_its_access_token_while_the_session_lives`,
-  `a_reload_renews_without_a_redirect`, `renewal_needs_the_origin_and_the_header`,
-  `a_second_use_of_a_code_revokes_its_session`,
-  `an_unsolicited_saml_response_does_not_redirect`, `a_public_origin_unequal_to_the_studio_refuses_start_up`, the slot
-  order tests, and barrier tests for `two_redemptions_of_one_code_produce_one_session`,
-  `a_sign_in_racing_a_disable_ends_without_a_live_session`, `a_scim_post_racing_a_first_sign_in_makes_one_member`,
-  `two_sign_ins_of_one_person_do_not_deadlock`.
-  Refs: Requirement 013-002, Requirement 013-005, Requirement 013-006, Requirement 013-009, Requirement 013-012, Requirement 013-018
-- [ ] T013-10 Verification and revocation: the multi-issuer verifier (`at+jwt`, audience, `client_id`, 300 seconds,
-  `federated:` refused from the deployment issuer, equal issuers refused at start-up), `Core::authenticate` with the
-  issuer kind, `sid` and `jti`, the session join, the `identity-federation-v1` capability and its activation, the
-  session refusal of a disabled connection or a moved identity revision and the revocation of a raised context, streams ending with their session,
-  break-glass.
-  Red tests: `a_suspended_member_is_refused_on_the_next_request`,
+  Owner-gate: OD-2026-11-24-717
+- [ ] T013-10 Server builder, before Task 013-9. Verification and revocation: `IssuerVerifiers` and the platform
+  verifier (`at+jwt`, audience, `client_id`, 300 seconds, `federated:` refused from the deployment issuer, equal
+  issuers refused at start-up); `VerifiedCaller` and the five `Core` implementations; the engine deployment-only; the
+  per-request statement of Requirement 013-019 over sessions the tests insert; `Who` and `StreamLimits`; the
+  `config.json` change in `crates/api-http/src/studio.rs`; the process listing `identity-federation-v1`, the command
+  `identity federation activate|remove`, the capability names (and the `capabilities` field when design 050 has not
+  merged); break-glass (D).
+  Red tests (`integration_federated_login`): `a_suspended_member_is_refused_on_the_next_request`,
   `a_revoked_session_is_refused_on_its_next_request` (a barrier holds a request while the revocation commits),
   `an_id_token_is_refused_as_an_access_token`, `a_disabled_connection_ends_its_sessions`,
-  `a_token_minted_for_another_subject_with_a_live_sid_is_refused`,
-  `a_deployment_token_is_refused_when_federation_is_required`, `break_glass_is_audited_once_per_token`, the older-replica
-  activation test, `a_stream_resumes_with_last_event_id`, `a_stream_ends_within_ten_seconds_of_its_session` (measured),
-  `a_scim_deactivation_refuses_the_next_request_and_every_live_token`.
-  Refs: Requirement 013-019, Requirement 013-021, Requirement 013-032
-- [ ] T013-11 SCIM: users (milestone A), groups on 029's `access_groups` (milestone C), tokens, limits, error format, the
-  recorded Okta and Entra ID fixtures.
-  Red tests: one per fixture; `a_deactivation_suspends_and_revokes_in_its_transaction`; `a_repeated_request_changes_nothing`;
+  `a_token_minted_for_another_subject_with_a_live_sid_is_refused`, `a_revoked_key_is_refused_on_every_replica_at_once`,
+  `a_stream_ends_within_ten_seconds_of_its_session` (measured), `a_deployment_stream_keeps_its_thirty_second_recheck`,
+  `a_stream_resumes_with_last_event_id`, the older-replica activation test, `the_engine_refuses_a_platform_token`;
+  `the_studio_configuration_offers_both_issuers` (`contract_federated_login`);
+  `a_deployment_token_is_refused_when_federation_is_required` (D), `break_glass_is_audited_once_per_token` (D).
+  Verification: `cargo test -p sagat-tests --test integration_federated_login --test contract_federated_login verify`;
+  `cargo test -p sagat-application identity`.
+  Refs: Requirement 013-016, Requirement 013-019, Requirement 013-021, Requirement 013-032
+- [ ] T013-9 Server builder, after Tasks 013-8 and 013-10. Sign-in: authorize with the sealed attempt, the OIDC
+  callback (A) and the SAML consumer service (B), redemption, the refresh grant (rotation, the grace, revocation on
+  reuse), renewal, logout, the link and test flow, just-in-time provisioning, sessions, origins and the start-up
+  refusals, the transfers bounded by the session (`crates/api-http/src/blobs.rs`,
+  `crates/api-http/src/routes/database_results.rs`), the lock order of Technical Plan 4.
+  Red tests (`integration_federated_login` unless named): `a_response_injected_into_another_browser_is_refused`,
+  `a_sign_in_started_by_another_site_establishes_no_session`, `a_provider_cannot_choose_the_tenant`,
+  `a_callback_of_one_connection_with_the_attempt_of_another_is_refused` (`contract_federated_login`),
+  `unknown_and_unconfigured_authorize_answers_are_identical` (`contract_federated_login`),
+  `a_crash_after_the_membership_insert_leaves_nothing` (`fault_federated_login`), `renewal_needs_the_origin_and_the_header`,
+  `a_second_use_of_a_code_revokes_its_session`, `a_public_origin_unequal_to_the_studio_refuses_start_up`, the slot order
+  tests, `two_redemptions_of_one_code_produce_one_session` (barrier), `a_sign_in_racing_a_disable_ends_without_a_live_session`
+  (barrier), `two_sign_ins_of_one_person_do_not_deadlock` (barrier), `two_connections_with_one_email_make_two_members`,
+  `a_second_organization_needs_the_person_to_replace_the_session`, `authorize_writes_nothing_to_the_database`,
+  `a_second_callback_of_one_attempt_is_refused`, `two_sign_ins_in_two_tabs_both_complete`,
+  `an_upload_outlives_its_access_token_while_the_session_lives`, `two_concurrent_refreshes_keep_the_session`,
+  `a_lost_refresh_response_keeps_the_session`, `a_reuse_after_the_successor_was_used_revokes_the_session`,
+  `a_reused_refresh_token_revokes_the_session`, `an_unsolicited_saml_response_does_not_redirect` (B).
+  Verification: `cargo test -p sagat-tests --test integration_federated_login --test contract_federated_login --test fault_federated_login signin`.
+  Refs: Requirement 013-002, Requirement 013-005, Requirement 013-006, Requirement 013-009, Requirement 013-012, Requirement 013-018, Requirement 013-026
+- [ ] T013-11 Server builder, after Task 013-9. SCIM at `<public origin>/scim/v2`: users (A), groups on 029's
+  `access_groups` (C), tokens, limits, error format, the recorded Okta and Entra ID fixtures.
+  Red tests (`integration_federated_login`): one per fixture; `a_deactivation_suspends_and_revokes_in_its_transaction`;
+  `a_scim_deactivation_refuses_the_next_request_and_every_live_token`; `a_repeated_request_changes_nothing`;
   `the_tenant_comes_from_the_token`; `a_scim_replace_that_changes_the_match_changes_no_link`;
-  `another_connections_scim_cannot_suspend_a_member_it_does_not_own`, `a_put_never_undoes_a_concurrent_patch` (barrier),
-  `a_scim_post_adopts_a_just_in_time_member`, `a_reprovisioned_person_gets_a_new_subject`,
-  `the_last_admin_cannot_be_suspended_by_scim`, `a_direct_assignment_survives_two_scim_syncs_with_the_same_groups`
-  (milestone C), `a_change_to_an_unnamed_group_takes_the_fence_shared` (milestone C),
-  `a_full_put_over_a_thousand_members_is_refused`, `two_scim_suspensions_of_the_last_two_admins_cannot_both_pass`
-  (barrier), the large-group fixtures of Okta and Entra ID.
+  `another_connections_scim_cannot_suspend_a_member_it_does_not_own`, `a_scim_post_adopts_a_just_in_time_member`,
+  `a_scim_post_racing_a_first_sign_in_makes_one_member` (barrier), `a_reprovisioned_person_gets_a_new_subject`,
+  `the_last_admin_cannot_be_suspended_by_scim`, `two_scim_suspensions_of_the_last_two_admins_cannot_both_pass`
+  (barrier), `a_full_put_over_a_thousand_members_is_refused`, `a_reactivated_member_has_no_old_grants` (its reveal
+  grants and secret access entries); C: `a_put_never_undoes_a_concurrent_patch` (barrier),
+  `a_change_to_an_unnamed_group_takes_the_fence_shared`, `a_direct_assignment_survives_two_scim_syncs_with_the_same_groups`,
+  `a_group_claim_confers_nothing`, `a_scim_group_confers_nothing_until_an_assignment_names_it`,
+  `a_group_change_applies_on_the_next_request`, the large-group fixtures of Okta and Entra ID.
+  Verification: `cargo test -p sagat-tests --test integration_federated_login scim`.
   Refs: Requirement 013-014, Requirement 013-015, Requirement 013-016, Requirement 013-017
   Owner-gate: OD-2026-11-24-717
-- [ ] T013-12 Administration routes: connections (with test sign-in and activation; delete refused while a group is
-  named), members, identities, sessions, mapping rules (milestone C), the federated-only setting and its guard
-  (milestone D).
-  Red tests: one per route and role; `enabling_federation_only_needs_a_recent_session_through_an_active_connection`;
-  `the_last_active_connection_cannot_be_disabled_while_required`; `a_key_rotation_keeps_an_active_connection_active`;
-  `an_administrator_cannot_attach_an_identity_to_another_member`; `a_test_sign_in_provisions_nobody`;
-  `an_administrator_links_their_identity_and_tests_the_connection`; `a_change_during_a_test_is_not_activated` (barrier);
-  `federated_only_and_a_disable_cannot_both_pass` (barrier); `a_rule_change_recomputes_owned_members`;
-  `a_deleted_owner_leaves_members_with_their_role`; `a_removed_admin_rule_demotes_its_members`;
-  `a_renewal_is_not_a_recent_sign_in`; `a_change_that_resets_the_last_required_connection_is_refused`;
+- [ ] T013-12 Server builder, after Task 013-9. Administration routes: connections (staged revisions, test and
+  activation, credential rotation; delete refused while a group is named, C), members, identities, sessions, mapping
+  rules (C), the federated-only setting and its guard (D).
+  Red tests (`integration_federated_login`): one per route and role; `an_issuer_change_is_refused`;
+  `a_key_rotation_keeps_an_active_connection_active`; `an_administrator_cannot_attach_an_identity_to_another_member`;
+  `a_test_sign_in_provisions_nobody`; `an_administrator_links_their_identity_and_tests_the_connection`;
   `a_link_confirmed_by_another_subject_is_refused`; `a_link_start_address_works_once`;
-  `a_pending_revision_is_tested_while_the_active_one_serves`; `a_client_secret_rotation_keeps_every_session`;
-  `a_private_key_jwt_key_is_published_before_use`;
-  `a_scim_suspension_and_a_member_demotion_cannot_remove_the_last_admin` (barrier).
-  Refs: Requirement 013-013, Requirement 013-020, Requirement 013-021
-- [ ] T013-13 The maintenance passes of Technical Plan 6 (`crates/scheduler/src/identity.rs`, lease `identity-maintenance`).
-  Red tests: `a_rule_change_job_recomputes_in_bounded_batches`, `a_silent_scim_connection_raises_its_alert`,
-  `an_expiring_certificate_raises_its_alert`, `the_sessions_of_a_disabled_connection_are_marked_in_batches`,
-  `the_purges_are_bounded`.
-  Refs: Requirement 013-013
-- [ ] T013-14 Studio: sign-in by organization, renewal with `credentials: 'same-origin'`, the tenant shown and checked,
-  sign-out at the provider, no `error_description` printed; the identity screens.
-  Red tests: component tests per screen and role; `the_token_never_reaches_storage`;
-  `a_renewed_token_of_another_tenant_is_refused`; `a_passive_viewer_keeps_following_a_run`.
+  `a_change_during_a_test_is_not_activated` (barrier); `a_pending_revision_is_tested_while_the_active_one_serves`;
+  `a_client_secret_rotation_keeps_every_session`; `a_private_key_jwt_key_is_published_before_use`;
+  `a_raised_context_revokes_the_sessions_that_do_not_meet_it`; `a_connection_cannot_assert_a_subject_another_connection_owns`;
+  `a_scim_suspension_and_a_member_demotion_cannot_remove_the_last_admin` (barrier);
+  `a_deleted_owner_leaves_members_with_their_role`; C: `a_rule_change_recomputes_owned_members`,
+  `a_removed_admin_rule_demotes_its_members`; D: `enabling_federation_only_needs_a_recent_session_through_an_active_connection`,
+  `the_last_active_connection_cannot_be_disabled_while_required`, `federated_only_and_a_disable_cannot_both_pass`
+  (barrier), `a_change_of_the_last_required_connection_is_staged_and_keeps_sign_in`, `a_renewal_is_not_a_recent_sign_in`.
+  Verification: `cargo test -p sagat-tests --test integration_federated_login admin`.
+  Refs: Requirement 013-001, Requirement 013-003, Requirement 013-010, Requirement 013-013, Requirement 013-020, Requirement 013-021
+- [ ] T013-13 Server builder, after Task 013-12. The maintenance passes of Technical Plan 6
+  (`crates/scheduler/src/identity.rs`, lease `identity-maintenance`) and the product alerts they raise.
+  Red tests (`integration_federated_login`): `the_purges_are_bounded`,
+  `the_sessions_of_a_disabled_connection_are_marked_in_batches`, `an_expiring_client_secret_raises_its_alert`,
+  `a_silent_scim_connection_raises_its_alert`, `a_disabled_owner_raises_its_alert`; B:
+  `an_expiring_certificate_raises_its_alert`; C: `a_rule_change_job_recomputes_in_bounded_batches`.
+  Verification: `cargo test -p sagat-tests --test integration_federated_login maintenance`.
+  Refs: Requirement 013-001, Requirement 013-013, Requirement 013-028
+- [ ] T013-14 Clients builder, after pull request #267; its end-to-end parts after Tasks 013-9 and 013-10. Studio:
+  sign-in by organization and the deployment choice, renewal with `credentials: 'same-origin'` and the passive-viewer
+  rule, the tenant shown and checked, sign-out at the provider, no `error_description` printed; the identity screens:
+  connections with OIDC guides (A) and SAML guides (B), SCIM tokens, members and sessions (A), mapping rules (C), the
+  federated-only setting (D).
+  Red tests (`src/auth/*.test.ts`, `src/features/identity/*.test.tsx`): component tests per screen and role;
+  `the_token_never_reaches_storage`; `a_renewed_token_of_another_tenant_is_refused`;
+  `a_passive_viewer_keeps_following_a_run`; `a_reload_renews_without_a_redirect`.
+  Verification: `(cd frontend/apps/studio && npm run lint && npm run typecheck && npm test && npm run check:api)`.
   Refs: Requirement 013-018, Requirement 013-023, Requirement 013-027
-- [ ] T013-15 CLI: `sagat login`, the key store, the source order, rotation and reuse.
-  Red tests: `a_reused_refresh_token_revokes_the_session`, `the_token_file_wins_over_the_key_store`,
-  `two_concurrent_refreshes_keep_the_session`, `a_lost_refresh_response_keeps_the_session`,
-  `a_reuse_after_the_successor_was_used_revokes_the_session`.
+- [ ] T013-15 Clients builder; its journey after Tasks 013-9 and 013-10. CLI: `sagat login --org <slug>` (discovery
+  at `<server>/v1/auth/.well-known/openid-configuration`, the loopback listener, the browser opened with `webbrowser` 1
+  or the address printed), the key store (`keyring` 3, service `sagat`, account `<server origin>|<slug>`; without one,
+  `$XDG_CONFIG_HOME/sagat/credentials.json` with mode `0600`), the source order, a refresh under `std::fs::File::lock`
+  with the key store read again under it, `sagat logout` (revoke, then delete the entry); `sagat worker dev` and
+  `sagat doctor` skip key-store tokens and say that they need a machine token (Decision 013-016).
+  Red tests (`cargo test -p sagat-cli`): `the_token_file_wins_over_the_key_store`,
+  `a_second_process_uses_the_token_the_first_refreshed`, `the_loopback_listener_accepts_one_code_on_its_path`
+  (against a stub), `logout_deletes_the_entry_after_revoking`, `an_engine_command_refuses_a_key_store_token`.
   Refs: Requirement 013-026
-- [ ] T013-16 Security and cross-cutting suites: cross-site request forgery, server-side request forgery, replay, the
-  canary scan, required authentication context, the cross-tenant battery; the audit vocabulary test (every action of
-  Requirement 013-028 written with a closed reason and no value); the metric label test (closed sets, no tenant,
-  connection, subject or group); one ceiling test per row of Requirement 013-031.
+- [ ] T013-16 Server builder, after both lanes, per milestone. Security and cross-cutting suites
+  (`security_federated_login`): cross-site request forgery, server-side request forgery, replay, the canary scan,
+  required authentication context, the cross-tenant battery entries; the audit vocabulary test (every action of
+  Requirement 013-028 with a closed reason and no value); the metric label test; one ceiling test per row of
+  Requirement 013-031 (certificates B; external groups and members per group C).
+  Verification: `cargo test -p sagat-tests --test security_federated_login`; the battery target.
   Refs: Requirement 013-010, Requirement 013-028, Requirement 013-029, Requirement 013-031, Non-functional requirement 013-001
-- [ ] T013-17 The other features' parts (Decision 013-019), milestone C: the external-group columns on feature 029's
-  tables after its migration (029's unique name among local groups only); the app-session and link refusal tests once
-  features 027 and 026 exist (027 builds its in-process redemption against Requirement 013-005).
-  Red tests: `an_external_group_can_be_named_by_an_assignment`, `an_external_group_named_like_a_local_group_is_accepted`.
+- [ ] T013-17 Server builder, milestone C, after feature 029's migration. The other features' parts (Decision
+  013-019): the external-group columns on 029's tables (its unique name among local groups only), the access fence
+  step of redemption and SCIM, the revocation of custom grants on a role change and a suspension, `identity:manage` in
+  029's catalog, the paths added to 029's lock-order test; the app-session and link refusal tests once features 027
+  and 026 exist.
+  Red tests (`integration_federated_login`): `an_external_group_can_be_named_by_an_assignment`,
+  `an_external_group_named_like_a_local_group_is_accepted`, `a_reactivated_member_has_no_old_custom_grants`.
+  Verification: `cargo test -p sagat-tests --test integration_federated_login groups`.
   Refs: Requirement 013-014, Requirement 013-016
   Owner-gate: OD-2026-11-24-717
-- [ ] T013-18 Interoperability with Keycloak (OIDC and SAML), the journey of Success criterion 013-001, and the benchmark
-  of sign-in, renewal and SCIM latency on a declared environment, with the 99th-percentile latency of run admissions
-  in the tenant while a recorded Okta or Entra ID initial sync is replayed.
+- [ ] T013-18 Server builder with the clients builder's browser spec, per milestone. Interoperability with Keycloak
+  (OIDC A, SAML B), the journeys of Success criterion 013-001 in `e2e_federated_login` and
+  `frontend/e2e/tests/federated-login.spec.ts`, and the benchmark of sign-in, renewal and SCIM latency on a declared
+  environment, with the 99th-percentile latency of run admissions in the tenant while a recorded Okta or Entra ID
+  initial sync is replayed.
   Verification: `cargo test -p sagat-tests --test e2e_federated_login --locked -- --ignored`, recorded with its result.
   Refs: Non-functional requirement 013-003
 
@@ -1351,9 +1503,10 @@ None yet.
 
 ### Verification Plan
 
-- Unit and property tests in `crates/domain` (mapping, policies, SCIM patch semantics) and `crates/infra-federation`
-  (SAML corpus, canonicalization, OIDC validation).
-- Oracle: `xmlsec1` in a disposable container agrees with the verifier on every accepted document.
+- Unit and property tests in `crates/domain` (mapping, policies, SCIM patch semantics, OIDC claim rules) and
+  `crates/infra-federation` (canonicalization); the SAML corpus in `security_federated_login`.
+- Oracle: `xmlsec1` in a disposable container agrees with the verifier on every accepted document
+  (`security_federated_login`).
 - Integration on real PostgreSQL: sign-in, provisioning, revocation, SCIM, administration; with
   `SAGAT_TEST_AS_RUNTIME_ROLE=1`.
 - Fault: a crash at each statement of provisioning, role change, suspension and revocation.
