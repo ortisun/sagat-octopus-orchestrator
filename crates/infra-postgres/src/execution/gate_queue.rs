@@ -253,7 +253,7 @@ impl PgRunTx {
                                     AND (g.leased_at IS NULL \
                                          OR g.leased_at > least($17::timestamptz, $12) \
                                                           - make_interval(secs => p.ms / 1000.0))) AS n \
-                     FROM (VALUES (1000), (60000), (3600000)) p(ms), rate_limit_windows k \
+                     FROM (SELECT 1000 AS ms UNION ALL SELECT 60000 UNION ALL SELECT 3600000) p, rate_limit_windows k \
                     WHERE k.tenant_id = $1 AND k.namespace_id = $2 AND k.pool = $3 AND k.limit_scope = $11 \
                       AND k.group_name = $4 AND k.key_digest = $5 \
                       AND p.ms <= greatest(k.max_period_ms, $9::bigint)) \

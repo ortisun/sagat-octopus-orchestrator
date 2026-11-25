@@ -1090,7 +1090,7 @@ pub const RATE_PLACE_SQL: &str = "WITH me AS ( \
                           AND g.limit_scope = me.limit_scope AND g.group_name = me.group_name \
                           AND g.key_digest = me.key_digest \
                           AND g.leased_at > me.t - make_interval(secs => p.ms / 1000.0)) AS n \
-           FROM (VALUES (1000), (60000), (3600000)) p(ms), me), \
+           FROM (SELECT 1000 AS ms UNION ALL SELECT 60000 UNION ALL SELECT 3600000) p, me), \
        counted AS (SELECT c.n FROM counts c, me WHERE c.ms = me.period_ms), \
        ahead AS ( \
          SELECT count(*) AS a FROM me \
