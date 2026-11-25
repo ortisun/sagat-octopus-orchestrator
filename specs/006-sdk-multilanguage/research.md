@@ -779,6 +779,21 @@ holds the lock, not when it ends.
     tests. Recorded in G006-033 with the probe's locks.
   - Security Nit 3 (no test pins the two newer definer functions): fixed, the privilege test lists them.
 
+### The follow-up of pull request #260 (2026-11-24, D006-094 to D006-099, G006-034 to G006-037)
+
+What ADR-0099 asks of the build of ADR-0098 and pull request #260 left out (D006-090, G006-032), built as Task 006-068 to
+Task 006-073 on `feature/delivery-acknowledgement` and cut as a pull request of its own. Each decision is "delegate
+(OD-2026-11-24-4)" unless it says otherwise.
+
+- **D006-094 — The cause `NOT_ACKNOWLEDGED` is a value of the closed set, with the list of all of them** (Task 006-068). The
+  domain gains `WithdrawalCause::NotAcknowledged` and `WithdrawalCause::ALL`, which the parse, the codec's tests and the
+  domain's tests iterate, so a fourth cause cannot be added without them. Nothing writes it in this build; the transition
+  that replays it is the one of the other causes (`LEASED` of that attempt and generation to `READY`, the attempt given back).
+  The Studio names the event, not its causes, so it has nothing to change. Tested: `the_cause_has_three_closed_values` (seen
+  failing with two values), the transition test over every cause, `a_withdrawn_lease_is_an_exact_codec_inverse` over every
+  cause. Weighed: a separate event for 1.8 (an older replica would have to learn a second event for the same transition) and
+  an open text field (a replica would replay a cause it does not know); the closed value is ADR-0099's choice.
+
 ## Delivery acknowledgement (2026-11-20, Decision 006-040 to Decision 006-066, Gap 006-040 to Gap 006-048, Owner question 006-002)
 
 Owner question 006-001 was answered "Yes, in 0.3.0" (Owner decision 2026-11-20-12), which left the variant, the protocol minor and
