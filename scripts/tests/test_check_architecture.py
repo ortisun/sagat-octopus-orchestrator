@@ -262,8 +262,7 @@ WRITER = """
 KEY_FILER = (
     'const fn insert(self) -> &\'static str { match self { Self::Semaphores => "INSERT INTO concurrency_semaphores (k) VALUES ($1)", '
     'Self::Windows => "INSERT INTO rate_limit_windows (k) VALUES ($1)" } }\n'
-    'const QUEUED_RUNS_SQL: &str = "SELECT count(*) FROM (SELECT run_id FROM concurrency_waiters WHERE k = $1 '
-    'UNION SELECT run_id FROM rate_limit_waiters WHERE k = $1) w";'
+    'const QUEUED_RUNS_SQL: &str = "SELECT coalesce(sum(queued_runs), 0)::bigint FROM flow_control_counts WHERE k = $1";'
 )
 
 
@@ -540,7 +539,23 @@ class QueuedRunsAreCountedByOneStatement(unittest.TestCase):
         code, out = run_lease_check(tree(**{"quotas.rs": copy}))
         self.assertEqual(code, 1, out)
         self.assertIn("quotas.rs:1", out)
-        self.assertIn("counts the runs of both waiter tables outside flow_control.rs", out)
+        self.assertIn("counts the runs of both waiter tables", out)
+
+    def test_a_count_of_both_waiter_tables_is_refused_in_the_home_too(self):
+        # task T022-105: the slot rows are the one count; a scan beside them would be a second one
+        scan = (
+            'const AGAIN: &str = "SELECT count(*) FROM (SELECT run_id FROM concurrency_waiters WHERE k = $1 '
+            'UNION SELECT run_id FROM rate_limit_waiters WHERE k = $1) w";'
+        )
+        code, out = run_lease_check(tree(**{"flow_control.rs": KEY_FILER + "\n" + scan}))
+        self.assertEqual(code, 1, out)
+        self.assertIn("flow_control.rs:3: a statement counts the runs of both waiter tables", out)
+
+    def test_a_read_of_the_slot_rows_elsewhere_is_refused_and_named(self):
+        read = 'async fn usage() { sqlx::query("SELECT sum(c.queued_runs) FROM flow_control_counts c WHERE k = $1"); }'
+        code, out = run_lease_check(tree(**{"quotas.rs": read}))
+        self.assertEqual(code, 1, out)
+        self.assertIn("quotas.rs:1: a statement reads the queued runs outside flow_control.rs", out)
 
     def test_a_count_of_one_table_is_not_a_count_of_queued_runs(self):
         busiest = 'async fn busiest() { sqlx::query("SELECT count(*) FROM concurrency_waiters WHERE k = $1"); }'
@@ -574,6 +589,25 @@ class TheEligibilityOfAWaiterIsOneText(unittest.TestCase):
             self.assertEqual(code, 1, out)
             self.assertIn("maintenance.rs:3", out)
             self.assertIn("eligibility of a waiter written out", out)
+
+    def test_the_deadline_half_written_out_beside_a_runs_join_is_refused(self):
+        # review of 2026-11-25 (correctness nit): the rule covers the deadline half of the eligibility too
+        statement = (
+            "SELECT 1 FROM concurrency_waiters x JOIN runs r ON r.id = x.run_id WHERE x.deadline_at > clock_timestamp()"
+        )
+        copy = f'async fn ahead() {{\n    sqlx::query(\n        "{statement}",\n    );\n}}'
+        code, out = run_lease_check(tree(**{"operations.rs": copy}))
+        self.assertEqual(code, 1, out)
+        self.assertIn("operations.rs:3", out)
+        self.assertIn("eligibility of a waiter written out", out)
+
+    def test_a_deadline_that_has_passed_is_not_the_eligibility(self):
+        due = (
+            'async fn due() { sqlx::query("SELECT 1 FROM rate_limit_waiters w JOIN runs r ON r.id = w.run_id '
+            'WHERE w.deadline_at <= now()"); }'
+        )
+        code, out = run_lease_check(tree(**{"maintenance.rs": due}))
+        self.assertEqual(code, 0, out)
 
     def test_the_macros_split_text_is_not_a_copy(self):
         macro = (

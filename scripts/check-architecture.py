@@ -493,14 +493,19 @@ def gate_row_write_errors(src):
     return errors
 
 
-# --- one count of queued runs (feature 022, D022-055 item 3; the keys review of 2026-11-20, architecture m3) ------------------
+# --- one count of queued runs (feature 022, D022-055 item 3; the keys review of 2026-11-20, architecture m3; T022-105) ---------
 # The `queued_runs` ceiling's check, its quota usage and the key listing read one statement (`QUEUED_RUNS_SQL`), so they never
-# disagree about what a queued run is (a run waiting for a permit or a slot, counted once). A second statement that counts the
-# runs of both waiter tables is refused outside flow_control.rs.
+# disagree about what a queued run is (a run waiting for a permit or a slot, counted once). Since task T022-105 (decision
+# D022-084) it reads the slot rows of `flow_control_counts` that the waiter rows' triggers keep: a statement that counts the
+# runs of both waiter tables again is refused everywhere, and a read of the slot rows outside flow_control.rs is refused.
 QUEUED_RUNS_COUNT = (
     re.compile(r"\bcount\s*\(", re.IGNORECASE),
     re.compile(r"\bselect\s+(?:distinct\s+)?(?:\w+\.)?run_id\s+from\s+concurrency_waiters\b", re.IGNORECASE),
     re.compile(r"\bselect\s+(?:distinct\s+)?(?:\w+\.)?run_id\s+from\s+rate_limit_waiters\b", re.IGNORECASE),
+)
+QUEUED_RUNS_READ = (
+    re.compile(r"\bsum\s*\(\s*(?:\w+\.)?queued_runs\s*\)", re.IGNORECASE),
+    re.compile(r"\bfrom\s+flow_control_counts\b", re.IGNORECASE),
 )
 QUEUED_RUNS_HOME = "flow_control.rs"
 
@@ -515,15 +520,23 @@ def queued_runs_count_errors(src):
         _, literals = rust_literals(text)
         rel = path.relative_to(root).as_posix()
         for offset, sql in literals:
-            if not all(pattern.search(sql) for pattern in QUEUED_RUNS_COUNT):
+            line = text.count(chr(10), 0, offset) + 1
+            if all(pattern.search(sql) for pattern in QUEUED_RUNS_COUNT):
+                errors.append(
+                    f"crates/infra-postgres/src/{rel}:{line}: a statement counts the runs of both waiter tables: the "
+                    f"queued runs are read from the slot rows of `flow_control_counts` by `QUEUED_RUNS_SQL` in "
+                    f"{QUEUED_RUNS_HOME} only, so the ceiling, its usage and the key listing never disagree (D022-055, "
+                    f"D022-084)"
+                )
+                continue
+            if not all(pattern.search(sql) for pattern in QUEUED_RUNS_READ):
                 continue
             if rel == QUEUED_RUNS_HOME:
                 found += 1
                 continue
             errors.append(
-                f"crates/infra-postgres/src/{rel}:{text.count(chr(10), 0, offset) + 1}: a statement counts the runs of "
-                f"both waiter tables outside {QUEUED_RUNS_HOME}: the queued runs are counted by `QUEUED_RUNS_SQL` only, "
-                f"so the ceiling, its usage and the key listing never disagree (D022-055)"
+                f"crates/infra-postgres/src/{rel}:{line}: a statement reads the queued runs outside {QUEUED_RUNS_HOME}: "
+                f"they are read by `QUEUED_RUNS_SQL` only (D022-055, D022-084)"
             )
     if found != 1:
         errors.append(
@@ -539,6 +552,11 @@ def queued_runs_count_errors(src):
 # macros `eligible_gate_waiter!` and `live_gate_run!` of lib.rs (whose literals are split around their arguments), and a
 # statement that writes the run's part out again is refused.
 LIVE_GATE_RUN_TEXT = re.compile(r"\b\w+\.status\s+IN\s*\(\s*'RUNNING'\s*,\s*'WAITING'\s*\)\s+AND\s+NOT\s+\w+\.paused\b", re.IGNORECASE)
+# The deadline half (review of 2026-11-25, correctness nit): a waiter's deadline compared as still ahead of an instant
+# (`<alias>.deadline_at > ...`) in a statement over a waiter table joined with its run. A deadline that has passed
+# (`<=`, the timeout routine's) is not the eligibility; the macros' split literals (".deadline_at > ") carry no alias.
+DEADLINE_HALF_TEXT = re.compile(r"\b\w+\.deadline_at\s*>(?!=)", re.IGNORECASE)
+WAITERS_WITH_RUNS = re.compile(r"\b(?:concurrency_waiters|rate_limit_waiters)\b.*\bjoin\s+runs\b", re.IGNORECASE | re.DOTALL)
 
 
 def eligible_waiter_errors(src):
@@ -550,7 +568,7 @@ def eligible_waiter_errors(src):
         _, literals = rust_literals(text)
         rel = path.relative_to(root).as_posix()
         for offset, sql in literals:
-            if LIVE_GATE_RUN_TEXT.search(sql):
+            if LIVE_GATE_RUN_TEXT.search(sql) or (DEADLINE_HALF_TEXT.search(sql) and WAITERS_WITH_RUNS.search(sql)):
                 errors.append(
                     f"crates/infra-postgres/src/{rel}:{text.count(chr(10), 0, offset) + 1}: the grant pass's eligibility "
                     f"of a waiter written out: use `eligible_gate_waiter!` or `live_gate_run!` (lib.rs), so its uses never "
