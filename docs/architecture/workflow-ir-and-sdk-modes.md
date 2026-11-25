@@ -6,16 +6,24 @@
 |---|---|---|---|---|
 | Visual-first | JSON IR via Studio | Rust engine | Yes, in isolated Activity/Script nodes | Complete static graph + execution |
 | Declarative code-first | SDK builder compiles/publishes JSON IR | Rust engine | Yes, BYO worker Activities or Script | Complete static graph + execution |
-| Procedural code-first (release 0.3.0, design 044, not built) | Workflow function with deterministic commands, pinned to its build | SDK worker, replayed against the engine journal | Yes, only in activities and steps | Observed dynamic graph, partial blueprint |
+| Procedural code-first (release 0.3.0, design 044, not built) | Workflow function with deterministic commands, pinned by the digest of its code | SDK worker, replayed against the engine journal | The workflow function itself (deterministic, replayed, no effects); effects only in activities and steps | Observed dynamic graph, partial blueprint |
 
 The first two modes are built. The procedural mode enters release 0.3.0 (Owner decision 2026-11-24-3) under
-constitution principle IV (version 5.0.0): the workflow function runs in an SDK worker, never in the control plane; it
-proposes commands that the server accepts under a lease and a fencing token and commits with the journal and the
-outbox in one transaction; the worker's memory is a cache that replay rebuilds; a replay that diverges from the journal
-stops with a typed non-determinism error and commits nothing; a code change that running histories depend on needs an
-explicit version marker or a new version. Design 044 starts with a determinism study per language, and the mode ships
-in an SDK only after that study and the shared replay conformance scenarios pass. The declarative graph stays a
-first-class model beside it.
+constitution principle IV (version 5.0.0):
+
+- the workflow function runs in an SDK worker, never in a platform process;
+- it proposes commands; the server checks each against the version's envelope (activities, secrets, signals, child
+  workflows, scripts, approvals), the current authorization and the per-run ceilings, and commits it under a lease and
+  a fencing token with the journal and the outbox in one transaction;
+- the worker's memory is a cache that replay rebuilds;
+- a replay that diverges from the journal stops with a typed non-determinism error and commits nothing;
+- a run pins one version at any moment and changes it only by a verified move (an explicit, authorized request per run,
+  applied only after a replay of its own history against the target code matches); version markers let a change
+  branch inside one version.
+
+Design 044 (and its records ADR-0103 to ADR-0109) holds the mechanism. It starts with a determinism study per
+language, and the mode ships in an SDK only after that study and the shared replay conformance scenarios pass; an SDK
+without it says so in its capabilities. The declarative graph stays a first-class model beside it.
 
 ## Compilation pipeline
 

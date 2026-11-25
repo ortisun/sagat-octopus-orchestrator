@@ -76,25 +76,37 @@ dependencies are pinned (`rust-toolchain.toml`, `Cargo.lock`, locked CI builds).
 A workflow is written in one of two models that share one engine, one journal and this one
 semantic contract. In the **graph model** the published version is the declarative IR, drawn in
 the Studio or compiled by an SDK builder, and the engine interprets it. In the **procedural
-model** (workflow as code) the published version names a workflow function and the pinned build
-that contains it. The function runs in an SDK worker, never in the control plane or the scheduler
-(Principle V), and is replayed deterministically against the run's journal. It proposes commands;
-the server accepts them as a worker result under Principle I (valid lease, fencing token) and
-commits them with the journal and the outbox in one transaction. The worker's memory is a cache
-that replay can discard and rebuild, never a record. Code outside an activity may run again on
-every replay, so the workflow function MUST NOT perform an external effect itself: effects are
-activities under Principle III. A replay that diverges from the journal MUST stop with a typed,
-audited non-determinism error and commit none of its commands. A code change that running
-histories depend on enters only through an explicit version marker in the code or a new version.
-The procedural model MUST NOT ship in an SDK before that language's determinism study and the
-shared replay conformance scenarios pass. The Studio draws the declarative IR and shows a
-procedural run as the graph observed from its journal; imperative code that cannot be converted to
-the IR is not promised a round trip.
+model** (workflow as code) the published version names a workflow function by the digest of its
+code and declares the envelope it may use (activities, secrets, signals, child workflows, scripts,
+approvals). The function runs in an SDK worker, never in a platform process (Principle V), and is
+replayed deterministically against the run's journal. It proposes commands. The server checks each
+command against the version's envelope, the current authorization and the per-run ceilings
+(history length, payload size, fan-out), so that a command can ask for nothing that a graph
+version with the same declarations could not; it accepts the command as a worker result under
+Principle I (valid lease, fencing token) and commits it with the journal and the outbox in one
+transaction. The worker's memory is a cache that replay can discard and rebuild, never a record.
+Code outside an activity may run again on every replay, so the workflow function MUST NOT perform
+an external effect itself: effects are activities under Principle III, and the SDK's determinism guard refuses or
+reports an effect outside one. A replay that diverges from the journal MUST stop with a typed,
+audited non-determinism error and commit none of its commands. A procedural run pins one version
+at any moment, and its pin changes only by a verified move: an explicit request per run by a
+person allowed to operate it, applied only when a replay of the run's own history against the
+target code reproduces the journaled commands and every outstanding step fits the target's
+envelope. Each move is journaled and audited, a refused move leaves the run unchanged, and no
+policy moves runs by itself; that is not an automatic migration. Within one version, explicit
+version markers in the code let a change branch for histories that started before it. The history
+and command format that the code replays is a wire contract under the rule above. The procedural
+model MUST NOT ship in an SDK before that language's determinism study and the shared replay
+conformance scenarios pass; an SDK that does not offer it says so in its declared capabilities,
+and the suite reports those scenarios as not offered, never as passed. The Studio draws the
+declarative IR and shows a procedural run as the graph observed from its journal; imperative code
+that cannot be converted to the IR is not promised a round trip.
 
 *Rationale:* a durable run outlives the release that started it, whichever model wrote it, and two
 models stay one product only if they share the journal, the fence and the conformance suite.
-Sources: ADR-0003, ADR-0007, `docs/architecture/overview.md` (invariant 1),
-`docs/architecture/workflow-ir-and-sdk-modes.md`, Owner decision 2026-11-24-3, AGENTS.md rule 8.
+Sources: ADR-0003, ADR-0007, design 044 and its records ADR-0103 to ADR-0109,
+`docs/architecture/overview.md` (invariant 1), `docs/architecture/workflow-ir-and-sdk-modes.md`,
+Owner decision 2026-11-24-3, AGENTS.md rule 8.
 
 ### V. Code, Tenant Boundary and Secrets Are Isolated
 
@@ -185,27 +197,32 @@ Sources: `docs/test-strategy.md`, AGENTS.md rules 9, 11 and 12.
 - **Regions:** a cell is one PostgreSQL authority with its object store and its processes. It may
   declare standby regions and fail over active-passive: an operator's activation, committed in one
   transaction, raises a region epoch that the database itself enforces on leases, fences and
-  writes, so that nothing granted before the activation can act after it (feature 032, ADR-0067). Different
+  writes, so that nothing granted before the activation can act on the new authority after it; an
+  unplanned activation first needs the operator's written attestation that the former primary is
+  fenced (feature 032, ADR-0067). Cells share no data and no transaction spans two cells; different
   cells may have their writable region in different regions. Cross-region failover is offered for
-  production only after its region drill report and its commit-latency benchmark exist and state
-  their environment and failures. A replication mode or a forced activation that can lose
-  acknowledged work says so before it is chosen, counts and reports what was lost after a
-  failover, and never claims a recovery point objective of zero.
+  production only after its region drill passes (no acknowledged work lost in the synchronous
+  quorum mode) and its commit-latency benchmark is published, each with its environment and
+  failures; until then a release may contain it built, but not offered for production. A
+  replication mode or a forced activation that can lose acknowledged work says so before it is
+  chosen, counts and reports what was lost after a failover, and never claims a recovery point
+  objective of zero.
 - **Admitted scope:** workflow as code (Principle IV); internal apps built in the Studio over
   declared workflow operations, whose sessions carry no more than their viewer's own authority and
   whose author code runs only in an isolated frame (feature 027, ADR-0062; a delegated execution
   mode would need its own ADR and an amendment); a curated integration and template hub (features
   021, 028 and design 047) whose only sources are the index signed in the release and indexes the
   operator configures with keys the operator pins, whose items are imported as drafts under the
-  same publication, signature, secret and isolation rules as authored content, and which runs
-  nothing in the server.
+  same publication, signature, secret and isolation rules as authored content, and none of whose
+  items carries code that the server executes.
 - **Out of scope for V1:** two regions accepting writes for the same cell (multi-region
   active-active inside a cell, with merged histories or conflict resolution); exactly-once physical
   execution of external effects; an open marketplace (publishing by tenants or third parties,
   unsigned or unpinned sources, ratings, payments); a generic application builder with its own
   backend, database or server-side author code; wire, protocol or history compatibility with
   another engine (running Temporal or Restate SDKs against this server, importing their
-  histories); WASM as a mandatory runtime; and automatic migration of arbitrary code.
+  histories); distributed transactions across cells; WASM as a mandatory runtime; and automatic
+  migration of arbitrary code.
 - **Targets are not promises:** throughput, latency and SLO figures are benchmark criteria to
   verify on a stated environment (hardware, configuration, workload), not commitments. A benchmark
   report states the environment and the failures, not only the throughput.
@@ -237,7 +254,12 @@ Sources: `docs/test-strategy.md`, AGENTS.md rules 9, 11 and 12.
   a draft again. `scripts/check-design-docs.py` verifies the record in CI.
 - **Owner decisions:** product, scope, budget, release and security-exception decisions belong to
   the owner and are recorded in `docs/owner-decisions.md`. A task that depends on one carries an
-  `Owner-gate:` line that cites the row, and MUST NOT be ticked until the owner has decided.
+  `Owner-gate:` line that cites the row, and MUST NOT be ticked until the owner has decided. Until
+  release 0.3.0 is published, an act recorded there as decided by `delegate (OD-2026-11-24-4)`
+  counts as the owner's for this clause and for the Approval clause, within the scope of Owner
+  decision 2026-11-24-4; publishing the release, spending money, creating accounts, acts outside
+  this repository that cannot be undone and amending this constitution stay with the owner.
+  `scripts/check-design-docs.py` names the delegation it accepts.
 - **EGM pin:** a review counts only if it ran with an EGM plugin whose content hash is listed in
   `docs/engineering/egm-accepted-hashes.json`. Upgrading EGM adds an entry, in a pull request,
   after the owner has read the diff of the plugin, and amends this procedure if a step changed.

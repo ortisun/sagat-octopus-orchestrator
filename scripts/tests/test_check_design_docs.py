@@ -372,6 +372,28 @@ class OwnerGates(Base):
         self.setup_gate(od_row(self.GATE, decided_by="delegate", covers="TEGM-12"))
         self.assertFails("Rule 5")
 
+    DELEGATION = "OD-2026-11-24-4"
+
+    def test_a_row_of_the_named_delegation_is_citable(self):
+        # Constitution 5.0.0, Owner decisions: until release 0.3.0 is published, an act recorded as
+        # "delegate (OD-2026-11-24-4)" counts as the owner's.
+        self.setup_gate(od_row(self.DELEGATION) + od_row(self.GATE, decided_by=f"delegate ({self.DELEGATION})", covers="TEGM-12"))
+        self.assertPasses()
+
+    def test_a_delegate_row_citing_another_decision_is_not_citable(self):
+        other = "OD-2026-11-03-9"
+        self.setup_gate(od_row(other) + od_row(self.GATE, decided_by=f"delegate ({other})", covers="TEGM-12"))
+        self.assertFails("Rule 5")
+
+    def test_a_delegate_row_without_the_owner_row_of_its_delegation_is_not_citable(self):
+        self.setup_gate(od_row(self.GATE, decided_by=f"delegate ({self.DELEGATION})", covers="TEGM-12"))
+        self.assertFails("Rule 5")
+
+    def test_a_delegate_row_whose_delegation_is_itself_a_delegate_row_is_not_citable(self):
+        self.setup_gate(od_row(self.DELEGATION, decided_by="delegate")
+                        + od_row(self.GATE, decided_by=f"delegate ({self.DELEGATION})", covers="TEGM-12"))
+        self.assertFails("Rule 5")
+
     def test_a_status_decided_against_is_not_citable(self):
         self.setup_gate(od_row(self.GATE, status="Decided against", covers="TEGM-12"))
         self.assertFails("Rule 5")
@@ -545,6 +567,14 @@ class Record(Base):
         self.repo.write("docs/owner-decisions.md", "# O\n\n" + OD_HEADER + od_row("OD-2026-11-03-5", covers=DOC))
         self.assertFails("Rule 2")
         self.assertTrue(ap.sha)
+
+    def test_an_acceptance_by_the_named_delegation_passes(self):
+        ap = Approved(self.repo, counts={"architecture": 1}, accepted=["OD-2026-11-03-5"])
+        path = ap.report_path("architecture")
+        rows = od_row("OD-2026-11-24-4") + od_row("OD-2026-11-03-5", decided_by="delegate (OD-2026-11-24-4)", covers=f"{path}#1")
+        self.repo.write("docs/owner-decisions.md", "# O\n\n" + OD_HEADER + rows)
+        self.repo.commit("row")
+        self.assertPasses()
 
     def test_a_delegate_acceptance_fails(self):
         ap = Approved(self.repo, counts={"architecture": 1}, accepted=["OD-2026-11-03-5"])
