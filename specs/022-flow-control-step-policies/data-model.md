@@ -386,6 +386,12 @@ row only, a run once: it adds one only when the run has no run-scope waiter row 
 when none is left there. The column `live_keys` is not built: the live keys are counted from the semaphore and window
 rows of the digest versions in force.
 
+*Lock order, corrected 2026-11-25 (batch 3 reviews, correctness Major 1):* a slot row is locked after the run's active-run
+counter row (slot 6) and after the start's keys (slot 7), on every path that writes or deletes a run-scope waiter row.
+The grant of a queued start can end the run in its own transaction (an entry that is an `end` node), so it locks the
+run's active-run counter row before the start's keys, as an admission does: run, slot 6, keys, slot 8b
+(`concurrency_locks::the_grant_of_a_queued_start_that_ends_takes_its_counter_row_before_the_key_and_the_queued_count`).
+
 ### `flow_control_key_versions`
 
 PK `version smallint`; `state` CHECK `IN ('ACTIVE','RETIRING','RETIRED')` with at most one `ACTIVE`; `activated_at`,

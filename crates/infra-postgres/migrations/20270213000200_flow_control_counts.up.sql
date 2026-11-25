@@ -10,9 +10,10 @@
 -- the run has no run-scope waiter row in the other table, and takes one away only when none is left there.
 --
 -- Lock order (ADR-0050 decision 7, ADR-0056 decision 2, D022-038): a slot row is a usage row of slot 8b. It is locked
--- when a run's own waiter row is written, which every path does after the run's active-run counter row (slot 6: the
--- admission inserts the run first; a commit that ends a run locks it first, `run_active_counts_lock_slot`) and after the
--- start's keys are locked (semaphores, then windows). The only keys a transaction locks after it are the STEP keys of
+-- when a run's own waiter row is written or deleted, which every path does after the run's active-run counter row (slot
+-- 6: the admission inserts the run first; a commit that ends a run locks it first, `run_active_counts_lock_slot`; the
+-- grant of a run's start locks it before its keys, since the grant can end the run in its own transaction) and after
+-- the start's keys are locked (semaphores, then windows). The only keys a transaction locks after it are the STEP keys of
 -- the run's entry steps when the grant routine starts a buffered run, and no transaction that holds a step key writes a
 -- run waiter afterwards (a run that waits for its start has no step). The counters of live keys are not kept here
 -- (decision D022-084: such a counter would be locked in the middle of a sorted pass over the keys, or at the commit beside

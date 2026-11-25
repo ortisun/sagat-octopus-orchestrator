@@ -1706,7 +1706,9 @@ taken after `git grep D022-04` on every `origin/*` branch.
      read the sum of the slots (`QUEUED_RUNS_SQL`), exact under the admission lock as before (D022-051). Lock order: the
      slot row is locked when the run's own waiter row is written, after the run's active-run counter row (slot 6) and the
      start's keys (slot 7 and the rate rows of 8b); the only keys locked after it are the step keys of a buffered run's
-     entry steps, and no transaction that holds a step key writes a run waiter after it.
+     entry steps, and no transaction that holds a step key writes a run waiter after it. *Corrected 2026-11-25 (batch 3
+     reviews, correctness Major 1):* the grant of a queued start deleted its waiter row (the slot row) before its settle
+     ended the run (the active-run counter row); it now locks the active-run counter row before its keys.
   2. *Live keys: not kept in counters.* A key row is created in the middle of the sorted pass over a decision's keys and
      deleted at the commit by the deferred prune. A counter kept by an immediate trigger would be locked before the
      later keys of the same pass (two transactions sharing a slot can then wait on each other); one kept at the commit
