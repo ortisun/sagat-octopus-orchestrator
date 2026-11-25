@@ -73,7 +73,7 @@ place. Every owner question below was decided under the owner's delegation (Owne
   a separate requirement and the conformance scenario is separate; only the numbering reason was left, which is administrative.
   Their design keeps ADR-0111 as its proposal, which now also weighs feature 004's `lookbackMs` path (the zoom-out review's
   Major 2). Delegate (Owner decision 2026-11-24-4); the coordinating session numbers it.
-- **Decision 045-010 — The start deadline does not move on a lease withdrawal.** A withdrawn lease (Architecture decision 0098,
+- **Decision 045-010 — The start deadline does not move on a lease withdrawal** (superseded by Decision 045-025, then by the third round's rule: a withdrawal extends it to a full window; the first text follows). A withdrawn lease (Architecture decision 0098,
   Architecture decision 0099) never started, so the attempt is the same attempt; resetting the deadline would let withdrawals
   postpone a timeout without limit.
 - **Decision 045-011 — The minimum heartbeat timeout** (revised 2026-11-24 to 10,000 ms after the security, correctness, architecture and design reviews; the first text follows: it was 3,000 ms). A host beats at a third of it (1,000 ms), three beats per window,
@@ -149,12 +149,16 @@ place. Every owner question below was decided under the owner's delegation (Owne
   Publication records 0, 1 or 2; only a version above 0 is read with these rules, so a document stored before the upgrade that already
   carries one of the keys runs as today; the removal of a requirement is refused while a version of its level exists, which is one
   indexed predicate and cannot race the publication, which holds the requirement.
-- **Decision 045-027 — The publication hold is a fair advisory lock** (security review round 2, Major 2; architecture review round 2,
+- **Decision 045-027 — The publication hold** (revised in round 3, security Majors 1 to 3 and architecture Major 4: it reads the requirement's row `FOR SHARE` and checks both process kinds, as `lease_withdrawal_required()` of Architecture decision 0098's build does, inside the store's publication transaction, and the rollback floor is a rule of 0098's replay-floor trigger; the advisory lock of round 2 is withdrawn; the first text follows) was first a fair advisory lock (security review round 2, Major 2; architecture review round 2,
   Major 7): a shared transaction advisory lock on the requirement's key, which the operator's functions take exclusively; advisory
   locks queue in order, so publications cannot starve the operator, and the runtime role takes no row lock on the registry. It refines
   Architecture decision 0082 decision 1, and features 020, 029 and 031 may use the same function.
 
 ## Gaps
+
+- **Gap 045-005 — An attempt leased less than 18 s before its close deadline is not provisional** under protocol 1.8 (architecture review
+  round 3, Major 6): its attempt deadline is the earlier deadline. Accepted for 0.3.0; a close floor of 18 s would remove it at the
+  cost of a `scheduleToCloseMs` minimum of 19 s for nodes without `timeoutMs`.
 
 - **Gap 045-001 — The deadline pass's share of a tick.** Whether it needs its own work budget per tick or shares the lost-lease pass's
   window. Closed 2026-11-24 after the security and design reviews: it never shares; it is its own `pick` pass with its own window.
