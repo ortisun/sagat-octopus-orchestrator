@@ -475,6 +475,54 @@ finding was answered.
 - **D044-147** (2026-11-25) A workflow type is unique in its namespace; a code run's signals never satisfy its waits, and
   an event type may not be a signal name; `version: active` must be a code version of the same type.
 
+### Decisions after the fifth review round (2026-11-25)
+
+The reports are in `docs/designs/044-workflow-as-code.reviews/2026-11-25/round-5/`; `resolution.md` there says how each
+finding was answered.
+
+- **D044-148** (2026-11-25) Every path that cancels a run (the route, a chain-addressed cancel, a parent's `propagate`
+  policy, the source cancel of a pending reset) goes through `execution::request_cancellation`, which takes the code arm
+  for a code run; a source-text check holds that `stop_run` with `Cancelled` has no other caller but the deadline pass.
+  The deadline is cleared when a terminal command is accepted or a stop begins; a deferred terminal command is not an
+  answer at the deadline; a reset re-arms the deadline from the grace that `run.cancel_requested` carries.
+- **D044-149** (2026-11-25) The stop drain and the handoff finish every update that has not completed (`REJECTED` or
+  `FAILED`, reason `RUN_ENDED` or `RUN_CONTINUED`); an update to a stopping or ended run is `409 RUN_NOT_MUTABLE`; a
+  holder of `run:operate` reads every principal's update under a key as a list.
+- **D044-150** (2026-11-25, supersedes D044-125 in part) A deferral record holds the deferred command's kind, target and
+  body digest; a re-emitted command that differs is `CHAIN_MISMATCH`; a replaying SDK expects it last; the replay check
+  answers its body digest. A terminal or continue-as-new command while a scope is open and not aborting is
+  `COMMAND_INVALID`; an aborting scope defers it. A completion below `S(k)` reviews at once as `NONDETERMINISM_RISK`.
+- **D044-151** (2026-11-25, supersedes D044-126's mechanism) The call-site check counts the calls of every method name
+  of `WorkflowDefinition` in production code against a checked-in allowlist of `(file, method, count)`, with no new
+  dependency; rustdoc JSON lists no call sites and needs a nightly toolchain.
+- **D044-152** (2026-11-25, supersedes D044-142 in part) The closing window also admits signal consumption and update
+  acceptance, rejection and completion.
+- **D044-153** (2026-11-25) The initiators of every engine-held approval, an activity's or an approval command's, are the
+  starter, the actors of external events delivered up to the issuing activation, and the actors of the run's moves and
+  review retries before it.
+- **D044-154** (2026-11-25, withdraws the opaque reference of D044-137's text) A `secret` field reaches a workflow lease
+  as the typed placeholder; a code run cannot route a secret through the function. Architecture decision 0108 refines
+  Architecture decision 0033 for schema-less code payloads (as Decision 302 did for events) and extends Architecture
+  decision 0036 decision 6's carriers.
+- **D044-155** (2026-11-25) Every code version of a workflow keeps the workflow type of its first one, so a move and
+  `version: active` never change the type; a command names only a blob referenced by its run's history or written under
+  its workflow lease; query and replay-check tokens may read those blobs; every name with the prefix `sagat.workflow` is
+  refused at registration; a sticky name serves only its session.
+- **D044-156** (2026-11-25) `append_events(conn, run, rows)` carries the origin on each `JournalRow`; the reconciler binds
+  `RunEvent::waking_kinds()` with a parity test, reads `steps.code_wait_started_at` through a partial index; `verify_run`
+  compares the overlay and the cancellation deadline.
+- **D044-157** (2026-11-25) `sagat_move_code_run` checks the pin's integrity, a matching replay check at the current
+  `S(k)` and the appended move event; `platform_requirement_hold(p_capability, p_kinds)` is specified here in full.
+- **D044-158** (2026-11-25) A reset rebuilds the inbox from the prefix's `signal.buffered` and `signal.consumed`. Python's
+  module set is closed at load. Eager leases are outside the completion's 62 statements and get their own budget entry
+  in Task 044-14. `code_query_requests.args` and `answer` are class `content`.
+- **D044-100** (2026-11-25, later state) Its `PgRunTx::append_events(events, origin)` is superseded by D044-144 and
+  D044-156: a free function with the origin on each row.
+- **D044-104** (2026-11-25, later state) Its sentence that Task 044-21 builds the inbox itself is superseded by the later
+  state of G044-017: Task 044-21 waits for Architecture decision 0111's inbox.
+- **D044-123** (2026-11-25, later state) Its "added here if design 045 has not landed" is superseded: design 045 owns
+  `steps.min_protocol_minor`, and Task 044-8 depends on it (G044-020).
+
 ## 3. Gaps
 
 - **G044-001** (2026-11-24) The memory of an idle cached run is not measured in any SDK; the TypeScript spike's heap
@@ -546,6 +594,14 @@ finding was answered.
   version, and own `steps.min_protocol_minor`, on which this design depends.
 - **G044-017** (2026-11-25, later state) Architecture decision 0111 must admit code versions as consumers, its inbox
   design must be approved, and Task 044-21 waits for both; no fallback builds the inbox here.
+
+- **G044-024** (2026-11-25) The constitution 5.0.0 draft (branch `docs/constitution-5.0.0`, principle IV, "A completion
+  is one transaction") says a completion "commits all or nothing" and "a completion that ends the run is refused while
+  an accepted signal, update or cancellation is still unseen". This design defers the terminal command instead and
+  commits the rest of the completion, because a refused completion repeats for ever when the cause is an obligation the
+  function cannot settle (round 4). The draft's owner should word the clause as "the command that ends the run is not
+  applied while ... and is deferred; the rest of the completion commits all or nothing". Until then the Constitution
+  Check records principles I and IV as "Pass with conditions". Raised by the architecture review of round 5.
 
 ## 4. Owner questions (all delegated)
 

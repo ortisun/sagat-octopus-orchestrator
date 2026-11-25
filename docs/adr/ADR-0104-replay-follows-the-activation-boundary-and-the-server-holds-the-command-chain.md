@@ -3,7 +3,7 @@
 **Status:** Proposed
 **Decided by:** agent (Claude Code, design 044), under the owner's delegation (OD-2026-11-20-6, OD-2026-11-24-4); no person has reviewed it
 **Refines / supersedes:** refines ADR-0103; none superseded
-**Enforced by:** `integration_workflow_as_code::activation_window::live_and_replayed_activations_are_equal` (generated interleavings against PostgreSQL with barriers); `is_visible_and_is_waking_cover_every_event_kind`; `pending_is_true_exactly_when_a_waking_event_follows_the_last_completed_start`; `every_waking_kind_makes_the_workflow_task_ready_in_its_transaction`; `the_reconciler_repairs_a_pending_run_whose_step_waits`; `a_completion_below_the_window_is_refused_unhandled_events`; `a_completion_with_a_foreign_command_chain_is_refused_and_puts_the_run_under_review`; `a_changed_activity_input_on_replay_is_a_chain_mismatch`; `the_chain_of_the_golden_commands_is_the_golden_hash`; the conformance scenarios `code-nondeterminism` and `code-signal-at-return` (design 044, Tasks 044-4, 044-5, 044-9, 044-11, 044-26)
+**Enforced by:** `integration_workflow_as_code::activation_window::live_and_replayed_activations_are_equal` (generated interleavings against PostgreSQL with barriers); `is_visible_and_is_waking_cover_every_event_kind_and_origin`; `pending_is_true_exactly_when_a_waking_event_follows_the_last_completed_start`; `every_journal_writer_wakes_a_code_run_in_its_transaction`; `the_reconciler_repairs_a_pending_run_from_the_journal`; `the_reconcilers_waking_kinds_equal_is_waking`; `a_completion_below_the_window_reviews_as_nondeterminism_risk`; `a_deferred_command_re_emitted_with_another_body_is_a_chain_mismatch`; `a_completion_with_a_foreign_command_chain_puts_the_run_under_review`; `a_changed_activity_input_on_replay_is_a_chain_mismatch`; `the_chain_of_the_golden_commands_is_the_golden_hash`; the conformance scenarios `code-nondeterminism` and `code-signal-at-return` (design 044, Tasks 044-4, 044-5, 044-9, 044-11, 044-26)
 **Required before acceptance:** the fault tests of design 044 Tasks 044-9 and 044-28
 
 ## Context
@@ -32,11 +32,15 @@ input; a chain over data the worker receives in the history could be produced wi
    repair a pending run whose step waits with kind `DECIDER`.
 4. Every journal row MUST store its origin, every command record its node spec and body digest, `run.started` the
    seed, so that the journal alone rebuilds a code run. A completion MUST carry `applied_through_seq`; the SDK MUST hold a terminal command until every event of the window
-   has been applied; the server MUST refuse a completion below `S(k)` (`UNHANDLED_EVENTS`, not counted, the SDK evicts and
-   replays). A terminal or continue-as-new command MUST be deferred, not counted, while a waking event after the
-   activation's start is unseen or an obligation (an open saga, a review, an unknown outcome, and for continue-as-new
-   an open activity, child or approval) is open: the completion's other commands commit, the deferral is recorded, the
-   command takes no number, and the SDK re-emits it last at each later activation; after 3 deferrals for unseen events
+   has been applied; the server MUST refuse a completion below `S(k)` as an SDK fault and put the run under review at
+   once with `NONDETERMINISM_RISK`. A terminal or continue-as-new command MUST be deferred, not counted, while a waking
+   event after the activation's start is unseen or an obligation (an aborting saga scope, a review, an unknown outcome,
+   and for continue-as-new an open activity, child or approval) is open: the completion's other commands commit, the
+   deferral is recorded with the deferred command's kind, target and body digest, the command takes no number, the SDK
+   re-emits it last at each later activation, and a re-emitted command that differs from the record MUST put the run
+   under review with `CHAIN_MISMATCH`; a replaying SDK MUST expect the deferred command last in that activation. A
+   terminal or continue-as-new command while a scope is open and not aborting MUST put the run under review
+   (`COMMAND_INVALID`), since only the function can close it. After 3 deferrals for unseen events
    the run MUST refuse new signals and updates until a completion commits without one. A command on one of the run's own
    steps that is already terminal MUST be a no-op with its own command record, counted and chained.
 5. The server MUST keep per code run a 32-byte chain `H(k) = SHA-256(H(k − 1) ‖ uint32 big-endian length ‖ d(k))`, with
@@ -44,7 +48,9 @@ input; a chain over data the worker receives in the history could be produced wi
    command's canonical body as received after a canonical check (a work command's fragment, a typed command's body). The
    history sent to workers MUST NOT carry the bodies of past commands. The domain MUST hold the chain rule over opaque
    digests behind an application port implemented in `infra-ir`. A
-   mismatch MUST put the run under review with cause `CHAIN_MISMATCH` and commit no command.
+   mismatch MUST put the run under review with cause `CHAIN_MISMATCH` and commit no command. A side-effect marker's
+   value is in the history, so its chain entry proves only that the function asked for that marker, not that it
+   computed the same value.
 6. The causes MUST behave as the table of design 044, Technical Plan 6.3, says, with the count of consecutive failures
    stored on the run; a failure's detail MUST be a closed cause, a command number, an actual kind and target checked
    against the grammar of its kind, and an exception type name matching `^[A-Za-z_][A-Za-z0-9_.$]{0,127}$`; the expected

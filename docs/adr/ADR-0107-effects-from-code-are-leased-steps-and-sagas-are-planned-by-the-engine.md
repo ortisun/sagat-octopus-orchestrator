@@ -3,7 +3,7 @@
 **Status:** Proposed
 **Decided by:** agent (Claude Code, design 044), under the owner's delegation (OD-2026-11-20-6 for Owner questions 044-007 and 044-010; OD-2026-11-24-4 for the acceptance); no person has reviewed it
 **Refines / supersedes:** applies ADR-0004 and ADR-0076 to code workflows; supersedes ADR-0010 decision 3 (a saga's plan is a pure function of the published definition) for code runs only
-**Enforced by:** `an_activity_command_cannot_carry_a_secret_of_another_activity_entry`; `a_compensation_receives_the_secrets_of_its_own_entry`; `a_fragment_that_changes_irreversible_is_refused`; `a_fragment_with_an_expression_field_is_refused`; `a_fragment_with_destinations_is_refused`; `a_fragment_with_an_output_schema_is_refused`; `an_approval_with_an_inline_policy_is_refused`; `publication_refuses_an_envelope_activity_with_a_reserved_prefix`; `publication_refuses_a_compensate_with_that_is_not_an_entry`; `an_aborted_code_saga_compensates_in_reverse_dependency_order`; `independent_code_compensations_run_while_one_is_under_review`; `an_unknown_outcome_in_a_code_saga_waits_for_review`; `a_terminal_command_with_an_open_saga_is_refused`; `a_terminal_command_waits_for_a_leased_activity_before_run_finished`; `a_code_step_output_beyond_the_retained_bytes_is_an_unknown_outcome`; `eager_activity_leases_are_provisional_and_granted_in_the_completion_transaction`; `an_unacknowledged_eager_lease_expires_without_an_unknown_outcome`; `an_idempotent_replay_returns_no_lease`; the conformance scenarios `code-saga` and `code-saga-uncertain` (design 044, Tasks 044-3, 044-5, 044-14, 044-22, 044-26)
+**Enforced by:** `an_activity_command_cannot_carry_a_secret_of_another_activity_entry`; `a_compensation_receives_the_secrets_of_its_own_entry`; `a_fragment_that_changes_irreversible_is_refused`; `a_fragment_with_an_expression_field_is_refused`; `a_fragment_with_destinations_is_refused`; `a_fragment_with_an_output_schema_is_refused`; `an_approval_with_an_inline_policy_is_refused`; `an_envelope_activity_with_a_reserved_prefix_is_refused`; `a_compensate_with_that_is_not_an_entry_is_refused`; `a_sequential_saga_compensates_in_reverse_dependency_order`; `independent_code_compensations_run_while_one_is_under_review`; `an_unknown_outcome_in_a_code_saga_waits_for_review`; `a_terminal_command_with_an_open_saga_scope_reviews_as_command_invalid`; `a_terminal_command_while_a_scope_aborts_is_deferred`; `every_kind_of_initiator_is_excluded_from_an_engine_held_approval`; `a_terminal_command_waits_for_a_leased_activity_before_run_finished`; `a_code_step_output_beyond_the_retained_bytes_is_an_unknown_outcome`; `eager_activity_leases_are_provisional_and_granted_in_the_completion_transaction`; `an_unacknowledged_eager_lease_expires_without_an_unknown_outcome`; `an_idempotent_replay_returns_no_lease`; the conformance scenarios `code-saga` and `code-saga-uncertain` (design 044, Tasks 044-3, 044-5, 044-14, 044-22, 044-26)
 **Required before acceptance:** the fault tests of design 044 Task 044-22 and the measurements of Task 044-25
 
 ## Context
@@ -21,12 +21,16 @@ code saga cannot have. Temporal offers local activities and leaves compensation 
    created by a command. There MUST be no local activity.
 2. A work command MUST carry a fragment of the code profile of its node kind: expression and template fields MUST be
    literals or refused; `destinations`, an inline approval policy and `onError` MUST be refused; `secrets`,
-   `irreversible`, `highRisk`, `compensateWith`, `reconcileWith` and `outputSchema` MUST come from the published
-   envelope entry, which a fragment may repeat or omit but never change.
+   `irreversible`, `highRisk`, `compensateWith`, `reconcileWith`, `outputSchema`, `requiresApproval` and feature 022's
+   `concurrency` and `rateLimit` policies MUST come from the published envelope entry, which a fragment may repeat or
+   omit but never change; a fragment MAY carry only the literal keys of those policies.
 3. A command MUST stay within the current code version's envelope: the activity entry that covers its name (an exact
    entry wins over a prefix, a longer prefix over a shorter one; only an exact entry MAY list secrets), the names of its
    `compensateWith` and `reconcileWith` entries too; an activity whose entry has `requiresApproval` MUST be held by the
-   engine behind an approval of that very step under the named policy; a derived step MUST receive the secrets of its own entry; a
+   engine behind an approval of that very step under the named policy; the initiators that a policy with
+   `excludeInitiator` excludes, for that approval and for an approval command alike, MUST be the run's starter, the actor
+   of every event of origin `external` delivered up to the issuing activation, and the actor of every
+   `run.code_version_moved` and `step.retry_requested` of the run journaled before it; a derived step MUST receive the secrets of its own entry; a
    script entry by digest with its own secrets, schemas and compensation; a listed child
    workflow at its listed version; a listed event type within its look-back; a named approval policy. No activity name MAY start with
    `script.` or `sagat.`. An activity input MUST be validated and classified by its entry's `inputSchema`.
@@ -42,9 +46,11 @@ code saga cannot have. Temporal offers local activities and leaves compensation 
    compensations stay eligible together; compensation identifiers MUST be derived from the start version and the forward
    node; they MUST run with the rules of features 003 and 037; the function MUST learn only the scope's outcome; an engine-driven stop MUST apply each open
    scope's `cancelPolicy`, carried by the open-saga command.
-7. A terminal command MUST be refused while a saga scope is open or aborting or a step is under review or has an unknown
-   outcome; otherwise it MUST go through the stop drain, and `run.finished` MUST be written only when no leased work is
-   left or what is left went to review.
+7. A terminal command MUST be deferred, not counted, while a saga scope aborts or a step is under review or has an
+   unknown outcome, and MUST put the run under review (`COMMAND_INVALID`) while a scope is open and not aborting, since
+   only the function can close it; closing a scope while a member is not settled, and a command that names a closed
+   scope, MUST be `COMMAND_INVALID`. An accepted terminal command MUST go through the stop drain, and `run.finished` MUST
+   be written only when no leased work is left or what is left went to review.
 
 ## Considered options
 

@@ -3,7 +3,7 @@
 **Status:** Proposed
 **Decided by:** agent (Claude Code, design 044), under the owner's delegation of the 0.3.0 design questions (OD-2026-11-20-6) and of the acceptance of design 044's architecture decisions (OD-2026-11-24-4); scope by the owner (OD-2026-11-24-3); no person has reviewed it
 **Refines / supersedes:** refines ADR-0003 (declarative IR: "procedural worker with determinism rules later") and ADR-0001; reuses ADR-0010, ADR-0076 and the step review of feature 003
-**Enforced by:** `integration_workflow_as_code::nodes::every_command_kind_runs_through_every_path`; `the_workflow_task_step_is_neither_derived_nor_forwarded`; `a_code_run_never_finishes_by_routing`; the crash tests of `fault_workflow_as_code` (between the statements of the batched path, after the commit); the differential test `the_batched_path_writes_what_persist_writes`; the budget test `a_completion_of_256_commands_stays_within_its_statement_budget`; `the_claim_statements_of_graph_steps_do_not_grow`; `every_command_kind_round_trips_through_its_code_profile`; `an_expired_workflow_task_is_counted_without_review`; `a_workflow_task_lease_is_refused_by_every_activity_rpc`; `an_activity_binding_named_workflow_order_gives_no_workflow_authority` (design 044, Tasks 044-4, 044-5, 044-8, 044-9)
+**Enforced by:** `integration_workflow_as_code::nodes::every_command_kind_runs_through_every_path`; `the_workflow_task_step_is_neither_derived_nor_forwarded`; `a_code_run_never_finishes_by_routing`; the crash tests of `fault_workflow_as_code` (between the statements of the batched path, after the commit); the differential test `the_batched_path_writes_what_persist_writes`; the budget test `a_completion_of_256_commands_of_every_kind_stays_within_62_statements`; `code_definition_sites::every_call_site_is_listed`; `the_claim_statements_of_graph_steps_do_not_grow`; `every_command_kind_round_trips_through_its_code_profile`; `an_expired_workflow_task_is_counted_without_review`; `a_workflow_task_lease_is_refused_by_every_activity_rpc`; `an_activity_binding_named_workflow_order_gives_no_workflow_authority` (design 044, Tasks 044-4, 044-5, 044-8, 044-9)
 **Required before acceptance:** the measurements of design 044 Task 044-25 and the fault tests of Tasks 044-9 and 044-28, as ADR-0050 requires of a decision that changes the execution path
 
 ## Context
@@ -20,10 +20,12 @@ A code version has no graph. The constitution forbids tenant code in a platform 
 1. A code workflow MUST be a decider: the function runs in the tenant's worker, in workflow tasks, and answers each with
    commands. The platform MUST NOT run workflow code in any of its processes.
 2. A code version MUST parse to a definition whose graph is the code variant, and a run transaction of a code run MUST
-   compose it with the run's node overlay (the node spec of every accepted work command, at most 4 KiB, and its derived
-   companions, frozen at acceptance), so that every accessor (`node`, `node_for_instance`, `entrypoint`, `scope_body`)
-   resolves through it. A source-text check MUST list every call site, and an arm that would let an unknown node
-   through MUST fail closed.
+   compose it with the run's node overlay (the node spec of every accepted work command, at most 1 KiB, and its derived
+   companions, frozen at acceptance), so that every method of `WorkflowDefinition`, the saga and scope accessors
+   included, answers through it or from the code version's document. A source-text check, with no new dependency, MUST
+   count the calls of every method name of `WorkflowDefinition` in the production code of `crates/*/src` and
+   `apps/*/src` against a checked-in allowlist of `(file, method, count)`, so that a new call site fails until it is
+   reviewed; an arm that would let an unknown node through MUST fail closed.
 3. A workflow task MUST be a lease of the run's reserved workflow-task step, of `steps.kind` `WORKFLOW_TASK` and
    `NodeKind::WorkflowTask` (built from the step row and the pin), whose reserved node identifier `is_derived`, `forward`
    and `parse_stored` handle themselves, and whose activity field holds `sagat.workflow:<type>:<hex digest>`, so that the
@@ -31,7 +33,9 @@ A code version has no graph. The constitution forbids tenant code in a platform 
    and the pause and skips the activity-only rules (quotas, breakers, pools, capacity windows, the run-document input),
    counting the task in the namespace quota bucket `sagat.workflow`. Only a session that registered that type and digest under a
    binding whose `workflowTypes` lists the type MUST receive it; an activity binding MUST NOT cover a workflow type; an
-   activity registration or binding that names `sagat.workflow` MUST be refused.
+   activity registration or binding pattern that starts with `sagat.workflow` MUST be refused, graph publication MUST
+   refuse an activity name that starts with `sagat.` (except feature 017's managed names), and the claim and the
+   completion MUST refuse a reserved workflow name on a step whose kind is not `WORKFLOW_TASK`.
 4. A workflow task MUST carry no secret, MUST have no heartbeat, MUST be refused by every activity RPC, and its expiry MUST
    be counted as a workflow task failure, never sent to reconciliation or review, because it has no external effect.
 5. Every command that creates work MUST carry the canonical JSON of a fragment of the code profile of an existing node

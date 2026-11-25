@@ -2,8 +2,8 @@
 
 **Status:** Proposed
 **Decided by:** agent (Claude Code, design 044), under the owner's delegation (OD-2026-11-20-6 for Owner questions 044-011 and 044-014; OD-2026-11-24-4 for the acceptance and for Owner question 044-015); no person has reviewed it
-**Refines / supersedes:** supersedes ADR-0031 decisions 8 and 9 (an update schedules no work; its handler is a declared expression) for code versions, and decision 7 (a query observes one committed snapshot) for worker queries, whose snapshot is the function's state after a committed completion; extends feature 014's declared state and ADR-0031's declared result disclosure to code versions; makes the history export of a code run a payload read path of feature 016 (ADR-0028), the new decision ADR-0031 asks for before any reader of raw payloads; refines ADR-0111 (branch `docs/temporal-parity-readiness`, Proposed) for code versions: every declared signal is buffered and the activation is its consumer
-**Enforced by:** `a_signal_before_the_function_waits_is_delivered_at_the_next_activation`; `a_delivered_signal_is_consumed_by_the_completion`; `a_repeated_signal_key_is_answered_before_the_bounds`; `a_declared_query_is_answered_with_no_worker`; `an_update_result_outside_its_schema_fails_the_update_only`; `an_update_receipt_of_another_principal_is_not_found`; `a_lost_update_response_replays_after_authorization_is_checked_again`; `a_worker_query_is_claimed_by_polling_with_the_broker_down`; `a_worker_query_answer_outside_its_schema_is_refused`; `integration_workflow_as_code::security::a_classified_value_copied_into_an_activity_input_is_redacted_on_export`; `integration_workflow_as_code::security::a_secret_field_is_never_exported`; the conformance scenarios `code-signals`, `code-updates`, `code-declared-state` and `code-worker-queries` (design 044, Tasks 044-21, 044-24, 044-26, 044-29)
+**Refines / supersedes:** supersedes ADR-0031 decisions 8 and 9 (an update schedules no work; its handler is a declared expression) for code versions, and decision 7 (a query observes one committed snapshot) for worker queries, whose snapshot is the function's state after a committed completion; extends feature 014's declared state and ADR-0031's declared result disclosure to code versions; makes the history export of a code run a payload read path of feature 016 (ADR-0028), the new decision ADR-0031 asks for before any reader of raw payloads; refines ADR-0111 (branch `docs/temporal-parity-readiness`, Proposed) for code versions: every declared signal is buffered and the activation is its consumer; refines ADR-0033's reading that a payload with no schema at all is structure only for everyone (Decisions 265 and 269 of feature 016), for code runs, as Decision 302 did for events; extends the closed carrier set of ADR-0036 decision 6 with the carriers of a code version's envelope
+**Enforced by:** `a_signal_before_the_function_waits_is_delivered_at_the_next_activation`; `a_delivered_signal_is_consumed_by_the_completion`; `a_repeated_signal_key_is_answered_before_the_bounds`; `a_declared_query_is_answered_with_no_worker`; `an_update_result_outside_its_schema_fails_the_update_only`; `an_update_receipt_of_another_principal_is_not_found`; `a_lost_update_response_replays_after_authorization_is_checked_again`; `a_worker_query_is_claimed_by_polling_with_the_broker_down`; `a_worker_query_answer_outside_its_schema_is_refused`; `integration_workflow_as_code::security::an_activity_input_is_redacted_on_export_by_its_entrys_input_schema`; `...::a_side_effect_value_is_structure_only_without_the_reveal_grant_and_revealed_with_it`; `...::a_secret_field_reaches_the_workflow_lease_as_a_placeholder`; `an_open_update_fails_run_ended_when_the_run_ends`; `an_open_update_fails_run_continued_at_continue_as_new`; `integration_workflow_as_code::security::a_secret_field_is_never_exported`; the conformance scenarios `code-signals`, `code-updates`, `code-declared-state` and `code-worker-queries` (design 044, Tasks 044-21, 044-24, 044-26, 044-29)
 **Required before acceptance:** ADR-0111 accepted with its refinement for code versions (Gap 044-017), and the measurements of design 044 Task 044-25
 
 ## Context
@@ -16,8 +16,8 @@ queries from committed state with no worker. Some answers exist only in the func
 
 ## Decision
 
-1. A code version MUST declare its signals in ADR-0111's shape, each buffered, and publication MUST require
-   `signal-inbox-v1`; the next activation MUST deliver the buffered signals in journal order; a signal MUST be consumed
+1. A code version MUST declare its signals in ADR-0111's shape, each buffered, and the publication of a version that
+   declares signals MUST require `signal-inbox-v1`; the next activation MUST deliver the buffered signals in journal order; a signal MUST be consumed
    only when the function's handler or wait takes it, reported by the completion and marked in its transaction; a
    delivered signal not yet taken MUST stay pending, moved or discarded as ADR-0111 decides. After authentication,
    authorization and tenant resolution, the idempotency key MUST be answered before any bound.
@@ -27,8 +27,11 @@ queries from committed state with no worker. Some answers exist only in the func
    durably, validated by the function when its admission event is applied, handled by the function (which may schedule
    work), and completed with a result validated against its closed `resultSchema` by the platform's validator, or failed
    (`RESULT_SCHEMA_VIOLATION` when the result does not fit), the run left alone. An `updateKey` MUST be scoped by the run and the admitting
-   principal; a receipt and a repeated admission MUST be answered only within that scope (or to `run:operate`), after
-   authorization is checked again, and an unknown key MUST answer the same `404` as a missing one.
+   principal; a receipt and a repeated admission MUST be answered only within that scope (a holder of `run:operate`
+   reads the list of every principal's update under the key), after authorization is checked again, and an unknown key
+   MUST answer the same `404` as a missing one. The stop drain and the handoff of continue-as-new MUST finish every
+   update that has not completed (`REJECTED` if admitted, `FAILED` if accepted, reason `RUN_ENDED` or `RUN_CONTINUED`),
+   and an update to a run that is stopping or ended MUST be refused `409 RUN_NOT_MUTABLE`.
 3. A code version MAY declare state and expression queries in the IR's `state` form; the engine MUST answer them exactly
    as for a graph run.
 4. A worker query MUST be a durable row, holding its arguments (at most 64 KiB) and answer inline and charged to the
@@ -38,7 +41,12 @@ queries from committed state with no worker. Some answers exist only in the func
    `resultSchema` and returned with `Cache-Control: no-store`, at most 64 in flight per namespace.
 5. Feature 016's carriers MUST gain, under a new version of its classification rules, the schemas of a code version's
    envelope (activity and script `inputSchema` and `outputSchema`, signal and event schemas, a children entry's
-   `outputSchema`); every other payload of a code run MUST be classified `pii` as a whole.
+   `outputSchema`); every other payload of a code run MUST be classified `pii` as a whole, so a holder of the reveal
+   grant sees it and every other reader receives structure only. This refines ADR-0033's reading that a payload with no
+   schema at all is structure only for everyone, as Decision 302 of feature 016 did for events, because an operator
+   repairing a run and a replayer need those values; and it extends ADR-0036 decision 6's closed carrier set. A field
+   classified `secret` MUST reach a workflow lease as the export's typed placeholder, never its value: a code run cannot
+   route a secret through the function, and an activity receives a secret only through its own entry's `secrets`.
 6. `GET /runs/{runId}/history` MUST be granted by `run:read` and `history:export`, held by the admin role only by
    default, in a versioned format with a baseline; it MUST classify every payload by its schema (an activity input by its
    envelope entry's `inputSchema`, a business literal by its declaring schema or as `pii`), apply
