@@ -31,7 +31,7 @@ code saga cannot have. Temporal offers local activities and leaves compensation 
    engine behind an approval of that very step under the named policy; the initiators that a policy with
    `excludeInitiator` excludes, for that approval and for an approval command alike, MUST be kept per run (the starter,
    the actor of every event of origin `external`, every mover, review retrier, review resolver and resetter, and the
-   publisher of each code version the run is pinned to), copied to a successor, a child and a reset run with a sequence
+   publisher and the activator of each code version the run is pinned to), copied to a successor, a child and a reset run with a sequence
    of 0 so that they always bind, written for a child of a graph parent from the parent's starter, chain initiator and
    publisher, written only in trees that contain a code run, checked by every approval of a run that has them (a graph
    child's approval node included), and otherwise bound by the issuing activation's start; the binder of a session's

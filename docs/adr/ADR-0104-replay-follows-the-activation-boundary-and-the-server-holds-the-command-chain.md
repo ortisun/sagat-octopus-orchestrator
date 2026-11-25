@@ -52,8 +52,10 @@ input; a chain over data the worker receives in the history could be produced wi
 5. The server MUST keep per code run a 32-byte chain `H(k) = SHA-256(H(k − 1) ‖ uint32 big-endian length ‖ d(k))`, with
    `H(0)` all zero and `d(k)` the RFC 8785 JSON of `{seq, kind, target, body}` of command k, `body` the SHA-256 of the
    command's canonical body as received after a canonical check (a work command's fragment, a typed command's body), in
-   which a blob-carried value is its descriptor (the SHA-256 and size of its RFC 8785 bytes), never a blob identifier,
-   so a replay reproduces it without uploading and the server checks the stored blob against it. The
+   which every value field that may travel as a blob is its descriptor (the SHA-256, as 64 lowercase hexadecimal
+   characters, and the size of its RFC 8785 bytes) whatever its carrier, never a blob identifier, so a replay reproduces
+   it without uploading and the server checks a stored blob against it; each command kind's `kind` string and `target`
+   are those of design 044, Technical Plan 6.2. The
    history sent to workers MUST NOT carry the bodies of past commands. The domain MUST hold the chain rule over opaque
    digests behind a trait of the domain implemented in `infra-ir`. A
    mismatch MUST put the run under review with cause `CHAIN_MISMATCH` and commit no command. A side-effect marker's

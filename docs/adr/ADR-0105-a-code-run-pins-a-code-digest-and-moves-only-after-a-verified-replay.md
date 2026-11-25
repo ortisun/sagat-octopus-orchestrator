@@ -41,7 +41,7 @@ workflow-task step waiting.
 3. A move MUST be available as a dry run that records verdicts and moves nothing. A move MUST be refused for a run under
    a `HISTORY_LIMIT` review, whose remedy is the retry; each item MUST end in feature 018's item model (a move or a
    dry-run match `SUCCEEDED`; a mismatch, a misfit or a stopping run `SKIPPED`; a busy run deferred, then `FAILED`) and
-   record its verdict (`MATCHED`, `REPLAY_MISMATCH`,
+   wait for its verdict under a defer cause that is not a refusal (`REPLAY_PENDING`), and record its verdict (`MATCHED`, `REPLAY_MISMATCH`,
    `ENVELOPE_MISMATCH` or a refusal) and its first difference. A rerun of a code run MUST start on its current code
    version.
 4. A reset of a code run MUST be to its current code version only, in one transaction within ADR-0050's prefix ceiling.
@@ -56,7 +56,8 @@ workflow-task step waiting.
    be refused for a code run. `run.code_version_moved` MUST be `COPY` (the pin comes from the start version), and a
    code run's `saga.aborting`, `compensation.planned` and the scope's outcome events MUST be `COPY` once its scope's
    outcome is in the prefix, the reset rebuilding that scope's saga rows from them. This refines ADR-0050 decision 5
-   for code runs: rows re-emitted with `restored: true` count for the visible count, the history and the chain. Every new event kind MUST have a reset rule in the registry of
+   for code runs: rows re-emitted with `restored: true` count for the visible count, the history and the chain, and the
+   reset copies each row's server-side detail (the seed, the node specs, the body and deferral digests) with it. Every new event kind MUST have a reset rule in the registry of
    ADR-0050 decision 8, which gains a column for rules that differ for code runs.
 5. An accepted continue-as-new MUST be recorded (`run.continue_requested`, with the resolved successor version) and
    close the workflow-task step, the handoff pinning exactly the recorded version; feature 014's continuation pass MUST perform the
@@ -65,7 +66,8 @@ workflow-task step waiting.
    same type, or a version without a `chainPolicy` is refused at the completion (`COMMAND_INVALID`). The successor MUST
    pin the run's current code version by default, or the workflow's active version when the command asks for it, which supersedes ADR-0030 decision 16 for code runs; it MUST be deferred, not counted, while
    an activity, child or approval is open or a saga scope aborts, and refused (`COMMAND_INVALID`) while a scope is open,
-   when the run does not head an open continuation chain, or when its input is not an inline JSON object; the chain's
+   when the run does not head an open continuation chain, or when its input is not an inline JSON object (the SDK keeps
+   it inline, with the declared state, within 192 KiB, and throws a typed error at the call otherwise); the chain's
    limits govern whatever version the successor pins.
 6. Each SDK MUST offer `patched(id)` and `deprecatePatch(id)`, recorded as markers.
 

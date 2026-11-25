@@ -692,6 +692,41 @@ finding was answered.
   live in `run_events.server_detail`; the pause is an advisory lock; the completion budget is 63 statements (50 + 13),
   the saga scope rows included.
 
+### Decisions after the tenth review round (2026-11-25)
+
+The reports are in `docs/designs/044-workflow-as-code.reviews/2026-11-25/round-10/`; `resolution.md` there says how each
+finding was answered.
+
+- **D044-213** (2026-11-25, supersedes D044-201 in part) Every value field that may travel as a blob is hashed as its
+  descriptor whatever its carrier; the server computes an inline value's descriptor; `d(k)`'s kind strings and targets
+  are tabled in Technical Plan 6.2, digests as 64 lowercase hexadecimal characters.
+- **D044-214** (2026-11-25) A continue-as-new input is never a blob: the declared state and that input stay inline within
+  192 KiB, and the SDK throws `InlineValuesExceeded` at the call that would cross it.
+- **D044-215** (2026-11-25) Command-value blobs have the purpose `COMMAND_VALUE`, owned by the run's `~workflow` step at
+  the lease's attempt and generation; the accepting completion commits them; a deferral holds its blob through
+  `blobs.held_by_seq`; validation reads each distinct blob once, at most 4 MiB per completion, under a fair semaphore.
+- **D044-216** (2026-11-25, supersedes D044-202 in part) A completion carries at most 339 commands: 256 from the
+  function's calls (48 KiB of metadata) and 83 the SDK issues (64 update decisions, one consumption, one set-state, at
+  most 16 scope aborts, one re-emitted deferral; 16 KiB); a run has at most 16 open scopes.
+- **D044-217** (2026-11-25, supersedes D044-211 in part) A cancellation without grace stops a code run at once whatever
+  was journaled before, under `run:operate`; the grace is in the operation's idempotency fingerprint; any other
+  `graceMs` is refused; first-request-wins holds for cooperative requests only.
+- **D044-218** (2026-11-25, supersedes D044-212 in part) `run_events.server_detail` is the one place of the seed, the node
+  specs and the digests; its readers are named; the reset copies it with every re-emitted row.
+- **D044-219** (2026-11-25, supersedes D044-207 in part) A move item awaiting its verdict is deferred `REPLAY_PENDING`,
+  which is not a refusal; checks are created ahead for up to 64 items; `created_at` and `busy_checks` are kept.
+- **D044-220** (2026-11-25) The migration is split, validation under `SHARE UPDATE EXCLUSIVE` in a second migration,
+  indexes as the scheduler-shards migration builds them, the registry's checks swapped as design 043 did.
+- **D044-221** (2026-11-25) Conformance runs a code-workflow worker as a separate process through `run.sh workflow-worker`
+  under UTC and a fixed seed, controlled over standard input and logging over standard output.
+- **D044-222** (2026-11-25) The overlay cache is keyed by the count it was filled at and reads incrementally only within
+  256 commands; the reconciler re-checks a waiting step every 3,600 s; the SDK drops its cache on a `REVIEW` answer; the
+  activator of a pinned version is an initiator; a refusal that depends on mutable state offers a retry.
+- **G044-012** (2026-11-25, later state) The esbuild review is Task 044-10's procedure (exact version, lock integrity,
+  `npm audit signatures`, the reviewer's checklist); `scripts/check-vendor.py` is not used.
+- **D044-200** (2026-11-25, later state) `golang.org/x/tools` is chosen when Task 044-16 starts (the newest release at
+  least two weeks old whose `go` directive is at most 1.25.0), not pinned to v0.28.0 here.
+
 ## 3. Gaps
 
 - **G044-001** (2026-11-24) The memory of an idle cached run is not measured in any SDK; the TypeScript spike's heap
@@ -786,6 +821,10 @@ finding was answered.
 - **G044-027** (2026-11-25) Draft 049 (journal buckets) and draft 052 (the next step in the completion answer), in the
   scale-resilience worktree, touch `append_events`, the new tables and Task 044-14's eager workflow task; whichever lands
   second adapts, and their owners are told. Raised by the architecture review of round 9.
+
+- **G044-027** (2026-11-25, later state) Draft 048 (high availability and rolling upgrades: expand and contract phases,
+  validation in a later migration, `platform_requirement_activate_v2`) binds Task 044-6 and `code-workflows-v1` as well;
+  its owner is told.
 
 ## 4. Owner questions (all delegated)
 
