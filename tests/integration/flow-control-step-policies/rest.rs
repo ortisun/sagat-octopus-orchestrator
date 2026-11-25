@@ -403,7 +403,7 @@ async fn the_keys_of_a_namespace_are_its_tenants_and_need_ops_read() {
     assert_eq!(worker.status(), StatusCode::FORBIDDEN);
 }
 
-/// FR-022-057, D022-060 (keys review, security M1): a key over an unclassified field reads `pii` (decision D022-085), so
+/// FR-022-057, D022-060 (keys review, security Major 1): a key over an unclassified field reads `pii` (decision D022-085), so
 /// its label is shown only to a caller who may reveal personal data in the namespace (a role that may use a reveal
 /// grant, and the grant); every other reader gets `keyLabel: null` in both run reads, and the key's group instead of the
 /// key in the listing (`view: GROUPS`, decision D022-086), its counts and whole instants those of the one key.
