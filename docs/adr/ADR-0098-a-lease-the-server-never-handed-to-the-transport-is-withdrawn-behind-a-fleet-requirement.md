@@ -1,6 +1,6 @@
 # ADR-0098: A lease the server never handed to the transport is withdrawn, with a new journal event behind a fleet requirement
 
-**Status:** Accepted (2026-11-21, OD-2026-11-21-4: the final review round, `specs/006-sdk-multilanguage/reviews/2026-11-21/round-3-*.md`, closed with no Blocker and no Major)
+**Status:** Accepted (2026-11-21, OD-2026-11-21-4, when review round 3, `specs/006-sdk-multilanguage/reviews/2026-11-21/round-3-*.md`, closed with no Blocker and no Major; the final review of pull request #260 closed on 2026-11-24 with no Blocker and no Major: round 4, recorded in D006-093)
 **Decided by:** agent, delegate (OD-2026-11-20-6), on the coordinator's choice of options A and B (2026-11-20) and of the fixes of the three reviews (2026-11-21, decisions D006-030 to D006-039 and, after the last round, D006-080 to D006-091; the final review of 2026-11-24, D006-092 and D006-093). Accepted by the owner (OD-2026-11-21-4), because decision 1 overturns part of an accepted decision about the guarantees of the worker protocol (ADR-0029 decision 5).
 **Refines / supersedes:** **supersedes ADR-0029 decision 5** for the leases the server never handed to the transport (see "Why ADR-0029 decision 5 does not hold here"); refines ADR-0076 (an unknown outcome goes to consultation or review: a withdrawn lease is not an unknown outcome); uses ADR-0082 (requirements are recorded only by the operator), amends its activation with one generic command (decision 4), and refines its decision 7 for a replay capability: an engine with `SAGAT_LEASE_WITHDRAWAL=off` still lists `lease-withdrawal-v1`, because the capability means it can replay the event (decision 8).
 **Enforced by:** `crates/infra-postgres/tests/capability_lists.rs` (ups and downs); in `tests/integration/platform-foundation/migrations.rs` the removal's isolation, crossing and bound tests; in the contract file below `a_heartbeat_with_a_handed_back_token_is_stale`, `a_hand_back_on_a_fleet_that_does_not_withdraw_leaves_the_lease_to_lapse`, `a_hand_back_from_a_session_stored_at_1_8_that_this_build_cannot_honour_lapses`, `a_hand_back_of_a_run_whose_cancellation_was_requested_is_withdrawn`, `a_requirement_recorded_for_one_kind_withdraws_nothing` and `a_silent_engine_serves_no_capability_call_and_keeps_heartbeats_and_reports`; the tests of both sides of the hand-back in each of the six SDKs; `the_drain_gets_what_is_left_of_the_grace_less_one_second` (`apps/execution-engine`); the census test of `lease_withdrawal_activation.rs`; `crates/domain/tests/lease_withdrawal.rs` (the transition, the attempt given back, the generation kept, the retry budget counted, cancellation, scoped and bounded paths, the reset rule); the codec test of `step.lease_withdrawn` (`crates/infra-postgres/src/event_codec.rs`); the body tests `withdrawal_of_undelivered_frames` of `crates/api-grpc/src/service.rs` (a frame discarded at the window deadline, a queue drained at token expiry, a dropped body, a frame sent into a closed queue, a frame handed over); `tests/contract/durable-execution/grpc/lease_withdrawal.rs` (barriers after the commit of a claim: a dropped stream, a window that ends, a dropped unary poll, the gate off, `TASK_NOT_STARTED` while leased, after a heartbeat and without the requirement; from a session older than 1.8; the cap of four for each cause; a claim whose consumer is gone between two runs; a claim whose consumer is gone while it waits on a lock, rolled back at its commit (also `protocol::cancelling_while_a_claim_waits_on_a_lock_rolls_its_run_back`); the refused removal; the requirement re-read under its lock and the off switch; the shutdown drain; the tenant slot; `verify_run` after each withdrawal); a scoped lease withdrawn for each cause on the real store (`tests/integration/workflow-primitives/bounded_worker.rs`); the down guards in `tests/integration/platform-foundation/migrations.rs`; the released-v0.2 profile (`release_upgrade_inflight.rs`, the schema boundary; its "no withdrawal before the activation" cannot fail on a 0.2 journal, gap G006-033); the gate tests of `crates/application/src/instances.rs`; `tests/integration/schedules-bulk-operations/lease_withdrawal_activation.rs` (the operator command, the refused removal); the capability parity test, the migration pair `20270208000000_lease_withdrawal` and its down guards; the capability-list check of `scripts/check-architecture.py` (decision 8).
@@ -47,8 +47,13 @@ not be weakened.
    still `LEASED` and the cap of decision 7 is not reached. From such a session on a fleet that does not withdraw (the
    requirement not recorded, or the switch of decision 8 off) it MUST record nothing and answer `STALE_ATTEMPT`, so the
    lease lapses as before (decision D006-089). In every other case it is an ordinary failure with the host's `retryable`
-   flag. `TASK_NOT_STARTED` MUST NOT be an unknown outcome. Refined by ADR-0099 (its decisions 5 and 9; built as decisions
-   D006-097 and D006-099).
+   flag. `TASK_NOT_STARTED` MUST NOT be an unknown outcome.
+   *Refined by ADR-0099* (decision 9): from 1.8 the reservation is read from the lease (`lease_hand_back_generation`), never from
+   the session row, and honoured only while `delivery-acknowledgement-v1` is recorded, for a lease claimed after that recording
+   on the current database server; a refusal for a reason of the fleet keeps D006-089 (nothing recorded, `STALE_ATTEMPT`, the
+   lease left to lapse), as ADR-0145 says; a hand-back of a lease not yet `RUNNING` to which no capability was served is withdrawn
+   whether or not it was acknowledged. Built, for the
+   build that is the floor of 1.8, by the follow-up of pull request #260 as decisions D006-097 and D006-099.
 6. A lease that lapses MUST keep its meaning: an unknown outcome, consultation or review.
 7. One attempt MUST NOT be withdrawn more than four times (the derivation is decision D006-031: one delivery is withdrawn at
    most once, and four causes can each end one delivery of an honest attempt). Past the cap a `TASK_NOT_STARTED` is the
@@ -63,7 +68,9 @@ not be weakened.
    crate. The removal is refused outside READ COMMITTED, waits at most one second for a lock, and its look at the journal is
    a probe of a partial index (decisions D006-084 and D006-085). A token handed back is dead for heartbeats too (decision
    D006-086). The minor of the session that holds a lease is never read above the build's own ceiling (ADR-0099 decision 9).
-   Refined by ADR-0099 (its decision 10; built as decisions D006-095, D006-096 and D006-098).
+   *Refined by ADR-0099* (decision 10): the switch `SAGAT_LEASE_WITHDRAWAL=off` does not reach a marked lease, which keeps its
+   meaning until its lease ends, and the replay floor of the causes of 1.8 is `lease-withdrawal-v2`, not this decision's
+   `lease-withdrawal-v1`. Built as decisions D006-095, D006-096 and D006-098.
 
 ### Why ADR-0029 decision 5 does not hold here
 
@@ -106,7 +113,7 @@ replay the event: a new durable event is forward-only. Rolling a binary back bel
 journal holds the event: the binary is rolled back (`docs/runbooks/lease-withdrawal.md`, Rollback). The down migration
 also refuses once the requirement's history names the capability, which any activation leaves, so after an activation only
 the binaries roll back; the schema needs that history exported and removed first (`docs/runbooks/instance-registry.md`,
-section 5). Refined by ADR-0099; what it asks of this build is decision D006-059 of the delivery acknowledgement design,
+section 5). Refined by ADR-0099 (the pointers in decisions 5 and 8, done in pull request #264); what it asks of this build is decision D006-059 of the delivery acknowledgement design,
 built by the follow-up of pull request #260 (decisions D006-094 to D006-099), with which this build is the rollback floor of
 protocol 1.8 (gap G006-032, closed when that follow-up merges). The forward order: the follow-up's build on every process,
 `lease-withdrawal-v2` activated, the build of protocol 1.8, `delivery-acknowledgement-v1` activated
@@ -114,6 +121,6 @@ protocol 1.8 (gap G006-032, closed when that follow-up merges). The forward orde
 
 ## Evidence
 
-`specs/006-sdk-multilanguage/research.md` D006-001 to D006-018, D006-030 to D006-039, D006-080 to D006-099, G006-001 to G006-004, G006-030 to G006-037, O006-001; the reviews of 2026-11-21 (`specs/006-sdk-multilanguage/reviews/2026-11-21/`); the CI jobs 136567175914 and
+`specs/006-sdk-multilanguage/research.md` D006-001 to D006-018, D006-020 to D006-028, D006-030 to D006-039, D006-080 to D006-100, G006-001 to G006-004, G006-020 to G006-022, G006-030 to G006-038, O006-001; the reviews of 2026-11-21 (`specs/006-sdk-multilanguage/reviews/2026-11-21/`); the CI jobs 136567175914 and
 136453650156; the C# output of `flow-rate-limit` (feature 022, PR #251); `specs/006-sdk-multilanguage/stream-completion.md`,
 "Leases that never reach a host".
