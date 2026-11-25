@@ -1216,13 +1216,15 @@ async fn the_functions_are_security_definer_with_a_fixed_search_path_and_the_liv
         "SELECT proname, prosecdef, proconfig, prosrc FROM pg_proc \
           WHERE proname IN ('instance_register', 'instance_heartbeat', 'instance_deregister', \
                             'platform_requirement_lock', 'platform_requirement_activate', 'platform_requirement_remove', \
-                            'lease_withdrawal_required', 'platform_capability_census')",
+                            'lease_withdrawal_required', 'platform_capability_census', \
+                            'platform_requirements_replay_floor_guard')",
     )
     .fetch_all(&r.db.pool)
     .await
     .expect("functions");
-    // the two of the lease withdrawal too (feature 006, D006-093: security round 4 Nit 3)
-    assert_eq!(rows.len(), 8);
+    // the two of the lease withdrawal too (feature 006, D006-093: security round 4 Nit 3), and the replay-floor guard,
+    // rewritten in place to run as its owner (Task 006-070, decision D006-095)
+    assert_eq!(rows.len(), 9);
     for row in &rows {
         let name: String = row.get("proname");
         assert!(row.get::<bool, _>("prosecdef"), "{name} runs as its owner");

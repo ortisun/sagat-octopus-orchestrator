@@ -786,6 +786,14 @@ async fn the_requirement_cannot_be_removed_once_a_journal_holds_a_withdrawal() {
             .contains("cannot be removed while a journal holds step.lease_withdrawn"),
         "{refused}"
     );
+    // the switch stops the withdrawals of unmarked leases only: from 1.8 it does not reach a marked one (request (6) of
+    // decision D006-059, Task 006-070)
+    assert!(
+        refused
+            .to_string()
+            .contains("to stop new withdrawals of unmarked leases"),
+        "{refused}"
+    );
     let still: bool = sqlx::query_scalar(
         "SELECT EXISTS (SELECT 1 FROM platform_requirements WHERE capability = 'lease-withdrawal-v1')",
     )
@@ -827,6 +835,50 @@ async fn a_requirement_the_registry_does_not_record_or_the_switch_off_withdraws_
         );
         assert!(named(&journal(&p, &run).await, "step.lease_withdrawn").is_empty());
     }
+}
+
+/// Request (8) of decision D006-059 (Task 006-070, decision D006-095): `lease-withdrawal-v1` recorded by hand SQL for the
+/// engines only is not the requirement. The gate of this engine keeps it for both kinds (a gate that has not read the
+/// registry again), and the withdrawal's own read under the lock finds it for one kind: nothing is withdrawn, the lease
+/// lapses as before, and a 1.8 hand-back is answered `STALE_ATTEMPT` with nothing written (decision D006-089).
+#[tokio::test]
+async fn a_requirement_recorded_for_one_kind_withdraws_nothing() {
+    let barrier = barrier();
+    let p = platform(Some(withdrawing()), Some(barrier.probe)).await;
+    let outcome: String = sqlx::query_scalar(
+        "SELECT out_outcome FROM platform_requirement_activate('lease-withdrawal-v1', \
+         ARRAY['EXECUTION_ENGINE'], 'test')",
+    )
+    .fetch_one(&p.api.db.pool)
+    .await
+    .expect("recorded for the engines only");
+    assert_eq!(outcome, "RECORDED");
+    let workflow = p.publish("one-kind", &one_attempt("one-kind")).await;
+    let dropped = p.start(&workflow, &json!({})).await;
+    let mut worker = stream_worker(&p, "first").await;
+    let stream = open_stream(&mut worker, 1).await;
+    barrier.arrived.notified().await;
+    drop(stream);
+    until_withdrawal_ran(&p, 1).await;
+    assert_eq!(
+        step(&p, &dropped).await,
+        ("LEASED".to_owned(), 1, 1),
+        "the lease not sent lapses"
+    );
+    assert!(named(&journal(&p, &dropped).await, "step.lease_withdrawn").is_empty());
+
+    let handed = p.start(&workflow, &json!({})).await;
+    as_protocol_1_8(&p, "first").await;
+    let lease = worker.one_task().await;
+    let refused = worker
+        .fail_with(&lease, "TASK_NOT_STARTED", true)
+        .await
+        .expect_err("nothing is recorded");
+    assert_eq!(machine_code(&refused), "STALE_ATTEMPT", "{refused:?}");
+    assert_eq!(step(&p, &handed).await, ("LEASED".to_owned(), 1, 1));
+    let journal = journal(&p, &handed).await;
+    assert!(named(&journal, "step.lease_withdrawn").is_empty());
+    assert!(named(&journal, "step.failed").is_empty());
 }
 
 /// Correctness Major 3 and architecture Major 2 (decision D006-036): the stream's producer runs on the tracker a graceful

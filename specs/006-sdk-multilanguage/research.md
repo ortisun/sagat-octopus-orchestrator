@@ -793,6 +793,25 @@ Task 006-073 on `feature/delivery-acknowledgement` and cut as a pull request of 
   failing with two values), the transition test over every cause, `a_withdrawn_lease_is_an_exact_codec_inverse` over every
   cause. Weighed: a separate event for 1.8 (an older replica would have to learn a second event for the same transition) and
   an open text field (a replica would replay a cause it does not know); the closed value is ADR-0099's choice.
+- **D006-095 — The two functions of the replay floor are rewritten in place, and the requirement counts only for both kinds**
+  (Task 006-070; requests (6) and (8) of D006-059). Migration `20270208000000_lease_withdrawal` may have been applied, so the
+  new migration `20270211000000_lease_withdrawal_functions` rewrites both functions with `CREATE OR REPLACE FUNCTION`, which
+  keeps their grants, and its down restores the bodies of `20270208000000` and `20270208000200` (nothing is stored, so
+  nothing is refused). `lease_withdrawal_required()` answers yes only when the row of `lease-withdrawal-v1` lists both kinds
+  (`kinds @> ARRAY['CONTROL_PLANE', 'EXECUTION_ENGINE']`), the question an engine's gate asks (`ServingGate::requires` over
+  both kinds): a requirement recorded for the engines only, by hand SQL, leaves control planes that cannot replay the event
+  free to register, so nothing is withdrawn under it; the lease lapses as before and a 1.8 hand-back is answered
+  `STALE_ATTEMPT` (D006-089). The replay-floor guard says that the switch stops "new withdrawals of unmarked leases", which
+  is all it does from 1.8 (ADR-0099 decision 10). The guard had run as the role that deletes the row; it now runs as its
+  owner with `search_path = pg_catalog, pg_temp`, like every other function of the registry, so its look at `run_events`
+  never depends on the deleting role's privileges or search path, and the privilege test lists it with the other eight.
+  Tested: `a_requirement_recorded_for_one_kind_withdraws_nothing` (`contract_grpc_durable_execution`), the guard's text in
+  `the_requirement_cannot_be_removed_once_a_journal_holds_a_withdrawal`, `the_requirement_counts_only_for_both_kinds_and_the_rollback_restores_the_old_bodies`
+  (`integration_platform_foundation`), and the privilege test of `instances.rs`. Weighed: editing `20270208000000` in place
+  (a database that applied it fails sqlx's checksum, and the old bodies stay where it ran); equality with the pair of kinds
+  instead of containment (a requirement recorded for a kind added later would turn every withdrawal off); keeping the guard
+  as an invoker's function (it would read the journal through the deleting role's search path, the one function of the
+  registry that does).
 
 ## Delivery acknowledgement (2026-11-20, Decision 006-040 to Decision 006-066, Gap 006-040 to Gap 006-048, Owner question 006-002)
 

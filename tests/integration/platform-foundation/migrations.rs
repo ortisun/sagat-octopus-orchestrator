@@ -777,6 +777,67 @@ async fn the_lease_withdrawal_rolls_back_only_while_nothing_names_it() {
     assert!(index().await, "forward restores the partial index");
 }
 
+/// The stamp of the migration before the follow-up of pull request #260 (`20270211000000_lease_withdrawal_functions`).
+const BEFORE_THE_FOLLOW_UP: i64 = 20_270_208_000_200;
+
+/// Requests (6) and (8) of decision D006-059 (Task 006-070, decision D006-095): `lease_withdrawal_required()` answers yes only
+/// for a requirement recorded for control planes and engines, the guard names the withdrawals of unmarked leases, and both run
+/// as their owner with the fixed search path. The rollback restores the bodies of `20270208000000` and `20270208000200`.
+#[tokio::test]
+async fn the_requirement_counts_only_for_both_kinds_and_the_rollback_restores_the_old_bodies() {
+    let db = migrated_db().await;
+    let recorded: String = sqlx::query_scalar(
+        "SELECT out_outcome FROM platform_requirement_activate('lease-withdrawal-v1', \
+         ARRAY['EXECUTION_ENGINE'], 'operator')",
+    )
+    .fetch_one(&db.pool)
+    .await
+    .expect("recorded for one kind");
+    assert_eq!(recorded, "RECORDED");
+    let required = || {
+        let pool = db.pool.clone();
+        async move {
+            sqlx::query_scalar::<_, bool>("SELECT lease_withdrawal_required()")
+                .fetch_one(&pool)
+                .await
+                .expect("the requirement under its lock")
+        }
+    };
+    assert!(!required().await, "one kind is not the requirement");
+    let guard = || {
+        let pool = db.pool.clone();
+        async move {
+            sqlx::query_as::<_, (String, bool, Option<Vec<String>>)>(
+                "SELECT prosrc, prosecdef, proconfig FROM pg_proc WHERE proname = 'platform_requirements_replay_floor_guard'",
+            )
+            .fetch_one(&pool)
+            .await
+            .expect("the guard")
+        }
+    };
+    let (source, definer, config) = guard().await;
+    assert!(
+        source.contains("new withdrawals of unmarked leases"),
+        "{source}"
+    );
+    assert!(definer, "the guard runs as its owner");
+    assert_eq!(
+        config.unwrap_or_default(),
+        ["search_path=pg_catalog, pg_temp"]
+    );
+
+    MIGRATOR
+        .undo(&db.pool, BEFORE_THE_FOLLOW_UP)
+        .await
+        .expect("the follow-up rolls back: it stores nothing");
+    assert!(required().await, "the old body answers for any kinds");
+    let (source, definer, _) = guard().await;
+    assert!(!source.contains("unmarked"), "{source}");
+    assert!(!definer, "the old guard runs as the deleting role");
+    migrate(&db.pool).await.expect("forward again");
+    assert!(!required().await);
+}
+
 /// Records `lease-withdrawal-v1` of both kinds, as the operator's activation does.
 async fn record_lease_withdrawal(pool: &sqlx::PgPool) {
     let recorded: String = sqlx::query_scalar(

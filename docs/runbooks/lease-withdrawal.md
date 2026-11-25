@@ -65,6 +65,9 @@ control-plane capability-activate lease-withdrawal-v1 --operator NAME --expect-l
 - A live process that does not list the capability is refused by its instance id; nothing is recorded.
 - A second run says the requirement is recorded already and exits 0.
 - Each engine reads the requirement at its next heartbeat (within about ten seconds) and withdraws from then on.
+- The requirement counts only when it is recorded for control planes and engines, as the command records it. A row
+  recorded by hand SQL for one kind withdraws nothing: every withdrawal reads the row again under its lock and finds it
+  incomplete (decision D006-095).
 
 ## Watching it
 
@@ -99,7 +102,9 @@ The requirement is a replay floor (decision D006-032). A build older than this f
 `step.lease_withdrawn`, so once one journal holds the event:
 
 - `platform_requirement_remove('lease-withdrawal-v1', ...)` is refused (`lease-withdrawal-v1 cannot be removed while a
-  journal holds step.lease_withdrawn`). The check is a probe of the partial index `run_events_lease_withdrawn_idx`.
+  journal holds step.lease_withdrawn`; the message ends by saying that `SAGAT_LEASE_WITHDRAWAL=off` stops new withdrawals
+  of unmarked leases, which is all the switch does from protocol 1.8). The check is a probe of the partial index
+  `run_events_lease_withdrawn_idx`.
 - The removal runs only under READ COMMITTED, the default (decision D006-084); a session or role whose
   `default_transaction_isolation` is stricter is refused (`is removed only under READ COMMITTED`): run it with
   `SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL READ COMMITTED` first.
