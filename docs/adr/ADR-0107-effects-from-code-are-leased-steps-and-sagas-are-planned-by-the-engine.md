@@ -32,11 +32,13 @@ code saga cannot have. Temporal offers local activities and leaves compensation 
    `script.` or `sagat.`. An activity input MUST be validated and classified by its entry's `inputSchema`.
 4. A successful report whose output cannot be retained MUST be an unknown outcome (`STORAGE_QUOTA_EXCEEDED`), reconciled
    or reviewed under feature 037; the function MUST NOT be told the step failed.
-5. Eager activity leases MUST be provisional leases of feature 006, released safely when unacknowledged; an idempotent
+5. Eager activity leases MUST be provisional leases of feature 006, granted through the claim's admission function
+   (quotas, breakers, pools, capacity windows, gates, approvals), released safely when unacknowledged; an idempotent
    replay MUST NOT return a lease, and the idempotency record MUST NOT store a lease token.
 6. A saga opened from code MUST be an engine compensation domain: closing it drops the compensations; aborting it MUST plan
    the compensations of its completed steps in the run-scoped tables of feature 003 (`run_sagas`, `run_saga_entries`),
-   with step B depending on step A when B's command record has a greater journal sequence than A's outcome, so that independent
+   with step B depending on step A when A's outcome is at or before the start of the workflow task whose completion
+   recorded B, so that independent
    compensations stay eligible together; compensation identifiers MUST be derived from the start version and the forward
    node; they MUST run with the rules of features 003 and 037; the function MUST learn only the scope's outcome; an engine-driven stop MUST apply each open
    scope's `cancelPolicy`, carried by the open-saga command.

@@ -38,6 +38,8 @@ design 044 (eager dispatch, worker queries, behaviour flags) so that they can la
 ## Consequences
 
 - Good: activity-only workers keep their minor; workflow workers negotiate as every worker does.
+- Compatibility with runs in flight: additive messages only; sessions below the minor see nothing new. Operational
+  cost: minors are cumulative, so an SDK's workflow tasks need its support of the minors before (1.7, 1.8, 1.9).
 - Bad: the exact minor number is known only at merge; documents say "the next free minor" until then (Gap 044-013).
 
 ## Evidence

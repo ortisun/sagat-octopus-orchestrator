@@ -26,9 +26,11 @@ workflow-task step waiting.
    (and `run:batch` for many runs), always a batch job whose selection is frozen at creation so that each item is a
    per-run request, the creator re-authorized when each item applies, to a
    published code version of the same workflow and namespace that is approved for activation where the namespace requires
-   approval; applied per run in one transaction with the run locked, only when a session of the target digest replayed the
+   approval, the publication of each code version holding the fleet requirements it needs; applied per run in one
+   transaction with the run locked, only when a session of the target digest replayed the
    run's history up to its last completed activation with the same command chain, that activation is still the last
-   completed one, the workflow-task step is not leased, and every outstanding step fits the target version's envelope.
+   completed one, the workflow-task step is not leased, and every step that can still act (outstanding steps and the completed steps of open saga scopes)
+   fits the target version's envelope (its covering entry has the same secrets, schemas, risk metadata and approval rule).
    The move MUST be a domain command persisted by the ordinary run transaction; only the `SECURITY DEFINER`
    function `sagat_move_code_run`, which checks the replay check of the item and the appended `run.code_version_moved`
    event, MAY change the pin; the runtime role MUST NOT hold the update privilege on it. A move MUST clear the step's sticky session, make it `READY` with a hint when it was under review or a
@@ -37,14 +39,14 @@ workflow-task step waiting.
 3. A move MUST be available as a dry run that records verdicts and moves nothing.
 4. A reset of a code run MUST be to its current code version only, in one transaction within ADR-0050's prefix ceiling.
    For a code run, an eligible point MUST be the end of a completion's journal block with no attempt in flight, no unknown
-   outcome and no compensating saga; the workflow-task step waiting and `READY` steps, timers and waits MUST NOT make it
-   ineligible and MUST be rematerialized; the new run MUST start on the source's current code version, copy the prefix's overlay rows, keep the
-   source's seed and recompute the chain of its prefix. Every new event kind MUST have a reset rule in the registry of
+   outcome, no open, aborting or compensating saga scope and no open approval or child; the workflow-task step waiting and `READY` steps, timers and waits MUST NOT make it
+   ineligible and MUST be rematerialized; the new run MUST start on the source's current code version, rebuild its overlay from the prefix's
+   command records, keep the source's seed and recompute the chain of its prefix from the journal alone. Every new event kind MUST have a reset rule in the registry of
    ADR-0050 decision 8, which gains a column for rules that differ for code runs.
-6. Continue-as-new from code MUST pin the run's current code version by default, or the workflow's active version when
+5. Continue-as-new from code MUST pin the run's current code version by default, or the workflow's active version when
    the command asks for it, which supersedes ADR-0030 decision 16 for code runs; it MUST be refused while an activity,
    child, approval or saga scope is open.
-5. Each SDK MUST offer `patched(id)` and `deprecatePatch(id)`, recorded as markers.
+6. Each SDK MUST offer `patched(id)` and `deprecatePatch(id)`, recorded as markers.
 
 ## Considered options
 

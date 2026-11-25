@@ -3,7 +3,7 @@
 **Status:** Proposed
 **Decided by:** agent (Claude Code, design 044), under the owner's delegation (OD-2026-11-20-6, OD-2026-11-24-4); no person has reviewed it
 **Refines / supersedes:** refines ADR-0103; none superseded
-**Enforced by:** `integration_workflow_as_code::the_activation_window_holds_for_every_interleaving` (generated interleavings against PostgreSQL with barriers); `is_visible_and_is_waking_cover_every_event_kind`; `pending_is_true_exactly_when_a_waking_event_follows_the_last_completed_start`; `every_waking_kind_makes_the_workflow_task_ready_in_its_transaction`; `the_reconciler_repairs_a_pending_run_whose_step_waits`; `a_completion_below_the_window_is_refused_unhandled_events`; `a_completion_with_a_foreign_command_chain_is_refused_and_puts_the_run_under_review`; `a_changed_activity_input_on_replay_is_a_chain_mismatch`; `the_chain_of_the_golden_commands_is_the_golden_hash`; the conformance scenarios `code-nondeterminism` and `code-signal-at-return` (design 044, Tasks 044-4, 044-5, 044-9, 044-11, 044-26)
+**Enforced by:** `integration_workflow_as_code::activation_window::live_and_replayed_activations_are_equal` (generated interleavings against PostgreSQL with barriers); `is_visible_and_is_waking_cover_every_event_kind`; `pending_is_true_exactly_when_a_waking_event_follows_the_last_completed_start`; `every_waking_kind_makes_the_workflow_task_ready_in_its_transaction`; `the_reconciler_repairs_a_pending_run_whose_step_waits`; `a_completion_below_the_window_is_refused_unhandled_events`; `a_completion_with_a_foreign_command_chain_is_refused_and_puts_the_run_under_review`; `a_changed_activity_input_on_replay_is_a_chain_mismatch`; `the_chain_of_the_golden_commands_is_the_golden_hash`; the conformance scenarios `code-nondeterminism` and `code-signal-at-return` (design 044, Tasks 044-4, 044-5, 044-9, 044-11, 044-26)
 **Required before acceptance:** the fault tests of design 044 Tasks 044-9 and 044-28
 
 ## Context
@@ -30,11 +30,14 @@ input; a chain over data the worker receives in the history could be produced wi
    `DECIDER` (never under review, never closed); a completion MUST decide the step's state after appending its own
    events; a failed task MUST move neither. The reconciler MUST compare the journal itself, not the run's columns, and
    repair a pending run whose step waits with kind `DECIDER`.
-4. A completion MUST carry `applied_through_seq`; the SDK MUST hold a terminal command until every event of the window
+4. Every journal row MUST store its origin, every command record its node spec and body digest, `run.started` the
+   seed, so that the journal alone rebuilds a code run. A completion MUST carry `applied_through_seq`; the SDK MUST hold a terminal command until every event of the window
    has been applied; the server MUST refuse a completion below `S(k)` (`UNHANDLED_EVENTS`, not counted, the SDK evicts and
-   replays). A terminal command MUST also be refused, not counted, while a waking signal, update or cancellation request
-   is unseen or an obligation (an open saga, a review, an unknown outcome) is open; after 3 refusals for unseen events
-   the run MUST refuse new signals and updates until its next completion commits. A command on one of the run's own
+   replays). A terminal or continue-as-new command MUST be deferred, not counted, while a waking event after the
+   activation's start is unseen or an obligation (an open saga, a review, an unknown outcome, and for continue-as-new
+   an open activity, child or approval) is open: the completion's other commands commit, the deferral is recorded, the
+   command takes no number, and the SDK re-emits it last at each later activation; after 3 deferrals for unseen events
+   the run MUST refuse new signals and updates until a completion commits without one. A command on one of the run's own
    steps that is already terminal MUST be a no-op with its own command record, counted and chained.
 5. The server MUST keep per code run a 32-byte chain `H(k) = SHA-256(H(k − 1) ‖ uint32 big-endian length ‖ d(k))`, with
    `H(0)` all zero and `d(k)` the RFC 8785 JSON of `{seq, kind, target, body}` of command k, `body` the SHA-256 of the

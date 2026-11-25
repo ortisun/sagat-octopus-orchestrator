@@ -413,6 +413,68 @@ finding was answered. These entries supersede the earlier ones they name.
 - Supersession notes: D044-019 is superseded by D044-083 and then D044-102; D044-028 and D044-047 by D044-088 and then
   D044-107; D044-002's "expiry without review" stands, and its expiry counts as a failure (Technical Plan 6.3).
 
+### Decisions after the fourth review round (2026-11-25)
+
+The reports are in `docs/designs/044-workflow-as-code.reviews/2026-11-25/round-4/`; `resolution.md` there says how each
+finding was answered.
+
+- **D044-124** (2026-11-25) The journal alone rebuilds a code run: `run_events.origin`; command records carry the node
+  spec (at most 1 KiB) and the body digest; `run.started` carries the seed; `signal.consumed` records consumption;
+  deferrals are recorded in `workflow_task.completed`. The overlay is a projection of the records; these fields are
+  server-side and never returned on reads.
+- **D044-125** (2026-11-25, supersedes D044-110 in part) A terminal or continue-as-new command that must wait is deferred:
+  the other commands commit, `S` moves, the command takes no number, and the SDK re-emits it last at each later
+  activation; a completion below the window is an SDK fault (`NONDETERMINISM_RISK`).
+- **D044-126** (2026-11-25) The code definition answers every `WorkflowDefinition` method, saga and scope accessors
+  included; scopes `s-<n>` are `NodeKind::Saga` nodes; the planner's automatic abort and completion of graph sagas do not
+  apply to code scopes; `policies` fails closed; the call-site check reads the compiler's resolution.
+- **D044-127** (2026-11-25, supersedes D044-102's dependency rule) B depends on A when A's outcome is at or before the
+  start of the workflow task whose completion recorded B.
+- **D044-128** (2026-11-25) Python's private namespace has three classes: shared vetted modules, restricted views,
+  refused modules; the audit hook acts only while the activation's context variable is set; `PYTHONHASHSEED=0` is
+  refused.
+- **D044-129** (2026-11-25) The reconciler checks each wait once (`code_wait_checked_at`), reads the journal backwards by
+  its primary key and the origin, at most 256 runs per pass, with a parity test of its waking kinds against the domain.
+- **D044-130** (2026-11-25, supersedes the cancellation of D044-034) Cancelling a code run journals
+  `run.cancel_requested` and sets the deadline without stopping the run; a scheduler pass stops it at the deadline;
+  steps, cleanup activities included, keep being leased in the grace.
+- **D044-131** (2026-11-25) Graph publication refuses `sagat.` activity names (except feature 017's managed names); a
+  reserved name on a step that is not `WORKFLOW_TASK` is refused at claim; a scan precedes recording the requirement.
+- **D044-132** (2026-11-25) A lease-kind matrix per RPC; `workflowTypes` only on ordinary bindings of the worker role.
+- **D044-133** (2026-11-25) Eager leases go through the claim's admission function; the eager workflow task counts in
+  the `sagat.workflow` bucket.
+- **D044-134** (2026-11-25) The initiators of an engine-held approval are the run's starter and every principal whose
+  update or signal was delivered up to the issuing activation.
+- **D044-135** (2026-11-25, supersedes D044-105 in part) Update keys are scoped by run and admitting principal; an
+  unknown key answers `404`; `UPDATE_KEY_IN_USE` is withdrawn.
+- **D044-136** (2026-11-25, supersedes D044-087 in part) Worker-query arguments (at most 64 KiB) and answers (at most
+  256 KiB) are inline in their row, charged to the content quota while it lives, deleted with it.
+- **D044-137** (2026-11-25) Feature 016 gains, under a new version of its classification rules, the carriers of a code
+  version's envelope; every other code-run payload is `pii` as a whole (Architecture decision 0108).
+- **D044-138** (2026-11-25, supersedes D044-085 and D044-112 in part) A code-run reset point also needs no open,
+  aborting or compensating saga scope and no open approval or child; the reset run's overlay is rebuilt from the
+  prefix's records.
+- **D044-139** (2026-11-25) The publication holds each fleet requirement `FOR SHARE` through the registry's definer
+  function (the `hold_requirement` of Architecture decision 0110 decision 8, shared); `signal-inbox-v1` is needed only by
+  a code version that declares signals.
+- **D044-140** (2026-11-25) The envelope declares `timeoutLevel` for design 045's fields and owns feature 022's flow
+  control per activity entry; fragments carry only literal keys.
+- **D044-141** (2026-11-25, supersedes D044-115) The completion budget is at most 62 statements (50 + 12), tested with a
+  completion that mixes every command kind; the commits are counted as the budget suite counts them (10 and 7 against a
+  graph run's 4).
+- **D044-142** (2026-11-25) A completion that would cross 51,200 visible events is refused and reviews at the count it
+  had; the closing window counts its own workflow-task events and admits markers, set-state and update completions.
+- **D044-143** (2026-11-25) The crash tests use a `test-support` feature, `SAGAT_TEST_CRASH_POINT`, an advisory-lock
+  barrier, a script and `SAGAT_TEST_EXECUTION_ENGINE`; the server lane uses a scripted decider in `tests/support/`.
+- **D044-144** (2026-11-25) The typed append is a free function `append_events(conn, run, rows, origin)` with
+  `JournalRow`; graph statement counts are unchanged; the raw-insert check covers `crates/` and `apps/` only.
+- **D044-145** (2026-11-25) The TypeScript workflow entry point checks Node 22.8 at load (the package's `engines` stays
+  Node 20); the bundler is a separate package with the `sagat-workflows` binary and the pinned esbuild.
+- **D044-146** (2026-11-25) A move request carries a `reason` (8 to 2,000 characters); the server computes a replay
+  check's verdict; `code_replay_checks.first_difference`; only the move item's apply path calls the move command.
+- **D044-147** (2026-11-25) A workflow type is unique in its namespace; a code run's signals never satisfy its waits, and
+  an event type may not be a signal name; `version: active` must be a code version of the same type.
+
 ## 3. Gaps
 
 - **G044-001** (2026-11-24) The memory of an idle cached run is not measured in any SDK; the TypeScript spike's heap
@@ -477,6 +539,13 @@ finding was answered. These entries supersede the earlier ones they name.
 - **G044-016** (2026-11-25, later state) Outside data (third-party outputs, webhook events) does reach Python workflow code,
   so the seed's secrecy matters; the SDK also caps decoded objects at 10,000 keys, which bounds the damage of colliding
   keys whatever the seed.
+
+- **G044-021** (2026-11-25, later state) The 5.0.0 draft now reads "a run's pin names exactly one version at any moment"
+  and covers version markers; the gap closes when that text merges.
+- **G044-020** (2026-11-25, later state) Design 045 must also accept the envelope's `timeoutLevel` as the level of a code
+  version, and own `steps.min_protocol_minor`, on which this design depends.
+- **G044-017** (2026-11-25, later state) Architecture decision 0111 must admit code versions as consumers, its inbox
+  design must be approved, and Task 044-21 waits for both; no fallback builds the inbox here.
 
 ## 4. Owner questions (all delegated)
 
