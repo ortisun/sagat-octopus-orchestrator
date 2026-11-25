@@ -232,7 +232,15 @@ where
                 scanned_versions: None,
             });
         }
-        let stop = report.stop_allowance();
+        // a hand-back passes a cancellation only from a session whose minor reserves the code (decision D006-100)
+        let stop = match report.stop_allowance() {
+            super::StopAllowance::HandBack
+                if !self.path_reserves_the_code(&mut tx, task).await? =>
+            {
+                super::StopAllowance::None
+            }
+            stop => stop,
+        };
         Self::live_path_fence(&mut tx, task, stop).await?;
         let before = tx.secret_versions(&names).await?;
         tx.commit().await?;

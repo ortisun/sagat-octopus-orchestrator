@@ -1545,3 +1545,46 @@ async fn a_call_whose_window_lapses_while_it_waits_hands_out_and_records_nothing
         .expect("blobs");
     assert_eq!(blobs_after, blobs_before);
 }
+
+/// Correctness review minor 5 of 2026-11-25 (decision D006-100): below 1.8 the code is not the host's, so a
+/// `TASK_NOT_STARTED` passes no cancellation: on a cancelled, still `LEASED` step with declared secrets, from a session of
+/// 1.4 or 1.5, the fence refuses it as before this follow-up (`STALE_ATTEMPT`, nothing written), at the root and in a scope.
+#[tokio::test]
+async fn below_1_8_a_task_not_started_passes_no_cancellation() {
+    for scoped in [false, true] {
+        let p = withdrawing_platform(None).await;
+        declared_secret(&p, "older-key").await;
+        let name = format!("older-hand-back-{scoped}");
+        let workflow = p
+            .publish(&name, &cancellable(&name, scoped, &["older-key"]))
+            .await;
+        let mut worker = p.worker("first").await;
+        worker
+            .register_version(&["act.a"], if scoped { "1.5" } else { "1.4" })
+            .await;
+        let (run, lease) = first_lease(&p, &mut worker, &workflow, scoped).await;
+        let (status, _) = p
+            .rest(
+                reqwest::Method::POST,
+                &format!("/runs/{run}/operations"),
+                Some(&json!({"action": "CANCEL", "reason": "the customer changed their mind"})),
+            )
+            .await;
+        assert_eq!(status, 202, "scoped={scoped}");
+        let refused = worker
+            .fail_with(&lease, "TASK_NOT_STARTED", true)
+            .await
+            .expect_err("the fence refuses it");
+        assert_eq!(
+            machine_code(&refused),
+            "STALE_ATTEMPT",
+            "scoped={scoped}: {refused:?}"
+        );
+        let journal = journal(&p, &run).await;
+        assert!(named(&journal, "step.failed").is_empty(), "scoped={scoped}");
+        assert!(
+            named(&journal, "step.lease_withdrawn").is_empty(),
+            "scoped={scoped}"
+        );
+    }
+}

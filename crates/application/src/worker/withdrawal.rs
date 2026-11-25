@@ -307,6 +307,35 @@ where
         ))
     }
 
+    /// Whether the session that holds the lease of `task` negotiated a minor that reserves `TASK_NOT_STARTED`, judged at this
+    /// build's ceiling (decision D006-100): only such a hand-back passes a cancellation at the report fence.
+    pub(super) async fn root_reserves_the_code<Tx: RunTx>(
+        &self,
+        tx: &mut Tx,
+        task: &TaskRef<'_>,
+    ) -> Result<bool, AppError> {
+        let info = tx.info();
+        let step_id = instance_step_id(info.version_id, info.run_id, task.instance);
+        Ok(tx
+            .lease_holder_minor(step_id, &Token::hash_of(task.lease_token))
+            .await?
+            .is_some_and(|minor| minor.min(self.hand_back_ceiling) >= HAND_BACK_PROTOCOL_MINOR))
+    }
+
+    /// [`Self::root_reserves_the_code`] for a scoped instance, in its path transaction.
+    pub(super) async fn path_reserves_the_code<Tx: PathExecutionTx>(
+        &self,
+        tx: &mut Tx,
+        task: &TaskRef<'_>,
+    ) -> Result<bool, AppError> {
+        let info = &tx.snapshot().info;
+        let step_id = instance_step_id(info.version_id, info.run_id, task.instance);
+        Ok(tx
+            .lease_holder_minor(step_id, &Token::hash_of(task.lease_token))
+            .await?
+            .is_some_and(|minor| minor.min(self.hand_back_ceiling) >= HAND_BACK_PROTOCOL_MINOR))
+    }
+
     /// [`Self::root_hand_back`] for a scoped instance, in its path transaction.
     pub(super) async fn path_hand_back<Tx: PathExecutionTx>(
         &self,

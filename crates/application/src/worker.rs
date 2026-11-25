@@ -700,7 +700,9 @@ impl StopAllowance {
         }
     }
 
-    /// Whether a step in `status` may report past a cancellation or a stop.
+    /// Whether a step in `status` may report past a cancellation or a stop. `HandBack` is granted only to a session whose
+    /// minor reserves the code, judged at the build's ceiling (decision D006-100): below 1.8 the code may be a handler's, and
+    /// a fleet below 1.8 keeps the outcome it had.
     pub(crate) fn allows(self, status: StepStatus) -> bool {
         match self {
             Self::None => false,
@@ -2536,6 +2538,13 @@ where
         // credential fits the characters and the length it may have (`[A-Za-z0-9_.:-]`, 64): a
         // worker that reports its own secret as the reason it failed fails for good instead.
         let mut retryable = retryable;
+        // a hand-back passes a cancellation only from a session whose minor reserves the code (decision D006-100)
+        let stop = match StopAllowance::of_failure(error_code, retryable) {
+            StopAllowance::HandBack if !self.root_reserves_the_code(&mut tx, task).await? => {
+                StopAllowance::None
+            }
+            stop => stop,
+        };
         let leaked = match self
             .checked_secret_report(
                 principal,
@@ -2543,7 +2552,7 @@ where
                 tx,
                 &idempotency,
                 error_code.as_bytes(),
-                StopAllowance::of_failure(error_code, retryable),
+                stop,
             )
             .await?
         {
