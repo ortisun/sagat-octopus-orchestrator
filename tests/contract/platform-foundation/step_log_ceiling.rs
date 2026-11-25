@@ -87,7 +87,10 @@ fn the_migrations_ceiling_and_not_stored_reasons_are_the_domains() {
         .iter()
         .map(|reason| reason.as_str().to_owned())
         .collect();
-    assert_eq!(migration_check("step_log_streams_not_stored_valid"), not_stored);
+    assert_eq!(
+        migration_check("step_log_streams_not_stored_valid"),
+        not_stored
+    );
     assert!(
         ceilings.is_disjoint(&not_stored),
         "the busy loss is never a ceiling (decision D041-129)"

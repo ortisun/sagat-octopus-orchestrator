@@ -183,7 +183,12 @@ pub async fn seed_dev(config: &Config, seed: &SeedConfig) -> Result<SeedOutcome,
         reason: e.to_string(),
     })?;
 
-    let pool = open_pool(&config.database, config.database.statement_timeout, PoolName::Process("seed_dev")).await?;
+    let pool = open_pool(
+        &config.database,
+        config.database.statement_timeout,
+        PoolName::Process("seed_dev"),
+    )
+    .await?;
     let store = PgIdentityStore::new(pool.clone());
     let now = OffsetDateTime::now_utc();
     let tenant = Tenant::provision(TenantId::generate(), slug, now);
@@ -230,7 +235,12 @@ pub async fn seed_dev_namespace(
             )
         })?;
 
-    let pool = open_pool(&config.database, config.database.statement_timeout, PoolName::Process("seed_dev_namespace")).await?;
+    let pool = open_pool(
+        &config.database,
+        config.database.statement_timeout,
+        PoolName::Process("seed_dev_namespace"),
+    )
+    .await?;
     let service = IdentityService::new(PgIdentityStore::new(pool.clone()), SystemClock);
     let result = async {
         let session = service
@@ -314,7 +324,12 @@ pub async fn provision_tenant(config: &Config, request: &ProvisionConfig) -> Res
         name: "SAGAT_PROVISION_ADMIN",
         reason: e.to_string(),
     })?;
-    let pool = open_pool(&config.database, config.database.statement_timeout, PoolName::Process("provision_tenant")).await?;
+    let pool = open_pool(
+        &config.database,
+        config.database.statement_timeout,
+        PoolName::Process("provision_tenant"),
+    )
+    .await?;
     let store = PgIdentityStore::new(pool.clone());
     let now = OffsetDateTime::now_utc();
     let tenant = Tenant::provision(TenantId::generate(), slug, now);
@@ -350,7 +365,12 @@ pub async fn grant_quota_ceiling(config: &Config, request: &CeilingConfig) -> Re
         .resource
         .parse::<sagat_domain::quota::QuotaResource>()
         .map_err(|_| invalid("SAGAT_CEILING_RESOURCE", "not a quota resource"))?;
-    let pool = open_pool(&config.database, config.database.statement_timeout, PoolName::Process("grant_quota_ceiling")).await?;
+    let pool = open_pool(
+        &config.database,
+        config.database.statement_timeout,
+        PoolName::Process("grant_quota_ceiling"),
+    )
+    .await?;
     let cache = DefinitionCache::new(Arc::new(JsonIrCodec), 1);
     let service = QuotaService::new(PgRunStore::new(pool.clone(), cache), SystemClock);
     let result = service.grant_ceiling(tenant, resource, request.value).await;
@@ -384,7 +404,12 @@ pub async fn set_scheduling_weight(
         .tenant_id
         .parse::<TenantId>()
         .map_err(|_| invalid("SAGAT_WEIGHT_TENANT_ID", "expected a tenant id (a UUID)"))?;
-    let pool = open_pool(&config.database, config.database.statement_timeout, PoolName::Process("set_scheduling_weight")).await?;
+    let pool = open_pool(
+        &config.database,
+        config.database.statement_timeout,
+        PoolName::Process("set_scheduling_weight"),
+    )
+    .await?;
     let cache = DefinitionCache::new(Arc::new(JsonIrCodec), 1);
     let service = QuotaService::new(PgRunStore::new(pool.clone(), cache), SystemClock);
     let result = service.set_scheduling_weight(tenant, request.value).await;
@@ -416,7 +441,12 @@ pub async fn reseal_secrets(
     secrets: &sagat_infra_secrets::SecretsConfig,
 ) -> Result<u64, RunError> {
     const BATCH: u32 = 500;
-    let pool = open_pool(&config.database, config.database.statement_timeout, PoolName::Process("reseal_secrets")).await?;
+    let pool = open_pool(
+        &config.database,
+        config.database.statement_timeout,
+        PoolName::Process("reseal_secrets"),
+    )
+    .await?;
     let cache = DefinitionCache::new(Arc::new(JsonIrCodec), 1);
     let service = SecretService::new(
         PgRunStore::new(pool.clone(), cache),

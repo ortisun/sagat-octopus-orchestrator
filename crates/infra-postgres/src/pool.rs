@@ -207,8 +207,15 @@ mod tests {
         );
         let id = uuid::Uuid::from_u128(0x0123_4567_89ab_cdef_0123_4567_89ab_cdef);
         let name = PoolName::Instance(id).application_name();
-        assert_eq!(name, "sagat-octopus-orchestrator/01234567-89ab-cdef-0123-456789abcdef");
-        assert_eq!(name.len(), 63, "PostgreSQL keeps 63 bytes of an application_name");
+        assert_eq!(
+            name,
+            "sagat-octopus-orchestrator/01234567-89ab-cdef-0123-456789abcdef"
+        );
+        assert_eq!(
+            name.len(),
+            63,
+            "PostgreSQL keeps 63 bytes of an application_name"
+        );
         assert_eq!(
             PoolName::Process("migrate").application_name(),
             "sagat-octopus-orchestrator/migrate"
