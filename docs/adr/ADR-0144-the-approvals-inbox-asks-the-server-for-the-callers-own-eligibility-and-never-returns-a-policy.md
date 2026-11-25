@@ -3,7 +3,7 @@
 **Status:** Proposed
 **Decided by:** agent proposal (design 050, 2026-11-24), for acceptance under Owner decision 2026-11-24-4 once the review of design 050 is complete
 **Refines / supersedes:** refines the approval decisions of feature 014 (Requirement 014-007, Requirement 014-008: eligibility by subjects and roles, the initiator excluded by default) and `listRunApprovals`, which "deliberately omits the eligibility policy, initiating identity and decision actor"; supersedes none
-**Enforced by:** planned in design 050 and not existing yet: the domain property test `may_decide_equals_decide` (for generated policies, subjects, roles, initiators and run states, over pending requests with fresh keys, `may_decide` is true exactly when `ApprovalRequest::decide` would accept that principal's decision, and the same for `PublicationRequest` over every state); `tests/contract/workflow-studio/approvals_inbox.rs` (the response schema has no field that names a subject or a role of a policy, the initiator or a decider; the publication inbox item has exactly the fields of decision 6); the cross-tenant battery entry for the new route
+**Enforced by:** planned in design 050 and not existing yet: the domain property test `may_decide_equals_decide` (for generated policies, subjects, roles, initiators and run states, over pending requests with fresh keys, `may_decide` is true exactly when `ApprovalRequest::decide` would accept that principal's decision, and the same for `PublicationRequest` over every state); `tests/contract/workflow-studio/rest/approvals_inbox.rs (in `contract_rest_workflow_studio`)` (the response schema has no field that names a subject or a role of a policy, the initiator or a decider; the publication inbox item has exactly the fields of decision 6); the cross-tenant battery entry for the new route
 
 ## Context
 
@@ -65,7 +65,7 @@ excludes it). The snapshot is stored with each request in `approval_requests` (`
 
 - One migration adds a partial index on pending approvals by namespace and deadline. The decision path keeps its rule;
   a decision on an approval whose run has ended answers `409 RUN_ENDED`, not retryable, where it answered a retryable
-  `503`: a deliberate change of behaviour, checked by an SDK conformance scenario in all six languages.
+  `503`: a deliberate change of behaviour, checked by a unit test in each SDK that calls the decision route and by a Rust integration test that seeds the row directly. Inside `decide`, a winning receipt still replays and a settled request still answers `ALREADY_DECIDED` on an ended run; only a pending request without a winning receipt answers `RUN_ENDED`.
 - A person sees their own eligibility for every pending approval of a namespace they can read, which they could learn
   anyway by attempting a decision; nobody learns anything about another person.
 - Rollback: the route is additive; removing it removes the inbox page.

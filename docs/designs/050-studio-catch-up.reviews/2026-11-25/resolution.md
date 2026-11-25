@@ -103,3 +103,27 @@ Stage 6 (`ca5ef2a0`), which the critic did not see; finding 6 reverses Stage 6 f
 | 12 | Nit | Fixed: option 3 rejected only for kinds and fields a deployment switches off; shape refusals left to live validation | Architecture decision 0143 |
 | 13 | Nit | Already fixed at `ca5ef2a0` | Gaps |
 | 14 | Nit | Already fixed at `ca5ef2a0` | Task 050-12, Verification Plan |
+
+## egm-review Stage 9, Implementation Readiness (`readiness_report.md`, at `dba19bef`)
+
+All 22 findings are accepted and fixed; none is contested. The plan is rewritten with one builder per task, explicit
+external gates, a file and a command per task, and the server and Studio parts split (new Tasks 050-15 to 050-19).
+
+| Finding | Severity | Disposition | Where |
+|---|---|---|---|
+| 1 | Blocker | Fixed: the progress tables are the source. A migration adds `failed_iteration` and `failure_code` to `iteration_scopes` and `loop_scopes`, written at a `Failed` drain. The mapping from lifecycles to outcomes is stated. The counts go in `GraphSnapshot` through `RunStore::graph` and are drawn by `runtime_graph`. The page is `RunStore::iteration_page` with `owner` (the owner's `RuntimeNode.id`), `after` and the filter applied in the query. Runs that began their drain before the migration are stated | Technical Plan 5, Task 050-9 |
+| 2 | Major | Fixed: `RunEnded` comes only after authorization, replay and the settled check, and `may_decide` mirrors that order. `a_replay_on_an_ended_run_still_answers_its_receipt` covers it | Technical Plan 6, Architecture decision 0144, Task 050-4 |
+| 3 | Major | Fixed: the Rust integration test seeds the inconsistent row. Each of the five SDKs that call the decision route gets a unit test of the `409` classification | Non-functional requirement 050-003, Task 050-4, Architecture decision 0144 |
+| 4 | Major | Fixed: `x-planned` first, switched by each route's task. The two digests are named with their renewal, and the redocly lint is the verification | Technical Plan 9, Task 050-2 |
+| 5 | Major | Fixed: `audit-actions.json` is imported by the Studio, and one contract test in `contract_rest_workflow_studio` holds both lists to `AuditAction::ALL` | Decision 050-006, Technical Plan 7, Task 050-11 |
+| 6 | Major | Fixed: the hook fills `decisionKey` or `updateKey`. A resend is the person's, and the client retries nothing; Gap 050-001 is corrected to match | Technical Plan 5, Gap 050-001 |
+| 7 | Major | Fixed: the variants that gain a body scope are listed, `nodeId` is kept, and `resolveNodeId` reads the body pointer first. The server tests live in `crates/application` | Technical Plan 4, Tasks 050-6, 050-15 |
+| 8 | Major | Fixed: a nested `HandleSpec` and five edge kinds; the body-document adapter `model/bodies.ts` as Task 050-16 before the canvas; the green test marked as a guard; `useCapabilities` with its query key | Technical Plan 4, Tasks 050-15, 050-16, 050-8 |
+| 9 | Major | Fixed: component tests with a mocked `validate`, and publication of each kind as a journey case | Task 050-7, Task 050-13 |
+| 10 | Major | Fixed: `advertised_capabilities` is a pure function used by the control plane and the harness. The `AppState` field and both routers are named, the switch citation is corrected, and `every_advertised_capability_is_a_known_value` is added | Technical Plan 3, Task 050-3 |
+| 11 | Major | Fixed: owners for every path, with the external gates as predecessors on the tasks | The plan's introduction, every task |
+| 12 | Major | Fixed: a file and a command per task. The integration target is created in Task 050-4, and the decision records' test paths now point at `rest/` files compiled by `contract_rest_workflow_studio` | Tasks, Architecture decisions 0143 and 0144 |
+| 13 | Major | Fixed: Task 050-19 enables the switch, seeds the policy row, and sets a budget of three minutes per journey | Task 050-19 |
+| 14 | Major | Fixed: `perf_studio_catch_up`, `perf.spec.ts`, the seeding method, the 300-inbox driver and the report path | Task 050-14, Verification Plan |
+| 15 | Major | Fixed: `ApprovalInboxStore::pending_page` with its row type, the role read by `IdentityStore::find_membership`, `list_for_run` returning the same rows, and `PublicationInboxStore::open_page` reading `approvalsRequiredNow` by publication's policy resolution | Technical Plan 6 |
+| 16 to 22 | Nit | Fixed: `inputSchema` is kept; Go and Java samples are named; the publication property test is added; the position `match` pattern is described; `openedAt` is `created_at` and the limit is 1 to 200; the server and Studio parts are split; each Studio test has its file | Technical Plans 4, 6 and 7, Tasks |
