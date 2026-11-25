@@ -1925,9 +1925,14 @@ taken after `git grep D022-04` on every `origin/*` branch.
   restores the lists of `20270206000000`. Chosen (c): no applied migration changes, the rule of the `REBASE HAZARD`
   comments holds (the later restatement names both sets), and the two tests keep the next merge honest. Value ranges are
   not restated: only `20270201000000` restated them, and this feature's resources take the general range (their bounds
-  are in code). Residual: the down of `20270201000000` restores the pre-041 lists, which lack this feature's six
-  concurrency names, so rolling back past it with a concurrency limit stored fails on the check instead of the clean
-  refusal of `20270130000300`'s down; the rollback needs those rows gone either way. The same merge brought `develop`'s
+  are in code). The downs had the same hazard in reverse: the down of `20270201000000` restored the pre-041 lists,
+  which lack this feature's six concurrency names, so
+  `migrations::the_quota_and_declaration_migrations_roll_back_only_once_their_rows_are_drained`
+  (integration_flow_control_step_policies), which rolls back to `20270130000300` with a `queued_runs` limit stored,
+  failed on the restored CHECK instead of reaching the clean refusal it expects. Each down now restores the lists in
+  force before its migration on the merged tree: `20270201000000`'s down names the concurrency names of
+  `20270130000300`, and `20270206000000`'s down the step-log names of `20270201000000`. Editing a down changes no
+  applied checksum (sqlx checks the ups only). The same merge brought `develop`'s
   `migrations::a_constraint_added_not_valid_is_validated_by_a_later_migration`, which failed on
   `steps_waiting_kind_valid` (restated `NOT VALID` by `20270130000600` and left unvalidated, as every earlier
   restatement had left it): `20270215000200_flow_control_waiting_kind_validate` validates it under `SHARE UPDATE
