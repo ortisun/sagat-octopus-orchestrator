@@ -4,6 +4,25 @@ Decisions that only the product owner could take, with what each one unblocks. E
 recorded where the open item lived (gap register, ADR, runbook or specification). "Not built"
 means the decision is taken and the implementation is still to be done; it is not evidence.
 
+## 2026-11-24 — Release 0.3.0 contains everything that is missing to surpass Temporal and Windmill
+
+The coordinating session compared the platform with Temporal and Windmill (gaps that have a specification, gaps that have
+none, work in progress, performance). The owner answered: "Vamos terminar tudo que falta. Inclua tudo na 0.3.0. Quero que
+os melhores desenvolvedores e arquitetos façam o melhor para superarmos o windmill e temporal."
+
+In English: let us finish everything that is missing; include all of it in 0.3.0; the best developers and architects are
+to do their best so that we surpass Windmill and Temporal.
+
+Asked the two things the delegation of OD-2026-11-20-6 does not cover, the owner chose the recommended option of each:
+the constitution is amended to remove what blocks the scope, and workflow as code enters 0.3.0.
+
+| ID | Decision | Decided by | Status | Covers |
+|---|---|---|---|---|
+| OD-2026-11-24-1 | "Inclua tudo na 0.3.0": release 0.3.0 contains every approved draft (019 to 032, 036), the rest of 022 beyond its throughput slice, the trigger operators of 042 (slices 2 to 5, which OD-2026-11-13-15 had left for a later release), designs 038, 039 and 040, the 10,000-item collection and loop ceilings that OD-2026-11-13-1 deferred (published only after the acceptance run on a separate database host), and new designs for the gaps that have no specification: workflow as code, activity timeouts and non-retryable errors, package dependencies for scripts, OAuth resources and an integration hub, a reference high-availability topology with rolling N and N-1 upgrades, partitioning of the journal tables, the Studio catch-up, federated login (013), OpenTelemetry and OpenBao (015) and a published benchmark against Temporal and Windmill. Because they are now 0.3.0 features, their open questions fall under OD-2026-11-20-6. The release is published only when all of it is built and the release-candidate run passes on that commit (OD-2026-11-04-8) | owner | Decided; not built | docs/roadmap.md, docs/releases/unreleased.md, every feature named |
+| OD-2026-11-24-2 | "Aprovo a emenda": the constitution is amended (MAJOR, 5.0.0) to remove what blocks OD-2026-11-24-1: "reimplementing Temporal" leaves the out-of-scope list, "single region" becomes one writable region per cell with fenced failover (032), low-code internal apps (027) and a curated integration and template hub (021, 028) are admitted, and the declarative IR is joined by a procedural code-first mode (OD-2026-11-24-3). The coordinating session drafts it with its Sync Impact Report, the three repository reviewers read it, and it merges without returning to the owner unless a reviewer finds a Blocker | owner | Decided; not built | docs/constitution.md, docs/architecture/overview.md, docs/governance/ |
+| OD-2026-11-24-3 | "Sim, entra na 0.3.0": workflow as code (a workflow function in an SDK, replayed deterministically against the journal, Temporal's programming model) is built in 0.3.0 in all six SDKs, under a new design that starts with a determinism study per language before any code. The declarative graph stays a first-class model beside it | owner | Decided; not designed | a new design doc in docs/designs/, docs/architecture/workflow-ir-and-sdk-modes.md |
+| OD-2026-11-24-4 | "Quero que os agents continuem por mim. Tomem a melhor decisão" (the agents carry on in the owner's place and take the best decision). This widens OD-2026-11-20-6 for release 0.3.0: besides the open questions, the coordinating session and the agents it briefs now also accept or reject ADRs, settle contested or unfixed review findings in writing, accept or reject unticked `checklists/*.md` items (OD-2026-11-03-33), approve design docs once their review is complete, and merge pull requests into `develop` once their CI is green. Each such act is weighed over every option, decided for the most architectural and business advantage (never for simplicity alone), recorded where it lives as "delegate (OD-2026-11-24-4)" with its reasoning, and reported to the owner afterwards. Read by the coordinating session as still the owner's: acts that need the owner's own hands or credentials (for example the `.env*` files the harness refuses to agents), spending money or creating accounts, publishing release 0.3.0 (the tag, the GitHub release and the merge into `main`) and any act outside this repository that cannot be undone | owner | Decided | every 0.3.0 feature, ADR and design doc; docs/constitution.md (approval and acceptance clauses) |
+
 ## 2026-11-21 — Lease withdrawal: Architecture decision 0098
 
 | ID | Decision | Decided by | Status | Covers |
