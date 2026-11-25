@@ -440,11 +440,39 @@ pub async fn may_activate(conn: &mut sqlx::PgConnection) -> Result<bool, StoreEr
     .map_err(store_error)
 }
 
+/// Whether `capability` is a recorded requirement of every kind in `kinds` (feature 006, decision D006-096: an entry of
+/// `control-plane capability-activate` that follows another).
+///
+/// # Errors
+/// The store's.
+pub async fn requirement_recorded(
+    conn: &mut sqlx::PgConnection,
+    capability: Capability,
+    kinds: &[InstanceKind],
+) -> Result<bool, StoreError> {
+    let kinds: Vec<&str> = kinds.iter().map(|kind| kind.as_str()).collect();
+    sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM platform_requirements WHERE capability = $1 AND kinds @> $2::text[])",
+    )
+    .bind(capability.as_str())
+    .bind(&kinds)
+    .fetch_one(conn)
+    .await
+    .map_err(store_error)
+}
+
+/// The refusal of [`census_step`] when the requirement the activation follows is not recorded for every kind under the lock.
+pub const FOLLOWED_REQUIREMENT_MISSING: &str =
+    "the requirement this one follows is not recorded for every kind";
+
 /// The feature step of an activation that only checks the fleet again under the epoch lock: `judge` is handed the census and
-/// says whether to refuse (keeping its own reasons).
+/// says whether to refuse (keeping its own reasons). With `follows`, the step first reads that requirement again, under the
+/// same lock its removal takes, and refuses with [`FOLLOWED_REQUIREMENT_MISSING`] unless it is recorded for every kind
+/// (decision D006-096).
 pub fn census_step<J>(
     capability: Capability,
     kinds: &'static [InstanceKind],
+    follows: Option<Capability>,
     judge: J,
 ) -> impl for<'c> FnOnce(&'c mut sqlx::PgConnection) -> FeatureStep<'c> + Send
 where
@@ -452,6 +480,11 @@ where
 {
     move |conn| {
         Box::pin(async move {
+            if let Some(follows) = follows
+                && !requirement_recorded(conn, follows, &InstanceKind::ALL).await?
+            {
+                return Err(StoreError::StateConflict(FOLLOWED_REQUIREMENT_MISSING));
+            }
             let census = capability_census(conn, capability, kinds).await?;
             if judge(&census) {
                 return Err(StoreError::StateConflict(

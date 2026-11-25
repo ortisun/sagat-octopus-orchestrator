@@ -69,6 +69,33 @@ control-plane capability-activate lease-withdrawal-v1 --operator NAME --expect-l
   recorded by hand SQL for one kind withdraws nothing: every withdrawal reads the row again under its lock and finds it
   incomplete (decision D006-095).
 
+## Activate `lease-withdrawal-v2`
+
+`lease-withdrawal-v2` is the floor's own capability (decision D006-096; ADR-0099): a process that lists it replays every
+cause of `step.lease_withdrawn`, the cause `NOT_ACKNOWLEDGED` of protocol 1.8 included, and, for an engine, serves no
+capability call while its registry has been silent (`docs/runbooks/instance-registry.md`, section 3). Recording it keeps
+every older binary out of the fleet, a build of `lease-withdrawal-v1` alone among them. It needs `lease-withdrawal-v1`
+recorded for both kinds first; the command refuses otherwise, and checks again under the epoch lock.
+
+```sh
+control-plane capability-activate lease-withdrawal-v2 --operator NAME --expect-live N --dry-run
+control-plane capability-activate lease-withdrawal-v2 --operator NAME --expect-live N
+```
+
+The other rules are those of `lease-withdrawal-v1` above. On a large journal, build its partial index before you migrate,
+as for `run_events_lease_withdrawn_idx`:
+
+```sql
+CREATE INDEX CONCURRENTLY IF NOT EXISTS run_events_lease_not_acknowledged_idx ON run_events (tenant_id)
+    WHERE event_type = 'step.lease_withdrawn' AND detail->>'cause' = 'NOT_ACKNOWLEDGED';
+```
+
+It can be removed again (`platform_requirement_remove('lease-withdrawal-v2', ...)`, under READ COMMITTED and the 1.5 s
+statement timeout, as below) until a journal holds a withdrawal with the cause `NOT_ACKNOWLEDGED`. From then on the removal
+is refused (`lease-withdrawal-v2 cannot be removed while a journal holds step.lease_withdrawn with the cause
+NOT_ACKNOWLEDGED`), and the down migration `20270211000100_lease_withdrawal_v2` refuses as well. This build writes no such
+withdrawal: only a build of protocol 1.8 does.
+
 ## Watching it
 
 | Signal | Meaning |

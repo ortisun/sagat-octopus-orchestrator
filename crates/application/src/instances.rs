@@ -119,15 +119,21 @@ pub enum Capability {
     /// to a host once both kinds are required to list it. Listed unconditionally by every control plane and engine of a build
     /// that knows the event: every configuration of it replays the event (decision D006-004).
     LeaseWithdrawalV1,
+    /// Feature 006, the follow-up of pull request #260 (request (9) of decision D006-059, decision D006-096): the process
+    /// replays every cause of `step.lease_withdrawn`, `NOT_ACKNOWLEDGED` of protocol 1.8 included, and an engine serves no
+    /// capability call while its registry has been silent (request (7)). The floor that a build of protocol 1.8 rolls back
+    /// to; activated only after `lease-withdrawal-v1` is recorded for both kinds.
+    LeaseWithdrawalV2,
 }
 
 impl Capability {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::SchedulesV1,
         Self::AccessNarrowingV1,
         Self::PayloadEncodingV1,
         Self::RunInputValidationV1,
         Self::LeaseWithdrawalV1,
+        Self::LeaseWithdrawalV2,
     ];
 
     #[must_use]
@@ -138,6 +144,7 @@ impl Capability {
             Self::PayloadEncodingV1 => "payload-encoding-v1",
             Self::RunInputValidationV1 => crate::run_input::CAPABILITY,
             Self::LeaseWithdrawalV1 => "lease-withdrawal-v1",
+            Self::LeaseWithdrawalV2 => "lease-withdrawal-v2",
         }
     }
 

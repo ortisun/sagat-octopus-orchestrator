@@ -838,6 +838,143 @@ async fn the_requirement_counts_only_for_both_kinds_and_the_rollback_restores_th
     assert!(!required().await);
 }
 
+/// The stamp of the migration before `20270211000100_lease_withdrawal_v2`.
+const BEFORE_LEASE_WITHDRAWAL_V2: i64 = 20_270_211_000_000;
+
+/// Decision D006-096 (Task 006-071): the rollback of `lease-withdrawal-v2` refuses, each guard with its own message, while
+/// a journal holds a `NOT_ACKNOWLEDGED` withdrawal (a `NOT_SENT` one does not stop it), while a registered process lists the
+/// capability, while the requirement is recorded and, after its removal, while its history names it. With nothing naming
+/// it, it goes through: the old checks refuse the capability and the partial index is gone; forward restores both.
+#[tokio::test]
+async fn the_lease_withdrawal_v2_rolls_back_only_while_nothing_names_it() {
+    let refused_rollback = |pool: sqlx::PgPool| async move {
+        let mut connection = pool.acquire().await.expect("a connection");
+        let refused = MIGRATOR
+            .undo(&mut *connection, BEFORE_LEASE_WITHDRAWAL_V2)
+            .await
+            .expect_err("a row blocks the rollback");
+        sqlx::query("SELECT pg_advisory_unlock_all()")
+            .execute(&mut *connection)
+            .await
+            .expect("release the migration lock");
+        refused.to_string()
+    };
+    let withdrawal = |pool: sqlx::PgPool, cause: &'static str| async move {
+        let mut tx = pool.begin().await.expect("a transaction");
+        sqlx::query("SET LOCAL session_replication_role = replica")
+            .execute(&mut *tx)
+            .await
+            .expect("foreign keys off for this transaction");
+        sqlx::query(
+            "INSERT INTO run_events (tenant_id, run_id, seq, event_type, node, attempt, detail, actor, occurred_at) \
+             VALUES (gen_random_uuid(), gen_random_uuid(), 1, 'step.lease_withdrawn', 'a', 1, \
+                     jsonb_build_object('attempt', 1, 'generation', 1, 'cause', $1::text), 'lease-withdrawal', now())",
+        )
+        .bind(cause)
+        .execute(&mut *tx)
+        .await
+        .expect("a withdrawal in a journal");
+        tx.commit().await.expect("committed");
+    };
+    // the journal is append-only, so its case runs on a database of its own that is then left as it is
+    {
+        let journal = migrated_db().await;
+        withdrawal(journal.pool.clone(), "NOT_ACKNOWLEDGED").await;
+        let refused = refused_rollback(journal.pool.clone()).await;
+        assert!(
+            refused
+                .contains("a journal holds step.lease_withdrawn with the cause NOT_ACKNOWLEDGED"),
+            "{refused}"
+        );
+    }
+    let db = migrated_db().await;
+    sqlx::query(
+        "INSERT INTO serving_instances (instance_id, kind, binary_version, capabilities, started_at, last_seen, token_hash) \
+         VALUES (gen_random_uuid(), 'EXECUTION_ENGINE', '0.3.0', ARRAY['lease-withdrawal-v1', 'lease-withdrawal-v2'], \
+                 now(), now(), sha256('t'::bytea))",
+    )
+    .execute(&db.pool)
+    .await
+    .expect("a process of this build");
+    let message = refused_rollback(db.pool.clone()).await;
+    assert!(
+        message.contains("a registered process lists lease-withdrawal-v2"),
+        "{message}"
+    );
+    sqlx::query("DELETE FROM serving_instances")
+        .execute(&db.pool)
+        .await
+        .expect("the process stopped");
+    for (capability, says) in [
+        ("lease-withdrawal-v1", None),
+        (
+            "lease-withdrawal-v2",
+            Some("lease-withdrawal-v2 is a recorded requirement"),
+        ),
+    ] {
+        let recorded: String = sqlx::query_scalar(
+            "SELECT out_outcome FROM platform_requirement_activate($1, \
+             ARRAY['CONTROL_PLANE', 'EXECUTION_ENGINE'], 'operator')",
+        )
+        .bind(capability)
+        .fetch_one(&db.pool)
+        .await
+        .expect("activate");
+        assert_eq!(recorded, "RECORDED");
+        if let Some(says) = says {
+            let message = refused_rollback(db.pool.clone()).await;
+            assert!(message.contains(says), "{message}");
+        }
+    }
+    let removed: String = sqlx::query_scalar(
+        "SELECT out_outcome FROM platform_requirement_remove('lease-withdrawal-v2', 'operator')",
+    )
+    .fetch_one(&db.pool)
+    .await
+    .expect("no NOT_ACKNOWLEDGED withdrawal: the floor lets it go");
+    assert_eq!(removed, "REMOVED");
+    let message = refused_rollback(db.pool.clone()).await;
+    assert!(
+        message.contains("the requirement history names lease-withdrawal-v2"),
+        "{message}"
+    );
+
+    // a database with only a NOT_SENT withdrawal and nothing naming the capability rolls back and forward
+    let clean = migrated_db().await;
+    withdrawal(clean.pool.clone(), "NOT_SENT").await;
+    MIGRATOR
+        .undo(&clean.pool, BEFORE_LEASE_WITHDRAWAL_V2)
+        .await
+        .expect("nothing names lease-withdrawal-v2: the rollback goes through");
+    let index = || {
+        let pool = clean.pool.clone();
+        async move {
+            sqlx::query_scalar::<_, bool>(
+                "SELECT EXISTS (SELECT 1 FROM pg_class WHERE relname = 'run_events_lease_not_acknowledged_idx')",
+            )
+            .fetch_one(&pool)
+            .await
+            .expect("index")
+        }
+    };
+    assert!(!index().await, "the rollback drops the partial index");
+    let refused = sqlx::query(
+        "INSERT INTO serving_instances (instance_id, kind, binary_version, capabilities, started_at, last_seen, token_hash) \
+         VALUES (gen_random_uuid(), 'EXECUTION_ENGINE', '0.3.0', ARRAY['lease-withdrawal-v2'], now(), now(), sha256('t'::bytea))",
+    )
+    .execute(&clean.pool)
+    .await
+    .expect_err("the old check does not know the capability");
+    assert!(
+        refused
+            .to_string()
+            .contains("serving_instances_capabilities_known"),
+        "{refused}"
+    );
+    migrate(&clean.pool).await.expect("forward again");
+    assert!(index().await, "forward restores the partial index");
+}
+
 /// Records `lease-withdrawal-v1` of both kinds, as the operator's activation does.
 async fn record_lease_withdrawal(pool: &sqlx::PgPool) {
     let recorded: String = sqlx::query_scalar(

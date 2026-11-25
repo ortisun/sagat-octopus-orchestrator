@@ -1323,7 +1323,15 @@ async fn the_capabilities_and_kinds_in_code_are_the_closed_values_of_the_schema_
         .split('`')
         .skip(1)
         .step_by(2)
-        .filter(|token| token.ends_with("-v1"))
+        // a capability token: lower-case words and a version, `-v1`, `-v2`, ...
+        .filter(|token| {
+            token.rsplit_once("-v").is_some_and(|(name, version)| {
+                !name.is_empty()
+                    && name.chars().all(|c| c.is_ascii_lowercase() || c == '-')
+                    && !version.is_empty()
+                    && version.chars().all(|c| c.is_ascii_digit())
+            })
+        })
         .map(str::to_owned)
         .collect();
     assert_eq!(

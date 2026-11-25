@@ -812,6 +812,39 @@ Task 006-073 on `feature/delivery-acknowledgement` and cut as a pull request of 
   instead of containment (a requirement recorded for a kind added later would turn every withdrawal off); keeping the guard
   as an invoker's function (it would read the journal through the deleting role's search path, the one function of the
   registry that does).
+- **D006-096 — `lease-withdrawal-v2`: a capability of its own, an entry that follows `lease-withdrawal-v1`, and a floor of
+  one cause** (Task 006-071; request (9) of D006-059). `Capability::LeaseWithdrawalV2` (`lease-withdrawal-v2`) joins the
+  closed set, and the migration pair `20270211000100_lease_withdrawal_v2` and `20270211000200_lease_withdrawal_v2_validate`
+  adds it to the three checks (the union with every value of `develop`; feature 022's are still on its own branch, and the
+  branch that merges second takes the union, D006-033), `NOT VALID` then validated, its down restoring the list of
+  `20270208000000` (D006-083). The processes list it from Task 006-072 on, in the same commit as the rule it promises (an
+  engine whose registry is silent serves no capability call): a commit that listed it first would announce a rule the binary
+  did not apply. The rules:
+  - **The entry.** `capability-activate lease-withdrawal-v2` covers both kinds, may be activated with nothing live, as
+    `lease-withdrawal-v1` may, and gains the entry field `follows`: the command refuses, saying so, while
+    `lease-withdrawal-v1` is not recorded for both kinds, once before its census and again in its step under the epoch
+    lock, where a removal of `lease-withdrawal-v1` (which takes the same lock) cannot cross it. The order is the command's,
+    not a trigger's: ADR-0100 retired the trigger that would have ordered requirements, and an order broken by hand SQL is
+    harmless here, because a binary that lists `lease-withdrawal-v2` lists `lease-withdrawal-v1` too, and every
+    withdrawal still reads `lease-withdrawal-v1` under its lock (D006-032).
+  - **The floor.** The replay-floor guard refuses to remove `lease-withdrawal-v2` while a journal holds
+    `step.lease_withdrawn` with the cause `NOT_ACKNOWLEDGED`, the one cause a build without it cannot replay, and, as for
+    `lease-withdrawal-v1` (D006-084), outside READ COMMITTED. So recording it stays reversible until the first withdrawal
+    of 1.8. Its look is a probe of a new partial index, `run_events_lease_not_acknowledged_idx` on `run_events (tenant_id)
+    WHERE event_type = 'step.lease_withdrawn' AND detail->>'cause' = 'NOT_ACKNOWLEDGED'`, built as
+    `run_events_lease_withdrawn_idx` is (`IF NOT EXISTS`, an invalid one refused, the runbook's `CONCURRENTLY` first).
+    The down refuses while the requirement or its history exists, while a registered process lists the capability, or while
+    a journal holds a `NOT_ACKNOWLEDGED` withdrawal.
+  - **The tests that said it was not activatable** (`the_command_activates_only_its_listed_capabilities`, the command-line
+    test of `lease_withdrawal_activation.rs`) are inverted, and new ones show the activation refused without
+    `lease-withdrawal-v1`, refused with it recorded for one kind, recorded with it for both, and the removal refused with a
+    `NOT_ACKNOWLEDGED` row written by SQL fixture (nothing of this build writes one) and allowed with only a `NOT_SENT` one.
+  Weighed: a trigger that refuses recording `lease-withdrawal-v2` before `lease-withdrawal-v1` (ADR-0100's option, retired:
+  it orders nothing the reads under lock do not already make safe); reusing `run_events_lease_withdrawn_idx` and filtering
+  the cause (the probe would read every withdrawal of every cause under the epoch lock, so the removal's 1.5 s bound would
+  depend on how many withdrawals the platform ever made, D006-085); a guard that refuses the removal once any withdrawal
+  exists (it would make the activation one-way from the first `NOT_SENT`, which a build without `lease-withdrawal-v2`
+  replays).
 
 ## Delivery acknowledgement (2026-11-20, Decision 006-040 to Decision 006-066, Gap 006-040 to Gap 006-048, Owner question 006-002)
 
