@@ -42,6 +42,41 @@ What the sections above propose is partly built; this says which part, and where
 - **SLOs.** None of the proposed targets is measured as an SLO. `tests/performance/reports/observability-operations.md` measures what observability costs the paths it watches (the note a writer pays, the projector's rate and lag, the monitor's rounds), on one machine.
 - **Runbooks.** [`observability.md`](../runbooks/observability.md) and [`alerts.md`](../runbooks/alerts.md); the five scenarios above are in [`sagas.md`](../runbooks/sagas.md), [`events.md`](../runbooks/events.md) and the control-plane and engine runbooks.
 
+## Flow control: concurrency keys and rate limits (feature 022)
+
+The closed vocabulary is `crates/telemetry/src/flow_control.rs` (FR-022-033, FR-022-049; plan "Observability" and
+"Observability (rate limits)" of [feature 022](../../specs/022-flow-control-step-policies/plan.md)). No label takes a
+tenant, a namespace, a run, a workflow, a group or a key: those are on spans and in the journal only. A span names a
+group (`sagat.concurrency.group`, `sagat.rate_limit.group`), never a key's value or its label.
+
+| Series | Kind | Labels | What it counts |
+|---|---|---|---|
+| `concurrency_acquisitions_total` | counter | `scope` (`run`, `step`); `outcome` (`acquired`, `queued`, `refused_full`, `refused_reset`, `granted`, `skipped_ahead`, `timed_out`, `dequeued`) | each decision of a permit, after its commit |
+| `concurrency_wait_seconds` | histogram | `scope` | how long a granted or timed-out waiter waited |
+| `concurrency_waiters` | gauge | `scope` | waiters of every key, deployment-wide |
+| `rate_limit_decisions_total` | counter | `scope`; `outcome` (`granted`, `queued`, `granted_from_queue`, `refused_full`, `refused_reset`, `skipped_ahead`, `timed_out`, `dequeued`, `slot_returned`) | each decision of a slot, after its commit |
+| `rate_limit_wait_seconds` | histogram | `scope` | how long a granted or timed-out waiter waited |
+| `rate_limit_waiters` | gauge | `scope` | waiters of every key, deployment-wide |
+| `rate_limit_grant_lag_seconds` | histogram | none | from the instant a slot was free with a waiter present to the grant |
+| `rate_limit_unleased_grants` | gauge | none | step grants not leased yet |
+| `scheduler_actions_total{kind="rate_lease"}`, `{kind="rate_purge"}` | counter | `kind`, `outcome` | lease recording and the purge of old grants (existing family) |
+
+Spans: `workflow.concurrency.acquire`, `workflow.concurrency.grant`, `workflow.rate_limit.admit`,
+`workflow.rate_limit.grant`.
+
+As built on this tree (decision D022-045, gap G022-001): every committed outcome of a step's gates is counted at step
+scope, the refusals of a run's start are counted at run scope (`refused_full`, `refused_reset`), and the four spans name
+the group, never the key. The two wait histograms, the two waiter gauges, the grant lag and the unleased grants are
+declared in the vocabulary and not recorded yet: built by task T022-082. Evidence:
+`readiness_gate::tests::{each_committed_gate_outcome_is_counted_in_the_closed_vocabulary, a_refused_start_is_counted_and_typed}`
+in `crates/infra-postgres` and `crates/telemetry/tests/flow_control_vocabulary.rs`.
+
+Alerts, found per namespace by the engine's monitor and listed with the others in the
+[alerts runbook](../runbooks/alerts.md): `CONCURRENCY_QUEUE_STUCK`, `RATE_LIMIT_GRANT_LAGGING` and
+`RATE_LIMIT_QUEUE_SATURATED`. Their conditions and thresholds are in the
+[flow-control runbook](../runbooks/flow-control.md), sections 8 to 10. None is raised by this tree: built by task
+T022-082.
+
 ## Dormant leaf source certification observations (feature014)
 
 Operational questions: did this returned native attempt certify, replay or refuse; did storage fail
