@@ -19,6 +19,13 @@ An SDK is **not** a workflow runtime. It does not execute workflow code, replay 
 journal, or decide a transition: the server owns every state and every retry decision (ADR-0001,
 ADR-0002). The builders only write a document the server validates and versions.
 
+*Note (2026-11-24, constitution 5.0.0, principle IV):* release 0.3.0 adds a procedural code-first
+model (workflow as code, design 044, not built): an SDK will also host workflow functions that are
+replayed against the server's journal. When design 044 is approved it amends this section. Even then
+the server keeps the journal and commits every transition; the SDK proposes commands under a lease
+and a fencing token, and its memory is a cache that replay rebuilds. Until then this section
+describes the SDKs as built.
+
 ## 1. Configuration and credentials
 
 | Setting | Meaning | Default |

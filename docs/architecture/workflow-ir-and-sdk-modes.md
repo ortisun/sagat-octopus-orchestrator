@@ -6,9 +6,16 @@
 |---|---|---|---|---|
 | Visual-first | JSON IR via Studio | Rust engine | Yes, in isolated Activity/Script nodes | Complete static graph + execution |
 | Declarative code-first | SDK builder compiles/publishes JSON IR | Rust engine | Yes, BYO worker Activities or Script | Complete static graph + execution |
-| Procedural code-first (later phase) | Workflow function with deterministic commands | SDK worker + engine journal | Yes, strictly side-effect steps | Observed dynamic graph, partial blueprint |
+| Procedural code-first (release 0.3.0, design 044, not built) | Workflow function with deterministic commands, pinned to its build | SDK worker, replayed against the engine journal | Yes, only in activities and steps | Observed dynamic graph, partial blueprint |
 
-The V1 goal is the first two modes. The procedural mode requires a formal determinism spike per language; it is not a hidden V1 requirement.
+The first two modes are built. The procedural mode enters release 0.3.0 (Owner decision 2026-11-24-3) under
+constitution principle IV (version 5.0.0): the workflow function runs in an SDK worker, never in the control plane; it
+proposes commands that the server accepts under a lease and a fencing token and commits with the journal and the
+outbox in one transaction; the worker's memory is a cache that replay rebuilds; a replay that diverges from the journal
+stops with a typed non-determinism error and commits nothing; a code change that running histories depend on needs an
+explicit version marker or a new version. Design 044 starts with a determinism study per language, and the mode ships
+in an SDK only after that study and the shared replay conformance scenarios pass. The declarative graph stays a
+first-class model beside it.
 
 ## Compilation pipeline
 

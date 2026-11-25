@@ -66,17 +66,35 @@ must say so rather than hide it. Sources: ADR-0004, ADR-0005, ADR-0010, ADR-0076
 
 ### IV. Compatibility Is Versioned and Pinned
 
-A published workflow version and its IR are immutable and every run references exactly one
-version; there is no automatic migration of a running workflow to a new version. Wire contracts
-(OpenAPI, Protobuf, AsyncAPI, the workflow IR schema) are versioned, and a change MUST NOT break
-runs in progress. The SDK protocol has one semantic contract: the six official SDKs
-(TypeScript, Go, Python, C#, Java, Rust) pass the same conformance suite and MUST NOT fork the server
-semantics. The Studio draws the declarative IR; imperative code that cannot be converted is not
-promised a round trip. Toolchains and dependencies are pinned (`rust-toolchain.toml`,
-`Cargo.lock`, locked CI builds).
+A published workflow version is immutable and every run references exactly one version; there is
+no automatic migration of a running workflow to a new version. Wire contracts (OpenAPI, Protobuf,
+AsyncAPI, the workflow IR schema) are versioned, and a change MUST NOT break runs in progress. The
+SDK protocol has one semantic contract: the six official SDKs (TypeScript, Go, Python, C#, Java,
+Rust) pass the same conformance suite and MUST NOT fork the server semantics. Toolchains and
+dependencies are pinned (`rust-toolchain.toml`, `Cargo.lock`, locked CI builds).
 
-*Rationale:* a durable run outlives the release that started it. Sources: ADR-0003, ADR-0007,
-`docs/architecture/overview.md` (invariant 1), AGENTS.md rule 8.
+A workflow is written in one of two models that share one engine, one journal and this one
+semantic contract. In the **graph model** the published version is the declarative IR, drawn in
+the Studio or compiled by an SDK builder, and the engine interprets it. In the **procedural
+model** (workflow as code) the published version names a workflow function and the pinned build
+that contains it. The function runs in an SDK worker, never in the control plane or the scheduler
+(Principle V), and is replayed deterministically against the run's journal. It proposes commands;
+the server accepts them as a worker result under Principle I (valid lease, fencing token) and
+commits them with the journal and the outbox in one transaction. The worker's memory is a cache
+that replay can discard and rebuild, never a record. Code outside an activity may run again on
+every replay, so the workflow function MUST NOT perform an external effect itself: effects are
+activities under Principle III. A replay that diverges from the journal MUST stop with a typed,
+audited non-determinism error and commit none of its commands. A code change that running
+histories depend on enters only through an explicit version marker in the code or a new version.
+The procedural model MUST NOT ship in an SDK before that language's determinism study and the
+shared replay conformance scenarios pass. The Studio draws the declarative IR and shows a
+procedural run as the graph observed from its journal; imperative code that cannot be converted to
+the IR is not promised a round trip.
+
+*Rationale:* a durable run outlives the release that started it, whichever model wrote it, and two
+models stay one product only if they share the journal, the fence and the conformance suite.
+Sources: ADR-0003, ADR-0007, `docs/architecture/overview.md` (invariant 1),
+`docs/architecture/workflow-ir-and-sdk-modes.md`, Owner decision 2026-11-24-3, AGENTS.md rule 8.
 
 ### V. Code, Tenant Boundary and Secrets Are Isolated
 
@@ -159,13 +177,35 @@ Sources: `docs/test-strategy.md`, AGENTS.md rules 9, 11 and 12.
 
 - **Technology baseline (V1):** Rust (Tokio, Axum, tonic, SQLx) with a pinned stable toolchain;
   PostgreSQL as authority; NATS JetStream notifications with the configurable Redis Streams
-  alternative governed by ADR-0069; graph-native declarative IR; single region with high
-  availability. NATS remains supported. This does not approve arbitrary transports, changes to
-  delivery authority or removal of the broker from a production profile. Other baseline changes
-  require a new ADR (Governance).
-- **Out of scope for V1:** multi-region active-active, exactly-once physical execution of external
-  effects, a connector marketplace, WASM as a mandatory runtime, reimplementing Temporal or
-  Restate, and automatic migration of arbitrary code.
+  alternative governed by ADR-0069; two authoring models on one engine, the graph-native
+  declarative IR and the procedural code-first model of Principle IV; one writable region per
+  cell, with high availability inside the region. NATS remains supported. This does not approve
+  arbitrary transports, changes to delivery authority or removal of the broker from a production
+  profile. Other baseline changes require a new ADR (Governance).
+- **Regions:** a cell is one PostgreSQL authority with its object store and its processes. It may
+  declare standby regions and fail over active-passive: an operator's activation, committed in one
+  transaction, raises a region epoch that the database itself enforces on leases, fences and
+  writes, so that nothing granted before the activation can act after it (feature 032, ADR-0067). Different
+  cells may have their writable region in different regions. Cross-region failover is offered for
+  production only after its region drill report and its commit-latency benchmark exist and state
+  their environment and failures. A replication mode or a forced activation that can lose
+  acknowledged work says so before it is chosen, counts and reports what was lost after a
+  failover, and never claims a recovery point objective of zero.
+- **Admitted scope:** workflow as code (Principle IV); internal apps built in the Studio over
+  declared workflow operations, whose sessions carry no more than their viewer's own authority and
+  whose author code runs only in an isolated frame (feature 027, ADR-0062; a delegated execution
+  mode would need its own ADR and an amendment); a curated integration and template hub (features
+  021, 028 and design 047) whose only sources are the index signed in the release and indexes the
+  operator configures with keys the operator pins, whose items are imported as drafts under the
+  same publication, signature, secret and isolation rules as authored content, and which runs
+  nothing in the server.
+- **Out of scope for V1:** two regions accepting writes for the same cell (multi-region
+  active-active inside a cell, with merged histories or conflict resolution); exactly-once physical
+  execution of external effects; an open marketplace (publishing by tenants or third parties,
+  unsigned or unpinned sources, ratings, payments); a generic application builder with its own
+  backend, database or server-side author code; wire, protocol or history compatibility with
+  another engine (running Temporal or Restate SDKs against this server, importing their
+  histories); WASM as a mandatory runtime; and automatic migration of arbitrary code.
 - **Targets are not promises:** throughput, latency and SLO figures are benchmark criteria to
   verify on a stated environment (hardware, configuration, workload), not commitments. A benchmark
   report states the environment and the failures, not only the throughput.
@@ -291,6 +331,6 @@ it is not approval of the implementation. A violation that cannot be avoided MUS
 the design doc's Complexity Tracking table with the simpler alternative that was rejected. For a
 feature not yet converted, the Check and the table live in its `plan.md`.
 
-**Version**: 4.7.0 | **Ratified**: 2026-10-11 | **Last Amended**: 2026-11-20
+**Version**: 5.0.0 | **Ratified**: 2026-10-11 | **Last Amended**: 2026-11-24
 
-Amendment scope and preserved obligations: [4.7.0 Sync Impact Report](governance/constitution-4.7.0-sync-impact.md). Previous amendments: [4.6.0 Sync Impact Report](governance/constitution-4.6.0-sync-impact.md), [4.5.0 Sync Impact Report](governance/constitution-4.5.0-sync-impact.md), [4.4.0 Sync Impact Report](governance/constitution-4.4.0-sync-impact.md), [4.3.0 Sync Impact Report](governance/constitution-4.3.0-sync-impact.md), [4.2.0 Sync Impact Report](governance/constitution-4.2.0-sync-impact.md), [4.1.0 Sync Impact Report](governance/constitution-4.1.0-sync-impact.md), [4.0.0 Sync Impact Report](governance/constitution-4.0.0-sync-impact.md), [3.0.0 Sync Impact Report](governance/constitution-3.0.0-sync-impact.md) and, for 2.0.0 (Principle III), the [compensation safety Sync Impact Report](governance/compensation-safety-sync-impact.md). Version 3.0.0 was adopted on 2026-11-01 by the owner's instruction to merge the pull request that carried that text. Version 4.0.0 was adopted on 2026-11-03 by merging the pull request that carries this text, on the owner's delegation to the assistant ("Decida por mim"); the owner may overrule it by a later amendment. Version 4.1.0 was adopted on 2026-11-04 by the owner's instruction to scope the CI to the change and to run the whole stack for a release (`docs/owner-decisions.md`, OD-2026-11-04-2). Version 4.2.0 was adopted on 2026-11-05 by the owner's instruction that a merge into `develop` starts no CI and that the CI stays for pull requests and releases (`docs/owner-decisions.md`, OD-2026-11-05-1). Version 4.5.0 is adopted by merging the pull request that carries it, on the owner's decision to amend the CI gate for step logs (`docs/owner-decisions.md`, OD-2026-11-15-10). Version 4.6.0 is adopted by merging the pull request that carries it, on the owner's delegation of the 0.3.0 decisions to the coordinating session (`docs/owner-decisions.md`, OD-2026-11-20-6 and OD-2026-11-20-7); the owner may overrule it by a later amendment. Version 4.7.0 is adopted by merging the pull request that carries it, on the owner's instructions that the document leads and the code follows, that words are written in full and that the identifiers are renamed to words (`docs/owner-decisions.md`, Owner decisions 2026-11-20-8, 2026-11-20-9 and 2026-11-20-10).
+Amendment scope and preserved obligations: [5.0.0 Sync Impact Report](governance/constitution-5.0.0-sync-impact.md). Previous amendments: [4.7.0 Sync Impact Report](governance/constitution-4.7.0-sync-impact.md), [4.6.0 Sync Impact Report](governance/constitution-4.6.0-sync-impact.md), [4.5.0 Sync Impact Report](governance/constitution-4.5.0-sync-impact.md), [4.4.0 Sync Impact Report](governance/constitution-4.4.0-sync-impact.md), [4.3.0 Sync Impact Report](governance/constitution-4.3.0-sync-impact.md), [4.2.0 Sync Impact Report](governance/constitution-4.2.0-sync-impact.md), [4.1.0 Sync Impact Report](governance/constitution-4.1.0-sync-impact.md), [4.0.0 Sync Impact Report](governance/constitution-4.0.0-sync-impact.md), [3.0.0 Sync Impact Report](governance/constitution-3.0.0-sync-impact.md) and, for 2.0.0 (Principle III), the [compensation safety Sync Impact Report](governance/compensation-safety-sync-impact.md). Version 3.0.0 was adopted on 2026-11-01 by the owner's instruction to merge the pull request that carried that text. Version 4.0.0 was adopted on 2026-11-03 by merging the pull request that carries this text, on the owner's delegation to the assistant ("Decida por mim"); the owner may overrule it by a later amendment. Version 4.1.0 was adopted on 2026-11-04 by the owner's instruction to scope the CI to the change and to run the whole stack for a release (`docs/owner-decisions.md`, OD-2026-11-04-2). Version 4.2.0 was adopted on 2026-11-05 by the owner's instruction that a merge into `develop` starts no CI and that the CI stays for pull requests and releases (`docs/owner-decisions.md`, OD-2026-11-05-1). Version 4.5.0 is adopted by merging the pull request that carries it, on the owner's decision to amend the CI gate for step logs (`docs/owner-decisions.md`, OD-2026-11-15-10). Version 4.6.0 is adopted by merging the pull request that carries it, on the owner's delegation of the 0.3.0 decisions to the coordinating session (`docs/owner-decisions.md`, OD-2026-11-20-6 and OD-2026-11-20-7); the owner may overrule it by a later amendment. Version 4.7.0 is adopted by merging the pull request that carries it, on the owner's instructions that the document leads and the code follows, that words are written in full and that the identifiers are renamed to words (`docs/owner-decisions.md`, Owner decisions 2026-11-20-8, 2026-11-20-9 and 2026-11-20-10). Version 5.0.0 is adopted by merging the pull request that carries it, on the owner's approval of the amendment that admits the full-parity scope of release 0.3.0 (`docs/owner-decisions.md`, Owner decisions 2026-11-24-1, 2026-11-24-2 and 2026-11-24-3), its review findings settled under Owner decision 2026-11-24-4; the owner may overrule it by a later amendment.

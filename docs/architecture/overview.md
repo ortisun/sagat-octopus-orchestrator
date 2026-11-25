@@ -78,6 +78,20 @@ needed. Git history preserves the earlier layout proposal.
 
 Publish declarative JSON definition → start Run via REST → persist journal → enqueue task → test worker executes → complete step → update state → view graph and audit log → kill and restart worker with safe retry.
 
-## Explicit scope left for later releases
+## Explicit scope left out
 
-Generic low-code style application designer, public connector marketplace, WASM as a mandatory runtime, multi-region active-active, bidirectional conversion of arbitrary imperative code and global distributed transactions.
+The constitution (version 5.0.0, Delivery Constraints) sets the scope. Release 0.3.0 admits workflow as code (a
+procedural workflow function replayed against the journal, design 044), internal apps built over declared workflow
+operations (feature 027), a curated integration and template hub (features 021, 028 and design 047) and standby regions
+per cell with fenced active-passive failover (feature 032). Still left out:
+
+- a generic application builder with its own backend, database or server-side author code;
+- an open marketplace: publishing by tenants or third parties, unsigned or unpinned sources, ratings, payments;
+- two regions accepting writes for the same cell (multi-region active-active inside a cell); different cells may have
+  their writable region in different regions;
+- wire, protocol or history compatibility with another engine (Temporal or Restate SDKs against this server, imported
+  histories);
+- WASM as a mandatory runtime;
+- bidirectional conversion of arbitrary imperative code to the declarative IR, and automatic migration of arbitrary
+  code;
+- global distributed transactions.

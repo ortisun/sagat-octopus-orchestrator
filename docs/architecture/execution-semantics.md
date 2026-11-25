@@ -7,7 +7,7 @@ V1 uses a **declarative Workflow IR interpreter** and step checkpointing. It doe
 To avoid promising perfect conversion, we support two modes:
 
 1. **Graph-native:** JSON/IR definition in the Studio or declarative SDK, static and versioned, native execution in the engine.
-2. **Code-orchestrated (P2):** orchestrator function in an SDK with controlled replay and step commands; requires a registered worker and proof of determinism. Do not assume immediate support for arbitrary control structures.
+2. **Code-orchestrated (procedural, release 0.3.0, design 044, not built):** orchestrator function in an SDK with controlled replay and step commands; requires a registered worker and proof of determinism (a determinism study per language and the shared replay conformance scenarios, constitution principle IV, version 5.0.0). Do not assume immediate support for arbitrary control structures.
 
 ## Run states
 

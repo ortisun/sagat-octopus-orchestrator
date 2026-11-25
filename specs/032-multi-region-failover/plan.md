@@ -7,6 +7,9 @@ Status: Proposed — not started.
 **Input**: [spec.md](./spec.md), [research.md](./research.md), proposed
 [ADR-0067](../../docs/adr/ADR-0067-a-cell-has-one-writable-region-and-fails-over-by-a-fenced-epoch.md).
 Implementation MUST NOT start before the owner answers O1560 (ADR and constitution amendment).
+*Note (2026-11-24):* O1560 is answered by Owner decision 2026-11-24-2 and the amendment is applied in
+constitution 5.0.0; the Delivery Constraints row of the Constitution Check below now reads against
+the "Regions" bullet, whose evidence gate replaces D1592's sequencing of the amendment.
 
 ## Summary
 
@@ -70,7 +73,7 @@ These are design checks, not implementation approvals or test results.
 | VI — OTel, audit, typed errors | Pass | Pass | History row in the same transaction; tenant fan-out; fixed-label metrics; reasons over existing codes; T032-015, T032-016, T032-035 |
 | VII — inbox/outbox, redeliverable events | Pass | Pass | Dedupe across epochs; republish with stable ids; reconciler re-hints in the new region; T032-030, T032-031 |
 | VIII — failure tests, honest benchmarks | Pass | Pass | Region loss mid-commit, partition, duplicates, timeout/signal race, lost broker, failed compensation, restart; drill report with environment; T032-023..032, T032-045..047 |
-| Delivery Constraints — single region with HA | **Justified (amendment required)** | **Justified (amendment required, after evidence)** | the owner may accept the direction (O1560); ADR-0067 `Accepted`, ADR-0009's "Superseded in part" line and the constitution amendment of D1583 wait for the drill report and the commit-latency benchmark (D1592, T032-063); active-active stays out of scope |
+| Delivery Constraints — single region with HA | **Justified (amendment required)** | **Justified (amendment required, after evidence)** | the owner may accept the direction (O1560); ADR-0067 `Accepted`, ADR-0009's "Superseded in part" line and the constitution amendment of D1583 wait for the drill report and the commit-latency benchmark (D1592, T032-063); active-active stays out of scope. 2026-11-24: amended in 5.0.0 (Owner decision 2026-11-24-2); the row now reads **Pass** against the "Regions" bullet, whose production gate is the same evidence |
 
 ## Project Structure
 

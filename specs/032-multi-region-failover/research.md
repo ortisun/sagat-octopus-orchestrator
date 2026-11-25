@@ -163,7 +163,10 @@ implemented. Identifier range of this feature: D1560–D1599, G1560–G1599, O15
   removed or redefined). Sync Impact Report: ADR-0009 status, `docs/architecture/overview.md`,
   `capacity-and-topology.md`, `docs/runbooks/disaster-recovery.md`, the "V1 single-region HA" assumption
   lines of specs 001–012 (annotated, not rewritten). The amendment and ADR-0009's line wait for evidence
-  (D1592).
+  (D1592). *Superseded in part 2026-11-24:* the amendment is applied in constitution 5.0.0 (Owner
+  decision 2026-11-24-2), with "one writable region per cell" in the baseline, a "Regions" bullet and
+  "two regions accepting writes for the same cell" out of scope; the dependents listed here are updated
+  in the [5.0.0 Sync Impact Report](../../docs/governance/constitution-5.0.0-sync-impact.md).
 - **D1584 — No new crate** (placement in plan §Source placement).
 - **D1585 — Commit deadline** 10 s default, 60 s ceiling, at least twice the statement timeout.
 - **D1586 — RPO** = acknowledged ledger operations missing (count) and the window from the cut point to the
@@ -309,6 +312,10 @@ not deployed and not checked.
 
 - **O1560** — Accept the direction of ADR-0067? Recommended default: yes, the direction now; `Accepted`,
   ADR-0009's line and the amendment of D1583 after the drill and benchmark reports (D1592).
+  **Answered 2026-11-24 (Owner decision 2026-11-24-2):** direction accepted; the amendment is applied
+  now in constitution 5.0.0, and D1592's evidence gate moves into the constitution's "Regions" bullet
+  (production only after the drill report and the commit-latency benchmark). `Accepted` and ADR-0009's
+  line still follow the evidence.
 - **O1561** — Default mode and publication of cross-region objectives? Recommended default:
   `sync_quorum` as reference mode; RPO/RTO across regions remain benchmark criteria, not published and
   not a release gate, until measured on a real two-region installation.
