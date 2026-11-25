@@ -4,6 +4,8 @@ import { ErrorState } from '../../ui/ErrorState';
 import { AlertsPanel } from './AlertsPanel';
 import { operationsApi } from './api';
 import { WorkersPanel } from './WorkersPanel';
+import { FlowControlKeysPanel } from './FlowControlKeysPanel';
+import { flowControlKeysApi } from './flowControlKeys';
 import './operations.css';
 
 /** Alerts and worker controls backed by feature 008's namespace-scoped operational read models. */
@@ -45,6 +47,7 @@ export function OperationsPage() {
         <AlertsPanel api={service} namespaceId={namespace.id} sessionKey={sessionKey} />
         <WorkersPanel api={service} canManage={canManage} namespace={namespace.slug} namespaceId={namespace.id} sessionKey={sessionKey} />
       </div>
+      <FlowControlKeysPanel api={flowControlKeysApi(api, namespace.id)} namespace={namespace.slug} namespaceId={namespace.id} sessionKey={sessionKey} />
     </section>
   );
 }
