@@ -111,3 +111,29 @@ union of assertion sets, the expiry audit).
 | 12 | Nit | Fixed: the control plane and the engine's leased loop named | Technical Plan 1 |
 | 13 | Nit | Fixed: the reference corrected; `IDENTITY_OWNER_DISABLED` in the alert list with its rule test | Requirement 013-024, Technical Plan 11 |
 | 14 | Nit | Fixed: a `settings_revision` counter instead of a revisions table | Technical Plan 3, Task 013-4 |
+
+## egm-review Stage 6, Comprehension Test (`comprehension_report.md`, at `26d4d65b`)
+
+28 of the 29 findings are accepted and fixed. Two are settled in part. While fixing finding 12 the author also found
+that the sign-in service's routes share `/v1/auth/` with the existing REST route `GET /v1/auth/context`. Technical Plans
+7 and 11 now scope the sign-in service's rules to its own listed routes. The API answers no route with CORS headers.
+
+| Finding | Severity | Disposition | Where |
+|---|---|---|---|
+| 1 | Blocker | Fixed: a numbered "Test sign-in and link" flow. A bearer-authenticated `POST /v1/auth/links` returns a one-use start address; a small window binds the attempt to the browser; the callback issues no code; the opening window confirms with the same bearer token and the attempt cookie. No session row is created. CUJ 1 and Requirements 013-001, 013-011 and 013-012 cite it | Technical Plan 4, Technical Plan 13, CUJ 1, Task 013-12 |
+| 2 | Major | Fixed in the Overview and in Architecture decision 0140 decision 8 | Overview, Architecture decision 0140 |
+| 3 | Major | Fixed: organization, with an optional `login_hint` | Requirement 013-027 |
+| 4 | Major | Fixed: no group is read; the attempt gains a purpose and the starting subject | Technical Plans 3 and 4 |
+| 5 | Major | Fixed by removal: authorize always goes to the provider. Reload, a new tab or a deep link renews instead. "Recent" means a provider round trip; the test is now `a_renewal_is_not_a_recent_sign_in` | Requirements 013-019, 013-021, Technical Plan 4 |
+| 6 | Major | Fixed: one platform session per browser, stated. The server refuses with `409 SESSION_CONFLICT` unless `replace_session=true`, and the old session is revoked in the transaction | Requirement 013-018, Technical Plans 4 and 11, Task 013-9 |
+| 7 | Major | Fixed: redemption is one numbered transaction. The order is code (slot 2), advisory lock, then the settings row, connection, membership and fence (slot 4a), then the session, the attempt and the signature. The code is marked once. Slot is glossed and linked | Technical Plans 4 and 13, Terms |
+| 8 | Major | Fixed: "at least once every 10 seconds (an interval of at most 10 seconds)" | Requirement 013-019 |
+| 9 | Major | Fixed (option a): within 30 seconds, while the successor has never been used, a reuse issues a new successor and retires the unused one. A reuse after the successor was used revokes the session (new test). The CLI re-reads the key store under its lock | Requirement 013-026, Technical Plan 4, Task 013-15 |
+| 10 | Major | Fixed: `federated_only` moves onto `tenant_identity_settings`. There is exactly one row per tenant, inserted by the migration and by tenant creation, and the membership read's join refuses a tenant without it | Technical Plans 3, 4 and 13, Task 013-5 |
+| 11 | Major | Fixed: no conversion path exists. A tenant leaving federation gives each person a new membership under the deployment issuer, and the old subject's grants stay with the old subject | Technical Plan 12 |
+| 12 | Major | Fixed: two route tables with full prefixes, authentication and permissions. `membership:manage` exists today and is held by `admin` only. `/auth/sessions` is an ordinary REST route | Technical Plan 11, Requirement 013-020, Technical Plan 7 |
+| 13 | Major | Fixed: the interval is 30 seconds by default and the leeway 30 seconds. Every statement says two intervals. The command waits and resumes. A retired key is kept until its successor's activation plus 300 seconds, one interval and the leeway | Requirement 013-025, Technical Plan 4, Architecture decision 0140 decision 7 |
+| 14 | Major | Fixed: Terms gain slot, access fence, instance registry, intent-write-verify-activate, reveal grants and the other entries, and the test terms, with links. The beat is corrected to 10 seconds (`HEARTBEAT` in `crates/application/src/instances.rs`). The capability names cite design 050 and Architecture decision 0143 | Terms, Requirements 013-032, Technical Plan 13 |
+| 15 to 23 | Nit | Fixed. The domain leftovers are removed and the test renamed. The two plain reads are named. The nine tests are placed in their tasks. Abbreviations are written in full: "CUJ" stays as the template's heading term, and `OD-…` stays in register strings. The residual of a stolen token is stated, and the OpenBao consequence is made conditional in both places. The federated-only re-check on renewal and the break-glass context clause are removed. The reset rule is moved into Requirement 013-021. The terms are added | Throughout |
+| 24 | Nit | Settled in part. Architecture decision 0050 decision 9 is the fleet capability activation that 0082 refines, so the citation was right. Architecture decision 0082 is added beside it for clarity | Architecture decision 0140 |
+| 25 to 29 | Nit | Fixed. The pre-provisioning workflow is stated, with the provider guides. The deployment issuer is a second choice on the sign-in page. Tasks 013-16 and 013-18 go to the server builder after both lanes. The OIDC leeway is 30 seconds. CUJ 5's Given is stated | Requirement 013-020, Technical Plan 10, the plan, Requirement 013-007, CUJ 5 |

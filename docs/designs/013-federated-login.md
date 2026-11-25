@@ -37,8 +37,8 @@ From release 0.3.0 each tenant (an organization) connects its own identity provi
   identities, see and end sessions.
 
 The deployment issuer keeps working as it does today, beside federation, for deployments that federate upstream and
-for break-glass. `apps/dev-idp` grows a development OIDC provider and a development SAML provider, so every flow runs
-on a laptop and in CI with no external service.
+for break-glass. `apps/dev-idp` grows a development OIDC provider, and SAML runs against a pinned Keycloak container
+(Decision 013-010), so every flow runs on a laptop and in CI with no external service.
 
 ### Terms
 
@@ -55,6 +55,37 @@ on a laptop and in CI with no external service.
   (feature 027 registers `apps` for embedded apps when it is built).
 - **Break-glass.** Signing in through the deployment issuer to a tenant that requires federated sign-in, by a subject
   the operator named, audited and alerted.
+- **Platform token.** An access token the sign-in service issues (`iss` the platform issuer, `aud` `<public origin>/v1`,
+  the platform API's resource identifier); a **deployment token** is one of the deployment issuer. The **issuer kind**
+  is which of the two verified a request's token.
+- **Owning connection** and **pin.** The one connection whose SCIM and mapping rules may change a member's role and
+  status (Decision 013-013); a pin is an administrator's mark that keeps a member's role unchanged by mapping.
+- **Neutral page.** The sign-in service's answer when it cannot start a sign-in (an unknown organization, or one
+  without an active connection): the same page, byte for byte, in both cases (Requirement 013-006).
+- **Slot.** A position in the fixed order in which every write transaction of the platform takes its row locks, so
+  that no two transactions wait for each other in a cycle
+  ([Architecture decision 0050](../adr/ADR-0050-many-run-operations-admit-under-stable-keys-and-never-buffer-or-reopen.md),
+  decision 7: slot 2 holds request receipts, where duplicates of one request serialize, and this design puts the
+  authorization code there; slot 4a holds the tenant's authority rows, memberships and, after them, feature 029's
+  access fence).
+- **Access fence.** Feature 029's per-tenant row that every change of permissions takes, so that grants and their
+  revocations serialize.
+- **Instance registry.** The table where every server process registers what it can honour and sends a beat every 10
+  seconds; an operator records a requirement there, which raises an epoch, and a process that lacks a recorded
+  requirement keeps a closed gate and serves nothing it would get wrong
+  ([Architecture decision 0082](../adr/ADR-0082-the-instance-registry-records-requirements-only-for-the-operator-and-a-refused-process-stays-up-with-a-closed-gate.md)).
+- **Intent, write, verify, activate.** The protocol of
+  [Architecture decision 0035](../adr/ADR-0035-database-connections-and-managed-execution.md) decision 7 for a secret
+  written through the API: record the intent in PostgreSQL, write the secret to OpenBao, read it back, then mark it
+  active, so a crash never leaves a reference to a secret that does not exist.
+- **Reveal grants, secret access entries, feature 026 links.** A member's permission to see one run's payloads in
+  clear (feature 011), an entry of a secret's access list (feature 017), and a signed link by which a person decides an
+  approval or submits a form (feature 026).
+- **Test terms.** The cross-tenant battery is the shared contract suite that calls every route with another tenant's
+  identifiers and expects the answer of a missing resource; the canary scan plants marked values and searches logs,
+  spans, audit records and responses for them; the test composition is the server, PostgreSQL, OpenBao and the
+  development providers that `tests/support` starts for a suite; the development overlay is
+  `infra/docker/compose.database.yaml`, which a developer starts on a laptop.
 
 ## The Problem
 
@@ -97,12 +128,12 @@ already has.
 - **Requirement 013-001** A tenant administrator (new permission `identity:manage`, built-in `admin` only, reserved
   and administrator-equivalent in feature 029's catalog) MUST be able to create, change, test, activate, disable and
   delete identity connections of protocol `OIDC` or `SAML`, at most 8 per tenant. A connection MUST pass from `DRAFT`
-  to `TESTED` only by a completed test sign-in through it by an administrator, and to `ACTIVE` only from `TESTED`; a
+  to `TESTED` only by a completed test sign-in through it by an administrator (Technical Plan 4, "Test sign-in and
+  link"), and to `ACTIVE` only from `TESTED`; a
   change of its endpoints (other than the immutable issuer or entity identifier), client authentication or mapping
   MUST return it to `DRAFT` unless it is `DISABLED`, and revoke its sessions (Requirement 013-019); a signing-key
   rotation does not (Requirement 013-004). *Acceptance:* the
-  integration tests of each transition and of a change that resets an active connection to draft (refused while it is
-  the only active connection of a tenant that requires federated sign-in, Requirement 013-021).
+  integration tests of each transition and of a change that resets an active connection to draft.
 - **Requirement 013-002** A token issued through a connection MUST name that connection's tenant; no claim,
   attribute, parameter, header or path segment from the provider or the browser MAY choose or change the tenant.
   *Acceptance:* the contract test that a provider asserting `tenant: other` still yields the connection's tenant, and
@@ -147,12 +178,12 @@ already has.
   organization the authorization endpoint MUST answer exactly as for a known organization without an active connection.
   What the redirect to a provider reveals (that an active connection exists, and its provider's host and display name
   on the chooser) is accepted and stated (Gap 013-007). Discovery by e-mail domain is deferred (Gap 013-010).
-  *Acceptance:* the contract test that unknown and unconfigured answers are byte-identical.
+  *Acceptance:* `unknown_and_unconfigured_authorize_answers_are_identical` (byte for byte).
 - **Requirement 013-007** An OIDC sign-in MUST use authorization code with PKCE (S256) toward the provider, a `state`
   and a `nonce` bound to the sign-in attempt, the `iss` callback parameter when the provider sends it (RFC 9207), and
   MUST validate the ID token: signature by a key of the provider's key set with RS256, PS256 or ES256 (the algorithm
   taken from the key and the token header, PS256 not mapped to RS256), `iss` exactly, `aud` containing the client
-  identifier, `azp` when there are several audiences, `exp`, `iat` within the tolerance, `nonce`, the tenant
+  identifier, `azp` when there are several audiences, `exp` and `iat` within a leeway of 30 seconds (the deployment verifier's default), `nonce`, the tenant
   restriction of Requirement 013-003, and a non-empty subject claim. The identity MUST come from the ID token;
   `userinfo` MAY add display claims only. *Acceptance:* one refusal test per check with the development provider
   configured to break it.
@@ -176,17 +207,18 @@ already has.
 
 - **Requirement 013-011** A federated identity MUST be (tenant, connection, the provider's stable identifier) linked to
   exactly one membership subject (Architecture decision 0142); the platform MUST NOT link identities by e-mail. A link
-  to an existing subject MUST be made only inside a sign-in by that subject, who confirms it (or by a test sign-in of
-  the administrator for their own subject); the member routes MAY unlink and pre-provision, never attach an identity to
+  to an existing subject MUST be made only by the link flow of Technical Plan 4 ("Test sign-in and link"), started and
+  confirmed by that subject while signed in (a test sign-in of a connection is the same flow for the administrator's
+  own subject); the member routes MAY unlink and pre-provision, never attach an identity to
   a subject that already has one or to an `admin` subject. *Acceptance:* `two_connections_with_one_email_make_two_members`,
   `an_administrator_cannot_attach_an_identity_to_another_member`.
 - **Requirement 013-012** A connection MAY enable just-in-time provisioning with a default role of `viewer` (the
   default), `operator` or `developer`, never `admin`; its scope is the connection and its tenant restriction (an e-mail
-  claim is never used to admit anyone; Entra ID's `email` claim never at all). On a shared issuer it MUST be refused without the tenant restriction of
+  claim is never used to admit anyone). On a shared issuer it MUST be refused without the tenant restriction of
   Requirement 013-003. The first completed sign-in then creates the membership (subject `federated:<uuid>`), its external
   identity, its profile and its role in one transaction with the session. Without it, an unknown identity is refused
-  and the refusal is audited. A test sign-in through a `DRAFT` or `TESTED` connection provisions nobody and produces no
-  session usable for the API. *Acceptance:* integration tests for each case, including a crash after the membership
+  and the refusal is audited. A test sign-in through a `DRAFT` or `TESTED` connection provisions nobody and creates no
+  session row. *Acceptance:* integration tests for each case, including a crash after the membership
   insert (nothing remains).
 - **Requirement 013-013** A connection MAY map provider groups delivered by its SCIM to the built-in role with up to 32
   ordered rules (a group value, a role). A connection's rules MUST match only groups sourced from that connection, and
@@ -233,7 +265,10 @@ already has.
 - **Requirement 013-018** Redeeming a code with its PKCE verifier MUST create the session row (absolute expiry 12
   hours by default, at most 24; idle expiry 2 hours by default) and, for the `studio` client only, set a
   `__Host-sagat_signin` cookie (`Secure`, `HttpOnly`, `SameSite=Lax`, path `/`) whose value is stored only as a hash; a
-  live session cookie of another tenant or subject MUST NOT be replaced silently (the Studio asks the person first).
+  browser holds at most one platform session, so a person signed in to one organization who signs in to another ends
+  the first; the token endpoint MUST refuse, with `409` and `SESSION_CONFLICT`, a `studio` redemption that carries a
+  live session cookie of another tenant or subject unless the request says `replace_session=true`, which the Studio
+  sends only after the person agreed, and the old session is then revoked in the redemption's transaction.
   Access tokens MUST be ES256 JSON web tokens with `typ` `at+jwt`, `aud` the API's resource identifier, `client_id`,
   `iss`, `tenant`, `sub`, `sid`, `jti`, `iat` and `exp`, at most 300 seconds, a bound the platform verifier enforces
   itself. The sign-in service issues no other kind of token with its access-token key. The Studio MUST renew through
@@ -241,17 +276,17 @@ already has.
   only after the person's activity in the idle window (an idle tab is not renewed); the
   Studio MUST refuse a renewed token whose tenant differs from the organization the person chose, show the tenant it
   is signed in to, and keep tokens in memory only. *Acceptance:* contract tests for each condition of the renewal; the
-  Studio test that a reload renews without a redirect while the session lives.
+  Studio test that a reload renews without a redirect while the session lives;
+  `a_second_organization_needs_the_person_to_replace_the_session`.
 - **Requirement 013-019** Revocation: a suspended or removed membership MUST be refused on its next request
   (Requirement 013-016); a revoked or expired session MUST stop renewing at once and its access tokens MUST be refused
   on their next request: the per-request membership read for a platform token joins its session by (`tenant`, `sid`)
   in the same statement and refuses a revoked or expired one, so revocation needs no poll and no new round trip
-  (Decision 013-003); a long-lived stream MUST carry the issuer kind and `sid` into its re-check, re-check at most every
-  10 seconds for a platform token, and end when its token or its session ends; the Studio resumes it with
+  (Decision 013-003); a long-lived stream MUST carry the issuer kind and `sid` into its re-check, re-check at least once
+  every 10 seconds for a platform token (an interval of at most 10 seconds), and end when its token or its session ends; the Studio resumes it with
   `Last-Event-ID` (a stream reconnects at least every five minutes with 300-second tokens). Disabling, deleting or resetting a connection MUST
-  revoke its sessions in the same transaction. Renewal, refresh and the silent path of the authorization endpoint MUST
-  re-check that the connection is `ACTIVE`, the session's context meets the connection's requirement, the membership is
-  `ACTIVE`, and the tenant's federated-only setting allows it. *Acceptance:* the revocation tests of Architecture
+  revoke its sessions in the same transaction. Renewal and refresh MUST re-check that the connection is `ACTIVE`, the session's
+  context meets the connection's requirement, and the membership is `ACTIVE`. *Acceptance:* the revocation tests of Architecture
   decision 0140: `a_revoked_session_is_refused_on_its_next_request` (a barrier holds a request after its membership read
   while the revocation commits: that request completes, the next one is refused), `a_stream_ends_within_ten_seconds_of_its_session`
   (measured), `a_stream_resumes_with_last_event_id`.
@@ -259,20 +294,26 @@ already has.
   `POST /members` (pre-provision an external identity of a connection with a role), `PATCH /members/{subject}` (role,
   pin, status, owning connection), `DELETE /members/{subject}`, `DELETE /members/{subject}/identities/{id}` (unlink,
   audited), `GET /members/{subject}/sessions` and `DELETE /members/{subject}/sessions` (end all), each under
-  `membership:manage`; `GET /auth/sessions` and `DELETE /auth/sessions/{sid}` for the caller's own. *Acceptance:*
+  the existing permission `membership:manage` (held by the built-in `admin` only); `GET /auth/sessions` and
+  `DELETE /auth/sessions/{sid}` for the caller's own, ordinary bearer routes of the REST API beside the existing
+  `GET /auth/context` (Technical Plan 11 lists every route with its prefix). `POST /members` is for a person whose
+  stable identifier the administrator reads from the provider's console (the Entra ID object and tenant identifiers,
+  the Okta user identifier); SCIM and just-in-time provisioning are the usual paths, and the runbook's provider guides
+  say where each provider shows it. *Acceptance:*
   integration tests per route and role; the cross-tenant battery.
 - **Requirement 013-021** A tenant MAY require federated sign-in: then the deployment issuer is refused for its human
   members (built-in roles `admin`, `developer`, `operator`, `viewer`; machine members keep the deployment issuer)
-  except the break-glass subjects the operator names with `control-plane identity break-glass`. Break-glass bypasses
-  the required authentication context; each use is audited once per token (`jti`) and raises an alert, and a failed
+  except the break-glass subjects the operator names with `control-plane identity break-glass`. Each break-glass use
+  is audited once per token (`jti`) and raises an alert, and a failed
   audit write refuses the request. Enabling federated-only MUST be refused unless an active connection exists and the
   enabling administrator's current session came through an active connection of the tenant and is recent (signed in
-  within the last 10 minutes); disabling or deleting the last active connection MUST be refused while it is required.
-  The same recent sign-in is required to create a SCIM token; a silent sign-in keeps the session's original
-  authentication time and is not recent. No change (SCIM, a mapping result, the member routes) MAY leave the tenant
+  within the last 10 minutes); disabling, deleting, or resetting to `DRAFT` by a change (Requirement 013-001) the last
+  active connection MUST be refused while it is required. The same recent sign-in is required to create a SCIM token;
+  a renewal keeps the session's original authentication time and is never a recent sign-in. No change (SCIM, a mapping result, the member routes) MAY leave the tenant
   without an active `admin` member (`LOCKOUT_GUARD`). Each of these checks runs under the tenant's identity-settings row
   lock (Technical Plan 13). *Acceptance:* the lockout tests, with a barrier for each racing pair;
-  `a_silent_sign_in_is_not_recent`; `the_last_admin_cannot_be_suspended_by_scim`.
+  `a_renewal_is_not_a_recent_sign_in`; `the_last_admin_cannot_be_suspended_by_scim`;
+  `a_change_that_resets_the_last_required_connection_is_refused`.
 - **Requirement 013-022** Domain verification and discovery by e-mail domain are deferred from 0.3.0 (Decision
   013-011, Gap 013-010); a later delivery adds them without changing the slug path.
 - **Requirement 013-023** Sign-out: `POST /v1/auth/logout` MUST revoke the session and clear the cookie; for an OIDC
@@ -294,22 +335,24 @@ already has.
   plane's identity only, written through the connection API by the intent, write, verify, activate protocol of
   Architecture decision 0035 decision 7, and never returned. The signing keys MUST follow the lifecycle of Architecture
   decision 0140 decision 7: created and rotated by an audited operator command, the active key version recorded in
-  PostgreSQL, a new public key published to every replica's key set for one key-set refresh interval before any replica
-  signs with it. The platform issuer's key set and the connections' client keys MUST be disjoint, and the API MUST never
-  verify a token with a connection key. An OpenBao outage stops sign-in and renewal only while a process must read a key
-  it has not cached (people are signed out as their tokens expire, within five minutes) and raises
-  `IDENTITY_SIGNING_UNAVAILABLE`; verification keeps working from the in-process key set. OpenBao Transit signing is
+  PostgreSQL, a new public key published in every replica's key set for two key-set refresh intervals (Technical Plan
+  4, "Signing keys") before any replica signs with it. The platform issuer's key set and the connections' client keys MUST be disjoint, and the API MUST never
+  verify a token with a connection key. An OpenBao outage stops sign-in and renewal only in a process that must read a key
+  it has not cached (a restarted process, or a rotation); there, people are signed out as their tokens expire, within
+  five minutes, and the process raises `IDENTITY_SIGNING_UNAVAILABLE`; verification keeps working from the in-process key set. OpenBao Transit signing is
   deferred (Gap 013-012).
 - **Requirement 013-026** The CLI MUST sign in with `sagat login --org <slug>` through the loopback redirect, receive an
   access token and a refresh token (one use, rotated on every refresh by compare-and-set on its generation, the new
-  token signed before the commit; a reuse of the immediately previous generation within 30 seconds is refused without
-  revoking, which covers two CLI processes and a lost response; any other reuse revokes the session and is audited; the
-  CLI holds a file lock around a refresh; CLI sessions absolute 7 days, idle 24 hours), and store them in the operating system's key store, or a file
+  token signed before the commit; a reuse of the immediately previous generation within 30 seconds of its rotation, while
+  its successor has never been used, issues a new successor and retires the unused one, which covers a lost response;
+  any other reuse revokes the session and is audited; the CLI holds a file lock around a refresh and re-reads the key
+  store under it, so a second CLI process uses the new token instead of reusing the old; CLI sessions absolute 7 days, idle 24 hours), and store them in the operating system's key store, or a file
   with mode `0600` where none exists; a CLI sign-in sets no session cookie in the browser. The CLI's token sources are,
   in order, `--token-file`, `SAGAT_TOKEN`, then the key store (refining Architecture decision 0019 decision 2). *Acceptance:* CLI tests
   against the test composition; the reuse test; `two_concurrent_refreshes_keep_the_session`;
-  `a_lost_refresh_response_keeps_the_session`.
-- **Requirement 013-027** The Studio MUST offer sign-in by organization or e-mail, the connection chooser, and tenant
+  `a_lost_refresh_response_keeps_the_session`; `a_reuse_after_the_successor_was_used_revokes_the_session`.
+- **Requirement 013-027** The Studio MUST offer sign-in by organization (with an optional e-mail address passed as
+  `login_hint`), sign-in through the deployment issuer as a second choice while it is offered, the connection chooser, and tenant
   screens for connections (with a guided setup per protocol and provider, the service provider's metadata, the test
   sign-in and activation), SCIM tokens, mapping rules, members, sessions and the federated-only setting; every
   control the person cannot use is shown unavailable with the permission it needs. *Acceptance:* component tests and
@@ -338,9 +381,11 @@ already has.
   lists the instance-registry capability `identity-federation-v1` only when its configuration enables federation (the
   control plane and the execution engine); an operator activates the requirement by the audited command of
   Architecture decision 0082 decision 1, refused while a live process lacks it; until it is recorded, connection
-  creation, SCIM, member suspension and the federated-only setting are refused (`FEDERATION_NOT_ACTIVATED`), and design
-  050's names `identity.federation` and `identity.scim` are derived from it (this design builds the registry derivation of
-  Architecture decision 0143 decision 2 if no earlier feature has). A binary below the requirement cannot serve
+  creation, SCIM, member suspension and the federated-only setting are refused (`FEDERATION_NOT_ACTIVATED`), and the
+  advertised capability names `identity.federation` and `identity.scim` of `GET /version` (design 050, Technical Plan 3)
+  are derived from it; this design builds that derivation from the instance registry, the mapping of
+  [Architecture decision 0143](../adr/ADR-0143-the-studio-draws-node-kinds-from-one-registry-checked-against-the-schema-and-enabled-by-the-servers-capabilities.md)
+  decision 2, if no earlier feature has. A binary below the requirement cannot serve
   a deployment that recorded it (the registry's closed gate); rolling back below it is unsupported. The deployment
   issuer, existing memberships and existing clients are unchanged; the migration refuses, with a named error, while a
   membership already has a subject starting `federated:`; its `down` refuses while a membership is `SUSPENDED` or any
@@ -410,7 +455,7 @@ than one re-check interval (10 seconds) after; a platform token reaching
 
 - Being a general identity provider for other applications. The sign-in service issues tokens for the platform's own
   clients only.
-- Encrypted SAML assertions, SAML artifact binding, IdP-initiated sign-in without a service-provider round trip,
+- Encrypted SAML assertions, SAML artifact binding, identity-provider-initiated sign-in without a service-provider round trip,
   WS-Federation, LDAP and Kerberos (Gap 013-004).
 - Passwords, magic links, social sign-in other than through an OIDC connection, and multi-factor authentication run
   by the platform. The provider authenticates; the platform can require its context (Requirement 013-010).
@@ -439,8 +484,8 @@ decision 2026-11-24-4, each weighed over its options and recorded below as "dele
   makes. Chosen: the join, settling Major 4 of the architecture review of 2026-11-25. Every API request already reads the
   membership (`IdentityService::authenticate`); for a platform token the same statement joins `signin_sessions` by
   (`tenant`, `sid`) and refuses a revoked or expired session, so revocation is effective on the next request with no new
-  round trip, no poller, no fail-closed mode and no revocation table. The five-minute lifetime still bounds a stolen
-  token's use when the database is unreachable, which then serves nothing anyway.
+  round trip, no poller, no fail-closed mode and no revocation table. The five-minute lifetime bounds what a stolen access token
+  can do when nobody revokes its session.
 - **Decision 013-004 — The Studio renews through a cookie-authenticated, same-origin call.** Options: refresh tokens in
   the browser (exposed to script); a hidden frame with `prompt=none` (the Studio is unframeable, `frame-ancestors
   'none'`); a same-origin renewal call. Chosen: the renewal call, for the `studio` client only, protected by
@@ -515,8 +560,8 @@ decision 2026-11-24-4, each weighed over its options and recorded below as "dele
   mount and the signing key, behind ports feature 015 may re-home when it is designed; it adds the external-group
   columns to feature 029's tables (Decision 013-017), the `ACTIVE` predicate to the membership reads every feature uses
   (Requirement 013-016). The in-process redemption port for feature 027's embedded apps is built by 027's delivery
-  against the contract of Requirement 013-005. Recorded as OD-2026-11-24-717, which the tasks that touch those
-  features cite in an `Owner-gate:` line.
+  against the contract of Requirement 013-005. Recorded as Owner decision 2026-11-24-717 (a delegate's), which
+  the tasks that touch those features cite in an `Owner-gate:` line.
 - **Decision 013-020 — Four milestones.** Settling Major 1 of the Stage 5 review, the plan ships in milestones, each
   with its own acceptance and gate: **A** OIDC connections, the broker and platform tokens, sessions and revocation,
   just-in-time provisioning, the member routes, the CLI, slug sign-in, the required context, SCIM users (offboarding
@@ -530,8 +575,10 @@ decision 2026-11-24-4, each weighed over its options and recorded below as "dele
   identifiers and SCIM deletion.
 - **Gap 013-002** Front-channel sign-out at the provider depends on the browser following the redirect; a closed tab
   leaves the provider's session open (the platform's is revoked).
-- **Gap 013-003** A stolen platform token can act for up to its five-minute lifetime only while the database cannot be
-  read, when the process serves nothing anyway; otherwise the membership read refuses a revoked session at once.
+- **Gap 013-003** A stolen platform access token is usable until its session is revoked or for its five-minute
+  lifetime, whichever comes first; a stolen session cookie is usable from the Studio's origin only (the renewal needs
+  the exact `Origin`) until the session is revoked or expires; a stream of a revoked session runs for up to one
+  re-check interval (10 seconds). Nobody is notified of a theft the platform cannot see.
 - **Gap 013-004** No encrypted assertions, artifact binding or IdP-initiated sign-in (Non-Goals).
 - **Gap 013-005** No OIDC back-channel logout in 0.3.0.
 - **Gap 013-006** The interoperability run uses Keycloak and recorded fixtures; no live run against Okta, Entra ID or
@@ -564,8 +611,9 @@ create (Decision 013-010); it is not a gate of this design.
 *   **Given**: a tenant `acme` on a deployment with federation enabled, and its administrator signed in through the
     deployment issuer.
 *   **When**: she adds an OIDC connection, follows the Entra ID guide (redirect URI and key set address to copy into
-    Entra), enters the issuer and the client identifier, chooses `private_key_jwt`, saves, runs "Test sign-in" in a new
-    window and signs in with her company account, then activates the connection.
+    Entra), enters the issuer and the client identifier, chooses `private_key_jwt`, saves, runs "Test sign-in", which
+    opens a small window, signs in there with her company account, confirms the link back in the Studio (Technical
+    Plan 4, "Test sign-in and link"), then activates the connection.
 *   **Then**: the discovery and key set were fetched through the identity egress guard; the test linked her company
     identity to her existing member (she confirmed the link); the connection is `ACTIVE`; every step is in the audit
     log.
@@ -598,7 +646,8 @@ create (Decision 013-010); it is not a gate of this design.
 
 ### CUJ 5: Require the provider and a second factor (User story 013-05)
 
-*   **Given**: one active connection, the administrator signed in through the deployment issuer.
+*   **Given**: one active connection, the administrator signed in through the deployment issuer, and her company
+    account set up with a second factor, so her own sign-in through the connection meets the multi-factor context.
 *   **When**: she tries to require federated sign-in; then signs in through the connection, sets the required
     authentication context to the multi-factor value, and requires federated sign-in.
 *   **Then**: the first attempt is refused ("sign in through an active connection first"); afterwards a person whose
@@ -615,7 +664,7 @@ flowchart LR
   C[CLI] -->|loopback PKCE| S
   S -->|OIDC code + PKCE| O[Tenant OIDC provider]
   S -->|SAML AuthnRequest| M[Tenant SAML provider]
-  M -->|form post to ACS| S
+  M -->|form post to the assertion consumer service| S
   S -->|attempt, then session at redemption| P[(PostgreSQL)]
   S -->|code| B
   B -->|code + PKCE verifier, then renewal| S
@@ -658,8 +707,7 @@ table.
 
 | Table | Holds | Notes |
 |---|---|---|
-| `tenants` (gains columns) | `federated_only` (boolean, default false) | read with the membership, so the deployment-issuer path stays one read |
-| `tenant_identity_settings` | session lifetimes, per-tenant ceilings | one row per tenant that sets them |
+| `tenant_identity_settings` | `federated_only` (boolean, default false), session lifetimes, per-tenant ceilings | exactly one row per tenant: the migration inserts one for every existing tenant and tenant creation inserts it in its own transaction (a foreign key to `tenants`, and the membership read's join refuses a tenant without it), so every lock of Technical Plan 13 finds it; read with the membership in one statement |
 | `identity_break_glass_subjects` | tenant, subject, written by, written at | only `control-plane identity break-glass` (schema-owning role) writes it |
 | `identity_break_glass_uses` | tenant, `jti` or (`sub`, `iat`) when the token has no `jti`, first use | unique; the once-per-token audit |
 | `identity_signing_keys` | key version, public key, state (`PUBLISHED`, `ACTIVE`, `RETIRED`), published at, activated at, the identity-mount reference | deployment-wide; the operator command writes it |
@@ -668,7 +716,7 @@ table.
 | `identity_mapping_rules` | tenant, connection, position, group value, role | at most 32 |
 | `external_identities` | tenant, connection, provider subject, membership subject, created, last sign-in, deprovisioned at | unique (tenant, connection, provider subject); a connection's deletion keeps them, deprovisioned |
 | `member_profiles` | tenant, subject, display name, e-mail (display only), role pinned, owning connection (`ON DELETE SET NULL`) | `memberships` gains `status` (`ACTIVE`, `SUSPENDED`; default `ACTIVE`), so the per-request read stays one row |
-| `signin_attempts` | tenant, id, connection, client, browser binding hash, the client's PKCE challenge and redirect URI, state, nonce, the provider-side verifier, SAML request id, the verified identity once the callback completed, created, expires (10 minutes), used at | at most 100,000 rows in the deployment (a new attempt is refused with `503` beyond it); purged at expiry |
+| `signin_attempts` | tenant, id, connection, client, purpose (`SIGN_IN`, `LINK`, `TEST`) and, for a link or a test, the subject that started it, browser binding hash, the client's PKCE challenge and redirect URI, state, nonce, the provider-side verifier, SAML request id, the verified identity once the callback completed, created, expires (10 minutes), used at | at most 100,000 rows in the deployment (a new attempt is refused with `503` beyond it); purged at expiry |
 | `signin_codes` | tenant, code hash, attempt, the verified identity copied from the attempt, client, redirect URI, PKCE challenge, expires (`min(60 seconds, the attempt's expiry)`), redeemed at, the session it produced | consumed by a conditional `UPDATE` first; a second redemption revokes that session; attempts are purged only after their codes |
 | `signin_sessions` | tenant, id, subject, connection, client, cookie hash (Studio) or refresh token hash and its generation (CLI), created, last renewed, absolute and idle expiry, authentication context and time, revoked at and reason | joined by the per-request membership read of a platform token |
 | `saml_assertion_replays` | tenant, connection, assertion id, expires | an accepted `NotOnOrAfter` is capped at 10 minutes; purged after expiry |
@@ -694,30 +742,64 @@ case-insensitive.
 `form-action 'self'` is not crossed). The service resolves the tenant by slug, picks the active connections (a chooser page when there
 are several), creates a `signin_attempts` row with the client's challenge and redirect URI, sets `__Host-sagat_login`
 (Requirement 013-009) and redirects to the provider: OIDC with its own PKCE, `state` and `nonce`; SAML with an
-`AuthnRequest` whose `ID` is stored, by HTTP-Redirect binding, `RelayState` the attempt id. When a live session of that
-tenant exists for this browser (`__Host-sagat_signin`), the client is `studio`, and the re-checks of Requirement
-013-019 pass, it issues a code at once without a provider round trip; redeeming that code renews the existing session
-(no new row, its authentication time and context kept), so a reload is never a recent sign-in.
+`AuthnRequest` whose `ID` is stored, by HTTP-Redirect binding, `RelayState` the attempt id. The authorization
+endpoint always sends the person to the provider: a reload, a new tab or a deep link of a Studio that holds a live
+session renews through `POST /v1/auth/session/token` instead, which keeps the session's authentication time, so only a
+round trip to the provider is a recent sign-in.
 
 **Complete.** `GET /v1/auth/callback/oidc/{connectionId}` or `POST /v1/auth/callback/saml/{connectionId}` (the global
 identifier) checks the attempt (this browser, unused, unexpired, same connection), verifies the provider's answer
 (Requirement 013-007 or Architecture decision 0141), checks the tenant restriction and the required authentication
-context, records the verified identity, its groups and its context on the attempt, and redirects to the client's
-redirect URI with a one-use code (Requirement 013-005). It writes no membership, no session and no cookie. Provider
-error text is never forwarded (Requirement 013-030).
+context, records the verified identity and its authentication context on the attempt (no group is read: Decision
+013-007), and, for a sign-in attempt, redirects to the client's
+redirect URI with a one-use code (Requirement 013-005). For a link or a test attempt it redirects to the Studio's link
+page instead, with no code. It writes no membership, no session and no cookie. Provider error text is never forwarded
+(Requirement 013-030).
+
+**Test sign-in and link.** Linking a provider identity to an existing member, and the test sign-in that moves a
+connection to `TESTED`, are one flow, started and finished by the signed-in person, whichever issuer signed them in:
+
+1. The Studio calls `POST /v1/auth/links` with the person's bearer token (deployment or platform), the exact `Origin`
+   and `X-Sagat-Renew`, naming the connection and the purpose (`LINK`, or `TEST` with `identity:manage`). The service
+   creates an attempt that records the caller's tenant and subject and returns a one-use start address that lives 60
+   seconds.
+2. The Studio opens the start address in a small window. Its first navigation binds the attempt to the browser
+   (`__Host-sagat_login`) and redirects to the provider; a second navigation of the address is refused.
+3. The callback verifies the provider's answer as for a sign-in, records the verified identity on the attempt and
+   redirects the small window to the Studio's link page, which tells the window that opened it (a same-origin
+   `postMessage`) and closes.
+4. The opening window shows the identity to be linked and, when the person confirms, calls
+   `POST /v1/auth/links/{attempt}` with the same bearer token, `Origin` and header; the browser sends
+   `__Host-sagat_login` with it. The service checks that the token's tenant and subject are the attempt's, that the
+   binding cookie is the attempt's, and that the attempt is verified, unused and unexpired; then, under the membership
+   lock, it writes the link (refused with `IDENTITY_LINK_CONFLICT` when the provider identity is linked to another
+   member) and its audit, and for a test sets `TESTED` by compare-and-set on the connection revision the attempt ran
+   against.
+
+No session row is created and no code is issued, so a link or a test never signs anyone in. A cross-site page can start
+nothing (step 1 needs the bearer token) and confirm nothing (step 4 needs it again).
 
 **Redeem.** `POST /v1/auth/token` with `grant_type=authorization_code`, the code and the PKCE verifier (`studio` and
-`cli`) first consumes the code by a
-conditional `UPDATE ... SET redeemed_at = now() WHERE hash = $1 AND redeemed_at IS NULL RETURNING ...` (Architecture
-decision 0050 slot 2, so duplicates serialize before any aggregate; no row back revokes the session the code produced),
-checks its client, redirect URI and challenge, signs the access token (a token for an uncommitted `sid` is refused by
-the session join, so signing before the commit is safe and an OpenBao failure leaves the code unspent), then in the
-same transaction: resolves or creates the external identity and membership (just in time),
-creates the
-session, marks the code redeemed, writes the audit. It returns the access token (and for `cli` a refresh token) and,
-for `studio`, sets `__Host-sagat_signin`. When the browser already holds a live session of another tenant or subject,
-the Studio has asked the person before redeeming, and the old session is ended, not overwritten silently.
-`grant_type=refresh_token` (`cli` only) rotates the refresh token; a reuse of a spent one revokes the session.
+`cli`) is one transaction, in this order:
+
+1. Consume the code: `UPDATE ... SET redeemed_at = now() WHERE hash = $1 AND redeemed_at IS NULL RETURNING ...`
+   (slot 2, so two redemptions of one code serialize before any other lock; when no row comes back the code was
+   spent, and the session it produced is revoked in a transaction of its own). The code is marked once, here.
+2. Check its client, redirect URI and PKCE challenge (no lock).
+3. Take the transaction advisory lock on (tenant, connection, provider subject) (Technical Plan 13).
+4. Slot 4a, in order: the tenant's identity-settings row `FOR SHARE`, the connection row `FOR SHARE` (its state and
+   required context re-checked), the membership (inserted just in time, or locked, through the definer functions of
+   Technical Plan 13), and feature 029's access fence only when the transaction writes a role.
+5. For `studio`, check the browser's session cookie (Requirement 013-018: `SESSION_CONFLICT` unless
+   `replace_session=true`, then revoke the old session); insert the session row; mark the attempt used; write the
+   audit.
+6. Sign the access token (and for `cli` the refresh token) for the new `sid`, then commit. A token for an
+   uncommitted `sid` is refused by the session join, so signing before the commit is safe, and an OpenBao failure
+   rolls the whole transaction back with the code unspent.
+
+It returns the access token (and for `cli` a refresh token) and, for `studio`, sets `__Host-sagat_signin`.
+`grant_type=refresh_token` (`cli` only) rotates the refresh token by compare-and-set on its generation; the grace for a
+lost response and the revocation on any other reuse are Requirement 013-026's.
 
 **Renew.** `POST /v1/auth/session/token` (`studio` only): cookie, the Studio's exact `Origin`, header
 `X-Sagat-Renew: 1`, no CORS; the re-checks of Requirement 013-019; extends the idle expiry and returns a new access
@@ -729,22 +811,24 @@ is applied after it, in `authenticate_bearer`) or the platform issuer's verifier
 `identity_signing_keys` (one cache, one set of fault tests), `typ` `at+jwt`, the API
 audience, a `client_id` and a maximum lifetime of 300 seconds of its own. After verification, `Core::authenticate`
 receives the issuer kind, `sid` and `jti`, and the request path resolves, in one statement that merges today's two
-reads (`find_tenant_by_slug`, `find_membership`), the tenant and its `federated_only` flag, the membership with its
+reads (`find_tenant_by_slug`, `find_membership`), the tenant and its identity-settings row (with `federated_only`), the membership with its
 status and its effective role (Technical Plan 13), and, for a platform token, its session by (`tenant`, `sid`); a
 suspended member or a revoked or expired session is refused with `401` and the reason `MEMBER_SUSPENDED` or
 `SESSION_REVOKED`. The execution engine verifies the deployment issuer only (Decision 013-016).
 
-**Signing keys.** `control-plane identity signing-key create` (and `rotate`) writes a new key as `PUBLISHED`; every
-replica's key set holds it within one refresh interval; the command then marks it `ACTIVE` after at least two refresh
-intervals and the previous key `RETIRED`. The fetcher returns every `PUBLISHED`, `ACTIVE` and `RETIRED` key until the
-next key's activation plus the token lifetime, one refresh interval and the leeway; the cache's existing rules refresh
-it on an unknown `kid` (at most once per minimum interval) and bound its staleness, and a replica stops signing when its
-set is older than two intervals. The serving process
+**Signing keys.** The platform key set's refresh interval is a control-plane setting, 30 seconds by default (the
+deployment key set's default minimum interval), and the leeway is 30 seconds. `control-plane identity signing-key
+create` (and `rotate`) writes a new key as `PUBLISHED`, waits two refresh intervals, printing that it waits, then marks
+it `ACTIVE` and the previous key `RETIRED` in one transaction; interrupted, a second run finds the `PUBLISHED` key and
+waits only for what remains. The fetcher returns every `PUBLISHED` and `ACTIVE` key, and a `RETIRED` key until its
+successor's activation plus 300 seconds (the longest token lifetime), one refresh interval and the leeway; the cache's
+existing rules refresh it on an unknown `kid` (at most once per minimum interval) and bound its staleness, and a
+replica stops signing when its set is older than two intervals. The serving process
 never creates a key. The rotation test drives the refreshes by a controlled clock.
 
-**Lock order.** Every write transaction of this design follows Architecture decision 0050's slots: redemption takes
-the tenant's membership row in slot 4a (`memberships` before the 029 access fence, both in slot 4a) and the session,
-code and attempt rows after it; a SCIM user request takes the membership, then the fence; a SCIM group request takes
+**Lock order.** Every write transaction of this design follows the slots of Architecture decision 0050 (Terms):
+redemption as its steps above (the code in slot 2; then the settings row, the connection row, the membership and the
+fence in slot 4a; the session and attempt rows after them); a SCIM user request takes the membership, then the fence; a SCIM group request takes
 the affected memberships in subject order (slot 4a, first), then the 029 tenant access fence exclusively (slot 4a,
 after memberships, as Architecture decision 0050 orders them), then the group's rows; a connection's disable or raised
 context takes the connection row, then its sessions. No transaction of this design writes a feature 027 app-session
@@ -817,8 +901,10 @@ unsolicited-response page) are served with `default-src 'none'; style-src 'self'
 refuses that outside `SAGAT_ENV=dev`. A CLI sign-in sets no cookie in the browser.
 
 **Origins.** The platform issuer is the Studio origin: `SAGAT_PUBLIC_ORIGIN` MUST equal it (the `__Host-` cookies and
-the same-origin renewal need it) and differ from the apps, component sandbox and public-forms origins; `/v1/auth/*` is
-served on the Studio origin only and answers `404` on the others. The sign-in pages are platform-authored, carry no
+the same-origin renewal need it) and differ from the apps, component sandbox and public-forms origins; the sign-in
+service's routes (the `/v1/auth/` routes of Technical Plan 11's first table) are served on the Studio origin only and
+answer `404` on the others; the REST routes `GET /auth/context` and `/auth/sessions` share the prefix and are ordinary
+bearer routes. The sign-in pages are platform-authored, carry no
 author or anonymous user content, and are the one exception to Architecture decision 0062 decision 8's rule against
 anonymous pages on the Studio origin, recorded there. Start-up refuses a configuration that breaks these, with a test.
 
@@ -849,14 +935,15 @@ bootstrap, and the Keycloak service with a pinned image, loopback ports and a he
 ### 10. Studio
 
 - **Sign-in** (`src/auth/`): `config.json` names the platform issuer when federation is on; the sign-in page asks for
-  the organization (and optionally an e-mail address passed as `login_hint`); `startLogin` gains `organization` and
+  the organization (and optionally an e-mail address passed as `login_hint`), and offers "Sign in with the
+  deployment's provider" as a second choice while `config.json` lists the deployment issuer; `startLogin` gains `organization` and
   `login_hint` and keeps `state` and PKCE
   in the page; the session store renews 60 seconds before expiry and on reload, refuses a renewed token of another
   tenant than the one chosen, and shows the tenant in the shell; sign-out calls `/v1/auth/logout` and offers the
   provider sign-out; the callback page no longer prints the provider's `error_description`. The organization slug may
   be remembered in local storage (a convenience; never a token).
 - **Identity screens** (`features/identity/`, tenant level): connections (list, guided setup for Entra ID, Okta, Google
-  Workspace, Keycloak and generic OIDC and SAML, the values to copy into the provider, test sign-in in a new window,
+  Workspace, Keycloak and generic OIDC and SAML, the values to copy into the provider, test sign-in in a small window,
   activate, disable), SCIM (tokens shown once, last request, error counts), mapping rules, members (list,
   filter, pre-provision, role, pin, suspend, remove, identities, sessions), the federated-only setting with its guard.
   Built on the interface module of Architecture decision 0101.
@@ -864,16 +951,42 @@ bootstrap, and the Keycloak service with a pinned image, loopback ports and a he
 ### 11. Contracts and errors
 
 - `specs/001-platform-foundation/contracts/openapi.yaml`: the `/v1/auth/*` operations that return JSON (discovery, key
-  set, token, renewal, logout), `/identity/*` and `/members*`, their schemas and errors, `x-implemented:
+  set, token, renewal, logout, links), `/identity/*` and `/members*`, their schemas and errors, `x-implemented:
   '013'`; the SCIM routes in a separate fragment `specs/013-federated-login/contracts/scim.openapi.yaml` (SCIM's own
   media type and error format).
+
+  Every path below is under the public origin; the REST API's paths are under `/v1` as today. The sign-in service:
+
+  | Method and path | Authentication | Purpose |
+  |---|---|---|
+  | `GET /v1/auth/.well-known/openid-configuration`, `GET /v1/auth/jwks` | none | discovery and the platform key set |
+  | `GET /v1/auth/authorize` | none (PKCE, `state`) | start a sign-in (Technical Plan 4) |
+  | `GET /v1/auth/callback/oidc/{connectionId}`, `POST /v1/auth/callback/saml/{connectionId}` | the attempt cookie | the provider's answer |
+  | `GET /v1/auth/saml/{connectionId}/metadata` | none | the service provider's metadata |
+  | `POST /v1/auth/token` | the code and PKCE verifier, or a refresh token | redemption and refresh |
+  | `POST /v1/auth/session/token` | the session cookie, `Origin`, `X-Sagat-Renew` | renewal (`studio`) |
+  | `POST /v1/auth/logout` | the session cookie, or the refresh token | sign-out |
+  | `POST /v1/auth/links`, `POST /v1/auth/links/{attempt}` | bearer token, `Origin`, `X-Sagat-Renew` (and the attempt cookie for the second) | test sign-in and link |
+
+  The administration routes of the REST API (bearer token; `x-access` tenant):
+
+  | Method and path | Permission | Purpose |
+  |---|---|---|
+  | `GET`, `POST /identity/connections` | `identity:manage` | list, create (state `DRAFT`) |
+  | `GET`, `PATCH`, `DELETE /identity/connections/{connectionId}` | `identity:manage` | read, change, delete |
+  | `POST /identity/connections/{connectionId}/activate`, `.../disable` | `identity:manage` | state changes |
+  | `GET`, `PUT /identity/connections/{connectionId}/mapping-rules` | `identity:manage` | the ordered rules (milestone C) |
+  | `POST /identity/connections/{connectionId}/scim-tokens`, `DELETE .../scim-tokens/{tokenId}` | `identity:manage`, a recent sign-in for create | SCIM tokens |
+  | `GET`, `PATCH /identity/settings` | `identity:manage` | federated-only (milestone D), session lifetimes, ceilings |
+  | the `/members` routes of Requirement 013-020 | `membership:manage` | member management |
+  | `GET /auth/sessions`, `DELETE /auth/sessions/{sid}` | an authenticated caller, their own only | the caller's sessions |
 - `details.reason` values (new): `CONNECTION_NOT_ACTIVE`, `CONNECTION_STATE`, `SIGNIN_ATTEMPT_INVALID`,
   `SIGNIN_PROVIDER_REFUSED`, `SIGNIN_TOKEN_INVALID`, `SAML_PROFILE_VIOLATION`, `AUTH_CONTEXT_REQUIRED`,
   `IDENTITY_NOT_PROVISIONED`, `IDENTITY_LINK_CONFLICT`, `FEDERATION_REQUIRED`, `LOCKOUT_GUARD`,
   `PROVIDER_DESTINATION_DENIED`, `REFRESH_TOKEN_REUSED`, `SESSION_REVOKED`,
   `MEMBER_SUSPENDED`, `ISSUER_IMMUTABLE`, `TENANT_RESTRICTION_REQUIRED`, `SUBJECT_FORMAT_REFUSED`,
   `CODE_CLIENT_MISMATCH`, `RECENT_SIGN_IN_REQUIRED`, `NOT_OWNING_CONNECTION`, `FEDERATION_NOT_ACTIVATED`,
-  `CONNECTION_GROUPS_NAMED`. Each has a remediation row. Alerts: `IDENTITY_BREAK_GLASS_USED`,
+  `CONNECTION_GROUPS_NAMED`, `SESSION_CONFLICT`. Each has a remediation row. Alerts: `IDENTITY_BREAK_GLASS_USED`,
   `IDENTITY_SIGNING_UNAVAILABLE`, `IDENTITY_SCIM_SILENT`, `IDENTITY_OWNER_DISABLED`, each with a rule test.
 - `docs/runbooks/federated-login.md`: enabling federation, the public origin, keys and their rotation, provider
   guides, SCIM setup, break-glass, revocation, the alerts.
@@ -891,8 +1004,10 @@ bootstrap, and the Keycloak service with a pinned image, loopback ports and a he
 Rollback: turning federation off in the configuration is refused while the requirement is recorded; the operator first
 releases every tenant's federated-only setting (each audited), then removes the requirement, which the registry allows
 only when no tenant requires federated sign-in. Federated members (subjects `federated:<uuid>`) cannot sign in while
-federation is off, because only the platform issuer issues their subjects; the runbook says so and tells the operator
-to keep federation on until those members have deployment-issuer identities linked, if ever. A binary rollback below
+federation is off, because only the platform issuer issues their subjects and a deployment token naming one is
+refused; no path converts them. A tenant that must leave federation gives each such person a new membership under the
+deployment issuer, and the grants, approver entries and schedules that named the old subject stay with it; the runbook
+says so. A binary rollback below
 the requirement is unsupported. Federation rows stay.
 
 ### 13. Concurrency, grants and edge rules
@@ -907,13 +1022,13 @@ the requirement is unsupported. Federation rows stay.
   `memberships`.
 - **One membership read.** A definer function `sagat_active_membership(tenant, subject)` returns the membership's
   role and status and nothing for a suspended one; `sagat_lock_memberships`, the per-request read, `find_membership`
-  and the two plain reads (moved into `crates/infra-postgres/src/identity.rs`, so the architecture rule has no
-  exception) all use it; one red test per caller family refuses a suspended member. Because no role comes from a claim
+  and the two plain reads of a role (`declared_operations.rs` and `approval_progress.rs` in `crates/infra-postgres/src`,
+  moved into `crates/infra-postgres/src/identity.rs`, so the architecture rule has no exception) all use it; one red test per caller family refuses a suspended member. Because no role comes from a claim
   in 0.3.0 (Decision 013-007), the stored role is the effective role.
 - **Lock order additions.** In slot 4a, before `memberships`: the tenant's identity-settings row, then the connection
-  row. Redemption, refresh, renewal and every SCIM request take both `FOR SHARE` and re-check the connection's state
-  and required context after the lock; a disable, reset, raised context or federated-only change takes the settings
-  row and the connection row `FOR UPDATE`, so a sign-in racing a disable either commits first and has its session
+  row (the order of redemption's step 4). Redemption, refresh, renewal and every SCIM request take both `FOR SHARE` and re-check the connection's state
+  and required context after the lock; a disable, reset, raised context or federated-only change (which writes
+  `federated_only` on the settings row) takes the settings row and the connection row `FOR UPDATE`, so a sign-in racing a disable either commits first and has its session
   revoked by the disable, or sees the disabled state. Write skew between federated-only, connection states and the
   last administrator is excluded by the settings row lock. Ceilings (sessions per member, SCIM tokens, connections) are
   counted under the membership or connection lock that their writer holds.
@@ -921,7 +1036,8 @@ the requirement is unsupported. Federation rows stay.
   group row, re-reads `generation` and retries the whole transaction (at most three times) if it moved, so a `PUT`
   never undoes a concurrent `PATCH` without recomputing its member.
 - **One identity at a time.** Resolving an external identity (redemption, SCIM `POST`, pre-provision) takes a
-  transaction advisory lock on (tenant, connection, provider subject) first. A SCIM `POST` for a person who already
+  transaction advisory lock on (tenant, connection, provider subject) before any slot 4a row (in redemption, after the
+  code of slot 2). A SCIM `POST` for a person who already
   signed in just in time adopts the existing identity (a `scim_resources` row, no `409`). After a SCIM delete the
   deprovisioned identity row is re-pointed to a new `federated:<uuid>` membership on the next provisioning, so old
   schedules, approver entries and grants naming the old subject do not come back; a suspension keeps the subject.
@@ -931,19 +1047,17 @@ the requirement is unsupported. Federation rows stay.
   new owner's groups in the same transaction.
 - **Testing and activating a connection.** A test sign-in records the connection revision it ran against; `TESTED` is
   set by compare-and-set on that revision, and `ACTIVE` only if the revision is unchanged since `TESTED`.
-- **Linking an existing subject.** The link flow starts from an authenticated Studio session, whose subject the
-  attempt records; the callback records the verified identity; a confirmation `POST /v1/auth/links/{attempt}` with the
-  renewal protections (cookie, exact `Origin`, `X-Sagat-Renew`, no CORS) writes the link and its audit under the
-  membership lock. A test sign-in by an administrator is this flow for their own subject, and its `TESTED` write is
-  part of the same confirmation. Positive test: `an_administrator_links_their_identity_and_tests_the_connection`.
+- **Linking an existing subject.** The flow of Technical Plan 4 ("Test sign-in and link"). Positive test:
+  `an_administrator_links_their_identity_and_tests_the_connection`; refusals: `a_link_confirmed_by_another_subject_is_refused`,
+  `a_link_start_address_works_once`.
 - **Typed conflicts.** Every new unique constraint is named in `classify` and answered as a typed conflict
-  (`DOMAIN_CLAIMED`, a slug conflict, SCIM `uniqueness`), never a `500`; each race has a barrier test.
+  (a slug conflict, `IDENTITY_LINK_CONFLICT`, SCIM `uniqueness`), never a `500`; each race has a barrier test.
 - **Break-glass uses.** `INSERT ... ON CONFLICT DO NOTHING` on the use row; the audit record and the alert are written
   only by the inserting transaction, in that transaction.
 - **Activation window.** A writer that needs the `identity-federation-v1` requirement checks it in its own transaction
   through a definer function that reads the epoch under a shared lock, as feature 029's guard does (its note on Gap
-  2001), so a removal and an enable cannot pass each other; replicas learn an activation at their next beat (about 12
-  seconds), during which some answer `FEDERATION_NOT_ACTIVATED`; the runbook says to wait for the beat.
+  2001), so a removal and an enable cannot pass each other; replicas learn an activation at their next beat (within 10
+  seconds, the registry's heartbeat), during which some answer `FEDERATION_NOT_ACTIVATED`; the runbook says to wait for the beat.
 
 ## Risks and Mitigations
 
@@ -959,7 +1073,7 @@ the requirement is unsupported. Federation rows stay.
 | A stale SCIM connection | An informational alert after 7 days without a request; groups do not expire (Decision 013-007) |
 | The signing key leaks | Keys in the identity mount readable by the control plane only, five-minute tokens, operator rotation with overlap, revocation of sessions |
 | An older or federation-off replica ignores federated-only or a suspension | The `identity-federation-v1` requirement; suspension enforced in the schema's membership reads (Requirements 013-016, 013-032) |
-| OpenBao is unavailable | Sign-in and renewal stop with `IDENTITY_SIGNING_UNAVAILABLE`; verification continues; people are signed out within five minutes (Requirement 013-025) |
+| OpenBao is unavailable | A process that has its key cached keeps signing; one that must read a key (restarted, or after a rotation) stops sign-in and renewal with `IDENTITY_SIGNING_UNAVAILABLE`, and its people are signed out within five minutes; verification continues (Requirement 013-025) |
 
 ## Constitution Check
 
@@ -968,7 +1082,7 @@ the requirement is unsupported. Federation rows stay.
 | I. State and retry semantics are explicit and durable | Pass | Provisioning, role changes, suspensions and revocations commit with their audit in one transaction; no run state is touched |
 | II. Modular domain, ports and adapters | Pass | Rules in the domain; use cases and ports in `application`; one new adapter crate (`infra-federation`) for provider protocols, XML and keys; no new edge into the domain; an architecture rule keeps C XML libraries out |
 | III. External effects are at-least-once; sagas compensate | n/a | Provider calls are reads and token exchanges for a sign-in, not workflow effects |
-| IV. Compatibility is versioned and pinned | Pass | Off by default; additive migrations and routes; the deployment issuer unchanged; no IR, worker-protocol or SDK change |
+| IV. Compatibility is versioned and pinned | Pass | Off by default; additive migrations and routes; the deployment issuer unchanged; no change of the workflow document's schema, the worker protocol or the SDKs |
 | V. Code, tenant boundary and secrets are isolated | Pass with conditions (Complexity Tracking) | The tenant from the connection; secrets in the secret provider, never returned; guarded egress; a new trust boundary (the platform signs tokens), justified below |
 | VI. Observability and audit are part of the feature | Pass | Audit of every change and sign-in outcome; closed-label metrics; no token, code or assertion in logs |
 | VII. Events are redeliverable; inbox and outbox are the contract | Pass | SCIM requests are idempotent by effect; no message is added |
@@ -1008,7 +1122,8 @@ Documents first: Task 013-1 lands before code. Tests are seen failing first. The
 `e2e_federated_login`. Two builders can work in parallel after Task 013-2: the server builder (Tasks 013-3 to 013-13
 and 013-17; `crates/`, `apps/control-plane`, `apps/dev-idp`) and the clients builder (Tasks 013-14 and 013-15;
 `apps/cli`, `frontend/apps/studio/src/auth/`, `features/identity/`), which works against the contract of Task 013-2
-and the development provider of Task 013-3.
+and the development provider of Task 013-3. Tasks 013-16 and 013-18 come last and belong to the server builder; they
+run once both lanes have merged, since their suites drive the Studio and the CLI too.
 
 Milestones (Decision 013-020), each closed by its own part of Success criterion 013-001: **A** Tasks 013-1 to 013-6,
 013-8 to 013-10 (without SAML and without federated-only), 013-11 for SCIM users, 013-12 (without the federated-only
@@ -1044,7 +1159,8 @@ and break-glass parts of Tasks 013-10 and 013-12. A task is ticked when every pa
   test per OIDC claim rule (wrong `aud`, `azp`, `nonce`, `hd` or `tid`, algorithm).
   Refs: Requirement 013-001, Requirement 013-003, Requirement 013-012, Requirement 013-013, Requirement 013-024
 - [ ] T013-5 Migration and stores (`crates/infra-postgres`): the tables of Technical Plan 3 with tenant keys,
-  `memberships.status`, `tenants.federated_only`, the redefined `sagat_lock_memberships`, the three plain reads, the
+  `memberships.status`, `tenant_identity_settings` with one row per tenant, the redefined `sagat_lock_memberships`,
+  the two plain reads moved, the
   session join of the membership read, grants, storage classification, the `up` and `down` refusals; the architecture
   rule on reads of `memberships`.
   Red tests: migration up and down (the `down` refused while a member is suspended); `runtime_privileges`; the
@@ -1070,7 +1186,8 @@ and break-glass parts of Tasks 013-10 and 013-12. A task is ticked when every pa
   binding; just-in-time provisioning; sessions; origins and the start-up refusals; the lock order of Technical Plan 4.
   Red tests: `a_response_injected_into_another_browser_is_refused`,
   `a_sign_in_started_by_another_site_establishes_no_session`, `a_provider_cannot_choose_the_tenant`,
-  `unknown_and_unconfigured_discovery_answers_are_identical`, `a_crash_after_the_membership_insert_leaves_nothing`,
+  `unknown_and_unconfigured_authorize_answers_are_identical`, `a_crash_after_the_membership_insert_leaves_nothing`,
+  `two_connections_with_one_email_make_two_members`, `a_second_organization_needs_the_person_to_replace_the_session`,
   `a_reload_renews_without_a_redirect`, `renewal_needs_the_origin_and_the_header`,
   `a_second_use_of_a_code_revokes_its_session`,
   `an_unsolicited_saml_response_does_not_redirect`, `a_public_origin_unequal_to_the_studio_refuses_start_up`, the slot
@@ -1087,14 +1204,17 @@ and break-glass parts of Tasks 013-10 and 013-12. A task is ticked when every pa
   `a_revoked_session_is_refused_on_its_next_request` (a barrier holds a request while the revocation commits),
   `an_id_token_is_refused_as_an_access_token`, `a_disabled_connection_ends_its_sessions`,
   `a_deployment_token_is_refused_when_federation_is_required`, `break_glass_is_audited_once_per_token`, the older-replica
-  activation test, `a_stream_resumes_with_last_event_id`.
+  activation test, `a_stream_resumes_with_last_event_id`, `a_stream_ends_within_ten_seconds_of_its_session` (measured),
+  `a_scim_deactivation_refuses_the_next_request_and_every_live_token`.
   Refs: Requirement 013-019, Requirement 013-021, Requirement 013-032
 - [ ] T013-11 SCIM: users (milestone A), groups on 029's `access_groups` (milestone C), tokens, limits, error format, the
   recorded Okta and Entra ID fixtures.
   Red tests: one per fixture; `a_deactivation_suspends_and_revokes_in_its_transaction`; `a_repeated_request_changes_nothing`;
   `the_tenant_comes_from_the_token`; `a_scim_replace_that_changes_the_match_changes_no_link`;
   `another_connections_scim_cannot_suspend_a_member_it_does_not_own`, `a_put_never_undoes_a_concurrent_patch` (barrier),
-  `a_scim_post_adopts_a_just_in_time_member`, `a_reprovisioned_person_gets_a_new_subject`.
+  `a_scim_post_adopts_a_just_in_time_member`, `a_reprovisioned_person_gets_a_new_subject`,
+  `the_last_admin_cannot_be_suspended_by_scim`, `a_direct_assignment_survives_two_scim_syncs_with_the_same_groups`
+  (milestone C).
   Refs: Requirement 013-014, Requirement 013-015, Requirement 013-016, Requirement 013-017
   Owner-gate: OD-2026-11-24-717
 - [ ] T013-12 Administration routes: connections (with test sign-in and activation; delete refused while a group is
@@ -1105,7 +1225,9 @@ and break-glass parts of Tasks 013-10 and 013-12. A task is ticked when every pa
   `an_administrator_cannot_attach_an_identity_to_another_member`; `a_test_sign_in_provisions_nobody`;
   `an_administrator_links_their_identity_and_tests_the_connection`; `a_change_during_a_test_is_not_activated` (barrier);
   `federated_only_and_a_disable_cannot_both_pass` (barrier); `a_rule_change_recomputes_owned_members`;
-  `a_deleted_owner_leaves_members_with_their_role`.
+  `a_deleted_owner_leaves_members_with_their_role`; `a_removed_admin_rule_demotes_its_members`;
+  `a_renewal_is_not_a_recent_sign_in`; `a_change_that_resets_the_last_required_connection_is_refused`;
+  `a_link_confirmed_by_another_subject_is_refused`; `a_link_start_address_works_once`.
   Refs: Requirement 013-013, Requirement 013-020, Requirement 013-021
 - [ ] T013-13 The maintenance passes of Technical Plan 6 (`crates/scheduler/src/identity.rs`, lease `identity-maintenance`).
   Red tests: `a_rule_change_job_recomputes_in_bounded_batches`, `a_silent_scim_connection_raises_its_alert`,
@@ -1117,7 +1239,9 @@ and break-glass parts of Tasks 013-10 and 013-12. A task is ticked when every pa
   `a_renewed_token_of_another_tenant_is_refused`.
   Refs: Requirement 013-018, Requirement 013-023, Requirement 013-027
 - [ ] T013-15 CLI: `sagat login`, the key store, the source order, rotation and reuse.
-  Red tests: `a_reused_refresh_token_revokes_the_session`, `the_token_file_wins_over_the_key_store`.
+  Red tests: `a_reused_refresh_token_revokes_the_session`, `the_token_file_wins_over_the_key_store`,
+  `two_concurrent_refreshes_keep_the_session`, `a_lost_refresh_response_keeps_the_session`,
+  `a_reuse_after_the_successor_was_used_revokes_the_session`.
   Refs: Requirement 013-026
 - [ ] T013-16 Security and cross-cutting suites: cross-site request forgery, server-side request forgery, replay, the
   canary scan, required authentication context, the cross-tenant battery; the audit vocabulary test (every action of
