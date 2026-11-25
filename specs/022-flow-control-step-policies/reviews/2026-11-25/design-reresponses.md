@@ -54,8 +54,8 @@ findings by section; where it names a finding only within its section, the row m
 | Finding | Decision | Where it lives |
 |---|---|---|
 | A | D022-242 | as Architecture N0 |
-| B | D022-243 | as Correctness M5 |
-| C | D022-244 | ADR-0136 decision 4; plan, "Authorization (T022-011)" reworded; spec FR-022-014 and FR-022-032 lines after the re-reviews; `contracts/errors.md` (`RECOVERY_ROLE_MAY_NOT_APPROVE`); tasks T022-011 as it reads now, T022-240 |
+| B | D022-244 | *Corrected 2026-11-25 (decision D022-270; the first mapping read D022-243):* ADR-0136 decision 4; plan, "Authorization (T022-011)"; `contracts/errors.md` (`RECOVERY_ROLE_MAY_NOT_APPROVE`); tasks T022-240 |
+| C | D022-242 | *Corrected 2026-11-25 (decision D022-270; the first mapping read D022-244):* as Architecture N0 (the lineage, the suppressed and redrivable dispatch) |
 | D | D022-259 | as Architecture N1 |
 | minors 1 to 4, 7 to 9 | D022-252, D022-254 | ADR-0135 decisions 2, 8 and 10; spec FR-022-002, FR-022-004, FR-022-007 lines after the re-reviews; data model, cache tables (`secret_ids`, `producer_subject`, `step_cache_names`, the obligations' grant); OpenAPI fragment (`StepCacheEntry`, the invalidation result and its `404`); plan, "Observability, added"; tasks T022-248, T022-246 |
 | minor 5 | D022-245 | ADR-0136 decision 5; data model, `runs`; tasks T022-241 |

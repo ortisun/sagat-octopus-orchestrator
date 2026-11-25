@@ -129,6 +129,13 @@ be delivered at creation without a buffer; `RunState::replay` rebuilds state for
    wait for another run's uncommitted first row of the same lineage; that wait is a leaf wait, because after it the
    waiting commit takes only rows of its own run and usage rows, and the other commit takes nothing of this run.
 
+   *Accepted 2026-11-25, delegate OD-2026-11-24-4, after three review rounds recorded in
+   specs/022-flow-control-step-policies/reviews/2026-11-25/ (feature 022 decision D022-271):* the feature 022 amendments
+   of this decision dated 2026-11-24 and 2026-11-25 (the new creators' slots, the slot-5 lookup locks with the pre-read
+   of the producer, the slot-7 cache rows and re-check, the slot-6 note, the recorded deviation of the dispatch insert
+   and its lineage key). *Added 2026-11-25 (decision D022-269):* an admission that reads the draft-executions setting
+   holds the namespace's advisory key for it shared in slot 4a.
+
    Transitions on an existing run (claims, completions, approvals, stream appends, operation messages,
    agent rows) start at slot 3R with the run (chain before run), then take the rows their own ADR lists
    (019 claim fences, 025 agent rows, 026 stream heads, 030 operation record and message), never a

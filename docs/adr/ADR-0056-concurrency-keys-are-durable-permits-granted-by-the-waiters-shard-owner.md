@@ -54,7 +54,7 @@ ceiling above the proposed defaults is published.
    changes, holding that run's row lock; a commit that ends the run MUST lock its active-run counter row
    (`run_active_counts_lock_slot`) before it gives back any key; the `runs` row is written by `persist` after
    the evaluation rounds (ADR-0094). *(Replaced 2026-11-25, delegate (OD-2026-11-24-4; feature 022 decision D022-234):
-   the sentence read "and MUST have written that run's `runs` row first (so the `run_active_counts` trigger rows
+   accepted 2026-11-25 with the amendments, decision D022-271; the sentence read "and MUST have written that run's `runs` row first (so the `run_active_counts` trigger rows
    precede the semaphore)", which the build since ADR-0094 does not do; what it protected, the counter row before
    the key, is kept by the explicit lock.)* It MUST lock semaphore rows in `(pool, scope, group, key_digest)` order, after
    every entity lock the path takes before it acquires, releases or grants a permit. After a semaphore it
@@ -103,13 +103,20 @@ ceiling above the proposed defaults is published.
    usage rows. The counter row after cache rows makes no cycle: deciders lock cache rows shared only, and no exclusive
    taker of a cache row takes the counter row.
 
-   2(a). *Added 2026-11-25 (decision D022-254):* the transition rows this decision lists for feature 022's lookup round
-   are the secret-access and membership locks of a cacheable step's secret ids (`sagat_lock_secret_access`,
-   `sagat_lock_memberships`, shared, ascending) and the activity's binding advisory lock (shared), taken before the cache
-   rows; at an admission they are taken at slot 5 of ADR-0050 decision 7, where the definition is known. In a later
-   lookup round of the same commit they come after semaphores, which is safe because they are shared locks whose only
-   exclusive takers (an access-list or membership change, a binding change) lock no run, semaphore, window, cache or
-   counter row afterwards: a leaf, as the shard lease row of ADR-0050 decision 7.
+   2(a). *Added 2026-11-25 (decision D022-254); rewritten 2026-11-25 on its true premise (decision D022-265):* the
+   transition rows this decision lists for feature 022's lookup round are the secret-access and membership locks of a
+   cacheable step's secret ids (`sagat_lock_secret_access`, `sagat_lock_memberships`, shared, ascending), then, after an
+   unlocked pre-read of the entry's immutable `producer_subject`, that subject's membership lock and the activity's
+   binding advisory lock (shared), all before the cache rows, the entry read `FOR SHARE` re-checking the subject; at an
+   admission the locks and the pre-read are at slot 5 of ADR-0050 decision 7 and the re-check at slot 7. The binding
+   lock is not a leaf: a binding replacement takes it exclusively and then locks `worker_sessions` and `steps` rows
+   (`crates/infra-postgres/src/bindings.rs`). The rule that keeps it safe is: no decider locks a step or a
+   `worker_sessions` row before its lookup round; it is stated here and checked by `scripts/check-architecture.py` and a
+   `slot_order.rs` case (a binding replacement against a lease-expiry pass that releases a cacheable successor).
+
+   *Accepted 2026-11-25, delegate OD-2026-11-24-4, after three review rounds recorded in
+   specs/022-flow-control-step-policies/reviews/2026-11-25/ (decision D022-271):* the feature 022 amendments of this
+   decision dated 2026-11-24 and 2026-11-25.
 3. **Every run creator acquires at admission.** Run admission MUST either acquire a run permit or enqueue
    the new run in its admission transaction, through one application port that every run creator calls:
    the start API, event and cron triggers, child nodes (including `onFailure` children), reruns, 017 ad hoc

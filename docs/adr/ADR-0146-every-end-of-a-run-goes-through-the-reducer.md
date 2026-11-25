@@ -1,6 +1,6 @@
 # ADR-0146: Every end of a run goes through the reducer: the collection and loop finish paths are routed through the planner and `persist`
 
-**Status:** Proposed (2026-11-25; revised the same day after the re-reviews of `6d02632e`, decisions D022-249 to D022-251)
+**Status:** Accepted (2026-11-25, delegate OD-2026-11-24-4, after three review rounds recorded in specs/022-flow-control-step-policies/reviews/2026-11-25/); revised after the re-reviews of `6d02632e` and the third reads of `c910345b` (decisions D022-249 to D022-251, D022-267, D022-268)
 **Decided by:** agent proposal (feature 022, decisions D022-207 and D022-232, 2026-11-24 and 2026-11-25) under the owner's delegation (OD-2026-11-24-4, "Tomem a melhor decisão"), after the reviews of 2026-11-25 (`specs/022-flow-control-step-policies/reviews/2026-11-25/`, correctness Major 8, architecture Major 5 and minor 15); accepted by the coordinating session once the three reviewers find no Blocker in a re-review (task T022-200)
 **Refines / supersedes:** refines ADR-0030 (structured instances share the reducer; this ADR extends that sharing to the moment a structured scope finishes the run) and ADR-0094 decision 4 (the finish paths answer the rounds instead of refusing a gated successor; amended 2026-11-24). Supersedes the run-time refusals of feature 022 for a gated successor of a finish path (`RuntimeNotIntegrated`) and for a start gate with a collection or loop (D022-049).
 **Enforced by:** a rule of `scripts/check-architecture.py` (task T022-226), judged by enclosing function (`enclosing_function`, as `run_finished_errors` does), that refuses a `run.finished` journal write or outbox insert, an `UPDATE runs` that sets `finished_at` and a direct `task.ready` outbox insert outside the allow-listed functions (decision 2), with negative fixtures; a mixed-version test (an older binary replays a journal the routed finish wrote) and a held-lock test against concurrent feature 014 iteration transactions; the tests of task T022-207 (one per finish path and successor kind, a crash at the finish commit, a loop and a collection that end `FAILED` with `onFailure` and with a namespace handler); `verify_run`.
@@ -31,8 +31,11 @@ run time (a gated successor `RuntimeNotIntegrated`, retried for ever; a start ga
    the planner and write through `persist`: the successor's release and its lookup and gate rounds, and the run's end
    (`run.finished`, the `runs` update, the run-finished deliveries, the start's releases, the handler phase, the dispatch
    row), are decided and written exactly as for any other commit. The scope's own rows (014's collection and loop
-   progress) keep their transaction and their order: chain → run → the scope's rows → the active-run counter row when
-   the commit ends the run → the rounds → `persist` → usage rows.
+   progress) keep their transaction and their order: chain → run → the scope's rows → the rounds → `persist` (the
+   active-run counter row when the commit ends the run, the give-backs, the rest) → usage rows, as row T31 of feature
+   022's plan says (revised 2026-11-25, decision D022-268). The finish-path rule lands in the routing slice, its pull
+   request's first commit showing it red, with a test that a chain finalization goes through `persist`'s terminal path
+   (decision D022-267).
 2. **Only `persist` ends a run or announces a task.** Outside the `persist` family (`persist`, `persist_addressed`,
    `persist_scoped_addressed`, `outbox_task_ready*`, `outbox_run_finished`), no function MAY journal or outbox
    `run.finished`, set `finished_at` in an `UPDATE runs`, or insert a `task.ready` outbox row. Allow-listed with their

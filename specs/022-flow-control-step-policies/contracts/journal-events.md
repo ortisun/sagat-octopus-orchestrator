@@ -15,7 +15,7 @@ shows it as an unsupported event, never an error). `verify_run` replays them.
 | `result.returned` | T6 | `result_source: "EARLY_RETURN"`; `payload_ref` set | sets the run result once; status unchanged |
 | `end.reached` (existing) | existing | adds optional `result_already_returned: true` | no second result |
 | `failure_handler.started` | T7 | `pending_status`, `form` ∈ `NODE`, `CHILD`; `failure_kind`, `failure_code` | enters handler phase |
-| `failure_handler.draining` | T32 (added 2026-11-25, decision D022-246) | `cause` ∈ `CANCELLED`, `TIMEOUT`, `REGION_FAILED`, `STORAGE_QUOTA`, `RUN_DATA_LIMIT`, `EXPRESSION_ERROR`; `later_causes` (closed list) | the phase drains: `failure_handler_state` `TIMING_OUT` for `TIMEOUT`, `CANCELLING` otherwise; the region's attempts and the child asked to stop; every stop source of the phase maps here, never to the run's stop |
+| `failure_handler.draining` | T32 (added 2026-11-25, decision D022-246) | `cause` ∈ `CANCELLED`, `TIMEOUT`, `REGION_FAILED`, `STORAGE_QUOTA`, `RUN_DATA_LIMIT`, `EXPRESSION_ERROR` (one cause: ~~`later_causes`~~ removed 2026-11-25, decision D022-261; a further stop request while draining is refused `409`) | the phase drains: `failure_handler_state` `TIMING_OUT` for `TIMEOUT`, `CANCELLING` otherwise; the region's attempts and the child asked to stop; every stop source of the phase maps here, never to the run's stop |
 | `failure_handler.finished` | T8 | `outcome` ∈ `SUCCEEDED`, `FAILED`, `FAILURE_HANDLER_TIMEOUT`, `CANCELLED` | followed by `run.finished` with the pending status |
 | `concurrency.queued` | T10 | `pool`, `scope: "RUN"`, `group`, `key_label`, `queue_deadline_us` | run `WAITING` (wait kind `CONCURRENCY`) |
 | `concurrency.acquired` | T10, T11, T13 | `pool`, `scope`, `group`, `key_label`, `generation` (step scope) | holder open |
@@ -56,7 +56,9 @@ during the phase drains it (`failure_handler_state` `CANCELLING` or `TIMING_OUT`
 `outcome` `FAILURE_HANDLER_TIMEOUT` the column records as `TIMED_OUT`; a phase never opens a second one. `run.started`
 also carries `start_at` (a draft test's start node), `handler_tree` and `handler_kind` (`DISPATCHED`, `REGION_CHILD`).
 
-*Revised 2026-11-25 after the re-reviews (decisions D022-242, D022-246, D022-253):* `run.finished` gains an optional
+*Revised 2026-11-25 after the re-reviews (decisions D022-242, D022-246, D022-253), and after the third reads (decision
+D022-260: the `run.finished` row is appended after the two dispatch statements, its detail taken from what they did; the
+reducer ignores it; the terminal path updates no `run_events` row):* `run.finished` gains an optional
 `namespace_dispatch` detail (`PENDING` or `SUPPRESSED_LINEAGE`) when its commit inserted a dispatch row, so a suppressed
 dispatch is on the run's journal; `failure_handler.finished`'s `outcome` is `FAILED` after a draining cause other than
 `CANCELLED` and `TIMEOUT`; a reset run's lineage is always its source's.

@@ -2186,6 +2186,86 @@ where a decision below says it reverses or supersedes part of one.
   remarks; the original table of "Transaction boundaries" is marked superseded at its heading, each of its rows having a
   row of the same number in the governing table. Every document that still carried an old row is corrected.
 
+
+### Decisions of the third reads (2026-11-25)
+
+The reviewers read `c910345b` for Blockers and Majors only; none found a Blocker, and every verdict on every ADR was
+"accept" or "accept with changes". The third rulings are in
+[reviews/2026-11-25/design-third-reads-and-rulings.md](reviews/2026-11-25/design-third-reads-and-rulings.md) and where each
+lives is in [reviews/2026-11-25/design-third-responses.md](reviews/2026-11-25/design-third-responses.md). Each decision is
+delegate (OD-2026-11-24-4).
+
+- **D022-260 — `run.finished` is appended after the dispatch statements (ruling 1; architecture Major 1, correctness
+  Major 1).** Delegate (OD-2026-11-24-4). The `run.finished` journal row is appended after the two dispatch statements,
+  its `namespace_dispatch` detail taken from what the inserts did; it is a row of the run's own commit, so the leaf
+  argument of D022-242 holds; the reducer ignores the field. The terminal path updates no `run_events` row. Evidence:
+  the held-commit case of task T022-238 asserts each run's `run.finished.namespace_dispatch` equals its dispatch row's
+  state.
+- **D022-261 — A further stop during draining is refused, and there is one cause (ruling 2, option (a); correctness
+  Major 2; supersedes the "later causes" of D022-246).** Delegate (OD-2026-11-24-4). Options: (a) while a run drains, a
+  further stop request (an operator's cancellation, the deadline, a second timeout) is refused `409`, as a second stop
+  is today, region step failures settle into the drain and add no cause, `later_causes` is removed, and qualification
+  reads the one journaled cause; (b) a journaled event per later cause. Chosen (a): (b) makes qualification depend on an
+  unbounded sequence for no operator benefit. Evidence: cancellation and timeout in both orders, the dispatch row and
+  the state rebuilt from the journal agreeing.
+- **D022-262 — The overdue pass is a typed no-op on a run in its handler phase (ruling 3; correctness Major 3).**
+  Delegate (OD-2026-11-24-4). Between the pass's pick and its lock a commit may open the phase; `stop_run(TimedOut)` on
+  such a run is a typed no-op the pass counts as skipped. Evidence: a barrier test with the pass held between pick and
+  apply while the commit that opens the phase lands; no `failure_handler.draining` follows.
+- **D022-263 — Continue-as-new under a handler or test tree is refused at admission (ruling 4; correctness Major 4;
+  refines D022-249).** Delegate (OD-2026-11-24-4). Refused with typed codes where the run would be created: a dispatch
+  fails with `last_error_code` `CONTINUE_AS_NEW_REFUSED`; a child admission under a handler or test tree fails its child
+  step with `CONTINUE_AS_NEW_REFUSED`; a draft test of such a definition is refused `422 VALIDATION_FAILED`
+  (`CONTINUE_AS_NEW_REFUSED`). The runtime check of `refuse_gated_successor` stays as a defence and ends the run through
+  a typed finalization, as the chain-limit finalization of `crates/scheduler/src/passes.rs` does. Evidence: no run stays
+  non-terminal at the boundary.
+- **D022-264 — A deferral by the dispatch budget is not an attempt (ruling 5).** Delegate (OD-2026-11-24-4). A deferral
+  moves `next_attempt_at` and counts nothing; only an admission tried counts. Evidence: a dispatch deferred more than
+  12 times stays `PENDING` and is admitted once.
+- **D022-265 — A hit's producer locks: an unlocked pre-read, then the locks, then a re-check (ruling 6; architecture
+  Major 2; refines D022-254 and rewrites ADR-0056 decision 2(a)).** Delegate (OD-2026-11-24-4). Options: (a) an unlocked
+  pre-read of the entry's immutable `producer_subject`, then that subject's membership and binding locks shared, then
+  the entry `FOR SHARE` and the subject checked again (a change is `unauthorized`); at an admission the pre-read and
+  locks at slot 5 and the re-check at slot 7; (b) a try-lock. Chosen (a): (b) would turn contention into spurious misses.
+  ADR-0056 decision 2(a) is rewritten on the true premise: a binding replacement locks `worker_sessions` and `steps`
+  after its key (`crates/infra-postgres/src/bindings.rs`), so the binding lock is not a leaf; the rule is that no decider
+  locks a step or a `worker_sessions` row before its lookup round, stated and checked. Evidence: a `slot_order.rs` case
+  of a binding replacement against a lease-expiry pass that releases a cacheable successor.
+- **D022-266 — `RunRecovery` is bound to namespaces, reads definitions, never redrives, and waits for activation
+  (ruling 7; security Majors 1 and 2, architecture Major 3; refines D022-244).** Delegate (OD-2026-11-24-4). A
+  `RunRecovery` subject is bound to named namespaces (an administrator's audited setting, as worker bindings are); every
+  route that authorizes it checks the binding first and answers the opaque `404` outside it; the role also holds
+  `definition:read` (the test `every_role_that_may_start_a_run_may_read_the_definition_it_starts`,
+  `crates/domain/src/identity.rs:1091`, stays as it is); it may not redrive a dispatch (`403`,
+  `RECOVERY_ROLE_MAY_NOT_REDRIVE`); a migration widens `memberships_role_valid` with a `down` that refuses while such
+  memberships exist; the role cannot be assigned until `failure-handler-v1` is activated; the OpenAPI role enum is
+  widened in the same change. Evidence: a tenant-battery case (bound to namespace A, cannot touch namespace B); a fault
+  test (a handler that reruns and then tries to redrive produces exactly one handler run).
+- **D022-267 — The fitness rules land in the slices that make them pass (ruling 8; architecture Major 4).** Delegate
+  (OD-2026-11-24-4). The finish-path rule (task T022-226) lands in slice 3, its pull request's first commit showing it
+  red; the dispatch-insert rule (T022-225) in slice 10; the evidence of T022-245 and of T022-207's handler cases in
+  slices 11 and 12; slice 3 keeps a test that a chain finalization goes through `persist`'s terminal path.
+- **D022-268 — ADR-0146 decision 1 states the order as T31 (ruling 9; architecture Major 5, the open part of N2).**
+  Delegate (OD-2026-11-24-4). Chain, run, the scope's rows, the rounds, `persist` (the counter row when the commit ends
+  the run, the give-backs, the rest), usage.
+- **D022-269 — The draft-executions setting has an advisory lock (ruling 10; refines D022-257).** Delegate
+  (OD-2026-11-24-4). An advisory key per namespace, held shared at slot 4a by admissions that read the setting and
+  exclusively by `set_policy` (`crates/infra-postgres/src/versioning.rs`), which locks nothing after it but its row and
+  audit.
+- **D022-270 — Leftovers (ruling 11; Security A, Correctness M8, Architecture N0).** Delegate (OD-2026-11-24-4). The
+  plan's machine-identity paragraph and the two failure-matrix rows of D022-228 and D022-241, the data model's
+  `lineage_run_id` row and dispatch note of D022-241, and ADR-0136's old text (the run-deadline case under "Enforced by",
+  "the revision read with the definition" in option 8, the consequence it carried) are struck or marked superseded by
+  D022-242; the mapping of Security B and C in `design-reresponses.md` is corrected (B to D022-244, C to D022-242).
+- **D022-271 — ADR-0135, ADR-0136, ADR-0137 and ADR-0146, and the feature 022 amendments of ADR-0050, ADR-0056 and
+  ADR-0094, are accepted.** Delegate (OD-2026-11-24-4). After three review rounds (`reviews/2026-11-25/`: the reviews of
+  `14b9e40b`, the re-reviews of `6d02632e`, the third reads of `c910345b`), with no Blocker in the third and every
+  verdict "accept" or "accept with changes", the coordinating session accepts the four ADRs and the amendments once
+  D022-260 to D022-270 are written into them, without a fourth full review. Each status line reads `Accepted
+  (2026-11-25, delegate OD-2026-11-24-4, after three review rounds recorded in
+  specs/022-flow-control-step-policies/reviews/2026-11-25/)`. Task T022-200 records it as an evidence line and is not
+  ticked by this change.
+
 ## Gaps
 
 | ID | Gap | Status |

@@ -1,6 +1,6 @@
 # ADR-0137: Standalone steps and draft test runs are ordinary runs of private definitions; a test tree is isolated by a run flag and its own gate pool, and a pin is a journaled completion
 
-**Status:** Proposed (revised 2026-11-25 after the reviews of `14b9e40b` and again after the re-reviews of `6d02632e`; `specs/022-flow-control-step-policies/reviews/2026-11-25/`)
+**Status:** Accepted (2026-11-25, delegate OD-2026-11-24-4, after three review rounds recorded in specs/022-flow-control-step-policies/reviews/2026-11-25/); revised after the reviews of `14b9e40b`, the re-reviews of `6d02632e` and the third reads of `c910345b` (decisions D022-222 to D022-271)
 **Decided by:** agent proposal (feature 022, design of the rest of release 0.3.0, 2026-11-24) under the owner's delegation (OD-2026-11-24-4, "Tomem a melhor decisão"), revised with the coordinating session's rulings of 2026-11-25 (decisions D022-222 to D022-240, then D022-242 to D022-259); accepted once the three reviewers find no Blocker in a re-review (task T022-200)
 **Refines / supersedes:** extends ADR-0035 decision 9 (ad hoc work is ordinary durable execution of an internally retained definition) from database nodes to standalone activity, script and database steps and to draft test runs; refines ADR-0050 decision 7 (the slots of the new creators and the retained definition as built, amended 2026-11-24 and 2026-11-25) and ADR-0056 decisions 1 and 3 (the draft-test pool is derived from a run flag; the new creators admit through the one port); builds on ADR-0089 decision 1 and ADR-0094 (invariant 11 admits a mock) and ADR-0050 decision 9 (fleet activation). Supersedes none.
 **Enforced by:** proposed checks, built by the slices of US05 and US06 in `specs/022-flow-control-step-policies/tasks.md`: `run_start_errors` of `scripts/check-architecture.py` (a domain start call outside `Engine::start` is refused, already built) and a new rule that refuses a literal gate pool outside `GatePool::of_run` (task T022-204); `integration_flow_control_step_policies::{standalone, test_runs, run_creators}` (one case per new creator, task T022-221; the review refusal where approvals are required, task T022-229); the slot-order case of a publication of a workflow with a database node against a test admission of its draft (`tests/fault/schedules-bulk-operations/slot_order.rs`, task T022-224); `crates/domain/tests/test_runs.rs` (upstream pins route without activating, `A → X` and `A → B → C` with `startAt = C`, task T022-233); invariants 7 and 15 of `data-model.md` in `support::flow_control::key_consistency` and `verify_run`; the guards of `runs.test_tree` (a `BEFORE UPDATE OF test_tree` trigger, `ENABLE ALWAYS`, and the check at insert that a child's flag equals its parent's); the exhaustive classification test of effect node kinds (task T022-218); `fault_flow_control_step_policies::{standalone, test_runs}`; the tenant battery for both routes (task T022-058).
@@ -41,7 +41,9 @@ ADR-0035 decision 9). What the tree adds since the approval:
    audited). Standalone activity and script steps follow the same rule; feature 017's database executions keep their
    accepted behaviour. In a `prod` namespace standalone activity and script steps are refused too unless the setting is
    enabled, while draft test runs stay refused in `prod` whatever the setting (O1160). The setting is read inside the
-   admission transaction under the publication policy's existing lock; runs already admitted continue when it is
+   admission transaction under an advisory key per namespace, held shared at slot 4a by the admissions that read it and
+   exclusively by `set_policy` (`crates/infra-postgres/src/versioning.rs`), which locks nothing after it but its row
+   and audit (decision D022-269); runs already admitted continue when it is
    turned off; creating the policy row to set the flag keeps the environment's approval default; a rerun of a
    standalone run is checked again. Refusals are `403 FORBIDDEN` with `TEST_RUN_PRODUCTION_NAMESPACE`,
    `TEST_RUN_REVIEW_REQUIRED`, `STANDALONE_STEP_REVIEW_REQUIRED` or `STANDALONE_STEP_PRODUCTION_NAMESPACE`, decided
@@ -68,7 +70,10 @@ ADR-0035 decision 9). What the tree adds since the approval:
    namespace handler, or read or write any cache scope but the `version` scope of its own private version (a test-tree
    run of another version bypasses the cache); it counts against the test-run quotas and the ordinary run quotas; 018's
    reset, rerun and batch admissions MUST refuse it as a source (`RESET_SOURCE_TEST_RUN`); a continue-as-new successor
-   of a test-tree run is refused (`refuse_gated_successor` extended, decision D022-249).
+   of a test-tree run is refused at admission: a draft test of a definition that continues as new is refused `422
+   VALIDATION_FAILED` (`CONTINUE_AS_NEW_REFUSED`), a child admission under a test tree fails its child step with that
+   code, and `refuse_gated_successor` stays as a defence that ends the run through a typed finalization (decisions
+   D022-249, D022-263).
 6. **A pin is a journaled completion that routes without activating.** An upstream pin (a node outside what `startAt`
    reaches) MUST be committed in the admission transaction (slot 6, with the run: its payload row, its `test_run_pins`
    row, its `step.mocked` and a `step.routed` with no activation), so no successor of an upstream pin is released;

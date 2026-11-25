@@ -675,6 +675,7 @@ decision 4. Evidence: `python3 scripts/check-docs-index.py`, `check-plain-words.
 `check-agent-config.py` and `check-design-docs.py` pass.
 
 - [ ] T022-200 The coordinator's review and acceptance of ADR-0135, ADR-0136 and ADR-0137 and of the four ADR amendments, after independent architecture, correctness and security reviews of this slice (reports in `reviews/`); each act recorded as "delegate (OD-2026-11-24-4)"; T022-001 then ticked with the recorded answers. All FR of US01, US03 to US06. Owner-gate: every task below that builds behaviour. Evidence: the review reports, their answers in `research.md`, the ADR status lines set.
+  - *Evidence 2026-11-25 (decision D022-271; not ticked):* three review rounds recorded in `reviews/2026-11-25/` (the reviews of `14b9e40b` with `design-reviews-and-rulings.md` and `design-responses.md`; the re-reviews of `6d02632e` with `design-rereviews-and-rulings.md` and `design-reresponses.md`; the third reads of `c910345b`, no Blocker, every verdict "accept" or "accept with changes", with `design-third-reads-and-rulings.md` and `design-third-responses.md`); the status lines of ADR-0135, ADR-0136, ADR-0137 and ADR-0146 read `Accepted (2026-11-25, delegate OD-2026-11-24-4, after three review rounds recorded in specs/022-flow-control-step-policies/reviews/2026-11-25/)`, and the feature 022 amendments of ADR-0050, ADR-0056 and ADR-0094 carry the same acceptance line. The task stays open for the coordinator to tick with its own record, and T022-001 with it.
 
 ### Slice 2: foundations
 
@@ -913,3 +914,30 @@ adds evidence per slice, and adds tasks T022-238 to T022-252.
 - [ ] T022-250 [US5] [US6] Draft executions completed: the setting read inside the admission transaction under the publication policy's lock; `STANDALONE_STEP_PRODUCTION_NAMESPACE`; a rerun of a standalone run checked again; the policy row created with the environment's approval default. FR-022-023, 026; D022-257. Evidence: one test per case; a run admitted before the setting is turned off continues.
 - [ ] T022-251 [US1] `step.cache_missed` re-materialized by a reset (the source step's `steps.cache_lookup` copied). FR-022-038; D022-253. Evidence: the reset corpus case; the reset run's next completion writes its store obligation with the key digest.
 - [ ] T022-252 The order as built: the handler configuration read by a left join in the statement that locks the run (`FOR UPDATE OF runs`), and the lock-order tests of the restated order (counter row in `persist` after the rounds; cache rows before it). D022-255. Evidence: the budget line of a failing run without a handler unchanged; a held-lock test that the configuration row is never locked by a terminal commit.
+
+### Revision of 2026-11-25 after the third reads: the third rulings
+
+The third rulings are in `reviews/2026-11-25/design-third-reads-and-rulings.md`, the decisions D022-260 to D022-271 in
+`research.md`, and where each lives in `reviews/2026-11-25/design-third-responses.md`. Nothing is ticked.
+
+#### Tasks, as they read now
+
+| Task | Reads now as | Decision |
+|---|---|---|
+| T022-238 | plus: each run's `run.finished.namespace_dispatch` equals its dispatch row's state in the held-commit case; the terminal path updates no `run_events` row | D022-260 |
+| T022-239 | plus: a dispatch deferred more than 12 times stays `PENDING` and is admitted once (a deferral counts no attempt) | D022-264 |
+| T022-240 | plus: the namespace binding of a `RunRecovery` subject (T022-253), `definition:read`, `RECOVERY_ROLE_MAY_NOT_REDRIVE`, no assignment before `failure-handler-v1` is activated, the widened `memberships_role_valid` and OpenAPI role enum; a tenant-battery case (bound to A, cannot touch B); a fault test (a handler that reruns and then tries to redrive: exactly one handler run) | D022-266 |
+| T022-242 | one cause: a further stop while draining refused `409`, region failures settling into the drain; cancellation and timeout in both orders, the dispatch row and the rebuilt state agreeing | D022-261 |
+| T022-243 | plus: the barrier test with the overdue pass held between pick and apply while the phase opens (a typed no-op counted skipped, no `failure_handler.draining`) | D022-262 |
+| T022-244 | plus: refusals at admission (a dispatch's `CONTINUE_AS_NEW_REFUSED`, a child step's, a draft test's `422`), the runtime check ending the run through a typed finalization; no run non-terminal at the boundary | D022-263 |
+| T022-248 | plus: the unlocked pre-read of `producer_subject`, its locks, the re-check on the entry (a change `unauthorized`), at slots 5 and 7 for an admission (T022-254, T022-255) | D022-265 |
+| T022-250 | the setting's advisory key per namespace, shared at slot 4a by admissions, exclusive in `set_policy` | D022-269 |
+| T022-226 | lands in slice 3, its pull request's first commit showing it red, with a test that a chain finalization goes through `persist`'s terminal path | D022-267 |
+| T022-225 | lands in slice 10 | D022-267 |
+| T022-245, T022-207 (its handler cases) | their evidence lands in slices 11 and 12 | D022-267 |
+
+#### Follow-up tasks of the third rulings (T022-253 to T022-255)
+
+- [ ] T022-253 The namespace binding of `RunRecovery` subjects: `run_recovery_namespaces`, the administrator's audited route, the check first on every route that authorizes the role (the opaque `404` outside), the migration widening `memberships_role_valid` with a refusing `down`, the activation gate on `failure-handler-v1`, the OpenAPI role enum. FR-022-032; D022-266. Evidence: the tenant battery (bound to namespace A, refused on namespace B as `404`); an assignment refused before activation; the `down` refused while a membership exists.
+- [ ] T022-254 A `slot_order.rs` case: a binding replacement against a lease-expiry pass that releases a cacheable successor, the lookup's producer locks taken in the order of ADR-0056 decision 2(a). D022-265. Evidence: no deadlock; a reversed control that waits; both database roles.
+- [ ] T022-255 A rule of `scripts/check-architecture.py`: no deciding path locks a `steps` or `worker_sessions` row before its lookup round. ADR-0056 decision 2(a); D022-265. Evidence: the rule's tests with negative fixtures.

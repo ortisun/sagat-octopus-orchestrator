@@ -39,6 +39,10 @@ key value, a cached value, a pin, a payload or a secret. Every row needs a test 
 | A standalone script node whose artifact is not of a published script version (added 2026-11-25, decision D022-233) | 422 | `VALIDATION_FAILED` | `UNKNOWN_SCRIPT` | no |
 | A standalone activity or script step in a `prod` namespace whose publication policy does not enable draft executions (added 2026-11-25 after the re-reviews, decision D022-257; draft test runs stay refused in `prod` whatever the setting) | 403 | `FORBIDDEN` | `STANDALONE_STEP_PRODUCTION_NAMESPACE` | no |
 | A publication approval or an approval decision by a subject whose only role is `RunRecovery` (added 2026-11-25, decision D022-244) | 403 | `FORBIDDEN` | `RECOVERY_ROLE_MAY_NOT_APPROVE` | no |
+| A redrive of a dispatch by a `RunRecovery` subject (added 2026-11-25, decision D022-266) | 403 | `FORBIDDEN` | `RECOVERY_ROLE_MAY_NOT_REDRIVE` | no |
+| Any route called by a `RunRecovery` subject outside the namespaces it is bound to (added 2026-11-25, decision D022-266) | 404 | `NOT_FOUND` | — (opaque) | no |
+| A stop request (cancellation) of a run whose handler phase is draining (added 2026-11-25, decision D022-261; as a second stop today) | 409 | `CONFLICT` | `STATE_CONFLICT` | no |
+| A draft test run of a definition that continues as new (added 2026-11-25, decision D022-263) | 422 | `VALIDATION_FAILED` | `CONTINUE_AS_NEW_REFUSED` | no |
 | An invalidation whose target names no scope a published version of the namespace can derive (added 2026-11-25, decision D022-252) | 404 | `NOT_FOUND` | — (opaque) | no |
 | A redrive of a dispatch that is neither `DEAD` nor `SUPPRESSED_LINEAGE` (revised 2026-11-25, decision D022-242) | 409 | `CONFLICT` | `STATE_CONFLICT` | no |
 | Redrive of a dispatch that is not `DEAD` | 409 | `CONFLICT` | `STATE_CONFLICT` | no |
@@ -99,6 +103,7 @@ Existing reasons reused unchanged: `IDEMPOTENCY_KEY_REUSED`, `STATE_CONFLICT`, `
 run is charged the output's logical bytes like any completion, so the two rows above read "a hit's output" for "a
 cache-hit copy" and "the copy of a hit".
 | `FAILURE_HANDLER_TIMEOUT` | handler outcome only | the handler exceeded `onFailure.timeoutMs`; the run keeps its pending status. *2026-11-25 (decision D022-224):* the journal's outcome; the column `runs.failure_handler_state` reads `TIMED_OUT` |
+| `CONTINUE_AS_NEW_REFUSED` | child step | added 2026-11-25 (decision D022-263): a child admission under a handler tree or a test tree whose definition continues as new; through the node's failure route, no child run created |
 | `RUN_DATA_LIMIT` | step | added 2026-11-25 (decision D022-231): a cache hit whose payload would exceed the run's retained bytes; decided in the lookup round, through the step's failure route |
 
 ## Handler draining causes (`failure_handler.draining`, closed; added 2026-11-25, decision D022-246)
@@ -110,7 +115,8 @@ commit could journal it.
 ## Dispatch error codes (`failure_handler_dispatches.last_error_code`, closed)
 
 `WORKFLOW_NOT_FOUND`, `NO_ACTIVE_VERSION`, `VERSION_NOT_PUBLISHED`, `QUOTA_EXCEEDED`, `PUBLISHER_NOT_AUTHORIZED`,
-`UNAVAILABLE`.
+`UNAVAILABLE`, and since 2026-11-25 `CONTINUE_AS_NEW_REFUSED` (decision D022-263). A deferral by the dispatch budget is
+not an attempt and records no code (decision D022-264).
 
 ## gRPC worker protocol
 

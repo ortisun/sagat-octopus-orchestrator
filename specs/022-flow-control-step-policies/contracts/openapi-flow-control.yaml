@@ -320,7 +320,7 @@ paths:
       summary: Try a dead handler dispatch again
       tags: [Governance]
       x-proposed: '022'
-      description: Needs `run:operate` and `run:start`. Only a DEAD dispatch, or since 2026-11-25 a SUPPRESSED_LINEAGE one (decision D022-242), which becomes PENDING and stays outside its lineage's unique first row; resets attempts. Subject to the namespace dispatch budget (decision D022-243). Audited with `reason`.
+      description: Needs `run:operate` and `run:start`. Only a DEAD dispatch, or since 2026-11-25 a SUPPRESSED_LINEAGE one (decision D022-242), which becomes PENDING and stays outside its lineage's unique first row; resets attempts. Subject to the namespace dispatch budget (decision D022-243). Refused 403 RECOVERY_ROLE_MAY_NOT_REDRIVE for a subject whose role is RunRecovery (decision D022-266). Audited with `reason`.
       parameters:
         - {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/parameters/NamespaceId'}
         - {name: sourceRunId, in: path, required: true, schema: {type: string, format: uuid}}

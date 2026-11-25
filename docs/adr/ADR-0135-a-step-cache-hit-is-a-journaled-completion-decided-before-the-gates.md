@@ -1,6 +1,6 @@
 # ADR-0135: A step cache hit is a journaled completion decided in a lookup round before the gates, and a cache entry is a retained reference stored after the fact
 
-**Status:** Proposed (revised 2026-11-25 after the reviews of `14b9e40b` and again after the re-reviews of `6d02632e`; `specs/022-flow-control-step-policies/reviews/2026-11-25/`)
+**Status:** Accepted (2026-11-25, delegate OD-2026-11-24-4, after three review rounds recorded in specs/022-flow-control-step-policies/reviews/2026-11-25/); revised after the reviews of `14b9e40b`, the re-reviews of `6d02632e` and the third reads of `c910345b` (decisions D022-222 to D022-271)
 **Decided by:** agent proposal (feature 022, design of the rest of release 0.3.0, 2026-11-24) under the owner's delegation (OD-2026-11-24-4, "Tomem a melhor decisão"), revised with the coordinating session's rulings of 2026-11-25 (decisions D022-222 to D022-240, then D022-242 to D022-259); accepted once the three reviewers find no Blocker in a re-review (task T022-200)
 **Refines / supersedes:** refines ADR-0094 (a lookup round, asked before its gates round, joins the evaluation rounds before `persist`; its decision 4 covers the new round) and ADR-0056 decision 2 (where the cache rows sit, amended 2026-11-24 and 2026-11-25); ADR-0050 decision 7 gives the cache rows their slot at admission (amended 2026-11-25); builds on ADR-0089 decision 1 (a step waits outside `READY` until a journaled decision), ADR-0027 (deferred content charge), ADR-0093 (per-key digest rotation) and ADR-0050 decision 9 (fleet activation). Supersedes none.
 **Enforced by:** proposed checks, built by the slices of US01 in `specs/022-flow-control-step-policies/tasks.md`: `crates/domain/tests/step_cache.rs` (the reducer never makes a cacheable step `READY` or leased before `step.cache_hit` or `step.cache_missed`; the planner asks `Evaluation::CacheLookup` before `Evaluation::Gates`; an answer that leaves a step undecided is refused; a retry is not looked up again); `integration_flow_control_step_policies::cache` (one test per readiness source; a hit with no lease, attempt, permit or slot; a miss reaching its gates in the same commit; no task-ready hint for a step a hit completes; two publishers with one access list; a revoked worker binding; a hit over the retained-output limit failing `RUN_DATA_LIMIT`); `verify_run` (invariants 11 and 14 of `data-model.md`); the rule of `scripts/check-architecture.py` that only the invalidation, purge, erasure and store-writer files lock a cache row exclusively and that after a cache row they lock only usage rows (task T022-211); the barrier tests of the store against invalidation and erasure, including T2 held open across T5 and a barrier held after T3's delete against T18 (task T022-231); a `slot_order.rs` case of a cacheable admission against a revocation (task T022-224); `fault_flow_control_step_policies::cache` (task T022-020).
@@ -46,13 +46,17 @@ D1165) did the lookup "inside the readiness transaction" and copied the entry's 
    in force (ADR-0093). The adapter first takes the secret-access and membership locks of the secret ids the node
    declares, which are the entry's too since the fingerprint covers them (`sagat_lock_secret_access`,
    `sagat_lock_memberships`, shared, ascending, as feature 017 fences an admission; at slot 5 for an admission, where
-   the definition is known), then the activity's binding advisory lock shared (`pg_advisory_xact_lock_shared`, as
-   `crates/infra-postgres/src/bindings.rs:21`), then reads the scope row and the entry
+   the definition is known); then it pre-reads, without a lock, the entry's immutable `producer_subject`, takes that
+   subject's membership lock and the activity's binding advisory lock shared (`pg_advisory_xact_lock_shared`, as
+   `crates/infra-postgres/src/bindings.rs:21`; at slot 5 for an admission), then reads the scope row and the entry
    row `FOR SHARE`, sorted, and decides on the database clock of that statement. A hit needs: a live entry
    (`expires_at` later than now, `created_at` later than the scope's `invalidated_at` and its key's tombstone); the
    consumer's publisher able to use now every secret id the entry records (metadata only, no value resolved); and the
    producing worker's subject the entry records still a member of the namespace holding a binding that covers the
-   activity (for a script, the producing runner's subject and its binding profile). Otherwise the outcome is
+   activity (for a script, the producing runner's subject and its binding profile), checked again on the entry read
+   `FOR SHARE` (at slot 7 for an admission): a subject that differs from the pre-read is `unauthorized`. No decider
+   locks a step or a `worker_sessions` row before its lookup round, since a binding replacement locks them after its key
+   (ADR-0056 decision 2(a); decision D022-265). A try-lock was rejected: contention would become spurious misses. Otherwise the outcome is
    `unauthorized` (a secret or a binding) or the miss it is. The domain checks the answer and journals it in the same
    commit.
 3. **It fails closed.** `persist` MUST refuse a commit that leaves a cacheable step waiting for its lookup without a

@@ -639,7 +639,7 @@ ceiling skips the insert (counted `skipped_backlog`).
 | `handler_tree` | boolean | NOT NULL DEFAULT false; true for a dispatched handler run, an `onFailure~h` child, every child of a handler-tree run, and every reset or rerun whose source or initiator is a handler-tree run; never dispatched |
 | `handler_kind` | text null | CHECK `IN ('DISPATCHED','REGION_CHILD')`; `REGION_CHILD` is the `onFailure~h` child form |
 | `handler_for_run_id` | uuid null | only when `handler_kind = 'DISPATCHED'` (CHECK); FK `(tenant_id, namespace_id, handler_for_run_id)` → `runs`; UNIQUE `(tenant_id, handler_for_run_id)` where not null; never inherited by a reset or rerun |
-| `lineage_run_id` | uuid | NOT NULL; the source's `lineage_run_id` (read under the source's identity guard) for a reset or a rerun whose initiator is a machine identity or a handler-tree run; otherwise the run's own id, so a reset or rerun a member starts begins a lineage of its own (decision D022-241, O1176 (b)); the initiator's principal kind is recorded with the reset or rerun provenance |
+| `lineage_run_id` | uuid | ~~NOT NULL; the source's `lineage_run_id` (read under the source's identity guard) for a reset or a rerun whose initiator is a machine identity or a handler-tree run; otherwise the run's own id, so a reset or rerun a member starts begins a lineage of its own (decision D022-241, O1176 (b)); the initiator's principal kind is recorded with the reset or rerun provenance~~ *(struck 2026-11-25, decision D022-270: superseded by D022-242 and D022-245; see "Revision of 2026-11-25 after the re-reviews")* |
 | `failure_handler_state` | text null | CHECK `IN ('RUNNING','CANCELLING','TIMING_OUT','SUCCEEDED','FAILED','TIMED_OUT','CANCELLED')`; the journal's outcome maps `SUCCEEDED` → `SUCCEEDED`, `FAILED` → `FAILED`, `FAILURE_HANDLER_TIMEOUT` → `TIMED_OUT`, `CANCELLED` → `CANCELLED` |
 | `test_tree` | boolean | immutable by a `BEFORE UPDATE OF test_tree` trigger, `ENABLE ALWAYS`; at insert a child's flag must equal its parent's |
 
@@ -648,8 +648,10 @@ unique index on `handler_for_run_id` is built in its own migration (decision D02
 
 ### `failure_handler_dispatches`, revised
 
-Adds `lineage_run_id` (the source run's) with UNIQUE `(tenant_id, namespace_id, lineage_run_id)`: at most one dispatch
-per lineage, a lineage linking only through machine identities and handler-tree runs (decision D022-241). `attempts` is incremented and committed before each admission is tried. Inserted only by the terminal path
+Adds `lineage_run_id` (the source run's) ~~with UNIQUE `(tenant_id, namespace_id, lineage_run_id)`: at most one dispatch
+per lineage, a lineage linking only through machine identities and handler-tree runs (decision D022-241)~~ *(struck
+2026-11-25, decision D022-270: the unique index is `WHERE lineage_first` and every reset and rerun extends the lineage,
+decision D022-242).* `attempts` is incremented and committed before each admission is tried. Inserted only by the terminal path
 of `persist` (a recorded deviation of ADR-0050 decision 7), locked only by the dispatcher and the redrive. The
 pending-dispatch ceiling refuses a new or re-enabled handler configuration, never an insert. `config_revision` is the
 revision read with the run's definition.
@@ -748,3 +750,22 @@ shared, then cache scope, tombstones, entry `FOR SHARE`; then gates: semaphores,
 active-run counter row when the commit ends the run, the give-backs, the rest, the dispatch insert last) → usage rows. The
 counter row after cache rows makes no cycle: deciders lock cache rows shared only, and no exclusive taker of a cache row
 takes the counter row (decision D022-255).
+
+## Revision of 2026-11-25 after the third reads (decisions D022-260 to D022-270)
+
+- `run.finished` of a commit that inserts a dispatch row is appended after the two dispatch statements; its
+  `namespace_dispatch` detail equals the row's state; the terminal path updates no `run_events` row (D022-260).
+- `failure_handler.draining` has one `cause`; `later_causes` is removed; a further stop request while draining is
+  refused (D022-261).
+- `failure_handler_dispatches.attempts` counts admissions tried only; a deferral by the budget moves `next_attempt_at`
+  alone (D022-264); `last_error_code` gains `CONTINUE_AS_NEW_REFUSED` (D022-263).
+- `step_cache_entries.producer_subject` is immutable and pre-read without a lock before the producer's locks, then
+  re-checked on the entry read `FOR SHARE` (D022-265).
+- `run_recovery_namespaces` (new): PK `(tenant_id, subject, namespace_id)`; `created_by`, `created_at`; an
+  administrator's audited setting binding a `RunRecovery` subject to a namespace, as worker bindings are; grants
+  SELECT to `sagat_app`, written only through the administrator's route. `memberships_role_valid` gains `RunRecovery`
+  (its `down` refuses while such a membership exists) (D022-266).
+- The draft-executions setting is guarded by an advisory key per namespace, shared by admissions, exclusive in
+  `set_policy` (D022-269).
+- Invariant 22: every `run.finished` whose commit inserted a dispatch row carries `namespace_dispatch` equal to that
+  row's state at the commit.

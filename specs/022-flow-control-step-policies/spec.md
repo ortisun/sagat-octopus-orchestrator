@@ -39,6 +39,10 @@ reducer). Where a line of 2026-11-25 and one of 2026-11-24 disagree, the later o
 D022-242 to D022-259 ([reviews/2026-11-25/design-rereviews-and-rulings.md](reviews/2026-11-25/design-rereviews-and-rulings.md)),
 written below as lines marked "after the re-reviews", which win over the earlier lines of the same day.
 
+**Third reads and acceptance (2026-11-25)**: no Blocker in the third reads of `c910345b`; the third rulings are decisions
+D022-260 to D022-270, written below as lines marked "after the third reads"; ADR-0135, ADR-0136, ADR-0137 and ADR-0146
+and the amendments of ADR-0050, ADR-0056 and ADR-0094 are Accepted (D022-271, delegate OD-2026-11-24-4).
+
 **Input**: Bring Windmill/Temporal flow control to the platform without changing its execution model: a
 declared **step result cache** (key = canonical input digest + pinned identity + scope, TTL, retained and
 classified entries, journaled hits, explicit invalidation); **early return** of a workflow's declared
@@ -453,6 +457,8 @@ Added after the review of 2026-11-13:
   check takes the binding advisory lock shared and checks the producing subject's membership (for a script, the
   producing runner's subject and its binding profile); hits staged in one round count cumulatively against the
   retained-output limit; to a run reader who may not see the producer an `unauthorized` outcome reads as `bypassed`.
+  *Amended 2026-11-25 after the third reads, delegate (OD-2026-11-24-4; decision D022-265):* the producing subject is pre-read without a lock, its locks are
+  taken, and it is checked again on the entry read; a change is `unauthorized`.
 - **FR-022-005 — Storing an entry**: A successful completion of a miss with an inline output MUST write a
   store obligation in its completion transaction; a leased writer MUST insert the entry from the run's
   immutable retained output, insert-if-absent, with expiry from the database clock. Storing MUST NOT fail,
@@ -553,6 +559,9 @@ Added after the review of 2026-11-13:
   deadline does not apply during the phase: only the handler's own timer bounds it, and the overdue pass skips a run in
   its phase. The runs of a region's `child` nodes are handler-tree runs; the `onFailure~h` node cancels and awaits its
   child.
+  *Amended 2026-11-25 after the third reads, delegate (OD-2026-11-24-4; decisions D022-261, D022-262):* there is one cause: while the run drains a further
+  stop request is refused `409`, and region step failures settle into the drain; an overdue pass that picked a run
+  which then opened its phase is a typed no-op.
 - **FR-022-014 — Handler outcome**: A handler MUST NOT change the outcome: when it ends (succeeded, failed,
   timed out, cancelled) the engine MUST journal `failure_handler.finished` and finish the run with the
   pending status in the same transaction. A handler's failure MUST NOT re-invoke it. Cancellation during the
@@ -570,6 +579,9 @@ Added after the review of 2026-11-13:
   permission); a subject whose only role is `RunRecovery` may not approve a publication or decide an approval. "A
   cancellation or the run deadline during the phase is a handler cancellation" reads "a cancellation during the phase"
   (D022-247).
+  *Amended 2026-11-25 after the third reads, delegate (OD-2026-11-24-4; decision D022-266):* a `RunRecovery` subject is bound to named namespaces (an
+  audited administrator's setting) and answers `404` outside them, holds `definition:read`, may not redrive a dispatch
+  (`RECOVERY_ROLE_MAY_NOT_REDRIVE`), and cannot be assigned until `failure-handler-v1` is activated.
 - **FR-022-015 — Namespace default handler**: An administrator MUST be able to set, read and clear one
   default handler per namespace (workflow, optional pinned version, statuses, enabled flag; optimistic
   revision, justification, audit). It applies to runs whose version declares no `onFailure` or whose
@@ -607,6 +619,9 @@ Added after the review of 2026-11-13:
   it and alerts. A run qualifies when no workflow handler phase ended `SUCCEEDED` and no operator asked to cancel it.
   The configuration is read by a left join in the statement that locks the run. A chain's finalization reaches the
   dispatch through `persist`'s terminal path.
+  *Amended 2026-11-25 after the third reads, delegate (OD-2026-11-24-4; decisions D022-260, D022-263, D022-264):* `run.finished` is journaled after the
+  dispatch statements with its `namespace_dispatch` outcome; a deferral by the budget is not an attempt; a dispatch or
+  a child admission under a handler or test tree whose definition continues as new fails `CONTINUE_AS_NEW_REFUSED`.
 
 #### Concurrency limits by key (US02)
 
@@ -685,6 +700,8 @@ Added after the review of 2026-11-13:
   *Amended 2026-11-25 after the re-reviews, delegate (OD-2026-11-24-4; decision D022-257):* in a `prod` namespace a standalone activity or script step is
   refused (`STANDALONE_STEP_PRODUCTION_NAMESPACE`) unless the setting is enabled; the setting is read inside the
   admission transaction under the publication policy's lock; a rerun of a standalone run is checked again.
+  *Amended 2026-11-25 after the third reads, delegate (OD-2026-11-24-4; decision D022-269):* the setting's lock is an advisory key per namespace, shared by
+  admissions at slot 4a and exclusive in the policy writer.
 - **FR-022-024 — Standalone semantics**: The node's retry, timeout, secrets, idempotency template,
   `reconcileWith`, `cache` and node `concurrency` MUST behave as in a workflow; `compensateWith` MUST be
   refused. A database node MUST keep every 017 rule; when feature 021 exists, its typed managed operation
