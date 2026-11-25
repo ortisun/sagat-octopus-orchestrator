@@ -823,9 +823,13 @@ pub struct Node {
     effect: EffectPolicy,
     origin: NodeOrigin,
     managed: Option<Managed>,
-    /// The gates of the step (feature 022): only a declared root activity or script carries any.
-    flow_control: FlowControl,
+    /// The gates of the step (feature 022): only a declared root activity or script carries any. Boxed, and absent for
+    /// an ungated step (decision D022-102): a debug build copies nodes through many frames.
+    flow_control: Option<Box<FlowControl>>,
 }
+
+/// The gates of every ungated node, which [`Node::flow_control`] lends.
+static UNGATED: FlowControl = FlowControl::NONE;
 
 impl Node {
     #[must_use]
@@ -839,7 +843,7 @@ impl Node {
             effect: EffectPolicy::NONE,
             origin: NodeOrigin::Declared,
             managed: None,
-            flow_control: FlowControl::NONE,
+            flow_control: None,
         }
     }
 
@@ -868,14 +872,14 @@ impl Node {
                 FlowControlRule::NodeKind,
             ));
         }
-        self.flow_control = flow_control;
+        self.flow_control = Some(Box::new(flow_control));
         Ok(self)
     }
 
     /// The gates of this step; [`FlowControl::NONE`] for an ungated one.
     #[must_use]
-    pub const fn flow_control(&self) -> &FlowControl {
-        &self.flow_control
+    pub fn flow_control(&self) -> &FlowControl {
+        self.flow_control.as_deref().unwrap_or(&UNGATED)
     }
 
     /// Managed operations always use one attempt. An ambiguous write requires manual review.
@@ -1803,9 +1807,9 @@ impl WorkflowDefinition {
             .run_flow_control
             .with_key_levels(|kind, key| level(None, kind, key));
         for (id, node) in &mut self.graph.nodes {
-            if node.flow_control.is_gated() {
-                let gates = std::mem::take(&mut node.flow_control);
-                node.flow_control = gates.with_key_levels(|kind, key| level(Some(id), kind, key));
+            if let Some(gates) = node.flow_control.as_mut() {
+                let taken = std::mem::take(gates.as_mut());
+                **gates = taken.with_key_levels(|kind, key| level(Some(id), kind, key));
             }
         }
         self

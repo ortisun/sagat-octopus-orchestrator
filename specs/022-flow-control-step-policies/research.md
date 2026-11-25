@@ -2059,6 +2059,27 @@ taken after `git grep D022-04` on every `origin/*` branch.
   `rest::a_group_larger_than_a_page_is_summed_across_pages_and_the_next_group_is_reached` (the big group's row
   `spansPages: true`, the next group's `false`, in both listings).
 
+- **D022-102 — The gates in the run state and a test's large scenario future are boxed where they are created
+  (2026-11-25; CI runs 45637128106 and 45649612535, integration shard 1; D022-070).** Delegate (OD-2026-11-24-4).
+  `scoped_event_storage::receiver::a_dispatcher_quota_refusal_rolls_back_receipts_and_retries_pending_lookback` (first
+  run) and `..._with_held_inbox_keeps_lookback_pending` (second) aborted integration_workflow_primitives with a stack
+  overflow of the 2 MiB test thread (debug build); both passed in the same job's isolated step and locally. Measured on
+  the arm64 debug build, `RUST_MIN_STACK` bisected in 32 KiB steps, one test at a time: on `develop` (`b42eb7d5`) the
+  held-inbox test needs 1,920 KiB (fails at 1,888), on this branch 2,048 KiB (fails at 2,016), and so does its sibling:
+  the tests already sat at 94% of the stack on `develop`, and this feature's growth pushed them over on x86. What grew
+  (`-Zprint-type-sizes`, both trees): `StepState` 128 to 288 bytes and `RunState` 336 to 520 (the 160-byte `Gates` of a
+  step's attempts and of a run's start, inline), `Node` 560 to 704 (its 144-byte `FlowControl`), and the poll frames
+  that copy them (`Engine::run`'s from 14,288 to 17,056 bytes); the futures on the dispatcher's path grew by at most
+  about 500 bytes each. Options: (a) raise the test thread's stack (`RUST_MIN_STACK` in CI) — refused, it hides the
+  growth from every other caller; (b) box the gates and the node's declaration (an ungated run, step or node allocates
+  nothing) and pin the sizes; (c) also box the test's own scenario future where it is created, as D022-070 boxed a
+  creator's futures. Chosen (b) and (c). `Gates` holds one pointer (`StepState` 136, `RunState` 368), a node's
+  `flow_control` is `Option<Box<FlowControl>>` (`Node` 568); the gated tests need 1,984 KiB with (b) (the node's box
+  moved nothing on this path, kept for the definition's own frames), and 1,376 KiB with (c), 544 KiB under `develop`.
+  Tests: `crates/domain/tests/state_sizes.rs` (red at 288, 520, 160 and 704 bytes before the boxes) and
+  `scoped_event_storage::receiver::the_quota_refusal_future_kept_on_the_test_thread_stays_small` (red without the box:
+  78,272 bytes with the gates boxed, 80,592 before); the plan's table "Stack and future sizes of a run creator" holds the bounds.
+
 ### Decisions of the Studio slice (2026-11-24)
 
 - **D022-150 — How the Studio authors, shows and lists the gates (tasks T022-054, T022-055, T022-056, T022-085;
