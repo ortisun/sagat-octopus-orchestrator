@@ -130,190 +130,152 @@ fn event_body(
     .unwrap_or_default()
 }
 
-/// The candidates of a flow-control alert that compares with a namespace's ceilings, read at most this many keys a look:
-/// beyond it the look is short everywhere (a look that stopped short resolves nothing it did not see).
-const MAX_FLOW_CONTROL_KEYS: i64 = 5_000;
-
-/// The concurrency keys whose oldest eligible waiter (not paused, not past its deadline, of a live run) queued more than
-/// the threshold ago and more than the threshold before the key's oldest current holder took its permit
-/// (`docs/runbooks/flow-control.md` section 8): their holders, that waiter's declaration and how long it has waited.
-/// Whether the key has room is decided against the namespace's current ceiling, which the quota rules resolve.
-const STUCK_CANDIDATES_SQL: &str = concat!(
-    "SELECT s.tenant_id, s.namespace_id, s.group_name, s.holders::bigint AS holders, w.lim::bigint AS lim, \
-            extract(epoch FROM clock_timestamp() - w.enqueued_at)::float8 AS waited \
-       FROM concurrency_semaphores s \
-       CROSS JOIN LATERAL ( \
-         SELECT x.enqueued_at, coalesce(x.pinned_limit, x.declared_limit) AS lim \
-           FROM concurrency_waiters x JOIN runs r ON r.tenant_id = x.tenant_id AND r.id = x.run_id \
-          WHERE x.tenant_id = s.tenant_id AND x.namespace_id = s.namespace_id AND x.pool = s.pool \
-            AND x.permit_scope = s.permit_scope AND x.group_name = s.group_name AND x.key_digest = s.key_digest \
-            AND ",
+/// The keys of `CONCURRENCY_QUEUE_STUCK` (`docs/runbooks/flow-control.md` section 8) with their namespace's effective
+/// `concurrency_limit`: a key whose oldest eligible waiter (not paused, not past its deadline, of a live run) queued more
+/// than the threshold ago and more than the threshold before the key's oldest current holder took its permit, and whose
+/// holders leave no room for that waiter under the lower of its declaration and the ceiling. One row per group: its keys
+/// in the condition, the longest wait, and the severity it is ranked by (the longest wait: age first).
+const STUCK_GROUPS_SQL: &str = concat!(
+    "keys AS ( \
+       SELECT s.tenant_id, s.namespace_id, s.group_name, s.holders::bigint AS holders, w.lim::bigint AS lim, \
+              extract(epoch FROM clock_timestamp() - w.enqueued_at)::float8 AS waited \
+         FROM concurrency_semaphores s \
+         CROSS JOIN LATERAL ( \
+           SELECT x.enqueued_at, coalesce(x.pinned_limit, x.declared_limit) AS lim \
+             FROM concurrency_waiters x JOIN runs r ON r.tenant_id = x.tenant_id AND r.id = x.run_id \
+            WHERE x.tenant_id = s.tenant_id AND x.namespace_id = s.namespace_id AND x.pool = s.pool \
+              AND x.permit_scope = s.permit_scope AND x.group_name = s.group_name AND x.key_digest = s.key_digest \
+              AND ",
     eligible_gate_waiter!("x", "r", "now()"),
     " \
-          ORDER BY x.enqueued_at, x.run_id, x.node LIMIT 1) w \
-       CROSS JOIN LATERAL ( \
-         SELECT min(h.acquired_at) AS oldest FROM concurrency_holders h \
-          WHERE h.tenant_id = s.tenant_id AND h.namespace_id = s.namespace_id AND h.pool = s.pool \
-            AND h.holder_scope = s.permit_scope AND h.group_name = s.group_name AND h.key_digest = s.key_digest) h \
-      WHERE s.waiters > 0 AND w.enqueued_at < now() - make_interval(secs => $1) \
-        AND h.oldest > w.enqueued_at + make_interval(secs => $1) \
-      LIMIT $2"
+            ORDER BY x.enqueued_at, x.run_id, x.node LIMIT 1) w \
+         CROSS JOIN LATERAL ( \
+           SELECT min(h.acquired_at) AS oldest FROM concurrency_holders h \
+            WHERE h.tenant_id = s.tenant_id AND h.namespace_id = s.namespace_id AND h.pool = s.pool \
+              AND h.holder_scope = s.permit_scope AND h.group_name = s.group_name AND h.key_digest = s.key_digest) h \
+        WHERE s.waiters > 0 AND w.enqueued_at < now() - make_interval(secs => $1) \
+          AND h.oldest > w.enqueued_at + make_interval(secs => $1)), \
+     ceilings AS ( \
+       SELECT n.tenant_id, n.namespace_id, {concurrency_limit} AS cap \
+         FROM (SELECT DISTINCT tenant_id, namespace_id FROM keys) n), \
+     groups AS ( \
+       SELECT k.tenant_id, k.namespace_id, k.group_name AS subject, count(*) AS items, max(k.waited) AS oldest, \
+              max(k.waited) AS severity \
+         FROM keys k JOIN ceilings c ON c.tenant_id = k.tenant_id AND c.namespace_id = k.namespace_id \
+        WHERE k.holders >= least(k.lim, c.cap) \
+        GROUP BY k.tenant_id, k.namespace_id, k.group_name)"
 );
 
-/// The run-scope rate-limit windows with waiters (`docs/runbooks/flow-control.md` section 10), most waiters first: their
-/// waiters and the age of their oldest. Whether they pass 80% of the namespace's effective `flow_control_key_waiters` is
-/// decided against the namespace's ceilings.
-const SATURATED_CANDIDATES_SQL: &str = "SELECT w.tenant_id, w.namespace_id, w.group_name, \
-            w.waiters::bigint AS waiters, \
-            coalesce(extract(epoch FROM clock_timestamp() - w.oldest_wait_at), 0)::float8 AS waited \
-       FROM rate_limit_windows w \
-      WHERE w.limit_scope = 'RUN' AND w.waiters > 0 AND $1::float8 >= 0 \
-      ORDER BY w.waiters DESC LIMIT $2";
+/// The keys of `RATE_LIMIT_QUEUE_SATURATED` (`docs/runbooks/flow-control.md` section 10) with their namespace's
+/// effective `flow_control_key_waiters` (never above the namespace's `queued_runs` less one, as the admission bounds a
+/// key): a run-scope window whose waiters are above 80% of it. One row per group: its keys in the condition, the age of
+/// the oldest waiter, and the severity it is ranked by (the fullest key's share of its ceiling). The threshold is not read.
+const SATURATED_GROUPS_SQL: &str = "keys AS ( \
+       SELECT w.tenant_id, w.namespace_id, w.group_name, w.waiters::bigint AS waiters, \
+              coalesce(extract(epoch FROM clock_timestamp() - w.oldest_wait_at), 0)::float8 AS waited \
+         FROM rate_limit_windows w \
+        WHERE w.limit_scope = 'RUN' AND w.waiters > 0 AND $1::float8 >= 0), \
+     ceilings AS ( \
+       SELECT n.tenant_id, n.namespace_id, least({key_waiters}, greatest({queued_runs} - 1, 0)) AS cap \
+         FROM (SELECT DISTINCT tenant_id, namespace_id FROM keys) n), \
+     groups AS ( \
+       SELECT k.tenant_id, k.namespace_id, k.group_name AS subject, count(*) AS items, max(k.waited) AS oldest, \
+              max(k.waiters::float8 / greatest(c.cap, 1)) AS severity \
+         FROM keys k JOIN ceilings c ON c.tenant_id = k.tenant_id AND c.namespace_id = k.namespace_id \
+        WHERE k.waiters * 5 > c.cap * 4 \
+        GROUP BY k.tenant_id, k.namespace_id, k.group_name)";
 
-/// One key in an alert's condition: its tenant, namespace and group, and how long it has been in it.
-struct KeyInCondition {
-    tenant: Uuid,
-    namespace: Uuid,
-    group: String,
-    seconds: f64,
-}
-
-/// The candidates of `kind`, one per (tenant, namespace, group): the keys in the condition and the longest any has been
-/// in it, bounded as [`MonitorStore::detect`] bounds its groups (the oldest first within a namespace, a tenant and the
-/// look).
-fn bounded_groups(
-    kind: AlertKind,
-    keys: Vec<KeyInCondition>,
-    bounds: &Bounds,
-    short: bool,
-) -> Detection {
-    let mut groups: std::collections::BTreeMap<(Uuid, Uuid, String), (u64, f64)> =
-        std::collections::BTreeMap::new();
-    for key in keys {
-        let entry = groups
-            .entry((key.tenant, key.namespace, key.group))
-            .or_insert((0, 0.0));
-        entry.0 += 1;
-        entry.1 = entry.1.max(key.seconds);
-    }
-    let mut candidates: Vec<Candidate> = groups
-        .into_iter()
-        .map(|((tenant, namespace, group), (items, oldest))| Candidate {
-            tenant_id: TenantId::new(tenant),
-            namespace_id: NamespaceId::new(namespace),
-            kind,
-            subject: Candidate::bounded_subject(&group),
-            items,
-            oldest_seconds: oldest.max(0.0),
-        })
-        .collect();
-    candidates.sort_by(|a, b| b.oldest_seconds.total_cmp(&a.oldest_seconds));
-    let mut detection = Detection::default();
-    let cut = |detection: &mut Detection, s: Short| {
-        if !detection.short.contains(&s) {
-            detection.short.push(s);
-        }
-    };
-    let mut per_namespace: std::collections::HashMap<(TenantId, NamespaceId), u32> =
-        std::collections::HashMap::new();
-    let mut per_tenant: std::collections::HashMap<TenantId, u32> = std::collections::HashMap::new();
-    for candidate in candidates {
-        let in_namespace = per_namespace
-            .entry((candidate.tenant_id, candidate.namespace_id))
-            .or_default();
-        if *in_namespace >= bounds.per_namespace {
-            cut(
-                &mut detection,
-                Short::Namespace(candidate.tenant_id, candidate.namespace_id),
-            );
-            continue;
-        }
-        let in_tenant = per_tenant.entry(candidate.tenant_id).or_default();
-        if *in_tenant >= bounds.per_tenant {
-            cut(&mut detection, Short::Tenant(candidate.tenant_id));
-            continue;
-        }
-        if detection.seen.len() >= bounds.total as usize {
-            cut(&mut detection, Short::Everything);
-            break;
-        }
-        *in_namespace += 1;
-        *in_tenant += 1;
-        detection.seen.push(candidate);
-    }
-    if short {
-        cut(&mut detection, Short::Everything);
-    }
-    detection
-}
+/// The bounds of a look over `groups` (the common table of one of the statements above), applied in the statement, most
+/// severe first: at most `$2` groups of a namespace, `$3` of a tenant and `$4` in all are `SEEN`; a namespace with more
+/// is returned once as `NAMESPACE`, a tenant with more, or with groups beyond the look's bound, once as `TENANT`. A look
+/// is short for a tenant or a namespace, never for everyone: one tenant's volume never stops another's alerts from
+/// resolving (batch 3 reviews of 2026-11-25, correctness Major 2, security Major 1).
+const RANKED_GROUPS_SQL: &str = "ranked_ns AS ( \
+       SELECT g.*, row_number() OVER (PARTITION BY g.tenant_id, g.namespace_id \
+                                      ORDER BY g.severity DESC, g.oldest DESC, g.subject) AS nr \
+         FROM groups g), \
+     ranked_tenant AS ( \
+       SELECT n.*, row_number() OVER (PARTITION BY n.tenant_id \
+                                      ORDER BY n.severity DESC, n.oldest DESC, n.namespace_id, n.subject) AS tr \
+         FROM ranked_ns n WHERE n.nr <= $2), \
+     ranked AS ( \
+       SELECT t.*, row_number() OVER (ORDER BY t.severity DESC, t.oldest DESC, t.tenant_id, t.namespace_id, t.subject) \
+                   AS gr \
+         FROM ranked_tenant t WHERE t.tr <= $3) \
+     SELECT * FROM ( \
+       SELECT 'SEEN' AS place, tenant_id, namespace_id, subject, items, oldest, gr AS position \
+         FROM ranked WHERE gr <= $4 \
+       UNION ALL \
+       SELECT DISTINCT 'NAMESPACE', tenant_id, namespace_id, '', 0::bigint, 0::float8, 0::bigint \
+         FROM ranked_ns WHERE nr > $2 \
+       UNION ALL \
+       SELECT 'TENANT', tenant_id, min(namespace_id::text)::uuid, '', 0::bigint, 0::float8, 0::bigint \
+         FROM (SELECT tenant_id, namespace_id FROM ranked_tenant WHERE tr > $3 \
+               UNION ALL SELECT tenant_id, namespace_id FROM ranked WHERE gr > $4) beyond \
+        GROUP BY tenant_id) looked \
+     ORDER BY place DESC, position, tenant_id, namespace_id";
 
 impl PgRunStore {
     /// [`MonitorStore::detect`] of the flow-control kinds that compare with a namespace's ceilings (feature 022,
     /// T022-082; decision D022-077 item 7): `CONCURRENCY_QUEUE_STUCK` (a key with no room for its oldest eligible waiter,
     /// whose every holder took its permit more than the unclaimed threshold after that waiter queued) and
     /// `RATE_LIMIT_QUEUE_SATURATED` (a run-scope key whose waiters are above 80% of the namespace's effective
-    /// `flow_control_key_waiters`). Each namespace's ceilings are read once a look, in the statement the gate reads them
-    /// with, so the alert and the decision agree.
+    /// `flow_control_key_waiters`). The condition is applied in the statement, against each namespace's effective
+    /// ceilings resolved as the gate resolves them (`quotas::effective_sql`), before any bound; the groups are then ranked
+    /// and bounded per namespace, per tenant and in all, and a look that stops short does so for a tenant or a namespace
+    /// only (batch 3 reviews of 2026-11-25, correctness Major 2 and minor 4, security Major 1).
     async fn detect_against_ceilings(
         &self,
         kind: AlertKind,
         thresholds: &Thresholds,
         bounds: &Bounds,
     ) -> Result<Detection, StoreError> {
-        let mut conn = self.pool().acquire().await.map_err(store_error)?;
-        let statement = if kind == AlertKind::ConcurrencyQueueStuck {
-            STUCK_CANDIDATES_SQL
+        use sagat_domain::quota::QuotaResource;
+        let effective =
+            |resource| crate::quotas::effective_sql(resource, "n.tenant_id", "n.namespace_id");
+        let groups = if kind == AlertKind::ConcurrencyQueueStuck {
+            STUCK_GROUPS_SQL.replace(
+                "{concurrency_limit}",
+                &effective(QuotaResource::ConcurrencyLimit),
+            )
         } else {
-            SATURATED_CANDIDATES_SQL
+            SATURATED_GROUPS_SQL
+                .replace(
+                    "{key_waiters}",
+                    &effective(QuotaResource::FlowControlKeyWaiters),
+                )
+                .replace("{queued_runs}", &effective(QuotaResource::QueuedRuns))
         };
-        let rows = sqlx::query(statement)
-            .bind(secs(thresholds.of(AlertKind::ConcurrencyQueueStuck)))
-            .bind(MAX_FLOW_CONTROL_KEYS)
-            .fetch_all(&mut *conn)
-            .await
-            .map_err(store_error)?;
-        let short = i64::try_from(rows.len()).unwrap_or(i64::MAX) >= MAX_FLOW_CONTROL_KEYS;
-        let mut ceilings: std::collections::HashMap<
-            (Uuid, Uuid),
-            sagat_domain::workflow::FlowControlCeilings,
-        > = std::collections::HashMap::new();
-        let mut keys = Vec::new();
+        let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
+            "WITH {groups}, {RANKED_GROUPS_SQL}"
+        )))
+        .bind(secs(thresholds.of(AlertKind::ConcurrencyQueueStuck)))
+        .bind(i64::from(bounds.per_namespace))
+        .bind(i64::from(bounds.per_tenant))
+        .bind(i64::from(bounds.total))
+        .fetch_all(self.pool())
+        .await
+        .map_err(store_error)?;
+        let mut detection = Detection::default();
         for row in &rows {
-            let tenant: Uuid = col(row, "tenant_id")?;
-            let namespace: Uuid = col(row, "namespace_id")?;
-            let ceiling = match ceilings.get(&(tenant, namespace)) {
-                Some(ceiling) => *ceiling,
-                None => {
-                    let read = crate::quotas::step_gate_ceilings(
-                        &mut conn,
-                        TenantId::new(tenant),
-                        NamespaceId::new(namespace),
-                    )
-                    .await?;
-                    ceilings.insert((tenant, namespace), read);
-                    read
+            let place: String = col(row, "place")?;
+            let tenant = TenantId::new(col::<Uuid>(row, "tenant_id")?);
+            let short = match place.as_str() {
+                "SEEN" => {
+                    detection.seen.push(candidate_from_row(kind, row)?);
+                    continue;
                 }
+                "NAMESPACE" => {
+                    Short::Namespace(tenant, NamespaceId::new(col::<Uuid>(row, "namespace_id")?))
+                }
+                "TENANT" => Short::Tenant(tenant),
+                _ => return Err(corrupt("a place of an alert look")),
             };
-            let in_condition = if kind == AlertKind::ConcurrencyQueueStuck {
-                // no room for the waiter: its holders are at the lower of its declaration and the namespace's ceiling
-                let holders = u64::try_from(col::<i64>(row, "holders")?).unwrap_or(0);
-                let declared = u64::try_from(col::<i64>(row, "lim")?).unwrap_or(0);
-                holders >= declared.min(ceiling.concurrency_limit)
-            } else {
-                // more than 80% of the effective ceiling of one key's run waiters
-                let waiters = u64::try_from(col::<i64>(row, "waiters")?).unwrap_or(0);
-                waiters.saturating_mul(5) > ceiling.effective_key_waiters().saturating_mul(4)
-            };
-            if in_condition {
-                keys.push(KeyInCondition {
-                    tenant,
-                    namespace,
-                    group: col(row, "group_name")?,
-                    seconds: col::<f64>(row, "waited")?,
-                });
+            if !detection.short.contains(&short) {
+                detection.short.push(short);
             }
         }
-        Ok(bounded_groups(kind, keys, bounds, short))
+        Ok(detection)
     }
 }
 

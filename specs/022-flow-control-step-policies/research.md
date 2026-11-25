@@ -1687,7 +1687,13 @@ taken after `git grep D022-04` on every `origin/*` branch.
      compare with the namespace's current ceilings (`concurrency_limit`; the effective `flow_control_key_waiters`), which
      the quota rules resolve: the monitor reads each namespace's ceilings once a look with the statement the gate decides
      with (`quotas::step_gate_ceilings`), over at most 5,000 candidate keys a look (beyond it the look is short and resolves
-     nothing it did not see). `RATE_LIMIT_GRANT_LAGGING` and `FLOW_CONTROL_WAITER_ORPHANED` are one aggregate statement
+     nothing it did not see). *Revised 2026-11-25 (batch 3 reviews, correctness Major 2, security Major 1):* the cut came
+     before each namespace's condition, deployment-wide, so one tenant's keys hid another's saturated key and a cut
+     resolved nothing for anyone. The condition is now applied in the statement, joining each namespace's effective
+     ceilings resolved in SQL by the same rules (`quotas::effective_sql`, the twin of `resolve_rows`), before any bound;
+     the groups are ranked per namespace, per tenant and in all by severity (the longest wait for stuck; the fullest key's
+     share of its ceiling for saturated), at most `MAX_PER_NAMESPACE`, `MAX_PER_TENANT` and `MAX_CANDIDATES` as for every
+     kind, and a look that stops short records it for the namespace or the tenant beyond the bound, never for everyone. `RATE_LIMIT_GRANT_LAGGING` and `FLOW_CONTROL_WAITER_ORPHANED` are one aggregate statement
      each, as the earlier kinds. Severities: lagging and orphaned critical (the gate is not serving, or an invariant is
      broken), stuck and saturated warning.
   5. *Contracts.* The kind enumeration of `Alert` in 001's OpenAPI and of the alert events in the AsyncAPI grows by four

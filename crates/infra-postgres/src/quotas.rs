@@ -700,6 +700,39 @@ fn resolve_rows(resource: QuotaResource, rows: &[(Option<uuid::Uuid>, i64, bool)
     quota::resolve(resource, value(true), value(false), ceiling).0
 }
 
+/// The effective value of `resource` for the namespace `namespace` of tenant `tenant` (two column expressions of the
+/// statement it is placed in), as a SQL expression: the twin of [`resolve_rows`], so that a statement that compares a
+/// count with a ceiling over many namespaces reads it in the same statement (the flow-control alerts, batch 3 reviews of
+/// 2026-11-25, correctness Major 2). The namespace's own setting, else the tenant's, else the ceiling; never above the
+/// ceiling, which is the tenant's grant (else the resource's default ceiling) under the resource's maximum. The
+/// constants are the resource's own, never input.
+pub(crate) fn effective_sql(resource: QuotaResource, tenant: &str, namespace: &str) -> String {
+    debug_assert!(
+        resource != QuotaResource::IterationConcurrency,
+        "its default is not its ceiling (`quota::resolve`)"
+    );
+    let name = resource.as_str();
+    let bound = |value: u64| i64::try_from(value).unwrap_or(i64::MAX);
+    let ceiling = format!(
+        "least(coalesce((SELECT greatest(c.max_value, 0) FROM quota_ceilings c \
+                          WHERE c.tenant_id = {tenant} AND c.resource = '{name}' LIMIT 1), {default}), {maximum})",
+        default = bound(resource.default_ceiling()),
+        maximum = bound(resource.maximum()),
+    );
+    let own = match resource.scope() {
+        sagat_domain::quota::QuotaScope::Namespace => format!(
+            "(SELECT greatest(q.max_value, 0) FROM quota_limits q \
+               WHERE q.tenant_id = {tenant} AND q.namespace_id = {namespace} AND q.resource = '{name}' LIMIT 1), "
+        ),
+        sagat_domain::quota::QuotaScope::Tenant => String::new(),
+    };
+    format!(
+        "least(coalesce({own}(SELECT greatest(q.max_value, 0) FROM quota_limits q \
+                               WHERE q.tenant_id = {tenant} AND q.namespace_id IS NULL AND q.resource = '{name}' \
+                               LIMIT 1), {ceiling}), {ceiling})"
+    )
+}
+
 /// The namespace ceilings a gate decision applies (feature 022, G1199, T022-077): the limits of a key (`concurrency_limit`,
 /// `rate_limit_per_second`, `rate_limit_per_minute`, `rate_limit_per_hour`), the longest wait, the live keys of each kind
 /// and the two queue ceilings, read in one statement of the caller's transaction, effective as everywhere else

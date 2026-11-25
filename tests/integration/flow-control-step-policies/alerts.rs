@@ -279,3 +279,133 @@ async fn a_waiter_of_an_ended_run_raises_flow_control_waiter_orphaned_and_the_ga
         [("accounts".to_owned(), "RESOLVED".to_owned(), 1)]
     );
 }
+
+/// Seeds `count` run-scope windows of group `group` in `namespace` of `tenant`, each with `waiters` waiters whose oldest
+/// queued 10 s ago (the counters only: the monitor reads a window's `waiters`, never its waiter rows).
+async fn seed_windows(
+    w: &World,
+    tenant: uuid::Uuid,
+    namespace: uuid::Uuid,
+    group: &str,
+    count: i32,
+    waiters: i32,
+) {
+    sqlx::query(
+        "INSERT INTO rate_limit_windows (tenant_id, namespace_id, pool, limit_scope, group_name, key_digest, waiters, \
+                                         max_period_ms, key_version, key_shard, oldest_wait_at, updated_at) \
+         SELECT $1, $2, 'ORDINARY', 'RUN', $3, sha256(($3 || '/' || i)::bytea), $5, 3600000, \
+                flow_control_active_key_version(), 0, clock_timestamp() - interval '10 seconds', clock_timestamp() \
+           FROM generate_series(1, $4) i",
+    )
+    .bind(tenant)
+    .bind(namespace)
+    .bind(group)
+    .bind(count)
+    .bind(waiters)
+    .execute(&w.db.pool)
+    .await
+    .expect("windows seeded");
+}
+
+/// Batch 3 reviews of 2026-11-25, correctness Major 2 and security Major 1: the condition of `RATE_LIMIT_QUEUE_SATURATED`
+/// is applied before any bound, and a look that stops short stops short for a tenant or a namespace, never for everyone.
+/// Tenant A has more than 5,000 run-scope windows with three waiters each (well under its ceiling: not saturated) and a
+/// saturated alert whose key has drained; tenant B has one key with two waiters against its `flow_control_key_waiters`
+/// of 2. B's key fires, and A's drained alert resolves (after the two looks that miss a condition, correctness minor 3).
+#[tokio::test]
+async fn a_saturated_key_of_one_tenant_fires_beside_thousands_of_another_tenants_keys_and_drained_alerts_resolve()
+ {
+    let w = gated_world().await;
+    let tenant_a = w.admin.tenant_id().as_uuid();
+    let namespace_a = w.namespace.id().as_uuid();
+    let (tenant_b, namespace_b): (uuid::Uuid, uuid::Uuid) = sqlx::query_as(
+        "SELECT tenant_id, id FROM namespaces WHERE tenant_id = $1 AND slug = 'payments'",
+    )
+    .bind(w.other_admin.tenant_id().as_uuid())
+    .fetch_one(&w.db.pool)
+    .await
+    .expect("the other tenant's namespace");
+    w.quotas
+        .set(
+            &w.other_admin,
+            Some(sagat_domain::identity::NamespaceId::new(namespace_b)),
+            QuotaResource::FlowControlKeyWaiters,
+            2,
+            &crate::support::engine::ctx(),
+        )
+        .await
+        .expect("tenant B's key waiters");
+    seed_windows(&w, tenant_a, namespace_a, "accounts", 5_001, 3).await;
+    seed_windows(&w, tenant_b, namespace_b, "payees", 1, 2).await;
+    sqlx::query(
+        "INSERT INTO operational_alerts (id, tenant_id, namespace_id, kind, subject, state, severity, first_seen_at, \
+                                         last_seen_at, fired_count, item_count, oldest_seconds) \
+         VALUES (gen_random_uuid(), $1, $2, 'RATE_LIMIT_QUEUE_SATURATED', 'drained', 'FIRING', 'warning', \
+                 clock_timestamp() - interval '1 hour', clock_timestamp() - interval '1 minute', 1, 1, 60)",
+    )
+    .bind(tenant_a)
+    .bind(namespace_a)
+    .execute(&w.db.pool)
+    .await
+    .expect("tenant A's alert of a key that drained");
+    let monitor = monitor(&w);
+    monitor.run_once().await;
+    monitor.run_once().await;
+    let states: Vec<(uuid::Uuid, String, String)> = sqlx::query_as(
+        "SELECT tenant_id, subject, state FROM operational_alerts WHERE kind = 'RATE_LIMIT_QUEUE_SATURATED' \
+          ORDER BY subject",
+    )
+    .fetch_all(&w.db.pool)
+    .await
+    .expect("alerts");
+    assert_eq!(
+        states,
+        [
+            (tenant_a, "drained".to_owned(), "RESOLVED".to_owned()),
+            (tenant_b, "payees".to_owned(), "FIRING".to_owned()),
+        ]
+    );
+}
+
+/// Batch 3 reviews of 2026-11-25, correctness Major 2: `CONCURRENCY_QUEUE_STUCK` compares a key's holders with the lower
+/// of its waiter's declaration and the namespace's effective `concurrency_limit`, resolved in the statement as the gate
+/// resolves it; here the tenant's setting (1) is below the declaration (2), so one holder leaves no room.
+#[tokio::test]
+async fn a_stuck_key_is_judged_against_the_tenants_concurrency_ceiling_below_its_declaration() {
+    let w = gated_world().await;
+    w.quotas
+        .set(
+            &w.admin,
+            None,
+            QuotaResource::ConcurrencyLimit,
+            1,
+            &crate::support::engine::ctx(),
+        )
+        .await
+        .expect("the tenant's concurrency limit");
+    let workflow = publish(&w, serial_start("alert-stuck-ceiling", 2)).await;
+    let input = json!({"accountId": "acct-1"});
+    let holder = w.start(workflow, &input).await;
+    let waiter = w.start(workflow, &input).await;
+    assert_eq!(
+        crate::run_admission::start_rows(&w, waiter).await,
+        (0, 1),
+        "the ceiling queues it"
+    );
+    seed(
+        &w,
+        "concurrency_waiters",
+        "UPDATE concurrency_waiters SET enqueued_at = clock_timestamp() - interval '400 seconds', \
+                deadline_at = clock_timestamp() + interval '1 hour' WHERE run_id = $1",
+        waiter,
+    )
+    .await;
+    monitor(&w).run_once().await;
+    assert_eq!(
+        alerts(&w, "CONCURRENCY_QUEUE_STUCK").await,
+        [("accounts".to_owned(), "FIRING".to_owned(), 1)]
+    );
+    for run in [waiter, holder] {
+        w.operate_run(run, RunOperation::Cancel).await;
+    }
+}
