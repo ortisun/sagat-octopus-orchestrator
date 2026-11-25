@@ -154,6 +154,9 @@ pub struct PgRunStore {
     flow_control: sagat_application::flow_control::FlowControlSwitches,
     /// The digest keys of the gates (feature 022): without them a gated step is never decided (fail closed).
     flow_control_keys: Option<Arc<sagat_application::keyed_digest::KeyRing>>,
+    /// Design 041's spike only: the hook a report transaction runs before its commit.
+    #[cfg(feature = "perf-spike")]
+    report_hook: crate::report_hook::HookSlot,
 }
 
 impl PgRunStore {
@@ -173,6 +176,8 @@ impl PgRunStore {
                 rate_limits: false,
             },
             flow_control_keys: None,
+            #[cfg(feature = "perf-spike")]
+            report_hook: crate::report_hook::HookSlot::default(),
         }
     }
 
@@ -252,6 +257,14 @@ impl PgRunStore {
             return Ok(Some(FlowControlRefusal::BinaryCapabilityMissing));
         }
         Ok(None)
+    }
+
+    /// Design 041's spike T041-35 only: runs `hook` in every root report transaction, before its commit.
+    #[cfg(feature = "perf-spike")]
+    #[must_use]
+    pub fn with_report_hook(mut self, hook: Arc<dyn crate::report_hook::ReportHook>) -> Self {
+        self.report_hook = crate::report_hook::HookSlot(Some(hook));
+        self
     }
 
     /// Makes every command check that a projection its definition excludes is in fact empty. For
@@ -560,6 +573,10 @@ impl PgRunStore {
             gate_returns_applied: BTreeSet::new(),
             gate_outcomes: Vec::new(),
             run_gate_outcomes: Vec::new(),
+            #[cfg(feature = "perf-spike")]
+            report_hook: self.report_hook.clone(),
+            #[cfg(feature = "perf-spike")]
+            reported_attempt: None,
         }))
     }
 
@@ -1864,6 +1881,10 @@ impl RunStore for PgRunStore {
                     gate_returns_applied: BTreeSet::new(),
                     gate_outcomes: Vec::new(),
                     run_gate_outcomes: Vec::new(),
+                    #[cfg(feature = "perf-spike")]
+                    report_hook: self.report_hook.clone(),
+                    #[cfg(feature = "perf-spike")]
+                    reported_attempt: None,
                 }));
             }
         }
@@ -4216,6 +4237,11 @@ pub struct PgRunTx {
         sagat_domain::workflow::GateKind,
         readiness_gate::GateOutcome,
     )>,
+    /// Design 041's spike only: the store's report hook, and the attempt this transaction reported.
+    #[cfg(feature = "perf-spike")]
+    report_hook: crate::report_hook::HookSlot,
+    #[cfg(feature = "perf-spike")]
+    reported_attempt: Option<crate::report_hook::ReportedAttempt>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -6175,7 +6201,28 @@ impl RunTx for PgRunTx {
                     },
                 })?;
         }
+        #[cfg(feature = "perf-spike")]
+        let mut timed = None;
+        #[cfg(feature = "perf-spike")]
+        if let (Some(hook), Some(attempt)) =
+            (self.report_hook.0.clone(), self.reported_attempt.take())
+        {
+            hook.on_report_commit(&mut self.tx, &attempt)
+                .await
+                .map_err(store_error)?;
+            if hook.times_commit() {
+                let xid: i64 = sqlx::query_scalar("SELECT pg_current_xact_id()::text::bigint")
+                    .fetch_one(&mut *self.tx)
+                    .await
+                    .map_err(store_error)?;
+                timed = Some((hook, xid, crate::report_hook::now_us()));
+            }
+        }
         self.tx.commit().await.map_err(store_error)?;
+        #[cfg(feature = "perf-spike")]
+        if let Some((hook, xid, sent)) = timed {
+            hook.on_committed(xid, sent, crate::report_hook::now_us());
+        }
         readiness_gate::record_gate_outcomes(
             &self.gate_outcomes,
             sagat_telemetry::flow_control::FlowControlScope::Step,
@@ -7850,6 +7897,18 @@ impl PgRunTx {
         let switch_case_id = stored_switch_case_id(&step);
         let attempt = i32::try_from(step.attempt()).map_err(|_| corrupt("attempt"))?;
         let generation = i64::try_from(step.generation()).map_err(|_| corrupt("generation"))?;
+        #[cfg(feature = "perf-spike")]
+        if reported.is_some() && self.report_hook.0.is_some() {
+            self.reported_attempt = Some(crate::report_hook::ReportedAttempt {
+                tenant: self.info.tenant_id.as_uuid(),
+                namespace: self.info.namespace_id.as_uuid(),
+                run: self.info.run_id.as_uuid(),
+                step: step_uuid,
+                node: node.as_str().to_owned(),
+                attempt,
+                generation,
+            });
+        }
         let inserted = !self.stored.contains(&instance);
         // The secrets the step declares, copied onto its row so that the claim query can leave out
         // the steps a worker is not entitled to receive (G48). None when it declares none.

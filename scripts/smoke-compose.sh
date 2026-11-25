@@ -78,7 +78,7 @@ echo "ok: exactly one tenant after seeding twice"
 
 echo "--- the API serves requests as the least-privilege role"
 API_USERS=$("${COMPOSE[@]}" exec -T postgres psql -U "$DB_OWNER" -d "$DB_NAME" -tAc \
-  "SELECT string_agg(DISTINCT usename, ',') FROM pg_stat_activity WHERE application_name = 'sagat-octopus-orchestrator' AND datname = '$DB_NAME'")
+  "SELECT string_agg(DISTINCT usename, ',') FROM pg_stat_activity WHERE application_name LIKE 'sagat-octopus-orchestrator/%' AND datname = '$DB_NAME'")
 [ "$API_USERS" = "sagat_app" ] || { echo "the API is connected as '$API_USERS', expected only sagat_app" >&2; exit 1; }
 echo "ok: the API is connected only as sagat_app"
 

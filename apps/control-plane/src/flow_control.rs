@@ -44,7 +44,12 @@ pub async fn activate(
         name: "--operator",
         reason: error.to_string(),
     })?;
-    let pool = crate::open_pool(db, db.statement_timeout).await?;
+    let pool = crate::open_pool(
+        db,
+        db.statement_timeout,
+        sagat_infra_postgres::PoolName::Process("flow_control_activation"),
+    )
+    .await?;
     let outcome = PgInstanceStore::new(pool.clone())
         .activate(
             Activation {

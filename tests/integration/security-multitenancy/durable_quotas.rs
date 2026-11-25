@@ -286,7 +286,7 @@ async fn manifest_covers_every_variable_size_column_and_every_accounted_table_ha
         assert!(
             matches!(
                 entry["class"].as_str(),
-                Some("content" | "log" | "protected_system")
+                Some("content" | "log" | "step_log" | "protected_system")
             ),
             "unknown classification: {entry}"
         );
@@ -409,6 +409,131 @@ async fn manifest_covers_every_variable_size_column_and_every_accounted_table_ha
             })
             .collect();
         assert_eq!(actual, expected, "{table} trigger/manifest column drift");
+    }
+    // The class `step_log` is measured by the shape of ADR-0027's Amendment of the Amendment (2026-11-20, OD-2026-11-20-16):
+    // one statement-level `AFTER INSERT` charge over the transition table, a per-row `AFTER DELETE` release with the
+    // manifest's columns and its deferred finalizer, no per-row delta on insert or update, each enabled `ALWAYS`.
+    let step_log_tables: BTreeSet<String> = entries
+        .iter()
+        .filter(|entry| entry["class"].as_str() == Some("step_log"))
+        .map(|entry| entry["table"].as_str().expect("table").to_owned())
+        .collect();
+    assert_eq!(
+        step_log_tables,
+        BTreeSet::from(["step_log_lines".to_owned()]),
+        "only the step-log lines are of the class step_log"
+    );
+    for entry in entries
+        .iter()
+        .filter(|entry| entry["class"].as_str() == Some("step_log"))
+    {
+        let kind = entry["measurement"]["kind"]
+            .as_str()
+            .expect("measurement kind");
+        assert!(
+            matches!(kind, "octet_length_utf8" | "fixed_octets"),
+            "a step-log column is measured by its text or by the fixed row charge: {entry}"
+        );
+        if kind == "fixed_octets" {
+            assert_eq!(
+                entry["measurement"]["expression"].as_str(),
+                Some("128"),
+                "{entry}"
+            );
+            let not_null: bool = sqlx::query_scalar(
+                "SELECT attnotnull FROM pg_attribute WHERE attrelid = $1::regclass AND attname = $2",
+            )
+            .bind(entry["table"].as_str().expect("table"))
+            .bind(entry["column"].as_str().expect("column"))
+            .fetch_one(&w.db.pool)
+            .await
+            .expect("the fixed charge's column");
+            assert!(
+                not_null,
+                "fixed_octets is allowed only on a NOT NULL column: {entry}"
+            );
+        }
+    }
+    for table in step_log_tables {
+        // tgtype bits: 1 row, 4 insert, 8 delete, 16 update (catalog pg_trigger).
+        let triggers: Vec<(String, String, bool, bool, i16, String)> = sqlx::query_as(
+            "SELECT t.tgname, t.tgenabled::text, t.tgdeferrable, t.tginitdeferred, t.tgtype, p.proname \
+               FROM pg_trigger t JOIN pg_proc p ON p.oid = t.tgfoid \
+              WHERE t.tgrelid = $1::regclass AND NOT t.tgisinternal AND p.proname LIKE 'sagat_quota_%' \
+              ORDER BY t.tgname",
+        )
+        .bind(&table)
+        .fetch_all(&w.db.pool)
+        .await
+        .expect("step-log accounting triggers");
+        let shape: Vec<(String, String, bool, bool, i16, String)> = vec![
+            (
+                format!("{table}_quota_delete"),
+                "A".into(),
+                false,
+                false,
+                1 | 8,
+                "sagat_quota_row_delta".into(),
+            ),
+            (
+                format!("{table}_quota_flush"),
+                "A".into(),
+                true,
+                true,
+                1 | 8,
+                "sagat_quota_flush_deltas".into(),
+            ),
+            (
+                format!("{table}_quota_insert"),
+                "A".into(),
+                false,
+                false,
+                4,
+                "sagat_quota_step_log_insert_trigger".into(),
+            ),
+        ];
+        assert_eq!(triggers, shape, "{table}: the step-log accounting shape");
+        let transition: Option<String> = sqlx::query_scalar(
+            "SELECT tgnewtable::text FROM pg_trigger WHERE tgrelid = $1::regclass AND tgname = $1 || '_quota_insert'",
+        )
+        .bind(&table)
+        .fetch_one(&w.db.pool)
+        .await
+        .expect("the insert trigger's transition table");
+        assert_eq!(transition.as_deref(), Some("inserted"));
+        let actual: Vec<u8> = sqlx::query_scalar(
+            "SELECT tgargs FROM pg_trigger WHERE tgrelid = $1::regclass AND tgname = $1 || '_quota_delete'",
+        )
+        .bind(&table)
+        .fetch_one(&w.db.pool)
+        .await
+        .expect("release trigger arguments");
+        let actual: Vec<String> = actual
+            .split(|byte| *byte == 0)
+            .filter(|part| !part.is_empty())
+            .map(|part| String::from_utf8(part.to_vec()).expect("UTF-8 trigger argument"))
+            .collect();
+        let expected: Vec<String> = entries
+            .iter()
+            .filter(|entry| {
+                entry["table"].as_str() == Some(table.as_str())
+                    && entry["class"].as_str() == Some("step_log")
+            })
+            .flat_map(|entry| {
+                [
+                    "step_log".to_owned(),
+                    entry["measurement"]["kind"]
+                        .as_str()
+                        .expect("measurement kind")
+                        .to_owned(),
+                    entry["column"].as_str().expect("column").to_owned(),
+                ]
+            })
+            .collect();
+        assert_eq!(
+            actual, expected,
+            "{table} release trigger/manifest column drift"
+        );
     }
     let blob_triggers: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM pg_trigger WHERE tgrelid = 'blobs'::regclass \

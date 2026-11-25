@@ -18,7 +18,7 @@ use sagat_application::authz::NamespaceDirectory;
 use sagat_application::error::StoreError;
 use sagat_application::quotas::{QuotaLookup, QuotaStore, StoredActivityLimit, StoredLimit};
 use sagat_domain::audit::AuditRecord;
-use sagat_domain::identity::{NamespaceId, TenantId};
+use sagat_domain::identity::{NamespaceId, Subject, TenantId};
 use sagat_domain::quota::{self, QuotaKind, QuotaResource};
 use sagat_domain::workflow::ActivityName;
 use sqlx::{PgConnection, PgPool};
@@ -1182,6 +1182,14 @@ impl QuotaStore for PgRunStore {
         tx.commit().await.map_err(store_error)
     }
 
+    async fn step_log_usage_if_revealed(
+        &self,
+        tenant: TenantId,
+        subject: &Subject,
+    ) -> Result<Option<u64>, StoreError> {
+        crate::reveal_grants::step_log_usage_if_revealed(&self.pool, tenant, subject).await
+    }
+
     async fn usage(
         &self,
         tenant: TenantId,
@@ -1333,6 +1341,13 @@ impl QuotaStore for PgRunStore {
             .fetch_optional(&self.pool)
             .await
             .map(|value| value.unwrap_or(0)),
+            // Feature 041: the step-log usage is shown only with the PII reveal grant in every namespace, read with it in
+            // one snapshot (decisions D041-133 and D041-141), so this general read refuses it.
+            QuotaResource::TenantStepLogBytes => {
+                return Err(StoreError::Internal {
+                    detail: "the step-log usage is read with the grant, through step_log_usage_if_revealed".into(),
+                });
+            }
             QuotaResource::DatabaseConnections => sqlx::query_scalar(
                 "SELECT count(*) FROM database_connections WHERE tenant_id=$1 AND namespace_id=$2 AND status<>'DELETED'")
                 .bind(tenant.as_uuid()).bind(namespace).fetch_one(&self.pool).await,
@@ -1444,6 +1459,9 @@ impl QuotaStore for PgRunStore {
             | QuotaResource::DatabaseConnectTimeoutMs
             | QuotaResource::DatabasePoolSize
             | QuotaResource::DatabaseIdleTimeoutMs
+            | QuotaResource::StepLogAttemptRecords
+            | QuotaResource::StepLogAttemptBytes
+            | QuotaResource::StepLogRetentionDays
             => {
                 return Err(StoreError::Internal {
                     detail: "an admission policy has no scalar usage".into(),

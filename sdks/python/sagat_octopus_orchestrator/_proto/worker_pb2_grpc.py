@@ -103,6 +103,11 @@ class WorkerServiceStub:
                 request_serializer=sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.ReadBlobRequest.SerializeToString,
                 response_deserializer=sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.ReadBlobResponse.FromString,
                 _registered_method=True)
+        self.AppendStepLogs = channel.unary_unary(
+                '/sagat_octopus_orchestrator.v1.WorkerService/AppendStepLogs',
+                request_serializer=sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.AppendStepLogsRequest.SerializeToString,
+                response_deserializer=sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.AppendStepLogsResponse.FromString,
+                _registered_method=True)
 
 
 class WorkerServiceServicer:
@@ -217,6 +222,20 @@ class WorkerServiceServicer:
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def AppendStepLogs(self, request, context):
+        """Added in 1.7 (feature 041). Stores the log records of one leased attempt. Answered only after the
+        records are committed; a record is stored at most once (attempt, generation, sequence).
+        Verdicts, not errors, say what the worker does next (StepLogVerdict).
+        Errors: UNAUTHENTICATED; PERMISSION_DENIED (no worker:execute, or a runner or database-runner
+        token); INVALID_ARGUMENT a malformed
+        batch (more than 500 records, more than 192 KiB encoded, sequences not increasing, a sequence at or
+        above 2^62, an unknown level); RESOURCE_EXHAUSTED (x-sagat-error RATE_LIMITED, retry-after-ms) shed
+        by admission; UNAVAILABLE the database or the serving gate.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_WorkerServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -269,6 +288,11 @@ def add_WorkerServiceServicer_to_server(servicer, server):
                     servicer.ReadBlob,
                     request_deserializer=sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.ReadBlobRequest.FromString,
                     response_serializer=sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.ReadBlobResponse.SerializeToString,
+            ),
+            'AppendStepLogs': grpc.unary_unary_rpc_method_handler(
+                    servicer.AppendStepLogs,
+                    request_deserializer=sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.AppendStepLogsRequest.FromString,
+                    response_serializer=sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.AppendStepLogsResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -560,6 +584,33 @@ class WorkerService:
             '/sagat_octopus_orchestrator.v1.WorkerService/ReadBlob',
             sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.ReadBlobRequest.SerializeToString,
             sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.ReadBlobResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def AppendStepLogs(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/sagat_octopus_orchestrator.v1.WorkerService/AppendStepLogs',
+            sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.AppendStepLogsRequest.SerializeToString,
+            sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.AppendStepLogsResponse.FromString,
             options,
             channel_credentials,
             insecure,

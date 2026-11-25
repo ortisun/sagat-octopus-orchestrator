@@ -131,6 +131,15 @@ pub enum QuotaResource {
     RateLimitPerMinute,
     /// The most grants one rate-limit key may count in an hour (10,000).
     RateLimitPerHour,
+    /// Retained step-log bytes of the tenant, each line charged its text plus 128 bytes (feature 041,
+    /// ADR-0027 Amendment of 2026-11-15).
+    TenantStepLogBytes,
+    /// Step-log records one attempt may store in the namespace; 0 turns capture off (feature 041).
+    StepLogAttemptRecords,
+    /// Step-log text bytes one attempt may store in the namespace (feature 041).
+    StepLogAttemptBytes,
+    /// Days a new step-log stream of the namespace is kept after its last batch (feature 041).
+    StepLogRetentionDays,
 }
 
 /// At which level a resource is counted.
@@ -165,7 +174,7 @@ pub enum QuotaUnit {
 }
 
 impl QuotaResource {
-    pub const ALL: [Self; 47] = [
+    pub const ALL: [Self; 51] = [
         Self::ActiveRuns,
         Self::TenantActiveRuns,
         Self::Workflows,
@@ -213,6 +222,10 @@ impl QuotaResource {
         Self::RateLimitPerSecond,
         Self::RateLimitPerMinute,
         Self::RateLimitPerHour,
+        Self::TenantStepLogBytes,
+        Self::StepLogAttemptRecords,
+        Self::StepLogAttemptBytes,
+        Self::StepLogRetentionDays,
     ];
 
     #[must_use]
@@ -265,6 +278,10 @@ impl QuotaResource {
             Self::RateLimitPerSecond => "rate_limit_per_second",
             Self::RateLimitPerMinute => "rate_limit_per_minute",
             Self::RateLimitPerHour => "rate_limit_per_hour",
+            Self::TenantStepLogBytes => "tenant_step_log_bytes",
+            Self::StepLogAttemptRecords => "step_log_attempt_records",
+            Self::StepLogAttemptBytes => "step_log_attempt_bytes",
+            Self::StepLogRetentionDays => "step_log_retention_days",
         }
     }
 
@@ -310,23 +327,32 @@ impl QuotaResource {
             | Self::RateLimitLiveKeys
             | Self::RateLimitPerSecond
             | Self::RateLimitPerMinute
-            | Self::RateLimitPerHour => QuotaScope::Namespace,
+            | Self::RateLimitPerHour
+            | Self::StepLogAttemptRecords
+            | Self::StepLogAttemptBytes
+            | Self::StepLogRetentionDays => QuotaScope::Namespace,
             Self::TenantActiveRuns
             | Self::WorkerSessions
             | Self::IterationConcurrency
             | Self::TenantContentBytes
             | Self::TenantLogBytes
             | Self::TenantDatabaseConcurrency
-            | Self::TenantBatchJobs => QuotaScope::Tenant,
+            | Self::TenantBatchJobs
+            | Self::TenantStepLogBytes => QuotaScope::Tenant,
         }
     }
 
     #[must_use]
     pub const fn kind(self) -> QuotaKind {
         match self {
-            Self::TenantContentBytes | Self::TenantLogBytes => QuotaKind::Storage,
+            Self::TenantContentBytes | Self::TenantLogBytes | Self::TenantStepLogBytes => {
+                QuotaKind::Storage
+            }
             Self::ApiRequestsPerSecond | Self::EventsPerSecond => QuotaKind::Rate,
-            Self::EventRetentionSeconds | Self::ScriptRetentionDays => QuotaKind::Retention,
+            Self::EventRetentionSeconds
+            | Self::ScriptRetentionDays
+            | Self::StepLogRetentionDays => QuotaKind::Retention,
+            Self::StepLogAttemptRecords | Self::StepLogAttemptBytes => QuotaKind::Policy,
             Self::DatabaseStatementBytes
             | Self::DatabaseParameters
             | Self::DatabaseParameterBytes
@@ -349,10 +375,13 @@ impl QuotaResource {
     #[must_use]
     pub const fn unit(self) -> QuotaUnit {
         match self {
-            Self::TenantContentBytes | Self::TenantLogBytes => QuotaUnit::Bytes,
+            Self::TenantContentBytes
+            | Self::TenantLogBytes
+            | Self::TenantStepLogBytes
+            | Self::StepLogAttemptBytes => QuotaUnit::Bytes,
             Self::ApiRequestsPerSecond | Self::EventsPerSecond => QuotaUnit::RequestsPerSecond,
             Self::EventRetentionSeconds => QuotaUnit::Seconds,
-            Self::ScriptRetentionDays => QuotaUnit::Days,
+            Self::ScriptRetentionDays | Self::StepLogRetentionDays => QuotaUnit::Days,
             Self::DatabaseStatementBytes => QuotaUnit::Bytes,
             Self::DatabaseParameterBytes => QuotaUnit::Bytes,
             Self::DatabaseResultBytes => QuotaUnit::Bytes,
@@ -398,7 +427,12 @@ impl QuotaResource {
     #[must_use]
     pub const fn maximum(self) -> u64 {
         match self {
-            Self::TenantContentBytes | Self::TenantLogBytes => MAX_BYTE_LIMIT,
+            Self::TenantContentBytes | Self::TenantLogBytes | Self::TenantStepLogBytes => {
+                MAX_BYTE_LIMIT
+            }
+            Self::StepLogAttemptRecords => 100_000,
+            Self::StepLogAttemptBytes => 16 * 1024 * 1024,
+            Self::StepLogRetentionDays => 365,
             Self::ApiRequestsPerSecond | Self::EventsPerSecond => 1_000_000,
             Self::EventRetentionSeconds => 2_592_000,
             Self::ScriptRetentionDays => 365,
@@ -502,6 +536,10 @@ impl QuotaResource {
             Self::RateLimitPerSecond | Self::RateLimitPerMinute | Self::RateLimitPerHour => {
                 self.maximum()
             }
+            Self::TenantStepLogBytes => 1024 * 1024 * 1024,
+            Self::StepLogAttemptRecords => 10_000,
+            Self::StepLogAttemptBytes => 1024 * 1024,
+            Self::StepLogRetentionDays => 14,
         }
     }
 
@@ -560,6 +598,26 @@ impl QuotaResource {
             Self::RateLimitPerSecond => "grants of one rate-limit key in a second",
             Self::RateLimitPerMinute => "grants of one rate-limit key in a minute",
             Self::RateLimitPerHour => "grants of one rate-limit key in an hour",
+            Self::TenantStepLogBytes => "retained step-log bytes of the tenant",
+            Self::StepLogAttemptRecords => "step-log records of an attempt in the namespace",
+            Self::StepLogAttemptBytes => "step-log bytes of an attempt in the namespace",
+            Self::StepLogRetentionDays => "step-log retention in the namespace",
+        }
+    }
+
+    /// The smallest value accepted for this resource (feature 041): a positive per-operation policy
+    /// is at least 1, with one named exception, `step_log_attempt_records`, whose 0 is the
+    /// namespace's capture switch (OD-2026-11-16-9); `step_log_attempt_bytes` is at least 1,024 and
+    /// `step_log_retention_days` at least 1. Every other resource accepts 0.
+    #[must_use]
+    pub const fn minimum(self) -> u64 {
+        match self {
+            // The named exception: 0 turns step-log capture off in the namespace.
+            Self::StepLogAttemptRecords => 0,
+            Self::StepLogAttemptBytes => 1024,
+            Self::StepLogRetentionDays => 1,
+            _ if matches!(self.kind(), QuotaKind::Policy) => 1,
+            _ => 0,
         }
     }
 
@@ -656,7 +714,7 @@ pub fn validate(
     if value > resource.maximum() {
         return Err(QuotaError::TooLarge);
     }
-    if value == 0 && resource.kind() == QuotaKind::Policy {
+    if value < resource.minimum() {
         return Err(QuotaError::OutsideRange);
     }
     if resource == QuotaResource::EventRetentionSeconds && (1..60).contains(&value) {
@@ -678,7 +736,7 @@ pub fn validate(
 pub const fn validate_ceiling(resource: QuotaResource, value: u64) -> Result<u64, QuotaError> {
     if value > resource.maximum() {
         Err(QuotaError::TooLarge)
-    } else if (value == 0 && matches!(resource.kind(), QuotaKind::Policy))
+    } else if value < resource.minimum()
         || (matches!(resource, QuotaResource::EventRetentionSeconds) && value > 0 && value < 60)
     {
         Err(QuotaError::OutsideRange)
@@ -721,6 +779,90 @@ mod tests {
     use super::*;
 
     const CEILING: u64 = 1_000;
+
+    #[test]
+    fn the_step_log_resources_have_the_ranges_of_design_041() {
+        use QuotaResource::{
+            StepLogAttemptBytes, StepLogAttemptRecords, StepLogRetentionDays, TenantStepLogBytes,
+        };
+        let huge = MAX_BYTE_LIMIT;
+        // 0 is the capture switch of a namespace, the one named exception of a policy resource.
+        assert_eq!(validate(StepLogAttemptRecords, true, 0, huge), Ok(0));
+        assert_eq!(validate_ceiling(StepLogAttemptRecords, 0), Ok(0));
+        assert_eq!(
+            validate(StepLogAttemptRecords, true, 100_001, huge),
+            Err(QuotaError::TooLarge)
+        );
+        assert_eq!(
+            validate(StepLogAttemptBytes, true, 1_023, huge),
+            Err(QuotaError::OutsideRange)
+        );
+        assert_eq!(
+            validate_ceiling(StepLogAttemptBytes, 1_023),
+            Err(QuotaError::OutsideRange)
+        );
+        assert_eq!(validate(StepLogAttemptBytes, true, 1_024, huge), Ok(1_024));
+        assert_eq!(
+            validate(StepLogAttemptBytes, true, 16 * 1024 * 1024 + 1, huge),
+            Err(QuotaError::TooLarge)
+        );
+        assert_eq!(
+            validate(StepLogRetentionDays, true, 0, huge),
+            Err(QuotaError::OutsideRange)
+        );
+        assert_eq!(
+            validate_ceiling(StepLogRetentionDays, 0),
+            Err(QuotaError::OutsideRange)
+        );
+        assert_eq!(
+            validate(StepLogRetentionDays, true, 366, huge),
+            Err(QuotaError::TooLarge)
+        );
+        assert_eq!(
+            validate(TenantStepLogBytes, true, 1, huge),
+            Err(QuotaError::NotPerNamespace)
+        );
+        assert_eq!(validate(TenantStepLogBytes, false, 0, huge), Ok(0));
+        for (resource, default, scope, kind) in [
+            (
+                TenantStepLogBytes,
+                1 << 30,
+                QuotaScope::Tenant,
+                QuotaKind::Storage,
+            ),
+            (
+                StepLogAttemptRecords,
+                10_000,
+                QuotaScope::Namespace,
+                QuotaKind::Policy,
+            ),
+            (
+                StepLogAttemptBytes,
+                1 << 20,
+                QuotaScope::Namespace,
+                QuotaKind::Policy,
+            ),
+            (
+                StepLogRetentionDays,
+                14,
+                QuotaScope::Namespace,
+                QuotaKind::Retention,
+            ),
+        ] {
+            assert_eq!(resource.default_limit(), default, "{resource}");
+            assert_eq!(resource.default_ceiling(), default, "{resource}");
+            assert_eq!(resource.scope(), scope, "{resource}");
+            assert_eq!(resource.kind(), kind, "{resource}");
+            assert_eq!(resource.as_str().parse::<QuotaResource>(), Ok(resource));
+        }
+        assert!(TenantStepLogBytes.has_usage());
+        assert!(!StepLogAttemptRecords.has_usage());
+        // A policy resource other than the exception still refuses 0.
+        assert_eq!(
+            validate(QuotaResource::DatabaseRows, true, 0, huge),
+            Err(QuotaError::OutsideRange)
+        );
+    }
 
     #[test]
     fn zero_iteration_capacity_is_a_valid_tenant_admission_stop() {
@@ -890,8 +1032,9 @@ mod tests {
 
     #[test]
     fn durable_resources_have_explicit_scope_kind_unit_range_and_usage_semantics() {
-        // 43, and the four rate-limit resources of task T022-077
-        assert_eq!(QuotaResource::ALL.len(), 47);
+        // 37 before features 022 and 041: feature 022 adds ten flow-control resources (the four
+        // rate-limit ones by task T022-077) and feature 041 the four step-log resources.
+        assert_eq!(QuotaResource::ALL.len(), 51);
         for (resource, scope, kind, unit, maximum, default, has_usage) in [
             (
                 QuotaResource::TenantContentBytes,

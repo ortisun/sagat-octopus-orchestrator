@@ -2,12 +2,12 @@
 
 ## Architectural choice: state machine + checkpointed steps
 
-V1 uses a **declarative Workflow IR interpreter** and step checkpointing. It does not require deterministic replay of the application's arbitrary stack: the SDKs' DSL is compiled to IR, or SDK workers receive deterministic commands with stable IDs and memoized results. In imperative code-first mode, any code outside steps may re-execute: the SDK MUST forbid/warn about external side effects outside activities.
+V1 uses a **declarative Workflow IR interpreter** and step checkpointing. It does not require deterministic replay of the application's arbitrary stack: the SDKs' DSL is compiled to IR, or SDK workers receive deterministic commands with stable IDs and memoized results. In imperative code-first mode, any code outside steps may re-execute: the SDK MUST forbid/warn about external side effects outside activities. *Note (2026-11-24, constitution 5.0.0):* this paragraph describes the engine as built; release 0.3.0 adds the procedural mode of design 044, which does replay workflow code deterministically against the journal, in the SDK worker and never in a platform process (principle IV).
 
 To avoid promising perfect conversion, we support two modes:
 
 1. **Graph-native:** JSON/IR definition in the Studio or declarative SDK, static and versioned, native execution in the engine.
-2. **Code-orchestrated (P2):** orchestrator function in an SDK with controlled replay and step commands; requires a registered worker and proof of determinism. Do not assume immediate support for arbitrary control structures.
+2. **Code-orchestrated (procedural, release 0.3.0, design 044, not built):** orchestrator function in an SDK with controlled replay and step commands; requires a registered worker and proof of determinism (a determinism study per language and the shared replay conformance scenarios, constitution principle IV, version 5.0.0). Do not assume immediate support for arbitrary control structures.
 
 ## Run states
 

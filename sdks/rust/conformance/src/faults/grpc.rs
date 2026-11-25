@@ -5,6 +5,70 @@ use tonic::{Request, Response, Status, transport::Channel};
 mod pb {
     tonic::include_proto!("sagat_octopus_orchestrator.v1");
 }
+
+// A step-log batch (feature 041): only counts print, never a message, an exception, a field, a token
+// or the identity of the attempt (FR-041-007 (d)).
+impl std::fmt::Debug for pb::AppendStepLogsRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AppendStepLogsRequest")
+            .field("records", &self.records.len())
+            .field("final_batch", &self.final_batch)
+            .field("highest_sequence", &self.highest_sequence)
+            .finish_non_exhaustive()
+    }
+}
+impl std::fmt::Debug for pb::StepLogRecord {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StepLogRecord")
+            .field("sequence", &self.sequence)
+            .field("fields", &self.fields.len())
+            .finish_non_exhaustive()
+    }
+}
+impl std::fmt::Debug for pb::StepLogField {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("StepLogField { <redacted> }")
+    }
+}
+impl std::fmt::Debug for pb::step_log_field::Value {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("StepLogField::Value(<redacted>)")
+    }
+}
+
+#[cfg(test)]
+mod step_log_debug_tests {
+    use super::pb;
+
+    #[test]
+    fn the_debug_of_a_step_log_batch_prints_counts_and_no_text() {
+        let request = pb::AppendStepLogsRequest {
+            session_token: "canary-session-token".into(),
+            lease_token: "canary-lease-token".into(),
+            records: vec![pb::StepLogRecord {
+                sequence: 3,
+                message: "canary-message".into(),
+                exception: "canary-exception".into(),
+                fields: vec![pb::StepLogField {
+                    key: "canary-key".into(),
+                    value: Some(pb::step_log_field::Value::StringValue(
+                        "canary-value".into(),
+                    )),
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        for text in [
+            format!("{request:?}"),
+            format!("{request:#?}"),
+            format!("{:?}", request.records[0].fields[0].value),
+        ] {
+            assert!(!text.contains("canary"), "{text}");
+        }
+        assert!(format!("{request:?}").contains("records: 1"));
+    }
+}
 #[derive(Clone)]
 struct Proxy {
     client: pb::worker_service_client::WorkerServiceClient<Channel>,
@@ -125,6 +189,12 @@ impl pb::worker_service_server::WorkerService for Proxy {
             |mut client, request| async move { client.resolve_secrets(request).await },
         )
         .await
+    }
+    async fn append_step_logs(
+        &self,
+        _: Request<pb::AppendStepLogsRequest>,
+    ) -> Result<Response<pb::AppendStepLogsResponse>, Status> {
+        Err(Status::unimplemented("AppendStepLogs"))
     }
     async fn resolve_database(
         &self,

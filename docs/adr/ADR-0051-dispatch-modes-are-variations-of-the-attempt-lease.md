@@ -33,7 +33,8 @@ authority next to the run row:
 
 The engine interprets a declarative IR (ADR-0003); Temporal's versioning exists largely for workflow-code replay,
 which does not apply. What must be protected here is the contract of activity implementations across builds, the
-fence, and the tenant boundary.
+fence, and the tenant boundary. *Note (2026-11-24, constitution 5.0.0):* code runs of design 044 replay workflow code;
+their version is pinned by code digest and changes only by a verified move (ADR-0105), outside this record's pins.
 
 ## Decision
 
