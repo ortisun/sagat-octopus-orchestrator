@@ -156,7 +156,8 @@ No access entity is journaled or visible to the run state machine.
   pg_temp`, `REVOKE ALL FROM PUBLIC`, executable by nobody else) that removes the subject's direct
   assignments, group memberships, folder entries and list principals, and inserts one
   `access.revoked_on_role_change` audit record with counts only and actor `system:operator` (FR-029-024,
-  pending O1441).
+  O1441 answered yes on 2026-11-24; a change made by design 013's group-to-role mapping takes the same path, with
+  its own audit reason).
 
 ## Grants for the runtime role
 

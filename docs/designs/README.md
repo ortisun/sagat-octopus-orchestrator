@@ -9,12 +9,14 @@ rules below are enforced by `python3 scripts/check-design-docs.py`; the full def
 
 | Number | Design | Status | Tasks ticked |
 |---|---|---|---|
+| 013 | [Federated login: each organization signs in through its own OIDC or SAML provider](013-federated-login.md) | Draft | 0 of 14 |
 | 038 | [Claim and transition efficiency](038-claim-transition-efficiency.md) | Draft | 0 of 11 |
 | 039 | [Nested collections and the capacity program](039-nested-collections.md) | Draft | 0 of 1 |
 | 040 | [OCSF as the standard schema for security and audit events](040-ocsf-event-standard.md) | Draft | 0 of 1 |
 | 041 | [Step logs per run](041-step-logs.md) | Approved | 2 of 32 |
 | 042 | [Stream operators](042-stream-operators.md) | Draft | 0 of 53 |
 | 043 | [Run input validation](043-run-input-validation.md) | Approved | 24 of 28 |
+| 050 | [The Studio catch-up: every executable node kind, the approvals inbox, the audit log](050-studio-catch-up.md) | Draft | 0 of 14 |
 | none | [Constitution 4.0.0: EGM as the only specification workflow](constitution-4.0.0-egm.md), the first design doc; it defines the rules below | Draft | |
 
 The status is the `Status` line of each doc on `develop`. A task of a doc that is not `Approved` stays unticked even when

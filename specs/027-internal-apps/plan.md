@@ -31,7 +31,8 @@ independent architecture and security reviews (research D1365, D1371, D1388, D13
 - **Target platform:** Linux containers; Compose and Helm profiles gain an apps host and a
   component sandbox host.
 - **Performance goals:** none promised; NFR-027-005 measures overhead on a declared environment.
-- **Constraints:** single region; no code in the control plane; viewer identity; no browser storage.
+- **Constraints:** one writable region per cell (constitution 5.0.0); no code in the control plane; viewer
+  identity; no browser storage.
 - **Scale/scope:** bounded by the ceilings below.
 
 ## Architecture and crate placement
@@ -48,7 +49,7 @@ independent architecture and security reviews (research D1365, D1371, D1388, D13
 | HTTP (extend) | `crates/api-http/src/studio.rs`, `crates/api-http/src/extract.rs`, `routes/declared_operations.rs`, `routes/execution.rs` | Studio policy gains `frame-src <sandbox origin>/v1/app-runtime/frames/` only; host selection for apps and sandbox origins; no change to `frame-ancestors 'none'`; ordinary `Idempotency-Key`/`updateKey` values starting with `app:` refused (`RESERVED_KEY_PREFIX`) |
 | Scheduler | `crates/scheduler/src/app_sessions.rs` | Leased (`engine_leases`, name `app-session-purge`) bounded purge loop |
 | CLI | `apps/cli/src/manifest.rs`, `apps/cli/src/apps.rs` | Manifest `apps`/`appComponents`, validate/plan/apply/promote through REST |
-| Frontend | `frontend/apps/studio/src/features/apps/{list,editor,runtime,frames,admin}/`, `frontend/apps/studio/apps.html`, `src/apps-main.tsx`, `src/styles/apps.css` | Editor, shared renderer, standalone runtime entry, frame host, admin screens |
+| Frontend | `frontend/apps/studio/src/features/apps/{list,editor,runtime,frames,admin}/`, `frontend/apps/studio/apps.html`, `src/apps-main.tsx`; built-in components from the interface module `src/ui/` on Astryx (Architecture decision 0101), new primitives as new files there | Editor, shared renderer, standalone runtime entry, frame host, admin screens |
 | Contracts | `specs/001-platform-foundation/contracts/{openapi.yaml,app.schema.json}`, `specs/011-gitops-versioning/contracts/manifest.schema.json` | Merged from [contracts/](contracts/) at implementation |
 
 No adapter crate gains a client; no domain type imports Axum, SQLx or serde_json. Existing services
@@ -110,13 +111,13 @@ Every transaction starts with `begin_safely` (ADR-0014) and takes the tenant fro
 `KEY SHARE` for target resolution → quota/usage rows last (ADR-0027). Invocation takes no app lock:
 the version is immutable. The app session row sits in **slot 1 (authority)** of the merged admission
 lock order whose home is ADR-0050 (coordinator decision C4: 029 access check → memberships →
-namespace row → 026 public-link row / 027 app session): a write reads it `FOR SHARE` there, before the
+namespace row → 026 public-link row / 027 app session): a write reads it `FOR UPDATE` there (the mode ADR-0050's slot table records), before the
 request receipt and before any chain or run row; everything after it follows the underlying use case
 unchanged (including chain-before-run, FR-014-013) with usage rows last. Session revocation by activation takes the app lock, then updates
 sessions by `(tenant_id, app_id)` index; invocations read sessions without locks, and a write
-re-reads its session row `FOR SHARE` inside the underlying transaction (it conflicts with the
+re-reads its session row `FOR UPDATE` inside the underlying transaction (it conflicts with the
 revoking `UPDATE`), so a revocation that commits first refuses the write and one that commits later
-applies to the next invocation. The runtime role holds `UPDATE` on `app_sessions`, which `FOR SHARE`
+applies to the next invocation. The runtime role holds `UPDATE` on `app_sessions`, which `FOR UPDATE`
 requires.
 
 ## Authorization
@@ -214,7 +215,7 @@ session metadata are `protected_system`.
 | Control plane restart | Sessions are rows; runtime continues; retries keep keys | fault |
 | PostgreSQL unavailable | `503` `UNAVAILABLE`; runtime shows retry state, no cached values | integration |
 | Audit insert fails | Write rolls back; read returns no value | fault |
-| Session revoked between read and write | `FOR SHARE` session re-check refuses the write | fault with held lock |
+| Session revoked between read and write | `FOR UPDATE` session re-check refuses the write | fault with held lock |
 | Frame navigates itself / floods | Host tears it down; marked failed; the spent capability refuses the reload | browser security |
 | A frame response loses its headers (defect) | Author code runs on the sandbox origin, which holds no token and no trusted page | header contract test on every status code of the sandbox host |
 | Component uploader loses `payload:read-internal` or the reveal grant | Next session renders the component unavailable; next publication fails `COMPONENT_AUTHOR_LEVEL` | integration |
@@ -264,7 +265,7 @@ session metadata are `protected_system`.
 | I. State and retry explicit and durable | Pass | Publication/activation/revocation one transaction; writes reuse existing transactions plus one audit row; first commit wins; no terminal reopen |
 | II. Ports and adapters | Pass | Domain model without serde_json; codec in `infra-ir`; SQL in `infra-postgres`; no client in domain/application |
 | III. At-least-once, sagas compensate | Pass | No new effect; derived idempotency keys; no exactly-once claim; G1366 stated |
-| IV. Versioned and pinned | Pass | Immutable app versions, sessions pinned, additive contracts, five-SDK regression |
+| IV. Versioned and pinned | Pass | Immutable app versions, sessions pinned, additive contracts, six-SDK regression |
 | V. Code, tenant, secrets isolated | Justified | No code in control plane; author code only in browser opaque-origin frames on a dedicated sandbox origin, receiving at most what its author may read (D1399), not a confidentiality boundary for passed data (G1361, G1375, Complexity Tracking) |
 | VI. Observability and audit | Pass | Spans, closed metrics, audit in the deciding transaction |
 | VII. Inbox/outbox | Pass | No new message; underlying outbox unchanged |
@@ -300,3 +301,23 @@ Cargo targets (no feature numbers): `integration_internal_apps`, `contract_rest_
 `frontend/e2e/tests/internal-apps*.spec.ts`; regression of `sdk_conformance`,
 `contract_rest_security_multitenancy`, `contract_rest_workflow_studio` and the Studio unit suite.
 Every check records its real result in the feature's tasks; pending or skipped checks are stated.
+
+## Readiness against `develop` (2026-11-24)
+
+Re-read against `develop` at `2c94064f`. What changed since this plan was written, and what the build does about it:
+
+| Change on `develop` or in release 0.3.0 | Effect on this plan |
+|---|---|
+| Constitution 5.0.0 (Owner decision 2026-11-24-2) admits internal apps whose sessions carry no more than the viewer's authority and whose author code runs only in an isolated frame | The Complexity Tracking row "Browser-run author code" and the Constitution Check row V stand; a delegated mode would need a new architecture decision and an amendment (Decision 027-001) |
+| The Rust SDK (feature 034, ADR-0070) makes six SDKs | Every regression and conformance mention says six (fixed above and in the spec and tasks) |
+| Astryx (ADR-0101, accepted 2026-11-24, OD-2026-11-24-700) | Built-in components and the editor come from `src/ui/`; no `apps.css` with tokens of its own; the token test of ADR-0101 covers the apps entry; the init message of a custom component carries the `sagat` theme's resolved values |
+| ADR-0050's slot table (feature 018) records the app-session row `FOR UPDATE` in slot 1 | Aligned (Decision 027-003) |
+| Feature 018 added key-taking routes (`/runs/signal-with-start`, `/runs/update-with-start`, batch operations, schedule trigger-now) | The `app:` prefix refusal of T027-023 covers them; the contract test enumerates every key-taking operation from the OpenAPI document instead of a hand list |
+| Design 043 checks every run input | A `start` binding is refused by the gate like any start (Decision 027-004) |
+| Design 013 (federated login) | Embedded sign-in uses the platform's sign-in service when federation is on (Decision 027-003); session creation in `embedded` mode then redeems the code in process |
+| Design 050 (one capability list) | `apps.runtime`, `apps.embedding`, `apps.custom-components`, `apps.operation-bindings` are names of that list (FR-027-037) |
+| Feature 029 is in the same release | T027-038 is sequenced after 029's evaluator (T029-013) and its gate for the app kind, not "pending until 029 exists"; the app kind is added to 029's catalog of item kinds by T027-038 |
+| Feature 022's rest is in 0.3.0 | The `operation` binding kind is enabled once 022's standalone admission exists (Decision 027-005, T027-062) |
+| Design 044 (workflow as code) | Bindings to code workflows work through declared state (Decision 027-006) |
+| Instance registry (ADR-0082, built) | The `apps` switches are deployment configuration; no fleet requirement is needed because no older binary can serve an app route |
+

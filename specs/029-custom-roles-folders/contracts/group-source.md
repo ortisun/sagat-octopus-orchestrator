@@ -1,41 +1,43 @@
-# Identity-provider group source contract (draft; not built by feature 029)
+# Identity-provider group source contract
 
-Feature 013 (draft) excludes SCIM and the mapping of provider groups, and no approved feature delivers
-them (AGENTS rule 2). Feature 029 therefore builds **no** external group schema or delivery path: only local
-groups exist, token claims never authorize, and creating an external group answers
-`ACCESS_CAPABILITY_DISABLED`. This page states what a future source feature (O1440: recommended, a 013
-amendment pushing SCIM 2.0 Groups) must guarantee so that its groups can join the evaluator of
-[evaluation.md](./evaluation.md) without changing it. The source feature owns its tables, endpoints,
-credentials and tests.
+Feature 029 builds no external group source. Design 013 (federated login, `docs/designs/013-federated-login.md`)
+implements this contract (O1440 answered on 2026-11-24, Decision 029-002; Architecture decision 0142). This page states
+what a source guarantees so that its groups join the evaluator of [evaluation.md](./evaluation.md) without changing it.
+The source owns its tables, endpoints, credentials and tests. Amended on 2026-11-24 from the draft of 2026-10-26, which
+assumed one source kind that pushed or heartbeated every group within a staleness bound: design 013 has two source
+kinds, and some SCIM providers push only changes, so freshness is stated per kind.
+
+## Source kinds
+
+| Kind | Delivered by | What one delivery carries | Freshness |
+|---|---|---|---|
+| `SCIM` | an identity provider through design 013's SCIM 2.0 endpoint of one connection | a full member set (`PUT`) or member additions and removals (`PATCH`) of one group | a SCIM group does not expire by silence: the provider pushes every change, deprovisioning included; design 013 raises an informational alert after 7 days without any request on the connection |
+| `ASSERTION` | a sign-in through one connection whose groups claim or attribute is mapped | the full set of that person's groups for that connection | ends when the sign-in session that wrote it ends (revoked or expired), and at most 24 hours after the sign-in; past it the memberships confer nothing until the next sign-in |
 
 ## Guarantees a source must provide
 
-1. **Tenant binding.** A source is configured for one tenant and authenticates as that tenant's connection
-   (013's identity-provider connection or a successor). The tenant comes from the authenticated connection,
-   never from a payload, as webhook ingress does (ADR-0026).
-2. **Stable identity.** Each group has a stable external identifier (≤ 256 bytes) unique per (tenant,
-   source). Members are named by the platform subject of the federated identity (013 FR-013-004: the
-   provider's stable identifier, never an e-mail). A member without a human membership is ignored and
-   counted, never created (013 FR-013-007).
-3. **Generations.** Every delivery for a group carries a `generation`, strictly increasing per group for a
-   change. A delivery with a lower generation is acknowledged and ignored. A delivery with the stored
-   generation is accepted only as a heartbeat without member changes and renews freshness.
-4. **Full sets and deltas.** A delivery carries either the full member set or a delta. A delta names its
-   `baseGeneration` and applies only when it equals the stored generation; otherwise it is refused and the
-   source must send a full set (no silent divergence after a lost delta).
-5. **Idempotent, bounded deliveries.** Each delivery has an identifier recorded with a digest in the same
-   transaction as its effect (inbox pattern, ADR-0012): the same digest replays the acknowledgement, a
-   different digest is `IDEMPOTENCY_KEY_REUSED`. At most 1,000 member changes per delivery by default.
-6. **Freshness.** The source delivers or heartbeats at least once per staleness bound (proposed default 24 h,
-   hard 7 d) per group. Past the bound the group confers nothing (fail closed) and an operational alert
-   opens.
-7. **Role changes.** When a member's built-in role changes, their external memberships confer nothing until
-   a delivery for that group is accepted after the change (consistent with FR-029-024 for local grants).
+1. **Tenant binding.** A source is one connection of one tenant (design 013). The tenant comes from the connection or
+   the SCIM token, never from a payload, as webhook ingress does (ADR-0026).
+2. **Stable identity.** Each group has a stable external value (at most 256 bytes) unique per (tenant, connection).
+   Members are named by the platform subject linked to the person's external identity (design 013, Requirement
+   013-011: the provider's stable identifier, never an e-mail address). A member without a human membership is
+   ignored and counted, never created by a group delivery.
+3. **Generations.** Every accepted change to a group's members increments that group's `generation` in the same
+   transaction as the change, for both kinds. A SCIM `PATCH` is a list of additions and removals applied in arrival
+   order under the tenant access fence; each is idempotent by effect (adding a present member or removing an absent
+   one changes nothing), so a retried request has no second effect. An assertion replaces the person's set for that
+   connection as a whole.
+4. **Idempotent, bounded deliveries.** At most 1,000 member operations per SCIM request and 256 group values per
+   assertion; a larger delivery is refused before any change. A SCIM request is one transaction.
+5. **Freshness.** As the table above. A stale membership confers nothing (fail closed) and is not deleted.
+6. **Role changes.** When a member's built-in role changes, by an administrator or by design 013's group-to-role
+   mapping, feature 029's revocation of custom grants applies (FR-029-024); external memberships stay, and the
+   assignments that name an external group are unaffected.
 
 ## What the platform side must keep
 
 - One delivery is one transaction under the exclusive tenant access fence, with a writer `lock_timeout`.
-- External members are read-only through the REST API (`EXTERNAL_GROUP_READ_ONLY` would be added then).
-- Membership in an external group is evaluated like a local one while fresh; it never bypasses the human-role,
+- External groups and their members are read-only through feature 029's REST routes (`EXTERNAL_GROUP_READ_ONLY`).
+- Membership in a fresh external group is evaluated like a local one; it never bypasses the human-role,
   reserved-permission or non-escalation rules. Linking an external group to roles or folders is an ordinary
-  assignment or entry by an administrator.
+  assignment or entry by an administrator, and a group that appears in a claim grants nothing until one names it.

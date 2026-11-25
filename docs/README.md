@@ -153,7 +153,7 @@ disagree, see [Where the documents disagree](#where-the-documents-disagree).
 | 010 | Performance, scalability and high availability | [specification](../specs/010-scalability-ha/spec.md) | 40 of 40 | Delivered: every task ticked with its evidence | [scaling](runbooks/scaling.md), [disaster recovery](runbooks/disaster-recovery.md) |
 | 011 | GitOps, versioning and definition promotion | [specification](../specs/011-gitops-versioning/spec.md) | 36 of 36 | Delivered: every task ticked with its evidence | [GitOps](runbooks/gitops.md) |
 | 012 | CLI, quickstarts, local testing and documentation | [specification](../specs/012-developer-experience/spec.md) | 35 of 35 | Delivered: every task ticked with its evidence | [developer experience](runbooks/developer-experience.md) |
-| 013 | Federated login | no document in this checkout | | the roadmap: "Draft specification only" | |
+| 013 | Federated login | [design doc](designs/013-federated-login.md) | 0 of 14 | Draft | |
 | 014 | Durable workflow primitives and practical SDK examples | [specification](../specs/014-workflow-primitives/spec.md) | 43 of 45 | Architecture accepted; runtime implementation partial | [workflow primitives](runbooks/workflow-primitives.md) |
 | 015 | OpenTelemetry and OpenBao | no document in this checkout | | the roadmap: "Draft specification only" | |
 | 016 | Per-field payload classification | [specification](../specs/016-payload-classification/spec.md) | 65 of 65 | Implemented; release gates passed; merged into 0.2.0 | [payload classification](runbooks/payload-classification.md) |
@@ -184,8 +184,9 @@ disagree, see [Where the documents disagree](#where-the-documents-disagree).
 | 041 | Step logs per run | [design doc](designs/041-step-logs.md) | 2 of 32 | Approved | |
 | 042 | Stream operators | [design doc](designs/042-stream-operators.md) | 0 of 53 | Draft | |
 | 043 | Run input validation | [design doc](designs/043-run-input-validation.md) | 24 of 28 | Approved | [run input validation](runbooks/run-input-validation.md) |
+| 050 | The Studio catch-up: every executable node kind, the approvals inbox, the audit log | [design doc](designs/050-studio-catch-up.md) | 0 of 14 | Draft | |
 
-Feature numbers are shared by every branch. A number missing here (013, 015) may be in use on another branch; take the
+Feature numbers are shared by every branch. A number missing here (015) may be in use on another branch; take the
 next one from `python3 scripts/next-feature-id.py`. The [release runbook](runbooks/release.md) applies to every feature, and the
 [runbooks index](runbooks/README.md) lists the runbooks that belong to no single feature.
 

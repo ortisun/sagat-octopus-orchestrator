@@ -432,9 +432,10 @@ that each is refused or contained, and that the session token never reaches the 
   data table alternative for every chart. Publication refuses buttons, fields and tabs without an
   accessible name, tables without a caption and charts without a title. A custom component frame has
   an accessible title; its content's accessibility is the component author's (G1365).
-- **FR-027-029 — Design tokens only:** Built-in components use only the Studio's tokens for colour,
-  type, radius and spacing in light, dark and forced-colour themes; authors choose semantic variants,
-  never colours or CSS. Elements without data are omitted or shown unavailable, never with sample
+- **FR-027-029 — Design tokens only:** Built-in components are Astryx components behind the Studio's
+  interface module and use only its theme's tokens for colour, type, radius and spacing in light, dark
+  and forced-colour themes (Architecture decision 0101, accepted 2026-11-24); authors choose semantic
+  variants, never colours or CSS. Elements without data are omitted or shown unavailable, never with sample
   values (FR-007-010). Custom components receive a snapshot of token values in their init message.
 
 **Cross-cutting**
@@ -468,7 +469,9 @@ that each is refused or contained, and that the session token never reaches the 
   Until 029 exists, authorization is namespace-wide as specified above.
 - **FR-027-037 — Compatibility:** REST and manifest changes are additive; existing workflows, runs,
   routes, SDKs, worker protocol, AsyncAPI and the workflow IR are unchanged. The server advertises the
-  `apps` capability; an older `sagat` refuses a manifest with `apps` rather than ignoring it.
+  capabilities `apps.runtime`, `apps.embedding` and `apps.custom-components` in the one capability list
+  of `GET /version` (design 050, Architecture decision 0143); an older `sagat` refuses a manifest with
+  `apps` rather than ignoring it.
 
 ### Non-functional requirements
 
@@ -480,7 +483,7 @@ that each is refused or contained, and that the session token never reaches the 
   their single-transaction boundaries; a crash leaves the previous state; duplicates never create a
   second version, receipt or run.
 - **NFR-027-003 (compatibility):** All existing contract baselines and suites pass unchanged; the
-  five-SDK conformance suite passes as a regression.
+  six-SDK conformance suite (TypeScript, Go, Python, C#, Java and Rust, feature 034) passes as a regression.
 - **NFR-027-004 (observability):** Every accepted or refused invocation has a correlated span and an
   audit record; export failures never decide a commit.
 - **NFR-027-005 (performance):** Invocation overhead over the underlying operation, session creation
@@ -563,3 +566,25 @@ Details in [research.md](research.md#owner-questions).
 
 See the [requirements checklist](checklists/requirements.md), the [plan](plan.md) and the
 [tasks](tasks.md).
+
+## Readiness against `develop` (2026-11-24)
+
+Re-read against `develop` at `2c94064f` for the build of release 0.3.0. The owner questions are answered under Owner
+decision 2026-11-24-4 ("delegate (OD-2026-11-24-4)"), with the reasoning in [research.md](research.md) (Decision
+027-001 to Decision 027-006) and the rows OD-2026-11-24-701 to OD-2026-11-24-704 of `docs/owner-decisions.md`:
+
+- **O1360** is answered by Owner decision 2026-11-24-2 (constitution 5.0.0, above).
+- **O1361 — no delegated execution mode in 0.3.0.** Apps act only as their viewer. With feature 029 in the same
+  release, an administrator who wants a group to operate a process through an app gives that group a custom role or a
+  folder level on the target workflow, which is visible, audited and revocable; a publisher mode would be a standing
+  grant outside that model, and constitution 5.0.0 requires its own architecture decision and an amendment for it.
+- **O1362 — custom components ship in 0.3.0**, off per namespace by default, only in a deployment with a component
+  sandbox origin, `pii` only by an explicit `allowPii`, and Gap 1361 stated in the Studio when an administrator
+  enables them.
+- **Architecture decision 0062 is accepted**, with three refinements recorded in it: the embedded sign-in popup goes
+  to the platform's sign-in service of design 013 when federation is on; the app-session row is locked `FOR UPDATE`
+  in slot 1, as Architecture decision 0050's slot table records; built-in components are Astryx components behind the
+  Studio's interface module (Architecture decision 0101).
+
+What changed on `develop` since the draft, and how this feature follows it, is listed in [plan.md](plan.md), "Readiness
+against `develop`"; the build slices are in [tasks.md](tasks.md), "Build slices".

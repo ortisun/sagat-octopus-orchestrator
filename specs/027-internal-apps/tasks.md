@@ -90,7 +90,7 @@ requirements — files — evidence`. `[P]` = can run in parallel with the other
 - [ ] T027-055 [P] Benchmark of invocation overhead, session creation and render time on a declared environment. — NFR-027-005 — `tests/performance/internal-apps/`, `tests/performance/reports/internal-apps.md` — evidence: report with environment and failures; no target claimed.
 - [ ] T027-056 Runbook: apps and component sandbox origins and ingress, embedding allowlist, issuer registration of the apps callback, session revocation, purge, ingress access logs (frame paths are spent capabilities; keep them out of long retention), incident response for a malicious component (disable policy, revoke sessions). — FR-027-023, 025, 035 — `docs/runbooks/internal-apps.md` — evidence: review.
 - [ ] T027-057 Documentation: Studio design addendum of the apps screens for owner review (G1369), `docs/architecture/studio-ux.md`; hand traceability and index rows to the coordinator. — FR-027-027 — `specs/007-workflow-studio/design/README.md`, `docs/architecture/studio-ux.md` — evidence: owner review recorded.
-- [ ] T027-058 Regression: five-SDK conformance, contract baselines (`events.baseline.json`, `worker.baseline.json`) unchanged, Studio suites. — FR-027-037 — `tests/contract/sdk-conformance/` — evidence: `cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored`, SC-027-012.
+- [ ] T027-058 Regression: six-SDK conformance, contract baselines (`events.baseline.json`, `worker.baseline.json`) unchanged, Studio suites. — FR-027-037 — `tests/contract/sdk-conformance/` — evidence: `cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored`, SC-027-012.
 - [ ] T027-059 Independent security and correctness reviews of the diff against this spec; findings fixed or recorded. — NFR-027-001, 002 — review records — evidence: reviewer reports.
 - [ ] T027-060 Gates: `cargo fmt --all -- --check`, clippy `-D warnings`, `python3 scripts/check-architecture.py`, `python3 scripts/check-agent-config.py`, contract checks, `npm` gates of `frontend/AGENTS.md`. — all — evidence: commands and outputs recorded.
 - [ ] T027-061 Automate the [quickstart](quickstart.md) A–D and record each step's real result, including skips. — FR-027-010, 035 — `tests/e2e/internal-apps/quickstart.rs` — evidence: SC-027-013.
@@ -110,3 +110,24 @@ requirements — files — evidence`. `[P]` = can run in parallel with the other
 Deliver the MVP (US01–US03) behind the `apps` capability, then US04/US05, then embedding, then
 components. Each increment merges its contracts, tests and documentation together; nothing is
 advertised before its evidence exists.
+
+## Follow-up tasks (2026-11-24)
+
+- [ ] T027-062 Enable the `operation` binding kind once feature 022's standalone step admission (FR-022-023) is built: the kind resolves to that admission as the viewer, behind the capability `apps.operation-bindings`; `BINDING_CAPABILITY_UNAVAILABLE` until then. — FR-027-011, 013 — `crates/application/src/apps/invocation.rs` — evidence: integration test per role; the capability test. Depends on 022.
+
+## Build slices (2026-11-24)
+
+Two builders run the feature in parallel without touching the same crates or Studio folders. Slice 0 is serial and
+comes first; the lanes then work against the merged contracts; the join tasks need both lanes.
+
+| Slice | Tasks | Paths it may change | Starts after |
+|---|---|---|---|
+| 0, one builder | T027-002, T027-004, T027-005, T027-007 | `tests/Cargo.toml`, `specs/001-platform-foundation/contracts/`, `specs/011-gitops-versioning/contracts/`, `frontend/apps/studio/src/api/schema.d.ts`, `tests/contract/security-multitenancy/rest/battery.rs`, `crates/domain/src/{identity,audit,quota}.rs`, `tests/contract/internal-apps/fixtures/` | pull request #275 (constitution 5.0.0) merged, so T027-001 can be ticked |
+| Lane A, the server builder | A1: T027-006, 008, 009, 010, 011, 012, 013, 014. A2: T027-015, 016, 017, 021, 022, 023, the server parts of 027 and 029. A3: T027-032, 033, 034, 037, 038. A4: T027-039, 040, the server part of 041, 042, 044, 045, the publication part of 047, 050, 051, 053, 054, 055, 062 | `crates/domain/src/apps*`, `crates/infra-ir/src/apps/`, `crates/application/src/apps*` and the `InvocationOrigin` parameter in `crates/application/src/{declared_operations,runs,payload_disclosure}.rs`, `crates/infra-postgres` (the apps migration and stores), `crates/api-http` (apps, runtime and surface routes, `studio.rs`, `extract.rs`, `error.rs`), `crates/scheduler/src/app_sessions.rs`, `crates/telemetry`, `apps/control-plane`, `infra/` | slice 0 |
+| Lane B, the clients builder | B1: T027-003, 018, 019, 026, 031. B2: the Studio parts of 027, 029 and 035, then T027-036 once A1's codec has merged. B3: the browser part of 041, 046, the frame-host part of 047 | `frontend/apps/studio/src/features/apps/`, `frontend/apps/studio/{apps.html,vite.config.ts,eslint.config.js}`, `src/apps-main.tsx`, new files in `src/ui/`, `frontend/e2e/tests/internal-apps*`, `apps/cli/src/{apps.rs,manifest.rs}` | slice 0 (B2's CLI part after A1) |
+| Join | T027-020, 024, 025, 028, 030, 043, 048, 049, 052, 056 to 061 | tests, runbooks, documents | both lanes |
+
+Across features: slice 0 of 027 and the foundational slice of 029 both change `crates/domain/src/{identity,audit,quota}.rs`
+and the OpenAPI document, so they run one after the other, never at once. Lane B adds only new files to `src/ui/`, as
+design 050's builders do, so the Studio branches do not edit the same primitives.
+

@@ -17,12 +17,12 @@ catalog imported as drafts.
 ## Technical context
 
 - **Language/runtime:** Rust (pinned toolchain), Tokio, Axum, tonic, SQLx; TypeScript (Studio, VS Code extension,
-  shared graph package); the five SDK languages.
+  shared graph package); the six SDK languages.
 - **Storage:** PostgreSQL (authority); no new broker subject; no object-store use beyond existing blobs.
 - **New crates/apps:** `apps/test-server`, `crates/infra-testing` (adapter: clock store, test migration, replay
   codec adapter), `crates/infra-git` (adapter: GitHub/GitLab REST through `crates/infra-egress`).
 - **Testing:** unit, integration on real PostgreSQL (also as the runtime role), contract (OpenAPI, CLI output schema,
-  index schema), five-SDK conformance on the test server, fault (crash points, duplicates, lost hints), security
+  index schema), six-SDK conformance on the test server, fault (crash points, duplicates, lost hints), security
   (tenant battery, canaries), VS Code extension tests in the editor's test host, browser journeys for the Studio.
 - **Constraints:** production behaviour and plans unchanged; contracts additive; nothing executes in the API or
   scheduler that is not already allowed; provider effects at-least-once.
@@ -46,7 +46,7 @@ catalog imported as drafts.
 | REST routes for bindings, sync status, conflicts, webhooks, catalog, imports | `crates/api-http/src/routes/{gitsync,templates}.rs` |
 | Testing routes and composition (control plane + engine + issuer), on-demand passes | `apps/test-server` (routes are not in `crates/api-http`) |
 | CLI `--json`, `inspect --follow`, `history`, `test-server`, `template` | `apps/cli/src/{output,history,test_server,template}.rs` and existing command modules |
-| SDK interceptors, test environment, activity test context | `sdks/{typescript,go,python,dotnet,java}` |
+| SDK interceptors, test environment, activity test context | `sdks/{typescript,go,python,dotnet,java,rust}` |
 | Shared graph model | `frontend/packages/workflow-graph` (extracted from `frontend/apps/studio/src/features/workflows/canvasModel.ts` and `src/model/layout.ts`) |
 | VS Code extension | `frontend/apps/vscode-extension` |
 | Studio screens (sync settings/status/conflicts, catalog/import, provenance) | `frontend/apps/studio/src/features/{gitsync,templates}` |
@@ -339,7 +339,7 @@ a shifted clock include the saga compensation-failure cases.
 | I. State and retry semantics durable | Pass | Activation and export obligation in one transaction; clock change one transaction; imports by compare-and-swap; leases and attempt fences on jobs; workflow time keeps "first commit wins" |
 | II. Modular domain, ports and adapters | Justified | Pure rules in `crates/domain`; ports in `crates/application`; provider clients only in `crates/infra-git`; manifest rules moved out of the CLI so the engine can use them; test-only code in `crates/infra-testing`. The new process `apps/test-server` is justified under principle V in Complexity Tracking (coordinator decision C21) |
 | III. At-least-once effects | Pass | Provider writes looked up before repeat; no exactly-once claim; no new compensation |
-| IV. Compatibility versioned and pinned | Pass | Immutable versions untouched; imports create drafts; contracts additive; five-SDK conformance for interceptors, test environment and replay calls |
+| IV. Compatibility versioned and pinned | Pass | Immutable versions untouched; imports create drafts; contracts additive; six-SDK conformance for interceptors, test environment and replay calls |
 | V. Isolation of code, tenant, secrets | Pass | No code executes at import; credentials are references resolved per job; one tenant per test deployment; webhook per binding with uniform `401`; extension workspace trust |
 | VI. Observability and audit | Pass | Spans, fixed-label metrics, audit in the decision's transaction, alerts for stuck sync |
 | VII. Redeliverable events | Pass | Webhook receipts deduplicate; webhooks are hints with head reconciliation; dead jobs visible and redrivable |
@@ -354,7 +354,7 @@ a shifted clock include the saga compensation-failure cases.
 | Export row inside the ADR-0018 transaction | Touches publication code of feature 011 | Polling `workflow_activations` with a cursor can skip rows committed out of order |
 | New adapter crates `infra-git`, `infra-testing` | Two crates | Putting provider clients in `infra-connectors` would mix inbound brokers with repository writes; test code in shared crates would ship in production binaries |
 | Shared graph package | Moves Studio code | A second IR-to-graph mapping in the extension would drift |
-| Generic interceptor call shape | One more indirection | Per-method interceptor interfaces in five languages drift as operations are added |
+| Generic interceptor call shape | One more indirection | Per-method interceptor interfaces in six languages drift as operations are added |
 | New process `apps/test-server` (with `crates/infra-testing`) | A binary and a crate built and released separately | A test mode inside the production control plane and engine: the virtual clock and its routes would ship in production binaries, guarded only by configuration. Justified under principle V (isolation of test-only code from production composition), with feature 017's `apps/database-runner` as the precedent for a separate process; not a split for scale (decision C21) |
 
 ## Delivery sequence
@@ -362,7 +362,7 @@ a shifted clock include the saga compensation-failure cases.
 1. Foundational: time classes, manifest, SQL functions, store refactor with plan-equality and zero-offset regressions;
    permissions; contract drafts merged.
 2. US01: test server, testing API, skip algorithm, SDK clock and test environment, activity test context, conformance.
-3. US02: interceptors in five SDKs, catalog code, conformance (fixes the ordering 031's converter relies on).
+3. US02: interceptors in six SDKs, catalog code, conformance (fixes the ordering 031's converter relies on).
 4. US03: replay (after feature 020's export format is accepted), CLI history commands.
 5. US04: CLI JSON output, shared graph package, extension.
 6. US05: Git sync tables, export, webhook, import, conflicts, Studio, faults.
@@ -372,9 +372,29 @@ a shifted clock include the saga compensation-failure cases.
 ## Verification plan
 
 Each task in [tasks.md](tasks.md) names its test. Required release evidence: production refusal (SC-028-002);
-manifest completeness and plan equality (SC-028-003); shifted-clock suites; time-skipping conformance in five SDKs;
+manifest completeness and plan equality (SC-028-003); shifted-clock suites; time-skipping conformance in six SDKs;
 interceptor conformance with lost-response faults; replay over the conformance corpus; extension diagnostics parity and
 canary tests; Git sync crash/duplicate/lost-webhook/race suites against a provider stub and one real-provider journey per
 provider (ignored locally without credentials, run in CI with a test repository); catalog tamper/rollback/expiry tests;
 tenant battery over every new operation; performance reports in `tests/performance/reports/developer-tooling.md` with
 environment, numbers and failures. Unrun tests are reported as unrun.
+
+## Readiness against `develop` (2026-11-24)
+
+Re-read against `develop` at `2c94064f`. The owner questions and ADR-0063 are decided (research.md, "Readiness
+decisions", Decision 028-001 to Decision 028-010); the build slices are in [tasks.md](tasks.md).
+
+| Change on `develop` or in release 0.3.0 | Effect on this plan |
+|---|---|
+| The Rust SDK (feature 034, ADR-0070) | Six SDKs everywhere (fixed in place); T028-023 covers Rust; T028-075 adds Rust interceptors; the four Rust lock files move together |
+| Constitution 5.0.0 admits the curated hub and the procedural model | The Constitution Check row on delivery constraints passes; replay of workflow code is design 044's (Decision 028-005) |
+| Design 044 (workflow as code) | One test environment (T028-076); one history document (Decision 028-006); interceptors of workflow code are design 044's |
+| Design 047 (OAuth resources and the integration hub) | It extends this feature's index format and code; the hub tasks come before its hub slice (Decision 028-003) |
+| Design 050 (one capability list; the editor slice) | `testing.virtual-clock` is a name of that list; T028-043 follows the editor slice (Decision 028-007, Decision 028-008) |
+| Astryx (ADR-0101) | Studio screens of this feature (`features/gitsync`, `features/templates`) use the interface module; the graph package stays free of it |
+| Feature 018 (schedules, batch, business identifiers) built | Their instants are in the time-class catalog: schedule firing and backfill instants are workflow time, the schedule pass's leases infrastructure time; the 018 columns are in the catalog test from the start |
+| Feature 041 (step logs) | The extension may follow them (Decision 028-009); their retention age is measured on the class of the column it reads |
+| Design 043 (run input validation) | The test server composes the production gate unchanged; a skip never bypasses it |
+| Design 046 (script dependencies) | Script templates carry its manifests (Decision 028-010) |
+| The migrations grew from 21 to more than 100 since the baseline | The figures of "Workflow time and the test server" (37 defaults, 43 function bodies) are of 2026-10-26; T028-006 derives the catalog from `pg_catalog` at build, and the test is the authority |
+

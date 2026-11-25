@@ -14,7 +14,7 @@
 | 10 | 010 Scale & HA | sharding, fairness, HA and benchmarks | Throughput and recoverability |
 | 11 | 011 GitOps & Versioning | versioning, promotion, diff, rollback | Old runs preserved |
 | 12 | 012 Developer Experience | CLI, local testing on the real engine (no emulator), docs and examples | End-to-end onboarding |
-| 13 | 013 Federated Login | Studio sign-in through each organization's OIDC or SAML provider | Draft specification only |
+| 13 | 013 Federated Login | Studio and CLI sign-in through each organization's OIDC or SAML provider, just-in-time provisioning, SCIM 2.0 users and groups, member management, session revocation ([design](designs/013-federated-login.md)) | In 0.3.0 (Owner decision 2026-11-24-1); design drafted 2026-11-24, in review; ADR-0140 to ADR-0142 proposed |
 | 14 | 014 Workflow Primitives | forEach/map, loops, approval, switch, Query/Update, Continue-As-New | 0.3 work in progress; two tasks remain open in [tasks.md](../specs/014-workflow-primitives/tasks.md) (Task 014-043, the release gates, and Task 014-044, the documentation); [increment evidence](../specs/014-workflow-primitives/implementation-ledger.md) |
 | 39 | 039 Nested Collections | General nesting of the 014 primitives and the capacity program it needs (holder discovery, sweeper, creator, runnable predicate, activation), moved out of 014 by OD-2026-11-12-6 ([design](designs/039-nested-collections.md)) | Draft placeholder; needs ADR-0078 accepted and its open items decided by the owner |
 | 40 | 040 OCSF Event Standard | The audit trail, then security incidents and alerts, available in the Open Cybersecurity Schema Framework shape as a projection of the native record, so a SIEM reads them without a custom parser ([design](designs/040-ocsf-event-standard.md)) | Draft; needs the owner's answers to O040-001 to O040-007 |
@@ -70,8 +70,13 @@ open: O1700–O1702 and O1704 (recommended defaults) and O1710 (how an operator 
 | 047 | OAuth resources and a curated integration hub |
 | 048 | A reference high-availability topology for PostgreSQL and rolling upgrades with N and N-1 writers |
 | 049 | Partitioning of `run_events`, `payloads` and the other journal tables, joined to the retention of 020 |
-| 050 | The Studio catch-up: every executable node kind, the approvals inbox, the audit log |
+| 050 | The Studio catch-up: every executable node kind, the approvals inbox, the audit log ([design](designs/050-studio-catch-up.md), drafted 2026-11-24, in review; ADR-0143 and ADR-0144 proposed; ADR-0101 accepted with conditions, Owner decision 2026-11-24-700) |
 | 051 | A published benchmark of the same workflow shapes on this platform, Temporal and Windmill, crash-recovery time included |
+
+**Features 027, 028 and 029 are ready for the build (2026-11-24):** re-read against `develop`, their stale lines fixed,
+their open questions answered, ADR-0062, ADR-0063 and ADR-0064 accepted and their checklist items settled under the
+owner's delegation (Owner decisions 2026-11-24-701 to 2026-11-24-716); each `tasks.md` ends with build slices for two
+parallel builders. Identity-provider groups and member management, which 029 waited for, are design 013's.
 
 013 (federated login) and 015 (OpenTelemetry and OpenBao) keep their numbers and get their specifications. The constitution
 is amended to admit this scope (OD-2026-11-24-2).

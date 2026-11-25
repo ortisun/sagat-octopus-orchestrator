@@ -1,7 +1,7 @@
 # ADR-0062: An internal app narrows its viewer's own authority through a server-side session, and author code runs only in an opaque-origin frame
 
-**Status:** Proposed
-**Decided by:** agent proposal, pending owner acceptance (2026-10-26)
+**Status:** Accepted (2026-11-24), with the refinements under "Acceptance"
+**Decided by:** agent proposal (2026-10-26); accepted by delegate (OD-2026-11-24-4) on 2026-11-24, row OD-2026-11-24-701 of `docs/owner-decisions.md`; the scope question O1360 was answered by the owner in Owner decision 2026-11-24-2 (constitution 5.0.0)
 **Scope:** brings a bounded app builder into the product although `docs/architecture/overview.md`
 ("Explicit scope left for later releases") defers a "Generic low-code style application designer".
 Acceptance of this ADR requires the owner's answer to O1360 (`specs/027-internal-apps/research.md`)
@@ -78,7 +78,8 @@ results. Four forces make this a hard-to-reverse decision:
    apps origin distinct from the Studio's, which serves only the runtime page, its sign-in callback,
    session creation and runtime routes, never component frames. The Studio MUST keep `frame-ancestors 'none'`. The allowed embedders
    MUST be exact `https` origins in the intersection of the app's list, the namespace policy and the
-   deployment allowlist. Embedded sign-in MUST be a user-initiated popup to the configured issuer
+   deployment allowlist. Embedded sign-in MUST be a user-initiated popup to the configured issuer (with
+   federation on, the platform's sign-in service, Architecture decision 0140)
    that hands back only the authorization code, by `postMessage` to the exact apps origin, accepted
    only from the opened popup with a matching single-use `state`; the control plane MUST redeem the
    code server-side so that no issuer token exists in apps-origin script. The host page MUST NOT be
@@ -171,6 +172,24 @@ results. Four forces make this a hard-to-reverse decision:
   accept the apps-origin callback for the platform's client (G1364).
 - One table now says which origin may serve what (decision 8); a new surface that needs its own
   origin or a CSP change refines this ADR instead of ADR-0016 directly.
+
+## Acceptance (2026-11-24)
+
+Accepted under Owner decision 2026-11-24-4 after a re-read against `develop` at `2c94064f`; the reasoning is
+Decision 027-001 to Decision 027-003 of `specs/027-internal-apps/research.md`. Three refinements, none of which changes
+a rule above:
+
+1. **Scope.** Constitution 5.0.0 ("Admitted scope") admits internal apps with this decision's viewer-authority and
+   isolated-frame rules; the context's force 4 is settled. A delegated execution mode stays out (O1361 answered no) and
+   would need a new architecture decision and an amendment.
+2. **Sign-in.** With design 013's federation enabled, decision 5's "configured issuer" is the platform's sign-in
+   service (Architecture decision 0140): the control plane redeems the code in process and registers the apps origin's
+   redirect itself.
+3. **Lock order.** The app-session row is locked `FOR UPDATE` in slot 1, as Architecture decision 0050's slot table
+   records.
+
+Built-in components are built on the Studio's interface module over Astryx (Architecture decision 0101, accepted the
+same day); decision 4's closed documents are unaffected.
 
 ## Evidence
 

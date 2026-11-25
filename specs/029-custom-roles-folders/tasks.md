@@ -7,9 +7,9 @@ Format: `- [ ] T029-NNN [P?] [USn?] Description (paths). Refs. Evidence.` `[P]`:
 
 ## Phase 1 — Setup and prerequisite release
 
-- [ ] T029-001 Owner decision on ADR-0064 and O1440–O1442, recorded in `docs/owner-decisions.md`, `docs/adr/README.md` and the ADR; "Refined by ADR-0064" notes for ADR-0018, 0028, 0031, 0035, 0036 once accepted; dependency notes in 013, 018, 019, 020, 021, 022, 024, 025, 026, 027, 028, 030, 031, 032 (by their owners): permissions and machine roles to classify, and the evaluator adoption of 018 schedules, 020 list queries and saved views, 021 resources (folder placement), 025 MCP listing and calls, 026 links. Refs: all. Evidence: merged change.
+- [ ] T029-001 Owner decision on ADR-0064 and O1440–O1442, recorded in `docs/owner-decisions.md`, `docs/adr/README.md` and the ADR; "Refined by ADR-0064" notes for ADR-0018, 0028, 0031, 0035, 0036 once accepted; dependency notes in 013, 018, 019, 020, 021, 022, 024, 025, 026, 027, 028, 030, 031, 032 (by their owners): permissions and machine roles to classify, and the evaluator adoption of 018 schedules, 020 list queries and saved views, 021 resources (folder placement), 025 MCP listing and calls, 026 links. Refs: all. Evidence: merged change. *Note (2026-11-24):* the decisions are taken (ADR-0064 accepted, O1440–O1442 answered, OD-2026-11-24-710 to OD-2026-11-24-713); the "Refined by" notes in other ADRs and the dependency notes in other features remain, so this task stays open.
 - [ ] T029-002 [P] Targets `{integration,contract_rest,fault,e2e,perf}_custom_roles_folders` in `tests/Cargo.toml`, `main.rs` in `tests/{integration,contract,fault,e2e}/custom-roles-folders/`. Evidence: `--list` shows each suite.
-- [ ] T029-003 Prerequisite release vehicle (ships before 029): deploy feature 018's instance-capability registry (T018-080: `serving_instances`, `platform_requirements`, `platform_requirement_epoch`, registration before serving, heartbeat, per-admission and per-stream re-check, `BINARY_CAPABILITY_MISSING`) fleet-wide; activation of `access-narrowing-v1` (kind `CONTROL_PLANE`) is the operator's audited 018 command, not a tenant transaction; 029 adds the check, used by T029-031/T029-046, that refuses narrowing writes (`ACCESS_CAPABILITY_DISABLED`) until the requirement is recorded, and the removal precondition (no restricted folder or list remains). Depends on T018-080. Refs: FR-029-037. Evidence: integration test with a live older replica (narrowing refused before activation; activation refused while the older replica is live; `503` after activation, including after a pause beyond the liveness window) (SC-029-017).
+- [ ] T029-003 Prerequisite (no separate release since 2026-11-24: the registry is built, T018-080, and ships with this feature in 0.3.0; the activation refusal while any live control plane lacks the capability gives the guarantee the earlier release gave): feature 018's instance-capability registry (T018-080: `serving_instances`, `platform_requirements`, `platform_requirement_epoch`, registration before serving, heartbeat, per-admission and per-stream re-check, `BINARY_CAPABILITY_MISSING`) fleet-wide; activation of `access-narrowing-v1` (kind `CONTROL_PLANE`) is the operator's audited 018 command, not a tenant transaction; 029 adds the check, used by T029-031/T029-046, that refuses narrowing writes (`ACCESS_CAPABILITY_DISABLED`) until the requirement is recorded, and the removal precondition (no restricted folder or list remains). Depends on T018-080. Refs: FR-029-037. Evidence: integration test with a live older replica (narrowing refused before activation; activation refused while the older replica is live; `503` after activation, including after a pause beyond the liveness window) (SC-029-017).
 
 ## Phase 2 — Foundational (blocks every story)
 
@@ -23,7 +23,7 @@ Format: `- [ ] T029-NNN [P?] [USn?] Description (paths). Refs. Evidence.` `[P]`:
 - [ ] T029-011 `crates/infra-postgres/src/access.rs`: one-statement fact query, fences with writer `lock_timeout`, `KEY SHARE NOWAIT` helper with ≤ 3 retries, `effective_permission_in_tx`, one statement that reads item and placement for both missing and hidden targets, listing queries that take the domain's `visible_folders(kind)` set as a parameter (no SQL re-derivation); `begin_safely`. Refs: FR-029-020, FR-029-021. Evidence: integration as `sagat_app`; `runtime_privileges`.
 - [ ] T029-012 Lock-order inventory (every caller of `effective_permission_in_tx`, item creation in a folder, publication) against ADR-0050 decision 7 (029 capability check as a read in slot 1; memberships → 029 access fences → namespace row in slot 4a, after slots 2, 3 and 3R) and the 014 and 017 orders, including folder and list creation's `FOR SHARE` read of 018's registry epoch against the operator's activation and removal; barrier tests in `tests/integration/custom-roles-folders/lock_order.rs`: move vs publish, move vs connection admission, folder delete vs create-in-folder, long reader vs queued writer (`ACCESS_WRITE_CONTENDED`). Refs: FR-029-021, NFR-029-DUR. Evidence: suite passes; no deadlock in `pg_stat_database`.
 - [ ] T029-013 `crates/application/src/access.rs`: `AccessStore` port and `Authorizer` (`require`, `require_item`, `visible_folders`, `explain`). Refs: FR-029-001, FR-029-020. Evidence: unit tests over a fake on domain types.
-- [ ] T029-014 Typed access extractors and a generated route registry (`crates/api-http/src/routes/mod.rs`); `accessControl` per kind in `GET /version`. Refs: FR-029-022. Evidence: registry equals `x-access` for every handler.
+- [ ] T029-014 Typed access extractors and a generated route registry (`crates/api-http/src/routes/mod.rs`); the `access.*` capability names per kind in `GET /version` (design 050's list). Refs: FR-029-022, FR-029-034. Evidence: registry equals `x-access` for every handler.
 - [ ] T029-015 `x-access` (with `discloses`) on every operation of `specs/001-platform-foundation/contracts/openapi.yaml`; `tests/contract/custom-roles-folders/coverage.rs`. Refs: FR-029-022. Evidence: fails when one declaration or `discloses` is removed (SC-029-005).
 - [ ] T029-016 Rule in `scripts/check-architecture.py` failing on `Role::grants`, `Principal::authorize` or `== Role::` outside `domain::access` and a machine-route allowlist; row in `docs/engineering/architecture-principles.md`; tests in `scripts/tests/`. Refs: FR-029-020, FR-029-021. Evidence: rule fails on a planted violation.
 - [ ] T029-017 After T029-012, switch every store recheck of the plan's inventory (`crates/infra-postgres/src/{declared_operations,approval_progress,event_payloads,payload_disclosure,managed_secrets,reveal_grants,database,database_results,secrets}.rs`, `database/admission.rs`) to `effective_permission_in_tx`. Refs: FR-029-021. Evidence: `integration_{workflow_primitives,payload_classification,database_connections,security_multitenancy}` as `sagat_app`.
@@ -90,15 +90,15 @@ Format: `- [ ] T029-NNN [P?] [USn?] Description (paths). Refs. Evidence.` `[P]`:
 
 ## Phase 10 — US08 Identity-provider groups stay out (P3)
 
-- [ ] T029-057 [P] [US8] Tests that token group and role claims confer nothing and that an external group is refused (`ACCESS_CAPABILITY_DISABLED`). Refs: FR-029-009. Evidence: integration test.
-- [ ] T029-058 [US8] Hand `contracts/group-source.md` to the 013 owner as the dependency contract (documentation only, no schema). Refs: FR-029-009. Evidence: dependency note merged in 013.
+- [ ] T029-057 [P] [US8] Tests that token group and role claims confer nothing by themselves, that an external group and its members are read-only here (`EXTERNAL_GROUP_READ_ONLY`), and that a fresh external membership counts and a stale one does not (rows written by design 013's sources, or by `tests/support` before 013 is built). Refs: FR-029-009. Evidence: integration test.
+- [ ] T029-058 [US8] Hand `contracts/group-source.md` to the 013 owner as the dependency contract (documentation only, no schema). Refs: FR-029-009. Evidence: dependency note merged in 013. *Note (2026-11-24):* design 013 adopts the contract (its Requirement 013-014 and Architecture decision 0142) and the contract is amended for its two source kinds; tick when design 013 merges.
 
 ## Phase 11 — Polish and release gates
 
 - [ ] T029-059 Fault suite `tests/fault/custom-roles-folders/`: crash at each statement of every access change, create-in-folder, move, preview/apply and membership deletion; audit insert failure; store unavailable; corrupt rows; duplicates; restart. Refs: NFR-029-DUR, FR-029-027. Evidence: SC-029-007.
 - [ ] T029-060 Race suite: revocation vs in-flight Query/Update, approval decision and disclosure; revocation vs signal/update; granter reduction vs grant. Refs: FR-029-021. Evidence: SC-029-006.
 - [ ] T029-061 [P] Canary suite for logs, spans, metrics, audit and error bodies. Refs: FR-029-027, FR-029-029, NFR-029-OBS. Evidence: SC-029-012.
-- [ ] T029-062 [P] Five-SDK scenario `tests/contract/sdk-conformance/scenarios/access-control.json` and reason handling in `sdks/{typescript,go,python,dotnet,java}`. Refs: FR-029-033. Evidence: `sdk_conformance` for all five (SC-029-009).
+- [ ] T029-062 [P] Six-SDK scenario `tests/contract/sdk-conformance/scenarios/access-control.json` and reason handling in `sdks/{typescript,go,python,dotnet,java,rust}`. Refs: FR-029-033. Evidence: `sdk_conformance` for all six (SC-029-009).
 - [ ] T029-063 [P] Ceiling tests for every row of the plan's ceilings table. Refs: FR-029-030. Evidence: SC-029-011.
 - [ ] T029-064 Benchmark `tests/performance/reports/custom-roles-folders.md`: environment, added latency per request (including the per-admission requirement read) and per filtered listing, fence waits with a long reader, the measured latency difference between hidden and missing targets (G1457), failures. Refs: NFR-029-PERF. Evidence: SC-029-013.
 - [ ] T029-065 Compatibility gate: tenants without access objects unchanged except the declared `/version` carve-out; update `*.baseline.json`. Refs: FR-029-034, NFR-029-COMP. Evidence: SC-029-014.
@@ -109,7 +109,7 @@ Format: `- [ ] T029-NNN [P?] [USn?] Description (paths). Refs. Evidence.` `[P]`:
 
 ## Dependencies and order
 
-- T029-003 ships in an earlier release. Phase 2 blocks every story; T029-017 waits for T029-012; T029-022–024
+- T029-003's registry is built (T018-080); its 029 part comes with Phase 2. Phase 2 blocks every story; T029-017 waits for T029-012; T029-022–024
   wait for T029-013/014/016.
 - US01 → US02 → US03; US04 needs US01 and US03; US05 and restriction wait for the gate (T029-039); US07
   enables its kinds through its own battery entries; US08 is independent.
@@ -125,3 +125,18 @@ Format: `- [ ] T029-NNN [P?] [USn?] Description (paths). Refs. Evidence.` `[P]`:
 MVP = prerequisite release + Phase 2 + US01 (custom roles, fail-closed migration of call sites). Then groups
 and open folders. Restriction and operation lists ship per item kind only after their gates. Each increment
 carries its own evidence; an unchecked task is not a shipped guarantee.
+
+## Build slices (2026-11-24)
+
+Two builders run the feature in parallel without touching the same crates or frontend folders. Slice 0 is serial; the
+call-site migration (T029-022 to T029-024) touches every module of `crates/application` and the stores, so it runs in a
+window agreed with the coordinating session, module by module in short pull requests, while no other feature's lane
+edits the authorization lines of the same module.
+
+| Slice | Tasks | Paths it may change | Starts after |
+|---|---|---|---|
+| 0, one builder | T029-002, T029-004 to T029-010, T029-015, T029-016 | `tests/Cargo.toml`, `tests/contract/custom-roles-folders/fixtures/`, `crates/domain/src/{access,identity,audit,quota}.rs`, the access migration, `crates/api-http/src/error.rs`, `crates/telemetry/src/metrics.rs`, `specs/001-platform-foundation/contracts/openapi.yaml` (`x-access` on every operation), `scripts/check-architecture.py` | feature 027's slice 0 merged (both change `identity.rs`, `audit.rs`, `quota.rs` and the OpenAPI document) |
+| Lane A, the server builder | A1: T029-003, T029-011 to T029-014, T029-017. A2 (the window): T029-018 to T029-024, T029-026. A3: T029-027 to T029-039, T029-041. A4: T029-042 to T029-050, T029-054 to T029-057 | `crates/domain/src/access.rs`, `crates/application`, `crates/infra-postgres`, `crates/api-http` (access routes, extractors, `streams.rs`), `apps/control-plane` | slice 0 |
+| Lane B, the clients builder | B1: T029-025, T029-062 (CLI roles and assignments; the six SDKs' reasons). B2: T029-051 (Access screens in `features/access/`). B3: the CLI parts of T029-028 and T029-031, then T029-040 once feature 028's T028-073 has moved the manifest rules out of `apps/cli/src/manifest.rs`. B4: T029-052, T029-053 (folder tree on the list pages, after design 050's editor slice) | `apps/cli/src/access.rs` and `args.rs`, `sdks/`, `frontend/apps/studio/src/features/access/`, the list pages of `features/{workflows,scripts,connections}`, new files in `src/ui/`, `tests/e2e/custom-roles-folders/` | slice 0 |
+| Join | T029-058 to T029-061, T029-063 to T029-069 | tests, reports, documents | both lanes |
+
