@@ -63,7 +63,7 @@ place. Every owner question below was decided under the owner's delegation (Owne
   every run (Temporal); (b) opt-in. Chosen (b), delegate (Owner decision 2026-11-24-4): (a) changes the answer of `signalRun` for
   runs in flight and for callers who rely on the `409` today (constitution principle IV); (b) gives the same capability to every new
   version that asks for it.
-- **Decision 045-009 — Buffered signals are designed here** (Owner question 045-009). Options: (a) in design 044 (workflow as code);
+- **Decision 045-009 — Where buffered signals belong** (Owner question 045-009; first decided "here", revised below to "a design of their own"). Options: (a) in design 044 (workflow as code);
   (b) a design of their own; (c) here. Chosen (c), delegate (Owner decision 2026-11-24-4): they are not covered by feature 018
   (explicitly out of scope); (a) would make the declarative mode wait for 044's determinism study; (b) is clean but takes another
   number while the 0.3.0 designs are being numbered; (c) shares this design's race with a wait's timeout, its fleet switch and its
@@ -76,10 +76,11 @@ place. Every owner question below was decided under the owner's delegation (Owne
 - **Decision 045-010 — The start deadline does not move on a lease withdrawal.** A withdrawn lease (Architecture decision 0098,
   Architecture decision 0099) never started, so the attempt is the same attempt; resetting the deadline would let withdrawals
   postpone a timeout without limit.
-- **Decision 045-011 — The minimum heartbeat timeout is 3,000 ms.** A host beats at a third of it (1,000 ms), three beats per window,
+- **Decision 045-011 — The minimum heartbeat timeout** (revised 2026-11-24 to 10,000 ms after the security, correctness, architecture and design reviews; the first text follows: it was 3,000 ms). A host beats at a third of it (1,000 ms), three beats per window,
   above the 751 to 889 ms ready-to-handler 99th percentile measured in `tests/performance/reports/sdk-streaming.md`. Below 18,000 ms a
   lease is never provisional (Architecture decision 0099 decision 2), which is correct.
-- **Decision 045-012 — Field numbers.** `TaskLease` 26 and 27 and `FailStepRequest` 14 (revised 2026-11-24: 28 is not taken) for protocol 1.9, above every number the drafts
+- **Decision 045-012 — Field numbers.** `TaskLease` 26 and 27 and `FailStepRequest` 14 (revised 2026-11-24: the first draft also
+  named `TaskLease` field 28, which is no longer used) for protocol 1.9, above every number the drafts
   and protocol 1.8 name; the register is in Technical Plan 8 of the design and is recorded in the research registers of drafts 019 and 031 on
   2026-11-24: 031 moves to `TaskLease` 25 and `WorkerCapabilities` 7, 019's `RegisterWorkerResponse` field moves from 4
   (taken by design 041) to 5.
@@ -99,12 +100,36 @@ place. Every owner question below was decided under the owner's delegation (Owne
 - **Decision 045-017 — A `RETRY_WAIT` step past its close deadline is ended by the retries pass** (zoom-out review, Nit 12, accepted),
   so the close-deadline index covers `READY` and gated `WAITING` rows only.
 
+- **Decision 045-018 — An operator's retry clears the close deadline** (correctness review, Major 6; architecture review, Major 5).
+  Options: (a) refuse the retry past the deadline with a typed reason; (b) give the retry a new close budget; (c) clear the close
+  deadline. Chosen (c), delegate (Owner decision 2026-11-24-4): the operator has looked at the step and decided; (a) makes the
+  button useless after the budget and (b) invents a budget nobody wrote. The new attempt keeps `timeoutMs` and gets a start deadline.
+  The same rule clears the deadline when a reconciliation, a review or an operator's hold takes over: from then on a person or a
+  reconciliation decides (correctness review, Blocker 1).
+- **Decision 045-019 — A pause suspends the start deadline, not the close deadline** (correctness review, Major 7; architecture
+  review, Major 4). Options: (a) both keep running; (b) both suspended; (c) the start deadline suspended, the close deadline kept.
+  Chosen (c), delegate (Owner decision 2026-11-24-4): schedule-to-start detects a missing worker, and a pause is not one; the close
+  deadline is the author's business window, which a pause does not extend. The pass skips a paused run; the resume moves each
+  claimable step's start deadline later by the paused time; the close deadline is enforced from the resume.
+- **Decision 045-020 — A reset recomputes the deadlines** (architecture review, Major 5). Options: (a) copy the source's instants;
+  (b) refuse a reset point with open deadlines; (c) recompute from the reset's time. Chosen (c), delegate (Owner decision
+  2026-11-24-4): (a) fails the new run at once, (b) makes a common reset impossible; a reset is a deliberate new start.
+- **Decision 045-021 — The close floor** (correctness review, Major 3; design review, Major 2): an attempt is not leased, and a retry
+  not scheduled, with less than the earlier of `timeoutMs` and 6,000 ms left before the close deadline, so that running out of budget
+  is a known failure and not a review.
+- **Decision 045-022 — `heartbeatFrom: "handler"` requires `scheduleToStartMs`, and has its own requirement** (security review,
+  Major 3; architecture review, Blocker 1 and Major 7): such a step waits for a 1.9 host, and only a bounded wait keeps it from
+  waiting without end; `activity-timeouts-handler-v1` is listed only by a build that offers 1.9.
+- **Decision 045-023 — The worker's delay is clamped to at least the author's initial delay** (security review, Major 4).
+
 ## Gaps
 
 - **Gap 045-001 — The deadline pass's share of a tick.** Whether it needs its own work budget per tick or shares the lost-lease pass's
-  window. Closed by the measurement of Task 045-19.
+  window. Closed 2026-11-24 after the security and design reviews: it never shares; it is its own `pick` pass with its own window.
 - **Gap 045-002 — The start deadline as an urgency hint.** Feature 019's priority order could serve sooner a step whose start deadline
   is close; not in 0.3.0, recorded for 019.
+- **Gap 045-004 — Whether the minimum heartbeat timeout should be 18,000 ms**, so that every lease can be provisional under protocol
+  1.8 and keep delivery acknowledgement's protection. Decided by the measurement of Task 045-17.
 - **Gap 045-003 — Timeouts on the managed runner nodes** (database, lake). Their runners have their own limits; a schedule-to-start for
   a runner fleet that is down is useful and is left for a later design.
 

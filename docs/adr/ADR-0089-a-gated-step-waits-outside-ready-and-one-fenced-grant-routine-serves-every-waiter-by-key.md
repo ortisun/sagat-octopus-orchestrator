@@ -1,6 +1,7 @@
 # ADR-0089: A gated step waits outside READY, and one fenced grant routine, driven by key, serves every waiter whatever its gates
 
 **Status:** Accepted (2026-11-13, OD-2026-11-13-19: the owner's "Aceitar o ADR-0089")
+**Refined by:** [ADR-0110](ADR-0110-step-timeouts-are-deadlines-on-the-database-clock-and-retry-is-decided-per-failure-code.md) (proposed, design 045): a waiter's deadline becomes the earlier of its gates' and the step's close deadline, and a waiter past its close deadline is not eligible (decisions 4 and 5).
 **Decided by:** agent proposal after the architecture, security and correctness reviews of 2026-11-13; accepted by the owner on 2026-11-13 (OD-2026-11-13-19)
 **Refines / supersedes:** supersedes ADR-0056 decision 3 for step permits (a step permit is no longer taken
 at claim) and decision 5 (grant by the waiter's shard owner, strict oldest first); refines ADR-0088
