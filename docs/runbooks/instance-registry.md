@@ -105,8 +105,13 @@ heartbeat then tries every second, and the calls are served again once a beat an
 succeeded. The reason: an activation counts a process live only when it was seen in the last 30 seconds, so an engine that it
 could not see must not hand out what a requirement recorded meanwhile might forbid. The gate is checked again just before the
 answer's first byte (and before a write starts), so a call admitted at the edge does not hand out data after it. The registry's
-connection carries a statement timeout of at most 5 seconds (the process's own when shorter), so a slow beat cannot use the
-window up.
+connection carries a statement timeout of at most 5 seconds (the process's own when shorter; a setting of 0, which
+PostgreSQL reads as no timeout, is 5 seconds too), so a slow beat cannot use the window up. A beat that failed is tried
+again no later than 19 seconds after the last decision (the window less the statement timeout and a second), so one
+failed beat never stops a healthy engine's capability calls. The 25 seconds are measured on the monotonic clock and on
+the wall clock, whichever lapses first (a machine that was suspended does not keep serving on a stale decision). A
+process that registered while the table was full (`REGISTRY_FULL`) is counted by no activation, so it serves, but never
+capability calls (decision D006-100).
 
 **A beat during an operator's change.** The beat takes the epoch row `FOR SHARE SKIP LOCKED`
 (`instance_heartbeat_reporting_change`): it never waits for an activation or a removal, even one left open by hand SQL. When an
