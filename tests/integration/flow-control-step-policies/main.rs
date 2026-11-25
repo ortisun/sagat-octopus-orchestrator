@@ -18,6 +18,7 @@ mod publication;
 mod queue;
 mod rate_creators;
 mod rate_gate;
+mod rate_lifecycle;
 mod rate_limit_locks;
 mod rate_rest;
 mod readiness;
