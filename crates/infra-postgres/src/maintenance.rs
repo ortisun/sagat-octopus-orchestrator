@@ -759,8 +759,12 @@ impl MaintenanceStore for PgRunStore {
         crate::step_logs::mark_expired_streams(self.pool(), limit).await
     }
 
-    async fn purge_step_log_lines(&self, limit: u32) -> Result<StepLogPurge, StoreError> {
-        crate::step_logs::purge_lines(self.pool(), limit).await
+    async fn purge_step_log_lines(
+        &self,
+        after: Option<TenantId>,
+        limit: u32,
+    ) -> Result<StepLogPurge, StoreError> {
+        crate::step_logs::purge_lines(self.pool(), after, limit).await
     }
 
     async fn step_log_purge_backlog(&self) -> Result<u64, StoreError> {

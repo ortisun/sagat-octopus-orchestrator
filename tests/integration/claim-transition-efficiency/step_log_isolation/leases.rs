@@ -6,8 +6,8 @@ use std::time::Duration;
 use sqlx::Connection as _;
 
 use super::{
-    Fx, LIMIT, MIB, ROW, exceeded, held, hold_the_usage_row, lease_of, lock_timeout, refusal,
-    set_limit, slots_taken, waits_on,
+    Fx, LIMIT, MIB, ROW, Writer, exceeded, held, hold_the_usage_row, lease_of, lock_timeout,
+    refusal, set_limit, slots_taken, waits_on,
 };
 use crate::support::bounded;
 
@@ -233,26 +233,40 @@ async fn a_callers_lower_lock_timeout_is_kept() {
 async fn a_refill_restores_the_callers_lock_timeout() {
     bounded::within("lock timeout restored", LIMIT, async {
         let fx = Fx::new(1 << 30).await;
-        for setting in ["150ms", "0"] {
-            // A writer of its own each time: its first charge is a refill.
-            let mut w = fx.writer().await;
-            let mut tx = w.conn.begin().await.expect("begin");
-            sqlx::query("SELECT set_config('lock_timeout', $1, true)")
-                .bind(setting)
-                .execute(&mut *tx)
-                .await
-                .expect("the caller's timeout");
-            fx.charge(&mut tx, fx.tenant, fx.stream, 1_000)
-                .await
-                .expect("a refill");
-            let after: String = sqlx::query_scalar("SELECT current_setting('lock_timeout')")
-                .fetch_one(&mut *tx)
-                .await
-                .expect("after");
-            assert_eq!(after, setting, "the caller's lock_timeout after a refill");
-            tx.commit().await.expect("commit");
+        // A budget of 20 s, below the caller's 30 s, so that both callers below have their timeout replaced for the
+        // wait, and long enough that the waiter is still waiting when the test lets the row go.
+        sqlx::query(
+            "CREATE OR REPLACE FUNCTION sagat_quota_step_log_refill_wait() RETURNS interval LANGUAGE sql STABLE \
+               SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$ SELECT interval '20 seconds' $$",
+        )
+        .execute(fx.pool())
+        .await
+        .expect("the test's bound");
+        for setting in ["30s", "0"] {
+            // A writer of its own each time: its first charge is a refill, which waits for the held usage row and so
+            // goes through the branch that sets and then restores `lock_timeout`.
+            let Writer { mut conn, pid } = fx.writer().await;
+            let (row, holder) = hold_the_usage_row(fx.pool(), fx.tenant).await;
+            let (tenant, stream, first) = (fx.tenant, fx.stream, fx.sequences(1));
+            let refill = tokio::spawn(async move {
+                let mut tx = conn.begin().await?;
+                sqlx::query("SELECT set_config('lock_timeout', $1, true)")
+                    .bind(setting)
+                    .execute(&mut *tx)
+                    .await?;
+                super::insert_messages(&mut tx, tenant, stream, first, &[872]).await?;
+                let after: String = sqlx::query_scalar("SELECT current_setting('lock_timeout')")
+                    .fetch_one(&mut *tx)
+                    .await?;
+                tx.commit().await?;
+                Ok::<_, sqlx::Error>(after)
+            });
+            waits_on(fx.pool(), pid, holder).await;
+            row.commit().await.expect("release the usage row");
+            let after = refill.await.expect("join").expect("the refill completes");
+            assert_eq!(after, setting, "the caller's lock_timeout after a refill that waited");
             assert!(
-                lease_of(fx.pool(), fx.tenant, w.pid).await.is_some(),
+                lease_of(fx.pool(), fx.tenant, pid).await.is_some(),
                 "the charge refilled"
             );
         }

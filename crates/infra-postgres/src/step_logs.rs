@@ -6,6 +6,7 @@
 
 use sagat_application::error::StoreError;
 use sagat_application::maintenance::{IdleLeaseReclaim, StepLogPurge, StepLogQuotaCounters};
+use sagat_domain::identity::TenantId;
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -51,11 +52,16 @@ pub(crate) async fn mark_expired_streams(pool: &PgPool, limit: u32) -> Result<u6
     .map_err(store_error_without_text)
 }
 
-/// Step 2 of the purge, one transaction: the removed and not yet purged streams of the first tenant that has one,
-/// locked `SKIP LOCKED`; at most `limit` of their lines deleted in key order; those streams with no line left marked
-/// `purged_at`. The deletes' release runs at the commit, under the tenant's usage row (ADR-0097 decision 5), and a
-/// release that would take the usage below zero is refused: the transaction is rolled back and the refusal returned.
-pub(crate) async fn purge_lines(pool: &PgPool, limit: u32) -> Result<StepLogPurge, StoreError> {
+/// Step 2 of the purge, one transaction: the removed and not yet purged streams of the first tenant after `after` that
+/// has one, locked `SKIP LOCKED`; at most `limit` of their lines deleted in key order; those streams with no line left
+/// marked `purged_at`. The deletes' release runs at the commit, under the tenant's usage row (ADR-0097 decision 5), and
+/// a release that would take the usage below zero is refused: the transaction is rolled back and the refusal returned.
+/// Once a tenant is chosen, every failure names it (decision D041-145).
+pub(crate) async fn purge_lines(
+    pool: &PgPool,
+    after: Option<TenantId>,
+    limit: u32,
+) -> Result<StepLogPurge, StoreError> {
     let mut tx = pool
         .begin_safely()
         .await
@@ -63,22 +69,45 @@ pub(crate) async fn purge_lines(pool: &PgPool, limit: u32) -> Result<StepLogPurg
     let streams: Vec<(Uuid, i64)> = sqlx::query_as(
         "WITH first AS (SELECT tenant_id FROM step_log_streams \
                           WHERE removed_at IS NOT NULL AND purged_at IS NULL \
+                            AND ($2::uuid IS NULL OR tenant_id > $2) \
                           ORDER BY tenant_id, stream_id LIMIT 1 FOR UPDATE SKIP LOCKED) \
          SELECT s.tenant_id, s.stream_id FROM step_log_streams s JOIN first ON first.tenant_id = s.tenant_id \
           WHERE s.removed_at IS NOT NULL AND s.purged_at IS NULL \
           ORDER BY s.stream_id LIMIT $1 FOR UPDATE OF s SKIP LOCKED",
     )
     .bind(PURGE_STREAMS)
+    .bind(after.map(|tenant| tenant.as_uuid()))
     .fetch_all(&mut *tx)
     .await
     .map_err(store_error_without_text)?;
     let Some(&(tenant, _)) = streams.first() else {
-        return Ok(StepLogPurge::Purged {
-            lines: 0,
-            streams: 0,
-        });
+        return Ok(StepLogPurge::Nothing);
     };
     let ids: Vec<i64> = streams.iter().map(|(_, stream)| *stream).collect();
+    let served = TenantId::new(tenant);
+    match purge_tenant(tx, tenant, &ids, limit).await {
+        Ok((lines, streams)) => Ok(StepLogPurge::Purged {
+            tenant: served,
+            lines,
+            streams,
+        }),
+        Err(sqlx::Error::Database(e)) if e.constraint() == Some("step_log_usage_underflow") => {
+            Ok(StepLogPurge::Underflow { tenant: served })
+        }
+        Err(e) => Ok(StepLogPurge::Failed {
+            tenant: served,
+            error: store_error_without_text(e),
+        }),
+    }
+}
+
+/// The deletes and the purged marks of one tenant's locked streams, and the commit.
+async fn purge_tenant(
+    mut tx: sqlx::Transaction<'static, sqlx::Postgres>,
+    tenant: Uuid,
+    ids: &[i64],
+    limit: u32,
+) -> Result<(u64, u64), sqlx::Error> {
     let lines = sqlx::query(
         "DELETE FROM step_log_lines l \
           USING (SELECT tenant_id, stream_id, sequence FROM step_log_lines \
@@ -86,11 +115,10 @@ pub(crate) async fn purge_lines(pool: &PgPool, limit: u32) -> Result<StepLogPurg
           WHERE l.tenant_id = d.tenant_id AND l.stream_id = d.stream_id AND l.sequence = d.sequence",
     )
     .bind(tenant)
-    .bind(&ids)
+    .bind(ids)
     .bind(bound(limit))
     .execute(&mut *tx)
-    .await
-    .map_err(store_error_without_text)?
+    .await?
     .rows_affected();
     let purged = sqlx::query(
         "UPDATE step_log_streams s SET purged_at = now() \
@@ -98,21 +126,12 @@ pub(crate) async fn purge_lines(pool: &PgPool, limit: u32) -> Result<StepLogPurg
             AND NOT EXISTS (SELECT 1 FROM step_log_lines l WHERE l.tenant_id = s.tenant_id AND l.stream_id = s.stream_id)",
     )
     .bind(tenant)
-    .bind(&ids)
+    .bind(ids)
     .execute(&mut *tx)
-    .await
-    .map_err(store_error_without_text)?
+    .await?
     .rows_affected();
-    match tx.commit().await {
-        Ok(()) => Ok(StepLogPurge::Purged {
-            lines,
-            streams: purged,
-        }),
-        Err(sqlx::Error::Database(e)) if e.constraint() == Some("step_log_usage_underflow") => {
-            Ok(StepLogPurge::Underflow)
-        }
-        Err(e) => Err(store_error_without_text(e)),
-    }
+    tx.commit().await?;
+    Ok((lines, purged))
 }
 
 /// The streams expired or being removed and not yet purged, by the two partial indexes.
@@ -130,7 +149,8 @@ pub(crate) async fn purge_backlog(pool: &PgPool) -> Result<u64, StoreError> {
 }
 
 /// The tenants with an idle or ended-backend quota lease, read once, then one tenant a transaction (each call of
-/// `sagat_quota_step_log_reclaim_idle` is a statement in a transaction of its own).
+/// `sagat_quota_step_log_reclaim_idle` is a statement in a transaction of its own). A tenant whose reclaim fails (its
+/// usage row held past the statement timeout, say) is counted and passed over, so it never costs the others theirs.
 pub(crate) async fn reclaim_idle_leases(
     pool: &PgPool,
     max_tenants: u32,
@@ -143,17 +163,19 @@ pub(crate) async fn reclaim_idle_leases(
             .map_err(store_error_without_text)?;
     let mut done = IdleLeaseReclaim::default();
     for tenant in tenants {
-        let (reclaimed, skipped): (i32, bool) =
+        let answer: Result<(i32, bool), sqlx::Error> =
             sqlx::query_as("SELECT reclaimed, skipped FROM sagat_quota_step_log_reclaim_idle($1)")
                 .bind(tenant)
                 .fetch_one(pool)
-                .await
-                .map_err(store_error_without_text)?;
-        if skipped {
-            done.skipped += 1;
-        } else if reclaimed > 0 {
-            done.tenants += 1;
-            done.leases += u64::try_from(reclaimed).unwrap_or(0);
+                .await;
+        match answer {
+            Ok((_, true)) => done.skipped += 1,
+            Ok((reclaimed, false)) if reclaimed > 0 => {
+                done.tenants += 1;
+                done.leases += u64::try_from(reclaimed).unwrap_or(0);
+            }
+            Ok(_) => {}
+            Err(_) => done.failed += 1,
         }
     }
     Ok(done)

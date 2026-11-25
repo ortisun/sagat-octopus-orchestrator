@@ -19,16 +19,47 @@ use crate::support::engine::{World, world};
 
 const LIMIT: Duration = Duration::from_secs(60);
 
+/// A tenant of the world and a namespace of it.
+#[derive(Debug, Clone, Copy)]
+struct Who {
+    tenant: Uuid,
+    namespace: Uuid,
+}
+
+/// The world's first tenant, as the store names it.
+fn me(w: &World) -> sagat_domain::identity::TenantId {
+    w.admin.tenant_id()
+}
+
+fn first(w: &World) -> Who {
+    Who {
+        tenant: w.admin.tenant_id().as_uuid(),
+        namespace: w.namespace.id().as_uuid(),
+    }
+}
+
+fn second(w: &World) -> Who {
+    Who {
+        tenant: w.other_admin.tenant_id().as_uuid(),
+        namespace: w.other_namespace.id().as_uuid(),
+    }
+}
+
 /// A worker stream of the world's first tenant whose retention ended `ended_ago` (negative: still to come).
 async fn stream(w: &World, ended_ago: &str) -> i64 {
+    stream_of(w, first(w), ended_ago).await
+}
+
+/// A worker stream of `who` whose retention ended `ended_ago` (negative: still to come).
+async fn stream_of(w: &World, who: Who, ended_ago: &str) -> i64 {
     sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
         "INSERT INTO step_log_streams (tenant_id, public_id, namespace_id, run_id, step_id, node, \
            instance_path_nodes, instance_path_indices, attempt, generation, retention_days, last_at, expires_at) \
          VALUES ($1, gen_random_uuid(), $2, gen_random_uuid(), gen_random_uuid(), 'a', '{{}}', '{{}}', 1, 0, 14, \
            now() - interval '14 days' - interval '{ended_ago}', now() - interval '{ended_ago}') RETURNING stream_id"
     )))
-    .bind(w.admin.tenant_id().as_uuid())
-    .bind(w.namespace.id().as_uuid())
+    .bind(who.tenant)
+    .bind(who.namespace)
     .fetch_one(&w.db.pool)
     .await
     .expect("a stream")
@@ -36,11 +67,16 @@ async fn stream(w: &World, ended_ago: &str) -> i64 {
 
 /// `count` lines of `text` bytes each on `stream`, one insert statement (charged to the owner's quota lease).
 async fn lines(w: &World, stream: i64, count: i64, text: i32) {
+    lines_of(w, first(w), stream, count, text).await;
+}
+
+/// [`lines`] on a stream of `who`.
+async fn lines_of(w: &World, who: Who, stream: i64, count: i64, text: i32) {
     sqlx::query(
         "INSERT INTO step_log_lines (tenant_id, stream_id, sequence, run_id, level, kind, message) \
          SELECT $1, $2, s, gen_random_uuid(), 'info', 'line', repeat('x', $4) FROM generate_series(1, $3) s",
     )
-    .bind(w.admin.tenant_id().as_uuid())
+    .bind(who.tenant)
     .bind(stream)
     .bind(count)
     .bind(text)
@@ -51,8 +87,13 @@ async fn lines(w: &World, stream: i64, count: i64, text: i32) {
 
 /// U = S + Σ used of the world's first tenant.
 async fn usage(w: &World) -> i64 {
+    usage_of(w, first(w).tenant).await
+}
+
+/// U = S + Σ used of `tenant`.
+async fn usage_of(w: &World, tenant: Uuid) -> i64 {
     sqlx::query_scalar("SELECT sagat_quota_step_log_usage($1)")
-        .bind(w.admin.tenant_id().as_uuid())
+        .bind(tenant)
         .fetch_one(&w.db.pool)
         .await
         .expect("the usage")
@@ -102,8 +143,12 @@ async fn a_purge_releases_the_quota_bytes_and_leaves_a_live_stream_alone() {
             "removal begun, not purged"
         );
         assert_eq!(
-            w.store.purge_step_log_lines(500).await.expect("purge"),
+            w.store
+                .purge_step_log_lines(None, 500)
+                .await
+                .expect("purge"),
             StepLogPurge::Purged {
+                tenant: me(&w),
                 lines: 3,
                 streams: 1
             }
@@ -117,11 +162,11 @@ async fn a_purge_releases_the_quota_bytes_and_leaves_a_live_stream_alone() {
         );
         assert_eq!(w.store.step_log_purge_backlog().await.expect("backlog"), 0);
         assert_eq!(
-            w.store.purge_step_log_lines(500).await.expect("purge"),
-            StepLogPurge::Purged {
-                lines: 0,
-                streams: 0
-            },
+            w.store
+                .purge_step_log_lines(None, 500)
+                .await
+                .expect("purge"),
+            StepLogPurge::Nothing,
             "nothing left to purge"
         );
     })
@@ -191,21 +236,29 @@ async fn a_stream_purged_over_several_transactions_keeps_removed_at_from_the_fir
         let first = removed_at().await;
         let mut gone = Vec::new();
         for _ in 0..3 {
-            gone.push(w.store.purge_step_log_lines(500).await.expect("purge"));
+            gone.push(
+                w.store
+                    .purge_step_log_lines(None, 500)
+                    .await
+                    .expect("purge"),
+            );
             assert_eq!(removed_at().await, first, "removed_at is the first mark's");
         }
         assert_eq!(
             gone,
             vec![
                 StepLogPurge::Purged {
+                    tenant: me(&w),
                     lines: 500,
                     streams: 0
                 },
                 StepLogPurge::Purged {
+                    tenant: me(&w),
                     lines: 500,
                     streams: 0
                 },
                 StepLogPurge::Purged {
+                    tenant: me(&w),
                     lines: 200,
                     streams: 1
                 },
@@ -241,8 +294,11 @@ fn a_purge_whose_release_would_underflow_is_refused_and_counted() {
             1
         );
         assert_eq!(
-            w.store.purge_step_log_lines(500).await.expect("purge"),
-            StepLogPurge::Underflow
+            w.store
+                .purge_step_log_lines(None, 500)
+                .await
+                .expect("purge"),
+            StepLogPurge::Underflow { tenant: me(&w) }
         );
         assert_eq!(
             state(&w, s).await,
@@ -396,15 +452,80 @@ fn scheduler(
     .with_placement(placement)
 }
 
-/// The replica that holds shard 0 publishes the database's counters: its first reading only remembers them, each later
-/// pass adds what they rose by, once (three refills between two passes add 3 to `kind="refill"`, and a third pass adds
-/// nothing), and it sets the quota-lease rows gauge (3 rows); once it has lost the shard, it sets that gauge to 0.
+/// The replica that holds shard 0 publishes the database's counters (decisions D041-144 (5) and D041-145): its first
+/// reading of a tenure only remembers them, each later pass adds what they rose by, once, and it sets the quota-lease
+/// rows gauge; once it has lost the shard, it sets that gauge to 0; when it gets the shard back, its new tenure starts
+/// from its own first reading. Three refills happen before the first reading, so a publisher that published absolute
+/// values, or a first reading as a rise from 0, would show 6 at the middle instead of 3; then three more while the
+/// shard is held, and three across the loss and the regain, which no tenure sees as a rise: 3 + 3 = 6 at the end.
 #[test]
-fn the_holder_of_shard_zero_publishes_each_rise_of_the_counters_once_and_clears_its_gauge_when_it_loses_the_shard()
- {
+fn the_holder_of_shard_zero_publishes_each_rise_of_the_counters_once_across_a_loss_and_a_regain() {
     let midway = std::rc::Rc::new(std::cell::RefCell::new(String::new()));
     let seen = std::rc::Rc::clone(&midway);
     let page = recorded(|metrics| async move {
+        let w = world().await;
+        let s = stream(&w, "-1 day").await;
+        let placement = Placement::new(format!("step-logs-{}", Uuid::now_v7()));
+        let keeper = Keeper::new(
+            w.store.clone(),
+            placement.clone(),
+            KeeperSettings {
+                ttl: Duration::from_secs(3_600),
+            },
+        );
+        let _before = three_refills(&w, s, 1).await;
+        keeper
+            .round()
+            .await
+            .expect("the shards, shard 0 among them");
+        let holder = scheduler(&w, placement);
+        holder.housekeeping().await;
+        let _held = three_refills(&w, s, 10).await;
+        holder.housekeeping().await;
+        holder.housekeeping().await;
+        *seen.borrow_mut() = metrics.render();
+        keeper.leave().await;
+        holder.housekeeping().await;
+        let _across = three_refills(&w, s, 20).await;
+        keeper
+            .round()
+            .await
+            .expect("shard 0 again, under a new lease");
+        holder.housekeeping().await;
+        let _after = three_refills(&w, s, 30).await;
+        holder.housekeeping().await;
+    });
+    let midway = midway.borrow().clone();
+    assert_eq!(
+        series(
+            &midway,
+            "step_log_quota_refills_total",
+            &[("kind", "refill")]
+        ),
+        Some(3.0),
+        "only the rise after the first reading: {midway}"
+    );
+    assert_eq!(
+        series(&midway, "step_log_quota_lease_rows", &[]),
+        Some(6.0),
+        "the six writers' quota leases: {midway}"
+    );
+    assert_eq!(
+        series(&page, "step_log_quota_refills_total", &[("kind", "refill")]),
+        Some(6.0),
+        "each rise of a tenure counted once, none across the loss and the regain: {page}"
+    );
+    assert_eq!(
+        series(&page, "step_log_quota_lease_rows", &[]),
+        Some(12.0),
+        "the gauge set again in the new tenure: {page}"
+    );
+}
+
+/// Once it has lost shard 0, a replica sets its quota-lease rows gauge to 0.
+#[test]
+fn a_replica_that_loses_shard_zero_sets_its_gauge_to_zero() {
+    let page = recorded(|_| async move {
         let w = world().await;
         let s = stream(&w, "-1 day").await;
         let placement = Placement::new(format!("step-logs-{}", Uuid::now_v7()));
@@ -420,25 +541,11 @@ fn the_holder_of_shard_zero_publishes_each_rise_of_the_counters_once_and_clears_
             .await
             .expect("the shards, shard 0 among them");
         let holder = scheduler(&w, placement);
-        holder.housekeeping().await;
         let _writers = three_refills(&w, s, 1).await;
         holder.housekeeping().await;
-        holder.housekeeping().await;
-        *seen.borrow_mut() = metrics.render();
         keeper.leave().await;
         holder.housekeeping().await;
     });
-    let midway = midway.borrow().clone();
-    assert_eq!(
-        series(&midway, "step_log_quota_lease_rows", &[]),
-        Some(3.0),
-        "the three writers' quota leases: {midway}"
-    );
-    assert_eq!(
-        series(&page, "step_log_quota_refills_total", &[("kind", "refill")]),
-        Some(3.0),
-        "three refills, each counted once: {page}"
-    );
     assert_eq!(
         series(&page, "step_log_quota_lease_rows", &[]),
         Some(0.0),
@@ -465,4 +572,159 @@ fn a_replica_without_shard_zero_publishes_no_counter() {
         );
     }
     assert!(!page.contains("step_log_quota_lease_rows"), "{page}");
+}
+
+/// The two tenants of the world, the one whose id sorts first first: the purge serves tenants in id order.
+fn by_id(w: &World) -> (Who, Who) {
+    let (a, b) = (first(w), second(w));
+    if a.tenant < b.tenant { (a, b) } else { (b, a) }
+}
+
+/// Decision D041-145 (the reviews' Major): a tenant whose purge is refused never keeps the others' expired lines. The
+/// tenant whose id sorts first has a broken accounting (its S lowered by hand), so its release would underflow; the
+/// other is purged in the same pass, its usage dropping by exactly its lines' charge (2 × (50 + 128) = 356 bytes), and
+/// the refusal is counted once.
+#[test]
+fn a_tenant_whose_purge_underflows_never_keeps_the_others_lines() {
+    let page = recorded(|_| async {
+        let w = world().await;
+        let (low, high) = by_id(&w);
+        let broken = stream_of(&w, low, "1 minute").await;
+        let fine = stream_of(&w, high, "1 minute").await;
+        lines_of(&w, low, broken, 2, 100).await;
+        lines_of(&w, high, fine, 2, 50).await;
+        sqlx::query(
+            "UPDATE tenant_retained_usage SET step_log_bytes = step_log_bytes - 1000000 WHERE tenant_id = $1",
+        )
+        .bind(low.tenant)
+        .execute(&w.db.pool)
+        .await
+        .expect("a broken accounting");
+        assert_eq!(usage_of(&w, high.tenant).await, 356);
+        w.scheduler.housekeeping().await;
+        assert_eq!(
+            state(&w, broken).await,
+            (true, false, 2),
+            "the refused purge was rolled back"
+        );
+        assert_eq!(
+            state(&w, fine).await,
+            (true, true, 0),
+            "the other tenant was purged in the same pass"
+        );
+        assert_eq!(usage_of(&w, high.tenant).await, 0);
+    });
+    assert_eq!(
+        series(
+            &page,
+            "step_log_purge_failures_total",
+            &[("cause", "underflow")]
+        ),
+        Some(1.0),
+        "{page}"
+    );
+}
+
+/// The same for a failure of another kind (decision D041-145): a trigger the test installs makes every delete of the
+/// first tenant's lines fail; the pass counts `cause="error"` once and purges the other tenant.
+#[test]
+fn a_tenant_whose_purge_fails_is_passed_over_and_counted() {
+    let page = recorded(|_| async {
+        let w = world().await;
+        let (low, high) = by_id(&w);
+        let failing = stream_of(&w, low, "1 minute").await;
+        let fine = stream_of(&w, high, "1 minute").await;
+        lines_of(&w, low, failing, 1, 10).await;
+        lines_of(&w, high, fine, 1, 10).await;
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "CREATE FUNCTION test_refuse_delete() RETURNS trigger LANGUAGE plpgsql AS $$ \
+             BEGIN IF OLD.tenant_id = '{}' THEN RAISE EXCEPTION 'refused by the test'; END IF; RETURN OLD; END $$",
+            low.tenant
+        )))
+        .execute(&w.db.pool)
+        .await
+        .expect("the refusing function");
+        sqlx::query(
+            "CREATE TRIGGER test_refuse_delete BEFORE DELETE ON step_log_lines FOR EACH ROW \
+             EXECUTE FUNCTION test_refuse_delete()",
+        )
+        .execute(&w.db.pool)
+        .await
+        .expect("the refusing trigger");
+        w.scheduler.housekeeping().await;
+        assert_eq!(state(&w, failing).await, (true, false, 1));
+        assert_eq!(state(&w, fine).await, (true, true, 0));
+    });
+    assert_eq!(
+        series(
+            &page,
+            "step_log_purge_failures_total",
+            &[("cause", "error")]
+        ),
+        Some(1.0),
+        "{page}"
+    );
+}
+
+/// The store's cursor: a purge after a tenant serves only tenants whose id sorts after it, and leaves the other
+/// tenant's lines and usage alone; none after the last answers `Nothing`.
+#[tokio::test]
+async fn a_purge_serves_only_the_tenants_after_its_cursor() {
+    bounded::within("cursor", LIMIT, async {
+        let w = world().await;
+        let (low, high) = by_id(&w);
+        let a = stream_of(&w, low, "1 minute").await;
+        let b = stream_of(&w, high, "1 minute").await;
+        lines_of(&w, low, a, 1, 10).await;
+        lines_of(&w, high, b, 1, 10).await;
+        assert_eq!(
+            w.store
+                .mark_expired_step_log_streams(500)
+                .await
+                .expect("mark"),
+            2
+        );
+        let low_id = sagat_domain::identity::TenantId::new(low.tenant);
+        let high_id = sagat_domain::identity::TenantId::new(high.tenant);
+        assert_eq!(
+            w.store
+                .purge_step_log_lines(Some(low_id), 500)
+                .await
+                .expect("purge"),
+            StepLogPurge::Purged {
+                tenant: high_id,
+                lines: 1,
+                streams: 1
+            }
+        );
+        assert_eq!(
+            state(&w, a).await,
+            (true, false, 1),
+            "the tenant at the cursor is not served"
+        );
+        assert_eq!(
+            usage_of(&w, low.tenant).await,
+            138,
+            "nor is its usage released"
+        );
+        assert_eq!(
+            w.store
+                .purge_step_log_lines(Some(high_id), 500)
+                .await
+                .expect("purge"),
+            StepLogPurge::Nothing
+        );
+        assert_eq!(
+            w.store
+                .purge_step_log_lines(None, 500)
+                .await
+                .expect("purge"),
+            StepLogPurge::Purged {
+                tenant: low_id,
+                lines: 1,
+                streams: 1
+            }
+        );
+    })
+    .await;
 }

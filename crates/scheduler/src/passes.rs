@@ -693,7 +693,9 @@ fn register_batch_purge_series() {
 /// engine that has purged nothing shows zeros, and the first purge, or the first refusal of one, counts).
 fn register_step_log_purge_series() {
     metrics::counter!("step_log_purged_lines_total").absolute(0);
-    metrics::counter!("step_log_purge_failures_total", "cause" => "underflow").absolute(0);
+    for cause in ["underflow", "error"] {
+        metrics::counter!("step_log_purge_failures_total", "cause" => cause).absolute(0);
+    }
 }
 
 /// What `now` adds to `previous` for each kind of `step_log_quota_refills_total`. The sequences only rise, and a reading
@@ -829,10 +831,12 @@ pub struct Scheduler<S, E, R> {
     chain_permits: tokio::sync::Semaphore,
     /// Chained entries the running tick may still take; `usize::MAX` outside a tick (review of S1).
     chained_budget: std::sync::atomic::AtomicUsize,
-    /// The step-log quota counters this replica last published, while it holds shard 0 (design 041, task T041-10); none
-    /// before its first reading and after it lost the shard, so a new tenure starts from its own first reading and no
-    /// delta is published twice.
-    step_log_counters: std::sync::Mutex<Option<StepLogQuotaCounters>>,
+    /// The step-log quota counters this replica last published, with the generation of its lease on shard 0 they were
+    /// read under (design 041, task T041-10, decision D041-145); none before its first reading and after it lost the
+    /// shard, so a new tenure starts from its own first reading and no delta is published twice.
+    step_log_counters: std::sync::Mutex<Option<(u64, StepLogQuotaCounters)>>,
+    /// The last tenant the step-log purge served, where the next pass starts (decision D041-145); none at first.
+    step_log_purge_cursor: std::sync::Mutex<Option<sagat_domain::identity::TenantId>>,
 }
 
 impl<S, E, R> std::fmt::Debug for Scheduler<S, E, R> {
@@ -873,6 +877,7 @@ where
             chain_permits: tokio::sync::Semaphore::const_new(MAX_CONCURRENT_CHAINS),
             chained_budget: std::sync::atomic::AtomicUsize::new(usize::MAX),
             step_log_counters: std::sync::Mutex::new(None),
+            step_log_purge_cursor: std::sync::Mutex::new(None),
         }
     }
 
@@ -4378,31 +4383,54 @@ where
                 }
             }
         }
+        // The tenants are served in id order from where the last pass stopped, wrapping around once, so that a tenant
+        // with a large backlog takes at most one pass before the others get theirs; one whose transaction fails is
+        // passed over for the rest of this pass, so that it never keeps the others' expired lines, and is tried again
+        // at the next pass (decision D041-145).
         let (started, mut calls, mut lines, mut streams) = (Instant::now(), 0_u32, 0_u64, 0_u64);
+        let start = *self
+            .step_log_purge_cursor
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (mut after, mut wrapped, mut last) = (start, start.is_none(), start);
         loop {
             calls += 1;
-            match self.store.purge_step_log_lines(STEP_LOG_PURGE_BATCH).await {
+            match self
+                .store
+                .purge_step_log_lines(after, STEP_LOG_PURGE_BATCH)
+                .await
+            {
+                Ok(StepLogPurge::Nothing) if !wrapped => {
+                    (after, wrapped) = (None, true);
+                }
+                Ok(StepLogPurge::Nothing) => break,
                 Ok(StepLogPurge::Purged {
+                    tenant,
                     lines: gone,
                     streams: emptied,
                 }) => {
                     metrics::counter!("step_log_purged_lines_total").increment(gone);
                     lines += gone;
                     streams += emptied;
-                    if (gone == 0 && emptied == 0)
-                        || calls >= STEP_LOG_PURGE_CALLS
-                        || started.elapsed() >= STEP_LOG_PURGE_TIME
-                    {
-                        break;
-                    }
+                    last = Some(tenant);
                 }
-                Ok(StepLogPurge::Underflow) => {
+                Ok(StepLogPurge::Underflow { tenant }) => {
                     metrics::counter!("step_log_purge_failures_total", "cause" => "underflow")
                         .increment(1);
                     tracing::error!(
                         "a step-log purge was refused: its release would take a tenant's step-log usage below zero"
                     );
-                    break;
+                    (after, last) = (Some(tenant), Some(tenant));
+                }
+                Ok(StepLogPurge::Failed { tenant, error }) => {
+                    metrics::counter!("step_log_purge_failures_total", "cause" => "error")
+                        .increment(1);
+                    tracing::warn!(
+                        sqlstate = error.sqlstate().unwrap_or("none"),
+                        kind = error.kind(),
+                        "could not purge a tenant's step-log lines; the pass goes on with the next tenant"
+                    );
+                    (after, last) = (Some(tenant), Some(tenant));
                 }
                 Err(error) => {
                     tracing::warn!(
@@ -4413,7 +4441,14 @@ where
                     break;
                 }
             }
+            if calls >= STEP_LOG_PURGE_CALLS || started.elapsed() >= STEP_LOG_PURGE_TIME {
+                break;
+            }
         }
+        *self
+            .step_log_purge_cursor
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = last;
         if marked > 0 || lines > 0 || streams > 0 {
             tracing::info!(
                 marked,
@@ -4427,10 +4462,11 @@ where
             .reclaim_idle_step_log_leases(STEP_LOG_RECLAIM_TENANTS)
             .await
         {
-            Ok(done) if done.leases > 0 || done.skipped > 0 => tracing::info!(
+            Ok(done) if done.leases > 0 || done.skipped > 0 || done.failed > 0 => tracing::info!(
                 tenants = done.tenants,
                 leases = done.leases,
                 skipped = done.skipped,
+                failed = done.failed,
                 "folded idle step-log quota leases back"
             ),
             Ok(_) => {}
@@ -4443,13 +4479,26 @@ where
         self.publish_step_log_quota_counters().await;
     }
 
-    /// Publishes the database's step-log quota counters, on the replica that holds shard 0 only (a scheduler with no
-    /// placement is the only replica and holds every shard): the first reading of a tenure only remembers the values, each
-    /// later one adds what the sequences rose by, and the gauge of the quota-lease rows is set. A replica that lost the
-    /// shard sets its gauge to 0 and forgets its reading.
+    /// The tenure of this replica on shard 0: the generation of its lease on the shard, or 0 for a scheduler with no
+    /// placement, which is the only replica and holds every shard; none when it does not hold shard 0 now.
+    fn shard_zero_tenure(&self) -> Option<u64> {
+        let zero = Shard::new(0)?;
+        match &self.placement {
+            None => Some(0),
+            Some(placement) => placement
+                .snapshot()
+                .lease_of(zero, Instant::now())
+                .map(|lease| lease.generation),
+        }
+    }
+
+    /// Publishes the database's step-log quota counters, on the replica that holds shard 0 only. A tenure is one lease
+    /// generation on the shard (decision D041-145): its first reading only remembers the values, each later one adds
+    /// what the sequences rose by, and the gauge of the quota-lease rows is set; a reading taken while the shard was
+    /// lost or changed hands is dropped, so a rise another holder published in between is never added again. A replica
+    /// that does not hold the shard sets its gauge to 0, once, and forgets its reading.
     async fn publish_step_log_quota_counters(&self) {
-        let holds_shard_zero = Shard::new(0).is_some_and(|zero| self.view().shards.contains(zero));
-        if !holds_shard_zero {
+        let Some(tenure) = self.shard_zero_tenure() else {
             let held = self
                 .step_log_counters
                 .lock()
@@ -4460,7 +4509,7 @@ where
                 metrics::gauge!("step_log_quota_lease_rows").set(0.0);
             }
             return;
-        }
+        };
         let now = match self.store.step_log_quota_counters().await {
             Ok(now) => now,
             Err(error) => {
@@ -4472,12 +4521,21 @@ where
                 return;
             }
         };
-        let previous = self
+        let mut last = self
             .step_log_counters
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .replace(now);
-        let deltas = previous.map_or([0; 4], |previous| step_log_refill_deltas(previous, now));
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if self.shard_zero_tenure() != Some(tenure) {
+            *last = None;
+            return;
+        }
+        let deltas = match last.replace((tenure, now)) {
+            Some((generation, previous)) if generation == tenure => {
+                step_log_refill_deltas(previous, now)
+            }
+            _ => [0; 4],
+        };
+        drop(last);
         for (kind, delta) in STEP_LOG_REFILL_KINDS.into_iter().zip(deltas) {
             metrics::counter!("step_log_quota_refills_total", "kind" => kind).increment(delta);
         }

@@ -824,6 +824,11 @@ fn classify(error: &sqlx::Error) -> StoreError {
                     Some("scripts_name_uniq") => StoreError::Conflict(ConflictKind::ScriptName),
                     _ => StoreError::Internal { detail },
                 },
+                // A step-log refill that found no usage row for its tenant raises this class by its own name (design 041,
+                // decision D041-145): a broken server-side state, not a caller's missing reference.
+                "23503" if db.constraint() == Some("step_log_usage_row_missing") => {
+                    StoreError::Internal { detail }
+                }
                 // foreign_key_violation
                 "23503" => StoreError::MissingReference,
                 // Conditions that can clear on their own, so the caller may retry:
@@ -923,5 +928,14 @@ mod tests {
             classify(&raised("22000", "step_log_usage_underflow")),
             StoreError::Internal { .. }
         ));
+        assert!(matches!(
+            classify(&raised("23503", "step_log_usage_row_missing")),
+            StoreError::Internal { .. }
+        ));
+        assert_eq!(
+            classify(&raised("23503", "some_fkey")),
+            StoreError::MissingReference,
+            "another foreign key's violation keeps its class"
+        );
     }
 }

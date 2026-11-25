@@ -151,7 +151,9 @@ expires: shorten `SAGAT_HOUSEKEEPING_INTERVAL_SECS` (300 by default) or look for
 (`database_oldest_transaction_age_seconds`). `step_log_purge_failures_total{cause="underflow"}` counts a delete whose
 release would have taken the tenant's usage below zero; it never happens unless the accounting is broken, so open an
 incident, keep the lines (the delete was rolled back) and compare `sagat_quota_step_log_usage(tenant)` with the sum of
-the tenant's stored line charges. The stream rows themselves stay until the run is deleted (feature 020, gap G041-004).
+the tenant's stored line charges. `{cause="error"}` counts a tenant's purge transaction that failed otherwise (look at
+the SQLSTATE in the engine's log). Either way the pass goes on with the other tenants and tries that tenant again at the
+next pass, and each pass starts after the tenant the last one ended with, so no tenant's backlog holds the others back. The stream rows themselves stay until the run is deleted (feature 020, gap G041-004).
 
 ## 8. The quota reclaims and their counters
 
@@ -163,7 +165,8 @@ lease of the tenant at once.
 
 `step_log_quota_refills_total{kind}` (`refill`, `reclaim`, `idle`, `ended`) and the gauge `step_log_quota_lease_rows`
 come from counters the database keeps and are published only by the replica that holds shard 0, so a sum across
-replicas counts each event once. The counters count attempts: a refill whose transaction rolled back is counted too. A
+replicas counts each event once. The counters count attempts: a refill whose transaction rolled back is counted too,
+and after a crash of the database each can jump by up to 32 (PostgreSQL logs sequence values ahead). A
 replica that loses shard 0 sets its gauge to 0 and stops publishing; the next holder starts from its own first read. A
 steady rise of `step_log_quota_lease_rows` means backends that charge and then live on idle: it is bounded by the
 backends that charged in the last 10 minutes.
