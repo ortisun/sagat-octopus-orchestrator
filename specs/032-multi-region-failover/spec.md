@@ -682,17 +682,30 @@ held, and can re-admit the inbound events it had accepted into the new authority
 
 ## Owner questions
 
-- **O1560 — Accept the direction of ADR-0067; the acceptance itself waits for evidence.** Recommended
+Feature 032 is in release 0.3.0 (Owner decision 2026-11-24-1), so its open questions fall under the delegation of Owner
+decision 2026-11-20-6. All three are settled as of 2026-11-24; the text each had is kept after its answer.
+
+- **O1560 — Accept the direction of ADR-0067; the acceptance itself waits for evidence.** *Answered by the owner on
+  2026-11-24 (Owner decision 2026-11-24-2):* the constitution is amended now, to 5.0.0, so that "single region" becomes
+  one writable region per cell with fenced failover; ADR-0067 is accepted (delegate, Owner decision 2026-11-24-4, Owner
+  decision 2026-11-24-507), and the region drill report and the commit-latency benchmark (Task T032-063) become the
+  release gate of this feature instead of the gate of the decision. Recommended
   default: the owner may accept the direction now so that implementation can start; ADR-0067's status
   `Accepted`, ADR-0009's "Superseded in part by ADR-0067" line and the constitution amendment (Delivery
   Constraints: "one active region per cell with high availability; an optional cross-region standby
   with active-passive failover under ADR-0067"; multi-region active-active still out of scope; 1.0.0 →
   1.1.0, MINOR) wait for the region drill report and the commit-latency benchmark, as ADR-0009 and the
   constitution's Governance require (T032-063). The amendment text stays in ADR-0067.
-- **O1561 — Cross-region objectives and default mode.** Recommended default: `sync_quorum` is the
+- **O1561 — Cross-region objectives and default mode.** *Decided 2026-11-24 as recommended, delegate (Owner decision
+  2026-11-20-6), Owner decision 2026-11-24-508.* Reason: `sync_quorum` is the only mode in which a region's loss loses
+  no acknowledged work, which is the property the platform claims over Temporal's asynchronous replication; publishing
+  objectives before a drill on two real regions would be a number without a measurement (constitution, "Targets are not
+  promises"). Recommended default: `sync_quorum` is the
   documented reference mode; RPO and RTO across regions stay benchmark criteria (not published
   objectives and not a release gate) until a drill has run on a real two-region installation; the
   single-region objectives of D241 are unchanged.
-- **O1562 — Placement granularity.** Recommended default: a tenant's namespaces live in one cell in
+- **O1562 — Placement granularity.** *Decided 2026-11-24 as recommended, delegate (Owner decision 2026-11-20-6), Owner
+  decision 2026-11-24-509.* Reason: a tenant in one cell keeps every authorization, quota and audit decision inside one
+  database transaction; a cross-cell tenant would need a directory that is itself a second authority. Recommended default: a tenant's namespaces live in one cell in
   this feature; namespace-level placement across cells needs a cross-cell tenant directory and is a
   later feature with its own ADR.

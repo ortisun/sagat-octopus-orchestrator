@@ -4,6 +4,29 @@ Decisions that only the product owner could take, with what each one unblocks. E
 recorded where the open item lived (gap register, ADR, runbook or specification). "Not built"
 means the decision is taken and the implementation is still to be done; it is not evidence.
 
+## 2026-11-24 — Delegated decisions of features 032 and 036 (readiness for the build)
+
+Taken by the agent that the coordinating session briefed for scale and resilience, under the owner's delegations:
+Owner decision 2026-11-20-6 (the open questions of 0.3.0 features) and Owner decision 2026-11-24-4 (accepting ADRs and
+checklist items), both recorded in this file by their own pull requests. Features 032 and 036 are 0.3.0 features by
+Owner decision 2026-11-24-1. Each row is a delegate's decision, weighed over every option and taken for the most
+architectural and business advantage; its reasoning is where the question lives, named in `Covers`. The owner may
+overrule any of them.
+
+| ID | Decision | Decided by | Status | Covers |
+|---|---|---|---|---|
+| OD-2026-11-24-500 | O1700 of 036: a dedicated ingestion role, optional; the default stays "everything together" (as recommended) | delegate | Decided; not built | specs/036-elastic-scaling/spec.md "Owner questions" |
+| OD-2026-11-24-501 | O1701 of 036: Kafka positions stay in the platform's database with the balanced rank share; no broker consumer groups (as recommended) | delegate | Decided; not built | specs/036-elastic-scaling/spec.md "Owner questions"; ADR-0073 |
+| OD-2026-11-24-502 | O1702 of 036: rolling replacement by default; in-place resize only where the operator enables it and the environment confirms support (as recommended) | delegate | Decided; not built | specs/036-elastic-scaling/spec.md "Owner questions" |
+| OD-2026-11-24-503 | O1704 of 036: a tenant's custom signal has no automatic effect until an operator admits it to a policy with a cap; tenant publication is not in the first delivery (as recommended, with checklist item CHK016's conflict settled) | delegate | Decided; not built | specs/036-elastic-scaling/spec.md "Owner questions"; research.md D036-006 |
+| OD-2026-11-24-504 | O1710 of 036: operators act through a separate operator listener and principal (option 1, ADR-0074) | delegate | Decided; not built | specs/036-elastic-scaling/spec.md "Owner questions"; tasks.md T036-053 to T036-065 |
+| OD-2026-11-24-505 | ADR-0072, ADR-0073 and ADR-0074 accepted for implementation, with their stale lines corrected; their evidence sections are filled when built | delegate | Decided; not built | docs/adr/ADR-0072-*.md, ADR-0073-*.md, ADR-0074-*.md; specs/036-elastic-scaling/tasks.md T036-090 |
+| OD-2026-11-24-506 | The 34 items of 036's `checklists/security.md` settled item by item after an independent security reviewer's verification, as recorded in that file | delegate | Decided | specs/036-elastic-scaling/checklists/security.md |
+| OD-2026-11-24-507 | ADR-0067 accepted; ADR-0009 superseded in part; the region drill report and the commit-latency benchmark (T032-063) become the release gate of feature 032 | delegate | Decided; not built | docs/adr/ADR-0067-*.md, ADR-0009-*.md; specs/032-multi-region-failover/tasks.md T032-001, T032-063 |
+| OD-2026-11-24-508 | O1561 of 032: `sync_quorum` is the reference mode; cross-region RPO and RTO stay benchmark criteria until a drill on two real regions (as recommended) | delegate | Decided; not built | specs/032-multi-region-failover/spec.md "Owner questions" |
+| OD-2026-11-24-509 | O1562 of 032: a tenant's namespaces live in one cell (as recommended) | delegate | Decided; not built | specs/032-multi-region-failover/spec.md "Owner questions" |
+| OD-2026-11-24-510 | The five unticked items of 032's `checklists/requirements.md` accepted as they stand, with the reason for each in that file | delegate | Decided | specs/032-multi-region-failover/checklists/requirements.md |
+
 ## 2026-11-20 — Documentation first, words in full, identifiers as words
 
 The owner gave three instructions on 2026-11-20, one after the other. They are amended into the constitution together

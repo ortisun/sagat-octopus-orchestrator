@@ -77,9 +77,9 @@ later SC-036-010 to 012, 014 to 016.
 
 **Dependencies.** 001 (foundation), 002 (execution, claim path), 004 (events, inbox and connectors),
 008 (observability), 009 (tenancy, quotas, audit), 010 (shards, pools, packaging and the benchmark harness).
-Feature 019 (proposed, not approved) routes work to worker deployments and excludes autoscaling of its push functions and warm pools;
+Feature 019 (approved for implementation on 2026-11-11, not built) routes work to worker deployments and excludes autoscaling of its push functions and warm pools;
 this feature does not depend on it, defines pool signals on the pool concept that exists today, and leaves the
-signals of 019's deployments to be added through FR-036-005 when 019 is approved. Feature 033 (Redis Streams)
+signals of 019's deployments to be added through FR-036-005 when 019 is built. Feature 033 (Redis Streams)
 is outbound and internal only and has no inbound consumer to scale; any transport added later falls under
 FR-036-005. Feature 032 (multi-region) is out of scope here.
 
@@ -1036,28 +1036,44 @@ make each source fail in turn and verify that the signal becomes unavailable and
   archival): named as future levers, and a limit of this feature's results.
 - A Studio view of signals, policies and decisions: the management interface and the operator command line
   come first; the view is a follow-up.
-- Autoscaling of push functions and warm pools of feature 019 until that feature is approved.
+- Autoscaling of push functions and warm pools of feature 019. Feature 019 was approved for implementation on
+  2026-11-11 (Owner decision 2026-11-11-1) and is not built; its own specification also leaves their autoscaling out.
 - Changing the delivery guarantees of any connector, or adopting broker-managed consumer groups.
 
 ## Owner questions
 
-Recorded with the recommended default in `research.md` at planning. The owner decides; until then the default
-below is what the specification assumes.
+Recorded with the recommended default in `research.md` at planning. Feature 036 is in release 0.3.0 (Owner decision
+2026-11-24-1), so its open questions fall under the delegation of Owner decision 2026-11-20-6; they were decided on
+2026-11-24 as recorded below and in `docs/owner-decisions.md` (Owner decisions 2026-11-24-500 to 2026-11-24-504).
 
-- **O1700 — Dedicated ingestion role.** Recommended: yes, as an optional deployment role; the default stays
-  "everything together".
-- **O1701 — Kafka consumption.** Recommended: keep positions in the platform's database with a balanced
-  assignment of partitions, and do not adopt broker consumer groups, so that the position and the admission
-  of the events stay one commit.
-- **O1702 — Default way to apply a resource change.** Recommended: rolling replacement by default; in place
-  only when the operator enables it for the role and the environment confirms support.
+- **O1700 — Dedicated ingestion role.** *Decided 2026-11-24, delegate (Owner decision 2026-11-20-6), Owner decision
+  2026-11-24-500:* yes, as an optional deployment role; the default stays "everything together". Reason: a separate
+  role is the only way to scale readers of a busy connector without also scaling the scheduler and the worker-facing
+  interface, which is where the platform competes with Windmill's dedicated workers and Temporal's separate services;
+  keeping it optional costs nothing to a small deployment. Recommended: yes, as an optional deployment role; the
+  default stays "everything together".
+- **O1701 — Kafka consumption.** *Decided 2026-11-24, delegate (Owner decision 2026-11-20-6), Owner decision
+  2026-11-24-501:* as recommended. Reason: a broker consumer group would make the offset commit a second authority
+  beside the inbox admission, which principle VII and Architecture decision 0012 forbid; the balanced rank share of
+  Architecture decision 0073 gives the balance a group would. Recommended: keep positions in the platform's database
+  with a balanced assignment of partitions, and do not adopt broker consumer groups, so that the position and the
+  admission of the events stay one commit.
+- **O1702 — Default way to apply a resource change.** *Decided 2026-11-24, delegate (Owner decision 2026-11-20-6),
+  Owner decision 2026-11-24-502:* as recommended. Reason: a rolling replacement is supported by every Kubernetes
+  version the chart targets and keeps the disruption budget's guarantees; in-place resize depends on the cluster's
+  version and runtime, so it is opt-in where the environment confirms it. Recommended: rolling replacement by default;
+  in place only when the operator enables it for the role and the environment confirms support.
 - **O1703 — Who may define what.** *Answered by the owner on 2026-10-28 (option B):* operators define every
   policy; tenants read the lag and how scaling treats their own connectors (what the decisions mean for the connector, not the decision records) and adjust their in-flight parallelism and
   rate limit by hand within quota; no tenant controls replicas or resources. Recorded in
   `docs/owner-decisions.md`; specified by FR-036-023.
-- **O1704 — Custom signals.** Recommended, and following from O1703: a custom signal published by a tenant has
-  no automatic effect until an operator admits it to a policy, with a cap on its influence. Pending the
-  owner's confirmation.
+- **O1704 — Custom signals.** *Decided 2026-11-24, delegate (Owner decision 2026-11-20-6), Owner decision
+  2026-11-24-503:* as recommended, and publication by tenants is not in the first delivery (the plan's gap G1700),
+  which settles the conflict security checklist item CHK016 named. Reason: a signal a tenant controls that scales a
+  shared role is a lever over other tenants' cost and capacity; admitting it only through an operator's policy with a
+  cap keeps principle V's boundary, and deferring the tenant endpoint keeps the first delivery's surface small.
+  Recommended, and following from O1703: a custom signal published by a tenant has no automatic effect until an
+  operator admits it to a policy, with a cap on its influence.
 - **O1705 — Rate limit of a connector.** *Resolved by a finding at planning, no decision needed:* the limit
   already holds across replicas, so there is nothing to opt into. The question rested on a wrong statement in
   the runbook. Specified by FR-036-013 (visibility and documentation only).
@@ -1075,7 +1091,12 @@ below is what the specification assumes.
 - **O1709 — Delivery order.** *Answered by the owner on 2026-10-28 (option B):* the first delivery is US01,
   US02, US03, US04, US05, US06, US10 and US13; US07, US09, US08, US12 and US11 follow. Recorded in
   `docs/owner-decisions.md`; described in the Context.
-- **O1710 — How an operator acts through the management interface.** *Raised by planning, not yet answered.*
+- **O1710 — How an operator acts through the management interface.** *Decided 2026-11-24, delegate (Owner decision
+  2026-11-20-6), Owner decision 2026-11-24-504: the separate operator listener and principal of Architecture decision
+  0074.* Reason: it is the only option in which a tenant's listener can never create or accept an operator, so a
+  misconfigured role cannot grant platform power through the tenant door, and the surface can be left off; the cost,
+  a second audience in the identity configuration (today `AuthConfig` and the development identity provider each hold
+  one audience), is a bounded task (T036-065 now carries it). Raised by planning:
   The REST API knows only tenant principals, and today's operator actions are owner-role commands. Options: a
   separate operator listener and principal (recommended, assumed by the plan and ADR-0074); an operator role on
   the tenant API; owner-role commands only with a read-only REST. See `research.md` O1710. If the owner chooses
@@ -1089,4 +1110,5 @@ below is what the specification assumes.
 The database remains the ceiling of the platform (every transition is a commit); more replicas move work
 between processes and do not make the server's commits cheaper. A single large run is one shard's work
 (feature 010, G254). Read replicas, journal partitioning and archival are the next levers and are not part of
-this feature.
+this feature: since 2026-11-24 they are designs 048 (what a standby may serve), 049 (journal partitioning) and feature
+020 (archival).

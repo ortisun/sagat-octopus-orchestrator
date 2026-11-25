@@ -62,7 +62,7 @@ above), so check the other branches before taking one. The [template](TEMPLATE.m
 | 0006 | [Scripts as untrusted execution](ADR-0006-untrusted-code-sandbox.md) | Accepted for initial design |
 | 0007 | [Common SDK protocol](ADR-0007-sdk-protocol-parity.md) | Accepted for initial design |
 | 0008 | [Runtime graph as a journal projection](ADR-0008-runtime-event-projection.md) | Accepted for initial design |
-| 0009 | [Single region with HA before active-active](ADR-0009-single-region-first.md) | Accepted for initial design |
+| 0009 | [Single region with HA before active-active](ADR-0009-single-region-first.md) | Accepted for initial design; superseded in part by ADR-0067 (2026-11-24) |
 | 0010 | [Compensations and reconciliations are derived steps of the definition](ADR-0010-compensations-are-derived-steps.md) | Accepted |
 | 0012 | [Events pass through a durable inbox and a durable delivery table; matching is asynchronous and idempotent](ADR-0012-events-pass-through-a-durable-inbox-and-delivery-table.md) | Accepted |
 | 0013 | [Scripts run in a container of their own, started by a runner the control plane never lets near its database](ADR-0013-scripts-run-in-containers-the-control-plane-never-touches.md) | Accepted |
@@ -109,14 +109,14 @@ above), so check the other branches before taking one. The [template](TEMPLATE.m
 | 0064 | [Access grants only add; only a restricted folder or an operation list narrows them; one evaluator decides every operation](ADR-0064-access-grants-add-and-only-restricted-folders-and-operation-lists-narrow.md) | Proposed |
 | 0065 | [Cross-namespace service operations cross the boundary only through durable operation messages, under a pinned contract, an endpoint allow-list and a declared result disclosure](ADR-0065-cross-namespace-operations-cross-only-through-durable-operation-messages.md) | Proposed |
 | 0066 | [Payload encryption is client-side and declared; the engine never holds a codec key and treats encoded values as opaque](ADR-0066-client-side-payload-encryption.md) | Proposed |
-| 0067 | [A cell has one writable region at a time, fails over active-passive by an operator's activation, and fences everything granted before it with a region epoch](ADR-0067-a-cell-has-one-writable-region-and-fails-over-by-a-fenced-epoch.md) | Proposed |
+| 0067 | [A cell has one writable region at a time, fails over active-passive by an operator's activation, and fences everything granted before it with a region epoch](ADR-0067-a-cell-has-one-writable-region-and-fails-over-by-a-fenced-epoch.md) | Accepted (2026-11-24, delegate, Owner decision 2026-11-24-4) |
 | 0068 | [Workflow Stream events are a fenced, budgeted, value-carrying log beside the journal, read only through a classified feed](ADR-0068-workflow-streams-are-a-fenced-classified-log-beside-the-journal.md) | Proposed |
 | 0069 | [Redis Streams share outbox and delivery authority](ADR-0069-redis-streams-share-outbox-and-delivery-authority.md) | Accepted for implementation |
 | 0070 | [Rust shares the canonical SDK contract](ADR-0070-rust-sdk-shares-the-canonical-sdk-contract.md) | Accepted for implementation, at the owner's request of 2026-10-27 |
 | 0071 | [Lake writes and step-output destinations are managed effects recovered at the destination](ADR-0071-lake-writes-and-destinations-are-managed-effects-recovered-at-the-destination.md) | Accepted |
-| 0072 | [Scaling decisions are a deterministic evaluation, recorded with their inputs and published; the platform applies only what lives inside a replica](ADR-0072-scaling-decisions-are-deterministic-recorded-and-published-not-applied-by-the-platform.md) | Proposed |
-| 0073 | [Connector partitions are shared by rank among the replicas that read them, and a connector's lag says why it is not draining](ADR-0073-connector-partitions-are-shared-by-rank-and-lag-says-why-a-consumer-is-not-draining.md) | Proposed |
-| 0074 | [Platform operators act through their own listener and principal, and outside data comes from allowlisted, read-only sources](ADR-0074-platform-operators-act-through-their-own-listener-and-outside-data-comes-from-allowlisted-sources.md) | Proposed |
+| 0072 | [Scaling decisions are a deterministic evaluation, recorded with their inputs and published; the platform applies only what lives inside a replica](ADR-0072-scaling-decisions-are-deterministic-recorded-and-published-not-applied-by-the-platform.md) | Accepted (2026-11-24, delegate, Owner decision 2026-11-24-4) |
+| 0073 | [Connector partitions are shared by rank among the replicas that read them, and a connector's lag says why it is not draining](ADR-0073-connector-partitions-are-shared-by-rank-and-lag-says-why-a-consumer-is-not-draining.md) | Accepted (2026-11-24, delegate, Owner decision 2026-11-24-4) |
+| 0074 | [Platform operators act through their own listener and principal, and outside data comes from allowlisted, read-only sources](ADR-0074-platform-operators-act-through-their-own-listener-and-outside-data-comes-from-allowlisted-sources.md) | Accepted (2026-11-24, delegate, Owner decision 2026-11-24-4) |
 | 0075 | [Worker leases retain ChildRoot possession through commit](ADR-0075-worker-leases-retain-child-root-possession.md) | Accepted |
 | 0076 | [Compensation failure and uncertain effects require explicit recovery authority](ADR-0076-compensation-failure-and-uncertain-effects.md) | Accepted on 2026-11-01 for its decisions 1 to 3, 5 and 7 |
 | 0077 | [EGM design docs replace Spec Kit as the only specification workflow](ADR-0077-egm-replaces-spec-kit.md) | Proposed |

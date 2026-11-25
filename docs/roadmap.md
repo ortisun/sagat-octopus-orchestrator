@@ -36,7 +36,7 @@
 | 29 | 029 Custom Roles and Folders | custom roles, groups, folders with ACLs, per-operation access lists ([spec](../specs/029-custom-roles-folders/spec.md)) | Approved for implementation (Owner decision 2026-11-11-1), not built; ADR-0064 proposed; IdP groups depend on 013 |
 | 30 | 030 Cross-namespace Services | Nexus-like service contracts and operations within one tenant ([spec](../specs/030-cross-namespace-services/spec.md)) | Approved for implementation (Owner decision 2026-11-11-1), not built; ADR-0065 proposed |
 | 31 | 031 Client-side Encryption | SDK payload codecs with customer-held keys, codec server, opacity checks at publication ([spec](../specs/031-client-side-encryption/spec.md)) | Approved for implementation (Owner decision 2026-11-11-1), not built; ADR-0066 proposed |
-| 32 | 032 Multi-region Failover | active-passive cells with fenced region epochs ([spec](../specs/032-multi-region-failover/spec.md)) | Approved for implementation (Owner decision 2026-11-11-1), not built; ADR-0067 proposed; needs a constitution amendment (owner decision O1560) |
+| 32 | 032 Multi-region Failover | active-passive cells with fenced region epochs ([spec](../specs/032-multi-region-failover/spec.md)) | Approved for implementation (Owner decision 2026-11-11-1), in 0.3.0, not built; ADR-0067 accepted (Owner decision 2026-11-24-507); the constitution amendment is decided (Owner decision 2026-11-24-2, 5.0.0); builds after design 048 |
 | 35 | 035 Iceberg Writes and Step-Output Destinations | managed workflow steps that append, overwrite or upsert records into customer Apache Iceberg tables (REST, Glue, Hive, JDBC catalogs; S3, GCS, ADLS storage) through a new 017 connection kind, recovered by an effect-key lookup in the table history; synchronous step-output destinations (Iceberg, PostgreSQL, object storage, ClickHouse, broker streams), with the asynchronous mode in 020 ([spec](../specs/035-iceberg-write-steps/spec.md)) | Specified and planned (2026-10-27); ADR-0071 accepted and implementation started 2026-11-02; 20 of its 129 tasks ticked with their evidence in [tasks.md](../specs/035-iceberg-write-steps/tasks.md) |
 | 41 | 041 Step Logs per Run | The lines a step's code logs are sent by the worker (protocol 1.7, six SDKs), stored per attempt beside the journal with ceilings, redaction and a retention period, and read through `GET /runs/{runId}/logs`, a live stream and a Studio screen, chosen for 0.3.0 by OD-2026-11-13-9 ([design](designs/041-step-logs.md)) | Approved on 2026-11-16 ([design doc](designs/041-step-logs.md), its Status line and approval record), after the architecture, security and correctness reviews and `egm-review`; owner answers OD-2026-11-13-14 and OD-2026-11-13-18; ADR-0084 and ADR-0085 accepted (OD-2026-11-13-17) and revised; 2 of its 32 tasks ticked |
 
@@ -51,11 +51,12 @@ Feature036 (Elastic scaling driven by telemetry) was proposed 2026-10-28 as the 
 feature010: lag for Kafka, NATS and SQS consumers, balanced Kafka partition assignment, scaling signals and
 policies declared by configuration and through the management interface, pulled sources, and horizontal and
 vertical decisions with an explanation. It has a [spec](../specs/036-elastic-scaling/spec.md) with five
-clarifications, a [plan](../specs/036-elastic-scaling/plan.md), ADR-0072 to ADR-0074 (proposed) and
+clarifications, a [plan](../specs/036-elastic-scaling/plan.md), ADR-0072 to ADR-0074 (accepted 2026-11-24 under the owner's delegation) and
 [94 tasks](../specs/036-elastic-scaling/tasks.md) for the first delivery; the owner approved it for implementation on
 2026-11-11 (Owner decision 2026-11-11-1); nothing implemented. The owner decided O1703 and O1706–O1709 (first delivery: consumer lag, balanced
-partitions, policies by configuration and API, pulled sources, export to the autoscaling provider). Still
-open: O1700–O1702 and O1704 (recommended defaults) and O1710 (how an operator acts through the API).
+partitions, policies by configuration and API, pulled sources, export to the autoscaling provider). O1700–O1702,
+O1704 and O1710 were decided on 2026-11-24 under the owner's delegation, as recommended (Owner decisions 2026-11-24-500
+to 2026-11-24-504); the plan's "Readiness against `develop` (2026-11-24)" lists the build slices.
 
 **Dependencies:** `001 → 002 → {003,004,009} → {005,006,007} → {008,011,012} → 010`, with cross-cutting security from 001; later phases can advance in parallel once contracts stabilize.
 
