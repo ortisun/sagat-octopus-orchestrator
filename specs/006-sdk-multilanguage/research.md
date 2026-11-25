@@ -1333,6 +1333,16 @@ one receive call.
   cannot stop a session that hands back). Tested in Task 006-050 (root and scoped) and Task 006-066 (the stream on a floor engine,
   the hand-back to this build: a lapse; a session stored at 8 handing back on the floor with request (10): a lapse).
 
+- **D006-069 — The design is approved for building** (delegate, OD-2026-11-24-4, 2026-11-25). ADR-0099 was accepted by the owner
+  (OD-2026-11-21-5 to -7) after 14 review rounds. Two merges of the base (pull request #260, D006-080 to D006-093) followed; round 15
+  of the review found one Major (a 1.8 hand-back the fleet cannot honour was an ordinary failure, against D006-089), settled by
+  D006-067 and ADR-0145, and round 16 found no Blocker and no Major, its four Minors settled by D006-068. With no finding at Major or
+  above left open, the design (ADR-0099, ADR-0145, `stream-completion.md` "Delivery acknowledgement (protocol 1.8)", D006-040 to
+  D006-069, the tasks of the phase "Delivery acknowledgement") is approved for building in the order its precondition sets. Weighed:
+  a further full round of the four reviewers (the merges changed the base's rules, and rounds 15 and 16 read exactly those
+  changes; the rest of the design is unchanged since round 14), and holding approval until the follow-up of #260 is built (it is
+  built and under review as pull request #283, and the tasks that depend on it already wait for its merge).
+
 ### Gaps
 
 - **G006-040 — A host that crashes between the verdict `ACKNOWLEDGED` and the start of the handler** leaves an acknowledged lease that
