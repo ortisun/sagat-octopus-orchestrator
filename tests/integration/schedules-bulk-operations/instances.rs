@@ -1357,6 +1357,91 @@ async fn an_activation_waits_for_a_beat_that_holds_the_epoch_and_sees_its_last_s
     }
 }
 
+/// Correctness review minor 8 and the security review's suspicion of 2026-11-25 (decision D006-100): every beat share-locks
+/// the epoch row, and a share lock can be taken past a waiting `FOR UPDATE`, so a fleet beating without pause could hold an
+/// activation off past its lock bound (2 s by default). Eight processes beat in a loop with no pause at all, started together
+/// by a barrier, while an activation runs under the default operator bounds: it records its requirement, and the beats went
+/// on while it did.
+#[tokio::test]
+async fn beats_without_pause_do_not_starve_an_activation() {
+    const BEATERS: usize = 8;
+    let r = registry().await;
+    let mut instances = Vec::new();
+    for _ in 0..BEATERS {
+        instances.push(r.serving(ENGINE, &[Capability::LeaseWithdrawalV1]).await);
+    }
+    let pool =
+        r.db.runtime_pool_with(u32::try_from(BEATERS).expect("a count") + 1)
+            .await;
+    let barrier = Arc::new(tokio::sync::Barrier::new(BEATERS + 1));
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let beats = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let mut tasks = Vec::new();
+    for instance in instances {
+        let (store, barrier, stop, beats) = (
+            sagat_infra_postgres::PgInstanceStore::new(pool.clone()),
+            Arc::clone(&barrier),
+            Arc::clone(&stop),
+            Arc::clone(&beats),
+        );
+        tasks.push(tokio::spawn(async move {
+            barrier.wait().await;
+            while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                store
+                    .heartbeat(instance, &TEST_TOKEN)
+                    .await
+                    .expect("a beat");
+                beats.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+        }));
+    }
+    barrier.wait().await;
+    // the beats are in flight before the first activation: a condition, never a time
+    while beats.load(std::sync::atomic::Ordering::Relaxed) < BEATERS * 20 {
+        tokio::task::yield_now().await;
+    }
+    let actor = Subject::operator();
+    // the default bounds of the operator's transaction: a lock wait of at most 2 s; ten activations and removals in a row
+    let operator = sagat_infra_postgres::PgInstanceStore::new(r.db.pool.clone());
+    let before = beats.load(std::sync::atomic::Ordering::Relaxed);
+    let mut outcomes = Vec::new();
+    for _ in 0..10 {
+        let activated = operator
+            .activate(
+                Activation {
+                    capability: Capability::LeaseWithdrawalV1,
+                    kinds: &[ENGINE],
+                    actor: &actor,
+                },
+                nothing,
+            )
+            .await;
+        let removed = operator
+            .remove(Capability::LeaseWithdrawalV1, &actor, nothing)
+            .await;
+        outcomes.push((activated, removed));
+    }
+    let during = beats.load(std::sync::atomic::Ordering::Relaxed) - before;
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    for task in tasks {
+        task.await.expect("a beater");
+    }
+    for (activated, removed) in &outcomes {
+        assert!(
+            matches!(activated, Ok(Activated::Recorded { .. })),
+            "the activation was held off by the beats: {activated:?}"
+        );
+        assert!(
+            matches!(removed, Ok(Removed::Removed { .. })),
+            "the removal was held off by the beats: {removed:?}"
+        );
+    }
+    assert!(
+        during >= BEATERS * 10,
+        "the processes beat while the activations ran: {during}"
+    );
+}
+
 /// The beat raises when the epoch row is missing (decision D006-098): it never answers an epoch it did not read. The row is
 /// deleted with the guards off, in a transaction that is rolled back.
 #[tokio::test]
