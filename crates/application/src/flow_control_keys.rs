@@ -30,7 +30,7 @@ use crate::keyed_digest::KeyRing;
 pub struct RunPermit {
     pub pool: GatePool,
     pub group: ResolvedGroup,
-    pub state: RunPermitState,
+    pub state: RunGateState,
     /// The database clock of the statement that acquired the permit (holding) or queued the run (waiting), read after
     /// the key's lock and before its commit.
     pub since: OffsetDateTime,
@@ -45,7 +45,7 @@ impl RunPermit {
         pool: GatePool,
         group: ResolvedGroup,
         digest: [u8; 32],
-        state: RunPermitState,
+        state: RunGateState,
         since: OffsetDateTime,
     ) -> Self {
         Self {
@@ -83,24 +83,15 @@ impl std::fmt::Debug for RunPermit {
     }
 }
 
-/// Whether a run holds its permit or waits for it.
+/// Whether a run's start holds what its gate gives (a permit, or a slot that still counts) or waits for it. Gate-neutral
+/// (task T022-112, decision D022-068 item 6): each body names the state in its gate's words (`HOLDING` for a permit,
+/// `GRANTED` for a slot, `WAITING` for both), so this type carries no word of either.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RunPermitState {
-    Holding,
-    /// Queued; the run is dequeued and fails `CONCURRENCY_WAIT_TIMEOUT` at `deadline` if not granted before.
-    Waiting {
-        deadline: OffsetDateTime,
-    },
-}
-
-impl RunPermitState {
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Holding => "HOLDING",
-            Self::Waiting { .. } => "WAITING",
-        }
-    }
+pub enum RunGateState {
+    /// The permit is held, or the slot was granted and still counts.
+    Held,
+    /// Queued; the run is dequeued and fails with its gate's wait timeout at `deadline` if not granted before.
+    Waiting { deadline: OffsetDateTime },
 }
 
 /// One live concurrency key of a namespace (a `concurrency_semaphores` row), read without its lock.
@@ -141,7 +132,7 @@ pub struct ConcurrencyKeyPage {
 pub struct RunRateSlot {
     pub pool: GatePool,
     pub group: ResolvedGroup,
-    pub state: RunPermitState,
+    pub state: RunGateState,
     /// The database clock of the statement that granted the slot or buffered the run.
     pub since: OffsetDateTime,
     /// The effective limit the row was decided with.
@@ -163,7 +154,7 @@ impl RunRateSlot {
         pool: GatePool,
         group: ResolvedGroup,
         digest: [u8; 32],
-        state: RunPermitState,
+        state: RunGateState,
         since: OffsetDateTime,
         (limit, per): (u32, RatePeriod),
     ) -> Self {
@@ -838,7 +829,7 @@ mod tests {
             GatePool::Ordinary,
             ResolvedGroup::parse("payments").expect("a group"),
             [0xab; 32],
-            RunPermitState::Holding,
+            RunGateState::Held,
             OffsetDateTime::UNIX_EPOCH,
         );
         assert_eq!(permit.label(), None);

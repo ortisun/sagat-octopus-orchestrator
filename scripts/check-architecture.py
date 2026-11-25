@@ -533,6 +533,32 @@ def queued_runs_count_errors(src):
     return errors
 
 
+# --- the grant pass's eligibility of a waiter is one text (feature 022, task T022-112, decision D022-068 item 6) -----------
+# A waiter is eligible when it is not past its deadline and its run is running or waiting and not paused. The grant routine,
+# the pass's listing of a key's waiters, admission and the place estimate must agree, so the text is written once, by the
+# macros `eligible_gate_waiter!` and `live_gate_run!` of lib.rs (whose literals are split around their arguments), and a
+# statement that writes the run's part out again is refused.
+LIVE_GATE_RUN_TEXT = re.compile(r"\b\w+\.status\s+IN\s*\(\s*'RUNNING'\s*,\s*'WAITING'\s*\)\s+AND\s+NOT\s+\w+\.paused\b", re.IGNORECASE)
+
+
+def eligible_waiter_errors(src):
+    """The errors of the one-text eligibility rule over the PostgreSQL adapter's source directory `src`."""
+    errors = []
+    root = pathlib.Path(src)
+    for path in sorted(root.rglob("*.rs")):
+        text = path.read_text()
+        _, literals = rust_literals(text)
+        rel = path.relative_to(root).as_posix()
+        for offset, sql in literals:
+            if LIVE_GATE_RUN_TEXT.search(sql):
+                errors.append(
+                    f"crates/infra-postgres/src/{rel}:{text.count(chr(10), 0, offset) + 1}: the grant pass's eligibility "
+                    f"of a waiter written out: use `eligible_gate_waiter!` or `live_gate_run!` (lib.rs), so its uses never "
+                    f"disagree (T022-112, D022-068 item 6)"
+                )
+    return errors
+
+
 # --- a key's value never reaches the API's flow-control bodies (feature 022, FR-022-022, D1168; keys review m4) -----------------
 # The bodies of `Run.concurrency` and the key listing are built from types that hold no key value: no JSON value (which could
 # carry one), no digest machinery, no digest read. A key is shown as its label only.
@@ -985,6 +1011,7 @@ def main(argv):
     errors.extend(key_row_insert_errors(postgres_src))
     errors.extend(gate_row_write_errors(postgres_src))
     errors.extend(queued_runs_count_errors(postgres_src))
+    errors.extend(eligible_waiter_errors(postgres_src))
     errors.extend(reveal_rule_errors(postgres_src))
     errors.extend(run_input_errors(run_input_src))
     errors.extend(application_runtime_errors(pkgs))
@@ -1027,7 +1054,7 @@ def main(argv):
     print(f"architecture check passed ({len(graph)} workspace crates, layers respected, no cycles, the lease row is a leaf lock, every run.finished body says its schedule, "
           f"no jsonschema in the run-input validator, the application's runtime confined to one file, every creator given the gate, every run created with a checked input, "
           f"runs are inserted only at the admission point, key rows are filed only by file_keys, gate rows are written only by the gate, a run starts only through Engine::start, "
-          f"queued runs are counted by one statement, flow-control bodies hold no key value, the reveal rule has one implementation)")
+          f"queued runs are counted by one statement, a waiter's eligibility is one text, flow-control bodies hold no key value, the reveal rule has one implementation)")
     return 0
 
 

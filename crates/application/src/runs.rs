@@ -2369,7 +2369,7 @@ where
                 if let Some(slot) = run.rate_limit.as_mut()
                     && matches!(
                         slot.state,
-                        crate::flow_control_keys::RunPermitState::Waiting { .. }
+                        crate::flow_control_keys::RunGateState::Waiting { .. }
                     )
                     && let Some(mut place) = self.rate_place(principal, id).await?
                 {
@@ -2379,7 +2379,7 @@ where
                     if slot.label().is_none()
                         || matches!(
                             run.concurrency.as_ref().map(|permit| permit.state),
-                            Some(crate::flow_control_keys::RunPermitState::Waiting { .. })
+                            Some(crate::flow_control_keys::RunGateState::Waiting { .. })
                         )
                     {
                         place.estimated_grant_at = None;

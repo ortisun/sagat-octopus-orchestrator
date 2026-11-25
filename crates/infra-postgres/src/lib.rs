@@ -24,6 +24,30 @@ macro_rules! purgeable_grant {
     };
 }
 
+/// The run of a waiter (alias `$r`) that the grant pass serves: running or waiting, and not paused (ADR-0089 decision 4).
+/// One text for the pass's eligibility and for the place estimate's "skipped" (task T022-112, decision D022-068 item 6).
+macro_rules! live_gate_run {
+    ($r:literal) => {
+        concat!(
+            $r,
+            ".status IN ('RUNNING', 'WAITING') AND NOT ",
+            $r,
+            ".paused"
+        )
+    };
+}
+
+/// A waiter (alias `$w`, its run `$r`) the grant pass may grant at the instant `$now`: not past its queue deadline, of a
+/// run the pass serves ([`live_gate_run!`]). Its own limit is checked beside it by each statement, over its own window.
+/// One text for every use of the predicate (the grant routine's waiters ahead, the pass's listing of a key's waiters,
+/// admission's eligible waiter, the place estimate; task T022-112, decision D022-068 item 6), as [`purgeable_grant!`]
+/// is for the purge; `scripts/check-architecture.py` refuses a copy written out elsewhere.
+macro_rules! eligible_gate_waiter {
+    ($w:literal, $r:literal, $now:literal) => {
+        concat!($w, ".deadline_at > ", $now, " AND ", live_gate_run!($r))
+    };
+}
+
 mod api_admission;
 mod approval_progress;
 mod approval_scheduler;
@@ -150,3 +174,23 @@ mod blobs;
 pub use blobs::PgBlobCatalog;
 
 mod secret_cleanup;
+
+#[cfg(test)]
+mod gate_predicate_tests {
+    /// Task T022-112: the one text of the grant pass's eligibility, as each of its uses expands it.
+    #[test]
+    fn the_eligibility_of_a_waiter_is_one_text() {
+        assert_eq!(
+            eligible_gate_waiter!("w", "r", "now()"),
+            // split as the macro is, so that the architecture check does not read it as a copy
+            concat!(
+                "w.deadline_at > now() AND r.status IN ('RUNNING', 'WAITING') ",
+                "AND NOT r.paused"
+            )
+        );
+        assert_eq!(
+            live_gate_run!("mr"),
+            concat!("mr.status IN ('RUNNING', 'WAITING') ", "AND NOT mr.paused")
+        );
+    }
+}

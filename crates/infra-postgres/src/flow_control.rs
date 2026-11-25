@@ -466,14 +466,14 @@ pub(crate) async fn bound_waiting_rate_slots(
     pool: &sqlx::PgPool,
     records: &mut [sagat_application::execution::RunRecord],
 ) -> Result<(), StoreError> {
-    use sagat_application::flow_control_keys::RunPermitState;
+    use sagat_application::flow_control_keys::RunGateState;
     let mut ceilings: Vec<(NamespaceId, sagat_domain::workflow::FlowControlCeilings)> = Vec::new();
     for record in records {
         let (tenant, namespace) = (record.info.tenant_id, record.info.namespace_id);
         let Some(slot) = record.rate_limit.as_mut() else {
             continue;
         };
-        if !matches!(slot.state, RunPermitState::Waiting { .. }) {
+        if !matches!(slot.state, RunGateState::Waiting { .. }) {
             continue;
         }
         let of = match ceilings.iter().find(|(n, _)| *n == namespace) {
@@ -500,7 +500,7 @@ pub(crate) async fn bound_waiting_rate_slots(
 pub(crate) fn run_rate_slot(
     row: &sqlx::postgres::PgRow,
 ) -> Result<Option<sagat_application::flow_control_keys::RunRateSlot>, StoreError> {
-    use sagat_application::flow_control_keys::{RunPermitState, RunRateSlot};
+    use sagat_application::flow_control_keys::{RunGateState, RunRateSlot};
     use sqlx::Row as _;
     let Some(state) = crate::execution::selected::<String>(row, "rl_state")? else {
         return Ok(None);
@@ -516,8 +516,8 @@ pub(crate) fn run_rate_slot(
         .try_into()
         .map_err(|_| corrupt("rate-limit key digest"))?;
     let state = match (state.as_str(), deadline) {
-        ("GRANTED", None) => RunPermitState::Holding,
-        ("WAITING", Some(deadline)) => RunPermitState::Waiting { deadline },
+        ("GRANTED", None) => RunGateState::Held,
+        ("WAITING", Some(deadline)) => RunGateState::Waiting { deadline },
         _ => return Err(corrupt("run rate-limit slot")),
     };
     let per = u64::try_from(period)
@@ -542,7 +542,7 @@ pub(crate) fn run_rate_slot(
 pub(crate) fn run_permit(
     row: &sqlx::postgres::PgRow,
 ) -> Result<Option<sagat_application::flow_control_keys::RunPermit>, StoreError> {
-    use sagat_application::flow_control_keys::{RunPermit, RunPermitState};
+    use sagat_application::flow_control_keys::{RunGateState, RunPermit};
     use sqlx::Row as _;
     // a row without the columns (a command transaction's) has no permit; one whose columns cannot be read is corrupt
     let Some(state) = crate::execution::selected::<String>(row, "cc_state")? else {
@@ -557,8 +557,8 @@ pub(crate) fn run_permit(
         .try_into()
         .map_err(|_| corrupt("concurrency key digest"))?;
     let state = match (state.as_str(), deadline) {
-        ("HOLDING", None) => RunPermitState::Holding,
-        ("WAITING", Some(deadline)) => RunPermitState::Waiting { deadline },
+        ("HOLDING", None) => RunGateState::Held,
+        ("WAITING", Some(deadline)) => RunGateState::Waiting { deadline },
         _ => return Err(corrupt("run permit")),
     };
     Ok(Some(RunPermit::new(
@@ -1075,13 +1075,18 @@ pub const RATE_KEY_LISTING_OF_GROUP_SQL: &str = concat!(
 /// `k = n + a - limit + 1` (offset `k - 1`, at least 0), and its own deadline and whether the pass skips its run (decision
 /// D022-068 item 1). A run's grant is leased at its grant (`rate_limit_grants_shape`), so its counted grants are those
 /// leased within its window, one range of `rate_limit_grants_count_idx`.
-pub const RATE_PLACE_SQL: &str = "WITH me AS ( \
+pub const RATE_PLACE_SQL: &str = concat!(
+    "WITH me AS ( \
          SELECT w.tenant_id, w.namespace_id, w.pool, w.limit_scope, w.group_name, w.key_digest, w.run_id, w.node, \
                 w.enqueued_at, w.period_ms, w.deadline_at, \
                 least(coalesce(w.pinned_limit, w.declared_limit)::bigint, CASE w.period_ms WHEN 1000 THEN $3::bigint \
                       WHEN 60000 THEN $4::bigint WHEN 3600000 THEN $5::bigint \
                       ELSE coalesce(w.pinned_limit, w.declared_limit)::bigint END)::integer AS l, \
-                NOT (mr.status IN ('RUNNING', 'WAITING') AND NOT mr.paused) AS skipped, statement_timestamp() AS t \
+                ",
+    "NOT (",
+    live_gate_run!("mr"),
+    ")",
+    " AS skipped, statement_timestamp() AS t \
            FROM rate_limit_waiters w JOIN runs mr ON mr.tenant_id = w.tenant_id AND mr.id = w.run_id \
           WHERE w.tenant_id = $1 AND w.run_id = $2 AND w.node = ''), \
        counts AS ( \
@@ -1104,7 +1109,9 @@ pub const RATE_PLACE_SQL: &str = "WITH me AS ( \
                           WHEN 1000 THEN $3::bigint WHEN 60000 THEN $4::bigint WHEN 3600000 THEN $5::bigint \
                           ELSE coalesce(x.pinned_limit, x.declared_limit)::bigint END) AS lx) b \
           WHERE (x.enqueued_at, x.run_id, x.node) < (me.enqueued_at, me.run_id, me.node) \
-            AND x.deadline_at > me.t AND r.status IN ('RUNNING', 'WAITING') AND NOT r.paused \
+            AND ",
+    eligible_gate_waiter!("x", "r", "me.t"),
+    " \
             AND ((b.lx >= me.l AND x.period_ms <= me.period_ms) OR b.lx > coalesce(c.n, 0))) \
      SELECT me.l, me.period_ms, counted.n, ahead.a, me.t, \
             (SELECT g.leased_at FROM rate_limit_grants g \
@@ -1113,7 +1120,8 @@ pub const RATE_PLACE_SQL: &str = "WITH me AS ( \
                 AND g.leased_at > me.t - make_interval(secs => me.period_ms / 1000.0) \
               ORDER BY g.leased_at OFFSET greatest(counted.n + ahead.a - me.l, 0) LIMIT 1) AS kth, \
             me.deadline_at, me.skipped \
-       FROM me, counted, ahead";
+       FROM me, counted, ahead"
+);
 
 /// The listing of one group's keys (`$3`), in the order of `concurrency_semaphores_group_listing_idx`: the order of
 /// [`KEY_LISTING_SQL`] within one group, after a position of that group (`$8`).

@@ -8,7 +8,7 @@
 
 use sagat_application::flow_control_keys::{
     ConcurrencyKeyPage, ConcurrencyKeyView, KeyPosition, RateLimitKeyPage, RateLimitKeyView,
-    RunPermit, RunPermitState, RunRateSlot,
+    RunGateState, RunPermit, RunRateSlot,
 };
 use serde::Serialize;
 use time::OffsetDateTime;
@@ -30,14 +30,17 @@ pub struct RunConcurrencyBody {
 impl From<&RunPermit> for RunConcurrencyBody {
     fn from(permit: &RunPermit) -> Self {
         Self {
-            state: permit.state.as_str(),
+            state: match permit.state {
+                RunGateState::Held => "HOLDING",
+                RunGateState::Waiting { .. } => "WAITING",
+            },
             pool: permit.pool.as_str(),
             group: permit.group.as_str().to_owned(),
             key_label: permit.label().map(|label| label.as_str().to_owned()),
             since: permit.since,
             queue_deadline: match permit.state {
-                RunPermitState::Holding => None,
-                RunPermitState::Waiting { deadline } => Some(deadline),
+                RunGateState::Held => None,
+                RunGateState::Waiting { deadline } => Some(deadline),
             },
         }
     }
@@ -129,10 +132,10 @@ pub struct RunRateLimitBody {
 impl From<&RunRateSlot> for RunRateLimitBody {
     fn from(slot: &RunRateSlot) -> Self {
         Self {
-            // a slot held is `GRANTED` (`RunPermitState::Holding` read from its grant row)
+            // a slot held is `GRANTED` (`RunGateState::Held` read from its grant row)
             state: match slot.state {
-                RunPermitState::Holding => "GRANTED",
-                RunPermitState::Waiting { .. } => "WAITING",
+                RunGateState::Held => "GRANTED",
+                RunGateState::Waiting { .. } => "WAITING",
             },
             pool: slot.pool.as_str(),
             group: slot.group.as_str().to_owned(),
@@ -141,8 +144,8 @@ impl From<&RunRateSlot> for RunRateLimitBody {
             per: slot.per.as_str(),
             since: slot.since,
             queue_deadline: match slot.state {
-                RunPermitState::Holding => None,
-                RunPermitState::Waiting { deadline } => Some(deadline),
+                RunGateState::Held => None,
+                RunGateState::Waiting { deadline } => Some(deadline),
             },
             position: slot.position,
             estimated_grant_at: slot.estimated_grant_at,

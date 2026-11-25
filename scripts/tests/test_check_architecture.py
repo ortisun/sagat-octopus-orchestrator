@@ -554,6 +554,36 @@ class QueuedRunsAreCountedByOneStatement(unittest.TestCase):
             self.assertIn("counts of queued runs were found in flow_control.rs", out)
 
 
+class TheEligibilityOfAWaiterIsOneText(unittest.TestCase):
+    """Task T022-112 (feature 022, decision D022-068 item 6): the grant pass's eligibility of a waiter is written by the
+    macros of lib.rs only."""
+
+    def test_the_adapter_of_this_repository_passes(self):
+        result = subprocess.run([sys.executable, str(SCRIPT)], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("a waiter's eligibility is one text", result.stdout)
+
+    def test_a_copy_written_out_is_refused_and_named(self):
+        for statement in (
+            "SELECT 1 FROM rate_limit_waiters w JOIN runs r ON r.id = w.run_id WHERE w.deadline_at > now() "
+            "AND r.status IN ('RUNNING', 'WAITING') AND NOT r.paused",
+            "SELECT NOT (mr.status IN ('RUNNING','WAITING') AND NOT mr.paused) FROM runs mr",
+        ):
+            copy = f'async fn ahead() {{\n    sqlx::query(\n        "{statement}",\n    );\n}}'
+            code, out = run_lease_check(tree(**{"maintenance.rs": copy}))
+            self.assertEqual(code, 1, out)
+            self.assertIn("maintenance.rs:3", out)
+            self.assertIn("eligibility of a waiter written out", out)
+
+    def test_the_macros_split_text_is_not_a_copy(self):
+        macro = (
+            'macro_rules! live_gate_run { ($r:literal) => { concat!($r, ".status IN (\'RUNNING\', \'WAITING\') AND NOT ", '
+            '$r, ".paused") }; }'
+        )
+        code, out = run_lease_check(tree(**{"lib.rs": macro}))
+        self.assertEqual(code, 0, out)
+
+
 class FlowControlBodiesHoldNoKeyValue(unittest.TestCase):
     """The keys review of 2026-11-20 (feature 022, architecture m4): the bodies and the route of the key reads are built
     from types that hold no key value."""

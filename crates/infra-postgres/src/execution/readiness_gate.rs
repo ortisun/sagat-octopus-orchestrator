@@ -847,11 +847,14 @@ impl PgRunTx {
     ) -> Result<i64, StoreError> {
         let statement = match gate.kind {
             GateKind::Concurrency => {
-                "SELECT count(*) FROM (SELECT 1 FROM concurrency_waiters w \
+                concat!(
+                    "SELECT count(*) FROM (SELECT 1 FROM concurrency_waiters w \
                                   JOIN runs r ON r.tenant_id = w.tenant_id AND r.id = w.run_id \
                                  WHERE w.tenant_id = $1 AND w.namespace_id = $2 AND w.pool = $3 \
                                    AND w.permit_scope = $6 AND w.group_name = $4 AND w.key_digest = $5 \
-                                   AND w.deadline_at > $7 AND r.status IN ('RUNNING', 'WAITING') AND NOT r.paused \
+                                   AND ",
+                    eligible_gate_waiter!("w", "r", "$7"),
+                    " \
                                    AND least(coalesce(w.pinned_limit, w.declared_limit), $11::bigint) > \
                                        (SELECT s.holders FROM concurrency_semaphores s \
                                          WHERE s.tenant_id = w.tenant_id AND s.namespace_id = w.namespace_id \
@@ -859,11 +862,13 @@ impl PgRunTx {
                                            AND s.group_name = w.group_name AND s.key_digest = w.key_digest) \
                                    AND $8::bigint >= 0 AND $9::bigint >= 0 AND $10::bigint >= 0 \
                                  ORDER BY w.enqueued_at, w.run_id, w.node LIMIT $12) eligible"
+                )
             }
             // each waiter counts the key's grants over its own window (D022-009): the count is taken once for each window
             // length up to the longest the window row has seen, which is at least every waiter's
             GateKind::RateLimit => {
-                "WITH counted AS ( \
+                concat!(
+                    "WITH counted AS ( \
                    SELECT p.ms, (SELECT count(*) FROM rate_limit_grants g \
                                   WHERE g.tenant_id = k.tenant_id AND g.namespace_id = k.namespace_id \
                                     AND g.pool = k.pool AND g.limit_scope = k.limit_scope \
@@ -878,13 +883,16 @@ impl PgRunTx {
                                   LEFT JOIN counted c ON c.ms = w.period_ms \
                                  WHERE w.tenant_id = $1 AND w.namespace_id = $2 AND w.pool = $3 \
                                    AND w.limit_scope = $6 AND w.group_name = $4 AND w.key_digest = $5 \
-                                   AND w.deadline_at > $7 AND r.status IN ('RUNNING', 'WAITING') AND NOT r.paused \
+                                   AND ",
+                    eligible_gate_waiter!("w", "r", "$7"),
+                    " \
                                    AND least(coalesce(w.pinned_limit, w.declared_limit), \
                                              CASE w.period_ms WHEN 1000 THEN $8::bigint \
                                              WHEN 60000 THEN $9::bigint WHEN 3600000 THEN $10::bigint \
                                              ELSE w.declared_limit END) > coalesce(c.n, 0) \
                                    AND $11::bigint >= 0 \
                                  ORDER BY w.enqueued_at, w.run_id, w.node LIMIT $12) eligible"
+                )
             }
         };
         sqlx::query_scalar(statement)
