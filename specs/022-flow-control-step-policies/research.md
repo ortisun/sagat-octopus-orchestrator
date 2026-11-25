@@ -1428,6 +1428,56 @@ taken after `git grep D022-04` on every `origin/*` branch.
      item 1. Nit 1 (the ceilings read once per waiter tried) is kept: reading them once a pass would carry a value read
      outside the grant's transaction into it, and the statement is one primary-key range of `quota_limits`.
 
+### Decisions of the Studio slice (2026-11-24)
+
+- **D022-150 — How the Studio authors, shows and lists the gates (tasks T022-054, T022-055, T022-056, T022-085;
+  FR-022-022, FR-022-035, FR-022-048, FR-022-050, FR-022-057; FR-007-010). Delegate (OD-2026-11-24-4).** The tasks
+  name the screens; these choices are left open by the specification and the contracts. Each option was weighed for
+  the architecture and for the person using the Studio, not for the least code.
+  1. *What turning a gate on writes.* Options: (a) a default policy (`limit` 1, `per` minute), so the draft validates
+     at once; (b) an empty policy `{}` that the author completes, with each missing member said beside its field and
+     the platform's own check (`CONCURRENCY_POLICY_INVALID`, `RATE_LIMIT_POLICY_INVALID`) in the checks panel; (c) no
+     switch: the policy exists once a limit is typed and disappears when the limit is cleared. Chosen: **(b)**. A
+     default is a value nobody chose: `limit` 1 silently serialises every run of a key, which an author who forgets to
+     change it learns in production; the Studio's rule is that it never invents a field (`model/ir.ts`). (c) loses the
+     key, group and timeout typed before the limit, and makes "no limit" and "limit being typed" one state. A draft is
+     saved even when it does not validate, so (b) costs no work, and publication is refused until the policy is whole.
+  2. *What the Studio checks itself.* Only what the server refuses, with the server's bounds
+     (`crates/domain/src/workflow/flow_control.rs`, `crates/infra-ir/src/flow_control.rs`): `limit` a whole number from
+     1 to 10,000 for a concurrency limit and to the window's ceiling for a rate limit (100 a second, 6,000 a minute,
+     10,000 an hour); `per` one of `second`, `minute`, `hour`; `group` `^[a-z][a-z0-9.-]{0,63}$`; `queueTimeoutMs` a
+     whole number from 1 to 86,400,000; `key` from 1 to 1,024 bytes. What a key may read (`input` at the top level;
+     `input`, `steps`, `state`, `run` on a step) needs the platform's expression compiler, so it is said in the hint and
+     checked by the platform's validation, not guessed by a second parser in the browser. A namespace ceiling lowers a
+     limit at admission and never refuses a publication, so it is not a check either.
+  3. *The order of the members.* The policy is written with its members in alphabetical order (`group`, `key`,
+     `limit`, `per`, `queueTimeoutMs`), the canonical form the shared fixtures and the SDKs' canonical JSON use, so the
+     Studio's policy is byte-identical to the fixtures' text and not only equal after sorting. Members the Studio does not
+     know (a newer platform's) are kept after them, untouched, and said to be kept (FR-007-010); a policy that is not an
+     object is shown unreadable, kept as it is, and only removable.
+  4. *Where a run's gates are shown.* Options: a section of the selected step's panel, a column of the runs list, or
+     the facts of the run's header. Chosen: **the header** (`features/runs/RunGates.tsx`), because `Run.concurrency` and
+     `Run.rateLimit` are the run's own state and are what an operator opens a waiting run to see; the position and the
+     estimate come from the single-run read only (FR-022-048), which the run page already makes, and the runs list does
+     not compute them. A step waiting for a gate is said by its waiting words (`waitingOn` `rate_limit` or
+     `concurrency`) wherever a step's waiting state is shown already (the step panel, the table, the card's name). The
+     estimate is called an estimate and never a promise; an absent estimate is said absent, with the reasons the contract
+     gives, and never replaced by a computed one.
+  5. *A hidden key label.* `keyLabel` `null` is said in words ("hidden: you may not reveal personal data in this
+     namespace") rather than left blank, so an operator knows the platform withheld it and does not read an empty cell
+     as "no key"; in the listings the instants of such a key are said to be cut to the minute, as the contract says
+     they are.
+  6. *Unknown values.* A state, pool, scope or window this Studio does not know is shown as unsupported, with the value
+     clipped, never mapped to a known word and never a crash (FR-007-010); a gate value that is not an object is shown
+     as unsupported too.
+  7. *Where the keys are listed.* Options: a page of its own, a tab of the Operations page, or two panels of it.
+     Chosen: **one panel of the Operations page with the two listings** (`features/operations/FlowControlKeysPanel.tsx`):
+     both need `ops:read`, which the page already checks, they answer one question (which queue is stuck, for how long),
+     and a page of their own would add a route and a menu entry for two tables. Each listing is a table with a caption,
+     column headers and the group as each row's header, pages through `nextCursor` with "Load more", and filters by
+     group; the group filter is sent as typed and the platform's `422` is shown, so the Studio keeps no second copy of
+     the derived-group rule. The namespace's `queuedRuns` is shown once per listing, as the platform reads it.
+
 ## Gaps
 
 | ID | Gap | Status |
