@@ -34,8 +34,9 @@ code saga cannot have. Temporal offers local activities and leaves compensation 
    publisher of each code version the run is pinned to), copied to a successor, a child and a reset run with a sequence
    of 0 so that they always bind, written for a child of a graph parent from the parent's starter, chain initiator and
    publisher, written only in trees that contain a code run, checked by every approval of a run that has them (a graph
-   child's approval node included), and otherwise bound by the issuing activation's start; a code approval MUST also
-   refuse the binder of the issuing session's binding, since a workflow-type binding grants authorship of the runs; a derived step MUST receive the secrets of its own entry; a
+   child's approval node included), and otherwise bound by the issuing activation's start; the binder of a session's
+   binding MUST be written as an initiator of the run when the session leases its workflow task, since a workflow-type
+   binding grants authorship of the runs, so the copy rules carry the binder to children, successors and resets; a derived step MUST receive the secrets of its own entry; a
    script entry by digest with its own secrets, schemas and compensation; a listed child
    workflow at its listed version; a listed event type within its look-back; a named approval policy. No activity name MAY start with
    `script.` or `sagat.`. An activity input MUST be validated and classified by its entry's `inputSchema`.

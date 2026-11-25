@@ -653,6 +653,45 @@ finding was answered.
   `golang.org/x/tools` v0.28.0 and `Microsoft.CodeAnalysis.CSharp` 4.11.0, pinned and reviewed as esbuild is; the goldens
   test is a guard; `NodeMissing` maps to `INTERNAL` with `NODE_MISSING`; signals declare `maxBytes` (default 64 KiB).
 
+### Decisions after the ninth review round (2026-11-25)
+
+The reports are in `docs/designs/044-workflow-as-code.reviews/2026-11-25/round-9/`; `resolution.md` there says how each
+finding was answered.
+
+- **D044-201** (2026-11-25) A blob-carried value enters a command body as its descriptor (SHA-256 and size of its RFC
+  8785 bytes), never a blob identifier; the server checks the stored blob against it and validates blob-carried inputs
+  and results like inline ones; a deferral holds its blob; exported histories stop at blob values.
+- **D044-202** (2026-11-25) An activation makes at most 256 commands and 64 KiB of command metadata; the SDK throws
+  `CommandBatchLimitExceeded` at the crossing call, live and in replay.
+- **D044-203** (2026-11-25, supersedes D044-177 in part) The closing window is 1,024 + 3 × the steps that can still act,
+  its bound capped at 58,368; the replay ceiling is 58,368 events (5.7 s); the claim leases only with room for a
+  completion.
+- **D044-204** (2026-11-25) The SDKs' test environments keep their local-time guards for activity workers and run
+  code-workflow workers under UTC and a fixed hash seed; refusal tests inject their readers; red tests that wait on a
+  later task carry `#[ignore = "green with Task 044-NN"]`, removed by the prerequisite; the release gate checks none
+  remains.
+- **D044-205** (2026-11-25) `CommandDigester` exposes `sha256` and `command_digest_input`; the domain folds the chain;
+  golden equality is Task 044-5's.
+- **D044-206** (2026-11-25, supersedes D044-193 in part) A migration that finds `platform_requirement_hold` compares its
+  security, configuration, owner and whitespace-normalized body with the exact body this design gives, which has no
+  capability list; Gap 044-026 is a precondition of Task 044-6.
+- **D044-207** (2026-11-25) Move items end in feature 018's item model: `SUCCEEDED` (a dry-run match with `MATCHED`),
+  `SKIPPED` with `REPLAY_MISMATCH`, `ENVELOPE_MISMATCH` or `RUN_NOT_MUTABLE`, deferred `RUN_BUSY` then `FAILED`; the fit
+  also covers pending signal names, open updates and the committed state; a dry-run item cannot move a pin.
+- **D044-208** (2026-11-25) Workflow types are unique by storage (`code_workflow_types`); `workflow_versions` carries the
+  type and the digest.
+- **D044-209** (2026-11-25, supersedes D044-199 in part) The overlay cache is filled only after a commit and dropped on a
+  count mismatch; a cold read loads only the addressed step; whole-definition methods answer from counts or fail closed;
+  a run transaction reads at most 768 KiB of overlay rows except the stop drain and a scope's planning.
+- **D044-210** (2026-11-25) A continue-as-new needs the run to head an open chain and an inline object input; the
+  chain's limits govern the successor.
+- **D044-211** (2026-11-25, supersedes D044-190 in part) The claim writes the session's binder into `run_initiators`;
+  `runs.tracks_initiators` marks the trees that keep rows; an operator may cancel without grace under `run:operate`.
+- **D044-212** (2026-11-25, supersedes D044-173 in part) `state.schema`, `argsSchema` and `resultSchema` stay outside
+  feature 016's carriers, as feature 016 requires, and their raw payloads are `pii` as a whole; the server-side fields
+  live in `run_events.server_detail`; the pause is an advisory lock; the completion budget is 63 statements (50 + 13),
+  the saga scope rows included.
+
 ## 3. Gaps
 
 - **G044-001** (2026-11-24) The memory of an idle cached run is not measured in any SDK; the TypeScript spike's heap
@@ -743,6 +782,10 @@ finding was answered.
   into the body of `platform_requirement_hold`, so a second design that adds a capability would change the shared body.
   This design keeps the list out of the body and relies on the table's closed check; design 045's owner should do the
   same before either migration lands. Raised by the architecture review of round 8.
+
+- **G044-027** (2026-11-25) Draft 049 (journal buckets) and draft 052 (the next step in the completion answer), in the
+  scale-resilience worktree, touch `append_events`, the new tables and Task 044-14's eager workflow task; whichever lands
+  second adapts, and their owners are told. Raised by the architecture review of round 9.
 
 ## 4. Owner questions (all delegated)
 

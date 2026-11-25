@@ -30,7 +30,7 @@ workflow-task step waiting.
    transaction with the run locked, only when the run has no stop reason and its workflow-task step is not `CLOSED`, a
    session of the target digest replayed the
    run's history up to its last completed activation with the same command chain, that activation is still the last
-   completed one, the workflow-task step is not leased, and every step that can still act (outstanding steps and the completed steps of open saga scopes)
+   completed one, the workflow-task step is not leased, and every step that can still act (outstanding steps and the succeeded members of scopes not yet settled)
    fits the target version's envelope (its covering entry has the same secrets, schemas, risk metadata and approval rule).
    The move MUST be a domain command persisted by the ordinary run transaction; only the `SECURITY DEFINER`
    function `sagat_move_code_run`, which checks the pin's integrity, that the item's replay check records a matching
@@ -39,7 +39,9 @@ workflow-task step waiting.
    task is pending, be journaled (`run.code_version_moved`) and audited; a refused one MUST leave the run unchanged and
    record why. No policy, schedule or pipeline MAY move runs.
 3. A move MUST be available as a dry run that records verdicts and moves nothing. A move MUST be refused for a run under
-   a `HISTORY_LIMIT` review, whose remedy is the retry; each item MUST record its verdict (`MATCHED`, `REPLAY_MISMATCH`,
+   a `HISTORY_LIMIT` review, whose remedy is the retry; each item MUST end in feature 018's item model (a move or a
+   dry-run match `SUCCEEDED`; a mismatch, a misfit or a stopping run `SKIPPED`; a busy run deferred, then `FAILED`) and
+   record its verdict (`MATCHED`, `REPLAY_MISMATCH`,
    `ENVELOPE_MISMATCH` or a refusal) and its first difference. A rerun of a code run MUST start on its current code
    version.
 4. A reset of a code run MUST be to its current code version only, in one transaction within ADR-0050's prefix ceiling.
@@ -62,7 +64,9 @@ workflow-task step waiting.
    tree's limits refuse it, while an input outside the successor's schema, a target that is not a code version of the
    same type, or a version without a `chainPolicy` is refused at the completion (`COMMAND_INVALID`). The successor MUST
    pin the run's current code version by default, or the workflow's active version when the command asks for it, which supersedes ADR-0030 decision 16 for code runs; it MUST be deferred, not counted, while
-   an activity, child or approval is open or a saga scope aborts, and refused (`COMMAND_INVALID`) while a scope is open.
+   an activity, child or approval is open or a saga scope aborts, and refused (`COMMAND_INVALID`) while a scope is open,
+   when the run does not head an open continuation chain, or when its input is not an inline JSON object; the chain's
+   limits govern whatever version the successor pins.
 6. Each SDK MUST offer `patched(id)` and `deprecatePatch(id)`, recorded as markers.
 
 ## Considered options

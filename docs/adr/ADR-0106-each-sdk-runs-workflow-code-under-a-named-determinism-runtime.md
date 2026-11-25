@@ -4,7 +4,7 @@
 **Decided by:** agent (Claude Code, design 044), after the determinism study of 2026-11-24, under the owner's delegation (OD-2026-11-20-6, OD-2026-11-24-4); the study was required by OD-2026-11-24-3; no person has reviewed it
 **Refines / supersedes:** none; adds to ADR-0007 and ADR-0015 (one conformance suite for the SDKs)
 **Required before acceptance:** the replay measurements of design 044 Task 044-25
-**Enforced by:** the conformance scenarios `code-deterministic-primitives`, `code-nondeterminism` and `code-activation-deadline` in all six SDKs; each runtime's tests of design 044 Tasks 044-10 and 044-15 to 044-20 (for example `the context global is not a host object`, `registration_refuses_an_unset_or_random_hash_seed`, `a_module_level_import_of_uuid_is_refused_in_a_process_that_loaded_it`, `TestSagatvetRefusesGoStatementsSelectAndMapRange`, `ConfigureAwaitFalseBeforeAnSdkCallFailsTheWorkflowTask`, `theArtifactRefusesToStartBelowJava21`, `a_tokio_sleep_in_a_workflow_fails_the_workflow_task`, `four abandoned activations withdraw the workflow types`)
+**Enforced by:** the conformance scenarios `code-deterministic-primitives`, `code-nondeterminism` and `code-activation-deadline` in all six SDKs; each runtime's tests of design 044 Tasks 044-10 and 044-15 to 044-20 (for example `the context global is not a host object`, `registration_refuses_an_unset_or_random_hash_seed`, `a_module_level_import_of_uuid_is_refused_in_a_process_that_loaded_it`, `TestSagatvetRefusesGoStatementsSelectAndMapRange`, `ConfigureAwaitFalseBeforeAnSdkCallFailsTheWorkflowTask`, `theArtifactsClassFilesAreJava21`, `a_tokio_sleep_in_a_workflow_fails_the_workflow_task`, `four abandoned activations withdraw the workflow types`)
 
 ## Context
 
