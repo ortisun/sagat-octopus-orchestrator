@@ -627,6 +627,14 @@ does not accept a `delegate` row as an owner gate or as the acceptance of a find
 | OD-2026-11-03-37 | AB. Merge PR 1 and then PR 2 with merge commits once CI is green, on the owner's delegation. | delegate | Decided | docs/designs/constitution-4.0.0-egm.md#decisions |
 | OD-2026-11-03-38 | AC. Keep ADR-0077 `Proposed`: the ADR rules say a person accepts. | delegate | Decided | docs/designs/constitution-4.0.0-egm.md#decisions |
 
+*Note (2026-11-25) on OD-2026-11-03-22 and OD-2026-11-03-36:* OD-2026-11-24-4 narrows them for release 0.3.0. A row
+decided by exactly `delegate (OD-2026-11-24-4)` now counts as the owner's for an `Owner-gate:` line and for accepting a
+review finding, because the owner delegated those acts for the release. The rows above, decided by a plain `delegate`,
+still do not count, and a delegate row may not accept a finding of a security review. The delegation ends when the
+tag `v0.3.0` exists: a delegate row counts only as the tag holds it, so rows recorded before it stay valid and rows
+added or edited after it are refused. `scripts/check-design-docs.py` (`DELEGATIONS`) enforces this, and
+[sdd-workflow.md](engineering/sdd-workflow.md) ("Who decides") explains it.
+
 ## 2026-11-02 — Feature 035 implementation gates (Iceberg writes and step-output destinations)
 
 The owner answered the four questions below in the Claude session that took over feature 035, each
