@@ -372,6 +372,68 @@ class OwnerGates(Base):
         self.setup_gate(od_row(self.GATE, decided_by="delegate", covers="TEGM-12"))
         self.assertFails("Rule 5")
 
+    # Owner decision 2026-11-24-4 delegates these acts for release 0.3.0; a plain "delegate" row (Owner decision
+    # 2026-11-03-22) still does not count.
+    DELEGATION = "OD-2026-11-24-4"
+    DELEGATE = "delegate (OD-2026-11-24-4)"
+
+    def tag_release(self, ref="HEAD"):
+        git(self.repo.root, "tag", "v0.3.0", ref)
+
+    def test_a_row_of_the_named_delegation_is_citable(self):
+        self.setup_gate(od_row(self.DELEGATION) + od_row(self.GATE, decided_by=self.DELEGATE, covers="TEGM-12"))
+        self.assertPasses()
+
+    def test_a_delegate_row_citing_another_decision_is_not_citable(self):
+        other = "OD-2026-11-03-9"
+        self.setup_gate(od_row(other) + od_row(self.GATE, decided_by=f"delegate ({other})", covers="TEGM-12"))
+        self.assertFails("Rule 5")
+
+    def test_a_delegate_row_without_the_owner_row_of_its_delegation_is_not_citable(self):
+        self.setup_gate(od_row(self.GATE, decided_by=self.DELEGATE, covers="TEGM-12"))
+        self.assertFails("Rule 5")
+
+    def test_a_delegate_row_whose_delegation_is_itself_a_delegate_row_is_not_citable(self):
+        self.setup_gate(od_row(self.DELEGATION, decided_by="delegate")
+                        + od_row(self.GATE, decided_by=self.DELEGATE, covers="TEGM-12"))
+        self.assertFails("Rule 5")
+
+    def test_a_delegate_row_recorded_before_the_release_tag_stays_citable(self):
+        self.setup_gate(od_row(self.DELEGATION) + od_row(self.GATE, decided_by=self.DELEGATE, covers="TEGM-12"))
+        self.tag_release()
+        self.assertPasses()
+
+    def test_a_delegate_row_recorded_after_the_release_tag_is_not_citable(self):
+        self.tag_release()
+        self.setup_gate(od_row(self.DELEGATION) + od_row(self.GATE, decided_by=self.DELEGATE, covers="TEGM-12"))
+        self.assertFails("Rule 5", contains=self.GATE)
+
+    def test_a_delegate_row_edited_after_the_release_tag_is_not_citable(self):
+        # The row existed at the tag, but with other Covers: an edit after the tag is a new act.
+        self.repo.write("docs/owner-decisions.md", "# Owner decisions\n\n" + OD_HEADER + od_row(self.DELEGATION)
+                        + od_row(self.GATE, decided_by=self.DELEGATE, covers="TEGM-99"))
+        self.repo.commit("the row at the release")
+        self.tag_release()
+        self.setup_gate(od_row(self.DELEGATION) + od_row(self.GATE, decided_by=self.DELEGATE, covers="TEGM-12"))
+        self.assertFails("Rule 5", contains=self.GATE)
+
+    def test_on_a_pull_request_a_delegate_row_needs_the_release_tags_in_the_clone(self):
+        self.setup_gate(od_row(self.DELEGATION) + od_row(self.GATE, decided_by=self.DELEGATE, covers="TEGM-12"))
+        self.assertFails("Rule 9", strict=True, contains="tags")
+
+    def test_on_a_pull_request_a_delegate_row_passes_when_the_clone_has_the_tags(self):
+        self.setup_gate(od_row(self.DELEGATION) + od_row(self.GATE, decided_by=self.DELEGATE, covers="TEGM-12"))
+        git(self.repo.root, "tag", "v0.2.0", "HEAD")
+        self.assertPasses(strict=True)
+
+    def test_a_plain_delegate_row_relabelled_after_the_release_tag_is_not_citable(self):
+        self.repo.write("docs/owner-decisions.md", "# Owner decisions\n\n" + OD_HEADER + od_row(self.DELEGATION)
+                        + od_row(self.GATE, decided_by="delegate", covers="TEGM-12"))
+        self.repo.commit("a plain delegate row")
+        self.tag_release()
+        self.setup_gate(od_row(self.DELEGATION) + od_row(self.GATE, decided_by=self.DELEGATE, covers="TEGM-12"))
+        self.assertFails("Rule 5", contains=self.GATE)
+
     def test_a_status_decided_against_is_not_citable(self):
         self.setup_gate(od_row(self.GATE, status="Decided against", covers="TEGM-12"))
         self.assertFails("Rule 5")
@@ -545,6 +607,47 @@ class Record(Base):
         self.repo.write("docs/owner-decisions.md", "# O\n\n" + OD_HEADER + od_row("OD-2026-11-03-5", covers=DOC))
         self.assertFails("Rule 2")
         self.assertTrue(ap.sha)
+
+    def test_an_acceptance_by_the_named_delegation_passes(self):
+        ap = Approved(self.repo, counts={"architecture": 1}, accepted=["OD-2026-11-03-5"])
+        path = ap.report_path("architecture")
+        rows = od_row("OD-2026-11-24-4") + od_row("OD-2026-11-03-5", decided_by="delegate (OD-2026-11-24-4)", covers=f"{path}#1")
+        self.repo.write("docs/owner-decisions.md", "# O\n\n" + OD_HEADER + rows)
+        self.repo.commit("row")
+        self.assertPasses()
+
+    def test_a_delegate_acceptance_of_a_security_finding_fails(self):
+        # Accepting a security finding instead of fixing it is a security exception, which stays the owner's.
+        ap = Approved(self.repo, counts={"security": 1}, accepted=["OD-2026-11-03-5"])
+        path = ap.report_path("security")
+        rows = od_row("OD-2026-11-24-4") + od_row("OD-2026-11-03-5", decided_by="delegate (OD-2026-11-24-4)", covers=f"{path}#1")
+        self.repo.write("docs/owner-decisions.md", "# O\n\n" + OD_HEADER + rows)
+        self.repo.commit("row")
+        self.assertFails("Rule 2", contains="accepts a finding of the security report")
+
+    def test_acceptances_are_counted_per_report(self):
+        # A security Major must not be covered by spare acceptances of another report.
+        ap = Approved(self.repo, counts={"security": 1, "architecture": 1}, accepted=["OD-2026-11-03-5", "OD-2026-11-03-6"])
+        path = ap.report_path("architecture")
+        rows = od_row("OD-2026-11-03-5", covers=f"{path}#1") + od_row("OD-2026-11-03-6", covers=f"{path}#2")
+        self.repo.write("docs/owner-decisions.md", "# O\n\n" + OD_HEADER + rows)
+        self.repo.commit("rows")
+        self.assertFails("Rule 2", contains="security")
+
+    def test_two_acceptances_of_one_report_with_two_findings_pass(self):
+        ap = Approved(self.repo, counts={"architecture": 2}, accepted=["OD-2026-11-03-5", "OD-2026-11-03-6"])
+        path = ap.report_path("architecture")
+        rows = od_row("OD-2026-11-03-5", covers=f"{path}#1") + od_row("OD-2026-11-03-6", covers=f"{path}#2")
+        self.repo.write("docs/owner-decisions.md", "# O\n\n" + OD_HEADER + rows)
+        self.repo.commit("rows")
+        self.assertPasses()
+
+    def test_an_owner_acceptance_of_a_security_finding_passes(self):
+        ap = Approved(self.repo, counts={"security": 1}, accepted=["OD-2026-11-03-5"])
+        path = ap.report_path("security")
+        self.repo.write("docs/owner-decisions.md", "# O\n\n" + OD_HEADER + od_row("OD-2026-11-03-5", covers=f"{path}#1"))
+        self.repo.commit("row")
+        self.assertPasses()
 
     def test_a_delegate_acceptance_fails(self):
         ap = Approved(self.repo, counts={"architecture": 1}, accepted=["OD-2026-11-03-5"])
@@ -924,3 +1027,22 @@ class Accepted(Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DelegationsAreNamedByTheConstitution(unittest.TestCase):
+    """Only the owner amends the constitution, so a delegation the check accepts must be named there (constitution
+    5.0.0, Owner decisions clause): a pull request cannot widen DELEGATIONS or move its end on its own."""
+
+    def test_every_delegation_and_its_tag_are_named_in_the_owner_decisions_clause(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("check_design_docs", SCRIPT)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        text = (SCRIPT.parents[1] / "docs" / "constitution.md").read_text(encoding="utf-8")
+        start = text.index("- **Owner decisions:**")
+        end = text.index("\n- **", start + 1)
+        clause = re.sub(r"\s+", " ", text[start:end])
+        self.assertTrue(module.DELEGATIONS)
+        for delegation, tag in module.DELEGATIONS.items():
+            self.assertIn(f"`delegate ({delegation})`", clause)
+            self.assertIn(f"`{tag}`", clause)

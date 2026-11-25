@@ -10,6 +10,7 @@
   "classes": [
     "content",
     "log",
+    "step_log",
     "protected_system"
   ],
   "columns": [
@@ -5148,6 +5149,222 @@
       },
       "owner_paths": [
         "crates/infra-postgres/src/instances.rs"
+      ]
+    },
+    {
+      "table": "step_log_lines",
+      "column": "exception",
+      "sql_type": "text",
+      "class": "step_log",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "octet_length_utf8",
+        "expression": "octet_length(coalesce(exception, ''))",
+        "evidence": "logical PostgreSQL value, independent of TOAST/compression"
+      },
+      "owner_paths": [
+        "crates/infra-postgres/migrations/20270210000000_step_logs.up.sql"
+      ]
+    },
+    {
+      "table": "step_log_lines",
+      "column": "fields",
+      "sql_type": "text",
+      "class": "step_log",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "octet_length_utf8",
+        "expression": "octet_length(coalesce(fields, ''))",
+        "evidence": "logical PostgreSQL value, independent of TOAST/compression"
+      },
+      "owner_paths": [
+        "crates/infra-postgres/migrations/20270210000000_step_logs.up.sql"
+      ]
+    },
+    {
+      "table": "step_log_lines",
+      "column": "kind",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Closed set `line`, `ceiling_marker`, `script_marker` (data-model.md §1), enforced by the database CHECK `step_log_lines_kind_valid`. Writer/source: the migration of design 041, task T041-5."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/migrations/20270210000000_step_logs.up.sql"
+      ]
+    },
+    {
+      "table": "step_log_lines",
+      "column": "level",
+      "sql_type": "text",
+      "class": "step_log",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "fixed_octets",
+        "expression": "128",
+        "evidence": "The per-row charge of 128 bytes (ADR-0027 Amendment item 4, OD-2026-11-15-6) on a NOT NULL column whose value is the closed set `trace`, `debug`, `info`, `warn`, `error` (CHECK `step_log_lines_level_valid`)."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/migrations/20270210000000_step_logs.up.sql"
+      ]
+    },
+    {
+      "table": "step_log_lines",
+      "column": "marker_reason",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Closed set `attempt_records`, `attempt_bytes` or null (data-model.md §1), enforced by the database CHECK `step_log_lines_kind_valid`. Writer/source: the migration of design 041, task T041-5."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/migrations/20270210000000_step_logs.up.sql"
+      ]
+    },
+    {
+      "table": "step_log_lines",
+      "column": "message",
+      "sql_type": "text",
+      "class": "step_log",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "octet_length_utf8",
+        "expression": "octet_length(coalesce(message, ''))",
+        "evidence": "logical PostgreSQL value, independent of TOAST/compression"
+      },
+      "owner_paths": [
+        "crates/infra-postgres/migrations/20270210000000_step_logs.up.sql"
+      ]
+    },
+    {
+      "table": "step_log_streams",
+      "column": "ceiling_reason",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Closed set `attempt_records`, `attempt_bytes`, `tenant_quota` or null (data-model.md §1), enforced by the database CHECK `step_log_streams_ceiling_valid`. Writer/source: the migration of design 041, task T041-5."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/migrations/20270210000000_step_logs.up.sql"
+      ]
+    },
+    {
+      "table": "step_log_streams",
+      "column": "instance_path_indices",
+      "sql_type": "_int4",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Copied from the `steps` row of the attempt: at most 8 integers, each 0..9999 (MAX_ITERATION_INDEX), the same length as its node path (CHECK `step_log_streams_path_valid`). Writer/source: the migration of design 041, task T041-5."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/migrations/20270210000000_step_logs.up.sql"
+      ]
+    },
+    {
+      "table": "step_log_streams",
+      "column": "instance_path_nodes",
+      "sql_type": "_text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Copied from the `steps` row of the attempt: at most 8 entries (MAX_SCOPE_DEPTH), each a node id of at most 64 bytes validated by `NodeId` (CHECK `step_log_streams_path_valid`). Writer/source: the migration of design 041, task T041-5."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/migrations/20270210000000_step_logs.up.sql"
+      ]
+    },
+    {
+      "table": "step_log_streams",
+      "column": "node",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Validated node identifier of the published definition, copied from the `steps` row or the script execution of the attempt; no run input or output. Writer/source: the migration of design 041, task T041-5."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/migrations/20270210000000_step_logs.up.sql"
+      ]
+    },
+    {
+      "table": "step_log_streams",
+      "column": "not_stored_reason",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Closed set `service_busy` or null (data-model.md §1, decision D041-129), enforced by the database CHECK `step_log_streams_not_stored_valid`. Writer/source: the migration of design 041, task T041-5."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/migrations/20270210000000_step_logs.up.sql"
+      ]
+    },
+    {
+      "table": "step_log_streams",
+      "column": "source",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Closed set `worker`, `script` (data-model.md §1), enforced by the database CHECK `step_log_streams_source_valid`. Writer/source: the migration of design 041, task T041-5."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/migrations/20270210000000_step_logs.up.sql"
       ]
     },
     {

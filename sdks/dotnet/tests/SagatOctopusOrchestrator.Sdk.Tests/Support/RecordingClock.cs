@@ -12,9 +12,25 @@ internal sealed class RecordingClock(DateTimeOffset? now = null) : TimeProvider
 {
     private readonly object gate = new();
     private readonly List<Wait> waits = [];
+    private readonly List<Fired> fired = [];
 
     /// <summary>One wait the host asked for: how long, and what the fake service had seen when it was asked for.</summary>
     internal sealed record Wait(TimeSpan Due, int Registrations, int Polls);
+
+    /// <summary>A wait that ran to its end: how long it was and when it ended (a <see cref="System.Diagnostics.Stopwatch"/> timestamp).</summary>
+    internal sealed record Fired(TimeSpan Due, long At);
+
+    /// <summary>The waits that ran to their end instead of being cut short (a pause ended by a wake, a delay cancelled by a stop).</summary>
+    internal List<Fired> FiredWaits
+    {
+        get
+        {
+            lock (gate)
+            {
+                return [.. fired];
+            }
+        }
+    }
 
     /// <summary>What the fake service has seen, read when a wait begins; the test sets it.</summary>
     internal Func<(int Registrations, int Polls)> Seen { get; set; } = () => (0, 0);
@@ -40,7 +56,19 @@ internal sealed class RecordingClock(DateTimeOffset? now = null) : TimeProvider
             waits.Add(new Wait(dueTime, registrations, polls));
         }
 
-        return TimeProvider.System.CreateTimer(callback, state, dueTime, period);
+        return TimeProvider.System.CreateTimer(
+            timerState =>
+            {
+                lock (gate)
+                {
+                    fired.Add(new Fired(dueTime, global::System.Diagnostics.Stopwatch.GetTimestamp()));
+                }
+
+                callback(timerState);
+            },
+            state,
+            dueTime,
+            period);
     }
 
     /// <summary>Gives <paramref name="host"/> this clock; called before the host starts.</summary>

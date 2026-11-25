@@ -33,7 +33,7 @@ use sagat_domain::identity::{Membership, Slug, Subject, Tenant, TenantId};
 use sagat_infra_ir::{JsonDeclaredOperationEvaluator, JsonEvaluator, JsonIrCodec};
 use sagat_infra_postgres::{
     LeastPrivilegeError, PgApprovalProgressStore, PgDeclaredOperationStore, PgIdentityStore,
-    PgPool, PgRunStore, PoolConfig, connect, migrate, spawn_pool_metrics,
+    PgPool, PgRunStore, PoolConfig, PoolName, connect, migrate, spawn_pool_metrics,
 };
 use sagat_telemetry::Metrics;
 use time::OffsetDateTime;
@@ -122,8 +122,8 @@ impl RunError {
     }
 }
 
-fn pool_config(db: &DatabaseConfig, statement_timeout: Duration) -> PoolConfig {
-    let mut config = PoolConfig::new(db.url.clone());
+fn pool_config(db: &DatabaseConfig, statement_timeout: Duration, name: PoolName) -> PoolConfig {
+    let mut config = PoolConfig::new(db.url.clone()).named(name);
     config.max_connections = db.max_connections;
     config.statement_timeout = statement_timeout;
     // A pool with no statement cap is the migrations': one statement may be long, and nothing about it
@@ -134,15 +134,17 @@ fn pool_config(db: &DatabaseConfig, statement_timeout: Duration) -> PoolConfig {
     config
 }
 
-/// Connects a pool with the given per-statement cap.
+/// Connects a pool with the given per-statement cap, its connections named for `name` (design 041, task T041-5: a
+/// replica's pool by its instance id, a one-shot process's by its kind).
 ///
 /// # Errors
 /// [`RunError::Database`] (never containing the connection URL).
 pub async fn open_pool(
     db: &DatabaseConfig,
     statement_timeout: Duration,
+    name: PoolName,
 ) -> Result<PgPool, RunError> {
-    connect(&pool_config(db, statement_timeout))
+    connect(&pool_config(db, statement_timeout, name))
         .await
         .map_err(|e| RunError::Database(e.to_string()))
 }
@@ -181,7 +183,7 @@ pub async fn run_migrations_for_handover(
     handover_password: Option<&str>,
     min_live_floor: Option<u32>,
 ) -> Result<(), RunError> {
-    let pool = open_pool(db, Duration::ZERO).await?;
+    let pool = open_pool(db, Duration::ZERO, PoolName::Process("migrate")).await?;
     migrate(&pool)
         .await
         .map_err(|e| RunError::Migrate(e.to_string()))?;
@@ -241,7 +243,12 @@ pub async fn seed_dev(config: &Config, seed: &SeedConfig) -> Result<SeedOutcome,
         reason: e.to_string(),
     })?;
 
-    let pool = open_pool(&config.database, config.database.statement_timeout).await?;
+    let pool = open_pool(
+        &config.database,
+        config.database.statement_timeout,
+        PoolName::Process("seed_dev"),
+    )
+    .await?;
     let store = PgIdentityStore::new(pool.clone());
     let now = OffsetDateTime::now_utc();
     let tenant = Tenant::provision(TenantId::generate(), slug, now);
@@ -288,7 +295,12 @@ pub async fn seed_dev_namespace(
             )
         })?;
 
-    let pool = open_pool(&config.database, config.database.statement_timeout).await?;
+    let pool = open_pool(
+        &config.database,
+        config.database.statement_timeout,
+        PoolName::Process("seed_dev_namespace"),
+    )
+    .await?;
     let service = IdentityService::new(PgIdentityStore::new(pool.clone()), SystemClock);
     let result = async {
         let session = service
@@ -372,7 +384,12 @@ pub async fn provision_tenant(config: &Config, request: &ProvisionConfig) -> Res
         name: "SAGAT_PROVISION_ADMIN",
         reason: e.to_string(),
     })?;
-    let pool = open_pool(&config.database, config.database.statement_timeout).await?;
+    let pool = open_pool(
+        &config.database,
+        config.database.statement_timeout,
+        PoolName::Process("provision_tenant"),
+    )
+    .await?;
     let store = PgIdentityStore::new(pool.clone());
     let now = OffsetDateTime::now_utc();
     let tenant = Tenant::provision(TenantId::generate(), slug, now);
@@ -408,7 +425,12 @@ pub async fn grant_quota_ceiling(config: &Config, request: &CeilingConfig) -> Re
         .resource
         .parse::<sagat_domain::quota::QuotaResource>()
         .map_err(|_| invalid("SAGAT_CEILING_RESOURCE", "not a quota resource"))?;
-    let pool = open_pool(&config.database, config.database.statement_timeout).await?;
+    let pool = open_pool(
+        &config.database,
+        config.database.statement_timeout,
+        PoolName::Process("grant_quota_ceiling"),
+    )
+    .await?;
     let cache = DefinitionCache::new(Arc::new(JsonIrCodec), 1);
     let service = QuotaService::new(PgRunStore::new(pool.clone(), cache), SystemClock);
     let result = service.grant_ceiling(tenant, resource, request.value).await;
@@ -442,7 +464,12 @@ pub async fn set_scheduling_weight(
         .tenant_id
         .parse::<TenantId>()
         .map_err(|_| invalid("SAGAT_WEIGHT_TENANT_ID", "expected a tenant id (a UUID)"))?;
-    let pool = open_pool(&config.database, config.database.statement_timeout).await?;
+    let pool = open_pool(
+        &config.database,
+        config.database.statement_timeout,
+        PoolName::Process("set_scheduling_weight"),
+    )
+    .await?;
     let cache = DefinitionCache::new(Arc::new(JsonIrCodec), 1);
     let service = QuotaService::new(PgRunStore::new(pool.clone(), cache), SystemClock);
     let result = service.set_scheduling_weight(tenant, request.value).await;
@@ -474,7 +501,12 @@ pub async fn reseal_secrets(
     secrets: &sagat_infra_secrets::SecretsConfig,
 ) -> Result<u64, RunError> {
     const BATCH: u32 = 500;
-    let pool = open_pool(&config.database, config.database.statement_timeout).await?;
+    let pool = open_pool(
+        &config.database,
+        config.database.statement_timeout,
+        PoolName::Process("reseal_secrets"),
+    )
+    .await?;
     let cache = DefinitionCache::new(Arc::new(JsonIrCodec), 1);
     let service = SecretService::new(
         PgRunStore::new(pool.clone(), cache),
@@ -580,7 +612,15 @@ pub async fn serve_with_admin(
     if serve.migrate_on_start {
         run_migrations(&config.database).await?;
     }
-    let pool = open_pool(&config.database, config.database.statement_timeout).await?;
+    // The instance id names this replica's pools before they open, so that its connections, its step-log quota leases
+    // and its step-log wait slots are attributable to it in `pg_stat_activity` (design 041, task T041-5).
+    let instance = registry::new_instance_id();
+    let pool = open_pool(
+        &config.database,
+        config.database.statement_timeout,
+        PoolName::Instance(instance),
+    )
+    .await?;
     let store = PgIdentityStore::new(pool.clone());
     if config.environment == Environment::Dev {
         tracing::debug!("database role privileges are not checked when SAGAT_ENV=dev");
@@ -599,11 +639,12 @@ pub async fn serve_with_admin(
     // call until then.
     // The registry has a connection of its own: the heartbeat of a healthy process must not wait for the pool that its
     // requests may have saturated.
-    let registry_pool = connect(&registry::registry_pool_config(&config.database))
+    let registry_pool = connect(&registry::registry_pool_config(&config.database, instance))
         .await
         .map_err(|e| RunError::Database(e.to_string()))?;
     let member = registry::member(
         &registry_pool,
+        instance,
         sagat_application::instances::InstanceKind::ControlPlane,
         &registry::capabilities(serve.run_input_validation),
         None,
