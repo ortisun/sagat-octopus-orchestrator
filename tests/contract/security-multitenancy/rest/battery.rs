@@ -588,6 +588,12 @@ async fn every_implemented_operation_resists_an_administrator_of_another_tenant(
         // lands, and the battery then attacks it like any other (so it also needs its `body_of` entry).
         "startCatalogBrowse",
         "getCatalogBrowse",
+        // Feature 041 merged its contract before its routes (`x-planned: '041'`, T041-3); each leaves this list in the task
+        // that serves it (T041-11, T041-12, T041-30).
+        "listRunLogs",
+        "listRunLogStreams",
+        "streamRunLogs",
+        "deleteRunLogs",
     ]
     .into_iter()
     .collect();

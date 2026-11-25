@@ -120,6 +120,7 @@ impl WorkerService for Fake {
             worker_id: uuid::Uuid::from_u128(6 + nth).to_string(),
             session_token: "session-token".into(),
             accepted_protocol_version: "1.6".into(),
+            step_logs: None,
         }))
     }
 
@@ -141,6 +142,12 @@ impl WorkerService for Fake {
         }))
     }
 
+    async fn append_step_logs(
+        &self,
+        _: Request<pb::AppendStepLogsRequest>,
+    ) -> Result<Response<pb::AppendStepLogsResponse>, Status> {
+        Err(Status::unimplemented("AppendStepLogs"))
+    }
     async fn resolve_database(
         &self,
         request: Request<pb::ResolveSecretsRequest>,

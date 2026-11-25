@@ -6,3 +6,4 @@ mod support;
 
 mod auth;
 mod fixtures;
+mod step_log_ceiling;
