@@ -30,6 +30,46 @@ const IDENTITY_VARIABLE: &str = "run";
 /// The longest expression a key may be: the bounded evaluator's source limit.
 const MAX_KEY_EXPRESSION_BYTES: usize = 1024;
 
+/// Refuses, at publication only, a root node's key that reads the run's identity, alone or beside other data: the run's
+/// id makes the key one of a kind per run, as many keys as runs, each of which a window row and its retention keep alive
+/// (FR-022-056, decision D022-081). A stored version is restored as it was published (`parse_stored` does not call
+/// this), so a version an earlier build published keeps running (review of 2026-11-25, correctness minor 1). A key that
+/// does not compile is left to the decoding, which says why.
+pub(crate) fn check_publication_keys(document: &Value) -> Result<(), IrError> {
+    let nodes = document
+        .get("nodes")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten();
+    for node in nodes {
+        let Some(id) = node
+            .get("id")
+            .and_then(Value::as_str)
+            .and_then(|id| NodeId::parse(id).ok())
+        else {
+            continue;
+        };
+        for (field, kind) in [
+            ("concurrency", GateKind::Concurrency),
+            ("rateLimit", GateKind::RateLimit),
+        ] {
+            let Some(text) = node
+                .get(field)
+                .and_then(|policy| policy.get("key"))
+                .and_then(Value::as_str)
+            else {
+                continue;
+            };
+            if Compiled::compile(text)
+                .is_ok_and(|compiled| compiled.variables().contains(IDENTITY_VARIABLE))
+            {
+                return Err(refused(kind, Some(&id), FlowControlRule::UnboundedKey));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Refuses, before the schema is applied, a gate declared on a node of a body (`forEach`, `while`, `repeatUntil`): body
 /// instances are scheduled by 014's exact-path transactions, which need their own evidence (G1160, G1175), so the
 /// refusal names what is missing (`UNSUPPORTED_NODE`, dependency `SCOPED_CONCURRENCY` or `SCOPED_RATE_LIMIT`) instead
@@ -213,14 +253,9 @@ fn key(
             IrError::Expression {
                 node: place.to_owned(),
                 field,
-                message: "a step's key reads `input`, `steps`, `state` or `run`".to_owned(),
+                message: "a step's key reads `input`, `steps` or `state`".to_owned(),
             }
         });
-    }
-    // alone or beside other data, the run's id makes the key one of a kind per run: as many keys as runs, each of which a
-    // window row and its retention keep alive (FR-022-056, decision D022-081)
-    if variables.contains(IDENTITY_VARIABLE) {
-        return Err(refused(kind, node, FlowControlRule::UnboundedKey));
     }
     Expression::parse(text)
         .map(Some)

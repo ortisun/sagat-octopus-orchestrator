@@ -166,6 +166,8 @@ impl IrCodec for JsonIrCodec {
         // a new publication needs every capability its document uses to be on; `parse_stored` below
         // restores what was published while one was
         capabilities::check_publication(&value)?;
+        // a key that reads the run's identity is refused at publication only (decision D022-081; review of 2026-11-25)
+        flow_control::check_publication_keys(&value)?;
         let parsed = published_definition(value)?;
         // the rules of flow control across the definition hold for a new publication; a stored one is restored as
         // it was, and the one other writer of runs asserts what it relies on itself (FR-022-059)

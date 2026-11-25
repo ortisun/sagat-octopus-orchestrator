@@ -126,7 +126,11 @@ fn a_key_that_reads_the_runs_identity_is_refused_as_unbounded() {
                 codes,
                 vec![("FLOW_CONTROL_KEY_UNBOUNDED", Some("call".to_owned()))],
                 "{gate} {key}"
-            );
+            ); // a stored version is restored as it was published (an earlier build may have published it): the rule is
+            // publication's only (review of 2026-11-25, correctness minor 1, security nit 1)
+            JsonIrCodec
+                .parse_stored(&document(gate, key))
+                .unwrap_or_else(|error| panic!("a stored {gate} {key} is restored: {error:?}"));
         }
         for key in ["input.accountId", "input.accountId + '-' + input.region"] {
             JsonIrCodec
