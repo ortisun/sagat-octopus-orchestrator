@@ -2,12 +2,13 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://sagat-octopus-orchestrator.example/schemas/workflow/v1/feature-026-draft.json",
   "title": "Feature 026 draft additions to the workflow IR v1 (additive, ADR-0032)",
-  "description": "DRAFT, not implemented. Merged into specs/001-platform-foundation/contracts/workflow.schema.json by T026-006. apiVersion stays sagat-octopus-orchestrator.io/v1. New root property: streams. New optional node properties: emits (activity, script, database), and notify, summary, form (approval). New schema annotation: x-sagat-form on carrier schema nodes of inputSchema and approval form.schema. Each is refused at publication until its server capability is enabled. The example is an excerpt: the nodes refund and notify-rejected are omitted.",
+  "description": "DRAFT, not implemented. Merged into specs/001-platform-foundation/contracts/workflow.schema.json by T026-006. apiVersion stays sagat-octopus-orchestrator.io/v1. New root property: streams. New optional node properties: emits (activity, script, database), and notify, summary, form (approval). Form hints sit beside the schema, never inside it (revised 2026-11-24, research.md Decision 026-001: any x- keyword but x-sagat-classification puts an inputSchema outside the run-input subset of design 043): a new root property inputFormHints and a hints property of the approval form. Every schema these fields carry (stream channel schemas, the approval form schema) must stay inside the design-043 subset. Each is refused at publication until its instance-registry capability is active (form-hints-v1, workflow-streams-v1, approval-channels-v1; Decision 026-013). The example is an excerpt: the nodes refund and notify-rejected are omitted.",
   "$defs": {
     "rootAdditions": {
       "type": "object",
       "properties": {
-        "streams": { "$ref": "#/$defs/streams" }
+        "streams": { "$ref": "#/$defs/streams" },
+        "inputFormHints": { "$ref": "#/$defs/formHints" }
       }
     },
     "streamChannelName": {
@@ -28,7 +29,7 @@
       "properties": {
         "schema": {
           "type": "object",
-          "description": "A closed, bounded carrier (feature 016): every object declares its properties and additionalProperties false; strings, arrays and depth bounded; at most 16 KiB by default and 64 KiB hard. Classified with x-sagat-classification; unmarked is pii."
+          "description": "A closed, bounded carrier (feature 016): every object declares its properties and additionalProperties false; strings, arrays and depth bounded; at most 16 KiB by default and 64 KiB hard. Classified with x-sagat-classification; unmarked is pii. Inside the run-input subset of design 043 (STREAM_SCHEMA_OUTSIDE_SUBSET otherwise); event data is validated by the platform validator of that design."
         },
         "display": { "enum": ["list", "progress"], "default": "list" },
         "budget": {
@@ -132,7 +133,7 @@
       "properties": {
         "schema": {
           "type": "object",
-          "description": "Closed, bounded object schema of the decision input; a feature-016 carrier; may carry x-sagat-form hints; at most 16 KiB by default, 64 KiB hard."
+          "description": "Closed, bounded object schema of the decision input; a feature-016 carrier; inside the run-input subset of design 043 (FORM_SCHEMA_OUTSIDE_SUBSET otherwise); at most 16 KiB by default, 64 KiB hard. Its hints are in hints, beside it."
         },
         "requiredFor": {
           "type": "array",
@@ -141,11 +142,19 @@
           "maxItems": 2,
           "uniqueItems": true,
           "default": ["APPROVE", "REJECT"]
-        }
+        },
+        "hints": { "$ref": "#/$defs/formHints" }
       }
     },
+    "formHints": {
+      "description": "Form hints of a carrier, keyed by the instance JSON pointer of a field (names under properties only, the shape of design 043's details.field, for example /reason). A pointer that names no field of the carrier is FORM_HINT_INVALID. Hints never change validation or the schema digest.",
+      "type": "object",
+      "maxProperties": 256,
+      "propertyNames": { "pattern": "^(/([^/~]|~[01])+){1,8}$", "maxLength": 1024 },
+      "additionalProperties": { "$ref": "#/$defs/formHint" }
+    },
     "formHint": {
-      "description": "Value of the x-sagat-form annotation on a schema node of inputSchema or approval form.schema.",
+      "description": "The hints of one field (revised 2026-11-24: formerly the x-sagat-form annotation inside the schema).",
       "type": "object",
       "additionalProperties": false,
       "properties": {
@@ -168,9 +177,13 @@
         "properties": {
           "orderId": { "type": "string", "maxLength": 32, "x-sagat-classification": "internal", "title": "Order" },
           "amount": { "type": "number", "minimum": 0, "maximum": 10000, "x-sagat-classification": "internal" },
-          "reason": { "type": "string", "maxLength": 2000, "x-sagat-form": { "widget": "textarea" } },
+          "reason": { "type": "string", "maxLength": 2000 },
           "contactEmail": { "type": "string", "format": "email", "x-sagat-classification": "pii" }
         }
+      },
+      "inputFormHints": {
+        "/reason": { "widget": "textarea", "order": 3 },
+        "/orderId": { "order": 1, "placeholder": "For example A-1234" }
       },
       "streams": {
         "progress": {
@@ -216,9 +229,10 @@
               "additionalProperties": false,
               "required": ["comment"],
               "properties": {
-                "comment": { "type": "string", "minLength": 1, "maxLength": 500, "x-sagat-classification": "internal", "x-sagat-form": { "widget": "textarea" } }
+                "comment": { "type": "string", "minLength": 1, "maxLength": 500, "x-sagat-classification": "internal" }
               }
-            }
+            },
+            "hints": { "/comment": { "widget": "textarea" } }
           },
           "onApprove": "refund",
           "onReject": "notify-rejected",

@@ -10,16 +10,20 @@ canonical contracts and the remediation table by T026-005.
 
 | Surface | `code` (HTTP) | `details.reason` | When |
 |---|---|---|---|
-| Forms | `VALIDATION_FAILED` (422) | `FORM_HINT_INVALID` | publication/validate: unknown `x-sagat-form` key, wrong type, widget incompatible with the field type |
-| Forms | `VALIDATION_FAILED` (422) | `ENCODING_READ_BY_FORM` (feature 031) | publication: an `x-sagat-form` hint, approval `form` or `summary` reads an encoded location |
-| Forms | — (answer) | `NO_SCHEMA`, `UNSUPPORTED_REQUIRED_FIELD`, `ENCODING_READ_BY_FORM`, `TOO_COMPLEX` | `FormModel.status = UNAVAILABLE`; an answer, not an error |
+| Forms | `VALIDATION_FAILED` (422) | `FORM_HINT_INVALID` | publication/validate: a hint of `inputFormHints` or `form.hints` with an unknown key, a wrong type, a pointer that names no field, or a widget incompatible with the field type (revised 2026-11-24: hints left the schema) |
+| Forms | `VALIDATION_FAILED` (422) | `ENCODING_READ_BY_FORM` (feature 031) | publication: a form hint, approval `form` or `summary` reads an encoded location |
+| Forms | — (answer) | `NO_SCHEMA`, `UNSUPPORTED_REQUIRED_FIELD`, `ENCODING_READ_BY_FORM`, `TOO_COMPLEX`, `SCHEMA_UNUSABLE` | `FormModel.status = UNAVAILABLE`; an answer, not an error; `SCHEMA_UNUSABLE` when the 043 pre-check refuses the carrier (added 2026-11-24) |
+| Run input (forms, `executeRun`) | `VALIDATION_FAILED` (422) | design 043's `RUN_INPUT_INVALID` (`field`, `rule`) and `RUN_INPUT_SCHEMA_UNUSABLE` | the run input gate refuses the input or the version's schema; exactly `startRun`'s answer; checked before any waiter is registered |
+| Run input (forms, `executeRun`) | `UNAVAILABLE` (503) | none | the gate found no validator permit within its wait; retryable, the key is not consumed |
 | Invocation | `RATE_LIMITED` (429) | `WAITER_LIMIT` | waiter ceiling of subject, tenant or process reached; checked before admission |
 | Invocation | `VALIDATION_FAILED` (422) | `WAIT_OUT_OF_RANGE` | `waitMs` outside 0..ceiling |
 | Invocation | `CONFLICT` (409) | `IDEMPOTENCY_KEY_REUSED` | existing reason; same key, other body |
 | Streams (REST) | `RATE_LIMITED` (429) | `STREAM_SUBSCRIPTION_LIMIT` | open stream ceiling |
 | Streams (REST) | — (feed event) | — | `event: reset` for a cursor of another cell epoch; not an error |
 | Streams (gRPC) | see [worker-protocol.md](./worker-protocol.md) | `STREAM_EVENT_INVALID`, `STREAM_LIMIT` (with `scope`), `STREAM_RATE` | append refusals |
-| Streams (publication) | `VALIDATION_FAILED` (422) | `STREAM_CHANNEL_UNDECLARED`, `STREAM_CHANNEL_RESERVED`, `STREAM_SCHEMA_OPEN`, `STREAM_SCHEMA_TOO_LARGE`, `STREAM_PROGRESS_SHAPE`, `STREAM_BUDGET_TOO_LARGE` | IR checks of FR-026-013 (a `sagat.` name declared by an author; budgets above the channel ceiling or summing above the author pool) |
+| Streams (publication) | `VALIDATION_FAILED` (422) | `STREAM_CHANNEL_UNDECLARED`, `STREAM_CHANNEL_RESERVED`, `STREAM_SCHEMA_OPEN`, `STREAM_SCHEMA_TOO_LARGE`, `STREAM_PROGRESS_SHAPE`, `STREAM_BUDGET_TOO_LARGE`, `STREAM_SCHEMA_OUTSIDE_SUBSET` | IR checks of FR-026-013 (a `sagat.` name declared by an author; budgets above the channel ceiling or summing above the author pool; a channel schema outside the 043 subset, added 2026-11-24) |
+| IR additions (publication) | `VALIDATION_FAILED` (422) | `FORM_HINTS_DISABLED`, `WORKFLOW_STREAMS_DISABLED`, `APPROVAL_CHANNELS_DISABLED` with the node or field | the definition uses a field whose instance-registry capability (`form-hints-v1`, `workflow-streams-v1`, `approval-channels-v1`) is not active, the pattern of `COLLECTION_OPERATORS_DISABLED` (added 2026-11-24) |
+| Resources (creation) | `VALIDATION_FAILED` (422) | `NOTIFICATION_CHANNELS_DISABLED`, `PUBLIC_LINKS_DISABLED`, `SYNCHRONOUS_ROUTES_DISABLED` (the last refused by feature 021 at route creation) | the capability `notification-channels-v1`, `public-links-v1` or `synchronous-routes-v1` is not active (added 2026-11-24) |
 | Public links (management) | `QUOTA_EXCEEDED` (429) | existing quota reasons | `public_links` count (default 0) |
 | Public links (management) | `VALIDATION_FAILED` (422) | `LINK_FIELD_NOT_AVAILABLE`, `LINK_SECRET_FIELD`, `ENCODING_READ_BY_FORM` (feature 031), `LINK_ORIGIN_INVALID`, `LINK_EXPIRY_OUT_OF_RANGE`, `LINK_PRESET_INVALID`, `LINK_CAPACITY_OUT_OF_RANGE` | exposed field not in an `AVAILABLE` model, a `secret` or encoded field exposed or preset, a non-https origin, expiry beyond ceiling, preset not valid against the schema, live-run cap missing or above its ceiling |
 | Public links (management) | `CONFLICT` (409) | `PUBLIC_ORIGIN_NOT_CONFIGURED` | the deployment has no public-forms origin |
@@ -27,10 +31,14 @@ canonical contracts and the remediation table by T026-005.
 | Public links (management) | `CONFLICT` (409) | `REVISION_CONFLICT` | existing reason; stale `expectedRevision` |
 | Public (anonymous) | `NOT_FOUND` (404) | none | every unusable link or receipt, indistinguishably; every `/v1/public/*` path on the Studio origin |
 | Public (anonymous) | `RATE_LIMITED` (429) | none | local guard, durable buckets, the link's live-run cap or the namespace public-link pool; `Retry-After` |
-| Public (anonymous) | `VALIDATION_FAILED` (422) | `FORM_INPUT_INVALID` with pointers | field not exposed, or schema violation; no value echoed |
+| Public (anonymous) | `VALIDATION_FAILED` (422) | `FORM_INPUT_INVALID` with `field` `/` | a field outside the exposed pointers, refused before the gate; the caller's own keys are never echoed (revised 2026-11-24) |
+| Public (anonymous) | `VALIDATION_FAILED` (422) | design 043's `RUN_INPUT_INVALID` | the gate refuses the merged input: `field` and `rule` only when the field lies inside an exposed pointer, else `field` `/` and `rule` `other` (added 2026-11-24, Decision 026-017) |
+| Public (anonymous) | `UNAVAILABLE` (503) | none | the gate found no permit; `Retry-After`; no detail |
 | Public (anonymous) | `QUOTA_EXCEEDED` (429) | none | content or active-run quotas of the tenant (no detail to anonymous callers) |
 | Approval links | `NOT_FOUND` (404) | none | unknown, foreign, malformed, MAC-invalid, expired or closed token; with feature 029, a workflow the caller cannot see |
-| Decisions | `VALIDATION_FAILED` (422) | `DECISION_INPUT_INVALID` with pointers | form input invalid, or missing for the chosen decision (`requiredFor`) |
+| Synchronous routes (with feature 021) | `VALIDATION_FAILED` (422) | design 043's `RUN_INPUT_INVALID` with `field` `/` and `rule` `other` | the dispatcher refused the route's event for its input (Decision 026-010) |
+| Decisions | `VALIDATION_FAILED` (422) | `DECISION_INPUT_INVALID` with `field` and `rule` | form input invalid (the first violation, by the 043 validator), or missing for the chosen decision (`requiredFor`, `field` `/input`, `rule` `required`) (revised 2026-11-24) |
+| Approval form (publication) | `VALIDATION_FAILED` (422) | `FORM_SCHEMA_OUTSIDE_SUBSET` | the approval `form.schema` is outside the 043 subset (added 2026-11-24) |
 | Decisions | `FORBIDDEN` (403) | existing `NOT_ELIGIBLE`, `INITIATOR_CANNOT_DECIDE` | unchanged feature-014 checks |
 | Approval summary (publication) | `VALIDATION_FAILED` (422) | `SUMMARY_LEVEL_BELOW_SOURCE` | a summary field annotated below the level of a location its expression reads |
 | Channels | `FORBIDDEN` (403) | `CLASSIFICATION_CEILING_NOT_GRANTED` | `maxClassification` `internal` without `payload:read-internal`, or `pii` without the reveal grant |

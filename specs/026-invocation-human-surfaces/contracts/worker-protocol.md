@@ -1,15 +1,20 @@
 # Worker protocol excerpt — `AppendStreamEvents` (draft)
 
 DRAFT, not implemented. Merged into `specs/001-platform-foundation/contracts/worker.proto` and
-`docs/architecture/worker-runtime-protocol.md` by T026-007. The rpc is offered in the next additive
-minor after 1.6, proposed as **1.7**; drafts 019 and 025 may need a minor as well, so the final number
-is assigned when the drafts are integrated (G1333). Every older minor keeps its meaning (ADR-0015).
+`docs/architecture/worker-runtime-protocol.md` by T026-007. Every older minor keeps its meaning (ADR-0015).
+
+Revised on 2026-11-24 (research.md, Decisions 026-006 and 026-007). The minor: 1.7 belongs to feature 041
+(`AppendStepLogs`, Owner decision 2026-11-15-8, the register of minors in `sdks/SPEC.md`). This rpc takes the
+next free minor of that register when its contract merges; drafts 020, 021 and 025 compete for the same
+next number, so it is written below as **1.N**, 1.8 if this contract is the first of them to merge (Gap 1333).
+The fence: the append no longer locks the step row; it locks its own attempt row and reads the lease
+without a lock, and a final batch closes the attempt. The bytes: a storage class of their own.
 
 ```proto
 service WorkerService {
   // ... existing rpcs unchanged ...
 
-  // Added in 1.7 (proposed). Appends Workflow Stream events for the leased attempt. Requires the
+  // Added in 1.N (the next free minor, see above). Appends Workflow Stream events for the leased attempt. Requires the
   // current lease (task, run, step, instance, attempt, generation, token) on the database clock,
   // a node that declares every channel in `emits`, and events valid against the pinned channel
   // schema. A batch commits atomically: all its new events or none. Replaying a batch returns the
@@ -28,7 +33,12 @@ message AppendStreamEventsRequest {
   int32 attempt = 4; int64 generation = 5; string lease_token = 6;
   string traceparent = 7;
   ExecutionInstanceIdentity instance = 8;
-  repeated StreamEventInput events = 9;   // 1..64 (256 hard), total at most 64 KiB (256 KiB hard)
+  repeated StreamEventInput events = 9;   // 0..64 (256 hard), total at most 64 KiB (256 KiB hard); empty only with final
+  // Added 2026-11-24: the attempt's last batch. Stores its events and closes the attempt's stream row;
+  // every later append of this attempt and generation is STALE_ATTEMPT. A resent final batch with the
+  // same events answers its original offsets. The SDK sends it when it flushes before completing.
+  bool final = 10;
+  string session_id = 11;                 // the worker session, checked as Heartbeat checks it
 }
 
 message AppendedStreamEvent {
@@ -47,11 +57,12 @@ message AppendStreamEventsResponse {
 
 | Situation | Status | `x-sagat-error` / reason |
 |---|---|---|
-| Lease expired, superseded, step already completed or failed, wrong token or generation | `ABORTED` | `STALE_ATTEMPT` (stop publishing; nothing stored) |
+| Lease expired, superseded, step already completed or failed, wrong token or generation, or the attempt's stream row closed (a final batch, or a feed that saw the step settled) | `ABORTED` | `STALE_ATTEMPT` (stop publishing; nothing stored) |
 | Same `publisher_seq` with different data | `ABORTED` | `IDEMPOTENCY_KEY_REUSED` |
 | Channel undeclared, not in `emits`, data not an object, schema violation, oversized event or batch | `INVALID_ARGUMENT` | details reason `STREAM_EVENT_INVALID` with the event index and a JSON pointer, never a value |
 | A value the step received as a secret appears in the data | `INVALID_ARGUMENT` | `SECRET_IN_OUTPUT` (same scanner as completion) |
-| Channel budget, author pool, reserved pool, per-run hard ceiling or tenant content quota | `RESOURCE_EXHAUSTED` | reason `STREAM_LIMIT` with `scope` = `channel`, `author_pool`, `reserved_pool`, `run` or `tenant_content` (not retryable) |
+| Channel budget, author pool, reserved pool, per-run hard ceiling or the tenant stream quota | `RESOURCE_EXHAUSTED` | reason `STREAM_LIMIT` with `scope` = `channel`, `author_pool`, `reserved_pool`, `run` or `tenant_stream` (not retryable; revised 2026-11-24: the quota is `tenant_stream_bytes`, Decision 026-007) |
+| No validator permit within the wait of design 043 | `UNAVAILABLE` | retryable with the same batch and publisher sequences |
 | Per-attempt append rate | `RESOURCE_EXHAUSTED` | reason `STREAM_RATE` with `retry_after_ms` |
 | Worker negotiated a minor below the one that defines the rpc | `UNIMPLEMENTED` from older servers; `FAILED_PRECONDITION` + `UNSUPPORTED_PROTOCOL` from newer servers | |
 | Identity not bound to the activity, tenant mismatch | `PERMISSION_DENIED` | `NOT_BOUND` (indistinguishable from stale for another tenant's run) |
@@ -61,20 +72,32 @@ A refusal never fails the step. The SDK surfaces it to the step code, which deci
 ## Server checks, in order
 
 1. Bounded request size and event count before any database access (the existing gRPC limits layer).
-2. One transaction: lock the step lease row `FOR SHARE`; sample the database clock after the lock;
-   compare token hash, generation, attempt, expiry and session ownership as `Heartbeat` does; read the
-   pinned version's channel declarations and the node's `emits`.
-3. Validate every event against its channel schema with the cached compiled validator; scan for the
-   attempt's resolved secret values.
+2. Before the transaction: validate every event against its channel schema with the platform validator
+   of design 043 (one permit for the batch, its work counter and depth limit; the schema is inside the 043
+   subset by publication); scan for the attempt's resolved secret values. No lock is held while waiting
+   for a permit.
+3. One transaction: insert or find the attempt row (`run_stream_attempts`, keyed by run, node instance,
+   attempt and generation) and lock it `FOR UPDATE`; refuse when it is closed. Then read the step's lease
+   **without a lock**, sample the database clock after that read, and compare token hash, generation,
+   attempt, expiry and session ownership as `Heartbeat` does; read the pinned version's channel
+   declarations and the node's `emits`.
 4. Lock `run_stream_heads` `FOR UPDATE`; per event: existing deduplication key → stored offset (or
    conflict on a different `data_sha256`); else check the channel budget, its pool (author or reserved
    `sagat.`) and the per-run hard ceiling, insert the event with its data inline (never in `payloads`),
-   update the channel usage and pool counters and advance the head; check the per-attempt rate.
-5. Commit; the deferred ADR-0027 trigger checks `tenant_content_bytes`. A commit failure stores nothing.
+   update the channel usage and pool counters and advance the head; check the per-attempt rate. With
+   `final`, set the attempt row's `closed_at`.
+5. Commit; the deferred ADR-0027 trigger charges the storage class `workflow_stream` and checks
+   `tenant_stream_bytes`, without taking the tenant usage row before the commit (the rule of feature 041).
+   A commit failure stores nothing.
 
-The rpc never locks the run row and never writes the journal, the outbox or `telemetry_pending`.
+The rpc never locks, or waits for a lock on, a row of `runs`, `steps` or `run_events`, and never writes the
+journal, the outbox or `telemetry_pending`. Leasing, heartbeat and completion never read or write the
+stream tables. Ordering with completion: the feed closes an attempt's row (an `UPDATE` that waits for an
+append holding it) before it sends `settled` or `superseded`, so an append that read the lease before the
+completion committed is either committed before that event or refused after it (research.md, Decision
+026-006).
 
-## SDK behaviour (all five, `sdks/SPEC.md` §6 addition)
+## SDK behaviour (all six, `sdks/SPEC.md` §6 addition)
 
 - `ctx.stream(channel).publish(data)` validates the channel name locally, assigns the next
   `publisher_seq` for the attempt, and buffers; a background flusher sends batches every 100 ms or at
@@ -84,8 +107,10 @@ The rpc never locks the run row and never writes the journal, the outbox or `tel
   `STREAM_BUFFER_FULL` (local, not retryable) rather than block the step forever.
 - Transport errors (`UNAVAILABLE`) are retried with the same batch and `publisher_seq` values until the
   lease deadline; `STALE_ATTEMPT` stops the flusher and drops the buffer (the attempt is over).
-- Completing or failing the step flushes first (bounded by the lease deadline); events not flushed
-  before completion are reported to the step code as not published, never silently dropped.
+- Completing or failing the step flushes first with a `final` batch (bounded by the lease deadline);
+  events not flushed before completion are reported to the step code as not published, never silently
+  dropped. A worker that dies before its final batch leaves the attempt to be closed by the feed or the
+  maintenance pass once the step settled or was superseded (Gap 1340).
 - Scripts use feature 023's reserved, capability-gated `stream.append` host call (shim protocol of
   feature 023, coordinator decision C17); the supervisor holds the
   lease and calls this rpc. Managed executors (017, 025) call it under their own lease.
