@@ -67,10 +67,10 @@ public sealed class TraceListenerTests
         options.Worker.HeartbeatInterval = TimeSpan.FromMilliseconds(30);
         await using var host = new Workers.WorkerHost(options);
         var ran = 0;
-        host.RegisterActivity<System.Text.Json.Nodes.JsonNode?, int>("charge", async (_, _, ct) =>
+        host.RegisterActivity<System.Text.Json.Nodes.JsonNode?, int>("charge", async (_, _, _) =>
         {
             Interlocked.Increment(ref ran);
-            await Task.Delay(400, ct);
+            await Eventually.ReachedAsync(() => fake.State.Of("Heartbeat").Count >= 1, 5_000); // the beat checked below, not a delay
             return 1;
         });
         fake.State.Lease(Leases.Lease(l => l.Traceparent = leaseTrace));

@@ -4,7 +4,7 @@
 
 **Created**: 2026-10-26
 
-**Status**: Draft — specification, plan and tasks proposed; not implemented; pending owner review
+**Status**: Specification, plan and tasks approved for implementation by the owner on 2026-11-11 (Owner decision 2026-11-11-1, "Aprovo os rascunhos 019–032 e 036, pode implementar"); not implemented
 
 **Release 0.3.0 slice (2026-11-13)**: the owner put throughput control in release 0.3.0 (OD-2026-11-13-11,
 quoted in [research.md](research.md#owner-decision-of-2026-11-13-throughput-control-in-release-030)): US02
@@ -591,8 +591,8 @@ Added after the review of 2026-11-13:
   evaluated when the delay elapses. A key error MUST end the new run `FAILED`/`EXPRESSION_ERROR` in that
   transaction. A grant to a buffered run MUST be made by the grant routine of FR-022-052 (ADR-0088,
   refined by ADR-0089). A **reset** run (018) MUST take a slot in its reset admission transaction and MUST
-  NOT be buffered: without a free slot the reset is refused (`RATE_LIMIT_SLOT_UNAVAILABLE`, to be
-  registered in 018's contract), and `rate_limit.*` events copied from the source prefix are history
+  NOT be buffered: without a free slot the reset is refused (`RATE_LIMIT_SLOT_UNAVAILABLE`, registered in
+  018's contract), and `rate_limit.*` events copied from the source prefix are history
   (FR-022-038).
 - **FR-022-042 — What buffering guarantees**: Buffered work MUST survive a restart of every process and
   hold no lease, worker, attempt or concurrency permit. Within one key, grants MUST follow enqueue order

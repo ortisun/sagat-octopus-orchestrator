@@ -580,7 +580,10 @@ pub fn needs(sql: &str) -> Vec<Need> {
             "using" if in_delete => {
                 if let Some((table, _)) = scan.relation(i + 1) {
                     consumed.insert(i + 1);
-                    push(Need::Select(table));
+                    // a CTE the DELETE joins is the statement's own row set, no relation to be granted
+                    if !ctes.contains(&table) {
+                        push(Need::Select(table));
+                    }
                 }
             }
             "truncate" => {
@@ -773,6 +776,18 @@ mod tests {
         has(sql, "DELETE outbox");
         has(sql, "INSERT archive(id)");
         lacks(sql, "SELECT moved");
+    }
+
+    /// The form of the rate gate's reclaim (feature 022): a CTE read by a later CTE's `DELETE ... USING` and by the
+    /// final `SELECT` is no relation, wherever it is named.
+    #[test]
+    fn a_cte_named_by_a_delete_using_is_not_a_table() {
+        let sql = "WITH v AS (SELECT w.k FROM windows w WHERE NOT EXISTS (SELECT 1 FROM grants g WHERE g.k = w.k \
+                   AND NOT (g.leased_at IS NOT NULL AND g.leased_at < clock_timestamp()))), \
+                   gone AS (DELETE FROM grants g USING v WHERE g.k = v.k RETURNING 1) SELECT count(*) FROM v";
+        has(sql, "SELECT windows");
+        has(sql, "DELETE grants");
+        lacks(sql, "SELECT v");
     }
 
     #[test]

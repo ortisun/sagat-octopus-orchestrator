@@ -4,6 +4,7 @@ Every case builds a throwaway git repository with a small Cargo workspace and a 
 real one, commits a base, changes files, and asks the script what the CI must run.
 """
 import importlib.util
+import json
 import os
 import pathlib
 import re
@@ -112,7 +113,8 @@ class Scope(unittest.TestCase):
         values = {}
         for line in result.stdout.splitlines():
             key, sep, value = line.partition("=")
-            if sep and key in {"full", "crates", "sdks", "frontend", "scripts", "lake", "targets", "any", "all"}:
+            if sep and key in {"full", "crates", "sdks", "frontend", "scripts", "lake", "targets", "any", "all",
+                                          "shards"}:
                 values[key] = value
         return values
 
@@ -329,7 +331,7 @@ class Scope(unittest.TestCase):
         self.assertEqual(
             decision,
             {"full": "false", "crates": "", "sdks": "", "frontend": "false", "scripts": "false", "lake": "false",
-             "targets": "", "any": "false", "all": "false"})
+             "targets": "", "any": "false", "all": "false", "shards": "[]"})
 
     def test_frontend_journeys_select_the_browser_suites(self):
         self.write("frontend/e2e/journeys/login.spec.ts", "// x\n")
@@ -606,6 +608,46 @@ class Scope(unittest.TestCase):
         for expected in ("full=false\n", "crates=sagat-leaf\n", "sdks=\n", "frontend=false\n", "scripts=false\n",
                          "targets=contract_rest_a\n", "any=true\n", "all=false\n"):
             self.assertIn(expected, text)
+        self.assertIn('shards=[{"index": 1, "count": 1, "targets": "contract_rest_a", "seconds": ', text)
+
+    # -- the shard matrix of the integration suites ----------------------------------------------
+    def shards(self, **kwargs):
+        return json.loads(self.decide(**kwargs)["shards"])
+
+    def test_no_selected_suite_gives_no_shard(self):
+        self.write("README.md", "changed\n")
+        self.commit()
+        decision = self.decide()
+        self.assertEqual((decision["any"], decision["shards"]), ("false", "[]"))
+
+    def test_a_selected_suite_runs_in_one_shard(self):
+        self.write("tests/fault/b/steps.rs", "// new\n")
+        self.commit()
+        self.assertEqual([s["targets"] for s in self.shards()], ["fault_b"])
+
+    def test_a_release_spreads_every_suite_over_the_shards_exactly_once(self):
+        shards = self.shards(event="workflow_dispatch", base="")
+        names = [name for shard in shards for name in shard["targets"].split()]
+        self.assertEqual(sorted(names), sorted(TARGETS))
+        self.assertEqual([s["index"] for s in shards], list(range(1, len(shards) + 1)))
+        self.assertTrue(all(s["count"] == len(shards) for s in shards))
+
+    def test_the_shards_are_balanced_by_the_duration_table_of_the_head(self):
+        figures = {**{name: 1 for name in TARGETS}, "integration_a": 1800, "fault_b": 1700}
+        self.write("scripts/integration-suite-durations.toml",
+                   "[seconds]\n" + "".join(f"{name} = {seconds}\n" for name, seconds in figures.items()))
+        self.write("tests/integration/a/x.rs", "// x\n")
+        self.write("tests/fault/b/x.rs", "// x\n")
+        self.write("tests/contract/a/x.rs", "// x\n")
+        self.commit()
+        self.assertEqual([s["targets"] for s in self.shards()], ["integration_a", "contract_a fault_b"])
+
+    def test_an_unreadable_duration_table_is_refused(self):
+        self.write("scripts/integration-suite-durations.toml", "[seconds\n")
+        self.commit()
+        result = self.run_select()
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("integration-suite-durations.toml", result.stderr)
 
 
 def load_selector():
@@ -665,6 +707,106 @@ class RealRepository(unittest.TestCase):
                 if not any(reader in self.readers.of(rel) for rel in files):
                     unseen.append(f"{reader[0]} {reader[1]}: {literal}")
         self.assertEqual(unseen, [], "these readers name a contract the selector does not see them read")
+
+
+class Shards(unittest.TestCase):
+    """How the selected integration suites are spread over parallel CI jobs: greedy, longest suite first, into the
+    least-loaded shard, with as many shards as the measured time needs (run 44793165198 timed out with every suite in
+    one step)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.selector = load_selector()
+
+    def plan(self, names, durations):
+        return self.selector.plan_shards(names, durations)
+
+    def test_no_suite_gives_no_shard(self):
+        self.assertEqual(self.plan([], {"a": 10}), [])
+
+    def test_one_suite_gives_one_shard(self):
+        self.assertEqual(self.plan(["a"], {"a": 10}),
+                         [{"index": 1, "count": 1, "targets": "a", "seconds": 10}])
+
+    def test_suites_that_fit_the_budget_together_share_one_shard(self):
+        budget = self.selector.SHARD_BUDGET_SECONDS
+        plan = self.plan(["a", "b", "c"], {"a": budget // 2, "b": budget // 4, "c": budget // 8})
+        self.assertEqual([s["targets"] for s in plan], ["a b c"])
+
+    def test_the_longest_suite_goes_first_into_the_least_loaded_shard(self):
+        budget = self.selector.SHARD_BUDGET_SECONDS
+        durations = {"a": budget, "b": 1000, "c": 900, "d": 800, "e": 100}
+        plan = self.plan(sorted(durations), durations)
+        self.assertEqual([(s["targets"], s["seconds"]) for s in plan],
+                         [("a", budget), ("b e", 1100), ("c d", 1700)])
+        self.assertTrue(all(s["count"] == 3 for s in plan))
+
+    def test_the_plan_does_not_depend_on_the_order_of_the_selection(self):
+        durations = {"a": 700, "b": 700, "c": 700, "d": 500, "e": 500, "f": 0, "g": 0}
+        first = self.plan(sorted(durations), durations)
+        second = self.plan(sorted(durations, reverse=True), durations)
+        self.assertEqual(first, second)
+
+    def test_suites_with_no_measured_time_are_spread_and_not_piled_into_one_shard(self):
+        budget = self.selector.SHARD_BUDGET_SECONDS
+        durations = {"a": budget - 100, "b": budget - 100, **{f"z{i}": 0 for i in range(6)}}
+        plan = self.plan(sorted(durations), durations)
+        empty = [len([n for n in s["targets"].split() if n.startswith("z")]) for s in plan]
+        self.assertEqual(empty, [3, 3])
+
+    def test_a_suite_missing_from_the_table_counts_as_the_conservative_default(self):
+        default = self.selector.DEFAULT_SUITE_SECONDS
+        self.assertGreaterEqual(default, 600)
+        self.assertEqual(self.plan(["new"], {}), [{"index": 1, "count": 1, "targets": "new", "seconds": default}])
+
+    def test_a_shard_is_added_while_the_greedy_plan_overflows_the_budget(self):
+        # Three suites of two thirds of the budget each need three shards, not the two that their sum suggests.
+        budget = self.selector.SHARD_BUDGET_SECONDS
+        third = budget // 3
+        durations = {"a": 2 * third, "b": 2 * third, "c": 2 * third}
+        plan = self.plan(sorted(durations), durations)
+        self.assertEqual([s["targets"] for s in plan], ["a", "b", "c"])
+
+    def test_the_number_of_shards_is_capped(self):
+        budget = self.selector.SHARD_BUDGET_SECONDS
+        cap = self.selector.MAX_SHARDS
+        durations = {f"s{i:02d}": budget for i in range(cap * 2)}
+        plan = self.plan(sorted(durations), durations)
+        self.assertEqual(len(plan), cap)
+        self.assertEqual(sorted(n for s in plan for n in s["targets"].split()), sorted(durations))
+
+
+class DurationTable(unittest.TestCase):
+    """The checked-in table the shards are balanced by must name exactly the suites of tests/Cargo.toml (AGENTS.md rule
+    21): a suite added without a figure would be planned at the default, and a figure left for a removed suite is stale."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.root = str(SCRIPT.parents[1])
+        cls.selector = load_selector()
+        cls.targets = cls.selector.head_targets(cls.root)
+        cls.durations = cls.selector.load_durations(cls.root)
+
+    def test_the_table_names_exactly_the_suites_of_the_manifest(self):
+        self.assertEqual(sorted(set(self.targets) - set(self.durations)), [], "suites with no measured duration")
+        self.assertEqual(sorted(set(self.durations) - set(self.targets)), [], "durations of suites that do not exist")
+
+    def test_every_figure_is_a_whole_number_of_seconds(self):
+        for name, seconds in self.durations.items():
+            self.assertTrue(isinstance(seconds, int) and not isinstance(seconds, bool) and seconds >= 0, name)
+
+    def test_no_suite_is_longer_than_a_shard_may_be(self):
+        # A suite longer than the budget would make its shard the bottleneck whatever the plan: split the suite, or
+        # raise the budget knowingly, with the job's timeout in view.
+        budget = self.selector.SHARD_BUDGET_SECONDS
+        self.assertEqual({n: s for n, s in self.durations.items() if s > budget}, {})
+
+    def test_every_suite_runs_once_and_no_shard_overflows_for_a_release(self):
+        plan = self.selector.plan_shards(sorted(self.targets), self.durations)
+        self.assertEqual(sorted(n for s in plan for n in s["targets"].split()), sorted(self.targets))
+        self.assertLessEqual(len(plan), self.selector.MAX_SHARDS)
+        budget = self.selector.SHARD_BUDGET_SECONDS
+        self.assertTrue(all(s["seconds"] <= budget for s in plan), [s["seconds"] for s in plan])
 
 
 if __name__ == "__main__":

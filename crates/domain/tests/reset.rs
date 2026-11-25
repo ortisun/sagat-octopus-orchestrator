@@ -114,26 +114,27 @@ fn the_rules_are_the_ones_of_the_contract() {
         "execution_chain.successor_linked",
         "run.continued",
         "continuation.selected",
-        // feature 022 (D022-035): no reset point after a rate-limit event until a reset admits through the rate gate
-        // (T022-086); the concurrency events have the rules of `specs/022-flow-control-step-policies/contracts/
-        // journal-events.md` since a reset takes a fresh permit (T022-064)
-        "rate_limit.queued",
-        "rate_limit.granted",
-        "rate_limit.wait_timed_out",
-        "rate_limit.dequeued",
-        "rate_limit.returned",
     ];
     let refuse = [
         ("reconciliation.requested", "reconciliation.concluded"),
         ("run.start_delayed", "run.start_released"),
     ];
-    // feature 022: history the reset re-materializes (a fresh permit), and the end of a wait that never started work
+    // feature 022 (`specs/022-flow-control-step-policies/contracts/journal-events.md`): history the reset re-materializes
+    // (a fresh permit, T022-064, or a fresh slot, T022-086), and the end of a wait that never started work
     let rematerialize = [
         "concurrency.queued",
         "concurrency.acquired",
         "concurrency.released",
+        "rate_limit.queued",
+        "rate_limit.granted",
+        "rate_limit.returned",
     ];
-    let refuse_to_the_end = ["concurrency.wait_timed_out", "concurrency.dequeued"];
+    let refuse_to_the_end = [
+        "concurrency.wait_timed_out",
+        "concurrency.dequeued",
+        "rate_limit.wait_timed_out",
+        "rate_limit.dequeued",
+    ];
     for (name, rule) in RESET_RULES {
         let expected = if exclude.contains(name) {
             ResetRule::Exclude

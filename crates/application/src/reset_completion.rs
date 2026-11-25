@@ -193,15 +193,16 @@ pub enum Completed {
 /// The closed reasons the completion of a pending reset fails with (the judgement of the platform on the journal the
 /// source ended with), and the label each has in `workflow_reset_completions_total{outcome="failed"}`. The expiry has
 /// its own, [`SOURCE_DID_NOT_END`], under `outcome="expired"`.
-pub const FAILURE_REASONS: [&str; 7] = [
+pub const FAILURE_REASONS: [&str; 8] = [
     "BOUNDARY_NO_LONGER_ELIGIBLE",
     "ADMISSION_REFUSED",
     "BUSINESS_ID_IN_USE",
     "AUTHORITY_REVOKED",
     "REEXECUTION_NOT_ACKNOWLEDGED",
     "REAPPLY_TOO_MANY",
-    // feature 022: a reset never queues for a permit (018's data model lists the reason)
+    // feature 022: a reset never queues for a permit, nor waits for a slot (018's data model lists the reasons)
     "CONCURRENCY_PERMIT_UNAVAILABLE",
+    "RATE_LIMIT_SLOT_UNAVAILABLE",
 ];
 
 /// Whether a conflict of state is one of the two races the pass knows: the entry was completed first, or the lease of
@@ -235,6 +236,10 @@ pub fn failure_of(error: &AppError) -> Option<&'static str> {
         // feature 022: the reset run found no free permit, and a reset never queues (018's data model lists the reason)
         AppError::FlowControl(crate::flow_control::FlowControlRefusal::PermitUnavailable) => {
             Some("CONCURRENCY_PERMIT_UNAVAILABLE")
+        }
+        // feature 022: the reset run found no free slot in its key's window, and a reset never waits (D022-069)
+        AppError::FlowControl(crate::flow_control::FlowControlRefusal::SlotUnavailable) => {
+            Some("RATE_LIMIT_SLOT_UNAVAILABLE")
         }
         // a process that does not run the gate is no judgement of the platform: another one completes the entry
         // (reviews of 2026-11-20, correctness m6, architecture m4)
@@ -452,7 +457,7 @@ fn engine_record(entry: &PendingReset, reason: &'static str, now: OffsetDateTime
 }
 
 /// Counts a completion once it is committed (`workflow_reset_completions_total`). The labels are the closed sets
-/// of the outcomes (`created`, `failed`, `expired`) and the reasons (`none`, the seven of [`FAILURE_REASONS`] and, for
+/// of the outcomes (`created`, `failed`, `expired`) and the reasons (`none`, the eight of [`FAILURE_REASONS`] and, for
 /// `expired` only, [`SOURCE_DID_NOT_END`]); none is a tenant, a run or a reset.
 fn count(outcome: &'static str, reason: &'static str) {
     metrics::counter!("workflow_reset_completions_total", "outcome" => outcome, "reason" => reason)
@@ -574,6 +579,7 @@ mod tests {
             },
             AppError::QuotaExceeded("x"),
             AppError::FlowControl(crate::flow_control::FlowControlRefusal::PermitUnavailable),
+            AppError::FlowControl(crate::flow_control::FlowControlRefusal::SlotUnavailable),
             AppError::BusinessIdConflict {
                 reason: "BUSINESS_ID_IN_USE",
                 holder: RunId::generate(),

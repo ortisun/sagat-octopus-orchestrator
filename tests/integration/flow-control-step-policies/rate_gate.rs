@@ -197,6 +197,23 @@ async fn a_buffered_start_is_granted_once_the_window_of_the_slot_ahead_has_passe
         start_slot(&w, third).await
     );
     assert_eq!(w.run_status(second).await, RunStatus::Running);
+    // the window's oldest wait moved to the waiter that remains, exactly (decision D022-068 item 5; correctness Major 3
+    // of the review of task T022-078)
+    let (oldest, third_enqueued): (Option<OffsetDateTime>, OffsetDateTime) = sqlx::query_as(
+        "SELECT k.oldest_wait_at, x.enqueued_at FROM rate_limit_windows k JOIN rate_limit_waiters x \
+             ON x.tenant_id = k.tenant_id AND x.namespace_id = k.namespace_id AND x.pool = k.pool \
+            AND x.limit_scope = k.limit_scope AND x.group_name = k.group_name AND x.key_digest = k.key_digest \
+          WHERE x.run_id = $1",
+    )
+    .bind(third.as_uuid())
+    .fetch_one(&w.db.pool)
+    .await
+    .expect("the third's window");
+    assert_eq!(
+        oldest,
+        Some(third_enqueued),
+        "the remaining waiter's instant"
+    );
     for run in [first, second, third] {
         w.assert_consistent(run).await;
     }
@@ -865,14 +882,15 @@ async fn the_rate_live_keys_count_misses_only_the_keys_other_transactions_have_n
         "every committed row is counted"
     );
     assert_eq!(window_rows(&w).await, 3, "no row for the refused key");
-    for run in [first, second, third] {
-        w.assert_consistent(run).await;
-    }
+    // the stand-in key has no grant and no waiter: it goes before the consistency check, which refuses an empty window
     sqlx::query("DELETE FROM rate_limit_windows WHERE key_digest = $1")
         .bind(vec![0x42_u8; 32])
         .execute(&w.db.pool)
         .await
         .expect("the stand-in key goes");
+    for run in [first, second, third] {
+        w.assert_consistent(run).await;
+    }
 }
 
 /// Correctness Major 1 of the re-review (decision D022-066 item 2): a rest that waits for the window a grant in flight
@@ -987,4 +1005,57 @@ async fn a_rest_that_waits_for_a_grant_in_flight_counts_that_grant() {
         .execute(&w.db.pool)
         .await
         .expect("the stand-in grant goes");
+}
+
+/// Decision D022-073 items 1 and 4 (strict admission order; the hint of a start queued with room): one window shared by a
+/// start that also needs a permit (`limit: 1`) and one that does not, `limit: 3, per: hour`. The holder takes a slot
+/// and the permit; the dual-gated waiter `w2` finds room in the window but no permit, so it waits for both and keeps its
+/// room; a pass refuses it (its permit) and rests the window until the holder's slot ages out, an hour ahead. A start
+/// `a` of the rate-only definition then finds room in the window and an eligible waiter ahead: it queues, the window's
+/// hint drops to the instant of its queueing statement, before its commit (a later hint would hold it for the hour), and the next pass grants it while `w2`
+/// still waits for its permit (the reservation rule keeps `w2`'s room: two counted of three).
+#[tokio::test]
+async fn a_start_behind_an_eligible_waiter_queues_although_the_window_has_room_and_the_next_pass_grants_it()
+ {
+    let w = gated_world().await;
+    let mut dual = rated_start("rate-strict-dual", 3, "hour");
+    dual["concurrency"] = json!({"group": "serial", "key": "input.accountId", "limit": 1});
+    let dual = publish(&w, dual).await;
+    let rated = publish(&w, rated_start("rate-strict-rated", 3, "hour")).await;
+    let input = json!({"accountId": "acct-1"});
+    let holder = w.start(dual, &input).await;
+    let w2 = w.start(dual, &input).await;
+    assert_eq!(
+        w.journal(w2).await,
+        ["run.started", "rate_limit.queued", "concurrency.queued"]
+    );
+    let report = w.scheduler.grant_gates().await;
+    assert_eq!(report.gates_granted, 0, "no permit for w2: {report:?}");
+    let rested = hint_us(&w, w2).await.expect("a rested window");
+    assert!(
+        rested > database_now_us(&w.db.pool).await,
+        "the window rests until the holder's slot ages out: {rested}"
+    );
+    let a = w.start(rated, &input).await;
+    let committed = database_now_us(&w.db.pool).await;
+    let (grants, waiters, ..) = start_slot(&w, a).await;
+    assert_eq!(
+        (grants, waiters),
+        (0, 1),
+        "room in the window, an eligible waiter ahead: it queues: {:?}",
+        w.journal(a).await
+    );
+    let hint = hint_us(&w, a).await.expect("a due window");
+    assert!(
+        hint <= committed,
+        "the window is due once the start has committed: {hint} > {committed}"
+    );
+    let report = w.scheduler.grant_gates().await;
+    assert_eq!(report.gates_granted, 1, "{report:?}");
+    assert_eq!(start_slot(&w, a).await.0, 1, "the start is granted");
+    assert_eq!(start_slot(&w, w2).await.1, 1, "w2 waits for its permit");
+    for run in [holder, w2, a] {
+        w.assert_consistent(run).await;
+    }
+    w.assert_keys_consistent().await;
 }

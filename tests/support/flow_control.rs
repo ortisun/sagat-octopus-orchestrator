@@ -377,7 +377,7 @@ pub async fn key_consistency(
     // What the schema has is decided once, by name (keys review 2026-11-20, architecture M2): a schema rolled back
     // before the gates has nothing to check, and a projection or column the checks name that is missing from a schema
     // that has the gates is a failure, never a silent pass.
-    let (tables, run_gates, step_gates, oldest_wait): (bool, bool, bool, bool) = sqlx::query_as(
+    let (tables, run_gates, step_gates, oldest_wait, rate_oldest_wait): (bool, bool, bool, bool, bool) = sqlx::query_as(
         "SELECT to_regclass('public.concurrency_semaphores') IS NOT NULL, \
                 EXISTS (SELECT 1 FROM pg_attribute WHERE attrelid = 'public.runs'::regclass \
                          AND attname = 'flow_control_gates' AND NOT attisdropped), \
@@ -385,6 +385,9 @@ pub async fn key_consistency(
                          AND attname = 'flow_control_gates' AND NOT attisdropped), \
                 to_regclass('public.concurrency_semaphores') IS NOT NULL \
                 AND EXISTS (SELECT 1 FROM pg_attribute WHERE attrelid = to_regclass('public.concurrency_semaphores') \
+                             AND attname = 'oldest_wait_at' AND NOT attisdropped), \
+                to_regclass('public.rate_limit_windows') IS NOT NULL \
+                AND EXISTS (SELECT 1 FROM pg_attribute WHERE attrelid = to_regclass('public.rate_limit_windows') \
                              AND attname = 'oldest_wait_at' AND NOT attisdropped)",
     )
     .fetch_one(&mut *tx)
@@ -413,6 +416,11 @@ pub async fn key_consistency(
         20_270_205_000_000,
         oldest_wait,
         "concurrency_semaphores.oldest_wait_at",
+    )?;
+    must(
+        20_270_207_000_000,
+        rate_oldest_wait,
+        "rate_limit_windows.oldest_wait_at",
     )?;
     if !tables {
         return Ok(Vec::new());
@@ -528,6 +536,125 @@ pub async fn key_consistency(
                 .to_owned(),
         ));
     }
+    let rate_tables: bool =
+        sqlx::query_scalar("SELECT to_regclass('public.rate_limit_windows') IS NOT NULL")
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|e| e.to_string())?;
+    must(20_270_130_000_100, rate_tables, "rate_limit_windows")?;
+    // the rate gate's rows across runs (task T022-079; invariants 8 and 9 of `data-model.md`, "Consistency invariants
+    // added"): counters, empty rows, waiters against the gates' projection, grants against the journal
+    let rate_gates: String = format!(
+        "{}SELECT s.tenant_id, s.run_id, s.node, 'STEP' AS scope, s.flow_control_gates -> 'rate' AS g \
+           FROM steps s WHERE s.tenant_id = $1 AND s.flow_control_gates IS NOT NULL \
+            AND cardinality(s.instance_path_nodes) = 0",
+        if run_gates {
+            "SELECT r.tenant_id, r.id AS run_id, '' AS node, 'RUN' AS scope, r.flow_control_gates -> 'rate' AS g \
+               FROM runs r WHERE r.tenant_id = $1 AND r.flow_control_gates IS NOT NULL \
+             UNION ALL "
+        } else {
+            ""
+        }
+    );
+    let rate_gates = rate_gates.as_str();
+    if rate_tables {
+        checks.extend([
+        (
+            // invariant 8 (and `live_grants`): the counters a window decides with are its rows
+            "a window's counters differ from its rows",
+            "SELECT w.group_name || ':' || encode(substr(w.key_digest, 1, 6), 'hex') || ' grants ' || w.live_grants \
+                    || ' waiters ' || w.waiters FROM rate_limit_windows w WHERE w.tenant_id = $1 \
+                AND (w.live_grants <> (SELECT count(*) FROM rate_limit_grants g WHERE g.tenant_id = w.tenant_id \
+                        AND g.namespace_id = w.namespace_id AND g.pool = w.pool AND g.limit_scope = w.limit_scope \
+                        AND g.group_name = w.group_name AND g.key_digest = w.key_digest) \
+                  OR w.waiters <> (SELECT count(*) FROM rate_limit_waiters x WHERE x.tenant_id = w.tenant_id \
+                        AND x.namespace_id = w.namespace_id AND x.pool = w.pool AND x.limit_scope = w.limit_scope \
+                        AND x.group_name = w.group_name AND x.key_digest = w.key_digest))"
+                .to_owned(),
+        ),
+        (
+            // the transaction that empties a window deletes it
+            "an empty window row",
+            "SELECT w.group_name || ':' || encode(substr(w.key_digest, 1, 6), 'hex') FROM rate_limit_windows w \
+              WHERE w.tenant_id = $1 AND w.live_grants = 0 AND w.waiters = 0"
+                .to_owned(),
+        ),
+        (
+            // invariant 8: a waiter row belongs to a run or step whose journal holds an open `rate_limit.queued` for it
+            "a rate-limit waiter row whose gates wait for no such slot",
+            format!(
+                "SELECT x.run_id::text || '/' || x.node FROM rate_limit_waiters x WHERE x.tenant_id = $1 \
+                   AND NOT EXISTS (SELECT 1 FROM ({rate_gates}) p WHERE p.run_id = x.run_id AND p.node = x.node \
+                       AND p.scope = x.limit_scope AND p.g ->> 'phase' = 'QUEUED' \
+                       AND (p.g ->> 'attempt')::int = x.attempt AND p.g ->> 'pool' = x.pool \
+                       AND p.g ->> 'group' = x.group_name AND p.g ->> 'key' = encode(substr(x.key_digest, 1, 6), 'hex') \
+                       AND (p.g ->> 'deadlineUs')::bigint = (extract(epoch FROM x.deadline_at) * 1000000)::bigint)"
+            ),
+        ),
+        (
+            "a slot the gates wait for without its rate-limit waiter row",
+            format!(
+                "SELECT p.run_id::text || '/' || p.node FROM ({rate_gates}) p WHERE p.g ->> 'phase' = 'QUEUED' \
+                   AND NOT EXISTS (SELECT 1 FROM rate_limit_waiters x WHERE x.tenant_id = p.tenant_id \
+                       AND x.run_id = p.run_id AND x.node = p.node AND x.limit_scope = p.scope)"
+            ),
+        ),
+        (
+            // invariant 9: every grant row is a `rate_limit.granted` of its run, node and attempt, at its instant
+            "a grant row without its rate_limit.granted",
+            "SELECT g.run_id::text || '/' || g.node || '/' || g.attempt FROM rate_limit_grants g WHERE g.tenant_id = $1 \
+                AND NOT EXISTS (SELECT 1 FROM run_events e WHERE e.tenant_id = g.tenant_id AND e.run_id = g.run_id \
+                    AND e.event_type = 'rate_limit.granted' AND e.node IS NOT DISTINCT FROM NULLIF(g.node, '') \
+                    AND coalesce((e.detail ->> 'attempt')::int, 0) = g.attempt AND e.detail ->> 'scope' = g.limit_scope \
+                    AND e.detail ->> 'pool' = g.pool AND e.detail ->> 'group' = g.group_name \
+                    AND e.detail ->> 'key_label' = encode(substr(g.key_digest, 1, 6), 'hex') \
+                    AND (e.detail ->> 'granted_at_us')::bigint = (extract(epoch FROM g.granted_at) * 1000000)::bigint \
+                    AND NOT coalesce((e.detail ->> 'restored')::boolean, false))"
+                .to_owned(),
+        ),
+        (
+            // invariant 9: a run's slot that still counts has its row (the purge keeps it its window and a minute more)
+            "a run's counted slot without its grant row",
+            "SELECT e.run_id::text FROM run_events e WHERE e.tenant_id = $1 AND e.event_type = 'rate_limit.granted' \
+                AND e.detail ->> 'scope' = 'RUN' AND NOT coalesce((e.detail ->> 'restored')::boolean, false) \
+                AND (e.detail ->> 'granted_at_us')::bigint + (e.detail ->> 'period_ms')::bigint * 1000 \
+                    > (extract(epoch FROM clock_timestamp()) * 1000000)::bigint \
+                AND NOT EXISTS (SELECT 1 FROM rate_limit_grants g WHERE g.tenant_id = e.tenant_id \
+                    AND g.run_id = e.run_id AND g.limit_scope = 'RUN' \
+                    AND (extract(epoch FROM g.granted_at) * 1000000)::bigint = (e.detail ->> 'granted_at_us')::bigint)"
+                .to_owned(),
+        ),
+        (
+            // invariant 9: `grants_total` grows by one per grant of the row's life, so it is at least its rows and at
+            // most the key's journaled grants (a window emptied and created again starts a new life below them)
+            "a window's grants_total outside its rows and its journaled grants",
+            "SELECT w.group_name || ':' || encode(substr(w.key_digest, 1, 6), 'hex') || ' total ' || w.grants_total \
+               FROM rate_limit_windows w WHERE w.tenant_id = $1 \
+                AND (w.grants_total < w.live_grants \
+                  OR w.grants_total > (SELECT count(*) FROM run_events e JOIN runs r ON r.tenant_id = e.tenant_id \
+                                         AND r.id = e.run_id \
+                                        WHERE e.tenant_id = w.tenant_id AND r.namespace_id = w.namespace_id \
+                                          AND e.event_type = 'rate_limit.granted' AND e.detail ->> 'pool' = w.pool \
+                                          AND e.detail ->> 'scope' = w.limit_scope \
+                                          AND e.detail ->> 'group' = w.group_name \
+                                          AND e.detail ->> 'key_label' = encode(substr(w.key_digest, 1, 6), 'hex') \
+                                          AND NOT coalesce((e.detail ->> 'restored')::boolean, false)))"
+                .to_owned(),
+        ),
+    ]);
+    }
+    if rate_oldest_wait {
+        checks.push((
+            // decision D022-068 item 5: the oldest wait the rate-limit listing orders by is its waiters' oldest
+            "a window's oldest wait differs from its waiters'",
+            "SELECT w.group_name || ':' || encode(substr(w.key_digest, 1, 6), 'hex') FROM rate_limit_windows w \
+              WHERE w.tenant_id = $1 AND w.oldest_wait_at IS DISTINCT FROM (SELECT min(x.enqueued_at) \
+                    FROM rate_limit_waiters x WHERE x.tenant_id = w.tenant_id AND x.namespace_id = w.namespace_id \
+                     AND x.pool = w.pool AND x.limit_scope = w.limit_scope AND x.group_name = w.group_name \
+                     AND x.key_digest = w.key_digest)"
+                .to_owned(),
+        ));
+    }
     for (what, statement) in &checks {
         // built from constants only, no value of a request or a row; any error (a renamed column included) fails
         let found: Vec<String> = sqlx::query_scalar(sqlx::AssertSqlSafe(statement.clone()))
@@ -543,10 +670,16 @@ pub async fn key_consistency(
             ));
         }
     }
-    let runs: Vec<Uuid> = sqlx::query_scalar(
+    let runs: Vec<Uuid> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
         "SELECT run_id FROM concurrency_holders WHERE tenant_id = $1 \
-         UNION SELECT run_id FROM concurrency_waiters WHERE tenant_id = $1",
-    )
+         UNION SELECT run_id FROM concurrency_waiters WHERE tenant_id = $1{}",
+        if rate_tables {
+            " UNION SELECT run_id FROM rate_limit_grants WHERE tenant_id = $1 \
+              UNION SELECT run_id FROM rate_limit_waiters WHERE tenant_id = $1"
+        } else {
+            ""
+        }
+    )))
     .bind(tenant.as_uuid())
     .fetch_all(&mut *tx)
     .await

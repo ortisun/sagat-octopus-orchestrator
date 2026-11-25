@@ -881,14 +881,16 @@ async fn verify_start_rate(
         ));
     }
     // invariant 10 for this run's grant, from the journals of its key: the run-scope grants whose instants lie in
-    // (t - period, t] are at most its limit (D022-032)
+    // (t - period, t] are at most its limit (D022-032); a grant a reset copied with its prefix (`restored`) is its
+    // source's, counted once in the source's journal (D022-069)
     if let Some((limit, per, at, gate)) = grant {
         let window_us = i64::try_from(per.duration().as_micros()).map_err(|e| e.to_string())?;
         let within: i64 = sqlx::query_scalar(
             "SELECT count(*) FROM run_events \
               WHERE tenant_id = $1 AND event_type = 'rate_limit.granted' AND detail->>'scope' = 'RUN' \
                 AND detail->>'pool' = $2 AND detail->>'group' = $3 AND detail->>'key_label' = $4 \
-                AND (detail->>'granted_at_us')::bigint > $5 AND (detail->>'granted_at_us')::bigint <= $6",
+                AND (detail->>'granted_at_us')::bigint > $5 AND (detail->>'granted_at_us')::bigint <= $6 \
+                AND NOT coalesce((detail->>'restored')::boolean, false)",
         )
         .bind(tenant.as_uuid())
         .bind(gate.pool.as_str())
@@ -4514,10 +4516,11 @@ impl RunTx for PgRunTx {
         &'a mut self,
         node: Option<&'a NodeId>,
         attempt: u32,
+        counted_at: OffsetDateTime,
     ) -> impl Future<Output = Result<Option<Vec<sagat_domain::execution::GateEvent>>, StoreError>>
     + Send
     + 'a {
-        self.grant_from_queue(node, attempt)
+        self.grant_from_queue(node, attempt, counted_at)
     }
 
     fn refusing_gate<'a>(

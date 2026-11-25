@@ -25,7 +25,7 @@ from sagat_octopus_orchestrator import (
 from sagat_octopus_orchestrator.worker import host as host_module
 from sagat_octopus_orchestrator.worker._grpc import error_of_status
 
-from .fakes import FakeHttpServer, FakeWorkerService, lease, reply, until
+from .fakes import FakeHttpServer, FakeWorkerService, lease, record_sends, reply, until
 from .test_client import RUN, WORKFLOW, MakeClient, refusal, run_body
 from .test_round3 import MakeHost
 
@@ -137,16 +137,30 @@ async def test_stop_ends_the_heartbeats_of_a_task_that_will_not_end(
     host.register_activity("charge", stuck)
     fake.leases = [lease()]
     await host.start()
+    order: list[str] = []
+    record_sends(host, order)
     await until(lambda: len(fake.of("Heartbeat")) >= 2, "the task, beating")
-    await host.stop(0.05)
-    beats = len(fake.of("Heartbeat"))
+    (task,) = host._inflight
+    beat, runner = task.beat, task.runner
+    assert beat is not None and runner is not None
     with caplog.at_level(logging.DEBUG, logger="sagat_octopus_orchestrator"):
+        await host.stop(0.05)
+        order.append("stopped")
         caplog.clear()
-        await asyncio.sleep(0.25)
-    assert len(fake.of("Heartbeat")) == beats, "no heartbeat reaches the server once the host has stopped"
-    assert "heartbeat" not in caplog.text, "and none is even tried"
-    release.set()
-    await asyncio.sleep(0.05)
+        # Barriers, not a window of time: the heartbeat of the task ends, then the handler is let go and ends too.
+        await until(beat.done, "the heartbeat to end")
+        alive = [other.get_name() for other in asyncio.all_tasks() if other.get_name().startswith("sagat-heartbeat-")]
+        tried = [
+            record.getMessage() for record in caplog.records if record.name.startswith("sagat_octopus_orchestrator")
+        ]
+        release.set()
+        await until(runner.done, "the handler to end")
+    # Ended by the stop, not by a failure it survived: a cancelled heartbeat sends nothing more, and no other one runs.
+    assert beat.cancelled(), "the stop cancels the heartbeat of a task that will not end"
+    assert alive == [], "no heartbeat of the host is left running"
+    # What the host sent, not what reached the fake: a beat sent before the stop may land after it.
+    assert "sent Heartbeat" not in order[order.index("stopped") + 1 :], "no heartbeat is sent once the host has stopped"
+    assert not [message for message in tried if "heartbeat" in message], "and none is even tried"
 
 
 async def test_stop_is_bounded_by_its_timeout_whatever_the_handlers_and_the_poll_do(

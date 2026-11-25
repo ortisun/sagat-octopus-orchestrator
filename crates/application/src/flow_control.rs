@@ -184,6 +184,11 @@ pub enum FlowControlRefusal {
     /// found no free permit; a reset never queues, so nothing was created (FR-022-018).
     #[error("no permit of the concurrency key is free for the reset")]
     PermitUnavailable,
+    /// 409 `CONFLICT` / `RATE_LIMIT_SLOT_UNAVAILABLE` (registered in 018's contract, D022-069): a reset of a run whose
+    /// definition takes a slot of a rate-limit key at its start found no free slot in the key's window; a reset never
+    /// waits, so nothing was created (FR-022-041). Given before the permit's when the start takes both (FR-022-052).
+    #[error("no slot of the rate-limit key is free for the reset")]
+    SlotUnavailable,
 }
 
 impl FlowControlRefusal {
@@ -198,6 +203,7 @@ impl FlowControlRefusal {
             Self::CapabilityDisabled { .. } => "CAPABILITY_DISABLED",
             Self::BinaryCapabilityMissing => crate::instances::REASON_CAPABILITY_MISSING,
             Self::PermitUnavailable => "CONCURRENCY_PERMIT_UNAVAILABLE",
+            Self::SlotUnavailable => "RATE_LIMIT_SLOT_UNAVAILABLE",
         }
     }
 }

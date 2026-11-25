@@ -57,6 +57,48 @@ capability matrix. Consult the [schema](../../specs/001-platform-foundation/cont
 before treating a graph as publishable. Do not enable a placeholder merely because it appears in
 the schema.
 
+## Flow-control declarations: `concurrency` and `rateLimit` (feature 022)
+
+Two optional, additive fields of IR v1 (ADR-0032), each allowed at the top level of a definition (it gates the run's
+start) and on a root `activity` or `script` node (it gates each attempt of the step). A definition may declare either,
+both, or neither; one without them publishes and runs as before.
+
+| Field | Shape | What it bounds |
+|---|---|---|
+| `concurrency` | `{limit, key?, group?, queueTimeoutMs?}` | at most `limit` holders of the key at once: running runs at the top level, attempts on a node |
+| `rateLimit` | `{limit, per, key?, group?, queueTimeoutMs?}`, `per` one of `second`, `minute`, `hour` | at most `limit` grants of the key in any interval of `per` on the database clock: run starts at the top level, leased attempts on a node |
+
+- `key` is a bounded expression: over `input` at the top level, over the run's data on a node; its canonical value is at
+  most 256 bytes. Without a key every run (or every step of the node) shares one key. A key that reads only the run's
+  identity (run id, business id, idempotency key) is refused at publication (`FLOW_CONTROL_KEY_UNBOUNDED`); one that
+  reads a field classified `secret` is refused, `pii` is warned (FR-022-056, FR-022-057).
+- `group` names the key's semaphore or window. The default is derived from the workflow (top level) or the workflow and
+  node; an explicit group is shared by every definition of the namespace that names it at the same level. Two
+  definitions that share a group with different `limit` or `per` are warned (`CONCURRENCY_LIMIT_MISMATCH`,
+  `RATE_LIMIT_MISMATCH`); each acquirer then applies its own pinned values.
+- The effective `limit`, `per` ceiling and `queueTimeoutMs` are the lowest of the declaration, the namespace's policy and
+  the deployment ceiling (the ceilings table of the
+  [plan](../../specs/022-flow-control-step-policies/plan.md), "Ceilings, revised"); zero refuses.
+- Publication refuses an invalid policy (`CONCURRENCY_POLICY_INVALID`, `RATE_LIMIT_POLICY_INVALID`), either field inside a
+  body (`UNSUPPORTED_NODE` with `SCOPED_CONCURRENCY` or `SCOPED_RATE_LIMIT`) and either field with `continueAsNew`
+  (`FLOW_CONTROL_COMBINATION`). The codes are in
+  [`contracts/errors.md`](../../specs/022-flow-control-step-policies/contracts/errors.md).
+- Each field is a capability enabled on its own (`concurrencyKeys` by `SAGAT_FLOW_CONTROL_CONCURRENCY_KEYS_ENABLED`,
+  `rateLimits` by `SAGAT_FLOW_CONTROL_RATE_LIMITS_ENABLED`, both off by default) and activated for the fleet through the
+  instance-capability registry. A definition that uses one before its activation is refused before a version exists
+  (`FLOW_CONTROL_ACTIVATION_PENDING`); one whose capability is switched off is refused at publication and at start
+  (`CAPABILITY_DISABLED`), while runs already admitted drain. The operator's steps are in the
+  [flow-control runbook](../runbooks/flow-control.md).
+
+What the engine does with them (the readiness gate, the grant and timeout routines, the transactions) is in
+[execution semantics](execution-semantics.md#flow-control-gates-feature-022-release-030). The worker protocol does not
+change: a worker never sees a gate, only a step that is already granted.
+
+The six SDK builders of the two fields (tasks T022-048 to T022-052, T022-067 and T022-083) and the Studio's fields
+(T022-054, T022-085) are not built in this tree; until they are, a definition declares them in its JSON document. The
+shared conformance scenarios `flow-concurrency` and `flow-rate-limit` will hold the six languages to one canonical IR
+(FR-022-050).
+
 ## TypeScript builder model (design API)
 
 ```typescript

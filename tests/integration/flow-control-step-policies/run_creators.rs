@@ -779,7 +779,7 @@ async fn an_ad_hoc_workflow_and_its_private_rerun_admit_through_the_key() {
     assert_eq!(admitted(&w, rerun.info.run_id).await, Admitted::Queued);
 }
 
-async fn start_delayed(w: &World, workflow: WorkflowId, account: Option<&str>) -> RunId {
+pub(crate) async fn start_delayed(w: &World, workflow: WorkflowId, account: Option<&str>) -> RunId {
     let input = match account {
         Some(account) => json!({"accountId": account}),
         None => json!({}),
@@ -1637,25 +1637,252 @@ async fn a_process_without_the_digest_keys_refuses_a_reset_and_decides_no_releas
     w.assert_consistent(delayed).await;
 }
 
-/// Gap G022-016, a release gate (decision D022-066 item 5; architecture Major 2 of the re-review): until task T022-086
-/// builds `RATE_LIMIT_SLOT_UNAVAILABLE` and the reset rules of the `rate_limit.*` events, a reset of a run whose start
-/// declares `rateLimit` is refused `BINARY_CAPABILITY_MISSING` with nothing created, synchronous or pending; the pending
-/// entry stays pending (no process of this build completes it), which is why the runbook forbids production activation
-/// before that task. Pins the interim refusal so that dropping it (a permit's refusal, or a grant) fails here.
-#[tokio::test]
-async fn a_reset_of_a_rate_limited_start_is_refused_until_its_rules_are_built() {
-    use sagat_application::reset_completion::ResetCompleter;
-    use sagat_application::runs::ResetSourcePolicy;
-
-    let w = Arc::new(gated_world().await);
+/// `a` then `b`; the start takes a slot of `input.accountId`, `limit` per `per`.
+fn rated_pair(name: &str, limit: u32, per: &str) -> Value {
     let mut doc = document(
-        "creators-rate-reset",
+        name,
         "a",
         vec![with(activity("a"), "next", json!("b")), activity("b")],
     );
     doc["rateLimit"] =
-        json!({"group": "accounts", "key": "input.accountId", "limit": 100, "per": "hour"});
-    let workflow = publish(&w, doc).await;
+        json!({"group": "accounts", "key": "input.accountId", "limit": limit, "per": per});
+    doc
+}
+
+/// The run's own run-level grant and waiter rows: (grants, waiters).
+async fn slot_rows(w: &World, run: RunId) -> (i64, i64) {
+    sqlx::query_as(
+        "SELECT (SELECT count(*) FROM rate_limit_grants WHERE run_id = $1 AND limit_scope = 'RUN'), \
+                (SELECT count(*) FROM rate_limit_waiters WHERE run_id = $1 AND limit_scope = 'RUN')",
+    )
+    .bind(run.as_uuid())
+    .fetch_one(&w.db.pool)
+    .await
+    .expect("rows")
+}
+
+/// The sequence of the completion of `node` among the source's reset points.
+async fn point_after(w: &World, source: RunId, node: &str) -> u64 {
+    w.runs
+        .reset_points(&w.admin, source, &ctx())
+        .await
+        .expect("points")
+        .iter()
+        .find(|point| point.node.as_deref() == Some(node))
+        .unwrap_or_else(|| panic!("the completion of `{node}` is a point"))
+        .sequence
+}
+
+/// `contracts/journal-events.md`, reset rules (task T022-086, D022-069 item 1): a run's `rate_limit.queued`, `granted`
+/// and `returned` are history (`REMATERIALIZE`), and every point after a `rate_limit.wait_timed_out` or
+/// `rate_limit.dequeued` is refused (`REFUSE`, to the end of the journal).
+#[test]
+fn the_reset_rules_of_the_rate_limit_events_are_the_contracts() {
+    use sagat_domain::execution::{ResetRule, rule_by_name};
+    for event in [
+        "rate_limit.queued",
+        "rate_limit.granted",
+        "rate_limit.returned",
+    ] {
+        assert_eq!(
+            rule_by_name(event),
+            Some(ResetRule::Rematerialize),
+            "{event}"
+        );
+    }
+    for event in ["rate_limit.wait_timed_out", "rate_limit.dequeued"] {
+        assert_eq!(
+            rule_by_name(event),
+            Some(ResetRule::Refuse { until: None }),
+            "{event}"
+        );
+    }
+}
+
+/// Task T022-086 (FR-022-041, FR-022-038; D022-069 items 2 and 3): the completion of `a` of an ended rate-limited run is a
+/// reset point, since its prefix's `rate_limit.granted` is history. The reset run takes a fresh slot in its admission
+/// transaction right after `run.reset`, counted from its grant; the source's grant, copied `restored`, makes no row, and
+/// the key's window then counts the source's slot and the reset's (2 of `limit: 2`).
+#[tokio::test]
+async fn a_reset_takes_a_fresh_slot_right_after_run_reset() {
+    let w = gated_world().await;
+    let workflow = publish(&w, rated_pair("creators-rate-reset", 2, "hour")).await;
+    let source = w.start(workflow, &json!({"accountId": "acct-1"})).await;
+    assert_eq!(complete_all(&w, "act.a").await, 1);
+    assert_eq!(complete_all(&w, "act.b").await, 1);
+    assert_eq!(w.run_status(source).await, RunStatus::Succeeded);
+    let after_a = point_after(&w, source, "a").await;
+    let made = w
+        .runs
+        .reset(
+            &w.admin,
+            source,
+            reset_request(after_a),
+            &idempotency(),
+            &ctx(),
+        )
+        .await
+        .expect("a reset");
+    let reset = made.run.expect("the reset run").info.run_id;
+    let journal = rows(&w, reset).await;
+    let restored: Vec<&str> = journal
+        .iter()
+        .filter(|(_, restored)| *restored)
+        .map(|(event, _)| event.as_str())
+        .collect();
+    assert!(
+        restored.starts_with(&["run.started", "rate_limit.granted"]),
+        "the source's grant is copied as history: {journal:?}"
+    );
+    let fresh: Vec<&str> = journal
+        .iter()
+        .filter(|(_, restored)| !restored)
+        .map(|(event, _)| event.as_str())
+        .collect();
+    assert_eq!(
+        fresh[..2],
+        ["run.reset", "rate_limit.granted"],
+        "the fresh slot right after the reset, before the run goes on: {journal:?}"
+    );
+    assert!(fresh.contains(&"step.released"), "{journal:?}");
+    assert_eq!(
+        slot_rows(&w, reset).await,
+        (1, 0),
+        "one grant row: the fresh slot"
+    );
+    let (counted, from_grant): (i64, bool) = sqlx::query_as(
+        "SELECT (SELECT count(*) FROM rate_limit_grants g JOIN runs r ON r.id = g.run_id \
+                  WHERE r.workflow_id = $1 AND g.limit_scope = 'RUN'), \
+                (SELECT leased_at = granted_at FROM rate_limit_grants WHERE run_id = $2 AND limit_scope = 'RUN')",
+    )
+    .bind(workflow.as_uuid())
+    .bind(reset.as_uuid())
+    .fetch_one(&w.db.pool)
+    .await
+    .expect("the key's grants");
+    assert_eq!(counted, 2, "the source's slot and the reset's");
+    assert!(from_grant, "a run's slot counts from its grant");
+    w.assert_consistent(reset).await;
+    assert_eq!(complete_all(&w, "act.b").await, 1, "`b` runs again");
+    assert_eq!(w.run_status(reset).await, RunStatus::Succeeded);
+    w.assert_consistent(reset).await;
+}
+
+/// Task T022-086 (D022-069 items 3 and 4): a reset never waits and never takes a slot a buffered run waits for. With
+/// `limit: 1, per: hour` the source's own slot still counts, so its reset is refused `RATE_LIMIT_SLOT_UNAVAILABLE` and
+/// nothing is created or buffered. With `limit: 1, per: second` and a run buffered behind the source, the slot that has
+/// aged out is the buffered run's (the reservation rule): the reset is refused, and the next pass grants the waiter. A
+/// start that declares both gates is refused rate first when its slot is not free, and `CONCURRENCY_PERMIT_UNAVAILABLE`
+/// when only its permit is not.
+#[tokio::test]
+async fn a_reset_without_a_free_slot_is_refused_rate_first_and_never_waits() {
+    let w = gated_world().await;
+    let refused_reset = |source: RunId, sequence: u64| {
+        let w = &w;
+        async move {
+            w.runs
+                .reset(
+                    &w.admin,
+                    source,
+                    reset_request(sequence),
+                    &idempotency(),
+                    &ctx(),
+                )
+                .await
+                .expect_err("refused")
+        }
+    };
+    // the source's own slot counts for its window
+    let hourly = publish(&w, rated_pair("creators-rate-reset-full", 1, "hour")).await;
+    let source = w.start(hourly, &json!({"accountId": "acct-1"})).await;
+    assert_eq!(complete_all(&w, "act.a").await, 1);
+    assert_eq!(complete_all(&w, "act.b").await, 1);
+    let runs_before = runs_of(&w, hourly).await.len();
+    assert_eq!(
+        refused_reset(source, point_after(&w, source, "a").await).await,
+        AppError::FlowControl(FlowControlRefusal::SlotUnavailable)
+    );
+    assert_eq!(
+        runs_of(&w, hourly).await.len(),
+        runs_before,
+        "nothing is created, nothing is buffered"
+    );
+    let waiters: i64 = sqlx::query_scalar("SELECT count(*) FROM rate_limit_waiters")
+        .fetch_one(&w.db.pool)
+        .await
+        .expect("waiters");
+    assert_eq!(waiters, 0);
+
+    // a slot that aged out is the buffered run's
+    let per_second = publish(&w, rated_pair("creators-rate-reset-reserved", 1, "second")).await;
+    let source = w.start(per_second, &json!({"accountId": "acct-2"})).await;
+    let behind = w.start(per_second, &json!({"accountId": "acct-2"})).await;
+    assert_eq!(slot_rows(&w, behind).await, (0, 1), "buffered");
+    assert_eq!(complete_all(&w, "act.a").await, 1);
+    assert_eq!(complete_all(&w, "act.b").await, 1);
+    assert_eq!(w.run_status(source).await, RunStatus::Succeeded);
+    let granted_us: i64 = sqlx::query_scalar(
+        "SELECT (extract(epoch FROM granted_at) * 1000000)::bigint FROM rate_limit_grants \
+          WHERE run_id = $1 AND limit_scope = 'RUN'",
+    )
+    .bind(source.as_uuid())
+    .fetch_one(&w.db.pool)
+    .await
+    .expect("the source's grant");
+    crate::support::flow_control::until_past(&w.db.pool, granted_us + 1_000_000).await;
+    assert_eq!(
+        refused_reset(source, point_after(&w, source, "a").await).await,
+        AppError::FlowControl(FlowControlRefusal::SlotUnavailable),
+        "the free slot is the buffered run's"
+    );
+    assert_eq!(w.scheduler.tick().await.gates_granted, 1);
+    assert_eq!(slot_rows(&w, behind).await, (1, 0), "the waiter is granted");
+    assert_eq!(complete_all(&w, "act.a").await, 1);
+    assert_eq!(complete_all(&w, "act.b").await, 1);
+    assert_eq!(w.run_status(behind).await, RunStatus::Succeeded);
+
+    // both gates: rate first, then the permit
+    let mut both = rated_pair("creators-rate-reset-both", 1, "hour");
+    both["concurrency"] = json!({"group": "accounts", "key": "input.accountId", "limit": 1});
+    let both = publish(&w, both).await;
+    let source = w.start(both, &json!({"accountId": "acct-3"})).await;
+    assert_eq!(complete_all(&w, "act.a").await, 1);
+    assert_eq!(complete_all(&w, "act.b").await, 1);
+    assert_eq!(w.run_status(source).await, RunStatus::Succeeded);
+    assert_eq!(
+        refused_reset(source, point_after(&w, source, "a").await).await,
+        AppError::FlowControl(FlowControlRefusal::SlotUnavailable),
+        "its permit is free, its slot is not: rate first"
+    );
+    let mut roomy = rated_pair("creators-rate-reset-permit", 10, "hour");
+    roomy["concurrency"] = json!({"group": "accounts", "key": "input.accountId", "limit": 1});
+    let roomy = publish(&w, roomy).await;
+    let source = w.start(roomy, &json!({"accountId": "acct-4"})).await;
+    assert_eq!(complete_all(&w, "act.a").await, 1);
+    assert_eq!(complete_all(&w, "act.b").await, 1);
+    let holder = w.start(roomy, &json!({"accountId": "acct-4"})).await;
+    assert_eq!(start_rows(&w, holder).await, (1, 0), "it holds the permit");
+    assert_eq!(
+        refused_reset(source, point_after(&w, source, "a").await).await,
+        AppError::FlowControl(FlowControlRefusal::PermitUnavailable),
+        "its slot is free, its permit is not"
+    );
+    for run in [source, holder, behind] {
+        w.assert_consistent(run).await;
+    }
+}
+
+/// Task T022-086 (`CANCEL_SOURCE`; 018's plan, row 18; D022-069 item 4): the completion of a pending reset of a
+/// rate-limited source takes a fresh slot once the source has ended, or fails its entry `RATE_LIMIT_SLOT_UNAVAILABLE`
+/// when the key's window has no free slot; it never waits. With `limit: 2, per: hour`, the first key holds its source's
+/// slot and another run's (no room); the second key holds its source's only (room for one).
+#[tokio::test]
+async fn a_pending_reset_takes_a_fresh_slot_or_fails_rate_limit_slot_unavailable() {
+    use sagat_application::reset_completion::{Completed, ResetCompleter};
+    use sagat_application::runs::ResetSourcePolicy;
+
+    let w = Arc::new(gated_world().await);
+    let workflow = publish(&w, rated_pair("creators-rate-pending-reset", 2, "hour")).await;
     let completer = ResetCompleter::new(
         w.store.clone(),
         Completions(Arc::clone(&w)),
@@ -1663,88 +1890,225 @@ async fn a_reset_of_a_rate_limited_start_is_refused_until_its_rules_are_built() 
         sagat_application::clock::SystemClock,
     );
     let session = w.session(&["act.a", "act.b"]).await;
+    // two open sources of two keys: `a` done, `b` in flight
+    let mut open = Vec::new();
+    for account in ["acct-1", "acct-2"] {
+        let run = w.start(workflow, &json!({"accountId": account})).await;
+        let a = w.one_task_of(&session, "act.a").await;
+        w.complete(&session, &a, &json!({})).await.expect("a");
+        let b = w.one_task_of(&session, "act.b").await;
+        open.push((run, b, point_after(&w, run, "a").await));
+    }
+    // a second slot of the first key: its window is full
+    let other = w.start(workflow, &json!({"accountId": "acct-1"})).await;
+    assert_eq!(slot_rows(&w, other).await, (1, 0));
+    let mut entries = Vec::new();
+    for (run, _, after_a) in &open {
+        let mut request = reset_request(*after_a);
+        request.source_policy = ResetSourcePolicy::CancelSource;
+        let made = w
+            .runs
+            .reset(&w.admin, *run, request, &idempotency(), &ctx())
+            .await
+            .expect("a pending reset");
+        assert!(made.run.is_none(), "it waits for its source");
+        entries.push(made.reset.id);
+    }
+    for (run, b, _) in &open {
+        w.complete(&session, b, &json!({})).await.expect("b");
+        assert!(w.run_status(*run).await.is_terminal());
+    }
+    let mut completions = Vec::new();
+    for id in &entries {
+        let due = sagat_application::reset_completion::DueReset {
+            tenant_id: w.admin.tenant_id(),
+            id: *id,
+        };
+        completions.push(completer.step(&due, None).await.expect("a completion"));
+    }
+    assert_eq!(
+        completions,
+        [
+            Completed::Failed("RATE_LIMIT_SLOT_UNAVAILABLE"),
+            Completed::Created
+        ]
+    );
+    let (state, reason, new_run) = reset_entry(&w, entries[0]).await;
+    assert_eq!(
+        (state.as_str(), reason.as_deref(), new_run),
+        ("FAILED", Some("RATE_LIMIT_SLOT_UNAVAILABLE"), None)
+    );
+    let (state, reason, new_run) = reset_entry(&w, entries[1]).await;
+    assert_eq!((state.as_str(), reason.as_deref()), ("CREATED", None));
+    let reset = RunId::new(new_run.expect("the reset run"));
+    assert_eq!(slot_rows(&w, reset).await, (1, 0), "a fresh slot");
+    w.assert_consistent(reset).await;
+}
 
-    // a synchronous reset of an ended source
+/// Task T022-086 (correctness Major 2 of the reviews of 2026-11-21; D022-069 item 2): a reset at the completion of a step
+/// that held a slot restores its `rate_limit.granted` as history. The reset run gives nothing back for it
+/// (`rate_limit.returned` is never fresh) and holds no row of it: its only step grant is the one `b` takes after the reset,
+/// and the consistency check reads the journal with the restored copy before and after `b` runs.
+#[tokio::test]
+async fn a_reset_after_a_rate_limited_step_restores_its_slot_as_history() {
+    let w = gated_world().await;
+    let mut doc = document(
+        "creators-rate-reset-step",
+        "a",
+        vec![with(activity("a"), "next", json!("b")), activity("b")],
+    );
+    for node in 0..2 {
+        doc["nodes"][node]["rateLimit"] =
+            json!({"group": "steps", "key": "input.accountId", "limit": 3, "per": "hour"});
+    }
+    let workflow = publish(&w, doc).await;
     let source = w.start(workflow, &json!({"accountId": "acct-1"})).await;
     assert_eq!(complete_all(&w, "act.a").await, 1);
     assert_eq!(complete_all(&w, "act.b").await, 1);
     assert_eq!(w.run_status(source).await, RunStatus::Succeeded);
-    // the reset rules of the `rate_limit.*` events are task T022-086's: the source's start, its first event, is a point
-    let first_point = |points: Vec<sagat_application::runs::ResetPointInfo>| {
-        points
-            .first()
-            .expect("the source's start is a point")
-            .sequence
-    };
-    let start_point = first_point(
-        w.runs
-            .reset_points(&w.admin, source, &ctx())
-            .await
-            .expect("points"),
-    );
-    let runs_before = runs_of(&w, workflow).await.len();
-    let refused = w
+    let after_a = point_after(&w, source, "a").await;
+    let made = w
         .runs
         .reset(
             &w.admin,
             source,
-            reset_request(start_point),
+            reset_request(after_a),
             &idempotency(),
             &ctx(),
         )
         .await
-        .expect_err("refused until task T022-086");
-    assert_eq!(
-        refused,
-        AppError::FlowControl(FlowControlRefusal::BinaryCapabilityMissing)
+        .expect("a reset");
+    let reset = made.run.expect("the reset run").info.run_id;
+    let step_grants = || async {
+        let nodes: Vec<String> = sqlx::query_scalar(
+            "SELECT node FROM rate_limit_grants WHERE run_id = $1 AND limit_scope = 'STEP' ORDER BY node",
+        )
+        .bind(reset.as_uuid())
+        .fetch_all(&w.db.pool)
+        .await
+        .expect("grants");
+        nodes
+    };
+    let journal = rows(&w, reset).await;
+    assert!(
+        journal
+            .iter()
+            .any(|(event, restored)| event == "rate_limit.granted" && *restored),
+        "{journal:?}"
     );
-    assert_eq!(
-        runs_of(&w, workflow).await.len(),
-        runs_before,
-        "nothing is created"
+    assert!(
+        !journal
+            .iter()
+            .any(|(event, restored)| event == "rate_limit.returned" && !*restored),
+        "nothing is given back for the restored slot: {journal:?}"
     );
+    assert_eq!(step_grants().await, ["b"], "only `b`'s fresh slot");
+    w.assert_consistent(reset).await;
+    assert_eq!(
+        complete_all(&w, "act.b").await,
+        1,
+        "`b` runs with its own slot"
+    );
+    assert_eq!(w.run_status(reset).await, RunStatus::Succeeded);
+    assert_eq!(step_grants().await, ["b"]);
+    w.assert_consistent(reset).await;
+}
 
-    // a pending reset of a source in flight: once its source ends, its completion is refused the same way and it stays
-    let open = w.start(workflow, &json!({"accountId": "acct-2"})).await;
-    let a = w.one_task_of(&session, "act.a").await;
-    w.complete(&session, &a, &json!({})).await.expect("a");
-    let b = w.one_task_of(&session, "act.b").await;
-    let point = first_point(
-        w.runs
-            .reset_points(&w.admin, open, &ctx())
-            .await
-            .expect("points"),
+/// Rows of the step-scope slots of `run`, by node.
+async fn step_slot_nodes(w: &World, run: RunId) -> Vec<String> {
+    sqlx::query_scalar(
+        "SELECT node FROM rate_limit_grants WHERE run_id = $1 AND limit_scope = 'STEP' ORDER BY node",
+    )
+    .bind(run.as_uuid())
+    .fetch_all(&w.db.pool)
+    .await
+    .expect("grants")
+}
+
+/// Task T022-086 (correctness re-review of 2026-11-21, minor 2; D022-069 item 2): a reset whose prefix returned a
+/// step's slot (a pause while `a` was granted and not leased journals `rate_limit.returned`; the resume asks again and
+/// the empty window grants it) restores the `granted`, `returned`, `granted` history of `a` and holds no row of it.
+/// With `limit: 3` the window has no slack: the source counts two grants (`a`'s second and `b`'s), so a restored grant
+/// counted as a third would leave the reset's `b` queued.
+#[tokio::test]
+async fn a_reset_whose_prefix_returned_a_step_slot_restores_it_as_history() {
+    let w = gated_world().await;
+    let mut doc = document(
+        "creators-rate-reset-returned",
+        "a",
+        vec![with(activity("a"), "next", json!("b")), activity("b")],
     );
-    let mut request = reset_request(point);
-    request.source_policy = ResetSourcePolicy::CancelSource;
+    for node in 0..2 {
+        doc["nodes"][node]["rateLimit"] =
+            json!({"group": "steps", "key": "input.accountId", "limit": 3, "per": "hour"});
+    }
+    let workflow = publish(&w, doc).await;
+    let source = w.start(workflow, &json!({"accountId": "acct-1"})).await;
+    assert_eq!(
+        step_slot_nodes(&w, source).await,
+        ["a"],
+        "`a` is granted at the start"
+    );
+    w.operate_run(source, sagat_application::runs::RunOperation::Pause)
+        .await;
+    assert_eq!(
+        step_slot_nodes(&w, source).await,
+        Vec::<String>::new(),
+        "the pause returned the unleased slot"
+    );
+    w.operate_run(source, sagat_application::runs::RunOperation::Resume)
+        .await;
+    assert_eq!(
+        step_slot_nodes(&w, source).await,
+        ["a"],
+        "the resume asks again and the empty window grants `a` a second time"
+    );
+    assert_eq!(complete_all(&w, "act.a").await, 1);
+    assert_eq!(complete_all(&w, "act.b").await, 1);
+    assert_eq!(w.run_status(source).await, RunStatus::Succeeded);
+    assert_eq!(step_slot_nodes(&w, source).await, ["a", "b"]);
+    let after_a = point_after(&w, source, "a").await;
     let made = w
         .runs
-        .reset(&w.admin, open, request, &idempotency(), &ctx())
+        .reset(
+            &w.admin,
+            source,
+            reset_request(after_a),
+            &idempotency(),
+            &ctx(),
+        )
         .await
-        .expect("a pending reset");
-    assert!(made.run.is_none(), "it waits for its source");
-    w.complete(&session, &b, &json!({})).await.expect("b");
-    assert!(w.run_status(open).await.is_terminal());
-    let runs_before = runs_of(&w, workflow).await.len();
-    let due = sagat_application::reset_completion::DueReset {
-        tenant_id: w.admin.tenant_id(),
-        id: made.reset.id,
+        .expect("a reset");
+    let reset = made.run.expect("the reset run").info.run_id;
+    let journal = rows(&w, reset).await;
+    let restored = |name: &str| {
+        journal
+            .iter()
+            .filter(|(event, restored)| event == name && *restored)
+            .count()
     };
     assert_eq!(
-        completer.step(&due, None).await,
-        Err(AppError::FlowControl(
-            FlowControlRefusal::BinaryCapabilityMissing
-        ))
+        (
+            restored("rate_limit.granted"),
+            restored("rate_limit.returned")
+        ),
+        (2, 1),
+        "`a`'s granted, returned, granted are history: {journal:?}"
     );
-    let (state, reason, new_run) = reset_entry(&w, made.reset.id).await;
+    assert!(
+        !journal
+            .iter()
+            .any(|(event, restored)| event == "rate_limit.returned" && !*restored),
+        "nothing is given back for the restored slot: {journal:?}"
+    );
     assert_eq!(
-        (state.as_str(), reason.as_deref(), new_run),
-        ("PENDING_SOURCE", None, None),
-        "the entry stays pending"
+        step_slot_nodes(&w, reset).await,
+        ["b"],
+        "only `b`'s fresh slot"
     );
-    assert_eq!(
-        runs_of(&w, workflow).await.len(),
-        runs_before,
-        "nothing is created"
-    );
+    w.assert_consistent(reset).await;
+    assert_eq!(complete_all(&w, "act.b").await, 1);
+    assert_eq!(w.run_status(reset).await, RunStatus::Succeeded);
+    assert_eq!(step_slot_nodes(&w, reset).await, ["b"]);
+    w.assert_consistent(reset).await;
 }

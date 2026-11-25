@@ -107,3 +107,49 @@ async fn a_paused_run_keeps_the_permit_of_its_start() {
         w.assert_consistent(run).await;
     }
 }
+
+/// Decision D022-074 (gap G022-020; FR-022-021; ADR-0056 decision 7): a namespace `concurrency_limit` lowered while starts
+/// are queued applies to them at once. Declared 3: three holders and two starts queued with that limit; the namespace then
+/// lowers its ceiling to 1. No permit is revoked. When the three holders end, one pass grants one queued start only (a
+/// grant against the filed limit of 3 would grant both); the other waits until that holder ends too.
+#[tokio::test]
+async fn a_lowered_concurrency_ceiling_applies_to_the_queued_starts_and_revokes_no_permit() {
+    let w = gated_world().await;
+    let workflow = publish(&w, serial_start("lifecycle-lowered-queued", 3)).await;
+    let session = w.session(&["act.g"]).await;
+    let input = json!({"accountId": "acct-1"});
+    let mut holders = Vec::new();
+    for _ in 0..3 {
+        holders.push(w.start(workflow, &input).await);
+    }
+    let first = w.start(workflow, &input).await;
+    let second = w.start(workflow, &input).await;
+    for run in [first, second] {
+        assert_eq!(start_rows(&w, run).await, (0, 1), "the key is full");
+    }
+    set(&w, QuotaResource::ConcurrencyLimit, 1).await;
+    for run in &holders {
+        assert_eq!(start_rows(&w, *run).await, (1, 0), "nothing is revoked");
+    }
+    for task in w.poll(&session, 8).await {
+        w.complete(&session, &task, &json!({})).await.expect("done");
+    }
+    for run in &holders {
+        assert_eq!(start_rows(&w, *run).await, (0, 0), "its permit given back");
+    }
+    let report = w.scheduler.grant_gates().await;
+    assert_eq!(
+        report.gates_granted, 1,
+        "the lowered ceiling decides the queued starts: {report:?}"
+    );
+    assert_eq!(start_rows(&w, first).await, (1, 0), "the oldest is granted");
+    assert_eq!(start_rows(&w, second).await, (0, 1), "the other waits");
+    let task = w.one_task(&session).await;
+    assert_eq!(task.run_id, first);
+    w.complete(&session, &task, &json!({})).await.expect("done");
+    assert_eq!(w.scheduler.grant_gates().await.gates_granted, 1);
+    assert_eq!(start_rows(&w, second).await, (1, 0));
+    for run in holders.iter().copied().chain([first, second]) {
+        w.assert_consistent(run).await;
+    }
+}

@@ -50,6 +50,9 @@ impl ErrorCode {
             (Self::Conflict, "CONCURRENCY_PERMIT_UNAVAILABLE") => {
                 "Retry the reset when a holder of the key has finished."
             }
+            (Self::Conflict, "RATE_LIMIT_SLOT_UNAVAILABLE") => {
+                "Retry the reset once a slot of the key's window has stopped counting (the source's own slot counts for one window from its grant)."
+            }
             (Self::QuotaExceeded, "CONCURRENCY_QUEUE_FULL") => {
                 "Retry when the key's queue has room."
             }
@@ -1222,6 +1225,9 @@ fn flow_control_refusal(refusal: sagat_application::flow_control::FlowControlRef
         R::PermitUnavailable => ApiError::conflict(
             "no permit of the run's concurrency key is free; a reset never queues",
         ),
+        R::SlotUnavailable => ApiError::conflict(
+            "no slot of the run's rate-limit key is free in its window; a reset never waits",
+        ),
     };
     e.parts.details = Some(match refusal {
         R::Limit { limit } => json!({ "reason": refusal.reason(), "limit": limit }),
@@ -1231,7 +1237,8 @@ fn flow_control_refusal(refusal: sagat_application::flow_control::FlowControlRef
         R::ConcurrencyQueueFull
         | R::RateLimitQueueFull
         | R::BinaryCapabilityMissing
-        | R::PermitUnavailable => json!({ "reason": refusal.reason() }),
+        | R::PermitUnavailable
+        | R::SlotUnavailable => json!({ "reason": refusal.reason() }),
     });
     e
 }

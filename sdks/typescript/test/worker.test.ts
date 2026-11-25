@@ -10,12 +10,14 @@ import {
 } from '../src/index.js';
 import type { TaskLease } from '../src/worker/grpc.js';
 import { errorOfStatus } from '../src/worker/grpc.js';
+import { observePauses } from '../src/worker/host.js';
 import { FaultPlan } from '../conformance/faults.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const PROTO = join(here, '..', '..', 'proto', 'worker.proto');
 
-type Call = { method: string; request: Record<string, unknown>; metadata: grpc.Metadata };
+/** One call as the fake saw it, or a mark the test or the host left among them (a pause, a call sent); `at` orders them. */
+type Call = { method: string; request: Record<string, unknown>; metadata: grpc.Metadata; at: number };
 
 test('a blob integrity failure is a protocol error without server text', () => {
   const metadata = new grpc.Metadata();
@@ -42,6 +44,8 @@ class FakeServer {
   /** How long a poll takes to answer, and the wait the answer asks for when it brings no task. */
   pollDelayMs = 0;
   completeDelayMs = 0;
+  /** Per method, a condition that holds its successful answer until it is true: a gate instead of a window of time. */
+  holds: Record<string, () => boolean> = {};
   pollRetryAfterMs = 50;
   streamBatches: TaskLease[][] | undefined;
   streamFailureAfterFirst: number | undefined;
@@ -68,7 +72,7 @@ class FakeServer {
           callback(null, { tasks: [], retry_after_ms: this.pollRetryAfterMs });
           return;
         }
-        this.calls.push({ method, request: call.request as Record<string, unknown>, metadata: call.metadata });
+        this.calls.push({ method, request: call.request as Record<string, unknown>, metadata: call.metadata, at: performance.now() });
         const queued = this.failures[method]?.shift();
         if (queued) {
           const metadata = new grpc.Metadata();
@@ -81,6 +85,17 @@ class FakeServer {
           const response = answer(call.request);
           const timer = setTimeout(() => callback(null, response), this.pollDelayMs);
           call.on('cancelled', () => clearTimeout(timer));
+          return;
+        }
+        const hold = this.holds[method];
+        if (hold) {
+          // A call the test holds in flight until what it claims has happened meanwhile (or five seconds pass).
+          const end = Date.now() + 5000;
+          const check = (): void => {
+            if (hold() || Date.now() > end) callback(null, answer(call.request));
+            else setTimeout(check, 1);
+          };
+          check();
           return;
         }
         if (method === 'completeStep' && this.completeDelayMs > 0) {
@@ -102,7 +117,7 @@ class FakeServer {
         call.end();
         return;
       }
-      this.calls.push({ method: 'streamTasks', request: call.request as unknown as Record<string, unknown>, metadata: call.metadata });
+      this.calls.push({ method: 'streamTasks', request: call.request as unknown as Record<string, unknown>, metadata: call.metadata, at: performance.now() });
       let closed = false;
       const closedOnce = (): void => {
         if (!closed) this.streamCancelled += 1;
@@ -160,6 +175,63 @@ class FakeServer {
     return this.calls.filter((call) => call.method === method);
   }
 
+  /** Leaves a mark among the calls, at its place in the order. */
+  note(what: string, request: Record<string, unknown> = {}): void {
+    this.calls.push({ method: what, request, metadata: new grpc.Metadata(), at: performance.now() });
+  }
+
+  /** Records every pause of the loop of the host among the calls ("pause", with its length in `ms`). */
+  observe(host: WorkerHost): WorkerHost {
+    observePauses(host, (ms) => this.note('pause', { ms }));
+    return host;
+  }
+
+  /**
+   * An interceptor that records each call as the host sends it ("sent Heartbeat") and each one answered with
+   * success ("answered CompleteStep"). A beat sent before a mark may reach the fake after it; what the host sent
+   * after the mark is what tells whether the heartbeat went on, whatever the order of arrival.
+   */
+  clientSide(): grpc.Interceptor {
+    return (options, nextCall) => {
+      const name = options.method_definition.path.slice(options.method_definition.path.lastIndexOf('/') + 1);
+      return new grpc.InterceptingCall(nextCall(options), {
+        start: (metadata, _listener, next) => {
+          this.note(`sent ${name}`);
+          // A partial listener: grpc-js passes on to the caller's listener what it does not name.
+          next(metadata, {
+            onReceiveStatus: (status, nextStatus) => {
+              if (status.code === grpc.status.OK) this.note(`answered ${name}`);
+              nextStatus(status);
+            },
+          });
+        },
+      });
+    };
+  }
+
+  /** The calls of the method the host sent after the first mark named `after`. */
+  sentAfter(method: string, after: string): number {
+    const from = this.calls.findIndex((call) => call.method === after);
+    return from < 0 ? 0 : this.calls.slice(from).filter((call) => call.method === `sent ${method}`).length;
+  }
+
+  /**
+   * For each two calls of the method that follow each other, the pauses of the loop between them: the pacing of the
+   * host as the host chose it, not as a window of the wall clock saw it (AGENTS.md Rule 18).
+   */
+  pausesBetween(method: string): number[][] {
+    const out: number[][] = [];
+    let since: number[] | undefined;
+    for (const call of this.calls) {
+      if (call.method === 'pause' && since) since.push(call.request['ms'] as number);
+      if (call.method === method) {
+        if (since) out.push(since);
+        since = [];
+      }
+    }
+    return out;
+  }
+
   reset(): void {
     this.generation += 1;
     this.calls.length = 0;
@@ -171,6 +243,7 @@ class FakeServer {
     this.secrets = [];
     this.pollDelayMs = 0;
     this.completeDelayMs = 0;
+    this.holds = {};
     this.pollRetryAfterMs = 50;
     this.streamBatches = undefined;
     this.streamFailureAfterFirst = undefined;
@@ -218,6 +291,15 @@ async function until(condition: () => boolean, what: string, ms = 5000): Promise
     }
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
+}
+
+/**
+ * Waits for a condition for at most `ms` and returns either way: the barrier a handler waits on in place of a sleep.
+ * The test's own assertions say what did not come.
+ */
+async function reached(condition: () => boolean, ms = 5000): Promise<void> {
+  const end = Date.now() + ms;
+  while (!condition() && Date.now() < end) await new Promise((resolve) => setTimeout(resolve, 1));
 }
 
 test('the asynchronous waiter does not spend its budget while the event loop cannot run', async () => {
@@ -496,7 +578,8 @@ test('the host runs at the version the server agreed to: against 1.0 it sends no
   const h = host({ heartbeatIntervalMs: 20, protocolVersion: '1.9' });
   let secretError: unknown;
   h.registerActivity('slow', async (_input, ctx) => {
-    await new Promise((resolve) => setTimeout(resolve, 80));
+    // A beat is made while the handler runs: it waits for one instead of sleeping (AGENTS.md Rule 18).
+    await reached(() => fake.of('heartbeat').length >= 1);
     secretError = await ctx.secrets().catch((error: unknown) => error);
     return 1;
   });
@@ -685,24 +768,36 @@ test('a stream cannot make the host own more than the aggregate input budget', a
   assert.equal(fake.of('completeStep').length + fake.of('failStep').length, 0);
 });
 
+/**
+ * Each two receives of the method that follow each other are separated by exactly one pause of the loop, within
+ * [low, high] milliseconds: the pause the host chose, read from the host (AGENTS.md Rule 18).
+ */
+function assertPaced(method: string, receives: number, low: number, high: number): void {
+  const pauses = fake.pausesBetween(method).slice(0, receives - 1);
+  assert.equal(pauses.length, receives - 1);
+  pauses.forEach((between, k) => {
+    assert.equal(between.length, 1, `receives ${k + 1} and ${k + 2}: pauses ${JSON.stringify(between)}`);
+    assert.ok(between[0]! >= low && between[0]! <= high, `receives ${k + 1} and ${k + 2}: a pause of ${between[0]} ms, outside [${low}, ${high}]`);
+  });
+}
+
 test('an empty stream hint is followed by a wait, never by another receive at once', async () => {
   fake.acceptedVersion = '1.4';
-  const worker = host();
+  const worker = fake.observe(host());
   worker.registerActivity('charge', () => null);
   await worker.start();
-  await new Promise((resolve) => setTimeout(resolve, 400));
-  const receives = fake.of('streamTasks').length;
-  assert.ok(receives >= 2 && receives <= 10, `${receives} empty receive windows in 400 ms`);
+  await until(() => fake.of('streamTasks').length >= 5, 'five empty receive windows');
+  // The hint asks for 50 ms; with 20 % jitter the pause is 40 to 60 ms.
+  assertPaced('streamTasks', 5, 40, 60);
   assert.equal(fake.of('pollTasks').length, 0);
 });
 
 test('an empty poll is followed by a wait, never by another poll at once', async () => {
-  const h = host();
+  const h = fake.observe(host());
   h.registerActivity('charge', () => ({ ok: true }));
   await h.start();
-  await new Promise((resolve) => setTimeout(resolve, 400));
-  const polls = fake.of('pollTasks').length;
-  assert.ok(polls >= 2 && polls <= 10, `${polls} polls in 400 ms`);
+  await until(() => fake.of('pollTasks').length >= 5, 'five empty polls');
+  assertPaced('pollTasks', 5, 40, 60);
 });
 
 test('no more tasks are taken than the host has room for, and stop waits for the ones in flight', async () => {
@@ -759,19 +854,23 @@ test('registering twice or after the start is a mistake and says so', async () =
 test('the heartbeat goes on while the result is being reported, until the report is made', async () => {
   fake.failures['completeStep'] = [{ code: 14 }, { code: 14 }, { code: 14 }];
   fake.leases = [lease()];
-  // 300 ms of retries against a heartbeat every 10 ms: room enough for a loaded machine.
-  const worker = host({ heartbeatIntervalMs: 10, retry: { initialDelayMs: 100, maxDelayMs: 100 } });
+  // The report is refused three times, then the fourth attempt is held in flight by the fake until three beats have
+  // come after the first attempt: the beats release the report, so the test waits for them instead of counting what
+  // fits in a window of time (AGENTS.md Rule 18). A heartbeat that ended with the handler would leave the report held.
+  const beatsDuringTheReport = (): number => {
+    const first = fake.calls.findIndex((call) => call.method === 'completeStep');
+    return first < 0 ? 0 : fake.calls.slice(first).filter((call) => call.method === 'heartbeat').length;
+  };
+  fake.holds['completeStep'] = () => beatsDuringTheReport() >= 3;
+  const worker = host({ heartbeatIntervalMs: 10, interceptors: [fake.clientSide()] });
   worker.registerActivity('charge', () => ({ ok: true }));
   await worker.start();
-  await until(() => fake.of('completeStep').length >= 4, 'the report to go through after its retries');
-  const order = fake.calls.map((call) => call.method).filter((method) => method === 'heartbeat' || method === 'completeStep');
-  const first = order.indexOf('completeStep');
-  const last = order.lastIndexOf('completeStep');
-  assert.ok(order.slice(first, last).includes('heartbeat'), `a heartbeat between the first report and the last: ${order.join(',')}`);
-  // Once the report is made the heartbeat ends. One that was already on its way may still arrive; no more than that.
+  await until(() => fake.of('completeStep').length >= 4 && fake.calls.some((call) => call.method === 'answered CompleteStep'), 'the report to go through after its retries');
+  assert.ok(beatsDuringTheReport() >= 3, `${beatsDuringTheReport()} heartbeats while the report was being made`);
+  // Once the report is made the heartbeat ends. A beat sent before may still reach the fake after it, so what is
+  // counted is what the host sent after the answer; the sleep only gives a heartbeat that went on the time to show.
   await new Promise((resolve) => setTimeout(resolve, 200));
-  const afterwards = fake.calls.map((call) => call.method).filter((method) => method === 'heartbeat' || method === 'completeStep');
-  assert.ok(afterwards.slice(afterwards.lastIndexOf('completeStep') + 1).filter((m) => m === 'heartbeat').length <= 1, 'none after the report that was made, but the one in flight');
+  assert.equal(fake.sentAfter('Heartbeat', 'answered CompleteStep'), 0, 'none sent after the report was made');
 });
 
 test('a handler that raises its cancellation after the host was stopped is not reported, and one cancelled by the run is', async () => {
@@ -856,18 +955,18 @@ test('stop does not wait for a poll the server holds: it ends within its timeout
 });
 
 test('after a stop that timed out the heartbeats of a task that will not end stop too', async () => {
-  const worker = host({ heartbeatIntervalMs: 30, transport: 'poll' });
+  const worker = host({ heartbeatIntervalMs: 30, transport: 'poll', interceptors: [fake.clientSide()] });
   worker.registerActivity('charge', () => new Promise(() => undefined));
   await worker.start();
   await until(() => fake.of('pollTasks').length >= 1, 'the worker poll');
   fake.leases = [lease()];
   await until(() => fake.of('heartbeat').length >= 2, 'heartbeats');
   await worker.stop(100);
-  // A heartbeat that was already on its way when the host stopped may still arrive; none is sent after that.
-  await new Promise((resolve) => setTimeout(resolve, 150));
-  const after = fake.of('heartbeat').length;
+  // A heartbeat that was already on its way when the host stopped may still arrive; none is sent after that. What
+  // the host sends is counted, not what reaches the fake; the sleep only gives a heartbeat that went on the time to show.
+  fake.note('stopped');
   await new Promise((resolve) => setTimeout(resolve, 400));
-  assert.equal(fake.of('heartbeat').length, after, 'no heartbeat after the host stopped');
+  assert.equal(fake.sentAfter('Heartbeat', 'stopped'), 0, 'no heartbeat after the host stopped');
 });
 
 test('a failure while reporting is cut by code points, never inside a pair, and what is sent is well formed', async () => {
@@ -913,13 +1012,18 @@ test('the node of the context is the document\'s, and the lease\'s step id only 
 test('a failed poll is followed by a pause, a refusal that asks for a pace is obeyed, and a full host does not poll in a loop', async () => {
   // UNAVAILABLE: backoff, not a loop.
   fake.failures['pollTasks'] = Array.from({ length: 5000 }, () => ({ code: 14 }));
-  const down = host();
+  const down = fake.observe(host());
   down.registerActivity('charge', () => null);
   await down.start();
-  await new Promise((resolve) => setTimeout(resolve, 700));
-  const unavailable = fake.of('pollTasks').length;
+  await until(() => fake.of('pollTasks').length >= 5, 'five failed polls');
   await down.stop(300);
-  assert.ok(unavailable >= 2 && unavailable <= 14, `${unavailable} polls in 0.7 s of failures`);
+  // The backoff of the host's policy (5 ms, doubled after each failure, half to all of it): read from the host,
+  // not counted in a window of time (AGENTS.md Rule 18).
+  fake.pausesBetween('pollTasks').slice(0, 4).forEach((between, k) => {
+    const ceiling = 5 * 2 ** k;
+    assert.equal(between.length, 1, `failed polls ${k + 1} and ${k + 2}: pauses ${JSON.stringify(between)}`);
+    assert.ok(between[0]! >= Math.floor(ceiling / 2) && between[0]! <= ceiling, `failed polls ${k + 1} and ${k + 2}: a pause of ${between[0]} ms, outside [${Math.floor(ceiling / 2)}, ${ceiling}]`);
+  });
 
   // RESOURCE_EXHAUSTED with retry-after-ms: exactly the pause asked for.
   fake.reset();

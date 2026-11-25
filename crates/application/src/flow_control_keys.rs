@@ -192,10 +192,12 @@ impl RunRateSlot {
         self.label = Some(KeyLabel::of_digest(&self.digest));
     }
 
-    /// Sets the place a single-run read computed for a waiting run.
+    /// Sets the place a single-run read computed for a waiting run, and the limit its grant is decided with (the lower
+    /// of its filed limit and the namespace's current ceiling, decision D022-075 item 3).
     pub fn place(&mut self, place: RatePlace) {
         self.position = Some(place.position);
         self.estimated_grant_at = place.estimated_grant_at;
+        self.limit = place.limit;
     }
 }
 
@@ -223,31 +225,77 @@ pub struct RatePlace {
     /// paused, in the queue's order).
     pub position: u32,
     pub estimated_grant_at: Option<OffsetDateTime>,
+    /// The limit the grant routine decides the waiter with.
+    pub limit: u32,
 }
 
-/// The estimate of a waiter's grant from what one statement read at `t` (plan "Visibility of the rate gate"): `counted`
-/// its key's grants that count over its window `per` at `t`, `ahead` the eligible waiters ahead of it, `limit` its own
-/// limit, and `kth_lease` the lease instant of the `k`-th oldest counted grant for `k = counted + ahead - limit + 1`
-/// when `1 <= k <= counted`. The grant routine grants it when `counted + ahead < limit`; a grant to a waiter ahead moves
-/// one from `ahead` to `counted`, so the sum falls only when a counted grant ages out, at its lease plus `per` (the
-/// half-open window). `t` when `k <= 0` (room now), `None` when `k > counted` (beyond one window).
-#[must_use]
-pub fn estimated_grant(
-    t: OffsetDateTime,
-    (counted, ahead, limit): (u64, u64, u32),
-    kth_lease: Option<OffsetDateTime>,
-    per: RatePeriod,
-) -> Option<OffsetDateTime> {
-    let sum = counted.saturating_add(ahead);
-    if sum < u64::from(limit) {
-        return Some(t);
+/// What one statement read of a waiting run's place at one instant `t` (plan "Visibility of the rate gate", D022-014).
+/// The statement guarantees that `kth_lease` counts at `t` (`kth_lease > t - per`), which [`estimated_grant`] relies on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PlaceReading {
+    /// The statement's instant (`statement_timestamp()`).
+    pub t: OffsetDateTime,
+    /// The key's grants that count over the waiter's window `per` at `t`.
+    pub counted: u64,
+    /// The waiters ahead of it that the pass visits (not past their deadline, their run running or waiting and not
+    /// paused, in the queue's order).
+    pub ahead: u64,
+    /// The waiter's own effective limit.
+    pub limit: u32,
+    /// The lease instant of the `k`-th oldest counted grant for `k = counted + ahead - limit + 1`, when
+    /// `1 <= k <= counted`.
+    pub kth_lease: Option<OffsetDateTime>,
+    pub per: RatePeriod,
+    /// The waiter's own queue deadline.
+    pub deadline: OffsetDateTime,
+    /// Whether the pass skips the waiter's run: paused, or no longer running or waiting (an orphan row).
+    pub skipped: bool,
+}
+
+impl PlaceReading {
+    /// The place this reading gives: the position `ahead + 1` and the estimate of [`estimated_grant`].
+    #[must_use]
+    pub fn place(&self) -> RatePlace {
+        RatePlace {
+            position: u32::try_from(self.ahead.saturating_add(1)).unwrap_or(u32::MAX),
+            estimated_grant_at: estimated_grant(self),
+            limit: self.limit,
+        }
     }
-    // k = sum - limit + 1, at least 1 here
-    let k = sum - u64::from(limit) + 1;
-    if k > counted {
+}
+
+/// The estimate of a waiter's grant from what one statement read at `t` (plan "Visibility of the rate gate"). The grant
+/// routine grants it when `counted + ahead < limit`; a grant to a waiter ahead moves one from `ahead` to `counted`, so
+/// the sum falls only when a counted grant ages out, at its lease plus `per` (the half-open window). `t` when `k <= 0`
+/// (room now), the `k`-th lease plus `per` when `1 <= k <= counted`, `None` when `k > counted` (beyond one window).
+/// `None` too when the pass will not grant this waiter (decision D022-068 item 1): its run is skipped (paused or ended),
+/// its deadline is at or before `t`, or the instant is at or after its deadline (the pass grants only while
+/// `deadline > now()`, so at the deadline exactly the waiter times out first).
+#[must_use]
+pub fn estimated_grant(reading: &PlaceReading) -> Option<OffsetDateTime> {
+    // a deadline at or before `t` needs no test of its own: every instant below is at or after `t` (a counted lease is
+    // after `t - per`)
+    debug_assert!(
+        reading
+            .kth_lease
+            .is_none_or(|lease| lease + reading.per.duration() > reading.t),
+        "a counted lease counts at the reading's instant"
+    );
+    if reading.skipped {
         return None;
     }
-    kth_lease.map(|lease| lease + per.duration())
+    let sum = reading.counted.saturating_add(reading.ahead);
+    let at = if sum < u64::from(reading.limit) {
+        reading.t
+    } else {
+        // k = sum - limit + 1, at least 1 here
+        let k = sum - u64::from(reading.limit) + 1;
+        if k > reading.counted {
+            return None;
+        }
+        reading.kth_lease? + reading.per.duration()
+    };
+    (at < reading.deadline).then_some(at)
 }
 
 /// One rate-limit window row of a namespace, read without its lock at the page's instant (FR-022-048, D022-067).
@@ -458,13 +506,13 @@ pub trait FlowControlKeyReader {
         limit: u32,
     ) -> impl Future<Output = Result<RateLimitKeyPage, StoreError>> + Send;
 
-    /// Where the run-level rate-limit waiter of `run` stands now, read by one statement at one instant; `None` when the
-    /// run does not wait for a slot.
+    /// What one statement read, at one instant, of where the run-level rate-limit waiter of `run` stands; `None` when the
+    /// run does not wait for a slot. The service derives the place from it ([`PlaceReading::place`]).
     fn rate_place(
         &self,
         tenant: TenantId,
         run: sagat_domain::execution::RunId,
-    ) -> impl Future<Output = Result<Option<RatePlace>, StoreError>> + Send;
+    ) -> impl Future<Output = Result<Option<PlaceReading>, StoreError>> + Send;
 
     /// Whether `subject` may reveal personal data in the namespace now: its role in the tenant may use a reveal grant
     /// and it holds one for the namespace (feature 009's `payload:reveal-pii`). What a key's label needs (FR-022-057,
@@ -501,6 +549,150 @@ mod tests {
             group: ResolvedGroup::parse(group).expect("a group"),
             digest: [0xab; 32],
         }
+    }
+
+    /// Decision D022-067 item 5 (review of task T022-078, architecture minor 7): a position written for one listing is
+    /// refused by the other, both ways.
+    #[test]
+    fn a_position_of_one_listing_is_refused_by_the_other() {
+        let p = position(Some(1_763_640_000_123_456), "payments.eu");
+        for (written, read) in [
+            (KeyListing::Concurrency, KeyListing::RateLimit),
+            (KeyListing::RateLimit, KeyListing::Concurrency),
+        ] {
+            assert_eq!(
+                KeyPosition::decode(&p.encode(written), read),
+                None,
+                "{written:?} read as {read:?}"
+            );
+            assert_eq!(
+                KeyPosition::decode(&p.encode(written), written),
+                Some(p.clone())
+            );
+        }
+    }
+
+    const MICROSECOND: time::Duration = time::Duration::microseconds(1);
+
+    /// A reading at `t` of a key with `counted` grants that count and `ahead` waiters ahead, limit 3 per hour, whose
+    /// `k`-th counted lease is one minute before `t`, and whose deadline is two hours after `t`.
+    fn reading(counted: u64, ahead: u64) -> PlaceReading {
+        let t = OffsetDateTime::from_unix_timestamp(1_763_640_000).expect("an instant");
+        PlaceReading {
+            t,
+            counted,
+            ahead,
+            limit: 3,
+            kth_lease: Some(t - time::Duration::minutes(1)),
+            per: RatePeriod::from_millis(3_600_000).expect("an hour"),
+            deadline: t + time::Duration::hours(2),
+            skipped: false,
+        }
+    }
+
+    /// Plan "Visibility of the rate gate": `k = counted + ahead - limit + 1` at each of its edges. `k <= 0` is room now
+    /// (`t`); `k = 1` and `k = counted` are the `k`-th lease plus the window; `k = counted + 1` is beyond one window.
+    #[test]
+    fn the_estimate_is_the_kth_lease_plus_the_window_at_each_edge_of_k() {
+        let r = reading(0, 0);
+        assert_eq!(estimated_grant(&r), Some(r.t), "k = -2: room now");
+        let r = reading(1, 1);
+        assert_eq!(estimated_grant(&r), Some(r.t), "k = 0: the last room");
+        let lease_plus_hour = |r: &PlaceReading| r.kth_lease.map(|l| l + time::Duration::hours(1));
+        let r = reading(2, 1);
+        assert_eq!(estimated_grant(&r), lease_plus_hour(&r), "k = 1");
+        let r = reading(3, 2);
+        assert_eq!(estimated_grant(&r), lease_plus_hour(&r), "k = 3 = counted");
+        let r = reading(3, 3);
+        assert_eq!(
+            estimated_grant(&r),
+            None,
+            "k = 4 = counted + 1: beyond one window"
+        );
+        let r = reading(0, 3);
+        assert_eq!(
+            estimated_grant(&r),
+            None,
+            "k = 1 with nothing counted: beyond one window"
+        );
+        let r = PlaceReading {
+            kth_lease: None,
+            ..reading(2, 1)
+        };
+        assert_eq!(
+            estimated_grant(&r),
+            None,
+            "a lease the statement did not find"
+        );
+        let r = PlaceReading {
+            counted: u64::MAX,
+            ahead: u64::MAX,
+            ..reading(0, 0)
+        };
+        assert_eq!(
+            estimated_grant(&r),
+            lease_plus_hour(&r),
+            "a saturated sum stays within the counted grants"
+        );
+    }
+
+    /// Decision D022-068 item 1: no estimate for a waiter the pass will not grant: paused, past its own deadline at
+    /// `t`, or an instant at or after its deadline; one microsecond either side of each boundary.
+    #[test]
+    fn no_estimate_for_a_waiter_the_pass_will_not_grant() {
+        let r = PlaceReading {
+            skipped: true,
+            ..reading(0, 0)
+        };
+        assert_eq!(estimated_grant(&r), None, "skipped");
+        let base = reading(0, 0);
+        let r = PlaceReading {
+            deadline: base.t,
+            ..base
+        };
+        assert_eq!(
+            estimated_grant(&r),
+            None,
+            "its deadline is the read's instant"
+        );
+        let r = PlaceReading {
+            deadline: base.t + MICROSECOND,
+            ..base
+        };
+        assert_eq!(
+            estimated_grant(&r),
+            Some(base.t),
+            "one microsecond before its deadline: room now"
+        );
+        let base = reading(2, 1);
+        let at = base.kth_lease.expect("a lease") + time::Duration::hours(1);
+        let r = PlaceReading {
+            deadline: at,
+            ..base
+        };
+        assert_eq!(
+            estimated_grant(&r),
+            None,
+            "the instant is its deadline: it times out first"
+        );
+        let r = PlaceReading {
+            deadline: at - MICROSECOND,
+            ..base
+        };
+        assert_eq!(
+            estimated_grant(&r),
+            None,
+            "the instant is after its deadline"
+        );
+        let r = PlaceReading {
+            deadline: at + MICROSECOND,
+            ..base
+        };
+        assert_eq!(
+            estimated_grant(&r),
+            Some(at),
+            "one microsecond before its deadline"
+        );
     }
 
     #[test]

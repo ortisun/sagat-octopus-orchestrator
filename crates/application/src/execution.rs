@@ -1099,11 +1099,16 @@ pub trait RunTx: Send {
     /// the queued step `node`, or of the run's start when `node` is `None` (T022-022) (semaphores, then windows), whether every gate it waits for admits it now by the
     /// reservation rule, and if so its grants, as the events to journal, with their holder and grant rows written and its
     /// waiter rows removed. `None` when a gate refuses it, or its queue deadline passed (the timeout routine's). The
+    /// key's grants are counted as of `counted_at`, the instant the pass selected its key (at or before every decision of
+    /// the pass): within one pass no grant ages out, so a waiter is never granted after a younger one that the same rule
+    /// refused earlier in that pass (strict admission order, decision D022-073 item 2); counting more grants than the
+    /// decision's own instant would is never an over-grant. The queue deadline is checked at the decision's instant. The
     /// run's state is not changed; the domain applies the events. An adapter that does not run the gate refuses.
     fn grant_queued_step<'a>(
         &'a mut self,
         _node: Option<&'a NodeId>,
         _attempt: u32,
+        _counted_at: time::OffsetDateTime,
     ) -> impl Future<Output = Result<Option<Vec<sagat_domain::execution::GateEvent>>, StoreError>>
     + Send
     + 'a {
@@ -2127,55 +2132,71 @@ impl<E: ExpressionEvaluator> Engine<E> {
                 })
                 .await;
         }
-        // fail closed, before any key is evaluated or anything is written (G1197): a definition with a `forEach`, `while`
-        // or `repeatUntil` node, whose finish paths end the run without the reducer and so would never give the permit
-        // back
-        let unsupported = {
-            let (def, _) = tx.parts();
-            let kinds = def.projected_state();
-            kinds.collections || kinds.loops
-        };
-        if unsupported {
-            return Err(EngineError::Store(StoreError::FlowControl(
-                crate::flow_control::FlowControlRefusal::BinaryCapabilityMissing,
-            )));
-        }
-        // a start delay decides nothing now: its release asks for the start's gates (`Evaluation::StartGates`), so the run
-        // acquires or queues when the delay elapses (FR-022-018, D022-052)
-        if let Some(until_us) = held_until_us {
-            return self
-                .run(tx, effects, move |def, state, now| {
-                    let (started, progress) =
-                        sagat_domain::execution::start_run_delayed(def, run_id, now, until_us)?;
-                    *state = started;
-                    Ok(((), progress))
+        // the gated start in a future of its own on the heap: its decisions and its three ways to start are deep futures, and
+        // built inline they would be carried by every creator's future and by each poll frame on their path, gated or not
+        // (a debug build's test thread overflowed its 2 MiB in a batch item's rerun; `future_sizes` pins the bound)
+        self.start_gated(tx, effects, run_id, held_until_us).await
+    }
+
+    /// The gated part of [`Self::start`], boxed where it is created so that only a pointer is held by its caller.
+    fn start_gated<'a, Tx: RunTx>(
+        &'a self,
+        tx: &'a mut Tx,
+        effects: Effects,
+        run_id: RunId,
+        held_until_us: Option<i64>,
+    ) -> std::pin::Pin<Box<impl Future<Output = Result<(), EngineError>> + 'a>> {
+        Box::pin(async move {
+            // fail closed, before any key is evaluated or anything is written (G1197): a definition with a `forEach`, `while`
+            // or `repeatUntil` node, whose finish paths end the run without the reducer and so would never give the permit
+            // back
+            let unsupported = {
+                let (def, _) = tx.parts();
+                let kinds = def.projected_state();
+                kinds.collections || kinds.loops
+            };
+            if unsupported {
+                return Err(EngineError::Store(StoreError::FlowControl(
+                    crate::flow_control::FlowControlRefusal::BinaryCapabilityMissing,
+                )));
+            }
+            // a start delay decides nothing now: its release asks for the start's gates (`Evaluation::StartGates`), so the run
+            // acquires or queues when the delay elapses (FR-022-018, D022-052)
+            if let Some(until_us) = held_until_us {
+                return self
+                    .run(tx, effects, move |def, state, now| {
+                        let (started, progress) =
+                            sagat_domain::execution::start_run_delayed(def, run_id, now, until_us)?;
+                        *state = started;
+                        Ok(((), progress))
+                    })
+                    .await;
+            }
+            let Ok((concurrency, rate)) = self.start_keys(tx).await? else {
+                return self
+                    .run(tx, effects, move |def, state, now| {
+                        let (started, progress) =
+                            sagat_domain::execution::start_run_key_failed(def, run_id, now)?;
+                        *state = started;
+                        Ok(((), progress))
+                    })
+                    .await;
+            };
+            let decisions = tx
+                .decide_run_gates(&crate::flow_control::RunGateKeys {
+                    concurrency,
+                    rate,
+                    cause: sagat_domain::execution::StartCause::Admission,
                 })
-                .await;
-        }
-        let Ok((concurrency, rate)) = self.start_keys(tx).await? else {
-            return self
-                .run(tx, effects, move |def, state, now| {
-                    let (started, progress) =
-                        sagat_domain::execution::start_run_key_failed(def, run_id, now)?;
-                    *state = started;
-                    Ok(((), progress))
-                })
-                .await;
-        };
-        let decisions = tx
-            .decide_run_gates(&crate::flow_control::RunGateKeys {
-                concurrency,
-                rate,
-                cause: sagat_domain::execution::StartCause::Admission,
+                .await?;
+            self.run(tx, effects, move |def, state, now| {
+                let (started, progress) =
+                    sagat_domain::execution::start_run_gated(def, run_id, now, decisions)?;
+                *state = started;
+                Ok(((), progress))
             })
-            .await?;
-        self.run(tx, effects, move |def, state, now| {
-            let (started, progress) =
-                sagat_domain::execution::start_run_gated(def, run_id, now, decisions)?;
-            *state = started;
-            Ok(((), progress))
+            .await
         })
-        .await
     }
 
     /// The keys of the gates the run's start declares, evaluated over the run's input (feature 022): `Err(())` for a key
@@ -2217,7 +2238,8 @@ impl<E: ExpressionEvaluator> Engine<E> {
     }
 
     /// The decisions of the start's gates asked for after the run started (feature 022): at the release of a start delay
-    /// (FR-022-018) or right after a reset (a fresh permit or `CONCURRENCY_PERMIT_UNAVAILABLE`, never a wait).
+    /// (FR-022-018) or right after a reset (a fresh permit and slot, or `RATE_LIMIT_SLOT_UNAVAILABLE` then
+    /// `CONCURRENCY_PERMIT_UNAVAILABLE`, rate first; never a wait; D022-053, D022-069).
     async fn decide_start_gates<Tx: RunTx>(
         &self,
         tx: &mut Tx,

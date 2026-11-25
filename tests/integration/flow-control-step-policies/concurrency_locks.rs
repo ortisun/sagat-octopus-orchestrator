@@ -19,7 +19,7 @@ use crate::support::engine::World;
 use crate::support::flow_control::{gated_world, publish};
 use crate::support::lock_order::{Lock, Outcome, Slot, against_at, deadlocks, run_plan};
 
-fn run_row(run: RunId) -> Lock {
+pub(crate) fn run_row(run: RunId) -> Lock {
     Lock::statement(
         "the run",
         format!(
@@ -30,7 +30,7 @@ fn run_row(run: RunId) -> Lock {
 }
 
 /// The run's active-run counter row (ADR-0050 slot 6), as `run_active_counts_lock_slot` takes it.
-fn counter_row(run: RunId) -> Lock {
+pub(crate) fn counter_row(run: RunId) -> Lock {
     Lock::statement(
         "the run's active-run counter row",
         format!(
@@ -42,7 +42,7 @@ fn counter_row(run: RunId) -> Lock {
 }
 
 /// Every run-scope key row of the tenant (slot 7).
-fn key_rows(w: &World) -> Lock {
+pub(crate) fn key_rows(w: &World) -> Lock {
     Lock::statement(
         "the key",
         format!(
@@ -162,7 +162,7 @@ async fn the_timeout_of_a_queued_start_takes_the_run_then_its_counter_row_then_t
 
 /// Every active-run counter row of the namespace of `run` (ADR-0050 slot 6), all 16 slots made to exist first: a new
 /// run's slot is not known before its id is drawn, so the reference holds every slot the admission could take.
-async fn every_counter_row(w: &World, run: RunId) -> Lock {
+pub(crate) async fn every_counter_row(w: &World, run: RunId) -> Lock {
     sqlx::query(
         "INSERT INTO run_active_counts (tenant_id, namespace_id, slot, active) \
          SELECT r.tenant_id, r.namespace_id, s::smallint, 0 FROM runs r, generate_series(0, 15) s WHERE r.id = $1 \

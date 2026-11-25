@@ -107,7 +107,9 @@ pub use flow_control::{
 /// The statements of the concurrency-key listing, exposed so a test can ask the planner about the very text they run
 /// (D022-058).
 #[doc(hidden)]
-pub use flow_control::{KEY_LISTING_OF_GROUP_SQL, KEY_LISTING_SQL};
+pub use flow_control::{
+    KEY_LISTING_OF_GROUP_SQL, KEY_LISTING_SQL, RATE_KEY_LISTING_OF_GROUP_SQL, RATE_KEY_LISTING_SQL,
+};
 pub use identity::PgIdentityStore;
 pub use instances::{
     FeatureStep, OperatorBounds, PgInstanceStore, live_capable_step, no_feature_step,

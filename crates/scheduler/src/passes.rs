@@ -5687,7 +5687,10 @@ where
         let truncated = u32::try_from(waiters.len()).unwrap_or(u32::MAX) >= GRANTS_PER_KEY_PER_PASS;
         let mut undecided = false;
         for waiter in waiters {
-            match self.grant_waiter(view, &hold, &waiter).await {
+            match self
+                .grant_waiter(view, &hold, &waiter, key.selected_at)
+                .await
+            {
                 Granted::Yes => pass.granted += 1,
                 // a replica without the gate grants nothing of any key; it keeps the hint for one that has it
                 Granted::Unsupported => {
@@ -5726,6 +5729,7 @@ where
         view: &View,
         hold: &Hold,
         waiter: &sagat_application::flow_control::GateWaiter,
+        counted_at: time::OffsetDateTime,
     ) -> Granted {
         let outcome = async {
             // the waiter's run first (ADR-0089 decision 3): one another transaction holds is tried by the next pass
@@ -5778,7 +5782,9 @@ where
                 }
             };
             let Some(grants) = tx
-                .grant_queued_step(waiter.node.as_ref(), attempt)
+                // every decision of this pass counts the key's grants as of the pass's selection of the key (decision
+                // D022-073 item 2): its grants follow admission order
+                .grant_queued_step(waiter.node.as_ref(), attempt, counted_at)
                 .await
                 .map_err(EngineError::Store)?
             else {

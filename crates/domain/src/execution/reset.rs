@@ -127,13 +127,14 @@ registry! {
     RunEvent::Gate(GateEvent { change: GateChange::ConcurrencyReleased, .. }) => ("concurrency.released", ResetRule::Rematerialize),
     RunEvent::Gate(GateEvent { change: GateChange::ConcurrencyWaitTimedOut, .. }) => ("concurrency.wait_timed_out", ResetRule::Refuse { until: None }),
     RunEvent::Gate(GateEvent { change: GateChange::ConcurrencyDequeued, .. }) => ("concurrency.dequeued", ResetRule::Refuse { until: None }),
-    // Feature 022 (D022-035): until a reset admits its run through the rate gate (T022-086), a prefix that holds a
-    // rate-limit event offers no point, so no reset run can start with a slot it was never granted.
-    RunEvent::Gate(GateEvent { change: GateChange::RateQueued { .. }, .. }) => ("rate_limit.queued", ResetRule::Exclude),
-    RunEvent::Gate(GateEvent { change: GateChange::RateGranted { .. }, .. }) => ("rate_limit.granted", ResetRule::Exclude),
-    RunEvent::Gate(GateEvent { change: GateChange::RateWaitTimedOut, .. }) => ("rate_limit.wait_timed_out", ResetRule::Exclude),
-    RunEvent::Gate(GateEvent { change: GateChange::RateDequeued, .. }) => ("rate_limit.dequeued", ResetRule::Exclude),
-    RunEvent::Gate(GateEvent { change: GateChange::RateReturned, .. }) => ("rate_limit.returned", ResetRule::Exclude),
+    // Feature 022 (T022-086, D022-069): the slot events of the prefix are history the reset re-materializes as a fresh
+    // slot, decided right after `run.reset` (a reset never waits), as the permit's; every point after a wait that ended
+    // without a grant is refused.
+    RunEvent::Gate(GateEvent { change: GateChange::RateQueued { .. }, .. }) => ("rate_limit.queued", ResetRule::Rematerialize),
+    RunEvent::Gate(GateEvent { change: GateChange::RateGranted { .. }, .. }) => ("rate_limit.granted", ResetRule::Rematerialize),
+    RunEvent::Gate(GateEvent { change: GateChange::RateWaitTimedOut, .. }) => ("rate_limit.wait_timed_out", ResetRule::Refuse { until: None }),
+    RunEvent::Gate(GateEvent { change: GateChange::RateDequeued, .. }) => ("rate_limit.dequeued", ResetRule::Refuse { until: None }),
+    RunEvent::Gate(GateEvent { change: GateChange::RateReturned, .. }) => ("rate_limit.returned", ResetRule::Rematerialize),
 }
 
 /// The rule of an event type by the name the journal stores, if this version knows the type. A journal row

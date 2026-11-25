@@ -373,9 +373,11 @@ def run_insert_errors(src):
 # the start's keys and has the adapter decide them; a creator that called a domain start function itself would start a run past
 # its gates. At run time the domain refuses a gated definition in `start_run`, and a state that knows its definition releases
 # nothing before every gate of its start holds (a delayed start and a reset decide their gates through the planner's
-# `Evaluation::StartGates`, D022-052, D022-053); this keeps it static.
+# `Evaluation::StartGates`, D022-052, D022-053); this keeps it static. `Engine::start` builds its gated part in
+# `start_gated`, a function that returns it boxed (D022-070), so both are the one start point.
 DOMAIN_START = re.compile(r"\bstart_run(?:_delayed|_gated|_key_failed)?\s*\(")
 DOMAIN_START_HOME = ("crates/application/src/execution.rs", "start")
+DOMAIN_START_HOMES = {DOMAIN_START_HOME, ("crates/application/src/execution.rs", "start_gated")}
 
 
 def run_start_errors(root):
@@ -392,7 +394,7 @@ def run_start_errors(root):
             if re.search(r"(\.|\bfn\s+)$", before):
                 continue
             inside = enclosing_function(masked, m.start())
-            if inside is not None and (rel, inside[0]) == DOMAIN_START_HOME:
+            if inside is not None and (rel, inside[0]) in DOMAIN_START_HOMES:
                 found += 1
                 continue
             errors.append(
@@ -534,7 +536,11 @@ def queued_runs_count_errors(src):
 # --- a key's value never reaches the API's flow-control bodies (feature 022, FR-022-022, D1168; keys review m4) -----------------
 # The bodies of `Run.concurrency` and the key listing are built from types that hold no key value: no JSON value (which could
 # carry one), no digest machinery, no digest read. A key is shown as its label only.
-KEY_VALUE_FREE_FILES = ("crates/api-http/src/dto_flow_control.rs", "crates/api-http/src/routes/concurrency.rs")
+KEY_VALUE_FREE_FILES = (
+    "crates/api-http/src/dto_flow_control.rs",
+    "crates/api-http/src/routes/concurrency.rs",
+    "crates/api-http/src/routes/rate_limits.rs",
+)
 KEY_VALUE_NAMES = re.compile(r"\b(serde_json|Value|KeyedDigest|FlowControlKey|KeyRing|keyed_digest|canonical)\b|\.digest\b")
 
 
