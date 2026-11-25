@@ -1,4 +1,4 @@
-# Research register: design 045, activity timeouts, retry per failure code and buffered signals
+# Research register: design 045, activity timeouts and retry per failure code
 
 The registers of [design 045](../../docs/designs/045-activity-timeouts.md): decisions (Decision 045-NNN), gaps (Gap 045-NNN)
 and owner questions (Owner question 045-NNN). Append-only: an entry is never renumbered or deleted; a revised entry says so in
@@ -47,16 +47,19 @@ place. Every owner question below was decided under the owner's delegation (Owne
   only (Temporal parity); (b) a policy per code only; (c) both. Chosen (c), delegate (Owner decision 2026-11-24-4): the list is the
   form a Temporal user knows and the common case; the per-code policy is what lets an author be patient with a rate limit and quick
   with a bug, which Temporal cannot express in one activity.
-- **Decision 045-006 — `activity` and `script` nodes only** (Owner question 045-006). Options: (a) every leased node kind,
+- **Decision 045-006 — `activity` and `script` nodes only** (in the root graph and in bodies, revised 2026-11-24 after the
+  zoom-out review: `bodyActivity` and `bodyScript` get the fields too, since the scoped and path statements carry them) (Owner question 045-006). Options: (a) every leased node kind,
   including the managed database and lake runners; (b) `activity` and `script`; (c) `activity` only. Chosen (b), delegate (Owner
   decision 2026-11-24-4): these are the nodes whose workers the author operates and whose stalls the author must detect; the managed
   runners are platform processes with their own limits (`timeoutMs` of their connection, `LakeLimits`), and adding them is Gap
   045-003. Compensation and reconciliation are excluded by principle III (a deadline must not end a pending compensation).
-- **Decision 045-007 — Pending signals move across continue-as-new** (Owner question 045-007). Options: (a) discard them; (b)
+- **Decision 045-007 — Pending signals move across continue-as-new** (moved, with buffered signals, to their own design on
+  2026-11-24; kept here as the reasoning ADR-0111 records) (Owner question 045-007). Options: (a) discard them; (b)
   refuse the continuation while any is pending; (c) move those the successor's version declares buffered and discard the rest,
   journaled. Chosen (c), delegate (Owner decision 2026-11-24-4): (a) loses business messages silently, (b) lets a sender block a
   run's progress; (c) keeps every message a successor can consume and records the others, without user code draining a channel.
-- **Decision 045-008 — Buffering is opt-in per version and per name** (Owner question 045-008). Options: (a) buffer every signal of
+- **Decision 045-008 — Buffering is opt-in per version and per name** (moved, with buffered signals, to their own design on
+  2026-11-24; ADR-0111 decision 1) (Owner question 045-008). Options: (a) buffer every signal of
   every run (Temporal); (b) opt-in. Chosen (b), delegate (Owner decision 2026-11-24-4): (a) changes the answer of `signalRun` for
   runs in flight and for callers who rely on the `409` today (constitution principle IV); (b) gives the same capability to every new
   version that asks for it.
@@ -65,16 +68,36 @@ place. Every owner question below was decided under the owner's delegation (Owne
   (explicitly out of scope); (a) would make the declarative mode wait for 044's determinism study; (b) is clean but takes another
   number while the 0.3.0 designs are being numbered; (c) shares this design's race with a wait's timeout, its fleet switch and its
   conformance scenarios, and its tasks form a slice that can be moved out unchanged.
+  Revised 2026-11-24, after the zoom-out review (its Major 1): buffered signals go to a design of their own. Of the three reasons
+  above, the shared race turned out not to exist (a wait that consumes at its entry has no timer to race), the fleet switch is
+  a separate requirement and the conformance scenario is separate; only the numbering reason was left, which is administrative.
+  Their design keeps ADR-0111 as its proposal, which now also weighs feature 004's `lookbackMs` path (the zoom-out review's
+  Major 2). Delegate (Owner decision 2026-11-24-4); the coordinating session numbers it.
 - **Decision 045-010 — The start deadline does not move on a lease withdrawal.** A withdrawn lease (Architecture decision 0098,
   Architecture decision 0099) never started, so the attempt is the same attempt; resetting the deadline would let withdrawals
   postpone a timeout without limit.
 - **Decision 045-011 — The minimum heartbeat timeout is 3,000 ms.** A host beats at a third of it (1,000 ms), three beats per window,
   above the 751 to 889 ms ready-to-handler 99th percentile measured in `tests/performance/reports/sdk-streaming.md`. Below 18,000 ms a
   lease is never provisional (Architecture decision 0099 decision 2), which is correct.
-- **Decision 045-012 — Field numbers.** `TaskLease` 26 to 28 and `FailStepRequest` 14 for protocol 1.9, above every number the drafts
+- **Decision 045-012 — Field numbers.** `TaskLease` 26 and 27 and `FailStepRequest` 14 (revised 2026-11-24: 28 is not taken) for protocol 1.9, above every number the drafts
   and protocol 1.8 name; the register is in Technical Plan 8 of the design and is recorded in the research registers of drafts 019 and 031 on
   2026-11-24: 031 moves to `TaskLease` 25 and `WorkerCapabilities` 7, 019's `RegisterWorkerResponse` field moves from 4
   (taken by design 041) to 5.
+
+- **Decision 045-013 — No `HEARTBEAT_TIMEOUT` code** (zoom-out review, Major 5, accepted). A lapse keeps `LEASE_EXPIRED` and its
+  event records `deadline: heartbeat`; the outcome-unknown list and its two copies stay as they are.
+- **Decision 045-014 — No `attempt_time_left_ms` on the lease** (zoom-out review, Major 4, accepted in part). No requirement needs it.
+  `heartbeat_timeout_ms` stays: the lease's expiry is an instant of the database's clock, and a duration lets a host beat in time
+  whatever its own clock says, which is why protocol 1.8 chose durations for its fields.
+- **Decision 045-015 — `byErrorCode` stays** (zoom-out review, Major 3, contested). The coordinating session's brief asks for "a retry
+  policy per error type", and the case it serves is not met by `nextRetryDelay`: a worker's delay changes when the next attempt
+  starts, not how many attempts a rate limit gets compared with a bug. The cost (one schema array, three refusal reasons, one
+  overlay rule) is small next to the business case. Delegate (Owner decision 2026-11-24-4).
+- **Decision 045-016 — The exception-to-code map stays** (zoom-out review, Nit 13, contested). Without it an uncaught exception is
+  `ACTIVITY_ERROR` whatever its class, so a retry list cannot name it unless every handler catches and rethrows; the map is local to
+  each SDK and changes nothing on the wire.
+- **Decision 045-017 — A `RETRY_WAIT` step past its close deadline is ended by the retries pass** (zoom-out review, Nit 12, accepted),
+  so the close-deadline index covers `READY` and gated `WAITING` rows only.
 
 ## Gaps
 
