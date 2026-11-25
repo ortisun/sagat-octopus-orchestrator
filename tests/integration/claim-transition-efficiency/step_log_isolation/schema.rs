@@ -70,6 +70,12 @@ async fn the_migration_rolls_back_only_without_lines_and_restores_what_it_replac
         let l = fx.ledger(fx.tenant).await;
         assert_eq!((l.usage(), l.s, l.used), (0, -1_000, 1_000), "S is negative while the quota lease holds the bytes");
         undo_to(&fx.db, BEFORE).await.expect("an empty rollback");
+        let left: i64 = sqlx::query_scalar("SELECT count(*) FROM _sqlx_migrations WHERE version >= $1")
+            .bind(STEP_LOGS)
+            .fetch_one(fx.pool())
+            .await
+            .expect("the applied migrations");
+        assert_eq!(left, 0, "the step-log migration and its validation are no longer applied");
         for (gone, what) in [
             ("SELECT to_regclass('step_log_lines') IS NULL AND to_regclass('step_log_streams') IS NULL", "the tables"),
             ("SELECT to_regclass('step_log_quota_leases') IS NULL", "the quota leases"),
@@ -86,8 +92,9 @@ async fn the_migration_rolls_back_only_without_lines_and_restores_what_it_replac
             ),
             ("SELECT NOT EXISTS (SELECT 1 FROM pg_proc WHERE proname LIKE 'sagat_quota_step_log%')", "the functions"),
             (
-                "SELECT NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname LIKE '%step_log_reclaim')",
-                "the limit-change triggers",
+                "SELECT NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname LIKE '%step_log_reclaim' \
+                   OR tgname = 'tenant_retained_usage_step_log_leases_cascade')",
+                "the limit-change and cascade triggers",
             ),
             (
                 "SELECT to_regprocedure('sagat_quota_add_delta(uuid,bigint,bigint,bigint)') IS NOT NULL \
@@ -556,8 +563,11 @@ fn the_hot_path_never_names_the_step_log_tables_or_their_transaction_port() {
     }
 }
 
+/// A migration file's name, its function bodies (name, body) and the rest of its text.
+type MigrationParts = (String, Vec<(String, String)>, String);
+
 /// The step-log migrations' up files, each split into its function bodies (name, body) and the rest.
-fn migration_parts() -> Vec<(String, Vec<(String, String)>, String)> {
+fn migration_parts() -> Vec<MigrationParts> {
     let dir = repository().join("crates/infra-postgres/migrations");
     let mut parts = Vec::new();
     let function =

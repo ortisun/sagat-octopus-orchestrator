@@ -149,12 +149,8 @@ async fn a_stream_row_held_by_an_ingest_is_skipped_by_the_mark_and_marked_by_the
                 .expect("mark"),
             1
         );
-        assert_eq!(
-            state(&w, held).await.0,
-            false,
-            "the held stream was skipped"
-        );
-        assert_eq!(state(&w, other).await.0, true);
+        assert!(!state(&w, held).await.0, "the held stream was skipped");
+        assert!(state(&w, other).await.0);
         ingest.commit().await.expect("the ingest ends");
         assert_eq!(
             w.store
@@ -163,7 +159,7 @@ async fn a_stream_row_held_by_an_ingest_is_skipped_by_the_mark_and_marked_by_the
                 .expect("mark"),
             1
         );
-        assert_eq!(state(&w, held).await.0, true, "marked by the next pass");
+        assert!(state(&w, held).await.0, "marked by the next pass");
     })
     .await;
 }

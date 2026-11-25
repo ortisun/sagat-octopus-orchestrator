@@ -53,7 +53,7 @@ async fn with_room_at_the_mark_the_top_up_answers_room_and_takes_no_lock_on_the_
             ("room".to_owned(), MIB - 1_000)
         );
         row.rollback().await.expect("rollback");
-        assert!(MIB - 1_000 >= MARK);
+        const { assert!(MIB - 1_000 >= MARK) };
     })
     .await;
 }
