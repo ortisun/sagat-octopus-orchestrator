@@ -493,7 +493,7 @@ def gate_row_write_errors(src):
     return errors
 
 
-# --- one count of queued runs (feature 022, D022-055 item 3; the keys review of 2026-11-20, architecture m3; T022-105) ---------
+# --- one count of queued runs (feature 022, D022-055 item 3; the keys review of 2026-11-20, architecture minor 3; T022-105) ---------
 # The `queued_runs` ceiling's check, its quota usage and the key listing read one statement (`QUEUED_RUNS_SQL`), so they never
 # disagree about what a queued run is (a run waiting for a permit or a slot, counted once). Since task T022-105 (decision
 # D022-084) it reads the slot rows of `flow_control_counts` that the waiter rows' triggers keep: a statement that counts the
