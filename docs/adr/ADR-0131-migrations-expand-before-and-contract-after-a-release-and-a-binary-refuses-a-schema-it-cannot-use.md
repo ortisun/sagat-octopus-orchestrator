@@ -15,17 +15,25 @@ writers together.
 
 ## Decision
 
-1. Every migration MUST declare `expand` or `contract`. An expand migration MUST leave the schema usable by release
-   N-1; a contract migration MUST remove only what N-1 no longer uses and MUST ship in a release after its expand.
-2. A migration MUST set a lock timeout, build indexes on existing tables concurrently, add constraints `NOT VALID` and
-   validate them later, and MUST NOT rewrite a table, change a type in place, rename, or add a volatile default.
-3. Each release's last migration MUST record the oldest release whose binaries may run on the schema. A process MUST
-   close its serving gate, write nothing and report not ready when its release is older than that, or when a migration
-   it was built with is missing; it re-checks at every instance heartbeat.
-4. A change that writes state release N-1 cannot process MUST be behind a registry capability, switched on only when the
-   registry's census shows no live N-1 process.
-5. Release N MUST NOT be published unless N-1 and N engines and control planes pass the integrity oracle together on
-   N's expand schema under load.
+1. Every new migration MUST declare `expand` or `contract` on the line after an optional `-- no-transaction`, and a
+   contract names its expand. An expand migration MUST leave the schema usable by release N-1; a contract migration MUST
+   remove only what N-1 no longer uses and MUST ship in a release after its expand. Applied migrations are never edited;
+   the lint judges only migrations after a recorded cut-off.
+2. A migration MUST set a lock timeout on every statement that blocks inserts (and `migrate` retries it), build indexes
+   on existing tables concurrently after dropping any invalid one, add constraints `NOT VALID` and validate them later,
+   and MUST NOT rewrite a table, change a type in place, rename, add a volatile default or an undefaulted `NOT NULL`
+   column, run `SET NOT NULL`, or replace a function, trigger, policy or view in an expand migration. A waiver is a header
+   line naming the rule and the reason.
+3. Each release's last migration MUST record the oldest release whose binaries may run on the schema, from a manifest
+   made when the release is cut. A process MUST read the applied versions through an owner-defined function, and close
+   its serving gate, write nothing and answer 503 when its release is older than that, or when a migration it was built
+   with is missing; it re-checks at every instance heartbeat.
+4. A change that writes state release N-1 cannot process MUST be behind a registry capability, switched on by the
+   registry's activation, which raises the oldest compatible release in the same transaction; `migrate` MUST refuse a
+   contract migration while a process older than the release before it is live.
+5. Release N MUST NOT be published unless N-1 and N engines and control planes pass the integrity oracle together, with
+   N's migrations applied during the load, a rollback before activation, and the transition latency under the lock
+   timeout.
 6. The promise starts with 0.3.0 as N-1. The upgrade from 0.2.x to 0.3.0 stays a stopped upgrade.
 
 ## Considered options

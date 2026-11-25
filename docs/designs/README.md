@@ -15,7 +15,7 @@ rules below are enforced by `python3 scripts/check-design-docs.py`; the full def
 | 041 | [Step logs per run](041-step-logs.md) | Approved | 2 of 32 |
 | 042 | [Stream operators](042-stream-operators.md) | Draft | 0 of 53 |
 | 043 | [Run input validation](043-run-input-validation.md) | Approved | 24 of 28 |
-| 048 | [A reference high-availability topology for PostgreSQL, and rolling upgrades with N and N-1 writers](048-high-availability-and-rolling-upgrades.md) | Draft | 0 of 18 |
+| 048 | [A reference high-availability topology for PostgreSQL, and rolling upgrades with N and N-1 writers](048-high-availability-and-rolling-upgrades.md) | Draft | 0 of 17 |
 | 049 | [Partitioning of the journal tables, joined to the retention of feature 020](049-journal-partitioning.md) | Draft | 0 of 17 |
 | 051 | [A published benchmark against Temporal and Windmill](051-competitive-benchmark.md) | Draft | 0 of 14 |
 | 052 | [Hot-path dispatch: a lean ready queue, wake on commit, the next step in a completion, and a throughput gate](052-hot-path-dispatch.md) | Draft | 0 of 14 |

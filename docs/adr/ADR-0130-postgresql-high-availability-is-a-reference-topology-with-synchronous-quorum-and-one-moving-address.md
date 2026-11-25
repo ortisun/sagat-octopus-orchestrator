@@ -21,24 +21,31 @@ since feature 037 a lease lost mid-activity can become a review item. Design 048
    synchronous standby is reachable, WAL archiving and base backups, everything pinned by digest.
 2. The platform MUST connect through one address that the HA manager moves at promotion. The platform MUST NOT elect,
    choose or fence a primary itself.
-3. A connection to a database in recovery MUST NOT be used; `25006` and `57P0x` are unavailable and retryable; a
-   connection that returned `25006` MUST be closed; every statement MUST have a client bound of the server's timeout
-   plus 2 s; connections MUST have a maximum lifetime; readiness MUST follow writability, liveness MUST NOT.
-4. With synchronous standbys configured, an operation MUST NOT be acknowledged on a `COMMIT` that returned after a
-   cancelled or terminated synchronous wait, and an answer that acknowledges earlier work without writing MUST follow a
-   waited commit of its own transaction.
-5. After a failover, leases whose expiry fell inside the outage MUST be extended by the outage's length, once, before
-   any lease is reclaimed; the extension never shortens a lease or changes a fence and is audited.
-6. SDKs MUST retry an unavailable report for a window of at least the failover budget plus one backoff (120 s by
-   default).
-7. A standby MUST NOT serve anything that decides, writes, authorizes or reveals a secret. It MAY serve only the closed
-   list of stale-tolerant reads of `docs/architecture/storage-and-events.md`, authorized on the primary, refused beyond
-   5 s of replay lag with a fallback to the primary, and marked as possibly stale.
+3. A writer connection to a database in recovery MUST NOT be used; `25006` is unavailable and retryable and its
+   connection closed; every statement MUST have a client bound of its transaction's timeout plus 2 s, closing the
+   connection hard; connections MUST have a maximum lifetime; a process stays ready and answers a typed 503 while the
+   database is unreachable, as Architecture decision 0082 decision 5 keeps it serving.
+4. With synchronous standbys configured, the database MUST NOT cancel a commit's wait for a standby (the commit's
+   timeout is disabled in the transaction's last statement; `client_connection_check_interval` is 0); a commit past its
+   client bound is reported as an unknown outcome (`COMMIT_OUTCOME_UNKNOWN`), never as success or as "not applied".
+5. A connection MUST commit a write that waits for the standby before its first use, so that whatever it reads is on a
+   standby.
+6. After a database restart or promotion, worker leases and attempt deadlines whose expiry fell in the gap MUST be
+   extended by the gap (at most 300 s, with a floor of 10 s), once, by compare-and-set, before any other use of the new
+   primary, and audited; shard leases are not extended; a change of region epoch extends nothing. This refines
+   Architecture decision 0020 decision 2 for this case only.
+7. SDKs MUST retry an unavailable report for at least the release gate plus one backoff (310 s by default); heartbeats
+   are not retried.
+8. A standby MUST NOT serve anything that decides, writes, authorizes or reveals a secret. It MAY serve only two reads,
+   the journal pages of a terminal run and run listing and search, authorized on the primary and served by a standby only
+   when its replay position has reached the primary's position read at authorization.
 
 ## Considered options
 
 1. **A reference topology with a moving address, and the platform's side hardened (chosen).** The HA managers already
    do promotion well; the platform's gaps are on its own side, and only a tested reference proves them closed.
+6. **Reading the warning of a cancelled wait** (this record's first draft). The driver does not surface it, and the
+   transaction is visible before it could be read.
 2. **Leave HA to the operator (today).** Each operator rebuilds it; the platform's side stays untested, and RPO 0 is
    not true when the standbys stall.
 3. **Several hosts and `target_session_attrs` in every process.** The driver does not support it; each process would
