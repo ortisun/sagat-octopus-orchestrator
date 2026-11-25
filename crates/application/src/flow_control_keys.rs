@@ -272,21 +272,20 @@ pub fn estimated_grant(reading: &PlaceReading) -> Option<OffsetDateTime> {
             .is_none_or(|lease| lease + reading.per.duration() > reading.t),
         "a counted lease counts at the reading's instant"
     );
-    if reading.skipped {
-        return None;
-    }
-    let sum = reading.counted.saturating_add(reading.ahead);
-    let at = if sum < u64::from(reading.limit) {
-        reading.t
-    } else {
-        // k = sum - limit + 1, at least 1 here
-        let k = sum - u64::from(reading.limit) + 1;
-        if k > reading.counted {
-            return None;
-        }
-        reading.kth_lease? + reading.per.duration()
-    };
-    (at < reading.deadline).then_some(at)
+    // the domain's one rule of the estimate (task T022-071), in microseconds on the database clock
+    let micros = |at: OffsetDateTime| i64::try_from(at.unix_timestamp_nanos() / 1_000).ok();
+    let estimate =
+        sagat_domain::execution::window::estimate_us(sagat_domain::execution::window::Reading {
+            at_us: micros(reading.t)?,
+            counted: reading.counted,
+            ahead: reading.ahead,
+            limit: reading.limit,
+            kth_lease_us: reading.kth_lease.and_then(micros),
+            per: reading.per,
+            deadline_us: micros(reading.deadline)?,
+            skipped: reading.skipped,
+        })?;
+    OffsetDateTime::from_unix_timestamp_nanos(i128::from(estimate) * 1_000).ok()
 }
 
 /// One rate-limit window row of a namespace, read without its lock at the page's instant (FR-022-048, D022-067).
