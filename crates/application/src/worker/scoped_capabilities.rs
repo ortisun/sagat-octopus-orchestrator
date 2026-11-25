@@ -39,6 +39,8 @@ where
         }
         let scope = Self::scope_from_info(&tx.snapshot().info, task);
         if let Some((blob, trace_id)) = audit_read {
+            // decision D006-100, as at the root
+            self.capability_window_holds()?;
             let effects = self.blob_read_effects(principal, task, scope, blob, trace_id);
             tx.persist_addressed(&[], &[], effects).await?;
         }

@@ -1365,9 +1365,183 @@ async fn a_silent_engine_serves_no_capability_call_and_keeps_heartbeats_and_repo
         .read_blob(&lease, &stored.blob_id)
         .await
         .expect("read");
+    // silent again: reports and claims are served (review of 2026-11-25, decision D006-100)
+    gate.forget_capability_decision();
     worker
         .complete(&lease, &json!({"ok": true}))
         .await
-        .expect("the report is served");
+        .expect("CompleteStep is served while silent");
     assert_eq!(p.status(&run).await, "SUCCEEDED");
+    let failing = p.start(&workflow, &json!({})).await;
+    let second = worker.one_task().await;
+    let ack = worker
+        .fail_with(&second, "PAYMENT_DECLINED", false)
+        .await
+        .expect("FailStep is served while silent");
+    assert_eq!(ack.step_status, "FAILED");
+    assert_eq!(p.status(&failing).await, "FAILED");
+}
+
+/// Waits until a backend of this database waits for a lock (the barrier: `pg_stat_activity`, never a sleep).
+async fn until_a_backend_waits_for_a_lock(p: &Platform) {
+    tokio::time::timeout(WAIT, async {
+        loop {
+            let waiting: bool = sqlx::query_scalar(
+                "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE datname = current_database() \
+                   AND pid <> pg_backend_pid() AND wait_event_type = 'Lock')",
+            )
+            .fetch_one(&p.api.db.pool)
+            .await
+            .expect("pg_stat_activity");
+            if waiting {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("a backend waits for the held run");
+}
+
+/// Holds the row of `run` `FOR UPDATE` in a transaction of the owner, so every transaction of the run waits for it.
+async fn hold_the_run(p: &Platform, run: &str) -> sqlx::Transaction<'static, sqlx::Postgres> {
+    let mut held = p.api.db.pool.begin().await.expect("a transaction");
+    sqlx::query("SELECT 1 FROM runs WHERE id = $1 FOR UPDATE")
+        .bind(Uuid::parse_str(run).expect("run id"))
+        .execute(&mut *held)
+        .await
+        .expect("the run held");
+    held
+}
+
+async fn audits(p: &Platform, action: &str) -> i64 {
+    sqlx::query_scalar("SELECT count(*) FROM audit_records WHERE action = $1")
+        .bind(action)
+        .fetch_one(&p.api.db.pool)
+        .await
+        .expect("audits")
+}
+
+/// Correctness review Major 3 and security review Minor 2 of 2026-11-25 (decision D006-100): a capability call admitted
+/// while the window held, whose window lapses while it waits (here for the run's row, held by the test), is refused
+/// `REGISTRY_SILENT` before anything leaves, and what it would have recorded as handed out is rolled back with it: no
+/// `secret.resolved`, no `blob.read`, and no blob stored for an upload.
+#[tokio::test]
+async fn a_call_whose_window_lapses_while_it_waits_hands_out_and_records_nothing() {
+    let gate = gate_decided(Duration::ZERO);
+    let mut options = Options::default();
+    options.worker.idle_retry = Duration::from_millis(50);
+    options.serving_gate = Some(Arc::clone(&gate));
+    options.blobs = Some(sagat_application::blobs::BlobLimits {
+        max_bytes: 1024 * 1024,
+        max_pending: 8,
+        upload_ttl: Duration::from_secs(3600),
+        abandoned_after: Duration::from_secs(3600),
+    });
+    let p = platform_with(options).await;
+    declared_secret(&p, "lapse-key").await;
+    let mut ir = one_attempt("lapse-secret");
+    ir["nodes"][0]["secrets"] = json!(["lapse-key"]);
+    let secret_workflow = p.publish("lapse-secret", &ir).await;
+    let blob_workflow = p.publish("lapse-blob", &one_attempt("lapse-blob")).await;
+    let mut worker = stream_worker(&p, "first").await;
+    let secret_run = p.start(&secret_workflow, &json!({})).await;
+    let secret_lease = worker.one_task().await;
+    let blob_run = p.start(&blob_workflow, &json!({})).await;
+    let blob_lease = worker.one_task().await;
+    let header = sagat_api_grpc::pb::WriteBlobHeader {
+        content_type: "application/json".into(),
+        ..sagat_api_grpc::pb::WriteBlobHeader::default()
+    };
+    let stored = worker
+        .write_blob(&blob_lease, header.clone(), b"{}", 2)
+        .await
+        .expect("stored while the window holds");
+    let reads_before = audits(&p, "blob.read").await;
+
+    // ResolveSecrets: the resolution waits for the run, the window lapses, the run is let go
+    let held = hold_the_run(&p, &secret_run).await;
+    let mut client = worker.client.clone();
+    let request = worker.req(Worker::resolve_secrets_message(&secret_lease));
+    let call = tokio::spawn(async move { client.resolve_secrets(request).await });
+    until_a_backend_waits_for_a_lock(&p).await;
+    gate.forget_capability_decision();
+    held.commit().await.expect("the run is let go");
+    let refused = call
+        .await
+        .expect("the call ended")
+        .expect_err("no value leaves");
+    assert_eq!(machine_code(&refused), "REGISTRY_SILENT", "{refused:?}");
+    assert_eq!(
+        audits(&p, "secret.resolved").await,
+        0,
+        "no resolution is recorded"
+    );
+
+    // ReadBlob: the check of the read waits, the window lapses: no byte and no audit of the read
+    gate.decided_at(std::time::Instant::now());
+    let held = hold_the_run(&p, &blob_run).await;
+    let mut client = worker.client.clone();
+    let request = worker.req(Worker::read_blob_message(&blob_lease, &stored.blob_id));
+    let call = tokio::spawn(async move {
+        let mut stream = client.read_blob(request).await?.into_inner();
+        stream.message().await
+    });
+    until_a_backend_waits_for_a_lock(&p).await;
+    gate.forget_capability_decision();
+    held.commit().await.expect("the run is let go");
+    let refused = call
+        .await
+        .expect("the call ended")
+        .expect_err("no byte leaves");
+    assert_eq!(machine_code(&refused), "REGISTRY_SILENT", "{refused:?}");
+    assert_eq!(
+        audits(&p, "blob.read").await,
+        reads_before,
+        "no read is recorded"
+    );
+
+    // WriteBlob: the check of the upload waits, the window lapses: nothing is stored
+    gate.decided_at(std::time::Instant::now());
+    let blobs_before: i64 = sqlx::query_scalar("SELECT count(*) FROM blobs")
+        .fetch_one(&p.api.db.pool)
+        .await
+        .expect("blobs");
+    let held = hold_the_run(&p, &blob_run).await;
+    use sagat_api_grpc::pb::{WriteBlobHeader, WriteBlobRequest, write_blob_request};
+    let messages = vec![
+        WriteBlobRequest {
+            part: Some(write_blob_request::Part::Header(WriteBlobHeader {
+                task_id: blob_lease.task_id.clone(),
+                run_id: blob_lease.run_id.clone(),
+                step_id: blob_lease.step_id.clone(),
+                attempt: blob_lease.attempt,
+                generation: blob_lease.generation,
+                lease_token: blob_lease.lease_token.clone(),
+                instance: blob_lease.instance.clone(),
+                ..header
+            })),
+        },
+        WriteBlobRequest {
+            part: Some(write_blob_request::Part::Chunk(bytes::Bytes::from_static(
+                b"{}",
+            ))),
+        },
+    ];
+    let request = worker.req(tokio_stream::iter(messages));
+    let mut client = worker.client.clone();
+    let upload = tokio::spawn(async move { client.write_blob(request).await });
+    until_a_backend_waits_for_a_lock(&p).await;
+    gate.forget_capability_decision();
+    held.commit().await.expect("the run is let go");
+    let refused = upload
+        .await
+        .expect("the call ended")
+        .expect_err("nothing is stored");
+    assert_eq!(machine_code(&refused), "REGISTRY_SILENT", "{refused:?}");
+    let blobs_after: i64 = sqlx::query_scalar("SELECT count(*) FROM blobs")
+        .fetch_one(&p.api.db.pool)
+        .await
+        .expect("blobs");
+    assert_eq!(blobs_after, blobs_before);
 }

@@ -650,6 +650,9 @@ pub struct WorkerService<S, C, E, R> {
     /// The gate whose recorded requirements say whether undelivered leases are withdrawn (feature 006, decision
     /// D006-004); `None`: never.
     lease_withdrawal: Option<Arc<crate::instances::ServingGate>>,
+    /// The gate whose capability decision a capability use case asks just before it commits what it hands out (decision
+    /// D006-100); none in a process with no registry.
+    capability_gate: Option<Arc<crate::instances::ServingGate>>,
     /// `SAGAT_LEASE_WITHDRAWAL=off`: this process writes no new withdrawal (decision D006-032).
     lease_withdrawal_disabled: bool,
     /// The highest session minor a hand-back is judged by: this build's own ceiling (ADR-0099 decision 9).
@@ -735,6 +738,7 @@ where
             lake_probes: None,
             polls_in_flight: Arc::default(),
             lease_withdrawal: None,
+            capability_gate: None,
             lease_withdrawal_disabled: false,
             hand_back_ceiling: PROTOCOL_MINOR,
         }
@@ -2258,6 +2262,8 @@ where
         }
         let scope = Self::scope_of(&tx, task);
         if let Some((blob, trace_id)) = audit_read {
+            // the audit of a read commits only while the process may hand data out (decision D006-100)
+            self.capability_window_holds()?;
             let effects = self.blob_read_effects(principal, task, scope, blob, trace_id);
             tx.persist(&[], effects).await?;
             tx.commit().await?;
@@ -3044,6 +3050,21 @@ where
             Ok(())
         } else {
             Err(AppError::StaleAttempt)
+        }
+    }
+
+    /// Refuses a capability use case whose process may no longer hand anything out (decision D006-100): asked inside its
+    /// transaction just before the commit of its audit, of a credential's pin or of a read's audit, so a refusal rolls them
+    /// back and nothing is recorded as handed out that was not.
+    ///
+    /// # Errors
+    /// [`AppError::RegistrySilent`] while the capability window of the gate has lapsed.
+    pub(super) fn capability_window_holds(&self) -> Result<(), AppError> {
+        match &self.capability_gate {
+            Some(gate) if gate.capability_window_lapsed(std::time::Instant::now()) => {
+                Err(AppError::RegistrySilent)
+            }
+            _ => Ok(()),
         }
     }
 

@@ -205,6 +205,8 @@ where
             .map(|r| format!("{} v{}", r.name, r.version))
             .collect::<Vec<_>>()
             .join(", ");
+        // the last moment to refuse: nothing is recorded as handed out if the process may no longer hand it (decision D006-100)
+        self.capability_window_holds()?;
         let effects = audit(
             AuditAction::SecretResolved,
             format!(

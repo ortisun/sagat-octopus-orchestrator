@@ -150,6 +150,14 @@ impl<S, C, E, R> WorkerService<S, C, E, R> {
         self
     }
 
+    /// Refuses the capability use cases (secrets, database credentials, blob reads) inside their transaction while `gate`'s
+    /// capability window has lapsed (decision D006-100): the same gate the transport asks.
+    #[must_use]
+    pub fn with_capability_gate(mut self, gate: Arc<ServingGate>) -> Self {
+        self.capability_gate = Some(gate);
+        self
+    }
+
     /// Stops this process writing new withdrawals when `enabled` is false (`SAGAT_LEASE_WITHDRAWAL=off`, decision D006-032):
     /// its leases lapse as before, and it still lists the capability, because it can still replay the event.
     #[must_use]

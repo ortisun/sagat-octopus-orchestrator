@@ -103,8 +103,10 @@ decided under the epoch it read. Past that, those calls are answered `UNAVAILABL
 reports (`CompleteStep`, `FailStep`, the hand-back) and claims keep flowing, whatever kind of failure silenced the registry. The
 heartbeat then tries every second, and the calls are served again once a beat and the gate's decision under its epoch have both
 succeeded. The reason: an activation counts a process live only when it was seen in the last 30 seconds, so an engine that it
-could not see must not hand out what a requirement recorded meanwhile might forbid. The gate is checked again just before the
-answer's first byte (and before a write starts), so a call admitted at the edge does not hand out data after it. The registry's
+could not see must not hand out what a requirement recorded meanwhile might forbid. The gate is checked again inside the call's own
+transaction just before it commits what it records as handed out (the audit of a secret's or a credential's resolution,
+the pin of a database credential, the audit of a blob read), so a refusal records nothing; again before the answer's first
+byte and before each later item of a download; and before an upload's write starts (decision D006-100). The registry's
 connection carries a statement timeout of at most 5 seconds (the process's own when shorter; a setting of 0, which
 PostgreSQL reads as no timeout, is 5 seconds too), so a slow beat cannot use the window up. A beat that failed is tried
 again no later than 19 seconds after the last decision (the window less the statement timeout and a second), so one
