@@ -6608,37 +6608,9 @@ where
                     InputRefusal::SchemaUnusable => FailureCode::run_input_schema_unusable(),
                     _ => FailureCode::child_input_invalid(),
                 };
-                // A child that a peer, a 0.2.x engine or an engine in `report` already created is not failed: the
-                // step is failed only if, under its row lock, its child was not started (D043-038, D043-164; the
-                // lookup before the failure of D043-132 left a window, correctness review of 2026-11-16, Major 3).
-                let target = node.clone();
-                let child = pending.child;
-                let outcome = self
-                    .apply_if(
-                        view,
-                        RunRef {
-                            tenant_id: tenant,
-                            run_id: parent_id,
-                        },
-                        "child_finish",
-                        Condition::ChildNotStarted { node, child },
-                        self.effects(),
-                        move |def, state, now| {
-                            Ok((
-                                (),
-                                execution::finish_child(
-                                    def,
-                                    state,
-                                    &target,
-                                    child,
-                                    ChildOutcome::Failed(code),
-                                    now,
-                                )?,
-                            ))
-                        },
-                    )
-                    .await;
-                return Ok((outcome, outcome != Outcome::Skipped));
+                return Ok(self
+                    .fail_unstarted_child(view, tenant, parent_id, node, pending.child, code)
+                    .await);
             }
         };
         let child_id = pending.child;
@@ -6752,6 +6724,20 @@ where
                 },
                 true,
             )),
+            // The gate of the child's start refused it (a full buffer, `queued_runs`, the live-keys ceiling, a capability
+            // switched off, not activated or not served): the parent's node fails with the refusal's reason, a typed
+            // failure its route takes, and no child run exists (FR-022-055, D022-080). Waiting instead would keep the
+            // reservation at the head of the pass and fail it every tick.
+            Err(StoreError::FlowControl(refusal)) => Ok(self
+                .fail_unstarted_child(
+                    view,
+                    tenant,
+                    parent_id,
+                    node,
+                    pending.child,
+                    refusal.child_failure(),
+                )
+                .await),
             Err(other) => Err(other.into()),
             Ok(Admitted::Created(mut tx)) => {
                 // The fence, before anything is committed: a replica that lost the parent's shard
@@ -6767,6 +6753,19 @@ where
                     .await;
                 if let Err(error) = started {
                     drop(tx);
+                    // the child's start gates refused it in the creation transaction, rolled back with it (FR-022-055)
+                    if let EngineError::Store(StoreError::FlowControl(refusal)) = &error {
+                        return Ok(self
+                            .fail_unstarted_child(
+                                view,
+                                tenant,
+                                parent_id,
+                                node,
+                                pending.child,
+                                refusal.child_failure(),
+                            )
+                            .await);
+                    }
                     if content_quota(&error) {
                         return Ok((
                             self.finish_with(
@@ -6804,6 +6803,48 @@ where
                 Ok((Outcome::Done, false))
             }
         }
+    }
+
+    /// Fails the parent step `node` with `code` because its child could not be started, unless, under the step's row
+    /// lock, its child was started after all: a child that a peer, a 0.2.x engine or an engine in `report` already created
+    /// is not failed (D043-038, D043-164; the lookup before the failure of D043-132 left a window, correctness review of
+    /// 2026-11-16, Major 3). The flag says the parent was told.
+    async fn fail_unstarted_child(
+        &self,
+        view: &View,
+        tenant: TenantId,
+        parent: RunId,
+        node: &sagat_domain::workflow::NodeId,
+        child: RunId,
+        code: FailureCode,
+    ) -> (Outcome, bool) {
+        let target = node.clone();
+        let outcome = self
+            .apply_if(
+                view,
+                RunRef {
+                    tenant_id: tenant,
+                    run_id: parent,
+                },
+                "child_finish",
+                Condition::ChildNotStarted { node, child },
+                self.effects(),
+                move |def, state, now| {
+                    Ok((
+                        (),
+                        execution::finish_child(
+                            def,
+                            state,
+                            &target,
+                            child,
+                            ChildOutcome::Failed(code),
+                            now,
+                        )?,
+                    ))
+                },
+            )
+            .await;
+        (outcome, outcome != Outcome::Skipped)
     }
 
     /// Reports a child's outcome to the parent step that waits for it.

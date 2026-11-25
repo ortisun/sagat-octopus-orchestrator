@@ -9,6 +9,7 @@ mod support;
 
 mod admission;
 mod ceilings;
+mod child_starts;
 mod concurrency_locks;
 mod consistency;
 mod lifecycle;

@@ -206,6 +206,16 @@ impl FlowControlRefusal {
             Self::SlotUnavailable => "RATE_LIMIT_SLOT_UNAVAILABLE",
         }
     }
+
+    /// The failure code of a child node whose child's start this refusal turned away (FR-022-055, decision D022-080): the
+    /// refusal's own reason, so a workflow routes on the cause it would be told at the API. Retryable as a class: each
+    /// clears when the key drains or the deployment is put right, and no child run exists.
+    #[must_use]
+    pub fn child_failure(self) -> sagat_domain::execution::FailureCode {
+        // every reason is a valid code (`[A-Z_]`, at most 64 characters), which a test of this module holds
+        sagat_domain::execution::FailureCode::parse(self.reason())
+            .unwrap_or_else(|_| sagat_domain::execution::FailureCode::flow_control_limit())
+    }
 }
 
 /// The keys of one gated step, evaluated by the application for the readiness gate (feature 022, T28): the canonical
@@ -430,6 +440,27 @@ mod tests {
             period_ms: 0,
         };
         assert!(permit.holds_back(2, 0) && !permit.holds_back(3, 0));
+    }
+
+    /// FR-022-055, decision D022-080: a child node refused by any gate refusal fails with that refusal's reason as its
+    /// failure code, never the fallback.
+    #[test]
+    fn a_refused_child_fails_with_the_refusals_own_reason() {
+        let capability = FlowControlCapability::RateLimits;
+        for refusal in [
+            FlowControlRefusal::ConcurrencyQueueFull,
+            FlowControlRefusal::RateLimitQueueFull,
+            FlowControlRefusal::Limit {
+                limit: "queued_runs",
+            },
+            FlowControlRefusal::ActivationPending { capability },
+            FlowControlRefusal::CapabilityDisabled { capability },
+            FlowControlRefusal::BinaryCapabilityMissing,
+            FlowControlRefusal::PermitUnavailable,
+            FlowControlRefusal::SlotUnavailable,
+        ] {
+            assert_eq!(refusal.child_failure().as_str(), refusal.reason());
+        }
     }
 
     /// A gate key's `Debug` (logged by the grant pass) names its label, never its full digest (keys reviews of
