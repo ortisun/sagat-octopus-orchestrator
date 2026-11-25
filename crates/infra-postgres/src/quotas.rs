@@ -706,11 +706,21 @@ fn resolve_rows(resource: QuotaResource, rows: &[(Option<uuid::Uuid>, i64, bool)
 /// 2026-11-25, correctness Major 2). The namespace's own setting, else the tenant's, else the ceiling; never above the
 /// ceiling, which is the tenant's grant (else the resource's default ceiling) under the resource's maximum. The
 /// constants are the resource's own, never input.
-pub(crate) fn effective_sql(resource: QuotaResource, tenant: &str, namespace: &str) -> String {
-    debug_assert!(
-        resource != QuotaResource::IterationConcurrency,
-        "its default is not its ceiling (`quota::resolve`)"
-    );
+///
+/// # Errors
+/// [`StoreError::Internal`] for `iteration_concurrency`, whose default is not its ceiling (`quota::resolve`) and which is
+/// not stored in `quota_limits`: an expression for it would be wrong in every build, not only in a debug one (batch 5
+/// correctness nit).
+pub(crate) fn effective_sql(
+    resource: QuotaResource,
+    tenant: &str,
+    namespace: &str,
+) -> Result<String, StoreError> {
+    if resource == QuotaResource::IterationConcurrency {
+        return Err(StoreError::Internal {
+            detail: "iteration_concurrency has no effective SQL expression".to_owned(),
+        });
+    }
     let name = resource.as_str();
     let bound = |value: u64| i64::try_from(value).unwrap_or(i64::MAX);
     let ceiling = format!(
@@ -726,11 +736,11 @@ pub(crate) fn effective_sql(resource: QuotaResource, tenant: &str, namespace: &s
         ),
         sagat_domain::quota::QuotaScope::Tenant => String::new(),
     };
-    format!(
+    Ok(format!(
         "least(coalesce({own}(SELECT greatest(q.max_value, 0) FROM quota_limits q \
                                WHERE q.tenant_id = {tenant} AND q.namespace_id IS NULL AND q.resource = '{name}' \
                                LIMIT 1), {ceiling}), {ceiling})"
-    )
+    ))
 }
 
 /// The namespace ceilings a gate decision applies (feature 022, G1199, T022-077): the limits of a key (`concurrency_limit`,
@@ -1515,5 +1525,24 @@ mod secrets_lock_rule {
             0,
             "a scoped transaction runs the shared check and must not take the exclusive lock"
         );
+    }
+}
+
+#[cfg(test)]
+mod effective_sql_tests {
+    use sagat_domain::quota::QuotaResource;
+
+    use super::effective_sql;
+
+    /// Batch 5 correctness nit: `iteration_concurrency` has no expression in any build (it was a debug assertion only),
+    /// and every other resource has one.
+    #[test]
+    fn iteration_concurrency_has_no_effective_expression_in_any_build() {
+        assert!(effective_sql(QuotaResource::IterationConcurrency, "t", "n").is_err());
+        for resource in QuotaResource::ALL {
+            if resource != QuotaResource::IterationConcurrency {
+                assert!(effective_sql(resource, "t", "n").is_ok(), "{resource}");
+            }
+        }
     }
 }

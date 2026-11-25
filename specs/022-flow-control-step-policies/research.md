@@ -1978,6 +1978,34 @@ taken after `git grep D022-04` on every `origin/*` branch.
   locked; a transaction an earlier pass of the same tick drops on that run could, and is now named by the report
   (`skipped` counts a busy run). It is not closed by this change: when it fails again, the report says which cause.
 
+- **D022-092 — The batch-5 minors and nits built on 2026-11-25 (batch 5 rulings).** Delegate (OD-2026-11-24-4).
+  1. *A held row exists only while its run's start waits* (correctness minor 3, security suspicion 1). `verify_run`
+     refuses a held signal kept for a run whose start does not wait
+     (`run_creators::verify_run_refuses_a_held_signal_kept_for_a_run_whose_start_does_not_wait`). The drop of
+     D022-087 item 4 no longer looks only at a commit with a dequeue or timeout event of the start: a commit of a run
+     that has ended and whose start never ran (each gate of its start queued, timed out or dequeued, none ever held)
+     drops it, whatever ended the run. A run whose start ran has a gate held or given back, so its end adds no statement
+     (the budget of design 038 is unchanged).
+  2. *Two doc comments said a signal is never buffered* (security minor 3): `routes/execution.rs` and `runs.rs` now name
+     the one buffer, a new run whose start queues.
+  3. *`effective_sql` guarded `iteration_concurrency` with a debug assertion only* (correctness nit): it returns a
+     `Result` and refuses it in every build (`quotas::effective_sql_tests`).
+  4. *A grant from the buffer is not re-authorized, for signals too* (security minor 1): FR-022-060 is amended in words.
+  Correctness minor 4 is the dated amendment of ADR-0089 decision 4 (D022-090); security minor 2 is in D022-090.
+  Batch 4, built the same day: the release-upgrade tests read the migration head from the migrator (correctness minor
+  1, `support::migration_head`); the pinned-limit rollback test rolls the later migrations back first, so that its
+  refused rollback is measured from its own schema (minor 4); the label test asserts the group view and its empty key
+  list where its two checks of key rows would pass on an empty list (minor 6); a cursor of the other view of a key
+  listing (what the caller may see changed between two pages) answers `400` with its own message, "the cursor was
+  written for the other view of this listing", not "the cursor is not valid" (nit 1,
+  `rest::a_cursor_of_the_other_view_is_refused_with_its_own_message`).
+  Batch 3, built the same day: the counts migration `20270213000200` locks `rate_limit_waiters` before
+  `concurrency_waiters`, the order a dual-gated admission writes them (correctness minor 6), and its counting trigger is
+  two per table, `AFTER INSERT ... WHEN (NEW.node = '')` and `AFTER DELETE ... WHEN (OLD.node = '')`, so a step's waiter
+  row fires none (correctness nit); both are checked in
+  `migrations::the_queued_runs_counters_are_filled_from_the_waiters_and_roll_back_without_loss`. The migration is on no
+  released tree; a database that applied it is recreated (D022-089).
+
 ### Decisions of the Studio slice (2026-11-24)
 
 - **D022-150 — How the Studio authors, shows and lists the gates (tasks T022-054, T022-055, T022-056, T022-085;

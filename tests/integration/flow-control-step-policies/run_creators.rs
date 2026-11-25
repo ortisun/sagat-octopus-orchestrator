@@ -2673,3 +2673,95 @@ async fn a_held_signal_whose_delivery_fails_is_dropped_and_the_start_is_granted(
     );
     w.assert_consistent(run).await;
 }
+
+/// Batch 5 correctness minor 3 (decision D022-087): `verify_run` holds that a signal is held only while the run's start
+/// waits in its queue. A held row kept for a run whose start was granted (here written by hand beside a run that took its
+/// permit at creation) is a breach.
+#[tokio::test]
+async fn verify_run_refuses_a_held_signal_kept_for_a_run_whose_start_does_not_wait() {
+    let w = gated_world().await;
+    let workflow = publish(&w, gated_waiter("creators-held-stray")).await;
+    let done = signal_with_start(&w, workflow, "cart-1")
+        .await
+        .expect("started and signalled");
+    let run = done.run.info.run_id;
+    assert_eq!(admitted(&w, run).await, Admitted::Acquired);
+    w.assert_consistent(run).await;
+    sqlx::query(
+        "INSERT INTO flow_control_held_signals (tenant_id, namespace_id, run_id, name, payload_digest, actor, held_at) \
+         SELECT r.tenant_id, r.namespace_id, r.id, 'payment.confirmed', p.digest, 'admin', now() \
+           FROM runs r JOIN payloads p ON p.tenant_id = r.tenant_id WHERE r.id = $1 LIMIT 1",
+    )
+    .bind(run.as_uuid())
+    .execute(&w.db.pool)
+    .await
+    .expect("a stray held row");
+    let verdict = w.store.verify_run(w.admin.tenant_id(), run).await;
+    assert!(
+        verdict
+            .as_ref()
+            .is_err_and(|breach| breach.contains("held signal")),
+        "{verdict:?}"
+    );
+}
+
+/// Batch 5 security minor 1 (FR-022-060 as amended, task T022-106 for signals): the signal a Signal-with-Start held with
+/// its queued run is delivered by the grant under the name of the caller who sent it, without checking `run:signal`
+/// again: a caller demoted to a role without it while the start waits still has its signal delivered, audited as its own.
+#[tokio::test]
+async fn a_held_signal_is_delivered_without_reauthorization_and_keeps_its_sender() {
+    use sagat_domain::identity::Role;
+    let w = gated_world().await;
+    let workflow = publish(&w, gated_waiter("creators-held-reauthorize")).await;
+    let first = signal_with_start(&w, workflow, "cart-1")
+        .await
+        .expect("the first holds the permit");
+    // an operator holds `run:start` and `run:signal`; a viewer holds neither
+    let carol = w.member("carol", Role::Operator).await;
+    w.bind_everything(&carol).await;
+    let key = idempotency();
+    let queued = w
+        .runs
+        .signal_with_start(
+            &carol,
+            &request(workflow, br#"{"k": "s", "accountId": "acct-1"}"#, &key),
+            business("cart-2"),
+            SignalAtStart {
+                name: "payment.confirmed",
+                payload: br#"{"paid": true}"#,
+            },
+            &ctx(),
+        )
+        .await
+        .expect("created and held");
+    let run = queued.run.info.run_id;
+    assert!(queued.held, "{queued:?}");
+    sqlx::query(
+        "UPDATE memberships SET role = 'viewer' WHERE tenant_id = $1 AND subject = 'carol'",
+    )
+    .bind(w.admin.tenant_id().as_uuid())
+    .execute(&w.db.pool)
+    .await
+    .expect("demoted");
+    w.operate_run(
+        first.run.info.run_id,
+        sagat_application::runs::RunOperation::Cancel,
+    )
+    .await;
+    assert_eq!(w.scheduler.grant_gates().await.gates_granted, 1);
+    assert_eq!(
+        w.step_status(run, "w").await,
+        Some(sagat_domain::execution::StepStatus::Succeeded),
+        "delivered: {:?}",
+        w.journal(run).await
+    );
+    let signalled_by: String = sqlx::query_scalar(
+        "SELECT actor FROM audit_records WHERE resource_id = $1 AND action = 'run.signalled'",
+    )
+    .bind(run.to_string())
+    .fetch_one(&w.db.pool)
+    .await
+    .expect("the actor");
+    assert_eq!(signalled_by, "carol", "audited as its sender's");
+    w.assert_consistent(run).await;
+}

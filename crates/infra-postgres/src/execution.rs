@@ -777,6 +777,22 @@ impl PgRunStore {
             ));
         }
         verify_start_rate(&mut stored_tx.tx, tenant, run, &replayed, &events).await?;
+        // feature 022 (decision D022-087; batch 5 correctness minor 3): a held signal exists only while the run's start
+        // waits in its queue; its grant takes it, and the end of a run whose start never ran drops it
+        let held: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM flow_control_held_signals WHERE tenant_id = $1 AND run_id = $2",
+        )
+        .bind(tenant.as_uuid())
+        .bind(run.as_uuid())
+        .fetch_one(&mut *stored_tx.tx)
+        .await
+        .map_err(|e| e.to_string())?;
+        if held > 0 && !(replayed.run_gates().is_waiting() && !replayed.status().is_terminal()) {
+            return Err(format!(
+                "a held signal is kept for a run whose start does not wait (status {:?})",
+                replayed.status()
+            ));
+        }
         drop(stored_tx);
         // The run's result (G21) is the payload its `end.reached` event names.
         let result_agrees: bool = sqlx::query_scalar(
@@ -5568,30 +5584,33 @@ impl RunTx for PgRunTx {
                     .execute(&mut *self.tx)
                     .await
                     .map_err(store_error)?;
-                // a queued start that ends (its queue timeout, a cancellation) drops the signal a Signal-with-Start held
-                // with it, audited (decision D022-087 item 4): only a commit that takes the run's start out of its queue
-                // looks, so the end of a run that started adds no statement
-                let start_left_queue = events.iter().any(|event| {
-                    matches!(
-                        event,
-                        RunEvent::Gate(sagat_domain::execution::GateEvent {
-                            target: sagat_domain::execution::GateTarget::Run,
-                            change: sagat_domain::execution::GateChange::ConcurrencyWaitTimedOut
-                                | sagat_domain::execution::GateChange::ConcurrencyDequeued
-                                | sagat_domain::execution::GateChange::RateWaitTimedOut
-                                | sagat_domain::execution::GateChange::RateDequeued,
-                            ..
-                        })
-                    )
-                });
-                if start_left_queue {
-                    self.drop_held_signal_of_ended_run().await?;
-                }
             }
             // a reset's restored prefix is history: it gave nothing back in this run and holds no row of it (FR-022-038)
             if effects.restored.is_none() {
                 self.persist_gate_returns(events).await?;
             }
+        }
+        // a commit of a run that ended and whose start never ran (each gate of its start still queued, timed out or
+        // dequeued, none ever held) drops the signal a Signal-with-Start held with it, audited, whatever ended the run
+        // (decision D022-087 item 4; batch 5 correctness minor 3, security suspicion 1); the end of a run whose start
+        // ran adds no statement
+        let start_never_ran = {
+            let gates = self.state.run_gates();
+            let mut slots = gates.concurrency().into_iter().chain(gates.rate());
+            let mut any = false;
+            let never_held = slots.all(|slot| {
+                any = true;
+                matches!(
+                    slot.phase(),
+                    sagat_domain::execution::GatePhase::Queued { .. }
+                        | sagat_domain::execution::GatePhase::TimedOut
+                        | sagat_domain::execution::GatePhase::Dequeued
+                )
+            });
+            any && never_held
+        };
+        if self.state.status().is_terminal() && start_never_ran {
+            self.drop_held_signal_of_ended_run().await?;
         }
 
         // 1. Outputs: content-addressed payloads, remembered per root node.

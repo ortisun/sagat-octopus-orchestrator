@@ -249,15 +249,15 @@ impl PgRunStore {
         let statement = if kind == AlertKind::ConcurrencyQueueStuck {
             STUCK_ALERT_SQL.replace(
                 "{concurrency_limit}",
-                &effective(QuotaResource::ConcurrencyLimit),
+                &effective(QuotaResource::ConcurrencyLimit)?,
             )
         } else {
             SATURATED_ALERT_SQL
                 .replace(
                     "{key_waiters}",
-                    &effective(QuotaResource::FlowControlKeyWaiters),
+                    &effective(QuotaResource::FlowControlKeyWaiters)?,
                 )
-                .replace("{queued_runs}", &effective(QuotaResource::QueuedRuns))
+                .replace("{queued_runs}", &effective(QuotaResource::QueuedRuns)?)
         };
         let rows = sqlx::query(sqlx::AssertSqlSafe(statement))
             .bind(secs(thresholds.of(AlertKind::ConcurrencyQueueStuck)))

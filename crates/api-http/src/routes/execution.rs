@@ -791,7 +791,9 @@ pub async fn list_runs<B: Exec>(
 }
 
 /// `POST /runs/signal-with-start` (feature 018, `FR-018-024`): signals the open run of the business
-/// identifier, or starts one and delivers the signal at creation. Never buffers a signal.
+/// identifier, or starts one and delivers the signal at creation. A signal is buffered only with a new
+/// run whose start queues for its flow-control gates: held with that run and delivered by the grant of
+/// its start (`held: true`; feature 022, decision D022-087); an open holder is never buffered for.
 pub async fn signal_with_start<B: Exec>(
     caller: Caller,
     State(state): State<B>,

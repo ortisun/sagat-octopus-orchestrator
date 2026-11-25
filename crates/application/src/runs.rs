@@ -1031,8 +1031,11 @@ where
 
     /// Signal-with-Start (feature 018, `FR-018-024`): signals the open run of the business identifier,
     /// or, when there is none, creates a run and delivers the signal to it in the same transaction. If
-    /// no step of the new run waits for the signal the whole request is rolled back; a signal is never
-    /// buffered. The conflict policy of `business` is ignored: an open holder is always signalled.
+    /// no step of the new run waits for the signal the whole request is rolled back. The one buffer: a
+    /// new run whose start queues for its flow-control gates holds the signal, and the grant of its
+    /// start delivers it, or drops it with an audit record (feature 022, decision D022-087); a signal
+    /// for an open holder is never buffered. The conflict policy of `business` is ignored: an open
+    /// holder is always signalled.
     ///
     /// # Errors
     /// [`AppError::Forbidden`] without `run:start` and `run:signal`; the errors of

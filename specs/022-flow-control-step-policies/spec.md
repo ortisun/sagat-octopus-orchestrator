@@ -761,6 +761,10 @@ Added after the review of 2026-11-13:
   MUST NOT re-check the initiator's permissions (a buffered run is an admitted run, like one waiting on a
   timer), and cancelling it is the remedy for a revoked initiator. The run keeps its original initiator in
   its journal and audit.
+  *Amended 2026-11-25 (batch 5 security minor 1, D022-087):* the same holds for the signal a Signal-with-Start
+  holds with its queued run: the grant delivers it under the caller's name without checking `run:signal` again
+  (it was authorized with the start it rides with), and cancelling the run is the remedy; a held signal that is
+  dropped is audited with the name of the caller who sent it.
 
 #### Cross-cutting
 
