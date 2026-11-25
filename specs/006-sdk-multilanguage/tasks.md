@@ -212,6 +212,17 @@ barriers.
   Architecture decision 0099" pointer; its derivation of the cap of four says the causes of 1.8 count toward it (Decision
   006-031); the runbook `docs/runbooks/lease-withdrawal.md` gains the activation of `lease-withdrawal-v2` and its forward order;
   Gap 006-032 closed with the merge. Evidence: the documentation checks.
+- [ ] T006-074 A hand-back from a session stored at 1.8 or later that this build cannot honour lapses (request (10) of
+  Decision 006-059, round 16 of the delivery acknowledgement design; added on 2026-11-24, delegate, Owner decision
+  2026-11-24-4): in `hand_back_verdict` (`crates/application/src/worker/withdrawal.rs`), a session whose stored minor,
+  before the clamp, is 8 or more but whose minor clamped to this build's ceiling is below 8 decides `Lapse` (`STALE_ATTEMPT`,
+  nothing written, counted `lapsed`) instead of an ordinary failure; the clamped minor still decides `Withdraw`, so this build
+  never withdraws a hand-back of 1.8. The case: a binary rolled back to this build while hosts registered at 1.8 hand back
+  before they register again; as an ordinary failure each would spend the attempt and fail a one-attempt `Activity` for good.
+  Evidence: the unit test of the pure verdict (stored minor 8 with ceiling 6 gives `Lapse`; stored 6 as today), and a
+  contract test, root and scoped, in `tests/contract/durable-execution/grpc/lease_withdrawal.rs` (the session row raised to 8
+  by SQL as `as_protocol_1_8` does, with `hand_back_ceiling` left at the build's own value): `STALE_ATTEMPT`, the step still
+  `LEASED`, no event written.
 
 ### Server
 
