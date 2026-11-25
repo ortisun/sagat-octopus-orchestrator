@@ -87,3 +87,27 @@ grants and edge rules").
 | 22 | Major | Fixed: `ON DELETE SET NULL`, no-owner rule, the disabled-owner alert, recompute on ownership change | Technical Plans 3 and 13 |
 | 23 | Major | Fixed: the last-administrator guard under the settings row lock | Requirement 013-021, Technical Plan 13 |
 | 24 to 33 | Nit | Fixed: renewal only after activity; the code's expiry bounded by its attempt and attempts purged after codes; constraints named in `classify`; break-glass `ON CONFLICT DO NOTHING`; the plain reads moved; "merges two reads into one"; the reasons returned by the statement; the barrier oracle stated and the key test on a controlled clock; the writer's check of the requirement under a shared epoch lock and the activation window; case-insensitive prefix checks | Requirements 013-018, 013-019; Technical Plans 3, 4 and 13 |
+
+## egm-review Stage 5, Initial Zoom Out (`zoom_out_report.md`, at `d7cca86d`)
+
+All 14 findings are accepted and fixed; none is contested. Findings 2 to 6 remove scope: groups from the sign-in
+assertion, domains, the development SAML provider, the `apps` client and Transit are deferred, each with a gap, which
+also removes the parts of the correctness fixes that existed only for them (the session-bound effective role, the
+union of assertion sets, the expiry audit).
+
+| Finding | Severity | Disposition | Where |
+|---|---|---|---|
+| 1 | Major | Fixed: milestones A to D with their own acceptance; the 029-dependent parts gated in milestone C | Decision 013-020, Success criterion 013-001, the plan's introduction, Tasks 013-5, 013-11, 013-12, 013-17 |
+| 2 | Major | Fixed: groups and mapping from SCIM only; Gap 013-011 names the providers that lose group sync; 029's contract, data model and FR-029-024 reverted to the SCIM kind | Decision 013-007, Requirements 013-013, 013-014, Technical Plans 3, 6, 13, Architecture decision 0142 decisions 4 and 5, specs/029 |
+| 3 | Major | Fixed: slug sign-in with `login_hint` passed through; domains deferred | Decision 013-011, Requirements 013-006, 013-012, 013-022, Technical Plans 3 and 8, Gap 013-010 |
+| 4 | Major | Fixed: no development SAML provider; SAML against the pinned Keycloak in tests and the development overlay; OIDC refusals as domain unit tests | Decision 013-010, Requirement 013-033, Technical Plan 9, Task 013-3 |
+| 5 | Major | Fixed: only `studio` and `cli`; the contract feature 027 meets; 027 builds its redemption | Requirement 013-005, Decision 013-019, Architecture decision 0140 decision 1, specs/027 spec, Task 013-17 |
+| 6 | Major | Fixed: one backend, the identity-mount key read by the control plane only; Transit deferred | Decision 013-015, Requirement 013-025, Gap 013-012, Architecture decision 0140 decision 3 |
+| 7 | Major | Fixed: Task 013-4 no longer reserves the prefix | Task 013-4 |
+| 8 | Major | Fixed: the pass stores and audits no expired role (none exists now); its tests replaced | Task 013-13 |
+| 9 | Nit | Fixed: the platform key set is a `JwksCache` over a fetcher of `identity_signing_keys` | Technical Plan 4 |
+| 10 | Nit | Fixed: `JwksCache` and `JwksFetcher` move into `crates/infra-egress` | Technical Plan 2, Task 013-6 |
+| 11 | Nit | Fixed in part: Requirement 013-016 states the behaviour and its guarantee, the mechanics in Technical Plan 13; the other requirements keep their acceptance test names, which the template asks for | Requirement 013-016 |
+| 12 | Nit | Fixed: the control plane and the engine's leased loop named | Technical Plan 1 |
+| 13 | Nit | Fixed: the reference corrected; `IDENTITY_OWNER_DISABLED` in the alert list with its rule test | Requirement 013-024, Technical Plan 11 |
+| 14 | Nit | Fixed: a `settings_revision` counter instead of a revisions table | Technical Plan 3, Task 013-4 |

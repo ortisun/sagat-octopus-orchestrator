@@ -25,8 +25,8 @@ Owner decision 2026-11-24-1 asks for "Studio sign-in through each organization's
 
 ## Decision
 
-1. When federation is enabled, the control plane MUST act as an OpenID provider for its own clients (the Studio, the
-   CLI, the apps origin of feature 027) at `<public origin>/v1/auth`, and as a relying party (OIDC) or service
+1. When federation is enabled, the control plane MUST act as an OpenID provider for its own clients (the Studio and the
+   CLI; feature 027 registers its apps origin as a third client when it is built) at `<public origin>/v1/auth`, and as a relying party (OIDC) or service
    provider (SAML) toward each tenant's configured identity connections.
 2. Each identity connection MUST belong to exactly one tenant. A sign-in through it MUST produce a token for that
    tenant only; no claim, attribute, parameter or path segment from the identity provider or the browser MAY choose
@@ -35,7 +35,7 @@ Owner decision 2026-11-24-1 asks for "Studio sign-in through each organization's
    `at+jwt`, `aud` the API's resource identifier, `client_id`, `iss` the platform issuer, `tenant`, `sub` (the platform
    subject the connection's identity is linked to), `sid` (the sign-in session) and `jti`; the platform verifier MUST
    require each and enforce the lifetime itself. The signing key MUST live in a separate OpenBao mount and policy for
-   identity material (a Transit key that never leaves OpenBao where available), never nameable by a workflow secret
+   identity material, readable by the control plane only (OpenBao Transit signing is deferred), never nameable by a workflow secret
    reference, and be rotated with an overlap; the public keys MUST be served at the issuer's key set, disjoint from
    the connections' client keys. An identity provider's own token, an ID token, or a token signed by a connection key
    MUST NOT be accepted by the API as a platform access token. A deployment issuer equal to the platform issuer MUST be

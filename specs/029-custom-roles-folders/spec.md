@@ -28,7 +28,7 @@ future authorization decision". This feature is that decision. It adds:
 1. **Custom roles**: named sets of assignable permissions, owned by the tenant or one namespace, assigned
    to members or groups, tenant-wide or in one namespace. They only add to the built-in role.
 2. **Local groups** of tenant members, and **external groups** that design 013 (federated login) delivers from an
-   identity provider through SCIM or sign-in assertions under contracts/group-source.md; this feature evaluates both
+   identity provider through SCIM under contracts/group-source.md; this feature evaluates both
    kinds the same way and builds no source of its own.
 3. **Folders**: flat containers inside a namespace for workflows (with their runs), scripts and database
    connections, with an access list of fixed levels bounded by the built-in `developer` role. `open` by
@@ -45,9 +45,9 @@ restriction. No change to the workflow IR, the worker
 protocol, AsyncAPI, run transitions, the scheduler, external effects or ADR-0033 audiences. Nothing here is
 implemented.
 
-**Ownership boundaries.** Identity-provider groups (SCIM and sign-in assertions) belong to design 013
+**Ownership boundaries.** Identity-provider groups (SCIM in 0.3.0) belong to design 013
 (`docs/designs/013-federated-login.md`), which meets the contract this feature states (contracts/group-source.md,
-amended 2026-11-24 for two source kinds); O1440 is answered that way. Member creation, suspension and removal are
+amended 2026-11-24; SCIM is the source kind built in 0.3.0); O1440 is answered that way. Member creation, suspension and removal are
 design 013's (just-in-time provisioning, SCIM and the member routes, which close G290); this feature consumes
 memberships as they are (O1442 answered). Integration resources (021, which adopts folder placement for resources)
 and apps (027) adopt the folder contract in their own features. Approval eligibility (FR-014-007) keeps
@@ -460,9 +460,7 @@ feature's routes.
 
 - **FR-029-024**: Changing a membership's built-in role MUST remove, in the same transaction and audited,
   the subject's direct assignments, local group memberships, folder entries and list entries (as 016 D663 does
-  for reveal grants; O1441). External group memberships (design 013) stay, because their source owns them, and an
-  effective role computed from an expired assertion mapping is not a stored role change (design 013, Technical
-  Plan 13).
+  for reveal grants; O1441). External group memberships (design 013) stay, because their source owns them.
 - **FR-029-025**: A manifest entry MAY name a folder (additive); manifest placement MUST go through the move
   rules and MUST NOT create folders or change entries. Promotion MUST resolve the destination target's
   visibility first (FR-029-017); promoting a workflow from a restricted folder MUST name a destination
@@ -672,8 +670,8 @@ Re-read against `develop` at `2c94064f`. The owner questions are answered and AD
 2026-11-24-4 (research.md, "Readiness decisions", Decision 029-001 to Decision 029-007; `docs/owner-decisions.md`,
 OD-2026-11-24-710 to OD-2026-11-24-714):
 
-- **O1440 — design 013 delivers identity-provider groups**, from SCIM and from sign-in assertions, under the amended
-  group-source contract (two source kinds, freshness per kind).
+- **O1440 — design 013 delivers identity-provider groups**, from SCIM (sign-in assertions deferred), under the amended
+  group-source contract (SCIM in 0.3.0; the assertion kind deferred).
 - **O1441 — yes**, a built-in role change revokes the subject's custom grants (FR-029-024), including a change made by
   design 013's group-to-role mapping; the mapping changes a role only when its stored inputs change and never a role
   an administrator pinned, so a directory cannot make it flap.

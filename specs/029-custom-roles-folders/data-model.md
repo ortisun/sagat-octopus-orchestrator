@@ -184,12 +184,10 @@ a secret or a token.
 
 ## External groups (2026-11-24)
 
-Design 013 adds to `access_groups` the columns `source_kind` (`LOCAL` by default, `SCIM`, `ASSERTION`), `connection_id`,
-`external_value` and `generation`, and to `access_group_members` the freshness bound of an assertion-sourced member
-(design 013, Decision 013-017), so that assignments, folder entries and operation lists name an external group exactly
+Design 013 adds to `access_groups` the columns `source_kind` (`LOCAL` by default, `SCIM`), `connection_id`,
+`external_value` and `generation` (design 013, Decision 013-017), so that assignments, folder entries and operation lists name an external group exactly
 as a local one. This feature's migration lands first; design 013's adds the columns. External rows are read-only through
 this feature's routes (`EXTERNAL_GROUP_READ_ONLY`); a connection whose groups are named cannot be deleted. The group
 name is unique among `LOCAL` rows only (a partial unique index), and external rows are unique by (tenant, connection,
-`external_value`); assertion members carry the `sid` of the session that wrote them, and the evaluator counts the
-members of live sessions only.
+`external_value`).
 

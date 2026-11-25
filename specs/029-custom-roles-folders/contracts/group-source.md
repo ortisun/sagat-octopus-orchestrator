@@ -12,7 +12,7 @@ kinds, and some SCIM providers push only changes, so freshness is stated per kin
 | Kind | Delivered by | What one delivery carries | Freshness |
 |---|---|---|---|
 | `SCIM` | an identity provider through design 013's SCIM 2.0 endpoint of one connection, into rows of `access_groups` and `access_group_members` with source `SCIM` (design 013, Decision 013-017) | a full member set (`PUT`) or member additions and removals (`PATCH`) of one group | a SCIM group does not expire by silence: the provider pushes every change, deprovisioning included; design 013 raises an informational alert after 7 days without any request on the connection |
-| `ASSERTION` | a sign-in through one connection whose groups claim or attribute is mapped, into the same tables with source `ASSERTION` | the full set of that person's groups for that connection | each session's set carries its `sid` and confers while that session lives (not revoked, not past its absolute or idle expiry) and at most 24 hours after the sign-in; the sets of a person's live sessions are unioned |
+| `ASSERTION` (deferred) | a sign-in through one connection whose groups claim or attribute is mapped | not built in 0.3.0 (design 013, Decision 013-007 and Gap 013-011); a later design that adds it decides how a snapshot stops conferring |
 
 ## Guarantees a source must provide
 
@@ -25,18 +25,15 @@ kinds, and some SCIM providers push only changes, so freshness is stated per kin
 3. **Generations.** Every accepted change to a group's members increments that group's `generation` in the same
    transaction as the change, for both kinds. A SCIM `PATCH` is a list of additions and removals applied in arrival
    order under the tenant access fence; each is idempotent by effect (adding a present member or removing an absent
-   one changes nothing), so a retried request has no second effect. An assertion replaces the person's set for that
-   connection as a whole.
-4. **Idempotent, bounded deliveries.** At most 1,000 member operations per SCIM request and 256 group values per
-   assertion; a larger delivery is refused before any change. A SCIM request is one transaction.
+   one changes nothing), so a retried request has no second effect.
+4. **Idempotent, bounded deliveries.** At most 1,000 member operations per SCIM request; a larger delivery is refused before any change. A SCIM request is one transaction.
 5. **Freshness.** As the table above. A stale membership confers nothing (fail closed) and is not deleted.
 6. **Role changes.** When a member's stored built-in role changes, by an administrator or by design 013's group-to-role
-   mapping, feature 029's revocation of custom grants applies (FR-029-024, amended to keep external memberships); an
-   effective role computed from an expired assertion mapping is not a stored change and revokes nothing.
+   mapping, feature 029's revocation of custom grants applies (FR-029-024, amended to keep external memberships).
 
 ## What the platform side must keep
 
-- A SCIM delivery is one transaction that takes the affected memberships, then the exclusive tenant access fence (Architecture decision 0050, slot 4a), with a writer `lock_timeout`. An assertion is written at the sign-in's redemption without the exclusive fence (design 013, Technical Plan 4, which argues why the fence's guarantee still holds); a narrowing it brings governs every request authorized after its commit.
+- A SCIM delivery is one transaction that takes the affected memberships, then the exclusive tenant access fence (Architecture decision 0050, slot 4a), with a writer `lock_timeout`. (The assertion kind, when a later design adds it, states its own fence rule.)
 - External groups and their members are read-only through feature 029's REST routes (`EXTERNAL_GROUP_READ_ONLY`).
 - Membership in a fresh external group is evaluated like a local one; it never bypasses the human-role,
   reserved-permission or non-escalation rules. Linking an external group to roles or folders is an ordinary

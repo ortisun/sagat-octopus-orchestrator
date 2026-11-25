@@ -243,8 +243,8 @@ a re-read against `develop` at `2c94064f`. New entries use the feature-scoped fo
   vectors; a policy language would make the explanation of US06 a proof, and a bypass would make restriction
   invisible. Additions at acceptance: the catalog is updated (Decision 029-005), external groups come from design 013
   (Decision 029-002), and the capability names are those of design 050's list. Recorded as OD-2026-11-24-710.
-- **Decision 029-002 — O1440 answered: design 013 delivers identity-provider groups, from SCIM and from sign-in
-  assertions.** Options (above): A, SCIM push; B, group claims read at sign-in; C, defer. Chosen: A, with a bounded
+- **Decision 029-002 — O1440 answered: design 013 delivers identity-provider groups, from SCIM (sign-in assertions
+  deferred by design 013's Decision 013-007 after its review).** Options (above): A, SCIM push; B, group claims read at sign-in; C, defer. Chosen: A, with a bounded
   form of B. SCIM is the authoritative source and the recommended one. B as the draft described it (claims read on
   each request) stays refused; what design 013 adds is different: the claims of a sign-in are stored as durable rows
   that an administrator sees, that confer nothing until an assignment names the group, and that stop counting when the

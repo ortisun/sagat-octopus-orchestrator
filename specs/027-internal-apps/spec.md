@@ -326,8 +326,9 @@ that each is refused or contained, and that the session token never reaches the 
   presents an authorization code, its PKCE verifier and redirect URI instead of a bearer token; the
   control plane redeems it at the configured issuer, verifies the token like any bearer token and
   discards it (D1371). With design 013's federation enabled, the code is the platform sign-in service's own: session
-  creation redeems it in process through design 013's `PlatformSignIn::redeem_for_app` port (subject, tenant and the
-  sign-in session), no token is minted, and the app session expires no later than that sign-in session and is
+  creation redeems it in process (this feature registers the `apps` client with design 013's sign-in service and
+  builds the redemption port, returning subject, tenant and the sign-in session, against design 013's Requirement
+  013-005), no token is minted, and the app session expires no later than that sign-in session and is
   revoked with it, rather than with a five-minute access token. App runtime routes accept only app session tokens; no
   other route accepts them.
   Sessions can be ended by the viewer and revoked by activation, audience change or administrator

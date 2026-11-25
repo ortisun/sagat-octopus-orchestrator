@@ -91,7 +91,7 @@ Format: `- [ ] T029-NNN [P?] [USn?] Description (paths). Refs. Evidence.` `[P]`:
 ## Phase 10 — US08 Identity-provider groups stay out (P3)
 
 - [ ] T029-057 [P] [US8] Tests that token group and role claims confer nothing by themselves, that an external group and its members are read-only here (`EXTERNAL_GROUP_READ_ONLY`), and that a fresh external membership counts and a stale one does not (rows written by design 013's sources, or by `tests/support` before 013 is built). Refs: FR-029-009. Evidence: integration test.
-- [ ] T029-058 [US8] Hand `contracts/group-source.md` to the 013 owner as the dependency contract (documentation only, no schema). Refs: FR-029-009. Evidence: dependency note merged in 013. *Note (2026-11-24):* design 013 adopts the contract (its Requirement 013-014 and Architecture decision 0142) and the contract is amended for its two source kinds; tick when design 013 merges.
+- [ ] T029-058 [US8] Hand `contracts/group-source.md` to the 013 owner as the dependency contract (documentation only, no schema). Refs: FR-029-009. Evidence: dependency note merged in 013. *Note (2026-11-24):* design 013 adopts the contract (its Requirement 013-014 and Architecture decision 0142) and the contract is amended (SCIM in 0.3.0); tick when design 013 merges.
 
 ## Phase 11 — Polish and release gates
 
