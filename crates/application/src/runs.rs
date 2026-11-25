@@ -52,8 +52,8 @@ use crate::declared_operations::{AppliedInTx, DeclaredOperationEvaluator, Declar
 use crate::definitions::{DefinitionStore, Idempotency};
 use crate::error::{AppError, StoreError};
 use crate::execution::{
-    Actor, DefinitionCache, Effects, Engine, EngineError, ExpressionEvaluator, MAX_PAYLOAD_BYTES,
-    RunInfo, RunRecord, RunTx,
+    Actor, DefinitionCache, Effects, Engine, EngineError, ExpressionEvaluator, HeldSignal,
+    MAX_PAYLOAD_BYTES, RunInfo, RunRecord, RunTx,
 };
 use crate::identity::{Page, PageRequest, RequestContext};
 use crate::operation_evaluation::DeclaredOperationArguments;
@@ -145,6 +145,8 @@ pub struct Started {
     pub existing: bool,
     /// The steps a signal delivered with the start woke (Signal-with-Start); empty otherwise.
     pub delivered_to: Vec<NodeId>,
+    /// The signal of a Signal-with-Start is held with the new run, whose start queued (feature 022, D022-087).
+    pub signal_held: bool,
     /// The declared Update applied with the start (Update-with-Start), or its stable rejection.
     pub update: Option<AppliedInTx>,
 }
@@ -162,6 +164,9 @@ pub struct SignalStarted {
     pub run: RunRecord,
     pub started: bool,
     pub delivered_to: Vec<NodeId>,
+    /// The new run's start queued and the signal is held with it, delivered by the grant of its start (feature 022,
+    /// T022-109, decision D022-087); `delivered_to` is then empty.
+    pub held: bool,
 }
 
 /// The declared Update an Update-with-Start request applies (feature 018, `FR-018-025`).
@@ -232,6 +237,16 @@ async fn commit_with_item<T: RunTx>(
         item.committed(outcome);
     }
     Ok(())
+}
+
+/// The receipt that says the signal of a Signal-with-Start was held with its queued run (feature 022, decision D022-087
+/// item 2): kept beside the signal's own receipt, so a retry answers `held` too.
+fn held_marker(signal: &Idempotency) -> Idempotency {
+    Idempotency {
+        scope: format!("{}.held", signal.scope),
+        key: signal.key.clone(),
+        fingerprint: signal.fingerprint.clone(),
+    }
 }
 
 fn served_marker(start: &Idempotency) -> Idempotency {
@@ -1056,6 +1071,7 @@ where
             run: started.run,
             started: !started.existing,
             delivered_to: started.delivered_to,
+            held: started.signal_held,
         })
     }
 
@@ -1883,11 +1899,12 @@ where
                 match with {
                     Some((WithStart::Signal(signal), start)) => {
                         // what the first request delivered, from the receipt it left with the run
-                        let (delivered, served) = self
+                        let (delivered, served, held) = self
                             .delivered_before(principal, started.run.info.run_id, signal, start)
                             .await?;
                         started.delivered_to = delivered;
                         started.existing = served;
+                        started.signal_held = held;
                     }
                     Some((WithStart::Update(update), start)) => {
                         // the receipt the first request left answers again, whatever the run is now
@@ -2081,9 +2098,54 @@ where
                     );
                     update_applied = Some(tx.apply_declared_update(&command, evaluator).await?);
                 }
+                let mut signal_held = false;
                 if let Some((WithStart::Signal(signal), start)) = with {
                     // the signal goes in the creation transaction, to every step that waits for it
                     // after the initial reduction; if none does, nothing is created at all
+                    let idempotency = Idempotency {
+                        scope: format!("run.signal:{run_id}"),
+                        key: start.key.clone(),
+                        fingerprint: fingerprint(&[signal.name.as_bytes(), signal.payload]),
+                    };
+                    // a start that queued for its gates has no step yet: the signal is held with the run and the
+                    // grant of its start delivers it, when some node of the definition can ever wait for it (feature
+                    // 022, T022-109, decision D022-087)
+                    let queued = {
+                        let (def, state) = tx.parts();
+                        state.run_gates().is_waiting().then(|| {
+                            def.nodes().any(|node| {
+                                matches!(
+                                    node.kind(),
+                                    NodeKind::WaitEvent { event_type, .. } if event_type.as_str() == signal.name
+                                )
+                            })
+                        })
+                    };
+                    match queued {
+                        Some(true) => {
+                            let held = HeldSignal {
+                                name: signal.name.to_owned(),
+                                payload: signal.payload.to_vec(),
+                                actor: principal.subject().as_str().to_owned(),
+                                trace_id: ctx.trace_id.clone(),
+                            };
+                            tx.hold_start_signal(&held, &idempotency, &held_marker(&idempotency))
+                                .await
+                                .map_err(|error| store_failure(pending_completion, error))?;
+                            signal_held = true;
+                        }
+                        Some(false) => {
+                            drop(tx);
+                            return Err(AppError::SignalRefused {
+                                reason: "SIGNAL_NOT_ACCEPTED_AT_START",
+                            });
+                        }
+                        None => {}
+                    }
+                }
+                if let Some((WithStart::Signal(signal), start)) = with
+                    && !signal_held
+                {
                     let idempotency = Idempotency {
                         scope: format!("run.signal:{run_id}"),
                         key: start.key.clone(),
@@ -2136,6 +2198,7 @@ where
                     .known_start(principal, &run_id.to_string(), false)
                     .await?;
                 started.delivered_to = delivered_to;
+                started.signal_held = signal_held;
                 started.update = update_applied;
                 Ok(started)
             }
@@ -2347,6 +2410,7 @@ where
             run,
             existing,
             delivered_to: Vec::new(),
+            signal_held: false,
             update: None,
         })
     }
@@ -3186,7 +3250,7 @@ where
         id: RunId,
         signal: SignalAtStart<'_>,
         start: &Idempotency,
-    ) -> Result<(Vec<NodeId>, bool), AppError> {
+    ) -> Result<(Vec<NodeId>, bool, bool), AppError> {
         let idempotency = Idempotency {
             scope: format!("run.signal:{id}"),
             key: start.key.clone(),
@@ -3206,6 +3270,7 @@ where
             return Err(AppError::Internal);
         };
         let served = tx.replay(&served_marker(start)).await?.is_some();
+        let held = tx.replay(&held_marker(&idempotency)).await?.is_some();
         Ok((
             delivered
                 .split(',')
@@ -3213,6 +3278,7 @@ where
                 .filter_map(|n| NodeId::parse(n).ok())
                 .collect(),
             served,
+            held,
         ))
     }
 

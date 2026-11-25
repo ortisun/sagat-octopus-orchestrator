@@ -5876,6 +5876,12 @@ where
                 })
                 .instrument(span)
                 .await?;
+            // the signal a Signal-with-Start held with this queued start, delivered in the grant's transaction as
+            // `signalRun` would, or dropped with an audit record when no step waits for it (feature 022, T022-109,
+            // decision D022-087 item 3)
+            if start {
+                self.engine.deliver_held_signal(&mut tx).await?;
+            }
             tx.commit().await.map_err(EngineError::Store)?;
             Ok::<_, EngineError>(Granted::Yes)
         }

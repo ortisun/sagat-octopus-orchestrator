@@ -486,6 +486,11 @@ Added after the review of 2026-11-13:
   it); when 019 is present, by (019 priority 1 first, enqueue time ascending) among those waiters; creating
   the waiter's first tasks and outbox; a grant and the queue timeout MUST be decided by first
   commit (ADR-0056).
+  *Amended 2026-11-25 (decision D022-087, task T022-109):* a Signal-with-Start whose new run queues MUST create the
+  run and hold the signal with it (`held: true`, nothing delivered); the grant MUST deliver it in its transaction as
+  `signalRun` would, or drop it with an audit when no step waits for it; a queued run that ends instead MUST drop it
+  with an audit. A retry of the request MUST answer the same. A signal no node of the definition waits for keeps the
+  refusal of FR-018-024.
 - **FR-022-019 — Step permits** *(revised 2026-11-13 after review, D022-019; changes ADR-0056 decision 3
   through the proposed ADR-0089)*: A step whose node declares `concurrency` MUST NOT become `READY` before
   it holds a permit. The transaction that would make it ready (FR-022-051) MUST acquire the permit when its

@@ -1477,6 +1477,78 @@
       ]
     },
     {
+      "table": "flow_control_held_signals",
+      "column": "name",
+      "sql_type": "text",
+      "class": "content",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "octet_length_utf8",
+        "expression": "octet_length(coalesce(name, ''))",
+        "evidence": "logical PostgreSQL value, independent of TOAST/compression"
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution/held_signals.rs"
+      ]
+    },
+    {
+      "table": "flow_control_held_signals",
+      "column": "payload_digest",
+      "sql_type": "bytea",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Fixed SHA-256 digest (32 bytes) of the held signal's payload, kept in `payloads` (accounted there); the column never holds the content. Database CHECK `flow_control_held_signals_digest_sha256`. Writer/source: `held_signals.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution/held_signals.rs"
+      ]
+    },
+    {
+      "table": "flow_control_held_signals",
+      "column": "actor",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Authenticated `Subject` of at most 255 bytes, taken from the verified principal, never from a request body. Database CHECK `flow_control_held_signals_actor_valid`. Writer/source: `held_signals.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution/held_signals.rs"
+      ]
+    },
+    {
+      "table": "flow_control_held_signals",
+      "column": "trace_id",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Fixed W3C trace identifier, exactly 32 lowercase hexadecimal characters when present. Database CHECK `flow_control_held_signals_trace_id_format`. Writer/source: `held_signals.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution/held_signals.rs"
+      ]
+    },
+    {
       "table": "inbox_events",
       "column": "correlation_key",
       "sql_type": "text",

@@ -1394,11 +1394,53 @@ async fn a_release_and_a_start_at_the_queued_runs_ceiling_are_decided_one_after_
     w.assert_consistent(delayed).await;
 }
 
-/// Row 3 when the start would queue (G022-010; D022-050 item 6): no step waits for the signal while the entry is held,
-/// so until the hold-and-deliver of the chosen design is built the request keeps 018's typed refusal
-/// (`SIGNAL_NOT_ACCEPTED_AT_START`) and nothing of the run exists: no run, no waiter row.
+/// A Signal-with-Start of `workflow` for business identifier `id` under the idempotency key `key`, signal `name`.
+async fn signal_with_start_as(
+    w: &World,
+    workflow: WorkflowId,
+    id: &str,
+    key: &str,
+    name: &str,
+) -> Result<sagat_application::runs::SignalStarted, AppError> {
+    w.runs
+        .signal_with_start(
+            &w.admin,
+            &request(workflow, br#"{"k": "s", "accountId": "acct-1"}"#, key),
+            business(id),
+            SignalAtStart {
+                name,
+                payload: br#"{"paid": true}"#,
+            },
+            &ctx(),
+        )
+        .await
+}
+
+/// The held signal rows of `run`, and the audit records of `action` about it.
+async fn held_and_audited(w: &World, run: RunId, action: &str) -> (i64, Vec<Option<String>>) {
+    let held: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM flow_control_held_signals WHERE run_id = $1")
+            .bind(run.as_uuid())
+            .fetch_one(&w.db.pool)
+            .await
+            .expect("held rows");
+    let reasons: Vec<Option<String>> = sqlx::query_scalar(
+        "SELECT reason FROM audit_records WHERE resource_id = $1 AND action = $2 ORDER BY created_at",
+    )
+    .bind(run.to_string())
+    .bind(action)
+    .fetch_all(&w.db.pool)
+    .await
+    .expect("audit");
+    (held, reasons)
+}
+
+/// Row 3 when the start would queue (task T022-109, decision D022-087; FR-022-018, FR-018-024 as amended): the run is
+/// created and queued, the signal held with it, and the answer says so (`held`, nothing delivered); a retry of the request
+/// answers the same. When the holder ends, the grant of the queued start delivers the signal in its own transaction,
+/// once, audited `run.signalled` as the caller's; a later pass delivers nothing more, and a retry still answers `held`.
 #[tokio::test]
-async fn a_signal_with_start_whose_start_would_queue_is_refused_and_creates_nothing() {
+async fn a_signal_with_start_whose_start_queues_holds_the_signal_and_the_grant_delivers_it() {
     let w = gated_world().await;
     let workflow = publish(&w, gated_waiter("creators-signal-queued")).await;
     let first = signal_with_start(&w, workflow, "cart-1")
@@ -1408,7 +1450,177 @@ async fn a_signal_with_start_whose_start_would_queue_is_refused_and_creates_noth
         admitted(&w, first.run.info.run_id).await,
         Admitted::Acquired
     );
-    let refused = signal_with_start(&w, workflow, "cart-2")
+    let key = idempotency();
+    let queued = signal_with_start_as(&w, workflow, "cart-2", &key, "payment.confirmed")
+        .await
+        .expect("created and held");
+    let run = queued.run.info.run_id;
+    assert!(queued.started && queued.held, "{queued:?}");
+    assert!(queued.delivered_to.is_empty(), "{queued:?}");
+    assert_eq!(admitted(&w, run).await, Admitted::Queued);
+    assert_eq!(
+        held_and_audited(&w, run, "run.signalled").await,
+        (1, vec![])
+    );
+    let retried = signal_with_start_as(&w, workflow, "cart-2", &key, "payment.confirmed")
+        .await
+        .expect("a retry answers the same");
+    assert_eq!(
+        (
+            retried.run.info.run_id,
+            retried.started,
+            retried.held,
+            retried.delivered_to.len()
+        ),
+        (run, true, true, 0)
+    );
+    // the holder ends: the next pass grants the queued start and delivers the held signal with it
+    w.operate_run(
+        first.run.info.run_id,
+        sagat_application::runs::RunOperation::Cancel,
+    )
+    .await;
+    let report = w.scheduler.grant_gates().await;
+    assert_eq!(report.gates_granted, 1, "{report:?}");
+    assert_eq!(start_rows(&w, run).await, (1, 0), "granted");
+    assert_eq!(
+        w.step_status(run, "w").await,
+        Some(sagat_domain::execution::StepStatus::Succeeded),
+        "{:?}",
+        w.journal(run).await
+    );
+    let (held, delivered) = held_and_audited(&w, run, "run.signalled").await;
+    assert_eq!(
+        (held, delivered.len()),
+        (0, 1),
+        "delivered once: {delivered:?}"
+    );
+    let signalled_by: String = sqlx::query_scalar(
+        "SELECT actor FROM audit_records WHERE resource_id = $1 AND action = 'run.signalled'",
+    )
+    .bind(run.to_string())
+    .fetch_one(&w.db.pool)
+    .await
+    .expect("the actor");
+    assert_eq!(
+        signalled_by,
+        w.admin.subject().as_str(),
+        "audited as the caller's"
+    );
+    assert_eq!(w.scheduler.grant_gates().await.gates_granted, 0);
+    assert_eq!(held_and_audited(&w, run, "run.signalled").await.1.len(), 1);
+    let again = signal_with_start_as(&w, workflow, "cart-2", &key, "payment.confirmed")
+        .await
+        .expect("a retry after the delivery answers the same");
+    assert!(again.held && again.delivered_to.is_empty(), "{again:?}");
+    w.assert_consistent(run).await;
+}
+
+/// Decision D022-087 item 4: a queued run whose queue timeout passes, or which is cancelled, drops the signal held with
+/// it in the commit that ends it, audited `run.signal_dropped` (reason `RUN_ENDED`), and nothing is delivered.
+#[tokio::test]
+async fn a_held_signal_is_dropped_with_an_audit_when_its_queued_run_times_out_or_is_cancelled() {
+    let w = gated_world().await;
+    let workflow = publish(&w, gated_waiter("creators-signal-dropped")).await;
+    let _first = signal_with_start(&w, workflow, "cart-1")
+        .await
+        .expect("the first holds the permit");
+    let timed_out = signal_with_start(&w, workflow, "cart-2")
+        .await
+        .expect("held");
+    let cancelled = signal_with_start(&w, workflow, "cart-3")
+        .await
+        .expect("held");
+    for started in [&timed_out, &cancelled] {
+        assert!(started.held, "{started:?}");
+    }
+    let (timed_out, cancelled) = (timed_out.run.info.run_id, cancelled.run.info.run_id);
+    crate::run_admission::age_start_deadline(&w, timed_out).await;
+    let report = w.scheduler.time_out_gates().await;
+    assert_eq!(report.gate_waits_timed_out, 1, "{report:?}");
+    w.operate_run(cancelled, sagat_application::runs::RunOperation::Cancel)
+        .await;
+    for run in [timed_out, cancelled] {
+        assert!(w.run_status(run).await.is_terminal());
+        let (held, dropped) = held_and_audited(&w, run, "run.signal_dropped").await;
+        assert_eq!(held, 0, "the row went with the run's end");
+        assert_eq!(dropped.len(), 1, "{dropped:?}");
+        assert!(
+            dropped[0]
+                .as_deref()
+                .is_some_and(|reason| reason.starts_with("RUN_ENDED")),
+            "{dropped:?}"
+        );
+        assert!(
+            held_and_audited(&w, run, "run.signalled")
+                .await
+                .1
+                .is_empty(),
+            "nothing was delivered"
+        );
+        w.assert_consistent(run).await;
+    }
+}
+
+/// Decision D022-087 item 3: a held signal whose node is not on the entry's path (an activity runs first) finds no step
+/// waiting at the grant; it is dropped with an audit record (`NOT_WAITING_AT_GRANT`), as `signalRun` would refuse it,
+/// and the run goes on.
+#[tokio::test]
+async fn a_held_signal_no_step_waits_for_at_the_grant_is_dropped_with_an_audit() {
+    let w = gated_world().await;
+    let mut doc = document(
+        "creators-signal-later",
+        "g",
+        vec![
+            with(activity("g"), "next", json!("w")),
+            wait_node("w", "payment.confirmed", "input.k", 300_000, None),
+        ],
+    );
+    doc["concurrency"] = json!({"group": "accounts", "key": "input.accountId", "limit": 1});
+    let workflow = publish(&w, doc).await;
+    let first = signal_with_start(&w, workflow, "cart-1").await;
+    assert!(
+        matches!(first, Err(AppError::SignalRefused { .. })),
+        "with room, nothing waits at creation: {first:?}"
+    );
+    let holder = w
+        .start(workflow, &json!({"k": "s", "accountId": "acct-1"}))
+        .await;
+    let held = signal_with_start(&w, workflow, "cart-2")
+        .await
+        .expect("held");
+    assert!(held.held, "{held:?}");
+    let run = held.run.info.run_id;
+    w.operate_run(holder, sagat_application::runs::RunOperation::Cancel)
+        .await;
+    assert_eq!(w.scheduler.grant_gates().await.gates_granted, 1);
+    let (rows, dropped) = held_and_audited(&w, run, "run.signal_dropped").await;
+    assert_eq!(rows, 0);
+    assert!(
+        dropped.len() == 1
+            && dropped[0]
+                .as_deref()
+                .is_some_and(|reason| reason.starts_with("NOT_WAITING_AT_GRANT")),
+        "{dropped:?}"
+    );
+    assert_eq!(
+        w.step_status(run, "g").await,
+        Some(sagat_domain::execution::StepStatus::Ready),
+        "the run goes on"
+    );
+    w.assert_consistent(run).await;
+}
+
+/// FR-018-024 as amended by D022-087 item 2: a Signal-with-Start whose start would queue, of a signal no node of the
+/// definition waits for, keeps 018's typed refusal (`SIGNAL_NOT_ACCEPTED_AT_START`) and nothing of the run exists.
+#[tokio::test]
+async fn a_signal_with_start_of_a_name_no_node_waits_for_is_refused_when_the_start_would_queue() {
+    let w = gated_world().await;
+    let workflow = publish(&w, gated_waiter("creators-signal-unknown")).await;
+    let _first = signal_with_start(&w, workflow, "cart-1")
+        .await
+        .expect("the first holds the permit");
+    let refused = signal_with_start_as(&w, workflow, "cart-2", &idempotency(), "order.shipped")
         .await
         .expect_err("refused");
     assert_eq!(
@@ -1418,12 +1630,14 @@ async fn a_signal_with_start_whose_start_would_queue_is_refused_and_creates_noth
         }
     );
     assert_eq!(runs_of(&w, workflow).await.len(), 1, "nothing was created");
-    let waiters: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM concurrency_waiters WHERE permit_scope = 'RUN'")
-            .fetch_one(&w.db.pool)
-            .await
-            .expect("waiters");
-    assert_eq!(waiters, 0, "no waiter row was left");
+    let (waiters, held): (i64, i64) = sqlx::query_as(
+        "SELECT (SELECT count(*) FROM concurrency_waiters WHERE permit_scope = 'RUN'), \
+                (SELECT count(*) FROM flow_control_held_signals)",
+    )
+    .fetch_one(&w.db.pool)
+    .await
+    .expect("rows");
+    assert_eq!((waiters, held), (0, 0), "no waiter row and no held signal");
 }
 
 /// Reviews of 2026-11-20 (architecture B1, security Major 1, correctness M1): a release a ceiling refused is held back

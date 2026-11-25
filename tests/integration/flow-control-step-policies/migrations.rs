@@ -1676,3 +1676,44 @@ async fn the_queued_runs_counters_are_filled_from_the_waiters_and_roll_back_with
     );
     MIGRATOR.run(pool).await.expect("forward");
 }
+
+/// Task T022-109 (migration `20270214000000`; decision D022-087): the held signals of Signal-with-Start roll back while
+/// none is kept, and refuse while one is (a request answered `202` is never dropped by a rollback); migrating forward
+/// again restores the table.
+#[tokio::test]
+async fn the_held_signals_roll_back_only_when_none_is_kept() {
+    const BEFORE_HELD_SIGNALS: i64 = 20_270_213_000_400;
+    let w = crate::support::flow_control::gated_world().await;
+    let pool = &w.db.pool;
+    let workflow = crate::support::flow_control::publish(
+        &w,
+        crate::run_creators::gated_waiter("migrations-held-signal"),
+    )
+    .await;
+    crate::run_creators::signal_with_start(&w, workflow, "cart-1")
+        .await
+        .expect("the holder");
+    let held = crate::run_creators::signal_with_start(&w, workflow, "cart-2")
+        .await
+        .expect("held");
+    assert!(held.held);
+    let refused = undo(pool, BEFORE_HELD_SIGNALS).await;
+    assert!(
+        format!("{refused:?}").contains("held Signal-with-Start signals remain"),
+        "{refused:?}"
+    );
+    assert!(
+        exists(pool, "flow_control_held_signals").await,
+        "nothing was dropped"
+    );
+    // the queued run ends: its end drops the signal, audited, and the rollback goes through
+    w.operate_run(
+        held.run.info.run_id,
+        sagat_application::runs::RunOperation::Cancel,
+    )
+    .await;
+    undo(pool, BEFORE_HELD_SIGNALS).await.expect("rolled back");
+    assert!(!exists(pool, "flow_control_held_signals").await);
+    MIGRATOR.run(pool).await.expect("forward again");
+    assert!(exists(pool, "flow_control_held_signals").await);
+}

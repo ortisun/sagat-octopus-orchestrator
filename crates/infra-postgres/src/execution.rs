@@ -11,6 +11,7 @@ use crate::pool::BeginSafely;
 mod ad_hoc;
 mod database;
 mod gate_queue;
+mod held_signals;
 mod path;
 mod path_read;
 mod readiness_gate;
@@ -4623,6 +4624,29 @@ impl RunTx for PgRunTx {
         Ok(())
     }
 
+    async fn hold_start_signal<'a>(
+        &'a mut self,
+        signal: &'a sagat_application::execution::HeldSignal,
+        receipt: &'a Idempotency,
+        marker: &'a Idempotency,
+    ) -> Result<(), StoreError> {
+        self.hold_start_signal_inner(signal, receipt, marker).await
+    }
+
+    async fn take_held_signal(
+        &mut self,
+    ) -> Result<Option<sagat_application::execution::HeldSignal>, StoreError> {
+        self.take_held_signal_inner().await
+    }
+
+    async fn audit_held_signal_dropped<'a>(
+        &'a mut self,
+        signal: &'a sagat_application::execution::HeldSignal,
+        reason: &'static str,
+    ) -> Result<(), StoreError> {
+        self.audit_held_signal_dropped_inner(signal, reason).await
+    }
+
     async fn apply_declared_update<'a>(
         &'a mut self,
         update: &'a sagat_application::declared_operations::DeclaredUpdate,
@@ -5518,6 +5542,25 @@ impl RunTx for PgRunTx {
                     .execute(&mut *self.tx)
                     .await
                     .map_err(store_error)?;
+                // a queued start that ends (its queue timeout, a cancellation) drops the signal a Signal-with-Start held
+                // with it, audited (decision D022-087 item 4): only a commit that takes the run's start out of its queue
+                // looks, so the end of a run that started adds no statement
+                let start_left_queue = events.iter().any(|event| {
+                    matches!(
+                        event,
+                        RunEvent::Gate(sagat_domain::execution::GateEvent {
+                            target: sagat_domain::execution::GateTarget::Run,
+                            change: sagat_domain::execution::GateChange::ConcurrencyWaitTimedOut
+                                | sagat_domain::execution::GateChange::ConcurrencyDequeued
+                                | sagat_domain::execution::GateChange::RateWaitTimedOut
+                                | sagat_domain::execution::GateChange::RateDequeued,
+                            ..
+                        })
+                    )
+                });
+                if start_left_queue {
+                    self.drop_held_signal_of_ended_run().await?;
+                }
             }
             // a reset's restored prefix is history: it gave nothing back in this run and holds no row of it (FR-022-038)
             if effects.restored.is_none() {

@@ -392,6 +392,18 @@ The grant of a queued start can end the run in its own transaction (an entry tha
 run's active-run counter row before the start's keys, as an admission does: run, slot 6, keys, slot 8b
 (`concurrency_locks::the_grant_of_a_queued_start_that_ends_takes_its_counter_row_before_the_key_and_the_queued_count`).
 
+### `flow_control_held_signals`
+
+*Added 2026-11-25 (task T022-109, decision D022-087; migration `20270214000000`).* The signal of a Signal-with-Start
+whose new run queued, held until the grant of the run's start delivers it. PK `(tenant_id, run_id)` (one held signal a
+run); `namespace_id`; `name text` (CHECK 1 to 128 characters, the signal's name as the request gave it); `payload_digest
+bytea` (CHECK 32 bytes), foreign key `(tenant_id, payload_digest)` → `payloads`; `actor text` (the requesting subject,
+CHECK 1 to 255) and `trace_id text` (CHECK the W3C format when present), so the delivery is audited as the caller's;
+`held_at timestamptz`. Foreign key `(tenant_id, namespace_id, run_id)` → `runs (tenant_id, namespace_id, id)` `ON DELETE
+CASCADE`. Written by the creation transaction of the run, deleted by the grant that delivers it or by the commit that
+ends the queued run (audited `run.signal_dropped`). `sagat_app`: `SELECT`, `INSERT`, `DELETE`. Invariant: a row exists
+only for a run whose start waits for its gates.
+
 ### `flow_control_key_versions`
 
 PK `version smallint`; `state` CHECK `IN ('ACTIVE','RETIRING','RETIRED')` with at most one `ACTIVE`; `activated_at`,

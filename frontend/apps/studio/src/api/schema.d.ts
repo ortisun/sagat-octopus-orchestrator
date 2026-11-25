@@ -398,7 +398,7 @@ export interface paths {
         put?: never;
         /**
          * Signal the open run of a business identifier, or start one and deliver the signal at creation
-         * @description Needs `run:start` and `run:signal`. Under the binding of the `businessId`: an open holder is signalled exactly as `signalRun` (`202` with `started: false`, or `409` `NOT_WAITING` when no step of it waits for the signal now, nothing changed); otherwise, subject to `businessIdReusePolicy`, a run is created and the signal is delivered to every step that waits for it after the initial reduction, in the same transaction (`202` with `started: true`). If no step of the new run waits for it the whole request is rolled back with `409` `SIGNAL_NOT_ACCEPTED_AT_START` and nothing is created. A signal is never buffered. `startDelayMs` is refused (`422` `START_DELAY_WITH_SIGNAL`). The same `Idempotency-Key` with the same body answers what the first request did; with another body it is `409 IDEMPOTENCY_KEY_REUSED`.
+         * @description Needs `run:start` and `run:signal`. Under the binding of the `businessId`: an open holder is signalled exactly as `signalRun` (`202` with `started: false`, or `409` `NOT_WAITING` when no step of it waits for the signal now, nothing changed); otherwise, subject to `businessIdReusePolicy`, a run is created and the signal is delivered to every step that waits for it after the initial reduction, in the same transaction (`202` with `started: true`). If no step of the new run waits for it the whole request is rolled back with `409` `SIGNAL_NOT_ACCEPTED_AT_START` and nothing is created. A signal is never buffered, with one exception (feature 022, D022-087): when the new run's start waits for its concurrency permit or rate-limit slot, the run is created and queued and the signal is held with it (`202`, `started: true`, `deliveredTo: []`, `held: true`); the grant of the run's start delivers it exactly as `signalRun` would, and drops it with an audit record (`run.signal_dropped`) when no step waits for it then; a queued run that ends instead (its queue timeout, a cancellation) drops it with the same audit. Such a request still needs a `waitEvent` of that name somewhere in the definition, or it is refused `SIGNAL_NOT_ACCEPTED_AT_START` with nothing created. `startDelayMs` is refused (`422` `START_DELAY_WITH_SIGNAL`). The same `Idempotency-Key` with the same body answers what the first request did; with another body it is `409 IDEMPOTENCY_KEY_REUSED`.
          *
          *     Design 043 (OD-2026-11-15-3): the input is checked against the `inputSchema` of the version the run pins before
          *     anything is created. A refusal is `422 VALIDATION_FAILED`, `retryable: false`, with `details.reason`
@@ -3639,6 +3639,8 @@ export interface components {
             started: boolean;
             /** @description The nodes the signal woke. */
             deliveredTo: string[];
+            /** @description Feature 022 (D022-087): true when the new run's start queued and the signal is held with it, to be delivered when the run is granted its start; `deliveredTo` is then empty. A retry of the request answers the same. */
+            held?: boolean;
         };
         UpdateWithStartRequest: {
             /** Format: uuid */

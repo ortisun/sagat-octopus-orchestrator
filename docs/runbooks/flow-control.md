@@ -199,6 +199,14 @@ the key would be new beyond `concurrency_live_keys` (`FLOW_CONTROL_LIMIT`). Each
   declares `rateLimit` takes a fresh slot or is refused `RATE_LIMIT_SLOT_UNAVAILABLE`, rate first (T022-086, D022-069).
 - Rolling back migration `20270203000000` is refused while any run, finished or not, keeps `runs.flow_control_gates`:
   archive those runs first.
+- A Signal-with-Start whose new run queues is answered `202` with `held: true`: the signal is kept in
+  `flow_control_held_signals` (its payload in `payloads`, by digest) and delivered by the grant of the run's start,
+  audited `run.signalled` as the caller's (T022-109, D022-087). When no step waits for it at the grant, or the run
+  ends while queued (its queue timeout, a cancellation), it is dropped with an audit record `run.signal_dropped` whose
+  reason says why (`NOT_WAITING_AT_GRANT`, `OUTPUT_BOUND`, `RUN_ENDED`). The held signals of a namespace:
+  `SELECT run_id, name, held_at FROM flow_control_held_signals WHERE tenant_id = '<tenant>' AND namespace_id =
+  '<namespace>' ORDER BY held_at`. Rolling back migration `20270214000000` is refused while one is held: let the runs
+  be granted or end first.
 
 ## 6. Rate limits (T022-072, T022-074, T022-077)
 

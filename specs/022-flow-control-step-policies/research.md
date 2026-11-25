@@ -1844,6 +1844,42 @@ taken after `git grep D022-04` on every `origin/*` branch.
      `rest::a_page_of_groups_reads_at_most_its_budget_of_key_rows`,
      `rest::a_group_view_tells_nothing_that_changes_with_the_number_of_keys`.
 
+- **D022-087 — A Signal-with-Start whose start queues holds its signal with the run, delivered by the grant (2026-11-25;
+  task T022-109; FR-022-018, FR-018-024; decision D022-050 item 6; gap G022-010).** Delegate (OD-2026-11-24-4).
+  1. *Where the signal waits.* Options: (a) a row of its own, `flow_control_held_signals`, one per run, its payload a
+     `payloads` row named by digest (the content-addressed store every signal payload already lands in, charged to
+     `tenant_content_bytes`); (b) the start's receipt carrying the payload (a receipt is a replay answer, not a work
+     item, and it outlives the run); (c) a pending `step` row (a step that does not exist in the definition's graph
+     breaks replay equals projection). Chosen (a): the row is the run's own (foreign key to `runs`, `ON DELETE
+     CASCADE`), so it lives and dies with the run, and the grant finds it by the run's primary key, one probe.
+  2. *What the request answers.* The run is created and queued, the signal is held, and the answer is `202` with
+     `started: true`, `deliveredTo: []` and `held: true`. The receipts are written in the creation transaction: the
+     signal's under its usual scope (`run.signal:<run>`, nothing delivered) and a marker (`run.signal:<run>.held`), so a
+     retry of the request answers the same, `held: true`, whatever the run is now. A request whose definition declares
+     no `waitEvent` for the signal's name keeps the refusal of FR-018-024 (`SIGNAL_NOT_ACCEPTED_AT_START`, nothing
+     created): no grant could ever deliver it, and the answer does not depend on the key's load.
+  3. *The delivery.* The grant routine, in the transaction that grants the run its start (T26, D022-073), after the
+     grant's settle, takes the held row and delivers the signal exactly as `signalRun` would: to every step that waits
+     for it, the payload the step's output, audited `run.signalled` by the original caller (the subject and the trace
+     kept with the row), journaled `wait.satisfied` with `via: SIGNAL_WITH_START`. When no step waits for it at the
+     grant (the waiting node is not on the entry's path), it is dropped with an audit record `run.signal_dropped`
+     (actor the engine, reason `NOT_WAITING_AT_GRANT`), as `signalRun` would refuse it; when the run's retained output
+     would pass its bound, dropped the same way (`OUTPUT_BOUND`).
+  4. *A queued run that ends instead.* Its queue timeout, a cancellation, or any other end of a queued run drops the
+     held signal in the commit that ends the run, audited `run.signal_dropped` (reason `RUN_ENDED`); the payload stays
+     the tenant's content under its retention, as the payload of a delivered signal does. Only a commit that ends a run
+     whose start declares a gate looks for the row, inside the flow-control step of `persist` (no statement on the hot
+     path of a plain definition).
+  5. *An open holder whose start is queued* is signalled exactly as `signalRun` (FR-018-024): nothing waits, `409`
+     `NOT_WAITING`, nothing changed. Only the request that creates the run holds its signal; holding a second signal
+     for an existing run would be a buffer, which FR-018-024 refuses.
+  Migration `20270214000000_flow_control_held_signals` (`sagat_app`: `SELECT`, `INSERT`, `DELETE`; a down that refuses
+  while a row is kept). Evidence: `run_creators::{a_signal_with_start_whose_start_queues_holds_the_signal_and_the_grant_delivers_it,
+  a_held_signal_is_dropped_with_an_audit_when_its_queued_run_times_out_or_is_cancelled,
+  a_held_signal_no_step_waits_for_at_the_grant_is_dropped_with_an_audit,
+  a_signal_with_start_of_a_name_no_node_waits_for_is_refused_when_the_start_would_queue}` and
+  `rate_creators::a_signal_with_start_of_a_rate_limited_definition_takes_its_slot_or_holds_its_signal`.
+
 ### Decisions of the Studio slice (2026-11-24)
 
 - **D022-150 — How the Studio authors, shows and lists the gates (tasks T022-054, T022-055, T022-056, T022-085;
@@ -1938,7 +1974,7 @@ taken after `git grep D022-04` on every `origin/*` branch.
 | G022-007 | FR-022-021 says "pausing a holder MUST NOT release its permit", and FR-022-019 counts a granted, unleased step as a holder, while FR-022-046 says a pause returns the permit and slot of a granted, unleased step: the approved texts disagree for that case; the build follows FR-022-046 (D022-048). T022-025's "pause keeps permit" holds for a leased step and a run holder. `data-model.md` ("Steps and their gates", invariant 11) does not say that a step a pause gave back waits with no waiter row. Revised when the approved texts are next re-approved. | Open; re-approval of the texts |
 | G022-008 | A step queued when its run pauses keeps its waiter row and its deadline, which runs during the pause: a long pause can fail it `CONCURRENCY_WAIT_TIMEOUT` or `RATE_LIMIT_WAIT_TIMEOUT` (the timeout routine does not look at the pause), while a step granted before the pause waits with no deadline (correctness review 4 and architecture M2 of 2026-11-20). Not introduced by T022-100. | Open; O1175 (a) accepted without option (c) (OD-2026-11-20-2), so the deadline rule is a later decision |
 | G022-009 | A start delay or a reset of a definition that gates its start is refused `BINARY_CAPABILITY_MISSING` (D022-049): the plan says the gate is decided at the delay's release, and a reset takes a fresh permit or is refused `CONCURRENCY_PERMIT_UNAVAILABLE` (never queues); neither is built. A child node whose run's start is refused (`CONCURRENCY_QUEUE_FULL`, `FLOW_CONTROL_LIMIT`) is retried by the next pass instead of failing its node with the typed retryable code (T022-102). *Closed in part 2026-11-20 (T022-064): the delay is decided at its release (D022-052) and the reset takes a fresh permit or is refused (D022-053). Open: the child node's typed code (T022-102).* | Open; T022-102 |
-| G022-010 | A Signal- or Update-with-Start of a definition whose start queues is refused `SIGNAL_NOT_ACCEPTED_AT_START` (no step waits while the entry is held), so the outcome depends on the key's load (correctness review M2 of 2026-11-20). Chosen design (D022-050 item 6): hold the signal or update with the queued run and deliver it at the grant. *2026-11-20 (T022-064):* an Update-with-Start is not affected (it changes the declared state, which a queued run has: `run_creators::an_update_with_start_admits_through_the_key_and_applies_its_update`); a Signal-with-Start keeps the typed refusal with nothing created (`run_creators::a_signal_with_start_whose_start_would_queue_is_refused_and_creates_nothing`). The hold-and-deliver needs a durable held signal, its delivery in the grant's transaction and the replay of its receipt: follow-up T022-109. | Open; T022-109 |
+| G022-010 | *Closed 2026-11-25 (D022-087, T022-109): the signal is held with the queued run and delivered by the grant.* A Signal- or Update-with-Start of a definition whose start queues is refused `SIGNAL_NOT_ACCEPTED_AT_START` (no step waits while the entry is held), so the outcome depends on the key's load (correctness review M2 of 2026-11-20). Chosen design (D022-050 item 6): hold the signal or update with the queued run and deliver it at the grant. *2026-11-20 (T022-064):* an Update-with-Start is not affected (it changes the declared state, which a queued run has: `run_creators::an_update_with_start_admits_through_the_key_and_applies_its_update`); a Signal-with-Start keeps the typed refusal with nothing created (`run_creators::a_signal_with_start_whose_start_would_queue_is_refused_and_creates_nothing`). The hold-and-deliver needs a durable held signal, its delivery in the grant's transaction and the replay of its receipt: follow-up T022-109. | Built (D022-087); closed when T022-109 is ticked |
 | G022-011 | `queued_runs` was believed counted without a lock (D022-050 item 3). *Closed 2026-11-20 (D022-051):* the count is exact. Only an admission adds a run waiter, every admission holds the namespace's active-run quota lock from before its runs row to its commit, and the start's gate counts after it in a fresh READ COMMITTED statement; proved by `run_admission::two_starts_at_the_queued_runs_ceiling_are_decided_one_after_the_other` (the lock held by the test, both starts observed waiting on it, then exactly one queued and one refused), red under two hand mutations (the lock removed; the ceiling ignored). The merge blocker the owner set on it is met. T022-105's counter rows remain for the cost of the count (a scan of the namespace's run waiters, at most the ceiling) and its privileges. | Closed (exactness); T022-105 open for the counter rows |
 | G022-012 | The start's decision (`decide_start_gates`) and the step's (`decide_gates`) are two code paths over the same rules; T022-072 builds one core for both levels and both gates (D022-050 item 5; architecture review Major 1 of 2026-11-20). A paused queued run's deadline runs during its pause, as G022-008 says of a step. *2026-11-20 (D022-054): the start's three causes share one validator (`check_start_decisions`) and one adapter function; the step's decision is still its own path.* *Closed 2026-11-20 (D022-064 item 2): `gates_of` and `decide_filed` serve both levels and both gates.* | Closed; T022-072 |
 | G022-013 | Keys-review correctness m5 and m8 (2026-11-20): the takeover test races a raw `UPDATE` of the shard lease, not a keeper's takeover, and checks "nothing twice" afterwards; and SC-022-004 at run level lacks five same-key starts with `limit: 1` (at most one holder, grants in admission order) and a mixed-limit pair sharing a group. | Open; T022-110 |

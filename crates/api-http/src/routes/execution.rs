@@ -497,6 +497,7 @@ pub async fn start_run<B: Exec>(
             run,
             existing: false,
             delivered_to: Vec::new(),
+            signal_held: false,
             update: None,
         }
     } else {
@@ -877,6 +878,7 @@ pub async fn signal_with_start<B: Exec>(
             run_id: done.run.info.run_id.to_string(),
             started: done.started,
             delivered_to: done.delivered_to.iter().map(ToString::to_string).collect(),
+            held: done.held,
         }),
     ))
 }
