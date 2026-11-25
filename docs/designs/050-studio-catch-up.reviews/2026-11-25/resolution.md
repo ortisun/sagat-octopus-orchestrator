@@ -66,3 +66,18 @@ the first text excluded ("nothing else changes in the engine"); the Overview now
 | 13 | Nit | Fixed: Requirements 050-009, 050-010, 050-012, 050-014 and 050-021 state observable behaviour; the bounds and mechanics are in Technical Plans 5 and 6 | Requirements |
 | 14 | Nit | Fixed: the versions page lives in `features/workflows/` | Requirement 050-016, the plan's introduction |
 | 15 | Nit | Fixed: a wrong run-end path becomes a follow-up task of its own scope | Technical Plan 6 |
+
+## egm-review Stage 6, Comprehension Test (`comprehension_report.md`, at `ea803052`)
+
+All 21 findings are accepted and fixed; none is contested.
+
+| Finding | Severity | Disposition | Where |
+|---|---|---|---|
+| 1 | Major | Fixed: the Overview says which primitives publish everywhere and which follow a switch | Overview |
+| 2 | Major | Fixed: "Codec" defined in Terms, the same as "the server's validation" | Terms |
+| 3 | Major | Fixed: `workflow.step-destinations` gates the `stepDestinations` field, shown read-only without it | Technical Plan 3 |
+| 4 | Major | Fixed: the instance registry defined with its link; stated as not part of design 050 | Technical Plan 3 |
+| 5 | Major | Fixed: "add here" moves every incoming link, the entrypoint included; a read-only node can be deleted; one wording | Requirement 050-005, Technical Plan 4 |
+| 6 | Major | Fixed: Task 050-12 renamed with the requirement's tests | Task 050-12 |
+| 7 | Major | Fixed: the server builder owns every `crates/` part; each task's predecessors listed | The plan's introduction |
+| 8 to 21 | Nit | Fixed: "four" small things and `youMayDecide` glossed; IR expanded and a list of referenced features; the owner, the delegation, the review files and "an earlier draft" named; gaps in order; only the notes change when the subset widens; field-level capabilities read-only and kept; admitted iterations, drain reasons, compensations and reconciliations defined and the counting rules stated; chain and declared state defined; the test terms glossed; the Studio served from another build explained; CUJ 3 worded; source and recovery activities defined, the combination refusal moved, supersede and recount explained; the two task-identifier forms explained; "derived from the start-up switches"; the cancellation test a probe | Overview, Terms, Technical Plans 3 to 6, CUJ 3, Requirement 050-011, the plan |

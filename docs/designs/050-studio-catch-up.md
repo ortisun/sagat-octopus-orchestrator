@@ -9,7 +9,8 @@
 ## Overview
 
 The engine has moved faster than the Studio. On `develop` at 2026-11-24 the server publishes and runs `switch` and
-`approval` nodes, parses loops, collection operators and lake writes behind runtime switches, lists and decides
+`approval` nodes, publishes `forEach`, `while`, `repeatUntil` and `continueAsNew` in fixed shapes on every server,
+collection operators behind design 042's deployment switch and lake writes when `lake.enabled`, lists and decides
 approvals, keeps an audit trail, records activations, publication requests and compensation plans, and builds Go and
 Java scripts. The Studio shows none of these, and it offers two node kinds the server refuses.
 
@@ -36,13 +37,18 @@ From release 0.3.0 the Studio covers what the server executes and exposes:
 
 All of it is built on the Astryx design system of
 [Architecture decision 0101](https://github.com/ortisun/sagat-octopus-orchestrator/blob/feature/007-astryx-design-system/docs/adr/ADR-0101-the-studio-builds-its-interface-on-the-astryx-design-system.md)
-(pull request #267), which this design accepts under the owner's delegation (Technical Plan 1). The server gains three
+(pull request #267), which this design accepts under the owner's delegation (Technical Plan 1). The server gains four
 small things: a `capabilities` list on `GET /version`, a namespace-wide approvals list, and a namespace-wide list of
-publication requests, and `youMayDecide` on the two existing per-run and per-workflow lists; and it makes three small
+publication requests, and `youMayDecide` (a flag saying whether the caller may decide the item now) on the two
+existing per-run and per-workflow lists; and it makes three small
 additive corrections the screens need: a validation problem's pointer names the body of a body node, a decision on an
 approval whose run has ended answers `409 RUN_ENDED` instead of a retryable `503`, and the runtime graph reports each
-iteration's status and the counts by status from the engine's own outcomes. Nothing changes in the IR, the worker
-protocol or the SDKs.
+iteration's status and the counts by status from the engine's own outcomes. Nothing changes in the IR (the workflow
+document's schema, `workflow.schema.json`), the worker protocol or the SDKs.
+
+The owner is the product owner of the platform; the decisions of this design are taken under the owner's delegation
+(Owner decision 2026-11-24-4 in [`docs/owner-decisions.md`](../owner-decisions.md)), and the reviews it settles are in
+[`050-studio-catch-up.reviews/`](050-studio-catch-up.reviews/2026-11-25/resolution.md).
 
 ### Terms
 
@@ -60,6 +66,29 @@ protocol or the SDKs.
 - **Publishable subset.** The shapes publication accepts in 0.3.0, narrower than the schema (Technical Plan 4). The
   codec decides them; feature 014's remaining tasks and design 039 widen them during the release.
 - **Inbox.** The Studio page "Waiting for me" of this design.
+- **Codec.** The server's conversion of a workflow document into its executable definition (`crates/infra-ir`), run by
+  `validate` and by publication; its refusals are the validation problems the editor shows. "The server's validation"
+  in this document means the same thing.
+- **Chain.** The runs linked by `continueAsNew` (feature 014): each run is a segment; a chain-addressed Query or Update
+  names the chain and reaches its current run; `chainPolicy` bounds the segments.
+- **Declared state.** The `state` of a workflow document (feature 014, Architecture decision 0031): a schema, an initial
+  value, and the Queries that read it and the Updates that change it; `expectedStateRevision` makes an Update refuse
+  when the state moved; `reapplyOnReset` keeps an Update's arguments so a reset can apply it again.
+- **Admitted iteration.** An iteration the engine has started (its scoped instances exist); a large collection admits
+  iterations as concurrency allows. A **compensation** (`~c` suffix) undoes a step in a saga; a **reconciliation**
+  (`~r` suffix) finds out whether a step with an unknown outcome happened (feature 003).
+- **The Studio served from another build.** An operator may point the server at a Studio bundle of another build
+  (`SAGAT_STUDIO_DIR`, Architecture decision 0016), so the Studio and the server can differ in version; the Studio
+  therefore treats what it bundles as suggestions and the server's answers as the authority.
+- **Test terms.** The cross-tenant battery is the shared contract suite that calls every route with another tenant's
+  identifiers and expects the answer of a missing resource; the runtime role is the database role the deployed server
+  runs as (`SAGAT_TEST_AS_RUNTIME_ROLE=1` runs a suite as it).
+- **Referenced features.** 003 sagas; 004 events and webhooks; 007 the Studio; 011 versions and publication; 013
+  federated login; 014 workflow primitives (loops, approvals, declared state, chains); 018 schedules and batches; 020
+  run search; 022 flow control; 026 forms and notifications; 027 internal apps; 028 developer tooling; 029 roles and
+  folders (its `x-access`, `discloses` and `visibleFolders` are the access declaration of a route, the item kinds an
+  answer can reveal, and the folders a caller may see); 035 lake writes and step-output destinations; 039 nested
+  collections; 041 step logs; 042 collection and stream operators; 043 run input validation; 044 workflow as code.
 
 ## The Problem
 
@@ -126,9 +155,10 @@ REST API to approve a step.
   between two nodes and an entry with a duplicate id, in the root and in a body, keeps both at their index (this test
   fails today: `documentIO.ts` appends them at the end).
 - **Requirement 050-005** The inspector of a legacy node MUST show its values read-only beside an action that adds the
-  executable kind next to it ("Add a For each here", "Add an Approval here"), which the author fills, links and uses
-  to replace the legacy node by deleting it; nothing is converted for the author. *Acceptance:* the inspector test of
-  each legacy kind; the action adds an empty node of the executable kind, linked to the legacy node's predecessor.
+  executable kind in its place ("Add a For each here", "Add an Approval here"): the new node takes every link that
+  pointed at the legacy node, the author fills it and deletes the legacy node; nothing is converted for the author.
+  *Acceptance:* the inspector test of each legacy kind; the action moves every incoming link (two predecessors, and an
+  entrypoint) to the new node.
 - **Requirement 050-006** The editor MUST edit, with its fields and handles, `switch` (up to 32 ordered cases and a
   default), `approval` (policy subjects and roles, initiator exclusion, timeout and the approve, reject, expire and
   error routes), `forEach` (items, up to eight collection-operator stages, body, result, the item and concurrency
@@ -169,7 +199,9 @@ REST API to approve a step.
   test that 2,001 undecidable rows followed by one decidable row are found in two requests, and
   `an_inbox_page_and_a_decision_agree_on_an_ended_run`.
 - **Requirement 050-011** The server MUST list the open publication requests of a namespace that still need an approval
-  under the current effective policy (`PENDING`, and `APPROVED` with fewer approvals than the policy now requires),
+  under the current effective policy (`PENDING`, and `APPROVED` with fewer approvals than the policy now requires,
+  because publication recounts the approvals against the policy in force when it publishes; a request is superseded
+  when its draft is edited),
   oldest first, with the same paging guarantee (`GET /namespaces/{namespaceId}/publication-requests`), each with
   `youMayDecide` computed by `PublicationRequest::may_decide` with the open-state clause and the three clauses of
   Architecture decision 0018 decision 4 (not the requester, not the last editor of the draft, not a person who already
@@ -288,9 +320,9 @@ REST API to approve a step.
 
 ## Open Questions
 
-None open. The questions of this design were decided by the agent the coordinating session briefed, under Owner
-decision 2026-11-24-4, each weighed over its options and recorded with its reasoning in the register below as
-"delegate (OD-2026-11-24-4)".
+None open. Each question of this design was decided under the owner's delegation (Owner decision 2026-11-24-4), weighed
+over its options and recorded with its reasoning in the register below; every decision of the register is a delegate's
+(OD-2026-11-24-4), and the one that the owner-decision record lists is OD-2026-11-24-700 (Decision 050-001).
 
 ### Decisions
 
@@ -320,7 +352,7 @@ decision 2026-11-24-4, each weighed over its options and recorded with its reaso
   Studio current, with free text still accepted because the Studio may be served from another build (Architecture
   decision 0016, `SAGAT_STUDIO_DIR`); settles Nit 15 of the architecture review of 2026-11-25.
 - **Decision 050-007 — Go and Java are marked built in the Studio's constant.** Options: a capability name per built
-  language (the draft); a field on the scripts routes; the constant. Chosen: the constant, settling Nit 8 of the
+  language (an earlier draft of this design); a field on the scripts routes; the constant. Chosen: the constant, settling Nit 8 of the
   Stage 5 review: `Language::is_built` is a compile-time constant true for all five languages, feature 023's languages
   need Studio changes anyway (a label, an editor mode, a sample), and a Studio served by another build learns of a
   missing language from the build route's `LANGUAGE_NOT_BUILT`.
@@ -347,10 +379,10 @@ decision 2026-11-24-4, each weighed over its options and recorded with its reaso
 - **Gap 050-002** The audit trail has no namespace column, so the audit page cannot filter by namespace.
 - **Gap 050-003** The approval form, summary and notification fields of feature 026 are drawn by 026's Studio tasks on
   the inspector this design builds; until then the approval inspector shows only the fields of feature 014.
-- **Gap 050-005** No count exists of drafts that hold legacy nodes; a guided conversion is built only if a count
-  (from `control-plane` over stored drafts) shows they are common.
 - **Gap 050-004** The subject picker of the approval policy is free text until feature 013's member list exists; then
   it lists the tenant's members (design 013, Requirement 013-020).
+- **Gap 050-005** No count exists of drafts that hold legacy nodes; a guided conversion is built only if a count
+  (from `control-plane` over stored drafts) shows they are common.
 
 ## Owner decisions needed
 
@@ -387,7 +419,7 @@ of Architecture decisions 0101, 0143 and 0144 and the settlement of review findi
     only another subject; she is an operator and started one of the first two, whose policy excludes the initiator.
 *   **When**: she opens "Waiting for me".
 *   **Then**: one approval is listed as hers to decide, with its workflow, run, step, deadline and time left; the
-    others are not listed under "decidable", and nothing on the page says who may decide them; she approves, the
+    others are not listed, and nothing on the page says who may decide them; she approves, the
     receipt shows, the item leaves the list, and the run moves to its approve route.
 
 ### CUJ 4: An operator follows a large collection (User story 050-03)
@@ -475,7 +507,7 @@ Design 050 ships two names:
 | Name | Present when |
 |---|---|
 | `workflow.collection-operators` | the deployment's collection-operators switch is on (design 042) |
-| `workflow.step-destinations` | step-output destinations publish (feature 035) |
+| `workflow.step-destinations` | step-output destinations publish (feature 035): the `stepDestinations` field of a step, which also writes the step's output to a table or a stream; without the name the Studio shows that field read-only |
 
 Lake writes are already advertised by the database drivers list (`GET /namespaces/{namespaceId}/database-drivers`
 lists Iceberg only when `lake.enabled`), which the Studio reads for `icebergWrite`; no second advertisement is added.
@@ -483,10 +515,18 @@ The loops, `switch`, `approval` and `continueAsNew` need no name: publication ac
 Plan 4 on every 0.3.0 server, and against a server without the field the Studio offers every kind that needs no name
 and lets validation decide.
 
+A field whose capability is absent (the collection-operator stage list of `forEach`, `stepDestinations`) is shown
+read-only with the reason and kept on save, as a node of a disabled kind is.
+
 Each other 0.3.0 feature adds its names, with a variant and a row here, when it ships: feature 022
 (`workflow.flow-control.concurrency`, `workflow.flow-control.rate`), 027 (`apps.*`), 028 (`testing.*`), 029
-(`access.*`), 013 (`identity.*`). A name that follows an operator's activation in the instance registry (022's, 029's
-restriction names, 013's) needs the registry member to keep the activated requirement set: today it reads the set only
+(`access.*`), 013 (`identity.*`). The instance registry (Architecture decision
+[0082](../adr/ADR-0082-the-instance-registry-records-requirements-only-for-the-operator-and-a-refused-process-stays-up-with-a-closed-gate.md))
+is unrelated to the Studio's node registry: every server process registers in it as a member and sends a beat every
+few seconds; an operator records a requirement there (a capability every process must have), which raises an epoch;
+a process that lacks a recorded requirement keeps a closed gate. This work is not part of design 050. A name that
+follows an operator's activation in the instance registry (022's, 029's restriction names, 013's) needs the member to
+keep the activated requirement set: today it reads the set only
 when a beat sees a new epoch and does not keep it (`Member::decide`), so a replica started after an activation would
 never learn it. The first feature that ships such a name (022, 029 or 013) makes the member read the set after a
 successful registration and on every epoch change, keep it beside the gate, and derive its names from it through one
@@ -523,9 +563,9 @@ expression field):
 
 | Shape | Publishes | Refused |
 |---|---|---|
-| Basic graph | activity, database, script, condition, parallel, timer, waitEvent, child, saga, switch, approval, end, and `icebergWrite` with lake writes on | an approval or a loop combined with a collection |
-| Collection workflow | source activities, then a chain of `forEach` nodes ending at `end`; a body of one to eight activities, conditions, switches, timers and event waits with local routes and one `return` | triggers, `chainPolicy`, an approval in a body, `while`, `repeatUntil`, `continueAsNew` beside a collection |
-| Loop workflow | a chain of `while` or `repeatUntil` nodes ending at `end`, recovery activities; a body that is an activity chain | an activity after a loop's success edge, triggers, an approval in a body |
+| Basic graph | activity, database, script, condition, parallel, timer, waitEvent, child, saga, switch, approval, end, and `icebergWrite` with lake writes on | |
+| Collection workflow | source activities (the activities before the collection that produce its items), then a chain of `forEach` nodes ending at `end`; a body of one to eight activities, conditions, switches, timers and event waits with local routes and one `return` | triggers, `chainPolicy`, an approval in a body or beside a collection, `while`, `repeatUntil`, `continueAsNew` beside a collection |
+| Loop workflow | a chain of `while` or `repeatUntil` nodes ending at `end`, recovery activities (the activities a loop's error route leads to); a body that is an activity chain | an activity after a loop's success edge, triggers, an approval in a body |
 | Declared state | `state` with Queries and Updates; `continueAsNew` with `chainPolicy` in the continuation shape | `bodies` with `state` |
 
 The Studio writes this table nowhere as a rule: it shows each kind's note in the palette, and the editor's live
@@ -535,8 +575,8 @@ node with the codec's reason. A codec problem about a body node names it by its 
 same id; the codec therefore sets the problem's existing JSON pointer to `/bodies/{name}/nodes/{index}`, and
 `NODE_POINTER` and `resolveNodeId` in `validationModel.ts` read that form; no field is added. The codec reports its first
 structural refusal only, so a draft with two refused combinations shows the second after the first is fixed. As feature 014's remaining tasks and design 039 widen the subset during the release, the
-codec changes and the Studio needs no change; the notes and this table are corrected in the same delivery as the codec
-(documentation first).
+codec changes and the Studio's behaviour needs no change; only the per-kind notes in `registry.ts` and this table are
+corrected in the same delivery as the codec (documentation first).
 
 The workflow settings panel (`WorkflowSettings.tsx`) gains `inputSchema` (a JSON editor with the subset of design 043
 explained, the server's problems by pointer), `state` (schema, initial value, a table of Queries and Updates, each with
@@ -556,8 +596,9 @@ kind of node" (legacy) or "This server does not enable this kind of node" (capab
 node); what moves today are entries without an `id` or a `type` and duplicate ids, which `documentIO.ts` appends after
 the known nodes; it changes to keep each at its index, in the root graph and in every body. The legacy node's
 inspector shows its values read-only beside "Add a For each here" or "Add an Approval here", which adds an empty node
-of the executable kind linked from the legacy node's predecessor; the author fills it from the values shown and deletes
-the legacy node. No automatic mapping is offered: no count of drafts with legacy nodes exists, and a guided conversion
+of the executable kind and moves to it every link that pointed at the legacy node (each predecessor's handle now names
+the new node; for an entrypoint, the entrypoint moves); the legacy node keeps its values and its own outgoing links
+until the author deletes it (a read-only node can be deleted). The author fills the new node from the values shown. No automatic mapping is offered: no count of drafts with legacy nodes exists, and a guided conversion
 (Gap 050-005) is built only if one shows they are common.
 
 ### 5. The run view
@@ -565,9 +606,11 @@ the legacy node. No automatic mapping is offered: no count of drafts with legacy
 - **Iterations.** The runtime graph projection gains, on a collection or loop owner node, `iterations`: the counts of
   its admitted iterations by status (`SUCCEEDED`, `FAILED`, `RUNNING`, `RETRYING`) and, when the owner knows it, the
   total; and on each scoped instance of its direct scope, `iterationStatus`. Both are taken from the outcomes the
-  engine already records for each iteration (`CollectionDrainReason`, `LoopDrainReason`,
-  `crates/domain/src/execution/event.rs`), additive fields of `RuntimeNode`, so the Studio never decides an iteration's
-  outcome itself. `model/runGraph.ts` groups `RuntimeNode`s by `instancePath` and `nodeId` (never by parsing `id`) under
+  engine already records for each iteration (`CollectionDrainReason`, `LoopDrainReason` in
+  `crates/domain/src/execution/event.rs`: the reason a collection or loop stopped, with the failed iteration when one
+  failed), additive fields of `RuntimeNode`, so the Studio never decides an iteration's outcome itself. Under that rule
+  a step that failed and was routed by `onError` belongs to a succeeded iteration, and compensations and
+  reconciliations are not counted as iterations. `model/runGraph.ts` groups `RuntimeNode`s by `instancePath` and `nodeId` (never by parsing `id`) under
   their outermost scope node and draws: the card shows the reported counts; the iteration strip (`useWindowedRows` of
   `features/runs/useWindow.ts`) lists index, status and failure code, filterable by status; choosing an iteration draws
   its body graph, with compensations (`~c`) and reconciliations (`~r`) beside their forward step. Nested scopes
@@ -747,12 +790,16 @@ label test of the two routes (050-004).
 ## Detailed Implementation Plan
 
 Documents first (constitution, Documentation first): Task 050-2 lands before the code that serves the new fields. Tests
-are seen failing first. Two builders can work in parallel after Task 050-2: the server builder (Tasks 050-3 to 050-5;
-`crates/` only) and the editor builder (Tasks 050-6 to 050-8; `frontend/apps/studio/src/model/` and
-`features/workflows/` only); the operations tasks (050-9 to 050-12; `features/runs/`, `features/inbox/`,
-`features/audit/`, `features/settings/`, `features/events/`, `features/scripts/`, `src/app/`)
-follow on either builder once Task 050-3 has merged; the domain part of Task 050-11 (`AuditAction::ALL` and its test)
-goes with the server builder. A new primitive goes in a new file of `src/ui/`.
+are seen failing first. A task line writes its identifier as `T050-n`, the form the design-doc check reads; prose writes
+"Task 050-n" for the same task.
+
+Two builders work in parallel after Task 050-2. The server builder owns every change under `crates/` and `apps/`:
+Tasks 050-3, 050-4 and 050-5, the codec pointer of Task 050-6, the runtime graph's iteration fields of Task 050-9, and
+`AuditAction::ALL` of Task 050-11. The Studio builder owns `frontend/apps/studio/`: the editor (Tasks 050-6 to 050-8,
+`model/` and `features/workflows/`), then the operations screens. Predecessors: Task 050-6's Studio part after its
+codec part; Task 050-9 after Task 050-4 and its own projection part; Task 050-10 after Tasks 050-4 and 050-5; Task
+050-11's page after its domain part; Task 050-12's versions page after Task 050-5; Task 050-13 after the tasks whose
+journeys it runs. A new primitive goes in a new file of `src/ui/`.
 
 - [ ] T050-1 Accept Architecture decision 0101 with its two conditions: set its status in pull request #267 (or a
   follow-up on `develop` after it merges) to accepted under OD-2026-11-24-700; add the bundle budget test to
@@ -777,7 +824,8 @@ goes with the server builder. A new primitive goes in a new file of `src/ui/`.
   (`crates/api-http`), `youMayDecide` on the items of `GET /runs/{runId}/approvals`, `RUN_ENDED`.
   Red tests: `may_decide_equals_decide` (property, domain, over pending requests with fresh keys and both run states),
   `a_decision_on_an_ended_run_is_409_run_ended`, `an_inbox_page_and_a_decision_agree_on_an_ended_run`,
-  `every_run_end_cancels_its_pending_approvals`, `the_inbox_never_names_a_policy_member`,
+  `every_run_end_cancels_its_pending_approvals` (a probe: a failing path opens a follow-up task and does not block this
+  one, since the inbox leaves ended-run rows out), `the_inbox_never_names_a_policy_member`,
   `one_decidable_row_after_2001_undecidable_is_found_in_two_requests`,
   `the_per_run_list_flags_the_callers_own_eligibility_only`,
   `a_page_stops_at_the_scan_bound_and_continues`, `another_tenants_namespace_is_not_found` (battery),
@@ -831,10 +879,9 @@ goes with the server builder. A new primitive goes in a new file of `src/ui/`.
   Red tests: `the_openapi_actions_equal_the_domain_actions`, `the_download_stops_at_ten_thousand_and_says_so`,
   `the_page_is_absent_without_audit_read`.
   Refs: Requirement 050-013
-- [ ] T050-12 The versions page, the settings page, the events page, the built languages from the server, the command
+- [ ] T050-12 The versions page, the settings page, the events page, Go and Java marked built in `languages.ts`, the command
   palette.
-  Red tests: one component test per section with each role; `go_and_java_are_built_when_the_server_says_so`;
-  `without_the_field_the_languages_of_0_2_are_built`;
+  Red tests: one component test per section with each role; `go_and_java_are_built`; `a_language_not_built_answer_is_shown_at_the_language`;
   `the_palette_never_calls_a_route_the_person_cannot_call`.
   Refs: Requirement 050-016, Requirement 050-017, Requirement 050-018, Requirement 050-019, Requirement 050-020
 - [ ] T050-13 Journeys in `frontend/e2e/tests/` driven by `e2e_workflow_studio`: the journey of Success criterion
@@ -856,7 +903,8 @@ None yet.
   and palette components (`npm test`).
 - Property: `may_decide_equals_decide` for approvals and publication requests in `crates/domain`.
 - Integration (real PostgreSQL): the two list routes, their scan bound, their runtime-role privileges
-  (`SAGAT_TEST_AS_RUNTIME_ROLE=1`), the registry-derived capabilities, in a new target `integration_studio_catch_up`.
+  (`SAGAT_TEST_AS_RUNTIME_ROLE=1`), the capabilities derived from the start-up switches, in a new target
+  `integration_studio_catch_up`.
 - Contract: the OpenAPI lint, the capability list against the switches, the inbox schema without policy fields, the
   cross-tenant battery, the audit action list.
 - Journeys: `e2e_workflow_studio` with the new journeys; axe in light, dark and forced colours.
