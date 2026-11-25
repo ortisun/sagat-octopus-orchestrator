@@ -2614,3 +2614,62 @@ async fn a_cancel_source_reset_retried_while_the_first_is_in_flight_answers_its_
     let again = again.expect("the retry answers the first request's entry, not the full window");
     assert_eq!(again.reset.id, first.reset.id);
 }
+/// Batch 5 correctness Major 1 and security suspicion 2 (decision D022-090): a held signal whose delivery fails (here a
+/// trigger refuses its `run.signalled` audit record, as any failure of the delivery would) no longer fails the grant of
+/// its start, which would end the key's pass on every pass: the grant is tried again without it, the signal dropped with
+/// its audit record (`DELIVERY_FAILED`, naming the caller who sent it), and the start granted.
+#[tokio::test]
+async fn a_held_signal_whose_delivery_fails_is_dropped_and_the_start_is_granted() {
+    let w = gated_world().await;
+    let workflow = publish(&w, gated_waiter("creators-signal-undeliverable")).await;
+    let first = signal_with_start(&w, workflow, "cart-1")
+        .await
+        .expect("the first holds the permit");
+    let queued = signal_with_start(&w, workflow, "cart-2")
+        .await
+        .expect("created and held");
+    let run = queued.run.info.run_id;
+    assert!(queued.held, "{queued:?}");
+    for statement in [
+        format!(
+            "CREATE FUNCTION test_refuse_signalled() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN \
+               IF NEW.resource_id = '{run}' AND NEW.action = 'run.signalled' THEN \
+                 RAISE EXCEPTION 'the test refuses this delivery'; END IF; RETURN NEW; END $$"
+        ),
+        "CREATE TRIGGER test_refuse_signalled BEFORE INSERT ON audit_records FOR EACH ROW \
+           EXECUTE FUNCTION test_refuse_signalled()"
+            .to_owned(),
+    ] {
+        sqlx::query(sqlx::AssertSqlSafe(statement))
+            .execute(&w.db.pool)
+            .await
+            .expect("the refusing trigger");
+    }
+    w.operate_run(
+        first.run.info.run_id,
+        sagat_application::runs::RunOperation::Cancel,
+    )
+    .await;
+    let report = w.scheduler.grant_gates().await;
+    sqlx::query("DROP TRIGGER test_refuse_signalled ON audit_records")
+        .execute(&w.db.pool)
+        .await
+        .expect("the trigger dropped");
+    assert_eq!(report.gates_granted, 1, "{report:?}");
+    assert_eq!(start_rows(&w, run).await, (1, 0), "granted");
+    let (held, dropped) = held_and_audited(&w, run, "run.signal_dropped").await;
+    assert_eq!(held, 0, "the held row is gone");
+    assert_eq!(dropped.len(), 1, "{dropped:?}");
+    let reason = dropped[0].as_deref().unwrap_or_default();
+    assert!(
+        reason.starts_with("DELIVERY_FAILED") && reason.contains(w.admin.subject().as_str()),
+        "dropped for its delivery, naming its sender: {reason}"
+    );
+    assert_eq!(held_and_audited(&w, run, "run.signalled").await.1.len(), 0);
+    assert_eq!(
+        w.step_status(run, "w").await,
+        Some(sagat_domain::execution::StepStatus::Waiting),
+        "nothing was delivered"
+    );
+    w.assert_consistent(run).await;
+}

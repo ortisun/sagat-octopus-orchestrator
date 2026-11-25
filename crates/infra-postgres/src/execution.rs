@@ -6161,6 +6161,10 @@ impl RunTx for PgRunTx {
         worker_capacity::available(&mut self.tx, &self.info).await
     }
 
+    async fn rollback(self) -> Result<(), StoreError> {
+        self.tx.rollback().await.map_err(store_error)
+    }
+
     async fn commit(mut self) -> Result<(), StoreError> {
         if self.scoped_event_delivery_attempted && self.scoped_event_persistence_failed {
             return Err(corrupt(

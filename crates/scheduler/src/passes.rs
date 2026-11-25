@@ -567,6 +567,12 @@ enum Granted {
     Busy,
     Orphan,
     Fenced,
+    /// Its grant failed for a reason that clears on its own (the store unavailable: a pool or statement timeout, a
+    /// serialization failure, a deadlock): like [`Self::Busy`], it ends its key's pass (decision D022-090).
+    Transient,
+    /// Its grant failed for any other reason (a version this build cannot load, an execution error, a row a constraint
+    /// refuses): it is skipped and the pass goes on, so that a waiter whose grant always fails does not hold back the
+    /// younger waiters of its key until its deadline (decision D022-090).
     Failed,
     /// This process has no digest key ring (G1198): it grants nothing.
     Unsupported,
@@ -579,10 +585,46 @@ impl Granted {
             Self::Refused | Self::RefusedRoom(_) | Self::HeldBack | Self::Busy => "skipped",
             Self::Orphan => "orphan",
             Self::Fenced => "fenced",
-            Self::Failed => "failed",
+            Self::Transient | Self::Failed => "failed",
             Self::Unsupported => "unsupported",
         }
     }
+
+    /// What a failed grant means for its key's pass (decision D022-090).
+    fn of_failure(error: &EngineError) -> Self {
+        match error {
+            EngineError::Store(StoreError::FlowControl(
+                sagat_application::flow_control::FlowControlRefusal::BinaryCapabilityMissing,
+            )) => Self::Unsupported,
+            EngineError::Store(
+                StoreError::Unavailable { .. } | StoreError::DatabaseUnavailable,
+            ) => Self::Transient,
+            _ => Self::Failed,
+        }
+    }
+}
+
+/// A grant of one waiter that did not end in a decision: where it failed (decision D022-090).
+enum GrantFailure {
+    /// The delivery of the signal held with a queued start.
+    Delivery(EngineError),
+    Other(EngineError),
+}
+
+impl GrantFailure {
+    fn error(&self) -> &EngineError {
+        match self {
+            Self::Delivery(error) | Self::Other(error) => error,
+        }
+    }
+}
+
+/// What the grant of a queued start does with the signal held with it (decision D022-090).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HeldSignal {
+    Deliver,
+    /// Its delivery failed in an earlier transaction: dropped, with its audit record.
+    Drop,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -6011,11 +6053,17 @@ where
                     return pass;
                 }
                 Granted::Refused => {}
-                // a waiter whose run another transaction holds, or whose grant failed, is decided by a later pass, and
-                // every younger waiter of the key waits for it: granting one of them now would put it before an older
-                // waiter the window may have room for (strict admission order, decision D022-073; batch 3 work item 2)
+                // a waiter whose run another transaction holds, or whose grant failed for a reason that clears on its
+                // own, is decided by a later pass, and every younger waiter of the key waits for it: granting one of
+                // them now would put it before an older waiter the window may have room for (strict admission order,
+                // decision D022-073; batch 3 work item 2; decision D022-090)
                 Granted::Busy => {
                     pass.skipped += 1;
+                    undecided = true;
+                    break;
+                }
+                Granted::Transient => {
+                    pass.failed += 1;
                     undecided = true;
                     break;
                 }
@@ -6024,10 +6072,12 @@ where
                     pass.fenced += 1;
                     return pass;
                 }
+                // any other failure would recur on every pass: the waiter is skipped, counted and logged (by
+                // `grant_waiter`), and stays queued until its deadline; the key keeps its hint, so it is tried again
+                // (decision D022-090)
                 Granted::Failed => {
                     pass.failed += 1;
                     undecided = true;
-                    break;
                 }
             }
         }
@@ -6049,136 +6099,200 @@ where
         waiter: &sagat_application::flow_control::GateWaiter,
         order: sagat_application::flow_control::PassOrder<'_>,
     ) -> Granted {
-        let outcome = async {
-            // the waiter's run first (ADR-0089 decision 3): one another transaction holds is tried by the next pass
-            let Some(mut tx) = self
-                .store
-                .begin(waiter.tenant_id, waiter.run_id, Lock::SkipLocked)
-                .await
-                .map_err(EngineError::Store)?
-            else {
-                return Ok(Granted::Busy);
-            };
-            if !view
-                .holds_key(&mut tx, hold)
-                .await
-                .map_err(EngineError::Store)?
-            {
-                return Ok(Granted::Fenced);
-            }
-            let attempt = {
-                let (_, state) = tx.parts();
-                if state.is_finished() {
-                    tracing::error!(
-                        run_id = %waiter.run_id,
-                        "a flow-control waiter of a run that ended: an invariant breach, skipped"
-                    );
-                    return Ok(Granted::Orphan);
-                }
-                // a paused or stopping run's waiter is skipped, and is not counted ahead (ADR-0089 decision 4)
-                // (not listed while paused: its pause or resume makes the key due; a stop dequeues it)
-                if state.is_paused() || state.stop_reason().is_some() {
-                    return Ok(Granted::Refused);
-                }
-                match &waiter.node {
-                    // a run's start that still waits (T022-022)
-                    None if state.run_gates().is_waiting() => 0,
-                    Some(node) => match state.step(node) {
-                        Some(step)
-                            if step.status() == execution::StepStatus::Waiting
-                                && matches!(
-                                    step.waiting_on(),
-                                    Some(execution::WaitingOn::Gate)
-                                ) =>
-                        {
-                            step.attempt().saturating_add(1)
-                        }
-                        // the candidate is stale: a grant, a timeout or a cancellation reached it first
-                        _ => return Ok(Granted::Refused),
-                    },
-                    None => return Ok(Granted::Refused),
-                }
-            };
-            // every decision of this pass counts the key's grants as of the pass's selection of the key (decision
-            // D022-073 item 2) and respects the pass's refusals (decision D022-078 item 2): its grants follow admission
-            // order
-            let grants = match tx
-                .grant_queued_step(waiter.node.as_ref(), attempt, order)
-                .await
-                .map_err(EngineError::Store)?
-            {
-                sagat_application::flow_control::QueueDecision::Granted(grants) => grants,
-                sagat_application::flow_control::QueueDecision::Refused {
-                    held_back: true, ..
-                } => return Ok(Granted::HeldBack),
-                sagat_application::flow_control::QueueDecision::Refused {
-                    room: Some(room), ..
-                } => return Ok(Granted::RefusedRoom(room)),
-                sagat_application::flow_control::QueueDecision::Refused { .. } => {
-                    return Ok(Granted::Refused);
-                }
-            };
-            // the span names the group, never the key (FR-022-033); a slot's grant is a rate-limit grant
-            let rate = grants.iter().find(|grant| {
-                grant.change.kind() == sagat_domain::workflow::GateKind::RateLimit
-            });
-            let span = match rate {
-                Some(grant) => tracing::info_span!(
-                    sagat_telemetry::FlowControlSpan::RateLimitGrant.as_str(),
-                    "sagat.rate_limit.group" = grant.gate.group.as_str(),
-                    run_id = %waiter.run_id,
-                    tenant_id = %waiter.tenant_id,
-                    parent_span_id = %sagat_telemetry::run_span_id(waiter.run_id.as_uuid()),
-                ),
-                None => tracing::info_span!(
-                    sagat_telemetry::FlowControlSpan::ConcurrencyGrant.as_str(),
-                    "sagat.concurrency.group" = grants.first().map_or("", |grant| grant.gate.group.as_str()),
-                    run_id = %waiter.run_id,
-                    tenant_id = %waiter.tenant_id,
-                    parent_span_id = %sagat_telemetry::run_span_id(waiter.run_id.as_uuid()),
-                ),
-            };
-            let start = waiter.node.is_none();
-            self.engine
-                .run(&mut tx, self.effects(), move |def, state, now| {
-                    let progress = if start {
-                        execution::grant_run_gates(def, state, now, grants)?
-                    } else {
-                        execution::grant_step_gates(def, state, now, grants)?
-                    };
-                    Ok(((), progress))
-                })
-                .instrument(span)
-                .await?;
-            // the signal a Signal-with-Start held with this queued start, delivered in the grant's transaction as
-            // `signalRun` would, or dropped with an audit record when no step waits for it (feature 022, T022-109,
-            // decision D022-087 item 3)
-            if start {
-                self.engine.deliver_held_signal(&mut tx).await?;
-            }
-            tx.commit().await.map_err(EngineError::Store)?;
-            Ok::<_, EngineError>(Granted::Yes)
+        let mut outcome = self
+            .try_grant_waiter(view, hold, waiter, order, HeldSignal::Deliver)
+            .await;
+        // a held signal whose delivery fails for a reason that does not clear on its own would fail the grant on every
+        // pass: the grant is tried once more, in a new transaction, without it (decision D022-090)
+        if let Err(GrantFailure::Delivery(error)) = &outcome
+            && Granted::of_failure(error) == Granted::Failed
+        {
+            tracing::warn!(
+                %error,
+                run_id = %waiter.run_id,
+                "the signal held with a queued start could not be delivered: it is dropped and the start granted"
+            );
+            outcome = self
+                .try_grant_waiter(view, hold, waiter, order, HeldSignal::Drop)
+                .await;
         }
-        .await;
-        let outcome = outcome.unwrap_or_else(|error| match error {
-            // the step was read under the run's lock, so a domain refusal here is a defect, not a lost race (correctness
-            // review m4, 2026-11-19): it is a failure, the key keeps its hint
-            EngineError::Store(StoreError::FlowControl(
-                sagat_application::flow_control::FlowControlRefusal::BinaryCapabilityMissing,
-            )) => {
-                tracing::warn!(
+        let outcome = outcome.unwrap_or_else(|failure| {
+            let outcome = Granted::of_failure(failure.error());
+            match outcome {
+                Granted::Unsupported => tracing::warn!(
                     "this process has no flow-control digest key ring: it grants no queued step"
-                );
-                Granted::Unsupported
+                ),
+                // the step was read under the run's lock, so a domain refusal here is a defect, not a lost race
+                // (correctness review m4, 2026-11-19)
+                _ => tracing::error!(
+                    error = %failure.error(),
+                    run_id = %waiter.run_id,
+                    "a flow-control grant failed"
+                ),
             }
-            error => {
-                tracing::error!(%error, run_id = %waiter.run_id, "a flow-control grant failed");
-                Granted::Failed
-            }
+            outcome
         });
         metrics::counter!("scheduler_actions_total", "kind" => "gate_grant", "outcome" => outcome.label())
             .increment(1);
         outcome
+    }
+
+    /// One try of [`Self::grant_waiter`], in one transaction of the waiter's run: committed when it grants, and otherwise
+    /// rolled back, the rollback awaited, so that the next waiter of the same run finds the run free (decision D022-091).
+    async fn try_grant_waiter(
+        &self,
+        view: &View,
+        hold: &Hold,
+        waiter: &sagat_application::flow_control::GateWaiter,
+        order: sagat_application::flow_control::PassOrder<'_>,
+        held: HeldSignal,
+    ) -> Result<Granted, GrantFailure> {
+        // the waiter's run first (ADR-0089 decision 3): one another transaction holds is tried by the next pass
+        let Some(mut tx) = self
+            .store
+            .begin(waiter.tenant_id, waiter.run_id, Lock::SkipLocked)
+            .await
+            .map_err(|error| GrantFailure::Other(EngineError::Store(error)))?
+        else {
+            return Ok(Granted::Busy);
+        };
+        let decided = self
+            .decide_grant(&mut tx, view, hold, waiter, order, held)
+            .await;
+        if matches!(decided, Ok(Granted::Yes)) {
+            tx.commit()
+                .await
+                .map_err(|error| GrantFailure::Other(EngineError::Store(error)))?;
+        } else if let Err(error) = tx.rollback().await {
+            // the pool closes a connection whose rollback failed, which ends the transaction and frees the run
+            tracing::warn!(%error, run_id = %waiter.run_id, "a flow-control grant could not be rolled back");
+        }
+        decided
+    }
+
+    /// The decision of one try of a grant, in `tx`, which the caller commits or rolls back.
+    async fn decide_grant<Tx: RunTx>(
+        &self,
+        tx: &mut Tx,
+        view: &View,
+        hold: &Hold,
+        waiter: &sagat_application::flow_control::GateWaiter,
+        order: sagat_application::flow_control::PassOrder<'_>,
+        held: HeldSignal,
+    ) -> Result<Granted, GrantFailure> {
+        let other = |error: EngineError| GrantFailure::Other(error);
+        if !view
+            .holds_key(&mut *tx, hold)
+            .await
+            .map_err(|error| other(EngineError::Store(error)))?
+        {
+            return Ok(Granted::Fenced);
+        }
+        let attempt = {
+            let (_, state) = tx.parts();
+            if state.is_finished() {
+                tracing::error!(
+                    run_id = %waiter.run_id,
+                    "a flow-control waiter of a run that ended: an invariant breach, skipped"
+                );
+                return Ok(Granted::Orphan);
+            }
+            // a paused or stopping run's waiter is skipped, and is not counted ahead (ADR-0089 decision 4)
+            // (not listed while paused: its pause or resume makes the key due; a stop dequeues it)
+            if state.is_paused() || state.stop_reason().is_some() {
+                return Ok(Granted::Refused);
+            }
+            match &waiter.node {
+                // a run's start that still waits (T022-022)
+                None if state.run_gates().is_waiting() => 0,
+                Some(node) => match state.step(node) {
+                    Some(step)
+                        if step.status() == execution::StepStatus::Waiting
+                            && matches!(step.waiting_on(), Some(execution::WaitingOn::Gate)) =>
+                    {
+                        step.attempt().saturating_add(1)
+                    }
+                    // the candidate is stale: a grant, a timeout or a cancellation reached it first
+                    _ => return Ok(Granted::Refused),
+                },
+                None => return Ok(Granted::Refused),
+            }
+        };
+        // every decision of this pass counts the key's grants as of the pass's selection of the key (decision
+        // D022-073 item 2) and respects the pass's refusals (decision D022-078 item 2): its grants follow admission
+        // order
+        let grants = match tx
+            .grant_queued_step(waiter.node.as_ref(), attempt, order)
+            .await
+            .map_err(|error| other(EngineError::Store(error)))?
+        {
+            sagat_application::flow_control::QueueDecision::Granted(grants) => grants,
+            sagat_application::flow_control::QueueDecision::Refused {
+                held_back: true, ..
+            } => return Ok(Granted::HeldBack),
+            sagat_application::flow_control::QueueDecision::Refused {
+                room: Some(room), ..
+            } => return Ok(Granted::RefusedRoom(room)),
+            sagat_application::flow_control::QueueDecision::Refused { .. } => {
+                return Ok(Granted::Refused);
+            }
+        };
+        // the span names the group, never the key (FR-022-033); a slot's grant is a rate-limit grant
+        let rate = grants
+            .iter()
+            .find(|grant| grant.change.kind() == sagat_domain::workflow::GateKind::RateLimit);
+        let span = match rate {
+            Some(grant) => tracing::info_span!(
+                sagat_telemetry::FlowControlSpan::RateLimitGrant.as_str(),
+                "sagat.rate_limit.group" = grant.gate.group.as_str(),
+                run_id = %waiter.run_id,
+                tenant_id = %waiter.tenant_id,
+                parent_span_id = %sagat_telemetry::run_span_id(waiter.run_id.as_uuid()),
+            ),
+            None => tracing::info_span!(
+                sagat_telemetry::FlowControlSpan::ConcurrencyGrant.as_str(),
+                "sagat.concurrency.group" = grants.first().map_or("", |grant| grant.gate.group.as_str()),
+                run_id = %waiter.run_id,
+                tenant_id = %waiter.tenant_id,
+                parent_span_id = %sagat_telemetry::run_span_id(waiter.run_id.as_uuid()),
+            ),
+        };
+        let start = waiter.node.is_none();
+        self.engine
+            .run(&mut *tx, self.effects(), move |def, state, now| {
+                let progress = if start {
+                    execution::grant_run_gates(def, state, now, grants)?
+                } else {
+                    execution::grant_step_gates(def, state, now, grants)?
+                };
+                Ok(((), progress))
+            })
+            .instrument(span)
+            .await
+            .map_err(other)?;
+        // the signal a Signal-with-Start held with this queued start, delivered in the grant's transaction as
+        // `signalRun` would, or dropped with an audit record when no step waits for it (feature 022, T022-109,
+        // decision D022-087 item 3); when its delivery failed in an earlier try, dropped (decision D022-090)
+        if start {
+            match held {
+                HeldSignal::Deliver => {
+                    self.engine
+                        .deliver_held_signal(&mut *tx)
+                        .await
+                        .map_err(GrantFailure::Delivery)?;
+                }
+                HeldSignal::Drop => {
+                    self.engine
+                        .drop_held_signal(
+                            &mut *tx,
+                            sagat_application::execution::HELD_SIGNAL_DELIVERY_FAILED,
+                        )
+                        .await
+                        .map_err(other)?;
+                }
+            }
+        }
+        Ok(Granted::Yes)
     }
 
     /// The timeout routine of feature 022 (T27, T022-098; ADR-0089 decision 5, FR-022-052): a queued step whose deadline

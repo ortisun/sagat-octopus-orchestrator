@@ -104,7 +104,8 @@ impl PgRunTx {
     }
 }
 
-/// The audit record of a held signal dropped for `reason`: the engine's, naming the signal and why, never its payload.
+/// The audit record of a held signal dropped for `reason`: the engine's, naming the signal, why, and the caller who sent
+/// it (the held row's actor; batch 5 security minor 2), never its payload.
 fn dropped(
     tenant: TenantId,
     run: sagat_domain::execution::RunId,
@@ -118,8 +119,9 @@ fn dropped(
         ResourceType::Run,
         run.to_string(),
         format!(
-            "{reason}: signal '{}' held with the queued start",
-            signal.name.chars().take(64).collect::<String>()
+            "{reason}: signal '{}' held with the queued start, sent by '{}'",
+            signal.name.chars().take(64).collect::<String>(),
+            signal.actor.chars().take(128).collect::<String>()
         ),
         signal.trace_id.clone(),
         now,

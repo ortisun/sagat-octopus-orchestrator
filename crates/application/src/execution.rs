@@ -60,6 +60,9 @@ pub const HELD_SIGNAL_NOT_WAITING: &str = "NOT_WAITING_AT_GRANT";
 pub const HELD_SIGNAL_OUTPUT_BOUND: &str = "OUTPUT_BOUND";
 /// Why a held signal was dropped with its queued run: the run ended before its start was granted (item 4).
 pub const HELD_SIGNAL_RUN_ENDED: &str = "RUN_ENDED";
+/// Why a held signal was dropped at the grant: its delivery failed for a reason that does not clear on its own, so the
+/// start was granted without it (decision D022-090).
+pub const HELD_SIGNAL_DELIVERY_FAILED: &str = "DELIVERY_FAILED";
 
 /// Deepest nesting of child runs: a run started by the API is at depth 0, its children at 1, and so
 /// on. A recursive workflow therefore ends in a failed step, never in an unbounded tree.
@@ -1823,6 +1826,10 @@ pub trait RunTx: Send {
 
     /// Commits. Dropping the transaction instead rolls everything back.
     fn commit(self) -> impl Future<Output = Result<(), StoreError>> + Send;
+
+    /// Rolls everything back and waits until it is done, so that the run's lock is released when this returns (decision
+    /// D022-091): a dropped transaction is rolled back later, by the pool, in a task of its own.
+    fn rollback(self) -> impl Future<Output = Result<(), StoreError>> + Send;
 }
 
 fn root_events_for_legacy_adapter(
@@ -2283,6 +2290,23 @@ impl<E: ExpressionEvaluator> Engine<E> {
         })
         .await?;
         Ok(HeldDelivery::Delivered(woken))
+    }
+
+    /// Drops the signal held with the run of `tx`, with its audit record for `reason`, without delivering it: the grant
+    /// of a queued start whose delivery failed in an earlier transaction (decision D022-090). Whether a signal was held.
+    ///
+    /// # Errors
+    /// The store's failures.
+    pub async fn drop_held_signal<Tx: RunTx>(
+        &self,
+        tx: &mut Tx,
+        reason: &'static str,
+    ) -> Result<bool, EngineError> {
+        let Some(signal) = tx.take_held_signal().await? else {
+            return Ok(false);
+        };
+        tx.audit_held_signal_dropped(&signal, reason).await?;
+        Ok(true)
     }
 
     pub async fn start<Tx: RunTx>(
