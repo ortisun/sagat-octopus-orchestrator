@@ -38,7 +38,10 @@ All of it is built on the Astryx design system of
 [Architecture decision 0101](https://github.com/ortisun/sagat-octopus-orchestrator/blob/feature/007-astryx-design-system/docs/adr/ADR-0101-the-studio-builds-its-interface-on-the-astryx-design-system.md)
 (pull request #267), which this design accepts under the owner's delegation (Technical Plan 1). The server gains three
 small things: a `capabilities` list on `GET /version`, a namespace-wide approvals list, and a namespace-wide list of
-publication requests. Nothing else changes in the engine, the IR, the worker protocol or the SDKs.
+publication requests; and it makes three small additive corrections the screens need: a validation problem names the
+body of a body node, a decision on an approval whose run has ended answers `409 RUN_ENDED` instead of a retryable `503`,
+and the instance registry's member keeps the activated requirement set it learns. Nothing changes in the IR, the
+worker protocol or the SDKs.
 
 ### Terms
 
@@ -101,26 +104,31 @@ REST API to approve a step.
   0143, decision 1). *Acceptance:* `registry.test.ts` passes on the schema of `develop` and fails on a schema with an
   added kind or a changed required field.
 - **Requirement 050-002** `GET /version` MUST return `capabilities`, a list of deployment-wide names (never per
-  tenant) of the known list of Technical Plan 3, each present exactly when the answering replica would accept the
-  matching publication or route; names that follow an operator's activation in the instance registry MUST appear within
-  one heartbeat of it. The field is a list of strings with a pattern; a reader MUST ignore a name it does not know, and
+  tenant) of the known list of Technical Plan 3, each present when the answering replica, as of its last successful
+  registry beat, would accept the matching publication or route; names that follow an operator's activation in the
+  instance registry MUST appear within one heartbeat of it, also on a replica that started after the activation. The field is a list of strings with a pattern; a reader MUST ignore a name it does not know, and
   an absent field means a server older than 0.3.0. *Acceptance:* the contract test
   `capabilities_follow_the_switches_a_server_was_started_with` (each static switch on and off),
-  `a_registry_activation_appears_within_one_heartbeat`, and `a_reader_ignores_an_unknown_capability`.
+  `a_registry_activation_appears_within_one_heartbeat`, `a_replica_started_after_an_activation_advertises_it` (beats
+  driven directly, no sleeps), and `a_reader_ignores_an_unknown_capability`.
 - **Requirement 050-003** The palette MUST offer only the kinds whose capability is present, inside a body only the
   kinds of that body's scope, and never a legacy kind; each entry MUST say in words where it publishes in 0.3.0
   (Technical Plan 4). A combination the codec refuses MUST be shown at its node, with the codec's reason, from the
   editor's live validation, never from a rule written again in the Studio. *Acceptance:* the Studio unit test with a
   capability list without `workflow.lake-writes` shows no `icebergWrite`; the journey that places an `approval` inside a
-  collection body shows the server's refusal at that node within the validation delay.
+  collection body shows the server's refusal at that node within the validation delay, also when a root node has the
+  same id (a validation problem names the body of a body node, Technical Plan 4).
 - **Requirement 050-004** A draft that holds a node the palette would not offer (a legacy kind, or a kind whose
   capability is absent) MUST open with that node drawn, read-only, with the reason in words and the server's
   problem; saving the draft MUST keep the node equal under `canonical()` (`model/ir.ts`) and in its place among the
-  nodes. *Acceptance:* a draft with a `humanApproval` node opens, saves and reloads equal under `canonical()`, the node
-  in its place; its problem list shows the server's message.
-- **Requirement 050-005** A legacy node MAY be replaced through a dialog that fills the fields that map exactly
-  (Technical Plan 4) and requires the author to fill every other required field before the replacement is made; the
-  replacement MUST be one undoable edit. *Acceptance:* the dialog test replaces a `foreach` with a `forEach` whose
+  nodes, in the root graph and in every body. *Acceptance:* a draft with a `humanApproval` node opens, saves and reloads
+  equal under `canonical()`, the node in its place, with its problem shown; a draft with an entry without an `id`
+  between two nodes and an entry with a duplicate id, in the root and in a body, keeps both at their index (this test
+  fails today: `documentIO.ts` appends them at the end).
+- **Requirement 050-005** A legacy node MAY be replaced through a dialog that carries over a value only when it passes
+  the target member's schema, asks for every required field that is absent or does not pass (showing the old value),
+  lists every property that will not carry over before the author confirms, and offers to move the legacy node's body
+  subgraph into a new body; the replacement MUST be one undoable edit. *Acceptance:* the dialog test replaces a `foreach` with a `forEach` whose
   `items`, `body`, `maxItems` and `maxConcurrency` come from the old node and whose `result` the author typed; undo
   restores the `foreach`.
 - **Requirement 050-006** The editor MUST edit, with its fields and handles, `switch` (up to 32 ordered cases and a
@@ -137,32 +145,46 @@ REST API to approve a step.
   `$defs/bodyNode`, each saying where it publishes in 0.3.0 (Technical Plan 4); a body named by two loops MUST say so
   before it is changed. *Acceptance:* the editor test opens the body of a
   `forEach`, adds a step, and cannot save a body without its `return` without the problem shown.
-- **Requirement 050-008** The run view MUST group scoped instances under their loop or collection node (counts by
-  status, a virtualized list of up to 10,000 iterations, the body graph of one chosen iteration), MUST show the case a
+- **Requirement 050-008** The run view MUST group scoped instances under their loop or collection node by
+  `instancePath` and `nodeId` (counts of iterations by the iteration status of Technical Plan 5, a virtualized list of
+  up to 10,000 iterations, the body graph of one chosen iteration, compensations and reconciliations drawn beside
+  their forward step), MUST show the case a
   `switch` chose from `switchSelection`, and MUST show an `UNKNOWN` selection as such. *Acceptance:* the run view test
-  with a recorded graph of a `forEach` of 500 items shows the counts, opens iteration 312 and shows its steps.
+  with a recorded graph of a `forEach` of 500 items, a two-step body, one compensation, one retry and one step routed
+  by `onError`, shows the iteration counts, opens iteration 312 and shows its steps.
 - **Requirement 050-009** The run view MUST list the run's approval requests with their status and deadline, and let a
   person decide one when `youMayDecide` is true, with a decision key made per dialog and reused on retry, an optional
   reason code, and the receipt shown; an ineligible person MUST see that they cannot decide, without the policy. The
-  flag comes from the approvals list filtered by `runId` (Requirement 050-010). *Acceptance:* the journey
+  flag comes from the approvals list filtered by `runId` (Requirement 050-010) and is a point-in-time hint the decision
+  re-checks. A decision key is reused only to resend the identical body after a lost response, a `429` or a `5xx`; any
+  change of the decision or the reason code makes a new key, and the fields are frozen once sent. A `403` or `409`
+  after a sent decision means "status unknown": the Studio re-reads `GET /runs/{runId}/approvals` and shows the status. *Acceptance:* the journey
   `a_person_approves_a_step_from_the_run_view_and_the_run_moves_on`.
 - **Requirement 050-010** The server MUST list the pending approval requests of a namespace
   (`GET /namespaces/{namespaceId}/approvals`) under Architecture decision 0144: ordered by deadline, optionally
   filtered by `workflowId` or `runId` (the latter served by the run's index, outside the deadline scan), each item with
-  `youMayDecide` computed by `ApprovalRequest::may_decide` on the caller's current principal, the filter
-  `decidable=true`, nothing of the policy, a bounded scan per page. An approval pending on a run that has ended is not
-  decidable. Settled approvals stay on the per-run list and in the audit log. *Acceptance:* the property test
+  `youMayDecide` computed by `ApprovalRequest::may_decide` on the caller's current principal and the run's state, the
+  filter `decidable=true` (`false` or absent: every pending item, each flagged), nothing of the policy, a bounded scan
+  per page whose cursor is the key of the last row scanned and is never null while rows remain. An approval whose run
+  has ended is left out of the page; a decision on it answers `409` with `details.reason` `RUN_ENDED`, never a
+  retryable `503`. Settled approvals stay on the per-run list and in the audit log. *Acceptance:* the property test
   `may_decide_equals_decide` (domain), the contract test that no field names a policy member, the cross-tenant battery
-  entry, and the integration test that a page stops at the scan bound and continues from its cursor.
-- **Requirement 050-011** The server MUST list the `PENDING` publication requests of a namespace
+  entry, the integration test that 2,001 undecidable rows followed by one decidable row are found in two requests,
+  `an_inbox_page_and_a_decision_agree_on_an_ended_run`, and a cross-namespace test of the `runId` filter.
+- **Requirement 050-011** The server MUST list the open publication requests of a namespace that still need an approval
+  under the current effective policy (`PENDING`, and `APPROVED` with fewer approvals than the policy now requires),
+  ordered by request time with a keyset cursor and a bounded scan
   (`GET /namespaces/{namespaceId}/publication-requests`), each with `youMayDecide` computed by
-  `PublicationRequest::may_decide` with the three clauses of Architecture decision 0018 decision 4 (not the requester,
-  not the last editor of the draft, not a person who already decided it) and `publication:approve` held.
-  *Acceptance:* integration tests for the requester, the last editor, an approver who already approved a request that
-  needs two approvals, another approver and a viewer.
+  `PublicationRequest::may_decide` with the open-state clause and the three clauses of Architecture decision 0018
+  decision 4 (not the requester, not the last editor of the draft, not a person who already decided it) and
+  `publication:approve` held. *Acceptance:* integration tests for the requester, the last editor, an approver who
+  already approved a request that needs two approvals, another approver and a viewer; a policy raised after an
+  approval puts the request back for another approver and not for the first; paging across a page boundary while a
+  request is superseded.
 - **Requirement 050-012** The Studio MUST have an inbox ("Waiting for me") that lists, for the chosen namespace, the
-  approvals and the publication requests the person may decide, most urgent first, and lets them decide from there;
-  the page MUST refresh while open and show when it last did. *Acceptance:* the journey
+  approvals (soonest deadline first) and the publication requests (oldest first) the person may decide, following
+  cursors up to five requests per list per refresh, and lets them decide from there; each refresh starts from the first
+  page; the page MUST refresh while open and show when it last did. *Acceptance:* the journey
   `the_inbox_shows_what_waits_for_me_and_nothing_else`.
 - **Requirement 050-013** The Studio MUST have an audit log page for holders of `audit:read`: the filters of
   `GET /audit`, an action picker from the build's closed list of audit actions, a record view with a link to the
@@ -173,8 +195,10 @@ REST API to approve a step.
   of `crates/domain/src/audit.rs`.
 - **Requirement 050-014** The run view MUST let a person call the version's declared Queries and Updates (run- and
   chain-addressed) with JSON arguments (the server's `422` shown at its pointer; no schema validator in the browser,
-  Architecture decision 0016 decision 1), an Update key made per dialog and reused on retry, an optional `expectedStateRevision`, and the result shown as Architecture decision 0031
-  discloses it. *Acceptance:* the journey `a_person_queries_then_updates_a_running_order`.
+  Architecture decision 0016 decision 1), an Update key reused only for the identical body after a lost response, a
+  `429` or a `5xx` and made anew when the arguments or the revision change, `expectedStateRevision` prefilled with the
+  revision last observed, and the result shown as Architecture decision 0031 discloses it. *Acceptance:* the journey
+  `a_person_queries_then_updates_a_running_order`; `a_corrected_update_after_a_stale_revision_succeeds`.
 - **Requirement 050-015** The run view MUST show the run's family: its parent, its children with their status (from
   the runtime graph's `childRunId`), and its continuation chain (`GET /namespaces/{namespaceId}/chains/{chainId}/runs`).
   *Acceptance:* the run view test with a parent, two children and a chain of three segments.
@@ -191,16 +215,20 @@ REST API to approve a step.
   tests; the journey `a_dead_letter_is_redriven_from_the_studio`.
 - **Requirement 050-019** The script editor MUST offer every language `Language::is_built` accepts as built; the
   list of built languages MUST come from the capability list (`scripts.language.<id>`, Technical Plan 3), not from a
-  constant. *Acceptance:* the script editor test with Go and Java built; a test that a language the server does not
-  advertise is shown disabled.
+  constant; against a server without the field it offers the languages 0.2 builds (TypeScript, Python, C#) and lets
+  the build route decide, and it re-reads `GET /version` at sign-in and after a build refused for its language.
+  *Acceptance:* the script editor test with Go and Java built; a test that a language the server does not advertise
+  is shown disabled; a test against a response without the field.
 - **Requirement 050-020** The Studio MUST have a command palette (Ctrl or Command and K) that finds workflows, scripts,
   schedules and connections by name, a run by its identifier or business identifier, and the pages of the Studio,
   using only list routes the person may call. *Acceptance:* component tests; the palette never calls a route the
   person lacks the permission for.
 - **Requirement 050-021** The run view MUST offer a download of the run's journal as JSON lines, read through
-  `GET /runs/{runId}/events` page by page at most two pages a second, carrying only what that route returns, kept as
-  raw page text (never parsed into objects) and bounded at 50,000 events or 32 MiB, saying when it stopped at the
-  bound. *Acceptance:* the test that the download equals the concatenated pages; the bound and pace tests.
+  `GET /runs/{runId}/events` page by page at most two pages a second, one compact line per event as the route
+  returned it, bounded at 50,000 events or 32 MiB counted as written, waiting for `Retry-After` on a `429` and stopping
+  after three refusals, and saying when it stopped and that it is the journal as of the last page read.
+  *Acceptance:* the test that the download's lines equal the items of the pages in order; the bound, pace and `429`
+  tests.
 - **Requirement 050-022** Every new screen MUST be built from the Studio's interface module on Astryx (Architecture
   decision 0101): no raw control outside `src/ui/`, no literal colour, light, dark and forced colours, keyboard
   operation, a table or list alternative to every graph, state by text and shape as well as colour, and no sample
@@ -456,13 +484,16 @@ The known names in 0.3.0, each with the source that turns it on:
 | `scripts.language.typescript`, `scripts.language.python`, `scripts.language.csharp`, `scripts.language.go`, `scripts.language.java` (feature 023 adds `bash`, `powershell`, `php`, `rust`) | `Language::is_built` holds for the language in this build | build | 005, 023 |
 
 The loops and `continueAsNew` need no name: publication accepts them in the shapes of Technical Plan 4 on every 0.3.0
-server.
+server. Against a server without the field the Studio offers every kind without a capability and lets validation
+decide, and treats each script language 0.2 builds (TypeScript, Python, C#) as built.
 
 **Where it lives.** `crates/application/src/capabilities.rs` holds a typed `PlatformCapability` enumeration with
 `as_str`, the closed source of the names; a feature adds a variant and its table row. Names from configuration, the
 build and the composition root are computed once at start-up by `apps/control-plane`. Names from the instance registry
-are derived from the set of activated requirements the process already re-reads on each heartbeat (Architecture
-decision 0082 decision 4), through one table that maps each registry `Capability` (`*-v1`) to its name, held by a test
+are derived from the set of activated requirements, which the registry member (`crates/application/src/instances.rs`)
+today reads only when a beat sees a new epoch and does not keep: this design makes it read the set once after a
+successful registration and again on every epoch change, and keep it beside the gate (Architecture decision 0082
+decision 4's one-heartbeat bound then holds for a replica started after an activation too), through one table that maps each registry `Capability` (`*-v1`) to its name, held by a test
 that every registry capability that gates a client-visible behaviour has a row. So an operator's activation shows in
 `GET /version` within one heartbeat, without a restart. `crates/api-http/src/routes/identity.rs` serves the union.
 
@@ -503,7 +534,11 @@ expression field):
 
 The Studio writes this table nowhere as a rule: it shows each kind's note in the palette, and the editor's live
 validation (the existing `useValidation`, which asks `validate` after a quiet delay) marks a refused combination at its
-node with the codec's reason. As feature 014's remaining tasks and design 039 widen the subset during the release, the
+node with the codec's reason. A codec problem names a node by its bare id today (`problems_of`,
+`crates/application/src/definitions.rs`), which the Studio cannot place inside a body or tell from a root node of the
+same id; `DefinitionProblem` therefore gains an optional `body` (the body's name), additive, set by the codec for
+every problem about a body node, and `validationModel.ts` resolves it on the body's canvas. The codec reports its first
+structural refusal only, so a draft with two refused combinations shows the second after the first is fixed. As feature 014's remaining tasks and design 039 widen the subset during the release, the
 codec changes and the Studio needs no change; the notes and this table are corrected in the same delivery as the codec
 (documentation first).
 
@@ -521,39 +556,50 @@ loops name the same body, the panel says so and editing it asks for confirmation
 **Legacy and disabled kinds.** A node of a kind without a registry entry, of a legacy kind, or of a kind whose
 capability is absent is drawn with the generic node card, read-only, with a reason: "The platform no longer runs this
 kind of node" (legacy) or "This server does not enable this kind of node" (capability). The draft keeps it equal under
-`canonical()` and in its place among the nodes (`documentIO.ts` changes from appending unreadable entries after the
-known nodes to keeping each at its index). The replacement dialog maps what maps exactly and asks for the rest:
+`canonical()` and in its place among the nodes. A legacy node already keeps its index (`readDocument` reads it as a
+node); what moves today are entries without an `id` or a `type` and duplicate ids, which `documentIO.ts` appends after
+the known nodes; it changes to keep each at its index, in the root graph and in every body. The replacement dialog
+carries over a value only when it passes the target member's schema and asks for the rest:
 
 | From | To | Mapped | Asked |
 |---|---|---|---|
-| `foreach` | `forEach` | `collectionExpr` → `items`; `maxItems` and `maxConcurrency` when within 1 to 10,000 and 1 to 256 (`maxConcurrency` 1 when absent); `next`; `onError` | `result`; `body` (the legacy node named a node, the new one names a body); a `maxItems` or `maxConcurrency` out of range, shown with the old value |
-| `humanApproval` | `approval` | `timeoutMs`; `onTimeout` → `onExpire`; `next` → `onApprove` | `policy` (`approverPolicy` is free text with no exact meaning); `onReject` |
+| `foreach` | `forEach` | `collectionExpr` → `items`; `maxItems` and `maxConcurrency` when within 1 to 10,000 and 1 to 256 (`maxConcurrency` 1 when absent); `next`, `onError` and `timeoutMs` when present and valid | `result`; `body` (the legacy node named a node, the new one names a body: the dialog offers to move the legacy body subgraph into a new body with a `return`); `next` when absent; any value out of range or not a valid `nodeId` or `duration`, shown with the old value |
+| `humanApproval` | `approval` | `timeoutMs` when it is a valid `duration`; `onTimeout` → `onExpire`, `next` → `onApprove` and `onError`, each when present and a valid `nodeId` | `policy` (`approverPolicy` is free text with no exact meaning); `onReject`; `onApprove` and `onExpire` when absent |
 
-`itemKeyExpr` and `formSchema` have no executable counterpart and are listed as dropped in the dialog before the author
-confirms.
+Before the author confirms, the dialog lists every property that will not carry over (`itemKeyExpr`, `formSchema`,
+`retry`, any property outside the target schema), with its value.
 
 ### 5. The run view
 
-- **Iterations.** `model/runGraph.ts` (it exists today) gains the grouping of `RuntimeNode`s with an `instancePath`
-  under their outermost scope node. The collection or loop card shows counts by status. Choosing it opens the iteration
-  strip: a virtualized list (index, status, failure code) filterable by status; choosing an iteration draws its body
-  graph with that iteration's statuses. Nested scopes (design 039) nest the same way.
+- **Iterations.** `model/runGraph.ts` (it exists today) gains the grouping of `RuntimeNode`s by `instancePath` and
+  `nodeId` (never by parsing `id`) under their outermost scope node. An iteration's status is derived from its
+  forward instances (`kind` `FORWARD`): succeeded when its `return` instance succeeded; failed when a forward instance
+  failed and the iteration has no succeeded `return` (a step that failed and was routed by `onError` is part of a
+  succeeded iteration); retrying when one is `RETRY_WAIT`; running otherwise. Compensations (`~c`) and reconciliations
+  (`~r`) are drawn beside their forward step and not counted. The card counts admitted iterations by status and says
+  "admitted so far"; the number not yet started is shown only when the owner node reports its item count. Choosing the
+  card opens the iteration strip: a virtualized list (index, status, failure code) filterable by status; choosing an
+  iteration draws its body graph with that iteration's statuses. Nested scopes (design 039) nest the same way.
 - **Switch.** The card of a `switch` shows the chosen case id or "default" from `switchSelection`; `UNKNOWN` shows
   "an unknown case was recorded" and the id.
 - **Approvals.** A run's approvals come from `GET /runs/{runId}/approvals`, and `youMayDecide` from
   `GET /namespaces/{namespaceId}/approvals?runId=` (Technical Plan 6). The decide dialog makes a decision key (a random
-  128-bit value printed as hex) per open dialog and reuses it on retry; it shows the receipt (`replayed` when a retry
-  found the first answer).
+  128-bit value printed as hex) when the person sends, freezes the decision and the reason code, reuses the key only to
+  resend that body after a lost response, a `429` or a `5xx`, and makes a new key for any changed body; it shows the
+  receipt (`replayed` when a resend found the first answer). A `403` or `409` after a sent decision re-reads the run's
+  approvals and shows their status.
 - **Queries and Updates.** The pinned version's `state.queries` and `state.updates` (from `GET /workflows/{id}/versions/{n}`)
   list the operations. A JSON argument editor sends the arguments; the server's `422` shows at its pointer. No schema
-  validator runs in the browser (Architecture decision 0016 decision 1). An Update makes its `updateKey` per dialog,
-  like a decision key. Results are shown as returned; a person who lacks `run:query` or `run:update` sees the panel
+  validator runs in the browser (Architecture decision 0016 decision 1). An Update's `updateKey` follows the decision
+  key's rule (a new key for a changed body, because a refused Update keeps a durable receipt under its key), and
+  `expectedStateRevision` is prefilled with the revision the panel last observed, so a second tab gets
+  `409 REVISION_CONFLICT` instead of applying twice. Results are shown as returned; a person who lacks `run:query` or `run:update` sees the panel
   unavailable with the reason.
 - **Family.** Parent (from the run), children (from `childRunId` of the graph's `child` nodes and their run status),
   chain (from the chain route when the run has a chain).
-- **Download.** "Download events" reads `GET /runs/{runId}/events` at most two pages a second, keeps each page's raw
-  text as a part of the file being built (never parsed into objects), stops at 50,000 events or 32 MiB and says so, and
-  saves JSON lines.
+- **Download.** "Download events" reads `GET /runs/{runId}/events` at most two pages a second, parses each page for its
+  cursor and items, writes one compact line per item, counts events and bytes as written, stops at 50,000 events or 32
+  MiB, waits for `Retry-After` on a `429` and stops after three refusals, and says which, as of the last page read.
 
 ### 6. The inbox
 
@@ -565,29 +611,41 @@ lists pending approvals only and needs `run:read` and `approval:read`. The rule 
 (`crates/infra-postgres/src/approval_inbox.rs`) returns a bounded page of pending rows in key order, with their policy
 snapshots and the run's status, joined to `workflows` for the name and to the run for its business identifier; the use
 case (`crates/application/src/approval_inbox.rs`) builds the caller's principal from the current membership (as the
-decision does) and computes `youMayDecide` with `may_decide`, then drops the undecidable rows when `decidable=true`. No
-SQL predicate repeats the rule; the snapshots never leave the use case. A page reads at most 2,000 rows; when
-`decidable=true` drops most of them it returns what it found with a cursor (Architecture decision 0144, decision 5). A
-`runId` filter reads the run's own index (`approval_requests_run_idx`) and is outside the deadline scan. A migration adds
-`approval_requests_pending_deadline_idx ON approval_requests (tenant_id, namespace_id, deadline, request_id) WHERE
-status = 'PENDING'`; its `down` drops it; the table has one row per approval ever opened, and the migration test
-records the build time on the test data set. Items: `approvalId`, `runId`, `workflowId`, `workflowName`, `businessId`,
+decision does) and computes `youMayDecide` with `may_decide(principal, run_ended)`, then drops the undecidable rows
+when `decidable=true`. `decide` takes the same `run_ended` input, derived by the adapter from `RunStatus::is_terminal`
+(today the adapter refuses an ended run itself, with its own list of terminal statuses, and answers a retryable
+`503`): the domain then refuses with `RunEnded`, which the route answers `409` with `details.reason` `RUN_ENDED`, and
+the inbox leaves such rows out. No SQL predicate repeats the rule; the snapshots never leave the use case. A page reads
+at most 2,000 rows; the cursor is the key (`deadline`, `request_id`) of the last row scanned, not of the last row
+returned, so a page that drops every row it scanned still returns a cursor, and it is null only when no row remains
+(Architecture decision 0144, decision 5). A `runId` filter reads the run's own index (`approval_requests_run_idx`,
+ordered by `opened_sequence`), checks the namespace, and has a cursor of its own kind bound to the filter (a cursor of
+one kind is refused with `400` on the other). A run end is checked to cancel its pending approvals (the test
+`every_run_end_cancels_its_pending_approvals`); a path found not to is fixed in the same delivery, so no orphan stays
+pending. A migration adds `CREATE INDEX IF NOT EXISTS approval_requests_pending_deadline_idx ON approval_requests
+(tenant_id, namespace_id, deadline, request_id) WHERE status = 'PENDING'`; the runbook tells an operator with a large
+table to build it `CONCURRENTLY` before upgrading, as earlier migrations do; its `down` drops it. Items: `approvalId`, `runId`, `workflowId`, `workflowName`, `businessId`,
 `nodeId`, `instancePath`, `status`, `deadline`, `openedAt`, `youMayDecide`. No policy member, initiator, decider or
 reason. Feature 026 adds its summary flag additively when it builds the summary.
 
 **Server, publication requests.** `GET /namespaces/{namespaceId}/publication-requests?decidable=&workflowId=&cursor=&limit=`
-lists `PENDING` requests only and needs `definition:read`. `crates/domain/src/versioning.rs` gains
-`PublicationRequest::may_decide(&Subject) -> bool` with the three clauses of Architecture decision 0018 decision 4 (not
-the requester, not the last editor, not a person who already decided it), which `decide` calls; the use case adds
-`publication:approve`.
+lists the open requests that still need an approval under the namespace's current effective policy (`PENDING`, and
+`APPROVED` with fewer approvals than the policy now requires, because publication recounts) and needs
+`definition:read`. `crates/domain/src/versioning.rs` gains `PublicationRequest::may_decide(&Subject) -> bool` with the
+open-state clause and the three clauses of Architecture decision 0018 decision 4 (not the requester, not the last
+editor, not a person who already decided it), which `decide` calls; the use case adds `publication:approve`. Order:
+`requested_at`, then `id`, with a keyset cursor of the last row scanned and the same 2,000-row bound; the decisions of a
+page are loaded in one query; a migration adds `publication_requests_open_requested_idx ON publication_requests
+(tenant_id, namespace_id, requested_at, id) WHERE state IN ('PENDING', 'APPROVED')`, with its `down`.
 
 **Metrics.** `approval_inbox_requests_total{outcome}` and `publication_inbox_requests_total{outcome}` (`outcome` in
 `ok`, `denied`, `invalid`, `unavailable`), `approval_inbox_rows_scanned` (a histogram); no tenant, namespace, workflow
 or subject label.
 
-**Studio.** `features/inbox/`: two tabs, approvals and publication requests, the decidable ones first, deadline
-ascending, "time left" in words and as a number, refreshed every 30 seconds while the tab is visible, the time of the
-last refresh shown. Deciding uses the existing operations; an item that settled meanwhile shows its new status instead
+**Studio.** `features/inbox/`: two tabs, approvals (deadline ascending, "time left" in words and as a number) and
+publication requests (oldest first), each read with `decidable=true`, following cursors up to five requests per list
+per refresh and saying "more may wait" when it stopped with a cursor left; every refresh, every 30 seconds while the
+tab is visible, starts from the first page; the time of the last refresh is shown. Deciding uses the existing operations; an item that settled meanwhile shows its new status instead
 of an error.
 
 ### 7. The audit page
@@ -717,33 +775,44 @@ goes with the server builder. A new primitive goes in a new file of `src/ui/`.
   in `apps/control-plane`, the registry-derived names and their mapping table, the route in
   `crates/api-http/src/routes/identity.rs`.
   Red tests: `capabilities_follow_the_switches_a_server_was_started_with`,
-  `a_registry_activation_appears_within_one_heartbeat`, `every_gating_registry_capability_has_a_name`,
+  `a_registry_activation_appears_within_one_heartbeat`, `a_replica_started_after_an_activation_advertises_it` (the
+  member keeps the requirement set from its registration; beats driven directly), `every_gating_registry_capability_has_a_name`,
   `a_reader_ignores_an_unknown_capability`.
   Refs: Requirement 050-002
 - [ ] T050-4 The approvals list: `ApprovalRequest::may_decide`, called by `decide` (`crates/domain/src/execution/approval.rs`),
   the use case that filters with it (`crates/application/src/approval_inbox.rs`), the bounded page query, the `runId`
   filter and the migration with the partial index and its `down` (`crates/infra-postgres`), the route and its metrics
   (`crates/api-http`).
-  Red tests: `may_decide_equals_decide` (property, domain), `an_approval_on_an_ended_run_is_not_decidable`,
-  `the_inbox_never_names_a_policy_member`, `the_run_filter_reads_outside_the_deadline_scan`,
+  Red tests: `may_decide_equals_decide` (property, domain, over pending requests with fresh keys and both run states),
+  `a_decision_on_an_ended_run_is_409_run_ended`, `an_inbox_page_and_a_decision_agree_on_an_ended_run`,
+  `every_run_end_cancels_its_pending_approvals`, `the_inbox_never_names_a_policy_member`,
+  `one_decidable_row_after_2001_undecidable_is_found_in_two_requests`,
+  `the_run_filter_scans_no_deadline_rows` (the rows-scanned metric with 3,000 earlier pending rows),
+  `a_run_cursor_is_refused_without_its_filter`, `the_run_filter_checks_the_namespace`,
   `a_page_stops_at_the_scan_bound_and_continues`, `another_tenants_namespace_is_not_found` (battery),
   `the_runtime_role_can_read_the_inbox` (`SAGAT_TEST_AS_RUNTIME_ROLE=1`).
   Refs: Requirement 050-010
-- [ ] T050-5 The publication requests list: `PublicationRequest::may_decide` with three clauses, called by `decide`
-  (`crates/domain/src/versioning.rs`); the use case with `publication:approve`; pending requests only.
+- [ ] T050-5 The publication requests list: `PublicationRequest::may_decide` with the open-state clause and three
+  clauses, called by `decide` (`crates/domain/src/versioning.rs`); the use case with `publication:approve`; open
+  requests that still need an approval; order, cursor, bound and the partial index.
   Red tests: `the_requester_and_the_last_editor_may_not_decide`, `a_person_who_decided_may_not_decide_again`,
-  `an_approver_may_decide`, battery entry.
+  `a_policy_raised_after_an_approval_lists_the_request_for_another_approver`, `an_approver_may_decide`,
+  `paging_holds_across_a_supersede`, battery entry.
   Refs: Requirement 050-011
 - [ ] T050-6 The registry: capability and scope per entry, the new kinds of Technical Plan 4, the schema drift test,
-  the palette filtered by capability, legacy and disabled kinds read-only.
+  the palette filtered by capability, legacy and disabled kinds read-only; `documentIO.ts` keeping every entry at its
+  index in the root and in bodies; the optional `body` of `DefinitionProblem` (`crates/infra-ir`,
+  `crates/application/src/definitions.rs`, the OpenAPI schema) and its resolution in `validationModel.ts`.
   Red tests: `registry_matches_the_schema`, `a_schema_with_a_new_kind_fails_the_registry_test`,
-  `a_missing_capability_hides_the_lake_write`, `a_legacy_node_is_kept_in_place_under_canonical`.
+  `a_missing_capability_hides_the_lake_write`, `an_unreadable_entry_between_two_nodes_keeps_its_index` (fails today),
+  `a_duplicate_id_entry_in_a_body_keeps_its_index`, `a_body_problem_is_placed_in_its_body_even_with_a_colliding_root_id`.
   Refs: Requirement 050-001, Requirement 050-003, Requirement 050-004
 - [ ] T050-7 The inspectors of `switch`, `approval`, `forEach` (with the stage list), `while`, `repeatUntil`,
   `return`, `continueAsNew`, `icebergWrite`; the workflow settings for `inputSchema`, `state`, `limits` and
   `chainPolicy`; server problems at their fields; the replacement dialog for legacy nodes.
   Red tests: one component test per kind and per setting; `the_replacement_of_a_foreach_asks_for_its_result`;
-  `an_out_of_range_maxitems_is_asked_with_the_old_value`; `undo_restores_the_legacy_node`;
+  `an_out_of_range_maxitems_is_asked_with_the_old_value`; `a_humanapproval_without_next_asks_for_on_approve`;
+  `the_dialog_lists_every_property_that_will_not_carry_over`; `undo_restores_the_legacy_node`;
   `a_refused_combination_shows_the_codecs_reason_at_its_node`.
   Refs: Requirement 050-005, Requirement 050-006
 - [ ] T050-8 The body canvas: bodies panel, breadcrumb, body palette, exactly one `return`, shared-body confirmation.
@@ -751,12 +820,16 @@ goes with the server builder. A new primitive goes in a new file of `src/ui/`.
   Refs: Requirement 050-007
 - [ ] T050-9 The run view: iterations grouped and virtualized, the switch selection, the approvals panel and decision,
   the Queries and Updates panel, the family, the journal download.
-  Red tests: `iteration_312_of_500_shows_its_steps`, `an_unknown_switch_selection_says_so`,
-  `a_retried_decision_reuses_its_key`, `an_update_retry_reuses_its_key`, `the_download_equals_the_pages`,
-  `the_download_stops_at_its_bound_and_says_so`.
+  Red tests: `iteration_312_of_500_shows_its_steps`, `an_iteration_with_a_handled_failure_counts_as_succeeded`,
+  `compensations_are_drawn_beside_their_step_and_not_counted`, `an_unknown_switch_selection_says_so`,
+  `a_resent_decision_reuses_its_key_and_a_changed_one_does_not`, `a_corrected_update_after_a_stale_revision_succeeds`,
+  `a_second_tab_gets_a_revision_conflict`, `a_403_after_a_sent_decision_rereads_the_status`,
+  `the_download_lines_equal_the_page_items`, `the_download_stops_at_its_bound_and_says_so`,
+  `the_download_waits_for_retry_after`.
   Refs: Requirement 050-008, Requirement 050-009, Requirement 050-014, Requirement 050-015, Requirement 050-021
 - [ ] T050-10 The inbox page (`features/inbox/`).
-  Red tests: `only_decidable_items_are_under_waiting_for_me`, `a_settled_item_shows_its_status_not_an_error`,
+  Red tests: `only_decidable_items_are_under_waiting_for_me`, `an_empty_first_page_with_a_cursor_is_followed`,
+  `each_refresh_starts_from_the_first_page`, `a_settled_item_shows_its_status_not_an_error`,
   `the_inbox_refreshes_only_while_visible`.
   Refs: Requirement 050-012
 - [ ] T050-11 The audit page (`features/audit/`), `AuditAction::ALL` and the action list test in
@@ -767,6 +840,7 @@ goes with the server builder. A new primitive goes in a new file of `src/ui/`.
 - [ ] T050-12 The versions page, the settings page, the events page, the built languages from the server, the command
   palette.
   Red tests: one component test per section with each role; `go_and_java_are_built_when_the_server_says_so`;
+  `without_the_field_the_languages_of_0_2_are_built`;
   `the_palette_never_calls_a_route_the_person_cannot_call`.
   Refs: Requirement 050-016, Requirement 050-017, Requirement 050-018, Requirement 050-019, Requirement 050-020
 - [ ] T050-13 Journeys in `frontend/e2e/tests/` driven by `e2e_workflow_studio`: the journey of Success criterion

@@ -35,8 +35,8 @@ additive `capabilities` list" to `PlatformVersion`, 029 adds "the additive `acce
    (for example `workflow.collection-operators`, `workflow.lake-writes`, `apps.runtime`, `testing.virtual-clock`,
    `access.restricted.workflow`). The names MUST be deployment-wide, never per tenant. The OpenAPI document lists the
    known names as `x-known-values`, never as an `enum`, and a reader MUST ignore a name it does not know; an absent field
-   means a server older than 0.3.0. A name is present when the replica that answers would accept the matching
-   publication or route; it is advice for a client, never an authorization. The names are the variants of one typed
+   means a server older than 0.3.0. A name is present when the replica that answers, as of its last successful registry
+   beat, would accept the matching publication or route; it is advice for a client, never an authorization. The names are the variants of one typed
    enumeration in `crates/application`; names that follow an operator's activation in the instance registry
    (Architecture decision 0082) MUST be derived from the activated requirements the process re-reads on each
    heartbeat, through one tested mapping, so they appear within one heartbeat; the others are computed at start-up.
@@ -72,8 +72,8 @@ additive `capabilities` list" to `PlatformVersion`, 029 adds "the additive `acce
 
 ## Consequences
 
-- The palette changes with the server: a deployment without lake writes never offers `icebergWrite`; a server before
-  the structured primitives never offers loops.
+- The palette changes with the server: a deployment without lake writes never offers `icebergWrite`. Against a server
+  without the field (before 0.3.0) the Studio offers every kind that needs no name and lets validation decide.
 - Feature 029's `accessControl` object of `GET /version` becomes entries of `capabilities` (one per item kind and
   state); feature 027's `apps` capability and feature 028's `virtual-clock` become entries too. Their documents are
   corrected in the same delivery as design 050's readiness pass.

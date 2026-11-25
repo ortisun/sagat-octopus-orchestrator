@@ -24,3 +24,25 @@ finding marked fixed is answered in the design or its records at the commit that
 | 15 | Nit | Fixed: an exhaustive `match` behind `AuditAction::ALL`; the known actions on the OpenAPI `action` parameter; free text still accepted | Requirement 050-013, Technical Plan 7, Decision 050-006 |
 | 16 | Nit | Fixed: four rows of `architecture-principles.md`, the baseline, the target `integration_studio_catch_up`, the metric names and labels | Technical Plans 6 and 9, Task 050-2, Verification Plan |
 | 17 | Nit | Fixed in part: `summaryAvailable` removed (feature 026 adds its flag). Contested in part: `OD-2026-11-24-700` stays. The identifier scheme is `OD-YYYY-MM-DD-n` with any `n`; on 2026-11-24 the parallel sessions took separate ranges (300 for the Windmill parity readiness, 500 for scale and resilience, 700 for this one) so that their rows cannot collide when the pull requests merge in any order, which a "next free `n`" cannot guarantee across branches | Technical Plan 6 |
+
+## Correctness review, round 1 (`correctness.md`, at `aac7f76e`)
+
+All 19 findings are accepted and fixed; none is contested. Findings 1, 4 and 8 make three small server corrections that
+the first text excluded ("nothing else changes in the engine"); the Overview now names them.
+
+| Finding | Severity | Disposition | Where |
+|---|---|---|---|
+| 1 | Major | Fixed: the registry member reads the requirement set after registration and on every epoch change and keeps it; red test for a replica started after an activation | Technical Plan 3, Requirement 050-002, Task 050-3 |
+| 2 | Major | Fixed: the cursor is the last row scanned, null only when none remains; the Studio follows up to five pages per refresh and restarts each refresh; `decidable=false` defined; the 2,001-plus-one test | Requirements 050-010, 050-012, Technical Plan 6, Tasks 050-4, 050-10, Architecture decision 0144 decision 5 |
+| 3 | Major | Fixed: `may_decide(principal, run_ended)` and `decide` take the same input from `RunStatus::is_terminal`; the property restricted to pending requests with fresh keys; the ended-run integration test | Technical Plan 6, Architecture decision 0144 decision 2 |
+| 4 | Major | Fixed: `409 RUN_ENDED` instead of a retryable `503`; ended-run rows left out; status re-read after a refused decision; the run-end cancellation test with a fix in the same delivery | Requirements 050-009, 050-010, Technical Plans 5 and 6 |
+| 5 | Major | Fixed: open requests still needing an approval under the current policy, `APPROVED` included; the open-state clause in `may_decide` | Requirement 050-011, Technical Plan 6, Architecture decision 0144 decision 6 |
+| 6 | Major | Fixed: order by request time, keyset cursor, bound, partial index with its `down`, decisions per page | Technical Plan 6, Task 050-5 |
+| 7 | Major | Fixed: a key reused only for the identical body; a new key for a changed body; fields frozen once sent | Requirements 050-009, 050-014, Technical Plan 5 |
+| 8 | Major | Fixed: `DefinitionProblem` gains an optional `body`, resolved on the body's canvas; the first-error limitation stated | Technical Plan 4, Requirement 050-003, Task 050-6 |
+| 9 | Major | Fixed: iteration status defined from forward instances and the `return`; compensations and reconciliations beside their step; "admitted so far" | Requirement 050-008, Technical Plan 5 |
+| 10 | Major | Fixed: the red test uses unreadable and duplicate-id entries, in the root and in bodies | Requirement 050-004, Technical Plan 4, Task 050-6 |
+| 11 | Major | Fixed: values carried only when they pass the target schema; absent required fields asked; every dropped property listed; the body subgraph offered a move | Requirement 050-005, Technical Plan 4 |
+| 12 | Major | Fixed: without the field, the languages 0.2 builds; `GET /version` re-read at sign-in and after a refused build | Requirement 050-019, Technical Plan 3 |
+| 13 | Major | Fixed: pages parsed, one line per item, counted as written, `Retry-After` honoured, "as of the last page read" | Requirement 050-021, Technical Plan 5 |
+| 14 to 19 | Nit | Fixed: the run filter's order and cursor bound to it, the namespace check and the rows-scanned test; `CREATE INDEX IF NOT EXISTS` with a `CONCURRENTLY` runbook step; the stale consequence of Architecture decision 0143 corrected; "as of the last successful beat"; `expectedStateRevision` prefilled; `403` after a sent decision treated as "status unknown" | Technical Plans 3, 5, 6; Architecture decisions 0143 and 0144 |
