@@ -1872,6 +1872,81 @@ async fn a_reset_without_a_free_slot_is_refused_rate_first_and_never_waits() {
     }
 }
 
+/// Decision D022-076 item 3 (re-review Major 3; FR-022-041, SC-022-022): a reset is refused only without a free slot, by
+/// the reservation rule: it takes a fresh slot when its key's counted grants plus the eligible waiters are below its
+/// limit, and a waiter ahead keeps its slot. With `limit: 3, per: hour`, the source's slot counted and one eligible
+/// waiter (a start that also waits for a permit another run holds, so it keeps its slot reserved), the reset finds
+/// `1 + 1 < 3` and takes a fresh slot; under strict order it was refused. With the reset's slot and a second such waiter
+/// (`2 + 2`), the next reset is refused `RATE_LIMIT_SLOT_UNAVAILABLE`, and the waiters keep their room.
+#[tokio::test]
+async fn a_reset_takes_a_fresh_slot_beside_the_eligible_waiters_and_is_refused_only_without_one() {
+    let w = gated_world().await;
+    let rated = publish(&w, rated_pair("creators-rate-reset-reservation", 3, "hour")).await;
+    let mut dual = rated_pair("creators-rate-reset-reservation-dual", 3, "hour");
+    dual["concurrency"] = json!({"group": "serial", "key": "input.accountId", "limit": 1});
+    let dual = publish(&w, dual).await;
+    let mut permit = document(
+        "creators-rate-reset-reservation-permit",
+        "p",
+        vec![activity("p")],
+    );
+    permit["concurrency"] = json!({"group": "serial", "key": "input.accountId", "limit": 1});
+    let permit = publish(&w, permit).await;
+    let input = json!({"accountId": "acct-1"});
+    let source = w.start(rated, &input).await;
+    assert_eq!(complete_all(&w, "act.a").await, 1);
+    assert_eq!(complete_all(&w, "act.b").await, 1);
+    assert_eq!(w.run_status(source).await, RunStatus::Succeeded);
+    let holder = w.start(permit, &input).await;
+    assert_eq!(start_rows(&w, holder).await, (1, 0), "it holds the permit");
+    let first = w.start(dual, &input).await;
+    assert_eq!(
+        slot_rows(&w, first).await,
+        (0, 1),
+        "its slot has room, its permit has not: it waits for both"
+    );
+    let made = w
+        .runs
+        .reset(
+            &w.admin,
+            source,
+            reset_request(point_after(&w, source, "a").await),
+            &idempotency(),
+            &ctx(),
+        )
+        .await
+        .expect("one slot counted and one eligible waiter leave room for the reset");
+    let reset = made.run.expect("the reset run").info.run_id;
+    assert_eq!(slot_rows(&w, reset).await, (1, 0), "a fresh slot");
+    let second = w.start(dual, &input).await;
+    assert_eq!(slot_rows(&w, second).await, (0, 1));
+    let refused = w
+        .runs
+        .reset(
+            &w.admin,
+            source,
+            reset_request(point_after(&w, source, "a").await),
+            &idempotency(),
+            &ctx(),
+        )
+        .await
+        .expect_err("two slots counted and two eligible waiters fill the limit");
+    assert_eq!(
+        refused,
+        AppError::FlowControl(FlowControlRefusal::SlotUnavailable)
+    );
+    for run in [first, second] {
+        assert_eq!(
+            slot_rows(&w, run).await,
+            (0, 1),
+            "the waiters keep their room"
+        );
+    }
+    for run in [source, holder, first, reset, second] {
+        w.assert_consistent(run).await;
+    }
+}
+
 /// Task T022-086 (`CANCEL_SOURCE`; 018's plan, row 18; D022-069 item 4): the completion of a pending reset of a
 /// rate-limited source takes a fresh slot once the source has ended, or fails its entry `RATE_LIMIT_SLOT_UNAVAILABLE`
 /// when the key's window has no free slot; it never waits. With `limit: 2, per: hour`, the first key holds its source's

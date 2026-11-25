@@ -503,6 +503,9 @@ Added after the review of 2026-11-13:
   decision 2). Holders of a key MUST equal the open, non-`restored` acquisitions in its runs' journals,
   verified after fault tests. Empty rows MUST be removed. A new digest key version MUST NOT be activated
   while any holder or waiter exists under the previous one.
+  *Amended 2026-11-24 (decision D022-077 item 5):* the last sentence is superseded by ADR-0093, which the owner
+  accepted (OD-2026-11-19-2): a new digest key version is activated while rows exist under the previous one, and each
+  key moves to it when it is next decided, per key, with live rows.
 - **FR-022-021 — Quotas and lifecycle**: Queued runs MUST count against `active_runs` and
   `tenant_active_runs` and against a separate namespace `queued_runs` ceiling, so waiting can never hold
   more than that share of the namespace; a full `queued_runs` refuses like a full per-key queue. Step permits MUST add to `activity_concurrency`; a full per-key queue MUST refuse

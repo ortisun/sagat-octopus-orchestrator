@@ -1933,7 +1933,7 @@ impl RunStore for PgRunStore {
     }
 
     async fn get(&self, tenant: TenantId, run: RunId) -> Result<Option<RunRecord>, StoreError> {
-        sqlx::query(RUN_SELECT)
+        let mut record = sqlx::query(RUN_SELECT)
             .bind(tenant.as_uuid())
             .bind(run.as_uuid())
             .fetch_optional(&self.pool)
@@ -1941,7 +1941,10 @@ impl RunStore for PgRunStore {
             .map_err(store_error)?
             .as_ref()
             .map(run_record)
-            .transpose()
+            .transpose()?;
+        // a waiting run shows the limit it is decided with, also when its place cannot be read (decision D022-076 item 5)
+        crate::flow_control::bound_waiting_rate_slots(&self.pool, record.as_mut_slice()).await?;
+        Ok(record)
     }
 
     async fn list(
@@ -1952,7 +1955,7 @@ impl RunStore for PgRunStore {
         before: Option<RunId>,
         limit: u32,
     ) -> Result<Vec<RunRecord>, StoreError> {
-        sqlx::query(concat!(
+        let mut records = sqlx::query(concat!(
             "SELECT id, tenant_id, namespace_id, workflow_id, workflow_version_id, status, run_version, \
                     stop_reason, stop_code, paused, correlation_id, started_by, trace_id, deadline_at, \
                     created_at, updated_at, finished_at, parent_run_id, root_run_id, parent_node, \
@@ -1999,7 +2002,10 @@ impl RunStore for PgRunStore {
         .map_err(store_error)?
         .iter()
         .map(run_record)
-        .collect()
+        .collect::<Result<Vec<_>, _>>()?;
+        // a waiting run shows the limit it is decided with (decision D022-076 item 5)
+        crate::flow_control::bound_waiting_rate_slots(&self.pool, &mut records).await?;
+        Ok(records)
     }
 
     async fn journal(
@@ -4516,11 +4522,11 @@ impl RunTx for PgRunTx {
         &'a mut self,
         node: Option<&'a NodeId>,
         attempt: u32,
-        counted_at: OffsetDateTime,
-    ) -> impl Future<Output = Result<Option<Vec<sagat_domain::execution::GateEvent>>, StoreError>>
+        order: sagat_application::flow_control::PassOrder<'a>,
+    ) -> impl Future<Output = Result<sagat_application::flow_control::QueueDecision, StoreError>>
     + Send
     + 'a {
-        self.grant_from_queue(node, attempt, counted_at)
+        self.grant_from_queue(node, attempt, order)
     }
 
     fn refusing_gate<'a>(

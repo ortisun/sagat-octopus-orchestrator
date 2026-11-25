@@ -556,7 +556,7 @@ disagree, it wins, and the rows above that it replaces say so. Decisions D022-01
 
 | # | Transaction | Locks (in order) | Commits together |
 |---|---|---|---|
-| T26 | Grant routine (replaces T11 and T20): a key selected by the pass of its home shard; for one waiter, run or step, whatever its gates | key home-shard fence (share) → waiter run (`SKIP LOCKED`) → `runs` update → semaphore(s) → window(s) → `flow_control_counts` and usage | for every gate the waiter declares, the grant (`concurrency.acquired`, `rate_limit.granted` with the attempt for a step) or nothing; waiter rows removed; timer cancelled; a run's first tasks and outbox, or the step `READY`; the key's next-eligible hint |
+| T26 | Grant routine (replaces T11 and T20): a key selected by the pass of its home shard; for one waiter, run or step, whatever its gates | waiter run (`SKIP LOCKED`) → key home-shard fence (share) → `runs` update → semaphore(s) → window(s) → `flow_control_counts` and usage (*corrected 2026-11-24, decision D022-077 item 2:* run, fence, keys, as decision D022-045 records and every pass takes them, ADR-0050 decision 7; this row named the fence first) | for every gate the waiter declares, the grant (`concurrency.acquired`, `rate_limit.granted` with the attempt for a step) or nothing; waiter rows removed; timer cancelled; a run's first tasks and outbox, or the step `READY`; the key's next-eligible hint |
 | T27 | Timeout routine (replaces T12 and T21), at the waiter's single deadline | timer path (`apply_if`) → run → `runs` update → semaphore(s) → window(s) → counts | the refusing gate's `wait_timed_out` (rate first) and the other's `dequeued`; run `FAILED` as T12 or the step's failure route |
 | T28 | Readiness gate at `persist` (generalizes T22 to every gate and every readiness source) | the path's own order → semaphore(s) → window(s) sorted → counts | for each gated step the reducer left `WAITING`: its grants (then `READY`) or its `*.queued` and timer; no task-ready hint for a waiting step |
 | T29 | Return of a granted, unleased step's slot and permit (pause, review, cancellation, run end; extends T14 and T24) | the path's own order → semaphore(s) → window(s) | `concurrency.released`, `rate_limit.returned`, holder and grant rows removed, step `WAITING` (pause) or ended |
@@ -585,7 +585,10 @@ locks a run after either.
   its hint, at or before every count of the pass); a grant or a recorded lease moves the hint with `least(hint,
   instant)`, which keeps the hint when the instant is unknown.
 - Keys are shared between tenants by `crates/scheduler/src/fairness.rs`. A pass visits at most 256 keys and
-  makes at most 256 grants per key (the existing per-key bound), each grant its own transaction.
+  makes at most 256 grants per key (the existing per-key bound), each grant its own transaction. *Amended 2026-11-24
+  (decision D022-077 item 1):* a pass visits the scheduler's batch of keys (`batch`, 200 by default), never more than
+  256 whatever an operator sets: one setting bounds the work of a tick for every pass, and the hard ceiling bounds the
+  transactions one tick can start.
 - Reservation rule (D022-021): on each gate, a waiter at eligible position `p` is granted only when counted
   holders or grants plus `p` are below its own limit.
 - *Strict admission order (2026-11-21, decision D022-073).* Admission adds one condition to the reservation rule: a new
@@ -594,7 +597,13 @@ locks a run after either.
   its deadline, of a live run that is not paused, and below the count of its own window by the lower of its filed limit
   and the current ceiling (decisions D022-071, D022-074, D022-075 item 4). The eligibility is read only when the key has
   waiters and the acquirer's semaphore or window has room, so no budget line moves; a start queued with room lowers the
-  key's hint to its statement's instant.
+  key's hint to its statement's instant. *Amended 2026-11-24 (decision D022-076 items 1 to 3):* a start or step queued
+  with room writes the hint to its statement's instant whatever the hint was, so a pass in progress on the key does not
+  rest it; one queued at a full window lowers the hint to the first instant a counted grant ages out of its own window;
+  a start that may not queue (a reset) is granted by the reservation rule (counted plus eligible waiters below its
+  limit) and refused otherwise. *Amended 2026-11-24 (decision D022-078 item 2):* within one pass, a waiter the key
+  refuses for lack of room holds back every younger waiter of the key whose limit and window are not looser, and a pass
+  that held one back while the counts admitted it leaves the key due.
 - *The delay strict order costs a new start* that the reservation rule alone would have granted at its admission
   instant `q` (decision D022-073 item 5). Let `I` be the idle pause of the scheduler loop (`SAGAT_SCHEDULER_INTERVAL_MS`,
   500 ms by default; `run_scheduler` sleeps `jittered(I)`, at most `1.2 I`, only after a tick that did no work) and `D`
@@ -632,7 +641,7 @@ Ceilings compare the sum of the 16 slots read after the transaction's own rows, 
 | Step waiters per key | not bounded per key: one per run and gated node | `active_runs` × gated nodes |
 | `limit` per `second` until SC-022-029 meets its floor | 20 | 20 |
 | `limit` per `second` after it | declared | 100 |
-| Keys visited per grant pass | 256 | 256 |
+| Keys visited per grant pass | the scheduler's batch (200), at most 256 (2026-11-24, decision D022-077 item 1) | 256 |
 
 ### Stack and future sizes of a run creator
 

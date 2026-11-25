@@ -1096,22 +1096,24 @@ pub trait RunTx: Send {
     }
 
     /// Feature 022 (the grant routine T26, T022-097; ADR-0089 decisions 3 and 4): under one sorted lock of the keys of
-    /// the queued step `node`, or of the run's start when `node` is `None` (T022-022) (semaphores, then windows), whether every gate it waits for admits it now by the
-    /// reservation rule, and if so its grants, as the events to journal, with their holder and grant rows written and its
-    /// waiter rows removed. `None` when a gate refuses it, or its queue deadline passed (the timeout routine's). The
-    /// key's grants are counted as of `counted_at`, the instant the pass selected its key (at or before every decision of
-    /// the pass): within one pass no grant ages out, so a waiter is never granted after a younger one that the same rule
-    /// refused earlier in that pass (strict admission order, decision D022-073 item 2); counting more grants than the
-    /// decision's own instant would is never an over-grant. The queue deadline is checked at the decision's instant. The
-    /// run's state is not changed; the domain applies the events. An adapter that does not run the gate refuses.
+    /// the queued step `node`, or of the run's start when `node` is `None` (T022-022) (semaphores, then windows), whether
+    /// every gate it waits for admits it now by the reservation rule, and if so its grants, as the events to journal,
+    /// with their holder and grant rows written and its waiter rows removed. Refused when a gate refuses it, or its queue
+    /// deadline passed (the timeout routine's). The key's grants are counted as of `order.counted_at`, the instant the
+    /// pass selected its key (at or before every decision of the pass): within one pass no grant ages out, so a waiter is
+    /// never granted after a younger one that the same rule refused earlier in that pass (strict admission order,
+    /// decision D022-073 item 2); counting more grants than the decision's own instant would is never an over-grant. A
+    /// waiter that a refusal of the pass on its key holds back is refused (`order.refused`, decision D022-078 item 2),
+    /// and a refusal by the pass's own key reports its limit and window. The queue deadline is checked at the decision's
+    /// instant. The run's state is not changed; the domain applies the events. An adapter that does not run the gate
+    /// refuses.
     fn grant_queued_step<'a>(
         &'a mut self,
         _node: Option<&'a NodeId>,
         _attempt: u32,
-        _counted_at: time::OffsetDateTime,
-    ) -> impl Future<Output = Result<Option<Vec<sagat_domain::execution::GateEvent>>, StoreError>>
-    + Send
-    + 'a {
+        _order: crate::flow_control::PassOrder<'a>,
+    ) -> impl Future<Output = Result<crate::flow_control::QueueDecision, StoreError>> + Send + 'a
+    {
         async {
             Err(StoreError::FlowControl(
                 crate::flow_control::FlowControlRefusal::BinaryCapabilityMissing,

@@ -5,8 +5,10 @@
 //! a key (they belong in the spans and the audit, never in a series). Spans carry the group's *name*
 //! (`sagat.concurrency.group`, `sagat.rate_limit.group`) and never a key value or its label.
 //!
-//! This build has the vocabulary and its recorders; the gate that records them is T022-022, T022-072 and T022-096..098
-//! (D022-037), so no series is emitted yet.
+//! The gate records them after each commit: the decisions, grants, timeouts, dequeues and returns of both levels are
+//! counted since decision D022-045 (the readiness gate, the grant and timeout routines, T022-096..098) and the run's
+//! start since T022-022 and T022-072; the wait histograms, waiter gauges and alerts are task T022-082's (decision
+//! D022-077 item 8).
 
 /// The `scope` label: a run's start or a step's attempt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

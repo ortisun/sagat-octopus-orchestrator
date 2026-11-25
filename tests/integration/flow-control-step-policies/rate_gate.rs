@@ -514,8 +514,20 @@ async fn a_grant_through_another_keys_pass_wakes_the_waiters_of_its_window() {
     let behind = w.start(rate_only, &json!({"accountId": "acct-1"})).await;
     assert_eq!(count(&w, head, "rate_limit.queued").await, 1);
     assert_eq!(count(&w, behind, "rate_limit.queued").await, 1);
-    // nothing counts on the window: its pass refuses the head (its permit) and the one behind (the head's reservation)
-    assert_eq!(w.scheduler.tick().await.gates_granted, 0);
+    // nothing counts on the window: its pass refuses the head (its permit) and the one behind (the head's reservation).
+    // One key at a time: with both keys' passes at once, the window's pass may find the head's run held by the permit's
+    // pass and skip it, which keeps the window's hint by design (`Busy`; a loaded runner did so on 2026-11-25)
+    let one_at_a_time = sagat_scheduler::SchedulerSettings {
+        concurrency: 1,
+        ..sagat_scheduler::SchedulerSettings::default()
+    };
+    assert_eq!(
+        crate::support::scale::scheduler(&w, one_at_a_time, None)
+            .tick()
+            .await
+            .gates_granted,
+        0
+    );
     assert_eq!(
         hint_us(&w, behind).await,
         None,
@@ -1058,4 +1070,65 @@ async fn a_start_behind_an_eligible_waiter_queues_although_the_window_has_room_a
         w.assert_consistent(run).await;
     }
     w.assert_keys_consistent().await;
+}
+
+/// Decision D022-076 item 7 (re-review minor 7; spec US07 edge cases, "a lowered policy applies to waiters at once", and
+/// its raised twin): a raised namespace ceiling applies to the starts already buffered, up to their declaration. Declared
+/// 3 an hour, the namespace's ceiling of an hour 1: one holder, two starts buffered under it (filed with 1, their
+/// declaration of 3 kept beside it). The ceiling raised to 3, one pass grants both (bounded by the filed 1, neither
+/// would be granted for the hour), each grant recording the limit of 3 it was decided with; a fourth start then waits.
+#[tokio::test]
+async fn a_raised_ceiling_applies_to_the_buffered_starts_up_to_their_declaration() {
+    let w = gated_world().await;
+    let workflow = publish(&w, rated_start("rate-raised", 3, "hour")).await;
+    set(&w, QuotaResource::RateLimitPerHour, 1).await;
+    let input = json!({"accountId": "acct-1"});
+    let holder = w.start(workflow, &input).await;
+    let buffered = [
+        w.start(workflow, &input).await,
+        w.start(workflow, &input).await,
+    ];
+    for run in buffered {
+        assert_eq!(start_slot(&w, run).await.1, 1, "a ceiling of one an hour");
+    }
+    let (filed, pinned): (i32, Option<i32>) = sqlx::query_as(
+        "SELECT declared_limit, pinned_limit FROM rate_limit_waiters WHERE run_id = $1",
+    )
+    .bind(buffered[0].as_uuid())
+    .fetch_one(&w.db.pool)
+    .await
+    .expect("the waiter");
+    assert_eq!(
+        (filed, pinned),
+        (1, Some(3)),
+        "filed under the ceiling, its declaration kept"
+    );
+    set(&w, QuotaResource::RateLimitPerHour, 3).await;
+    let report = w.scheduler.grant_gates().await;
+    assert_eq!(
+        report.gates_granted, 2,
+        "the raised ceiling applies to the buffered starts: {report:?}"
+    );
+    for run in buffered {
+        assert_eq!(start_slot(&w, run).await.0, 1);
+        let decided: (i32, i64) = sqlx::query_as(
+            "SELECT (SELECT declared_limit FROM rate_limit_grants WHERE run_id = $1 AND limit_scope = 'RUN'), \
+                    (SELECT (detail->>'limit')::bigint FROM run_events \
+                      WHERE run_id = $1 AND event_type = 'rate_limit.granted' AND node IS NULL)",
+        )
+        .bind(run.as_uuid())
+        .fetch_one(&w.db.pool)
+        .await
+        .expect("the grant");
+        assert_eq!(decided, (3, 3), "decided with the raised ceiling");
+    }
+    let fourth = w.start(workflow, &input).await;
+    assert_eq!(
+        start_slot(&w, fourth).await.1,
+        1,
+        "never above the declaration"
+    );
+    for run in [holder, buffered[0], buffered[1], fourth] {
+        w.assert_consistent(run).await;
+    }
 }

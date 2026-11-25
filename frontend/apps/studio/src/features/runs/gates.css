@@ -1,0 +1,33 @@
+/* The run-level gates of feature 022 in the run's header (RunGates.tsx). */
+.rn-gates {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-6);
+  margin-top: var(--space-6);
+}
+
+.rn-gates > h2 {
+  flex-basis: 100%;
+  margin: 0;
+}
+
+.rn-gate {
+  flex: 1 1 20rem;
+  min-width: 0;
+  padding: var(--space-5);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-card);
+  background: var(--bg);
+}
+
+.rn-gate[data-waiting="true"] {
+  border-style: dashed;
+}
+
+.rn-gate h3 {
+  margin: 0 0 var(--space-3);
+}
+
+.rn-gate dd {
+  overflow-wrap: anywhere;
+}

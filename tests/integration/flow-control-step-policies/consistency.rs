@@ -519,7 +519,9 @@ async fn a_slot_the_journal_waits_for_without_its_waiter_row_is_found() {
     );
 }
 
-/// Task T022-079 (invariant 9, "fails on a seeded extra grant"): a grant row no `rate_limit.granted` made is found.
+/// Task T022-079 (invariant 9, "fails on a seeded extra grant"): a grant row no `rate_limit.granted` made is found. The
+/// seeded row's two instants are one statement's (a run's grant is leased at its grant, `rate_limit_grants_shape`): two
+/// reads of `clock_timestamp()` differed on a loaded runner on 2026-11-25 and the seed itself was refused.
 #[tokio::test]
 async fn a_seeded_extra_grant_is_found() {
     let (w, _, first, _) = rated_holder_and_waiters().await;
@@ -532,7 +534,7 @@ async fn a_seeded_extra_grant_is_found() {
                                            group_name, key_digest, declared_limit, period_ms, granted_at, leased_at, \
                                            shard) \
              SELECT tenant_id, namespace_id, run_id, '', 0, pool, limit_scope, group_name, key_digest, declared_limit, \
-                    period_ms, clock_timestamp(), clock_timestamp(), shard FROM rate_limit_waiters WHERE run_id = $1",
+                    period_ms, statement_timestamp(), statement_timestamp(), shard FROM rate_limit_waiters WHERE run_id = $1",
             const_format(
                 "UPDATE rate_limit_windows k SET live_grants = live_grants + 1, grants_total = grants_total + 1 WHERE ",
             ),

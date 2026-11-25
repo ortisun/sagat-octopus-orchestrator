@@ -64,6 +64,15 @@ The reviews found four more facts:
    its own limit. An older waiter refused only by its other gate therefore keeps room reserved; an older
    waiter refused by its own lower limit does not block (ADR-0056's skip-ahead stands). With feature 019,
    positions follow (priority, enqueue instant).
+   *Amended 2026-11-24, delegate (OD-2026-11-24-4; feature 022 decisions D022-073, D022-076 items 3 and 9):* a
+   narrowing, not a departure. Strict order returns at admission: a new arrival that may wait (a start, a step) is
+   granted at once only when its key has no eligible waiter and its counted holders or grants are below its limit, and
+   otherwise queues behind them. The grant routine keeps the reservation rule above and tries a key's waiters in
+   admission order, counting as of the pass's selection of the key, and grants no younger waiter whose limit and window
+   are not looser than one the same pass refused for lack of room (decision D022-078 item 2). A start that may not
+   queue (a reset, a pending reset) is decided by the reservation rule: granted when its key's counted holders or
+   grants plus the eligible waiters are below its limit, refused otherwise. Every limit is the lower of the waiter's
+   declaration and the namespace's current ceiling.
 5. **One timeout routine.** A waiter has one deadline, the earlier of its gates'. At it, one transaction
    MUST journal the `wait_timed_out` of the gate that refuses it then (`rate_limit` first when both do) and
    the `dequeued` of the other. A grant MUST skip a waiter past its deadline. A waiter of a terminal run is
