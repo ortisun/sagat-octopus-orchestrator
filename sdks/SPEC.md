@@ -438,8 +438,12 @@ switch `SAGAT_LEASE_WITHDRAWAL=off`) it records nothing and answers `STALE_ATTEM
 from the session, and honoured only while the operator has activated `delivery-acknowledgement-v1` (and, before it,
 `lease-withdrawal-v2`), for a lease claimed after that
 activation on the current database server; a lease not yet `RUNNING` (no heartbeat) to which no capability was served is then
-withdrawn on its hand-back, whether or not it was acknowledged, also after its expiry until the server's pass has ended it. Otherwise (a step no longer `LEASED` to the lease, the cap reached, a session below 1.8) it retries
-it as an ordinary failure, which spends the attempt. The rules (decisions D006-020 to D006-023;
+withdrawn on its hand-back, whether or not it was acknowledged, also after its expiry until the server's pass has ended it. A
+hand-back that the server refuses at 1.8 for a reason of the fleet (those activations not recorded, the lease claimed before the
+current activation or on another database server, the engine's switch off for a lease that was not flagged) is answered
+`STALE_ATTEMPT` with nothing recorded, so the lease lapses (decision D006-067, Architecture decision 0145). Otherwise (a step no
+longer `LEASED` to the lease or `RUNNING`, a capability served, the cap reached, a session below 1.8) the server records it as an
+ordinary failure, which spends the attempt. The rules (decisions D006-020 to D006-023;
 from 1.8 only, decision D006-080):
 
 - *Which leases.* Every lease of a poll answer or a stream frame that the host received and does not dispatch:
@@ -467,7 +471,7 @@ from 1.8 only, decision D006-080):
   error_code = "TASK_NOT_STARTED", safe_message = "the host did not start this task", retryable = true, traceparent}`, with
   the execution-instance identity under protocol 1.5 as every report (§6.1). No heartbeat, no `ResolveSecrets`, no handler,
   no "task taken" event. It is retried as a report is (§6.5); `STALE_ATTEMPT` ends it without an error (the lease is no
-  longer this host's). It is sent only on a session of 1.8 or later, whose server reserves the code. `TASK_NOT_STARTED` is a step failure code, like `NO_HANDLER`; it is never raised to a caller and is
+  longer this host's, or the server left it to lapse, decision D006-067). It is sent only on a session of 1.8 or later, whose server reserves the code. `TASK_NOT_STARTED` is a step failure code, like `NO_HANDLER`; it is never raised to a caller and is
   not in `sdks/error-catalog.json`. **The code is reserved for the host**: a handler that fails with it (an
   `ActivityFailure` whose code is `TASK_NOT_STARTED`, of a forward, compensation or reconciliation handler) is reported as
   `WORKER_ERROR`, with its own message and `retryable` (§6.5), because only the host can know that no handler ran. At most eight hand-backs are on their way at once (the
@@ -813,7 +817,7 @@ where the language can express one. The shared scenario is `collection-operators
   | 1.5 | Scoped execution identity | `ExecutionInstanceIdentity` |
   | 1.6 | Managed database capabilities (`ResolveDatabase`) | feature 017, D600 |
   | 1.7 | Step logs (`AppendStepLogs`, `StepLogPolicy`) | feature 041, OD-2026-11-15-8; served from its task T041-7 |
-  | 1.8 | Delivery acknowledgement (`TaskLease.acknowledge_before_start` field 23 and `attempt_deadline_epoch_ms` field 24, `WorkerCapabilities.declines_acknowledgement` field 10, `AcknowledgeTasks`; a flagged lease is provisional until acknowledged); the minor at which `TASK_NOT_STARTED` is reserved for the host | feature 006, Architecture decision 0099, Owner decision 2026-11-20-12; reserved by its design on 2026-11-20 at the coordinator's instruction, an exception to this register's rule put to the owner (Owner question 006-002); offered from Task 006-057, after its gate, and only after 1.7 is served by the server and spoken by the SDK |
+  | 1.8 | Delivery acknowledgement (`TaskLease.acknowledge_before_start` field 23 and `attempt_deadline_epoch_ms` field 24, `WorkerCapabilities.declines_acknowledgement` field 10, `AcknowledgeTasks`; a flagged lease is provisional until acknowledged); the minor at which `TASK_NOT_STARTED` is reserved for the host | feature 006, Architecture decision 0099, Owner decision 2026-11-20-12; reserved by its design on 2026-11-20 at the coordinator's instruction, an exception to this register's rule that the owner approved (Owner decision 2026-11-21-6, which answered Owner question 006-002); offered from Task 006-057, after its gate, and only after 1.7 is served by the server and spoken by the SDK |
   | next | Drafts 019, 020, 021, 023, 024, 025, 026, 031, 032 and 035 each name a minor; each takes the next free one (1.9 or later) when its contract merges, and its SDKs carry the 1.8 host procedure first | |
 
 ## 10. Observability and safety
