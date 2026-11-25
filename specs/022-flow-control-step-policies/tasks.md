@@ -338,6 +338,27 @@ T022-063 (020 erasure).
 - [x] T022-070 [US7] Additive migration for `rate_limit_windows`, `rate_limit_grants`, `rate_limit_waiters` (`data-model.md`) with `sagat_app` grants, a refusing down migration and entries in `storage-classification.json`; the digest key rotation refusal of T022-007 extended to them. FR-022-040. Evidence: up/down test; runtime-privilege sweep; manifest test.
   *Done 2026-11-15 (0.3.0 slice).* Migration `20270130000100_flow_control_rate_limits` (windows, grants, waiters; counters, `max_period_ms` and `grants_total` per life of the row (D022-039) by triggers; a grant's lease instant written once; the rotation refusal extended to windows), its entries in `storage-classification.json`. Evidence: as T022-009 and T022-010.
 - [ ] T022-071 [US7] The pure window decision in `crates/domain/src/execution/flow_control.rs`: which grants count for an acquirer (run scope from the grant, step scope from the lease or while unleased), admit or wait, position and estimate, as a function of instants passed in. FR-022-040,048; D022-003,005,014. Evidence: property tests that no sequence of decisions puts more than `limit` counted instants in any window, for mixed acquirer limits and windows; clock-backwards cases.
+  *Evidence 2026-11-25 (0.3.0 slice; decision D022-082), not ticked.* `sagat_domain::execution::window`
+  (`crates/domain/src/execution/flow_control.rs`): which grants count (`Grant::counts`, the half-open window, an unleased
+  grant and one ahead of the clock count), an arrival granted, queued or (a reset) refused (`Window::admit`, strict
+  admission order), a queued waiter admitted by the reservation rule (`admits_queued`), one pass of the grant routine with
+  its hold-backs (`pass`), position and estimate (`place`, `estimate_us`, now the one rule `flow_control_keys::estimated_grant`
+  calls). `cargo test -p sagat-domain --test rate_window_properties` 7 passed (four properties at 2,000 cases: run starts
+  and steps of mixed acquirers with the clock moving both ways never leave more than the decider's limit counted in its
+  window, invariant 10 over decision order; one bound: leases never more than `limit` in any window, grants in admission
+  order; the estimate is the first instant the grant routine admits the waiter; and the clock set back, strict order and
+  the estimate's cases). Red first: the first run failed on the test's own pass check (all grants of a pass at one
+  instant, which no pass does; the model's pass now decides each waiter one microsecond after the last) and on the
+  half-open edge, then green. Hand mutations of the model caught: a full window admitting (`>=` to `>`; four properties
+  red), the waiters ahead ignored (the estimate property red), an unleased grant not counted (the one-bound property
+  red). Differential test against PostgreSQL: `integration_flow_control_step_policies::window_model::the_sql_window_decides_what_the_domain_model_decides`
+  (twelve seeded sequences of starts of three acquirers on one key, `limit` 1 a second, 2 a minute, 3 an hour; passes;
+  ages; a clock set back: 35 admissions granted, 53 queued and 8 pass grants, each equal to the model's); it passed at
+  once: the SQL agrees. Hand mutations of the SQL caught: admission ignoring an eligible waiter ahead (strict order lost,
+  red). Not caught, an equivalent mutation for these sequences: the pass's reservation without the waiters ahead (with
+  one gate a waiter ahead that the counts admit is granted earlier in the same pass, so the term matters only for a
+  dual-gated waiter, which `queue::a_dual_gated_head_is_not_starved_by_a_younger_waiter` pins). Not in it: step scope
+  (the lease instant comes from a worker; D022-082 item 3).
 - [x] T022-072 [US7] Grant or buffer at admission (T19) through the one admission-gate port, for every run creator on the tree; permit and slot together when both are declared; queue-full and key-error outcomes; start delay evaluated at release. `crates/application/src/{rate_limits.rs,concurrency.rs,runs.rs}`, `crates/infra-postgres/src/{rate_limits.rs,execution.rs}`. FR-022-041,042,044,047. Evidence: integration tests for API, event, cron and child starts; `RATE_LIMIT_QUEUE_FULL`; a run never commits with a permit and no slot or the reverse.
   *Partly done 2026-11-20 (0.3.0 slice), not ticked (decisions D022-064 and D022-065).* A start that declares
   `rateLimit` is granted or buffered in its admission transaction by the one decision of both levels and both gates
@@ -519,6 +540,23 @@ T022-063 (020 erasure).
 - [ ] T022-082 [P] [US7] Metrics and spans of the plan in `crates/telemetry/src/{metrics.rs,span.rs}`; alerts `rate_limit_grant_lagging` and `rate_limit_queue_saturated` in `crates/scheduler/src/monitor.rs`. FR-022-049. Evidence: telemetry tests reject unknown labels; each alert raised and cleared in a test.
   - *Amended 2026-11-24 (decision D022-077 items 4, 6 and 7):* this task also builds `CONCURRENCY_QUEUE_STUCK` (the runbook documents three alerts) and the alert `FLOW_CONTROL_WAITER_ORPHANED` (the code logs and counts `outcome="orphan"` only, gap G022-005), with the runbook's thresholds: `CONCURRENCY_QUEUE_STUCK` when a key has a waiter older than `SAGAT_ALERT_UNCLAIMED_SECS` (300) and no grant in that time; `RATE_LIMIT_GRANT_LAGGING` when a key is due for longer than `SAGAT_ALERT_LEASE_GRACE_SECS` (60) with no grant in that time; `RATE_LIMIT_QUEUE_SATURATED` at 80 % of the effective `flow_control_key_waiters` of run starts.
   - *Built in part 2026-11-19 (G022-001, D022-045), not ticked:* the step-scope decisions, grants, timeouts, dequeues and returns are counted after commit in the closed vocabulary, and the four spans name the group, never the key. Evidence: `cargo test -p sagat-infra-postgres --lib readiness_gate::tests::each_committed_gate_outcome_is_counted_in_the_closed_vocabulary` (mutation of the from-queue outcome caught). Open: the wait histograms, waiter gauges, grant lag, unleased grants and the two alerts.
+  *Evidence 2026-11-25 (0.3.0 slice; decision D022-083), not ticked.* Telemetry: the wait histograms and the grant
+  lag observed at each grant from the queue (`GateOutcome::GrantedFromQueue`, `PassOrder::due_at`), the waiter gauges by
+  scope and `rate_limit_unleased_grants` set by the monitor from `MonitorStore::sample`. Evidence:
+  `cargo test -p sagat-telemetry --test flow_control_vocabulary` 3 passed, among them
+  `the_vocabulary_check_rejects_unknown_labels_and_values` (a group or a tenant as a label, a scope outside its set, a
+  series of no family: each refused); `cargo test -p sagat-infra-postgres --lib readiness_gate::tests::a_grant_from_the_queue_records_its_wait_and_a_slot_its_lag`.
+  Alerts (`AlertKind::{ConcurrencyQueueStuck, RateLimitGrantLagging, RateLimitQueueSaturated, FlowControlWaiterOrphaned}`,
+  their detection in `crates/infra-postgres/src/operations.rs`, migrations `20270212000100`/`000200`, the enumerations of
+  001's OpenAPI and AsyncAPI, the Studio client; runbooks `flow-control.md` sections 8 to 10 and 14, `alerts.md`):
+  `integration_flow_control_step_policies::alerts::{a_waiter_passed_over_by_every_holder_raises_concurrency_queue_stuck_until_it_leaves,
+  a_due_window_no_pass_serves_raises_rate_limit_grant_lagging_until_it_is_granted,
+  a_buffer_above_eighty_percent_raises_rate_limit_queue_saturated_until_it_drains,
+  a_waiter_of_an_ended_run_raises_flow_control_waiter_orphaned_and_the_gauges_count_the_waiters}`, each raised and
+  resolved by seeded instants or rows, the subject the group. Written with the code, not before it; each condition is
+  proved by a hand mutation that turns its test red: the recent-grant exemption of the lagging alert, `>` to `>=` at 80%,
+  the ended-run filter of the orphan, and the holder-order condition of the stuck alert (a first version of its test did
+  not pin it; the test now seeds a holder older than the waiter, quiet, then a younger one, firing).
 - [ ] T022-083 [P] [US7] `rateLimit` builder in the six SDKs (`sdks/typescript/src/workflow.ts`, `sdks/go/workflow/workflow.go`, `sdks/python/sagat_octopus_orchestrator/workflow.py`, `sdks/dotnet/src/SagatOctopusOrchestrator.Sdk/Workflows/Flow.cs`, `sdks/java/sdk/src/main/java/dev/sagatoctopusorchestrator/sdk/workflow/WorkflowBuilder.java`, `sdks/rust`). FR-022-050. Evidence: unit tests and each SDK's lints; canonical fixture byte-identical in six languages.
 - [ ] T022-084 [US7] Scenario `flow-rate-limit` of `contracts/conformance.md` in `tests/contract/sdk-conformance/scenarios/` with independent assertions and reviewed goldens. SC-022-023. Evidence: `SAGAT_SDK_SCENARIO=flow-rate-limit cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture` passes in six languages, rerun without the bless switch.
 - [ ] T022-085 [US7] Studio: `rateLimit` fields beside `concurrency` in `frontend/apps/studio/src/features/workflows/` (settings and node inspector), a run or step waiting for a rate slot with position and estimate in `features/runs/`, the rate-limit keys list in `features/operations/`; unknown capability shown as unsupported (FR-007-010); WCAG AA. FR-022-048,050. Evidence: Vitest; a browser journey including keyboard; same IR as the SDKs.
@@ -696,6 +734,18 @@ Added for the findings recorded in `reviews/2026-11-13/` (D022-019..034). The sl
   admitted, decision D022-072).
 - [ ] T022-105 `flow_control_counts` slot rows with `SECURITY DEFINER` triggers and `SELECT`-only grants; foreign keys `(tenant_id, namespace_id, run_id)`; column-limited `UPDATE` grants on semaphores and windows (`next_eligible_at`, `updated_at`). FR-022-058; D022-026. Evidence: runtime-privilege sweep; a direct `UPDATE` of a counter as `sagat_app` is refused; a dual-gated run counts once.
   - *Built in part 2026-11-20 (0.3.0 slice; D022-051), not ticked:* the exactness of `queued_runs` that the owner made a merge condition: proved exact under the namespace's admission lock by `run_admission::two_starts_at_the_queued_runs_ceiling_are_decided_one_after_the_other` (held lock, both starts observed waiting, exactly one queued and one refused `FLOW_CONTROL_LIMIT`), owner and `SAGAT_TEST_AS_RUNTIME_ROLE=1`; hand mutations caught: the admission lock removed, the ceiling ignored. Open: the `flow_control_counts` slot rows and their triggers, the foreign keys, the column-limited grants.
+  *Evidence 2026-11-25 (0.3.0 slice; decision D022-084), not ticked.* Migration `20270212000000_flow_control_counts`:
+  `flow_control_counts` (sixteen slot rows of `queued_runs` per namespace), filled from the waiter rows present and kept
+  by `flow_control_counts_track` (`SECURITY DEFINER`, `search_path = pg_catalog, pg_temp`, schema-qualified names, not
+  executable by the runtime role) on the run-scope waiter rows of both tables, a run once; `sagat_app` holds `SELECT`
+  only; `QUEUED_RUNS_SQL` reads the sum of the slots. The foreign keys `(tenant_id, namespace_id, run_id)` and the
+  column-limited `UPDATE (next_eligible_at, updated_at)` were built by `20270130000000` and `20270130000100`. The live
+  keys are not counted in slot rows (D022-084 item 2: lock order). Evidence:
+  `rate_gate::a_dual_gated_queued_run_counts_once_and_the_runtime_role_cannot_write_a_counter` (two dual-gated runs, four
+  waiter rows, counted two; a cancellation takes one; a step waiter is not a queued run; as `sagat_app` an `UPDATE`,
+  `INSERT` or `DELETE` of a counter and an `UPDATE` of a key row's counters are refused `42501`, the hint's update is
+  allowed) and `migrations::the_queued_runs_counters_are_filled_from_the_waiters_and_roll_back_without_loss`. Written with
+  the code; hand mutation caught: the count-once guard of the trigger off (red, the dual-gated runs counted twice).
 - [ ] T022-106 A grant from the buffer does not re-authorize: a buffered run whose initiator lost `run:start` is granted, and its journal and audit keep the original initiator. FR-022-060; D022-034. Evidence: integration test.
   *Evidence 2026-11-25 (0.3.0 slice), not ticked.*
   `rate_gate::a_grant_from_the_buffer_does_not_reauthorize_and_keeps_the_initiator`: a developer's run buffered for both

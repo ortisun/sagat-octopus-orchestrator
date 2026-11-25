@@ -468,6 +468,15 @@ slot for longer than a threshold: the pass is not keeping up or the clock went b
 `docs/runbooks/flow-control.md` next to `concurrency_queue_stuck`. No audit action is added: admission and
 grants are journal facts, and policy changes use the existing quota-policy audit.
 
+*Built 2026-11-25 (task T022-082; decisions D022-077 items 4, 6 and 7, and D022-083).* The monitor raises four alerts,
+`CONCURRENCY_QUEUE_STUCK`, `RATE_LIMIT_GRANT_LAGGING`, `RATE_LIMIT_QUEUE_SATURATED` and `FLOW_CONTROL_WAITER_ORPHANED`, one
+per namespace and group, the group the subject, with the runbook's thresholds (`SAGAT_ALERT_UNCLAIMED_SECS`,
+`SAGAT_ALERT_LEASE_GRACE_SECS`, 80% of the effective `flow_control_key_waiters`, none for an orphan). The wait histograms
+observe each waiter granted from the queue, from its queueing to its grant; `rate_limit_grant_lag_seconds` observes each
+slot the pass grants on its own key, from the key's hint as the pass selected it (or the waiter's queueing if later) to
+the grant, an upper bound of the time a slot was free with the waiter present; the waiter gauges by scope and
+`rate_limit_unleased_grants` are set by the monitor from the key rows' counters every look.
+
 ### Migration and compatibility (the slice)
 
 - **Database**: two additive migrations, each with a refusing down migration, grants for `sagat_app` and
@@ -632,6 +641,13 @@ locks a run after either.
 from the run shard (waiters) or the key shard (keys), maintained by `SECURITY DEFINER` triggers on the waiter,
 holder, grant and key rows; `sagat_app` has `SELECT` only. A dual-gated run counts once in `queued_runs`.
 Ceilings compare the sum of the 16 slots read after the transaction's own rows, as for `active_runs`.
+
+*Amended 2026-11-25 (task T022-105, decision D022-084):* the table holds `queued_runs` only (its slot from the run's
+identifier, kept by triggers on the run-scope waiter rows); the live keys stay counted from the key rows under the digest
+versions in force, which only a decision that would create a key reads: a counter of keys would be locked in the middle of
+a sorted pass over the keys, or at the commit beside the deferred quota flush, where two transactions could wait on each
+other. No line of the hot-path budget moves: the sum of the slots is one statement, as the scan it replaces was, and
+the budget counts top-level statements and rows only.
 
 ### Ceilings, revised
 
