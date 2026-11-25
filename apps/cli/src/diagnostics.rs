@@ -67,6 +67,10 @@ pub const CATALOG: &[(&str, &str)] = &[
         "A concurrency or rate-limit declaration cannot be combined with continueAsNew: a continuation's successor would start without passing the gate. Remove one of them.",
     ),
     (
+        "FLOW_CONTROL_KEY_UNBOUNDED",
+        "A concurrency or rate-limit key reads the run's identity (`run`), alone or beside other data: every run would have a key of its own, which the namespace keeps a row for. Key on what the gate protects (an account, a provider) read from `input`, or from `steps` and `state` on a step.",
+    ),
+    (
         "CONCURRENCY_SELF_CHILD",
         "A child node starts this workflow, whose run-level concurrency key the child may share with its parent: with a limit of 1 the child waits for the permit its parent holds until the queue timeout. Use another group, or another key, for the child.",
     ),
