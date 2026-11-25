@@ -359,6 +359,15 @@ T022-063 (020 erasure).
   one gate a waiter ahead that the counts admit is granted earlier in the same pass, so the term matters only for a
   dual-gated waiter, which `queue::a_dual_gated_head_is_not_starved_by_a_younger_waiter` pins). Not in it: step scope
   (the lease instant comes from a worker; D022-082 item 3).
+  *Gates 2026-11-25 on `ff4aa462`, not ticked:* `cargo fmt --check`, `cargo clippy --workspace --all-targets --locked -D
+  warnings`, `check-architecture.py` and `check-agent-config.py` pass; `contract_flow_control_step_policies` 11,
+  `fault_flow_control_step_policies` 34, `integration_flow_control_step_policies` 225,
+  `integration_claim_transition_efficiency` 22 (no line of the budget moved), `integration_platform_foundation` 112
+  (`runtime_privileges` and `migrations` among them) passed as the owner and as the runtime role
+  (`SAGAT_TEST_AS_RUNTIME_ROLE=1`); `integration_security_multitenancy -- manifest_covers_every_variable_size_column`
+  passed in both roles; `cargo test -p sagat-domain`, `-p sagat-telemetry`, `-p sagat-scheduler --lib`,
+  `-p sagat-infra-postgres --lib`, `-p sagat-application --lib`, `-p sagat-cli` passed;
+  `python3 -m unittest discover -s scripts/tests` 527 OK.
 - [x] T022-072 [US7] Grant or buffer at admission (T19) through the one admission-gate port, for every run creator on the tree; permit and slot together when both are declared; queue-full and key-error outcomes; start delay evaluated at release. `crates/application/src/{rate_limits.rs,concurrency.rs,runs.rs}`, `crates/infra-postgres/src/{rate_limits.rs,execution.rs}`. FR-022-041,042,044,047. Evidence: integration tests for API, event, cron and child starts; `RATE_LIMIT_QUEUE_FULL`; a run never commits with a permit and no slot or the reverse.
   *Partly done 2026-11-20 (0.3.0 slice), not ticked (decisions D022-064 and D022-065).* A start that declares
   `rateLimit` is granted or buffered in its admission transaction by the one decision of both levels and both gates
@@ -557,6 +566,15 @@ T022-063 (020 erasure).
   proved by a hand mutation that turns its test red: the recent-grant exemption of the lagging alert, `>` to `>=` at 80%,
   the ended-run filter of the orphan, and the holder-order condition of the stuck alert (a first version of its test did
   not pin it; the test now seeds a holder older than the waiter, quiet, then a younger one, firing).
+  *Gates 2026-11-25 on `ff4aa462`, not ticked:* `cargo fmt --check`, `cargo clippy --workspace --all-targets --locked -D
+  warnings`, `check-architecture.py` and `check-agent-config.py` pass; `contract_flow_control_step_policies` 11,
+  `fault_flow_control_step_policies` 34, `integration_flow_control_step_policies` 225,
+  `integration_claim_transition_efficiency` 22 (no line of the budget moved), `integration_platform_foundation` 112
+  (`runtime_privileges` and `migrations` among them) passed as the owner and as the runtime role
+  (`SAGAT_TEST_AS_RUNTIME_ROLE=1`); `integration_security_multitenancy -- manifest_covers_every_variable_size_column`
+  passed in both roles; `cargo test -p sagat-domain`, `-p sagat-telemetry`, `-p sagat-scheduler --lib`,
+  `-p sagat-infra-postgres --lib`, `-p sagat-application --lib`, `-p sagat-cli` passed;
+  `python3 -m unittest discover -s scripts/tests` 527 OK.
 - [ ] T022-083 [P] [US7] `rateLimit` builder in the six SDKs (`sdks/typescript/src/workflow.ts`, `sdks/go/workflow/workflow.go`, `sdks/python/sagat_octopus_orchestrator/workflow.py`, `sdks/dotnet/src/SagatOctopusOrchestrator.Sdk/Workflows/Flow.cs`, `sdks/java/sdk/src/main/java/dev/sagatoctopusorchestrator/sdk/workflow/WorkflowBuilder.java`, `sdks/rust`). FR-022-050. Evidence: unit tests and each SDK's lints; canonical fixture byte-identical in six languages.
 - [ ] T022-084 [US7] Scenario `flow-rate-limit` of `contracts/conformance.md` in `tests/contract/sdk-conformance/scenarios/` with independent assertions and reviewed goldens. SC-022-023. Evidence: `SAGAT_SDK_SCENARIO=flow-rate-limit cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture` passes in six languages, rerun without the bless switch.
 - [ ] T022-085 [US7] Studio: `rateLimit` fields beside `concurrency` in `frontend/apps/studio/src/features/workflows/` (settings and node inspector), a run or step waiting for a rate slot with position and estimate in `features/runs/`, the rate-limit keys list in `features/operations/`; unknown capability shown as unsupported (FR-007-010); WCAG AA. FR-022-048,050. Evidence: Vitest; a browser journey including keyboard; same IR as the SDKs.
@@ -746,6 +764,15 @@ Added for the findings recorded in `reviews/2026-11-13/` (D022-019..034). The sl
   `INSERT` or `DELETE` of a counter and an `UPDATE` of a key row's counters are refused `42501`, the hint's update is
   allowed) and `migrations::the_queued_runs_counters_are_filled_from_the_waiters_and_roll_back_without_loss`. Written with
   the code; hand mutation caught: the count-once guard of the trigger off (red, the dual-gated runs counted twice).
+  *Gates 2026-11-25 on `ff4aa462`, not ticked:* `cargo fmt --check`, `cargo clippy --workspace --all-targets --locked -D
+  warnings`, `check-architecture.py` and `check-agent-config.py` pass; `contract_flow_control_step_policies` 11,
+  `fault_flow_control_step_policies` 34, `integration_flow_control_step_policies` 225,
+  `integration_claim_transition_efficiency` 22 (no line of the budget moved), `integration_platform_foundation` 112
+  (`runtime_privileges` and `migrations` among them) passed as the owner and as the runtime role
+  (`SAGAT_TEST_AS_RUNTIME_ROLE=1`); `integration_security_multitenancy -- manifest_covers_every_variable_size_column`
+  passed in both roles; `cargo test -p sagat-domain`, `-p sagat-telemetry`, `-p sagat-scheduler --lib`,
+  `-p sagat-infra-postgres --lib`, `-p sagat-application --lib`, `-p sagat-cli` passed;
+  `python3 -m unittest discover -s scripts/tests` 527 OK.
 - [ ] T022-106 A grant from the buffer does not re-authorize: a buffered run whose initiator lost `run:start` is granted, and its journal and audit keep the original initiator. FR-022-060; D022-034. Evidence: integration test.
   *Evidence 2026-11-25 (0.3.0 slice), not ticked.*
   `rate_gate::a_grant_from_the_buffer_does_not_reauthorize_and_keeps_the_initiator`: a developer's run buffered for both
