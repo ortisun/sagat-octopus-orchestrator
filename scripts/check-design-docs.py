@@ -29,6 +29,11 @@ MARKER_RE = re.compile(r"^\s+Evidence \([0-9]{4}-[0-9]{2}-[0-9]{2}\):")
 INLINE_MARKER_RE = re.compile(r"Evidence \([0-9]{4}-[0-9]{2}-[0-9]{2}\):")
 PROTECTED_RE = re.compile(r"^\s*(Refs|Owner-gate):")
 OD_ID_RE = re.compile(r"OD-[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]+")
+# Delegations whose rows count as the owner's, each with the release tag that ends it (docs/engineering/sdd-workflow.md,
+# "Who decides"). A row decided as "delegate (<id>)" is citable only for an id listed here, only if that id's own row is
+# the owner's, and, once the tag exists, only if the row first carried the delegation in a commit the tag contains.
+# A plain "delegate" row (Owner decision 2026-11-03-22) is never citable.
+DELEGATIONS = {"OD-2026-11-24-4": "v0.3.0"}
 COUNTS_RE = re.compile(r"Counts: Blocker ([0-9]{1,4}), Major ([0-9]{1,4}), Nit ([0-9]{1,4})")
 SEMVER_RE = re.compile(r"[0-9]{1,6}\.[0-9]{1,6}\.[0-9]{1,6}")
 LOOSE_CHECKBOX_RE = re.compile(r"^\s*[-*+] \[[ xX]\]")
@@ -229,6 +234,7 @@ class Checker:
         self._base_ok = None
         self._hashes = None
         self._od = None
+        self._first_delegate = None
         self.agent_blobs = {}
 
     # -- helpers ---------------------------------------------------------------------------
@@ -334,13 +340,52 @@ class Checker:
             rows.append(dict(zip(header, cells)))
         return rows
 
-    def citable(self, row_id):
-        """The citable row with this id, or None."""
+    def owner_row(self, row_id):
+        """The row with this id if the owner decided it, or None."""
         matches = [r for r in self.owner_rows() if r["ID"] == row_id]
         if len(matches) != 1 or not OD_ID_RE.fullmatch(row_id):
             return None
         row = matches[0]
         return row if row["Decided by"] == "owner" and row["Status"] == "Decided" else None
+
+    def citable(self, row_id):
+        """The citable row with this id, or None: an owner row, or a row decided under a delegation named in
+        DELEGATIONS whose own row is the owner's and which was recorded before the delegation ended."""
+        row = self.owner_row(row_id)
+        if row is not None:
+            return row
+        matches = [r for r in self.owner_rows() if r["ID"] == row_id]
+        if len(matches) != 1 or not OD_ID_RE.fullmatch(row_id) or matches[0]["Status"] != "Decided":
+            return None
+        delegated = re.fullmatch(r"delegate \((OD-[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]+)\)", matches[0]["Decided by"])
+        if not delegated or delegated.group(1) not in DELEGATIONS or self.owner_row(delegated.group(1)) is None:
+            return None
+        return matches[0] if self.recorded_before_end(row_id, matches[0]["Decided by"], delegated.group(1)) else None
+
+    def recorded_before_end(self, row_id, decided_by, delegation):
+        """True while the delegation's release is not tagged, or if the row first carried this delegation in a
+        commit that the release tag contains: acts taken during the delegation stay valid after it ends."""
+        code, tag = self.git("rev-parse", "--verify", "--quiet", f"refs/tags/{DELEGATIONS[delegation]}^{{commit}}")
+        if code != 0:
+            return True
+        first = self.delegate_rows_first_commit().get((row_id, decided_by))
+        return first is not None and self.git("merge-base", "--is-ancestor", first, tag.strip())[0] == 0
+
+    def delegate_rows_first_commit(self):
+        """{(id, decided by): the first commit that added a row with both}, from the history of the file."""
+        if self._first_delegate is None:
+            self._first_delegate = {}
+            code, out = self.git("log", "--reverse", "--format=commit %H", "-p", "--no-color", "--no-ext-diff",
+                                 "--", "docs/owner-decisions.md")
+            commit = None
+            for line in out.split("\n") if code == 0 else []:
+                if line.startswith("commit "):
+                    commit = line[len("commit "):].strip()
+                elif line.startswith("+|") and commit:
+                    cells = split_row(line[1:])
+                    if len(cells) >= 3 and cells[2].startswith("delegate ("):
+                        self._first_delegate.setdefault((cells[0], cells[2]), commit)
+        return self._first_delegate
 
     # -- the run ---------------------------------------------------------------------------
     def run(self):
