@@ -10,11 +10,16 @@ outputs and timings recorded next to each step (SC-021-018).
 - The pinned Rust toolchain, Docker, Node 22.
 - `infra/docker/compose.database.yaml` (017: PostgreSQL, persistent TLS OpenBao, demo database) plus
   a new development-only overlay `infra/docker/compose.integrations.yaml` (T021-065) adding the
-  integration runner, MinIO, Mosquitto, an SMTP test server, a local HTTP/OAuth2 test server and the
+  integration runner, MinIO, Mosquitto, an SMTP test server, a local HTTP/OAuth2 test server (2026-11-24: an HTTP test server only) and the
   Pub/Sub emulator. Bootstrap material is generated into an ignored directory; nothing is shared
   with another stack.
 - A demo tenant and namespace `demo` with an administrator token from the development identity
   provider (`apps/dev-idp`), and an egress policy allowing the overlay's test hosts.
+- (2026-11-24) The operator activations of the five capabilities of Decision 021-011
+  (`integration-resources-v1`, `namespace-variables-v1`, `inbound-endpoints-v1`, `managed-streams-v1`,
+  `connector-filters-v1`) through the instance registry; before them every step below is refused with
+  `INTEGRATION_CAPABILITY_NOT_ACTIVATED`, which is itself the first failure check. The overlay needs no
+  OAuth2 test server any more (Decision 021-001).
 
 ## Happy path
 
@@ -28,6 +33,19 @@ outputs and timings recorded next to each step (SC-021-018).
       "tokenUrl":"https://billing.test:8443/oauth/token","clientId":"demo","scopes":["invoices"]}},
     "slots":{"clientSecret":"billing-client"}}
    ```
+
+   Revised 2026-11-24 (Decision 021-001): the step uses a bearer token, and the OAuth form waits for
+   design 047. Create the token `billing-token` through the 017 secret API, then:
+
+   ```http
+   PUT /v1/namespaces/{id}/resources/billing-api
+   {"requestId":"<uuid>","expectedRevision":0,"type":"http_api","typeVersion":1,"status":"ACTIVE",
+    "settings":{"baseUrl":"https://billing.test:8443","auth":{"scheme":"bearer"}},
+    "slots":{"token":"billing-token"}}
+   ```
+
+   With `"auth":{"scheme":"oauth"}` and a slot naming a design 047 credential, expect `422
+   OAUTH_BROKER_UNAVAILABLE` until design 047's broker capability is on.
 
    Expect `200` with revision 1 and no secret value. `POST …/resources/billing-api/probe` returns a
    run; it ends `SUCCEEDED`, and `GET …/probe` shows revision 1.

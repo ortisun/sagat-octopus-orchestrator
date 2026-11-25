@@ -3,7 +3,8 @@
 Proposed; nothing exists. Revised 2026-10-27 after the architecture and security reviews. Locking
 follows ADR-0050 decision 7 (variable fence 4a; resource and variable heads 4b; secrets 5; pins 6;
 [plan](plan.md#lock-order-adr-0050-decision-7), D1159). Migration timestamps are allocated at merge (D1151); file names below
-are provisional. Every table carries `tenant_id` and, where namespace-scoped, `namespace_id`, with
+are provisional. Revised 2026-11-24 against `develop` at `2c94064f`: migrations come after `20270119000000` (Decision
+021-006). Every table carries `tenant_id` and, where namespace-scoped, `namespace_id`, with
 composite foreign keys to `namespaces(tenant_id, id)` as in 017. The runtime role `sagat_app`
 receives only the grants listed. Every new variable-size column is classified in
 `crates/infra-postgres/storage-classification.json`.
@@ -18,6 +19,13 @@ Shipped in the server: `key` (`http_api`, `graphql`, `s3_bucket`, `smtp`, `slack
 auth schemes, operations, probe, egress profile (`public`; `private` only inside operator-approved
 deployment ranges). Older versions remain readable while any revision references them. A type
 version is never removed while referenced.
+
+Revised 2026-11-24 (Decisions 021-001 and 021-004): every type version carries `provenance`
+(`platform`; or `hub` with the index, the publisher key and the item digest that design 047 pins);
+a hub type key is `hub.<publisher>.<name>` and its versions are stored by design 047, not shipped in
+the server; the slot shape `oauth_credential` names a design 047 OAuth credential instead of a
+secret, and the auth scheme `oauth` replaces `oauth2_client_credentials`. No table of this feature
+stores a namespace-authored type.
 
 ### Resource
 
@@ -124,15 +132,16 @@ PK `(tenant_id, run_id, name)`; `namespace_id`, `variable_id`, `revision`; FKs a
 
 | Table | Change |
 |---|---|
-| `runs` | `origin` CHECK gains `RESOURCE_PROBE` |
+| `runs` | `origin` CHECK gains `RESOURCE_PROBE` (2026-11-24: beside `AD_HOC_STEP`, `AD_HOC_WORKFLOW`, `CONNECTION_PROBE` of `20261125000000_database_ad_hoc`) |
 | `event_endpoints` | `kind` (`WEBHOOK` default, `ROUTE`, `EMAIL`); `route_method`, `route_path_normalized`, `route_shape_key` (path with parameters replaced by `{}`), `route_captures` jsonb (declared headers/query, bounded), `idempotency_mode` (`HEADER`, `GENERATE`), `idempotency_header`; `email_provider` (`MAILGUN`, `GENERIC_RELAY`); `profile` CHECK gains `MAILGUN`. Unique `(tenant_id, namespace_id, route_method, route_shape_key)` where `kind = 'ROUTE'`. Existing rows become `WEBHOOK` with NULLs. |
 | `namespace_route_prefixes` (new) | PK `(tenant_id, namespace_id)`; `prefix` text unique (26 base32 characters, random); `previous_prefix`, `previous_valid_until` for bounded rotation overlap. |
 | `event_connectors` | `kind` CHECK gains `POSTGRES_CDC`, `MQTT`, `GCP_PUBSUB`, `AZURE_SERVICE_BUS`, `WEBSOCKET`; `placement` (`ENGINE` for NATS/Kafka/SQS, `MANAGED` for every new kind; CHECK ties placement to kind); `filter` text (bounded expression); `filtered_total` bigint; `lag_bytes` bigint NULL; `health_state` (`OK`, `ERROR`, `LAGGING`). |
-| `connector_leases` | `generation` bigint NOT NULL DEFAULT 0, `holder_role` (`engine`, `database-runner`, `integration-runner`; CHECK against the connector kind), `credential_version` text NULL, `state` (`HELD`, `ENDED`) for managed stream holders. |
+| `connector_leases` | `generation` bigint NOT NULL DEFAULT 0, `holder_role` (`engine`, `database-runner`, `integration-runner`; CHECK against the connector kind), `credential_version` text NULL, `state` (`HELD`, `ENDED`) for managed stream holders. (2026-11-24: the table is still `(connector_id, stream, holder, expires_at)` from `20261012000000_events`; Architecture decision 0073's rank columns, if accepted, sit beside these and stay NULL for `MANAGED` leases, Decision 021-017.) |
 | `connector_offsets` | reused: CDC `stream` = slot name, `next_offset` = end LSN (signed 64-bit; larger refused, D1139). |
 | `connector_dead_letters` | `reason` CHECK gains `UNSUPPORTED_TYPE` (CDC column type outside the cell vocabulary). A filter that cannot be evaluated counts as not matching, as trigger filters do today, and is counted as `filter_error`; it is not a dead letter. |
 | `inbox_events` | `envelope_extension` jsonb NULL (≤ 16 KiB): `message` (broker key, topic, partition, offset, timestamp) or `request` (route method, path parameters, captured query and headers). For `ROUTE` endpoints `payload_digest` covers body and extension; existing kinds keep a body-only digest. Classification: `pii`, as `payload`. `stream_position` bigint NULL (CDC commit LSN) with partial index `(tenant_id, namespace_id, source, stream_position) WHERE stream_position IS NOT NULL`; the purge loop skips a row whose `stream_position` is above its connector's `connector_offsets.next_offset` (D1139). `correlation_data_derived` boolean NOT NULL DEFAULT false: the correlation key is returned only under the FR-016-026 reveal when true. |
-| `quota_limits` | resource CHECK gains `resources`, `variables`, `integration_concurrency`, `tenant_integration_concurrency`, `cdc_connectors`. |
+| `quota_limits` | resource CHECK gains `resources`, `variables`, `integration_concurrency`, `tenant_integration_concurrency`, `cdc_connectors`. (2026-11-24: `integration_concurrency` and `tenant_integration_concurrency` withdrawn; those bounds are `activity_quota_limits` rows and the `activity_concurrency` values for the reserved `sagat.integration.*` activities, and the per-resource bound is a 022 concurrency key, Decision 021-009.) |
+| `serving_instances`, `platform_requirements`, `platform_requirement_history` (2026-11-24) | the capability CHECKs gain the five values of Decision 021-011 (`NOT VALID`, validated by a separate migration; the down migration refuses while a value is recorded). |
 
 Down migrations refuse while any `resources`, `variables`, bindings, pins, `ROUTE`/`EMAIL` endpoints
 or new-kind connectors exist; they never delete customer rows.

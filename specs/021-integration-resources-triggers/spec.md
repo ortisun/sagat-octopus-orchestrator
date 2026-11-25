@@ -4,7 +4,7 @@
 
 **Created**: 2026-10-26
 
-**Status**: Specification, plan and tasks approved for implementation by the owner on 2026-11-11 (Owner decision 2026-11-11-1, "Aprovo os rascunhos 019–032 e 036, pode implementar"); not implemented
+**Status**: Specification, plan and tasks approved for implementation by the owner on 2026-11-11 (Owner decision 2026-11-11-1, "Aprovo os rascunhos 019–032 e 036, pode implementar"); in release 0.3.0 (Owner decision 2026-11-24-1); revised for build on 2026-11-24 against `develop` at `2c94064f` ([readiness review](research.md#readiness-review-2026-11-24)); Owner questions 1120 to 1123, Architecture decision 0055 and the open checklist items decided under "delegate (OD-2026-11-24-4)"; not implemented
 
 **Input**: Generic, versioned resource types and resources (Windmill resources) that generalize the
 feature-017 connection catalog without breaking it: JSON-Schema'd settings, secret slots backed by
@@ -28,10 +28,15 @@ repeated per worker. Inbound events come from signed webhooks and NATS, Kafka an
 **managed operations** run by a new isolated executor, **variables**, seven inbound source kinds and
 two filter capabilities. It changes nothing in how connections, activities, scripts, outbound
 subscriptions or existing connectors behave. Architecture:
-[ADR-0055](../../docs/adr/ADR-0055-integration-resources-and-inbox-connector-kinds.md) (Proposed);
-decisions D1120–D1159 and D1620–D1624, gaps G1120–G1143, owner questions O1120–O1123 and the
-resolution of the 2026-10-27 reviews: [research.md](research.md).
+[ADR-0055](../../docs/adr/ADR-0055-integration-resources-and-inbox-connector-kinds.md) (Accepted
+2026-11-24 under the delegation, with the amendment of that date);
+decisions D1120–D1159, D1620–D1624 and D021-001–D021-021, gaps G1120–G1152, owner questions
+O1120–O1123 (all decided) and the resolution of the 2026-10-27 reviews: [research.md](research.md).
 Per-kind detail is normative in [contracts/](contracts/). Nothing described here exists.
+
+Input revised on 2026-11-24: the `http_api` and `graphql` scheme "OAuth2 client credentials" of the
+input above is now the `oauth` scheme, a reference to an OAuth credential of design 047 whose token
+broker hands the integration runner only a current access token (Decision 021-001).
 
 ## Dependencies and ownership
 
@@ -58,10 +63,38 @@ inputs and outputs, filters) are entries of 031's registry and use its codes. **
 `sync_quorum` cell the CDC flush position waits for quorum durability (FR-021-022); under `async`
 replication 032 states the loss of changes inside the RPO.
 
+Built or specified since the draft (2026-11-24 readiness review, each verified on `develop`):
+**018** reset and business identifiers are built; event-started runs carry no business identifier
+(Gap 1151). **033** makes the internal notification transport NATS JetStream or Redis Streams
+(Architecture decision 0069); every "hint" below is a transport hint and the reconciler recovers it
+(Decision 021-013). **035** runs lake writes in a profile of `apps/database-runner` and adds the lake
+drivers to `GET /database-drivers`, which the resource-type listing names (Decision 021-016). **038**
+records a statement budget for the claim that a new managed kind moves in its own change (Decision
+021-008). **041** gives worker protocol 1.7 to step logs, which managed runners do not write
+(Decision 021-012). **042** applies operator chains per trigger after the inbox and leaves connector
+admission to Requirement 021-029 (Decision 021-014). **043** makes every run creator pass the
+`RunInputGate` (Architecture decision 0090); 021's sources reach it through the trigger dispatcher
+and the resource probe is a new creator (Decision 021-010, Requirement 021-037). **022**'s throughput
+slice (Architecture decisions 0056, 0088, 0089) grants limits in the scheduler, never at the claim;
+the per-resource concurrency limit is a 022 concurrency key (Decision 021-009). **036**'s rank-shared
+connector partitions (Architecture decision 0073, proposed) concern the engine's Kafka placement only
+(Decision 021-017). The **instance registry** (Architecture decision 0082) carries 021's five
+capabilities (Decision 021-011, Requirement 021-038).
+
+**Design 047** (OAuth resources and the curated integration hub) builds on this feature: it depends
+on the resource catalog, `ResolveResource` and the type provenance extension point (Tasks 021-005,
+021-012, 021-017, 021-023, 021-085) and owns the OAuth credential that the `oauth` scheme references;
+021 is built and shipped without it, the `oauth` scheme refused until 047's broker capability is on.
+**Design 046** (script package dependencies) does not touch this feature; hub script templates reach
+it only as authored scripts do. **028**'s signed-index requirements (FR-028-039 to FR-028-042) are
+used by design 047, not by 021.
+
 ## Domain vocabulary
 
-- **Resource type**: platform-provided, versioned definition (settings schema, secret slots, auth
-  schemes, operations, probe, egress profile): `http_api`, `graphql`, `s3_bucket`, `smtp`, `slack_bot`.
+- **Resource type**: versioned definition (settings schema, secret slots, auth schemes, operations,
+  probe, egress profile): the platform-provided `http_api`, `graphql`, `s3_bucket`, `smtp`,
+  `slack_bot`; from design 047, curated hub type versions (`hub.<publisher>.<name>`) that only
+  narrow those operations (Decision 021-004). No namespace defines a type.
 - **Resource**: a namespace instance of one type version with non-secret settings and slot bindings,
   immutable revisions and a status (`ACTIVE`, `PAUSED`, `DELETED`).
 - **Managed operation**: a typed request on a resource, authored as a `resourceOperation` node
@@ -76,18 +109,20 @@ replication 032 states the loss of changes inside the RPO.
 
 ### US01 — Register an HTTP API resource with an OpenBao credential and probe it (Priority: P1)
 
-An administrator registers `billing-api` (`http_api`, OAuth2 client credentials), creates its client
-secret in OpenBao from the same form, saves and probes it.
+An administrator registers `billing-api` (`http_api`, bearer token), creates its token in OpenBao
+from the same form, saves and probes it. (Revised 2026-11-24: the draft used OAuth2 client
+credentials here; OAuth is now a reference to a design 047 credential, scenario 6, so that this P1
+story does not wait for design 047.)
 
 **Why this priority**: every operation needs a resource.
 
-**Independent Test**: REST and Studio against real OpenBao and local OAuth2/HTTP test servers;
-reload; probe; edit with a stale revision.
+**Independent Test**: REST and Studio against real OpenBao and a local HTTP test server; reload;
+probe; edit with a stale revision.
 
 **Acceptance Scenarios**:
 
-1. **Given** an administrator of namespace A, **When** they save `billing-api` with a new client
-   secret, **Then** the value is in OpenBao, the resource stores the slot's logical secret name, and
+1. **Given** an administrator of namespace A, **When** they save `billing-api` with a new bearer
+   token, **Then** the value is in OpenBao, the resource stores the slot's logical secret name, and
    reads return settings and metadata only.
 2. **Given** a saved resource, **When** they probe it, **Then** a durable probe run executes the
    type's fixed probe in the integration runner and reports a closed outcome, time and tested
@@ -99,6 +134,10 @@ reload; probe; edit with a stale revision.
    `REVISION_CONFLICT` and no revision is written.
 5. **Given** namespace B or another tenant, **When** it reads, uses or probes `billing-api`, **Then**
    it gets the opaque `404` and the attempt is audited.
+6. **Given** a resource with the `oauth` scheme, **When** design 047's broker capability is off,
+   **Then** the save is refused with `OAUTH_BROKER_UNAVAILABLE`; **When** it is on and the slot names
+   a 047 credential, **Then** a probe's runner receives only a current access token, never the client
+   secret or refresh token.
 
 ### US02 — Call an HTTP or GraphQL API from a workflow (Priority: P1)
 
@@ -282,8 +321,15 @@ An author checks a filter against a pasted sample, or against retained events th
   `RESOURCE_UNAVAILABLE`; nothing claims to recall an in-flight request.
 - A slot secret rotated between attempts: each attempt resolves and pins the current authorized
   version; the resource revision is unchanged.
-- An OAuth2 token endpoint slower than the step deadline: `TIMEOUT` before any business request; no
-  token is kept for the next attempt.
+- An OAuth token broker (design 047) that cannot return a current access token within the resolve
+  deadline: `CAPABILITY_UNAVAILABLE` (retryable) before any business request; the runner keeps no
+  token for the next attempt. (The draft's per-attempt token request by the runner is withdrawn,
+  Decision 021-001.)
+- A resource probe or a triggered run whose input the `RunInputGate` refuses: the probe is refused
+  before its transaction; a triggered run becomes a delivery without a run, audited once
+  (Requirement 021-037).
+- A capability of Decision 021-011 that is not activated: its writes, publications and admissions are
+  refused with its own reason; nothing already admitted changes.
 - DNS rebinding (public at check, metadata later) and redirects to other hosts: the runner connects
   only to checked addresses and follows no redirect (`PROVIDER_REJECTED`).
 - Two routes with the same method and path shape conflict at creation.
@@ -313,7 +359,13 @@ An author checks a filter against a pasted sample, or against retained events th
   allowed to resolve it (`integration-runner` for the first set), with the first set and auth schemes
   of [resource-types.md](contracts/resource-types.md). The listing MUST show every database driver of
   017 and 024 (`postgresql`, `mysql`, `mariadb`, `sqlserver`, `bigquery`, `snowflake`, `duckdb`) with
-  `managedBy: connections`.
+  `managedBy: connections`. (Revised 2026-11-24, Decisions 021-004 and 021-016.) The listing MUST
+  also show the lake drivers of feature 035 (`iceberg`, `object_storage`, `clickhouse`), read from the
+  connection catalog's own driver registry rather than copied. Every type version MUST record its
+  provenance (`platform`, or `hub` from design 047's curated hub under the reserved key prefix
+  `hub.`); a hub type version MUST only narrow operations of the platform catalog (fixed host, fixed
+  auth, bounded methods and paths) and inherits their effect class, executor role, egress profile and
+  probe; the platform MUST refuse any type authored by a namespace (`RESOURCE_TYPE_NOT_AUTHORABLE`).
 - **FR-021-002 — Resource catalog**: Namespace-scoped create, list, detail at a revision, update,
   pause and delete MUST provide a unique name, stable id, immutable revisions, `expectedRevision`
   concurrency, `requestId` receipts (same actor/key/body replays; changed body conflicts) and
@@ -326,7 +378,12 @@ An author checks a filter against a pasted sample, or against retained events th
   MUST require `secret:manage` on that secret; `secret:use` suffices only for revisions that keep every
   slot's destination. The resource form offers create/rotate/select with 017's write-only,
   partial-save and reconciliation behaviour (FR-017-004, FR-017-007). No slot value reaches a
-  response, log, audit or the journal.
+  response, log, audit or the journal. (Revised 2026-11-24, Decision 021-001.) A slot of shape
+  `oauth_credential` binds to an OAuth credential of design 047 instead of a secret; binding it to a
+  destination requires the manage permission design 047 defines on that credential; the token
+  endpoint belongs to the credential, so `tokenUrl` is no longer a host-bearing setting of this
+  feature; the scheme is refused (`OAUTH_BROKER_UNAVAILABLE`) at resource write and at publication
+  until 047's broker capability is on.
 - **FR-021-004 — Pinning and current authority**: Admission MUST pin the revision of every
   `resourceOperation` node (and its `compensate`/`reconcile`) in the admission transaction; every
   attempt uses it; an explicit `revision` is honoured. Publication, admission and capability use MUST
@@ -340,6 +397,9 @@ An author checks a filter against a pasted sample, or against retained events th
   run (`origin: RESOURCE_PROBE`) through the operation path (executor, egress, credentials, quotas). A
   probe sends no business data, e-mail or Slack message, accepts no request content, refuses a paused
   resource and records its tested revision; an edit makes the displayed result belong to the old one.
+  (Revised 2026-11-24, Decision 021-015.) The probe run is a retained platform-built definition, as
+  017's connection probe, whose probe node no author can write, and it passes the `RunInputGate`
+  as Requirement 021-037 states.
 
 **Managed operations**
 
@@ -354,9 +414,15 @@ An author checks a filter against a pasted sample, or against retained events th
   is resolved in two phases with no transaction open during provider I/O, the audit and credential
   pin committing before anything is returned ([integration-runner.md](contracts/integration-runner.md)).
   It holds no platform database URL, OpenBao token or signing key; ordinary workers, sandbox runners
-  and database runners cannot claim or resolve these tasks.
-- **FR-021-009 — Egress**: Every connection of an operation or probe, including OAuth2 token
-  requests, MUST pass the namespace egress policy intersected with the deployment policy, resolve
+  and database runners cannot claim or resolve these tasks. (Revised 2026-11-24, Decisions 021-005,
+  021-007, 021-008, 021-012.) The runner is its own binary over shared managed-runner plumbing
+  extracted from both profiles of the database runner; an integration step is a new managed kind,
+  leased only to a session at this feature's protocol minor (the next free one at merge) holding role
+  `integration-runner`, admitted inside the claim within design 038's recorded budget; the runner
+  writes no step log.
+- **FR-021-009 — Egress**: Every connection of an operation or probe (OAuth token requests are design
+  047's broker's, under clause (e) of Architecture decision 0055 decision 11, revised 2026-11-24)
+  MUST pass the namespace egress policy intersected with the deployment policy, resolve
   once, check every address, connect to a checked address verifying the TLS name, refuse loopback,
   link-local, metadata and platform state endpoints, follow no redirect and ignore environment
   proxies. TLS verification is mandatory outside an explicit development mode.
@@ -504,6 +570,11 @@ An author checks a filter against a pasted sample, or against retained events th
 - **FR-021-033 — Finite ceilings**: Every new resource and operation has the default and hard ceiling
   of the plan; effective = min(request, namespace, deployment); zero refuses; publication and
   admission fail before work; existing run, content, event-rate and connector quotas still apply.
+  (Revised 2026-11-24, Decision 021-009.) Namespace and tenant integration concurrency are the
+  existing activity quotas of the reserved `sagat.integration.*` activities, already checked in the
+  claim; a per-resource concurrency limit is a durable concurrency key `resource:{resourceId}` granted
+  by 022's gated-step routine, so a step over it waits outside `READY` and the claim reads no new
+  counter; until 022's gate is on, a revision that sets it is refused (`CONCURRENCY_GATE_UNAVAILABLE`).
 - **FR-021-034 — SDKs**: The five SDKs MUST emit the same canonical `resourceOperation` nodes and
   `vars` expressions, invent no retry, auth or serialization semantics, and pass shared conformance.
 - **FR-021-035 — Studio**: Resources (types, resources, probes, revisions; connections listed with a
@@ -514,6 +585,21 @@ An author checks a filter against a pasted sample, or against retained events th
   Compose and Helm profiles with default-deny egress; runbooks (resources, integration runner, each
   new source, CDC slot lag); the [quickstart](quickstart.md) demo; and the draft contracts merged into
   the canonical documents in the same delivery.
+- **FR-021-037 — Run creators pass the input gate** (added 2026-11-24, Decision 021-010): Every run
+  this feature creates MUST pass the `RunInputGate` of Architecture decision 0090 before the
+  transaction that creates it opens. Routes, e-mail endpoints and the five new connector kinds start
+  runs only through `webhook` and `message` triggers and therefore through the trigger dispatcher
+  (design 043, creator row 9), where a refused input is a delivery without a run, audited once; the
+  resource probe is a new creator (`Creator::ResourceProbe`, beside row 13) with input `{}`. The
+  admission pins of Requirement 021-004 and Requirement 021-019 are written in the transaction that
+  the checked input enters, for every creator of design 043's table.
+- **FR-021-038 — Capabilities and rollout** (added 2026-11-24, Decision 021-011): The capabilities
+  `integration-resources-v1`, `namespace-variables-v1`, `inbound-endpoints-v1`, `managed-streams-v1`
+  and `connector-filters-v1` MUST join the instance registry of Architecture decision 0082, each
+  switched on only by the audited operator activation of Requirement 018-052; until then the feature
+  refuses its own writes, publications and admissions with `INTEGRATION_CAPABILITY_NOT_ACTIVATED`
+  naming the capability. `managed-streams-v1` MUST NOT be activated while a live engine would consume
+  a `MANAGED` connector.
 
 ### Amendment to feature 016
 
@@ -567,11 +653,11 @@ All evidence below is required future evidence; none exists.
 |---|---|---|
 | SC-021-001 | Browser and REST create an `http_api` resource with an OpenBao secret, reload without values, conflict on a stale revision, one probe success and five distinct probe failures | FR-021-001..003,006,017,035 |
 | SC-021-002 | In 50 seeded edit/retry interleavings no retry uses a later revision; revoking the slot's ACL stops the next resolution; a 018 reset copies resource and variable bindings at the same revisions or is refused as specified | FR-021-004,008,019 |
-| SC-021-003 | 017 regression suites pass unchanged; creating a resource of each of the seven database driver types is refused with `MANAGED_BY_CONNECTIONS` | FR-021-001,005 |
+| SC-021-003 | 017 regression suites pass unchanged; creating a resource of each of the seven database driver types is refused with `MANAGED_BY_CONNECTIONS` (revised 2026-11-24: of each of the ten connection-catalog drivers, the three lake drivers of 035 included, read from the driver registry); a namespace-authored type is refused with `RESOURCE_TYPE_NOT_AUTHORABLE` | FR-021-001,005 |
 | SC-021-004 | Studio and five SDKs publish byte-identical `resourceOperation` documents and get equal results and errors | FR-021-007,010..014,034 |
 | SC-021-005 | For every operation kind: crash after send, stale lease, lost hint, timeout vs late completion, duplicate report and restart leave one completion or an explicit unknown outcome | FR-021-008,015 |
 | SC-021-006 | A failing HTTP compensation inside a saga ends in review or `COMPENSATION_FAILED` per policy; an irreversible SMTP send ends `PARTIAL` | FR-021-015 |
-| SC-021-007 | Egress refuses loopback, link-local, metadata, platform endpoints, DNS rebinding and redirects for every operation, the token request and every new connector kind (MQTT, Pub/Sub, Service Bus, WebSocket, CDC), including their token endpoints and upgrade handshakes | FR-021-009,021 |
+| SC-021-007 | Egress refuses loopback, link-local, metadata, platform endpoints, DNS rebinding and redirects for every operation (the OAuth token request is design 047's, revised 2026-11-24) and every new connector kind (MQTT, Pub/Sub, Service Bus, WebSocket, CDC), including their token endpoints and upgrade handshakes | FR-021-009,021 |
 | SC-021-008 | Canaries in slots, tokens, variables and event data never appear in outputs, logs, spans, metrics, audit or errors; an echoed token fails `SECRET_IN_OUTPUT` | FR-021-016,020,032 |
 | SC-021-009 | Variable pins hold across retries and change for new runs; disclosure by role matches FR-021-020 | FR-021-018..020 |
 | SC-021-010 | CDC: no duplicate run after a crash between commit and flush report, also when the restart comes after the dedupe window; in a `sync_quorum` cell no flush is reported before quorum durability; pause and ACL revocation end the lease and close the replication connection at the next renewal or batch; the lag alert fires; nothing is created on the customer database | FR-021-021,022 |
@@ -583,6 +669,8 @@ All evidence below is required future evidence; none exists.
 | SC-021-016 | Two tenants and two namespaces cannot manage, use, probe, resolve, consume or preview each other's objects; `event.message`, `event.request` and data-derived correlation keys follow FR-016-026; a holder of only `secret:use` cannot bind a slot to a new destination; with 029 enabled, a resource in a restricted folder is hidden and unusable for unlisted subjects exactly as a missing one | FR-021-003,031 |
 | SC-021-017 | Every ceiling of the plan is refused at its bound before work; zero refuses | FR-021-033 |
 | SC-021-018 | The quickstart happy and failure demos run from a clean checkout on a declared environment with recorded timings | FR-021-036, NFR-021-005 |
+| SC-021-019 | A route, e-mail, CDC and MQTT event whose `data` the target version's `inputSchema` refuses creates no run and records one delivery outcome with one `run.input_refused` audit; a resource probe passes the gate; an `INSERT INTO runs` outside the gate's places fails the architecture check (added 2026-11-24) | FR-021-037 |
+| SC-021-020 | Before each capability's activation its writes, publications and admissions are refused with `INTEGRATION_CAPABILITY_NOT_ACTIVATED`; the `oauth` scheme is refused while design 047's broker capability is off; a per-resource concurrency limit is refused while 022's gate is off and, once on, holds a step outside `READY` without a claim statement (design 038 budget unchanged by it) (added 2026-11-24) | FR-021-003, FR-021-033, FR-021-038 |
 
 ## Assumptions
 
@@ -592,21 +680,44 @@ All evidence below is required future evidence; none exists.
   stay gaps until credentials are supplied.
 - The operator approves private ranges for runners as in ADR-0035; namespaces can only narrow them.
 - The coordinator allocates the protocol minor, migration timestamps and permission order across
-  018–032; numbers here are provisional (D1151).
+  018–032; numbers here are provisional (D1151). On 2026-11-24 the protocol minor is the next free
+  one after 1.8 (provisionally 1.9) and migrations come after `20270119000000` (Decisions 021-005,
+  021-006).
 
 ## Out of Scope
 
-Namespace-defined resource types (O1122); resources consumed by ordinary activities and scripts;
-OAuth2 authorization-code/refresh flows; SES/SNS, SendGrid, Postmark; an SMTP server; MIME parsing;
-provider-specific route signatures (GitHub, Stripe, Shopify); synchronous routes (026); standalone
-operations (022); database engines (024); operations inside bodies (G1120); a connector marketplace;
+Namespace-defined resource types (refused: Owner question 1122, decided 2026-11-24; curated hub type
+versions are design 047's, see below); SES/SNS, SendGrid, Postmark (Gap 1127); an SMTP server; MIME
+parsing; provider-specific route signatures (GitHub, Stripe, Shopify); synchronous routes (026);
+standalone operations (022); database engines (024); operations inside bodies (G1120);
 cross-resource distributed transactions.
+
+Owned by design 047 (`docs/designs/047-oauth-integration-hub.md`), not by this feature (revised
+2026-11-24, Decision 021-003):
+
+- OAuth 2.0 authorization-code and client-credentials credentials, their refresh, and the platform
+  token broker that holds client secrets and refresh tokens in OpenBao; 021's `http_api` and
+  `graphql` OAuth scheme only references such a credential (FR-021-001, FR-021-003).
+- Per-tenant and operator-offered OAuth client registration.
+- Resources consumed by ordinary activities and scripts: an activity or script declares a resource
+  and receives its non-secret settings and current access token through the declared-secret
+  delivery of constitution Principle V.
+- The curated integration and template hub (constitution 5.0.0: only the release's signed index and
+  operator-pinned indexes as sources, items imported as drafts under the same publication,
+  signature, secret and isolation rules as authored content, nothing run in the server), built on
+  028's signed-index requirements FR-028-039 to FR-028-042. Its resource-type versions specialise
+  this feature's closed operation kinds through the provenance extension point of FR-021-001.
+  The line "a connector marketplace" of the 2026-10-26 draft is replaced by this pointer.
 
 ## Owner questions
 
-O1120 (e-mail providers), O1121 (default `resource:effect` grant), O1122 (custom resource types) and
-O1123 (the placement rule of ADR-0055 decision 11), with recommended defaults, are in
-[research.md](research.md#owner-questions); this spec assumes the defaults.
+Owner questions 1120 (e-mail providers), 1121 (default `resource:effect` grant), 1122 (custom
+resource types) and 1123 (the placement rule of Architecture decision 0055 decision 11) were decided
+on 2026-11-24 under the owner's delegation, "delegate (OD-2026-11-24-4)", with the option analysis in
+[research.md](research.md#owner-questions): generic relay and Mailgun first; developer holds
+`resource:effect`; no namespace-defined types, curated hub type versions through a provenance
+extension point (design 047); clauses (a) to (d) accepted and clause (e) added for design 047's
+token broker. No owner question of this feature is open.
 
 ## Boundaries
 

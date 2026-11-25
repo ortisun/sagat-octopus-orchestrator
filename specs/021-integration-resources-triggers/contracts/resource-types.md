@@ -1,7 +1,21 @@
 # Resource types v1 and managed operations (draft contract)
 
 Draft for FR-021-001, FR-021-003, FR-021-010..017. Merged into canonical documents by T021-060. Not
-implemented. Revised 2026-10-27 after the architecture and security reviews.
+implemented. Revised 2026-10-27 after the architecture and security reviews. Revised 2026-11-24 (readiness review):
+the `oauth2_client_credentials` scheme is replaced by `oauth`, a reference to a design 047 credential (Decision
+021-001); type versions carry provenance (Decision 021-004); the database-driver list is read from the connection
+catalog (Decision 021-016).
+
+## Provenance and hub type versions (2026-11-24)
+
+- Every type version carries `provenance`: `platform` (shipped in the server, the five types below) or `hub`
+  (installed by design 047 from a signed index; key `hub.<publisher>.<name>`).
+- A hub type version is a specialisation: each of its operations names one platform operation kind
+  (`http.request`, `graphql.execute`, `s3.*`, `smtp.send`, `slack.postMessage`) and may only narrow it: fix `baseUrl`
+  (and so the host), fix the auth scheme, restrict methods, give path templates and bound fields. Its effect class,
+  executor role, egress profile, probe kind, refused headers and result envelope are those of the kind it narrows.
+  A specialisation that widens anything is refused when the version is validated.
+- A namespace cannot create a type: `RESOURCE_TYPE_NOT_AUTHORABLE`.
 
 ## Common rules
 
@@ -14,6 +28,9 @@ implemented. Revised 2026-10-27 after the architecture and security reviews.
   their own runners, D1154).
 - **Host-bearing settings** are `baseUrl`, `oauth2_client_credentials.tokenUrl` (`http_api`,
   `graphql`), `endpoint` and `bucket` (`s3_bucket`), `host` (`smtp`) and `apiBaseUrl` (`slack_bot`).
+  (2026-11-24: `tokenUrl` is withdrawn with the scheme; the token endpoint of an `oauth` slot is fixed by its design
+  047 credential, and binding an `oauth` slot to a destination needs design 047's manage permission on that
+  credential.)
   A revision that creates the resource, changes a host-bearing setting or changes a slot's secret
   requires `secret:manage` on every affected slot secret (`SLOT_DESTINATION_REQUIRES_MANAGE`);
   `secret:use` suffices for other revisions (D1158).
@@ -46,6 +63,15 @@ implemented. Revised 2026-10-27 after the architecture and security reviews.
 
 OAuth2: one token request per attempt (`grant_type=client_credentials`), response ≤ 16 KiB,
 `access_token` and `token_type` `Bearer` required, token never logged, cached or reported.
+
+Revised 2026-11-24 (Decision 021-001), replacing the two paragraphs above for OAuth: the `auth` value
+`oauth2_client_credentials` is withdrawn. The scheme `oauth` has one slot `credential` of shape `oauth_credential`
+naming an OAuth credential of design 047 (authorization code or client credentials) and optional `scopes[]` ≤ 16 that
+must be a subset of the credential's. The runner sends no token request: `ResolveResource` returns the credential's
+current access token from design 047's broker as the slot value, and the runner sends `Authorization: Bearer <value>`;
+the value is scanned for in the output like every slot value and is never logged, cached across attempts or reported.
+A save or publication with `oauth` is refused with `OAUTH_BROKER_UNAVAILABLE` while design 047's broker capability is
+off.
 
 **`http.request`** — safe for `GET`/`HEAD`, effect otherwise.
 
@@ -125,3 +151,7 @@ Settings: `apiBaseUrl` (default `https://slack.com/api`, fixed host), slot `botT
 `{key, managedBy: "connections"}` with a link to the connection API. `PUT …/resources/{name}` with
 any of them fails `422` with `MANAGED_BY_CONNECTIONS`. A driver added later to the connection catalog
 joins this list in the same delivery.
+
+Revised 2026-11-24 (Decision 021-016): the list is read from the connection catalog's driver registry, which
+`GET /database-drivers` already serves, so it now also holds the lake drivers `iceberg`, `object_storage` and
+`clickhouse` of feature 035, and a driver added there appears here without a change to this feature.

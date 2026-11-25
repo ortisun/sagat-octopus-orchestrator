@@ -224,7 +224,8 @@ components:
             properties:
               key: {type: string}
               versions: {type: array, items: {type: integer, minimum: 1}}
-              managedBy: {type: string, enum: [connections], description: 'Present for every database driver; create it through /connections.'}
+              managedBy: {type: string, enum: [connections], description: 'Present for every database driver; create it through /connections. Revised 2026-11-24: read from the connection catalog driver registry (postgresql, iceberg, object_storage, clickhouse, and the 024 drivers).'}
+              provenance: {type: string, enum: [platform, hub], description: 'Added 2026-11-24 (Decision 021-004). hub versions are installed by design 047; absent for managedBy entries.'}
     ResourceTypeVersion:
       type: object
       required: [key, version, settingsSchema, slots, authSchemes, operations, probe]
@@ -232,7 +233,9 @@ components:
         key: {type: string}
         version: {type: integer}
         settingsSchema: {type: object, description: 'Closed, bounded JSON Schema document.'}
-        slots: {type: array, items: {type: object, required: [name, shape], properties: {name: {type: string}, shape: {type: string, enum: [token, username_password, client_secret, access_key_pair, api_key]}}}}
+        slots: {type: array, items: {type: object, required: [name, shape], properties: {name: {type: string}, shape: {type: string, enum: [token, username_password, client_secret, access_key_pair, api_key, oauth_credential], description: 'Revised 2026-11-24: client_secret withdrawn with oauth2_client_credentials (no v1 type offers it); oauth_credential names a design 047 credential (Decision 021-001).'}}}}
+        provenance: {type: string, enum: [platform, hub], description: 'Added 2026-11-24 (Decision 021-004).'}
+        specialises: {type: object, description: 'Added 2026-11-24. hub versions only: operation name to the platform operation kind it narrows.', additionalProperties: {type: string}}
         authSchemes: {type: array, items: {type: string}}
         operations: {type: array, items: {type: object, required: [name, effect], properties: {name: {type: string}, effect: {type: string, enum: [safe, effect]}, irreversible: {type: boolean}}}}
         probe: {type: string, description: 'Human-readable description of the fixed probe.'}
@@ -243,7 +246,7 @@ components:
       properties:
         requestId: {type: string, format: uuid}
         expectedRevision: {type: integer, minimum: 0, maximum: 2147483646}
-        type: {type: string, enum: [http_api, graphql, s3_bucket, smtp, slack_bot]}
+        type: {type: string, pattern: '^(http_api|graphql|s3_bucket|smtp|slack_bot|hub\.[a-z0-9-]{1,63}\.[a-z0-9_-]{1,63})$', description: 'Revised 2026-11-24 (Decision 021-004): the five platform types, or an installed hub type of design 047. A database driver key fails MANAGED_BY_CONNECTIONS; any other key RESOURCE_TYPE_UNKNOWN.'}
         typeVersion: {type: integer, minimum: 1}
         settings: {type: object, description: 'Validated against the type version; never secret.'}
         slots: {type: object, maxProperties: 8, additionalProperties: {type: string, pattern: '^[a-z][a-z0-9._-]{0,63}$'}, description: 'slot name → namespace secret logical name (OpenBao authority).'}

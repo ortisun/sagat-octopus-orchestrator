@@ -5,6 +5,12 @@ the architecture and security reviews. Additive to
 `specs/001-platform-foundation/contracts/worker.proto` in the next free minor after 1.6
 (provisionally **1.7**, allocated at merge, D1151). Not implemented.
 
+Revised 2026-11-24 (Decision 021-005): 1.7 is step logs (feature 041) and 1.8 is reserved for delivery
+acknowledgement (branch `docs/delivery-acknowledgement`); this contract takes the next free minor when it merges,
+provisionally **1.9**. Every "1.7" below reads as that minor. A host of that minor also carries the 1.8 procedure.
+The integration step is the managed kind `ManagedKind::Integration`, admitted inside the claim within design 038's
+budget (Decision 021-008); the runner writes no step log (Decision 021-012).
+
 ## Roles and claiming
 
 - Machine role `integration-runner`: `worker:execute`, `integration:execute`, `connector:stream`
@@ -102,6 +108,14 @@ inbox purge guard compares with the stored checkpoint;
 A repeated call in the same attempt reuses the pinned versions (still under current authority) and
 never caches plaintext. OAuth2 tokens are obtained by the runner after this call and live only in
 the attempt.
+
+Revised 2026-11-24 (Decision 021-001), replacing the last sentence above: the runner obtains no OAuth token. For a
+slot of shape `oauth_credential`, step 2 also asks design 047's token broker, with no transaction open, for the
+credential's current access token; step 3 checks that the credential is still bound, active and authorized, records
+its version in `step_resource_credentials` like a secret version, and returns the access token as
+`ResolvedSlot.value`. The refresh token and the client secret never leave the broker. A broker that is unavailable
+gives `CAPABILITY_UNAVAILABLE`; a revoked or unbound credential gives `RESOURCE_UNAVAILABLE`. The runner keeps the
+token only for the attempt.
 
 ## Execution and reporting
 
