@@ -20,21 +20,27 @@ input; a chain over data the worker receives in the history could be produced wi
    Activation k MUST deliver the visible events with a journal sequence in `(S(k − 1), S(k)]`, in journal order, one at a
    time, letting the function run until it yields before the next; `ctx.now()` MUST be the time of `S(k)`, never earlier
    than the previous one. A live and a replaying worker MUST apply the same rule.
-2. What is visible and what is waking MUST be two exhaustive predicates of the domain (`RunEvent::is_visible`,
-   `RunEvent::is_waking`), with no catch-all arm, used by every projection, count and rule.
+2. What is visible and what is waking MUST be decided by the domain from the event and its origin
+   (`RunEvent::is_visible`, `RunEvent::is_waking(origin)`), exhaustively with no catch-all arm: a completion's command
+   records and the workflow-task events never wake; a command's immediate effect does. Every journal write of every run
+   MUST go through one typed append function that applies them, and no other code MAY insert into the journal.
 3. A workflow task MUST be pending exactly when the journal sequence of the run's last waking event is greater than `S`
-   of its last completion. The journal append of a code run MUST move the first for every waking event, in the
-   transaction that appends it, and make the workflow-task step `READY` with its hint when it was waiting; a completion
-   MUST decide the step's state after appending its own events; a failed task MUST move neither. The reconciler MUST
-   repair a pending run whose step waits.
+   of its last completion. The typed append MUST move the first for every waking event, in the
+   transaction that appends it, and make the workflow-task step `READY` with its hint only when it was waiting with kind
+   `DECIDER` (never under review, never closed); a completion MUST decide the step's state after appending its own
+   events; a failed task MUST move neither. The reconciler MUST compare the journal itself, not the run's columns, and
+   repair a pending run whose step waits with kind `DECIDER`.
 4. A completion MUST carry `applied_through_seq`; the SDK MUST hold a terminal command until every event of the window
    has been applied; the server MUST refuse a completion below `S(k)` (`UNHANDLED_EVENTS`, not counted, the SDK evicts and
-   replays). A terminal command MUST also be refused while a waking signal, update or cancellation request is unseen;
-   after 3 refusals the run MUST refuse new signals and updates until its next completion commits.
+   replays). A terminal command MUST also be refused, not counted, while a waking signal, update or cancellation request
+   is unseen or an obligation (an open saga, a review, an unknown outcome) is open; after 3 refusals for unseen events
+   the run MUST refuse new signals and updates until its next completion commits. A command on one of the run's own
+   steps that is already terminal MUST be a no-op with its own command record, counted and chained.
 5. The server MUST keep per code run a 32-byte chain `H(k) = SHA-256(H(k − 1) ‖ uint32 big-endian length ‖ d(k))`, with
-   `H(0)` all zero and `d(k)` the RFC 8785 JSON of `{seq, kind, target, fragment}` of command k, `fragment` the SHA-256
-   of the fragment bytes as received after a canonical check. The history sent to workers MUST NOT carry fragments of past
-   commands. The domain MUST hold the chain rule over opaque digests behind a port, implemented in `sagat-application`. A
+   `H(0)` all zero and `d(k)` the RFC 8785 JSON of `{seq, kind, target, body}` of command k, `body` the SHA-256 of the
+   command's canonical body as received after a canonical check (a work command's fragment, a typed command's body). The
+   history sent to workers MUST NOT carry the bodies of past commands. The domain MUST hold the chain rule over opaque
+   digests behind an application port implemented in `infra-ir`. A
    mismatch MUST put the run under review with cause `CHAIN_MISMATCH` and commit no command.
 6. The causes MUST behave as the table of design 044, Technical Plan 6.3, says, with the count of consecutive failures
    stored on the run; a failure's detail MUST be a closed cause, a command number, an actual kind and target checked

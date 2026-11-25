@@ -2,9 +2,9 @@
 
 **Status:** Proposed
 **Decided by:** agent (Claude Code, design 044), under the owner's delegation (OD-2026-11-20-6 for Owner questions 044-011 and 044-014; OD-2026-11-24-4 for the acceptance and for Owner question 044-015); no person has reviewed it
-**Refines / supersedes:** supersedes ADR-0031 decisions 8 and 9 (an update schedules no work; its handler is a declared expression) for code versions only; extends feature 014's declared state and ADR-0031's declared result disclosure to code versions; makes the history export of a code run a payload read path of feature 016 (ADR-0028), the new decision ADR-0031 asks for before any reader of raw payloads; refines ADR-0111 (branch `docs/temporal-parity-readiness`, Proposed) for code versions: every declared signal is buffered and the activation is its consumer
+**Refines / supersedes:** supersedes ADR-0031 decisions 8 and 9 (an update schedules no work; its handler is a declared expression) for code versions, and decision 7 (a query observes one committed snapshot) for worker queries, whose snapshot is the function's state after a committed completion; extends feature 014's declared state and ADR-0031's declared result disclosure to code versions; makes the history export of a code run a payload read path of feature 016 (ADR-0028), the new decision ADR-0031 asks for before any reader of raw payloads; refines ADR-0111 (branch `docs/temporal-parity-readiness`, Proposed) for code versions: every declared signal is buffered and the activation is its consumer
 **Enforced by:** `a_signal_before_the_function_waits_is_delivered_at_the_next_activation`; `a_delivered_signal_is_consumed_by_the_completion`; `a_repeated_signal_key_is_answered_before_the_bounds`; `a_declared_query_is_answered_with_no_worker`; `an_update_result_outside_its_schema_fails_the_update_only`; `an_update_receipt_of_another_principal_is_not_found`; `a_lost_update_response_replays_after_authorization_is_checked_again`; `a_worker_query_is_claimed_by_polling_with_the_broker_down`; `a_worker_query_answer_outside_its_schema_is_refused`; `security_workflow_as_code::a_classified_value_copied_into_an_activity_input_is_redacted_on_export`; `security_workflow_as_code::a_secret_field_is_never_exported`; the conformance scenarios `code-signals`, `code-updates`, `code-declared-state` and `code-worker-queries` (design 044, Tasks 044-21, 044-24, 044-26, 044-29)
-**Required before acceptance:** ADR-0111 accepted with its refinement for code versions (Gap 044-017)
+**Required before acceptance:** ADR-0111 accepted with its refinement for code versions (Gap 044-017), and the measurements of design 044 Task 044-25
 
 ## Context
 
@@ -16,21 +16,28 @@ queries from committed state with no worker. Some answers exist only in the func
 
 ## Decision
 
-1. Every declared signal of a code version MUST be buffered in ADR-0111's inbox, with its bounds and lifecycle; the next
-   activation MUST deliver the buffered signals in journal order, and the completion that ends it MUST mark them consumed
-   in its transaction. The idempotency key MUST be answered before any bound.
-2. A code version's update MUST follow `ADMITTED`, then `ACCEPTED` or `REJECTED`, then `COMPLETED` or `FAILED`: admitted
+1. A code version MUST declare its signals in ADR-0111's shape, each buffered, and publication MUST require
+   `signal-inbox-v1`; the next activation MUST deliver the buffered signals in journal order; a signal MUST be consumed
+   only when the function's handler or wait takes it, reported by the completion and marked in its transaction; a
+   delivered signal not yet taken MUST stay pending, moved or discarded as ADR-0111 decides. After authentication,
+   authorization and tenant resolution, the idempotency key MUST be answered before any bound.
+2. A code version's update MUST follow `ADMITTED`, then `ACCEPTED` or `REJECTED`, then `COMPLETED` or `FAILED`, each a
+   row of an append-only transition table (graph receipts stay immutable), with a closed `argsSchema`; a `202` MUST be
+   answered only to a request that opts in with `acceptPending`: admitted
    durably, validated by the function when its admission event is applied, handled by the function (which may schedule
    work), and completed with a result validated against its closed `resultSchema` by the platform's validator, or failed
-   (`RESULT_SCHEMA_VIOLATION` when the result does not fit), the run left alone. A receipt MUST be readable only by the
-   principal that admitted it or by one with `run:operate`, after authorization is checked again.
+   (`RESULT_SCHEMA_VIOLATION` when the result does not fit), the run left alone. A receipt, and a repeated admission with the same key, MUST be
+   answered only to the principal that admitted it or to one with `run:operate`, after authorization is checked again;
+   another principal MUST learn nothing about it.
 3. A code version MAY declare state and expression queries in the IR's `state` form; the engine MUST answer them exactly
    as for a graph run.
-4. A worker query MUST be a durable row claimed through `PollTasks` by a session of the run's current digest, never a
-   journal event, expiring at the caller's timeout (at most 30,000 ms) plus 5 s, its answer validated against its closed
+4. A worker query MUST be a durable row claimed through `PollTasks` by a session of the run's current digest, answered
+   from the function's state at its last committed completion with that completion's journal sequence, never a journal
+   event, expiring at the caller's timeout (at most 30,000 ms) plus 5 s, its answer validated against its closed
    `resultSchema` and returned with `Cache-Control: no-store`, at most 64 in flight per namespace.
 5. `GET /runs/{runId}/history` MUST be granted by `run:read` and `history:export`, held by the admin role only by
-   default; it MUST classify every payload by its schema (an activity input by its envelope entry's `inputSchema`), apply
+   default, in a versioned format with a baseline; it MUST classify every payload by its schema (an activity input by its
+   envelope entry's `inputSchema`, a business literal by its declaring schema or as `pii`), apply
    feature 016's redaction and reveal rules, never export a field classified `secret`, and be audited.
 
 ## Considered options
@@ -50,6 +57,9 @@ queries from committed state with no worker. Some answers exist only in the func
   tests without seeing what it may not.
 - Bad: two query paths; a short-lived table and a task kind for worker queries; a replay over a redacted history can end
   `INCONCLUSIVE_REDACTED`; the signal path waits for ADR-0111.
+- Compatibility with runs in flight: graph signals, updates and queries keep their behaviour and their immutable
+  receipts; code versions exist only after this decision; older update clients never receive a `202` they did not ask
+  for. Operational cost: update waits re-read at most 64 times in 60 s and are bounded per API process.
 
 ## Evidence
 

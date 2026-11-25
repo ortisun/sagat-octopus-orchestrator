@@ -4,7 +4,7 @@
 **Decided by:** agent (Claude Code, design 044), under the owner's delegation (OD-2026-11-20-6 for Owner questions 044-007 and 044-010; OD-2026-11-24-4 for the acceptance); no person has reviewed it
 **Refines / supersedes:** applies ADR-0004 and ADR-0076 to code workflows; supersedes ADR-0010 decision 3 (a saga's plan is a pure function of the published definition) for code runs only
 **Enforced by:** `an_activity_command_cannot_carry_a_secret_of_another_activity_entry`; `a_compensation_receives_the_secrets_of_its_own_entry`; `a_fragment_that_changes_irreversible_is_refused`; `a_fragment_with_an_expression_field_is_refused`; `a_fragment_with_destinations_is_refused`; `a_fragment_with_an_output_schema_is_refused`; `an_approval_with_an_inline_policy_is_refused`; `publication_refuses_an_envelope_activity_with_a_reserved_prefix`; `publication_refuses_a_compensate_with_that_is_not_an_entry`; `an_aborted_code_saga_compensates_in_reverse_dependency_order`; `independent_code_compensations_run_while_one_is_under_review`; `an_unknown_outcome_in_a_code_saga_waits_for_review`; `a_terminal_command_with_an_open_saga_is_refused`; `a_terminal_command_waits_for_a_leased_activity_before_run_finished`; `a_code_step_output_beyond_the_retained_bytes_is_an_unknown_outcome`; `eager_activity_leases_are_provisional_and_granted_in_the_completion_transaction`; `an_unacknowledged_eager_lease_expires_without_an_unknown_outcome`; `an_idempotent_replay_returns_no_lease`; the conformance scenarios `code-saga` and `code-saga-uncertain` (design 044, Tasks 044-3, 044-5, 044-14, 044-22, 044-26)
-**Required before acceptance:** the fault tests of design 044 Task 044-22
+**Required before acceptance:** the fault tests of design 044 Task 044-22 and the measurements of Task 044-25
 
 ## Context
 
@@ -23,19 +23,23 @@ code saga cannot have. Temporal offers local activities and leaves compensation 
    literals or refused; `destinations`, an inline approval policy and `onError` MUST be refused; `secrets`,
    `irreversible`, `highRisk`, `compensateWith`, `reconcileWith` and `outputSchema` MUST come from the published
    envelope entry, which a fragment may repeat or omit but never change.
-3. A command MUST stay within the current code version's envelope: an activity entry listed by name or prefix, the names
-   of its `compensateWith` and `reconcileWith` entries too; a derived step MUST receive the secrets of its own entry; a
-   script listed by digest and ready; a listed child workflow; a named approval policy. No activity name MAY start with
+3. A command MUST stay within the current code version's envelope: the activity entry that covers its name (an exact
+   entry wins over a prefix, a longer prefix over a shorter one; only an exact entry MAY list secrets), the names of its
+   `compensateWith` and `reconcileWith` entries too; an activity whose entry has `requiresApproval` MUST be held by the
+   engine behind an approval of that very step under the named policy; a derived step MUST receive the secrets of its own entry; a
+   script entry by digest with its own secrets, schemas and compensation; a listed child
+   workflow at its listed version; a listed event type within its look-back; a named approval policy. No activity name MAY start with
    `script.` or `sagat.`. An activity input MUST be validated and classified by its entry's `inputSchema`.
 4. A successful report whose output cannot be retained MUST be an unknown outcome (`STORAGE_QUOTA_EXCEEDED`), reconciled
    or reviewed under feature 037; the function MUST NOT be told the step failed.
 5. Eager activity leases MUST be provisional leases of feature 006, released safely when unacknowledged; an idempotent
    replay MUST NOT return a lease, and the idempotency record MUST NOT store a lease token.
 6. A saga opened from code MUST be an engine compensation domain: closing it drops the compensations; aborting it MUST plan
-   the compensations of its completed steps in run-scoped plan rows (`code_saga_plan_entries`), with step B depending on
-   step A only when B's command was issued in an activation after the one that delivered A's outcome, so that independent
+   the compensations of its completed steps in the run-scoped tables of feature 003 (`run_sagas`, `run_saga_entries`),
+   with step B depending on step A when B's command record has a greater journal sequence than A's outcome, so that independent
    compensations stay eligible together; compensation identifiers MUST be derived from the start version and the forward
-   node; they MUST run with the rules of features 003 and 037; the function MUST learn only the scope's outcome.
+   node; they MUST run with the rules of features 003 and 037; the function MUST learn only the scope's outcome; an engine-driven stop MUST apply each open
+   scope's `cancelPolicy`, carried by the open-saga command.
 7. A terminal command MUST be refused while a saga scope is open or aborting or a step is under review or has an unknown
    outcome; otherwise it MUST go through the stop drain, and `run.finished` MUST be written only when no leased work is
    left or what is left went to review.
@@ -57,6 +61,8 @@ code saga cannot have. Temporal offers local activities and leaves compensation 
 - Good: no blind repeat of an effect; compensation, review, secret disclosure and risk metadata identical in both modes.
 - Bad: the code profile of each node kind is a second schema to keep in step with the first; eager dispatch waits for
   feature 006's acknowledgement.
+- Compatibility with runs in flight: graph sagas keep their published plans; only code runs, which exist only after this
+  decision, use run-time plans. Operational cost: one batched insert of plan rows per abort.
 
 ## Evidence
 

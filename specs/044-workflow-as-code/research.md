@@ -329,6 +329,90 @@ finding was answered. These entries supersede the earlier ones they name.
 - Supersession notes for the first register: D044-040 (`code_nodes`) is superseded by D044-047 and D044-070; D044-026 by
   D044-074; D044-062 by D044-074.
 
+### Decisions after the third review round (2026-11-25)
+
+The reports are in `docs/designs/044-workflow-as-code.reviews/2026-11-25/round-3/`; `resolution.md` there says how each
+finding was answered. These entries supersede the earlier ones they name.
+
+- **D044-098** (2026-11-25, supersedes D044-070) A code version parses to `DefinitionGraph::Code`; a run transaction
+  composes it with the run's overlay, so `node`, `node_for_instance`, `entrypoint` and `scope_body` all resolve through
+  it; a source-text check lists every call site; arms that let an unknown node through fail closed. The overlay is
+  cached in process by run and command count.
+- **D044-099** (2026-11-25, supersedes D044-071) The workflow-task step has `steps.kind = WORKFLOW_TASK` and
+  `NodeKind::WorkflowTask`, built from the step row and the pin; `is_derived`, `forward` and `parse_stored` change
+  themselves; the claim has a workflow-task arm that skips activity quotas, breakers, pools, capacity windows and the
+  run-document input, and counts the task in the namespace bucket `sagat.workflow` (default 1,024); waiting kinds
+  `DECIDER`, `CLOSED` and `APPROVAL`.
+- **D044-100** (2026-11-25, supersedes D044-072 in part) Waking depends on the event and its origin; every journal write
+  goes through `PgRunTx::append_events(events, origin)`, and the architecture check refuses raw inserts; only a step
+  `WAITING` with kind `DECIDER` is woken; the reconciler reads the journal, not the counters.
+- **D044-101** (2026-11-25, supersedes D044-096) A command on a terminal step is a no-op with its own command record
+  (`command.noop`), counted and chained; its audit is one record per completion.
+- **D044-102** (2026-11-25, supersedes D044-083) Step B depends on step A when B's command record has a greater journal
+  sequence than A's outcome; code saga plans live in `run_sagas` and `run_saga_entries`; engine-driven stops apply each
+  open scope's `cancelPolicy`, which the open-saga command carries.
+- **D044-103** (2026-11-25, supersedes D044-082) The chain covers the SHA-256 of every command's canonical body, typed
+  commands included; the canonical form is a new public RFC 8785 function of `infra-ir` beside the unchanged
+  `canonical_json`; `CommandDigester` is an application port implemented in `infra-ir`.
+- **D044-104** (2026-11-25, supersedes D044-073 in part) Signals take Architecture decision 0111's shape; publication
+  also needs `signal-inbox-v1`; a signal is consumed only when the function's handler or wait takes it, reported by the
+  completion; delivered but unhandled signals stay pending and move or are discarded as Architecture decision 0111
+  decides. Task 044-21 builds on that design's inbox task, or builds the inbox to its decisions if it has not landed.
+- **D044-105** (2026-11-25, supersedes D044-084 in part) Code update lifecycles are rows of the append-only
+  `code_update_transitions`; graph receipts stay immutable; `acceptPending` opts in to `202`, otherwise `409
+  UPDATE_PENDING` after 60 s; the receipts route is `/runs/{runId}/update-receipts/{updateKey}`; another principal's key
+  gets `409 UPDATE_KEY_IN_USE` with no content; updates need `argsSchema`.
+- **D044-106** (2026-11-25, supersedes D044-074 in part) The capability is `code-workflows-v1`, required of the control
+  plane and the engine; removing the requirement is refused while a code version exists.
+- **D044-107** (2026-11-25, supersedes D044-088) Bindings list workflow types in `worker_binding_workflow_types`; the
+  four binding checks of today treat reserved names against it; replacing a binding closes sessions of removed types.
+- **D044-108** (2026-11-25) The envelope: an exact entry wins over a prefix and a longer prefix over a shorter; only an
+  exact entry may list secrets; script entries are objects; `children` carry versions; `events` list event types with a
+  largest look-back; `requiresApproval` makes the engine hold the step behind an approval of that step.
+- **D044-109** (2026-11-25, supersedes D044-089 and D044-059) The sticky preference is the deferrable Task 044-14; the
+  core lets any session of the digest take a workflow task, the lease carries its window start, and a worker reuses its
+  cache only when it holds the run at that start.
+- **D044-110** (2026-11-25, supersedes D044-078 and D044-079 in part) A terminal command refused for obligations or unseen
+  events is not counted and is offered again; an accepted one closes the workflow-task step (`CLOSED`) and goes through
+  the stop drain, with `StopReason::Completed` carrying the output reference for a success; completions during the drain
+  are stale.
+- **D044-111** (2026-11-25, supersedes the waiting continue-as-new of D044-078) Continue-as-new is refused while an
+  activity, child, approval or saga is open, cancels open timers and waits in its transaction, and pins the current code
+  version by default (`same`); Architecture decision 0105 supersedes Architecture decision 0030 decision 16 for code runs.
+- **D044-112** (2026-11-25, supersedes D044-085 in part) A reset of a moved run starts on the source's current code
+  version, with the prefix's overlay rows copied; `run.code_version_moved` is `EXCLUDE`; the registry of reset rules gains
+  a column for code runs.
+- **D044-113** (2026-11-25) The headroom refuses external signals and updates from a visible count of 50,176 and during
+  the closing window; only the first cancellation request is journaled; no workflow task is offered once the window is
+  used up, so the largest replayed history is 56,320 events.
+- **D044-114** (2026-11-25, supersedes D044-092) The rule of one workflow task per 100 ms is withdrawn (steps have no
+  not-before column and the claim must not change); the namespace bucket `sagat.workflow` bounds workflow tasks in
+  flight.
+- **D044-115** (2026-11-25, supersedes D044-077) The completion budget is at most 57 statements: the 50 of
+  `COMPLETION_WITH_A_NEXT_STEP` plus at most 7 listed in Non-functional requirement 044-003.
+- **D044-116** (2026-11-25, supersedes D044-086 in part) Business literals of fragments (`input`, `correlationKey`,
+  `subject`, `businessId`) are classified payloads; activity inputs are classified by the entry's `inputSchema`; a lease
+  input of a `c-<n>` step is its literal input; a derived step's input is the forward input and output.
+- **D044-117** (2026-11-25) All moves are batch jobs (a single-run move is a one-item job); the creator is re-authorized
+  per item; verdicts and retries live on `batch_items`; `code_replay_checks` holds only the lease; an unclaimed item ends
+  `NO_TARGET_WORKER` after 3,600 s; `REPIN` is refused for code runs; the move function checks the replay check and the
+  appended event.
+- **D044-118** (2026-11-25) Worker queries answer from the function's state at its last committed completion, with that
+  completion's journal sequence; their arguments and answers are classified payloads; Architecture decision 0108
+  supersedes Architecture decision 0031 decision 7 for them.
+- **D044-119** (2026-11-25) The history export has a format version and a baseline; a replayer refuses an unknown format.
+- **D044-120** (2026-11-25) All retained run content of a code run (inputs, literals, side effects, update arguments and
+  results, declared state) is charged to the 4 MiB and the tenant's content quota.
+- **D044-121** (2026-11-25) Python workflow modules run in a private module namespace whose `__import__` is the SDK's, so
+  preloaded modules are refused too; at most 10,000 keys per decoded object; TypeScript, Python and C# require a UTC
+  process time zone.
+- **D044-122** (2026-11-25) The SDK surface and packaging of Technical Plan 1.12; `publishCode` saves the draft and uses
+  today's publication route, which activates.
+- **D044-123** (2026-11-25) A session on the new minor implements the host procedures of 1.7, 1.8 and 1.9; design 045's
+  `steps.min_protocol_minor` decides the minor per step (added here if design 045 has not landed).
+- Supersession notes: D044-019 is superseded by D044-083 and then D044-102; D044-028 and D044-047 by D044-088 and then
+  D044-107; D044-002's "expiry without review" stands, and its expiry counts as a failure (Technical Plan 6.3).
+
 ## 3. Gaps
 
 - **G044-001** (2026-11-24) The memory of an idle cached run is not measured in any SDK; the TypeScript spike's heap
@@ -380,6 +464,20 @@ finding was answered. These entries supersede the earlier ones they name.
 - **G044-010** (2026-11-25, later state) The constitution 5.0.0 draft (branch `docs/constitution-5.0.0`, principle IV)
   states the verified move as this design does; the gap closes when that text merges.
 
+- **G044-013** (2026-11-25, later state) Design 045 names 1.9, so the minor of this design is the next free one after
+  it at merge, not 1.9; Decision 044-024's "expected 1.9" is withdrawn.
+- **G044-021** (2026-11-25) The constitution 5.0.0 draft keeps "every run references exactly one version"; a code run
+  references its start version as its identity origin and is pinned to one current version. The draft's owner should
+  say so before it merges, and its sentence "within one version, explicit version markers" should say that patches take
+  effect on a running run only through a verified move.
+- **G044-022** (2026-11-25) The version diff (`DefinitionDiff`) has no form for two code versions in 0.3.0; an envelope
+  and declaration diff is a follow-up.
+- **G044-023** (2026-11-25) The update waits are bounded per API process (256), not across processes; a wait holds no
+  database resource and re-reads at most 64 times in 60 s.
+- **G044-016** (2026-11-25, later state) Outside data (third-party outputs, webhook events) does reach Python workflow code,
+  so the seed's secrecy matters; the SDK also caps decoded objects at 10,000 keys, which bounds the damage of colliding
+  keys whatever the seed.
+
 ## 4. Owner questions (all delegated)
 
 - **O044-001** (2026-11-24) Should code under a running run ever change? delegate (OD-2026-11-20-6): yes, only by an
@@ -430,3 +528,11 @@ finding was answered. These entries supersede the earlier ones they name.
 - **O044-016** (2026-11-25) May a deploy pipeline request moves? delegate (OD-2026-11-20-6): no. Constitution 5.0.0 says a
   pin changes only by a person's explicit request and no policy moves runs; a pipeline step that moves every open run at
   each deploy is such a policy. A person requests a dry run and the move of a frozen selection.
+- **O044-017** (2026-11-25) Approvals in code runs: advisory signals, or engine-held steps? delegate (OD-2026-11-24-4):
+  engine-held. An entry's `requiresApproval` makes the engine hold the step and open the approval of that very step, so
+  the decision is bound to the effect it guards; publication approval can see which activities are gated. Raised by the
+  security review of round 3.
+- **O044-018** (2026-11-25) Sticky exclusivity in the core slice, or deferrable? delegate (OD-2026-11-20-6): deferrable
+  with eager dispatch (Task 044-14). The core keeps the worker's cache, reused when the window follows it; exclusivity is
+  an optimisation to be measured, and it brings a routing string with several writers. Raised by the zoom-out review of
+  round 3.

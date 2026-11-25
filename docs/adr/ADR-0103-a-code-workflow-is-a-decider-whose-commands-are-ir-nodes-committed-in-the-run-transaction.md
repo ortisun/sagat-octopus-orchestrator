@@ -19,13 +19,17 @@ A code version has no graph. The constitution forbids tenant code in a platform 
 
 1. A code workflow MUST be a decider: the function runs in the tenant's worker, in workflow tasks, and answers each with
    commands. The platform MUST NOT run workflow code in any of its processes.
-2. A code run MUST have a per-run node overlay: the node spec of every accepted work command (at most 4 KiB) and its
-   derived companions, stored when the command is accepted, through which every path that reads a step's node finds it.
-   Every call site of `node_for_instance` MUST resolve through the overlay for a code run or be shown unreachable.
-3. A workflow task MUST be a lease of the run's reserved workflow-task step, whose node identifier is a reserved form
-   recognised by one predicate (`is_workflow_task_step`) tested before `is_derived` and `forward`, and whose activity
-   field holds `sagat.workflow:<type>:<digest>` (or, while sticky, `sagat.workflow-sticky:<session>`), so that the
-   existing claim routes it without a change to its SQL. Only a session that registered that type and digest under a
+2. A code version MUST parse to a definition whose graph is the code variant, and a run transaction of a code run MUST
+   compose it with the run's node overlay (the node spec of every accepted work command, at most 4 KiB, and its derived
+   companions, frozen at acceptance), so that every accessor (`node`, `node_for_instance`, `entrypoint`, `scope_body`)
+   resolves through it. A source-text check MUST list every call site, and an arm that would let an unknown node
+   through MUST fail closed.
+3. A workflow task MUST be a lease of the run's reserved workflow-task step, of `steps.kind` `WORKFLOW_TASK` and
+   `NodeKind::WorkflowTask` (built from the step row and the pin), whose reserved node identifier `is_derived`, `forward`
+   and `parse_stored` handle themselves, and whose activity field holds `sagat.workflow:<type>:<hex digest>`, so that the
+   candidate scan finds it without a change to its SQL; the claim MUST have a workflow-task arm that checks the digest
+   and the pause and skips the activity-only rules (quotas, breakers, pools, capacity windows, the run-document input),
+   counting the task in the namespace quota bucket `sagat.workflow`. Only a session that registered that type and digest under a
    binding whose `workflowTypes` lists the type MUST receive it; an activity binding MUST NOT cover a workflow type; an
    activity registration or binding that names `sagat.workflow` MUST be refused.
 4. A workflow task MUST carry no secret, MUST have no heartbeat, MUST be refused by every activity RPC, and its expiry MUST
@@ -35,9 +39,9 @@ A code version has no graph. The constitution forbids tenant code in a platform 
    command functions. There MUST be no second execution engine.
 6. A completion MUST commit, in one transaction with the run row and the workflow-task step locked: the journal events
    of the completion and of every command, the overlay rows, the steps, timers and waits, the projections, the outbox
-   hints and the state of the workflow-task step. It MUST run at most the statements of today's activity completion plus
-   4, reads included, whatever the number of its commands (at most 256); the batched persistence path MUST write what
-   `persist` writes.
+   hints and the state of the workflow-task step. It MUST run at most the 50 statements of today's `COMPLETION_WITH_A_NEXT_STEP` plus 7,
+   reads included, whatever the number of its commands (at most 256), that is at most 57; the batched persistence path MUST write what
+   `persist` writes. Every journal write of every run MUST go through one typed append function.
 7. The engine MUST NOT end a code run by routing; a terminal command MUST go through the engine's stop drain.
 8. A run whose function needs a person MUST go under the existing step review of feature 003 on its workflow-task step;
    skipping or resolving that step MUST be refused.
