@@ -240,7 +240,8 @@ investigation; behaviour is described as it exists at that revision.
 ## Gaps
 
 - **G1360** — `docs/architecture/overview.md` marks a generic low-code designer as later scope;
-  needs the owner's answer to O1360 and a coordinator edit.
+  needs the owner's answer to O1360 and a coordinator edit. *Closed 2026-11-24:* O1360 answered by
+  Owner decision 2026-11-24-2 and the overview's scope list rewritten with constitution 5.0.0.
 - **G1361** — Exfiltration by a custom component: WebRTC, self-navigation and DNS prefetch escape
   CSP. The sandbox protects credentials, the host page and other data; it is **not** a
   confidentiality boundary for values handed to the component.
@@ -284,6 +285,10 @@ investigation; behaviour is described as it exists at that revision.
 - **O1360 — Accept a bounded app builder into scope?** The overview defers a generic designer.
   *Recommended default:* accept the bounded builder specified here; keep a generic designer
   (own backend, own database, arbitrary code) out of scope and update the overview to say so.
+  **Answered 2026-11-24 (Owner decision 2026-11-24-2):** as recommended, in constitution 5.0.0
+  (Delivery Constraints, "Admitted scope" and "Out of scope"); the overview is updated (G1360 closed).
+  The constitution writes the viewer-authority rule into the admission, so a delegated mode (O1361)
+  would need its own ADR and an amendment.
 - **O1361 — Allow a delegated (publisher or app-principal) execution mode?** It would let people
   without the underlying permission act through an app (Windmill's default). *Recommended default:*
   no in this feature; viewer identity only; revisit after 029, through a separate ADR.
