@@ -5742,9 +5742,13 @@ where
                     return pass;
                 }
                 Granted::Refused => {}
+                // a waiter whose run another transaction holds, or whose grant failed, is decided by a later pass, and
+                // every younger waiter of the key waits for it: granting one of them now would put it before an older
+                // waiter the window may have room for (strict admission order, decision D022-073; batch 3 work item 2)
                 Granted::Busy => {
                     pass.skipped += 1;
                     undecided = true;
+                    break;
                 }
                 Granted::Orphan => pass.orphans += 1,
                 Granted::Fenced => {
@@ -5754,6 +5758,7 @@ where
                 Granted::Failed => {
                     pass.failed += 1;
                     undecided = true;
+                    break;
                 }
             }
         }

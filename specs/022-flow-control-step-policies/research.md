@@ -1880,6 +1880,25 @@ taken after `git grep D022-04` on every `origin/*` branch.
   a_signal_with_start_of_a_name_no_node_waits_for_is_refused_when_the_start_would_queue}` and
   `rate_creators::a_signal_with_start_of_a_rate_limited_definition_takes_its_slot_or_holds_its_signal`.
 
+- **D022-088 — A waiter the grant routine cannot decide now holds back the younger waiters of its key (2026-11-25; batch 3
+  work item 2; decision D022-073; ADR-0089 decision 3).** Delegate (OD-2026-11-24-4). The fault test
+  `rate_limits::a_flood_of_a_thousand_starts_on_one_key_never_holds_more_than_its_limit_in_a_window` failed twice on a
+  loaded runner with "grants follow admission order". Cause, reproduced with a held lock
+  (`run_admission::a_waiter_whose_run_is_busy_holds_back_the_younger_waiters_of_its_key`): the grant routine takes a
+  waiter's run with `SKIP LOCKED`; a run another transaction holds (a pass that has not yet released it: a transaction
+  that ends without a commit is rolled back by the pool when it takes the connection back, in a task of its own, so for
+  a moment after a pass the run it refused is still locked; a statement in flight) was counted `skipped` and the pass
+  went on, and on a window with room for both it granted the younger waiter behind it first. A failed grant did the
+  same. Options: (a) wait for the run (`Lock::Wait`, a pass holding a key could then wait on a run, ADR-0089 decision 3
+  forbids it); (b) hold back only the younger waiters of no looser limit and window (the waiter's limit is not known
+  without its run); (c) end the key's pass at that waiter, the key keeping its hint, so the next pass starts from it.
+  Chosen (c): exact admission order, one pass of delay at most, no new lock. The integration test
+  `run_admission::a_cancellation_dequeues_a_queued_start_and_frees_a_held_permit` also failed twice in full owner runs
+  ("the tick did not grant exactly one"); it was not reproduced (25 repetitions unloaded), and its tick has no other
+  transaction on the waiter's run: the remaining causes are a grant that failed on the loaded runner (a statement or
+  pool acquisition timeout) or the pool's late rollback above. Its assertion now prints the tick's report, which names
+  which (`skipped`, `failed`, `fenced`).
+
 ### Decisions of the Studio slice (2026-11-24)
 
 - **D022-150 — How the Studio authors, shows and lists the gates (tasks T022-054, T022-055, T022-056, T022-085;

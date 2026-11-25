@@ -179,7 +179,13 @@ async fn a_cancellation_dequeues_a_queued_start_and_frees_a_held_permit() {
     w.operate_run(holder, RunOperation::Cancel).await;
     assert_eq!(count(&w, holder, "concurrency.released").await, 1);
     assert_eq!(start_rows(&w, holder).await, (0, 0));
-    assert_eq!(w.scheduler.tick().await.gates_granted, 1);
+    // the report names why a tick granted nothing (a busy run, a failed grant, a fenced or empty selection), so an
+    // intermittent failure on a loaded runner says its cause (batch 3 work item 2)
+    let report = w.scheduler.tick().await;
+    assert_eq!(
+        report.gates_granted, 1,
+        "the tick did not grant exactly one: {report:?}"
+    );
     assert_eq!(start_rows(&w, second).await, (1, 0));
     for run in [holder, first, second] {
         w.assert_consistent(run).await;
@@ -776,4 +782,73 @@ async fn a_start_behind_an_eligible_waiter_queues_although_the_key_has_room_and_
     for run in holders.iter().copied().chain([waiter, late]) {
         w.assert_consistent(run).await;
     }
+}
+
+/// Item 2 of the batch 3 work (the intermittent `rate_limits::a_flood_of_a_thousand_starts_on_one_key_never_holds_more_than_its_limit_in_a_window`,
+/// "grants follow admission order"): the grant routine takes a waiter's run with `SKIP LOCKED`, and a run another
+/// transaction held (a pass that had not yet released it, a statement in flight) was skipped while the pass went on: on
+/// a window with room for both, the younger waiter behind it was granted first, out of admission order (decision
+/// D022-073). Two buffered starts of `limit: 2, per: hour` behind two holders whose slots have aged out; the older
+/// waiter's run held by a transaction of this test: the pass grants nobody and leaves the key due; released, the next
+/// pass grants both, the older first.
+#[tokio::test]
+async fn a_waiter_whose_run_is_busy_holds_back_the_younger_waiters_of_its_key() {
+    let w = gated_world().await;
+    let mut doc = document("start-busy-order", "g", vec![activity("g")]);
+    doc["rateLimit"] =
+        json!({"group": "accounts", "key": "input.accountId", "limit": 2, "per": "hour"});
+    let workflow = publish(&w, doc).await;
+    let input = json!({"accountId": "acct-1"});
+    let _holders = [
+        w.start(workflow, &input).await,
+        w.start(workflow, &input).await,
+    ];
+    let older = w.start(workflow, &input).await;
+    let younger = w.start(workflow, &input).await;
+    // the holders' slots two hours old, out of the window (the guard of a grant row off in this one transaction)
+    let mut tx = w.db.pool.begin().await.expect("tx");
+    for statement in [
+        "ALTER TABLE rate_limit_grants DISABLE TRIGGER USER",
+        "UPDATE rate_limit_grants SET granted_at = granted_at - interval '2 hours', \
+                leased_at = leased_at - interval '2 hours'",
+        "ALTER TABLE rate_limit_grants ENABLE TRIGGER USER",
+    ] {
+        sqlx::query(statement)
+            .execute(&mut *tx)
+            .await
+            .expect(statement);
+    }
+    tx.commit().await.expect("aged");
+    let granted = |run: RunId| {
+        let w = &w;
+        async move {
+            sqlx::query_scalar::<_, time::OffsetDateTime>(
+                "SELECT granted_at FROM rate_limit_grants WHERE run_id = $1 AND limit_scope = 'RUN'",
+            )
+            .bind(run.as_uuid())
+            .fetch_optional(&w.db.pool)
+            .await
+            .expect("a grant")
+        }
+    };
+    let mut busy = w.db.pool.begin().await.expect("a transaction");
+    sqlx::query("SELECT 1 FROM runs WHERE id = $1 FOR UPDATE")
+        .bind(older.as_uuid())
+        .execute(&mut *busy)
+        .await
+        .expect("the older waiter's run held");
+    let report = w.scheduler.grant_gates().await;
+    assert_eq!(
+        (report.gates_granted, granted(younger).await),
+        (0, None),
+        "the younger waiter is not granted past the busy older one: {report:?}"
+    );
+    busy.rollback().await.expect("released");
+    let report = w.scheduler.grant_gates().await;
+    assert_eq!(report.gates_granted, 2, "{report:?}");
+    let (first, second) = (granted(older).await, granted(younger).await);
+    assert!(
+        first.is_some() && second.is_some() && first < second,
+        "the older waiter first: {first:?} {second:?}"
+    );
 }
