@@ -18,7 +18,7 @@ use sagat_application::error::StoreError;
 use sagat_application::instances::{
     Capability, Counting, InstanceKind, InstanceStore, LIVENESS, Member, RegistrySettings,
 };
-use sagat_infra_postgres::{PgInstanceStore, PgPool, PoolConfig};
+use sagat_infra_postgres::{PgInstanceStore, PgPool, PoolConfig, PoolName};
 use tokio::sync::watch;
 use uuid::Uuid;
 
@@ -48,27 +48,30 @@ pub fn new_instance_id() -> Uuid {
 }
 
 /// The pool of the registry: one connection, of its own, with the statement timeout of the process. It costs the database
-/// one connection per process and spares the heartbeat the contention of the pool that serves requests.
+/// one connection per process and spares the heartbeat the contention of the pool that serves requests. It serves the
+/// same instance as the process's pool, so it takes the same name (design 041, task T041-5).
 #[must_use]
-pub fn registry_pool_config(db: &DatabaseConfig) -> PoolConfig {
-    let mut config = PoolConfig::new(db.url.clone());
+pub fn registry_pool_config(db: &DatabaseConfig, instance: Uuid) -> PoolConfig {
+    let mut config = PoolConfig::new(db.url.clone()).named(PoolName::Instance(instance));
     config.max_connections = 1;
     config.statement_timeout = db.statement_timeout;
     config
 }
 
-/// A member of the registry over `pool` (the registry's own, see [`registry_pool_config`]), with a closed gate.
-/// `capabilities` is what the process can do.
+/// A member of the registry over `pool` (the registry's own, see [`registry_pool_config`]), with a closed gate, as the
+/// instance `instance` (made by [`new_instance_id`] before the process opened its pools, which carry it in their
+/// names). `capabilities` is what the process can do.
 #[must_use]
 pub fn member(
     pool: &PgPool,
+    instance: Uuid,
     kind: InstanceKind,
     capabilities: &[Capability],
     scheduler_owner: Option<String>,
 ) -> Arc<Member<PgInstanceStore>> {
     Arc::new(Member::new(
         PgInstanceStore::new(pool.clone()),
-        new_instance_id(),
+        instance,
         kind,
         BINARY_VERSION,
         capabilities,
@@ -417,10 +420,16 @@ mod tests {
             max_connections: 40,
             statement_timeout: Duration::from_secs(7),
         };
-        let config = registry_pool_config(&db);
+        let instance = new_instance_id();
+        let config = registry_pool_config(&db, instance);
         assert_eq!(
             config.max_connections, 1,
             "not a share of the pool of the process"
+        );
+        assert_eq!(
+            config.application_name,
+            format!("sagat-octopus-orchestrator/{instance}"),
+            "named for the instance it serves, as the process's pool is"
         );
         assert_eq!(config.statement_timeout, Duration::from_secs(7));
         assert_eq!(config.url, db.url);

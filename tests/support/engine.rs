@@ -762,6 +762,10 @@ impl World {
         });
         config.max_connections = max_connections;
         config.acquire_timeout = std::time::Duration::from_secs(2);
+        // Each in-process replica is named as a replica of its own (design 041, task T041-5), so that replicas never
+        // share step-log wait slots.
+        config.application_name =
+            sagat_infra_postgres::PoolName::Instance(Uuid::new_v4()).application_name();
         let pool = connect(&config).await.expect("a second pool");
         let cache = DefinitionCache::new(Arc::new(JsonIrCodec), 64);
         let store = PgRunStore::new(pool.clone(), cache.clone());

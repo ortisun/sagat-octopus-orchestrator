@@ -198,7 +198,12 @@ pub async fn input_schema_inventory_in(
     db: &DatabaseConfig,
     scope: Scope,
 ) -> Result<Inventory, RunError> {
-    let pool = open_pool(db, Duration::from_secs(30)).await?;
+    let pool = open_pool(
+        db,
+        Duration::from_secs(30),
+        sagat_infra_postgres::PoolName::Process("inventory"),
+    )
+    .await?;
     let mut inventory = Inventory {
         scope,
         ..Inventory::default()

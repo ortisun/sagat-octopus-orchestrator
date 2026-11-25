@@ -87,7 +87,10 @@ pub use instances::{FeatureStep, OperatorBounds, PgInstanceStore};
 pub use leaf_certification::PgLeafCollectionSuccessStore;
 pub use loop_progress::PgLoopProgressStore;
 pub use operations::{MONITOR_LEASE, READ_AUDIT_SQL};
-pub use pool::{BeginSafely, PoolConfig, connect, spawn_pool_metrics};
+pub use pool::{
+    APPLICATION_NAME_PREFIX, BeginSafely, PoolConfig, PoolName, connect, spawn_pool_metrics,
+    step_log_wait_slots, step_log_wait_slots_for,
+};
 pub use primitives::PgCollectionStore;
 pub use privilege::{LeastPrivilegeError, PrivilegeFinding};
 pub use reveal_grants::has_effective_payload_reveal_grant;
