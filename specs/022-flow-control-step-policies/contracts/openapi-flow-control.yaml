@@ -30,6 +30,9 @@ paths:
         STANDALONE_STEP_REVIEW_REQUIRED in a namespace whose effective required approvals are above zero unless its
         publication policy enables draft executions; a script node accepts only the artifact of a published script
         version; a run of this private definition uses only its own version scope of the cache.
+        Revised 2026-11-25 (decision D022-257): in a prod namespace an activity or script step is refused 403
+        STANDALONE_STEP_PRODUCTION_NAMESPACE unless the publication policy enables draft executions; the setting is read
+        inside the admission transaction; a rerun of a standalone run is checked again.
       parameters:
         - {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/parameters/NamespaceId'}
         - {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/parameters/IdempotencyKey'}
@@ -136,6 +139,9 @@ paths:
       description: |
         Needs `cache:invalidate`. A key value, when given, is in the body, digested server-side and never
         logged. Runs that already hit keep their journaled completion. Audited with the justification.
+        Revised 2026-11-25 (decision D022-252): a target that names no scope a published version of the namespace
+        can derive is 404 (no scope row is created for it); an invalidation by key writes a per-key tombstone, so a value
+        computed by an attempt leased before it is never stored as live.
       parameters:
         - {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/parameters/NamespaceId'}
         - {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/parameters/IdempotencyKey'}
@@ -295,7 +301,7 @@ paths:
       description: Needs `ops:read`. Metadata only; the failure context is closed and payload-free.
       parameters:
         - {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/parameters/NamespaceId'}
-        - {name: state, in: query, schema: {type: string, enum: [PENDING, ADMITTED, DEAD]}}
+        - {name: state, in: query, schema: {type: string, enum: [PENDING, ADMITTED, DEAD, SUPPRESSED_LINEAGE]}, description: 'SUPPRESSED_LINEAGE added 2026-11-25 (decision D022-242): a dispatch its lineage suppressed, listed so an operator can redrive it.'}
         - {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/parameters/Cursor'}
         - {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/parameters/PageLimit'}
       responses:
@@ -314,7 +320,7 @@ paths:
       summary: Try a dead handler dispatch again
       tags: [Governance]
       x-proposed: '022'
-      description: Needs `run:operate` and `run:start`. Only a DEAD dispatch; resets attempts. Audited with `reason`.
+      description: Needs `run:operate` and `run:start`. Only a DEAD dispatch, or since 2026-11-25 a SUPPRESSED_LINEAGE one (decision D022-242), which becomes PENDING and stays outside its lineage's unique first row; resets attempts. Subject to the namespace dispatch budget (decision D022-243). Audited with `reason`.
       parameters:
         - {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/parameters/NamespaceId'}
         - {name: sourceRunId, in: path, required: true, schema: {type: string, format: uuid}}
@@ -384,7 +390,7 @@ components:
       additionalProperties: false
       required: [entryId, scope, node, keyLabel, createdAt, expiresAt, sizeBytes, sourceRunId]
       properties:
-        entryId: {type: string, format: uuid}
+        entryId: {type: [string, 'null'], format: uuid, description: 'Null for a caller who may not disclose every location the key reads (decision D022-254); so are expiresAt and sourceRunId, and createdAt is cut to the minute.'}
         scope: {type: string, enum: [VERSION, WORKFLOW, NAMESPACE]}
         workflowId: {type: [string, 'null'], format: uuid}
         versionId: {type: [string, 'null'], format: uuid}
@@ -392,7 +398,7 @@ components:
         node: {type: string}
         keyLabel: {type: [string, 'null'], pattern: '^[0-9a-f]{12}$', description: 'Null for a caller who may not disclose, at its level, every location the key reads (FR-022-057, review 2026-11-13).'}
         createdAt: {type: string, format: date-time}
-        expiresAt: {type: string, format: date-time}
+        expiresAt: {type: [string, 'null'], format: date-time}
         sizeBytes: {type: integer, minimum: 0, maximum: 262144}
         sourceRunId: {type: [string, 'null'], format: uuid, description: 'Null for a caller who may not disclose every location the key reads (revised 2026-11-25, decision D022-229); with keyLabel and the counts.'}
     StepCacheEntryPage:
@@ -428,7 +434,7 @@ components:
       required: [scopesInvalidated, entriesDeleted]
       properties:
         scopesInvalidated: {type: integer, minimum: 0}
-        entriesDeleted: {type: integer, minimum: 0, description: 'Entries deleted now; the rest of an invalidated scope is purged in the background and is already dead for lookups.'}
+        entriesDeleted: {type: [integer, 'null'], minimum: 0, description: 'Entries deleted now; the rest of an invalidated scope is purged in the background and is already dead for lookups. Null for a caller who may not disclose every location the key reads (decision D022-254).'}
     ConcurrencyKey:
       type: object
       additionalProperties: false
@@ -522,7 +528,7 @@ components:
       required: [sourceRunId, state, attempts, createdAt]
       properties:
         sourceRunId: {type: string, format: uuid}
-        state: {type: string, enum: [PENDING, ADMITTED, DEAD]}
+        state: {type: string, enum: [PENDING, ADMITTED, DEAD, SUPPRESSED_LINEAGE], description: 'SUPPRESSED_LINEAGE: a dispatch its lineage suppressed (every reset and rerun extends a lineage, decision D022-242); redrivable.'}
         attempts: {type: integer, minimum: 0, maximum: 12}
         nextAttemptAt: {type: [string, 'null'], format: date-time}
         handlerRunId: {type: [string, 'null'], format: uuid}

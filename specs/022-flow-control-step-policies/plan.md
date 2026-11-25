@@ -87,6 +87,11 @@ plan's last section.
 
 ## Transaction boundaries
 
+*Superseded 2026-11-25 (decision D022-259):* this table is the approved original, kept as history. The table that
+governs is ["Transactions, as built"](#transactions-as-built-t1-to-t18-and-t31) in the section "Release 0.3.0, the rest of
+022"; every row below has a row of the same number there (T11 to T14 are replaced by T26 to T29). The rows of this
+table were briefly overwritten by the revision of `6f2cfd81` and are restored here from `d8d3cf79`.
+
 Each row is one transaction; "commits" lists everything that commits together. Lock order inside each:
 the existing order of that path, then its `runs` write (whose trigger updates `run_active_counts`), then
 the new shared rows (cache scope → entry; semaphores sorted by pool, scope, group, key), then, on the
@@ -97,24 +102,24 @@ transition rows ADR-0050 decision 7 lets this feature list (per-path orders in A
 
 | # | Transaction | Locks (in order) | Commits together |
 |---|---|---|---|
-| T1 | Lookup round, in the commit that releases a cacheable step (a worker completion, a pass, a timer, a signal, an approval, a finished child, an admission) | the path's order (chain → run; fence only on a pass) → counter row (ending runs only) → secret-access and membership locks of the step's secrets (shared, ascending) → cache scope (`FOR SHARE`) → cache entry (`FOR SHARE`) | `step.cache_hit` + `step.completed` (attempt 0, the entry's payload read and passed through the outputs path, no new payload row) and the hit provenance row; or `step.cache_missed {outcome}` with the key digest and version on `steps.cache_lookup`; or `RUN_DATA_LIMIT` through the route; then the successors' rounds; the hint only for a step `READY` at the end *(revised 2026-11-25: secret locks, binding check, retained bytes; no resume source, D022-238)* |
-| T2 | Miss completed | the completion's order (run → step → its gates' rows → usage) | the completion's records + store obligation row for the outcomes `miss`, `expired`, `invalidated` (payload by reference, key digest and version copied from the step); a full pending-obligations ceiling skips it, counted *(revised 2026-11-25, D022-230)* |
-| T3 | Store writer (pass of `crates/scheduler/src/passes.rs`; no lease, no fence) | obligation (`FOR UPDATE SKIP LOCKED`) → scope row (insert if absent, then `FOR SHARE`) → entry (a dead one deleted under its lock) → entry insert → usage (entries count) | entry with `created_at` = the obligation's `created_at`, obligation deleted; skipped and counted when created at or before the scope's `invalidated_at` or when a count refuses *(revised 2026-11-25, D022-230)* |
-| T4 | Invalidate by scope or node | scope row (inserted when absent, `FOR UPDATE`; nothing locked after it but usage) | `invalidated_at = clock_timestamp()` read after the lock, revision, audit *(revised 2026-11-25, D022-230)* |
-| T5 | Invalidate by key, purge batch | store obligations of the scope and key digests (invalidation by key; `FOR UPDATE`) → scope row (`FOR SHARE`) → entries (`FOR UPDATE`, `SKIP LOCKED` for the purge) → usage | deletions of entries and of those obligations, counts, audit (invalidation only) *(revised 2026-11-25, D022-230)* |
+| T1 | Step becomes ready, cache hit (inside the readiness transaction: a worker completion, a scheduler pass or an admission) | the path's existing order — chain (if any) → run, plus the shard fence only on scheduler paths that already hold it; no new fence is taken (worker completions hold none) → cache scope row (share) → entry (share) → hit provenance insert | copied output payload, hit provenance row, step `SUCCEEDED`, `step.cache_hit` + `step.completed`, next tasks/timers/subscriptions, outbox, telemetry note, usage delta |
+| T2 | Miss completed (CompleteStep) | existing completion order | existing completion records + store obligation row |
+| T3 | Store writer | obligation (`SKIP LOCKED`) → scope row (share) → entry insert-if-absent → policy fence | entry, obligation deleted, content charge; on quota refusal a second transaction deletes the obligation only |
+| T4 | Invalidate by scope/node | scope row (update) | `invalidated_at`/revision bump, audit |
+| T5 | Invalidate by key / purge batch | scope row (share) → entries (update, `SKIP LOCKED` for purge) | deletions, byte release, audit (invalidation only) |
 | T6 | `earlyReturn` reached | existing reducer order | result payload, `runs.result_digest`/`result_source`/`result_available_at`, `result.returned`, `run.result_returned` deliveries and NATS hint, next tasks |
 | T7 | Would-finish with handler | existing stop order | `failure_handler.started` (pending status), handler entry tasks or derived child creation (existing child path), outbox; no `run.finished` |
-| T8 | Handler ends, or a run finishes | the path's order → counter row → the start's semaphore (given back; a run's rate slot counts by time and is never given back) → `persist` → usage | `failure_handler.finished`, `concurrency.released`, `run.finished`, run-finished deliveries, the dispatch row with the `config_revision` read with the definition when the run qualifies (always inserted; a recorded deviation of ADR-0050 decision 7), outbox *(revised 2026-11-25, D022-223, D022-237)* |
-| T9 | Handler dispatch (pass, shard-fenced) | first transaction: dispatch row (`FOR UPDATE SKIP LOCKED`) → attempts and `next_attempt_at` counted, committed; then: lease row (leaf, `FOR SHARE`) → slot 3 dispatch row (locked inside `RunStore::create` through a `NewRun` field) → 3R source run identity (`KEY SHARE`) → the handler workflow's head read without a lock → 6 the run through `Engine::start` → 7 its gates → 8a the dispatch row's update → 8b | handler run (journal, tasks, outbox, `handler_for_run_id`, `handler_kind = DISPATCHED`, `handler_tree`), dispatch `ADMITTED`; after 12 counted attempts `DEAD` *(revised 2026-11-25, D022-222, D022-223)* |
+| T8 | Handler ends / run finishes | existing terminal order → `runs` update → run semaphore → namespace handler policy (share) | `failure_handler.finished`, `run.finished`, run-finished deliveries, permit release (`concurrency.released`), dispatch row when due, outbox |
+| T9 | Handler dispatch | shard fence (share) → dispatch row (`SKIP LOCKED`) → source run identity `KEY SHARE` (ADR-0039 pattern) → ordinary admission locks | handler run (run, journal, tasks, outbox, audit), dispatch `ADMITTED` + `handler_run_id`; or attempts/`next_attempt_at`/`DEAD` in a separate transaction after a refused admission |
 | T10 | Admission with run permit (every run creator, see Run creators) | ADR-0050 merged admission order (C4): slots 1–5 (authority, receipt, aggregates, catalog heads, secrets) → slot 6 `runs` insert (with its `run_active_counts` trigger rows) → **slot 7 semaphore** (insert or update) → slot 8 quota and usage | run, holder or waiter row, `concurrency.acquired` or `concurrency.queued` + queue timer, counters, usage |
 | T11 | Grant to the oldest unpaused waiter whose own limit admits it (skip-ahead, no head-of-line blocking); with 019, by (019 priority 1 first, enqueue time asc) among those (D1602) | shard fence (share) → waiter run (`SKIP LOCKED`) → semaphore | holder row, waiter row removed, timer cancelled, `concurrency.acquired`, first ready tasks, outbox | *Revised 2026-11-13: replaced by T26 (ADR-0089, proposed).*
 | T12 | Queue timeout | timer path (`apply_if`) → run → `runs` update → semaphore | waiter removed, `concurrency.wait_timed_out`, run `FAILED` (`CONCURRENCY_WAIT_TIMEOUT`) directly as in T8 without a workflow handler phase (it never held a permit); namespace dispatch row when due | *Revised 2026-11-13: replaced by T27.*
 | T13 | Step claim with step permit | run → drain fence → session → sorted activity quota rows → sorted semaphores | lease, holder row, journal, outbox | *Revised 2026-11-13: removed by ADR-0089; a gated step is granted before it is `READY` (T26, T28) and the claim takes no semaphore.*
 | T14 | Attempt ends | existing completion/failure/expiry order (run → step) → semaphore | existing records + holder row removed, `concurrency.released` | *Revised 2026-11-13: also when a granted step leaves `READY` other than by its lease (T29).*
-| T15 | Standalone admission (`Engine::start`) | 2 receipt → 3 018 business-id row (when given) → the retained private definition with its workflows quota lock, where 017's `create` takes it (before 4a; a deviation inherited from 017) → 4a 017 namespace locks → 4b connection heads (a database node) → 5 secrets → 6 run → 7 gates (pool `ORDINARY`) → 8b | private definition, run (`STANDALONE_STEP`), receipt, audit, journal, tasks, outbox; refused first when review is required (D022-227) *(revised 2026-11-25, D022-240)* |
-| T16 | Draft test admission (`Engine::start`) | 2 receipt → 3R `fromRun` sources (`KEY SHARE`, ascending id) → the draft row read without a lock (revision compared) → the retained private definition (an immutable copy of what was read) with its workflows quota lock → 4a 017 namespace locks → 6 run (`DRAFT_TEST`, `test_tree`), pin payload rows, `test_run_pins` rows → 7 gates (pool `DRAFT_TEST`) → 8b | the above, `step.mocked` and `step.routed` (no activation) for upstream pins, `run.started` with `start_at`, tasks for `startAt`, receipt, audit, NATS hint *(revised 2026-11-25, D022-222, D022-233)* |
+| T15 | Standalone admission | existing ad hoc order (017 `RunStore::create`) | private definition (reuse or insert), run, receipt, audit, journal, tasks, outbox |
+| T16 | Draft test admission | workflow row (share, draft revision check) → existing ad hoc order | private definition, run (`DRAFT_TEST`), pin payloads, `step.mocked` for upstream pins, tasks for `startAt`, receipt, audit, NATS hint |
 | T17 | Namespace handler configuration | namespace policy fence (update) | handler row with revision CAS, audit |
-| T18 | Erasure of a source run (022-side port, called by 020) | the run's store obligations (`FOR UPDATE`) → cache entries by `(tenant_id, namespace_id, source_run_id)` (`FOR UPDATE`) → usage | obligations and entries deleted, counts; hit provenance and pins kept and listed by source *(revised 2026-11-25, D022-230: obligations first)* |
+| T18 | Erasure of a source run (called by 020) | cache entries by `source_run_id` (update) → obligations of the run | entries and obligations deleted, bytes released; hit provenance and pins left for 020 to act on |
 
 No transaction locks two existing runs. No provider, worker or HTTP I/O happens inside any of them.
 
@@ -856,12 +861,12 @@ every end of a run through the reducer.
 |---|---|
 | Every creator on the tree starts a run through `Engine::start`; a domain start call elsewhere is refused | `crates/application/src/execution.rs` (`start`), `scripts/check-architecture.py` (`run_start_errors`), D022-049 |
 | The planner asks `Evaluation::Gates` once it has nothing else to emit, and `Evaluation::StartGates` for a released delay or a reset | `crates/domain/src/execution/plan.rs`, ADR-0094 |
-| `persist` gives back gates first, locks the active-run counter row of a commit that ends a run with a gate event, then writes outputs to `payloads` `ON CONFLICT DO NOTHING` and charges logical output bytes per run | `crates/infra-postgres/src/execution.rs` (`persist`, `charge_logical_output_bytes`) |
+| `persist` locks the active-run counter row of a commit that ends a run with a gate event, then gives back gates, then writes outputs to `payloads` `ON CONFLICT DO NOTHING` and charges logical output bytes per run (order corrected 2026-11-25, D022-258) | `crates/infra-postgres/src/execution.rs` (`persist`, `charge_logical_output_bytes`) |
 | The task-ready hint is written for `step.released`, `step.retry_due` and `step.retry_requested` of a node that declares no gate, or of a step `READY` | `crates/infra-postgres/src/execution.rs`, the `StepReleased` arm near lines 5692 to 5703 |
 | The collection finish and the loop finish write `run.finished` and the `runs` update themselves | `crates/infra-postgres/src/primitives.rs` near lines 3482 to 3510; `loop_progress.rs` near lines 764 to 785 (G1197). *Revised 2026-11-25 (decision D022-232), the whole list:* `primitives.rs` near 3495, 4026 to 4045 (a direct `task.ready` outbox and `run.finished`) and 4061; `loop_progress.rs` near 778 and 3409 to 3449; `chain_progress.rs` 2246 to 2248 (allow-listed, ADR-0146 decision 2) |
 | A stopped run drains, a second stop is refused, a stopped run reads `CANCELLING`, `check_finish` refuses an end with an active step | `crates/domain/src/execution/plan.rs:306-308`, `:523`, `:602-606`; `state.rs:4636-4639`, `:433-434`, `:5133-5163`; `crates/application/src/runs.rs:3344` (added 2026-11-25) |
 | While paused the planner is idle apart from the gates of steps made ready by the retry pass or an operator | `crates/domain/src/execution/plan.rs:101`, `:309-316` (added 2026-11-25) |
-| Publication locks `workflows FOR UPDATE` then the namespace's secrets; activation locks the row first | `crates/application/src/definitions.rs:618-642`, `quotas.rs:306-312`, `database/admission.rs:209`, `versioning.rs:534-537` (added 2026-11-25) |
+| Publication locks `workflows FOR UPDATE` then the namespace's secrets; activation locks the row first | `crates/infra-postgres/src/definitions.rs:618-642`, `quotas.rs:306-312`, `database/admission.rs:209`, `versioning.rs:534-537` (added 2026-11-25) |
 | 017's `create` retains the private definition with its workflows quota lock before the slot-4a locks | `crates/infra-postgres/src/execution.rs:1531` against `1619-1640` (added 2026-11-25) |
 | Secret-access and membership lock functions exist; keyed digests have the purposes `Concurrency` and `RateLimit`; namespaces may require publication approvals | migration `20261126000000_authority_read_locks`; `crates/application/src/keyed_digest.rs`; `publication_policies.required_approvals` (migration `20261016000000_versioning`) (added 2026-11-25) |
 | `payloads (tenant_id, digest)` is content-addressed, append-only and referenced by foreign keys | migration `20261009000100_execution`, `20261029000000_collection_progress` |
@@ -874,54 +879,59 @@ every end of a run through the reducer.
 
 ### The order of a commit
 
-Every transition on an existing run, as built (ADR-0094) and extended:
+*Rewritten 2026-11-25 (decisions D022-255, D022-259; ADR-0094 is the authority).* Every transition on an existing run, as
+built:
 
-1. The path's entity locks: chain, then run; a shard fence only where a pass already holds one (a leaf lock).
-2. The active-run counter row, when the commit ends a run that holds a permit (T022-022).
-3. **The lookup round** (`Evaluation::CacheLookup`, ADR-0135): for every step that waits for its lookup, the key
-   evaluated by the application, the scope then entry rows read `FOR SHARE` by the adapter, sorted; a hit journals
-   `step.cache_hit` and `step.completed` and the planner continues; a miss journals `step.cache_missed`.
-   *Revised 2026-11-25 (decisions D022-225, D022-226, D022-231):* before the cache rows, the secret-access and membership
-   locks of the step's secrets (shared, ascending); a hit also checks the producing worker's binding and the run's
-   retained bytes (`RUN_DATA_LIMIT` through the route), and its bytes are read for the outputs path.
-4. **The gates round** (`Evaluation::Gates`): semaphores, then windows, each sorted, after what the transaction gives
-   back. A step a hit or a pin completed is not asked.
-5. Rounds asked where the planner reaches a node: `Evaluation::EarlyResult` (ADR-0136), `Evaluation::Child` (a handler
-   child), `Evaluation::Output`; a later lookup round for a cacheable step released after the gates round (ADR-0135
-   decision 7).
-6. `persist`: the `runs` row, journal, steps, tasks, timers, outbox, projections, hit provenance rows, the early
-   result's columns, the handler phase's columns, the namespace dispatch row (the policy row read without a lock); the
-   task-ready hint only for a step `READY` at the end of the commit. *Revised 2026-11-25 (decisions D022-223, D022-237):*
-   the namespace handler's revision is read with the run's definition at the start of the transaction, not here; the
-   dispatch row insert is a recorded deviation of ADR-0050 decision 7.
-7. Quota, rate and usage rows and the deferred content flush last (slot 8b).
+1. **Entity locks**: chain, then run (the statement that locks the run also reads the namespace handler configuration
+   by a left join, `FOR UPDATE OF runs`, so the configuration row is not locked); a shard fence only where a pass
+   already holds one (a leaf lock).
+2. **The rounds**, each asked once the planner has nothing else to emit:
+   1. the lookup round (`Evaluation::CacheLookup`, ADR-0135): the secret-access and membership locks of the step's
+      secret ids (shared, ascending), the activity's binding advisory lock (shared), then the cache scope, the
+      tombstones and the entry, `FOR SHARE`; a hit journals `step.cache_hit` and `step.completed`, a miss
+      `step.cache_missed`, an over-limit hit fails the step `RUN_DATA_LIMIT`;
+   2. the gates round (`Evaluation::Gates`): semaphores, then windows, each sorted; a step a hit or a pin completed is
+      not asked;
+   3. rounds asked where the planner reaches a node: `Evaluation::EarlyResult`, `Evaluation::Child`,
+      `Evaluation::Output`; a later lookup round for a cacheable step released after the gates round (ADR-0135
+      decision 7).
+3. **`persist`**: the active-run counter row when the commit ends the run, then the give-backs (sorted, under the same
+   key order), then the rest: the `runs` row, journal, steps, tasks, timers, outbox, projections, hit provenance rows,
+   the early result's columns, the handler phase's columns, and last the namespace dispatch insert (a recorded deviation
+   of ADR-0050 decision 7); the task-ready hint only for a step `READY` when the commit ends.
+4. **Usage**: quota, rate and usage rows and the deferred content flush (slot 8b).
 
-Admissions follow the slots of ADR-0050 decision 7, as amended for the new creators (D022-214), and, since 2026-11-25,
-with slot 7 ordered run-scope gates, cache scope, cache entry, step-scope gates (D022-235). A domain property test checks
-that no progress emits a filed gate decision and `run.finished` in one commit (D022-234).
+The counter row after cache rows makes no cycle: deciders lock cache rows shared only, and no exclusive taker of a cache
+row (T3, T4, T5, T18, the expiry update) takes the counter row. Admissions follow the slots of ADR-0050 decision 7 as
+amended: slot 5 carries a cacheable admission's lookup locks, and slot 7 is run-scope gates, cache scope, cache entry,
+step-scope gates. A domain property test checks that no progress emits a filed gate decision and `run.finished` in one
+commit (D022-234).
 
 ### Transactions, as built (T1 to T18, and T31)
 
-Replaces the table "Transaction boundaries" above for every row it lists; T19 to T30 stay as the slice built them.
+Replaces the table "Transaction boundaries" above for every row it lists (that table is marked superseded); T19 to T30
+stay as the slice built them. *Rewritten 2026-11-25 (decision D022-259):* every row below is written whole with the
+rulings of both reviews; this is the table that governs.
 
 | # | Transaction | Locks (in order) | Commits together |
 |---|---|---|---|
-| T1 | Lookup round, in the commit that releases a cacheable step (a worker completion, a pass, a timer, a signal, an approval, a finished child, an admission, a resume) | the path's order (chain → run; fence only on a pass) → counter row (ending runs only) → cache scope (`FOR SHARE`) → cache entry (`FOR SHARE`) | `step.cache_hit` + `step.completed` (attempt 0, the entry's payload as the output, no payload row) and the hit provenance row, or `step.cache_missed {outcome}`; then the successors' rounds; no task-ready hint for a step a hit completes; logical output bytes charged |
-| T2 | Miss completed | the completion's order (run → step → its gates' rows → usage) | the completion's records + store obligation row (payload by reference) |
-| T3 | Store writer (pass of `crates/scheduler/src/passes.rs`) | obligation (`FOR UPDATE SKIP LOCKED`) → scope row (insert if absent, then `FOR SHARE`) → entry insert if absent → usage (entries count) | entry, obligation deleted; a refused count deletes the obligation and counts `skipped_quota` |
-| T4 | Invalidate by scope or node | scope row (`FOR UPDATE`; nothing locked after it but usage) | `invalidated_at` and revision, audit |
-| T5 | Invalidate by key, purge batch | scope row (`FOR SHARE`) → entries (`FOR UPDATE`, `SKIP LOCKED` for the purge) → usage | deletions, counts, audit (invalidation only) |
-| T6 | `earlyReturn` reached | the path's order → rounds 3 to 5 → `persist` | result payload, `runs.result_digest`, `result_source`, `result_available_at`, `result.returned`, `run.result_returned` outbox (none for a test tree), `next` scheduled |
-| T7 | Would finish with a handler | the stop's order → rounds → `persist` | `failure_handler.started`, `failure_handler_state`, `pending_terminal_status`, the region's first steps (decided by the rounds) or the derived child's creation; the start's permit kept; no `run.finished` |
-| T8 | Handler ends, or a run finishes | the path's order → counter row → the start's semaphore (given back; a run's rate slot counts by time and is never given back) → `persist` (policy row read plainly) → usage | `failure_handler.finished`, `concurrency.released`, `run.finished`, run-finished deliveries, the dispatch row with `config_revision` when the run qualifies, outbox |
-| T9 | Handler dispatch (pass, shard-fenced) | lease row (leaf, `FOR SHARE`) → slot 3 dispatch row (`FOR UPDATE SKIP LOCKED`) → 3R source run identity (`KEY SHARE`) → 4b handler workflow head → 6 the run through `Engine::start` → 7 its gates → 8a the dispatch row's update → 8b | handler run (journal, tasks, outbox, `handler_for_run_id`), dispatch `ADMITTED`; a refusal is a separate transaction (attempts, `next_attempt_at`, `DEAD`) |
+| T1 | Lookup round, in the commit that releases a cacheable step (a worker completion, a pass, a timer, a signal, an approval, a finished child, an admission) | the path's entity locks (chain → run; a fence only on a pass) → the secret-access and membership locks of the step's secret ids (shared, ascending; slot 5 at an admission) → the binding advisory lock of the activity (shared) → cache scope (`FOR SHARE`) → the scope's and key's tombstones (read) → cache entry (`FOR SHARE`) | `step.cache_hit` + `step.completed` (attempt 0; the payload read and passed through the outputs path, no new payload row; the hits of one round counted cumulatively against the run's retained bytes) and the hit provenance row; or `step.cache_missed {outcome}` with the key digest and version on `steps.cache_lookup`; or the step failed `RUN_DATA_LIMIT` through its route; then the successors' rounds; the hint only for a step `READY` when the commit ends |
+| T2 | Miss completed | the completion's order (entity locks → rounds → `persist` → usage) | the completion's records + a store obligation for the outcomes `miss`, `expired`, `invalidated` (payload by reference, `ON DELETE RESTRICT`; the key digest and version copied from the step; the attempt's lease instant); a full pending-obligations ceiling skips it, counted |
+| T3 | Store writer (a pass of `crates/scheduler/src/passes.rs`; no lease, no fence) | store obligation (`FOR UPDATE SKIP LOCKED`; its one column `UPDATE` grant guarded by an `ALWAYS` trigger) → scope row (inserted when absent, then `FOR SHARE`) → the scope's and key's tombstones (read) → a dead entry deleted under its lock → entry insert (`ON CONFLICT DO NOTHING` against a second writer) → the one usage row of entries and obligations | entry with `created_at` = the producing attempt's lease instant and its expiry from it, obligation deleted; skipped and counted when that instant is at or before the scope's or the key's invalidation, or when a count refuses |
+| T4 | Invalidate by scope or node | scope row (inserted when absent, only for a scope a published version can derive, else `404`; `FOR UPDATE`) → the one usage row | `invalidated_at = clock_timestamp()` read after the lock, revision, audit |
+| T5 | Invalidate by key, purge batch | the store obligations of the scope and key digest (invalidation by key; `FOR UPDATE`) → scope row (`FOR SHARE`) → the key's tombstone (upsert, `invalidated_at` after its lock; invalidation by key) → entries (`FOR UPDATE`, `SKIP LOCKED` for the purge) → the one usage row | the tombstone, deletions of entries and of those obligations, counts, audit (invalidation only); `entriesDeleted` null for a caller who may not disclose the key's locations |
+| T6 | `earlyReturn` reached | entity locks → rounds (`Evaluation::EarlyResult`) → `persist` → usage | result payload, `runs.result_digest`, `result_source`, `result_available_at`, `result.returned`, `run.result_returned` outbox (none for a test tree), `next` scheduled |
+| T7 | Would finish with a handler | the stop's entity locks → rounds → `persist` → usage | `failure_handler.started` (the stop moved into `pending_terminal_status` and cleared), `failure_handler_state = RUNNING`, the handler timer (`timeoutMs`, its ceiling), the region's first steps decided by the rounds (the runs of its `child` nodes are handler-tree runs) or the derived `onFailure~h` child's creation; the start's permit kept; no `run.finished` |
+| T32 | Handler draining (added 2026-11-25) | the stop source's entity locks → `persist` → usage | `failure_handler.draining {cause}` (the first cause; later ones in its detail), `failure_handler_state = CANCELLING` or `TIMING_OUT`, the region's leased attempts asked to stop, the `onFailure~h` child's cancellation requested; overrides a pause; the run deadline is not a source |
+| T8 | Handler ends, or a run finishes (also a chain's finalization, for the dispatch) | the run's row locked by the statement that reads the handler configuration by a left join (`FOR UPDATE OF runs`) → rounds (none asked on an ending commit) → `persist`: the active-run counter row → the start's semaphore and the region steps' gates given back, sorted (a run's rate slot counts by time and is never given back) → the journal, the `runs` row, the deliveries → the dispatch insert (`lineage_first = true ... ON CONFLICT ... WHERE lineage_first DO NOTHING`, then, when it inserted nothing, a `SUPPRESSED_LINEAGE` row), last before usage → usage | `failure_handler.finished`, the handler timer cancelled, `concurrency.released`, `run.finished`, run-finished deliveries, the dispatch row of a qualifying run (always inserted: live, or suppressed and counted `skipped_lineage`), outbox; a recorded deviation of ADR-0050 decision 7, its waits leaf waits |
+| T9 | Handler dispatch (a pass, shard-fenced) | first transaction: dispatch row (`FOR UPDATE SKIP LOCKED`) → attempts and `next_attempt_at` counted, the namespace dispatch budget checked (beyond it: deferred, alerted), committed; then: lease row (leaf, `FOR SHARE`) → slot 3 dispatch row (locked inside `RunStore::create` through a `NewRun` field) → 3R source run identity (`KEY SHARE`) → the handler workflow's head read without a lock → 6 the run through `Engine::start` → 7 its gates → 8a the dispatch row's update → 8b | handler run (`handler_tree`, `handler_kind = DISPATCHED`, `handler_for_run_id`, its lineage), dispatch `ADMITTED`; `DEAD` after 12 counted attempts; a redrive turns a `DEAD` or `SUPPRESSED_LINEAGE` row `PENDING` (a suppressed one keeps `lineage_first = false`) |
 | T10 | Admission of a run with start gates (every creator) | as built (D022-049): slots 1 to 6 → 7 semaphores then windows → 8b | run, holder or waiter rows, `concurrency.*` and `rate_limit.*`, counters |
 | T11 to T14 | — | replaced by T26 to T29 (ADR-0089, as built) | — |
-| T15 | Standalone admission (`Engine::start`) | 2 receipt → 3 018 business-id row (when given) → 4a 017 namespace locks → 4b connection heads (a database node) → 5 secrets → 6 private definition (reuse or insert) and run → 7 gates (pool `ORDINARY`) → 8b | private definition, run (`STANDALONE_STEP`), receipt, audit, journal, tasks, outbox |
-| T16 | Draft test admission (`Engine::start`) | 2 receipt → 3R `fromRun` sources (`KEY SHARE`, ascending id) → 4a 017 namespace locks → 4b draft workflow row (`FOR SHARE`, revision check) → 6 private definition, run (`DRAFT_TEST`, `test_tree`), pin payload rows, `test_run_pins` rows → 7 gates (pool `DRAFT_TEST`) → 8b | the above, `step.mocked` for upstream pins, tasks for `startAt`, receipt, audit, NATS hint |
-| T17 | Namespace handler configuration | namespace policy fence (`FOR UPDATE`) → handler row (revision compare and set) | handler row, audit |
-| T18 | Erasure of a source run (022-side port, called by 020) | cache entries by `(tenant_id, namespace_id, source_run_id)` (`FOR UPDATE`) → the run's obligations → usage | entries and obligations deleted, counts; hit provenance and pins kept and listed by source |
-| T31 | Collection or loop finish, routed through the reducer (ADR-0146) | the path's order (chain → run → the scope's rows) → counter row → rounds → `persist` → usage | `collection.finished` or the loop's events, the successor's release decided by the rounds, or `run.finished` with T8's records; every site of the code facts row above routed *(revised 2026-11-25, D022-232)* |
+| T15 | Standalone admission (`Engine::start`) | 2 receipt → 3 018 business-id row (when given) → the retained private definition with its workflows quota lock, where 017's `create` takes it (before 4a; a deviation inherited from 017) → 4a 017 namespace locks, and the publication policy read under its existing lock (`required_approvals`, `draft_executions_enabled`, `prod`) → 4b connection heads (a database node) → 5 secrets, and the lookup's secret-access, membership and binding locks of a cacheable node → 6 run → 7 run-scope gates → cache scope → cache entry → step-scope gates (pool `ORDINARY`) → 8b | private definition, run (`STANDALONE_STEP`), receipt, audit, journal, tasks, outbox; a refusal before any row when review is required or in `prod` without the setting |
+| T16 | Draft test admission (`Engine::start`) | 2 receipt → 3R `fromRun` sources (`KEY SHARE`, ascending id) → the draft row read without a lock (its `draft_revision` compared) → the retained private definition (an immutable copy of what was read) with its workflows quota lock → 4a 017 namespace locks, and the publication policy read under its existing lock → 5 secrets, and a cacheable entry step's lookup locks → 6 run (`DRAFT_TEST`, `test_tree`, `start_at`), pin payload rows, `test_run_pins` rows → 7 gates (pool `DRAFT_TEST`; cache rows of its own private version only) → 8b | the above, `step.mocked` and `step.routed` (no activation) for upstream pins, `run.started` with `start_at`, tasks for `startAt`, receipt, audit, NATS hint |
+| T17 | Namespace handler configuration | `sagat_lock_namespace` (the namespace fence, never the `namespaces` row) → handler row (revision compare and set) | handler row, audit; a new or re-enabled handler refused while the pending dispatches are at their ceiling |
+| T18 | Erasure of a source run (022-side port, called by 020) | the run's store obligations (`FOR UPDATE`) → cache entries by `(tenant_id, namespace_id, source_run_id)` (`FOR UPDATE`) → the one usage row | obligations and entries deleted, counts; hit provenance and pins kept and listed by source |
+| T31 | Collection or loop finish, routed through the reducer (ADR-0146) | the path's entity locks (chain → run → the scope's rows) → rounds → `persist` (counter row, give-backs, the rest) → usage | `collection.finished` or the loop's events, the successor's release decided by the rounds, or `run.finished` with T8's records; every site of the code facts row routed |
 
 No transaction locks two existing runs for update: T9's source run is a `KEY SHARE` identity guard (ADR-0039), as a
 rerun's is. No provider, worker or HTTP I/O happens inside any of them.
@@ -934,6 +944,7 @@ rerun's is. No provider, worker or HTTP I/O happens inside any of them.
 | Draft test run (`POST .../test-runs`) and every child of a test tree | `Engine::start` | `DRAFT_TEST` (from `runs.test_tree`) | task T022-221 |
 | Namespace handler dispatch | `Engine::start` | `ORDINARY` | task T022-221 |
 | Derived `onFailure~h` child | `Engine::start` (the child path) | the parent's | task T022-221 |
+| A run started by a `child` node of a handler region, or by a dispatched handler's own `child` node (added 2026-11-25, D022-243) | `Engine::start` (the child path) | the parent's; `handler_tree = true` | task T022-221 |
 
 ### Capabilities and activation (D022-206)
 
@@ -947,6 +958,11 @@ rerun's is. No provider, worker or HTTP I/O happens inside any of them.
 
 Each registry capability is required of `CONTROL_PLANE` and `EXECUTION_ENGINE`. `failure-handler-v1` and
 `early-return-v1` cannot be activated before the finish-path routing (T31) is in the binary.
+*Manifest, added 2026-11-25 (decision D022-256; supersedes the build constant of the serving rule below):* each
+capability has a manifest of the artefacts it needs (the event types the codec decodes, the `Evaluation` variants, the
+migrations, the routes, the named acceptance test present and not ignored); a test fails when the capability's serving
+constant is true while any artefact is missing (task T022-235). Rollback order: `platform_requirement_remove`, then the
+switch; a switch gates new use only, never a phase or an obligation in flight.
 *Serving rule, added 2026-11-25 (decision D022-236):* a binary lists a registry capability only once the last behaviour
 slice of it has merged (for `step-cache-v1`, `early-return-v1` and `failure-handler-v1`, the routing of ADR-0146 too),
 with a test per capability that a binary of an earlier slice does not list it (task T022-235). Rollback is switching a
@@ -955,9 +971,14 @@ capability off, never a binary downgrade, once a journal holds its events (D022-
 
 ### Authorization (T022-011)
 
-The table "Authorization" above stands. The catalog grows from 53 to 56 entries. Test runs need `definition:write` and
-`run:start`; a handler run that starts a reset or rerun needs `run:operate` and `run:start` under its publisher's
-authority (D022-201). Machine roles receive none of the new permissions.
+*Reworded 2026-11-25 (decisions D022-244, D022-258); the first text said a handler run resets "under its publisher's
+authority", which D022-228 and D022-244 withdraw.* The table "Authorization" above stands. The catalog grows from 53 to
+56 permissions, and the built-in roles gain `RunRecovery` (`run:read`, `run:start`, `run:operate`; no publication,
+approval, version or secret permission; a subject whose only role it is may not approve a publication or decide an
+approval). Test runs need `definition:write` and `run:start`. A handler that recovers calls the public API with a
+`RunRecovery` credential given to it as a secret, audited as that subject; no run holds its publisher's rights. Machine
+roles receive none of the new permissions. Declaring a namespace-scope cache name and the workflows that may write it is
+an administrator's setting of the namespace (D022-254).
 *Revised 2026-11-25 (decisions D022-227, D022-228):* no run holds its publisher's operator rights: a handler that
 recovers calls the public API with a machine identity given to it as a secret, audited as that identity. Enabling draft
 executions in a namespace that requires approvals is a publication-policy change, under that route's permission and
@@ -979,10 +1000,18 @@ below is recorded, with its reason, by the change that adds it, before its call 
 | A collection finish and a loop finish routed through the reducer, against today's lines | task T022-207 |
 | A standalone admission, a draft test admission with two upstream pins | tasks T022-039, T022-042 |
 | A cache hit's content read (the payload read for the outputs path), and the lookup round's secret locks and binding check | task T022-016 (added 2026-11-25, D022-231, D022-225) |
-| A failing run in a namespace without a handler: unchanged, the revision read with the definition adds no statement | task T022-031 (added 2026-11-25, D022-237) |
+| A failing run in a namespace without a handler: unchanged; the handler configuration is a left join in the statement that locks the run, which adds no statement (corrected 2026-11-25, D022-255: no statement loads the definition) | task T022-031 |
+| A child admission's `test_tree` and `handler_tree` check against its parent's | task T022-217 (added 2026-11-25, D022-258) |
+| A qualifying failing run's dispatch insert, and its suppressed second statement | task T022-031 (added 2026-11-25, D022-242) |
 | An update of a run that does not touch `test_tree`: unchanged (the guard is `BEFORE UPDATE OF test_tree`) | task T022-217 (added 2026-11-25, D022-237) |
 
 ### Observability, added
+
+*Added 2026-11-25 (decision D022-254):* the attribute sets of the new spans and metrics are closed and carry no key, label
+or source run: `workflow.cache.lookup` and `workflow.cache.store` carry `sagat.cache.scope` and `sagat.outcome`;
+`workflow.failure_handler.dispatch` carries `sagat.outcome`; the metrics keep the label sets of the table above, with
+`step_cache_lookups_total` gaining no label for `unauthorized` beyond its outcome. A run reader who may not see the
+producer reads an `unauthorized` outcome as `bypassed`.
 
 The metrics and spans of "Observability" above stand, with: `step_cache_lookups_total` counted from the journal's
 `step.cache_hit` and `step.cache_missed` outcomes after commit; `workflow.cache.lookup` spans the lookup round;
@@ -1003,6 +1032,14 @@ the audit action `test_run.secret_resolved` (D022-202, the secret's name and ver
 | A person reruns a failed run, which fails again | Dispatched again: a member's rerun begins a new lineage | Integration test (D022-241, O1176 (b)) |
 | Publication of a workflow with a database node against a test admission of its draft | No cycle (the draft row is not locked) | `slot_order.rs` case (D022-222) |
 | The dispatcher crashes inside an admission | The attempt is already counted; `DEAD` after 12 | Fault test (D022-223) |
+| Two failing runs of one lineage commit at once | Both reach their terminal status; one live dispatch row and one suppressed row | Fault test with a held commit (D022-242) |
+| A handler starts fresh runs that fail | Dispatches beyond the namespace budget deferred and alerted, never dropped | Integration test (D022-243) |
+| A stop source during the handler phase | `failure_handler.draining {cause}`, the first cause wins; never the run's stop | Domain cases (D022-246) |
+| The run deadline passes during the phase | Nothing: only the handler's timer bounds the phase | Overdue pass test (D022-247) |
+| A continue-as-new successor of a test-tree or handler-tree run, or of a definition with a new policy | Refused | Codec and `refuse_gated_successor` tests (D022-249) |
+| A failing chain head | Dispatched through `persist`'s terminal path | Integration test (D022-250) |
+| An older binary replays a journal the routed finish wrote | Replays | Mixed-version test (D022-251) |
+| An attempt leased before an invalidation by key completes after it | Not stored as live (lease stamp, tombstone) | Barrier test with T2 open across T5 (D022-252) |
 | A key failure's route releases a cacheable successor after the gates round | Looked up in a later round of the commit | A barrier test with an invalidation holding the scope row |
 | A collection or a loop ends a run with a handler | Handler phase entered through the reducer | T31 tests; until then refused at publication |
 | Configuration cleared while a terminal commit is in flight | Dispatched or not by commit order; revision recorded | Barrier test both orders (G022-024) |
@@ -1011,6 +1048,8 @@ the audit action `test_run.secret_resolved` (D022-202, the secret's name and ver
 | An ordinary run's key full; a test run of the same key | The test run is granted | One test per gate |
 
 ### Constitution Check (the rest)
+
+*Re-dated 2026-11-25 after the second rulings (decisions D022-242 to D022-259); the results stand.*
 
 | Principle | Result | Evidence / future gate |
 |---|---|---|
@@ -1022,6 +1061,14 @@ the audit action `test_run.secret_resolved` (D022-202, the secret's name and ver
 | VI — OTel, audit, typed errors | Pass | The metrics above; `contracts/errors.md` |
 | VII — inbox/outbox | Pass | The dispatch obligation; `run.result_returned` in its commit |
 | VIII — failure tested, honest | Pass | The matrix above; G022-021 to G022-027 state what is pending or accepted |
+
+### Complexity Tracking (the rest; added 2026-11-25)
+
+| Addition | Why needed | Simpler alternative rejected because |
+|---|---|---|
+| A recorded deviation of ADR-0050 decision 7: the terminal commit inserts a slot-3 dispatch row, by lineage | Exactly one obligation per failure, written with the failure; a suppressed dispatch visible and redrivable | A second transaction after the terminal commit loses the obligation in a crash (D022-223, D022-242) |
+| A handler phase with a journaled draining state | The handler's work cannot run under the stop, and a draining sub-state must replay | A separate handler state machine, or relaxing the drain for handler nodes (D022-224, D022-246) |
+| A per-capability manifest of artefacts | A capability served before its behaviour exists would run half of it | A constant set by a slice proves nothing (D022-256) |
 
 ### Delivery sequence (the rest)
 

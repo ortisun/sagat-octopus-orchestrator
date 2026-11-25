@@ -1,9 +1,9 @@
 # ADR-0146: Every end of a run goes through the reducer: the collection and loop finish paths are routed through the planner and `persist`
 
-**Status:** Proposed (2026-11-25)
+**Status:** Proposed (2026-11-25; revised the same day after the re-reviews of `6d02632e`, decisions D022-249 to D022-251)
 **Decided by:** agent proposal (feature 022, decisions D022-207 and D022-232, 2026-11-24 and 2026-11-25) under the owner's delegation (OD-2026-11-24-4, "Tomem a melhor decisão"), after the reviews of 2026-11-25 (`specs/022-flow-control-step-policies/reviews/2026-11-25/`, correctness Major 8, architecture Major 5 and minor 15); accepted by the coordinating session once the three reviewers find no Blocker in a re-review (task T022-200)
 **Refines / supersedes:** refines ADR-0030 (structured instances share the reducer; this ADR extends that sharing to the moment a structured scope finishes the run) and ADR-0094 decision 4 (the finish paths answer the rounds instead of refusing a gated successor; amended 2026-11-24). Supersedes the run-time refusals of feature 022 for a gated successor of a finish path (`RuntimeNotIntegrated`) and for a start gate with a collection or loop (D022-049).
-**Enforced by:** a rule of `scripts/check-architecture.py` (task T022-226) that refuses, outside `persist` in `crates/infra-postgres/src/execution.rs`, a `run.finished` journal write or outbox insert, a `finished_at =` assignment and a direct `task.ready` outbox insert, with one allow-listed exception in `crates/infra-postgres/src/chain_progress.rs` that cites the `continueAsNew` refusals; the tests of task T022-207 (one per finish path and successor kind, a crash at the finish commit, a loop and a collection that end `FAILED` with `onFailure` and with a namespace handler); `verify_run`.
+**Enforced by:** a rule of `scripts/check-architecture.py` (task T022-226), judged by enclosing function (`enclosing_function`, as `run_finished_errors` does), that refuses a `run.finished` journal write or outbox insert, an `UPDATE runs` that sets `finished_at` and a direct `task.ready` outbox insert outside the allow-listed functions (decision 2), with negative fixtures; a mixed-version test (an older binary replays a journal the routed finish wrote) and a held-lock test against concurrent feature 014 iteration transactions; the tests of task T022-207 (one per finish path and successor kind, a crash at the finish commit, a loop and a collection that end `FAILED` with `onFailure` and with a namespace handler); `verify_run`.
 
 ## Context
 
@@ -33,15 +33,22 @@ run time (a gated successor `RuntimeNotIntegrated`, retried for ever; a start ga
    row), are decided and written exactly as for any other commit. The scope's own rows (014's collection and loop
    progress) keep their transaction and their order: chain → run → the scope's rows → the active-run counter row when
    the commit ends the run → the rounds → `persist` → usage rows.
-2. **Only `persist` ends a run or announces a task.** Outside `persist`, no code MAY journal or outbox `run.finished`,
-   assign `finished_at`, or insert a `task.ready` outbox row. The one exception is the chain finish of
-   `chain_progress.rs`: a continuation chain carries no feature 022 policy, because `concurrency`, `rateLimit`,
-   `earlyReturn` and `onFailure` are refused with `continueAsNew` (`FLOW_CONTROL_COMBINATION`), and `cache` acts at a
-   step's readiness and completion, never at a run's end; the allow-list names this reason.
+2. **Only `persist` ends a run or announces a task.** Outside the `persist` family (`persist`, `persist_addressed`,
+   `persist_scoped_addressed`, `outbox_task_ready*`, `outbox_run_finished`), no function MAY journal or outbox
+   `run.finished`, set `finished_at` in an `UPDATE runs`, or insert a `task.ready` outbox row. Allow-listed with their
+   reasons: the announcements of a body iteration (014's exact-path transactions announce the next instance of a body,
+   not a root step, and no 022 policy applies to a body node); and the chain hand-off and finalization of
+   `chain_progress.rs`, for what they write besides the dispatch: `continueAsNew` is refused with every declared 022
+   policy (`concurrency`, `rateLimit`, `cache`, `onFailure`, `earlyReturn`) and for a successor of a test-tree or
+   handler-tree run (decision D022-249). The namespace handler is not a declaration, so it is no reason: a chain's
+   finalization writes its terminal status through `persist`'s terminal path for the namespace dispatch, and a failing
+   chain head is dispatched like any run (decision D022-250). *(Revised 2026-11-25: the first text could not pass, since
+   `persist`'s own helpers write the statements it refused, and its chain reason did not cover the dispatch.)*
 3. **The interim refusals go with the routing.** Until the routing lands, publication refuses `cache`, `earlyReturn` and
    `onFailure` in a definition with a `forEach`, `while` or `repeatUntil` node (`UNSUPPORTED_NODE`, dependency
-   `COLLECTION_FINISH_ROUTING`); the change that routes the paths removes this refusal, `RuntimeNotIntegrated` and the
-   start-gate refusal of D022-049, with their tests.
+   `COLLECTION_FINISH_ROUTING`); the change that routes the paths removes `RuntimeNotIntegrated` and the start-gate
+   refusal of D022-049, with their tests. *Revised 2026-11-25 (decision D022-258):* the publication refusal is kept as a
+   defence until the routing's tests and the fitness rule have run in a release, and is then removed by its own change.
 4. **The capabilities wait for it.** No binary lists `failure-handler-v1`, `early-return-v1` or `step-cache-v1` before
    this routing is in it (decision D022-236).
 
@@ -68,5 +75,6 @@ run time (a gated successor `RuntimeNotIntegrated`, retried for ever; a start ga
 
 ## Evidence
 
-None yet: task T022-207 (the routing and its tests), task T022-226 (the fitness rule). Research: D022-207, D022-232,
+None yet: task T022-207 (the routing and its tests), task T022-226 (the fitness rule), task T022-247 (the mixed-version
+and held-lock tests). Research: D022-207, D022-232,
 G1197; feature 014's plan, "Transaction and scheduling design"; ADR-0030.

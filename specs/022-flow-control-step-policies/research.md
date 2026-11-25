@@ -1803,7 +1803,7 @@ supersedes part of one. The code facts were checked on this branch at `14b9e40b`
 
 - **D022-222 — The draft row and the handler workflow's head are read without a lock (architecture Blocker 1;
   supersedes the slot-4b `FOR SHARE` of D022-214).** Delegate (OD-2026-11-24-4). Publication locks `workflows FOR
-  UPDATE` and then the namespace's secrets (`crates/application/src/definitions.rs:618-642`, `quotas.rs:306-312`,
+  UPDATE` and then the namespace's secrets (`crates/infra-postgres/src/definitions.rs:618-642`, `quotas.rs:306-312`,
   `database/admission.rs:209`), and version activation locks the row first too (`versioning.rs:534-537`); a test
   admission of a draft with a managed database node takes the secrets at slot 4a and then the row: a cycle. Options:
   (a) read the draft row without a lock, compare its `draft_revision` with the request's (a moved draft is `409
@@ -1982,7 +1982,7 @@ supersedes part of one. The code facts were checked on this branch at `14b9e40b`
   minor 1, correctness minors 2 and 3; supersedes the paused part of D022-203).** Delegate (OD-2026-11-24-4). The ruling
   removes ADR-0135 decision 6 if no path first-releases a root step while the run is paused. Checked: while paused the
   planner returns `Plan::Idle` after deciding the gates of steps the retry pass or an operator made ready
-  (`crates/domain/src/execution/plan.rs:309-316`), and forward planning is off (`:101`), so no `step.released` is
+  (`crates/domain/src/execution/plan.rs:309-316`, the idle return at `:316`), and forward planning is off (`:101`), so no `step.released` is
   emitted while paused; the exception is removed. `step.cache_missed` joins the task-ready hint's arms. Invariant 14
   admits `step.mocked`.
 - **D022-239 — Migrations and rollback (architecture minors 11 and 12).** Delegate (OD-2026-11-24-4). The `origin`
@@ -2011,7 +2011,8 @@ supersedes part of one. The code facts were checked on this branch at `14b9e40b`
   writes a multixact per hit: measured by task T022-062. This branch merges after `docs/owner-delegation-2026-11-24`,
   which records OD-2026-11-24-4.
 - **D022-241 — A lineage links only through machine identities and handler-tree runs (O1176 option (b); amends
-  D022-228).** Delegate (OD-2026-11-24-4), the coordinating session's answer to O1176. Options: (a) at most one dispatch
+  D022-228).** *(Reversed 2026-11-25 by D022-242: a machine identity is not a principal kind of the platform; O1176 is
+  answered (a), with suppressed dispatches written, shown and redrivable.)* Delegate (OD-2026-11-24-4), the coordinating session's answer to O1176. Options: (a) at most one dispatch
   per lineage whoever started the rerun, as first ruled; (b) a reset or rerun extends its source's lineage only when its initiator is a machine identity or a handler-tree run; a reset or rerun a person (a member) starts begins a lineage of its own; (c) at most N dispatches per lineage.
   Chosen (b). A person's rerun of a failed run is a deliberate human decision and its failure may reach the namespace
   handler again, which is what an operator expects; recovery by a handler goes through a machine identity (D022-228), so
@@ -2021,6 +2022,169 @@ supersedes part of one. The code facts were checked on this branch at `14b9e40b`
   run that is no reset or rerun); the initiator is the authenticated principal of the request, whose kind (member or
   machine identity) the admission knows, and it is recorded with the reset or rerun provenance. The unique index on the
   dispatch rows' lineage is unchanged. Gap G022-028 is narrowed accordingly.
+
+
+### Decisions of the re-review of the design of the rest of 022 (2026-11-25)
+
+The three reviewers re-read `6d02632e`; their findings and the coordinating session's second rulings are in
+[reviews/2026-11-25/design-rereviews-and-rulings.md](reviews/2026-11-25/design-rereviews-and-rulings.md), and where each
+finding lives is in [reviews/2026-11-25/design-reresponses.md](reviews/2026-11-25/design-reresponses.md). Each decision
+below records a ruling or a group of related rulings, delegate (OD-2026-11-24-4). Where a ruling cannot be built as
+written, the decision says so and states the design that keeps its intent. Decisions D022-200 to D022-241 stand except
+where a decision below says it reverses or supersedes part of one.
+
+- **D022-242 — Every reset and rerun extends its source's lineage; a suppressed dispatch is written, shown and
+  redrivable (rulings "Lineage" 1 and 2; the section's findings are Architecture N0 and N11, Correctness B1 and M5, Security A,
+  B and C; reverses D022-241, so O1176 is answered (a)).** Delegate (OD-2026-11-24-4). "A machine identity" is not a principal kind of the platform
+  (`crates/domain/src/identity.rs:152`; the only machine roles cannot start runs, `:688-690`), so D022-241 cannot be
+  built; and the lineage unique index made the always-insert terminal commit fail with a unique violation and retry for
+  ever. Options: (a) every reset and rerun extends the lineage, whoever starts it, and a dispatch the lineage suppresses
+  is a row of its own, counted, listed and redrivable; (b) D022-241, which needs a principal kind that does not exist;
+  (c) no lineage bound, which lets a handler loop. Chosen (a): an operator sees and controls every suppressed handler,
+  nothing loops, and nothing depends on a principal kind the platform lacks. The two rulings, read together, are not
+  buildable literally: an `ON CONFLICT DO NOTHING` (ruling 2) writes no row, so nothing would be left to show and
+  redrive (ruling 1); and a redriven suppressed row would conflict with a unique index "over the live rows". The design
+  that keeps both: the dispatch row has `lineage_first boolean`; the unique index is `(tenant_id, namespace_id,
+  lineage_run_id) WHERE lineage_first`; the terminal commit inserts its row with `lineage_first = true ... ON CONFLICT
+  (tenant_id, namespace_id, lineage_run_id) WHERE lineage_first DO NOTHING`, and only when that inserted nothing, a
+  second statement inserts the row with `lineage_first = false` and state `SUPPRESSED_LINEAGE` (counted
+  `skipped_lineage`; the outcome journaled on the run); a redrive turns a suppressed row `PENDING` and keeps
+  `lineage_first = false`, so it never conflicts. Both statements are the last of the run's own commit before the usage
+  rows; ADR-0050's recorded deviation extends to the lineage key: the first statement may wait for another run's
+  uncommitted first row of the lineage, and that wait is a leaf wait, since after the insert the commit takes only rows
+  of its own run and usage rows. Evidence: two failing runs of one lineage commit concurrently, both reach their
+  terminal status, exactly one `lineage_first` row and one suppressed row (task T022-238).
+- **D022-243 — A namespace dispatch budget bounds a handler that starts fresh runs (ruling "Lineage" 3; same section).** Delegate (OD-2026-11-24-4). A handler that starts a fresh run, a trigger or a Signal-with-Start escapes
+  the lineage. Decided: a namespace dispatch budget (dispatches a namespace may admit per window, with a per-workflow
+  share; quota resources) defers a dispatch beyond it, never drops it, and raises an alert; runs a dispatched handler
+  starts through its own `child` nodes are handler-tree runs, and so are the runs of `child` nodes of a handler region
+  (ruling "Handler phase" 5). Rejected: refusing fresh starts from handler runs (a notifier that opens a ticket workflow
+  is the main use).
+- **D022-244 — A built-in role `RunRecovery` is the only credential ADR-0136 accepts for recovery (ruling "Lineage" 4;
+  same section; supersedes D022-228's "a machine identity").** Delegate (OD-2026-11-24-4). The prescribed credential, an
+  Operator or a Developer subject, can approve publications and decide approvals, defeating four-eyes review
+  (`identity.rs:650-675`, `versioning.rs:465`). Decided: `RunRecovery` holds `run:read`, `run:start` and `run:operate`
+  and no publication, approval, version or secret permission; a subject whose only role is `RunRecovery` is refused as a
+  publication approver and as an approval decider (a check in both deciders, beyond the missing permissions). Task
+  T022-011's catalog counts the role. No run is ever granted its publisher's rights.
+- **D022-245 — `lineage_run_id`, `handler_tree` and `handler_kind` are filled and guarded by the database (ruling
+  "Lineage" 5; Security minor 5).** Delegate (OD-2026-11-24-4). `lineage_run_id` is nullable, read as
+  `coalesce(lineage_run_id, id)`, filled by a `BEFORE INSERT` trigger from the reset or rerun source (so an older binary
+  and the chain insert keep working), and immutable; `handler_tree` and `handler_kind` get the guards `test_tree` has (a
+  `BEFORE UPDATE OF` trigger, `ENABLE ALWAYS`; a child's `handler_tree` checked against its parent's at insert).
+- **D022-246 — Draining is a journaled event, and every stop source in the phase maps to it (rulings "Handler phase" 1
+  and 2; the section's findings are Correctness B2, M1, M2, M3 and minors 2, 5, 6, 7, 8, and Architecture N3).** Delegate (OD-2026-11-24-4). A draining sub-state without a
+  journal fact cannot be replayed. Decided: one event `failure_handler.draining {cause}`; during the phase every stop
+  source (`run.stop_requested`, the storage-quota stop, a region step failing without `onError`, an expression error in
+  a region condition or switch) maps to it and never to the run's stop; the first cause wins and later ones are recorded
+  in its detail; `runs.failure_handler_state` follows the journal (a domain case rebuilds the state from the journal
+  after each commit); draining overrides a pause as a stop does; the recovery sweep also selects draining runs. The
+  ruling's causes are `CANCELLED`, `RUN_DEADLINE`, `TIMEOUT`, `REGION_FAILED`, `STORAGE_QUOTA`, `RUN_DATA_LIMIT`,
+  `EXPRESSION_ERROR`. One of them cannot occur: ruling "Handler phase" 3 takes the run deadline out of the phase, so
+  `RUN_DEADLINE` is unreachable. The design that keeps both rulings coherent: the closed set is the other six; a
+  `RUN_DEADLINE` cause is not in the codec, and a decoder test pins the six. Rejected: keeping an unreachable value
+  (a reader would believe a deadline can drain a handler).
+- **D022-247 — The run deadline does not apply during the phase (ruling "Handler phase" 3; Architecture N3;
+  supersedes the deadline half of D022-224).** Delegate (OD-2026-11-24-4). Otherwise the next overdue
+  pass cancels a `TIMED_OUT` handler. Decided: only the handler's own timer bounds the phase (D1174), `timeoutMs` has its
+  ceiling (3,600,000 ms), and the overdue pass (`crates/infra-postgres/src/maintenance.rs`, `overdue_runs`) excludes
+  `failure_handler_state IS NOT NULL`; a deadline that fires before the phase opens is the run's stop, and the phase then
+  opens normally.
+- **D022-248 — Qualification, region children, the handler timer and the cases (rulings "Handler phase" 4 to 6;
+  same section).** Delegate (OD-2026-11-24-4). A run qualifies for the namespace
+  handler when no workflow handler phase ended `SUCCEEDED` and no operator asked to cancel it; a draining cause other
+  than `CANCELLED` qualifies. The derived `onFailure~h` node cancels and awaits its child. T7 creates the handler timer;
+  T8 cancels it and holds the region step's gates in its sorted set. The cases: a parallel region with one branch
+  failing while the other is leased; a storage-quota stop in the phase; paused, then the timeout; `on: [TIMED_OUT]`; a
+  cancellation during `TIMEOUT` draining and a timeout during `CANCELLED` draining, both orders (task T022-227).
+- **D022-249 — Continue-as-new is refused with every new policy and for every isolated tree (ruling "Finish paths" 1;
+  the section's findings are Architecture N4, N6, N7 and Correctness M4 and minor 3).** Delegate (OD-2026-11-24-4). A successor would escape `test_tree`, `handler_tree`
+  and the cache. Decided: publication refuses `continueAsNew` in a definition that declares `cache`, `onFailure` or
+  `earlyReturn` (`FLOW_CONTROL_COMBINATION` extended), and `refuse_gated_successor`
+  (`crates/infra-postgres/src/chain_progress.rs`) refuses a successor of a `test_tree` or `handler_tree` run.
+- **D022-250 — A chain's finalization reaches the namespace dispatch (ruling "Finish paths" 2; same section).**
+  Delegate (OD-2026-11-24-4). The chain finish skipped the dispatch. Decided: the chain finalization's terminal write
+  goes through `persist`'s terminal path for the namespace dispatch, so a failing chain head is dispatched like any run.
+  ADR-0146's allow-list keeps the chain hand-off and finalization for what they write otherwise, with its reason
+  rewritten: the namespace handler is not a declaration, so "no 022 policy is declared with `continueAsNew`" was not a
+  reason for the dispatch.
+- **D022-251 — The finish-path fitness rule is defined by enclosing function, and ADR-0146 has a mixed-version and a
+  held-lock test (rulings "Finish paths" 3 and 4; same section).** Delegate (OD-2026-11-24-4).
+  The first rule could not pass (`persist`'s helpers write the very statements it refuses). Decided: the rule judges the
+  enclosing function (`enclosing_function`, as `run_finished_errors` does), allow-lists the `persist` family (`persist`,
+  `persist_addressed`, `persist_scoped_addressed`, `outbox_task_ready*`, `outbox_run_finished`), the body iteration
+  announcements (with their reason) and the chain hand-off and finalization, restricts the `finished_at` clause to
+  `UPDATE runs`, and has negative fixtures. ADR-0146 adds a test in which an older binary replays a journal the new path
+  finished, and a held-lock test against concurrent feature 014 iteration transactions.
+- **D022-252 — The cache store, completed (rulings "The cache store" 1, 2, 4, 5, 6, 9, 11 and 13; the section's findings are
+  Correctness M6, M7, M9, M10, minors 1 and 4 and nits, Architecture N10, Security minors 1 to 4 and 7 to 9; supersedes
+  the stamp of D022-230).** Delegate (OD-2026-11-24-4).
+  Decided: the entry is stamped with the database instant of the producing attempt's lease (`step.leased`) and expires
+  from it, so a value computed by an attempt leased before an invalidation is never stored as live; an invalidation by
+  key writes a per-key tombstone (`step_cache_key_invalidations`: scope digest, key digest, `invalidated_at`) that T3 and
+  the hit read; hits staged in one round count cumulatively, in round order, against the retained-output limit; one
+  usage row holds both counts (entries and store obligations), so T3 and T18 cannot deadlock on them; invariant 18 is
+  restated as "no `step.cache_hit` names an entry that was dead at the hit's commit", which a test can fail; store
+  obligations keep one column `UPDATE` grant guarded by an `ALWAYS` trigger, so `FOR UPDATE` works as `sagat_app`;
+  an invalidation inserts a scope row only for a scope a published version can derive, and any other target is `404`;
+  `UPDATE (expires_at)` is one of the exclusive takers of ADR-0135 decision 7, and two writers replacing one dead entry
+  use `ON CONFLICT DO NOTHING`. Evidence: a barrier test with T2 held open across T5; two hits in one round; a barrier
+  held after T3's delete against T18 (task T022-231).
+- **D022-253 — `step.cache_missed` is re-materialized by a reset (ruling "The cache store" 3; same section;
+  supersedes the `COPY` rule of D022-203).** Delegate (OD-2026-11-24-4). A reset copies `steps.cache_lookup` from the source step, so a store
+  obligation of the reset run's next completion has its key digest.
+- **D022-254 — The cache's security, completed (rulings "The cache store" 7, 8, 10 and 12; same section, and
+  Architecture N5 for the slot).** Delegate (OD-2026-11-24-4). Decided: entries record secret ids, not names; the binding check
+  stores the producing worker's subject, takes the binding advisory lock shared (`pg_advisory_xact_lock_shared`, as
+  `crates/infra-postgres/src/bindings.rs:21`) after the secret locks and before the cache rows, checks the worker's
+  membership, and, for a script, checks the producing runner's subject and its binding profile; for a caller who may not
+  disclose every location the key reads, `entry_id`, the expiry and `entriesDeleted` are null and listing instants are
+  cut to the minute (as D022-060); spans and metrics carry no key, label or source run (their attribute sets are listed
+  in the plan); namespace-scope cache names are declared resources of the namespace (an administrator's setting that
+  lists the workflows that may write the name; any workflow of the namespace may read), which closes poisoning through
+  fields a key does not read, while `version` and `workflow` scopes need no declaration; the lookup's secret-access,
+  membership and binding locks are taken at slot 5 for an admission (the definition is known there), and ADR-0056
+  decision 2(a) lists them with the leaf argument for a later round. Evidence: a `slot_order.rs` case, a cacheable
+  admission against a revocation (task T022-224).
+- **D022-255 — The order is restated as built everywhere, and the handler configuration is read with the run's row
+  (rulings "Orders and statements" 1 and 2; Architecture N2, N5, N9; supersedes D022-237's "read with the run's
+  definition").** Delegate (OD-2026-11-24-4). The order of a transition on an existing run is: entity locks, then the
+  rounds (lookup, then gates), then `persist` (the active-run counter row when the commit ends the run, the give-backs,
+  the rest), then usage. ADR-0056 decision 2's clauses on the policy row `FOR SHARE` and "`runs` update, then semaphore"
+  are struck with a dated line; the no-cycle argument for the counter row after cache rows is written (deciders lock
+  cache rows shared only, and no exclusive taker of a cache row takes the counter row); ADR-0094 is cited as the
+  authority. There is no statement that "loads the run's definition" to join: the handler configuration (statuses,
+  revision, enabled flag) is read by a left join in the statement that locks the run, with `FOR UPDATE OF runs` so the
+  configuration row is not locked; the definition cache carries nothing mutable; the budget line is corrected.
+- **D022-256 — A capability is served by a manifest of required artefacts (ruling "Capability serving"; Architecture
+  N8, minor 1; supersedes the build constant of D022-236).** Delegate (OD-2026-11-24-4). A constant set by a slice proves
+  nothing (a tautology). Decided: a per-capability manifest names the artefacts that must exist (event types the codec
+  decodes, `Evaluation` variants, migrations, routes, the named acceptance test present and not ignored), and a test
+  fails when the serving constant is true while any is missing. Rollback order: `platform_requirement_remove`, then the
+  switch; a switch gates new use only, never phases or obligations in flight.
+- **D022-257 — Draft executions are read under the policy's lock, and `prod` refuses standalone code steps too (ruling
+  "Draft executions"; Security minor 6).** Delegate (OD-2026-11-24-4). `draft_executions_enabled` is read inside the
+  admission transaction under the publication policy's existing lock; runs already admitted continue when it is turned
+  off (documented); creating the policy row to set the flag keeps the environment's approval default; a rerun of a
+  standalone run is checked again. The ruling says "`prod` refuses standalone activity and script steps as it refuses
+  test runs, unless the setting is enabled". Read as: in `prod`, standalone activity and script steps are refused unless
+  the setting is enabled (`STANDALONE_STEP_PRODUCTION_NAMESPACE`), and draft test runs stay refused whatever the
+  setting, as O1160 (D022-200) decided; the "unless" does not reopen test runs in `prod`.
+- **D022-258 — The rest of the minors and nits (ruling "The rest").** Delegate (OD-2026-11-24-4). The interim
+  `COLLECTION_FINISH_ROUTING` refusal is kept as a defence after the routing and said so; reruns by unrelated automation
+  extend the lineage, a consequence stated with the suppressed and redrivable row; a budget line for the child
+  `test_tree` check; a Complexity Tracking row for the recorded deviation, and the Constitution Check re-dated; the path
+  is `crates/infra-postgres/src/definitions.rs` (the citations corrected); the plan's persist fact states the counter row
+  before the give-backs; the old text of T022-215 is marked superseded; D022-238 cites `plan.rs:316`;
+  `FAILURE_HANDLER_SELF_GATE` refuses the direct case only, and longer cycles are bounded by the queue and handler
+  timeouts, stated; the plan's authorization paragraph is reworded; an `unauthorized` outcome is shown as `bypassed` to a
+  run reader who may not see the producer; a namespace-scope key's classification is the producer's, stated; `SECURITY
+  DEFINER` triggers schema-qualify `public.` tables; T17's fence is `sagat_lock_namespace`, never the `namespaces` row.
+- **D022-259 — One governing transaction table (Architecture N1, Correctness M8, Security D).** Delegate
+  (OD-2026-11-24-4). `plan.md`'s table "Transactions, as built" (section "Release 0.3.0, the rest of 022") is the one
+  that wins; its rows T1, T3, T5, T8, T9, T15, T16 and T18 are rewritten whole with every ruling, not by appended
+  remarks; the original table of "Transaction boundaries" is marked superseded at its heading, each of its rows having a
+  row of the same number in the governing table. Every document that still carried an old row is corrected.
 
 ## Gaps
 
@@ -2093,7 +2257,7 @@ supersedes part of one. The code facts were checked on this branch at `14b9e40b`
 | G022-025 | Until the finish-path routing lands (task T022-207), publication refuses `cache`, `earlyReturn` and `onFailure` in a definition with a `forEach`, `while` or `repeatUntil` node (`UNSUPPORTED_NODE`, dependency `COLLECTION_FINISH_ROUTING`; decision D022-207; added 2026-11-24). | Open; T022-206, closed by T022-207 |
 | G022-026 | A cacheable step released while its run is paused waits for its lookup undecided and is looked up on resume (decision D022-203): an entry that expires during the pause is a miss on resume (added 2026-11-24). *Closed 2026-11-25 (decision D022-238): no root step is released while its run is paused, so the exception is removed.* | Closed (D022-238) |
 | G022-027 | A handler step that declares `concurrency` or `rateLimit` waits for its gates during the handler phase, and the phase's own `timeoutMs` keeps running: a handler behind a busy key can time out `FAILURE_HANDLER_TIMEOUT` without running (decision D022-210; added 2026-11-24). | Accepted; documented |
-| G022-028 | A request a handler makes with a machine identity does not carry the handler run's identity, so "a reset or rerun whose initiator is a handler-tree run" is known only for creators inside the engine; the lineage index bounds the loop (decision D022-228; added 2026-11-25). *Narrowed 2026-11-25 (decision D022-241): the lineage now follows the request's principal kind, which the admission knows; what stays unobservable is only whether a machine identity acts for a handler, which does not matter, since every machine-identity rerun extends the lineage.* | Narrowed (D022-241) |
+| G022-028 | A request a handler makes with a machine identity does not carry the handler run's identity, so "a reset or rerun whose initiator is a handler-tree run" is known only for creators inside the engine; the lineage index bounds the loop (decision D022-228; added 2026-11-25). *Narrowed 2026-11-25 (decision D022-241): the lineage now follows the request's principal kind, which the admission knows; what stays unobservable is only whether a machine identity acts for a handler, which does not matter, since every machine-identity rerun extends the lineage.* *Closed 2026-11-25 (decision D022-242): the lineage no longer depends on who started a reset or rerun, so nothing about the initiator needs to be observed; a handler's fresh starts are bounded by the dispatch budget (D022-243).* | Closed (D022-242, D022-243) |
 | G022-029 | The fingerprint's input mapping and worker binding of the ruling name fields no node declares on this tree; they are covered by the canonical node digest with a closed exclude list and by the producing worker's binding check (decision D022-226; added 2026-11-25). | Accepted by design |
 
 ## Owner questions
@@ -2244,7 +2408,8 @@ the deadline of a step queued before the pause while the run is paused (G022-008
 skip paused runs and the deadline to move by the pause's length. **Recommended: (a)** now, and (c)'s deadline rule as a
 separate decision after measurement. T022-100 is not ticked until the owner answers.
 ### O1176 — Should the failure of a rerun or reset that a person starts be dispatched to the namespace handler?
-**Answered 2026-11-25 by delegation (delegate, OD-2026-11-24-4; decision D022-241): option (b) — the lineage links only through resets and reruns whose initiator is a machine identity or a handler-tree run; a person's rerun begins a new lineage and its failure is dispatched again.**
+**Answer reversed 2026-11-25 (delegate, OD-2026-11-24-4; decision D022-242): option (a) — every reset and rerun extends its source's lineage, whoever starts it; a dispatch the lineage suppresses is written as a `SUPPRESSED_LINEAGE` row, counted, listed and redrivable by an operator. The first answer below is kept as history.**
+*First answer, reversed:* **Answered 2026-11-25 by delegation (delegate, OD-2026-11-24-4; decision D022-241): option (b) — the lineage links only through resets and reruns whose initiator is a machine identity or a handler-tree run; a person's rerun begins a new lineage and its failure is dispatched again.**
 Asked 2026-11-25 (decision D022-228), to the coordinating session under OD-2026-11-24-4. The ruling of security Major 3
 dispatches a namespace handler at most once per lineage (the source chain of resets and reruns), which bounds the loop of
 a handler that reruns its own failed run. It also means that when a person reruns a failed run and the rerun fails again,

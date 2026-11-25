@@ -35,6 +35,10 @@ implemented.
 written below as amendment lines dated 2026-11-25, with a new proposed ADR-0146 (every end of a run goes through the
 reducer). Where a line of 2026-11-25 and one of 2026-11-24 disagree, the later one wins.
 
+**Revision after the re-reviews of 2026-11-25**: the reviewers re-read `6d02632e`; the second rulings are decisions
+D022-242 to D022-259 ([reviews/2026-11-25/design-rereviews-and-rulings.md](reviews/2026-11-25/design-rereviews-and-rulings.md)),
+written below as lines marked "after the re-reviews", which win over the earlier lines of the same day.
+
 **Input**: Bring Windmill/Temporal flow control to the platform without changing its execution model: a
 declared **step result cache** (key = canonical input digest + pinned identity + scope, TTL, retained and
 classified entries, journaled hits, explicit invalidation); **early return** of a workflow's declared
@@ -415,6 +419,8 @@ Added after the review of 2026-11-13:
   `compensationTimeoutMs`), so the producing node's sorted logical secret references, an input mapping or a binding a
   later feature adds enter it by construction; plus the classification rules version. The key digest is keyed under its
   own purpose (`KeyPurpose::StepCache`, 1 KiB by default, 4 KiB at most).
+  *Amended 2026-11-25 after the re-reviews, delegate (OD-2026-11-24-4; decision D022-254):* the fingerprint and the entry carry secret ids, not names; the
+  entry records the producing worker's subject; in the `namespace` scope the key's classification is the producer's.
 - **FR-022-003 — Hit semantics**: When a cacheable step becomes ready, the engine MUST evaluate the key over
   committed run data and, on a hit, in the same transaction copy the entry's output into the run's
   retained payloads (charged like any output), journal `step.cache_hit` (entry, source run/node/attempt,
@@ -443,6 +449,10 @@ Added after the review of 2026-11-13:
   checked under the shared secret-access and membership locks (`sagat_lock_secret_access`, `sagat_lock_memberships`),
   and the producing worker identity the entry records to hold now a binding that covers the activity; otherwise the
   outcome is `unauthorized`.
+  *Amended 2026-11-25 after the re-reviews, delegate (OD-2026-11-24-4; decisions D022-252, D022-254):* the hit also reads the key's tombstone; the binding
+  check takes the binding advisory lock shared and checks the producing subject's membership (for a script, the
+  producing runner's subject and its binding profile); hits staged in one round count cumulatively against the
+  retained-output limit; to a run reader who may not see the producer an `unauthorized` outcome reads as `bypassed`.
 - **FR-022-005 — Storing an entry**: A successful completion of a miss with an inline output MUST write a
   store obligation in its completion transaction; a leased writer MUST insert the entry from the run's
   immutable retained output, insert-if-absent, with expiry from the database clock. Storing MUST NOT fail,
@@ -455,6 +465,10 @@ Added after the review of 2026-11-13:
   ceiling skips it, counted. The entry's `created_at` is the producing completion's instant and its expiry runs from it;
   the writer skips an obligation created at or before its scope's invalidation, replaces a dead entry under its lock,
   and takes no lease or fence.
+  *Amended 2026-11-25 after the re-reviews, delegate (OD-2026-11-24-4; decision D022-252; supersedes the stamp above):* the entry is stamped with the
+  database instant of the producing attempt's lease (`step.leased`) and expires from it; the writer skips an obligation
+  whose attempt was leased at or before the scope's invalidation or the key's tombstone; two writers replacing one dead
+  entry use `ON CONFLICT DO NOTHING`; one usage row holds the counts of entries and store obligations.
 - **FR-022-006 — Invalidation and retention**: An authorized principal MUST be able to invalidate by
   workflow and node (optionally one version), by key value (sent in the body, digested server-side), or by
   shared cache name. Invalidation and expiry purge MUST release bytes in the deleting transaction and MUST
@@ -462,6 +476,8 @@ Added after the review of 2026-11-13:
   *Amended 2026-11-25, delegate (OD-2026-11-24-4; decision D022-230):* an invalidation by scope inserts the scope row when absent
   and stamps `invalidated_at` with the database clock read after its lock; an invalidation by key also deletes the
   pending store obligations of that scope and key; entries release no bytes (they hold none), only their count.
+  *Amended 2026-11-25 after the re-reviews, delegate (OD-2026-11-24-4; decision D022-252):* an invalidation by key writes a per-key tombstone; a scope row
+  is inserted only for a scope a published version can derive, and any other target is `404`.
 - **FR-022-007 — Classification and retained content**: Entries MUST be retained content charged to
   `tenant_content_bytes` (ADR-0027) and in the storage classification manifest. A consuming run discloses
   a copied output only through its own pinned carrier, identical to the producer's by FR-022-002. Cache APIs
@@ -473,6 +489,10 @@ Added after the review of 2026-11-13:
   a test tree) uses only the `version` scope of its own private version; a cache key follows FR-022-057
   (`CACHE_KEY_SECRET` refused, `CACHE_KEY_PII` warned), and a key's label, the entry counts and a hit's source run are
   shown only to a caller who may disclose every location the key reads.
+  *Amended 2026-11-25 after the re-reviews, delegate (OD-2026-11-24-4; decision D022-254):* for any other caller `entry_id`, the expiry and
+  `entriesDeleted` are null and listing instants are cut to the minute; spans and metrics carry no key, label or source
+  run. A `namespace`-scope cache name is a declared resource of the namespace (an administrator's setting lists the
+  workflows that may write it; any workflow of the namespace may read it).
 
 #### Early return (US04)
 
@@ -527,6 +547,12 @@ Added after the review of 2026-11-13:
   *Amended 2026-11-25, delegate (OD-2026-11-24-4; decision D022-224; ADR-0136):* `failure_handler.started` moves the stop into
   `pending_terminal_status` and clears it, so the run reads `RUNNING` or `WAITING` and plans only the handler's work; a
   region step failing without `onError` ends the phase `FAILED`; there is never a second phase.
+  *Amended 2026-11-25 after the re-reviews, delegate (OD-2026-11-24-4; decisions D022-246 to D022-248):* every stop source during the phase maps to one
+  journaled `failure_handler.draining {cause}` (`CANCELLED`, `TIMEOUT`, `REGION_FAILED`, `STORAGE_QUOTA`,
+  `RUN_DATA_LIMIT`, `EXPRESSION_ERROR`; the first wins), never to the run's stop; draining overrides a pause. The run
+  deadline does not apply during the phase: only the handler's own timer bounds it, and the overdue pass skips a run in
+  its phase. The runs of a region's `child` nodes are handler-tree runs; the `onFailure~h` node cancels and awaits its
+  child.
 - **FR-022-014 — Handler outcome**: A handler MUST NOT change the outcome: when it ends (succeeded, failed,
   timed out, cancelled) the engine MUST journal `failure_handler.finished` and finish the run with the
   pending status in the same transaction. A handler's failure MUST NOT re-invoke it. Cancellation during the
@@ -539,6 +565,11 @@ Added after the review of 2026-11-13:
   cancellation and the handler's timer a timeout: a draining sub-state (`CANCELLING`, `TIMING_OUT`) stops the region's
   attempts and the child, then commits `failure_handler.finished`, the permit's release and `run.finished` with the
   pending status. The timeout is `FAILURE_HANDLER_TIMEOUT` in the journal and `TIMED_OUT` in the column.
+  *Amended 2026-11-25 after the re-reviews, delegate (OD-2026-11-24-4; decision D022-244; supersedes "a machine identity"):* the credential is of the
+  built-in role `RunRecovery` (`run:read`, `run:start`, `run:operate`; no publication, approval, version or secret
+  permission); a subject whose only role is `RunRecovery` may not approve a publication or decide an approval. "A
+  cancellation or the run deadline during the phase is a handler cancellation" reads "a cancellation during the phase"
+  (D022-247).
 - **FR-022-015 — Namespace default handler**: An administrator MUST be able to set, read and clear one
   default handler per namespace (workflow, optional pinned version, statuses, enabled flag; optimistic
   revision, justification, audit). It applies to runs whose version declares no `onFailure` or whose
@@ -566,9 +597,16 @@ Added after the review of 2026-11-13:
   children and by resets and reruns of them) and carry `handler_kind` (`DISPATCHED`, `REGION_CHILD`); `handlerFor` is a
   dispatched run's only, and a rerun or reset of a handler run inherits it not. Each dispatch attempt is counted in its
   own commit before the admission, so a crash in the admission still reaches `DEAD`.
-  *Amended 2026-11-25, delegate (OD-2026-11-24-4; decision D022-241, O1176 answered (b)):* a reset or rerun extends its source's lineage only when its initiator is a machine identity or a handler-tree run; a reset or rerun a person (a member) starts begins a lineage of its own, so a
+  *Amended 2026-11-25, delegate (OD-2026-11-24-4; decision D022-241, O1176 answered (b); reversed by the next line):* a reset or rerun extends its source's lineage only when its initiator is a machine identity or a handler-tree run; a reset or rerun a person (a member) starts begins a lineage of its own, so a
   person's rerun of a failed run is dispatched again when it fails, and a handler's rerun through a machine identity is
   not.
+  *Amended 2026-11-25 after the re-reviews, delegate (OD-2026-11-24-4; decisions D022-242, D022-243, D022-248, D022-250, D022-255; reverses D022-241,
+  O1176 answered (a)):* every reset and rerun extends its source's lineage, whoever starts it; a dispatch the lineage
+  suppresses is written as a `SUPPRESSED_LINEAGE` row, counted, listed and redrivable by an operator, and the terminal
+  commit never fails on it. A namespace dispatch budget (per window, with a per-workflow share) defers dispatches beyond
+  it and alerts. A run qualifies when no workflow handler phase ended `SUCCEEDED` and no operator asked to cancel it.
+  The configuration is read by a left join in the statement that locks the run. A chain's finalization reaches the
+  dispatch through `persist`'s terminal path.
 
 #### Concurrency limits by key (US02)
 
@@ -644,6 +682,9 @@ Added after the review of 2026-11-13:
   `required_approvals` is above zero, a standalone activity or script step is refused (`FORBIDDEN`,
   `STANDALONE_STEP_REVIEW_REQUIRED`) unless its publication policy enables draft executions; a script node accepts only
   the artifact of a published script version; the derived default group is one key space for every actor.
+  *Amended 2026-11-25 after the re-reviews, delegate (OD-2026-11-24-4; decision D022-257):* in a `prod` namespace a standalone activity or script step is
+  refused (`STANDALONE_STEP_PRODUCTION_NAMESPACE`) unless the setting is enabled; the setting is read inside the
+  admission transaction under the publication policy's lock; a rerun of a standalone run is checked again.
 - **FR-022-024 — Standalone semantics**: The node's retry, timeout, secrets, idempotency template,
   `reconcileWith`, `cache` and node `concurrency` MUST behave as in a workflow; `compensateWith` MUST be
   refused. A database node MUST keep every 017 rule; when feature 021 exists, its typed managed operation
@@ -712,6 +753,8 @@ Added after the review of 2026-11-13:
   *Amended 2026-11-25, delegate (OD-2026-11-24-4; decisions D022-226, D022-237):* a test-tree run whose version is not its own private
   one bypasses the cache; `test_tree` is immutable (`BEFORE UPDATE OF test_tree`, `ENABLE ALWAYS`) and the database
   checks at insert that a child's flag equals its parent's.
+  *Amended 2026-11-25 after the re-reviews, delegate (OD-2026-11-24-4; decisions D022-245, D022-249):* a continue-as-new successor of a test-tree or
+  handler-tree run is refused; `handler_tree`, `handler_kind` and `lineage_run_id` have the guards `test_tree` has.
 
 #### Rate limits with buffering (US07)
 
@@ -912,12 +955,18 @@ Added after the review of 2026-11-13:
   behaviour slice of it has merged (and, for `step-cache-v1`, `early-return-v1` and `failure-handler-v1`, the routing of
   ADR-0146). Once a journal holds a new event an older binary cannot decode the run: rollback is switching a capability
   off, never a binary downgrade.
+  *Amended 2026-11-25 after the re-reviews, delegate (OD-2026-11-24-4; decision D022-256; supersedes "once every behaviour slice of it has merged"):* a
+  binary serves a capability only when its manifest of artefacts (event types, `Evaluation` variants, migrations,
+  routes, the acceptance test present and not ignored) is complete; rollback is `platform_requirement_remove`, then the
+  switch, and a switch never stops a phase or an obligation in flight. Publication refuses `continueAsNew` with `cache`,
+  `onFailure` or `earlyReturn` (`FLOW_CONTROL_COMBINATION`).
 - **FR-022-032 — Authorization and tenant boundary**: Operations MUST follow the plan's matrix (new
   `cache:invalidate`, `failure-handler:manage`, `step:standalone`; test runs need `definition:write` and
   `run:start`). Tenant and namespace come from the authenticated context; foreign resources MUST be opaque
   `NOT_FOUND`; replays MUST reauthorize; authorization MUST fail closed.
   *Amended 2026-11-24, delegate (OD-2026-11-24-4; decision D022-220):* the catalog holds 53 permissions today
   (`crates/domain/src/identity.rs`); the three new ones make 56; machine roles hold none.
+  *Amended 2026-11-25 after the re-reviews, delegate (OD-2026-11-24-4; decision D022-244):* the built-in roles gain `RunRecovery`.
 - **FR-022-033 — Observability and audit**: Each capability MUST emit the plan's spans and fixed-label
   metrics, journal events in the run transaction, and audit in the decision transaction (invalidation,
   handler configuration and redrive, standalone and test admission, pin disclosure). Metric labels MUST
@@ -963,6 +1012,8 @@ Added after the review of 2026-11-13:
   transaction, cache hits re-create their provenance row, and every reset point inside a failure-handler
   phase (after `failure_handler.started`) or after a queue timeout or dequeue is refused; a reset run never
   inherits `handler_for`.
+  *Amended 2026-11-25 after the re-reviews, delegate (OD-2026-11-24-4; decision D022-253):* `step.cache_missed` is `REMATERIALIZE` (the reset copies
+  `steps.cache_lookup` from the source step); `failure_handler.draining` is `REFUSE`, as the phase's other events.
 
 ### Non-functional requirements
 

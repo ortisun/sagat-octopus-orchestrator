@@ -858,3 +858,58 @@ rest read now, adds the evidence each slice must bring, and adds tasks T022-224 
 - [ ] T022-235 Per registry capability of the rest, a test that a binary lists it only once every slice of it is in the binary (a build constant per capability, set by its last slice). FR-022-031; D022-236. Evidence: five tests, one per capability, red when the constant is set early by hand.
 - [ ] T022-236 [US1] Producer secrets and bindings: `secret_refs` in the fingerprint and on the entry, the recheck under the shared secret-access and membership locks, `producer_worker_id` and its binding check. FR-022-002, 004; D022-225, D022-226. Evidence: two publishers with one access list (the one without access misses `unauthorized`); a revoked access list between the store and the hit; a worker binding revoked between the store and the hit; the lock taken before the cache rows (a held-lock barrier).
 - [ ] T022-237 Migrations and rollback of the rest: the `origin` CHECK `NOT VALID` then `VALIDATE`; the unique index on `handler_for_run_id` in its own migration with its lock measured on the acceptance data set; every `down` refusing while rows with the new origins, flags or events exist; the runbook's rollback (switch off, never a binary downgrade). D022-239. Evidence: up and down tests, both database roles; the index build's duration recorded.
+
+### Revision of 2026-11-25 after the re-reviews: the second rulings
+
+The reviewers re-read `6d02632e`; the second rulings are in `reviews/2026-11-25/design-rereviews-and-rulings.md`, the
+decisions D022-242 to D022-259 in `research.md`, and where each finding lives in
+`reviews/2026-11-25/design-reresponses.md`. Nothing is ticked or rewritten; this subsection says how the tasks read now,
+adds evidence per slice, and adds tasks T022-238 to T022-252.
+
+#### Tasks, as they read now
+
+| Task | Reads now as | Decision |
+|---|---|---|
+| T022-011 | 56 permissions and a new built-in role `RunRecovery` (`run:read`, `run:start`, `run:operate`), with the refusal of a `RunRecovery`-only subject as a publication approver and an approval decider (T022-240) | D022-244 |
+| T022-215 | *The old text (a machine identity) is superseded:* recovery through a `RunRecovery` credential given as a secret; a suppressed dispatch is redrivable | D022-242, D022-244 |
+| T022-226 | the rule judged by enclosing function, with the `persist` family, the body iteration announcements and the chain hand-off and finalization allow-listed, `finished_at` only in `UPDATE runs`, negative fixtures | D022-251 |
+| T022-227 | plus the cases of D022-248: a parallel region with one branch failing while the other is leased; a storage-quota stop in the phase; paused, then the timeout; `on: [TIMED_OUT]`; a cancellation during `TIMEOUT` draining and a timeout during `CANCELLED` draining, both orders; the state rebuilt from the journal after each commit | D022-246 to D022-248 |
+| T022-228 | the lineage extended by every reset and rerun; `lineage_first` and `SUPPRESSED_LINEAGE` (T022-238); the D022-241 evidence (a person's rerun dispatched again) withdrawn | D022-242 |
+| T022-231 | the lease-instant stamp, the per-key tombstone, one usage row for both counts (T022-246) | D022-252 |
+| T022-235 | the manifest of artefacts, not a build constant (T022-249) | D022-256 |
+| T022-237 | plus the `BEFORE INSERT` lineage trigger and the guards of `handler_tree` and `handler_kind` (T022-241) | D022-245 |
+
+#### Evidence each slice must bring now, added
+
+- **Slice 2:** T022-249's manifest test red with any artefact removed; the `FLOW_CONTROL_COMBINATION` fixtures for
+  `cache`, `onFailure` and `earlyReturn` with `continueAsNew` (T022-244); T022-226's rule red on the tree before the
+  routing, green after, and its negative fixtures.
+- **Slice 3:** a chain head failing in a namespace with a handler dispatched (T022-245); T022-247's mixed-version and
+  held-lock tests.
+- **Slices 6 to 9:** T2 held open across T5 (a value leased before the invalidation not stored); two hits in one round
+  against the retained limit; a barrier held after T3's delete against T18; a cacheable admission against a revocation
+  (`slot_order.rs`); a `namespace`-scope store by an undeclared workflow skipped; the disclosure nulls for a caller
+  without the right (T022-246, T022-248, T022-251).
+- **Slices 10 to 13:** two failing runs of one lineage committing at once (one live and one suppressed row, both runs
+  terminal); a suppressed row redriven; a handler starting fresh runs deferred by the budget; the overdue pass skipping a
+  run in its phase; every draining case (T022-238, T022-239, T022-242, T022-243, T022-252).
+- **Slices 14 to 19:** the `prod` refusal of a standalone code step and its setting; a rerun of a standalone run checked
+  again; a continue-as-new successor of a test-tree run refused (T022-244, T022-250).
+
+#### Follow-up tasks of the second rulings (T022-238 to T022-252)
+
+- [ ] T022-238 [US3] Dispatch by lineage: `lineage_first`, the partial unique index, the two-statement insert (`ON CONFLICT ... WHERE lineage_first DO NOTHING`, then a `SUPPRESSED_LINEAGE` row counted `skipped_lineage` and journaled as `run.finished`'s `namespace_dispatch`), the listing filter and the redrive of a suppressed row. FR-022-016; D022-242. Evidence: two failing runs of one lineage commit concurrently (a held commit), both reach their terminal status, one live and one suppressed row; no unique violation is ever raised to the terminal commit (a hand mutation that drops the `ON CONFLICT` is caught); a redrive admits once.
+- [ ] T022-239 [US3] The namespace dispatch budget (quota resources: dispatches per window, per-workflow share), deferring beyond it and alerting. FR-022-016; D022-243. Evidence: a handler that starts fresh failing runs is deferred at the budget, nothing dropped, the alert raised; at and over each bound.
+- [ ] T022-240 The built-in role `RunRecovery` and the refusals `RECOVERY_ROLE_MAY_NOT_APPROVE` in the publication approval and approval decision paths. FR-022-032; D022-244. Evidence: the role's permissions in the catalog test; a `RunRecovery`-only subject refused in both deciders; a handler recovering through such a credential, audited as it.
+- [ ] T022-241 Database guards of `lineage_run_id` (nullable, `coalesce`, the `BEFORE INSERT` trigger from the reset or rerun source, immutable), `handler_tree` and `handler_kind` (`BEFORE UPDATE OF`, `ENABLE ALWAYS`; a child's `handler_tree` equal to its parent's). D022-245. Evidence: an update of each refused as `sagat_app` and as the owner; an older binary's insert gets its lineage; the chain insert unchanged.
+- [ ] T022-242 [US3] `failure_handler.draining {cause}`: the reducer maps every stop source of the phase to it (never to the run's stop), the first cause wins, later ones in its detail, draining overrides a pause, the recovery sweep selects draining runs, the codec's closed set of six causes. FR-022-013, 014; D022-246. Evidence: `crates/domain/tests/failure_handler.rs` cases per cause; a decoder test that pins the six causes; the state rebuilt from the journal after each commit.
+- [ ] T022-243 [US3] The run deadline does not apply during the phase: the overdue pass (`overdue_runs`) excludes `failure_handler_state IS NOT NULL`; the `timeoutMs` ceiling. FR-022-013; D022-247. Evidence: a `TIMED_OUT` run's handler is not cancelled by the next overdue pass (red on today's pass); a deadline before the phase opens stops the run and the phase opens.
+- [ ] T022-244 Continue-as-new refusals: publication refuses `continueAsNew` with `cache`, `onFailure` or `earlyReturn` (`FLOW_CONTROL_COMBINATION`); `refuse_gated_successor` refuses a successor of a test-tree or handler-tree run. FR-022-031; D022-249. Evidence: codec fixtures; an integration case per tree.
+- [ ] T022-245 [US3] A chain's finalization writes its terminal status through `persist`'s terminal path for the namespace dispatch. FR-022-016; D022-250. Evidence: a failing chain head dispatched once; the chain's other writes unchanged.
+- [ ] T022-246 [US1] The cache store completed: the lease-instant stamp, `step_cache_key_invalidations`, cumulative hits per round, one usage row for both counts, the obligations' guarded column `UPDATE` grant, `404` for an underivable invalidation target, `ON CONFLICT DO NOTHING` for two writers of one dead entry. FR-022-003, 005, 006; D022-252. Evidence: T2 held open across T5; two hits in one round; a barrier held after T3's delete against T18; `FOR UPDATE SKIP LOCKED` on an obligation as `sagat_app`; invariant 18 as restated, red with a seeded dead-entry hit.
+- [ ] T022-247 The tests of ADR-0146: an older binary replays a journal the routed finish wrote; a held-lock test against concurrent feature 014 iteration transactions. D022-251. Evidence: both tests, both database roles.
+- [ ] T022-248 [US1] The cache's security completed: secret ids on the fingerprint and entry, the producing subject, the binding advisory lock shared and the membership check (and the runner's for a script), the disclosure nulls and the minute cut, the closed span and metric attributes, `step_cache_names` with its administrator's route and audit, the lookup locks at slot 5 for an admission. FR-022-002, 004, 007; D022-254. Evidence: a revoked membership and a revoked binding each turn a hit `unauthorized`; a reader without the right sees `bypassed` and nulls; an undeclared writer of a `namespace`-scope name skipped; a `slot_order.rs` case of a cacheable admission against a revocation.
+- [ ] T022-249 The per-capability manifest of artefacts and its serving test, and the rollback order (`platform_requirement_remove`, then the switch). FR-022-031; D022-256. Evidence: five manifests; each test red when the serving constant is true with an artefact removed by hand.
+- [ ] T022-250 [US5] [US6] Draft executions completed: the setting read inside the admission transaction under the publication policy's lock; `STANDALONE_STEP_PRODUCTION_NAMESPACE`; a rerun of a standalone run checked again; the policy row created with the environment's approval default. FR-022-023, 026; D022-257. Evidence: one test per case; a run admitted before the setting is turned off continues.
+- [ ] T022-251 [US1] `step.cache_missed` re-materialized by a reset (the source step's `steps.cache_lookup` copied). FR-022-038; D022-253. Evidence: the reset corpus case; the reset run's next completion writes its store obligation with the key digest.
+- [ ] T022-252 The order as built: the handler configuration read by a left join in the statement that locks the run (`FOR UPDATE OF runs`), and the lock-order tests of the restated order (counter row in `persist` after the rounds; cache rows before it). D022-255. Evidence: the budget line of a failing run without a handler unchanged; a held-lock test that the configuration row is never locked by a terminal commit.

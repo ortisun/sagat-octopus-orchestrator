@@ -89,7 +89,7 @@ be delivered at creation without a buffer; `RunState::replay` rebuilds state for
    | 3 | run-creating aggregates: 018 schedule row or pending-reset row → 018 business-id row; 030 `START` operation message. A pass reads its shard fence in the same transaction; the lease row is a leaf lock, outside this order (below) | ADR-0050 order (a) |
    | 3R | existing runs the transaction acts on: chain before run (014); the parent reservation of a child admission; the ADR-0039 source identity guard of a rerun or reset; an existing run commanded for an aggregate (018 Signal-/Update-with-Start holder) | implemented order: 017 and ADR-0039 take these before the catalog lock and memberships |
    | 4 | 4a namespace fences and authority: 017 namespace secret/catalog lock → 021 variable fence (writers) → 024 data-catalog fence (writers) → memberships `FOR SHARE` (017 helpers) → 029 access fences (shared) → namespace row; 4b catalog heads and pins (`FOR SHARE` on admission): 019 dispatch-catalog fence → 019 deployment fences (id order) → 017 connection heads → 021 resource heads → 021 variable heads → 024 asset heads → 025 provider and MCP-server heads → 030 service-endpoint head → 030 allow-list entries | ascending id within each kind |
-   | 5 | secret rows (ascending) → secret ACL rows | |
+   | 5 | secret rows (ascending) → secret ACL rows | *2026-11-25 (feature 022 decision D022-254):* a cacheable entry step's lookup locks (secret-access, membership, then the binding advisory lock, shared) |
    | 6 | new run rows: retained definition (017) → tree and active-run admission → payload rows → run insert with journal, steps, tasks, timers, outbox, audit (parent before child) → run pins (017 connections, 019 deployment, 021 bindings, 024 data assets) | *2026-11-25 (feature 022 decision D022-235):* the journal, step, task and outbox rows are written by `persist` after slot 7; the slot names the lock order, and those inserts lock nothing another transaction waits for |
    | 7 | 022 semaphores by (pool, scope, group, key) | ADR-0056 decision 2. *2026-11-25 (feature 022 decision D022-235):* run-scope semaphores and windows, then the cache scope, then the cache entry (`FOR SHARE`, ADR-0135), then step-scope semaphores and windows |
    | 8 | 8a bookkeeping rows of a transaction whose subject is one existing run (018 batch job → item, obligation, pending-reset insert); 8b quota, rate and usage rows last, including 025 `ai_usage_daily` and the deferred content flush (ADR-0027) | usage rows are always last |
@@ -123,6 +123,11 @@ be delivered at creation without a buffer; `RunState::replay` rebuilds state for
    failed run, whose lock serializes every writer of it; and the dispatcher locks only committed rows (`SKIP LOCKED`).
    `scripts/check-architecture.py` refuses an insert into `failure_handler_dispatches` outside the terminal path of
    `persist`, and a lock of one outside the dispatcher and the redrive.
+   *Extended 2026-11-25 (feature 022 decision D022-242):* to the lineage key. The insert is `ON CONFLICT (tenant_id,
+   namespace_id, lineage_run_id) WHERE lineage_first DO NOTHING`, followed when it inserted nothing by a second insert of
+   a `SUPPRESSED_LINEAGE` row; both are the last statements of the run's own commit before usage rows. The first may
+   wait for another run's uncommitted first row of the same lineage; that wait is a leaf wait, because after it the
+   waiting commit takes only rows of its own run and usage rows, and the other commit takes nothing of this run.
 
    Transitions on an existing run (claims, completions, approvals, stream appends, operation messages,
    agent rows) start at slot 3R with the run (chain before run), then take the rows their own ADR lists

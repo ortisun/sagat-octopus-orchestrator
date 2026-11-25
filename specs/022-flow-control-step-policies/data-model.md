@@ -684,3 +684,67 @@ ascending) → cache scope → cache entry (`FOR SHARE`) → semaphores, then wi
 last. The exclusive takers of cache rows take their store obligations first and lock nothing after a cache row but usage
 rows (T3, T4, T5, T18). An admission follows ADR-0050 decision 7: its slot 7 is run-scope gates, cache scope, cache
 entry, step-scope gates.
+
+## Revision of 2026-11-25 after the re-reviews (decisions D022-242 to D022-259)
+
+The second rulings ([reviews/2026-11-25/design-rereviews-and-rulings.md](reviews/2026-11-25/design-rereviews-and-rulings.md)).
+Where this section and any above disagree, this section wins; in particular the `lineage_run_id` rule of decision
+D022-241 above is reversed.
+
+### `runs`, revised
+
+| Column | Type | Notes |
+|---|---|---|
+| `lineage_run_id` | uuid null | read as `coalesce(lineage_run_id, id)`; filled by a `BEFORE INSERT` trigger with the source's lineage for every reset and rerun, whoever starts it (so an older binary and the chain insert keep working); immutable by a `BEFORE UPDATE OF` trigger, `ENABLE ALWAYS` (decisions D022-242, D022-245) |
+| `handler_tree`, `handler_kind` | | immutable by a `BEFORE UPDATE OF` trigger, `ENABLE ALWAYS`; at insert a child's `handler_tree` equals its parent's, and the runs of a handler region's `child` nodes and of a dispatched handler's `child` nodes are `true` (decisions D022-243, D022-245) |
+| `failure_handler_state` | text null | follows the journal: `RUNNING` from `failure_handler.started`; `CANCELLING` or `TIMING_OUT` from `failure_handler.draining {cause}` (`TIMING_OUT` for `TIMEOUT`, `CANCELLING` for every other cause); `SUCCEEDED`, `FAILED`, `TIMED_OUT` or `CANCELLED` from `failure_handler.finished` (decision D022-246) |
+
+The overdue pass (`crates/infra-postgres/src/maintenance.rs`, `overdue_runs`) excludes `failure_handler_state IS NOT
+NULL` (decision D022-247).
+
+### `failure_handler_dispatches`, revised (decision D022-242)
+
+| Column | Notes |
+|---|---|
+| `lineage_run_id` | the source run's `coalesce(lineage_run_id, id)` |
+| `lineage_first` | boolean NOT NULL; UNIQUE `(tenant_id, namespace_id, lineage_run_id) WHERE lineage_first`; replaces the unique index on every row of a lineage |
+| `state` | CHECK `IN ('PENDING','ADMITTED','DEAD','SUPPRESSED_LINEAGE')`; a redrive turns `DEAD` or `SUPPRESSED_LINEAGE` into `PENDING` and never changes `lineage_first` |
+
+The terminal commit inserts `lineage_first = true ... ON CONFLICT (tenant_id, namespace_id, lineage_run_id) WHERE
+lineage_first DO NOTHING`; when that inserts nothing, a second statement inserts `lineage_first = false`, state
+`SUPPRESSED_LINEAGE` (counted `skipped_lineage`, the outcome journaled on the run). The namespace dispatch budget is a
+quota resource per window with a per-workflow share (decision D022-243); a dispatch beyond it stays `PENDING` with a
+later `next_attempt_at` and raises an alert.
+
+### Cache tables, revised (decisions D022-252 to D022-254)
+
+| Table | Change |
+|---|---|
+| `step_cache_entries` | `secret_ids uuid[]` (sorted secret ids, never names) replaces `secret_refs`; `producer_subject text` (the producing worker's or, for a script, runner's subject; bounded, protected) replaces `producer_worker_id`; `created_at` is the database instant of the producing attempt's lease (`step.leased`), and `expires_at` runs from it |
+| `step_cache_key_invalidations` (new) | PK `(tenant_id, namespace_id, scope_digest, key_digest)`; `invalidated_at`; written by an invalidation by key (T5) after its lock; read by T3 and by the hit; deleted with its scope; grants SELECT, INSERT, UPDATE (`invalidated_at`), DELETE; protected |
+| `step_cache_store_obligations` | `leased_at` (the attempt's lease instant) added; one column `UPDATE` grant (`created_at`, never changed: an `ALWAYS` trigger refuses every update) so that `FOR UPDATE SKIP LOCKED` works as `sagat_app` |
+| `step_cache_names` (new) | PK `(tenant_id, namespace_id, cache_name)`; `writer_workflow_ids uuid[]` (the workflows that may write the name), `revision`, `updated_by`, `updated_at`; an administrator's setting, audited; a `namespace`-scope store by another workflow is skipped (counted) |
+| `step_cache_scopes` | inserted by an invalidation only for a scope a published version can derive |
+| usage | one usage row per namespace holds both counts (entries and store obligations), kept by `SECURITY DEFINER` triggers with `SET search_path = pg_catalog, pg_temp` that schema-qualify `public.` tables |
+
+`steps.cache_lookup` is copied from the source step by a reset (`step.cache_missed` is `REMATERIALIZE`, decision
+D022-253).
+
+### Invariants, revised and added
+
+- Invariant 16 (revised): at most one dispatch row with `lineage_first = true` per lineage; every run with
+  `handler_kind = 'DISPATCHED'` is named by an `ADMITTED` dispatch row.
+- Invariant 18 (restated, decision D022-252): no `step.cache_hit` names an entry that was dead at the hit's commit
+  (expired, or created at or before its scope's invalidation or its key's tombstone).
+- 20. `runs.failure_handler_state` equals the state the journal's `failure_handler.*` events give; a domain case
+  rebuilds it from the journal after each commit.
+- 21. No run with `test_tree` or `handler_tree` true has a continue-as-new successor (decision D022-249).
+
+### Lock order, as built (replaces the revised orders above)
+
+A transition on an existing run: entity locks (chain → run, the run's statement reading the handler configuration by a
+left join, `FOR UPDATE OF runs`) → the rounds (lookup: secret-access and membership locks, binding advisory lock,
+shared, then cache scope, tombstones, entry `FOR SHARE`; then gates: semaphores, then windows, sorted) → `persist` (the
+active-run counter row when the commit ends the run, the give-backs, the rest, the dispatch insert last) → usage rows. The
+counter row after cache rows makes no cycle: deciders lock cache rows shared only, and no exclusive taker of a cache row
+takes the counter row (decision D022-255).

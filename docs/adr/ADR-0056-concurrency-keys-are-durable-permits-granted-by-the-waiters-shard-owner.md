@@ -59,7 +59,7 @@ ceiling above the proposed defaults is published.
    the key, is kept by the explicit lock.)* It MUST lock semaphore rows in `(pool, scope, group, key_digest)` order, after
    every entity lock the path takes before it acquires, releases or grants a permit. After a semaphore it
    MAY lock only (a) the transition rows this ADR lists for that path — on the terminal path the namespace
-   failure-handler policy row (`FOR SHARE`) — and (b) quota, rate and usage rows, which always come last
+   failure-handler policy row (~~`FOR SHARE`~~, struck 2026-11-25: read without a lock) — and (b) quota, rate and usage rows, which always come last
    (ADR-0050 slot 8b, ADR-0027 deferred content flush). It MUST NOT lock another existing run, an aggregate
    count or an activity-quota row after a semaphore. The failure-handler policy row and the cache scope and
    entry rows of feature 022 are the transition rows that ADR-0050 decision 7 lets each ADR list for
@@ -92,6 +92,24 @@ ceiling above the proposed defaults is published.
    secret-access and membership locks of the step's secrets, shared, before the cache rows; the namespace handler's
    revision is read with the run's definition, not on the terminal path; a domain property test checks that no progress
    emits a filed gate decision and `run.finished` in one commit (task T022-234).
+
+   *Struck and restated 2026-11-25, delegate (OD-2026-11-24-4; feature 022 decisions D022-254 and D022-255; ADR-0094 is
+   the authority):* in the per-path orders above, the clauses "→ `runs` update → semaphore" and "namespace
+   failure-handler policy row (`FOR SHARE`)" no longer describe any path, and the first order of the amendment of
+   2026-11-24 put the counter row before the rounds, which the build does not do. The order of every transition on an
+   existing run is: entity locks (the statement that locks the run also reads the namespace handler configuration by a
+   left join, `FOR UPDATE OF runs`) → the rounds (lookup, then gates) → `persist`: the active-run counter row when the
+   commit ends the run, the give-backs, the rest (the `runs` row, the journal, the projections, the dispatch insert) →
+   usage rows. The counter row after cache rows makes no cycle: deciders lock cache rows shared only, and no exclusive
+   taker of a cache row takes the counter row.
+
+   2(a). *Added 2026-11-25 (decision D022-254):* the transition rows this decision lists for feature 022's lookup round
+   are the secret-access and membership locks of a cacheable step's secret ids (`sagat_lock_secret_access`,
+   `sagat_lock_memberships`, shared, ascending) and the activity's binding advisory lock (shared), taken before the cache
+   rows; at an admission they are taken at slot 5 of ADR-0050 decision 7, where the definition is known. In a later
+   lookup round of the same commit they come after semaphores, which is safe because they are shared locks whose only
+   exclusive takers (an access-list or membership change, a binding change) lock no run, semaphore, window, cache or
+   counter row afterwards: a leaf, as the shard lease row of ADR-0050 decision 7.
 3. **Every run creator acquires at admission.** Run admission MUST either acquire a run permit or enqueue
    the new run in its admission transaction, through one application port that every run creator calls:
    the start API, event and cron triggers, child nodes (including `onFailure` children), reruns, 017 ad hoc
