@@ -1034,26 +1034,57 @@ async fn a_cancelled_unary_poll_keeps_its_tenant_slot_until_its_claim_ends() {
         .expect("the slots came back with the claims");
 }
 
-/// Architecture Major 1 of the second review (ADR-0099 decision 9): a session stored at minor 8, under a build whose ceiling
-/// is 6, is judged at 6, so its hand-back is an ordinary failure.
+/// Request (10) of decision D006-059 (Task 006-074, decision D006-099; it replaces the test that the hand-back was an
+/// ordinary failure): a session stored at minor 8, under a build whose ceiling is 6 (this build's own), is judged at 6, so
+/// it is never withdrawn; and since the stored minor reserves the code, the host's word that nothing ran is not turned into a
+/// failure either. It lapses: `STALE_ATTEMPT`, nothing written, the lease still live. The case is a binary rolled back to
+/// this build while hosts registered at 1.8 hand back before they register again. At the root and in a scope.
 #[tokio::test]
-async fn a_stored_minor_above_the_build_ceiling_is_judged_at_the_ceiling() {
-    let mut options = Options::default();
-    options.worker.idle_retry = Duration::from_millis(50);
-    options.lease_withdrawal = Some(withdrawing());
-    let p = platform_with(options).await;
-    record_requirement(&p).await;
-    let workflow = p.publish("ceiling", &one_attempt("ceiling")).await;
-    let run = p.start(&workflow, &json!({})).await;
-    let mut worker = stream_worker(&p, "first").await;
-    as_protocol_1_8(&p, "first").await;
-    let lease = worker.one_task().await;
-    let ack = worker
-        .fail_with(&lease, "TASK_NOT_STARTED", true)
-        .await
-        .expect("reported");
-    assert_eq!(ack.step_status, "FAILED");
-    assert!(named(&journal(&p, &run).await, "step.lease_withdrawn").is_empty());
+async fn a_hand_back_from_a_session_stored_at_1_8_that_this_build_cannot_honour_lapses() {
+    for scoped in [false, true] {
+        let mut options = Options::default();
+        options.worker.idle_retry = Duration::from_millis(50);
+        options.lease_withdrawal = Some(withdrawing());
+        let p = platform_with(options).await;
+        record_requirement(&p).await;
+        let name = format!("ceiling-{scoped}");
+        let workflow = p.publish(&name, &cancellable(&name, scoped, &[])).await;
+        let mut worker = p.worker("first").await;
+        worker
+            .register_version(&["act.a"], if scoped { "1.5" } else { "1.4" })
+            .await;
+        as_protocol_1_8(&p, "first").await;
+        let (run, lease) = first_lease(&p, &mut worker, &workflow, scoped).await;
+        let refused = worker
+            .fail_with(&lease, "TASK_NOT_STARTED", true)
+            .await
+            .expect_err("nothing is recorded");
+        assert_eq!(
+            machine_code(&refused),
+            "STALE_ATTEMPT",
+            "scoped={scoped}: {refused:?}"
+        );
+        let journal = journal(&p, &run).await;
+        assert!(
+            named(&journal, "step.lease_withdrawn").is_empty(),
+            "scoped={scoped}"
+        );
+        assert!(named(&journal, "step.failed").is_empty(), "scoped={scoped}");
+        assert!(
+            named(&journal, "step.started").is_empty(),
+            "scoped={scoped}"
+        );
+        assert_eq!(p.status(&run).await, "RUNNING", "scoped={scoped}");
+        if !scoped {
+            assert_eq!(step(&p, &run).await, ("LEASED".to_owned(), 1, 1));
+        }
+        // the lease is still the step's: its heartbeat is answered
+        worker
+            .client
+            .heartbeat(worker.req(worker.heartbeat_message(&lease)))
+            .await
+            .unwrap_or_else(|stale| panic!("scoped={scoped}: the lease is still live: {stale:?}"));
+    }
 }
 
 /// Whether the lease is of an instance in a scope (a root lease names the root instance, with an empty path).
@@ -1062,6 +1093,42 @@ fn in_a_scope(lease: &sagat_api_grpc::pb::TaskLease) -> bool {
         .instance
         .as_ref()
         .is_some_and(|instance| !instance.instance_path.is_empty())
+}
+
+/// Starts `workflow` (one item for a scoped one, with the iteration quota and a scheduler) and polls its first lease.
+async fn first_lease(
+    p: &Platform,
+    worker: &mut Worker<'_>,
+    workflow: &str,
+    scoped: bool,
+) -> (String, sagat_api_grpc::pb::TaskLease) {
+    let (run, scheduler) = if scoped {
+        let (status, body) = p
+            .rest(
+                reqwest::Method::PUT,
+                "/quotas/iteration_concurrency",
+                Some(&json!({"limit": 8})),
+            )
+            .await;
+        assert_eq!(status, 200, "{body}");
+        let run = p.start(workflow, &json!({"lines": [1]})).await;
+        (
+            run,
+            Some(crate::support::blob_collections::scheduler(p, None).await),
+        )
+    } else {
+        (p.start(workflow, &json!({})).await, None)
+    };
+    for _ in 0..20 {
+        if let Some(scheduler) = &scheduler {
+            scheduler.tick().await;
+        }
+        if let Some(lease) = worker.poll(1).await.pop() {
+            assert_eq!(in_a_scope(&lease), scoped);
+            return (run, lease);
+        }
+    }
+    panic!("scoped={scoped}: no lease");
 }
 
 /// Stores the secret `name` in the namespace and lets the publisher (`alice`) use it.

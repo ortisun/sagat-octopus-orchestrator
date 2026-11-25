@@ -917,6 +917,22 @@ Task 006-073 on `feature/delivery-acknowledgement` and cut as a pull request of 
   of the beat (a beat that waited would count from a moment after the database last saw the process); a fallback that
   serves while a change is in progress (the open owner transaction is exactly the activation that may forbid the call);
   checking only on arrival (a call admitted just before the window ends could hand out a secret after it).
+- **D006-099 — A hand-back from a session stored at 1.8 that this build cannot honour lapses** (Task 006-074; request (10) of
+  D006-059, round 16 of the delivery acknowledgement design). A session's stored minor is read for the lease and clamped to
+  this build's ceiling (ADR-0099 decision 9). Before this decision a session stored at 8 or more under a build whose ceiling
+  is below 8 gave an ordinary failure, because the clamped minor does not reserve the code. That happens to a binary rolled
+  back to this build while hosts registered at 1.8 hand back before they register again: each hand-back would spend its
+  attempt, and fail a one-attempt `Activity` for good, for work the host says never ran. Now `hand_back_verdict` takes the
+  stored minor before the clamp beside the clamped one: when the stored one reserves the code and the clamped one does not,
+  the verdict is `Lapse` (nothing written, `STALE_ATTEMPT`, counted `lapsed`), as for a fleet that does not withdraw
+  (D006-089); the clamped minor alone still decides `Withdraw`, so this build never withdraws a hand-back of 1.8. A session
+  stored below 8 is judged as before (the ordinary failure: the code may be a handler's there). Tested, red first: the unit
+  test of the pure verdict (stored 8 with ceiling 6 gives `Lapse`, stored 6 an ordinary failure) and
+  `a_hand_back_from_a_session_stored_at_1_8_that_this_build_cannot_honour_lapses`, root and scoped, with the build's own
+  ceiling (`contract_grpc_durable_execution`); `a_stored_minor_above_the_build_ceiling_is_judged_at_the_ceiling`, which
+  asserted the ordinary failure, is replaced by it. Weighed: the ordinary failure (the regression of D006-080 after a
+  rollback); withdrawing at the stored minor (this build would honour a reservation it does not implement, the opposite of
+  ADR-0099 decision 9).
 - **G006-034 — The writer of `NOT_ACKNOWLEDGED` reads `lease-withdrawal-v2` under the lock its removal waits for in the
   build of 1.8.** This build writes no such withdrawal, so it has no reader of the requirement under a share lock; the guard
   of D006-096 is the half that is here. Closed by the task of the delivery acknowledgement build that writes the cause.

@@ -192,21 +192,32 @@ pub enum HandBackVerdict {
 
 /// [`hand_back`]'s refusal sorted (decision D006-089): a refusal for a reason of the fleet (`Lapsed`, `Disabled`) from a session
 /// that reserves the code, of a lease still `LEASED` to it, leaves the lease to lapse; any other refusal is the ordinary
-/// failure.
+/// failure. `stored_minor` is the minor the session of the lease negotiated, as stored; it is judged clamped to `ceiling`,
+/// this build's own (ADR-0099 decision 9), so a build below 1.8 never withdraws a hand-back of 1.8. A session stored at a
+/// minor that reserves the code, clamped below it, lapses too (decision D006-099): its host's word that nothing ran is not
+/// turned into a failure that spends the attempt (a binary rolled back while hosts of 1.8 hand back).
 #[must_use]
 pub fn hand_back_verdict(
     gate: Option<WithdrawalOutcome>,
     leased: bool,
-    holder_minor: Option<u32>,
+    stored_minor: Option<u32>,
+    ceiling: u32,
     required: bool,
     before: u32,
 ) -> HandBackVerdict {
+    let holder_minor = stored_minor.map(|minor| minor.min(ceiling));
+    let reserves =
+        |minor: Option<u32>| minor.is_some_and(|minor| minor >= HAND_BACK_PROTOCOL_MINOR);
     match hand_back(gate, leased, holder_minor, required, before) {
         Ok(before) => HandBackVerdict::Withdraw(before),
         Err(outcome @ (WithdrawalOutcome::Lapsed | WithdrawalOutcome::Disabled))
-            if leased && holder_minor.is_some_and(|minor| minor >= HAND_BACK_PROTOCOL_MINOR) =>
+            if leased && reserves(holder_minor) =>
         {
             HandBackVerdict::Lapse(outcome)
+        }
+        // stored at 1.8 or later, judged below it: this build cannot honour it, and must not fail it (decision D006-099)
+        Err(WithdrawalOutcome::Lapsed) if leased && reserves(stored_minor) => {
+            HandBackVerdict::Lapse(WithdrawalOutcome::Lapsed)
         }
         Err(outcome) => HandBackVerdict::Fail(outcome),
     }
@@ -268,23 +279,24 @@ where
         }) && tx.lease_unexpired_instance(task.instance, &hash).await?;
         let info = tx.info();
         let step_id = instance_step_id(info.version_id, info.run_id, task.instance);
+        // judged never above this build's own ceiling: a session another build registered may store a minor this build does
+        // not serve (ADR-0099 decision 9); the stored minor still says what the host promised (decision D006-099)
         let minor = if leased {
-            // never above this build's own ceiling: a session another build registered may store a minor this build does
-            // not serve (ADR-0099 decision 9)
-            tx.lease_holder_minor(step_id, &hash)
-                .await?
-                .map(|minor| minor.min(self.hand_back_ceiling))
+            tx.lease_holder_minor(step_id, &hash).await?
         } else {
             None
         };
+        let ceiling = self.hand_back_ceiling;
         let gate = self.gate_outcome();
-        let cheap = hand_back_verdict(gate, leased, minor, true, 0);
+        let cheap = hand_back_verdict(gate, leased, minor, ceiling, true, 0);
         if !matches!(cheap, HandBackVerdict::Withdraw(_)) {
             return Ok(cheap);
         }
         let required = tx.lease_withdrawal_required().await?;
         let before = tx.lease_withdrawals(step_id, task.fence.attempt).await?;
-        Ok(hand_back_verdict(gate, leased, minor, required, before))
+        Ok(hand_back_verdict(
+            gate, leased, minor, ceiling, required, before,
+        ))
     }
 
     /// [`Self::root_hand_back`] for a scoped instance, in its path transaction.
@@ -306,23 +318,24 @@ where
             && tx.lease_unexpired(task.instance, &hash).await?;
         let info = &tx.snapshot().info;
         let step_id = instance_step_id(info.version_id, info.run_id, task.instance);
+        // judged never above this build's own ceiling: a session another build registered may store a minor this build does
+        // not serve (ADR-0099 decision 9); the stored minor still says what the host promised (decision D006-099)
         let minor = if leased {
-            // never above this build's own ceiling: a session another build registered may store a minor this build does
-            // not serve (ADR-0099 decision 9)
-            tx.lease_holder_minor(step_id, &hash)
-                .await?
-                .map(|minor| minor.min(self.hand_back_ceiling))
+            tx.lease_holder_minor(step_id, &hash).await?
         } else {
             None
         };
+        let ceiling = self.hand_back_ceiling;
         let gate = self.gate_outcome();
-        let cheap = hand_back_verdict(gate, leased, minor, true, 0);
+        let cheap = hand_back_verdict(gate, leased, minor, ceiling, true, 0);
         if !matches!(cheap, HandBackVerdict::Withdraw(_)) {
             return Ok(cheap);
         }
         let required = tx.lease_withdrawal_required().await?;
         let before = tx.lease_withdrawals(step_id, task.fence.attempt).await?;
-        Ok(hand_back_verdict(gate, leased, minor, required, before))
+        Ok(hand_back_verdict(
+            gate, leased, minor, ceiling, required, before,
+        ))
     }
 
     /// Withdraws `leases`, which the server committed and never handed to the transport (decision D006-001), and returns
@@ -574,33 +587,73 @@ mod tests {
     #[test]
     fn a_hand_back_lapses_only_when_the_fleet_does_not_withdraw_for_a_reserving_session() {
         use HandBackVerdict::{Fail, Lapse, Withdraw};
-        assert_eq!(hand_back_verdict(None, true, Some(8), true, 0), Withdraw(0));
+        assert_eq!(
+            hand_back_verdict(None, true, Some(8), 8, true, 0),
+            Withdraw(0)
+        );
         for gate in [WithdrawalOutcome::Lapsed, WithdrawalOutcome::Disabled] {
             assert_eq!(
-                hand_back_verdict(Some(gate), true, Some(8), true, 0),
+                hand_back_verdict(Some(gate), true, Some(8), 8, true, 0),
                 Lapse(gate)
             );
         }
         assert_eq!(
-            hand_back_verdict(None, true, Some(8), false, 0),
+            hand_back_verdict(None, true, Some(8), 8, false, 0),
             Lapse(WithdrawalOutcome::Lapsed),
             "the requirement is not recorded"
         );
         assert_eq!(
-            hand_back_verdict(None, true, Some(8), true, 4),
+            hand_back_verdict(None, true, Some(8), 8, true, 4),
             Fail(WithdrawalOutcome::Capped)
         );
         assert_eq!(
-            hand_back_verdict(None, false, Some(8), false, 0),
+            hand_back_verdict(None, false, Some(8), 8, false, 0),
             Fail(WithdrawalOutcome::FenceMissed)
         );
         for minor in [Some(7), None] {
             assert_eq!(
-                hand_back_verdict(Some(WithdrawalOutcome::Disabled), true, minor, false, 0),
+                hand_back_verdict(Some(WithdrawalOutcome::Disabled), true, minor, 8, false, 0),
                 Fail(WithdrawalOutcome::Lapsed),
                 "{minor:?}: the code is not reserved below 1.8"
             );
         }
+    }
+
+    /// Decision D006-099 (request (10) of decision D006-059): a session stored at 1.8 under a build whose ceiling is 6 is judged
+    /// at 6, so it is never withdrawn, and it lapses rather than spending the attempt; a session stored at 6 is the ordinary
+    /// failure as before, and the ceiling that reserves the code still withdraws.
+    #[test]
+    fn a_hand_back_stored_at_1_8_that_the_build_cannot_honour_lapses() {
+        use HandBackVerdict::{Fail, Lapse, Withdraw};
+        assert_eq!(
+            hand_back_verdict(None, true, Some(8), 6, true, 0),
+            Lapse(WithdrawalOutcome::Lapsed),
+            "stored 8, ceiling 6"
+        );
+        assert_eq!(
+            hand_back_verdict(None, true, Some(9), 6, true, 4),
+            Lapse(WithdrawalOutcome::Lapsed),
+            "never withdrawn, whatever the count"
+        );
+        assert_eq!(
+            hand_back_verdict(None, true, Some(6), 6, true, 0),
+            Fail(WithdrawalOutcome::Lapsed),
+            "stored 6: the code may be a handler's"
+        );
+        assert_eq!(
+            hand_back_verdict(None, true, Some(8), 8, true, 0),
+            Withdraw(0)
+        );
+        assert_eq!(
+            hand_back_verdict(None, false, Some(8), 6, true, 0),
+            Fail(WithdrawalOutcome::FenceMissed),
+            "a started step stays the ordinary failure"
+        );
+        assert_eq!(
+            hand_back_verdict(None, true, None, 6, true, 0),
+            Fail(WithdrawalOutcome::Lapsed),
+            "no live session holds the lease"
+        );
     }
 
     #[test]
