@@ -566,6 +566,9 @@ Added after the review of 2026-11-13:
   children and by resets and reruns of them) and carry `handler_kind` (`DISPATCHED`, `REGION_CHILD`); `handlerFor` is a
   dispatched run's only, and a rerun or reset of a handler run inherits it not. Each dispatch attempt is counted in its
   own commit before the admission, so a crash in the admission still reaches `DEAD`.
+  *Amended 2026-11-25, delegate (OD-2026-11-24-4; decision D022-241, O1176 answered (b)):* a reset or rerun extends its source's lineage only when its initiator is a machine identity or a handler-tree run; a reset or rerun a person (a member) starts begins a lineage of its own, so a
+  person's rerun of a failed run is dispatched again when it fails, and a handler's rerun through a machine identity is
+  not.
 
 #### Concurrency limits by key (US02)
 

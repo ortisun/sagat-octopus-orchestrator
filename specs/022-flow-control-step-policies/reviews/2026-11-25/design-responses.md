@@ -85,7 +85,8 @@ model" is `data-model.md`, section "Revision of 2026-11-25"; "tasks" is `tasks.m
 2. **Security Major 3.** "A reset or rerun whose initiator is a handler-tree run" is not observable when a handler calls
    the public API with a machine identity (gap G022-028); the lineage index is what bounds that loop. Its cost (a
    person's rerun of a failed run is not dispatched again) is asked as O1176, with a recommended alternative; the
-   documents follow the ruling until it is answered.
+   documents follow the ruling until it is answered. *Answered 2026-11-25: O1176 option (b), decision D022-241; the
+   documents now follow it, and G022-028 is narrowed.*
 3. **Security minor 1.** `UPDATE (expires_at)` together with "the trigger that refuses updates kept" is read as a trigger
    that refuses every other column and any raise of the expiry.
 4. **Security minor 10.** "4 KiB" is read for `keyValue`; for `mock` it would contradict the approved pin bound of 256 KiB

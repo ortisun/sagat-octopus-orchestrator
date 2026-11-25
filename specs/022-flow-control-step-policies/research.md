@@ -1903,7 +1903,8 @@ supersedes part of one. The code facts were checked on this branch at `14b9e40b`
   (ambient authority a reviewer cannot see). One part is not observable on 0.3.0: a request a handler makes with a
   machine identity does not carry the handler run's identity, so "whose initiator is a handler-tree run" is known only
   for creators inside the engine; the lineage index is what bounds the loop of a handler that reruns its failed run.
-  Its cost, that the failure of a rerun a person starts is not dispatched either, is asked as O1176.
+  Its cost, that the failure of a rerun a person starts is not dispatched either, is asked as O1176. *(Amended
+  2026-11-25 by D022-241, O1176 answered (b): the lineage links only through machine identities and handler-tree runs.)*
 - **D022-229 — Cache keys follow the key classification rules (security Major 4, security minors 2 and 3).** Delegate
   (OD-2026-11-24-4). FR-022-057 extends to `cache.key`: a key over a `secret` location is refused
   (`CACHE_KEY_SECRET`), over `pii` warned (`CACHE_KEY_PII`); its label, the entry counts and a hit's source run are
@@ -2009,6 +2010,17 @@ supersedes part of one. The code facts were checked on this branch at `14b9e40b`
   pool's own load on a shared external system is a section of the runbook (task T022-061). `FOR SHARE` on a hot entry
   writes a multixact per hit: measured by task T022-062. This branch merges after `docs/owner-delegation-2026-11-24`,
   which records OD-2026-11-24-4.
+- **D022-241 — A lineage links only through machine identities and handler-tree runs (O1176 option (b); amends
+  D022-228).** Delegate (OD-2026-11-24-4), the coordinating session's answer to O1176. Options: (a) at most one dispatch
+  per lineage whoever started the rerun, as first ruled; (b) a reset or rerun extends its source's lineage only when its initiator is a machine identity or a handler-tree run; a reset or rerun a person (a member) starts begins a lineage of its own; (c) at most N dispatches per lineage.
+  Chosen (b). A person's rerun of a failed run is a deliberate human decision and its failure may reach the namespace
+  handler again, which is what an operator expects; recovery by a handler goes through a machine identity (D022-228), so
+  the loop the reviewers found stays bounded; (a) would silently suppress alerts for a person's reruns, and (c) is an
+  arbitrary number that still suppresses some. `runs.lineage_run_id` is therefore the source's `lineage_run_id` when the
+  reset's or rerun's initiator is a machine identity or a handler-tree run, and the run's own id otherwise (a member, or a
+  run that is no reset or rerun); the initiator is the authenticated principal of the request, whose kind (member or
+  machine identity) the admission knows, and it is recorded with the reset or rerun provenance. The unique index on the
+  dispatch rows' lineage is unchanged. Gap G022-028 is narrowed accordingly.
 
 ## Gaps
 
@@ -2081,7 +2093,7 @@ supersedes part of one. The code facts were checked on this branch at `14b9e40b`
 | G022-025 | Until the finish-path routing lands (task T022-207), publication refuses `cache`, `earlyReturn` and `onFailure` in a definition with a `forEach`, `while` or `repeatUntil` node (`UNSUPPORTED_NODE`, dependency `COLLECTION_FINISH_ROUTING`; decision D022-207; added 2026-11-24). | Open; T022-206, closed by T022-207 |
 | G022-026 | A cacheable step released while its run is paused waits for its lookup undecided and is looked up on resume (decision D022-203): an entry that expires during the pause is a miss on resume (added 2026-11-24). *Closed 2026-11-25 (decision D022-238): no root step is released while its run is paused, so the exception is removed.* | Closed (D022-238) |
 | G022-027 | A handler step that declares `concurrency` or `rateLimit` waits for its gates during the handler phase, and the phase's own `timeoutMs` keeps running: a handler behind a busy key can time out `FAILURE_HANDLER_TIMEOUT` without running (decision D022-210; added 2026-11-24). | Accepted; documented |
-| G022-028 | A request a handler makes with a machine identity does not carry the handler run's identity, so "a reset or rerun whose initiator is a handler-tree run" is known only for creators inside the engine; the lineage index bounds the loop (decision D022-228; added 2026-11-25). | Accepted; O1176 |
+| G022-028 | A request a handler makes with a machine identity does not carry the handler run's identity, so "a reset or rerun whose initiator is a handler-tree run" is known only for creators inside the engine; the lineage index bounds the loop (decision D022-228; added 2026-11-25). *Narrowed 2026-11-25 (decision D022-241): the lineage now follows the request's principal kind, which the admission knows; what stays unobservable is only whether a machine identity acts for a handler, which does not matter, since every machine-identity rerun extends the lineage.* | Narrowed (D022-241) |
 | G022-029 | The fingerprint's input mapping and worker binding of the ruling name fields no node declares on this tree; they are covered by the canonical node digest with a closed exclude list and by the producing worker's binding check (decision D022-226; added 2026-11-25). | Accepted by design |
 
 ## Owner questions
@@ -2232,7 +2244,8 @@ the deadline of a step queued before the pause while the run is paused (G022-008
 skip paused runs and the deadline to move by the pause's length. **Recommended: (a)** now, and (c)'s deadline rule as a
 separate decision after measurement. T022-100 is not ticked until the owner answers.
 ### O1176 — Should the failure of a rerun or reset that a person starts be dispatched to the namespace handler?
-**Asked 2026-11-25 (decision D022-228), to the coordinating session under OD-2026-11-24-4.** The ruling of security Major 3
+**Answered 2026-11-25 by delegation (delegate, OD-2026-11-24-4; decision D022-241): option (b) — the lineage links only through resets and reruns whose initiator is a machine identity or a handler-tree run; a person's rerun begins a new lineage and its failure is dispatched again.**
+Asked 2026-11-25 (decision D022-228), to the coordinating session under OD-2026-11-24-4. The ruling of security Major 3
 dispatches a namespace handler at most once per lineage (the source chain of resets and reruns), which bounds the loop of
 a handler that reruns its own failed run. It also means that when a person reruns a failed run and the rerun fails again,
 no handler is dispatched for it. Options: (a) **as ruled**, at most once per lineage, whoever started the rerun;

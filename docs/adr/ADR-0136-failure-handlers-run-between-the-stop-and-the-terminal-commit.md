@@ -73,7 +73,7 @@ trailing steps finish. Both act at the end of a run, the busiest commit of the e
    transition writes a slot-3 row): the row is invisible until the commit, its key is the failed run, whose lock
    serializes every writer of it, and the dispatcher locks only committed rows `SKIP LOCKED`, so no cycle can pass
    through it. A namespace handler is dispatched at most once per lineage (the source chain of resets and reruns,
-   `lineage_run_id`), by a unique index on the dispatch rows.
+   `lineage_run_id`), by a unique index on the dispatch rows; a reset or rerun extends its source's lineage only when its initiator is a machine identity or a handler-tree run; a reset or rerun a person (a member) starts begins a lineage of its own (O1176 answered (b), decision D022-241).
 8. **The dispatcher counts first, then admits.** A shard-fenced pass counts each attempt (attempts, `next_attempt_at`)
    in its own committed transaction, then admits the handler run through `Engine::start` (initiator `system:engine`; its steps run under the
    handler version's publisher as a triggered run's do, D1177, with no operator right; provenance `handlerFor`) and marks the row
@@ -123,8 +123,9 @@ trailing steps finish. Both act at the end of a run, the busiest commit of the e
   one namespace handler run per failure and per lineage whatever the dispatcher crashes; an early result is disclosed
   while the run runs and survives its later failure.
 - Bad: observers see a failed run as `RUNNING` with a pending status for the length of its handler phase; a handler step
-  behind a busy key can time out before it runs (gap G022-027); a rerun a person starts of a failed run is not dispatched
-  again (asked as O1176).
+  behind a busy key can time out before it runs (gap G022-027); a handler that reruns its failed run through a machine identity
+  is dispatched once per lineage; a rerun a person starts begins a new lineage and is dispatched again (O1176, decision
+  D022-241).
 - Harder: every future path that ends a run must go through the reducer (ADR-0146); every future creator copies
   `handler_tree` to its children.
 - Concurrency of configuration: a change that commits while a failing run's transaction is in flight applies to that

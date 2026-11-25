@@ -1000,6 +1000,7 @@ the audit action `test_run.secret_resolved` (D022-202, the secret's name and ver
 | A dead entry where a store would insert | Replaced under its lock | Integration test (D022-230) |
 | A hit over the run's retained bytes | The step fails `RUN_DATA_LIMIT` through its route | Integration test (D022-231) |
 | A handler that reruns its own failed run | At most one dispatch per lineage | Fault test with a machine identity (D022-228) |
+| A person reruns a failed run, which fails again | Dispatched again: a member's rerun begins a new lineage | Integration test (D022-241, O1176 (b)) |
 | Publication of a workflow with a database node against a test admission of its draft | No cycle (the draft row is not locked) | `slot_order.rs` case (D022-222) |
 | The dispatcher crashes inside an admission | The attempt is already counted; `DEAD` after 12 | Fault test (D022-223) |
 | A key failure's route releases a cacheable successor after the gates round | Looked up in a later round of the commit | A barrier test with an invalidation holding the scope row |
