@@ -28,6 +28,17 @@ CREATE TABLE flow_control_held_signals (
     CONSTRAINT flow_control_held_signals_trace_id_format CHECK (trace_id IS NULL OR trace_id ~ '^[0-9a-f]{32}$')
 );
 
+-- The signal's name is customer content (classified `content` in storage-classification.json): charged to the tenant
+-- by the ALWAYS accounting triggers, as every accounted table is (`durable_quotas::manifest_covers_every_variable_size_
+-- column_and_every_accounted_table_has_always_triggers`, integration_security_multitenancy). The payload is charged in
+-- `payloads`, the actor and the trace are bounded system values.
+CREATE TRIGGER flow_control_held_signals_quota_delta AFTER INSERT OR UPDATE OR DELETE ON flow_control_held_signals
+    FOR EACH ROW EXECUTE FUNCTION sagat_quota_row_delta('content', 'octet_length_utf8', 'name');
+ALTER TABLE flow_control_held_signals ENABLE ALWAYS TRIGGER flow_control_held_signals_quota_delta;
+CREATE CONSTRAINT TRIGGER flow_control_held_signals_quota_flush AFTER INSERT OR UPDATE OR DELETE
+    ON flow_control_held_signals DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION sagat_quota_flush_deltas();
+ALTER TABLE flow_control_held_signals ENABLE ALWAYS TRIGGER flow_control_held_signals_quota_flush;
+
 REVOKE ALL PRIVILEGES ON flow_control_held_signals FROM PUBLIC;
 DO $grants$
 BEGIN

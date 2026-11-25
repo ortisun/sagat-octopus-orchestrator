@@ -1881,7 +1881,10 @@ taken after `git grep D022-04` on every `origin/*` branch.
      `NOT_WAITING`, nothing changed. Only the request that creates the run holds its signal; holding a second signal
      for an existing run would be a buffer, which FR-018-024 refuses.
   Migration `20270214000000_flow_control_held_signals` (`sagat_app`: `SELECT`, `INSERT`, `DELETE`; a down that refuses
-  while a row is kept). Evidence: `run_creators::{a_signal_with_start_whose_start_queues_holds_the_signal_and_the_grant_delivers_it,
+  while a row is kept; the signal's name, customer content, charged to `tenant_content_bytes` by the ALWAYS accounting
+  triggers, added 2026-11-25 after the merge with `develop` when
+  `durable_quotas::manifest_covers_every_variable_size_column_and_every_accounted_table_has_always_triggers` failed on
+  the table: the branch is unreleased, so the migration itself carries them, as D022-089 does for the quota lists). Evidence: `run_creators::{a_signal_with_start_whose_start_queues_holds_the_signal_and_the_grant_delivers_it,
   a_held_signal_is_dropped_with_an_audit_when_its_queued_run_times_out_or_is_cancelled,
   a_held_signal_no_step_waits_for_at_the_grant_is_dropped_with_an_audit,
   a_signal_with_start_of_a_name_no_node_waits_for_is_refused_when_the_start_would_queue}` and
@@ -1955,7 +1958,9 @@ taken after `git grep D022-04` on every `origin/*` branch.
   waiters keep taking the permits, so no new alert kind is added. A held signal whose delivery fails (anything but a
   transient failure) no longer fails the grant: the grant's transaction is rolled back and the grant is tried once more
   in a new transaction that drops the signal with its audit record, reason `DELIVERY_FAILED`, and grants the start
-  without it. Tests: `run_admission::a_waiter_whose_grant_always_fails_does_not_hold_back_the_younger_waiters` (a
+  without it. Every drop's audit record (`NOT_WAITING_AT_GRANT`, `OUTPUT_BOUND`, `RUN_ENDED`, `DELIVERY_FAILED`) names
+  the caller who sent the signal, the held row's actor, in its reason (batch 5 security minor 2): the record's actor
+  stays the engine, which dropped it. Tests: `run_admission::a_waiter_whose_grant_always_fails_does_not_hold_back_the_younger_waiters` (a
   trigger refuses the older waiter's holder row; the younger is granted in the same pass) and
   `run_creators::a_held_signal_whose_delivery_fails_is_dropped_and_the_start_is_granted`.
 
