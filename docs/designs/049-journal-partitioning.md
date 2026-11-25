@@ -32,6 +32,17 @@ hot path smaller tables:
 The cost on the hot path is measured by design 038's statement budget, which gains a count of the relations each lease
 and completion locks.
 
+**Terms used below.** The *journal* is the append-only record of what happened in each run: `run_events` holds one
+row per event with a per-run sequence (`seq`), and *payloads* hold the values (inputs, outputs, event bodies) the
+events and the state rows refer to by digest. A *partition* is one physical table of a table partitioned by PostgreSQL;
+*pruning* is the planner's choice of the partitions a statement must open. *Feature 020* designs retention: a
+namespace's policy says how long a finished run stays (*hot retention*), its archive is written to an object store and
+read back to check it (*verified*), and only then is the run *purged*, leaving a small *stub* row. The *run lock* is the
+row lock on the run that every transaction that appends to it takes first. *Design 038's budget* is the test that
+counts the statements, transactions and rows of a worker's lease and of a completion and fails when they change. The
+*instance registry* (Architecture decision 0082) records which processes are live and what they support; its *census*
+says whether any process of an older release is still running.
+
 ## The Problem
 
 From the code on `develop` at `546d5aa5`:

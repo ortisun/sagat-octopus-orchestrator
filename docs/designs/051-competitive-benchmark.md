@@ -27,6 +27,16 @@ returning the next ready step of the run in the answer to a completion, and a th
 is in this design because Part A is what shows whether each remedy pays; each remedy is built and kept only if its
 measurement says so.
 
+**Terms used below.** A *run* is one execution of a workflow; a *step* is one node of it, and an *activity* is a step
+that a worker executes. A worker *polls* (or holds a *stream*) to be given work; the server answers with a *lease*, the
+right to execute one step's attempt, fenced by a token so that a stale attempt is refused. A *claim* is the database
+transaction that grants a lease; a *candidate* is a ready step a poll considers, and a *probe* is a claim transaction
+begun for one candidate. A *completion* is the worker's report of a step's result (`CompleteStep`). A *transition* is
+one completed step recorded durably (Requirement 051-008). The *run lock* is the row lock on the run that every
+transaction changing the run takes first. *Design 038's budget* is the test
+`tests/integration/claim-transition-efficiency/work_budget.rs` that counts the statements, transactions and rows of a
+lease and of a completion and fails when they change.
+
 ## The Problem
 
 **There is no comparison, only vendor figures.** The only competitor table in the repository
@@ -267,7 +277,8 @@ None that blocks the design. Two are the owner's because they spend money or nee
 2026-11-24-4 keeps both):
 
 - **The runner budget of the first campaign**: a 64-vCPU GitHub-hosted larger runner for about 5,000 minutes, about
-  US$ 820 at the price of 2026-11-24 (Technical Plan, "Cost of the campaigns"). Gates Task 051-9.
+  US$ 818 at the price of 2026-11-24 (Technical Plan, "Cost of the campaigns": US$ 817.94). Gates Tasks 051-9 to
+  051-12, whose `Owner-gate:` lines wait for the owner's row.
 - **A cloud account for the second tier** (three machines in one zone). Gates Task 051-14.
 
 ## Critical User Journeys (CUJs)
@@ -541,17 +552,21 @@ Part A tasks are 051-1 to 051-14; Part B tasks are 051-20 to 051-29.
   Refs: Requirement 051-012, Requirement 051-014
 - [ ] T051-9 Run the pilots that choose each competitor's configuration on the larger runner and publish them.
   Refs: Requirement 051-004
-  Owner-gate: OD-2026-11-24-1
+  Owner-gate: pending, the owner's row approving the runner budget of "Owner decisions needed" (money stays the owner's under Owner decision 2026-11-24-4)
 - [ ] T051-10 Run the first full campaign and publish the dated report section and raw data.
   Refs: Success criterion 051-001, Requirement 051-011, Requirement 051-013
+  Owner-gate: pending, the owner's row approving the runner budget of "Owner decisions needed" (money stays the owner's under Owner decision 2026-11-24-4)
 - [ ] T051-11 Publish the crash-recovery table of the first campaign.
   Refs: Success criterion 051-003
+  Owner-gate: pending, the owner's row approving the runner budget of "Owner decisions needed" (money stays the owner's under Owner decision 2026-11-24-4)
 - [ ] T051-12 Run the campaign again with Part B on and off, and record each remedy's gain or its removal.
   Refs: Requirement 051-107, Success criterion 051-002
+  Owner-gate: pending, the owner's row approving the runner budget of "Owner decisions needed" (money stays the owner's under Owner decision 2026-11-24-4)
 - [ ] T051-13 Link the report from `docs/README.md` and the roadmap, and write the reader's guide to it.
   Refs: User story 051-01, User story 051-02
 - [ ] T051-14 Run the second tier on three machines and publish it.
   Refs: Requirement 051-003
+  Owner-gate: pending, the owner's row providing the cloud account of "Owner decisions needed"
 
 - [ ] T051-20 Write Architecture decisions 0133 and 0134 and update `docs/architecture/execution-semantics.md` with the queue row in the claim's lock order.
   Refs: Requirement 051-101, Requirement 051-102, Requirement 051-104, Requirement 051-105
