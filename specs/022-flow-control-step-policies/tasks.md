@@ -707,6 +707,7 @@ Added for the findings recorded in `reviews/2026-11-13/` (D022-019..034). The sl
   (keys over public, internal and pii fields at both gates; a viewer, a developer without the grant and an admin with it,
   in `getRun`, the run listing and both key listings; red with the internal rule disabled by hand). `cargo test -p
   sagat-infra-expr --lib reads` 3 passed; `cargo test -p sagat-cli --locked` passed (the two codes' help and sections).
+  *Gates 2026-11-25, not ticked:* the gate line under T022-111 (one run for both tasks).
 - [ ] T022-110 Close G022-013: a takeover test that races a real keeper takeover (alpha's short lease run out by the database clock while its grant waits for a held key, `beta.round()` the second lock waiter), and SC-022-004 at run level (five same-key starts with `limit: 1`: at most one holder, grants in admission order; a mixed-limit pair sharing a group). Evidence: `fault_flow_control_step_policies` with hand mutations.
   *Evidence 2026-11-25 (0.3.0 slice), not ticked.*
   `fault_flow_control_step_policies::concurrency::{a_real_takeover_skips_the_shard_of_a_grant_in_flight_and_nothing_is_granted_twice,
@@ -746,6 +747,25 @@ Added for the findings recorded in `reviews/2026-11-13/` (D022-019..034). The sl
   pool and scope instead of its own keys (both new tests red). Studio: `FlowControlKeysPanel` shows the group view
   (`FlowControlKeysPanel.test.tsx`, "shows one row per group, and no key", red against the previous panel); the
   contract's `ConcurrencyKeyGroup`, `RateLimitKeyGroup`, `view` and `groups` (`npm run api && npm run check:api`).
+  *Gates 2026-11-25 on `2590dd03` and `9742dccf`, not ticked (with T022-104 and T022-111):* `cargo fmt --check`,
+  `cargo clippy --workspace --all-targets --locked -D warnings`, `check-architecture.py`, `check-agent-config.py`,
+  `check-plain-words.py` and `check-docs-first.py` pass. As the owner and as the runtime role
+  (`SAGAT_TEST_AS_RUNTIME_ROLE=1`): `contract_flow_control_step_policies` 13, `fault_flow_control_step_policies` 34,
+  `integration_flow_control_step_policies` 228, `integration_claim_transition_efficiency` 22 (no line of the budget
+  moved), `integration_platform_foundation` 112. In the owner's run three tests failed and passed again in a fresh
+  process: `fault::rate_limits::a_flood_of_a_thousand_starts_on_one_key_never_holds_more_than_its_limit_in_a_window`
+  (grant order, line 1270) and `run_admission::a_cancellation_dequeues_a_queued_start_and_frees_a_held_permit` (the
+  tick granted other than one, line 182), both green in the runtime role's full run, not explained further; and
+  `runtime_privileges::every_statement_the_stores_issue_is_within_the_runtime_roles_privileges`, a real defect (the
+  audit read the named group listing's `VALUES` alias `c(pool, scope)` as a function), fixed by `9742dccf` and green in
+  both roles after it. Owner: `contract_rest_security_multitenancy` 21, `contract_schedules_bulk_operations` 11,
+  `integration_schedules_bulk_operations` 790 passed and 5 failed (four on a test database the harness could not create
+  or connect to, `support/mod.rs` lines 261 and 281, and `batch_business_id_selector::the_prefix_composes_with_the_other_filters_of_the_selector`),
+  the five green in a fresh process; the selector's other targets (`contract_developer_experience` 8,
+  `contract_iceberg_writes` 69, `contract_payload_classification` 18, `contract_platform_foundation` 30,
+  `contract_rest_*` and `contract_workflow_primitives` 50) passed; `cargo test -p sagat-application` 461, `-p sagat-cli`
+  123, the library tests of `sagat-domain`, `sagat-infra-expr`, `sagat-infra-ir`, `sagat-infra-postgres` and
+  `sagat-api-http` passed; Studio `npx vitest run` 1573, `npm run lint`, `npm run check:api` pass.
 - [ ] T022-112 [US7] One text of the grant pass's eligibility predicate (`deadline_at > now()`, the run running or waiting
   and not paused) for its five uses (`execution/gate_queue.rs` twice, `maintenance.rs` twice, `RATE_PLACE_SQL`), as
   `purgeable_grant!` is one text for the purge, and a gate-neutral run permit state (`RunPermitState` documents and
