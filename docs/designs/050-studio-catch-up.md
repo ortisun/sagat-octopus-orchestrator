@@ -19,7 +19,9 @@ From release 0.3.0 the Studio covers what the server executes and exposes:
   collection operators of design 042, `while`, `repeatUntil`, `return` inside a body, `continueAsNew`, `database` and
   `icebergWrite`, the workflow's declared state with its Queries and Updates, and the limits and chain policy. The
   concurrency and rate-limit fields of feature 022 are built on their own branch and join the same registry. A kind
-  the server does not accept is never offered, and a document that holds one opens without losing it
+  the server does not accept is never offered, a combination the server does not publish yet is shown as refused at
+  the node while the author edits, by the server's own validation, and a document that holds a refused kind opens
+  without losing it
   ([Architecture decision 0143](../adr/ADR-0143-the-studio-draws-node-kinds-from-one-registry-checked-against-the-schema-and-enabled-by-the-servers-capabilities.md)).
 - **One inbox** lists what waits for the person signed in: the run approvals they may decide now and the publication
   requests they may approve, ordered by deadline. The server answers "may I decide this" with the same rule that
@@ -49,7 +51,10 @@ publication requests. Nothing else changes in the engine, the IR, the worker pro
 - **Scoped instance.** One execution of a body node inside one iteration, named in the runtime graph by an
   `instancePath` (the loop node and the iteration index of each enclosing scope) and an id such as `items[2]/charge`.
 - **Legacy kind.** `foreach` and `humanApproval`: shapes of the first schema that the server refuses at publication
-  for good ("legacy collection placeholder has no executable definition", `crates/infra-ir/src/convert.rs`).
+  for good ("legacy collection placeholder has no executable definition" and "legacy approval placeholder has no
+  executable definition", `crates/infra-ir/src/convert.rs`).
+- **Publishable subset.** The shapes publication accepts in 0.3.0, narrower than the schema (Technical Plan 4). The
+  codec decides them; feature 014's remaining tasks and design 039 widen them during the release.
 - **Inbox.** The Studio page "Waiting for me" of this design.
 
 ## The Problem
@@ -59,12 +64,12 @@ today and the Studio does not show, read from the code on `develop` at 2026-11-2
 
 | Area | The server | The Studio |
 |---|---|---|
-| Node kinds | 19 root kinds and 14 body kinds in `workflow.schema.json`; `approval` and `switch` publish and run; `forEach`, `while`, `repeatUntil`, `return`, `continueAsNew` parse and publish when the runtime enables the structured primitives; `icebergWrite` when `lake.enabled`; collection operators when the deployment switch is on | 11 kinds in `model/registry.ts`, two of them the refused legacy kinds (`foreach`, `humanApproval`), marked "does not run yet"; no body editing; no declared state |
+| Node kinds | 19 root kinds and 14 body kinds in `workflow.schema.json`; `approval` and `switch` publish and run in the basic graph; `forEach`, `while`, `repeatUntil`, `return` and `continueAsNew` publish in fixed shapes only (a collection chain or a loop chain ending at `end`, narrow bodies, no declared state with bodies; Technical Plan 4); `icebergWrite` when `lake.enabled`; collection operators when the deployment switch is on | 12 entries in `model/registry.ts`, two of them the refused legacy kinds (`foreach`, `humanApproval`), marked "does not run yet"; no body editing; no declared state |
 | Run graph | Scoped instances with `instancePath`, `waitingOn` (`approval`, `loop`, `collection`), `switchSelection`, `childRunId`, chain links | Waiting labels only; iterations are not grouped; the chosen case is not shown; an approval cannot be decided |
 | Declared operations | `POST /runs/{runId}/queries/{name}`, `.../updates/{name}` and the chain-addressed forms (feature 014, Architecture decision 0031) | No way to call them |
 | Approvals | `GET /runs/{runId}/approvals`, `POST /approvals/{approvalId}/decisions` | Nothing; no list across runs exists on the server either |
 | Audit | `GET /audit` with action, resource, actor and time filters (feature 008) | No page |
-| Versions | Activation history, activate and roll back with a reason, promotion, publication requests (request, approve, reject, withdraw, publish), compensation plans (feature 011, feature 003) | Publish dialog only |
+| Versions | Activation history, activate and roll back with a reason, promotion, publication requests (request, approve, reject, withdraw, publish), compensation plans (feature 011, feature 003) | The publish dialog and `VersionsPanel.tsx` (the version list, a read-only view, a diff); no activation, rollback, promotion, requests or compensation plan |
 | Namespace settings | Publication policy, quotas and activity quotas, worker bindings, payload reveal grants, secret access lists, egress policy | Egress policy and secrets only |
 | Event plumbing | Event endpoints, webhook and broker subscriptions with deliveries and redrive, connector dead letters with redrive (feature 004) | Connectors only |
 | Scripts | `Language::Go.is_built()` and `Language::Java.is_built()` hold (`crates/domain/src/scripts.rs`; Architecture decision 0024) | Go and Java disabled, "not built by this platform yet" (`features/scripts/languages.ts`) |
@@ -89,22 +94,30 @@ REST API to approve a step.
 
 ### Functional
 
-- **Requirement 050-001** The Studio MUST hold its node kinds in one registry with an entry for every member of
-  `$defs/node` and `$defs/bodyNode` of the workflow schema, each entry naming the capability it needs or none, and a
-  unit test MUST fail when the schema and the registry differ (Architecture decision 0143, decision 1).
-  *Acceptance:* `registry.test.ts` passes on the schema of `develop` and fails on a schema with an added kind.
-- **Requirement 050-002** `GET /version` MUST return `capabilities`, a list of names from the closed list of
-  Technical Plan 3, present exactly when the answering replica would accept the matching publication or route.
-  *Acceptance:* the contract test `capabilities_follow_the_switches_a_server_was_started_with` starts the test
-  composition with each switch on and off and compares the list.
+- **Requirement 050-001** The Studio MUST hold its node kinds in one registry with one entry per `type` constant of
+  the members of `$defs/node` and `$defs/bodyNode` of the workflow schema, each with its scopes (root, body or both),
+  its required fields per scope and the capability it needs or none, and a unit test reading the schema from
+  `specs/001-platform-foundation/contracts/` MUST fail when the schema and the registry differ (Architecture decision
+  0143, decision 1). *Acceptance:* `registry.test.ts` passes on the schema of `develop` and fails on a schema with an
+  added kind or a changed required field.
+- **Requirement 050-002** `GET /version` MUST return `capabilities`, a list of deployment-wide names (never per
+  tenant) of the known list of Technical Plan 3, each present exactly when the answering replica would accept the
+  matching publication or route; names that follow an operator's activation in the instance registry MUST appear within
+  one heartbeat of it. The field is a list of strings with a pattern; a reader MUST ignore a name it does not know, and
+  an absent field means a server older than 0.3.0. *Acceptance:* the contract test
+  `capabilities_follow_the_switches_a_server_was_started_with` (each static switch on and off),
+  `a_registry_activation_appears_within_one_heartbeat`, and `a_reader_ignores_an_unknown_capability`.
 - **Requirement 050-003** The palette MUST offer only the kinds whose capability is present, inside a body only the
-  body kinds, and never a legacy kind. *Acceptance:* the Studio unit test with a capability list that lacks
-  `workflow.structured-primitives` shows no loop in the palette; one with it shows `forEach`, `while` and
-  `repeatUntil`.
+  kinds of that body's scope, and never a legacy kind; each entry MUST say in words where it publishes in 0.3.0
+  (Technical Plan 4). A combination the codec refuses MUST be shown at its node, with the codec's reason, from the
+  editor's live validation, never from a rule written again in the Studio. *Acceptance:* the Studio unit test with a
+  capability list without `workflow.lake-writes` shows no `icebergWrite`; the journey that places an `approval` inside a
+  collection body shows the server's refusal at that node within the validation delay.
 - **Requirement 050-004** A draft that holds a node the palette would not offer (a legacy kind, or a kind whose
   capability is absent) MUST open with that node drawn, read-only, with the reason in words and the server's
-  problem; saving the draft MUST keep the node byte for byte. *Acceptance:* a draft with a `humanApproval` node opens,
-  saves and reloads unchanged; its problem list shows the server's message.
+  problem; saving the draft MUST keep the node equal under `canonical()` (`model/ir.ts`) and in its place among the
+  nodes. *Acceptance:* a draft with a `humanApproval` node opens, saves and reloads equal under `canonical()`, the node
+  in its place; its problem list shows the server's message.
 - **Requirement 050-005** A legacy node MAY be replaced through a dialog that fills the fields that map exactly
   (Technical Plan 4) and requires the author to fill every other required field before the replacement is made; the
   replacement MUST be one undoable edit. *Acceptance:* the dialog test replaces a `foreach` with a `forEach` whose
@@ -118,10 +131,11 @@ REST API to approve a step.
   (schema, initial value, Queries and Updates with their argument and result schemas), `inputSchema`, `limits` and
   `chainPolicy`. A field the server would refuse MUST show the server's problem at that field after `validate`.
   *Acceptance:* one component test per kind builds the node from the palette, fills it, validates it against the
-  test server and publishes it where its capability is on.
+  test server and, in a shape of the publishable subset (Technical Plan 4), publishes it.
 - **Requirement 050-007** A body MUST be edited on a canvas of its own, opened from the loop node that names it, with
-  a breadcrumb back to the workflow; the body canvas MUST require exactly one `return` and offer only body kinds; a
-  body named by two loops MUST say so before it is changed. *Acceptance:* the editor test opens the body of a
+  a breadcrumb back to the workflow; the body canvas MUST require exactly one `return` and offer only the kinds of
+  `$defs/bodyNode`, each saying where it publishes in 0.3.0 (Technical Plan 4); a body named by two loops MUST say so
+  before it is changed. *Acceptance:* the editor test opens the body of a
   `forEach`, adds a step, and cannot save a body without its `return` without the problem shown.
 - **Requirement 050-008** The run view MUST group scoped instances under their loop or collection node (counts by
   status, a virtualized list of up to 10,000 iterations, the body graph of one chosen iteration), MUST show the case a
@@ -129,18 +143,23 @@ REST API to approve a step.
   with a recorded graph of a `forEach` of 500 items shows the counts, opens iteration 312 and shows its steps.
 - **Requirement 050-009** The run view MUST list the run's approval requests with their status and deadline, and let a
   person decide one when `youMayDecide` is true, with a decision key made per dialog and reused on retry, an optional
-  reason code, and the receipt shown; an ineligible person MUST see that they cannot decide, without the policy.
-  *Acceptance:* the journey `a_person_approves_a_step_from_the_run_view_and_the_run_moves_on`.
-- **Requirement 050-010** The server MUST list approval requests of a namespace (`GET /namespaces/{namespaceId}/approvals`)
-  under Architecture decision 0144: filtered by status, ordered by deadline, each item with `youMayDecide`, the filter
-  `decidable=true`, nothing of the policy, a bounded scan per page. *Acceptance:* the property test
-  `inbox_eligibility_equals_the_decision_rule`, the contract test that no field names a policy member, the
-  cross-tenant battery entry, and the integration test that a page stops at the scan bound and continues from its
-  cursor.
-- **Requirement 050-011** The server MUST list the open publication requests of a namespace
-  (`GET /namespaces/{namespaceId}/publication-requests`), each with `youMayDecide` computed by the rule of Architecture
-  decision 0018 decision 4 (`publication:approve`, not the requester, not the last editor of the draft).
-  *Acceptance:* integration tests for the requester, the last editor, an approver and a viewer.
+  reason code, and the receipt shown; an ineligible person MUST see that they cannot decide, without the policy. The
+  flag comes from the approvals list filtered by `runId` (Requirement 050-010). *Acceptance:* the journey
+  `a_person_approves_a_step_from_the_run_view_and_the_run_moves_on`.
+- **Requirement 050-010** The server MUST list the pending approval requests of a namespace
+  (`GET /namespaces/{namespaceId}/approvals`) under Architecture decision 0144: ordered by deadline, optionally
+  filtered by `workflowId` or `runId` (the latter served by the run's index, outside the deadline scan), each item with
+  `youMayDecide` computed by `ApprovalRequest::may_decide` on the caller's current principal, the filter
+  `decidable=true`, nothing of the policy, a bounded scan per page. An approval pending on a run that has ended is not
+  decidable. Settled approvals stay on the per-run list and in the audit log. *Acceptance:* the property test
+  `may_decide_equals_decide` (domain), the contract test that no field names a policy member, the cross-tenant battery
+  entry, and the integration test that a page stops at the scan bound and continues from its cursor.
+- **Requirement 050-011** The server MUST list the `PENDING` publication requests of a namespace
+  (`GET /namespaces/{namespaceId}/publication-requests`), each with `youMayDecide` computed by
+  `PublicationRequest::may_decide` with the three clauses of Architecture decision 0018 decision 4 (not the requester,
+  not the last editor of the draft, not a person who already decided it) and `publication:approve` held.
+  *Acceptance:* integration tests for the requester, the last editor, an approver who already approved a request that
+  needs two approvals, another approver and a viewer.
 - **Requirement 050-012** The Studio MUST have an inbox ("Waiting for me") that lists, for the chosen namespace, the
   approvals and the publication requests the person may decide, most urgent first, and lets them decide from there;
   the page MUST refresh while open and show when it last did. *Acceptance:* the journey
@@ -148,16 +167,18 @@ REST API to approve a step.
 - **Requirement 050-013** The Studio MUST have an audit log page for holders of `audit:read`: the filters of
   `GET /audit`, an action picker from the build's closed list of audit actions, a record view with a link to the
   resource when its type has a page, and a download of the filtered records as JSON lines, at most 10,000 records,
-  saying when it stopped at that bound. *Acceptance:* the component tests of the page; the contract test that the
-  action list the Studio bundles equals `AuditAction` of `crates/domain/src/audit.rs`.
+  saying when it stopped at that bound. The action picker suggests the known actions and accepts any text, because the
+  Studio may be served from another build (Architecture decision 0016, `SAGAT_STUDIO_DIR`). *Acceptance:* the
+  component tests of the page; the test that the known actions of the OpenAPI `action` parameter equal `AuditAction`
+  of `crates/domain/src/audit.rs`.
 - **Requirement 050-014** The run view MUST let a person call the version's declared Queries and Updates (run- and
-  chain-addressed) with arguments checked as advice against `argsSchema` before sending, an Update key made per
-  dialog and reused on retry, an optional `expectedStateRevision`, and the result shown as Architecture decision 0031
+  chain-addressed) with JSON arguments (the server's `422` shown at its pointer; no schema validator in the browser,
+  Architecture decision 0016 decision 1), an Update key made per dialog and reused on retry, an optional `expectedStateRevision`, and the result shown as Architecture decision 0031
   discloses it. *Acceptance:* the journey `a_person_queries_then_updates_a_running_order`.
 - **Requirement 050-015** The run view MUST show the run's family: its parent, its children with their status (from
   the runtime graph's `childRunId`), and its continuation chain (`GET /namespaces/{namespaceId}/chains/{chainId}/runs`).
   *Acceptance:* the run view test with a parent, two children and a chain of three segments.
-- **Requirement 050-016** A workflow MUST have a versions page: the versions, the activation history, activate and
+- **Requirement 050-016** A workflow MUST have a versions page, grown from today's `VersionsPanel.tsx`: the versions, the activation history, activate and
   roll back with a reason and the version the person saw, promote to another namespace, the publication requests of
   the workflow with request, approve, reject, withdraw and publish, and the compensation plan of a version.
   *Acceptance:* the journey `a_person_rolls_back_a_version_and_the_history_says_who_and_why`.
@@ -177,8 +198,9 @@ REST API to approve a step.
   using only list routes the person may call. *Acceptance:* component tests; the palette never calls a route the
   person lacks the permission for.
 - **Requirement 050-021** The run view MUST offer a download of the run's journal as JSON lines, read through
-  `GET /runs/{runId}/events` page by page, carrying only what that route returns. *Acceptance:* the test that the
-  download equals the concatenated pages.
+  `GET /runs/{runId}/events` page by page at most two pages a second, carrying only what that route returns, kept as
+  raw page text (never parsed into objects) and bounded at 50,000 events or 32 MiB, saying when it stopped at the
+  bound. *Acceptance:* the test that the download equals the concatenated pages; the bound and pace tests.
 - **Requirement 050-022** Every new screen MUST be built from the Studio's interface module on Astryx (Architecture
   decision 0101): no raw control outside `src/ui/`, no literal colour, light, dark and forced colours, keyboard
   operation, a table or list alternative to every graph, state by text and shape as well as colour, and no sample
@@ -202,9 +224,11 @@ REST API to approve a step.
 
 ### Success criteria
 
-- **Success criterion 050-001** A person builds, publishes and runs, without leaving the Studio, a workflow with a
-  `switch`, an `approval`, a `forEach` over 500 items with a `filter` stage, and a `while`, then approves the step from
-  the inbox and follows the iterations to the end (the journey of Task 050-13).
+- **Success criterion 050-001** A person builds, publishes and runs, without leaving the Studio, three workflows in
+  shapes that publish in 0.3.0: a collection workflow (a `forEach` over 500 items with a `filter` stage, a body of an
+  activity and a `return`, then `end`), a loop workflow (a `while` over an activity body, then `end`), and a workflow
+  whose `switch` routes large amounts to an `approval`; approves the step from the inbox; and follows the 500
+  iterations to the end (the journey of Task 050-13).
 - **Success criterion 050-002** The registry test, the capability contract test and the inbox property test pass,
   and the schema drift test fails on a schema with an added kind.
 - **Success criterion 050-003** axe reports no serious or critical violation on every new page in light, dark and
@@ -270,10 +294,11 @@ decision 2026-11-24-4, each weighed over its options and recorded with its reaso
 - **Decision 050-005 — Publication requests join the inbox.** Options: approvals only; approvals and publication
   requests. Chosen: both, because both are "a person must decide before the work goes on", and the second needs only
   a list route over rows that exist.
-- **Decision 050-006 — Audit actions come from a contract file, not a route.** Options: a route that lists the
-  actions; free text; a contract file generated from `AuditAction` and bundled with the Studio. Chosen: the contract
-  file, checked by a test against the domain list. The Studio is served by the same build as the API (Architecture
-  decision 0016), so the bundled list is the server's list; a route would add a call and a permission for a constant.
+- **Decision 050-006 — The known audit actions are listed in the OpenAPI document.** Options: a route that lists the
+  actions; free text; a separate contract file bundled with the Studio; `x-known-values` on the `action` parameter of
+  `listAuditRecords`. Chosen: the OpenAPI list, held to `AuditAction::ALL` by a test, so `npm run check:api` keeps the
+  Studio current, with free text still accepted because the Studio may be served from another build (Architecture
+  decision 0016, `SAGAT_STUDIO_DIR`); settles Nit 15 of the architecture review of 2026-11-25.
 - **Decision 050-007 — The built languages come from the server.** Options: change the constant; a field on the
   scripts routes; a capability name per built language. Chosen: the capability names (`scripts.language.go` and the
   rest, from `Language::is_built`), so feature 023's new languages appear without a Studio change and without a second
@@ -281,7 +306,18 @@ decision 2026-11-24-4, each weighed over its options and recorded with its reaso
 - **Decision 050-008 — The journal download is client-side and bounded.** Options: a new export route; the existing
   `GET /runs/{runId}/events` read page by page. Chosen: the existing route, because it already applies the
   disclosure rules; design 044's `GET /runs/{runId}/history` (for replay) is a different document and is that
-  design's.
+  design's. The download is bounded and paced (Requirement 050-021).
+- **Decision 050-009 — The publishable subset is the codec's, shown by live validation.** Options: a capability per
+  primitive (the first draft; no such switch exists, Blocker 1 of the architecture review of 2026-11-25); placement
+  rules written again in the Studio; a placement table served by the server; the schema's scopes in the palette, a note
+  per kind, and the editor's existing live validation marking a refused combination at its node. Chosen: the last. The
+  subset is shape rules in `crates/infra-ir/src/convert.rs` (a chain ending at `end`, one to eight body steps, no bodies
+  with declared state), which a kind-by-scope table cannot express and a TypeScript copy would let drift (Architecture
+  decision 0016 rejected a second rule set in the browser); it widens during the release (feature 014, design 039), and
+  only the codec and its documents then change.
+- **Decision 050-010 — The namespace approvals list holds pending approvals only.** Options: every status ordered by
+  deadline (an unbounded sort of settled rows); a second index by `settled_at`; pending only. Chosen: pending only, the
+  inbox's purpose; settled approvals stay on the per-run list and in the audit log (Major 6 of the same review).
 
 ### Gaps
 
@@ -301,15 +337,17 @@ of Architecture decisions 0101, 0143 and 0144 and the settlement of review findi
 
 ## Critical User Journeys (CUJs)
 
-### CUJ 1: An author builds a loop with an approval (User story 050-01)
+### CUJ 1: An author builds a collection and an approval (User story 050-01)
 
-*   **Given**: a namespace on a server whose `GET /version` lists `workflow.structured-primitives` and
-    `workflow.collection-operators`, and an author with `definition:write` and `definition:publish`.
-*   **When**: she adds a `forEach` over `input.lines` with a `filter` stage, opens its body, adds a step and a `return`,
-    adds a `switch` after the loop with two cases and a default, an `approval` on the large-amount case for the role
-    `operator`, validates and publishes.
+*   **Given**: a namespace on a server whose `GET /version` lists `workflow.collection-operators`, and an author with
+    `definition:write` and `definition:publish`.
+*   **When**: she builds `refund-lines`: a `forEach` over `input.lines` with a `filter` stage, whose body has a step
+    and a `return`, then `end`; then `refund-approval`: a `switch` with two cases and a default, an `approval` on the
+    large-amount case for the role `operator`; she tries to drop an `approval` into the collection body.
 *   **Then**: each node is edited through its own fields; the body canvas refuses to save without its `return`; the
-    server's problems appear on their fields; the version is published.
+    `approval` in the body is marked at the node with the server's reason ("approvals inside collection and loop
+    bodies wait for scoped compensation") within the validation delay; once she removes it, both workflows validate
+    and publish.
 
 ### CUJ 2: An old draft with a legacy node (User story 050-01)
 
@@ -330,10 +368,12 @@ of Architecture decisions 0101, 0143 and 0144 and the settlement of review findi
 
 ### CUJ 4: An operator follows a large collection (User story 050-03)
 
-*   **Given**: a run of a `forEach` over 2,000 items, 12 of which failed, and a declared Query `progress`.
-*   **When**: the operator opens the run.
-*   **Then**: the loop node shows 1,988 succeeded and 12 failed; the iteration list filters to the failed ones; one
-    opens with its body graph and its failure; the Queries panel calls `progress` and shows its declared result.
+*   **Given**: a run of a collection workflow over 2,000 items, 12 of which failed, and a run of an `order` workflow
+    (no bodies) whose declared state has the Query `progress`.
+*   **When**: the operator opens the first run, then the second.
+*   **Then**: the collection node shows 1,988 succeeded and 12 failed; the iteration list filters to the failed ones;
+    one opens with its body graph and its failure; on the second run the Queries panel calls `progress` and shows its
+    declared result.
 
 ### CUJ 5: An administrator investigates a change (User story 050-04)
 
@@ -364,53 +404,77 @@ Order of the open Studio work, so that no two branches rewrite the same folder a
 
 1. Pull request #267 (Astryx) merges first.
 2. `feature/022-studio-flow-control` rebases on it and merges (concurrency and rate-limit fields, `FlowControlFields`
-   in `features/workflows`, run gates in `features/runs`).
-3. Design 050's editor slice (Technical Plan 4 and 5: `model/registry.ts`, `features/workflows/`), then its run and
-   operations slices.
-4. Feature 028's extraction of the graph model into `frontend/packages/workflow-graph` starts after the editor slice
+   in `features/workflows`, run gates in `features/runs`). Its registry entries use `runs: boolean` today; they move to
+   `capability` and `scope` in design 050's editor slice, by whichever branch merges second.
+3. Feature 041's Studio task (the Logs tab in `RunDetailPage.tsx` and `NodePanel.tsx`) merges before design 050's run
+   slice, which rebases on it.
+4. Design 050's editor slice (Technical Plan 4: `model/registry.ts`, `features/workflows/`), then its run slice
+   (`features/runs/`, `model/runGraph.ts`), then its operations slices.
+5. Feature 026's approval fields go on 050's approval inspector after the editor slice. Design 044's Task 044-23 (the
+   run view of code runs and the open runs per digest) follows 050's run and versions slices and adds its column to
+   050's versions page, which 050 owns.
+6. Feature 028's extraction of the graph model into `frontend/packages/workflow-graph` starts after the editor slice
    has merged; feature 029's folder tree touches the list pages, which this design does not change.
+7. Feature 029's `x-access` with `discloses` and its `visibleFolders` filter on the two new list routes are added by
+   whichever of 050's server slice and 029's slice 0 merges second.
 
 ### 2. Ownership: what this design builds and what it leaves
 
 | Surface | Built by | Note |
 |---|---|---|
 | Node kinds of the schema, bodies, declared state, limits | 050 | the registry is the extension point for 022, 026, 044 |
-| Concurrency and rate-limit fields, gate badges in a run | 022 (its branch) | joins the registry with capability `workflow.flow-control` |
+| Concurrency and rate-limit fields, gate badges in a run | 022 (its branch) | joins the registry with the capabilities `workflow.flow-control.concurrency` and `workflow.flow-control.rate` |
 | Approval form, summary, notify; decision page from a link | 026 | on 050's approval inspector |
 | Inbox, audit page, versions page, settings page, event health, palette | 050 | |
 | Run list query, saved views | 020 | the run list keeps its filters until then |
 | Step logs tab | 041 | |
-| Code runs | 044 | drawn with the same node pictures, marked `Code-orchestrated` |
+| Code runs; the open runs per code digest on the versions page | 044 (Task 044-23) | drawn with the same node pictures, marked `Code-orchestrated`; a column of 050's versions page |
 
 ### 3. Capabilities
 
-`PlatformVersion` gains `capabilities: string[]`, at most 64 names, each from the closed list below (additive: a later
-feature adds a name to this table and to the OpenAPI enumeration):
+`PlatformVersion` gains `capabilities`, a list of strings matching `^[a-z]+(\.[a-z0-9-]+)+$`, at most 128. The names
+are deployment-wide: `GET /version` answers the same list to every tenant. A reader MUST ignore a name it does not
+know; the OpenAPI document lists the known names under `x-known-values` of the field, never as an `enum`, so a new name
+is not a breaking change (`docs/engineering/architecture-principles.md`: readers tolerate what they do not know). A
+response without the field comes from a server older than 0.3.0; the Studio then treats every name as absent.
 
-| Name | Present when | Owner |
-|---|---|---|
-| `workflow.structured-primitives` | publication accepts `forEach`, `while`, `repeatUntil`, `return` and `continueAsNew` (the runtime enables them; feature 014) | 014 |
-| `workflow.collection-operators` | the deployment's collection-operators switch is on (design 042) | 042 |
-| `workflow.lake-writes` | `lake.enabled` (feature 035) | 035 |
-| `workflow.step-destinations` | step-output destinations publish (feature 035) | 035 |
-| `workflow.flow-control` | concurrency and rate limits publish (feature 022) | 022 |
-| `workflow.reset-reapply` | the `resetReapply` capability of feature 018 | 018 |
-| `apps.runtime`, `apps.embedding`, `apps.custom-components` | feature 027's switches | 027 |
-| `testing.virtual-clock` | only on the test server of feature 028 | 028 |
-| `access.custom-roles`, `access.folders.<kind>`, `access.restricted.<kind>`, `access.operation-lists` | feature 029's gates per item kind | 029 |
-| `identity.federation`, `identity.scim` | design 013's switches | 013 |
-| `scripts.language.<id>` (`typescript`, `python`, `csharp`, `go`, `java`, and feature 023's) | `Language::is_built` holds for the language in this build | 005, 023 |
+The known names in 0.3.0, each with the source that turns it on:
 
-The list is computed per process from the composition root's configuration and the instance registry's recorded
-requirements (Architecture decision 0082) where a feature uses one; it is cached for the life of the process and is
-never read from a request. `apps/control-plane` builds it; `crates/api-http/src/routes/identity.rs` serves it.
+| Name | Present when | Source | Owner |
+|---|---|---|---|
+| `workflow.collection-operators` | the deployment's collection-operators switch is on (design 042) | configuration | 042 |
+| `workflow.lake-writes` | `lake.enabled` (feature 035) | configuration | 035 |
+| `workflow.step-destinations` | step-output destinations publish (feature 035) | configuration | 035 |
+| `workflow.flow-control.concurrency`, `workflow.flow-control.rate` | the operator activated `flow-control-concurrency-v1` or `flow-control-rate-v1` | instance registry | 022 |
+| `workflow.reset-reapply` | the `resetReapply` capability of feature 018 | configuration | 018 |
+| `apps.runtime`, `apps.embedding`, `apps.custom-components`, `apps.operation-bindings` | feature 027's switches and origins | configuration | 027 |
+| `testing.virtual-clock`, `testing.history-replay` | only on the test server of feature 028 | composition root | 028 |
+| `access.custom-roles`, `access.groups`, `access.external-groups` | feature 029's gates (external groups with design 013's sources) | configuration | 029, 013 |
+| `access.folders.workflow`, `access.folders.script`, `access.folders.connection`, `access.folders.app` | feature 029's open-folder gate for that item kind | configuration | 029 |
+| `access.restricted.workflow`, `access.restricted.run`, `access.restricted.script`, `access.restricted.connection`, `access.operation-lists` | feature 029's gate for that kind and the operator's activation of `access-narrowing-v1` | instance registry | 029 |
+| `identity.federation`, `identity.scim` | design 013's switches | configuration | 013 |
+| `scripts.language.typescript`, `scripts.language.python`, `scripts.language.csharp`, `scripts.language.go`, `scripts.language.java` (feature 023 adds `bash`, `powershell`, `php`, `rust`) | `Language::is_built` holds for the language in this build | build | 005, 023 |
+
+The loops and `continueAsNew` need no name: publication accepts them in the shapes of Technical Plan 4 on every 0.3.0
+server.
+
+**Where it lives.** `crates/application/src/capabilities.rs` holds a typed `PlatformCapability` enumeration with
+`as_str`, the closed source of the names; a feature adds a variant and its table row. Names from configuration, the
+build and the composition root are computed once at start-up by `apps/control-plane`. Names from the instance registry
+are derived from the set of activated requirements the process already re-reads on each heartbeat (Architecture
+decision 0082 decision 4), through one table that maps each registry `Capability` (`*-v1`) to its name, held by a test
+that every registry capability that gates a client-visible behaviour has a row. So an operator's activation shows in
+`GET /version` within one heartbeat, without a restart. `crates/api-http/src/routes/identity.rs` serves the union.
 
 ### 4. The registry and the editor
 
-`model/registry.ts` keeps one entry per kind, with `capability`, `scope` (`root`, `body` or both), fields and
-handles. `registry.test.ts` reads `workflow.schema.json` (already copied into the Studio's tests for validation) and
-asserts: every `oneOf` member of `$defs/node` and `$defs/bodyNode` has one entry with the right scope; every required
-property of the member is a field or a handle; no entry names a kind outside the schema.
+`model/registry.ts` keeps one entry per `type` constant, with `capability`, its scopes (`root`, `body` or both), its
+fields and handles per scope (a root `activity` and a body `activity` are different schema members with different
+required fields), and a one-line note of where it publishes in 0.3.0. `registry.test.ts` reads
+`specs/001-platform-foundation/contracts/workflow.schema.json` (imported by path in the test, not copied) and asserts:
+every `type` constant of the members of `$defs/node` and `$defs/bodyNode` has one entry with exactly those scopes;
+every required property of the member of each scope is a field or a handle of that scope; no entry names a kind
+outside the schema.
 
 New entries (fields follow the schema; a duration is the existing duration field; an expression the existing
 expression field):
@@ -419,12 +483,29 @@ expression field):
 |---|---|---|---|
 | `switch` | ordered cases (`id`, `when`), up to 32 | one per case, `default` | none |
 | `approval` | `policy.subjects`, `policy.roles` (admin, developer, operator), `policy.excludeInitiator` (default true), `timeoutMs` | `onApprove`, `onReject`, `onExpire`, `onError` | none |
-| `forEach` | `items`, `operators` (stage list: filter, map, flatMap, skip, take, distinct, window), `body` (a body name), `result`, `maxItems` (1 to 10,000), `maxConcurrency` (1 to 256), `timeoutMs` | `next`, `onError` | `workflow.structured-primitives`; the stage list needs `workflow.collection-operators` |
-| `while`, `repeatUntil` | `condition`, `body`, `initial`, `carry`, `maxIterations` (1 to 10,000), `delayMs`, `timeoutMs` | `next`, `onError` | `workflow.structured-primitives` |
-| `return` (body only) | `result` | none | `workflow.structured-primitives` |
-| `continueAsNew` | `input`, `state` | none | `workflow.structured-primitives` |
+| `forEach` | `items`, `operators` (stage list: filter, map, flatMap, skip, take, distinct, window), `body` (a body name), `result`, `maxItems` (1 to 10,000), `maxConcurrency` (1 to 256), `timeoutMs` | `next`, `onError` | none; the stage list needs `workflow.collection-operators` |
+| `while`, `repeatUntil` | `condition`, `body`, `initial`, `carry`, `maxIterations` (1 to 10,000), `delayMs`, `timeoutMs` | `next`, `onError` | none |
+| `return` (body only) | `result` | none | none |
+| `continueAsNew` | `input`, `state` | none | none |
 | `icebergWrite` | the fields of `$defs/icebergWrite`, with the connection picker of the database node | `next`, `onError` | `workflow.lake-writes` |
 | `database` | exists (`DatabaseFields`) | | none |
+
+**The publishable subset of 0.3.0.** The schema allows more than publication accepts. On `develop` at 2026-11-24
+(`crates/infra-ir/src/lib.rs`, `published_definition`; `crates/infra-ir/src/convert.rs`;
+`docs/runbooks/workflow-primitives.md`):
+
+| Shape | Publishes | Refused |
+|---|---|---|
+| Basic graph | activity, database, script, condition, parallel, timer, waitEvent, child, saga, switch, approval, end, and `icebergWrite` with lake writes on | an approval or a loop combined with a collection |
+| Collection workflow | source activities, then a chain of `forEach` nodes ending at `end`; a body of one to eight activities, conditions, switches, timers and event waits with local routes and one `return` | triggers, `chainPolicy`, an approval in a body, `while`, `repeatUntil`, `continueAsNew` beside a collection |
+| Loop workflow | a chain of `while` or `repeatUntil` nodes ending at `end`, recovery activities; a body that is an activity chain | an activity after a loop's success edge, triggers, an approval in a body |
+| Declared state | `state` with Queries and Updates; `continueAsNew` with `chainPolicy` in the continuation shape | `bodies` with `state` |
+
+The Studio writes this table nowhere as a rule: it shows each kind's note in the palette, and the editor's live
+validation (the existing `useValidation`, which asks `validate` after a quiet delay) marks a refused combination at its
+node with the codec's reason. As feature 014's remaining tasks and design 039 widen the subset during the release, the
+codec changes and the Studio needs no change; the notes and this table are corrected in the same delivery as the codec
+(documentation first).
 
 The workflow settings panel (`WorkflowSettings.tsx`) gains `inputSchema` (a JSON editor with the subset of design 043
 explained, the server's problems by pointer), `state` (schema, initial value, a table of Queries and Updates, each with
@@ -433,17 +514,19 @@ its argument schema, result schema, expression, and for an Update its `validate`
 
 **Bodies.** The document's `bodies` map is listed in a side panel. A loop's `body` field picks a body by name or
 creates one. Opening a body replaces the canvas with the body's graph and shows a breadcrumb (`orders` › `lines`
-body); the palette switches to body kinds. The body canvas shows a problem until it has exactly one `return`. When two
+body); the palette switches to the kinds of `$defs/bodyNode`, each with its note. The body canvas shows a problem until
+it has exactly one `return`. When two
 loops name the same body, the panel says so and editing it asks for confirmation once per session.
 
 **Legacy and disabled kinds.** A node of a kind without a registry entry, of a legacy kind, or of a kind whose
 capability is absent is drawn with the generic node card, read-only, with a reason: "The platform no longer runs this
-kind of node" (legacy) or "This server does not enable this kind of node" (capability). The draft keeps it byte for
-byte (the editor's canonical form leaves unknown members alone). The replacement dialog maps exactly:
+kind of node" (legacy) or "This server does not enable this kind of node" (capability). The draft keeps it equal under
+`canonical()` and in its place among the nodes (`documentIO.ts` changes from appending unreadable entries after the
+known nodes to keeping each at its index). The replacement dialog maps what maps exactly and asks for the rest:
 
 | From | To | Mapped | Asked |
 |---|---|---|---|
-| `foreach` | `forEach` | `collectionExpr` → `items`; `body`; `maxItems`; `maxConcurrency` (1 when absent); `next`; `onError` | `result`; `body` must name a body (the legacy node named a node) |
+| `foreach` | `forEach` | `collectionExpr` → `items`; `maxItems` and `maxConcurrency` when within 1 to 10,000 and 1 to 256 (`maxConcurrency` 1 when absent); `next`; `onError` | `result`; `body` (the legacy node named a node, the new one names a body); a `maxItems` or `maxConcurrency` out of range, shown with the old value |
 | `humanApproval` | `approval` | `timeoutMs`; `onTimeout` → `onExpire`; `next` → `onApprove` | `policy` (`approverPolicy` is free text with no exact meaning); `onReject` |
 
 `itemKeyExpr` and `formSchema` have no executable counterpart and are listed as dropped in the dialog before the author
@@ -451,50 +534,56 @@ confirms.
 
 ### 5. The run view
 
-- **Iterations.** `features/runs/runGraph.ts` groups `RuntimeNode`s with an `instancePath` under their outermost
-  scope node. The loop card shows counts by status. Choosing it opens the iteration strip: a virtualized list (index,
-  status, failure code) filterable by status; choosing an iteration draws its body graph with that iteration's
-  statuses. Nested scopes (feature 039) nest the same way.
+- **Iterations.** `model/runGraph.ts` (it exists today) gains the grouping of `RuntimeNode`s with an `instancePath`
+  under their outermost scope node. The collection or loop card shows counts by status. Choosing it opens the iteration
+  strip: a virtualized list (index, status, failure code) filterable by status; choosing an iteration draws its body
+  graph with that iteration's statuses. Nested scopes (design 039) nest the same way.
 - **Switch.** The card of a `switch` shows the chosen case id or "default" from `switchSelection`; `UNKNOWN` shows
   "an unknown case was recorded" and the id.
-- **Approvals.** A run's approvals come from `GET /runs/{runId}/approvals` and, for `youMayDecide`, from the inbox
-  route filtered to the run. The decide dialog makes a decision key (a random 128-bit value printed as hex) per open
-  dialog and reuses it on retry; it shows the receipt (`replayed` when a retry found the first answer).
+- **Approvals.** A run's approvals come from `GET /runs/{runId}/approvals`, and `youMayDecide` from
+  `GET /namespaces/{namespaceId}/approvals?runId=` (Technical Plan 6). The decide dialog makes a decision key (a random
+  128-bit value printed as hex) per open dialog and reuses it on retry; it shows the receipt (`replayed` when a retry
+  found the first answer).
 - **Queries and Updates.** The pinned version's `state.queries` and `state.updates` (from `GET /workflows/{id}/versions/{n}`)
-  list the operations. A JSON argument editor checks `argsSchema` in the browser with the validator the editor
-  already uses, as advice; the server's `422` shows by pointer. An Update makes its `updateKey` per dialog, like a
-  decision key. Results are shown as returned; a run whose role lacks `run:query` or `run:update` sees the panel
+  list the operations. A JSON argument editor sends the arguments; the server's `422` shows at its pointer. No schema
+  validator runs in the browser (Architecture decision 0016 decision 1). An Update makes its `updateKey` per dialog,
+  like a decision key. Results are shown as returned; a person who lacks `run:query` or `run:update` sees the panel
   unavailable with the reason.
 - **Family.** Parent (from the run), children (from `childRunId` of the graph's `child` nodes and their run status),
   chain (from the chain route when the run has a chain).
-- **Download.** "Download events" reads `GET /runs/{runId}/events` until its last page and saves JSON lines.
+- **Download.** "Download events" reads `GET /runs/{runId}/events` at most two pages a second, keeps each page's raw
+  text as a part of the file being built (never parsed into objects), stops at 50,000 events or 32 MiB and says so, and
+  saves JSON lines.
 
 ### 6. The inbox
 
-**Server.** `GET /namespaces/{namespaceId}/approvals?status=PENDING&decidable=true|false&workflowId=&cursor=&limit=`
-needs `run:read` and `approval:read`. The use case lives in `crates/application/src/approval_inbox.rs`; the query in
-`crates/infra-postgres/src/approval_inbox.rs` reads `approval_requests` joined to `runs` and `workflows` for the
-workflow's name and the run's business identifier.
-
-```sql
--- the predicate of youMayDecide, generated from ApprovalPolicy::admits
-($caller_holds_decide
- AND ($subject = ANY(policy_subjects) OR $role = ANY(policy_roles))
- AND NOT (exclude_initiator AND initiator = $subject))
-```
-
-`crates/domain/src/execution/approval.rs` exposes `ApprovalPolicy::admits(subject, role, initiator)`, which
-`authorize_decision` already does inline; the SQL text lives beside it as a constant, and the property test generates
-policies, subjects, roles and initiators and compares the two. A migration adds
+**Server, approvals.** `GET /namespaces/{namespaceId}/approvals?decidable=true|false&workflowId=&runId=&cursor=&limit=`
+lists pending approvals only and needs `run:read` and `approval:read`. The rule stays where it is:
+`crates/domain/src/execution/approval.rs` gains `ApprovalRequest::may_decide(&Principal) -> bool`, extracted from
+`authorize_decision` (tenant, `approval:decide`, the policy snapshot's subjects and roles, the initiator exclusion), and
+`decide` calls it; an approval whose run has ended is not decidable, as the decision path refuses it. The adapter
+(`crates/infra-postgres/src/approval_inbox.rs`) returns a bounded page of pending rows in key order, with their policy
+snapshots and the run's status, joined to `workflows` for the name and to the run for its business identifier; the use
+case (`crates/application/src/approval_inbox.rs`) builds the caller's principal from the current membership (as the
+decision does) and computes `youMayDecide` with `may_decide`, then drops the undecidable rows when `decidable=true`. No
+SQL predicate repeats the rule; the snapshots never leave the use case. A page reads at most 2,000 rows; when
+`decidable=true` drops most of them it returns what it found with a cursor (Architecture decision 0144, decision 5). A
+`runId` filter reads the run's own index (`approval_requests_run_idx`) and is outside the deadline scan. A migration adds
 `approval_requests_pending_deadline_idx ON approval_requests (tenant_id, namespace_id, deadline, request_id) WHERE
-status = 'PENDING'`. A page reads at most 2,000 rows in key order; when `decidable=true` filters most of them away it
-returns what it found with a cursor (Architecture decision 0144, decision 5). Items: `approvalId`, `runId`,
-`workflowId`, `workflowName`, `businessId`, `nodeId`, `instancePath`, `status`, `deadline`, `openedAt`, `settledAt`,
-`youMayDecide`, `summaryAvailable` (false until feature 026). No policy member, initiator, decider or reason.
+status = 'PENDING'`; its `down` drops it; the table has one row per approval ever opened, and the migration test
+records the build time on the test data set. Items: `approvalId`, `runId`, `workflowId`, `workflowName`, `businessId`,
+`nodeId`, `instancePath`, `status`, `deadline`, `openedAt`, `youMayDecide`. No policy member, initiator, decider or
+reason. Feature 026 adds its summary flag additively when it builds the summary.
 
-`GET /namespaces/{namespaceId}/publication-requests?status=OPEN&decidable=&cursor=&limit=` needs `definition:read`;
-`youMayDecide` is `publication:approve` held, the caller is neither the requester nor the last editor (the rule of
-`crates/application/src/publishing.rs`, exposed and reused the same way).
+**Server, publication requests.** `GET /namespaces/{namespaceId}/publication-requests?decidable=&workflowId=&cursor=&limit=`
+lists `PENDING` requests only and needs `definition:read`. `crates/domain/src/versioning.rs` gains
+`PublicationRequest::may_decide(&Subject) -> bool` with the three clauses of Architecture decision 0018 decision 4 (not
+the requester, not the last editor, not a person who already decided it), which `decide` calls; the use case adds
+`publication:approve`.
+
+**Metrics.** `approval_inbox_requests_total{outcome}` and `publication_inbox_requests_total{outcome}` (`outcome` in
+`ok`, `denied`, `invalid`, `unavailable`), `approval_inbox_rows_scanned` (a histogram); no tenant, namespace, workflow
+or subject label.
 
 **Studio.** `features/inbox/`: two tabs, approvals and publication requests, the decidable ones first, deadline
 ascending, "time left" in words and as a number, refreshed every 30 seconds while the tab is visible, the time of the
@@ -504,16 +593,20 @@ of an error.
 ### 7. The audit page
 
 `features/audit/` at the tenant level (beside `namespaces`), shown in the navigation only with `audit:read`. Filters:
-action (picker over the bundled list), resource type and id, actor, from and to. The table shows time, actor, action,
+action (a picker that suggests the known actions and accepts any text), resource type and id, actor, from and to. The table shows time, actor, action,
 resource and reason; a record view adds the trace link (the existing `TraceLink`). A resource link is made for the
 types that have a page (run, workflow, schedule, script, connection, namespace). The download reads pages until 10,000
-records or the end and saves JSON lines, saying which. `specs/008-observability-operations/contracts/audit-actions.json`
-holds the closed list; `crates/domain/src/audit.rs` gains `AuditAction::ALL` and a test that compares it with the file. The server already
-records each reading (`audit.read`, collapsing within five minutes).
+records or the end and saves JSON lines, saying which. The known actions are listed under `x-known-values` of the
+`action` parameter of `listAuditRecords` in `openapi.yaml`, so `npm run check:api` keeps the Studio's types current;
+`crates/domain/src/audit.rs` gains `AuditAction::ALL`, an exhaustive `match` that fails to compile when a variant is
+added without being listed, and a test that `ALL` equals the OpenAPI list. The server already records each reading
+(`audit.read`, collapsing within five minutes).
 
 ### 8. Versions, settings, events, scripts, palette
 
-- **Versions** (`features/versions/`, route `workflows/:workflowId/versions`): versions list, activation history
+- **Versions** (grown from `features/workflows/VersionsPanel.tsx`, which already lists, shows and compares versions,
+  into a page at route `workflows/:workflowId/versions`; design 044's Task 044-23 adds its column of open runs per code
+  digest): versions list, activation history
   (`GET /workflows/{id}/activations`), activate or roll back (`PUT /workflows/{id}/active-version` with reason and the
   version seen), promote (`POST .../versions/{n}/promote`, destination picker, missing names shown), publication
   requests of the workflow, compensation plan (`GET .../versions/{n}/compensation-plans`) drawn as the reverse-order
@@ -533,10 +626,13 @@ records each reading (`audit.read`, collapsing within five minutes).
 
 ### 9. Contracts and documents
 
-- `specs/001-platform-foundation/contracts/openapi.yaml`: `PlatformVersion.capabilities` with the closed enumeration;
-  the two list operations with their schemas, errors and `x-implemented: '050'`; `frontend/apps/studio/src/api/schema.d.ts`
-  regenerated.
-- `specs/008-observability-operations/contracts/audit-actions.json` (new).
+- `specs/001-platform-foundation/contracts/openapi.yaml`: `PlatformVersion.capabilities` (strings with the pattern
+  and `x-known-values`); the two list operations with their schemas, errors and `x-implemented: '050'`; the known
+  values of the audit `action` parameter; `frontend/apps/studio/src/api/schema.d.ts` regenerated; the OpenAPI
+  compatibility baseline of `tests/contract/` updated after reading its diff.
+- `docs/engineering/architecture-principles.md`: four rows with their checks (the registry against the schema; the
+  capability names against `PlatformCapability` and the registry mapping; `may_decide` against `decide` for approvals
+  and publication requests; `AuditAction::ALL` against the OpenAPI list).
 - `docs/runbooks/studio.md`: the inbox, the audit page, the capability list and how an operator reads it.
 - `specs/007-workflow-studio/design/README.md`: the new screens.
 
@@ -557,7 +653,7 @@ records each reading (`audit.read`, collapsing within five minutes).
 | Principle | Result | Evidence |
 |---|---|---|
 | I. State and retry semantics are explicit and durable | Pass | No new state transition: decisions, updates, activations and redrives use the existing operations and their transactions; the new routes only read |
-| II. Modular domain, ports and adapters | Pass | The eligibility rule stays in the domain (`ApprovalPolicy::admits`), the use case in `application`, SQL in `infra-postgres`; no new dependency edge |
+| II. Modular domain, ports and adapters | Pass | The eligibility rules stay in the domain (`ApprovalRequest::may_decide`, `PublicationRequest::may_decide`) and their decision paths call them; the use cases in `application` filter with them; the adapter only reads bounded pages; the capability names are a typed enumeration in `application`; no new dependency edge |
 | III. External effects are at-least-once; sagas compensate | n/a | No external effect is added |
 | IV. Compatibility is versioned and pinned | Pass | Additive REST fields and routes; the Studio draws the IR and keeps nodes it cannot run; no IR change |
 | V. Code, tenant boundary and secrets are isolated | Pass | Both routes take the tenant from the principal and answer another tenant's namespace as missing (battery); nothing of a policy, a payload or a secret leaves; no token in a URL or storage |
@@ -611,34 +707,44 @@ goes with the server builder. A new primitive goes in a new file of `src/ui/`.
   Verification: the budget test fails on an entry script 11% larger; the quickstart names the journey's result and
   environment.
   Refs: Requirement 050-022
-- [ ] T050-2 Contracts and documents: `PlatformVersion.capabilities` and its enumeration, the two list operations, their
-  schemas and errors in `openapi.yaml`; `schema.d.ts` regenerated; `audit-actions.json`; `docs/runbooks/studio.md`;
-  the screen list in `specs/007-workflow-studio/design/README.md`.
+- [ ] T050-2 Contracts and documents: `PlatformVersion.capabilities` (pattern and `x-known-values`), the two list
+  operations, their schemas and errors, the known audit actions in `openapi.yaml`; the compatibility baseline; the four
+  rows of `docs/engineering/architecture-principles.md`; `schema.d.ts` regenerated; `docs/runbooks/studio.md`, with the
+  publishable subset of Technical Plan 4; the screen list in `specs/007-workflow-studio/design/README.md`.
   Verification: `contract_platform_foundation` (OpenAPI lint), `npm run check:api`; the docs checks.
   Refs: Requirement 050-002, Requirement 050-010, Requirement 050-011, Requirement 050-013
-- [ ] T050-3 The capability list in `apps/control-plane` and `crates/api-http/src/routes/identity.rs`.
-  Red tests: `capabilities_follow_the_switches_a_server_was_started_with`, `an_unknown_capability_name_is_not_served`.
+- [ ] T050-3 The capability list: `PlatformCapability` in `crates/application/src/capabilities.rs`, the static names
+  in `apps/control-plane`, the registry-derived names and their mapping table, the route in
+  `crates/api-http/src/routes/identity.rs`.
+  Red tests: `capabilities_follow_the_switches_a_server_was_started_with`,
+  `a_registry_activation_appears_within_one_heartbeat`, `every_gating_registry_capability_has_a_name`,
+  `a_reader_ignores_an_unknown_capability`.
   Refs: Requirement 050-002
-- [ ] T050-4 The approvals list: `ApprovalPolicy::admits` and its SQL constant (`crates/domain/src/execution/approval.rs`),
-  the use case (`crates/application/src/approval_inbox.rs`), the query and the migration with the partial index
-  (`crates/infra-postgres`), the route and its metrics (`crates/api-http`).
-  Red tests: `inbox_eligibility_equals_the_decision_rule` (property), `the_inbox_never_names_a_policy_member`,
+- [ ] T050-4 The approvals list: `ApprovalRequest::may_decide`, called by `decide` (`crates/domain/src/execution/approval.rs`),
+  the use case that filters with it (`crates/application/src/approval_inbox.rs`), the bounded page query, the `runId`
+  filter and the migration with the partial index and its `down` (`crates/infra-postgres`), the route and its metrics
+  (`crates/api-http`).
+  Red tests: `may_decide_equals_decide` (property, domain), `an_approval_on_an_ended_run_is_not_decidable`,
+  `the_inbox_never_names_a_policy_member`, `the_run_filter_reads_outside_the_deadline_scan`,
   `a_page_stops_at_the_scan_bound_and_continues`, `another_tenants_namespace_is_not_found` (battery),
   `the_runtime_role_can_read_the_inbox` (`SAGAT_TEST_AS_RUNTIME_ROLE=1`).
   Refs: Requirement 050-010
-- [ ] T050-5 The publication requests list with `youMayDecide` from the rule of `publishing.rs`.
-  Red tests: `the_requester_and_the_last_editor_may_not_decide`, `an_approver_may_decide`, battery entry.
+- [ ] T050-5 The publication requests list: `PublicationRequest::may_decide` with three clauses, called by `decide`
+  (`crates/domain/src/versioning.rs`); the use case with `publication:approve`; pending requests only.
+  Red tests: `the_requester_and_the_last_editor_may_not_decide`, `a_person_who_decided_may_not_decide_again`,
+  `an_approver_may_decide`, battery entry.
   Refs: Requirement 050-011
 - [ ] T050-6 The registry: capability and scope per entry, the new kinds of Technical Plan 4, the schema drift test,
   the palette filtered by capability, legacy and disabled kinds read-only.
   Red tests: `registry_matches_the_schema`, `a_schema_with_a_new_kind_fails_the_registry_test`,
-  `a_missing_capability_hides_the_loops`, `a_legacy_node_is_kept_byte_for_byte`.
+  `a_missing_capability_hides_the_lake_write`, `a_legacy_node_is_kept_in_place_under_canonical`.
   Refs: Requirement 050-001, Requirement 050-003, Requirement 050-004
 - [ ] T050-7 The inspectors of `switch`, `approval`, `forEach` (with the stage list), `while`, `repeatUntil`,
   `return`, `continueAsNew`, `icebergWrite`; the workflow settings for `inputSchema`, `state`, `limits` and
   `chainPolicy`; server problems at their fields; the replacement dialog for legacy nodes.
   Red tests: one component test per kind and per setting; `the_replacement_of_a_foreach_asks_for_its_result`;
-  `undo_restores_the_legacy_node`.
+  `an_out_of_range_maxitems_is_asked_with_the_old_value`; `undo_restores_the_legacy_node`;
+  `a_refused_combination_shows_the_codecs_reason_at_its_node`.
   Refs: Requirement 050-005, Requirement 050-006
 - [ ] T050-8 The body canvas: bodies panel, breadcrumb, body palette, exactly one `return`, shared-body confirmation.
   Red tests: `a_body_without_its_return_shows_the_problem`, `a_shared_body_asks_once_before_a_change`.
@@ -646,7 +752,8 @@ goes with the server builder. A new primitive goes in a new file of `src/ui/`.
 - [ ] T050-9 The run view: iterations grouped and virtualized, the switch selection, the approvals panel and decision,
   the Queries and Updates panel, the family, the journal download.
   Red tests: `iteration_312_of_500_shows_its_steps`, `an_unknown_switch_selection_says_so`,
-  `a_retried_decision_reuses_its_key`, `an_update_retry_reuses_its_key`, `the_download_equals_the_pages`.
+  `a_retried_decision_reuses_its_key`, `an_update_retry_reuses_its_key`, `the_download_equals_the_pages`,
+  `the_download_stops_at_its_bound_and_says_so`.
   Refs: Requirement 050-008, Requirement 050-009, Requirement 050-014, Requirement 050-015, Requirement 050-021
 - [ ] T050-10 The inbox page (`features/inbox/`).
   Red tests: `only_decidable_items_are_under_waiting_for_me`, `a_settled_item_shows_its_status_not_an_error`,
@@ -654,7 +761,7 @@ goes with the server builder. A new primitive goes in a new file of `src/ui/`.
   Refs: Requirement 050-012
 - [ ] T050-11 The audit page (`features/audit/`), `AuditAction::ALL` and the action list test in
   `crates/domain/src/audit.rs`.
-  Red tests: `the_bundled_actions_equal_the_domain_actions`, `the_download_stops_at_ten_thousand_and_says_so`,
+  Red tests: `the_openapi_actions_equal_the_domain_actions`, `the_download_stops_at_ten_thousand_and_says_so`,
   `the_page_is_absent_without_audit_read`.
   Refs: Requirement 050-013
 - [ ] T050-12 The versions page, the settings page, the events page, the built languages from the server, the command
@@ -679,9 +786,9 @@ None yet.
 
 - Unit: the registry drift test; the inspectors; the run graph grouping; the inbox, audit, versions, settings, events
   and palette components (`npm test`).
-- Property: `inbox_eligibility_equals_the_decision_rule` in `crates/domain`.
+- Property: `may_decide_equals_decide` for approvals and publication requests in `crates/domain`.
 - Integration (real PostgreSQL): the two list routes, their scan bound, their runtime-role privileges
-  (`SAGAT_TEST_AS_RUNTIME_ROLE=1`), in `integration_workflow_studio` or a new `integration_studio_catch_up` target.
+  (`SAGAT_TEST_AS_RUNTIME_ROLE=1`), the registry-derived capabilities, in a new target `integration_studio_catch_up`.
 - Contract: the OpenAPI lint, the capability list against the switches, the inbox schema without policy fields, the
   cross-tenant battery, the audit action list.
 - Journeys: `e2e_workflow_studio` with the new journeys; axe in light, dark and forced colours.

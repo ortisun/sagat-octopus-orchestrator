@@ -3,18 +3,20 @@
 **Status:** Proposed
 **Decided by:** agent proposal (design 050, 2026-11-24), for acceptance under Owner decision 2026-11-24-4 once the review of design 050 is complete
 **Refines / supersedes:** refines Architecture decision 0016 (the Studio is a same-origin application over the REST API) and Architecture decision 0032 (the workflow IR grows additively); supersedes research decisions Decision 145 and Gap 147 of feature 007 ("a node the schema accepts and the engine does not run yet" is shown in the palette, marked "does not run yet")
-**Enforced by:** planned in design 050 and not existing yet: `frontend/apps/studio/src/model/registry.test.ts` (every `oneOf` member of `$defs/node` and `$defs/bodyNode` of `specs/001-platform-foundation/contracts/workflow.schema.json` has exactly one registry entry, every registry entry names a schema member, and every required property of the member is either a field or a handle of the entry); `tests/contract/workflow-studio/capabilities.rs` (every capability name the server can advertise is in the closed list of `specs/001-platform-foundation/contracts/openapi.yaml`, and the list a test deployment advertises matches the switches it was started with); the Studio unit test that a kind whose capability is absent is not in the palette and that a document holding a refused kind opens read-only on that node
+**Enforced by:** planned in design 050 and not existing yet: `frontend/apps/studio/src/model/registry.test.ts` (every `type` constant of `$defs/node` and `$defs/bodyNode` of `specs/001-platform-foundation/contracts/workflow.schema.json` has exactly one registry entry with its scopes, every registry entry names a schema kind, and every required property of each scope's member is a field or a handle of the entry); `tests/contract/workflow-studio/capabilities.rs` (every variant of `PlatformCapability` is in the `x-known-values` of `openapi.yaml` and the reverse, the list a test deployment advertises matches the switches it was started with, a registry activation appears within one heartbeat, and a reader ignores an unknown name); the Studio unit test that a kind whose capability is absent is not in the palette and that a document holding a refused kind opens read-only on that node
 
 ## Context
 
 The Studio (feature 007) keeps its node kinds in a hand-written list, `frontend/apps/studio/src/model/registry.ts`. On
-`develop` at 2026-11-24 the list has eleven entries; the workflow schema has nineteen node kinds and fourteen body
+`develop` at 2026-11-24 the list has twelve entries; the workflow schema has nineteen node kinds and fourteen body
 kinds. The list offers two kinds the server refuses at publication (`foreach` and `humanApproval`:
-`crates/infra-ir/src/convert.rs` answers "legacy collection placeholder has no executable definition"), marked "does not
-run yet", and lacks `switch` and `approval`, which the server publishes and runs, and `forEach`, `while`,
-`repeatUntil`, `return`, `continueAsNew` and `icebergWrite`, which the server parses and publishes only when a runtime
-capability or a deployment switch is on (`unsupported` in the same file: "this workflow capability is not enabled by
-the runtime"; `lake.enabled` for `icebergWrite`; the collection-operators switch of design 042). Nothing tells the
+`crates/infra-ir/src/convert.rs` answers "legacy collection placeholder has no executable definition" and "legacy
+approval placeholder has no executable definition"), marked "does not run yet", and lacks `switch` and `approval`,
+which the server publishes and runs, and `forEach`, `while`, `repeatUntil`, `return`, `continueAsNew` and
+`icebergWrite`, which the server publishes only in fixed shapes or when a deployment switch is on (`unsupported` in the
+same file: "this workflow capability is not enabled by
+the runtime" in the basic path, while dedicated paths accept collections, loops and continuations in fixed shapes;
+`lake.enabled` for `icebergWrite`; the collection-operators switch of design 042). Nothing tells the
 Studio which of these a given server accepts, so the list was written for one moment of the server and drifted.
 
 Three more features add capabilities the Studio must follow in release 0.3.0: internal apps (027, the `apps`
@@ -25,15 +27,20 @@ additive `capabilities` list" to `PlatformVersion`, 029 adds "the additive `acce
 
 ## Decision
 
-1. The Studio MUST hold its node kinds in one registry that is checked against the workflow schema by a unit test:
-   every member of `$defs/node` and `$defs/bodyNode` has one entry, and no entry exists without a member. A new kind
-   in the schema fails the Studio's tests until it has an entry.
-2. `PlatformVersion` (`GET /version`) MUST carry `capabilities`, a list of names from one closed list in the
-   OpenAPI document, each name written `<area>.<capability>` (for example `workflow.structured-primitives`,
-   `workflow.collection-operators`, `workflow.lake-writes`, `apps.runtime`, `testing.virtual-clock`,
-   `access.restricted-folders.workflow`). A name is present when the replica that answers would accept the matching
-   publication or route; it is advice for a client, never an authorization. Every 0.3.0 feature that switches a
-   capability on or off adds its name to this list instead of a field of its own.
+1. The Studio MUST hold its node kinds in one registry that is checked against the workflow schema by a unit test: one
+   entry per `type` constant of the members of `$defs/node` and `$defs/bodyNode`, with its scopes and its required
+   fields per scope, and no entry without a member. A new kind or a changed required field in the schema fails the
+   Studio's tests until the registry follows.
+2. `PlatformVersion` (`GET /version`) MUST carry `capabilities`, a list of strings of the form `<area>.<capability>`
+   (for example `workflow.collection-operators`, `workflow.lake-writes`, `apps.runtime`, `testing.virtual-clock`,
+   `access.restricted.workflow`). The names MUST be deployment-wide, never per tenant. The OpenAPI document lists the
+   known names as `x-known-values`, never as an `enum`, and a reader MUST ignore a name it does not know; an absent field
+   means a server older than 0.3.0. A name is present when the replica that answers would accept the matching
+   publication or route; it is advice for a client, never an authorization. The names are the variants of one typed
+   enumeration in `crates/application`; names that follow an operator's activation in the instance registry
+   (Architecture decision 0082) MUST be derived from the activated requirements the process re-reads on each
+   heartbeat, through one tested mapping, so they appear within one heartbeat; the others are computed at start-up.
+   Every 0.3.0 feature that switches a capability on or off adds a name to this list instead of a field of its own.
 3. A registry entry MUST name the capability it needs, or none. The palette MUST NOT offer a kind whose capability is
    absent. A document that already holds such a node, or a node of a kind the server refuses at publication for good
    (`foreach`, `humanApproval`), MUST open with that node shown and read-only, with the reason in words and the server
@@ -41,8 +48,11 @@ additive `capabilities` list" to `PlatformVersion`, 029 adds "the additive `acce
 4. A refused legacy kind MAY be replaced through a dialog that fills the fields that map exactly to the executable
    kind (`foreach` to `forEach`, `humanApproval` to `approval`) and asks the author for every field that does not; the
    replacement is an ordinary edit of the draft, undoable, and published only by the author.
-5. The server stays the authority. Publication and `validate` decide; a capability shown by one replica and refused
-   by another during a rolling upgrade costs the author a validation problem, never a wrong publication.
+5. The server stays the authority. Publication and `validate` decide. The shapes publication accepts (the publishable
+   subset, narrower than the schema) are the codec's alone: the Studio MUST NOT write them again as rules; it shows a
+   note per kind and marks a refused combination at its node from the editor's live validation. A capability shown by
+   one replica and refused by another during a rolling upgrade costs the author a validation problem, never a wrong
+   publication.
 
 ## Considered options
 
@@ -72,6 +82,6 @@ additive `capabilities` list" to `PlatformVersion`, 029 adds "the additive `acce
 
 ## Evidence
 
-The drift is measured on `develop` at 2026-11-24 (design 050, The Problem): the registry has eleven entries against
-nineteen node kinds; two of the eleven are refused by `crates/infra-ir/src/convert.rs`. The planned tests are listed
+The drift is measured on `develop` at 2026-11-24 (design 050, The Problem): the registry has twelve entries against
+nineteen node kinds; two of the twelve are refused by `crates/infra-ir/src/convert.rs`. The planned tests are listed
 under **Enforced by**; none exists yet.
