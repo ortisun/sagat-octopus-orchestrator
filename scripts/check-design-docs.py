@@ -31,9 +31,11 @@ PROTECTED_RE = re.compile(r"^\s*(Refs|Owner-gate):")
 OD_ID_RE = re.compile(r"OD-[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]+")
 # Delegations whose rows count as the owner's, each with the release tag that ends it (docs/engineering/sdd-workflow.md,
 # "Who decides"). A row decided as "delegate (<id>)" is citable only for an id listed here, only if that id's own row is
-# the owner's, and, once the tag exists, only if the row first carried the delegation in a commit the tag contains.
+# the owner's, and, once the tag exists, only if the identical row is in docs/owner-decisions.md as the tag holds it.
 # A plain "delegate" row (Owner decision 2026-11-03-22) is never citable.
 DELEGATIONS = {"OD-2026-11-24-4": "v0.3.0"}
+# A tag every clone with the release tags has; in a pull request its absence means the tags were not fetched.
+TAGS_PRESENT = "v0.2.0"
 COUNTS_RE = re.compile(r"Counts: Blocker ([0-9]{1,4}), Major ([0-9]{1,4}), Nit ([0-9]{1,4})")
 SEMVER_RE = re.compile(r"[0-9]{1,6}\.[0-9]{1,6}\.[0-9]{1,6}")
 LOOSE_CHECKBOX_RE = re.compile(r"^\s*[-*+] \[[ xX]\]")
@@ -234,7 +236,8 @@ class Checker:
         self._base_ok = None
         self._hashes = None
         self._od = None
-        self._first_delegate = None
+        self._warned_tags = False
+        self.report_counts = {}
         self.agent_blobs = {}
         self.report_reviewers = {}
 
@@ -361,32 +364,26 @@ class Checker:
         delegated = re.fullmatch(r"delegate \((OD-[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]+)\)", matches[0]["Decided by"])
         if not delegated or delegated.group(1) not in DELEGATIONS or self.owner_row(delegated.group(1)) is None:
             return None
-        return matches[0] if self.recorded_before_end(row_id, matches[0]["Decided by"], delegated.group(1)) else None
+        return matches[0] if self.recorded_before_end(matches[0], delegated.group(1)) else None
 
-    def recorded_before_end(self, row_id, decided_by, delegation):
-        """True while the delegation's release is not tagged, or if the row first carried this delegation in a
-        commit that the release tag contains: acts taken during the delegation stay valid after it ends."""
-        code, tag = self.git("rev-parse", "--verify", "--quiet", f"refs/tags/{DELEGATIONS[delegation]}^{{commit}}")
+    def recorded_before_end(self, row, delegation):
+        """True while the delegation's release tag does not exist, or if the identical row is in docs/owner-decisions.md
+        as the tag holds it: acts recorded during the delegation stay valid after it, and any later edit of a row is
+        a new act. In a pull request the clone must have the release tags, so that a missing tag cannot keep the
+        delegation open."""
+        tag = DELEGATIONS[delegation]
+        code, commit = self.git("rev-parse", "--verify", "--quiet", f"refs/tags/{tag}^{{commit}}")
         if code != 0:
+            if self.strict and self.git("rev-parse", "--verify", "--quiet", f"refs/tags/{TAGS_PRESENT}^{{commit}}")[0] != 0:
+                if not self._warned_tags:
+                    self._warned_tags = True
+                    self.fail("Rule 9", ".", None, f"the release tags are not in this clone ({TAGS_PRESENT} does not "
+                              "resolve): fetch them (fetch-depth 0) so that a delegation's end can be read")
+                return False
             return True
-        first = self.delegate_rows_first_commit().get((row_id, decided_by))
-        return first is not None and self.git("merge-base", "--is-ancestor", first, tag.strip())[0] == 0
-
-    def delegate_rows_first_commit(self):
-        """{(id, decided by): the first commit that added a row with both}, from the history of the file."""
-        if self._first_delegate is None:
-            self._first_delegate = {}
-            code, out = self.git("log", "--reverse", "--format=commit %H", "-p", "--no-color", "--no-ext-diff",
-                                 "--", "docs/owner-decisions.md")
-            commit = None
-            for line in out.split("\n") if code == 0 else []:
-                if line.startswith("commit "):
-                    commit = line[len("commit "):].strip()
-                elif line.startswith("+|") and commit:
-                    cells = split_row(line[1:])
-                    if len(cells) >= 3 and cells[2].startswith("delegate ("):
-                        self._first_delegate.setdefault((cells[0], cells[2]), commit)
-        return self._first_delegate
+        cells = list(row.values())
+        code, text = self.git("show", f"{commit.strip()}:docs/owner-decisions.md")
+        return code == 0 and any(line.startswith("|") and split_row(line) == cells for line in text.split("\n"))
 
     # -- the run ---------------------------------------------------------------------------
     def run(self):
@@ -632,6 +629,7 @@ class Checker:
             if found is None:
                 continue
             self.report_reviewers[(doc.rel, path)] = found[0]
+            self.report_counts[(doc.rel, path)] = found[1]
             reviewers.append(found[0])
             findings += found[1]
         if sorted(reviewers) != sorted(REVIEWERS):
@@ -677,6 +675,19 @@ class Checker:
         return reviewer, int(parsed.group(1)) + int(parsed.group(2))
 
     def check_acceptances(self, doc, ids, paths):
+        anchors = {path: set() for path in paths}
+        for accepted in ids:
+            row = self.citable(accepted)
+            for path in paths:
+                if row is not None:
+                    anchors[path].update(re.findall(re.escape(path) + r"#([0-9]+)", row["Covers"]))
+        # Counted per report: spare acceptances of one report cannot cover the findings of another.
+        for path in paths:
+            needed = self.report_counts.get((doc.rel, path), 0)
+            if len(anchors[path]) < needed:
+                reviewer = self.report_reviewers.get((doc.rel, path), "?")
+                self.fail("Rule 2", doc.rel, None, f"the {reviewer} report {shown(path)} holds {needed} Blocker and Major "
+                          f"findings and {len(anchors[path])} distinct ones are accepted")
         for accepted in ids:
             row = self.citable(accepted)
             anchored = row is not None and any(

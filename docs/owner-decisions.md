@@ -565,8 +565,9 @@ does not accept a `delegate` row as an owner gate or as the acceptance of a find
 *Note (2026-11-25) on OD-2026-11-03-22 and OD-2026-11-03-36:* OD-2026-11-24-4 narrows them for release 0.3.0. A row
 decided by exactly `delegate (OD-2026-11-24-4)` now counts as the owner's for an `Owner-gate:` line and for accepting a
 review finding, because the owner delegated those acts for the release. The rows above, decided by a plain `delegate`,
-still do not count. The delegation ends when the tag `v0.3.0` exists: rows recorded before it stay valid, and rows
-recorded after it are refused. `scripts/check-design-docs.py` (`DELEGATIONS`) enforces this, and
+still do not count, and a delegate row may not accept a finding of a security review. The delegation ends when the
+tag `v0.3.0` exists: a delegate row counts only as the tag holds it, so rows recorded before it stay valid and rows
+added or edited after it are refused. `scripts/check-design-docs.py` (`DELEGATIONS`) enforces this, and
 [sdd-workflow.md](engineering/sdd-workflow.md) ("Who decides") explains it.
 
 ## 2026-11-02 — Feature 035 implementation gates (Iceberg writes and step-output destinations)
