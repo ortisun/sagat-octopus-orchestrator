@@ -38,8 +38,9 @@ decisions clause); Governance is unchanged.
   region per cell, with high availability inside the region"; a "Regions" bullet and an "Admitted scope" bullet are
   added; the out-of-scope list is rewritten to say exactly what stays out.
 - **The Owner decisions clause gains one time-boxed sentence**: until release 0.3.0 is published, an act recorded as
-  decided by `delegate (OD-2026-11-24-4)` counts as the owner's for that clause and for the Approval clause (see "The
-  delegation and the constitution's own text").
+  decided by `delegate (OD-2026-11-24-4)` counts as the owner's for that clause, the Approval clause and the
+  Transitional clause, and every security exception stays the owner's (see "The delegation and the constitution's own
+  text").
 
 A principle redefined incompatibly is MAJOR under Governance, Versioning. Principle IV could be read as merely expanded
 (MINOR), because no old obligation is dropped, but the owner asked for MAJOR and the conservative reading agrees: a
@@ -55,11 +56,11 @@ reader of 4.7.0 could rely on "every published version has an IR", and in 5.0.0 
 | Principle IV, Studio sentence | KEEP (moved) | "The Studio draws the declarative IR; imperative code that cannot be converted is not promised a round trip." | The same, with "and shows a procedural run as the graph observed from its journal" and "converted to the IR" | Principle VI already makes the runtime graph a projection of the journal |
 | Principle IV, rationale | REWRITE | ADR-0003, ADR-0007, overview, rule 8 | adds design 044 and its records ADR-0103 to ADR-0109, `workflow-ir-and-sdk-modes.md` and Owner decision 2026-11-24-3 | Sources of the new rules |
 | Delivery Constraints, technology baseline | REWRITE | "graph-native declarative IR; single region with high availability" | "two authoring models on one engine, the graph-native declarative IR and the procedural code-first model of Principle IV; one writable region per cell, with high availability inside the region" | Owner decision 2026-11-24-2 |
-| Delivery Constraints, Regions | ADD | — | Standby regions and active-passive failover by an operator's activation that raises a database-enforced region epoch, with a written attestation for an unplanned activation (032, ADR-0067); cells share no data and no transaction spans two cells; different cells may be writable in different regions; production only after the region drill passes and the commit-latency benchmark is published; a mode that can lose acknowledged work says so, reports the loss and never claims a recovery point objective of zero | Owner decision 2026-11-24-2; keeps ADR-0067's evidence gate (Decision 1592 of feature 032) |
-| Delivery Constraints, Admitted scope | ADD | — | Workflow as code; internal apps over declared operations, sessions no wider than the viewer's own authority, author code only in an isolated frame (027, ADR-0062); a curated hub whose only sources are the release-signed index and operator indexes with operator-pinned keys, items imported as drafts under the authored-content rules, no item carrying code the server executes (021, 028, 047) | Owner decision 2026-11-24-2 |
+| Delivery Constraints, Regions | ADD | — | Standby regions and active-passive failover by an operator's activation that raises a database-enforced region epoch, with a written attestation for an unplanned activation (032, ADR-0067); cells share no data and no transaction spans two cells; different cells may be writable in different regions; production only after the region drill passes and the commit-latency benchmark is published; a mode that can lose acknowledged work says so, reports the loss and never claims a recovery point objective of zero; a lost change of authority is listed and the access it removed stays refused until an operator applies it again or reviews it | Owner decision 2026-11-24-2; keeps ADR-0067's evidence gate (Decision 1592 of feature 032); the security review's Major 6 |
+| Delivery Constraints, Admitted scope | ADD | — | Workflow as code; internal apps over declared operations, sessions carrying only the intersection of the viewer's current authority and the app version's declared operations, author code only in an isolated frame that holds no credential and receives no value its author could not read (027, ADR-0062); a curated hub whose only sources are the release-signed index and operator indexes with operator-pinned keys, every item and what it pulls in pinned by digest and verified before import, items imported as drafts under the authored-content rules, no item adding code, a template or an expression that a platform process evaluates beyond what authored content of the same kind may carry (021, 028, 047) | Owner decision 2026-11-24-2; the security review's Major 5 and minor 4 |
 | Delivery Constraints, out of scope | REWRITE | "multi-region active-active, exactly-once physical execution of external effects, a connector marketplace, WASM as a mandatory runtime, reimplementing Temporal or Restate, and automatic migration of arbitrary code" | "two regions accepting writes for the same cell …; exactly-once physical execution of external effects; an open marketplace …; a generic application builder with its own backend, database or server-side author code; wire, protocol or history compatibility with another engine …; distributed transactions across cells; WASM as a mandatory runtime; and automatic migration of arbitrary code" | Each removal is the owner's; each item kept or added is explained below |
 | Delivery Constraints, Targets are not promises; Security-by-default | KEEP | — | Unchanged | — |
-| Development Workflow, Owner decisions | REWRITE (one sentence added) | — | Until release 0.3.0 is published, an act recorded as decided by `delegate (OD-2026-11-24-4)` counts as the owner's for this clause and the Approval clause, within that decision's scope; publishing the release, spending money, creating accounts, irreversible acts outside the repository and amending the constitution stay with the owner; `scripts/check-design-docs.py` names the delegation it accepts | Owner decision 2026-11-24-4, whose Covers column names "docs/constitution.md (approval and acceptance clauses)"; the architecture review's Major 8 |
+| Development Workflow, Owner decisions | REWRITE (one sentence added) | — | Until release 0.3.0 is published, an act recorded as decided by `delegate (OD-2026-11-24-4)` counts as the owner's for this clause, the Approval clause and the Transitional clause, within that decision's scope; acts that need the owner's own hands or credentials, publishing the release, spending money, creating accounts, irreversible acts outside the repository, amending the constitution and every security exception (accepting instead of fixing a security-review finding or a security checklist item included) stay with the owner; `scripts/check-design-docs.py` names the delegation and the tag `v0.3.0` that ends it, and an act recorded before the tag stays valid | Owner decision 2026-11-24-4, whose Covers column names "docs/constitution.md (approval and acceptance clauses)"; the architecture review's Major 8; the security review's Majors 1 and 2 and minor 5 |
 | Every other Development Workflow bullet | KEEP | — | Unchanged | — |
 | Governance | KEEP | — | Unchanged | — |
 | Footer | REWRITE | `Version: 4.7.0`, last amended 2026-11-20 | `Version: 5.0.0`, last amended 2026-11-24, this report, the adoption sentence | — |
@@ -98,6 +99,19 @@ go wrong:
   A workflow task's result is a worker result like any other: valid lease, fencing token, stale attempts refused. This
   keeps Principle I whole without rewriting it: the next task is still scheduled in the transaction of the transition,
   by the server.
+- **An envelope entry that releases a secret names its activities exactly.** A pattern such as `payments.*` would
+  release the secret to activity names registered after publication, which no graph version allows (security review,
+  minor 3). Design 044 allows patterns today; for entries that list secrets it must change.
+- **A workflow task carries no secret value and no capability to resolve one.** Principle V releases secrets to "the
+  secrets declared by its immutable task definition"; read loosely, the envelope could become the workflow task's
+  definition and every envelope secret would reach the function, which runs again on every replay and journals its
+  command inputs (security review, Major 3). Design 044 already says so (Requirement 044-003); the constitution is the
+  floor that a revised design cannot lower.
+- **The history a workflow task receives is that run's own journal projection, to an authorized session, under the
+  classification rules; the determinism guard is not a security control.** In a graph version only the step that
+  references a field receives it; in a code version every session bound to the workflow type would otherwise receive
+  every output and signal payload of every run of that type, `pii` and `secret` fields included, and feature 016
+  leaves the worker protocol out of classification (security review, Major 4).
 - **The worker's memory is a cache that replay can discard and rebuild.** PostgreSQL stays the authority (Principle I);
   sticky execution is an optimisation, never a record.
 - **No external effect in the function itself; effects are activities under Principle III; the SDK's guard refuses or
@@ -107,7 +121,9 @@ go wrong:
   disagrees with the journal applies a transition the history does not explain. Design 044 holds the run with a cause
   (`CHAIN_MISMATCH`, ADR-0104); it is never a silent continuation.
 - **A run pins one version at any moment; the pin changes only by a verified move.** The move is an explicit request
-  per run by a person allowed to operate it, applied only when a replay of the run's own history against the target
+  per run by a person allowed to operate the run and to activate the target version, to a target approved for
+  activation where the namespace requires approval (otherwise a person holding only the right to operate runs could
+  move one onto an unapproved version with a wider envelope; security review, minor 1), applied only when a replay of the run's own history against the target
   code reproduces the journaled commands and every outstanding step fits the target's envelope; it is journaled and
   audited, a refused move changes nothing, and no policy moves runs by itself. This is how a fix reaches a run of
   months without the automatic migration that the first paragraph forbids: the platform never guesses, and the replay
@@ -161,6 +177,15 @@ What the constitution now requires of failover, beyond 4.7.0:
   count and report the loss afterwards, and never claim a recovery point objective of zero. That keeps Principle VIII
   and "Targets are not promises" true for the new topology, and it is why Principle I needs no change: in those modes the
   platform does not hide the loss, it measures it.
+- A lost change of authority is worse than lost work: a revoked key, a removed member, a revoked binding or a rotated
+  secret that the region lost before replication would work again after the activation, reversing "authentication and
+  authorization fail closed" (Principle V) without anyone being told. Feature 032's divergence report lists runs, inbox
+  events, deliveries, receipts and audit records, not authority. So the constitution requires the loss report to list
+  such changes and the access they removed to stay refused until an operator applies them again or reviews them
+  (security review, Major 6). Acknowledging authority writes only after synchronous replication in every mode was the
+  alternative; it was not chosen because the asynchronous mode exists for installations that cannot afford a
+  cross-region wait, and a revocation that waits on a lost region would block the very operator trying to contain an
+  incident.
 
 ## The other items of the out-of-scope list
 
@@ -225,14 +250,32 @@ Three options were weighed:
    release 0.3.0, and the protection that design 4.0.0 chose would be lost for good.
 3. **One time-boxed sentence that names the delegation, and a checker that accepts only it.** (Chosen.) The sentence
    says that until release 0.3.0 is published an act recorded as `delegate (OD-2026-11-24-4)` counts as the owner's for
-   the Owner decisions and Approval clauses, within that decision's scope, and repeats what stays the owner's:
-   publishing the release, spending money, creating accounts, irreversible acts outside the repository and amending this
-   constitution. `scripts/check-design-docs.py` gains the constant `DELEGATIONS = ("OD-2026-11-24-4",)`: a row decided by
-   `delegate (<id>)` is citable only when `<id>` is in that list and its own row is an owner row with status `Decided`.
-   A bare `delegate`, a delegation not listed, a delegation whose row is missing or is itself a delegate row are still
-   refused. Five tests were added and seen failing before the change (the two that should pass failed with "is not an
-   owner row"); the 128 tests of the script pass after it. The pull request that publishes release 0.3.0 removes the
-   entry, and from then on delegate rows stop satisfying a gate or an acceptance.
+   the Owner decisions, Approval and Transitional clauses (the delegation also covers checklist items, which the
+   Transitional clause governs), within that decision's scope. It repeats what stays the owner's: acts that need the
+   owner's own hands or credentials, publishing the release, spending money, creating accounts, irreversible acts outside
+   the repository, amending this constitution, and every security exception, which includes accepting instead of fixing
+   a finding of a security review or an item of a security checklist (security review, Major 1: otherwise a delegate
+   could accept a security Blocker and approve the design).
+
+The check itself is pull request #281 (`chore/delegate-settles-findings`), split out of this amendment so that it can
+land first:
+
+- `DELEGATIONS = {"OD-2026-11-24-4": "v0.3.0"}`. A row decided by `delegate (<id>)` is citable only when `<id>` is listed,
+  its own row is an owner row with status `Decided`, and, once the tag exists, the row first carried the delegation in
+  a commit that the tag contains.
+- The delegation therefore ends by itself at the tag, and acts taken during the release stay valid after it. The first
+  draft of this report had the publishing pull request delete the entry, which would have failed every approval and
+  every gate the delegate had recorded, on the release's own CI (security review, Major 2). A date window, which the
+  security review proposed, was weighed and not chosen: the date in a row's identifier is written by whoever writes the
+  row, while the commit that first gave it the delegation is history the check reads, and relabelling an old plain
+  `delegate` row after the tag is refused too.
+- A delegate row that covers a finding of the security report is refused (Major 1).
+- A plain `delegate`, a delegation not listed, a delegation whose row is missing or is itself a delegate row are
+  refused. Ten tests, the passing cases and the security refusal seen failing first, the expiry checked by a hand
+  mutation; 133 tests of the script pass.
+- That `DELEGATIONS` could be widened by a pull request the delegate merges (security review, minor 5) is closed after
+  #281 is in `develop`: this pull request then makes the check refuse a delegation that the Owner decisions clause of
+  `docs/constitution.md` does not name, which only the owner can amend.
 
 The EGM pin keeps requiring the owner's own reading of the plugin's diff; the delegation does not name it.
 
@@ -247,7 +290,7 @@ The line above is the git blob of `docs/constitution.md` at 4.7.0. A principle b
 | I | KEEP | 32d2ec982a4ae0995a472628184c4762ea740f9081886bb4c78fa461237a5a21 | 32d2ec982a4ae0995a472628184c4762ea740f9081886bb4c78fa461237a5a21 |
 | II | KEEP | 80fbee5c64129b11cc2cc1d978c7a4b91f9af39cfdea73510c3bcb345aad8ec2 | 80fbee5c64129b11cc2cc1d978c7a4b91f9af39cfdea73510c3bcb345aad8ec2 |
 | III | KEEP | 69d38cce2aa95cfa7f3e70b2be2e93260ff8f224afa7e8f779e5558b4f9827d9 | 69d38cce2aa95cfa7f3e70b2be2e93260ff8f224afa7e8f779e5558b4f9827d9 |
-| IV | REWRITE | ff10043d76dfd25ac3b2db1ea27b943804c52d4d46c83838e6908cdaccc32f7b | 44579587cf16c115dbe57e15b1cf5f93e28f65a867860a1386811605360438a3 |
+| IV | REWRITE | ff10043d76dfd25ac3b2db1ea27b943804c52d4d46c83838e6908cdaccc32f7b | 23d380d586fce881488b297860fe5ba50eb55b521c035e02316a5a0677ab1770 |
 | V | KEEP | b816cb76163ef1d8cc8579bb3e326f59c774b077131029cfd64fa45d470f38f9 | b816cb76163ef1d8cc8579bb3e326f59c774b077131029cfd64fa45d470f38f9 |
 | VI | KEEP | 3fbc81dd01da920dafb2681958b3a7864f90b6395d3aecb2254555436c6aa8bc | 3fbc81dd01da920dafb2681958b3a7864f90b6395d3aecb2254555436c6aa8bc |
 | VII | KEEP | 708ea13f72890e3ff5bf0472c30fdb2a5cab3d5e616e40e88197c880eeba2760 | 708ea13f72890e3ff5bf0472c30fdb2a5cab3d5e616e40e88197c880eeba2760 |
@@ -260,7 +303,7 @@ builds it; until then the rule is held by review.
 
 | Rule | Check today | Check to add, and where |
 |---|---|---|
-| Only the named delegation counts as the owner's | `scripts/check-design-docs.py` (`DELEGATIONS`) and its five tests | removed by the pull request that publishes 0.3.0 |
+| Only the named delegation counts as the owner's, never for a security finding, and only until `v0.3.0` | `scripts/check-design-docs.py` (`DELEGATIONS`) and its ten tests (pull request #281) | the refusal of a delegation the constitution does not name (this pull request, after #281) |
 | The workflow function never runs in a platform process | review | `scripts/check-architecture.py` refuses embedded language runtimes (`deno_core`, `v8`, `pyo3`, `boa_engine`, `mlua`, `wasmtime`) in the dependency graph of the server crates (design 044) |
 | A command stays within the envelope | none | Requirement 044-013, one test per envelope member |
 | A diverging replay commits nothing | none | ADR-0104's `a_completion_with_a_foreign_command_chain_is_refused_and_holds_the_run` and the conformance scenario `code-nondeterminism` |
@@ -309,7 +352,9 @@ builds it; until then the rule is held by review.
 - `docs/runbooks/disaster-recovery.md`: the multi-region case is 032's, admitted and not built.
 - `docs/owner-decisions.md`: the status of Owner decision 2026-11-24-2 becomes "Decided; amended in 5.0.0 (pull request
   #275)", and its Covers cell links this report.
-- `scripts/check-design-docs.py` and `scripts/tests/test_check_design_docs.py`: the named delegation (above).
+- `docs/architecture/security-and-sandbox.md`: the four trust boundaries that 0.3.0 adds (workflow code in tenant
+  workers, internal apps and their frames, the hub's indexes, the region epoch).
+- `scripts/check-design-docs.py` and its tests change in pull request #281, which lands first (above).
 - `docs/governance/README.md`: the row of this report.
 
 Not changed, on purpose:
@@ -340,9 +385,16 @@ Not changed, on purpose:
   commit-latency benchmark.
 - **Feature 027**: owner questions 1361 and 1362 and the acceptance of ADR-0062, for the agent that takes the feature.
 - **Design 047**: the integration hub's sources, signatures and import path follow the admission.
-- **Release 0.3.0's publishing pull request** removes `OD-2026-11-24-4` from `DELEGATIONS` in
-  `scripts/check-design-docs.py`, and the time-boxed sentence of the Owner decisions clause expires with it (a PATCH
-  amendment that deletes the sentence).
+- **After release 0.3.0 is tagged** the delegation has ended by itself in the check; a later PATCH amendment may delete
+  the expired sentence of the Owner decisions clause, and the `DELEGATIONS` entry stays so that the acts recorded during
+  the release remain valid.
+- **Design 044** must also: make an envelope entry that lists a secret name its activities exactly (today it allows
+  patterns); register a gap for the history projection to workflow sessions under the classification rules of
+  feature 016 (the worker protocol is outside 016 today); drop a sticky cache when the region epoch or the generation
+  changes; and check a sticky completion against the full command chain, so that after an asynchronous failover a
+  cached, lost completion is refused.
+- **Feature 032** must list changes of authority in its divergence report and keep the revoked access refused until an
+  operator reviews it.
 
 ## Review
 
@@ -362,7 +414,7 @@ with the reasoning, as delegate (Owner decision 2026-11-24-4).
 | Major 5: the per-language gate against "six SDKs" and the release rule | Fixed: an SDK without the model declares it and its scenarios report "not offered"; shipping 0.3.0 with a language short goes to the owner |
 | Major 6: the failover gate could be met by a failed drill | Fixed: "after its region drill passes (no acknowledged work lost in the synchronous quorum mode) and its commit-latency benchmark is published"; built-but-not-offered is stated; the release-workflow check is in the enforcement table and the follow-ups |
 | Major 7: the report let the delegate settle what stays the owner's | Fixed: a contested Blocker of this amendment goes to the owner, and the amendment of Principle I for retention is approved by the owner |
-| Major 8: the checker refuses delegate rows | Fixed by option 3 of "The delegation and the constitution's own text": one time-boxed sentence and a checker that accepts only the named delegation, with five tests |
+| Major 8: the checker refuses delegate rows | Fixed by option 3 of "The delegation and the constitution's own text": one time-boxed sentence here, and a checker that accepts only the named delegation in pull request #281 |
 | minor: the report contradicted its diff on the status of Owner decision 2026-11-24-2 | Fixed: listed under dependents, follow-up removed |
 | minor: stale dependents (execution semantics opening paragraph, 021 owner question 1122 and its spec line, 028's Constitution Check row) | Fixed |
 | minor: owner questions 1402 and 1361 decided silently | Fixed differently: neither is answered here; the 028 note says the admission permits operator indexes and the question stays open, and the report says the constitution raises the bar on 1361 and leaves the question with feature 027's agent |
@@ -378,9 +430,23 @@ with the reasoning, as delegate (Owner decision 2026-11-24-4).
 | Nit: plans and SDK READMEs not named under "Not changed, on purpose" | Fixed |
 | Fitness: no rule has an "Enforced by" | Fixed: the enforcement table above |
 
-### Security review
+### Security review (no Blocker; six Major, five minor, one Nit)
 
-(Filled in after the review.)
+| Finding | Disposition |
+|---|---|
+| Major 1: the delegate could settle security exceptions, and the checker let it accept a security Blocker | Fixed: every security exception, accepting a security-review finding or a security checklist item included, stays the owner's (Owner decisions clause); #281 refuses a delegate row that covers a finding of the security report |
+| Major 2: deleting the delegation at the release would fail every delegate approval and gate | Fixed differently: #281 ends the delegation at the tag `v0.3.0` and keeps acts recorded before it valid, keyed on the commit that first gave the row the delegation rather than on the date in its identifier, which the row's writer chooses |
+| Major 3: nothing stopped secrets reaching the workflow function | Fixed: "A workflow task carries no secret value and no capability to resolve one" |
+| Major 4: nothing governed the history disclosed to workflow workers | Fixed: the history is that run's own journal projection, to an authorized session, rechecked on delivery, under the classification rules of a step that reads the field; the determinism guard is not a security control; the gap for design 044 is a follow-up, and the earlier claim that Principle V already bound this is withdrawn |
+| Major 5: the internal-apps admission was weaker than ADR-0062 | Fixed: the intersection of the viewer's current authority and the declared operations; a frame that holds no credential and receives no value its author could not read |
+| Major 6: a failover could silently undo revocations | Fixed: lost changes of authority are listed and the access they removed stays refused until an operator applies them again or reviews them; synchronous acknowledgment of authority writes in every mode was weighed and not chosen (see "Regions") |
+| minor 1: a verified move could bypass version approval | Fixed: the person must also be allowed to activate the target version, approved where the namespace requires it |
+| minor 2: the ceilings read as a closed per-run list | Fixed: "the ceilings and quotas of the run and of its namespace (… among them)" |
+| minor 3: a pattern entry could release a secret to activities registered later | Fixed: an entry that releases a secret names its activities exactly; design 044 must follow (follow-ups) |
+| minor 4: the hub pinned its sources, not its content | Fixed: every item and everything it pulls in is pinned by digest and verified before import; no item adds code, a template or an expression beyond what authored content of the same kind may carry |
+| minor 5: the delegation sentence drifted from the owner's decision; `DELEGATIONS` could be widened by the delegate | Fixed: "acts that need the owner's own hands or credentials" and the Transitional clause are in the sentence; the check will refuse a delegation the constitution does not name (this pull request, after #281) |
+| Nit: `security-and-sandbox.md` not a dependent; "platform process" undefined | Fixed: four trust boundaries added there; "platform process" is defined in Principle IV |
+| Suspicion: a sticky completion after an asynchronous failover | Handed to design 044 (follow-ups): check a sticky completion against the full command chain |
 
 ### Correctness review
 
@@ -394,6 +460,7 @@ with the reasoning, as delegate (Owner decision 2026-11-24-4).
 - The region topology is admitted before its evidence exists. The "Regions" bullet keeps production use behind a
   passing drill and a published benchmark, so an installation cannot claim cross-region failover on this text.
 - The named delegation is a hole in the owner-only gate for the length of release 0.3.0. It is narrow (one decision,
-  checked to be an owner row) and it is removed when the release is published.
+  checked to be an owner row, never for a security finding) and it closes by itself at the tag `v0.3.0`.
 - Rollback is a forward amendment (6.0.0) that restores the 4.7.0 Delivery Constraints and Principle IV; nothing in the
-  code depends on this text yet, except the checker's `DELEGATIONS`, which a revert removes.
+  code depends on this text yet, except the checker's `DELEGATIONS` (pull request #281), which a revert of that pull
+  request removes.

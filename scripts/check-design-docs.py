@@ -29,10 +29,6 @@ MARKER_RE = re.compile(r"^\s+Evidence \([0-9]{4}-[0-9]{2}-[0-9]{2}\):")
 INLINE_MARKER_RE = re.compile(r"Evidence \([0-9]{4}-[0-9]{2}-[0-9]{2}\):")
 PROTECTED_RE = re.compile(r"^\s*(Refs|Owner-gate):")
 OD_ID_RE = re.compile(r"OD-[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]+")
-# The delegations the constitution names (5.0.0, Owner decisions): a row decided as "delegate (<id>)" under one of
-# these counts as the owner's. Owner decision 2026-11-24-4 lasts until release 0.3.0 is published; the pull request
-# that publishes it removes the entry, and with it the delegate rows stop satisfying a gate or an acceptance.
-DELEGATIONS = ("OD-2026-11-24-4",)
 COUNTS_RE = re.compile(r"Counts: Blocker ([0-9]{1,4}), Major ([0-9]{1,4}), Nit ([0-9]{1,4})")
 SEMVER_RE = re.compile(r"[0-9]{1,6}\.[0-9]{1,6}\.[0-9]{1,6}")
 LOOSE_CHECKBOX_RE = re.compile(r"^\s*[-*+] \[[ xX]\]")
@@ -338,27 +334,13 @@ class Checker:
             rows.append(dict(zip(header, cells)))
         return rows
 
-    def owner_row(self, row_id):
-        """The row with this id if the owner decided it, or None."""
+    def citable(self, row_id):
+        """The citable row with this id, or None."""
         matches = [r for r in self.owner_rows() if r["ID"] == row_id]
         if len(matches) != 1 or not OD_ID_RE.fullmatch(row_id):
             return None
         row = matches[0]
         return row if row["Decided by"] == "owner" and row["Status"] == "Decided" else None
-
-    def citable(self, row_id):
-        """The citable row with this id, or None: an owner row, or a row decided under a delegation that
-        docs/constitution.md names (Owner decisions clause) and whose own row is the owner's."""
-        row = self.owner_row(row_id)
-        if row is not None:
-            return row
-        matches = [r for r in self.owner_rows() if r["ID"] == row_id]
-        if len(matches) != 1 or not OD_ID_RE.fullmatch(row_id) or matches[0]["Status"] != "Decided":
-            return None
-        delegated = re.fullmatch(r"delegate \((OD-[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]+)\)", matches[0]["Decided by"])
-        if delegated and delegated.group(1) in DELEGATIONS and self.owner_row(delegated.group(1)) is not None:
-            return matches[0]
-        return None
 
     # -- the run ---------------------------------------------------------------------------
     def run(self):

@@ -120,9 +120,7 @@ check does not accept as an owner decision until the owner changes it to `owner`
 *   **N. Delegated decisions carry `Decided by: delegate`, which the check does not accept.** An owner-decision row has a
     `Decided by` cell and the check accepts only `owner`. This is a convention, not a control: the assistant commits under
     the owner's git identity and can write the word `owner`, so the owner's review of the pull request is what makes a row
-    an owner decision (section 5, Risks and Mitigations). *Note (2026-11-24, constitution 5.0.0):* a bare `delegate`
-    is still refused; for release 0.3.0 the check also accepts `delegate (OD-2026-11-24-4)`, the one delegation the
-    constitution names, when that decision's own row is the owner's (`DELEGATIONS` in `scripts/check-design-docs.py`).
+    an owner decision (section 5, Risks and Mitigations).
 *   **O. No new `permissions.allow` entry, and no `permissions.deny` entry for the plugin.** The check script is run with a
     prompt. *Reason:* `AGENTS.md` rule 20 (do not widen permissions to make a task easier); a path-wide deny would block
     the work that this design plans, and a plugin-specific syntax is unverified.

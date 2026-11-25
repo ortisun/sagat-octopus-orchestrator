@@ -78,21 +78,31 @@ semantic contract. In the **graph model** the published version is the declarati
 the Studio or compiled by an SDK builder, and the engine interprets it. In the **procedural
 model** (workflow as code) the published version names a workflow function by the digest of its
 code and declares the envelope it may use (activities, secrets, signals, child workflows, scripts,
-approvals). The function runs in an SDK worker, never in a platform process (Principle V), and is
-replayed deterministically against the run's journal. It proposes commands. The server checks each
-command against the version's envelope, the current authorization and the per-run ceilings
-(history length, payload size, fan-out), so that a command can ask for nothing that a graph
-version with the same declarations could not; it accepts the command as a worker result under
-Principle I (valid lease, fencing token) and commits it with the journal and the outbox in one
-transaction. The worker's memory is a cache that replay can discard and rebuild, never a record.
+approvals); an envelope entry that releases a secret names its activities exactly. The function
+runs in an SDK worker, never in a platform process (the control plane, the scheduler, the engine
+and the API, replay checks and queries included; Principle V), and is replayed deterministically
+against the run's journal. It proposes commands. The server checks each command against the
+version's envelope, the current authorization and the ceilings and quotas of the run and of its
+namespace (history length, payload size and fan-out among them), so that a command can ask for
+nothing that a graph version with the same declarations could not; it accepts the command as a
+worker result under Principle I (valid lease, fencing token) and commits it with the journal and
+the outbox in one transaction. A workflow task carries no secret value and no capability to
+resolve one: the envelope's secrets are released only to the activities whose entry lists them,
+under Principle V. The history a workflow task receives is a projection of that run's own
+journal, delivered only to a session whose current membership and binding to the workflow type
+authorize it, checked again on every delivery; a classified field reaches it only under the same
+classification rules as a step that reads that field; the SDK's determinism guard is not a
+security control. The worker's memory is a cache that replay can discard and rebuild, never a
+record.
 Code outside an activity may run again on every replay, so the workflow function MUST NOT perform
 an external effect itself: effects are activities under Principle III, and the SDK's determinism guard refuses or
 reports an effect outside one. A replay that diverges from the journal MUST stop with a typed,
 audited non-determinism error and commit none of its commands. A procedural run pins one version
 at any moment, and its pin changes only by a verified move: an explicit request per run by a
-person allowed to operate it, applied only when a replay of the run's own history against the
-target code reproduces the journaled commands and every outstanding step fits the target's
-envelope. Each move is journaled and audited, a refused move leaves the run unchanged, and no
+person allowed to operate the run and to activate the target version, to a target approved for
+activation where the namespace requires approval, applied only when a replay of the run's own
+history against the target code reproduces the journaled commands and every outstanding step fits
+the target's envelope. Each move is journaled and audited, a refused move leaves the run unchanged, and no
 policy moves runs by itself; that is not an automatic migration. Within one version, explicit
 version markers in the code let a change branch for histories that started before it. The history
 and command format that the code replays is a wire contract under the rule above. The procedural
@@ -206,15 +216,22 @@ Sources: `docs/test-strategy.md`, AGENTS.md rules 9, 11 and 12.
   failures; until then a release may contain it built, but not offered for production. A
   replication mode or a forced activation that can lose acknowledged work says so before it is
   chosen, counts and reports what was lost after a failover, and never claims a recovery point
-  objective of zero.
+  objective of zero. Changes of authority are never lost silently: a revocation of a credential,
+  session, membership, binding or grant, or a rotation or deletion of a secret, that such a mode
+  can lose is listed by the loss report, and the access it removed stays refused until an operator
+  applies it again or reviews it.
 - **Admitted scope:** workflow as code (Principle IV); internal apps built in the Studio over
-  declared workflow operations, whose sessions carry no more than their viewer's own authority and
-  whose author code runs only in an isolated frame (feature 027, ADR-0062; a delegated execution
-  mode would need its own ADR and an amendment); a curated integration and template hub (features
-  021, 028 and design 047) whose only sources are the index signed in the release and indexes the
-  operator configures with keys the operator pins, whose items are imported as drafts under the
-  same publication, signature, secret and isolation rules as authored content, and none of whose
-  items carries code that the server executes.
+  declared workflow operations, whose sessions carry only the intersection of their viewer's
+  current authority and the operations the pinned app version declares, and whose author code runs
+  only in an isolated frame that holds no credential and receives no value its author could not
+  read (feature 027, ADR-0062; a delegated execution mode would need its own ADR and an
+  amendment); a curated integration and template hub (features 021, 028 and design 047) whose only
+  sources are the index signed in the release and indexes the operator configures with keys the
+  operator pins, where every item and everything it pulls in is pinned by digest in its signed
+  index and verified before import, items are imported as drafts under the same publication,
+  signature, secret and isolation rules as authored content, and no item adds code, a template or
+  an expression that a platform process evaluates beyond what authored content of the same kind
+  may carry.
 - **Out of scope for V1:** two regions accepting writes for the same cell (multi-region
   active-active inside a cell, with merged histories or conflict resolution); exactly-once physical
   execution of external effects; an open marketplace (publishing by tenants or third parties,
@@ -256,10 +273,13 @@ Sources: `docs/test-strategy.md`, AGENTS.md rules 9, 11 and 12.
   the owner and are recorded in `docs/owner-decisions.md`. A task that depends on one carries an
   `Owner-gate:` line that cites the row, and MUST NOT be ticked until the owner has decided. Until
   release 0.3.0 is published, an act recorded there as decided by `delegate (OD-2026-11-24-4)`
-  counts as the owner's for this clause and for the Approval clause, within the scope of Owner
-  decision 2026-11-24-4; publishing the release, spending money, creating accounts, acts outside
-  this repository that cannot be undone and amending this constitution stay with the owner.
-  `scripts/check-design-docs.py` names the delegation it accepts.
+  counts as the owner's for this clause, the Approval clause and the Transitional clause, within
+  the scope of Owner decision 2026-11-24-4. These stay with the owner: acts that need the owner's
+  own hands or credentials, publishing the release, spending money, creating accounts, acts
+  outside this repository that cannot be undone, amending this constitution, and every
+  security exception, including accepting instead of fixing a finding of a security review or a
+  checklist item of a security checklist. `scripts/check-design-docs.py` names the delegation it
+  accepts and the tag `v0.3.0` that ends it; an act recorded before the tag stays valid after it.
 - **EGM pin:** a review counts only if it ran with an EGM plugin whose content hash is listed in
   `docs/engineering/egm-accepted-hashes.json`. Upgrading EGM adds an entry, in a pull request,
   after the owner has read the diff of the plugin, and amends this procedure if a step changed.
