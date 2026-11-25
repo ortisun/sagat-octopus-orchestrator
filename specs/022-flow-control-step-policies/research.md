@@ -1553,6 +1553,76 @@ taken after `git grep D022-04` on every `origin/*` branch.
      is not ahead). Weighed: the literal reading (a position that says nothing at a full key) and a projection of every
      waiter's window to the estimated instant (a second pass over the counted leases, for a read the plan bounds).
 
+- **D022-079 — A `CANCEL_SOURCE` reset of a rate-limited source whose key's window is full is refused at its request,
+  before the source is cancelled (2026-11-25; task T022-114; gap G022-019; decision D022-069 items 3 and 8; reviews of
+  2026-11-21, architecture Major 1, security minor).** Delegate (OD-2026-11-24-4; T022-114 left the choice open).
+  Options: (a) an advisory refusal at the request: `409 CONFLICT`, `details.reason` `RATE_LIMIT_SLOT_UNAVAILABLE`,
+  nothing written and the source left running; (b) a warning in the reset preview (`previewReset`) that the key's
+  window is full now; (c) both. Chosen **(a)**:
+  1. *What it buys.* The trap of D022-069 item 3 destroys work: the source is cancelled and no run replaces it. (a)
+     prevents that outcome for every caller in the case the request can see (the window full when it arrives); (b)
+     informs only a caller that previews first and reads the warning (a batch job, a script or an SDK call does not),
+     and leaves the destructive request accepted. (c) adds a second reading of the same fact to the preview's contract
+     for a caller who is told at the request anyway. The refusal follows the precedent of the same request (design 043
+     row 5: the input is checked before the source is cancelled, so a reset that could never be made is refused at its
+     request).
+  2. *The rule.* The request reads, in a read-only transaction, the source's own run-level slot row (its grant, or its
+     waiter while it is buffered), which names the key, and counts the key's grants that count over the start's window
+     now (a step's unleased grant included); the window is full when they reach the lower of the version's declared
+     `limit` and the namespace's current ceiling of that window length. Waiters are not counted: the request refuses
+     only what the window itself makes impossible, and the completion, which counts eligible waiters by the reservation
+     rule (D022-076 item 3), stays the authority. A source without such a row (its grant purged, a window and a minute
+     after it ended counting) is not refused here.
+  3. *Advisory, never a promise.* The window may empty or fill between the request and the source's end, so an
+     accepted entry can still end `FAILED` `RATE_LIMIT_SLOT_UNAVAILABLE` (the outcome D022-069 item 8 accepts), and a
+     refused request may have succeeded later; the runbook says to retry the request once a slot has stopped counting
+     or to use `REQUIRE_TERMINAL`. Cost: one statement at the request of a `CANCEL_SOURCE` reset of a rate-limited
+     version, none on any other path; no budget line covers a reset.
+  4. *A permit is not checked:* cancelling the source gives its permit back at its end, so the window's trap has no
+     equivalent for `concurrency`.
+  Proved by `run_creators::a_cancel_source_reset_on_a_full_window_is_refused_at_its_request_and_cancels_nothing`
+  (`limit: 1, per: hour`). Closes gap G022-019 when the task is ticked.
+- **D022-080 — A child node whose child's start the gate refuses fails with the refusal's reason, through its failure
+  route (2026-11-25; task T022-102; FR-022-055; decision D022-024; the follow-up of decision D022-062).** Delegate
+  (OD-2026-11-24-4). The scheduler's pass that starts a reserved child passed every flow-control refusal up as an
+  error: the pass failed on every tick and the parent's node neither completed nor failed. Now:
+  1. *Every refusal of the gate fails the node,* with the refusal's own `details.reason` as the step's failure code:
+     `RATE_LIMIT_QUEUE_FULL`, `CONCURRENCY_QUEUE_FULL`, `FLOW_CONTROL_LIMIT` (a full `queued_runs` or the live-keys
+     ceiling), `CAPABILITY_DISABLED` (the deployment switched the capability off since the version was published),
+     `FLOW_CONTROL_ACTIVATION_PENDING` (the capability is no longer activated for the fleet) and
+     `BINARY_CAPABILITY_MISSING` (this process does not serve the gate, or the definition has a collection or a loop,
+     G1197). The refusal is decided either in the child's creation (`PgRunStore::create`) or in its start
+     (`Engine::start`); both roll the child back. The failure is applied only while the step's child is not started,
+     under the step's row lock, as the input refusal of design 043 is (D043-038). Weighed: leaving the reservation in
+     place for a later pass (the head of an oldest-first queue that one key could hold for every tenant, the reason the
+     quota refusals of feature 010 fail too, G32) and failing only the three codes FR-022-055 names (the capability
+     refusals would then stay errors on every tick). A process that does not serve the gate is a misconfiguration once
+     the capability is activated (D022-057: activation waits for every live process to list it), so a visible, routable
+     failure is preferred to a reservation that waits silently.
+  2. *"Handled by the node's retry policy"* (FR-022-055, D022-024) cannot be built as written: a `child` node has no
+     retry policy in IR v1 (`Node::retry_policy`: only an activity retries), and adding one is a change of the IR and of
+     the six SDKs that no task of this feature carries. The codes are retryable as a class (each clears when the key
+     drains or the deployment is put right), and the node's `onError` route is what handles them; an author who wants a
+     retry routes the failure to a timer and back. The specification gains a dated amendment line under FR-022-055.
+  3. *A `child` node inside a collection body* is refused at publication on this tree (the body subset of
+     `crates/infra-ir/src/convert.rs`, `is_collection_body`), and the pass reads root children only, so the body's case
+     has no path yet; `child_starts::a_child_node_inside_a_collection_body_is_refused_at_publication` holds the refusal
+     and fails when a body child is enabled, to be replaced by the body's own case.
+  Proved by `child_starts::{a_child_refused_by_a_full_buffer_or_a_ceiling_fails_its_node_through_the_route,
+  a_child_refused_by_its_capability_fails_its_node_through_the_route}`.
+- **D022-081 — A key that reads the run's identity is refused, alone or beside other data (2026-11-25; task T022-103;
+  FR-022-056; decision D022-025).** Delegate (OD-2026-11-24-4). FR-022-056 names "a key that reads only the run's
+  identity (run id, business id, idempotency key)". On this tree an expression sees the run's identity through one
+  variable, `run`, whose only field is the run's id (`crates/infra-ir/src/evaluator.rs`); the business identifier and
+  the idempotency key are not visible to an expression, and a top-level key reads only `input`. Options: (a) refuse a key
+  whose every variable is `run` (the literal reading); (b) refuse any key that reads `run`. Chosen (b): `input.accountId +
+  run.id` makes one key per run exactly as `run.id` does, so the literal reading leaves the unbounded cardinality the
+  rule exists for (security M3 of 2026-11-13) one concatenation away. The codec refuses it with the rule
+  `FlowControlRule::UnboundedKey`, reported as `FLOW_CONTROL_KEY_UNBOUNDED` at the node; when `run` gains a field that is
+  not the identity, the rule narrows to the identity's fields. The codec reads stored versions with the same rule; no
+  release carries feature 022, so no stored version holds such a key. The specification gains a dated amendment line
+  under FR-022-056.
+
 ### Decisions of the Studio slice (2026-11-24)
 
 - **D022-150 — How the Studio authors, shows and lists the gates (tasks T022-054, T022-055, T022-056, T022-085;
@@ -1656,7 +1726,7 @@ taken after `git grep D022-04` on every `origin/*` branch.
 | G022-016 | A reset of a run whose start declares `rateLimit` is refused `BINARY_CAPABILITY_MISSING` (D022-064 item 7): `RATE_LIMIT_SLOT_UNAVAILABLE` (018's code, G1181) and the reset rules of the `rate_limit.*` events land with T022-086. The refusal is retryable and no process of this build lifts it, so a pending reset of such a run is retried until it is cancelled: the runbook forbids production activation before it (D022-066 item 5), and `run_creators::a_reset_of_a_rate_limited_start_is_refused_until_its_rules_are_built` pins it. *Built 2026-11-21 (T022-086, D022-069):* a reset takes a fresh slot right after `run.reset` or is refused `RATE_LIMIT_SLOT_UNAVAILABLE`, rate first, and the five `rate_limit.*` events have the rules of `contracts/journal-events.md`; the interim refusal and its test are gone. *Closed 2026-11-21:* T022-086 ticked after its re-review (three reviewers, 0 Blockers, 0 Majors). | Closed (T022-086) |
 | G022-017 | The purge keeps a grant for its window row's longest period seen (`max_period_ms`) plus a minute: an acquirer that later declares a longer window on the same key (a `RATE_LIMIT_MISMATCH` warned at publication) does not count the grants purged before it arrived, and may be admitted up to their number early in its first window. | Open; documented in the runbook |
 | G022-018 | The grant purge visits keys in no order, without key-shard partitioning or an index on the lease instant (a full scan of `rate_limit_grants` a call): under steady per-second traffic on more keys than it visits per housekeeping its backlog grows (reviews of 2026-11-20, architecture Major 5). *2026-11-20 (D022-066 item 1):* the rows of a namespace are bounded by its `rate_limit_live_keys` again, and a decision that would be refused reclaims its own namespace's purgeable windows of at most 64 grants first, so only a window of more grants waits for this purge. Open: the order, the shards, the index, a time budget, an `outcome="failed"` and an oldest-purgeable-age gauge; a call stops at the first round that deleted nothing, which a round of keys all held by others also is (re-review correctness minor 3). | Open; production gate (runbook section 6); T022-062, T022-089 |
-| G022-019 | A reset with the strategy `CANCEL_SOURCE` of a rate-limited source whose key's window is full cancels its source and then fails `RATE_LIMIT_SLOT_UNAVAILABLE`, with no run replacing it (D022-069 items 3 and 8; reviews of 2026-11-21, architecture Major 1, security minor; re-review architecture minor C). The runbooks warn and advise `REQUIRE_TERMINAL`; the two contracts say so. Task T022-114 builds the advisory refusal at the request, or a warning in the reset preview. | Open; not a production gate (D022-069 item 8); T022-114 |
+| G022-019 | A reset with the strategy `CANCEL_SOURCE` of a rate-limited source whose key's window is full cancels its source and then fails `RATE_LIMIT_SLOT_UNAVAILABLE`, with no run replacing it (D022-069 items 3 and 8; reviews of 2026-11-21, architecture Major 1, security minor; re-review architecture minor C). The runbooks warn and advise `REQUIRE_TERMINAL`; the two contracts say so. Task T022-114 builds the advisory refusal at the request, or a warning in the reset preview. *Built 2026-11-25 (decision D022-079):* the request is refused `RATE_LIMIT_SLOT_UNAVAILABLE` before the source is cancelled when the key's window is full as it arrives (advisory: the window can still fill before the source ends). | Open until T022-114 is ticked; not a production gate (D022-069 item 8) |
 | G022-020 | A namespace's `concurrency_limit` lowered while runs are queued for a permit: the grant routine compares a queued waiter with the limit filed at its admission, as the rate gate did before D022-071; the specification's edge case speaks of a new version's lower limit only (`spec.md`, US02 edge cases). Whether a lowered concurrency ceiling applies to queued waiters at once is a product question for the coordinator (OD-2026-11-20-6) before it is built. *Closed 2026-11-21 (decision D022-074):* the grant from the queue evaluates a permit waiter, and a waiter ahead, against the lower of its filed limit and the current `concurrency_limit`; held permits are never revoked; `lifecycle::a_lowered_concurrency_ceiling_applies_to_the_queued_starts_and_revokes_no_permit`. | Closed; D022-074 |
 | G1189 | Nothing in the database computes or checks `key_shard` and the waiter `shard`; two binaries that hashed differently would file one key under two shards. | Open; T022-097 |
 | G1190 | `flow_control_key_activate` records the operator as typed and keeps no history row with the database role, unlike the registry's activations. *Partly closed 2026-11-16 (D022-042): the version row records `activated_role` (`session_user`); a history of earlier activations of the same version is not kept, since a version is activated once. 2026-11-19 (D022-046): every force has an append-only history row with the database role and a reason; the runbook part is `docs/runbooks/flow-control.md`.* | Open; T022-061 (the rest of the runbook) |

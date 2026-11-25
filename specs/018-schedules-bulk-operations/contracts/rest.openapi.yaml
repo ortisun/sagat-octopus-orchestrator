@@ -449,8 +449,11 @@ paths:
         reset transaction and cannot wait: 409 `RATE_LIMIT_SLOT_UNAVAILABLE`, given first when the version
         declares both (feature 022, D022-069). With `CANCEL_SOURCE` the fresh permit or slot is decided once
         the source has ended; the entry then fails with the same reason and the cancelled source is not
-        replaced. Cancelling the source frees no slot (its slot counts for its window), so on a rate-limited
-        key near its limit `REQUIRE_TERMINAL` is the safe choice. A purged source (or a purge committing during the reset) is
+        replaced. Cancelling the source frees no slot (its slot counts for its window), so a `CANCEL_SOURCE`
+        request whose key's window is full when it arrives is refused at once with 409
+        `RATE_LIMIT_SLOT_UNAVAILABLE` and the source is not cancelled (advisory: the window can still fill
+        before the source ends, D022-079); on a rate-limited key near its limit `REQUIRE_TERMINAL` is the safe
+        choice. A purged source (or a purge committing during the reset) is
         409 `RUN_PURGED`. A prefix with an event type that has no reset rule is 422 `RESET_RULE_MISSING`;
         a `REMATERIALIZE` rule that cannot be applied is refused with its owner's reason.
       parameters:

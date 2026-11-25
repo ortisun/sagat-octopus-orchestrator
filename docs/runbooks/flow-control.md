@@ -199,7 +199,7 @@ the key would be new beyond `concurrency_live_keys` (`FLOW_CONTROL_LIMIT`). Each
 T022-113: the rate twins of the run creators split from T022-086, the reset of a rate-limited run, which is done
 (D022-069 item 7); G022-018: the deployment-wide purge scans every grant a call, in no order,
 and has no backlog gauge). Task T022-114 (gap G022-019, a `CANCEL_SOURCE` reset on a full key) is deliberately not a
-gate: the strategy is off by default and its failure is recorded (D022-069 item 8). The consistency check of the rate tables across runs (T022-079) and
+gate: the strategy is off by default and its failure is recorded (D022-069 item 8); since D022-079 a request whose key's window is full when it arrives is refused `RATE_LIMIT_SLOT_UNAVAILABLE` before the source is cancelled (advisory: retry it once a slot stops counting, or use `REQUIRE_TERMINAL`). The consistency check of the rate tables across runs (T022-079) and
 the lock-order barriers (T022-081) are done. Finish the rolling upgrade before resetting a rate-limited run: a replica built
 before T022-086 cannot read the `restored` copy of a `rate_limit.*` event, and for the same reason never roll an engine
 back past T022-086 once a rate-limited run was reset (D022-069 item 6). A refused reset counts `refused_reset` in each

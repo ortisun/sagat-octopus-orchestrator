@@ -51,7 +51,7 @@ Existing reasons reused unchanged: `IDEMPOTENCY_KEY_REUSED`, `STATE_CONFLICT`, `
 | `CONCURRENCY_LIMIT_MISMATCH` | warning | an explicit group is already declared by another published definition of the namespace with a different limit (grants then skip ahead, D1196) |
 | `RATE_LIMIT_POLICY_INVALID` | error | US07: bad `limit`, `per`, group or timeout, a `limit` above the ceiling of its `per`, a timeout above the run deadline, a top-level key that reads other data than `input`, or `rateLimit` on a kind other than activity/script |
 | `RATE_LIMIT_MISMATCH` | warning | US07: an explicit group is already declared by another published definition of the namespace with a different `limit` or `per` (each acquirer then applies its own, D022-009) |
-| `FLOW_CONTROL_KEY_UNBOUNDED` | error | a concurrency or rate-limit key reads only the run's identity (run id, business id, idempotency key) (FR-022-056) |
+| `FLOW_CONTROL_KEY_UNBOUNDED` | error | a concurrency or rate-limit key reads the run's identity (`run`, whose only field is the run's id), alone or beside other data; the business identifier and the idempotency key are not visible to an expression (FR-022-056, D022-081) |
 | `FLOW_CONTROL_KEY_SECRET` | error | a key reads a location classified `secret` (FR-022-057) |
 | `FLOW_CONTROL_KEY_PII` | warning | a key reads a location classified `pii`; its label is shown only to callers who may disclose it (FR-022-057) |
 | `EARLY_RETURN_PLACEMENT` | error | placement rules of FR-022-008 |
@@ -72,7 +72,8 @@ Existing reasons reused unchanged: `IDEMPOTENCY_KEY_REUSED`, `STATE_CONFLICT`, `
 | `RATE_LIMIT_WAIT_TIMEOUT` | run (buffered) or step (waiting for a slot) | US07: the queue deadline passed before a slot; non-retryable for a run, ordinary failure route for a step; the wait spent no attempt |
 | `FLOW_CONTROL_KEY_INVALID` | step | a step-level key failed to evaluate or exceeds 256 bytes; failure route, no attempt spent, never granted (FR-022-054) |
 | `FLOW_CONTROL_LIMIT` | step | a step-level key would exceed the namespace's live-keys ceiling; failure route, no attempt spent (FR-022-054) |
-| `RATE_LIMIT_QUEUE_FULL`, `CONCURRENCY_QUEUE_FULL`, `FLOW_CONTROL_LIMIT` | child node | the child run's start was refused by a full buffer, `queued_runs` or the live-keys ceiling; retryable, through the node's retry policy and failure route; no child run exists (FR-022-055) |
+| `RATE_LIMIT_QUEUE_FULL`, `CONCURRENCY_QUEUE_FULL`, `FLOW_CONTROL_LIMIT` | child node | the child run's start was refused by a full buffer, `queued_runs` or the live-keys ceiling; retryable as a class, through the node's failure route (a `child` node has no retry policy in IR v1); no child run exists (FR-022-055, D022-080) |
+| `CAPABILITY_DISABLED`, `FLOW_CONTROL_ACTIVATION_PENDING`, `BINARY_CAPABILITY_MISSING` | child node | the child run's start was refused because the deployment switched the capability off, the fleet has not activated it, or this process does not serve the gate (or the child's definition has a collection or a loop, G1197); through the node's failure route; no child run exists (FR-022-055, D022-080) |
 | `EXPRESSION_ERROR` | run | existing: an `earlyReturn.result` or a top-level concurrency or rate-limit key failed to evaluate |
 | `RUN_DATA_LIMIT` | run | existing: an early result over 256 KiB, or a cache-hit copy over the run's retained limit |
 | `STORAGE_QUOTA_EXCEEDED` | run | existing: the copy of a hit or an early result exceeded the tenant content quota (ADR-0027 path) |
