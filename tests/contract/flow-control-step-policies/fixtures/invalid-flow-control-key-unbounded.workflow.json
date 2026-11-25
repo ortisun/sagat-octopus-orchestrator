@@ -1,0 +1,9 @@
+{
+  "apiVersion": "sagat-octopus-orchestrator.io/v1",
+  "kind": "Workflow",
+  "metadata": {"name": "per-run-key"},
+  "entrypoint": "call",
+  "nodes": [
+    {"id": "call", "type": "activity", "activity": "provider.call", "rateLimit": {"key": "run.id", "limit": 1, "per": "second"}}
+  ]
+}

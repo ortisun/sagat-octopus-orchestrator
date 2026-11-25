@@ -409,6 +409,74 @@ async fn a_key_that_does_not_evaluate_fails_the_step_through_its_route() {
     w.assert_consistent(run).await;
 }
 
+/// FR-022-054, the second cause (task T022-101): a key whose canonical value is longer than 256 bytes fails the step
+/// `FLOW_CONTROL_KEY_INVALID` through its route, with no attempt spent, never granted nor queued and no key filed for
+/// it; a key of exactly 256 bytes is decided as any other. The canonical value is the JSON text, so a string of 254
+/// characters is 256 bytes with its quotes.
+#[tokio::test]
+async fn a_key_longer_than_256_bytes_fails_the_step_through_its_route() {
+    let w = gated_world().await;
+    let workflow = publish(
+        &w,
+        document(
+            "key-too-long",
+            "g",
+            vec![
+                with(rated(activity("g")), "onError", json!("recover")),
+                activity("recover"),
+            ],
+        ),
+    )
+    .await;
+    let fits = w
+        .start(workflow, &json!({"accountId": "a".repeat(254)}))
+        .await;
+    granted(&w, fits, "g", (false, true)).await;
+    let windows = || async {
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM rate_limit_windows")
+            .fetch_one(&w.db.pool)
+            .await
+            .expect("windows")
+    };
+    assert_eq!(windows().await, 1, "the key of 256 bytes is filed");
+
+    let long = w
+        .start(workflow, &json!({"accountId": "b".repeat(255)}))
+        .await;
+    let (status, failure, attempt): (String, Option<String>, i32) = sqlx::query_as(
+        "SELECT status, failure_code, attempt FROM steps WHERE run_id = $1 AND node = 'g'",
+    )
+    .bind(long.as_uuid())
+    .fetch_one(&w.db.pool)
+    .await
+    .expect("step");
+    assert_eq!(
+        (status.as_str(), failure.as_deref(), attempt),
+        ("FAILED", Some("FLOW_CONTROL_KEY_INVALID"), 0)
+    );
+    assert_eq!(
+        rows(&w, long, "g").await,
+        (0, 0, 0, 0),
+        "never granted nor queued"
+    );
+    assert_eq!(windows().await, 1, "no key is filed for it");
+    assert!(
+        !w.journal(long)
+            .await
+            .iter()
+            .any(|event| event.starts_with("rate_limit.")),
+        "no decision of its gate is journaled"
+    );
+    assert_eq!(
+        step(&w, long, "recover").await.0,
+        "READY",
+        "the failure route takes it"
+    );
+    for run in [fits, long] {
+        w.assert_consistent(run).await;
+    }
+}
+
 /// Invariant 11: a gated step written READY without a grant is found by `verify_run`.
 #[tokio::test]
 async fn a_seeded_ready_step_without_a_grant_fails_verify_run() {

@@ -482,7 +482,19 @@ fn graph_rule(error: &WorkflowError) -> (&'static str, Option<String>) {
         E::InvalidWorkflowLimit(_) => ("INVALID_WORKFLOW_LIMIT", None),
         E::InvalidContinuationPolicy(_) => ("INVALID_CONTINUATION_POLICY", None),
         E::InvalidSwitch { node, .. } => ("INVALID_SWITCH", Some(node.to_string())),
-        // feature 022 (`contracts/errors.md`): the code of the gate the declaration is for
+        // feature 022 (`contracts/errors.md`): a key per run has a code of its own (FR-022-056), every other rule the code
+        // of the gate the declaration is for
+        E::InvalidFlowControl {
+            node,
+            rule: sagat_domain::workflow::FlowControlRule::UnboundedKey,
+            ..
+        } => ("FLOW_CONTROL_KEY_UNBOUNDED", node.clone()),
+        // a key over a `secret` location (FR-022-057, decision D022-085)
+        E::InvalidFlowControl {
+            node,
+            rule: sagat_domain::workflow::FlowControlRule::SecretKey,
+            ..
+        } => ("FLOW_CONTROL_KEY_SECRET", node.clone()),
         E::InvalidFlowControl { kind, node, .. } => (
             match kind {
                 sagat_domain::workflow::GateKind::Concurrency => "CONCURRENCY_POLICY_INVALID",
@@ -520,6 +532,11 @@ pub fn warning_problem(warning: &DefinitionWarning) -> Problem {
             "INPUT_SCHEMA_APPLIES_TO_TRIGGERS",
             None,
             Some("/inputSchema".to_owned()),
+        ),
+        DefinitionWarning::FlowControlKeyPii { node, .. } => (
+            "FLOW_CONTROL_KEY_PII",
+            node.as_ref().map(ToString::to_string),
+            None,
         ),
     };
     Problem {

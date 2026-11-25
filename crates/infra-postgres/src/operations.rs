@@ -130,6 +130,193 @@ fn event_body(
     .unwrap_or_default()
 }
 
+/// The candidates of a flow-control alert that compares with a namespace's ceilings, read at most this many keys a look:
+/// beyond it the look is short everywhere (a look that stopped short resolves nothing it did not see).
+const MAX_FLOW_CONTROL_KEYS: i64 = 5_000;
+
+/// The concurrency keys whose oldest eligible waiter (not paused, not past its deadline, of a live run) queued more than
+/// the threshold ago and more than the threshold before the key's oldest current holder took its permit
+/// (`docs/runbooks/flow-control.md` section 8): their holders, that waiter's declaration and how long it has waited.
+/// Whether the key has room is decided against the namespace's current ceiling, which the quota rules resolve.
+const STUCK_CANDIDATES_SQL: &str = concat!(
+    "SELECT s.tenant_id, s.namespace_id, s.group_name, s.holders::bigint AS holders, w.lim::bigint AS lim, \
+            extract(epoch FROM clock_timestamp() - w.enqueued_at)::float8 AS waited \
+       FROM concurrency_semaphores s \
+       CROSS JOIN LATERAL ( \
+         SELECT x.enqueued_at, coalesce(x.pinned_limit, x.declared_limit) AS lim \
+           FROM concurrency_waiters x JOIN runs r ON r.tenant_id = x.tenant_id AND r.id = x.run_id \
+          WHERE x.tenant_id = s.tenant_id AND x.namespace_id = s.namespace_id AND x.pool = s.pool \
+            AND x.permit_scope = s.permit_scope AND x.group_name = s.group_name AND x.key_digest = s.key_digest \
+            AND ",
+    eligible_gate_waiter!("x", "r", "now()"),
+    " \
+          ORDER BY x.enqueued_at, x.run_id, x.node LIMIT 1) w \
+       CROSS JOIN LATERAL ( \
+         SELECT min(h.acquired_at) AS oldest FROM concurrency_holders h \
+          WHERE h.tenant_id = s.tenant_id AND h.namespace_id = s.namespace_id AND h.pool = s.pool \
+            AND h.holder_scope = s.permit_scope AND h.group_name = s.group_name AND h.key_digest = s.key_digest) h \
+      WHERE s.waiters > 0 AND w.enqueued_at < now() - make_interval(secs => $1) \
+        AND h.oldest > w.enqueued_at + make_interval(secs => $1) \
+      LIMIT $2"
+);
+
+/// The run-scope rate-limit windows with waiters (`docs/runbooks/flow-control.md` section 10), most waiters first: their
+/// waiters and the age of their oldest. Whether they pass 80% of the namespace's effective `flow_control_key_waiters` is
+/// decided against the namespace's ceilings.
+const SATURATED_CANDIDATES_SQL: &str = "SELECT w.tenant_id, w.namespace_id, w.group_name, \
+            w.waiters::bigint AS waiters, \
+            coalesce(extract(epoch FROM clock_timestamp() - w.oldest_wait_at), 0)::float8 AS waited \
+       FROM rate_limit_windows w \
+      WHERE w.limit_scope = 'RUN' AND w.waiters > 0 AND $1::float8 >= 0 \
+      ORDER BY w.waiters DESC LIMIT $2";
+
+/// One key in an alert's condition: its tenant, namespace and group, and how long it has been in it.
+struct KeyInCondition {
+    tenant: Uuid,
+    namespace: Uuid,
+    group: String,
+    seconds: f64,
+}
+
+/// The candidates of `kind`, one per (tenant, namespace, group): the keys in the condition and the longest any has been
+/// in it, bounded as [`MonitorStore::detect`] bounds its groups (the oldest first within a namespace, a tenant and the
+/// look).
+fn bounded_groups(
+    kind: AlertKind,
+    keys: Vec<KeyInCondition>,
+    bounds: &Bounds,
+    short: bool,
+) -> Detection {
+    let mut groups: std::collections::BTreeMap<(Uuid, Uuid, String), (u64, f64)> =
+        std::collections::BTreeMap::new();
+    for key in keys {
+        let entry = groups
+            .entry((key.tenant, key.namespace, key.group))
+            .or_insert((0, 0.0));
+        entry.0 += 1;
+        entry.1 = entry.1.max(key.seconds);
+    }
+    let mut candidates: Vec<Candidate> = groups
+        .into_iter()
+        .map(|((tenant, namespace, group), (items, oldest))| Candidate {
+            tenant_id: TenantId::new(tenant),
+            namespace_id: NamespaceId::new(namespace),
+            kind,
+            subject: Candidate::bounded_subject(&group),
+            items,
+            oldest_seconds: oldest.max(0.0),
+        })
+        .collect();
+    candidates.sort_by(|a, b| b.oldest_seconds.total_cmp(&a.oldest_seconds));
+    let mut detection = Detection::default();
+    let cut = |detection: &mut Detection, s: Short| {
+        if !detection.short.contains(&s) {
+            detection.short.push(s);
+        }
+    };
+    let mut per_namespace: std::collections::HashMap<(TenantId, NamespaceId), u32> =
+        std::collections::HashMap::new();
+    let mut per_tenant: std::collections::HashMap<TenantId, u32> = std::collections::HashMap::new();
+    for candidate in candidates {
+        let in_namespace = per_namespace
+            .entry((candidate.tenant_id, candidate.namespace_id))
+            .or_default();
+        if *in_namespace >= bounds.per_namespace {
+            cut(
+                &mut detection,
+                Short::Namespace(candidate.tenant_id, candidate.namespace_id),
+            );
+            continue;
+        }
+        let in_tenant = per_tenant.entry(candidate.tenant_id).or_default();
+        if *in_tenant >= bounds.per_tenant {
+            cut(&mut detection, Short::Tenant(candidate.tenant_id));
+            continue;
+        }
+        if detection.seen.len() >= bounds.total as usize {
+            cut(&mut detection, Short::Everything);
+            break;
+        }
+        *in_namespace += 1;
+        *in_tenant += 1;
+        detection.seen.push(candidate);
+    }
+    if short {
+        cut(&mut detection, Short::Everything);
+    }
+    detection
+}
+
+impl PgRunStore {
+    /// [`MonitorStore::detect`] of the flow-control kinds that compare with a namespace's ceilings (feature 022,
+    /// T022-082; decision D022-077 item 7): `CONCURRENCY_QUEUE_STUCK` (a key with no room for its oldest eligible waiter,
+    /// whose every holder took its permit more than the unclaimed threshold after that waiter queued) and
+    /// `RATE_LIMIT_QUEUE_SATURATED` (a run-scope key whose waiters are above 80% of the namespace's effective
+    /// `flow_control_key_waiters`). Each namespace's ceilings are read once a look, in the statement the gate reads them
+    /// with, so the alert and the decision agree.
+    async fn detect_against_ceilings(
+        &self,
+        kind: AlertKind,
+        thresholds: &Thresholds,
+        bounds: &Bounds,
+    ) -> Result<Detection, StoreError> {
+        let mut conn = self.pool().acquire().await.map_err(store_error)?;
+        let statement = if kind == AlertKind::ConcurrencyQueueStuck {
+            STUCK_CANDIDATES_SQL
+        } else {
+            SATURATED_CANDIDATES_SQL
+        };
+        let rows = sqlx::query(statement)
+            .bind(secs(thresholds.of(AlertKind::ConcurrencyQueueStuck)))
+            .bind(MAX_FLOW_CONTROL_KEYS)
+            .fetch_all(&mut *conn)
+            .await
+            .map_err(store_error)?;
+        let short = i64::try_from(rows.len()).unwrap_or(i64::MAX) >= MAX_FLOW_CONTROL_KEYS;
+        let mut ceilings: std::collections::HashMap<
+            (Uuid, Uuid),
+            sagat_domain::workflow::FlowControlCeilings,
+        > = std::collections::HashMap::new();
+        let mut keys = Vec::new();
+        for row in &rows {
+            let tenant: Uuid = col(row, "tenant_id")?;
+            let namespace: Uuid = col(row, "namespace_id")?;
+            let ceiling = match ceilings.get(&(tenant, namespace)) {
+                Some(ceiling) => *ceiling,
+                None => {
+                    let read = crate::quotas::step_gate_ceilings(
+                        &mut conn,
+                        TenantId::new(tenant),
+                        NamespaceId::new(namespace),
+                    )
+                    .await?;
+                    ceilings.insert((tenant, namespace), read);
+                    read
+                }
+            };
+            let in_condition = if kind == AlertKind::ConcurrencyQueueStuck {
+                // no room for the waiter: its holders are at the lower of its declaration and the namespace's ceiling
+                let holders = u64::try_from(col::<i64>(row, "holders")?).unwrap_or(0);
+                let declared = u64::try_from(col::<i64>(row, "lim")?).unwrap_or(0);
+                holders >= declared.min(ceiling.concurrency_limit)
+            } else {
+                // more than 80% of the effective ceiling of one key's run waiters
+                let waiters = u64::try_from(col::<i64>(row, "waiters")?).unwrap_or(0);
+                waiters.saturating_mul(5) > ceiling.effective_key_waiters().saturating_mul(4)
+            };
+            if in_condition {
+                keys.push(KeyInCondition {
+                    tenant,
+                    namespace,
+                    group: col(row, "group_name")?,
+                    seconds: col::<f64>(row, "waited")?,
+                });
+            }
+        }
+        Ok(bounded_groups(kind, keys, bounds, short))
+    }
+}
+
 impl MonitorStore for PgRunStore {
     async fn acquire_monitor(&self) -> Result<bool, StoreError> {
         self.acquire_lease(MONITOR_LEASE, Duration::from_secs(60))
@@ -142,8 +329,50 @@ impl MonitorStore for PgRunStore {
         thresholds: &Thresholds,
         bounds: &Bounds,
     ) -> Result<Detection, StoreError> {
+        // two flow-control kinds compare with a namespace's ceilings, which are resolved by the quota rules (feature 022)
+        if matches!(
+            kind,
+            AlertKind::ConcurrencyQueueStuck | AlertKind::RateLimitQueueSaturated
+        ) {
+            return self.detect_against_ceilings(kind, thresholds, bounds).await;
+        }
         // The groups of the kind: a tenant, a namespace, what it is about, how many, how old.
         let (groups, uses_threshold) = match kind {
+            AlertKind::ConcurrencyQueueStuck | AlertKind::RateLimitQueueSaturated => {
+                return Err(StoreError::Internal {
+                    detail: "a flow-control alert read without its ceilings".into(),
+                });
+            }
+            // feature 022 (T022-082; decision D022-077 item 7; `docs/runbooks/flow-control.md` section 9): a window with
+            // waiters whose next-eligible hint (early, never late) passed more than the threshold ago, and no grant of it
+            // in that time, so a busy key the pass reads in parts is not lagging. One alert per group: the keys and how
+            // long the oldest has been due.
+            AlertKind::RateLimitGrantLagging => (
+                "SELECT w.tenant_id, w.namespace_id, w.group_name AS subject, count(*) AS items, \
+                        extract(epoch FROM clock_timestamp() - min(w.next_eligible_at))::float8 AS oldest \
+                 FROM rate_limit_windows w \
+                 WHERE w.waiters > 0 AND w.next_eligible_at < now() - make_interval(secs => $1) \
+                   AND NOT EXISTS (SELECT 1 FROM rate_limit_grants g \
+                                    WHERE g.tenant_id = w.tenant_id AND g.namespace_id = w.namespace_id \
+                                      AND g.pool = w.pool AND g.limit_scope = w.limit_scope \
+                                      AND g.group_name = w.group_name AND g.key_digest = w.key_digest \
+                                      AND g.granted_at >= now() - make_interval(secs => $1)) \
+                 GROUP BY w.tenant_id, w.namespace_id, w.group_name",
+                true,
+            ),
+            // invariant 12 (data-model): every waiter row belongs to a run that did not end; one that does is a breach,
+            // whatever its age (gap G022-005). One alert per group: the waiters and the oldest's age.
+            AlertKind::FlowControlWaiterOrphaned => (
+                "SELECT o.tenant_id, o.namespace_id, o.group_name AS subject, count(*) AS items, \
+                        extract(epoch FROM clock_timestamp() - min(o.enqueued_at))::float8 AS oldest \
+                 FROM (SELECT x.tenant_id, x.namespace_id, x.group_name, x.enqueued_at FROM concurrency_waiters x \
+                         JOIN runs r ON r.tenant_id = x.tenant_id AND r.id = x.run_id WHERE r.finished_at IS NOT NULL \
+                       UNION ALL \
+                       SELECT x.tenant_id, x.namespace_id, x.group_name, x.enqueued_at FROM rate_limit_waiters x \
+                         JOIN runs r ON r.tenant_id = x.tenant_id AND r.id = x.run_id WHERE r.finished_at IS NOT NULL) o \
+                 GROUP BY o.tenant_id, o.namespace_id, o.group_name",
+                false,
+            ),
             AlertKind::OutboxStuck => (
                 "SELECT g.tenant_id, g.ns AS namespace_id, ''::text AS subject, g.items, g.oldest \
                  FROM (SELECT o.tenant_id, o.ns, count(*) AS items, \
@@ -511,6 +740,19 @@ impl MonitorStore for PgRunStore {
                 .map_err(store_error)?
                 .max(0.0))
         };
+        // the waiters of flow control's keys by scope, from the counters the triggers keep on the key rows, and the step
+        // grants no worker has leased (feature 022, T022-082)
+        let flow = sqlx::query(
+            "SELECT \
+               (SELECT coalesce(sum(waiters), 0)::bigint FROM concurrency_semaphores WHERE permit_scope = 'RUN') AS c_run, \
+               (SELECT coalesce(sum(waiters), 0)::bigint FROM concurrency_semaphores WHERE permit_scope = 'STEP') AS c_step, \
+               (SELECT coalesce(sum(waiters), 0)::bigint FROM rate_limit_windows WHERE limit_scope = 'RUN') AS r_run, \
+               (SELECT coalesce(sum(waiters), 0)::bigint FROM rate_limit_windows WHERE limit_scope = 'STEP') AS r_step, \
+               (SELECT count(*) FROM rate_limit_grants WHERE leased_at IS NULL) AS unleased",
+        )
+        .fetch_one(pool)
+        .await
+        .map_err(store_error)?;
         let runs = sqlx::query(
             "SELECT status, count(*) AS n FROM runs WHERE finished_at IS NULL GROUP BY status",
         )
@@ -559,6 +801,13 @@ impl MonitorStore for PgRunStore {
             },
             batch_jobs_active: to_u64(&overdue, "batch_active")?,
             resets_pending: to_u64(&overdue, "resets_pending")?,
+            flow_control: sagat_application::operations::FlowControlSample {
+                concurrency_run_waiters: to_u64(&flow, "c_run")?,
+                concurrency_step_waiters: to_u64(&flow, "c_step")?,
+                rate_run_waiters: to_u64(&flow, "r_run")?,
+                rate_step_waiters: to_u64(&flow, "r_step")?,
+                unleased_grants: to_u64(&flow, "unleased")?,
+            },
         })
     }
 

@@ -712,6 +712,9 @@ Added after the review of 2026-11-13:
   run's start would be refused by a full per-key buffer, a full `queued_runs` or the live-keys ceiling MUST
   fail with `RATE_LIMIT_QUEUE_FULL`, `CONCURRENCY_QUEUE_FULL` or `FLOW_CONTROL_LIMIT`, a retryable step
   failure handled by the node's retry policy and failure route; no child run is created.
+  *Amended 2026-11-25 (decision D022-080):* a `child` node has no retry policy in IR v1, so its failure route handles
+  the refusal; the capability refusals (`CAPABILITY_DISABLED`, `FLOW_CONTROL_ACTIVATION_PENDING`,
+  `BINARY_CAPABILITY_MISSING`) fail the node the same way, each with its own code.
 - **FR-022-056 — Key cardinality and retirement**: Publication MUST refuse a key that reads only the run's
   identity (run id, business id, idempotency key) (`FLOW_CONTROL_KEY_UNBOUNDED`). A window row MUST carry the
   longest period among its live grants and waiters, and the purge MUST keep a grant until that period plus
@@ -719,6 +722,8 @@ Added after the review of 2026-11-13:
   is in progress, a deciding transaction computes both digests and uses the row that exists under the old
   version, else the new one; the old version is retired when no row uses it, and no key is ever split
   between two rows.
+  *Amended 2026-11-25 (decision D022-081):* an expression sees the run's identity only as `run` (whose one field is the
+  run's id), and a key that reads it is refused whether or not it reads other data too.
 - **FR-022-057 — Classification of keys**: Publication MUST refuse a concurrency or rate-limit key that
   reads a location classified `secret` (FR-016-002 carriers; `FLOW_CONTROL_KEY_SECRET`) and warn for `pii`
   (`FLOW_CONTROL_KEY_PII`). A key label MUST be shown only to a caller who may disclose, at its level, every

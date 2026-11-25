@@ -691,13 +691,41 @@ async fn grantable(
     workflow: sagat_domain::definition::WorkflowId,
     account: &str,
 ) -> (RunId, RunId) {
+    let pair = admitted_behind(w, workflow, account, false).await;
+    until_past(&w.db.pool, granted_us(w, pair.0).await + SECOND_US).await;
+    pair
+}
+
+/// A start of `workflow` by the first tenant or, with `other`, by the second.
+async fn start_by(
+    w: &World,
+    workflow: sagat_domain::definition::WorkflowId,
+    input: &Value,
+    other: bool,
+) -> RunId {
+    if other {
+        w.start_as_other_tenant(workflow, input)
+            .await
+            .expect("started")
+    } else {
+        w.start(workflow, input).await
+    }
+}
+
+/// A holder granted now and a buffered start behind it on the fresh key `account`, started by the first tenant or, with
+/// `other`, by the second (whose `workflow` it is): [`grantable`] without the wait for the holder's window.
+async fn admitted_behind(
+    w: &World,
+    workflow: sagat_domain::definition::WorkflowId,
+    account: &str,
+    other: bool,
+) -> (RunId, RunId) {
     let input = json!({"accountId": account});
-    let holder = w.start(workflow, &input).await;
+    let holder = start_by(w, workflow, &input, other).await;
     move_grant_instants(w, holder, ADMISSION_MARGIN_US).await;
-    let waiter = w.start(workflow, &input).await;
+    let waiter = start_by(w, workflow, &input, other).await;
     assert_eq!(start_rows(w, waiter).await, (0, 1), "{account}");
     move_grant_instants(w, holder, -ADMISSION_MARGIN_US).await;
-    until_past(&w.db.pool, granted_us(w, holder).await + SECOND_US).await;
     (holder, waiter)
 }
 
@@ -1389,9 +1417,12 @@ async fn a_waiter_of_a_longer_window_refused_by_its_own_limit_does_not_hold_back
 /// of the pass's selection of the key, so a grant that ages out while the pass runs never lets a younger waiter be granted
 /// before an older one the same pass refused. With `limit: 2, per: second`, two slots counted, an older waiter `x` (rate
 /// only) and a younger `y` that also waits for a permit with room: the pass (one key at a time) refuses `x`, and `y`'s
-/// decision is held on its permit's key, held by the test, until both counted slots have aged out on the database clock.
-/// Counted at its own instant, `y` would find room for itself and `x` ahead and be granted first; counted as of the
-/// selection, it is refused, and the next pass grants `x` and then `y`.
+/// decision is held on its permit's key, held by the test. Meanwhile both counted slots age out: their instants are set
+/// to one window before the database clock read after the pass blocked (decision D022-072), which is after the pass's
+/// selection, so they count as of the selection and not as of `y`'s own instant. Counted at its own instant, `y` would
+/// find room for itself and `x` ahead and be granted first; counted as of the selection, it is refused, and the next pass
+/// grants `x` and then `y`. No step depends on real elapsed time: the holders' instants are moved ahead while `x` and `y`
+/// are admitted and while the pass selects.
 #[tokio::test]
 async fn a_grant_that_ages_out_during_a_pass_never_puts_a_younger_waiter_first() {
     let w = gated_world().await;
@@ -1401,12 +1432,18 @@ async fn a_grant_that_ages_out_during_a_pass_never_puts_a_younger_waiter_first()
     let dual = publish(&w, dual).await;
     let input = json!({"accountId": "acct-1"});
     let holders = [w.start(rated, &input).await, w.start(rated, &input).await];
+    let mut granted_at = Vec::new();
+    for holder in holders {
+        granted_at.push(granted_us(&w, holder).await);
+        move_grant_instants(&w, holder, ADMISSION_MARGIN_US).await;
+    }
     let x = w.start(rated, &input).await;
     let y = w.start(dual, &input).await;
     for run in [x, y] {
         assert_eq!(start_rows(&w, run).await, (0, 1), "the window is full");
     }
-    let aged = granted_us(&w, holders[1]).await + SECOND_US;
+    // the key is due now (a start queued at a full window rests it to the moved slots' age-out)
+    keys_due(&w).await;
     let mut permits = w.db.pool.begin().await.expect("tx");
     sqlx::query("SELECT 1 FROM concurrency_semaphores WHERE tenant_id = $1 FOR UPDATE")
         .bind(w.admin.tenant_id().as_uuid())
@@ -1420,17 +1457,25 @@ async fn a_grant_that_ages_out_during_a_pass_never_puts_a_younger_waiter_first()
     let grants = scheduler(&w, one_at_a_time, None);
     let pass = tokio::spawn(async move { grants.grant_gates().await });
     barrier(&w, 1).await;
-    assert!(
-        database_now_us(&w.db.pool).await < aged,
-        "the pass selected the keys while both slots counted"
-    );
-    until_past(&w.db.pool, aged).await;
+    // the pass selected the key before this instant; the slots now aged out as of any later one
+    let aged = database_now_us(&w.db.pool).await - SECOND_US + 1;
+    for holder in holders {
+        set_grant_instants(&w, holder, aged).await;
+    }
     permits.rollback().await.expect("released");
     let report = pass.await.expect("the pass");
     assert_eq!(
         report.gates_granted, 0,
         "counted as of the selection, neither is granted by this pass: {report:?}"
     );
+    // the holders' rows get their journal's instants back, and the next pass runs once those have aged on the database
+    // clock, so that the journals, which the consistency check reads, never show three grants in one window (the wait
+    // decides nothing above: whatever its length, the outcome is the same)
+    for (holder, at) in holders.into_iter().zip(&granted_at) {
+        set_grant_instants(&w, holder, *at).await;
+    }
+    until_past(&w.db.pool, granted_at[1] + SECOND_US).await;
+    keys_due(&w).await;
     let report = w.scheduler.grant_gates().await;
     assert_eq!(report.gates_granted, 2, "{report:?}");
     let (gx, gy) = (granted_us(&w, x).await, granted_us(&w, y).await);
@@ -1801,6 +1846,42 @@ async fn replicas_with_offset_process_clocks_grant_on_the_database_clock() {
     w.assert_keys_consistent().await;
 }
 
+/// Makes every rate key of the database with waiters due now, as the owner: a hint only says when a pass may look.
+async fn keys_due(w: &World) {
+    crate::support::flow_control::keys_due(&w.db.pool).await;
+}
+
+/// Sets the instants of `run`'s run-level grant row to `at_us` (microseconds since the epoch), as the owner, with the guard
+/// switched off for this transaction only (decision D022-072); a lock it would wait for fails it within five seconds
+/// instead of hanging the test.
+async fn set_grant_instants(w: &World, run: RunId, at_us: i64) {
+    let mut tx = w.db.pool.begin().await.expect("tx");
+    sqlx::query("SET LOCAL lock_timeout = '5s'")
+        .execute(&mut *tx)
+        .await
+        .expect("a bound on lock waits");
+    sqlx::query("ALTER TABLE rate_limit_grants DISABLE TRIGGER rate_limit_grants_guard")
+        .execute(&mut *tx)
+        .await
+        .expect("the guard off in this transaction");
+    sqlx::query(
+        "UPDATE rate_limit_grants \
+            SET granted_at = 'epoch'::timestamptz + $2 * interval '1 microsecond', \
+                leased_at = 'epoch'::timestamptz + $2 * interval '1 microsecond' \
+          WHERE run_id = $1 AND limit_scope = 'RUN'",
+    )
+    .bind(run.as_uuid())
+    .bind(at_us)
+    .execute(&mut *tx)
+    .await
+    .expect("the grant's instants set");
+    sqlx::query("ALTER TABLE rate_limit_grants ENABLE ALWAYS TRIGGER rate_limit_grants_guard")
+        .execute(&mut *tx)
+        .await
+        .expect("the guard on again");
+    tx.commit().await.expect("set");
+}
+
 /// Moves the instants of `run`'s grant rows by `by_us` microseconds, as the owner, with the guard that forbids it
 /// switched off for this transaction only (module comment: the database clock set back).
 async fn move_grant_instants(w: &World, run: RunId, by_us: i64) {
@@ -1865,4 +1946,185 @@ async fn a_database_clock_set_back_grants_nothing_until_it_catches_up() {
         w.assert_consistent(run).await;
     }
     w.assert_keys_consistent().await;
+}
+
+/// Task T022-115, the second clause of SC-022-017 (decision D022-075 item 7): (1) a second key whose own buffer is
+/// saturated at the same time, its grants coming from the pass, is served at its own limit: with `limit: 1, per:
+/// second` on `sat-a` and `limit: 2, per: second` on `sat-b`, both windows full and three starts buffered behind `sat-b`,
+/// one pass grants `sat-a` one and `sat-b` exactly two, and the third waits; (2) with more keys and tenants holding
+/// buffered starts than one pass visits (a batch of 4 keys; the first tenant has four keys, the second two), the first
+/// pass grants its budget and serves the second tenant, and every eligible key of either tenant is granted within two
+/// passes. Each holder's counted instants are moved ahead while its waiter is admitted (decision D022-072), so every
+/// start queues at a full window whatever the runner's speed; the windows age out on the database clock.
+#[tokio::test]
+async fn a_second_saturated_key_is_served_at_its_own_limit_and_every_tenant_within_two_passes() {
+    let w = gated_world().await;
+    // (1) two saturated keys of their own limits
+    let one = publish(&w, rated_start("fault-rate-sat-one", 1, "second")).await;
+    let two = publish(&w, rated_start("fault-rate-sat-two", 2, "second")).await;
+    let (holder_a, waiter_a) = admitted_behind(&w, one, "sat-a", false).await;
+    let input = json!({"accountId": "sat-b"});
+    let holders_b = [w.start(two, &input).await, w.start(two, &input).await];
+    for holder in holders_b {
+        move_grant_instants(&w, holder, ADMISSION_MARGIN_US).await;
+    }
+    let mut waiters_b = Vec::new();
+    for _ in 0..3 {
+        let waiter = w.start(two, &input).await;
+        assert_eq!(start_rows(&w, waiter).await, (0, 1), "sat-b is full");
+        waiters_b.push(waiter);
+    }
+    for holder in holders_b {
+        move_grant_instants(&w, holder, -ADMISSION_MARGIN_US).await;
+    }
+    let mut latest = granted_us(&w, holder_a).await;
+    for holder in holders_b {
+        latest = latest.max(granted_us(&w, holder).await);
+    }
+    until_past(&w.db.pool, latest + SECOND_US).await;
+    // the keys are due now: a start queued at a full window rests its key to the moved slots' age-out
+    keys_due(&w).await;
+    let report = w.scheduler.grant_gates().await;
+    assert_eq!(
+        report.gates_granted, 3,
+        "one of sat-a, two of sat-b: {report:?}"
+    );
+    assert_eq!(start_rows(&w, waiter_a).await, (1, 0));
+    assert_eq!(start_rows(&w, waiters_b[0]).await, (1, 0));
+    assert_eq!(start_rows(&w, waiters_b[1]).await, (1, 0));
+    assert_eq!(
+        start_rows(&w, waiters_b[2]).await,
+        (0, 1),
+        "sat-b is served at its own limit"
+    );
+    let mut b_grants: Vec<i64> = Vec::new();
+    for waiter in &waiters_b[..2] {
+        b_grants.push(granted_us(&w, *waiter).await);
+    }
+    at_most_per_window(&b_grants, 2, SECOND_US);
+    // the third leaves, so that the passes below count only the keys of their own clause
+    w.operate_run(waiters_b[2], sagat_application::runs::RunOperation::Cancel)
+        .await;
+
+    // (2) more keys and tenants than one pass visits
+    let doc = rated_start("fault-rate-tenants", 1, "second");
+    let mine = publish(&w, doc.clone()).await;
+    let theirs = crate::support::flow_control::publish_as(&w, &w.other_admin, doc).await;
+    let mut waiters = Vec::new();
+    for (other, keys) in [(false, 4), (true, 2)] {
+        for key in 0..keys {
+            let workflow = if other { theirs } else { mine };
+            let account = format!("tenant-{}-key-{key}", u8::from(other));
+            let (holder, waiter) = admitted_behind(&w, workflow, &account, other).await;
+            waiters.push((other, holder, waiter));
+        }
+    }
+    let mut latest = 0;
+    for (_, holder, _) in &waiters {
+        latest = latest.max(granted_us(&w, *holder).await);
+    }
+    until_past(&w.db.pool, latest + SECOND_US).await;
+    keys_due(&w).await;
+    let narrow = scheduler(
+        &w,
+        SchedulerSettings {
+            batch: 4,
+            ..SchedulerSettings::default()
+        },
+        None,
+    );
+    let first = narrow.grant_gates().await;
+    assert_eq!(
+        first.gates_granted, 4,
+        "one pass's budget of keys: {first:?}"
+    );
+    let mut other_served = 0;
+    for (other, _, waiter) in &waiters {
+        if *other && start_rows(&w, *waiter).await.0 == 1 {
+            other_served += 1;
+        }
+    }
+    assert!(
+        other_served >= 1,
+        "the second tenant is served in the first pass"
+    );
+    let second = narrow.grant_gates().await;
+    assert_eq!(second.gates_granted, 2, "{second:?}");
+    for (other, holder, waiter) in &waiters {
+        assert_eq!(
+            start_rows(&w, *waiter).await,
+            (1, 0),
+            "every eligible key granted within two passes"
+        );
+        let grants: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM run_events WHERE run_id = $1 AND event_type = 'rate_limit.granted'",
+        )
+        .bind(waiter.as_uuid())
+        .fetch_one(&w.db.pool)
+        .await
+        .expect("grants");
+        assert_eq!(grants, 1, "granted once");
+        // the second tenant's runs are checked by the key-wide check below (the world reads the first tenant's)
+        if !*other {
+            w.assert_consistent(*holder).await;
+            w.assert_consistent(*waiter).await;
+        }
+    }
+    for run in [holder_a, waiter_a]
+        .into_iter()
+        .chain(holders_b)
+        .chain(waiters_b)
+    {
+        w.assert_consistent(run).await;
+    }
+    w.assert_keys_consistent().await;
+}
+
+/// Decision D022-077 item 1 at its call site: a grant pass visits the scheduler's batch of keys, never more than 256
+/// (`KEYS_PER_GRANT_PASS`). With a batch of 300 and 257 rate keys due (each with a holder and a start buffered behind
+/// it at `limit: 1, per: hour`, every window's hint set to a second ago as the owner), one pass visits exactly 256: it
+/// grants nothing (each window is full) and rests every key it visited to its age-out instant, so one key is left due;
+/// the next pass visits that one.
+#[tokio::test]
+async fn a_grant_pass_visits_at_most_256_keys_whatever_its_batch() {
+    const KEYS: usize = 257;
+    let w = gated_world().await;
+    let workflow = publish(&w, rated_start("fault-rate-wide-pass", 1, "hour")).await;
+    for key in 0..KEYS {
+        let input = json!({"accountId": format!("wide-{key}")});
+        w.start(workflow, &input).await;
+        let waiter = w.start(workflow, &input).await;
+        assert_eq!(start_rows(&w, waiter).await, (0, 1));
+    }
+    sqlx::query("UPDATE rate_limit_windows SET next_eligible_at = now() - interval '1 second'")
+        .execute(&w.db.pool)
+        .await
+        .expect("every key due");
+    let due = || async {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM rate_limit_windows WHERE waiters > 0 AND next_eligible_at <= now()",
+        )
+        .fetch_one(&w.db.pool)
+        .await
+        .expect("due keys")
+    };
+    assert_eq!(due().await, i64::try_from(KEYS).expect("keys"));
+    let wide = scheduler(
+        &w,
+        SchedulerSettings {
+            batch: 300,
+            ..SchedulerSettings::default()
+        },
+        None,
+    );
+    let first = wide.grant_gates().await;
+    assert_eq!(first.gates_granted, 0, "{first:?}");
+    assert_eq!(
+        due().await,
+        1,
+        "one pass visits 256 keys, not the batch of 300"
+    );
+    let second = wide.grant_gates().await;
+    assert_eq!(second.gates_granted, 0, "{second:?}");
+    assert_eq!(due().await, 0, "the next pass visits the one left");
 }

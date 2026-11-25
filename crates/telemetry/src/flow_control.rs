@@ -7,8 +7,9 @@
 //!
 //! The gate records them after each commit: the decisions, grants, timeouts, dequeues and returns of both levels are
 //! counted since decision D022-045 (the readiness gate, the grant and timeout routines, T022-096..098) and the run's
-//! start since T022-022 and T022-072; the wait histograms, waiter gauges and alerts are task T022-082's (decision
-//! D022-077 item 8).
+//! start since T022-022 and T022-072. The wait histograms and the grant lag are observed at each grant from the queue,
+//! after its commit, and the waiter and unleased-grant gauges are set by the engine's monitor every look (task T022-082,
+//! decision D022-083), which also raises the four flow-control alerts.
 
 /// The `scope` label: a run's start or a step's attempt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -847,11 +847,14 @@ impl PgRunTx {
     ) -> Result<i64, StoreError> {
         let statement = match gate.kind {
             GateKind::Concurrency => {
-                "SELECT count(*) FROM (SELECT 1 FROM concurrency_waiters w \
+                concat!(
+                    "SELECT count(*) FROM (SELECT 1 FROM concurrency_waiters w \
                                   JOIN runs r ON r.tenant_id = w.tenant_id AND r.id = w.run_id \
                                  WHERE w.tenant_id = $1 AND w.namespace_id = $2 AND w.pool = $3 \
                                    AND w.permit_scope = $6 AND w.group_name = $4 AND w.key_digest = $5 \
-                                   AND w.deadline_at > $7 AND r.status IN ('RUNNING', 'WAITING') AND NOT r.paused \
+                                   AND ",
+                    eligible_gate_waiter!("w", "r", "$7"),
+                    " \
                                    AND least(coalesce(w.pinned_limit, w.declared_limit), $11::bigint) > \
                                        (SELECT s.holders FROM concurrency_semaphores s \
                                          WHERE s.tenant_id = w.tenant_id AND s.namespace_id = w.namespace_id \
@@ -859,11 +862,13 @@ impl PgRunTx {
                                            AND s.group_name = w.group_name AND s.key_digest = w.key_digest) \
                                    AND $8::bigint >= 0 AND $9::bigint >= 0 AND $10::bigint >= 0 \
                                  ORDER BY w.enqueued_at, w.run_id, w.node LIMIT $12) eligible"
+                )
             }
             // each waiter counts the key's grants over its own window (D022-009): the count is taken once for each window
             // length up to the longest the window row has seen, which is at least every waiter's
             GateKind::RateLimit => {
-                "WITH counted AS ( \
+                concat!(
+                    "WITH counted AS ( \
                    SELECT p.ms, (SELECT count(*) FROM rate_limit_grants g \
                                   WHERE g.tenant_id = k.tenant_id AND g.namespace_id = k.namespace_id \
                                     AND g.pool = k.pool AND g.limit_scope = k.limit_scope \
@@ -878,13 +883,16 @@ impl PgRunTx {
                                   LEFT JOIN counted c ON c.ms = w.period_ms \
                                  WHERE w.tenant_id = $1 AND w.namespace_id = $2 AND w.pool = $3 \
                                    AND w.limit_scope = $6 AND w.group_name = $4 AND w.key_digest = $5 \
-                                   AND w.deadline_at > $7 AND r.status IN ('RUNNING', 'WAITING') AND NOT r.paused \
+                                   AND ",
+                    eligible_gate_waiter!("w", "r", "$7"),
+                    " \
                                    AND least(coalesce(w.pinned_limit, w.declared_limit), \
                                              CASE w.period_ms WHEN 1000 THEN $8::bigint \
                                              WHEN 60000 THEN $9::bigint WHEN 3600000 THEN $10::bigint \
                                              ELSE w.declared_limit END) > coalesce(c.n, 0) \
                                    AND $11::bigint >= 0 \
                                  ORDER BY w.enqueued_at, w.run_id, w.node LIMIT $12) eligible"
+                )
             }
         };
         sqlx::query_scalar(statement)
@@ -1842,8 +1850,13 @@ pub(super) enum GateOutcome {
     /// Granted at once by the readiness gate.
     Granted,
     Queued,
-    /// Granted by the grant routine.
-    GrantedFromQueue,
+    /// Granted by the grant routine, with how long the waiter waited (from its queueing to its grant) and, for a slot of
+    /// the pass's own rate-limit key, the grant's lag (from the instant the key became due, or the waiter's queueing if
+    /// later, to the grant), both in microseconds of the database clock (T022-082; decision D022-083).
+    GrantedFromQueue {
+        waited_us: Option<i64>,
+        lag_us: Option<i64>,
+    },
     TimedOut,
     Dequeued,
     /// A permit released or an unleased slot returned.
@@ -1856,7 +1869,10 @@ impl GateOutcome {
             GateChange::ConcurrencyAcquired => Self::Granted,
             GateChange::RateGranted { from_queue, .. } => {
                 if from_queue {
-                    Self::GrantedFromQueue
+                    Self::GrantedFromQueue {
+                        waited_us: None,
+                        lag_us: None,
+                    }
                 } else {
                     Self::Granted
                 }
@@ -1947,15 +1963,30 @@ pub(super) fn record_gate_outcomes(
     scope: sagat_telemetry::flow_control::FlowControlScope,
 ) {
     use sagat_telemetry::flow_control::{
-        ConcurrencyOutcome, RateLimitOutcome, record_concurrency, record_rate_limit,
+        ConcurrencyOutcome, RateLimitOutcome, record_concurrency, record_concurrency_wait,
+        record_grant_lag, record_rate_limit, record_rate_limit_wait,
     };
+    #[allow(clippy::cast_precision_loss)] // a histogram's observation
+    let seconds = |us: i64| us.max(0) as f64 / 1_000_000.0;
     for (kind, outcome) in outcomes {
+        // the wait of a waiter granted from the queue, and the lag of a slot's grant (plan "Observability"; T022-082)
+        if let GateOutcome::GrantedFromQueue { waited_us, lag_us } = outcome {
+            if let Some(waited) = waited_us {
+                match kind {
+                    GateKind::Concurrency => record_concurrency_wait(scope, seconds(*waited)),
+                    GateKind::RateLimit => record_rate_limit_wait(scope, seconds(*waited)),
+                }
+            }
+            if let (GateKind::RateLimit, Some(lag)) = (kind, lag_us) {
+                record_grant_lag(seconds(*lag));
+            }
+        }
         match kind {
             GateKind::Concurrency => {
                 let label = match outcome {
                     GateOutcome::Granted => Some(ConcurrencyOutcome::Acquired),
                     GateOutcome::Queued => Some(ConcurrencyOutcome::Queued),
-                    GateOutcome::GrantedFromQueue => Some(ConcurrencyOutcome::Granted),
+                    GateOutcome::GrantedFromQueue { .. } => Some(ConcurrencyOutcome::Granted),
                     GateOutcome::TimedOut => Some(ConcurrencyOutcome::TimedOut),
                     GateOutcome::Dequeued => Some(ConcurrencyOutcome::Dequeued),
                     // a release is not an acquisition: the vocabulary has no outcome for it
@@ -1970,7 +2001,7 @@ pub(super) fn record_gate_outcomes(
                 match outcome {
                     GateOutcome::Granted => RateLimitOutcome::Granted,
                     GateOutcome::Queued => RateLimitOutcome::Queued,
-                    GateOutcome::GrantedFromQueue => RateLimitOutcome::GrantedFromQueue,
+                    GateOutcome::GrantedFromQueue { .. } => RateLimitOutcome::GrantedFromQueue,
                     GateOutcome::TimedOut => RateLimitOutcome::TimedOut,
                     GateOutcome::Dequeued => RateLimitOutcome::Dequeued,
                     GateOutcome::GivenBack => RateLimitOutcome::SlotReturned,
@@ -2209,6 +2240,56 @@ mod tests {
     }
     use sagat_domain::workflow::GateKind;
 
+    /// T022-082: a waiter granted from the queue records how long it waited, by family and scope, and a slot's grant its
+    /// lag, in the closed vocabulary; a grant at once and a grant without the readings record neither.
+    #[test]
+    fn a_grant_from_the_queue_records_its_wait_and_a_slot_its_lag() {
+        let (telemetry, recorder) =
+            sagat_telemetry::Metrics::detached(std::time::Duration::from_secs(60));
+        let from_queue = GateOutcome::GrantedFromQueue {
+            waited_us: Some(2_500_000),
+            lag_us: Some(750_000),
+        };
+        metrics::with_local_recorder(&recorder, || {
+            record_gate_outcomes(
+                &[
+                    (GateKind::Concurrency, from_queue),
+                    (GateKind::RateLimit, from_queue),
+                    (GateKind::RateLimit, GateOutcome::Granted),
+                ],
+                sagat_telemetry::flow_control::FlowControlScope::Run,
+            );
+        });
+        let rendered = telemetry.render();
+        let line = |prefix: &str| {
+            rendered
+                .lines()
+                .find(|line| line.starts_with(prefix))
+                .unwrap_or_else(|| panic!("{prefix}: {rendered}"))
+                .to_owned()
+        };
+        assert!(
+            line("concurrency_wait_seconds_sum{scope=\"run\"}").ends_with(" 2.5"),
+            "{rendered}"
+        );
+        assert!(
+            line("concurrency_wait_seconds_count{scope=\"run\"}").ends_with(" 1"),
+            "{rendered}"
+        );
+        assert!(
+            line("rate_limit_wait_seconds_sum{scope=\"run\"}").ends_with(" 2.5"),
+            "{rendered}"
+        );
+        assert!(
+            line("rate_limit_grant_lag_seconds_sum").ends_with(" 0.75"),
+            "{rendered}"
+        );
+        assert!(
+            line("rate_limit_grant_lag_seconds_count").ends_with(" 1"),
+            "{rendered}"
+        );
+    }
+
     /// G022-001: what a committed transaction decided is counted once per gate, step scope, in the closed vocabulary;
     /// a released permit is not an acquisition and is not counted as one.
     #[test]
@@ -2218,7 +2299,10 @@ mod tests {
         let all = [
             GateOutcome::Granted,
             GateOutcome::Queued,
-            GateOutcome::GrantedFromQueue,
+            GateOutcome::GrantedFromQueue {
+                waited_us: None,
+                lag_us: None,
+            },
             GateOutcome::TimedOut,
             GateOutcome::Dequeued,
             GateOutcome::GivenBack,

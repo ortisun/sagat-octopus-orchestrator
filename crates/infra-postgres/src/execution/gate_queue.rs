@@ -227,7 +227,8 @@ impl PgRunTx {
     ) -> Result<bool, StoreError> {
         let statement = match queued.kind {
             GateKind::Concurrency => {
-                "WITH taken AS (SELECT holders::bigint AS n FROM concurrency_semaphores \
+                concat!(
+                    "WITH taken AS (SELECT holders::bigint AS n FROM concurrency_semaphores \
                                  WHERE tenant_id = $1 AND namespace_id = $2 AND pool = $3 AND permit_scope = $11 \
                                    AND group_name = $4 AND key_digest = $5) \
                  SELECT taken.n, (SELECT count(*) FROM (SELECT 1 FROM concurrency_waiters w \
@@ -235,17 +236,20 @@ impl PgRunTx {
                                   WHERE w.tenant_id = $1 AND w.namespace_id = $2 AND w.pool = $3 \
                                     AND w.permit_scope = $11 AND w.group_name = $4 AND w.key_digest = $5 \
                                     AND (w.enqueued_at, w.run_id, w.node) < ($6, $7, $8) \
-                                    AND w.deadline_at > $12 \
-                                    AND r.status IN ('RUNNING', 'WAITING') AND NOT r.paused \
+                                    AND ",
+                    eligible_gate_waiter!("w", "r", "$12"),
+                    " \
                                     AND least(coalesce(w.pinned_limit, w.declared_limit), $16::bigint) > taken.n \
                                     AND $9::bigint >= 0 \
                                     AND $17::timestamptz IS NOT NULL \
                                     AND $13::bigint >= 0 AND $14::bigint >= 0 AND $15::bigint >= 0 LIMIT $10) ahead) \
                    FROM taken"
+                )
             }
             // a step's grant counts while it is unleased and for its window after its lease (data-model, Rate limits)
             GateKind::RateLimit => {
-                "WITH counted AS ( \
+                concat!(
+                    "WITH counted AS ( \
                    SELECT p.ms, (SELECT count(*) FROM rate_limit_grants g \
                                   WHERE g.tenant_id = k.tenant_id AND g.namespace_id = k.namespace_id \
                                     AND g.pool = k.pool AND g.limit_scope = k.limit_scope \
@@ -264,13 +268,15 @@ impl PgRunTx {
                                   WHERE w.tenant_id = $1 AND w.namespace_id = $2 AND w.pool = $3 \
                                     AND w.limit_scope = $11 AND w.group_name = $4 AND w.key_digest = $5 \
                                     AND (w.enqueued_at, w.run_id, w.node) < ($6, $7, $8) \
-                                    AND w.deadline_at > $12 \
-                                    AND r.status IN ('RUNNING', 'WAITING') AND NOT r.paused \
+                                    AND ",
+                    eligible_gate_waiter!("w", "r", "$12"),
+                    " \
                                     AND least(coalesce(w.pinned_limit, w.declared_limit), \
                                               CASE w.period_ms WHEN 1000 THEN $13 \
                                               WHEN 60000 THEN $14 WHEN 3600000 THEN $15 \
                                               ELSE w.declared_limit END) > coalesce(c.n, 0) \
                                     AND $16::bigint >= 0 LIMIT $10) ahead)"
+                )
             }
         };
         let (taken, ahead): (i64, i64) = sqlx::query_as(statement)
@@ -439,7 +445,23 @@ impl PgRunTx {
             } else {
                 &mut self.run_gate_outcomes
             };
-            outcomes.push((q.kind, GateOutcome::GrantedFromQueue));
+            // how long it waited, and for a slot of the pass's own key the grant's lag: from the instant the key became
+            // due (its hint, early and never late) or the waiter's queueing if later (T022-082; decision D022-083)
+            let micros = |d: time::Duration| i64::try_from(d.whole_microseconds()).ok();
+            let own = q.kind == order.kind
+                && level_of(node).0 == order.level
+                && q.group == *order.group
+                && q.digest == *order.digest;
+            let lag_us = (own && q.kind == GateKind::RateLimit)
+                .then(|| micros(now - order.due_at.max(q.enqueued_at)))
+                .flatten();
+            outcomes.push((
+                q.kind,
+                GateOutcome::GrantedFromQueue {
+                    waited_us: micros(now - q.enqueued_at),
+                    lag_us,
+                },
+            ));
             events.push(GateEvent {
                 target: node.map_or(GateTarget::Run, |node| GateTarget::Step {
                     node: node.clone(),

@@ -3,9 +3,9 @@
 For operators of a deployment that turns on concurrency keys or rate limits. Sections 1 to 4 cover the two things the
 owner decided on 2026-11-19: how the digest key of the flow-control keys is rotated, including in an emergency
 (OD-2026-11-19-2), and how far the namespace's live-keys ceiling can be passed (OD-2026-11-19-4). Sections 5 and 6 cover
-queued runs and rate limits; section 7 the activation of the two capabilities; sections 8 to 10 the three alerts; section
+queued runs and rate limits; section 7 the activation of the two capabilities; sections 8 to 10 and 14 the four alerts; section
 11 how to read the key listings during an incident; section 12 the clocks; section 13 what happens when a limit or a
-namespace ceiling is lowered (T022-061, T022-088). How the gates work inside the engine is in
+namespace ceiling is lowered (T022-061, T022-082, T022-088). How the gates work inside the engine is in
 [execution semantics](../architecture/execution-semantics.md#flow-control-gates-feature-022-release-030).
 
 Design: [ADR-0093](../adr/ADR-0093-the-flow-control-digest-key-is-rotated-per-key-with-live-rows.md) (decisions 1 to 5),
@@ -55,9 +55,13 @@ is live.
 
 ### 1.2 Turning concurrency keys on
 
-**Not in production before T022-104** (G022-015): publication does not yet refuse a key over a `secret` field. Until
-then a key's label and its whole oldest instants are shown only to callers with the namespace's reveal grant; other
-readers get the instants truncated to the minute, which narrows but does not stop linking a key's runs (D022-061).
+**Not in production before T022-104 and T022-111 are ticked** (G022-015, G022-014). Built on 2026-11-25 (D022-085):
+publication refuses a key over a `secret` field (`FLOW_CONTROL_KEY_SECRET`) and warns one over a `pii` field, an
+unclassified one included (`FLOW_CONTROL_KEY_PII`); a run shows its key's label to a caller who may disclose every field
+the key reads (public: every reader; internal: a role that reads internal payloads; pii: the reveal grant). The key
+listings show keys, by label with whole instants, only to callers with the namespace's reveal grant; every other reader
+gets one row per pool, scope and group (`view: GROUPS`: keys, holders or grants, waiters, oldest wait, whole instants),
+which links no run to another (D022-061, D022-086).
 
 **Turning the switch off** stops new gated publications and starts; keep the key file mounted so that what was admitted
 drains: a process with the switches off that is given the file still lists the gate (so a fleet that requires it keeps
@@ -185,7 +189,10 @@ with nothing created, when the key's queue is full (`CONCURRENCY_QUEUE_FULL`), t
 the key would be new beyond `concurrency_live_keys` (`FLOW_CONTROL_LIMIT`). Each refusal is counted
 `concurrency_acquisitions_total{scope="run",outcome="refused_full"}`.
 
-- `queued_runs` is exact: every start holds the namespace's admission lock while it is decided (D022-051).
+- `queued_runs` is exact: every start holds the namespace's admission lock while it is decided (D022-051). It is read
+  from the sixteen slot rows of `flow_control_counts`, which triggers on the waiter rows keep (a run that waits for both
+  gates counts once; T022-105, D022-084): `SELECT sum(queued_runs) FROM flow_control_counts WHERE namespace_id =
+  '<namespace>'`. Never edit them by hand: the runtime role cannot, and the owner would make the ceiling lie.
 - A start delay takes its permit or queues at its release, and a reset takes a fresh permit or is refused
   `CONCURRENCY_PERMIT_UNAVAILABLE` (D022-052, D022-053). A workflow with a `forEach`, `while` or `repeatUntil` node
   beside a top-level gate is refused `BINARY_CAPABILITY_MISSING` in this build (G1197). A reset of a run whose start
@@ -199,7 +206,7 @@ the key would be new beyond `concurrency_live_keys` (`FLOW_CONTROL_LIMIT`). Each
 T022-113: the rate twins of the run creators split from T022-086, the reset of a rate-limited run, which is done
 (D022-069 item 7); G022-018: the deployment-wide purge scans every grant a call, in no order,
 and has no backlog gauge). Task T022-114 (gap G022-019, a `CANCEL_SOURCE` reset on a full key) is deliberately not a
-gate: the strategy is off by default and its failure is recorded (D022-069 item 8). The consistency check of the rate tables across runs (T022-079) and
+gate: the strategy is off by default and its failure is recorded (D022-069 item 8); since D022-079 a request whose key's window is full when it arrives is refused `RATE_LIMIT_SLOT_UNAVAILABLE` before the source is cancelled (advisory: retry it once a slot stops counting, or use `REQUIRE_TERMINAL`). The consistency check of the rate tables across runs (T022-079) and
 the lock-order barriers (T022-081) are done. Finish the rolling upgrade before resetting a rate-limited run: a replica built
 before T022-086 cannot read the `restored` copy of a `rate_limit.*` event, and for the same reason never roll an engine
 back past T022-086 once a rate-limited run was reset (D022-069 item 6). A refused reset counts `refused_reset` in each
@@ -280,14 +287,15 @@ file mounted so that what was admitted drains (section 1.2); removing the requir
 
 ## 8. Alert `CONCURRENCY_QUEUE_STUCK` (the plan's `concurrency_queue_stuck`)
 
-**Warning.** Built by task T022-082: the monitor of this tree does not raise it yet. This section is the behaviour the
-code follows (plan, "Observability": "oldest waiter older than its key's longest holder by a threshold while capacity
-is zero").
+**Warning.** Raised by the engine's monitor (task T022-082; plan, "Observability": "oldest waiter older than its key's
+longest holder by a threshold while capacity is zero").
 
 **Meaning.** A concurrency key of the namespace has no room (its holders are at the limit of its oldest eligible waiter)
 and that waiter queued more than the threshold before the key's oldest current holder took its permit: every permit it
 waits for was given, after it queued, to someone else. Eligible is the grant routine's word: not paused, not past its
-deadline, of a live run. The **subject** is the key's group (`=<workflow>` or `=<workflow>/<node>` when derived); an
+deadline, of a live run. The limit is the lower of the waiter's declaration and the namespace's current
+`concurrency_limit`, as the grant routine decides it (D022-074), read once a look per namespace. `items` is the number
+of keys of the group in the condition; `oldestSeconds` how long the longest of their waiters has waited. The **subject** is the key's group (`=<workflow>` or `=<workflow>/<node>` when derived); an
 alert never carries a key's value or its label. One alert per group, with the number of keys in that condition.
 
 **Threshold.** `SAGAT_ALERT_UNCLAIMED_SECS` (300 by default), the time the monitor already gives a step that no worker
@@ -323,7 +331,7 @@ Never copy `key_digest` out of the database: it is the key's identity under the 
   fall below it.
 - A waiter of a run that already ended. That is an invariant breach: the pass skips it, logs `a flow-control waiter of a
   run that ended: an invariant breach, skipped` and counts `scheduler_actions_total{kind="gate_grant",outcome="orphan"}`;
-  it is not counted ahead of anyone. It has no alert of its own yet (gap G022-005, task T022-082).
+  it is not counted ahead of anyone, and alert `FLOW_CONTROL_WAITER_ORPHANED` fires for its group (section 14).
 
 **Not this alert.** A holder that never ends (a run in `MANUAL_REVIEW` keeps its permit, a long attempt keeps a step's)
 leaves `oldestHolderSince` older than every waiter: the waiters time out at their deadline (`CONCURRENCY_WAIT_TIMEOUT`,
@@ -343,8 +351,7 @@ remove the fleet requirement to unblock a queue: it stops gating every key.
 
 ## 9. Alert `RATE_LIMIT_GRANT_LAGGING` (the plan's `rate_limit_grant_lagging`)
 
-**Critical.** Built by task T022-082: the monitor of this tree does not raise it yet; this section is the behaviour
-the code follows (FR-022-049; plan, "Observability (rate limits)").
+**Critical.** Raised by the engine's monitor (task T022-082; FR-022-049; plan, "Observability (rate limits)").
 
 **Meaning.** A rate-limit key of the namespace has had waiters and a slot that may be free for longer than the
 threshold, and no grant pass has served it: the pass is not keeping up, or no live replica holds the key's home shard.
@@ -360,10 +367,13 @@ pass visits (decision D022-073 item 5; SC-022-017).
 **Threshold.** `SAGAT_ALERT_LEASE_GRACE_SECS` (60 by default), the grace the monitor already gives the scheduler to take
 back an expired lease: both say "the scheduler has not done what a tick does".
 
-**Metric.** `rate_limit_grant_lag_seconds` (histogram, no label: from the instant a slot was free with a waiter present
-to the grant; built by task T022-082). Today: `scheduler_actions_total{kind="gate_grant"}` and
-`{kind="rate_lease"}` by `outcome`, and the deployment-wide scheduler rules of
-[`infra/observability/alerts.yaml`](../../infra/observability/alerts.yaml) (shard ownership, scheduler lag).
+**Metric.** `rate_limit_grant_lag_seconds` (histogram, no label): for each slot the grant pass grants from the buffer,
+the time from the instant the key became due (its next-eligible hint as the pass selected it, or the waiter's queueing
+if later) to the grant. The hint is early and never late, so the figure is the most the slot can have been free with
+the waiter present (decision D022-083). Beside it `rate_limit_wait_seconds{scope}` (from a waiter's queueing to its
+grant), `scheduler_actions_total{kind="gate_grant"}` and `{kind="rate_lease"}` by `outcome`, and the deployment-wide
+scheduler rules of [`infra/observability/alerts.yaml`](../../infra/observability/alerts.yaml) (shard ownership,
+scheduler lag).
 
 **Confirm.**
 
@@ -410,8 +420,8 @@ key ring to "help": it grants nothing and, once the requirement is recorded, ser
 
 ## 10. Alert `RATE_LIMIT_QUEUE_SATURATED` (the plan's `rate_limit_queue_saturated`)
 
-**Warning.** Built by task T022-082: the monitor of this tree does not raise it yet; this section is the behaviour the
-code follows (FR-022-049; plan, "Observability (rate limits)": "a key's waiters above 80% of its ceiling").
+**Warning.** Raised by the engine's monitor (task T022-082; FR-022-049; plan, "Observability (rate limits)": "a key's
+waiters above 80% of its ceiling").
 
 **Meaning.** A rate-limit key's buffer of run starts is more than 80% full: its waiters are above 80% of the namespace's
 effective `flow_control_key_waiters` (100 by default, 10,000 at most, and always below the effective `queued_runs`;
@@ -424,9 +434,9 @@ nothing created; an event or a cron start stays pending under its retry (the inb
 
 **Threshold.** 80% of the effective ceiling, as the plan says; no setting.
 
-**Metric.** `rate_limit_waiters{scope="run"}` (gauge, deployment-wide; built by task T022-082). Today:
-`rate_limit_decisions_total{scope="run",outcome="queued"}` against `{outcome="granted_from_queue"}` (arrivals against
-starts) and `{outcome="refused_full"}` (refusals, once full).
+**Metric.** `rate_limit_waiters{scope="run"}` (gauge, deployment-wide, set by the monitor every look from the key rows'
+counters), and `rate_limit_decisions_total{scope="run",outcome="queued"}` against `{outcome="granted_from_queue"}`
+(arrivals against starts) and `{outcome="refused_full"}` (refusals, once full).
 
 **Confirm.** `GET /namespaces/{namespaceId}/rate-limit-keys` (section 11): `waiters`, `queuedRuns`, `nextSlotAt`. In SQL:
 
@@ -559,3 +569,43 @@ FR-022-046; ADR-0056 decision 7). What a lowered value changes is the next decis
 The ceilings are quota resources of the namespace (a namespace's value, else the tenant's default, else the
 deployment's), changed through the quota policy of feature 009; each change is audited by the existing quota-policy
 audit, and no flow-control audit action is added (plan, "Observability (rate limits)").
+
+## 14. Alert `FLOW_CONTROL_WAITER_ORPHANED` (the plan's `flow_control_waiter_orphaned`)
+
+**Critical.** Raised by the engine's monitor (task T022-082; decision D022-077 item 4; invariant 12 of
+`specs/022-flow-control-step-policies/data-model.md`; gap G022-005).
+
+**Meaning.** A waiter row of a concurrency key or a rate-limit key belongs to a run that ended. No path of the platform
+leaves one: every end of a run gives back its gates in the same commit. It is an invariant breach, so any one is a
+condition, whatever its age. The grant pass skips such a waiter, logs `a flow-control waiter of a run that ended: an
+invariant breach, skipped` and counts `scheduler_actions_total{kind="gate_grant",outcome="orphan"}`; it is not counted
+ahead of anyone, so no waiter is held back by it. The **subject** is the waiter's group; `items` the orphaned waiters
+of the group; `oldestSeconds` how long ago the oldest queued.
+
+**Threshold.** None: one orphaned waiter is the condition.
+
+**Confirm.**
+
+```sql
+SELECT 'concurrency' AS gate, w.group_name, w.run_id, w.node, w.enqueued_at, r.status, r.finished_at
+  FROM concurrency_waiters w JOIN runs r ON r.tenant_id = w.tenant_id AND r.id = w.run_id
+ WHERE w.namespace_id = '<namespace>' AND r.finished_at IS NOT NULL
+UNION ALL
+SELECT 'rate', w.group_name, w.run_id, w.node, w.enqueued_at, r.status, r.finished_at
+  FROM rate_limit_waiters w JOIN runs r ON r.tenant_id = w.tenant_id AND r.id = w.run_id
+ WHERE w.namespace_id = '<namespace>' AND r.finished_at IS NOT NULL;
+```
+
+**Likely causes.** A row written or kept by hand (a restore of part of the database, an edit against section 8's
+**Never**); a defect of the platform, which is what the alert is for: keep the run's journal
+(`GET /runs/{runId}/events`) and the rows above for the report.
+
+**Safe actions.** The waiter holds nothing and is never granted, so nothing is over-admitted while it stays; its key's
+counter of waiters counts it, so it takes one place of the key's buffer (section 10). Report it first. Then, as the
+schema-owning role, delete the waiter row (`DELETE FROM concurrency_waiters` or `rate_limit_waiters` `WHERE run_id = ...
+AND node = ...`): the triggers keep the key's counters and the namespace's queued runs in step, and a key left empty is
+deleted at the commit.
+
+**Never.** Delete a waiter row of a run that has not ended: that run would wait for ever with nothing to grant it.
+
+**Over when** no waiter of an ended run is left in the namespace.

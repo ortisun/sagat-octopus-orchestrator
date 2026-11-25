@@ -419,11 +419,42 @@ components:
         oldestHolderSince: {type: [string, 'null'], format: date-time}
     ConcurrencyKeyPage:
       type: object
-      required: [items, queuedRuns]
+      required: [view, items, groups, queuedRuns]
       properties:
+        view: {type: string, enum: [KEYS, GROUPS], description: 'KEYS: one row per key in `items`, by its label, for a caller who may reveal personal data in the namespace. GROUPS: one row per pool, scope and group in `groups` (its keys summed, whole instants), for every other caller; `items` is then empty (FR-022-057, D022-061, D022-086).'}
         queuedRuns: {type: integer, minimum: 0}
         items: {type: array, items: {$ref: '#/components/schemas/ConcurrencyKey'}}
+        groups: {type: array, items: {$ref: '#/components/schemas/ConcurrencyKeyGroup'}}
         nextCursor: {type: [string, 'null']}
+    ConcurrencyKeyGroup:
+      type: object
+      additionalProperties: false
+      required: [pool, scope, group, keys, holders, waiters, oldestWaitSince, oldestHolderSince]
+      description: Feature 022 (FR-022-022, T022-111, D022-086). One pool, scope and group of the namespace's concurrency keys, summed over its keys in the page's snapshot; no key's label, value or own count.
+      properties:
+        pool: {type: string, enum: [ORDINARY, DRAFT_TEST]}
+        scope: {type: string, enum: [RUN, STEP]}
+        group: {type: string}
+        keys: {type: integer, minimum: 1, description: 'Its live keys.'}
+        holders: {type: integer, minimum: 0}
+        waiters: {type: integer, minimum: 0}
+        oldestWaitSince: {type: [string, 'null'], format: date-time, description: 'The queueing instant of the group''s oldest waiter, whole; null when nobody waits.'}
+        oldestHolderSince: {type: [string, 'null'], format: date-time, description: 'The acquisition instant of the group''s oldest holder, whole; null when nobody holds.'}
+    RateLimitKeyGroup:
+      type: object
+      additionalProperties: false
+      required: [pool, scope, group, keys, grantsInWindow, unleasedGrants, waiters, oldestWaitSince, nextSlotAt]
+      description: Feature 022 (FR-022-048, T022-111, D022-086). One pool, scope and group of the namespace's rate-limit windows, summed over its windows at the page's instant, each read as RateLimitKey reads it; no key's label, value or own count.
+      properties:
+        pool: {type: string, enum: [ORDINARY, DRAFT_TEST]}
+        scope: {type: string, enum: [RUN, STEP]}
+        group: {type: string}
+        keys: {type: integer, minimum: 1, description: 'Its windows (keys).'}
+        grantsInWindow: {type: integer, minimum: 0}
+        unleasedGrants: {type: integer, minimum: 0}
+        waiters: {type: integer, minimum: 0}
+        oldestWaitSince: {type: [string, 'null'], format: date-time, description: 'The queueing instant of the group''s oldest waiter, whole; null when nobody waits.'}
+        nextSlotAt: {type: [string, 'null'], format: date-time, description: 'The earliest nextSlotAt of its windows.'}
     RateLimitKey:
       description: Release 0.3.0 slice (US07). One window row of the namespace. Counts are a snapshot read without the key's lock, at the page's instant.
       type: object
@@ -442,10 +473,12 @@ components:
     RateLimitKeyPage:
       type: object
       additionalProperties: false
-      required: [items, queuedRuns]
+      required: [view, items, groups, queuedRuns]
       properties:
+        view: {type: string, enum: [KEYS, GROUPS], description: 'KEYS: one row per key in `items`, by its label, for a caller who may reveal personal data in the namespace. GROUPS: one row per pool, scope and group in `groups` (its keys summed, whole instants), for every other caller; `items` is then empty (FR-022-057, D022-061, D022-086).'}
         queuedRuns: {type: integer, minimum: 0}
         items: {type: array, items: {$ref: '#/components/schemas/RateLimitKey'}}
+        groups: {type: array, items: {$ref: '#/components/schemas/RateLimitKeyGroup'}}
         nextCursor: {type: [string, 'null']}
     FailureHandlerStatus:
       type: string

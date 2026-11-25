@@ -377,6 +377,15 @@ PK `(tenant_id, namespace_id, slot)`, `slot` 0..15; `queued_runs bigint`, `live_
 (a run counts once whatever its waiter rows) and on the semaphore and window rows (a key counts once per
 row); `sagat_app` has `SELECT` only, as for `run_active_counts`.
 
+*Revised 2026-11-25 (task T022-105, decision D022-084; migration `20270213000200`):* built as `flow_control_counts
+(tenant_id, namespace_id, slot 0..15, queued_runs bigint)`, CHECK `queued_runs >= 0`, foreign key `(tenant_id,
+namespace_id)` → `namespaces`; the slot is `get_byte(uuid_send(run_id), 15) & 15`, the slots of `run_active_counts`;
+`flow_control_counts_track` (`SECURITY DEFINER`, `search_path = pg_catalog, pg_temp`, every name schema-qualified, not
+executable by the runtime role) runs after each insert and delete of a waiter row of either table and counts a run-scope
+row only, a run once: it adds one only when the run has no run-scope waiter row in the other table and takes one only
+when none is left there. The column `live_keys` is not built: the live keys are counted from the semaphore and window
+rows of the digest versions in force.
+
 ### `flow_control_key_versions`
 
 PK `version smallint`; `state` CHECK `IN ('ACTIVE','RETIRING','RETIRED')` with at most one `ACTIVE`; `activated_at`,
@@ -468,10 +477,10 @@ rows it actually deleted.
 
 - `concurrency_waiters.pinned_limit integer` null and `rate_limit_waiters.pinned_limit integer` null: the declaration
   the run's version pins (`limit` of the policy), before any ceiling, written with every new waiter row; `NULL` in a
-  row written before `20270210000000`. `declared_limit` keeps its meaning on the waiter rows: the filed limit, the
+  row written before `20270213000000`. `declared_limit` keeps its meaning on the waiter rows: the filed limit, the
   declaration clamped by the namespace's ceiling at admission, as the row's `*.queued` event records it. CHECK
   `concurrency_waiters_pinned_limit_valid` and `rate_limit_waiters_pinned_limit_valid` `(pinned_limit IS NULL OR
-  pinned_limit BETWEEN declared_limit AND 10000)`, added `NOT VALID` by `20270210000000` and validated by `20270210000100`. The table
+  pinned_limit BETWEEN declared_limit AND 10000)`, added `NOT VALID` by `20270213000000` and validated by `20270213000100`. The table
   grants of `sagat_app` cover the column (`SELECT, INSERT, DELETE`); a fixed-size column has no storage class.
 - Every decision (admission, the grant routine, the place estimate, the run view) bounds a waiter by
   `least(coalesce(pinned_limit, declared_limit), the namespace's current ceiling)` (of its window's length for a slot,

@@ -202,7 +202,7 @@ function GateFields({ doc, owner, gate, disabled, change }: { doc: IrDocument; o
         label={words.key}
         hint={
           node
-            ? 'An expression over input, steps, state or run, read when the step becomes ready. Empty: one key for the whole group.'
+            ? 'An expression over input, steps or state, read when the step becomes ready. Empty: one key for the whole group.'
             : 'An expression over input, such as input.accountId: runs with the same value share the limit. Empty: one key for the whole group.'
         }
         error={problem('key')}

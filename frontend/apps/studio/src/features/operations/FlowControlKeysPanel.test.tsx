@@ -107,6 +107,33 @@ describe('the flow-control keys of a namespace', () => {
     expect(screen.getByRole('region', { name: 'Rate-limit keys' })).toHaveTextContent(/A hidden key label/);
   });
 
+  it('shows one row per group, and no key, to a caller the platform lists groups to (T022-111, D022-086)', async () => {
+    const { platform, user } = await mount({
+      'GET /namespaces/ns-1/concurrency-keys': (_init, url) => {
+        const query = new URL(url, 'http://studio.test').searchParams;
+        if (query.get('cursor') === 'sealed-groups') {
+          return { view: 'GROUPS', queuedRuns: 3, items: [], groups: [{ pool: 'ORDINARY', scope: 'STEP', group: 'regions', keys: 1, holders: 1, waiters: 0, oldestWaitSince: null, oldestHolderSince: '2026-11-24T09:58:00Z' }], nextCursor: null };
+        }
+        return { view: 'GROUPS', queuedRuns: 3, items: [], groups: [{ pool: 'ORDINARY', scope: 'RUN', group: 'accounts', keys: 2, holders: 2, waiters: 3, oldestWaitSince: '2026-11-24T10:00:05.123Z', oldestHolderSince: '2026-11-24T09:59:00Z' }], nextCursor: 'sealed-groups' };
+      },
+      'GET /namespaces/ns-1/rate-limit-keys': () => ({ view: 'GROUPS', queuedRuns: 3, items: [], groups: [{ pool: 'DRAFT_TEST', scope: 'STEP', group: '=provider-sync/fetch', keys: 4, grantsInWindow: 10, unleasedGrants: 2, waiters: 7, oldestWaitSince: '2026-11-24T10:01:00Z', nextSlotAt: null }], nextCursor: null }),
+    });
+    const table = await screen.findByRole('table', { name: /Concurrency keys of payments, one row per group/ });
+    expect(within(table).getAllByRole('columnheader').map((h) => h.textContent)).toEqual(['Group', 'Applies to', 'Pool', 'Keys', 'Holders', 'Waiters', 'Oldest wait since', 'Oldest holder since']);
+    const row = within(table).getAllByRole('row')[1] as HTMLElement;
+    expect(cells(row).slice(0, 6)).toEqual(['accounts', 'Run starts', 'Ordinary', '2', '2', '3']);
+    expect(cells(row)[6]).not.toMatch(/to the minute/);
+    const region = screen.getByRole('region', { name: 'Concurrency keys' });
+    expect(region).toHaveTextContent(/one row per group, its keys summed, and no key/);
+    expect(region).not.toHaveTextContent(/Key label|Hidden/);
+    await user.click(within(region).getByRole('button', { name: 'Load more concurrency keys' }));
+    await waitFor(() => expect(within(table).getAllByRole('row')).toHaveLength(3));
+    expect(platform.calls.some((call) => call.url.includes('cursor=sealed-groups'))).toBe(true);
+    const rate = await screen.findByRole('table', { name: /Rate-limit keys of payments, one row per group/ });
+    expect(within(rate).getAllByRole('columnheader').map((h) => h.textContent)).toEqual(['Group', 'Applies to', 'Pool', 'Keys', 'Grants in window', 'Unleased grants', 'Waiters', 'Oldest wait since', 'Next slot frees']);
+    expect(cells(within(rate).getAllByRole('row')[1] as HTMLElement)[8]).toBe('Not by time: a granted step frees it when a worker leases it or it is given back');
+  });
+
   it('filters by group with the keyboard and shows the platform refusal of a group that is no group', async () => {
     const { platform, user } = await mount();
     await screen.findByRole('table', { name: /Concurrency keys of payments/ });

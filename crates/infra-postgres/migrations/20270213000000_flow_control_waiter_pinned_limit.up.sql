@@ -7,7 +7,7 @@
 -- Additive: the column is nullable and has no default, so the statement rewrites nothing. A row written before it has
 -- `NULL` and is bounded by its filed limit; an older binary of the rollout neither writes nor reads it, and keeps its
 -- behaviour (a raised ceiling unapplied to the waiters it files). The CHECK is added `NOT VALID`, so no scan runs under
--- the `ACCESS EXCLUSIVE` lock; `20270210000100` validates it under `SHARE UPDATE EXCLUSIVE` (the rule of design 043,
+-- the `ACCESS EXCLUSIVE` lock; `20270213000100` validates it under `SHARE UPDATE EXCLUSIVE` (the rule of design 043,
 -- D043-145, D043-153). The table grants of `sagat_app` (`SELECT, INSERT, DELETE`) cover the column; a fixed-size column
 -- has no storage class.
 --

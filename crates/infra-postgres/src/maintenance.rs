@@ -211,20 +211,26 @@ impl MaintenanceStore for PgRunStore {
     ) -> Result<Vec<sagat_application::flow_control::GateWaiter>, StoreError> {
         let statement = match key.kind {
             sagat_domain::workflow::GateKind::Concurrency => {
-                "SELECT w.tenant_id, w.run_id, w.node FROM concurrency_waiters w \
+                concat!(
+                    "SELECT w.tenant_id, w.run_id, w.node FROM concurrency_waiters w \
                    JOIN runs r ON r.tenant_id = w.tenant_id AND r.id = w.run_id \
                   WHERE w.tenant_id = $1 AND w.namespace_id = $2 AND w.pool = 'ORDINARY' AND w.permit_scope = $6 \
-                    AND w.group_name = $3 AND w.key_digest = $4 AND w.deadline_at > now() \
-                    AND r.status IN ('RUNNING', 'WAITING') AND NOT r.paused \
+                    AND w.group_name = $3 AND w.key_digest = $4 AND ",
+                    eligible_gate_waiter!("w", "r", "now()"),
+                    " \
                   ORDER BY w.enqueued_at, w.run_id, w.node LIMIT $5"
+                )
             }
             sagat_domain::workflow::GateKind::RateLimit => {
-                "SELECT w.tenant_id, w.run_id, w.node FROM rate_limit_waiters w \
+                concat!(
+                    "SELECT w.tenant_id, w.run_id, w.node FROM rate_limit_waiters w \
                    JOIN runs r ON r.tenant_id = w.tenant_id AND r.id = w.run_id \
                   WHERE w.tenant_id = $1 AND w.namespace_id = $2 AND w.pool = 'ORDINARY' AND w.limit_scope = $6 \
-                    AND w.group_name = $3 AND w.key_digest = $4 AND w.deadline_at > now() \
-                    AND r.status IN ('RUNNING', 'WAITING') AND NOT r.paused \
+                    AND w.group_name = $3 AND w.key_digest = $4 AND ",
+                    eligible_gate_waiter!("w", "r", "now()"),
+                    " \
                   ORDER BY w.enqueued_at, w.run_id, w.node LIMIT $5"
+                )
             }
         };
         sqlx::query(statement)

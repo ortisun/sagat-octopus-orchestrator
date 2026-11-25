@@ -30,7 +30,7 @@ use crate::keyed_digest::KeyRing;
 pub struct RunPermit {
     pub pool: GatePool,
     pub group: ResolvedGroup,
-    pub state: RunPermitState,
+    pub state: RunGateState,
     /// The database clock of the statement that acquired the permit (holding) or queued the run (waiting), read after
     /// the key's lock and before its commit.
     pub since: OffsetDateTime,
@@ -45,7 +45,7 @@ impl RunPermit {
         pool: GatePool,
         group: ResolvedGroup,
         digest: [u8; 32],
-        state: RunPermitState,
+        state: RunGateState,
         since: OffsetDateTime,
     ) -> Self {
         Self {
@@ -83,24 +83,15 @@ impl std::fmt::Debug for RunPermit {
     }
 }
 
-/// Whether a run holds its permit or waits for it.
+/// Whether a run's start holds what its gate gives (a permit, or a slot that still counts) or waits for it. Gate-neutral
+/// (task T022-112, decision D022-068 item 6): each body names the state in its gate's words (`HOLDING` for a permit,
+/// `GRANTED` for a slot, `WAITING` for both), so this type carries no word of either.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RunPermitState {
-    Holding,
-    /// Queued; the run is dequeued and fails `CONCURRENCY_WAIT_TIMEOUT` at `deadline` if not granted before.
-    Waiting {
-        deadline: OffsetDateTime,
-    },
-}
-
-impl RunPermitState {
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Holding => "HOLDING",
-            Self::Waiting { .. } => "WAITING",
-        }
-    }
+pub enum RunGateState {
+    /// The permit is held, or the slot was granted and still counts.
+    Held,
+    /// Queued; the run is dequeued and fails with its gate's wait timeout at `deadline` if not granted before.
+    Waiting { deadline: OffsetDateTime },
 }
 
 /// One live concurrency key of a namespace (a `concurrency_semaphores` row), read without its lock.
@@ -125,7 +116,11 @@ pub struct ConcurrencyKeyView {
 /// together, a run once), counted as the `queued_runs` ceiling counts them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConcurrencyKeyPage {
+    /// Whether the page lists keys (`items`) or groups (`groups`): keys only to a caller who may reveal personal data
+    /// in the namespace, groups to every other (decision D022-086).
+    pub view: KeyView,
     pub items: Vec<ConcurrencyKeyView>,
+    pub groups: Vec<ConcurrencyGroupView>,
     pub queued_runs: u64,
     /// The digest key version the database had active in the page's snapshot, which seals its cursor (D022-059); `None`
     /// before any version was activated (then no key exists either).
@@ -141,7 +136,7 @@ pub struct ConcurrencyKeyPage {
 pub struct RunRateSlot {
     pub pool: GatePool,
     pub group: ResolvedGroup,
-    pub state: RunPermitState,
+    pub state: RunGateState,
     /// The database clock of the statement that granted the slot or buffered the run.
     pub since: OffsetDateTime,
     /// The effective limit the row was decided with.
@@ -163,7 +158,7 @@ impl RunRateSlot {
         pool: GatePool,
         group: ResolvedGroup,
         digest: [u8; 32],
-        state: RunPermitState,
+        state: RunGateState,
         since: OffsetDateTime,
         (limit, per): (u32, RatePeriod),
     ) -> Self {
@@ -281,21 +276,20 @@ pub fn estimated_grant(reading: &PlaceReading) -> Option<OffsetDateTime> {
             .is_none_or(|lease| lease + reading.per.duration() > reading.t),
         "a counted lease counts at the reading's instant"
     );
-    if reading.skipped {
-        return None;
-    }
-    let sum = reading.counted.saturating_add(reading.ahead);
-    let at = if sum < u64::from(reading.limit) {
-        reading.t
-    } else {
-        // k = sum - limit + 1, at least 1 here
-        let k = sum - u64::from(reading.limit) + 1;
-        if k > reading.counted {
-            return None;
-        }
-        reading.kth_lease? + reading.per.duration()
-    };
-    (at < reading.deadline).then_some(at)
+    // the domain's one rule of the estimate (task T022-071), in microseconds on the database clock
+    let micros = |at: OffsetDateTime| i64::try_from(at.unix_timestamp_nanos() / 1_000).ok();
+    let estimate =
+        sagat_domain::execution::window::estimate_us(sagat_domain::execution::window::Reading {
+            at_us: micros(reading.t)?,
+            counted: reading.counted,
+            ahead: reading.ahead,
+            limit: reading.limit,
+            kth_lease_us: reading.kth_lease.and_then(micros),
+            per: reading.per,
+            deadline_us: micros(reading.deadline)?,
+            skipped: reading.skipped,
+        })?;
+    OffsetDateTime::from_unix_timestamp_nanos(i128::from(estimate) * 1_000).ok()
 }
 
 /// One rate-limit window row of a namespace, read without its lock at the page's instant (FR-022-048, D022-067).
@@ -321,17 +315,68 @@ pub struct RateLimitKeyView {
 /// A page of rate-limit windows, oldest wait first, and the namespace's queued runs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RateLimitKeyPage {
+    /// As [`ConcurrencyKeyPage::view`].
+    pub view: KeyView,
     pub items: Vec<RateLimitKeyView>,
+    pub groups: Vec<RateLimitGroupView>,
     pub queued_runs: u64,
     /// The digest key version the database had active in the page's snapshot, which seals its cursor.
     pub cursor_version: Option<u16>,
 }
 
-/// Which listing a key's place belongs to: the cursor of one is refused by the other (decision D022-067 item 5).
+/// What a page of a key listing lists (FR-022-022, FR-022-057, decisions D022-061 and D022-086).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyView {
+    /// One row per key, by its label, with its whole instants: for a caller who may reveal personal data in the
+    /// namespace, which covers every level a published key may read (decision D022-085 item 6).
+    Keys,
+    /// One row per pool, scope and group, its keys summed, with whole instants: for every other caller. A group is the
+    /// definition's name or a declared slug, already on each run, so a group row tells nothing a run reader lacks and
+    /// links no run to another (decision D022-061 (b)).
+    Groups,
+}
+
+/// One group of a namespace's concurrency keys, summed over its keys in one snapshot (decision D022-086).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConcurrencyGroupView {
+    pub pool: GatePool,
+    pub scope: GateLevel,
+    pub group: ResolvedGroup,
+    /// Its live keys (rows).
+    pub keys: u64,
+    pub holders: u64,
+    pub waiters: u64,
+    pub oldest_wait_since: Option<OffsetDateTime>,
+    pub oldest_holder_since: Option<OffsetDateTime>,
+    /// Where a page that ends with this group resumes (its digest is all zero: groups are ordered by pool, scope and
+    /// name).
+    pub position: KeyPosition,
+}
+
+/// One group of a namespace's rate-limit windows, summed over its windows at the page's instant (decision D022-086).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RateLimitGroupView {
+    pub pool: GatePool,
+    pub scope: GateLevel,
+    pub group: ResolvedGroup,
+    pub keys: u64,
+    pub grants_in_window: u64,
+    pub unleased_grants: u64,
+    pub waiters: u64,
+    pub oldest_wait_since: Option<OffsetDateTime>,
+    /// The earliest of its windows' next slots.
+    pub next_slot_at: Option<OffsetDateTime>,
+    pub position: KeyPosition,
+}
+
+/// Which listing a place belongs to: the cursor of one is refused by every other (decision D022-067 item 5), the key
+/// and group views of one listing included (decision D022-086).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeyListing {
     Concurrency,
     RateLimit,
+    ConcurrencyGroups,
+    RateLimitGroups,
 }
 
 impl KeyListing {
@@ -339,8 +384,30 @@ impl KeyListing {
         match self {
             Self::Concurrency => "k1",
             Self::RateLimit => "r1",
+            Self::ConcurrencyGroups => "kg1",
+            Self::RateLimitGroups => "rg1",
         }
     }
+
+    /// The listing of this gate in `view`.
+    #[must_use]
+    pub const fn of(self, view: KeyView) -> Self {
+        match (self, view) {
+            (Self::Concurrency | Self::ConcurrencyGroups, KeyView::Keys) => Self::Concurrency,
+            (Self::Concurrency | Self::ConcurrencyGroups, KeyView::Groups) => {
+                Self::ConcurrencyGroups
+            }
+            (Self::RateLimit | Self::RateLimitGroups, KeyView::Keys) => Self::RateLimit,
+            (Self::RateLimit | Self::RateLimitGroups, KeyView::Groups) => Self::RateLimitGroups,
+        }
+    }
+}
+
+/// The position a cursor names, and the view of the listing that wrote it (decision D022-086).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ListingPosition {
+    pub view: KeyView,
+    pub position: KeyPosition,
 }
 
 /// The place of a key in the listing's order: oldest wait first (a key nobody waits for last), then pool, scope, group
@@ -400,6 +467,38 @@ impl KeyPosition {
     ) -> Option<Self> {
         let plain = ring.open_cursor(tenant, namespace, text)?;
         Self::decode(std::str::from_utf8(&plain).ok()?, listing)
+    }
+
+    /// The position a cursor of either view of the listing of `gate` names (its key view's or its group view's), with
+    /// that view; `None` for anything else.
+    #[must_use]
+    pub fn open_either(
+        text: &str,
+        gate: KeyListing,
+        ring: &KeyRing,
+        tenant: TenantId,
+        namespace: NamespaceId,
+    ) -> Option<ListingPosition> {
+        let plain = ring.open_cursor(tenant, namespace, text)?;
+        let plain = std::str::from_utf8(&plain).ok()?;
+        [KeyView::Keys, KeyView::Groups]
+            .into_iter()
+            .find_map(|view| {
+                Self::decode(plain, gate.of(view))
+                    .map(|position| ListingPosition { view, position })
+            })
+    }
+
+    /// The place of a group in the group view's order (pool, scope and name; the digest all zero).
+    #[must_use]
+    pub const fn of_group(pool: GatePool, scope: GateLevel, group: ResolvedGroup) -> Self {
+        Self {
+            oldest_wait_us: None,
+            pool,
+            scope,
+            group,
+            digest: [0; 32],
+        }
     }
 
     /// The position's text before it is sealed, tagged with its listing.
@@ -506,6 +605,28 @@ pub trait FlowControlKeyReader {
         limit: u32,
     ) -> impl Future<Output = Result<RateLimitKeyPage, StoreError>> + Send;
 
+    /// The namespace's concurrency groups after `after` (a group's place, from the first when `None`), at most `limit`,
+    /// optionally the one group named, each summed over its keys in one snapshot, with the namespace's queued runs
+    /// (decision D022-086). A page reads its own groups' keys, never another group's.
+    fn concurrency_key_groups(
+        &self,
+        tenant: TenantId,
+        namespace: NamespaceId,
+        group: Option<&ResolvedGroup>,
+        after: Option<&KeyPosition>,
+        limit: u32,
+    ) -> impl Future<Output = Result<ConcurrencyKeyPage, StoreError>> + Send;
+
+    /// The same for the rate-limit windows, at the page's instant (decision D022-086).
+    fn rate_limit_key_groups(
+        &self,
+        tenant: TenantId,
+        namespace: NamespaceId,
+        group: Option<&ResolvedGroup>,
+        after: Option<&KeyPosition>,
+        limit: u32,
+    ) -> impl Future<Output = Result<RateLimitKeyPage, StoreError>> + Send;
+
     /// What one statement read, at one instant, of where the run-level rate-limit waiter of `run` stands; `None` when the
     /// run does not wait for a slot. The service derives the place from it ([`PlaceReading::place`]).
     fn rate_place(
@@ -513,6 +634,17 @@ pub trait FlowControlKeyReader {
         tenant: TenantId,
         run: sagat_domain::execution::RunId,
     ) -> impl Future<Output = Result<Option<PlaceReading>, StoreError>> + Send;
+
+    /// Whether the window of the rate-limit key that the run-level slot of `run` took (or waits for) is full now: its
+    /// grants that count over the start's window reach the lower of `declared_limit` and the namespace's current
+    /// ceiling of that window length. `None` when the run has no row of its slot. Read in its own read-only
+    /// transaction; advisory only (decision D022-079: a `CANCEL_SOURCE` reset is refused at its request on it).
+    fn start_window_full(
+        &self,
+        tenant: TenantId,
+        run: sagat_domain::execution::RunId,
+        declared_limit: u32,
+    ) -> impl Future<Output = Result<Option<bool>, StoreError>> + Send;
 
     /// Whether `subject` may reveal personal data in the namespace now: its role in the tenant may use a reveal grant
     /// and it holds one for the namespace (feature 009's `payload:reveal-pii`). What a key's label needs (FR-022-057,
@@ -838,7 +970,7 @@ mod tests {
             GatePool::Ordinary,
             ResolvedGroup::parse("payments").expect("a group"),
             [0xab; 32],
-            RunPermitState::Holding,
+            RunGateState::Held,
             OffsetDateTime::UNIX_EPOCH,
         );
         assert_eq!(permit.label(), None);

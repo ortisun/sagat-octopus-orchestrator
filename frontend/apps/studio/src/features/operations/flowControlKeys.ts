@@ -4,15 +4,18 @@ import type { components } from '../../api/schema';
 
 /**
  * The flow-control keys of a namespace (feature 022): the live concurrency keys (FR-022-022) and the rate-limit keys
- * (FR-022-048), oldest wait first, by key label only. The cursor is opaque and sealed by the platform: it is sent back
- * as it came and never read.
+ * (FR-022-048), oldest wait first, by key label only, to a caller who may reveal personal data in the namespace; one row
+ * per group to every other caller (`view: GROUPS`, decision D022-086). The cursor is opaque and sealed by the platform:
+ * it is sent back as it came and never read.
  */
 
 type Schemas = components['schemas'];
 
 export type ConcurrencyKey = Schemas['ConcurrencyKey'];
+export type ConcurrencyKeyGroup = Schemas['ConcurrencyKeyGroup'];
 export type ConcurrencyKeyPage = Schemas['ConcurrencyKeyPage'];
 export type RateLimitKey = Schemas['RateLimitKey'];
+export type RateLimitKeyGroup = Schemas['RateLimitKeyGroup'];
 export type RateLimitKeyPage = Schemas['RateLimitKeyPage'];
 
 export interface KeyQuery {
@@ -62,8 +65,8 @@ export function queuedWords(queued: number): string {
   return `${queued} ${queued === 1 ? 'run of this namespace is' : 'runs of this namespace are'} queued (waiting for a permit or a slot, each run counted once).`;
 }
 
-/** Why a rate-limit key has no instant for its next slot, in the contract's words. */
-export function noNextSlotWords(key: RateLimitKey): string {
+/** Why a rate-limit key, or group, has no instant for its next slot, in the contract's words. */
+export function noNextSlotWords(key: { waiters: number; unleasedGrants: number }): string {
   if (key.waiters === 0) return 'Nobody waits';
   if (key.unleasedGrants > 0) return 'Not by time: a granted step frees it when a worker leases it or it is given back';
   return 'There is room: the next grant pass grants';
