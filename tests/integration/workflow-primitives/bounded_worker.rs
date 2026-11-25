@@ -838,6 +838,10 @@ async fn a_scoped_lease_is_withdrawn_in_its_path_for_either_cause() {
                     .expect_err("the handed-back token is dead");
                 assert!(matches!(stale, AppError::StaleAttempt), "{stale:?}");
             }
+            // the cause of protocol 1.8 is replayed only: nothing of this build writes it (decision D006-094)
+            WithdrawalCause::NotAcknowledged => {
+                unreachable!("the loop names the two causes this build writes")
+            }
         }
         let withdrawn: Vec<(Option<String>, Option<i32>)> = sqlx::query_as(
             "SELECT detail->>'cause', attempt FROM run_events WHERE run_id = $1 \
