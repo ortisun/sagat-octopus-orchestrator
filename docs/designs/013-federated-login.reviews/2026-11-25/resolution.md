@@ -190,3 +190,11 @@ external gate named.
 | 16 | Major | Fixed: `x509-cert` 0.2, `keyring` 3, `std::fs::File::lock` (toolchain 1.100) and `webbrowser` 1. The key-store entry, fallback file, discovery and `sagat logout` are specified, and engine commands refuse key-store tokens | Tasks 013-7, 013-15 |
 | 17 | Major | Fixed: four product alerts (`AlertKind`) tested where raised, and one Prometheus rule tested by `contract_observability_operations`, each in a task | Technical Plan 11, Tasks 013-4, 013-8, 013-13 |
 | 18 to 27 | Nit | Fixed: `JwksCache` moves to `infra-egress` with a new constructor and its users listed. `Owner-gate:` lines are added to Tasks 013-5 and 013-8, and the architecture rules sit in Tasks 013-5 and 013-7. The caller families are listed, the dev-idp tests named, and the transfer change written into Task 013-9. The docs scripts are named. The lock order maps to the harness's `Slot` variants with the registry epoch first. The migration sorts after `20270119000000` and the references are completed | The plan, Technical Plan 4 |
+
+## Status of the review (2026-11-25)
+
+Run, one at a time, each settled above: the repository's reviewers (architecture and correctness, and security for
+design 013) and egm-review Stages 5 (zoom-out), 6 (comprehension), 7 (design critic) and 9 (implementation readiness).
+Not run: Stages 1 to 4 (structural and style) and Stage 8 (codebase details); the fixes made after each stage were
+not reviewed again. The design therefore stays **Draft**, and its Architecture decisions stay Proposed: approval needs
+the remaining stages, then a re-review of the settled fixes with no Blocker or Major open.

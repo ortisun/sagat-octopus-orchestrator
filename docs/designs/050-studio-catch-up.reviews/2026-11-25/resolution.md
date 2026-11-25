@@ -127,3 +127,11 @@ external gates, a file and a command per task, and the server and Studio parts s
 | 14 | Major | Fixed: `perf_studio_catch_up`, `perf.spec.ts`, the seeding method, the 300-inbox driver and the report path | Task 050-14, Verification Plan |
 | 15 | Major | Fixed: `ApprovalInboxStore::pending_page` with its row type, the role read by `IdentityStore::find_membership`, `list_for_run` returning the same rows, and `PublicationInboxStore::open_page` reading `approvalsRequiredNow` by publication's policy resolution | Technical Plan 6 |
 | 16 to 22 | Nit | Fixed: `inputSchema` is kept; Go and Java samples are named; the publication property test is added; the position `match` pattern is described; `openedAt` is `created_at` and the limit is 1 to 200; the server and Studio parts are split; each Studio test has its file | Technical Plans 4, 6 and 7, Tasks |
+
+## Status of the review (2026-11-25)
+
+Run, one at a time, each settled above: the repository's reviewers (architecture and correctness, and security for
+design 013) and egm-review Stages 5 (zoom-out), 6 (comprehension), 7 (design critic) and 9 (implementation readiness).
+Not run: Stages 1 to 4 (structural and style) and Stage 8 (codebase details); the fixes made after each stage were
+not reviewed again. The design therefore stays **Draft**, and its Architecture decisions stay Proposed: approval needs
+the remaining stages, then a re-review of the settled fixes with no Blocker or Major open.
