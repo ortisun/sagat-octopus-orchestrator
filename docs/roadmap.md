@@ -59,6 +59,23 @@ open: O1700–O1702 and O1704 (recommended defaults) and O1710 (how an operator 
 
 **Dependencies:** `001 → 002 → {003,004,009} → {005,006,007} → {008,011,012} → 010`, with cross-cutting security from 001; later phases can advance in parallel once contracts stabilize.
 
+**Release 0.3.0 is the full-parity release (OD-2026-11-24-1, 2026-11-24):** everything above that is not built is in
+0.3.0, together with these new designs, numbered here so that parallel sessions do not take the same number:
+
+| Design | Subject |
+|---|---|
+| 044 | Workflow as code: a procedural code-first mode replayed against the journal in the six SDKs (OD-2026-11-24-3), starting with a determinism study per language |
+| 045 | Activity timeouts (schedule-to-start, schedule-to-close, heartbeat timeout per activity) and non-retryable error types |
+| 046 | Package dependencies for TypeScript and Python scripts under a supply-chain policy (gap G97 of feature 005) |
+| 047 | OAuth resources and a curated integration hub |
+| 048 | A reference high-availability topology for PostgreSQL and rolling upgrades with N and N-1 writers |
+| 049 | Partitioning of `run_events`, `payloads` and the other journal tables, joined to the retention of 020 |
+| 050 | The Studio catch-up: every executable node kind, the approvals inbox, the audit log |
+| 051 | A published benchmark of the same workflow shapes on this platform, Temporal and Windmill, crash-recovery time included |
+
+013 (federated login) and 015 (OpenTelemetry and OpenBao) keep their numbers and get their specifications. The constitution
+is amended to admit this scope (OD-2026-11-24-2).
+
 **Parity drafts 018–032 (2026-10-26):** proposed to bring Temporal and Windmill capabilities into the platform's architecture. The owner approved 018 on 2026-10-29 and 019 to 032 for implementation on 2026-11-11 (Owner decision 2026-11-11-1); 019 to 032 are not built. Suggested order, for the owner to confirm: `{018, 019, 020, 022} → {021, 026, 028, 029} → {023, 024, 025, 027, 030, 031} → 032`, because 018 consumes 020's run selector, 025 and 027 consume 022's standalone steps and 026's Streams and forms, 031 uses 028's interceptors, 029's identity-provider groups wait for 013, and 032 needs a constitution amendment. The cross-feature notes are in [SPECIFICATION-INDEX.md](../SPECIFICATION-INDEX.md).
 
 ### Capacity increment in progress — 2026-10-29
