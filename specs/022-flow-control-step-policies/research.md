@@ -1921,8 +1921,10 @@ taken after `git grep D022-04` on every `origin/*` branch.
   (b) re-stamp `20270206000000` after `20270210000100` (same checksum problem, and it would move the rate-limit names
   after the step-log tables for no reason); (c) a new pair `20270215000000_quota_resources_of_flow_control_and_step_logs`
   and `20270215000100_..._validate`, stamped after every migration of both, that restates the union `NOT VALID` and
-  validates it in a second transaction, with a down that refuses while a step-log limit or ceiling exists and otherwise
-  restores the lists of `20270206000000`. Chosen (c): no applied migration changes, the rule of the `REBASE HAZARD`
+  validates it in a second transaction, with a down that keeps the union (restoring the lists of `20270206000000` would
+  refuse the step-log limits that `20270201000000`, still applied after that rollback, allows; seen failing in
+  `step_log_isolation::schema::the_migration_rolls_back_only_without_lines_and_restores_what_it_replaced`,
+  integration_claim_transition_efficiency, which rolls back to `20270201000100` with a step-log limit stored). Chosen (c): no applied migration changes, the rule of the `REBASE HAZARD`
   comments holds (the later restatement names both sets), and the two tests keep the next merge honest. Value ranges are
   not restated: only `20270201000000` restated them, and this feature's resources take the general range (their bounds
   are in code). The downs had the same hazard in reverse: the down of `20270201000000` restored the pre-041 lists,
