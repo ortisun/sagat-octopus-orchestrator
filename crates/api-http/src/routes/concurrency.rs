@@ -101,6 +101,11 @@ pub(crate) async fn open_key_listing<B: Governance>(
     })
 }
 
+/// The refusal of a cursor written for the other view of a key listing: the caller's reveal right changed between two
+/// pages, so the listing must be read again from its start (batch 4 correctness nit 1).
+pub(crate) const OTHER_VIEW: &str =
+    "the cursor was written for the other view of this listing: read it again without a cursor";
+
 /// `GET /namespaces/{namespaceId}/concurrency-keys`
 pub async fn list_concurrency_keys<B: Governance>(
     caller: Caller,
@@ -121,8 +126,8 @@ pub async fn list_concurrency_keys<B: Governance>(
             &caller.ctx,
         )
         .await?
-        // a cursor of the other view: the caller's view changed between two pages
-        .ok_or_else(|| ApiError::bad_request("the cursor is not valid"))?;
+        // a cursor of the other view: what the caller may see changed between two pages (batch 4 nit 1)
+        .ok_or_else(|| ApiError::bad_request(OTHER_VIEW))?;
     let body = ConcurrencyKeyPageBody::of(&page, opened.limit as usize, |last| {
         service.concurrency_key_cursor(&caller.session.principal, opened.namespace, &page, last)
     })?;

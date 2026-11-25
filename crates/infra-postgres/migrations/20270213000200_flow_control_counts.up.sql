@@ -23,8 +23,10 @@
 -- counters and cannot write them; the only way to change one is to change a waiter row. Additive: an older engine never
 -- reads the table and its writes of waiter rows keep it exact through the triggers.
 
--- No waiter row may be written between the count below and the triggers being in place.
-LOCK TABLE concurrency_waiters, rate_limit_waiters IN SHARE ROW EXCLUSIVE MODE;
+-- No waiter row may be written between the count below and the triggers being in place. The rate-limit waiters first, as a
+-- dual-gated admission writes them (batch 3 correctness minor 6), so that the migration and an admission never wait on
+-- each other in opposite orders.
+LOCK TABLE rate_limit_waiters, concurrency_waiters IN SHARE ROW EXCLUSIVE MODE;
 
 CREATE TABLE flow_control_counts (
     tenant_id    uuid     NOT NULL,
@@ -88,13 +90,21 @@ $$;
 -- and move any tenant's counters with the rights of the owner.
 REVOKE ALL ON FUNCTION flow_control_counts_track() FROM PUBLIC;
 
-CREATE TRIGGER concurrency_waiters_queued_runs AFTER INSERT OR DELETE ON concurrency_waiters
-    FOR EACH ROW EXECUTE FUNCTION flow_control_counts_track();
-CREATE TRIGGER rate_limit_waiters_queued_runs AFTER INSERT OR DELETE ON rate_limit_waiters
-    FOR EACH ROW EXECUTE FUNCTION flow_control_counts_track();
+-- A run's waiter only (`node = ''`): a step's waiter row, the common case of a gated node, fires no trigger at all (batch 3
+-- correctness nit). One trigger per operation, since a `WHEN` of an `INSERT OR DELETE` trigger cannot name both rows.
+CREATE TRIGGER concurrency_waiters_queued_runs AFTER INSERT ON concurrency_waiters
+    FOR EACH ROW WHEN (NEW.node = '') EXECUTE FUNCTION flow_control_counts_track();
+CREATE TRIGGER concurrency_waiters_queued_runs_out AFTER DELETE ON concurrency_waiters
+    FOR EACH ROW WHEN (OLD.node = '') EXECUTE FUNCTION flow_control_counts_track();
+CREATE TRIGGER rate_limit_waiters_queued_runs AFTER INSERT ON rate_limit_waiters
+    FOR EACH ROW WHEN (NEW.node = '') EXECUTE FUNCTION flow_control_counts_track();
+CREATE TRIGGER rate_limit_waiters_queued_runs_out AFTER DELETE ON rate_limit_waiters
+    FOR EACH ROW WHEN (OLD.node = '') EXECUTE FUNCTION flow_control_counts_track();
 -- a counter follows its rows whatever replication role a session runs with
 ALTER TABLE concurrency_waiters ENABLE ALWAYS TRIGGER concurrency_waiters_queued_runs;
+ALTER TABLE concurrency_waiters ENABLE ALWAYS TRIGGER concurrency_waiters_queued_runs_out;
 ALTER TABLE rate_limit_waiters ENABLE ALWAYS TRIGGER rate_limit_waiters_queued_runs;
+ALTER TABLE rate_limit_waiters ENABLE ALWAYS TRIGGER rate_limit_waiters_queued_runs_out;
 
 REVOKE ALL PRIVILEGES ON flow_control_counts FROM PUBLIC;
 DO $grants$

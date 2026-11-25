@@ -627,9 +627,14 @@ async fn a_key_label_is_shown_to_whoever_may_disclose_every_location_the_key_rea
                 seen.push((*level, reads[0]));
             }
             let mut listed = Vec::new();
+            let mut views = Vec::new();
             for path in [&keys, &rate_keys] {
                 let (status, page) = read_as(api, path, subject).await;
                 assert_eq!(status, StatusCode::OK, "{page}");
+                views.push((
+                    page["view"].as_str().unwrap_or_default().to_owned(),
+                    page["items"].as_array().map_or(usize::MAX, Vec::len),
+                ));
                 listed.extend(
                     page["items"]
                         .as_array()
@@ -638,24 +643,33 @@ async fn a_key_label_is_shown_to_whoever_may_disclose_every_location_the_key_rea
                         .map(|item| item["keyLabel"].is_string()),
                 );
             }
-            (seen, listed)
+            (seen, listed, views)
         }
     };
-    let (viewer, listed) = seen_by("vera-viewer").await;
+    // a caller who may not see a key's labels gets the group view, whose key list is empty: the two checks of the key
+    // rows below would pass on that empty list alone (batch 4 correctness minor 6)
+    let groups_only = vec![("GROUPS".to_owned(), 0), ("GROUPS".to_owned(), 0)];
+    let (viewer, listed, views) = seen_by("vera-viewer").await;
+    assert_eq!(views, groups_only, "a viewer lists groups");
     assert_eq!(
         viewer,
         [("public", true), ("internal", false), ("pii", false)],
         "a viewer reads public payloads only"
     );
     assert!(listed.iter().all(|shown| !shown), "{listed:?}");
-    let (developer, listed) = seen_by("dan-developer").await;
+    let (developer, listed, views) = seen_by("dan-developer").await;
+    assert_eq!(
+        views, groups_only,
+        "a developer without a grant lists groups"
+    );
     assert_eq!(
         developer,
         [("public", true), ("internal", true), ("pii", false)],
         "a developer reads internal payloads, not personal data without a grant"
     );
     assert!(listed.iter().all(|shown| !shown), "{listed:?}");
-    let (admin, listed) = seen_by("alice").await;
+    let (admin, listed, views) = seen_by("alice").await;
+    assert!(views.iter().all(|(view, _)| view == "KEYS"), "{views:?}");
     assert_eq!(
         admin,
         [("public", true), ("internal", true), ("pii", true)],
@@ -1459,4 +1473,37 @@ async fn a_cursor_is_sealed_under_the_active_version_and_one_of_a_forced_version
     );
     let (status, body) = read(&api, &format!("{path}&cursor={under_two}")).await;
     assert_eq!(status, StatusCode::OK, "{body}");
+}
+
+/// Batch 4 correctness nit 1 (decision D022-092): a cursor of the key view, read again by its caller once the caller's
+/// reveal grant is gone (the caller now gets the group view), is refused `400` with a message of its own, so the caller
+/// learns to read the listing again from its start rather than that its cursor was altered.
+#[tokio::test]
+async fn a_cursor_of_the_other_view_is_refused_with_its_own_message() {
+    let (api, namespace, acme) = api().await;
+    let workflow = publish(&api, "rest-other-view", serial_start("rest-other-view", 1))
+        .await
+        .expect("published");
+    let _first = start(&api, &workflow, CANARY).await;
+    let _second = start(&api, &workflow, "acct-other-view").await;
+    let keys = format!("/namespaces/{namespace}/concurrency-keys");
+    let (status, page) = read_as(&api, &format!("{keys}?limit=1"), "alice").await;
+    assert_eq!(status, StatusCode::OK, "{page}");
+    assert_eq!(
+        page["view"], "KEYS",
+        "the admin with the grant reads keys: {page}"
+    );
+    let cursor = page["nextCursor"].as_str().expect("a next page").to_owned();
+    sqlx::query("DELETE FROM payload_reveal_grants WHERE tenant_id = $1 AND subject = 'alice'")
+        .bind(acme.as_uuid())
+        .execute(&api.db.pool)
+        .await
+        .expect("the grant revoked");
+    let (status, refused) =
+        read_as(&api, &format!("{keys}?limit=1&cursor={cursor}"), "alice").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{refused}");
+    assert!(
+        refused.to_string().contains("other view of this listing"),
+        "{refused}"
+    );
 }
