@@ -4,6 +4,26 @@ Decisions that only the product owner could take, with what each one unblocks. E
 recorded where the open item lived (gap register, ADR, runbook or specification). "Not built"
 means the decision is taken and the implementation is still to be done; it is not evidence.
 
+## 2026-11-24 — Windmill-parity readiness of features 021, 023 and 026, decided under the delegation
+
+The session that prepared the Windmill-side parity features (branch `docs/windmill-parity-readiness`) re-read the
+approved drafts 021, 023 and 026 against `develop` and took these acts in the owner's place under Owner decisions
+2026-11-20-6 and 2026-11-24-4. Each is recorded with its options and reasoning where it lives; the rows below are the
+index. They are delegated acts, reported to the owner, who may overrule any of them.
+
+| ID | Decision | Decided by | Status | Covers |
+|---|---|---|---|---|
+| OD-2026-11-24-300 | Architecture decision 0055 accepted with its amendment of 2026-11-24 and the new clause 11(e), which admits design 047's control-plane token broker as the placement for token requests | delegate (OD-2026-11-24-4) | Decided | docs/adr/ADR-0055-integration-resources-and-inbox-connector-kinds.md |
+| OD-2026-11-24-301 | Feature 021's owner questions: 1120, a generic relay plus Mailgun first; 1121, developers hold `resource:effect` by default; 1122, no namespace-defined resource types, curated hub types through the provenance extension point; 1123, clauses (a) to (d) plus (e) | delegate (OD-2026-11-24-4) | Decided | specs/021-integration-resources-triggers/research.md |
+| OD-2026-11-24-302 | Feature 021's requirements checklist: "written for non-technical stakeholders" and "technology-agnostic success criteria" accepted as stated deviations; the owner-answer and ADR items closed by the two rows above | delegate (OD-2026-11-24-4) | Decided | specs/021-integration-resources-triggers/checklists/requirements.md |
+| OD-2026-11-24-303 | Architecture decision 0057 accepted with its amendment of 2026-11-24 (bundle versions, closed catalogs narrowed by Architecture decision 0120 for TypeScript and Python, lake mode, provenance and SBOM through design 046, fleet activation, warm containers) | delegate (OD-2026-11-24-4) | Decided | docs/adr/ADR-0057-additional-script-languages-reuse-the-sandbox-and-signed-artifacts.md |
+| OD-2026-11-24-304 | Feature 023's owner questions: 1200, a reviewed starter catalog per language of at most 32 root packages in 0.3.0; 1201, every built language enabled by default; 1202, Deno and Bun not adopted, the spike kept for the benchmark; the capability `script-languages-v1` gates the new languages | delegate (OD-2026-11-24-4) | Decided | specs/023-script-languages/research.md (Decisions 1234 and 1626 to 1627) |
+| OD-2026-11-24-305 | Feature 023's requirements checklist: "no implementation details" (two items) and "technology-agnostic success criteria" accepted as stated deviations; "written for non-technical stakeholders" rejected and fixed by an "In short" summary; the ADR, coordinator-integration and migration items closed | delegate (OD-2026-11-24-4) | Decided | specs/023-script-languages/checklists/requirements.md |
+| OD-2026-11-24-306 | Architecture decisions 0061 and 0068 accepted with their amendments of 2026-11-24 (the public-link run marker, the run-input gate, the attempt fence instead of the step lock, a storage class of its own, the purge pass) | delegate (OD-2026-11-24-4) | Decided | docs/adr/ADR-0061-link-bearers-hold-one-narrow-capability-and-never-decide.md, docs/adr/ADR-0068-workflow-streams-are-a-fenced-classified-log-beside-the-journal.md |
+| OD-2026-11-24-307 | Feature 026's owner questions: 1320, no decision by holding a link in 0.3.0; 1321, public links off by default everywhere through a quota of 0; 1322, channel messages carry personal data only under feature 020's rule, gated until Owner question 1081 is answered | delegate (OD-2026-11-24-4) | Decided | specs/026-invocation-human-surfaces/research.md |
+| OD-2026-11-24-308 | Feature 026's requirements checklist: three items accepted as stated deviations; "written for non-technical readers" rejected and fixed by an "In plain words" section | delegate (OD-2026-11-24-4) | Decided | specs/026-invocation-human-surfaces/checklists/requirements.md |
+| OD-2026-11-24-309 | Boundaries: design 046 owns and builds first the script policy table, the lease-time block check and the provenance and SBOM module, which feature 023 extends; feature 021's OAuth scheme names a design 047 credential and is refused until design 047's broker is on | delegate (OD-2026-11-24-4) | Decided | specs/046-script-dependencies/research.md (Decision 046-033), specs/023-script-languages/research.md (Decision 1627), specs/021-integration-resources-triggers/research.md (Decision 021-001) |
+
 ## 2026-11-24 — Release 0.3.0 contains everything that is missing to surpass Temporal and Windmill
 
 The coordinating session compared the platform with Temporal and Windmill (gaps that have a specification, gaps that have

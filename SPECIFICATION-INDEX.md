@@ -108,7 +108,9 @@ security and cross-feature consistency) and revised. Suggested order and gates: 
 the amendment of constitution principle I for retention (020, ADR-0054) and of the Delivery Constraints for
 multi-region (032, ADR-0067); the scope line of `docs/architecture/overview.md` that defers a low-code designer
 (027, O1360); one rule for `pii` leaving the platform (020, O1081, applied by 020/025/026/031); the placement
-rule for customer-credentialed calls (021, ADR-0055); and acceptance of every proposed ADR.
+rule for customer-credentialed calls (021, ADR-0055, accepted on 2026-11-24 with clause 11(e) under Owner decision
+2026-11-24-4); and acceptance of every proposed ADR (ADR-0055, ADR-0057, ADR-0061 and ADR-0068 accepted on 2026-11-24,
+same delegation).
 
 **Cross-feature registries and their owners.** Each concern has one owner; the others cite it.
 
