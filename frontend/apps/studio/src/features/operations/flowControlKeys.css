@@ -36,3 +36,11 @@
   outline: 2px solid var(--focus);
   outline-offset: 2px;
 }
+
+.operations-keys .operations-panel-heading {
+  flex-wrap: wrap;
+}
+
+.operations-key-filter input {
+  max-width: 100%;
+}
