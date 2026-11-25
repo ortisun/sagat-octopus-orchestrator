@@ -236,6 +236,7 @@ class Checker:
         self._od = None
         self._first_delegate = None
         self.agent_blobs = {}
+        self.report_reviewers = {}
 
     # -- helpers ---------------------------------------------------------------------------
     def fail(self, rule, rel, line, message):
@@ -630,6 +631,7 @@ class Checker:
             found = self.parse_report(doc, path, text)
             if found is None:
                 continue
+            self.report_reviewers[(doc.rel, path)] = found[0]
             reviewers.append(found[0])
             findings += found[1]
         if sorted(reviewers) != sorted(REVIEWERS):
@@ -681,6 +683,14 @@ class Checker:
                 re.search(re.escape(path) + r"#[0-9]+", row["Covers"]) for path in paths)
             if not anchored:
                 self.fail("Rule 2", doc.rel, None, f"{accepted} is not an owner row that covers '<report path>#<n>'")
+                continue
+            # Accepting a security finding instead of fixing it is a security exception: the owner's own, never a
+            # delegate's (docs/engineering/sdd-workflow.md, "Who decides").
+            security = [path for path in paths if self.report_reviewers.get((doc.rel, path)) == "security"
+                        and re.search(re.escape(path) + r"#[0-9]+", row["Covers"])]
+            if row["Decided by"] != "owner" and security:
+                self.fail("Rule 2", doc.rel, None,
+                          f"{accepted} is a delegate row that accepts a finding of the security report; only the owner may")
 
     def check_commit_dependent(self, doc, commit):
         old = self.base_text(doc.rel)

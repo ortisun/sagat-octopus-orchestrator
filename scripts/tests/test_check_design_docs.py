@@ -598,6 +598,22 @@ class Record(Base):
         self.repo.commit("row")
         self.assertPasses()
 
+    def test_a_delegate_acceptance_of_a_security_finding_fails(self):
+        # Accepting a security finding instead of fixing it is a security exception, which stays the owner's.
+        ap = Approved(self.repo, counts={"security": 1}, accepted=["OD-2026-11-03-5"])
+        path = ap.report_path("security")
+        rows = od_row("OD-2026-11-24-4") + od_row("OD-2026-11-03-5", decided_by="delegate (OD-2026-11-24-4)", covers=f"{path}#1")
+        self.repo.write("docs/owner-decisions.md", "# O\n\n" + OD_HEADER + rows)
+        self.repo.commit("row")
+        self.assertFails("Rule 2", contains="security")
+
+    def test_an_owner_acceptance_of_a_security_finding_passes(self):
+        ap = Approved(self.repo, counts={"security": 1}, accepted=["OD-2026-11-03-5"])
+        path = ap.report_path("security")
+        self.repo.write("docs/owner-decisions.md", "# O\n\n" + OD_HEADER + od_row("OD-2026-11-03-5", covers=f"{path}#1"))
+        self.repo.commit("row")
+        self.assertPasses()
+
     def test_a_delegate_acceptance_fails(self):
         ap = Approved(self.repo, counts={"architecture": 1}, accepted=["OD-2026-11-03-5"])
         path = ap.report_path("architecture")
