@@ -1,16 +1,27 @@
 # ADR-0051: Deployment routing, task-token completion and push invocation are decided on the canonical attempt lease
 
-**Status:** Proposed
-**Decided by:** agent proposal, pending owner acceptance (2026-10-26)
+**Status:** Accepted (2026-11-24, delegate (OD-2026-11-24-4), after the revision of 2026-11-24)
+**Decided by:** agent proposal (2026-10-26); revised and accepted by an agent in the owner's place on 2026-11-24, delegate
+(OD-2026-11-24-4). Reasoning: one authority for every dispatch mode is the only option under which the fence decides every
+race; per-version queues, routing at readiness and stored tokens each add a second authority that a lost or duplicated
+message, a forgotten writer or a lost response can contradict. The revision aligns the decision with what landed after the
+draft: unknown outcomes of feature 037, the claim budget and window order of design 038, the gates of feature 022
+(ADR-0089), the instance registry (ADR-0082), lease withdrawal and delivery acknowledgement (ADR-0098, ADR-0099, protocol
+1.8) and the activity timeouts of design 045 (protocol 1.9, ADR-0110, proposed).
 **Refines / supersedes:** refines ADR-0015 (additive minors, one per wire slice), ADR-0020 (fairness algorithm reused,
-scheduler unchanged) and ADR-0029 (same claim path for streams); preserves ADR-0002, ADR-0004, ADR-0012 and the
-"Final V1 decision" of `docs/architecture/worker-runtime-protocol.md`; supersedes nothing.
-**Enforced by:** planned tests of feature 019 — `fault_worker_deployments_dispatch` (routing-change-vs-claim and
-pattern-change-vs-routing-change races, forged-token oracle and gRPC token-replay battery,
-crash at every pin/detach/push commit point), `integration_worker_deployments_dispatch` (bucket function equal in
-domain and SQL, claim eligibility, token fences), the `deployment-versioning`, `async-completion` and
-`push-envelope` conformance scenarios, and `scripts/check-architecture.py` (SigV4/JWT/HTTP only in adapters).
-Until those exist: review only.
+scheduler unchanged) and ADR-0029 (same claim path for streams); composes with ADR-0082 (each capability is a fleet
+requirement), ADR-0089 (a gated step is not a candidate), ADR-0098 and ADR-0099 (withdrawal, provisional leases) and
+ADR-0110 (deadlines); preserves ADR-0002, ADR-0004, ADR-0012 and the "Final V1 decision" of
+`docs/architecture/worker-runtime-protocol.md`; supersedes nothing.
+**Enforced by:** planned tests of feature 019 — `fault_worker_deployments_dispatch` (routing-change-versus-claim and
+pattern-change-versus-routing-change races, the forged-token oracle and the gRPC token-replay battery, a crash at every
+pin, detach and push commit point), `integration_worker_deployments_dispatch` (the bucket function equal in domain and
+SQL, claim eligibility, token fences, the mixed-fleet refusal before a requirement is recorded),
+`contract_grpc_worker_deployments_dispatch` (every lease-token call refuses a `detached` or `push` holder, and `DetachStep`
+refuses a provisional lease), the claim budget lines of `integration_claim_transition_efficiency`, the parity test of the
+outcome-unknown codes (`crates/domain/tests/outcome_unknown_parity.rs`, which gains `DETACHED_TIMEOUT`), the
+`deployment-versioning`, `async-completion` and `push-envelope` conformance scenarios in six languages, and
+`scripts/check-architecture.py` (SigV4, JWT and HTTP only in adapters). Until those exist: review only.
 
 ## Context
 
@@ -23,8 +34,8 @@ authority next to the run row:
 1. **Queues per version** (or NATS subjects per version) that workers consume. A message would be a grant; the
    worker protocol already forbids a lease granted anywhere but the Worker API's canonical transaction.
 2. **Routing decided when a step becomes ready** and stored on the step. Many writers make steps ready (admission,
-   completion, timers, signals, approvals, chains); a routing change would have to retarget ready rows, and a
-   writer that forgets the rule routes wrongly.
+   completion, timers, signals, approvals, chains, the grants of feature 022); a routing change would have to retarget
+   ready rows, and a writer that forgets the rule routes wrongly.
 3. **Task tokens as signed JWTs or stored random secrets.** A JWT needs a new signing key and cannot be revoked
    when the attempt is reclaimed; a stored secret is another credential table to protect, rotate and purge, and a
    lost response loses it.
@@ -32,8 +43,10 @@ authority next to the run row:
    timeout, cancellation and fencing semantics that the step already has.
 
 The engine interprets a declarative IR (ADR-0003); Temporal's versioning exists largely for workflow-code replay,
-which does not apply. What must be protected here is the contract of activity implementations across builds, the
-fence, and the tenant boundary.
+which does not apply to that model. Workflow as code (owner decision OD-2026-11-24-3, design 044) will add replayed
+workflow code; this decision does not design its versioning, but its deployment versions are the routing unit that design
+can reuse. What must be protected here is the contract of activity implementations across builds, the fence, and the
+tenant boundary.
 
 ## Decision
 
@@ -48,6 +61,9 @@ fence, and the tenant boundary.
    change cannot race a routing change into a state neither checked. These fences take slot 4 of ADR-0050's merged
    admission lock order (catalog before deployment; coordinator decision C4). The bucket MUST be one deterministic function
    (eight hash bytes) of run id and deployment id, identical in domain and SQL. Discovery outside the transaction MUST remain a hint.
+   Routing eligibility MUST be part of the claim's run read of design 038 (`RunStore::begin_claim`), so an ineligible
+   candidate is dropped without a projection load, and a claim of a step outside every deployment MUST add no statement
+   to the budget of `integration_claim_transition_efficiency` (FR-038-001, FR-038-002).
 2. **Pins are journaled facts.** A pin MUST be created in the claim (or admission, or chain-handoff) transaction that
    needs it and journaled there; a repin MUST be journaled and audited. Pins MUST NOT change the workflow version a
    run references.
@@ -55,18 +71,26 @@ fence, and the tenant boundary.
    and a binding; drains, secret pools, activity quotas and breakers MUST apply unchanged. Sessions without a
    deployment, including every session of an older protocol minor, MUST be served as unversioned.
 4. **Priority and fairness only reorder.** They MUST select among candidates the session is already entitled to,
-   inside one namespace, using strict priority and the weighted max-min share of ADR-0020 between fairness keys.
+   inside one namespace, using strict priority and the weighted max-min share of ADR-0020 between fairness keys. A step
+   that waits at a gate of feature 022 is not a candidate (ADR-0089 decision 1); its grant follows (priority, enqueue
+   instant) (ADR-0089 decision 4), and once `READY` it is ordered here like any other step. The poll turn of design 038
+   (FR-038-004) MUST rotate a poll's start point only among candidates of the same priority, never ahead of a higher one.
 5. **A task token is an encoding of the lease.** It MUST encode namespace, run, instance digest, attempt,
    generation and the existing lease token; the server MUST NOT store a new secret for it, and any reclaim (new
    generation) MUST invalidate it. The server MUST verify the token's secret first, in constant time, against the
    current lease hash and the retained hashes of the step's ended detached or push-held leases; any mismatch MUST be
    the opaque `NOT_FOUND`, and `STALE_ATTEMPT` or `NOT_DETACHED` MAY be answered only after a match, so the API is no
    oracle for runs, attempts or generations. Using it MUST also require an authenticated principal holding
-   `task:complete` in the namespace and, for a machine identity, a binding covering the step's activity (owner
-   question O1041 asks whether a token alone may ever suffice). External heartbeats and reports MUST run the same
+   `task:complete` in the namespace and, for a machine identity, a binding covering the step's activity (a token alone
+   never suffices: owner question O1041, decided no). External heartbeats and reports MUST run the same
    fenced transactions as worker reports, with idempotency receipts keyed by principal and read only after the
    secret check, and the existing two-phase secret scan. Every worker-protocol call that takes a lease token MUST
-   refuse a lease whose holder is `detached` or `push`, so a decoded token cannot be replayed on gRPC.
+   refuse a lease whose holder is `detached` or `push`, so a decoded token cannot be replayed on gRPC. A detached
+   attempt whose detached heartbeat timeout or maximum duration passes MUST end with `DETACHED_TIMEOUT`, an
+   outcome-unknown code: the external system may have done the work, so the step goes to consultation (`reconcileWith`)
+   or review (feature 037, FR-037-006), never to a blind retry. On a provisional lease of protocol 1.8 (ADR-0099 decision 8)
+   `DetachStep` is a capability call: it MUST be refused with `FAILED_PRECONDITION` and `TASK_NOT_ACKNOWLEDGED`, and on
+   any other lease the detach transaction MUST record it as a capability served (`lease_capability_generation`).
 6. **Push invocation is a claim by an engine-side invoker.** The invoker MUST claim through the canonical claim
    (run lock, then the shard fence, the shared catalog fence and tenant → namespace → endpoint push fences with exact
    counts), MUST perform HTTP with no transaction or lock held, MUST renew and report under that lease with a stable
@@ -81,15 +105,30 @@ fence, and the tenant boundary.
    resolve provider credentials as the endpoint revision's secret binding, rechecked at every invocation against the
    revision's named binding principal (the ADR-0025 broker-credential precedent), and MUST only sign requests or mint
    short-lived ID tokens whose audience is derived from the target's origin, through the pinned token endpoint. A
-   timeout after sending MUST be `OUTCOME_UNKNOWN`.
+   timeout after sending MUST be `OUTCOME_UNKNOWN`, and a push lease that lapses is `LEASE_EXPIRED`, an unknown outcome
+   like any lapsed lease. A request that was never written to the connection MUST be withdrawn as ADR-0098 withdraws a
+   lease never handed to the transport (no attempt spent, cause `NOT_SENT`), while `lease-withdrawal-v1` is recorded and
+   under its cap of four withdrawals per attempt; otherwise it is the retryable `PUSH_UNAVAILABLE`. A push lease is
+   never provisional: there is no host to acknowledge it.
 7. **One additive protocol minor per wire slice** (deployment identity, checkpoints, detach), each a superset of the
-   previous and advertised only when its slice's evidence passes; the server MUST keep serving every older minor.
+   previous and advertised only when its slice's evidence passes; the server MUST keep serving every older minor. The
+   three minors are the next free ones when the contract merges (1.10, 1.11 and 1.12 at the time of writing: 1.7 is
+   design 041, 1.8 delivery acknowledgement, 1.9 design 045). Minors are cumulative, so a host of any of them also
+   carries the host procedures of 1.8 and 1.9.
+8. **Each capability is switched on by the fleet, not per process.** `worker-deployments-v1`, `dispatch-priority-v1`,
+   `heartbeat-checkpoints-v1`, `async-completion-v1` and `push-dispatch-v1` MUST be requirements of the instance
+   registry (ADR-0082) for control planes and engines. Until the operator records one, the surfaces of its capability
+   refuse it (REST and IR with `VALIDATION_FAILED`, reason `DISPATCH_ACTIVATION_PENDING`), the minor that carries it is
+   not offered, and `PlatformVersion.features` does not list it; once recorded, a process without it serves nothing
+   (ADR-0082 decision 3). So no engine of a rolling upgrade leases outside the routing, ignores priority, or serves a
+   gRPC call on a detached lease. The precedent is ADR-0089 decision 6 and ADR-0110 decision 8.
 
 ## Considered options
 
 1. **Every dispatch mode is a variation of the attempt lease (chosen).** One authority (run row, fence, lease
-   token); every race is decided by the first commit; recovery is the existing lease reaper. Cost: the claim query
-   gains predicates whose discovery cost must be measured (G1040), and a push replica holds a lease while it waits.
+   token); every race is decided by the first commit; recovery is the existing lease reaper and the unknown-outcome
+   rules of feature 037. Cost: the claim query gains predicates whose discovery cost must be measured (G1040), and a push
+   replica holds a lease while it waits.
 2. **Per-version queues or broker subjects.** Rejected: a delivered message would grant work, contradicting
    ADR-0002 and the worker-protocol decision; a lost or duplicated message would need a second reconciliation.
 3. **Routing assigned at readiness.** Rejected: spreads the rule to every writer and requires retargeting ready
@@ -99,22 +138,29 @@ fence, and the tenant boundary.
 5. **A separate push delivery pipeline (ADR-0025 style) with its own attempts.** Rejected: duplicates step retry,
    timeout and cancellation semantics and would let a delivery succeed for an attempt the run has already
    reclaimed.
+6. **Each process switches a capability on from its own configuration.** Rejected (added 2026-11-24): during a
+   rolling upgrade an engine of the previous build would claim a routed step without the routing predicate or accept a
+   gRPC report on a detached lease, exactly the second authority this decision forbids.
 
 ## Consequences
 
 - Operators can roll out builds gradually, keep incompatible runs pinned and retire builds only when nothing needs
   them; nothing changes for activities outside deployments or for workers of older minors.
-- The claim becomes more expensive for ramping and pinned versions; ceilings are provisional until the benchmark.
-- A detached attempt is still a lease: it expires, is reclaimed with a new generation and can be raced by a timeout
-  or a cancellation, all decided by the first commit.
+- The claim becomes more expensive for ramping and pinned versions; ceilings are provisional until the benchmark, and
+  the claim budget of design 038 records every statement added.
+- A detached attempt is still a lease: it expires, can be raced by a completion or a cancellation, all decided by the
+  first commit. Its expiry is an unknown outcome, so an author who wants automatic recovery declares `reconcileWith`;
+  Temporal would retry blindly instead, which repeats an effect the external system may already have applied.
 - The engine process makes outbound calls with provider credentials it resolves per invocation, like outbound
   webhook delivery today; private networks would need a separate executor (G1044).
-- Rollback: disable the capabilities; keep readers until detached attempts and pins drain; an older engine is not a
-  safe reader of runs with detached attempts (ADR-0032 point 8).
+- An operator records five fleet requirements before the capabilities can be used; the runbook lists them.
+- Rollback: remove the requirements' use (no new deployments, detach, push); keep readers until detached attempts and
+  pins drain; an older engine is not a safe reader of runs with detached attempts (ADR-0032 point 8), and the registry
+  refuses it while a requirement is recorded.
 
 ## Evidence
 
-None yet: this ADR is a proposal with planned tests (Enforced by). Design sources:
+None yet: this ADR is accepted as a decision with planned tests (Enforced by). Design sources:
 [plan](../../specs/019-worker-deployments-dispatch/plan.md#transaction-boundaries),
-[research](../../specs/019-worker-deployments-dispatch/research.md) D1042–D1064,
+[research](../../specs/019-worker-deployments-dispatch/research.md) D1042–D1064 and D019-001 to D019-010,
 [contracts](../../specs/019-worker-deployments-dispatch/contracts/).
