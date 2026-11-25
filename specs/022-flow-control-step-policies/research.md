@@ -1528,7 +1528,10 @@ taken after `git grep D022-04` on every `origin/*` branch.
      row written before it, which is then bounded by its filed limit as item 7 says. Chosen (c): additive, each column
      keeps one meaning, the row still records its event. Every decision bounds a waiter, deciding or ahead, by
      `least(coalesce(pinned_limit, declared_limit), the current ceiling)`; a CHECK holds `pinned_limit BETWEEN declared_limit AND
-     10000` (the filed limit is never above the declaration, which the domain bounds at 10,000), added `NOT VALID` and validated by a second migration. The
+     10000` (the filed limit is never above the declaration, which the domain bounds at 10,000), added `NOT VALID` and validated by a second migration
+     (`20270213000000` and `20270213000100`; first numbered `20270210000000` and `20270210000100`, which feature 041's
+     step logs also took, and renumbered on 2026-11-25 after the latest migration of every branch: no migration of this
+     branch reads the column, so applying it after `flow_control_counts` and the alert kinds changes nothing). The
      migration's rollback refuses while a waiter row's declaration is above its filed limit: dropping the column would
      lose a bound no older binary can recover; a row whose two limits agree loses nothing. No grant changes (the table
      grants cover the column) and no storage class is added (a fixed-size column, outside the variable-size review).

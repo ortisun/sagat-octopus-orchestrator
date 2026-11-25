@@ -477,10 +477,10 @@ rows it actually deleted.
 
 - `concurrency_waiters.pinned_limit integer` null and `rate_limit_waiters.pinned_limit integer` null: the declaration
   the run's version pins (`limit` of the policy), before any ceiling, written with every new waiter row; `NULL` in a
-  row written before `20270210000000`. `declared_limit` keeps its meaning on the waiter rows: the filed limit, the
+  row written before `20270213000000`. `declared_limit` keeps its meaning on the waiter rows: the filed limit, the
   declaration clamped by the namespace's ceiling at admission, as the row's `*.queued` event records it. CHECK
   `concurrency_waiters_pinned_limit_valid` and `rate_limit_waiters_pinned_limit_valid` `(pinned_limit IS NULL OR
-  pinned_limit BETWEEN declared_limit AND 10000)`, added `NOT VALID` by `20270210000000` and validated by `20270210000100`. The table
+  pinned_limit BETWEEN declared_limit AND 10000)`, added `NOT VALID` by `20270213000000` and validated by `20270213000100`. The table
   grants of `sagat_app` cover the column (`SELECT, INSERT, DELETE`); a fixed-size column has no storage class.
 - Every decision (admission, the grant routine, the place estimate, the run view) bounds a waiter by
   `least(coalesce(pinned_limit, declared_limit), the namespace's current ceiling)` (of its window's length for a slot,
