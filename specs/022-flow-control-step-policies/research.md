@@ -1938,6 +1938,38 @@ taken after `git grep D022-04` on every `origin/*` branch.
   restatement had left it): `20270215000200_flow_control_waiting_kind_validate` validates it under `SHARE UPDATE
   EXCLUSIVE` (every restatement only added kinds, so every stored row satisfies it).
 
+- **D022-090 — Only a busy run and a failure that clears on its own end a key's grant pass (2026-11-25; batch 5
+  correctness Major 1, security suspicion 2; amends D022-088).** Delegate (OD-2026-11-24-4). D022-088 ended a key's pass
+  at a waiter whose grant failed, whatever the failure: a waiter whose grant always fails (a version this build cannot
+  load, an execution error, a row a constraint refuses, a held signal whose delivery fails) then held back every younger
+  waiter of its key until its own deadline. Options: (a) end the pass on every failure (as built; a poisoned waiter
+  stalls its key); (b) skip every failure (a younger waiter overtakes an older one whenever the database hiccups,
+  breaking admission order under load, the cause of D022-088); (c) end the pass only on what clears on its own, the
+  store's `Unavailable` and `DatabaseUnavailable` (a pool or statement timeout, a serialization failure, a deadlock, a
+  lost connection: SQLSTATE classes 08, 40, 53, 55, 57) and a busy run, and skip any other failure, counted `failed`
+  in `scheduler_actions_total{kind="gate_grant"}` and logged with its run. Chosen (c). The skipped waiter stays queued
+  until its deadline, which bounds it; on a concurrency key `CONCURRENCY_QUEUE_STUCK` names the key's group once younger
+  waiters keep taking the permits, so no new alert kind is added. A held signal whose delivery fails (anything but a
+  transient failure) no longer fails the grant: the grant's transaction is rolled back and the grant is tried once more
+  in a new transaction that drops the signal with its audit record, reason `DELIVERY_FAILED`, and grants the start
+  without it. Tests: `run_admission::a_waiter_whose_grant_always_fails_does_not_hold_back_the_younger_waiters` (a
+  trigger refuses the older waiter's holder row; the younger is granted in the same pass) and
+  `run_creators::a_held_signal_whose_delivery_fails_is_dropped_and_the_start_is_granted`.
+
+- **D022-091 — Every waiter's transaction that does not commit is rolled back and the rollback awaited (2026-11-25; batch
+  5 correctness Major 2).** Delegate (OD-2026-11-24-4). `grant_waiter` returned a refusal by dropping its transaction:
+  the pool rolls a dropped transaction back later, in a task of its own, so for a moment the run stayed locked and a
+  second waiter of the same run (two root nodes of one run on one key, or a start gated on two keys) found it busy,
+  which since D022-088 ends the key's pass. `RunTx` gains `rollback`, and every return of `grant_waiter` that does not
+  commit awaits it before the next waiter is tried (an adapter without a transaction drops it, as before). A failed
+  rollback is logged; the connection is then closed by the pool, which releases the lock. Test:
+  `run_admission::a_refused_waiter_frees_its_run_before_the_next_waiter_of_the_same_run_is_tried` (two waiters of one
+  run adjacent on one key, the first refused by its other gate; a younger waiter of another run is granted in the first
+  pass). The intermittent `run_admission::a_cancellation_dequeues_a_queued_start_and_frees_a_held_permit` was
+  re-examined against this cause: its key has one waiter, so no earlier waiter of the same pass can leave the run
+  locked; a transaction an earlier pass of the same tick drops on that run could, and is now named by the report
+  (`skipped` counts a busy run). It is not closed by this change: when it fails again, the report says which cause.
+
 ### Decisions of the Studio slice (2026-11-24)
 
 - **D022-150 — How the Studio authors, shows and lists the gates (tasks T022-054, T022-055, T022-056, T022-085;

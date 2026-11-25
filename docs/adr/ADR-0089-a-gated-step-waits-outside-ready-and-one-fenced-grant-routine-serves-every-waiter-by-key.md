@@ -73,6 +73,17 @@ The reviews found four more facts:
    queue (a reset, a pending reset) is decided by the reservation rule: granted when its key's counted holders or
    grants plus the eligible waiters are below its limit, refused otherwise. Every limit is the lower of the waiter's
    declaration and the namespace's current ceiling.
+   *Amended 2026-11-25, delegate (OD-2026-11-24-4; feature 022 decisions D022-088, D022-090 and D022-091):* a waiter
+   the grant routine cannot decide now ends its key's pass, and every younger waiter of the key waits for the next
+   pass, so that no younger waiter is granted before an older one the window may have room for. Two cases are "cannot
+   decide now": its run is held by another transaction (`SKIP LOCKED` found it locked), and its grant failed for a
+   reason that clears on its own (the store unavailable: a pool or statement timeout, a serialization failure, a
+   deadlock). Any other failure of a waiter's grant (a version this build cannot load, an execution error, a row a
+   constraint refuses) would end the pass on every pass, so it is skipped: counted `failed`, logged with its run, and
+   the pass goes on; the waiter stays queued until its deadline. A held signal whose delivery fails is dropped with its
+   audit record (`DELIVERY_FAILED`) and the start is granted without it. A waiter's transaction that does not commit is
+   rolled back, and the rollback awaited, before the next waiter is tried, so that a second waiter of the same run
+   finds the run free.
 5. **One timeout routine.** A waiter has one deadline, the earlier of its gates'. At it, one transaction
    MUST journal the `wait_timed_out` of the gate that refuses it then (`rate_limit` first when both do) and
    the `dequeued` of the other. A grant MUST skip a waiter past its deadline. A waiter of a terminal run is
