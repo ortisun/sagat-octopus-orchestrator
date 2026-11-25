@@ -1,0 +1,113 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sagat.dev/schemas/script-policy/packages-v1.json",
+  "title": "The packages section of a namespace's script policy document (design 046)",
+  "description": "The document is stored in script_runtime_policies.document under the key 'packages'; feature 023 owns the key 'languages'. Allow and deny rules are rows of script_package_rules (at most 500 of each kind per namespace, each with the shape of $defs/rule); waivers are rows of supply_chain_waivers. Neither is part of the document.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "npm": {
+      "$ref": "#/$defs/ecosystem"
+    },
+    "pypi": {
+      "$ref": "#/$defs/ecosystem"
+    },
+    "quarantineHours": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 720,
+      "default": 72
+    },
+    "vulnerabilities": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "blockAtOrAbove": {
+          "enum": [
+            "CRITICAL",
+            "HIGH",
+            "MODERATE",
+            "LOW",
+            "NONE"
+          ],
+          "default": "HIGH"
+        },
+        "blockUnrated": {
+          "type": "boolean",
+          "default": false
+        },
+        "blockNewAtLease": {
+          "type": "boolean",
+          "default": false
+        }
+      }
+    },
+    "licences": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "deny": {
+          "type": "array",
+          "maxItems": 100,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9.+-]{1,64}$"
+          }
+        }
+      }
+    },
+    "installScripts": {
+      "enum": [
+        "skip",
+        "refuse"
+      ],
+      "default": "skip"
+    },
+    "maxLayerBytes": {
+      "type": "integer",
+      "minimum": 1048576,
+      "maximum": 4294967296,
+      "default": 1073741824
+    }
+  },
+  "$defs": {
+    "ecosystem": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": true
+        }
+      }
+    },
+    "rule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ecosystem",
+        "name"
+      ],
+      "properties": {
+        "ecosystem": {
+          "enum": [
+            "npm",
+            "pypi"
+          ]
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 214,
+          "description": "A glob over the normalised name: '*' matches any run of characters except '/', nothing else is special."
+        },
+        "versions": {
+          "type": "string",
+          "maxLength": 256,
+          "description": "A range in the ecosystem's grammar (node semantic versions or PEP 440); absent means every version."
+        }
+      }
+    }
+  }
+}
