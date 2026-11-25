@@ -122,17 +122,19 @@ pub use definitions::{
 #[doc(hidden)]
 pub use execution::EXPIRED_RESETS_SQL;
 pub use execution::{PgRunStore, PgRunTx};
+/// The statements of the concurrency-key listing, exposed so a test can ask the planner about the very text they run
+/// (D022-058).
+#[doc(hidden)]
+pub use flow_control::{
+    CONCURRENCY_GROUP_OF_NAME_SQL, CONCURRENCY_GROUP_SQL, KEY_LISTING_OF_GROUP_SQL,
+    KEY_LISTING_SQL, RATE_GROUP_OF_NAME_SQL, RATE_GROUP_SQL, RATE_KEY_LISTING_OF_GROUP_SQL,
+    RATE_KEY_LISTING_SQL,
+};
 /// The deciding transactions of feature 022's gates file their keys through these, inside the store; exposed for the
 /// integration suite that proves the rotation (T022-095).
 #[doc(hidden)]
 pub use flow_control::{
     FiledKey, KEY_ROW_VANISHED, KeyTable, KeyToFile, file_keys, key_versions, missing_key_versions,
-};
-/// The statements of the concurrency-key listing, exposed so a test can ask the planner about the very text they run
-/// (D022-058).
-#[doc(hidden)]
-pub use flow_control::{
-    KEY_LISTING_OF_GROUP_SQL, KEY_LISTING_SQL, RATE_KEY_LISTING_OF_GROUP_SQL, RATE_KEY_LISTING_SQL,
 };
 pub use identity::PgIdentityStore;
 pub use instances::{

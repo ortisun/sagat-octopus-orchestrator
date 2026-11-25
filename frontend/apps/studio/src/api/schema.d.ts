@@ -1656,7 +1656,7 @@ export interface paths {
         };
         /**
          * List the live concurrency keys of a namespace, oldest wait first
-         * @description Feature 022 (FR-022-022, release 0.3.0 slice). Needs `ops:read`. The concurrency keys with a holder or a waiter, each with its holders, waiters and the ages of its oldest holder and oldest wait, oldest wait first; keys nobody waits for come last. `queuedRuns` counts the namespace's queued runs (concurrency and rate-limit waiters together, a run once) as the `queued_runs` ceiling counts them; the `group` filter narrows the keys, not that count. A key is never shown by its value: `keyLabel` is the 12-hex label of its keyed digest, and is null unless the caller may reveal personal data in the namespace (a role that may use a reveal grant, and the namespace's `payload:reveal-pii` grant); for any other caller `oldestHolderSince` and `oldestWaitSince` are truncated to their minute (toward the past, UTC; seconds and fractions zero), since whole they equal the `since` of the key's runs; this narrows, and does not stop, linking a key's runs by the minute of their own `since` when its runs start in different minutes. A page that has a next one is a 503 when the serving process lacks the digest key version in force (it cannot seal the cursor). Counts are read without the keys' locks, in one snapshot per page; a key's counts and place may change between two pages, so a key can appear on two pages or on none of a later page's predecessors. `nextCursor` is opaque, sealed for this namespace under the digest key version in force: an altered cursor, one of another namespace, one of another group's listing, or one sealed under a version no longer in force (a forced retirement included) is a 400. A namespace of another tenant is a 404, like one that does not exist.
+         * @description Feature 022 (FR-022-022, release 0.3.0 slice). Needs `ops:read`. The concurrency keys with a holder or a waiter, each with its holders, waiters and the ages of its oldest holder and oldest wait, oldest wait first; keys nobody waits for come last. `queuedRuns` counts the namespace's queued runs (concurrency and rate-limit waiters together, a run once) as the `queued_runs` ceiling counts them; the `group` filter narrows the keys, not that count. A key is never shown by its value. A caller who may reveal personal data in the namespace (a role that may use a reveal grant, and the namespace's `payload:reveal-pii` grant) reads `view: KEYS`, one row per key in `items` with `keyLabel`, the 12-hex label of its keyed digest, and whole instants. Every other caller reads `view: GROUPS`, one row per pool, scope and group in `groups` (its keys, holders, waiters, oldest wait and oldest holder, summed over its keys, whole instants) and an empty `items`: a group is the definition's name or a declared slug, already on each run, so no row links one run to another (D022-061, D022-086). Keys are ordered oldest wait first; groups by pool, scope and name, and a page reads only its own groups' keys. A page that has a next one is a 503 when the serving process lacks the digest key version in force (it cannot seal the cursor). Counts are read without the keys' locks, in one snapshot per page; a key's counts and place may change between two pages, so a key can appear on two pages or on none of a later page's predecessors. `nextCursor` is opaque, sealed for this namespace under the digest key version in force: an altered cursor, one of another namespace, one of another group's listing, one of the other view (the caller's reveal right changed between two pages), or one sealed under a version no longer in force (a forced retirement included) is a 400. A namespace of another tenant is a 404, like one that does not exist.
          */
         get: operations["listConcurrencyKeys"];
         put?: never;
@@ -1676,7 +1676,7 @@ export interface paths {
         };
         /**
          * List the rate-limit keys of a namespace, oldest wait first
-         * @description Feature 022 (FR-022-048, release 0.3.0 slice; T022-078). Needs `ops:read`. Every rate-limit window of the namespace (the rows the quota usage of `rate_limit_live_keys` counts; the ceiling leaves out the rows of a forcibly retired digest version, which drain on their own, D022-068 item 4), each with the grants that count over its longest window, its unleased grants, its waiters, the age of its oldest wait and the instant its next slot frees, oldest wait first; keys nobody waits for come last. `queuedRuns` counts the namespace's queued runs (concurrency and rate-limit waiters together, a run once) as the `queued_runs` ceiling counts them; the `group` filter narrows the keys, not that count. A key is never shown by its value: `keyLabel` is the 12-hex label of its keyed digest, and is null unless the caller may reveal personal data in the namespace (a role that may use a reveal grant, and the namespace's `payload:reveal-pii` grant); for any other caller `oldestWaitSince` and `nextSlotAt` are truncated to their minute (toward the past, UTC; seconds and fractions zero), since whole they equal or derive from the instants of the key's runs. A page that has a next one is a 503 when the serving process lacks the digest key version in force (it cannot seal the cursor). Counts are read without the keys' locks, in one snapshot per page, at the page's instant; a key's counts and place may change between two pages. `nextCursor` is opaque, sealed for this namespace under the digest key version in force and of this listing's own kind: an altered cursor, one of another namespace, one of the concurrency-key listing, one of another group's listing, or one sealed under a version no longer in force is a 400. A namespace of another tenant is a 404, like one that does not exist.
+         * @description Feature 022 (FR-022-048, release 0.3.0 slice; T022-078). Needs `ops:read`. Every rate-limit window of the namespace (the rows the quota usage of `rate_limit_live_keys` counts; the ceiling leaves out the rows of a forcibly retired digest version, which drain on their own, D022-068 item 4), each with the grants that count over its longest window, its unleased grants, its waiters, the age of its oldest wait and the instant its next slot frees, oldest wait first; keys nobody waits for come last. `queuedRuns` counts the namespace's queued runs (concurrency and rate-limit waiters together, a run once) as the `queued_runs` ceiling counts them; the `group` filter narrows the keys, not that count. A key is never shown by its value: as the concurrency-key listing, `view: KEYS` (one row per window by `keyLabel`, whole instants) for a caller who may reveal personal data in the namespace, `view: GROUPS` (one row per pool, scope and group in `groups`, summed over its windows) for every other caller (D022-086). A page that has a next one is a 503 when the serving process lacks the digest key version in force (it cannot seal the cursor). Counts are read without the keys' locks, in one snapshot per page, at the page's instant; a key's counts and place may change between two pages. `nextCursor` is opaque, sealed for this namespace under the digest key version in force and of this listing's own kind: an altered cursor, one of another namespace, one of the concurrency-key listing, one of another group's listing, one of the other view, or one sealed under a version no longer in force is a 400. A namespace of another tenant is a 404, like one that does not exist.
          */
         get: operations["listRateLimitKeys"];
         put?: never;
@@ -5679,10 +5679,61 @@ export interface components {
             oldestHolderSince?: string | null;
         };
         ConcurrencyKeyPage: {
+            /**
+             * @description KEYS: one row per key in `items`, by its label, for a caller who may reveal personal data in the namespace. GROUPS: one row per pool, scope and group in `groups` (its keys summed, whole instants), for every other caller; `items` is then empty (FR-022-057, D022-061, D022-086).
+             * @enum {string}
+             */
+            view: "KEYS" | "GROUPS";
             queuedRuns: number;
             items: components["schemas"]["ConcurrencyKey"][];
+            groups: components["schemas"]["ConcurrencyKeyGroup"][];
             /** @description Opaque, sealed for this namespace; null after the last page. */
             nextCursor?: string | null;
+        };
+        /** @description Feature 022 (FR-022-022, T022-111, D022-086). One pool, scope and group of the namespace's concurrency keys, summed over its keys in the page's snapshot; no key's label, value or own count. */
+        ConcurrencyKeyGroup: {
+            /** @enum {string} */
+            pool: "ORDINARY" | "DRAFT_TEST";
+            /** @enum {string} */
+            scope: "RUN" | "STEP";
+            group: string;
+            /** @description Its live keys. */
+            keys: number;
+            holders: number;
+            waiters: number;
+            /**
+             * Format: date-time
+             * @description The queueing instant of the group's oldest waiter, whole; null when nobody waits.
+             */
+            oldestWaitSince: string | null;
+            /**
+             * Format: date-time
+             * @description The acquisition instant of the group's oldest holder, whole; null when nobody holds.
+             */
+            oldestHolderSince: string | null;
+        };
+        /** @description Feature 022 (FR-022-048, T022-111, D022-086). One pool, scope and group of the namespace's rate-limit windows, summed over its windows at the page's instant, each read as RateLimitKey reads it; no key's label, value or own count. */
+        RateLimitKeyGroup: {
+            /** @enum {string} */
+            pool: "ORDINARY" | "DRAFT_TEST";
+            /** @enum {string} */
+            scope: "RUN" | "STEP";
+            group: string;
+            /** @description Its windows (keys). */
+            keys: number;
+            grantsInWindow: number;
+            unleasedGrants: number;
+            waiters: number;
+            /**
+             * Format: date-time
+             * @description The queueing instant of the group's oldest waiter, whole; null when nobody waits.
+             */
+            oldestWaitSince: string | null;
+            /**
+             * Format: date-time
+             * @description The earliest nextSlotAt of its windows.
+             */
+            nextSlotAt: string | null;
         };
         /** @description Feature 022 (FR-022-048). One rate-limit window row of the namespace; counts are a snapshot read without the key's lock, at the page's instant. */
         RateLimitKey: {
@@ -5713,8 +5764,14 @@ export interface components {
             nextSlotAt: string | null;
         };
         RateLimitKeyPage: {
+            /**
+             * @description KEYS: one row per key in `items`, by its label, for a caller who may reveal personal data in the namespace. GROUPS: one row per pool, scope and group in `groups` (its keys summed, whole instants), for every other caller; `items` is then empty (FR-022-057, D022-061, D022-086).
+             * @enum {string}
+             */
+            view: "KEYS" | "GROUPS";
             queuedRuns: number;
             items: components["schemas"]["RateLimitKey"][];
+            groups: components["schemas"]["RateLimitKeyGroup"][];
             /** @description Opaque, sealed for this namespace and this listing; null after the last page. */
             nextCursor?: string | null;
         };
@@ -5728,7 +5785,7 @@ export interface components {
             /** @enum {string} */
             pool: "ORDINARY" | "DRAFT_TEST";
             group: string;
-            /** @description The 12-hex label of the key's keyed digest; null unless the caller may reveal personal data in the run's namespace (FR-022-057). */
+            /** @description The 12-hex label of the key's keyed digest; null unless the caller may disclose, at its level, every location the key reads: a key over public fields to every reader, over internal fields to a role that reads internal payloads, over pii fields (an unclassified field is pii) only to a caller who may reveal personal data in the run's namespace (FR-022-057, D022-085). */
             keyLabel: string | null;
             /** @description The effective limit the slot was decided with: the lowest of the declaration and the namespace's ceiling of its window. */
             limit: number;
@@ -5759,7 +5816,7 @@ export interface components {
             /** @enum {string} */
             pool: "ORDINARY" | "DRAFT_TEST";
             group: string;
-            /** @description The 12-hex label of the key's keyed digest; null unless the caller may reveal personal data in the run's namespace (FR-022-057). */
+            /** @description The 12-hex label of the key's keyed digest; null unless the caller may disclose, at its level, every location the key reads: a key over public fields to every reader, over internal fields to a role that reads internal payloads, over pii fields (an unclassified field is pii) only to a caller who may reveal personal data in the run's namespace (FR-022-057, D022-085). */
             keyLabel: string | null;
             /**
              * Format: date-time

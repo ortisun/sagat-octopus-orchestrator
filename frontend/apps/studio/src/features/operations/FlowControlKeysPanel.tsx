@@ -6,11 +6,12 @@ import { Button } from '../../ui/Button';
 import { ErrorState } from '../../ui/ErrorState';
 import { Moment } from '../runs/Now';
 import { keyLabelWords, noNextSlotWords, poolWords, queuedWords, scopeWords } from './flowControlKeys';
-import type { ConcurrencyKey, FlowControlKeysApi, KeyQuery, RateLimitKey } from './flowControlKeys';
+import type { ConcurrencyKey, ConcurrencyKeyGroup, FlowControlKeysApi, KeyQuery, RateLimitKey, RateLimitKeyGroup } from './flowControlKeys';
 import './flowControlKeys.css';
 
 const PAGE_SIZE = 50;
 const HIDDEN_NOTE = 'A hidden key label: you may not reveal personal data in this namespace, so the platform does not show it, and gives the instants of that key to the minute.';
+const GROUPS_NOTE = 'You may not reveal personal data in this namespace, so the platform lists one row per group, its keys summed, and no key.';
 
 /** An instant of a key; the platform cuts the instants of a hidden key to the minute, and the cell says so. */
 function Instant({ at, hidden, empty }: { at: string | null | undefined; hidden: boolean; empty: string }) {
@@ -28,18 +29,27 @@ interface Column<T> {
   cell: (item: T) => ReactNode;
 }
 
-interface Listing<T> {
+interface Listing<T, G> {
   title: string;
   /** The plural noun, for the buttons and the caption. */
   noun: string;
   empty: string;
   columns: readonly Column<T>[];
-  read: (query: KeyQuery, signal: AbortSignal) => Promise<{ queuedRuns: number; items: T[]; nextCursor?: string | null }>;
+  /** The columns of a group row, for a caller the platform lists groups to (`view: GROUPS`). */
+  groupColumns: readonly Column<G>[];
+  read: (
+    query: KeyQuery,
+    signal: AbortSignal,
+  ) => Promise<{ view?: 'KEYS' | 'GROUPS'; queuedRuns: number; items: T[]; groups?: G[]; nextCursor?: string | null }>;
   hidden: (item: T) => boolean;
 }
 
-/** One listing: a group filter, a table of a page or more, and "Load more" while the platform has a next page. */
-function KeyListing<T extends { group: string }>({ listing, namespace, queryKey }: { listing: Listing<T>; namespace: string; queryKey: readonly unknown[] }) {
+/**
+ * One listing: a group filter, a table of a page or more, and "Load more" while the platform has a next page. The
+ * platform answers a caller who may reveal personal data with keys, any other with groups (decision D022-086); a
+ * platform that does not say which lists keys.
+ */
+function KeyListing<T extends { group: string }, G extends { group: string }>({ listing, namespace, queryKey }: { listing: Listing<T, G>; namespace: string; queryKey: readonly unknown[] }) {
   const [draft, setDraft] = useState('');
   const [group, setGroup] = useState('');
   const headingId = useId();
@@ -49,12 +59,17 @@ function KeyListing<T extends { group: string }>({ listing, namespace, queryKey 
     queryFn: ({ pageParam, signal }) => listing.read({ limit: PAGE_SIZE, ...(group === '' ? {} : { group }), ...(pageParam ? { cursor: pageParam } : {}) }, signal),
     getNextPageParam: (last) => last.nextCursor ?? undefined,
   });
-  const items = list.data?.pages.flatMap((page) => page.items) ?? [];
+  const groupView = list.data?.pages[0]?.view === 'GROUPS';
+  const items = groupView ? [] : (list.data?.pages.flatMap((page) => page.items) ?? []);
+  const groups = groupView ? (list.data?.pages.flatMap((page) => page.groups ?? []) ?? []) : [];
+  const rows: readonly { group: string }[] = groupView ? groups : items;
   const queued = list.data?.pages[0]?.queuedRuns;
   // A platform without the listing answers its route with a 404 (the namespace itself was resolved by the page): the
   // listing is unavailable there, which is said, not raised as a failure (FR-007-010).
   const unavailable = list.isError && isApiError(list.error) && list.error.status === 404;
-  const caption = `${listing.title} of ${namespace}${group === '' ? '' : `, group ${group}`}, oldest wait first`;
+  const caption = groupView
+    ? `${listing.title} of ${namespace}${group === '' ? '' : `, group ${group}`}, one row per group`
+    : `${listing.title} of ${namespace}${group === '' ? '' : `, group ${group}`}, oldest wait first`;
 
   return (
     <section className="operations-keys" aria-labelledby={headingId}>
@@ -84,9 +99,10 @@ function KeyListing<T extends { group: string }>({ listing, namespace, queryKey 
       {list.isPending ? <p role="status">Loading {listing.noun}…</p> : null}
       {unavailable ? <p role="status">Unavailable: this platform does not list {listing.noun}.</p> : null}
       {list.isError && !unavailable ? <ErrorState error={list.error} what={`Loading ${listing.noun}`} onRetry={() => void list.refetch()} /> : null}
-      {list.isSuccess && items.length === 0 ? <p className="empty">{listing.empty}</p> : null}
-      {items.length > 0 ? (
+      {list.isSuccess && rows.length === 0 ? <p className="empty">{listing.empty}</p> : null}
+      {rows.length > 0 ? (
         <>
+          {groupView ? <p className="hint">{GROUPS_NOTE}</p> : null}
           {items.some(listing.hidden) ? <p className="hint">{HIDDEN_NOTE}</p> : null}
           {/* eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- a scrollable region must take focus (WCAG 2.1.1) */}
           <div className="operations-key-scroll" role="region" aria-label={`${listing.title}, scrollable`} tabIndex={0}>
@@ -95,7 +111,7 @@ function KeyListing<T extends { group: string }>({ listing, namespace, queryKey 
               <thead>
                 <tr>
                   <th scope="col">Group</th>
-                  {listing.columns.map((column) => (
+                  {(groupView ? listing.groupColumns : listing.columns).map((column) => (
                     <th scope="col" key={column.header}>
                       {column.header}
                     </th>
@@ -103,16 +119,27 @@ function KeyListing<T extends { group: string }>({ listing, namespace, queryKey 
                 </tr>
               </thead>
               <tbody>
-                {items.map((item, index) => (
-                  <tr key={index}>
-                    <th scope="row">
-                      <code>{item.group}</code>
-                    </th>
-                    {listing.columns.map((column) => (
-                      <td key={column.header}>{column.cell(item)}</td>
+                {groupView
+                  ? groups.map((row, index) => (
+                      <tr key={index}>
+                        <th scope="row">
+                          <code>{row.group}</code>
+                        </th>
+                        {listing.groupColumns.map((column) => (
+                          <td key={column.header}>{column.cell(row)}</td>
+                        ))}
+                      </tr>
+                    ))
+                  : items.map((item, index) => (
+                      <tr key={index}>
+                        <th scope="row">
+                          <code>{item.group}</code>
+                        </th>
+                        {listing.columns.map((column) => (
+                          <td key={column.header}>{column.cell(item)}</td>
+                        ))}
+                      </tr>
                     ))}
-                  </tr>
-                ))}
               </tbody>
             </table>
           </div>
@@ -128,6 +155,12 @@ function KeyListing<T extends { group: string }>({ listing, namespace, queryKey 
   );
 }
 
+const groupCommon = <G extends { scope: string; pool: string; keys: number }>(): Column<G>[] => [
+  { header: 'Applies to', cell: (row) => scopeWords(row.scope) },
+  { header: 'Pool', cell: (row) => poolWords(row.pool) },
+  { header: 'Keys', cell: (row) => row.keys },
+];
+
 const common = <T extends { scope: string; pool: string; keyLabel: string | null }>(): Column<T>[] => [
   { header: 'Applies to', cell: (key) => scopeWords(key.scope) },
   { header: 'Pool', cell: (key) => poolWords(key.pool) },
@@ -139,7 +172,7 @@ const common = <T extends { scope: string; pool: string; keyLabel: string | null
  * how long. Both listings need `ops:read`, which the page checks before it renders this.
  */
 export function FlowControlKeysPanel({ api, namespace, namespaceId, sessionKey }: { api: FlowControlKeysApi; namespace: string; namespaceId: string; sessionKey: string }) {
-  const concurrency: Listing<ConcurrencyKey> = {
+  const concurrency: Listing<ConcurrencyKey, ConcurrencyKeyGroup> = {
     title: 'Concurrency keys',
     noun: 'concurrency keys',
     empty: 'No concurrency key has a holder or a waiter in this namespace.',
@@ -152,8 +185,15 @@ export function FlowControlKeysPanel({ api, namespace, namespaceId, sessionKey }
       { header: 'Oldest wait since', cell: (key) => <Instant at={key.oldestWaitSince} hidden={key.keyLabel === null} empty="Nobody waits" /> },
       { header: 'Oldest holder since', cell: (key) => <Instant at={key.oldestHolderSince} hidden={key.keyLabel === null} empty="Nobody holds" /> },
     ],
+    groupColumns: [
+      ...groupCommon<ConcurrencyKeyGroup>(),
+      { header: 'Holders', cell: (row) => row.holders },
+      { header: 'Waiters', cell: (row) => row.waiters },
+      { header: 'Oldest wait since', cell: (row) => <Instant at={row.oldestWaitSince} hidden={false} empty="Nobody waits" /> },
+      { header: 'Oldest holder since', cell: (row) => <Instant at={row.oldestHolderSince} hidden={false} empty="Nobody holds" /> },
+    ],
   };
-  const rate: Listing<RateLimitKey> = {
+  const rate: Listing<RateLimitKey, RateLimitKeyGroup> = {
     title: 'Rate-limit keys',
     noun: 'rate-limit keys',
     empty: 'No rate-limit key has a counted grant or a waiter in this namespace.',
@@ -167,6 +207,14 @@ export function FlowControlKeysPanel({ api, namespace, namespaceId, sessionKey }
       { header: 'Oldest wait since', cell: (key) => <Instant at={key.oldestWaitSince} hidden={key.keyLabel === null} empty="Nobody waits" /> },
       { header: 'Next slot frees', cell: (key) => <Instant at={key.nextSlotAt} hidden={key.keyLabel === null} empty={noNextSlotWords(key)} /> },
     ],
+    groupColumns: [
+      ...groupCommon<RateLimitKeyGroup>(),
+      { header: 'Grants in window', cell: (row) => row.grantsInWindow },
+      { header: 'Unleased grants', cell: (row) => row.unleasedGrants },
+      { header: 'Waiters', cell: (row) => row.waiters },
+      { header: 'Oldest wait since', cell: (row) => <Instant at={row.oldestWaitSince} hidden={false} empty="Nobody waits" /> },
+      { header: 'Next slot frees', cell: (row) => <Instant at={row.nextSlotAt} hidden={false} empty={noNextSlotWords(row)} /> },
+    ],
   };
   const base = ['operations', sessionKey, namespaceId, 'flow-control-keys'] as const;
   return (
@@ -174,7 +222,7 @@ export function FlowControlKeysPanel({ api, namespace, namespaceId, sessionKey }
       <div className="operations-panel-heading">
         <div>
           <h2 id="operations-keys-title">Flow-control keys</h2>
-          <p>The keys whose runs or steps hold or wait for a concurrency permit or a rate-limit slot, oldest wait first. A key is shown by its label, never by its value.</p>
+          <p>The keys whose runs or steps hold or wait for a concurrency permit or a rate-limit slot, oldest wait first. A key is shown by its label, never by its value; to a caller who may not reveal personal data, by its group only.</p>
         </div>
       </div>
       <KeyListing listing={concurrency} namespace={namespace} queryKey={[...base, 'concurrency']} />

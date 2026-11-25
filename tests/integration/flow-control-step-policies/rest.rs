@@ -403,9 +403,10 @@ async fn the_keys_of_a_namespace_are_its_tenants_and_need_ops_read() {
     assert_eq!(worker.status(), StatusCode::FORBIDDEN);
 }
 
-/// FR-022-057, D022-060 (keys review, security M1): until T022-104 classifies what a key reads, a key's label is shown
-/// only to a caller who may reveal personal data in the namespace (a role that may use a reveal grant, and the grant);
-/// every other reader gets `keyLabel: null` in both reads, the rest of the permit and the key unchanged.
+/// FR-022-057, D022-060 (keys review, security M1): a key over an unclassified field reads `pii` (decision D022-085), so
+/// its label is shown only to a caller who may reveal personal data in the namespace (a role that may use a reveal
+/// grant, and the grant); every other reader gets `keyLabel: null` in both run reads, and the key's group instead of the
+/// key in the listing (`view: GROUPS`, decision D022-086), its counts and whole instants those of the one key.
 #[tokio::test]
 async fn a_key_label_is_shown_only_to_a_caller_who_may_reveal_personal_data() {
     use sagat_domain::identity::Role;
@@ -448,26 +449,25 @@ async fn a_key_label_is_shown_only_to_a_caller_who_may_reveal_personal_data() {
                 .clone();
             let (status, page) = read_as(api, &keys, subject).await;
             assert_eq!(status, StatusCode::OK, "{page}");
-            assert_eq!(page["items"][0]["holders"], 1, "{page}");
-            // the key's instants: whole they would link the runs of one key as the label would (review of the fixes,
-            // security Major 1), so without the label they are cut to the minute, which still says how long the queue
-            // has waited (FR-022-022; re-review of the fixes)
-            let revealed = page["items"][0]["keyLabel"].is_string();
+            // a caller who may see labels reads the key; any other reads its group, never the key (decision D022-086)
+            let revealed = page["view"] == "KEYS";
+            let row = if revealed {
+                assert_eq!(page["groups"], json!([]), "{page}");
+                page["items"][0].clone()
+            } else {
+                assert_eq!(page["view"], "GROUPS", "{page}");
+                assert_eq!(page["items"], json!([]), "{page}");
+                assert_eq!(page["groups"][0]["keys"], 1, "{page}");
+                page["groups"][0].clone()
+            };
+            assert_eq!(row["holders"], 1, "{page}");
+            assert_eq!(row["waiters"], 1, "{page}");
+            // whole in both views: a key's to a caller who may see its label, a group's to any other (D022-061 (b))
             for (field, since) in [
                 ("oldestHolderSince", &run["concurrency"]["since"]),
                 ("oldestWaitSince", &waiting["concurrency"]["since"]),
             ] {
-                let (at, since) = (instant(&page["items"][0][field]), instant(since));
-                // whole to a caller who may see the label, its minute (toward the past) to any other: never coarser,
-                // never the whole instant (re-review of 34b8be41, minor 3)
-                let expected = if revealed {
-                    since
-                } else {
-                    since
-                        - time::Duration::seconds(i64::from(since.second()))
-                        - time::Duration::nanoseconds(i64::from(since.nanosecond()))
-                };
-                assert_eq!(at, expected, "{field}: {page}");
+                assert_eq!(instant(&row[field]), instant(since), "{field}: {page}");
             }
             assert!(
                 run["concurrency"].get("keyLabel").is_some(),
@@ -476,7 +476,7 @@ async fn a_key_label_is_shown_only_to_a_caller_who_may_reveal_personal_data() {
             [
                 run["concurrency"]["keyLabel"].clone(),
                 listed["keyLabel"].clone(),
-                page["items"][0]["keyLabel"].clone(),
+                row.get("keyLabel").cloned().unwrap_or(Value::Null),
             ]
         }
     };
@@ -788,9 +788,15 @@ async fn a_listing_shows_only_its_own_namespaces_keys_and_queued_runs() {
             let response = api.get_as(&path, admin, tenant).await;
             assert_eq!(response.status(), StatusCode::OK);
             let page = json_of(response).await;
-            let shape: Vec<(i64, i64)> = page["items"]
+            // keys to a caller with the reveal grant, the group of the keys to any other (decision D022-086)
+            let rows = if page["view"] == "GROUPS" {
+                "groups"
+            } else {
+                "items"
+            };
+            let shape: Vec<(i64, i64)> = page[rows]
                 .as_array()
-                .expect("items")
+                .expect("rows")
                 .iter()
                 .map(|item| {
                     (
@@ -893,6 +899,308 @@ async fn a_page_of_keys_reads_only_its_own_keys() {
     }
 }
 
+/// Task T022-111 (decisions D022-061 (b), D022-086): a caller without the reveal right reads one row per pool, scope and
+/// group, its keys summed with whole instants, in both listings, paged by a sealed cursor and narrowed by `group`; a
+/// caller with it reads the keys by label. No body a viewer reads carries a key's label, digest or value (the canary);
+/// a cursor of one view is a `400` in the other.
+#[tokio::test]
+async fn a_caller_without_the_reveal_right_reads_one_row_per_group_and_pages_them() {
+    use sagat_domain::identity::Role;
+    let (api, namespace, acme) = api().await;
+    member(&api, acme, "vera-viewer", Role::Viewer).await;
+    let accounts = publish(&api, "rest-groups-a", serial_start("rest-groups-a", 1))
+        .await
+        .expect("published");
+    let mut regions_document = serial_start("rest-groups-r", 1);
+    regions_document["concurrency"]["group"] = json!("regions");
+    let regions = publish(&api, "rest-groups-r", regions_document)
+        .await
+        .expect("published");
+    let mut rated = serial_start("rest-groups-rate", 1);
+    rated
+        .as_object_mut()
+        .expect("a document")
+        .remove("concurrency");
+    rated["rateLimit"] =
+        json!({"group": "providers", "key": "input.accountId", "limit": 1, "per": "hour"});
+    let rated = publish(&api, "rest-groups-rate", rated)
+        .await
+        .expect("published");
+    let a_holder = start(&api, &accounts, CANARY).await;
+    let a_waiter = start(&api, &accounts, CANARY).await;
+    let b_holder = start(&api, &accounts, "acct-other-2291").await;
+    let r_holder = start(&api, &regions, CANARY).await;
+    let rate_holder = start(&api, &rated, CANARY).await;
+    let rate_waiter = start(&api, &rated, CANARY).await;
+    let mut labels = Vec::new();
+    for run in [&a_holder, &b_holder, &r_holder] {
+        labels.push(label_of(&api, run).await);
+    }
+    let digests: Vec<String> = sqlx::query_scalar(
+        "SELECT encode(key_digest, 'hex') FROM concurrency_semaphores \
+         UNION ALL SELECT encode(key_digest, 'hex') FROM rate_limit_windows",
+    )
+    .fetch_all(&api.db.pool)
+    .await
+    .expect("the digests");
+    labels.extend(digests.iter().map(|digest| digest[..12].to_owned()));
+    let since = |body: &Value, gate: &str| body[gate]["since"].as_str().expect("since").to_owned();
+    let run = |id: &String| {
+        let api = &api;
+        let id = id.clone();
+        async move { read(api, &format!("/runs/{id}")).await.1 }
+    };
+    let instant = |text: &Value| {
+        time::OffsetDateTime::parse(
+            text.as_str().expect("an instant"),
+            &time::format_description::well_known::Rfc3339,
+        )
+        .expect("rfc3339")
+    };
+    // what the viewer reads, checked for every label and digest of the namespace's keys
+    let as_viewer = |path: String| {
+        let api = &api;
+        let labels = labels.clone();
+        async move {
+            let response = api
+                .as_user(Method::GET, &path, "vera-viewer", "acme")
+                .header("x-octopus-namespace", "payments")
+                .send()
+                .await
+                .expect("read");
+            let status = response.status();
+            let text = response.text().await.expect("body");
+            assert!(!text.contains(CANARY), "a raw key value in {path}: {text}");
+            for label in &labels {
+                assert!(
+                    !text.contains(label.as_str()),
+                    "a key's label or digest in {path}: {text}"
+                );
+            }
+            assert!(
+                !text.contains("keyLabel"),
+                "no key row reaches a viewer: {text}"
+            );
+            (status, serde_json::from_str::<Value>(&text).expect("json"))
+        }
+    };
+
+    let keys = format!("/namespaces/{namespace}/concurrency-keys");
+    let (status, first) = as_viewer(format!("{keys}?limit=1")).await;
+    assert_eq!(status, StatusCode::OK, "{first}");
+    assert_eq!(first["view"], "GROUPS", "{first}");
+    assert_eq!(first["items"], json!([]), "{first}");
+    assert_eq!(
+        first["queuedRuns"], 2,
+        "the accounts waiter and the rate waiter: {first}"
+    );
+    let group = &first["groups"][0];
+    assert_eq!(
+        (&group["pool"], &group["scope"], &group["group"]),
+        (&json!("ORDINARY"), &json!("RUN"), &json!("accounts")),
+        "{first}"
+    );
+    assert_eq!(
+        (&group["keys"], &group["holders"], &group["waiters"]),
+        (&json!(2), &json!(2), &json!(1))
+    );
+    let (holder_a, holder_b, waiter) = (
+        run(&a_holder).await,
+        run(&b_holder).await,
+        run(&a_waiter).await,
+    );
+    let oldest_holder = instant(&json!(since(&holder_a, "concurrency")))
+        .min(instant(&json!(since(&holder_b, "concurrency"))));
+    assert_eq!(
+        instant(&group["oldestHolderSince"]),
+        oldest_holder,
+        "whole: {first}"
+    );
+    assert_eq!(
+        instant(&group["oldestWaitSince"]),
+        instant(&json!(since(&waiter, "concurrency"))),
+        "whole: {first}"
+    );
+    let cursor = first["nextCursor"]
+        .as_str()
+        .expect("a next page")
+        .to_owned();
+    let (status, second) = as_viewer(format!("{keys}?limit=1&cursor={cursor}")).await;
+    assert_eq!(status, StatusCode::OK, "{second}");
+    assert_eq!(second["groups"][0]["group"], "regions", "{second}");
+    assert_eq!(
+        (
+            &second["groups"][0]["keys"],
+            &second["groups"][0]["holders"]
+        ),
+        (&json!(1), &json!(1))
+    );
+    assert_eq!(
+        second["groups"][0]["oldestWaitSince"],
+        Value::Null,
+        "{second}"
+    );
+    assert_eq!(second["nextCursor"], Value::Null, "the last page: {second}");
+    let (status, regions_only) = as_viewer(format!("{keys}?group=regions")).await;
+    assert_eq!(status, StatusCode::OK, "{regions_only}");
+    assert_eq!(
+        regions_only["groups"].as_array().map(Vec::len),
+        Some(1),
+        "{regions_only}"
+    );
+    assert_eq!(
+        regions_only["groups"][0]["group"], "regions",
+        "{regions_only}"
+    );
+    // the listing holds to its contract in the group view too
+    crate::support::contract::OpenApi::load()
+        .validate_body(
+            "GET",
+            "/namespaces/{namespaceId}/concurrency-keys",
+            200,
+            &first,
+        )
+        .expect("a documented JSON body")
+        .unwrap_or_else(|errors| panic!("against the contract: {errors}\n{first}"));
+
+    // the rate-limit listing, the same way
+    let rate_keys = format!("/namespaces/{namespace}/rate-limit-keys");
+    let (status, rate) = as_viewer(rate_keys.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{rate}");
+    assert_eq!(rate["view"], "GROUPS", "{rate}");
+    assert_eq!(rate["items"], json!([]), "{rate}");
+    let group = &rate["groups"][0];
+    assert_eq!(group["group"], "providers", "{rate}");
+    assert_eq!(
+        (&group["keys"], &group["grantsInWindow"], &group["waiters"]),
+        (&json!(1), &json!(1), &json!(1)),
+        "{rate}"
+    );
+    assert_eq!(
+        instant(&group["oldestWaitSince"]),
+        instant(&json!(since(&run(&rate_waiter).await, "rateLimit"))),
+        "whole: {rate}"
+    );
+    let _ = rate_holder;
+    crate::support::contract::OpenApi::load()
+        .validate_body(
+            "GET",
+            "/namespaces/{namespaceId}/rate-limit-keys",
+            200,
+            &rate,
+        )
+        .expect("a documented JSON body")
+        .unwrap_or_else(|errors| panic!("against the contract: {errors}\n{rate}"));
+
+    // a caller with the reveal right reads the keys, by label; its cursor is refused in the group view and back
+    let (status, revealed) = read(&api, &format!("{keys}?limit=1")).await;
+    assert_eq!(status, StatusCode::OK, "{revealed}");
+    assert_eq!(revealed["view"], "KEYS", "{revealed}");
+    assert_eq!(revealed["groups"], json!([]), "{revealed}");
+    assert!(revealed["items"][0]["keyLabel"].is_string(), "{revealed}");
+    let key_cursor = revealed["nextCursor"]
+        .as_str()
+        .expect("a next page")
+        .to_owned();
+    let (status, refused) = as_viewer(format!("{keys}?limit=1&cursor={key_cursor}")).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{refused}");
+    let (status, refused) = read(&api, &format!("{keys}?limit=1&cursor={cursor}")).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{refused}");
+}
+
+/// Task T022-111 (decision D022-086): a page of groups reads its own groups' keys and nothing else: on 5,000 keys in
+/// 100 groups of 50, a page of three groups reads at most their 150 keys and one probe a group to find them, from the
+/// first group and after a cursor, in both listings and for one group's name; never a scan of the namespace's keys.
+#[tokio::test]
+async fn a_page_of_groups_reads_only_its_own_groups() {
+    let (api, namespace, tenant) = api().await;
+    let pool = &api.db.pool;
+    for table in [
+        "concurrency_semaphores (tenant_id, namespace_id, pool, permit_scope",
+        "rate_limit_windows (tenant_id, namespace_id, pool, limit_scope",
+    ] {
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "INSERT INTO {table}, group_name, key_digest, key_version, key_shard, updated_at) \
+             SELECT $1, $2::uuid, 'ORDINARY', 'RUN', 'group-' || lpad((i % 100)::text, 3, '0'), sha256(int4send(i)), \
+                    (SELECT version FROM flow_control_key_versions WHERE state = 'ACTIVE'), i % 64, clock_timestamp() \
+               FROM generate_series(1, 5000) i"
+        )))
+        .bind(tenant.as_uuid())
+        .bind(&namespace)
+        .execute(pool)
+        .await
+        .expect("5,000 keys");
+    }
+    for table in ["concurrency_semaphores", "rate_limit_windows"] {
+        sqlx::query(sqlx::AssertSqlSafe(format!("ANALYZE {table}")))
+            .execute(pool)
+            .await
+            .expect("analyze");
+    }
+    /// Every row the plan's scans of `relation` returned, over all their loops.
+    fn rows_of(plan: &Value, relation: &str) -> f64 {
+        let mut rows = 0.0;
+        if plan["Relation Name"] == relation {
+            rows += plan["Actual Rows"].as_f64().unwrap_or(0.0)
+                * plan["Actual Loops"].as_f64().unwrap_or(1.0);
+        }
+        for child in plan["Plans"].as_array().into_iter().flatten() {
+            rows += rows_of(child, relation);
+        }
+        rows
+    }
+    for (sql, relation, named) in [
+        (
+            sagat_infra_postgres::CONCURRENCY_GROUP_SQL,
+            "concurrency_semaphores",
+            false,
+        ),
+        (
+            sagat_infra_postgres::CONCURRENCY_GROUP_OF_NAME_SQL,
+            "concurrency_semaphores",
+            true,
+        ),
+        (
+            sagat_infra_postgres::RATE_GROUP_SQL,
+            "rate_limit_windows",
+            false,
+        ),
+        (
+            sagat_infra_postgres::RATE_GROUP_OF_NAME_SQL,
+            "rate_limit_windows",
+            true,
+        ),
+    ] {
+        for after in ["", "group-050"] {
+            let mut query = sqlx::query_scalar::<_, Value>(sqlx::AssertSqlSafe(format!(
+                "EXPLAIN (ANALYZE, FORMAT JSON) {sql}"
+            )))
+            .bind(tenant.as_uuid())
+            .bind(uuid::Uuid::parse_str(&namespace).expect("uuid"))
+            .bind(if after.is_empty() { "" } else { "ORDINARY" })
+            .bind(if after.is_empty() { "" } else { "RUN" })
+            .bind(after)
+            .bind(3_i64);
+            if named {
+                query = query.bind("group-077");
+            }
+            let plan = query.fetch_one(pool).await.expect("a plan");
+            let text = plan.to_string();
+            assert!(
+                !text.contains("\"Seq Scan\""),
+                "no scan of every key: {text}"
+            );
+            let read = rows_of(&plan[0]["Plan"], relation);
+            // three groups of 50 and at most four probes to find them (one group of 50 and four probes when named)
+            let bound = if named { 50.0 + 4.0 } else { 150.0 + 4.0 };
+            assert!(
+                read >= 50.0 && read <= bound,
+                "{relation} rows read {read} > {bound} (after {after:?}): {text}"
+            );
+        }
+    }
+}
+
 /// The version a sealed cursor names in clear: `c1.` and its first two bytes.
 fn cursor_version(cursor: &str) -> u16 {
     u16::from_str_radix(&cursor["c1.".len().."c1.".len() + 4], 16).expect("a version")
@@ -915,6 +1223,8 @@ async fn a_cursor_is_sealed_under_the_active_version_and_one_of_a_forced_version
     let namespace = api
         .create_namespace("alice", "acme", &workspace, "payments", "dev")
         .await;
+    // the keys' own cursors: a caller with the reveal grant (decision D022-086)
+    grant_reveal(&api, &namespace, "alice").await;
     let workflow = publish(&api, "rest-rotation", serial_start("rest-rotation", 1))
         .await
         .expect("published");

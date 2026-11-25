@@ -48,8 +48,10 @@ ADR-0096). Off by default; nothing changes for a definition that does not declar
 New reads: `Run.concurrency`, `Run.rateLimit` (with `position` and `estimatedGrantAt` on a single-run read) and a step's
 `waitingOn` for a reader of the run; `GET /namespaces/{namespaceId}/concurrency-keys` and `GET .../rate-limit-keys` with
 `ops:read`. A key is
-shown only as a label, and only to a caller with the namespace's reveal grant; other readers get `null` and the key's
-instants cut to the minute (D022-060, D022-061). New series `concurrency_acquisitions_total` and
+shown only as a label. In a run, to a caller who may disclose every field the key reads (D022-085); in the two listings,
+to a caller with the namespace's reveal grant, every other reader getting one row per group instead (`view: GROUPS`,
+D022-086). Publication refuses a key over a `secret` field (`FLOW_CONTROL_KEY_SECRET`) and warns one over a `pii` or an
+unclassified field (`FLOW_CONTROL_KEY_PII`). New series `concurrency_acquisitions_total` and
 `rate_limit_decisions_total` (by `scope` and `outcome`); the wait histograms, waiter gauges, grant lag and unleased grants,
 and the three alerts `CONCURRENCY_QUEUE_STUCK`, `RATE_LIMIT_GRANT_LAGGING` and `RATE_LIMIT_QUEUE_SATURATED`, are
 documented in the runbook and built by task T022-082.

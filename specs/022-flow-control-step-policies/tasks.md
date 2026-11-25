@@ -726,6 +726,26 @@ Added for the findings recorded in `reviews/2026-11-13/` (D022-019..034). The sl
   - *Amended 2026-11-20 (decision D022-068 item 6):* the two key listings' handlers share one opening, parameterised by
     `KeyListing` (`KeyListingQuery`, `key_cursor_in_force`), when this task reshapes them (architecture minor 3 of the
     review of task T022-078).
+  - *Amended 2026-11-25 (decision D022-086):* the group rows are read by a walk of the page's groups over the key rows in
+    one snapshot, not from counter rows: a counter row of a group locked by the holder and waiter triggers between one
+    decision's key locks can deadlock (as D022-084 item 2 found for the live keys); the page still costs its own groups.
+    Groups are ordered by pool, scope and name.
+  *Evidence 2026-11-25 (0.3.0 slice; decision D022-086), not ticked.* Both listings answer `view: KEYS` to a caller
+  with the reveal grant and `view: GROUPS` (one row per pool, scope and group, whole instants, `items` empty) to every
+  other; one opening for both handlers (`routes::concurrency::open_key_listing`, `KeyListingQuery`,
+  `key_cursor_in_force`; D022-068 item 6); the minute cut is gone. REST:
+  `integration_flow_control_step_policies::rest::a_caller_without_the_reveal_right_reads_one_row_per_group_and_pages_them`
+  (a viewer reads two groups summed, paged by a sealed cursor and narrowed by `group`, the rate listing's group, both
+  bodies against the contract; the canary: no label, digest, `keyLabel` or raw value in any body a viewer reads; a
+  revealer reads keys by label; a cursor of one view is a `400` in the other),
+  `rest::a_key_label_is_shown_only_to_a_caller_who_may_reveal_personal_data` and
+  `rate_rest::the_namespace_lists_its_rate_keys_with_the_concurrency_listings_protections` (rewritten for the group
+  view). Plan: `rest::a_page_of_groups_reads_only_its_own_groups` (5,000 keys in 100 groups, both gates, from the first
+  group and after a cursor, all and one name: a page of three groups reads at most their 150 keys and four probes, no
+  sequential scan). Hand mutations caught: every caller given the key view (three tests red); a group summed over its
+  pool and scope instead of its own keys (both new tests red). Studio: `FlowControlKeysPanel` shows the group view
+  (`FlowControlKeysPanel.test.tsx`, "shows one row per group, and no key", red against the previous panel); the
+  contract's `ConcurrencyKeyGroup`, `RateLimitKeyGroup`, `view` and `groups` (`npm run api && npm run check:api`).
 - [ ] T022-112 [US7] One text of the grant pass's eligibility predicate (`deadline_at > now()`, the run running or waiting
   and not paused) for its five uses (`execution/gate_queue.rs` twice, `maintenance.rs` twice, `RATE_PLACE_SQL`), as
   `purgeable_grant!` is one text for the purge, and a gate-neutral run permit state (`RunPermitState` documents and

@@ -482,7 +482,7 @@ async fn the_namespace_lists_its_rate_keys_with_the_concurrency_listings_protect
     let (status, _) = read(&api, &format!("{path}?group=NOT%20A%20GROUP")).await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
 
-    // a member without the reveal grant: no label, the instants to the minute
+    // a member without the reveal grant: the group, summed over its windows, no key (decision D022-086)
     api.owner_store
         .insert_membership(&sagat_domain::identity::Membership::restore(
             sagat_domain::identity::TenantId::new(
@@ -502,15 +502,18 @@ async fn the_namespace_lists_its_rate_keys_with_the_concurrency_listings_protect
         .expect("membership");
     let (status, hidden) = read_as(&api, &path, "olivia").await;
     assert_eq!(status, StatusCode::OK, "{hidden}");
-    let item = &hidden["items"][0];
-    assert!(item["keyLabel"].is_null(), "{item}");
-    for field in ["oldestWaitSince", "nextSlotAt"] {
-        assert_eq!(
-            us(&item[field]) % (60 * SECOND_US),
-            0,
-            "{field} to the minute: {item}"
-        );
-    }
+    assert_eq!(hidden["view"], "GROUPS", "{hidden}");
+    assert_eq!(hidden["items"], json!([]), "{hidden}");
+    let group = &hidden["groups"][0];
+    assert!(group.get("keyLabel").is_none(), "{group}");
+    // whole, the earliest of its windows' (decision D022-061 (b))
+    assert_eq!(
+        group["oldestWaitSince"], waited["oldestWaitSince"],
+        "{hidden}"
+    );
+    assert_eq!(group["nextSlotAt"], waited["nextSlotAt"], "{hidden}");
+    assert_eq!(group["keys"], 2, "{hidden}");
+    conforms("/namespaces/{namespaceId}/rate-limit-keys", &hidden);
 }
 
 /// Decision D022-067 item 5: a cursor of the concurrency listing is refused by the rate-limit listing.
@@ -1137,6 +1140,18 @@ async fn a_rate_cursor_of_a_forced_version_is_refused() {
     let namespace = api
         .create_namespace("alice", "acme", &workspace, "payments", "dev")
         .await;
+    // the keys' own cursors: a caller with the reveal grant (decision D022-086)
+    let granted = api
+        .as_user(
+            Method::PUT,
+            &format!("/namespaces/{namespace}/payload-reveal-grants/alice"),
+            "alice",
+            "acme",
+        )
+        .send()
+        .await
+        .expect("grant");
+    assert_eq!(granted.status(), StatusCode::OK);
     let workflow = publish(
         &api,
         "rest-rate-rotation",

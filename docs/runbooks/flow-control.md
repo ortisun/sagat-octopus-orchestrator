@@ -59,9 +59,9 @@ is live.
 publication refuses a key over a `secret` field (`FLOW_CONTROL_KEY_SECRET`) and warns one over a `pii` field, an
 unclassified one included (`FLOW_CONTROL_KEY_PII`); a run shows its key's label to a caller who may disclose every field
 the key reads (public: every reader; internal: a role that reads internal payloads; pii: the reveal grant). The key
-listings show labels and whole instants only to callers with the namespace's reveal grant; other readers get the
-instants truncated to the minute, which narrows but does not stop linking a key's runs (D022-061), until T022-111 gives
-them one row per group instead.
+listings show keys, by label with whole instants, only to callers with the namespace's reveal grant; every other reader
+gets one row per pool, scope and group (`view: GROUPS`: keys, holders or grants, waiters, oldest wait, whole instants),
+which links no run to another (D022-061, D022-086).
 
 **Turning the switch off** stops new gated publications and starts; keep the key file mounted so that what was admitted
 drains: a process with the switches off that is given the file still lists the gate (so a fleet that requires it keeps

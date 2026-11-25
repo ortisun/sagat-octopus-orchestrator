@@ -2,13 +2,14 @@
 //! `Run.concurrency` and the page of `GET /namespaces/{namespaceId}/concurrency-keys` (T022-026, FR-022-022), and
 //! `Run.rateLimit` and the page of `GET /namespaces/{namespaceId}/rate-limit-keys` (T022-078, FR-022-048).
 //!
-//! A key appears only as its 12-hex label (D1168), and only to a caller who may reveal personal data in the namespace
-//! (`keyLabel` is `null` for every other caller, FR-022-057, D022-060); no body here can carry a key's value, because no
-//! type it is built from holds one.
+//! A key appears only as its 12-hex label (D1168). In a run, only to a caller who may disclose every place the key reads
+//! (FR-022-057, D022-085); in the key listings, only to a caller who may reveal personal data in the namespace, every
+//! other caller reading one row per group instead (`view: GROUPS`, decision D022-086). No body here can carry a key's
+//! value, because no type it is built from holds one.
 
 use sagat_application::flow_control_keys::{
-    ConcurrencyKeyPage, ConcurrencyKeyView, KeyPosition, RateLimitKeyPage, RateLimitKeyView,
-    RunGateState, RunPermit, RunRateSlot,
+    ConcurrencyGroupView, ConcurrencyKeyPage, ConcurrencyKeyView, KeyPosition, KeyView,
+    RateLimitGroupView, RateLimitKeyPage, RateLimitKeyView, RunGateState, RunPermit, RunRateSlot,
 };
 use serde::Serialize;
 use time::OffsetDateTime;
@@ -77,12 +78,97 @@ impl From<&ConcurrencyKeyView> for ConcurrencyKeyBody {
     }
 }
 
+/// One item of `ConcurrencyKeyPage.groups`: a group summed over its keys (decision D022-086).
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConcurrencyGroupBody {
+    pub pool: &'static str,
+    pub scope: &'static str,
+    pub group: String,
+    pub keys: u64,
+    pub holders: u64,
+    pub waiters: u64,
+    #[serde(with = "time::serde::rfc3339::option")]
+    pub oldest_wait_since: Option<OffsetDateTime>,
+    #[serde(with = "time::serde::rfc3339::option")]
+    pub oldest_holder_since: Option<OffsetDateTime>,
+}
+
+impl From<&ConcurrencyGroupView> for ConcurrencyGroupBody {
+    fn from(group: &ConcurrencyGroupView) -> Self {
+        Self {
+            pool: group.pool.as_str(),
+            scope: group.scope.as_str(),
+            group: group.group.as_str().to_owned(),
+            keys: group.keys,
+            holders: group.holders,
+            waiters: group.waiters,
+            oldest_wait_since: group.oldest_wait_since,
+            oldest_holder_since: group.oldest_holder_since,
+        }
+    }
+}
+
+/// The view a key listing's page is in: `KEYS` (`items`) or `GROUPS` (`groups`), decision D022-086.
+const fn view_name(view: KeyView) -> &'static str {
+    match view {
+        KeyView::Keys => "KEYS",
+        KeyView::Groups => "GROUPS",
+    }
+}
+
+/// The page of at most `limit` rows out of `rows`, read with one more than `limit`, and the cursor after its last row
+/// when another page follows.
+fn page_of<'a, T: Placed + 'a, B: From<&'a T>, E>(
+    rows: &'a [T],
+    limit: usize,
+    cursor: impl FnOnce(&KeyPosition) -> Result<String, E>,
+) -> Result<(Vec<B>, Option<String>), E> {
+    let shown = &rows[..rows.len().min(limit)];
+    let next_cursor = match shown.last() {
+        Some(last) if rows.len() > limit => Some(cursor(last.place())?),
+        _ => None,
+    };
+    Ok((shown.iter().map(B::from).collect(), next_cursor))
+}
+
+/// A row of a key listing, and where a page that ends with it resumes.
+trait Placed {
+    fn place(&self) -> &KeyPosition;
+}
+
+impl Placed for ConcurrencyKeyView {
+    fn place(&self) -> &KeyPosition {
+        &self.position
+    }
+}
+
+impl Placed for ConcurrencyGroupView {
+    fn place(&self) -> &KeyPosition {
+        &self.position
+    }
+}
+
+impl Placed for RateLimitKeyView {
+    fn place(&self) -> &KeyPosition {
+        &self.position
+    }
+}
+
+impl Placed for RateLimitGroupView {
+    fn place(&self) -> &KeyPosition {
+        &self.position
+    }
+}
+
 /// `ConcurrencyKeyPage`.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConcurrencyKeyPageBody {
+    pub view: &'static str,
     pub queued_runs: u64,
     pub items: Vec<ConcurrencyKeyBody>,
+    pub groups: Vec<ConcurrencyGroupBody>,
     pub next_cursor: Option<String>,
 }
 
@@ -97,14 +183,21 @@ impl ConcurrencyKeyPageBody {
         limit: usize,
         cursor: impl FnOnce(&KeyPosition) -> Result<String, E>,
     ) -> Result<Self, E> {
-        let shown = &page.items[..page.items.len().min(limit)];
-        let next_cursor = match shown.last() {
-            Some(last) if page.items.len() > limit => Some(cursor(&last.position)?),
-            _ => None,
+        let ((items, groups), next_cursor) = match page.view {
+            KeyView::Keys => {
+                let (items, next) = page_of(&page.items, limit, cursor)?;
+                ((items, Vec::new()), next)
+            }
+            KeyView::Groups => {
+                let (groups, next) = page_of(&page.groups, limit, cursor)?;
+                ((Vec::new(), groups), next)
+            }
         };
         Ok(Self {
+            view: view_name(page.view),
             queued_runs: page.queued_runs,
-            items: shown.iter().map(ConcurrencyKeyBody::from).collect(),
+            items,
+            groups,
             next_cursor,
         })
     }
@@ -186,12 +279,47 @@ impl From<&RateLimitKeyView> for RateLimitKeyBody {
     }
 }
 
+/// One item of `RateLimitKeyPage.groups`: a group summed over its windows (decision D022-086).
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RateLimitGroupBody {
+    pub pool: &'static str,
+    pub scope: &'static str,
+    pub group: String,
+    pub keys: u64,
+    pub grants_in_window: u64,
+    pub unleased_grants: u64,
+    pub waiters: u64,
+    #[serde(with = "time::serde::rfc3339::option")]
+    pub oldest_wait_since: Option<OffsetDateTime>,
+    #[serde(with = "time::serde::rfc3339::option")]
+    pub next_slot_at: Option<OffsetDateTime>,
+}
+
+impl From<&RateLimitGroupView> for RateLimitGroupBody {
+    fn from(group: &RateLimitGroupView) -> Self {
+        Self {
+            pool: group.pool.as_str(),
+            scope: group.scope.as_str(),
+            group: group.group.as_str().to_owned(),
+            keys: group.keys,
+            grants_in_window: group.grants_in_window,
+            unleased_grants: group.unleased_grants,
+            waiters: group.waiters,
+            oldest_wait_since: group.oldest_wait_since,
+            next_slot_at: group.next_slot_at,
+        }
+    }
+}
+
 /// `RateLimitKeyPage`.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RateLimitKeyPageBody {
+    pub view: &'static str,
     pub queued_runs: u64,
     pub items: Vec<RateLimitKeyBody>,
+    pub groups: Vec<RateLimitGroupBody>,
     pub next_cursor: Option<String>,
 }
 
@@ -205,14 +333,21 @@ impl RateLimitKeyPageBody {
         limit: usize,
         cursor: impl FnOnce(&KeyPosition) -> Result<String, E>,
     ) -> Result<Self, E> {
-        let shown = &page.items[..page.items.len().min(limit)];
-        let next_cursor = match shown.last() {
-            Some(last) if page.items.len() > limit => Some(cursor(&last.position)?),
-            _ => None,
+        let ((items, groups), next_cursor) = match page.view {
+            KeyView::Keys => {
+                let (items, next) = page_of(&page.items, limit, cursor)?;
+                ((items, Vec::new()), next)
+            }
+            KeyView::Groups => {
+                let (groups, next) = page_of(&page.groups, limit, cursor)?;
+                ((Vec::new(), groups), next)
+            }
         };
         Ok(Self {
+            view: view_name(page.view),
             queued_runs: page.queued_runs,
-            items: shown.iter().map(RateLimitKeyBody::from).collect(),
+            items,
+            groups,
             next_cursor,
         })
     }

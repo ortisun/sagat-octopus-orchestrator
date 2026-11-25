@@ -116,7 +116,11 @@ pub struct ConcurrencyKeyView {
 /// together, a run once), counted as the `queued_runs` ceiling counts them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConcurrencyKeyPage {
+    /// Whether the page lists keys (`items`) or groups (`groups`): keys only to a caller who may reveal personal data
+    /// in the namespace, groups to every other (decision D022-086).
+    pub view: KeyView,
     pub items: Vec<ConcurrencyKeyView>,
+    pub groups: Vec<ConcurrencyGroupView>,
     pub queued_runs: u64,
     /// The digest key version the database had active in the page's snapshot, which seals its cursor (D022-059); `None`
     /// before any version was activated (then no key exists either).
@@ -311,17 +315,68 @@ pub struct RateLimitKeyView {
 /// A page of rate-limit windows, oldest wait first, and the namespace's queued runs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RateLimitKeyPage {
+    /// As [`ConcurrencyKeyPage::view`].
+    pub view: KeyView,
     pub items: Vec<RateLimitKeyView>,
+    pub groups: Vec<RateLimitGroupView>,
     pub queued_runs: u64,
     /// The digest key version the database had active in the page's snapshot, which seals its cursor.
     pub cursor_version: Option<u16>,
 }
 
-/// Which listing a key's place belongs to: the cursor of one is refused by the other (decision D022-067 item 5).
+/// What a page of a key listing lists (FR-022-022, FR-022-057, decisions D022-061 and D022-086).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyView {
+    /// One row per key, by its label, with its whole instants: for a caller who may reveal personal data in the
+    /// namespace, which covers every level a published key may read (decision D022-085 item 6).
+    Keys,
+    /// One row per pool, scope and group, its keys summed, with whole instants: for every other caller. A group is the
+    /// definition's name or a declared slug, already on each run, so a group row tells nothing a run reader lacks and
+    /// links no run to another (decision D022-061 (b)).
+    Groups,
+}
+
+/// One group of a namespace's concurrency keys, summed over its keys in one snapshot (decision D022-086).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConcurrencyGroupView {
+    pub pool: GatePool,
+    pub scope: GateLevel,
+    pub group: ResolvedGroup,
+    /// Its live keys (rows).
+    pub keys: u64,
+    pub holders: u64,
+    pub waiters: u64,
+    pub oldest_wait_since: Option<OffsetDateTime>,
+    pub oldest_holder_since: Option<OffsetDateTime>,
+    /// Where a page that ends with this group resumes (its digest is all zero: groups are ordered by pool, scope and
+    /// name).
+    pub position: KeyPosition,
+}
+
+/// One group of a namespace's rate-limit windows, summed over its windows at the page's instant (decision D022-086).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RateLimitGroupView {
+    pub pool: GatePool,
+    pub scope: GateLevel,
+    pub group: ResolvedGroup,
+    pub keys: u64,
+    pub grants_in_window: u64,
+    pub unleased_grants: u64,
+    pub waiters: u64,
+    pub oldest_wait_since: Option<OffsetDateTime>,
+    /// The earliest of its windows' next slots.
+    pub next_slot_at: Option<OffsetDateTime>,
+    pub position: KeyPosition,
+}
+
+/// Which listing a place belongs to: the cursor of one is refused by every other (decision D022-067 item 5), the key
+/// and group views of one listing included (decision D022-086).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeyListing {
     Concurrency,
     RateLimit,
+    ConcurrencyGroups,
+    RateLimitGroups,
 }
 
 impl KeyListing {
@@ -329,8 +384,30 @@ impl KeyListing {
         match self {
             Self::Concurrency => "k1",
             Self::RateLimit => "r1",
+            Self::ConcurrencyGroups => "kg1",
+            Self::RateLimitGroups => "rg1",
         }
     }
+
+    /// The listing of this gate in `view`.
+    #[must_use]
+    pub const fn of(self, view: KeyView) -> Self {
+        match (self, view) {
+            (Self::Concurrency | Self::ConcurrencyGroups, KeyView::Keys) => Self::Concurrency,
+            (Self::Concurrency | Self::ConcurrencyGroups, KeyView::Groups) => {
+                Self::ConcurrencyGroups
+            }
+            (Self::RateLimit | Self::RateLimitGroups, KeyView::Keys) => Self::RateLimit,
+            (Self::RateLimit | Self::RateLimitGroups, KeyView::Groups) => Self::RateLimitGroups,
+        }
+    }
+}
+
+/// The position a cursor names, and the view of the listing that wrote it (decision D022-086).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ListingPosition {
+    pub view: KeyView,
+    pub position: KeyPosition,
 }
 
 /// The place of a key in the listing's order: oldest wait first (a key nobody waits for last), then pool, scope, group
@@ -390,6 +467,38 @@ impl KeyPosition {
     ) -> Option<Self> {
         let plain = ring.open_cursor(tenant, namespace, text)?;
         Self::decode(std::str::from_utf8(&plain).ok()?, listing)
+    }
+
+    /// The position a cursor of either view of the listing of `gate` names (its key view's or its group view's), with
+    /// that view; `None` for anything else.
+    #[must_use]
+    pub fn open_either(
+        text: &str,
+        gate: KeyListing,
+        ring: &KeyRing,
+        tenant: TenantId,
+        namespace: NamespaceId,
+    ) -> Option<ListingPosition> {
+        let plain = ring.open_cursor(tenant, namespace, text)?;
+        let plain = std::str::from_utf8(&plain).ok()?;
+        [KeyView::Keys, KeyView::Groups]
+            .into_iter()
+            .find_map(|view| {
+                Self::decode(plain, gate.of(view))
+                    .map(|position| ListingPosition { view, position })
+            })
+    }
+
+    /// The place of a group in the group view's order (pool, scope and name; the digest all zero).
+    #[must_use]
+    pub const fn of_group(pool: GatePool, scope: GateLevel, group: ResolvedGroup) -> Self {
+        Self {
+            oldest_wait_us: None,
+            pool,
+            scope,
+            group,
+            digest: [0; 32],
+        }
     }
 
     /// The position's text before it is sealed, tagged with its listing.
@@ -488,6 +597,28 @@ pub trait FlowControlKeyReader {
     /// The namespace's rate-limit windows after `after` (from the first when `None`), at most `limit`, optionally of one
     /// group, with the namespace's queued runs (FR-022-048). Every label is `None`: the service decides who sees them.
     fn rate_limit_keys(
+        &self,
+        tenant: TenantId,
+        namespace: NamespaceId,
+        group: Option<&ResolvedGroup>,
+        after: Option<&KeyPosition>,
+        limit: u32,
+    ) -> impl Future<Output = Result<RateLimitKeyPage, StoreError>> + Send;
+
+    /// The namespace's concurrency groups after `after` (a group's place, from the first when `None`), at most `limit`,
+    /// optionally the one group named, each summed over its keys in one snapshot, with the namespace's queued runs
+    /// (decision D022-086). A page reads its own groups' keys, never another group's.
+    fn concurrency_key_groups(
+        &self,
+        tenant: TenantId,
+        namespace: NamespaceId,
+        group: Option<&ResolvedGroup>,
+        after: Option<&KeyPosition>,
+        limit: u32,
+    ) -> impl Future<Output = Result<ConcurrencyKeyPage, StoreError>> + Send;
+
+    /// The same for the rate-limit windows, at the page's instant (decision D022-086).
+    fn rate_limit_key_groups(
         &self,
         tenant: TenantId,
         namespace: NamespaceId,
