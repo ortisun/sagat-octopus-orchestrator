@@ -556,7 +556,7 @@ T022-063 (020 erasure).
   `the_vocabulary_check_rejects_unknown_labels_and_values` (a group or a tenant as a label, a scope outside its set, a
   series of no family: each refused); `cargo test -p sagat-infra-postgres --lib readiness_gate::tests::a_grant_from_the_queue_records_its_wait_and_a_slot_its_lag`.
   Alerts (`AlertKind::{ConcurrencyQueueStuck, RateLimitGrantLagging, RateLimitQueueSaturated, FlowControlWaiterOrphaned}`,
-  their detection in `crates/infra-postgres/src/operations.rs`, migrations `20270212000100`/`000200`, the enumerations of
+  their detection in `crates/infra-postgres/src/operations.rs`, migrations `20270213000300`/`000400`, the enumerations of
   001's OpenAPI and AsyncAPI, the Studio client; runbooks `flow-control.md` sections 8 to 10 and 14, `alerts.md`):
   `integration_flow_control_step_policies::alerts::{a_waiter_passed_over_by_every_holder_raises_concurrency_queue_stuck_until_it_leaves,
   a_due_window_no_pass_serves_raises_rate_limit_grant_lagging_until_it_is_granted,
@@ -764,7 +764,7 @@ Added for the findings recorded in `reviews/2026-11-13/` (D022-019..034). The sl
   admitted, decision D022-072).
 - [ ] T022-105 `flow_control_counts` slot rows with `SECURITY DEFINER` triggers and `SELECT`-only grants; foreign keys `(tenant_id, namespace_id, run_id)`; column-limited `UPDATE` grants on semaphores and windows (`next_eligible_at`, `updated_at`). FR-022-058; D022-026. Evidence: runtime-privilege sweep; a direct `UPDATE` of a counter as `sagat_app` is refused; a dual-gated run counts once.
   - *Built in part 2026-11-20 (0.3.0 slice; D022-051), not ticked:* the exactness of `queued_runs` that the owner made a merge condition: proved exact under the namespace's admission lock by `run_admission::two_starts_at_the_queued_runs_ceiling_are_decided_one_after_the_other` (held lock, both starts observed waiting, exactly one queued and one refused `FLOW_CONTROL_LIMIT`), owner and `SAGAT_TEST_AS_RUNTIME_ROLE=1`; hand mutations caught: the admission lock removed, the ceiling ignored. Open: the `flow_control_counts` slot rows and their triggers, the foreign keys, the column-limited grants.
-  *Evidence 2026-11-25 (0.3.0 slice; decision D022-084), not ticked.* Migration `20270212000000_flow_control_counts`:
+  *Evidence 2026-11-25 (0.3.0 slice; decision D022-084), not ticked.* Migration `20270213000200_flow_control_counts`:
   `flow_control_counts` (sixteen slot rows of `queued_runs` per namespace), filled from the waiter rows present and kept
   by `flow_control_counts_track` (`SECURITY DEFINER`, `search_path = pg_catalog, pg_temp`, schema-qualified names, not
   executable by the runtime role) on the run-scope waiter rows of both tables, a run once; `sagat_app` holds `SELECT`

@@ -403,7 +403,7 @@ async fn lock_row(
 
 /// The namespace's queued runs as the `queued_runs` ceiling counts them (feature 022, T022-013, D022-051, T022-105): the
 /// sum of its sixteen slot rows of `flow_control_counts`, which `SECURITY DEFINER` triggers on the run-scope waiter rows
-/// keep in the transaction that writes them, a run waiting for both gates once (migration `20270212000000`; decision
+/// keep in the transaction that writes them, a run waiting for both gates once (migration `20270213000200`; decision
 /// D022-084). Under the namespace's admission lock it is exact, as the scan it replaces was. The one statement the
 /// ceiling's check, its quota usage and the key listing read, so they never disagree; `$1` is the tenant, `$2` the
 /// namespace.

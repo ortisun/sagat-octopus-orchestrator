@@ -377,7 +377,7 @@ PK `(tenant_id, namespace_id, slot)`, `slot` 0..15; `queued_runs bigint`, `live_
 (a run counts once whatever its waiter rows) and on the semaphore and window rows (a key counts once per
 row); `sagat_app` has `SELECT` only, as for `run_active_counts`.
 
-*Revised 2026-11-25 (task T022-105, decision D022-084; migration `20270212000000`):* built as `flow_control_counts
+*Revised 2026-11-25 (task T022-105, decision D022-084; migration `20270213000200`):* built as `flow_control_counts
 (tenant_id, namespace_id, slot 0..15, queued_runs bigint)`, CHECK `queued_runs >= 0`, foreign key `(tenant_id,
 namespace_id)` → `namespaces`; the slot is `get_byte(uuid_send(run_id), 15) & 15`, the slots of `run_active_counts`;
 `flow_control_counts_track` (`SECURITY DEFINER`, `search_path = pg_catalog, pg_temp`, every name schema-qualified, not

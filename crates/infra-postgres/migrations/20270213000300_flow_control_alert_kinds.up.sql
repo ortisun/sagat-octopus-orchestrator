@@ -7,7 +7,7 @@
 -- listing reads the kind as text (`AlertKind::from_str` refuses a name it does not know, so roll the engines and the
 -- control planes forward before the monitor of this build raises one: an older control plane's listing of a namespace
 -- that holds one answers an error until it is upgraded); no older writer writes them. The CHECK is added `NOT VALID`,
--- so this statement takes no scan under its `ACCESS EXCLUSIVE` lock; `20270212000200` validates it under `SHARE UPDATE
+-- so this statement takes no scan under its `ACCESS EXCLUSIVE` lock; `20270213000400` validates it under `SHARE UPDATE
 -- EXCLUSIVE` (the rule of design 043, D043-145, D043-153). No table, column, index or grant changes (the runtime role
 -- already writes the table), so nothing is classified.
 ALTER TABLE operational_alerts DROP CONSTRAINT operational_alerts_kind_valid;

@@ -1530,8 +1530,9 @@ taken after `git grep D022-04` on every `origin/*` branch.
      `least(coalesce(pinned_limit, declared_limit), the current ceiling)`; a CHECK holds `pinned_limit BETWEEN declared_limit AND
      10000` (the filed limit is never above the declaration, which the domain bounds at 10,000), added `NOT VALID` and validated by a second migration
      (`20270213000000` and `20270213000100`; first numbered `20270210000000` and `20270210000100`, which feature 041's
-     step logs also took, and renumbered on 2026-11-25 after the latest migration of every branch: no migration of this
-     branch reads the column, so applying it after `flow_control_counts` and the alert kinds changes nothing). The
+     step logs also took, and renumbered on 2026-11-25 after the latest migration of every branch; the queued-runs
+     counters and the alert kinds then moved after them, to `20270213000200`..`20270213000400`, so the rollback order
+     follows the order they were built in, review of 2026-11-25, correctness minor 8). The
      migration's rollback refuses while a waiter row's declaration is above its filed limit: dropping the column would
      lose a bound no older binary can recover; a row whose two limits agree loses nothing. No grant changes (the table
      grants cover the column) and no storage class is added (a fixed-size column, outside the variable-size review).
@@ -1691,7 +1692,7 @@ taken after `git grep D022-04` on every `origin/*` branch.
      broken), stuck and saturated warning.
   5. *Contracts.* The kind enumeration of `Alert` in 001's OpenAPI and of the alert events in the AsyncAPI grows by four
      values (additive: an enumeration may gain values, `contract_asyncapi_events_webhooks_messaging`); the Studio client is
-     regenerated. Migrations `20270212000100` and `20270212000200` widen `operational_alerts_kind_valid` (`NOT VALID`, then
+     regenerated. Migrations `20270213000300` and `20270213000400` widen `operational_alerts_kind_valid` (`NOT VALID`, then
      validated); the down refuses while an alert of a new kind is kept. Feature 008's data model, an approved text, still
      lists the five earlier kinds: it is revised when it is next re-approved.
 - **D022-084 — `flow_control_counts` holds the namespace's queued runs; the live keys stay counted from the key rows
