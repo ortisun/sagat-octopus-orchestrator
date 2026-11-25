@@ -306,9 +306,13 @@ graph declares, and the versioning rules that keep code and history together.
   be able to start a code version. *Acceptance:* the conformance scenario `code-graph-mixed`.
 - **Requirement 044-019** Continue-as-new from code MUST be deferred (Requirement 044-031) while an activity, child or
   approval of the run is open or a saga scope aborts, and refused (`COMMAND_INVALID`) while a scope is open; once
-  accepted it MUST, in feature 014's handoff transaction, cancel the
-  run's open timers and waits, start the successor with a new seed and move the pending signals as Architecture decision
-  0111 decides. The successor MUST pin the run's current code version unless the command asks for the workflow's active
+  accepted it MUST close the workflow-task step, and feature 014's continuation pass MUST perform the handoff in its own
+  transaction, in that pass's lock order (the chain, the parent's key share, then the run): cancel the run's open timers
+  and waits, start the successor with a new seed and move the pending signals as Architecture decision 0111 decides.
+  A handoff refused by the chain's or the tree's limits MUST end the run `FAILED` through the stop drain, as for a graph
+  run; a successor input outside its `inputSchema`, a `version: active` that is not a code version of the same type, or
+  a version without a `chainPolicy`, MUST be refused at the completion (`COMMAND_INVALID`). A detached child is not an
+  obligation. The successor MUST pin the run's current code version unless the command asks for the workflow's active
   version, which MUST be a code version of the same workflow type. *Acceptance:* the conformance scenario `code-continue-as-new`, including a losing
   timer of a race and a run moved before it continues.
 - **Requirement 044-020** A saga opened from code MUST be a compensation domain of the engine, stored in `run_sagas`
@@ -372,8 +376,10 @@ graph declares, and the versioning rules that keep code and history together.
 - **Requirement 044-027** A code run's history MUST be bounded: from a visible count of 10,240 or 3 MiB of retained
   bytes the function is told that continuing as new is suggested; at 51,200 the run goes under review with cause
   `HISTORY_LIMIT`, whose retry opens a closing window of 1,024 visible events plus two for every outstanding step,
-  timer, wait and child, in which only commands that end, continue or wind down the run, consume signals, or accept,
-  reject or complete updates are accepted; when the window is
+  timer, wait and child, in which only commands that end the run, continue it as new, cancel its outstanding work,
+  close or abort its sagas, record markers, set the state, consume signals, or accept, reject or complete updates are
+  accepted; a completion inside the window is judged against the window's bound, not 51,200, and one that would cross
+  the bound is refused and ends the run `FAILED` (`HISTORY_LIMIT`) in that transaction; when the window is
   used up, no further workflow task is offered and the engine ends the run `FAILED` (`HISTORY_LIMIT`) through the stop
   drain. *Acceptance:* `the_history_limit_suggests_then_reviews_then_closes`,
   `an_exhausted_closing_window_fails_the_run_through_the_stop_drain`.
@@ -410,9 +416,11 @@ graph declares, and the versioning rules that keep code and history together.
   a principal at most a quarter of each namespace bound. The bounds answer `429` with
   `retry-after-ms`. *Acceptance:* one test per bound (Task 044-24).
 - **Requirement 044-033** A person with `run:operate` and `worker:manage` MUST be able to pause the workflow tasks of
-  every code run of a namespace (no workflow-task, query or replay-check task leased or completed, runs keep their
-  state) and resume them, audited; the pause MUST hold for sessions registered before it. A workflow task refused or
-  timed out because of the pause MUST NOT count as a failure; run deadlines and cancellation grace keep running during a
+  every code run of a namespace (no workflow-task or query task leased or completed, runs keep their
+  state) and resume them, audited; the pause MUST hold for sessions registered before it; replay checks and moves go
+  on, so a busy run can be quiesced and moved. A workflow task refused or timed out because of the pause MUST NOT count
+  as a failure, and its `workflow_task.timed_out` or `workflow_task.failed` records that it was not counted, so
+  `verify_run` derives the same count; run deadlines and cancellation grace keep running during a
   pause; a worker query to a paused run or to one under review MUST fail at once with `QUERY_UNAVAILABLE`. *Acceptance:*
   `pausing_code_workflows_stops_a_session_registered_before_the_pause`.
 - **Requirement 044-034** The engine MUST find the node of every step of a code run (`c-<n>`, its derived `~c` and `~r`
@@ -426,8 +434,9 @@ graph declares, and the versioning rules that keep code and history together.
 - **Non-functional requirement 044-001 (replay cost)** Each SDK MUST replay a history at the rate of at most
   97.65625 µs per visible event on the reference worker host: 10,240 events in at most 1 s (1,000,000 µs / 10,240), 51,200
   in at most 5 s, and the largest history a function is ever asked to replay, 51,200 + 1,024 + 2 × 2,048 = 56,320 events
-  (a completion that would cross 51,200 is refused, so the review starts at most at 51,200; no workflow task is offered
-  once the closing window is used up), in at most 5,500,000 µs = 5.5 s (56,320 × 97.65625 µs). Benchmark criteria on a stated host, not promises (constitution, Delivery Constraints).
+  (the claim refuses to lease a workflow task once the visible count reaches 51,200, whichever writer took it there,
+  and puts the run under review; the one closing window is at most 1,024 + 2 × 2,048 events, inside which no completion
+  may cross its bound and after which the run ends), in at most 5,500,000 µs = 5.5 s (56,320 × 97.65625 µs). Benchmark criteria on a stated host, not promises (constitution, Delivery Constraints).
 - **Non-functional requirement 044-002 (commits)** Counted as the budget suite counts them (a lease is 2 transactions,
   `LEASE` in `work_budget.rs`), a code workflow that runs one activity and ends MUST cost at most 10 transactions without
   eager dispatch (the start 1, the first workflow task lease 2, its completion 1, the activity lease 2, the activity
@@ -436,16 +445,16 @@ graph declares, and the versioning rules that keep code and history together.
   lease 2, the completion with the activity's provisional lease 1, its acknowledgement 1, the activity completion with
   the next workflow task lease 1, the final completion 1). A graph workflow with one activity costs 4 (the start 1, the
   lease 2, the completion 1), so the ratios are 10 / 4 = 2.5 and 7 / 4 = 1.75.
-- **Non-functional requirement 044-003 (statements)** A workflow task completion MUST run at most 63 SQL statements (50 + 13), reads
+- **Non-functional requirement 044-003 (statements)** A workflow task completion MUST run at most 62 SQL statements (50 + 12), reads
   included, whatever the number of its commands up to 256: the 50 of today's `COMPLETION_WITH_A_NEXT_STEP`
   (`tests/integration/claim-transition-efficiency/work_budget.rs`), whose per-row journal, payload, step and outbox
-  inserts become one batched insert each, plus at most 13: the count of the steps that can still act, the overlay
+  inserts become one batched insert each, plus at most 12: the count of the steps that can still act, the overlay
   insert, the overlay read on a cache miss, the
-  binding and pause read, the inbox consumption, one collapsed audit of no-op commands, the update transitions, the saga
-  plan rows, the declared state, the approval rows of gated activities and approval commands, the look-back read of wait
+  binding and pause read, the inbox consumption, one collapsed audit of no-op commands, the update transitions, the
+  declared state, the approval rows of gated activities and approval commands, the look-back read of wait
   commands, the gate rows of feature 022, the blob-reference check of commands that name a blob. Eager leases are
-  outside it (Technical Plan 5.2). A terminal or continue-as-new
-  completion MUST add exactly the statements of the existing stop drain or handoff path. The budget test mixes every
+  outside it (Technical Plan 5.2). A terminal completion MUST add exactly the statements of the existing stop drain; a
+  continue-as-new completion adds none, because the continuation pass performs the handoff. The budget test mixes every
   command kind in one completion.
 - **Non-functional requirement 044-004 (latency)** With a sticky worker (Task 044-14) and a history of at most 1,024
   visible events, the time from the commit of a signal to the commit of the workflow task that handles it MUST be at most
@@ -454,9 +463,14 @@ graph declares, and the versioning rules that keep code and history together.
 - **Non-functional requirement 044-005 (memory)** The cache of a worker MUST hold at most 256 runs by default. An idle
   cached run MUST cost at most 1 MiB in TypeScript, Python, C# and Java and at most 256 KiB in Go and Rust, so a full
   default cache costs at most 256 MiB (256 × 1 MiB) or 64 MiB (256 × 256 KiB). Benchmark criteria; Gap 044-001.
-- **Non-functional requirement 044-006 (bounds)** A completion carries at most 256 commands and at most 4 MiB of inline
-  command payload; a history page at most 1,024 events or 4 MiB, so a history of E events and B bytes takes at most
-  ⌈E / 1,024⌉ + ⌈B / 4 MiB⌉ pages, at least 56,320 / 1,024 = 55 for the largest; a replay-check task at most 16 runs, each
+- **Non-functional requirement 044-006 (bounds)** Every request message fits the worker service's existing decode limit
+  of 320 KiB (`MAX_PAYLOAD_BYTES` + 64 KiB, `crates/api-grpc/src/server.rs`), which does not change: a completion carries
+  at most 256 commands and at most 256 KiB of fragments and inline values together (the SDK writes the largest values as
+  blobs until the message fits); a replay-check answer carries one item and at most 8,192 body digests (256 KiB), the
+  worker sending successive ranges. Every response message stays below the 4 MiB that gRPC clients receive by default:
+  a history page at most 1,024 events or 3 MiB, so a history of E events and B bytes takes at most
+  ⌈E / 1,024⌉ + ⌈B / 3 MiB⌉ pages, at least 56,320 / 1,024 = 55 for the largest; a lease's first page at most 256 KiB;
+  a `PollTasks` answer at most 4 MiB in all (it carries fewer tasks when they do not fit); a replay-check task at most 16 runs, each
   read by pages under its own capability; a registration at most 64 workflow types; a worker query's arguments at most
   64 KiB and its answer at most 256 KiB; a node specification at most 1 KiB, so an overlay read on a cache miss is at most
   3 × 2,048 × 1 KiB = 6 MiB (each of at most 2,048 steps that can still act with its two companions); a side-effect
@@ -696,7 +710,8 @@ benchmarks.
   time zone of UTC, and a fixed `PYTHONHASHSEED` chosen by the operator and kept as a deployment secret (any value but
   `random` and `0`; Decision 044-051). The
   content hash of the digest includes the `hash()` of a fixed string under that seed, so workers with different seeds
-  have different digests and never share a run (Gap 044-016).
+  have different digests and never share a run. The seed has 32 bits and can be searched offline from a digest by
+  anyone who can read versions; the 10,000-key cap, not the seed's secrecy, is what bounds colliding keys (Gap 044-016).
 - **Verdict:** build.
 
 #### 1.4 Go
@@ -779,7 +794,9 @@ benchmarks.
 - **Seed.** Each run has a 32-byte seed drawn from the operating system's random source at the run's creation, stored
   with the run and delivered in every workflow task. A successor of continue-as-new and a child get new seeds; a reset
   keeps its source run's seed, because it replays its source's prefix. The seed is returned by no REST read except the
-  history export, and `ctx.random` and `ctx.uuid` are not for secrets (every SDK says so).
+  history export, and `ctx.random` and `ctx.uuid` are not for secrets: their values are predictable to every holder of
+  the seed (the workers bound to the type, holders of `history:export`), so every SDK says so and the analyzers of Go and
+  C# flag their use in a value named like a token, key or secret.
 - **Generator.** xoshiro256** whose four 64-bit state words are the seed read as four little-endian unsigned integers
   (an all-zero seed is replaced by the four words of SplitMix64 started at 0). `random()` is `(next() >> 11) × 2^-53`.
   `randomInt(n)` for 0 < n ≤ 2^32 draws `x = next()` until `x ≥ (2^64 − n) mod n` and returns `x mod n` (no bias).
@@ -894,8 +911,9 @@ code reads, is crate-private in `crates/domain/src/execution/sagas.rs`.) For a c
 (`unhandled_failure` aborting on a failed member, `body_done` completing it, the abandoned-region rule) do not apply: only
 the open, close and abort commands and an engine-driven stop move it, so a function can catch a member's failure. A
 source-text check (Task 044-4, in the manner of `crates/application/tests/managed_kind_sites.rs`, with no new
-dependency, hosted as a test of `apps/execution-engine`, which depends on every crate it scans, so that the scoped
-selection of pull-request CI runs it whenever a scanned crate changes) has two parts. It counts, in the production code
+dependency, hosted as a test of `apps/execution-engine`, whose dependency closure holds every crate that reads a
+definition, so that the scoped selection of pull-request CI runs it whenever one of them changes; it scans that closure
+only, and the apps outside it, which read no definition, are covered by the release run) has two parts. It counts, in the production code
 of every file of `crates/*/src` and `apps/*/src` (up to its test module, with whitespace removed so that layout does not
 hide a call), the calls `.<method>(` of the distinctive method names of `WorkflowDefinition` (`node_for_instance`,
 `entrypoint`, `scope_body`, `scope_compensates`, `saga_region`, `sagas`, `enclosing_scope`, `scope_chain`,
@@ -904,17 +922,25 @@ hide a call), the calls `.<method>(` of the distinctive method names of `Workflo
 receiver, against a checked-in allowlist of `(file, method, count)` (`apps/execution-engine/tests/code_definition_sites.allow`):
 a count that grows or shrinks fails until its entry is changed in a commit that states which definition the path
 composes. For the generic names (`node`, `nodes`, `body`, `name`, `len`, `is_empty`, `limits`, `triggers`, `warnings`)
-it holds the loaders instead: every function that returns or caches a `WorkflowDefinition` (in `PgRunStore`,
-`chain_progress.rs`, `loop_progress.rs`, `primitives.rs`, `application/src/runs/reset.rs`) calls the composer, a short
-allowlist of `(file, function)`. It is a fitness function that makes every new site a reviewed decision, not a
+it holds the loaders instead. `DefinitionCache::get` (`crates/application/src/execution.rs`) is renamed `get_version`,
+and the calls of `get_version`, `get_or_parse` and `get_or_parse_private` are counted per file in the same allowlist;
+each caller states whether it composes the overlay with `WorkflowDefinition::compose_code(&self, overlay:
+&[CodeStepNode])` (in `crates/domain/src/execution/code/`) or needs only the version's definition. Today's callers are
+`crates/infra-postgres/src/execution.rs`, `chain_progress.rs`, `loop_progress.rs`, `primitives.rs` and
+`leaf_certification.rs`, `crates/scheduler/src/passes.rs` (the children pass), `crates/scheduler/src/events.rs`,
+`crates/application/src/runs.rs` (two), `runs/reset.rs`, `runs/pending_reset.rs` and `schedules.rs`. Every caller that
+reads a run's node composes, the children pass and the pending reset included (a reset of a moved run checks the input
+against its current code version); the starts, triggers and schedules need only the version's definition. It is a fitness function that makes every new site a reviewed decision, not a
 call-graph proof; the fail-closed arms and `every_command_kind_runs_through_every_path` hold the behaviour; an arm that would let a missing node through (`ensure_activity_bound` returns `Ok(())`
 when the node is absent, `crates/application/src/worker.rs`) fails closed for a missing node only, so known kinds of
 graph runs in flight keep their behaviour. The overlay is a projection of the journal: the node spec of every accepted
 work command (its activity name, options and the envelope's risk metadata, never a payload, at most 1 KiB) is carried by
 the command's record (section 4.5) and copied into `code_step_nodes` with its derived companions, frozen at acceptance so
 that a move does not change what a step already accepted means; each row records the version that accepted it
-(`accepted_version_id`) and the secrets its entry granted, so the re-check of the publisher's right at resolution finds
-that version after a move or a reset. A run transaction reads, from an in-process cache keyed
+(`accepted_version_id`, also in the command record), the scope it was scheduled in (`scope`, null outside a saga), the
+`S(k)` of the completion that issued it (`issued_seq`) and the secrets its entry granted, so the re-check of the publisher's right at resolution finds
+that version after a move or a reset. A run transaction reads, from an in-process cache (bounded to 256 MiB per process
+by least recent use, a tenant at most a quarter of it) keyed
 by run and command count (a hit reads nothing), the rows of the steps that can still act (outstanding steps and the
 completed steps of open saga scopes, together at most 2,048, Requirement 044-032, each with its two companions, so at most
 6 MiB) and always the row of the step the transaction addresses; a path that needs another terminal step's node (the
@@ -1099,8 +1125,8 @@ version (Requirement 044-026).
 - **The workflow-task arm of the claim.** Under the run lock the claim recognises the workflow-task step by its
   `steps.kind`, builds its node from the step row and the pin (never from an activity node), checks the session's digest
   against the run's current one and the namespace's pause, and skips what applies only to activities: per-activity
-  quotas, breakers, pool delivery, capacity windows and the run-document input. The reserved names count in one quota
-  bucket per namespace, `sagat.workflow` of the existing activity-concurrency quota (Requirement 044-032). A run that is
+  quotas, breakers, pool delivery, capacity windows and the run-document input. The reserved names, the digest form and
+  the sticky form alike, count in one quota bucket per namespace, `sagat.workflow` of the existing activity-concurrency quota (Requirement 044-032). A run that is
   stopping is drained like any run: its workflow-task step is not leased; cooperative cancellation does not stop the run
   (section 8.4).
 - **Protocol minor.** The minor a step needs is decided per step: design 045's `steps.min_protocol_minor`, which design
@@ -1131,7 +1157,8 @@ version (Requirement 044-026).
      lease that ends without a committed command naming it is released, with its charge, by the blob pass.
   4. The lease journals `workflow_task.started` with its time (section 1.8), the window start `S(k − 1)` and the two
      flags `continue_as_new_suggested` and `history_limit_reached` as they stand at the lease; the SDK answers
-     `continueAsNewSuggested()` and `historyLimitReached()` from the `workflow_task.started` that opens the activation,
+     `continueAsNewSuggested()` and `historyLimitReached()` from the `workflow_task.started` at `S(k)`, the last started
+     event of the activation's window,
      live or replayed, never from the current lease, so a cold replay takes the same branches.
   5. `ReadHistory` streams count against the caps of Requirement 044-032 in the manner of `TaskStreams`
      (`crates/api-grpc/src/limits.rs`) and end at the lease's or token's expiry; `CompleteWorkflowTask`,
@@ -1169,7 +1196,8 @@ pending rule all use them.
   review), timers fired, waits satisfied or timed out, children finished, approvals of approval commands decided or
   expired, saga outcomes, signals buffered, updates admitted, `run.cancel_requested`, markers, `workflow_task.started`
   and `workflow_task.completed`. Not visible, and not waking: lease renewals, attempts and retries of an activity, hints,
-  review and audit events, and the internals of a step's admission (a grant of feature 022, the approval decision that
+  review and audit events, the events of derived steps (`~c`, `~r`) and of scope steps (`s-<n>`), whose saga's outcome
+  is what the function sees, and the internals of a step's admission (a grant of feature 022, the approval decision that
   releases an activity held for approval: the function sees only the step's outcome).
 - **The history a worker receives** is typed `HistoryEvent` messages (section 13), not the journal's internal JSON.
   Command records carry the command number, kind and target, never the body: the worker does not need the inputs of its
@@ -1177,7 +1205,8 @@ pending rule all use them.
   `HistoryEvent` carries its journal sequence and its origin.
 - Every lease carries the window start `S(k − 1)`. A worker whose cache holds the run at exactly `S(k − 1)` applies the
   new window to its cached state; any other worker reads the visible history from journal sequence 1 with `ReadHistory`
-  (the lease carries the first page), at most 1,024 events or 4 MiB per page, and replays. A failure or a timeout drops
+  (the lease carries the first page, at most 256 KiB), at most 1,024 events or 3 MiB per page, replaying each page as
+  it arrives, so the lease's time-to-live, counted from the last page, covers only the replay of that page. A failure or a timeout drops
   the run from the failing worker's cache.
 
 #### 4.3 The activation window and the pending rule
@@ -1256,8 +1285,11 @@ failure, the exception's type name, accepted only if it matches `^[A-Za-z_][A-Za
 otherwise; never a message. Both are idempotent by the lease's idempotency key, looked up before any fence check and
 again under the run lock; an idempotent replay of a completion answers its outcome without any eager lease, after the
 re-checks, and the idempotency record stores no lease token. A completion is refused as stale while the run's stop drain
-runs. A completion that would take the visible count past 51,200 is refused with `HISTORY_LIMIT` and puts the run under
-review at the count it had.
+runs. Outside a closing window, a completion that would take the visible count past 51,200 is refused with
+`HISTORY_LIMIT` and puts the run under review at the count it had, and the claim refuses to lease a workflow task once the
+count has reached 51,200 by any writer, raising that review in the claim's transaction. Inside a window, a completion is
+judged against the window's bound (section 6.3). The check for unseen waking events comes after the completion's own
+immediate effects are appended, so an event a look-back wait consumed at once is not unseen.
 
 #### 4.5 What the journal holds for a code run
 
@@ -1293,7 +1325,7 @@ fields from the envelope, and adds the literal fields a command needs (marked "a
 A fragment is parsed through the existing codec port of the application (`IrCodec`,
 `crates/application/src/definitions.rs`), extended with a fragment parse in code-profile mode implemented in
 `crates/infra-ir`, so every limit of a graph node applies to the command. The business literals of a fragment (`input`,
-`correlationKey`, `subject`, `businessId`) are stored in `payloads`, classified by the entry's `inputSchema`, the
+`correlationKey`, `subject`, `businessId`, the literal keys of feature 022) are stored in `payloads`, classified by the entry's `inputSchema`, the
 signal's or event's schema, or as `pii` when nothing declares them, charged to the run's retained bytes and the tenant's
 content quota (Architecture decision 0027); the node spec keeps names, numbers and options only. A `c-<n>` step's lease
 input is its stored literal input (`steps.input_digest`, a reference to `payloads`), never the run document; the input of
@@ -1313,7 +1345,10 @@ the actor of every event of origin `external` (an update's admitter, a signal's 
 `run.code_version_moved`, `step.retry_requested`, review resolution and reset; and the publisher of each code version
 the run is pinned to, because the mover and the publisher chose the code that issues the command and the retrier,
 resolver and resetter released or shaped it. Continue-as-new's handoff, a child's start and a reset copy the source's
-rows into the new run. A code approval records the run and the bound `S(k)` of the activation that issued it
+rows into the new run with `first_seq` 0, so they always bind; a child started by any parent, graph or code, gets the
+parent's starter, the parent's chain initiator and the publisher of the parent's version at `first_seq` 0, and the
+resetter's row in a reset run is at 0 too. Every approval of a run that has rows, a graph approval node of a graph child
+of a code parent included, records `initiators_run_id` and checks them. A code approval records the run and the bound `S(k)` of the activation that issued it
 (`approval_requests` gains `initiators_run_id` and `initiators_bound_seq`, null for graph approvals), and its decision
 refuses a subject that has a row of that run with `first_seq` at or below the bound.
 
@@ -1326,7 +1361,7 @@ The other commands are typed messages:
 | Wait for event | `wait.started` | `steps` row `WAITING` kind `EVENT` |
 | Start child | `step.released` | `steps` row with `child_run_id` reserved, started by the children pass as today |
 | Request approval | `approval.opened` | as an approval node |
-| Open, close, abort saga | `saga.entered` in a code variant that carries the scope `s-<n>`, `onCompensationFailure` and `cancelPolicy`; `saga.completed`; `saga.aborting` | `run_sagas` and `run_saga_entries` (section 10), the scope's overlay node, and a step row `s-<n>` `WAITING` on the saga, created as a graph saga's step is, never offered to a worker and not counted among the steps that can still act, so that feature 003's saga machinery (`running`, `owned`, `advance` in `crates/domain/src/execution/sagas.rs`) drives code scopes and keeps their compensations out of a stop's wind-down. Closing a scope while one of its members is not settled, and any command that names a closed, aborted or unknown scope, are `COMMAND_INVALID` |
+| Open, close, abort saga | `saga.entered` in a code variant that carries the scope `s-<n>`, its parent scope (null at the top), `onCompensationFailure` and `cancelPolicy`; `saga.completed`; `saga.aborting` | `run_sagas` and `run_saga_entries` (section 10), the scope's overlay node, and a step row `s-<n>` `WAITING` on the saga, created as a graph saga's step is, never offered to a worker and not counted among the steps that can still act, so that feature 003's saga machinery (`running`, `owned`, `advance` in `crates/domain/src/execution/sagas.rs`) drives code scopes and keeps their compensations out of a stop's wind-down. A scope nested in an open parent is part of the parent's region (`saga_region`, `scope_chain`): aborting the parent aborts its open children first, as for graph sagas, and closing a parent with an open child is `COMMAND_INVALID`. Closing a scope while one of its members is not settled, and any command that names a closed, aborted or unknown scope, are `COMMAND_INVALID` |
 | Request cancellation | `step.cancel_requested` | as today |
 | A command on a step that is already terminal | `command.noop` | one audit record per completion for all its no-ops, with their count |
 | Consume signals | `signal.consumed`, whose target is the signal name and whose body is the ascending list of the consumed sequences, each refused (`COMMAND_INVALID`) unless it is a pending signal of this run at or before the activation's start | the inbox rows marked consumed |
@@ -1362,8 +1397,8 @@ and number printing are not RFC 8785's). Then, in one transaction:
    generation, that the run is neither terminal nor in its stop drain and its cancellation deadline has not passed
    (stale: `ABORTED STALE_ATTEMPT`, nothing written); the replayed chain against `runs.code_command_chain`; that the first
    new command number is `runs.code_command_count + 1`; the count of the steps that can still act, read by one statement
-   over the partial index `steps_code_can_act_idx` (the run's `c-<n>` steps that are not terminal, and the completed
-   members of its open scopes from `run_saga_entries`), against 2,048; `applied_through_seq`
+   over the partial index `steps_code_can_act_idx` (the run's `c-<n>` steps that are not terminal, and the succeeded
+   `c-<n>` steps whose overlay `scope` is a scope of the run in its forward or aborting phase), against 2,048; `applied_through_seq`
    against `S(k)`. A mismatch writes the review instead of the commands (section 6.3).
 3. Insert the payloads (the inputs and business literals), one batched statement.
 4. Append the journal events through `append_events`: `workflow_task.completed` first, then the command records and the
@@ -1374,21 +1409,24 @@ and number printing are not RFC 8785's). Then, in one transaction:
 7. Insert the outbox rows for the new `READY` steps; compare-and-swap the run row (`run_version`, `code_command_chain`,
    `code_command_count`, `code_last_completed_start_seq`, `code_consecutive_failures` reset to 0); mark the consumed
    inbox signals; write the idempotency record; and, only when a command needs them, the collapsed audit of no-ops, the
-   saga plan rows, the declared state and the update transitions.
+   declared state and the update transitions. An abort command journals only `saga.aborting`: feature 003's `advance`
+   plans the compensations once every member of the scope has settled, applying the scope's `cancelPolicy` to members
+   still in flight, so a member that succeeds after the abort is compensated.
 
-The statements are the 50 of today's `COMPLETION_WITH_A_NEXT_STEP` plus at most 13 (Non-functional requirement
+The statements are the 50 of today's `COMPLETION_WITH_A_NEXT_STEP` plus at most 12 (Non-functional requirement
 044-003). The eager leases of Task 044-14 are outside that budget: each goes through the claim's admission function, so
 the quotas, breakers, pools, capacity windows, gates and approvals of an ordinary claim apply and only a step that would
 be `READY` is eligible, and each costs at most the 38 statements of `LEASE` in `work_budget.rs`, for at most as many
 leases as the slots the completion offers; Task 044-14 adds that budget entry.
 The batched persistence path is new code in `PgRunTx`, held to the same rows as `persist` by a differential test (the
 same commands persisted both ways produce identical rows and journal) and by its crash tests (Task 044-9). A terminal
-command adds the statements of the existing stop drain, and continue-as-new those of feature 014's handoff.
+command adds the statements of the existing stop drain; an accepted continue-as-new only closes the step, and feature
+014's continuation pass performs the handoff (section 9).
 
 #### 5.3 The transactions that wake the function
 
 An activity completion, a timer firing, a wait satisfied or timed out, a child finished, an approval decided, a saga
-settled, a reconciliation concluded, a grant of feature 022, a signal buffered, an update admitted and a cancellation
+settled, a reconciliation concluded, a signal buffered, an update admitted and a cancellation
 request each already commit in one transaction (their own code paths). For a code run each appends its waking event
 through `append_events`, which moves `code_last_waking_seq` and makes the workflow-task step `READY` with its hint when
 it was `WAITING` with kind `DECIDER`, in that same transaction. A test enumerates every writer of the journal (not every
@@ -1405,7 +1443,8 @@ it yields with no event left to apply, a command where the history has none, and
 markers are mismatches, and so is an activation whose `workflow_task.completed` records a deferral in which the
 function does not make the deferred command last (section 4.4). The report (`FailWorkflowTask`, cause `NONDETERMINISM`) names the command number, the actual kind
 and target and the code digest; the server takes the expected kind and target from its own record, never from the
-worker, and checks the actual target against the identifier pattern of its kind.
+worker, and checks the actual target against the identifier pattern of its kind; a marker identifier (patch or side
+effect) matches `^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$`.
 
 #### 6.2 On the server: the command chain
 
@@ -1457,7 +1496,7 @@ journaled reset, by every completion that commits, by a retry and by a move.
 | `UNHANDLED_EVENTS` (a waking event after the activation's start) | Server | Not counted; the command is deferred and the step is `READY` at once; after 3 deferrals new signals and updates are refused (`RUN_CLOSING`) until a completion commits without one | none needed |
 | `CLOSING_WINDOW_COMMAND` (a command that the closing window does not admit) | Server | Under review at once | Retry, cancel |
 | `HISTORY_LIMIT` (visible count 51,200) | Server | Under review at once | Retry opens the closing window; cancel |
-| `RETAINED_BYTES_LIMIT` (a completion that would take the run past its 4 MiB of retained bytes) | Server | Under review at once | Retry opens a closing window in which only commands without a payload, and a terminal or continue-as-new command whose payload fits, are accepted; move, reset, cancel |
+| `RETAINED_BYTES_LIMIT` (a completion that would take the run past its 4 MiB of retained bytes) | Server | Under review at once | Move, reset, cancel (no retry: the same activation would make the same commands; the continue-as-new suggestion at 3 MiB is the function's warning) |
 | `STORAGE_QUOTA_EXCEEDED` (the tenant's content quota refuses a completion's payloads) | Server | Counted with `WORKFLOW_TASK_FAILED`, with the same backoff | Retry, move, reset, cancel |
 
 A cause raised at once is not retried automatically because the same code would produce it again; `CHAIN_MISMATCH` and
@@ -1468,7 +1507,11 @@ run under review as they end any run.
 The **closing window** of a `HISTORY_LIMIT` retry offers workflow tasks with the flag `historyLimitReached` for
 1,024 + 2 × (steps that can still act at the retry) more visible events; the workflow-task events of the window count
 against its 1,024, and an item whose outcome no longer fits is ended by the stop drain, which is the expected way out of
-a window that is used up. External signals and updates are refused at the headroom (from a visible count of
+a window that is used up. There is one window per run: a `HISTORY_LIMIT` review raised inside it has no retry. Its bound
+is journaled in the `step.retry_requested` that opens it, so `verify_run` derives it. A completion that would cross the
+bound is refused and ends the run in its transaction; when another writer (an outcome, a timer, the lease's own
+`workflow_task.started`) reaches the bound, a scheduler pass over the runs with an open window ends the run, since the
+writers that hold a bare transaction run no planner. External signals and updates are refused at the headroom (from a visible count of
 50,176 = 51,200 − 1,024, from 3 MiB of retained bytes, and during the window), and only the first cancellation request of
 a run is journaled, so the window is the function's own; in it only commands that end the run, continue it as new, cancel
 its outstanding work, close or abort its sagas, record markers, set the state, consume signals, or accept, reject or
@@ -1494,8 +1537,9 @@ admitting principals, its `run_initiators` are copied from the source and gain t
 refused for a code run. The rules of the new kinds: `workflow_task.*`, `command.noop`,
 `signal.consumed`, `run.cancel_requested`, `marker.recorded`, `update.*` and `run.code_version_moved` are `COPY` (the
 new run's pin comes from its start version, and `verify_run` derives the pin from moves that are not restored); for a
-code run `saga.aborting` is `COPY` once the scope's outcome is in the prefix (a point between them is already
-ineligible);
+code run `saga.aborting`, `compensation.planned` and the scope's outcome events (`saga.compensated` and the partial
+and failed outcomes) are `COPY` once the scope's outcome is in the prefix (a point between them is already ineligible),
+and the reset rebuilds the settled scope's `run_sagas` and `run_saga_entries` rows from them;
 for a code run `timer.started`, `wait.started` and the step rows of outstanding commands are `REMATERIALIZE`, the column
 the registry gains for code runs.
 
@@ -1548,7 +1592,8 @@ on a running run only through a verified move (section 7.3), which proves per ru
   the replayed `S(k)`, the run has no stop reason, the workflow-task step is neither `CLOSED` nor leased (an item whose
   run is stopping ends `RUN_NOT_MUTABLE`), and every step that can still act fits the target's envelope
   (Requirement 044-023); if the step is leased or a new completion moved `S(k)`, the item is checked again later, at most
-  three times, then ends `RUN_BUSY`. Applying appends `run.code_version_moved` (both versions, the actor, `S(k)`) through
+  three times, then ends `RUN_BUSY`; an operator can quiesce a busy namespace with the pause, which stops workflow tasks
+  but not replay checks or moves, and then move it. Applying appends `run.code_version_moved` (both versions, the actor, `S(k)`) through
   `append_events` and calls `sagat_move_code_run` at once, before anything else is appended; it then appends, for a run
   under review, `step.retry_requested`; rewrites the workflow-task step's activity to the
   target's reserved name and clears its sticky fields; makes it `READY` with a hint if it was under review or a task is
@@ -1665,8 +1710,10 @@ update keeps its synchronous expression form.
   committed completion (it waits for the answer to an in-flight completion first), with `RespondWorkerQuery`, which stores
   the answer (at most 256 KiB) inline in the row with that completion's journal sequence; the server validates it against the query's
   `resultSchema` and the waiting call, which re-reads the row, returns it with `Cache-Control: no-store`. A handler that
-  issues a command fails the query with `QUERY_COMMAND`; a query to a paused run or to one under review fails at once
-  with `QUERY_UNAVAILABLE`. Audited with the caller and the outcome, not the arguments or the
+  issues a command fails the query with `QUERY_COMMAND`; a query to a paused run, to one under review or to one whose
+  workflow-task step is `CLOSED` fails at once with `QUERY_UNAVAILABLE` (declared queries answer ended runs). The row
+  records the requesting principal (`requested_by`), so the quarter bound holds across processes, and the waiting call
+  re-reads it on the update waits' schedule. Audited with the caller and the outcome, not the arguments or the
   answer. Architecture decision 0108 supersedes Architecture decision 0031 decision 7 for worker queries: the snapshot is
   the function's state after a committed completion, and its journal sequence is disclosed.
 
@@ -1709,8 +1756,9 @@ and releases its lease at once, since it has no effect, and the run shows `CANCE
 - **Continue-as-new.** The command is deferred (`OUTSTANDING_OBLIGATIONS`, not counted, section 4.4) while an activity,
   child or approval is open or a saga scope aborts, and is `COMMAND_INVALID` while a scope is open (Requirement
   044-019); a continue-as-new accepted after `run.cancel_requested` ends the run `CANCELLED` through the stop drain, with
-  no handoff (section 8.4); when accepted, one transaction, feature 014's handoff, cancels the run's open
-  timers and waits, closes the workflow-task step and starts the successor: the run chain's deadline and segment limit apply,
+  no handoff (section 8.4); when accepted, the completion closes the workflow-task step, and feature 014's continuation
+  pass performs the handoff in its own transaction and lock order (Requirement 044-019): it cancels the run's open
+  timers and waits and starts the successor; the run chain's deadline and segment limit apply,
   the transferred input is checked against the successor's `inputSchema` (design 043), the pending signals move as
   Architecture decision 0111 decides, the run's initiators are copied (section 5.1), and the successor gets a new seed and
   a history that starts with its own `run.started`, carrying the transferred input and the carried state. `version: active` pins the
@@ -1738,13 +1786,18 @@ await ctx.saga({ onCompensationFailure: 'manual_review', cancelPolicy: 'compensa
 `wait_in_flight_then_compensate` or `abort_no_compensation`, the saga node's values). Activities scheduled through `saga`
 carry the scope, and their `compensateWith` and `reconcileWith` come from their envelope entries. When the body returns,
 the SDK issues `close saga` and the compensations are dropped, as for a graph saga that completes. When the body throws
-(or calls `saga.abort()`), the SDK issues `abort saga`; the engine then writes the scope's plan into the existing
+(or calls `saga.abort()`), the SDK issues `abort saga`, whatever was thrown, a `continueAsNew`, an
+`acknowledgeCancellation` or a `WorkflowFailure` included, and re-raises it once the scope settles; once every member
+has settled the engine writes the scope's plan into the existing
 run-scoped tables of feature 003: `run_sagas` (the scope `s-<n>`, its phase and outcome) and `run_saga_entries` (one row
 per completed step of the scope, with its `compensation_id` and its `after` list). A graph saga's plan is a pure function
 of the published definition (Architecture decision 0010 decision 3), which a code saga cannot have; Architecture decision
-0107 supersedes that decision for code runs. The dependencies come from the journal: step B depends on step A when B's
-outcome event has a journal sequence at or before the start of the workflow task whose completion recorded B's command,
-because only then had the function seen A's outcome when it decided B. Compensations run in reverse dependency order, and independent ones stay eligible together (principle III),
+0107 supersedes that decision for code runs. The dependencies come from the journal: step B depends on step A when A's
+outcome event has a journal sequence at or before `issued_seq` of B, the start of the workflow task whose completion
+recorded B's command,
+because only then had the function seen A's outcome when it decided B. `plan_entries` (`crates/domain/src/execution/saga.rs`)
+takes a dependency source: the graph arm is today's `reverse_dependencies` over edges, and the code arm reads `issued_seq`
+from the overlay and each step's outcome sequence from `RunState`; `verify_run` rebuilds `after` the same way. Compensations run in reverse dependency order, and independent ones stay eligible together (principle III),
 so one compensation under review does not block an independent one. Each compensation's identifier is derived as a graph
 compensation's is, from the start version and the forward node (`c-<n>`), so it is the same across retries and moves; its
 key includes the run, so a reset's run has its own keys, as for a graph reset. The compensations run as derived steps
@@ -1793,7 +1846,7 @@ registers, so the candidate scan's SQL does not change; when `sticky_until` pass
 timer pass rewrites the activity to the digest name and writes its hint. The sticky fields are routing state, not
 journaled, and excluded from the replay comparison as such. A failure, a timeout or a move clears them. A worker evicts
 runs from its cache by least recent use beyond its cache size (default 256) and tells the server with
-`ReleaseSticky(runIds)`, which the server applies only to steps whose `sticky_session_id` is the caller's session in the
+`ReleaseSticky(runIds)` (at most 256 identifiers), which the server applies only to steps whose `sticky_session_id` is the caller's session in the
 caller's tenant. A retry of a `CHAIN_MISMATCH` or `NONDETERMINISM_RISK` review records the failing session as excluded
 from the next sticky preference.
 
@@ -1822,7 +1875,7 @@ Dependent on the delivery acknowledgement of feature 006 (protocol 1.8):
 | 018, business identifiers, batch, reset | Business identifiers, the with-start calls and batch operations apply to code runs unchanged; moves are a batch action; reset as in section 6.3, with a rule per new event kind |
 | 019, worker deployments | A deployment routes activities only; workflow tasks are routed by the code digest of the run's current code version; `REPIN` is refused for code runs |
 | 020, visibility | Its search-attribute command and event are added by Task 044-27 when feature 020 lands |
-| 022, concurrency and rate limits | Run-level gates gate a code run's admission in `PgRunStore::create` as any run's; a run-level gate with continue-as-new is refused as for a graph (Requirement 022-017). Step-level keys on an activity command hold the step `WAITING` until the grant (Architecture decision 0089), and the grant is a waking event. The workflow-task step, query tasks and replay-check tasks are never gated by keys; workflow tasks count in the namespace's `sagat.workflow` quota bucket |
+| 022, concurrency and rate limits | Run-level gates gate a code run's admission in `PgRunStore::create` as any run's; a run-level gate with continue-as-new is refused as for a graph (Requirement 022-017). Step-level keys on an activity command hold the step `WAITING` until the grant (Architecture decision 0089); the grant makes the step `READY` and does not wake the function, which sees only the step's outcome. A literal key is a business literal: stored in `payloads`, classified `pii`, while the node spec, the journal and the gate rows carry only feature 022's keyed digest, and its label is shown only to a reader with the reveal rights. The workflow-task step, query tasks and replay-check tasks are never gated by keys; workflow tasks count in the namespace's `sagat.workflow` quota bucket |
 | 031, codecs | The server evaluates no expression on a code run's payloads; inputs, outputs and signal payloads may be encoded as feature 031 allows for graph runs, with the same rules for validated and classified fields; declared state, update arguments and results the engine validates, and literal correlation keys stay plaintext |
 | 041, step logs | Activities from code send step logs as any activity. A workflow task sends none; the function's log output goes to the worker's own logger, suppressed during replay; a session on the new minor implements protocol 1.7's host procedures |
 | 043, input validation | A code run's input, a child's and a successor's are checked by the gate of design 043; activity inputs, update arguments and results, worker-query arguments and answers, and the declared state are validated by its validator |
@@ -1850,7 +1903,7 @@ that SDK. Field numbers are the next free ones of each message, fixed by `worker
 | `FailWorkflowTask` | fence fields, `idempotency_key`, `cause WorkflowTaskFailureCause`, `command_number`, `actual_kind`, `actual_target`, `exception_type` |
 | `ReadHistory` | request: lease or read token, `from_seq`; server stream of pages of `HistoryEvent` |
 | `QueryTask`, `RespondWorkerQuery` | the query's name, its arguments inline (`args bytes`, at most 64 KiB), the deadline; the answer inline (`answer bytes`, at most 256 KiB) and `committed_through_seq` |
-| `ReplayCheckTask`, `RespondReplayCheck` | up to 16 items with run and read token; per item `s_k`, `chain`, `body_digests`, `deferred_body_digest` (when the last completion recorded a deferral); the verdict is the server's |
+| `ReplayCheckTask`, `RespondReplayCheck` | the task: up to 16 items with run and read token; each answer: one item, `from_command`, at most 8,192 `body_digests`, and with the last range `s_k`, `chain` and `deferred_body_digest` (when the last completion recorded a deferral); the server compares each range as it arrives and the verdict is its own |
 | `ReleaseSticky` | `run_ids` (Task 044-14) |
 | `CompleteStepRequest` | `accept_workflow_task bool`; answer: optional `WorkflowTaskLease` (Task 044-14) |
 
@@ -1871,6 +1924,7 @@ tree builds while the server lane fills them in.
 | `POST /runs/{runId}/worker-queries/{queryName}` (Task 044-29) | `run:read`, `run:query` | `200` | `504 QUERY_TIMEOUT`, `422 QUERY_COMMAND`, `429` |
 | `PUT /namespaces/{namespaceId}/code-workflows/pause` and `DELETE` it | `run:operate`, `worker:manage` | `204` | `404` |
 | `GET /namespaces/{namespaceId}/workflows/{workflowId}/code-versions` | `definition:read` | `200` | `404` |
+| `getRun`, `listResetPoints` (existing) | unchanged | the workflow-task step is not a `RuntimeNode` (so `waitingOn` gains no value); a code run's view gains the additive object `codeWorkflow {state, cause, currentVersion}`; a code run's reset point is `STEP_COMPLETED` with node `~workflow` (so `ResetPoint.kind` gains no value) | unchanged |
 | `PUT` of a worker binding | today's binding permission | `200`; `workflowTypes` added to `SetWorkerBindingRequest` and `WorkerBinding`, `activities` may be empty when `workflowTypes` is not | today's, and `422` for a type outside the pattern of Requirement 044-001 or more than 64 |
 
 #### 13.3 Error codes
@@ -1889,7 +1943,7 @@ tree builds while the server lane fills them in.
 | `RUN_BUSY`, `NO_TARGET_WORKER`, `FORBIDDEN` | none (batch item reasons) | none | moves |
 | `UNHANDLED_EVENTS`, `OUTSTANDING_OBLIGATIONS` | none | none (the cause of an `ACCEPTED_DEFERRED` outcome of a successful answer) | completions |
 | `RUN_NOT_MUTABLE` (batch item reason) | none | none | a move of a run that is stopping |
-| `QUERY_UNAVAILABLE` | `409` | none | a worker query to a paused run or one under review |
+| `QUERY_UNAVAILABLE` | `409` | none | a worker query to a paused run, one under review or one whose workflow task is closed |
 | `EXTERNAL_CONTENT_NOT_INSPECTED` | none (a placeholder) | none | a blob with a `secret` field, and every blob in the export |
 | `STALE_ATTEMPT` | none | `ABORTED` | completions (existing) |
 | `INCONCLUSIVE_REDACTED` | none (a replayer verdict) | none | SDK replayers |
@@ -1924,10 +1978,10 @@ New tables, each with tenant scope and foreign keys within the tenant:
 | Table | Holds | `sagat_app` | Classification |
 |---|---|---|---|
 | `code_run_pins (tenant_id, run_id, code_version_id, moved_at)`, primary key `(tenant_id, run_id)` | The current code version; at insert it must equal the run's start version (a trigger with no setting that bypasses it) | `SELECT`, `INSERT`; `EXECUTE` on `sagat_move_code_run` only, a `SECURITY DEFINER` function owned by the migration role, `REVOKE ALL ... FROM PUBLIC`, `SET search_path = pg_catalog, pg_temp`, schema-qualified names | `protected_system` |
-| `code_step_nodes (tenant_id, run_id, node, accepted_version_id, spec bytea)` | The node overlay, a projection of the command records (at most 1 KiB per spec), append-only | `SELECT`, `INSERT` | `protected_system` (names, numbers, options; no payload) |
+| `code_step_nodes (tenant_id, run_id, node, accepted_version_id, scope, issued_seq, spec bytea)`, primary key `(tenant_id, run_id, node)` | The node overlay, a projection of the command records (at most 1 KiB per spec), append-only | `SELECT`, `INSERT` | `protected_system` (names, numbers, options; no payload) |
 | `code_update_transitions (tenant_id, namespace_id, run_id, admitted_by, update_key, state, reason, args_digest, result_digest, at)`, unique `(tenant_id, run_id, admitted_by, update_key, state)` | The code update lifecycle, append-only, one row per state, keys scoped by the admitting principal | `SELECT`, `INSERT` | `protected_system` (references only) |
 | `code_query_requests (tenant_id, namespace_id, run_id, id, query_name, args bytea, answer bytea, committed_through_seq, status, lease_token_hash, expires_at)`, arguments at most 64 KiB and answer at most 256 KiB inline | Worker queries (Task 044-29) | `SELECT`, `INSERT`, `UPDATE`, `DELETE` | `args` and `answer` `content`, measured by `octet_length` as `payloads.content` is; the other columns `protected_system` |
-| `code_replay_checks (tenant_id, job_id, ordinal, run_id, s_k, computed_chain, verdict, read_token_hash, lease_token_hash, expires_at, first_difference integer)` | The lease of a move item's replay check | `SELECT`, `INSERT`, `UPDATE`, `DELETE` | `protected_system` |
+| `code_replay_checks (tenant_id, job_id, ordinal, run_id, s_k, computed_chain, verdict, read_token_hash, lease_token_hash, expires_at, first_difference integer)`, primary key `(tenant_id, job_id, ordinal)` | The lease of a move item's replay check | `SELECT`, `INSERT`, `UPDATE`, `DELETE` | `protected_system` |
 | `worker_binding_workflow_types (tenant_id, namespace_id, subject, workflow_type, profile)` | The workflow types of a binding, modelled on `worker_binding_pools`, with the binding's profile constrained to the ordinary one | today's grants of `worker_binding_pools` | `protected_system` |
 
 Other changes:
@@ -1939,30 +1993,32 @@ Other changes:
   once-per-wait mark), with a partial index on `code_wait_started_at` where the kind is `WORKFLOW_TASK` and the step waits
   with kind `DECIDER`; `waiting_kind` gains `DECIDER` and `CLOSED` (`APPROVAL`
   exists, with `approval_request_id`); `min_protocol_minor` is design 045's, a prerequisite.
-- `run_events` gains `origin text` (null for graph runs' existing rows; `completion`, `effect`, `engine`, `external`),
-  written by `append_events`.
+- `run_events` gains `origin text` (null for graph runs' existing rows; `completion`, `effect`, `engine`, `external`,
+  held by a closed check added `NOT VALID` and validated), written by `append_events`.
 - `steps` gains the partial index `steps_code_can_act_idx` over the `c-<n>` steps of code runs that are not terminal,
   which the completion counts (section 5.2); no counter is kept by hand.
 - `run_initiators (tenant_id, run_id, subject, first_seq)`, primary key `(tenant_id, run_id, subject)`, append-only,
   `SELECT` and `INSERT` for `sagat_app`, `protected_system`; `approval_requests` gains `initiators_run_id` and
   `initiators_bound_seq`.
 - `batch_jobs.action` gains `MOVE_CODE_VERSION`.
-- `namespaces` gains `code_workflows_paused boolean NOT NULL DEFAULT false`, changed only by the pause route and audited.
+- `namespaces` gains `code_workflows_paused boolean NOT NULL DEFAULT false`, changed only by the pause route and audited;
+  `sagat_app` gets `UPDATE (code_workflows_paused)` only, and the claim and the completion read it `FOR SHARE`, so a
+  completion racing a pause either commits first or is refused.
+- `code_query_requests` gains `requested_by`.
 - The instance registry's `Capability` enumeration (`crates/application/src/instances.rs`) and its three closed checks
   (`serving_instances_capabilities_closed`, `platform_requirements_capability_valid`,
   `platform_requirement_history_capability_valid`) gain `code-workflows-v1`, required of `CONTROL_PLANE` and
   `EXECUTION_ENGINE`; a trigger refuses removing the requirement while a code version exists, and the publication holds
   each requirement it needs `FOR SHARE` for the rest of its transaction, so a removal cannot commit beside a
-  publication. The holder is the registry's function `platform_requirement_hold(p_capability text, p_kinds text[])`
-  (the function of Architecture decision 0110 decision 8, built by whichever design lands first, in the manner of
-  `platform_requirement_lock` of `20270113000000_instance_registry.up.sql`): `LANGUAGE plpgsql SECURITY DEFINER`, owned by
-  the migration role, `SET search_path = pg_catalog, pg_temp`, schema-qualified names, no dynamic SQL, `REVOKE ALL ...
-  FROM PUBLIC` and `EXECUTE` for `sagat_app`; it runs `SELECT r.kinds FROM public.platform_requirements r WHERE
-  r.capability = p_capability FOR SHARE` and raises `CAPABILITY_NOT_ACTIVE` (SQLSTATE `P0001`, mapped by the store to the
-  typed error) when the row is missing or its kinds do not include every kind of `p_kinds`; the Rust caller passes the
-  `Capability` enumeration's text, never a caller's string, and the closed check of the table bounds the value. The
-  migration of Task 044-6 creates it with `CREATE FUNCTION` only if it does not exist (checked in `pg_proc`), with
-  exactly this body, and its down never drops it.
+  publication. The holder is design 045's function, exactly as that design defines it, so that one definition is
+  shared: `platform_requirement_hold(capability text) RETURNS boolean`, `SECURITY DEFINER`, `SET search_path =
+  pg_catalog, pg_temp`, schema-qualified names, the capability checked against the closed list, `REVOKE ALL ... FROM
+  PUBLIC` and `EXECUTE` for `sagat_app`; it reads the requirement's own row `FOR SHARE` and returns true only when the
+  requirement is recorded for both control planes and engines, which is what `code-workflows-v1` requires. The store
+  calls it inside the publication's transaction under a `lock_timeout` and maps `false` to `CAPABILITY_NOT_ACTIVE` and a
+  lock timeout to `UNAVAILABLE` with the reason `REQUIREMENT_BUSY`. The migration of Task 044-6 creates it only if it does
+  not exist; if it exists, the migration compares `prosrc`, `prosecdef`, `proconfig` and the owner with this definition
+  and fails on any difference; its down never drops it.
 - The check of `workflow_versions.classification_rules` (`IN (0, 1)`, migration `20261201000000_payload_classification`)
   admits the new rules version of Architecture decision 0108 decision 5.
 - The down refuses while any code run or code version exists.
@@ -1973,7 +2029,7 @@ Other changes:
   digest or run: `workflow_tasks_total{outcome: completed, failed, timed_out, refused}`,
   `workflow_task_latency_seconds{cached: true, false}`, `workflow_task_reviews_total{cause}` (the causes of section 6.3),
   `workflow_tasks_unserved{reason: no_digest, paused}`, `workflow_task_pending_repaired_total`,
-  `code_moves_total{verdict: matched, mismatched, run_busy, no_target_worker, forbidden}`,
+  `code_moves_total{verdict: matched, mismatched, run_busy, run_not_mutable, no_target_worker, forbidden}`,
   `worker_queries_total{outcome: answered, timed_out, refused}`; in each SDK `sagat_workflow_cache_runs`,
   `sagat_workflow_replay_seconds`, `sagat_workflow_nondeterminism_total` and `sagat_workflow_abandoned_activations`, with
   no labels.
@@ -1994,7 +2050,7 @@ Other changes:
    be recorded, a scan refuses if a published graph version names an activity starting with `sagat.workflow`.
 2. SDKs offer the new minor only when the application registers a workflow type; an activity-only worker keeps its minor.
 3. The migration's down refuses while any code run or code version exists. The namespace pause of Requirement 044-033
-   stops every code run's workflow tasks while a problem is found.
+   stops every code run's workflow tasks and worker queries while a problem is found; replay checks and moves go on.
 
 ### 17. Against Temporal
 
@@ -2167,6 +2223,8 @@ a replaying worker derives from `ReadHistory`.
   `docs/runbooks/instance-registry.md` (recording `code-workflows-v1`), and the quickstarts `docs/quickstarts/` (a
   workflow-as-code section in each of the five existing language pages and a new `rust.md`), with the recommended
   topology for compiled languages.
+  The task also waits for the 5.0.0 text to answer Gaps 044-024 and 044-025 (or for the owner to keep the wording),
+  not only for its merge.
   Files: modify the pages named; create `docs/quickstarts/rust.md`.
   Verification: `python3 scripts/check-docs-index.py`, `python3 scripts/check-plain-words.py --base origin/develop`; a
   reviewer reads each page against this design.
@@ -2178,7 +2236,8 @@ a replaying worker derives from `ReadHistory`.
   `crates/api-grpc`, `openapi.yaml` (Technical Plan 13.2, each new operation `x-planned: '044'` and listed in `not_built`
   of `tests/contract/security-multitenancy/rest/battery.rs`), `events.asyncapi.yaml` (the workflow task hint),
   `sdks/error-catalog.json` and its six copies (Technical Plan 13.3), the permission `history:export`
-  (`crates/domain/src/identity.rs`, admin role), the register row of the new minor, the reset rules of every new kind in
+  (`crates/domain/src/identity.rs`, admin role, and its entry in
+  `specs/029-custom-roles-folders/contracts/permission-catalog.json`, not assignable to a custom role in 0.3.0), the register row of the new minor, the reset rules of every new kind in
   `specs/018-schedules-bulk-operations/contracts/journal-and-events.md` with its code-run column, the history export
   format and its baseline (`specs/044-workflow-as-code/contracts/history-export.baseline.json`), the SDK
   copies of `worker.proto` (`sdks/typescript/proto/worker.proto`, `sdks/python/proto/worker.proto`,
@@ -2187,7 +2246,8 @@ a replaying worker derives from `ReadHistory`.
   catalogs regenerated by each SDK's own script (`sdks/typescript/scripts/sync-shared.mjs`,
   `sdks/python/scripts/sync_shared.py`, `sdks/java/scripts/sync-shared.sh`, `sdks/dotnet/scripts/sync-shared.sh`,
   `sdks/go/scripts/generate.sh`; the Rust SDK's `sdks/rust/src/error-catalog.json` and `sdks/rust/proto/worker.proto`
-  are copied by hand and held by `sdks/rust/tests/rest.rs`), whose shared-contract tests fail when one is not run, with
+  are copied by hand and held by `sdks/rust/tests/rest.rs` and `sdks/rust/tests/protocol.rs`), whose shared-contract
+  tests fail when one is not run, with
   each new code's `origin`,
   `retryable` and `remediation`, the three new targets in `tests/Cargo.toml` with their duration figures; the Studio types
   (`npm run api && npm run check:api`) and `docs/reference` (`SAGAT_DOCS_BLESS=1 cargo test -p sagat-tests --test
@@ -2195,6 +2255,7 @@ a replaying worker derives from `ReadHistory`.
   Red tests: `contract_workflow_as_code::a_document_with_code_and_nodes_is_refused`,
   `contract_workflow_as_code::the_worker_protocol_change_is_additive_to_the_baseline`,
   `contract_workflow_as_code::the_openapi_routes_of_design_044_exist_with_their_errors_and_permissions`,
+  `...::an_old_client_reads_a_code_run_without_new_enum_values`,
   `contract_workflow_as_code::every_new_event_kind_has_a_reset_rule`, `contract_workflow_as_code::the_history_export_format_matches_its_baseline`.
   Refs: Requirement 044-001, Requirement 044-003, Requirement 044-015, Requirement 044-023, Requirement 044-025, Requirement 044-033, Non-functional requirement 044-006
   Owner-gate: OD-2026-11-24-3
@@ -2204,7 +2265,12 @@ a replaying worker derives from `ReadHistory`.
   included), the command chain vectors; reviewed under `AGENTS.md` rule 18 (a golden changes only after reading its
   diff); and the TypeScript lane's fake server `sdks/typescript/test/fake-workflow-server.ts`, which serves `PollTasks`,
   `StreamTasks` with `WORKFLOW` leases, `ReadHistory`, `CompleteWorkflowTask` and `FailWorkflowTask` from the goldens.
-  Red tests: `contract_workflow_as_code::the_goldens_parse_and_their_chains_recompute`.
+  The vectors are produced by a checked-in generator with no new dependency,
+  `specs/044-workflow-as-code/contracts/goldens/generate.mjs` on Node 22 (`node:crypto` for SHA-256, `BigInt` for
+  xoshiro256** and SplitMix64, its own RFC 8785 serializer over `JSON.stringify` numbers with keys sorted by UTF-16
+  code unit), so the goldens do not come from the Rust code they check; the Rust test recomputes them independently.
+  Red tests: `contract_workflow_as_code::the_goldens_parse_and_their_chains_recompute`, written red here and green when
+  Task 044-5 lands.
   Refs: Requirement 044-006, Requirement 044-007, Requirement 044-010
   Owner-gate: OD-2026-11-24-3
 - [ ] T044-4 Domain: `DefinitionGraph::Code` and the composition with the overlay, the reserved node and the changed
@@ -2212,11 +2278,14 @@ a replaying worker derives from `ReadHistory`.
   `is_waking(origin)`, the reducer rules of the workflow-task step, the code run state (lifecycle, pending rule, counts,
   review causes), the commands, the chain rule over opaque digests behind `CommandDigester`, the envelope check with entry
   precedence, the code profiles, the planner arm; in `crates/domain/src/execution/code/` (create) and
-  `crates/domain/src/workflow.rs`, `execution/event.rs`, `execution/state.rs`, `execution/plan.rs` (modify), the one
-  cancellation function `execution::request_cancellation` (`crates/domain/src/execution/command.rs`); and the
+  `crates/domain/src/workflow.rs`, `execution/event.rs`, `execution/state.rs`, `execution/plan.rs`, `execution/saga.rs`
+  (the code arm of `plan_entries`) (modify), the composer `WorkflowDefinition::compose_code`, the one cancellation
+  function `execution::request_cancellation` and the move command `execution::move_code_version`
+  (`crates/domain/src/execution/command.rs`); and the
   source-text check of section 2 (the distinctive method names and the definition loaders), in
-  `apps/execution-engine/tests/code_definition_sites.rs` with its allowlist `code_definition_sites.allow` (create), and
-  the `CommandDigester` trait in `crates/domain`.
+  `apps/execution-engine/tests/code_definition_sites.rs` with its allowlist `code_definition_sites.allow`, and
+  `apps/execution-engine/tests/code_workflow_sites.rs` for the other tree-wide source-text checks (create); the rename of
+  `DefinitionCache::get` to `get_version`; the `CommandDigester` trait in `crates/domain`.
   Red tests (unit, `crates/domain`): `the_code_definition_resolves_every_command_node_and_its_companions`,
   `is_visible_and_is_waking_cover_every_event_kind_and_origin`, `the_workflow_task_step_is_neither_derived_nor_forwarded`,
   `the_chain_rule_over_the_golden_digests_is_the_golden_hash`, `an_exact_entry_wins_over_a_prefix_entry`,
@@ -2226,7 +2295,9 @@ a replaying worker derives from `ReadHistory`.
   `pending_is_true_exactly_when_a_waking_event_follows_the_last_completed_start`; and
   `code_definition_sites::every_call_site_is_listed`, `code_definition_sites::a_new_call_fails_until_its_entry_is_added`
   (a negative fixture, however the call is laid out), `code_definition_sites::a_count_that_shrinks_fails_until_its_entry_is_changed`,
-  `code_definition_sites::every_definition_loader_calls_the_composer`.
+  `code_definition_sites::every_definition_loader_calls_the_composer`,
+  `code_workflow_sites::only_append_events_inserts_into_run_events` (the rule of `scripts/check-architecture.py`, run on
+  pull requests too), `the_code_arm_of_plan_entries_orders_by_issued_seq`.
   Refs: Requirement 044-004, Requirement 044-005, Requirement 044-007, Requirement 044-008, Requirement 044-013, Requirement 044-034
   Owner-gate: OD-2026-11-24-3
 - [ ] T044-5 The fragment parse in code-profile mode behind the codec port (`crates/application/src/definitions.rs`,
@@ -2288,6 +2359,7 @@ a replaying worker derives from `ReadHistory`.
   `...::a_version_with_signals_is_refused_until_signal_inbox_exists`,
   `...::a_code_version_with_another_workflow_type_is_refused`, `...::a_timeout_level_above_none_is_refused_until_design_045`,
   `...::a_v0_2_0_reader_refuses_a_code_document`,
+  `...::recording_code_workflows_is_refused_while_a_graph_version_names_sagat_workflow`,
   `...::publication_and_removal_of_the_requirement_race_and_one_is_refused` (barrier, both orders),
   `...::a_late_instance_without_the_code_capability_closes_its_gate`, `...::a_stored_code_version_reads_back_byte_identical`,
   `...::an_event_type_named_like_a_signal_is_refused`.
@@ -2300,7 +2372,8 @@ a replaying worker derives from `ReadHistory`.
   hold a bare transaction, and `scripts/check-architecture.py` refuses one elsewhere in `crates/` and `apps/`; the
   fail-closed arms of the call sites listed by Task 044-4.
   The arms are listed by file and function in the allowlist of Task 044-4 as they are reviewed; the one known today is
-  `ensure_activity_bound` in `crates/application/src/worker.rs`.
+  `ensure_activity_bound` in `crates/application/src/worker.rs`, which returns a new variant `NodeMissing` of its error
+  for a missing node of a code run.
   Files: create `crates/infra-postgres/src/execution/journal.rs` (`append_events`, the one place the architecture
   check allows a journal insert); modify `crates/infra-postgres/src/execution.rs`, `execution/path.rs`, `primitives.rs`,
   `approval_progress.rs`, `chain_progress.rs`, `loop_progress.rs`, `declared_operations.rs`,
@@ -2325,7 +2398,9 @@ a replaying worker derives from `ReadHistory`.
   input, the `sagat.workflow` quota bucket, the stop-reason condition), the per-step minor, the history projection and
   `ReadHistory` with the lease extension and per-page re-checks, `WriteBlob` and `ReadBlob` under the lease, the lease
   rules of Technical Plan 4.1, the expiry parity, the bounds of Non-functional requirement 044-006; the scripted decider.
-  Files: modify the four named, `crates/infra-postgres/src/bindings.rs` and `crates/api-grpc/src/limits.rs`; create
+  Files: modify the four named, `crates/infra-postgres/src/bindings.rs`, `crates/domain/src/binding.rs`
+  (`parse_patterns` accepts an empty activity list when workflow types are given) and `crates/api-grpc/src/limits.rs`;
+  create
   `tests/support/workflow_worker.rs` and its line in `tests/support/mod.rs`.
   Red tests: `integration_workflow_as_code::lease::workflow_tasks_follow_the_current_digest`,
   `...::an_activity_binding_named_workflow_order_gives_no_workflow_authority`, `...::a_binding_lists_workflow_types_by_exact_name_only`,
@@ -2341,7 +2416,9 @@ a replaying worker derives from `ReadHistory`.
   `...::a_workflow_only_binding_is_listed_profiled_and_kept_on_replace`, `crates/api-grpc`
   `the_completion_and_answer_rpcs_are_of_class_lease`,
   `...::workflow_tasks_beyond_the_namespace_bucket_wait`;
-  `crates/domain/tests/workflow_task_expiry_parity.rs`; and
+  `apps/execution-engine/tests/workflow_task_expiry_parity.rs` (it reads the scheduler and both maintenance files, so it
+  lives where scoped CI selects it); `...::a_poll_answer_never_exceeds_4_mib`, `...::a_first_page_never_exceeds_256_kib`,
+  `...::an_activity_rpc_still_refuses_messages_over_320_kib`; and, a guard green before and after the change,
   `integration_claim_transition_efficiency::work_budget::the_claim_statements_of_graph_steps_do_not_grow`.
   Refs: Requirement 044-002, Requirement 044-003, Requirement 044-032, Non-functional requirement 044-006, Non-functional requirement 044-007
   Owner-gate: OD-2026-11-24-3
@@ -2360,13 +2437,15 @@ a replaying worker derives from `ReadHistory`.
   `...::a_completion_below_the_window_reviews_as_nondeterminism_risk`, `...::an_immediate_effect_of_a_command_makes_the_workflow_task_ready`,
   `...::a_deferred_command_re_emitted_with_another_body_is_a_chain_mismatch`,
   `...::a_command_naming_a_blob_of_another_run_is_refused`, `...::a_deferral_answers_ok_with_its_cause`,
-  `...::the_first_workflow_task_delivers_the_input_in_run_started`, `crates/domain/tests`
+  `...::the_first_workflow_task_delivers_the_input_in_run_started`,
+  `...::a_look_back_wait_satisfied_in_the_same_completion_is_not_unseen`,
+  `...::the_overlay_cache_never_exceeds_its_byte_bound_or_a_tenants_share`, `crates/domain/tests`
   `the_reconcilers_waking_kinds_equal_is_waking`,
   `integration_workflow_as_code::completion::every_journal_writer_wakes_a_code_run_in_its_transaction`, `...::no_waking_event_or_reconciler_pass_releases_a_review`,
   `...::the_reconciler_repairs_a_pending_run_from_the_journal`, `...::a_signal_committed_during_a_workflow_task_is_delivered_next`
   and `...::cancelling_a_timer_that_fired_is_a_no_op_that_replays` (both at a barrier, in both orders, with a cold
   replay), `integration_workflow_as_code::activation_window::live_and_replayed_activations_are_equal` (the generator),
-  and `integration_claim_transition_efficiency::work_budget::a_completion_of_256_commands_of_every_kind_stays_within_63_statements`.
+  and `integration_claim_transition_efficiency::work_budget::a_completion_of_256_commands_of_every_kind_stays_within_62_statements`.
   Refs: Requirement 044-004, Requirement 044-005, Requirement 044-012, Requirement 044-031, Non-functional requirement 044-003
   Owner-gate: OD-2026-11-24-3
 - [ ] T044-10 The TypeScript runtime and API (`sdks/typescript`, entry point `workflows`): the bundler and manifest
@@ -2378,12 +2457,14 @@ a replaying worker derives from `ReadHistory`.
   provenance, and the reviewer's checklist (licence, install scripts, platform binaries, maintainers) recorded in the
   register; `scripts/check-vendor.py` covers only the vendored rskafka snapshot and is not used. `npm test` runs in
   `sdks/typescript` and in `sdks/typescript-workflows-bundler`, whose job `.github/workflows/ci.yml` gains with Node 22.8
-  (and `sdks/AGENTS.md` its check).
+  (and `sdks/AGENTS.md` its check); `scripts/select-test-targets.py` maps `sdks/typescript-workflows-bundler/` to its
+  own entry, gating that job on pull requests (`scripts/tests/test_select_test_targets.py`).
   Red tests (`npm test`): `replay of the golden histories makes the golden commands`,
   `an import of a builtin with or without the node prefix is refused at bundling`, `the context global is not a host object`,
   `registration refuses a process time zone other than UTC`, `registration refuses Node below 22.8`,
   `date now is the workflow time`, `promise race resolves in journal order`, `an infinite loop stops at the activation deadline`,
-  `a terminal command waits for the whole window`, `a cache whose state is not at the window start is dropped`.
+  `a terminal command waits for the whole window`, `a cache whose state is not at the window start is dropped`,
+  `a completion over 256 KiB moves its largest values to blobs`, `a throw inside a saga body aborts the scope first`.
   Refs: Requirement 044-006, Requirement 044-010, Requirement 044-011, Requirement 044-025
   Owner-gate: OD-2026-11-24-1
 - [ ] T044-11 Detection and report of nondeterminism and the server's review path for every cause of Technical Plan 6.3.
@@ -2410,7 +2491,11 @@ a replaying worker derives from `ReadHistory`.
   `...::a_completion_over_the_runs_4_mib_reviews_as_retained_bytes_limit`, `...::an_exhausted_closing_window_fails_the_run_through_the_stop_drain`,
   `...::external_events_are_refused_at_the_headroom`, `...::a_reset_after_a_cancellation_request_re_arms_the_deadline`,
   `...::a_reset_rebuilds_the_inbox_from_the_prefix`, `...::a_reset_point_with_an_open_update_is_refused`,
-  `...::a_reset_after_a_move_keeps_the_movers_as_initiators`, `...::a_reset_after_a_caught_code_abort_is_eligible`.
+  `...::a_reset_after_a_move_keeps_the_movers_as_initiators`, `...::a_reset_after_a_caught_code_abort_is_eligible`
+  (reading the reset run's journal and saga rows), `...::reapply_updates_is_refused_for_a_code_run`,
+  `...::a_completion_inside_the_window_is_judged_against_its_bound`,
+  `...::a_window_used_up_by_another_writer_ends_the_run` (an outcome, a timer, the lease's own start),
+  `...::a_history_limit_review_inside_a_window_has_no_retry`, `...::the_claim_reviews_a_run_whose_count_reached_51200`.
   Refs: Requirement 044-008, Requirement 044-010, Requirement 044-027
   Owner-gate: OD-2026-11-24-3
 - [ ] T044-13 Verified moves: the single-run route as a one-item job, the batch action with its frozen selection and
@@ -2428,7 +2513,8 @@ a replaying worker derives from `ReadHistory`.
   `...::a_replay_check_is_claimed_by_polling_with_the_broker_down`, `...::an_unclaimed_replay_check_ends_no_target_worker`,
   `...::re_applying_an_item_already_on_its_target_is_a_no_op_success`, `...::a_dry_run_move_records_verdicts_and_moves_nothing`,
   `...::repin_is_refused_for_a_code_run`, `...::a_move_check_compares_the_deferred_command`,
-  `...::a_move_of_a_run_in_its_stop_drain_is_refused`.
+  `...::a_move_of_a_run_in_its_stop_drain_is_refused`, `...::a_replay_check_of_a_56320_event_run_fits_the_ceiling`,
+  `...::a_busy_run_is_moved_under_the_pause`.
   Refs: Requirement 044-023, Requirement 044-026
   Owner-gate: OD-2026-11-24-3
 - [ ] T044-14 (deferrable) The sticky preference and eager dispatch on the server and in the six SDKs, after feature 006's
@@ -2465,7 +2551,9 @@ a replaying worker derives from `ReadHistory`.
   `RegistrationRefusesALocalTimeZoneOtherThanUtc`, `ReplayOfTheGoldenHistories`.
   Refs: Requirement 044-006, Requirement 044-010, Requirement 044-011, Requirement 044-025
   Owner-gate: OD-2026-11-24-1
-- [ ] T044-18 The Java runtime (`sdks/java`, new artifact `sagat-workflows` for Java 21): the permit dispatcher on virtual
+- [ ] T044-18 The Java runtime (`sdks/java`, new artifact `sagat-workflows` for Java 21, in the module
+  `sdks/java/workflows/` with its `<module>` entry in `sdks/java/pom.xml` and `maven.compiler.release` 21 for that module
+  only, the parent staying on 17): the permit dispatcher on virtual
   threads, the per-call thread check, the time zone and locale precondition, the manifest flag, the API, the replayer,
   the client additions in the core SDK, the capability declaration; the Java 21 job of the artifact in
   `.github/workflows/ci.yml`.
@@ -2547,12 +2635,21 @@ a replaying worker derives from `ReadHistory`.
   `apps/execution-engine/tests`), `...::a_deferred_continue_as_new_after_a_cancellation_request_ends_cancelled` (at a
   barrier, in both orders, for a route cancel and a chain cancel), `...::a_cancel_of_a_run_already_stopping_journals_nothing`,
   `...::cancelling_a_code_child_from_code_gives_it_its_grace`,
+  `...::a_continue_as_new_completion_and_a_chain_cancel_race_without_deadlock` (at a barrier, in both orders),
+  `...::a_handoff_refused_by_the_chain_limit_fails_the_run`, `...::continue_as_new_without_a_chain_policy_is_command_invalid`,
+  `...::a_detached_child_does_not_defer_continue_as_new`,
   `...::the_deadline_pass_ignores_a_run_already_stopping`,
   `integration_workflow_as_code::sagas::a_member_failure_inside_a_code_saga_reaches_the_function`,
   `...::abort_no_compensation_and_wait_in_flight_apply_to_a_code_scope`,
   `...::closing_a_scope_with_a_member_in_flight_is_command_invalid`,
   `...::a_cancellation_deadline_during_code_compensation_lets_compensations_finish`,
   `...::an_engine_stop_aborts_an_open_code_scope_by_its_cancel_policy`,
+  `...::aborting_a_code_scope_with_a_member_in_flight_compensates_it_after_it_succeeds`,
+  `...::a_nested_scope_is_aborted_with_its_parent`, `...::closing_a_parent_with_an_open_child_scope_is_command_invalid`,
+  `...::a_long_sequential_scope_counts_its_completed_members`,
+  `...::a_late_signaller_of_the_predecessor_is_excluded_in_the_successor`,
+  `...::the_starter_of_a_graph_parent_is_excluded_from_a_code_childs_approval`,
+  `...::a_code_parents_initiators_are_excluded_from_a_graph_childs_approval_node`,
   `...::a_deferred_terminal_command_with_an_obligation_from_the_same_completion_replays_cold`,
   `...::continue_as_new_to_a_graph_version_is_refused`.
   Refs: Requirement 044-018, Requirement 044-019, Requirement 044-020, Requirement 044-022, Requirement 044-031
@@ -2560,11 +2657,16 @@ a replaying worker derives from `ReadHistory`.
 - [ ] T044-23 The namespace pause and the run view: the pause route and setting checked in the claim and the completion,
   the run view of a code run (observed graph from its steps, overlay and journal, `Code-orchestrated`) and its review
   banner, the command line (`sagat workflow publish-code`, `history export`, `move`).
+  The commands: `sagat workflow publish-code --manifest <file> --envelope <file>`, `sagat workflow history export
+  --workflow <id> --last <n> --dir <dir>` (Technical Plan 7.4; the existing `sagat history` is unchanged) and
+  `sagat workflow move (--run <id> | --selection <file>) --to-version <n> --reason <text> [--dry-run]`.
   Files: create `apps/cli/tests/workflow_code.rs`, `frontend/apps/studio/src/features/runs/CodeRunReview.tsx` and its
-  test; modify `apps/cli/src/workflow.rs` and `apps/cli/src/export.rs` (the commands),
+  test, `crates/api-http/src/routes/code_workflows.rs` (the pause route and the version list); modify
+  `apps/cli/src/args.rs` and `apps/cli/tests/args.rs` (the grammar), `apps/cli/src/workflow.rs` and
+  `apps/cli/src/export.rs` (the commands), `crates/application/src/runs.rs` (the run view's `codeWorkflow` object),
   `frontend/apps/studio/src/features/runs/RunDetailPage.tsx`.
   Red tests: `integration_workflow_as_code::pause::pausing_code_workflows_stops_a_session_registered_before_the_pause`,
-  `...::a_timeout_caused_by_the_pause_is_not_counted`,
+  `...::a_timeout_caused_by_the_pause_is_not_counted`, `...::a_completion_racing_the_pause_at_a_barrier_commits_first_or_is_refused`,
   the Studio test `a code run under review shows its cause and its remedies` (`npm test` in `frontend/apps/studio`), the
   command-line test `history_export_writes_json_lines_the_replayers_read` (`cargo test -p sagat-cli`).
   Refs: Requirement 044-028, Requirement 044-033
@@ -2582,7 +2684,7 @@ a replaying worker derives from `ReadHistory`.
   `...::a_blob_output_with_a_secret_field_is_not_readable_under_a_workflow_lease`, `...::the_export_emits_blobs_as_references_only`,
   `...::read_history_streams_beyond_the_tenant_cap_are_refused`, `...::a_second_full_history_pass_of_a_lease_is_resource_exhausted`,
   `...::a_tenant_holds_at_most_64_update_waits_of_a_process`, `...::a_completion_over_the_tenants_content_quota_is_counted_with_backoff`,
-  `...::an_orphaned_lease_blob_is_released`,
+  `...::an_orphaned_lease_blob_is_released`, `...::a_literal_concurrency_key_is_a_keyed_digest_and_hidden_from_a_viewer`,
   `...::an_unknown_export_format_is_refused_by_the_replayer`, `...::another_tenants_version_key_or_query_is_not_found`,
   `...::a_code_run_with_2049_outstanding_steps_is_refused`, `...::a_code_step_secret_is_refused_after_the_publisher_loses_it`,
   `...::the_business_literals_of_a_fragment_are_classified_payloads`, `...::a_lease_history_read_is_audited_once`,
@@ -2648,7 +2750,8 @@ a replaying worker derives from `ReadHistory`.
   Red tests: `integration_workflow_as_code::worker_queries::a_worker_query_is_answered_from_the_last_committed_completion`,
   `...::a_worker_query_expires_without_a_journal_event`, `...::a_worker_query_is_claimed_by_polling_with_the_broker_down`,
   `...::a_worker_query_answer_outside_its_schema_is_refused`, `...::a_query_handler_that_issues_a_command_fails_the_query`,
-  `...::a_65th_worker_query_in_a_namespace_is_refused`, `...::a_worker_query_to_a_run_under_review_is_unavailable`.
+  `...::a_65th_worker_query_in_a_namespace_is_refused`, `...::a_worker_query_to_a_run_under_review_is_unavailable`,
+  `...::a_worker_query_to_an_ended_run_is_unavailable`.
   Refs: Requirement 044-017, Requirement 044-032
   Owner-gate: OD-2026-11-24-3
 
@@ -2718,7 +2821,7 @@ long history (Task 044-28).
 - `python3 scripts/check-docs-index.py`, `python3 scripts/check-plain-words.py --base origin/develop` and
   `python3 scripts/check-docs-first.py --base origin/develop`
 - `python3 -m pytest scripts/tests/test_select_test_targets.py scripts/tests/test_check_architecture.py`
-- `cargo test -p sagat-domain -p sagat-infra-ir -p sagat-application -p sagat-telemetry -p sagat-infra-postgres -p sagat-scheduler -p sagat-api-grpc -p sagat-api-http --locked`
+- `cargo test -p sagat-domain -p sagat-infra-ir -p sagat-application -p sagat-telemetry -p sagat-infra-postgres -p sagat-scheduler -p sagat-api-grpc -p sagat-api-http -p sagat-execution-engine --locked`
 - `scripts/test-workflow-as-code-process-faults.sh` (the crash tests, `#[ignore]`, with `SAGAT_TEST_EXECUTION_ENGINE`)
 - `cargo test -p sagat-tests --test contract_workflow_as_code --test integration_workflow_as_code --test fault_workflow_as_code --locked`
 - `cargo test -p sagat-tests --test integration_claim_transition_efficiency --test contract_rest_security_multitenancy --test fault_schedules_bulk_operations --test integration_platform_foundation --test contract_developer_experience --locked`

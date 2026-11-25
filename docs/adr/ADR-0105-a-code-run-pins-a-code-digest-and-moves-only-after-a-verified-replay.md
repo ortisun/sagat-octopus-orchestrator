@@ -49,11 +49,15 @@ workflow-task step waiting.
    accepted terminal command, set its cancellation deadline from the grace that event carries; rebuild its update
    transitions from the prefix's records and copy the source's initiators, adding the resetter; `reapply: UPDATES` MUST
    be refused for a code run. `run.code_version_moved` MUST be `COPY` (the pin comes from the start version), and a
-   code run's `saga.aborting` MUST be `COPY` once its scope's outcome is in the prefix. This refines ADR-0050 decision 5
+   code run's `saga.aborting`, `compensation.planned` and the scope's outcome events MUST be `COPY` once its scope's
+   outcome is in the prefix, the reset rebuilding that scope's saga rows from them. This refines ADR-0050 decision 5
    for code runs: rows re-emitted with `restored: true` count for the visible count, the history and the chain. Every new event kind MUST have a reset rule in the registry of
    ADR-0050 decision 8, which gains a column for rules that differ for code runs.
-5. Continue-as-new from code MUST pin the run's current code version by default, or the workflow's active version when
-   the command asks for it, which supersedes ADR-0030 decision 16 for code runs; it MUST be deferred, not counted, while
+5. An accepted continue-as-new MUST only close the workflow-task step; feature 014's continuation pass MUST perform the
+   handoff in its own transaction and lock order (the chain before the run), ending the run `FAILED` when the chain's or
+   tree's limits refuse it, while an input outside the successor's schema, a target that is not a code version of the
+   same type, or a version without a `chainPolicy` is refused at the completion (`COMMAND_INVALID`). The successor MUST
+   pin the run's current code version by default, or the workflow's active version when the command asks for it, which supersedes ADR-0030 decision 16 for code runs; it MUST be deferred, not counted, while
    an activity, child or approval is open or a saga scope aborts, and refused (`COMMAND_INVALID`) while a scope is open.
 6. Each SDK MUST offer `patched(id)` and `deprecatePatch(id)`, recorded as markers.
 

@@ -23,22 +23,26 @@ code saga cannot have. Temporal offers local activities and leaves compensation 
    literals or refused; `destinations`, an inline approval policy and `onError` MUST be refused; `secrets`,
    `irreversible`, `highRisk`, `compensateWith`, `reconcileWith`, `outputSchema`, `requiresApproval` and feature 022's
    `concurrency` and `rateLimit` policies MUST come from the published envelope entry, which a fragment may repeat or
-   omit but never change; a fragment MAY carry only the literal keys of those policies.
+   omit but never change; a fragment MAY carry only the literal keys of those policies, which are business literals
+   (classified `pii`), while the node spec and the journal carry only feature 022's keyed digest.
 3. A command MUST stay within the current code version's envelope: the activity entry that covers its name (an exact
    entry wins over a prefix, a longer prefix over a shorter one; only an exact entry MAY list secrets), the names of its
    `compensateWith` and `reconcileWith` entries too; an activity whose entry has `requiresApproval` MUST be held by the
    engine behind an approval of that very step under the named policy; the initiators that a policy with
    `excludeInitiator` excludes, for that approval and for an approval command alike, MUST be kept per run (the starter,
    the actor of every event of origin `external`, every mover, review retrier, review resolver and resetter, and the
-   publisher of each code version the run is pinned to), copied to a successor, a child and a reset run, and bound by the
-   issuing activation's start; a derived step MUST receive the secrets of its own entry; a
+   publisher of each code version the run is pinned to), copied to a successor, a child and a reset run with a sequence
+   of 0 so that they always bind, written for a child of a graph parent from the parent's starter, chain initiator and
+   publisher, checked by every approval of a run that has them (a graph child's approval node included), and otherwise
+   bound by the issuing activation's start; a derived step MUST receive the secrets of its own entry; a
    script entry by digest with its own secrets, schemas and compensation; a listed child
    workflow at its listed version; a listed event type within its look-back; a named approval policy. No activity name MAY start with
    `script.` or `sagat.`. An activity input MUST be validated and classified by its entry's `inputSchema`.
 4. A successful report whose output cannot be retained MUST be an unknown outcome (`STORAGE_QUOTA_EXCEEDED`), reconciled
    or reviewed under feature 037; the function MUST NOT be told the step failed. A completion whose payloads exceed the
    run's 4 MiB MUST put the run under review (`RETAINED_BYTES_LIMIT`); one refused by the tenant's content quota MUST be a
-   counted failure; the engine MUST NOT end a code run for either.
+   counted failure; the engine MUST NOT end a code run for either. A `RETAINED_BYTES_LIMIT` review has no retry, because
+   the same activation would make the same commands.
 5. Eager activity leases MUST be provisional leases of feature 006, granted through the claim's admission function
    (quotas, breakers, pools, capacity windows, gates, approvals), released safely when unacknowledged; an idempotent
    replay MUST NOT return a lease, and the idempotency record MUST NOT store a lease token.
@@ -50,7 +54,11 @@ code saga cannot have. Temporal offers local activities and leaves compensation 
    node; they MUST run with the rules of features 003 and 037; the function MUST learn only the scope's outcome; an engine-driven stop MUST apply each open
    scope's `cancelPolicy`, carried by the open-saga command. Each code scope MUST have a step row `s-<n>` waiting on the
    saga, never offered to a worker, so that feature 003's saga machinery drives it and a stop never winds down its
-   compensations.
+   compensations. An abort command MUST only journal `saga.aborting`; the plan MUST be written once every member has
+   settled, the scope's `cancelPolicy` applied to members still in flight. A scope MAY be nested in an open parent,
+   recorded by the open-saga command and the overlay: aborting the parent MUST abort its open children first, and
+   closing a parent with an open child MUST be `COMMAND_INVALID`. The dependency source of `plan_entries` MUST have a
+   code arm reading each command's issuing `S(k)` and each step's outcome sequence.
 7. A terminal command MUST be deferred, not counted, while a saga scope aborts or a step is under review or has an
    unknown outcome, and MUST put the run under review (`COMMAND_INVALID`) while a scope is open and not aborting, since
    only the function can close it; closing a scope while a member is not settled, and a command that names a closed

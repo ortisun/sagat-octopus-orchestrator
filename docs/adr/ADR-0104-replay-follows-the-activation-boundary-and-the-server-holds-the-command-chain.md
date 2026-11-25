@@ -26,7 +26,9 @@ input; a chain over data the worker receives in the history could be produced wi
 2. What is visible and what is waking MUST be decided by the domain from the event and its origin
    (`RunEvent::is_visible`, `RunEvent::is_waking(origin)`), exhaustively with no catch-all arm: a completion's command
    records and the workflow-task events never wake; a command's immediate effect does. Every journal write of every run
-   MUST go through one typed append function that applies them, and no other code MAY insert into the journal.
+   MUST go through one typed append function that applies them, and no other code MAY insert into the journal; a
+   source-text test hosted where pull-request CI selects it (`code_workflow_sites::only_append_events_inserts_into_run_events`)
+   holds that, besides the release rule of `scripts/check-architecture.py`.
 3. A workflow task MUST be pending exactly when the journal sequence of the run's last waking event is greater than `S`
    of its last completion. The typed append MUST move the first for every waking event, in the
    transaction that appends it, and make the workflow-task step `READY` with its hint only when it was waiting with kind

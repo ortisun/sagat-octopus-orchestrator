@@ -574,6 +574,48 @@ finding was answered.
   not count its own refusals or timeouts and worker queries answer `QUERY_UNAVAILABLE` on a paused run or one under
   review.
 
+### Decisions after the seventh review round (2026-11-25)
+
+The reports are in `docs/designs/044-workflow-as-code.reviews/2026-11-25/round-7/`; `resolution.md` there says how each
+finding was answered.
+
+- **D044-175** (2026-11-25, supersedes D044-167 in part) The can-act count reads the overlay's `scope` against the run's
+  sagas in their forward or aborting phase, not `run_saga_entries`; the completion budget is 62 statements (50 + 12),
+  the saga plan rows leaving it because an abort only journals `saga.aborting` and feature 003 plans once every member
+  has settled.
+- **D044-176** (2026-11-25) The overlay row and the command record carry `issued_seq` and `accepted_version_id`;
+  `plan_entries` takes a dependency source with a code arm; code scopes may nest, recorded by the open-saga command.
+- **D044-177** (2026-11-25, supersedes D044-166 in part) `RETAINED_BYTES_LIMIT` has no retry and no window; the
+  `HISTORY_LIMIT` window is one per run, judges completions against its own bound, ends the run in the crossing
+  completion or through a scheduler pass when another writer uses it up; the claim raises the review at 51,200.
+- **D044-178** (2026-11-25, supersedes D044-164 in part) Copied initiator rows bind at sequence 0; a child of any
+  parent inherits the parent's starter, chain initiator and publisher; every approval of a run with rows checks them.
+- **D044-179** (2026-11-25) Feature 022's literal keys from code are business literals classified `pii`; the spec, the
+  journal and the gate rows carry only the keyed digest.
+- **D044-180** (2026-11-25) Every request fits the worker service's unchanged 320 KiB decode limit (completions at most
+  256 KiB of fragments and values, the SDK moving the largest to blobs; replay-check answers one item and 8,192 digests
+  per message); responses stay below 4 MiB (pages of 3 MiB, first pages of 256 KiB, poll answers of 4 MiB).
+- **D044-181** (2026-11-25) The overlay cache is bounded to 256 MiB per process, a tenant at most a quarter.
+- **D044-182** (2026-11-25) The golden vectors come from a checked-in Node 22 generator with no new dependency, so they
+  do not come from the Rust code they check.
+- **D044-183** (2026-11-25, supersedes D044-171 in part) `DefinitionCache::get` becomes `get_version`; every caller of the
+  cache is counted and states whether it composes the overlay; the expiry parity and the journal-insert rule are tests
+  of `apps/execution-engine`, which scoped CI selects.
+- **D044-184** (2026-11-25, supersedes D044-157 in part) `platform_requirement_hold` is design 045's function
+  (`capability text`, `RETURNS boolean`, `lock_timeout`, `REQUIREMENT_BUSY`); a migration that finds it compares its
+  definition and fails on a difference.
+- **D044-185** (2026-11-25) The workflow-task step is not a `RuntimeNode` and a code run's reset point is
+  `STEP_COMPLETED` at `~workflow`, so no closed REST enumeration gains a value; the run view gains `codeWorkflow`.
+- **D044-186** (2026-11-25, supersedes D044-163 in part) For code runs `compensation.planned` and a scope's outcome
+  events are `COPY` once it settled, and the reset rebuilds the scope's saga rows.
+- **D044-187** (2026-11-25, supersedes the handoff of D044-161 and of Requirement 044-019's first text) An accepted
+  continue-as-new only closes the step; feature 014's continuation pass performs the handoff in its lock order; chain and
+  tree refusals end the run `FAILED`; input, target and missing `chainPolicy` refusals are `COMMAND_INVALID`; a
+  detached child is no obligation.
+- **D044-188** (2026-11-25) The pause stops workflow tasks and worker queries, not replay checks or moves; its refusals
+  and timeouts are journaled as not counted; the flag has a column grant and is read `FOR SHARE`; worker queries to an
+  ended run answer `QUERY_UNAVAILABLE`; marker identifiers have a pattern; `ReleaseSticky` takes at most 256 runs.
+
 ## 3. Gaps
 
 - **G044-001** (2026-11-24) The memory of an idle cached run is not measured in any SDK; the TypeScript spike's heap
