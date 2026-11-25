@@ -459,8 +459,10 @@ feature's routes.
 **Lifecycle, surfaces and contracts**
 
 - **FR-029-024**: Changing a membership's built-in role MUST remove, in the same transaction and audited,
-  the subject's direct assignments, group memberships, folder entries and list entries (as 016 D663 does
-  for reveal grants; O1441).
+  the subject's direct assignments, local group memberships, folder entries and list entries (as 016 D663 does
+  for reveal grants; O1441). External group memberships (design 013) stay, because their source owns them, and an
+  effective role computed from an expired assertion mapping is not a stored role change (design 013, Technical
+  Plan 13).
 - **FR-029-025**: A manifest entry MAY name a folder (additive); manifest placement MUST go through the move
   rules and MUST NOT create folders or change entries. Promotion MUST resolve the destination target's
   visibility first (FR-029-017); promoting a workflow from a restricted folder MUST name a destination

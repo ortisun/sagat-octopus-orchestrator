@@ -34,19 +34,23 @@ they leave.
    SCIM provisioning MUST do the same for a user the provider pushes, before the person's first sign-in.
 4. Groups from a provider MUST become 029 external groups with durable memberships, from two source kinds: **SCIM**
    (the provider pushes groups and their members; an accepted change applies on the next request and never expires by
-   silence) and **sign-in assertion** (the groups claim or attribute of a sign-in, stored as that person's full set
-   for that connection; it confers nothing once the sign-in session that wrote it ends, by revocation or expiry, and
-   at most 24 hours after the sign-in). A group confers nothing until an administrator assigns it a role or a folder entry
+   silence) and **sign-in assertion** (the groups claim or attribute of a sign-in, stored as that session's full set
+   for that connection with the session's `sid`; it confers while that session lives, not revoked and not past its
+   absolute or idle expiry, and at most 24 hours after the sign-in; the sets of a person's live sessions are unioned). A group confers nothing until an administrator assigns it a role or a folder entry
    (feature 029); its appearance in a claim grants nothing.
 5. A membership MUST have one owning connection (the one that provisioned it, or the one an administrator names);
    only its rules and its SCIM may change the member's role or status. Its rules map only groups sourced from that
    connection, by an ordered list; the highest role any rule gives MUST win; the result MUST be computed on stored
    groups only and MUST change the membership's role only when it differs and the member's role is not pinned by an
-   administrator. A role mapped from assertion groups MUST be stored with its source and the expiry of those groups
-   and fall back to the connection's default role when they stop conferring, so a claim never leaves a durable role
-   behind. A change is audited and applies feature 029's revocation of custom grants (Requirement 029-024).
+   administrator. A role mapped from assertion groups MUST be stored with its source and its session, and every
+   membership read MUST compute the lower of it and the connection's default once those groups stop conferring, so a
+   claim never leaves a durable role behind and an expiry is never stored as a role change. A stored change is audited
+   and applies feature 029's revocation of custom grants (Requirement 029-024, amended to keep external memberships).
 6. A SCIM deactivation or deletion by the owning connection MUST suspend or remove the membership, revoke its sign-in
-   sessions and its app sessions in the same transaction, and keep the external identity for the audit trail.
+   sessions and the grants feature 029 revokes on a role change (and the reveal grants and secret access entries) in
+   the same transaction, write no feature 027 app-session row (an app session checks the membership and its sign-in
+   session on each call), and keep the external identity for the audit trail. The serving process writes memberships
+   only through definer functions; its database role keeps `SELECT` only.
 
 ## Considered options
 

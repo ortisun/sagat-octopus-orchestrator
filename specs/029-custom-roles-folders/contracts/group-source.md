@@ -12,7 +12,7 @@ kinds, and some SCIM providers push only changes, so freshness is stated per kin
 | Kind | Delivered by | What one delivery carries | Freshness |
 |---|---|---|---|
 | `SCIM` | an identity provider through design 013's SCIM 2.0 endpoint of one connection, into rows of `access_groups` and `access_group_members` with source `SCIM` (design 013, Decision 013-017) | a full member set (`PUT`) or member additions and removals (`PATCH`) of one group | a SCIM group does not expire by silence: the provider pushes every change, deprovisioning included; design 013 raises an informational alert after 7 days without any request on the connection |
-| `ASSERTION` | a sign-in through one connection whose groups claim or attribute is mapped, into the same tables with source `ASSERTION` | the full set of that person's groups for that connection | ends when the sign-in session that wrote it ends (revoked or expired), and at most 24 hours after the sign-in; past it the memberships confer nothing until the next sign-in |
+| `ASSERTION` | a sign-in through one connection whose groups claim or attribute is mapped, into the same tables with source `ASSERTION` | the full set of that person's groups for that connection | each session's set carries its `sid` and confers while that session lives (not revoked, not past its absolute or idle expiry) and at most 24 hours after the sign-in; the sets of a person's live sessions are unioned |
 
 ## Guarantees a source must provide
 
@@ -30,9 +30,9 @@ kinds, and some SCIM providers push only changes, so freshness is stated per kin
 4. **Idempotent, bounded deliveries.** At most 1,000 member operations per SCIM request and 256 group values per
    assertion; a larger delivery is refused before any change. A SCIM request is one transaction.
 5. **Freshness.** As the table above. A stale membership confers nothing (fail closed) and is not deleted.
-6. **Role changes.** When a member's built-in role changes, by an administrator or by design 013's group-to-role
-   mapping, feature 029's revocation of custom grants applies (FR-029-024); external memberships stay, and the
-   assignments that name an external group are unaffected.
+6. **Role changes.** When a member's stored built-in role changes, by an administrator or by design 013's group-to-role
+   mapping, feature 029's revocation of custom grants applies (FR-029-024, amended to keep external memberships); an
+   effective role computed from an expired assertion mapping is not a stored change and revokes nothing.
 
 ## What the platform side must keep
 

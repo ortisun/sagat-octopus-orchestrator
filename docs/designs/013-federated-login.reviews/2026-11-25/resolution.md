@@ -55,3 +55,35 @@ makes, so the watermark, window and fail-closed questions of that Blocker no lon
 | 17 | Major | Fixed: the rules on `VerifiedClaims` and `Membership::principal`, with negative fixtures | Technical Plan 2, Architecture decision 0140 "Enforced by" |
 | 18 | Major | Fixed: break-glass, tenant settings, signing keys and break-glass uses tables; tenant keys everywhere; the federated-only flag on `tenants`; delete rules | Technical Plan 3 |
 | 19 to 26 | Nit | Fixed: the identity egress policy in the domain, the resolver in `infra-egress`; the OIDC rules in the domain and `JwksCache` shared; the process split argued with revisit criteria; the contradictions removed; `x-access` on the new operations; the CLI's source order; streams reconnecting with `Last-Event-ID`; the region epoch note | Technical Plans 2, 4, 11; Decision 013-018; Requirements 013-019, 013-026; Gap 013-009; Architecture decision 0140 |
+
+## Correctness review, round 1 (`correctness.md`, at `2368d9ab`)
+
+All 33 findings are accepted and fixed; none is contested. Most fixes are in the new Technical Plan 13 ("Concurrency,
+grants and edge rules").
+
+| Finding | Severity | Disposition | Where |
+|---|---|---|---|
+| 1 | Blocker | Fixed: `Subject::parse` does not reserve `federated:`; the refusal lives in `authenticate_bearer` for deployment tokens, case-insensitive; an end-to-end red test with a schedule | Technical Plan 3, Task 013-5 |
+| 2 | Major | Fixed: one effective-membership expression used by every read, the plain reads moved into the identity store; the pass never stores a role | Technical Plans 6 and 13, Requirement 013-013 |
+| 3 | Major | Fixed: assertion rows carry their `sid`; live sessions joined and unioned | Technical Plan 13, Architecture decision 0142 decision 4, specs/029 contract and data model |
+| 4 | Major | Fixed: FR-029-024 amended to keep external memberships; a computed fallback is not a stored change; the survival test | specs/029 spec, Technical Plan 13, Requirement 013-013 |
+| 5 | Major | Fixed: a rule or default change recomputes owned members; the fallback is the lower of mapped and default | Requirement 013-013, Technical Plan 6 |
+| 6 | Major | Fixed: the code is consumed first by a conditional update; the token signed before the commit; a barrier test | Technical Plan 4 (Redeem), Technical Plan 3 |
+| 7 | Major | Fixed: definer functions for every write to `memberships`; the runtime role keeps `SELECT`; a privilege test | Technical Plan 13, Requirement 013-016, Architecture decision 0142 decision 6 |
+| 8 | Major | Fixed: `FOR NO KEY UPDATE` in the functions, re-checks after the lock, ceilings counted under the writer's lock | Technical Plan 13 |
+| 9 | Major | Fixed: the connection row taken `FOR SHARE` by sign-in paths and `FOR UPDATE` by a disable; a barrier test | Technical Plan 13 |
+| 10 | Major | Fixed: the tenant's identity-settings row serializes federated-only, connection states and the last administrator | Requirement 013-021, Technical Plan 13 |
+| 11 | Major | Fixed: generation re-read and retry for SCIM group writes | Technical Plan 13, Task 013-11 |
+| 12 | Major | Fixed: an advisory lock per identity; adoption; re-provisioning to a new subject; typed conflicts | Technical Plan 13 |
+| 13 | Major | Fixed: unique names among local groups only; external rows unique by connection and value | Technical Plan 3, specs/029 data model |
+| 14 | Major | Fixed: compare-and-set rotation, signing before the commit, a grace window for the previous generation, a CLI file lock | Requirement 013-026 |
+| 15 | Major | Fixed: no app-session write; app sessions check the membership and the sign-in session | Requirement 013-016, Architecture decision 0142 decision 6 |
+| 16 | Major | Fixed: streams carry `sid` and re-check at most every 10 seconds; the bound restated and measured | Requirement 013-019, Non-functional requirement 013-001 |
+| 17 | Major | Fixed: retired keys kept until the next activation plus lifetime, refresh and leeway; refresh on an unknown `kid`; signing stops on a stale set; a controlled clock | Technical Plan 4 (Signing keys) |
+| 18 | Major | Fixed: `TESTED` and `ACTIVE` bound to the tested revision | Technical Plan 13, Technical Plan 3 |
+| 19 | Major | Fixed: a silent code renews the existing session and is never recent | Technical Plan 4 (Begin), Requirement 013-021 |
+| 20 | Major | Fixed: the link flow specified, with the test sign-in inside it, and a positive test | Technical Plan 13 |
+| 21 | Major | Fixed: suspension revokes the role-change grants, reveal grants and secret access entries; reactivation restores nothing | Requirement 013-016 |
+| 22 | Major | Fixed: `ON DELETE SET NULL`, no-owner rule, the disabled-owner alert, recompute on ownership change | Technical Plans 3 and 13 |
+| 23 | Major | Fixed: the last-administrator guard under the settings row lock | Requirement 013-021, Technical Plan 13 |
+| 24 to 33 | Nit | Fixed: renewal only after activity; the code's expiry bounded by its attempt and attempts purged after codes; constraints named in `classify`; break-glass `ON CONFLICT DO NOTHING`; the plain reads moved; "merges two reads into one"; the reasons returned by the statement; the barrier oracle stated and the key test on a controlled clock; the writer's check of the requirement under a shared epoch lock and the activation window; case-insensitive prefix checks | Requirements 013-018, 013-019; Technical Plans 3, 4 and 13 |
