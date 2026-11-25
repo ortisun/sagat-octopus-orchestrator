@@ -226,10 +226,9 @@ From the code on `develop` at `546d5aa5`:
   retirement of one bucket is measured end to end (the mark-only purge of its runs included) and from the start of the
   detach to the end of the drop, each at the median and the maximum of five repetitions, and the chain shape's 99th
   percentile latency, measured by design 051's driver during the retirement, rises by less than 10%. The target for the
-  detach-to-drop part is at most 120 s: a concurrent detach waits twice for the transactions older than it, and design
-  048's reference topology bounds every platform transaction at 60 s (`transaction_timeout`, PostgreSQL 17 and later),
-  so 2 × 60 s = 120 s; the owner sessions of retirement lift their own `transaction_timeout`; on PostgreSQL 16 the
-  maximum is reported without a bound.
+  detach-to-drop part is at most 120 s when no transaction older than 60 s is open: a concurrent detach waits twice for
+  the transactions older than it, so 2 × 60 s = 120 s. Before each detach the retirement command lists the transactions
+  older than 60 s and waits for them, or stops and reports them, so the bound is checked, not assumed.
 - **Success criterion 049-003** The partitioning of a `run_events` of 100 GiB, under the chain shape at half its maximum
   sustained rate, blocks no insert for more than 2 s of wait plus the measured hold of its catalog statements, as shown by
   the driver's per-second counter and the migration's timing of each lock.
