@@ -1617,7 +1617,7 @@ taken after `git grep D022-04` on every `origin/*` branch.
   the idempotency key are not visible to an expression, and a top-level key reads only `input`. Options: (a) refuse a key
   whose every variable is `run` (the literal reading); (b) refuse any key that reads `run`. Chosen (b): `input.accountId +
   run.id` makes one key per run exactly as `run.id` does, so the literal reading leaves the unbounded cardinality the
-  rule exists for (security M3 of 2026-11-13) one concatenation away. The codec refuses it with the rule
+  rule exists for (the security review of 2026-11-13, Major 3) one concatenation away. The codec refuses it with the rule
   `FlowControlRule::UnboundedKey`, reported as `FLOW_CONTROL_KEY_UNBOUNDED` at the node; when `run` gains a field that is
   not the identity, the rule narrows to the identity's fields. The codec reads stored versions with the same rule; no
   release carries feature 022, so no stored version holds such a key. The specification gains a dated amendment line
