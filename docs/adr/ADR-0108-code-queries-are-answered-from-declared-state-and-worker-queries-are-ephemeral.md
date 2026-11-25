@@ -41,12 +41,16 @@ queries from committed state with no worker. Some answers exist only in the func
    `resultSchema` and returned with `Cache-Control: no-store`, at most 64 in flight per namespace.
 5. Feature 016's carriers MUST gain, under a new version of its classification rules, the schemas of a code version's
    envelope (activity and script `inputSchema` and `outputSchema`, signal and event schemas, a children entry's
-   `outputSchema`); every other payload of a code run MUST be classified `pii` as a whole, so a holder of the reveal
+   `outputSchema`, an update's `argsSchema` and `resultSchema`, `state.schema`); every other payload of a code run (a
+   side-effect value, a continue-as-new input without a schema) MUST be classified `pii` as a whole, so a holder of the reveal
    grant sees it and every other reader receives structure only. This refines ADR-0033's reading that a payload with no
    schema at all is structure only for everyone, as Decision 302 of feature 016 did for events, because an operator
    repairing a run and a replayer need those values; and it extends ADR-0036 decision 6's closed carrier set. A field
    classified `secret` MUST reach a workflow lease as the export's typed placeholder, never its value: a code run cannot
-   route a secret through the function, and an activity receives a secret only through its own entry's `secrets`.
+   route a secret through the function, and an activity receives a secret only through its own entry's `secrets`. A
+   blob whose carrier schema has a `secret` field MUST NOT be delivered to a workflow, query or replay-check token, and
+   the export MUST emit every blob as a reference only. The classification governs raw reads; the answers of declared
+   queries and updates follow ADR-0031's declared disclosure.
 6. `GET /runs/{runId}/history` MUST be granted by `run:read` and `history:export`, held by the admin role only by
    default, in a versioned format with a baseline; it MUST classify every payload by its schema (an activity input by its
    envelope entry's `inputSchema`, a business literal by its declaring schema or as `pii`), apply

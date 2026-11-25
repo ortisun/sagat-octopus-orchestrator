@@ -28,14 +28,17 @@ code saga cannot have. Temporal offers local activities and leaves compensation 
    entry wins over a prefix, a longer prefix over a shorter one; only an exact entry MAY list secrets), the names of its
    `compensateWith` and `reconcileWith` entries too; an activity whose entry has `requiresApproval` MUST be held by the
    engine behind an approval of that very step under the named policy; the initiators that a policy with
-   `excludeInitiator` excludes, for that approval and for an approval command alike, MUST be the run's starter, the actor
-   of every event of origin `external` delivered up to the issuing activation, and the actor of every
-   `run.code_version_moved` and `step.retry_requested` of the run journaled before it; a derived step MUST receive the secrets of its own entry; a
+   `excludeInitiator` excludes, for that approval and for an approval command alike, MUST be kept per run (the starter,
+   the actor of every event of origin `external`, every mover, review retrier, review resolver and resetter, and the
+   publisher of each code version the run is pinned to), copied to a successor, a child and a reset run, and bound by the
+   issuing activation's start; a derived step MUST receive the secrets of its own entry; a
    script entry by digest with its own secrets, schemas and compensation; a listed child
    workflow at its listed version; a listed event type within its look-back; a named approval policy. No activity name MAY start with
    `script.` or `sagat.`. An activity input MUST be validated and classified by its entry's `inputSchema`.
 4. A successful report whose output cannot be retained MUST be an unknown outcome (`STORAGE_QUOTA_EXCEEDED`), reconciled
-   or reviewed under feature 037; the function MUST NOT be told the step failed.
+   or reviewed under feature 037; the function MUST NOT be told the step failed. A completion whose payloads exceed the
+   run's 4 MiB MUST put the run under review (`RETAINED_BYTES_LIMIT`); one refused by the tenant's content quota MUST be a
+   counted failure; the engine MUST NOT end a code run for either.
 5. Eager activity leases MUST be provisional leases of feature 006, granted through the claim's admission function
    (quotas, breakers, pools, capacity windows, gates, approvals), released safely when unacknowledged; an idempotent
    replay MUST NOT return a lease, and the idempotency record MUST NOT store a lease token.
@@ -45,7 +48,9 @@ code saga cannot have. Temporal offers local activities and leaves compensation 
    recorded B, so that independent
    compensations stay eligible together; compensation identifiers MUST be derived from the start version and the forward
    node; they MUST run with the rules of features 003 and 037; the function MUST learn only the scope's outcome; an engine-driven stop MUST apply each open
-   scope's `cancelPolicy`, carried by the open-saga command.
+   scope's `cancelPolicy`, carried by the open-saga command. Each code scope MUST have a step row `s-<n>` waiting on the
+   saga, never offered to a worker, so that feature 003's saga machinery drives it and a stop never winds down its
+   compensations.
 7. A terminal command MUST be deferred, not counted, while a saga scope aborts or a step is under review or has an
    unknown outcome, and MUST put the run under review (`COMMAND_INVALID`) while a scope is open and not aborting, since
    only the function can close it; closing a scope while a member is not settled, and a command that names a closed

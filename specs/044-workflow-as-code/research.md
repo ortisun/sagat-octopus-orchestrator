@@ -523,6 +523,57 @@ finding was answered.
 - **D044-123** (2026-11-25, later state) Its "added here if design 045 has not landed" is superseded: design 045 owns
   `steps.min_protocol_minor`, and Task 044-8 depends on it (G044-020).
 
+### Decisions after the sixth review round (2026-11-25)
+
+The reports are in `docs/designs/044-workflow-as-code.reviews/2026-11-25/round-6/`; `resolution.md` there says how each
+finding was answered.
+
+- **D044-159** (2026-11-25) `S(0) = 0`; `run.started` is visible and waking (origin `engine`) and carries the input, the
+  predecessor and the carried state; the start transaction makes the first workflow task pending by the rule.
+- **D044-160** (2026-11-25) `workflow_task.started` journals `continue_as_new_suggested` and `history_limit_reached`; the
+  SDK answers both from the started event that opens the activation, never from the current lease.
+- **D044-161** (2026-11-25) There is no terminate (Architecture decision 0050 decision 5): the remedy is cancellation,
+  which stops a run under review at once; a continue-as-new accepted after `run.cancel_requested`, or a handoff that
+  meets a chain or link latch, ends the run `CANCELLED`; a request to a run with a stop reason journals nothing; the
+  cancellation deadline is judged by the database clock; cooperative cancellation is Architecture decision 0103
+  decision 9.
+- **D044-162** (2026-11-25) A move is refused for a run with a stop reason or a `CLOSED` workflow-task step
+  (`RUN_NOT_MUTABLE`); `sagat_move_code_run` is called right after the move event, and `code_replay_checks` holds the run,
+  `S(k)`, the computed chain and the verdict.
+- **D044-163** (2026-11-25, supersedes D044-138 in part) A reset point needs no open code update; `run.code_version_moved`
+  is `COPY`; a code run's `saga.aborting` is `COPY` once the scope settled; restored rows count for a code run's
+  projections; update transitions are rebuilt; `reapply: UPDATES` is refused for code runs.
+- **D044-164** (2026-11-25, supersedes D044-153 in part) Initiators are kept per run in `run_initiators`, copied by the
+  handoff, a child start and a reset, and include resolvers, resetters and the publisher of each pinned code version; a
+  code approval checks them against the bound of its issuing activation.
+- **D044-165** (2026-11-25) Each code scope has a step row `s-<n>` waiting on the saga, so feature 003's saga machinery
+  drives it and a stop never winds down its compensations.
+- **D044-166** (2026-11-25) `RETAINED_BYTES_LIMIT` reviews a completion over the run's 4 MiB, with a closing window on
+  retry; `STORAGE_QUOTA_EXCEEDED` from the tenant's quota is counted with backoff; a code completion never calls
+  `stop_for_storage_quota`.
+- **D044-167** (2026-11-25, supersedes D044-141 in part) The count of the steps that can still act is read by one
+  statement over a partial index, never kept by hand; the completion budget is 63 statements (50 + 13); the append's
+  wake statement is not issued inside a completion.
+- **D044-168** (2026-11-25) A blob whose carrier schema has a `secret` field is never delivered to a workflow, query or
+  replay-check token; the export emits blobs as references only; orphaned lease blobs are released; `ReadHistory`
+  streams have caps and a byte budget; the completion and answer RPCs are of class `Lease`; a tenant holds at most 64 of
+  a process's update waits.
+- **D044-169** (2026-11-25) A deferral answers OK with `ACCEPTED_DEFERRED` and its cause; `UNHANDLED_EVENTS` and
+  `OUTSTANDING_OBLIGATIONS` are not gRPC errors.
+- **D044-170** (2026-11-25) A binding with workflow types only is stored with its profile in
+  `worker_binding_workflow_types`; the binding store reads both tables; both lists empty is the unbind.
+- **D044-171** (2026-11-25, supersedes D044-151 in part) The call-site check counts only the distinctive method names,
+  holds the definition loaders for the generic ones, fails on a count that shrinks, and is hosted as a test of
+  `apps/execution-engine` so that scoped CI runs it; the same host carries the other tree-wide source-text checks.
+- **D044-172** (2026-11-25) `timeoutLevel` admits only `"none"` until design 045 lands; Task 044-27 widens it.
+- **D044-173** (2026-11-25, supersedes D044-137 and D044-154 in part) An update's `argsSchema` and `resultSchema` and
+  `state.schema` are carriers; only side-effect values and schema-less continue-as-new inputs are `pii` as a whole; raw
+  reads follow the classification and declared query and update answers follow Architecture decision 0031.
+- **D044-174** (2026-11-25) `CommandDigester` is a trait of the domain; the history projection is one application
+  function parameterized by its reader; overlay rows record their accepting version and granted secrets; the pause does
+  not count its own refusals or timeouts and worker queries answer `QUERY_UNAVAILABLE` on a paused run or one under
+  review.
+
 ## 3. Gaps
 
 - **G044-001** (2026-11-24) The memory of an idle cached run is not measured in any SDK; the TypeScript spike's heap
@@ -602,6 +653,12 @@ finding was answered.
   function cannot settle (round 4). The draft's owner should word the clause as "the command that ends the run is not
   applied while ... and is deferred; the rest of the completion commits all or nothing". Until then the Constitution
   Check records principles I and IV as "Pass with conditions". Raised by the architecture review of round 5.
+
+- **G044-025** (2026-11-25) The 5.0.0 draft (principle IV) applies a move only while "the journal has not advanced past
+  the activation that was verified". This design applies it while no completion has followed the verified activation;
+  waking events committed after it are not yet applied by the function and are delivered in the next activation on the
+  target code. The draft's owner should word the clause "the run has not completed an activation past the one
+  verified". Raised by the architecture review of round 6.
 
 ## 4. Owner questions (all delegated)
 
