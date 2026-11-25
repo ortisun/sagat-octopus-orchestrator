@@ -220,7 +220,11 @@ ALTER TABLE tenant_retained_usage ADD CONSTRAINT tenant_retained_usage_step_log_
 -- One lease per tenant and server backend that charges for it (D041-117): `writer` is `pg_backend_pid()`. A backend
 -- runs one transaction at a time, so no writer ever meets another's lock on its lease.
 CREATE TABLE step_log_quota_leases (
-    tenant_id  uuid        NOT NULL REFERENCES tenant_retained_usage (tenant_id) ON DELETE CASCADE,
+    tenant_id  uuid        NOT NULL,                       -- no foreign key (D041-143): its check would take
+                                                           -- FOR KEY SHARE on the usage row on a second charge of a
+                                                           -- transaction; the usage row's AFTER DELETE trigger
+                                                           -- `tenant_retained_usage_step_log_leases_cascade` removes a
+                                                           -- tenant's leases
     writer     integer     NOT NULL,
     granted    bigint      NOT NULL DEFAULT 0,
     used       bigint      NOT NULL DEFAULT 0,

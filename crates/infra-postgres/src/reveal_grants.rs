@@ -71,6 +71,10 @@ pub async fn has_effective_payload_reveal_grant(
 /// and a grant row exists for each namespace. A tenant with no namespace, or a subject with no membership, answers
 /// `None` (fail-closed; design 041, decision D041-133).
 ///
+/// The usage is U = S + Σ used of the quota leases (ADR-0097), read through `sagat_quota_step_log_usage`, which is
+/// `STABLE` so that its queries run in the snapshot of the `SELECT` that calls it (a `VOLATILE` function would take
+/// snapshots of its own and could pair a grant from before a revoke with a usage from after it).
+///
 /// The membership role, the grants and the usage are one `SELECT`, so one snapshot (decision D041-141): a statement
 /// that waited behind a lock takes its snapshot when it runs, after the wait, so a revoke that committed meanwhile is
 /// seen, and the usage is never shown with a grant from before a revoke that the usage follows. A role change deletes
@@ -88,7 +92,7 @@ pub(crate) async fn step_log_usage_if_revealed(
             AND NOT EXISTS (SELECT 1 FROM namespaces n WHERE n.tenant_id = m.tenant_id \
                 AND NOT EXISTS (SELECT 1 FROM payload_reveal_grants g \
                     WHERE g.tenant_id = n.tenant_id AND g.namespace_id = n.id AND g.subject = m.subject)), \
-            coalesce((SELECT u.step_log_bytes FROM tenant_retained_usage u WHERE u.tenant_id = m.tenant_id), 0)::bigint \
+            sagat_quota_step_log_usage(m.tenant_id) \
          FROM memberships m WHERE m.tenant_id = $1 AND m.subject = $2",
     )
     .bind(tenant.as_uuid())

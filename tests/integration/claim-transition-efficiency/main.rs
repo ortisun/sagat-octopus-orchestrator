@@ -6,5 +6,6 @@
 #[path = "../../support/mod.rs"]
 mod support;
 
+mod step_log_isolation;
 mod window_order;
 mod work_budget;

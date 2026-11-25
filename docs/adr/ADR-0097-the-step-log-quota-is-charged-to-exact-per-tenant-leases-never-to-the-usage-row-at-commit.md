@@ -15,8 +15,12 @@ replica's wait slots beside the tenant's; a top-up that never waits, takes no sl
 3b, 4 and 8 by D041-137 (the replica's *Q* passed per transaction, the usage row tried `SKIP LOCKED`, the pooler's
 sizing rule, the top-up's answers without `held`). Under rules 2 and 4 of `README.md` these delegate amendments take
 effect with the owner's approval of that revision on the owner's path (OD-2026-11-20-17), which the design's approval
-block records. The owner confirmed both on 2026-11-21 ("Confirm the amendments", OD-2026-11-21-9). Every passage a
-change touches cites its row.
+block records. The owner confirmed both on 2026-11-21 ("Confirm the amendments", OD-2026-11-21-9). Amended on
+2026-11-24 by the building agent under OD-2026-11-24-4 (delegate), decision 1 by design 041's D041-143: the lease table
+has no foreign key to the usage row, since PostgreSQL checks a foreign key on an update that keeps the key when the row
+version was written by the updating transaction, so a second charge in one transaction took `FOR KEY SHARE` on the usage
+row and waited, with no timeout, for a refill holding it; the cascade on a tenant's deletion is a delete trigger of the
+usage row instead. Every passage a change touches cites its row.
 **Refines / supersedes:** supersedes:
 - for the class `step_log`, the charge half of item 3 of the Amendment of 2026-11-15 of
   [ADR-0027](ADR-0027-durable-content-rate-and-retention-quotas.md) (a charge goes to a lease, not to
@@ -85,7 +89,8 @@ ADR-0095 decision 4).
 
 1. **Leases, one a writer.** A table `step_log_quota_leases (tenant_id, writer integer, granted bigint, used bigint,
    charged_at timestamptz)` holds one lease per tenant and server backend that charges for it, keyed by
-   `pg_backend_pid()` (a foreign key to the tenant's usage row, `ON DELETE CASCADE`; fill factor 50). A backend runs one
+   `pg_backend_pid()` (no foreign key: the usage row's delete trigger removes a tenant's leases, decision D041-143; fill
+   factor 50). A backend runs one
    transaction at a time, so a writer's lease is never locked by another writer, behind a transaction pooler too (the
    key is the server backend, not the client connection; the top-up of decision 3b reaches the carry's own backend only
    with session affinity, and is correct without it); a

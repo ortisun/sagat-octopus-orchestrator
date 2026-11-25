@@ -83,8 +83,9 @@ async fn all_readers_refuse_a_same_tenant_wrong_namespace_or_invented_step_uuid(
 /// Everything the run owns. The run row is taken without its null columns: a test that rolls back an
 /// index migration undoes every later one too, and a later migration may add a nullable column to
 /// `runs` (the schedule provenance), which is absent after the rollback and null before it. For the same reason the
-/// tenant's retained usage is taken without `step_log_bytes`, the column of feature 041's later migration (its down
-/// refuses while it is not 0, so a rollback here never loses a value).
+/// tenant's retained usage is taken without `step_log_bytes` and `step_log_leased_bytes`, the columns of feature 041's
+/// later migrations (their downs refuse while a step-log line or usage exists and fold the quota leases' room back, so
+/// a rollback here never loses a value).
 pub(super) async fn snapshot(fixture: &Fixture) -> serde_json::Value {
     sqlx::query_scalar(
         "SELECT jsonb_build_object( \
@@ -95,7 +96,7 @@ pub(super) async fn snapshot(fixture: &Fixture) -> serde_json::Value {
           'members',(SELECT jsonb_agg(to_jsonb(i) ORDER BY scope_id,iteration_index) FROM collection_iterations i WHERE i.tenant_id=r.tenant_id AND i.run_id=r.id), \
           'usage',(SELECT to_jsonb(u) FROM run_instance_usage u WHERE u.tenant_id=r.tenant_id AND u.run_id=r.id), \
           'tenantIterations',(SELECT to_jsonb(u) FROM tenant_iteration_usage u WHERE u.tenant_id=r.tenant_id), \
-          'retained',(SELECT to_jsonb(u) - 'step_log_bytes' FROM tenant_retained_usage u WHERE u.tenant_id=r.tenant_id), \
+          'retained',(SELECT to_jsonb(u) - 'step_log_bytes' - 'step_log_leased_bytes' FROM tenant_retained_usage u WHERE u.tenant_id=r.tenant_id), \
           'payloads',(SELECT jsonb_agg(to_jsonb(p) ORDER BY digest) FROM payloads p WHERE p.tenant_id=r.tenant_id), \
           'audit',(SELECT jsonb_agg(to_jsonb(a) ORDER BY id) FROM audit_records a WHERE a.tenant_id=r.tenant_id), \
           'outbox',(SELECT jsonb_agg(to_jsonb(o) ORDER BY id) FROM event_outbox o WHERE o.tenant_id=r.tenant_id AND o.aggregate_id=r.id), \

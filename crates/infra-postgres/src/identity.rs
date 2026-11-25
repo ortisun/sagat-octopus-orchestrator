@@ -789,6 +789,17 @@ fn classify(error: &sqlx::Error) -> StoreError {
                         what: sagat_domain::quota::QuotaResource::TenantLogBytes.limit_name(),
                     }
                 }
+                // Feature 041 (ADR-0097): a step-log charge past the tenant's limit is the limit's refusal; a charge whose
+                // missing room is held by other open transactions' quota leases clears when they end, so the caller may
+                // retry (a batch answers `RETRY_LATER`). The step-log store counts the two apart by constraint name.
+                "54000" if db.constraint() == Some("tenant_step_log_quota_exceeded") => {
+                    StoreError::QuotaExceeded {
+                        what: sagat_domain::quota::QuotaResource::TenantStepLogBytes.limit_name(),
+                    }
+                }
+                "54000" if db.constraint() == Some("tenant_step_log_quota_held") => {
+                    StoreError::Unavailable { detail }
+                }
                 // unique_violation
                 "23505" => match db.constraint() {
                     Some("tenants_slug_uniq") => StoreError::Conflict(ConflictKind::TenantSlug),
@@ -836,5 +847,81 @@ fn classify(error: &sqlx::Error) -> StoreError {
         | Error::PoolClosed
         | Error::WorkerCrashed => StoreError::Unavailable { detail },
         _ => StoreError::Internal { detail },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::borrow::Cow;
+
+    use sagat_application::error::StoreError;
+    use sagat_domain::quota::QuotaResource;
+
+    use super::classify;
+
+    /// A database error with a SQLSTATE and a constraint name, as PostgreSQL raises it from a function.
+    #[derive(Debug)]
+    struct Raised {
+        code: &'static str,
+        constraint: &'static str,
+    }
+
+    impl std::fmt::Display for Raised {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "{} ({})", self.code, self.constraint)
+        }
+    }
+
+    impl std::error::Error for Raised {}
+
+    impl sqlx::error::DatabaseError for Raised {
+        fn message(&self) -> &str {
+            "raised"
+        }
+        fn code(&self) -> Option<Cow<'_, str>> {
+            Some(Cow::Borrowed(self.code))
+        }
+        fn constraint(&self) -> Option<&str> {
+            Some(self.constraint)
+        }
+        fn as_error(&self) -> &(dyn std::error::Error + Send + Sync + 'static) {
+            self
+        }
+        fn as_error_mut(&mut self) -> &mut (dyn std::error::Error + Send + Sync + 'static) {
+            self
+        }
+        fn into_error(self: Box<Self>) -> Box<dyn std::error::Error + Send + Sync + 'static> {
+            self
+        }
+        fn kind(&self) -> sqlx::error::ErrorKind {
+            sqlx::error::ErrorKind::Other
+        }
+    }
+
+    fn raised(code: &'static str, constraint: &'static str) -> sqlx::Error {
+        sqlx::Error::Database(Box::new(Raised { code, constraint }))
+    }
+
+    /// Design 041, task T041-5 (decision D041-142 (7)): the step-log quota's two refusals are typed apart.
+    #[test]
+    fn the_step_log_quota_refusals_are_typed_apart() {
+        assert_eq!(
+            classify(&raised("54000", "tenant_step_log_quota_exceeded")),
+            StoreError::QuotaExceeded {
+                what: QuotaResource::TenantStepLogBytes.limit_name()
+            }
+        );
+        assert!(matches!(
+            classify(&raised("54000", "tenant_step_log_quota_held")),
+            StoreError::Unavailable { .. }
+        ));
+        assert!(matches!(
+            classify(&raised("55P03", "step_log_wait_slots_taken")),
+            StoreError::Unavailable { .. }
+        ));
+        assert!(matches!(
+            classify(&raised("22000", "step_log_usage_underflow")),
+            StoreError::Internal { .. }
+        ));
     }
 }
