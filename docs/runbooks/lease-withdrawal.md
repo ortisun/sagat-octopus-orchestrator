@@ -96,6 +96,17 @@ is refused (`lease-withdrawal-v2 cannot be removed while a journal holds step.le
 NOT_ACKNOWLEDGED`), and the down migration `20270211000100_lease_withdrawal_v2` refuses as well. This build writes no such
 withdrawal: only a build of protocol 1.8 does.
 
+### The forward order to protocol 1.8
+
+1. Every control plane and engine runs the build of the follow-up of pull request #260 (it lists `lease-withdrawal-v2`;
+   check `serving_instances`, section 5 of `docs/runbooks/instance-registry.md`).
+2. `lease-withdrawal-v1` is activated, then `lease-withdrawal-v2` (above).
+3. The build of protocol 1.8 is deployed.
+4. `delivery-acknowledgement-v1` is activated (its own runbook, with that build).
+
+A rollback walks the same steps back; once a journal holds a `NOT_ACKNOWLEDGED` withdrawal, the binaries roll back no
+further than step 1's build (ADR-0099, decision 10; decision D006-059 request (9)).
+
 ## Watching it
 
 | Signal | Meaning |

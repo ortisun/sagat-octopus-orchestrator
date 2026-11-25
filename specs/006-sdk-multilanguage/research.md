@@ -458,6 +458,11 @@ design of delivery acknowledgement, so this list starts at 030.
      any other failure.
   4. So an honest attempt meets each cause at most once: four withdrawals. The cap is on the total, because the host's
      three causes cannot be told apart.
+  5. The causes of protocol 1.8 count toward the same four (request (5) of D006-059, Task 006-073): a provisional lease
+     withdrawn at its deadline (`NOT_ACKNOWLEDGED`) and a hand-back after the acknowledgement each end one delivery before
+     any handler ran, as the four above do, so each takes one of them. A cap of its own for 1.8 would let a client that
+     never acknowledges, or a host that always hands back, take four more free leases of the same attempt; an attempt
+     whose deliveries keep ending is a property of the task, the host or the client, which must spend it.
   The fifth withdrawal of one attempt is refused, and the outcome is counted as `capped`. Past the cap a `TASK_NOT_STARTED`
   is the ordinary failure (the attempt spent, the backoff, the flag honoured), never a review. A lease the server did not
   send is left to lapse, as before this feature: the server has no failure of a host to record, and a lapse keeps today's
@@ -684,7 +689,8 @@ OD-2026-11-21-4 ("Accept, if the final review is clean"), applied when the round
 
 - **G006-032 — This build is not the rollback floor of protocol 1.8.** ADR-0099's requests (1), (2) and (5) to (9) are a
   follow-up of pull request #260 (D006-090). Closed when that follow-up merges; it must merge before any build negotiates
-  1.8.
+  1.8. Built on 2026-11-24 as Tasks 006-068 to 006-074 (D006-094 to D006-099); what of request (1) is behaviour of 1.8 is
+  G006-037, and the reader of `lease-withdrawal-v2` under its lock is G006-034. Closed with the merge of that pull request.
 - **G006-033 — Minors left after round 3** (D006-091). None weakens a guarantee of this build: each is unreachable before
   1.8, an operability improvement, or a test seam.
   - No check refuses a migration stamped below one already applied; the restamp rule (D006-033) is prose until the
