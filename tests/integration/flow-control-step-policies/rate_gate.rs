@@ -514,8 +514,20 @@ async fn a_grant_through_another_keys_pass_wakes_the_waiters_of_its_window() {
     let behind = w.start(rate_only, &json!({"accountId": "acct-1"})).await;
     assert_eq!(count(&w, head, "rate_limit.queued").await, 1);
     assert_eq!(count(&w, behind, "rate_limit.queued").await, 1);
-    // nothing counts on the window: its pass refuses the head (its permit) and the one behind (the head's reservation)
-    assert_eq!(w.scheduler.tick().await.gates_granted, 0);
+    // nothing counts on the window: its pass refuses the head (its permit) and the one behind (the head's reservation).
+    // One key at a time: with both keys' passes at once, the window's pass may find the head's run held by the permit's
+    // pass and skip it, which keeps the window's hint by design (`Busy`; a loaded runner did so on 2026-11-25)
+    let one_at_a_time = sagat_scheduler::SchedulerSettings {
+        concurrency: 1,
+        ..sagat_scheduler::SchedulerSettings::default()
+    };
+    assert_eq!(
+        crate::support::scale::scheduler(&w, one_at_a_time, None)
+            .tick()
+            .await
+            .gates_granted,
+        0
+    );
     assert_eq!(
         hint_us(&w, behind).await,
         None,
