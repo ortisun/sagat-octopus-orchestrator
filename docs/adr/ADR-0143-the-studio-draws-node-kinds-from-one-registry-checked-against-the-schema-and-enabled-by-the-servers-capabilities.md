@@ -3,7 +3,7 @@
 **Status:** Proposed
 **Decided by:** agent proposal (design 050, 2026-11-24), for acceptance under Owner decision 2026-11-24-4 once the review of design 050 is complete
 **Refines / supersedes:** refines Architecture decision 0016 (the Studio is a same-origin application over the REST API) and Architecture decision 0032 (the workflow IR grows additively); supersedes research decisions Decision 145 and Gap 147 of feature 007 ("a node the schema accepts and the engine does not run yet" is shown in the palette, marked "does not run yet")
-**Enforced by:** planned in design 050 and not existing yet: `frontend/apps/studio/src/model/registry.test.ts` (every `type` constant of `$defs/node` and `$defs/bodyNode` of `specs/001-platform-foundation/contracts/workflow.schema.json` has exactly one registry entry with its scopes, every registry entry names a schema kind, and every required property of each scope's member is a field or a handle of the entry); `tests/contract/workflow-studio/capabilities.rs` (every variant of `PlatformCapability` is in the `x-known-values` of `openapi.yaml` and the reverse, the list a test deployment advertises matches the switches it was started with, a registry activation appears within one heartbeat, and a reader ignores an unknown name); the Studio unit test that a kind whose capability is absent is not in the palette and that a document holding a refused kind opens read-only on that node
+**Enforced by:** planned in design 050 and not existing yet: `frontend/apps/studio/src/model/registry.test.ts` (every `type` constant of `$defs/node` and `$defs/bodyNode` of `specs/001-platform-foundation/contracts/workflow.schema.json` has exactly one registry entry with its scopes, every registry entry names a schema kind, and every required property of each scope's member is a field or a handle of the entry); `tests/contract/workflow-studio/capabilities.rs` (every variant of `AdvertisedCapability` is in the `x-known-values` of `openapi.yaml` and the reverse, the list a test deployment advertises matches the switches it was started with, and a reader ignores an unknown name); the Studio unit test that a kind whose capability is absent is not in the palette and that a document holding a refused kind opens read-only on that node
 
 ## Context
 
@@ -32,15 +32,17 @@ additive `capabilities` list" to `PlatformVersion`, 029 adds "the additive `acce
    fields per scope, and no entry without a member. A new kind or a changed required field in the schema fails the
    Studio's tests until the registry follows.
 2. `PlatformVersion` (`GET /version`) MUST carry `capabilities`, a list of strings of the form `<area>.<capability>`
-   (for example `workflow.collection-operators`, `workflow.lake-writes`, `apps.runtime`, `testing.virtual-clock`,
-   `access.restricted.workflow`). The names MUST be deployment-wide, never per tenant. The OpenAPI document lists the
-   known names as `x-known-values`, never as an `enum`, and a reader MUST ignore a name it does not know; an absent field
-   means a server older than 0.3.0. A name is present when the replica that answers, as of its last successful registry
-   beat, would accept the matching publication or route; it is advice for a client, never an authorization. The names are the variants of one typed
-   enumeration in `crates/application`; names that follow an operator's activation in the instance registry
-   (Architecture decision 0082) MUST be derived from the activated requirements the process re-reads on each
-   heartbeat, through one tested mapping, so they appear within one heartbeat; the others are computed at start-up.
-   Every 0.3.0 feature that switches a capability on or off adds a name to this list instead of a field of its own.
+   (for example `workflow.collection-operators`). The names MUST be deployment-wide, never per tenant. The OpenAPI
+   document lists the shipped names as `x-known-values`, never as an `enum`, and a reader MUST ignore a name it does not
+   know; an absent field means a server older than 0.3.0. A name is present when the replica that answers would
+   accept the matching publication or route; it is advice for a client, never an authorization. The names are the
+   variants of one typed enumeration in `crates/application` (`AdvertisedCapability`, distinct from the instance
+   registry's `Capability` and from the workflow switches of `crates/infra-ir`). Every 0.3.0 feature that switches a
+   behaviour on or off adds its name, with its source, when it ships, instead of a field of its own; a name that follows
+   an operator's activation in the instance registry (Architecture decision 0082) MUST be derived from the activated
+   requirements the registry member reads after a successful registration and on every epoch change and keeps beside
+   its gate, through one tested mapping, which the first feature shipping such a name builds. A switch that already has
+   an advertisement (the database drivers list for lake writes) keeps it and gets no second one.
 3. A registry entry MUST name the capability it needs, or none. The palette MUST NOT offer a kind whose capability is
    absent. A document that already holds such a node, or a node of a kind the server refuses at publication for good
    (`foreach`, `humanApproval`), MUST open with that node shown and read-only, with the reason in words and the server

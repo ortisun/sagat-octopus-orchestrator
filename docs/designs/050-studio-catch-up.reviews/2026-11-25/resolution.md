@@ -46,3 +46,23 @@ the first text excluded ("nothing else changes in the engine"); the Overview now
 | 12 | Major | Fixed: without the field, the languages 0.2 builds; `GET /version` re-read at sign-in and after a refused build | Requirement 050-019, Technical Plan 3 |
 | 13 | Major | Fixed: pages parsed, one line per item, counted as written, `Retry-After` honoured, "as of the last page read" | Requirement 050-021, Technical Plan 5 |
 | 14 to 19 | Nit | Fixed: the run filter's order and cursor bound to it, the namespace check and the rows-scanned test; `CREATE INDEX IF NOT EXISTS` with a `CONCURRENTLY` runbook step; the stale consequence of Architecture decision 0143 corrected; "as of the last successful beat"; `expectedStateRevision` prefilled; `403` after a sent decision treated as "status unknown" | Technical Plans 3, 5, 6; Architecture decisions 0143 and 0144 |
+
+## egm-review Stage 5, Initial Zoom Out (`zoom_out_report.md`, at `035b2bf0`)
+
+| Finding | Severity | Disposition | Where |
+|---|---|---|---|
+| 1 | Major | Contested, in writing. The owner's scope names one design for "the Studio catch-up" (Owner decision 2026-11-24-1), and the coordinating session's brief asks this design to cover what else the Studio lacks against Windmill's and Temporal's interfaces; splitting the operator surfaces into a second design would add a second review cycle on the release's path for screens that only call routes that exist. The risk the finding names (a later small change sending the foundation back to draft) is answered instead by finding 13's fix (requirements state observable behaviour; numbers live in the Technical Plan) and by the approval rule itself, which lets follow-up tasks be added after approval. Task 050-1 stays here because accepting ADR-0101 is this design's Decision 050-001; it lands in pull request #267 while that is open | Decision 050-001, Requirements 050-009 to 050-021 |
+| 2 | Major | Fixed: design 050 ships two static names; other features add theirs when they ship; the registry derivation and the member change are built by the first feature with a registry-derived name (022, 029 or 013), recorded in Architecture decision 0143 decision 2 and in 029's Task 029-014 and 013's Requirement 013-032 | Requirement 050-002, Technical Plan 3, Task 050-3 |
+| 3 | Major | Fixed: the codec's existing pointer becomes `/bodies/{name}/nodes/{index}`; no new field | Technical Plan 4, Requirement 050-003, Task 050-6 |
+| 4 | Major | Fixed: `youMayDecide` on the existing per-run and per-workflow lists; the namespace routes lose their filters | Requirements 050-009 to 050-011, Technical Plans 5 and 6, Tasks 050-4, 050-5 |
+| 5 | Major | Fixed: a read-only inspector with an "add here" action; the mapping dialog deferred to Gap 050-005 | Requirement 050-005, Technical Plan 4, CUJ 2, Task 050-7 |
+| 6 | Major | Fixed: the runtime graph reports iteration statuses and counts from the engine's recorded outcomes; the Studio only groups and draws | Requirement 050-008, Technical Plan 5, Task 050-9 |
+| 7 | Nit | Fixed: the drivers list stays the advertisement of lake writes; no `workflow.lake-writes` name | Requirement 050-003, Technical Plans 3 and 4 |
+| 8 | Nit | Fixed: Go and Java marked built in the constant; `LANGUAGE_NOT_BUILT` handles another build | Requirement 050-019, Decision 050-007, Technical Plan 8 |
+| 9 | Nit | Fixed: the three meanings of "capability" mapped; the type named `AdvertisedCapability`; the wording aligned with Architecture decision 0143 | Technical Plan 3, Architecture decision 0143 decision 2 |
+| 10 | Nit | Fixed: one `collectPagesBounded` for the inbox, the audit download and the journal download; no fixed pace | Technical Plans 5 and 6, Requirements 050-012, 050-021 |
+| 11 | Nit | Fixed: the existing per-intent key pattern as one hook `useIntentKey`; no key format | Technical Plan 5, Requirements 050-009, 050-014 |
+| 12 | Nit | Fixed: `useWindowedRows` and `JsonField` named | Technical Plan 5, Task 050-9 |
+| 13 | Nit | Fixed: Requirements 050-009, 050-010, 050-012, 050-014 and 050-021 state observable behaviour; the bounds and mechanics are in Technical Plans 5 and 6 | Requirements |
+| 14 | Nit | Fixed: the versions page lives in `features/workflows/` | Requirement 050-016, the plan's introduction |
+| 15 | Nit | Fixed: a wrong run-end path becomes a follow-up task of its own scope | Technical Plan 6 |

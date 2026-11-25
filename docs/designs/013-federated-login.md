@@ -357,7 +357,8 @@ already has.
   control plane and the execution engine); an operator activates the requirement by the audited command of
   Architecture decision 0082 decision 1, refused while a live process lacks it; until it is recorded, connection
   creation, SCIM, member suspension and the federated-only setting are refused (`FEDERATION_NOT_ACTIVATED`), and design
-  050's names `identity.federation` and `identity.scim` are derived from it. A binary below the requirement cannot serve
+  050's names `identity.federation` and `identity.scim` are derived from it (this design builds the registry derivation of
+  Architecture decision 0143 decision 2 if no earlier feature has). A binary below the requirement cannot serve
   a deployment that recorded it (the registry's closed gate); rolling back below it is unsupported. The deployment
   issuer, existing memberships and existing clients are unchanged; the migration refuses, with a named error, while a
   membership already has a subject starting `federated:`; its `down` refuses while a membership is `SUSPENDED` or any
